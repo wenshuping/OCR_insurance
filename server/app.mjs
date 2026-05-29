@@ -1767,6 +1767,10 @@ export function createPolicyOcrApp(options = {}) {
       if (identityChanged) clearPolicyReportForRegeneration(state, policy);
       policy.updatedAt = new Date().toISOString();
       await persist(state);
+
+      // Recompute and store cashflow after policy update
+      const { cashflowEntries, scenarioEntries, totalCashflow } = computeAndStoreCashflow(policy);
+
       if (identityChanged) {
         startPolicyReportGeneration({
           state,
@@ -1780,7 +1784,12 @@ export function createPolicyOcrApp(options = {}) {
       }
       res.status(identityChanged ? 202 : 200).json({
         ok: true,
-        policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords),
+        policy: {
+          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords),
+          cashflowEntries,
+          scenarioEntries,
+          totalCashflow,
+        },
         reportRegenerating: identityChanged,
       });
     } catch (error) {
