@@ -120,6 +120,41 @@ const emptyForm: PolicyFormData = {
   plans: [],
 };
 
+/**
+ * Build PolicyCashflowPlan[] using server-pre-computed entries when available,
+ * falling back to frontend computation via buildPolicyCashflowPlans for policies
+ * that have no pre-computed data.
+ */
+function buildCashflowPlansWithFallback(policies: Policy[]): PolicyCashflowPlan[] {
+  const preComputedPlans: PolicyCashflowPlan[] = [];
+  const fallbackPolicies: Policy[] = [];
+
+  for (const p of policies) {
+    if (p.cashflowEntries?.length) {
+      preComputedPlans.push({
+        policyId: p.id,
+        productName: p.name || '',
+        company: p.company || '',
+        insured: p.insured || '',
+        insuredBirthday: p.insuredBirthday || '',
+        effectiveDate: p.date || '',
+        annualEntries: p.cashflowEntries,
+        scenarioEntries: p.scenarioEntries || [],
+        totalDeterministicCashflow: p.totalCashflow ?? 0,
+        expired: false,
+      });
+    } else {
+      fallbackPolicies.push(p);
+    }
+  }
+
+  const fallbackPlans = fallbackPolicies.length
+    ? buildPolicyCashflowPlans(fallbackPolicies)
+    : [];
+
+  return [...preComputedPlans, ...fallbackPlans];
+}
+
 function createGuestId() {
   if (crypto.randomUUID) return `guest-${crypto.randomUUID()}`;
   return `guest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -824,7 +859,7 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
 
   // 现金流明细（如果有）
   if (policy) {
-    const cashflowPlans = buildPolicyCashflowPlans([policy]);
+    const cashflowPlans = buildCashflowPlansWithFallback([policy]);
     for (const plan of cashflowPlans) {
       if (plan.annualEntries.length) {
         appendPrintableCashflowTable(report, plan.annualEntries, {
@@ -3490,7 +3525,7 @@ function CashflowDetailPage({
   onBack: () => void;
 }) {
   const memberPolicies = policies.filter((p) => (p.insured || '').trim() === member);
-  const plans = buildPolicyCashflowPlans(memberPolicies);
+  const plans = buildCashflowPlansWithFallback(memberPolicies);
   const summaries = buildMemberAnnualSummaries(plans);
   const summary = summaries[0];
   const notes: string[] = [];
@@ -3599,7 +3634,7 @@ function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overvi
 
         <div className="mb-4 grid gap-2 sm:grid-cols-3">
           {overview.members.map((member) => {
-            const memberPlans = buildPolicyCashflowPlans(
+            const memberPlans = buildCashflowPlansWithFallback(
               policies.filter((p) => (p.insured || '').trim() === member)
             );
             const hasCashflow = memberPlans.some((p) => p.annualEntries.length > 0 || p.scenarioEntries.length > 0);
