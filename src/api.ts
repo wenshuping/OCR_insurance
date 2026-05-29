@@ -65,6 +65,7 @@ export type Policy = {
   cashflowEntries?: CashflowEntry[];
   scenarioEntries?: ScenarioEntry[];
   totalCashflow?: number;
+  cashValues?: CashValueRow[];
 };
 
 export type PolicyPlan = {
@@ -296,6 +297,24 @@ export type CashflowEntry = {
   /** Alias used by the server DB store (calc_text column) */
   calcText?: string | null;
   cashValue?: number | null;
+};
+
+export type CashValueRow = {
+  policyYear: number;
+  age: number | null;
+  cashValue: number;
+  source?: string;
+};
+
+export type CashValueScanResult = {
+  ok: boolean;
+  source?: 'ocr' | 'vision_llm';
+  tableType?: 2 | 3;
+  rows: CashValueRow[];
+  rowCount?: number;
+  confidence?: number;
+  error?: string;
+  message?: string;
 };
 
 export type ScenarioEntry = {
@@ -561,6 +580,22 @@ export function regeneratePolicyReport(input: { token?: string; guestId?: string
   return request<{ ok: true; policy: Policy; skipped?: boolean }>(`/api/policies/${input.id}/report${query}`, {
     token: input.token,
     body: {},
+  });
+}
+
+export function scanCashValue(input: { token?: string; guestId?: string; policyId: number; uploadItem: UploadItem }) {
+  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
+  return request<CashValueScanResult>(`/api/policies/${input.policyId}/cash-value/scan${query}`, {
+    token: input.token,
+    body: { uploadItem: input.uploadItem },
+  });
+}
+
+export function confirmCashValue(input: { token?: string; guestId?: string; policyId: number; rows: CashValueRow[] }) {
+  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
+  return request<{ ok: true; savedCount: number }>(`/api/policies/${input.policyId}/cash-value/confirm${query}`, {
+    token: input.token,
+    body: { rows: input.rows },
   });
 }
 
