@@ -1,5 +1,4 @@
 // scripts/fix-cashflow-indicators.mjs
-import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
