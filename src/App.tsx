@@ -29,6 +29,8 @@ import {
   AdminOfficialDomainProfile,
   AdminOverview,
   ApiError,
+  CashValueRow,
+  CashValueScanResult,
   CashflowEntry,
   KnowledgeRecord,
   MemberAnnualSummary,
@@ -47,6 +49,7 @@ import {
   UploadItem,
   adminLogin,
   analyzePolicy,
+  confirmCashValue,
   crawlAdminKnowledge,
   createAdminOfficialDomainProfile,
   deleteAdminOfficialDomainProfile,
@@ -66,6 +69,7 @@ import {
   register,
   regeneratePolicyReport,
   recognizePolicy,
+  scanCashValue,
   scanPolicy,
   sendCode,
   updateAdminOfficialDomainProfile,
@@ -2194,6 +2198,15 @@ function CustomerApp() {
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
   const [cashflowMember, setCashflowMember] = useState<string | null>(null);
 
+  // Cash value upload dialog state
+  const [cashValueDialogOpen, setCashValueDialogOpen] = useState(false);
+  const [cashValuePolicyId, setCashValuePolicyId] = useState<number | null>(null);
+  const [cashValueScanResult, setCashValueScanResult] = useState<CashValueScanResult | null>(null);
+  const [cashValueEditRows, setCashValueEditRows] = useState<CashValueRow[]>([]);
+  const [cashValueLoading, setCashValueLoading] = useState(false);
+  const [cashValueMessage, setCashValueMessage] = useState('');
+  const cashValueInputRef = useRef<HTMLInputElement | null>(null);
+
   const canSubmit = Boolean(uploadItem || ocrText.trim() || formData.company.trim() || formData.name.trim());
   const totalCoverage = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [policies]);
   const annualPremium = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0), [policies]);
@@ -2919,6 +2932,7 @@ function CustomerApp() {
     if (!canSubmit || loading) return;
     if (blockSecondGuestPolicyIfNeeded()) return;
     const hasGeneratedAnalysis = hasAnalysisResult(analysisDraft);
+    const isNewPolicy = !policies.some((p) => Number(p.id) === Number((formData as any).id));
     const startedAt = clientPerfNow();
     setLoading(true);
     setMessage(hasGeneratedAnalysis ? '正在保存保单信息' : '正在保存保单信息，报告将在后台生成');
@@ -2956,7 +2970,15 @@ function CustomerApp() {
         return [payload.policy, ...withoutDuplicate];
       });
       setSelectedPolicy(payload.policy);
-      setActiveTab('policies');
+
+      // Trigger cash value dialog for newly saved policies without cash values
+      const hasExistingCashValues = (payload.policy.cashValues?.length ?? 0) > 0;
+      if (!hasExistingCashValues && isNewPolicy) {
+        setCashValuePolicyId(payload.policy.id);
+        setCashValueDialogOpen(true);
+      } else {
+        setActiveTab('policies');
+      }
       const suffix = payload.registrationRequiredNext ? '；第二次录入需要手机验证码' : '';
       setMessage(isPolicyReportGenerating(payload.policy) ? `保单已保存，报告正在后台生成${suffix}` : `保单已保存到我的保单${suffix}`);
     } catch (error) {
@@ -2972,6 +2994,97 @@ function CustomerApp() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleCashValueFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || cashValuePolicyId === null) return;
+    e.target.value = '';
+
+    setCashValueLoading(true);
+    setCashValueMessage('正在识别现金价值表...');
+
+    try {
+      const uploadItem = await fileToUploadItem(file);
+      const result = await scanCashValue({
+        token,
+        guestId,
+        policyId: cashValuePolicyId,
+        uploadItem,
+      });
+
+      if (result.ok && result.rows?.length) {
+        setCashValueScanResult(result);
+        setCashValueEditRows(result.rows);
+        setCashValueMessage('');
+      } else {
+        setCashValueMessage(result.message || '未能识别现金价值表，请确保照片清晰且包含完整表格');
+        setCashValueScanResult(null);
+        setCashValueEditRows([]);
+      }
+    } catch (error) {
+      setCashValueMessage(error instanceof Error ? error.message : '识别失败');
+      setCashValueScanResult(null);
+      setCashValueEditRows([]);
+    } finally {
+      setCashValueLoading(false);
+    }
+  }
+
+  async function handleCashValueConfirm() {
+    if (cashValuePolicyId === null || cashValueEditRows.length === 0) return;
+    setCashValueLoading(true);
+    setCashValueMessage('正在保存...');
+
+    try {
+      await confirmCashValue({
+        token,
+        guestId,
+        policyId: cashValuePolicyId,
+        rows: cashValueEditRows,
+      });
+
+      // Refresh the policy data
+      const updated = policies.map((p) =>
+        p.id === cashValuePolicyId ? { ...p, cashValues: cashValueEditRows } : p
+      );
+      setPolicies(updated);
+      if (selectedPolicy?.id === cashValuePolicyId) {
+        setSelectedPolicy({ ...selectedPolicy, cashValues: cashValueEditRows });
+      }
+
+      setCashValueDialogOpen(false);
+      setCashValueScanResult(null);
+      setCashValueEditRows([]);
+      setCashValuePolicyId(null);
+      setCashValueMessage(`现金价值表已保存（${cashValueEditRows.length} 行）`);
+    } catch (error) {
+      setCashValueMessage(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setCashValueLoading(false);
+    }
+  }
+
+  function handleCashValueCellEdit(rowIndex: number, field: 'policyYear' | 'age' | 'cashValue', value: string) {
+    setCashValueEditRows((prev) => {
+      const updated = [...prev];
+      const num = Number(value.replace(/[,，\s元]/g, ''));
+      if (field === 'age') {
+        updated[rowIndex] = { ...updated[rowIndex], age: Number.isFinite(num) ? num : null };
+      } else if (Number.isFinite(num)) {
+        updated[rowIndex] = { ...updated[rowIndex], [field]: num };
+      }
+      return updated;
+    });
+  }
+
+  function closeCashValueDialog() {
+    setCashValueDialogOpen(false);
+    setCashValueScanResult(null);
+    setCashValueEditRows([]);
+    setCashValuePolicyId(null);
+    setCashValueMessage('');
+    setActiveTab('policies');
   }
 
   async function openPolicy(policy: Policy) {
@@ -3061,6 +3174,140 @@ function CustomerApp() {
     setActiveTab('entry');
     setMessage('可以继续录入保单');
   }
+
+  // Cash Value Upload Dialog
+  const cashValueDialog = cashValueDialogOpen ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+        {!cashValueScanResult ? (
+          /* Step 1: Upload prompt */
+          <div className="text-center">
+            <h3 className="mb-2 text-lg font-bold text-slate-800">
+              保单已保存！是否上传现金价值表？
+            </h3>
+            <p className="mb-5 text-sm text-slate-500">
+              拍照上传保单的现金价值页面，系统将自动识别并录入
+            </p>
+            {cashValueMessage && (
+              <p className="mb-3 text-sm text-red-500">{cashValueMessage}</p>
+            )}
+            {cashValueLoading && (
+              <p className="mb-3 text-sm text-blue-500">正在识别中...</p>
+            )}
+            <div className="flex gap-3 justify-center">
+              <button
+                className="rounded-lg bg-[#0B72B9] px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+                disabled={cashValueLoading}
+                onClick={() => cashValueInputRef.current?.click()}
+              >
+                拍照上传
+              </button>
+              <button
+                className="rounded-lg border border-slate-200 px-5 py-2.5 text-sm font-medium text-slate-600"
+                onClick={closeCashValueDialog}
+              >
+                暂时跳过
+              </button>
+            </div>
+            <input
+              ref={cashValueInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => { void handleCashValueFileChange(e); }}
+            />
+          </div>
+        ) : (
+          /* Step 2: Preview and edit results */
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-800">现金价值表识别结果</h3>
+              <span className="text-xs text-slate-400">
+                {cashValueScanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
+                {cashValueScanResult.confidence != null && ` · 置信度 ${Math.round(cashValueScanResult.confidence * 100)}%`}
+              </span>
+            </div>
+            {cashValueMessage && (
+              <p className="mb-2 text-sm text-red-500">{cashValueMessage}</p>
+            )}
+            <div className="max-h-[50vh] overflow-y-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-100">
+                    <th className="px-2 py-1.5 text-left font-bold text-slate-600">保单年度</th>
+                    {cashValueScanResult.tableType === 3 && (
+                      <th className="px-2 py-1.5 text-left font-bold text-slate-600">年龄</th>
+                    )}
+                    <th className="px-2 py-1.5 text-left font-bold text-slate-600">现金价值(元)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cashValueEditRows.map((row, i) => (
+                    <tr key={i} className="border-b border-slate-50">
+                      <td className="px-1 py-0.5">
+                        <input
+                          type="text"
+                          className="w-16 rounded border border-slate-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                          defaultValue={row.policyYear}
+                          onBlur={(e) => handleCashValueCellEdit(i, 'policyYear', e.target.value)}
+                        />
+                      </td>
+                      {cashValueScanResult.tableType === 3 && (
+                        <td className="px-1 py-0.5">
+                          <input
+                            type="text"
+                            className="w-14 rounded border border-slate-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                            defaultValue={row.age ?? ''}
+                            onBlur={(e) => handleCashValueCellEdit(i, 'age', e.target.value)}
+                          />
+                        </td>
+                      )}
+                      <td className="px-1 py-0.5">
+                        <input
+                          type="text"
+                          className="w-24 rounded border border-slate-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                          defaultValue={row.cashValue.toLocaleString('zh-CN')}
+                          onBlur={(e) => handleCashValueCellEdit(i, 'cashValue', e.target.value)}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-4 flex gap-2 justify-center">
+              <button
+                className="rounded-lg bg-[#0B72B9] px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+                disabled={cashValueLoading || cashValueEditRows.length === 0}
+                onClick={() => { void handleCashValueConfirm(); }}
+              >
+                确认保存
+              </button>
+              <button
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 disabled:opacity-50"
+                disabled={cashValueLoading}
+                onClick={() => {
+                  setCashValueScanResult(null);
+                  setCashValueEditRows([]);
+                  setCashValueMessage('');
+                  cashValueInputRef.current?.click();
+                }}
+              >
+                重新拍照
+              </button>
+              <button
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-400"
+                onClick={closeCashValueDialog}
+              >
+                跳过
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null;
 
   const authDialog = showAuthDialog ? (
     <PhoneVerificationDialog
@@ -3156,6 +3403,7 @@ function CustomerApp() {
         {responsibilityAssistant}
         {authDialog}
         {accountSheet}
+        {cashValueDialog}
       </>
     );
   }
@@ -3200,6 +3448,7 @@ function CustomerApp() {
         {responsibilityAssistant}
         {authDialog}
         {accountSheet}
+        {cashValueDialog}
       </>
     );
   }
@@ -3209,7 +3458,12 @@ function CustomerApp() {
       <CashflowDetailPage
         member={cashflowMember}
         policies={policies}
+        cashValueDialog={cashValueDialog}
         onBack={() => setCashflowMember(null)}
+        onUploadCashValue={(policyId) => {
+          setCashValuePolicyId(policyId);
+          setCashValueDialogOpen(true);
+        }}
       />
     );
   }
@@ -3321,24 +3575,43 @@ function CustomerApp() {
       ) : null}
       {authDialog}
       {accountSheet}
+      {cashValueDialog}
     </div>
   );
 }
 
-function CashflowAnnualTable({ entries, effectiveYear, birthYear, endYear, policyId, productName }: {
+function CashflowAnnualTable({ entries, effectiveYear, birthYear, endYear, policyId, productName, cashValues }: {
   entries: CashflowEntry[];
   effectiveYear: number;
   birthYear: number;
   endYear: number;
   policyId: number;
   productName: string;
+  cashValues?: CashValueRow[];
 }) {
   const allEntries = fillCashflowYears(entries, effectiveYear, birthYear, endYear, { policyId, productName });
-  if (!allEntries.length) return null;
+
+  // Overlay OCR cash values onto entries
+  const cashValueMap = new Map<number, number>();
+  if (cashValues) {
+    for (const cv of cashValues) {
+      const calendarYear = effectiveYear + cv.policyYear - 1;
+      cashValueMap.set(calendarYear, cv.cashValue);
+    }
+  }
+  const enrichedEntries = allEntries.map((entry) => {
+    const ocrCashValue = cashValueMap.get(entry.year);
+    if (ocrCashValue != null) {
+      return { ...entry, cashValue: ocrCashValue };
+    }
+    return entry;
+  });
+
+  if (!enrichedEntries.length) return null;
   const columnSize = 14;
   const columns: CashflowEntry[][] = [];
-  for (let i = 0; i < allEntries.length; i += columnSize) {
-    columns.push(allEntries.slice(i, i + columnSize));
+  for (let i = 0; i < enrichedEntries.length; i += columnSize) {
+    columns.push(enrichedEntries.slice(i, i + columnSize));
   }
 
   return (
@@ -3498,11 +3771,13 @@ function MemberAnnualSummaryTable({ summary }: { summary: MemberAnnualSummary })
 }
 
 function CashflowDetailPage({
-  member, policies, onBack,
+  member, policies, onBack, cashValueDialog, onUploadCashValue,
 }: {
   member: string;
   policies: Policy[];
   onBack: () => void;
+  cashValueDialog?: React.ReactNode;
+  onUploadCashValue?: (policyId: number) => void;
 }) {
   const memberPolicies = policies.filter((p) => (p.insured || '').trim() === member);
   const plans: PolicyCashflowPlan[] = memberPolicies.map(p => ({
@@ -3579,10 +3854,19 @@ function CashflowDetailPage({
                     endYear={endYear}
                     policyId={plan.policyId}
                     productName={plan.productName}
+                    cashValues={memberPolicies.find(p => p.id === plan.policyId)?.cashValues}
                   />
                   <p className="mt-2 text-right text-sm font-black text-slate-800">
                     确定现金流合计: {plan.totalDeterministicCashflow.toLocaleString('zh-CN')}元
                   </p>
+                  {onUploadCashValue ? (
+                    <button
+                      className="mt-2 rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                      onClick={() => onUploadCashValue(plan.policyId)}
+                    >
+                      上传现金价值表
+                    </button>
+                  ) : null}
                 </div>
               );
             })() : null}
@@ -3607,6 +3891,7 @@ function CashflowDetailPage({
           </section>
         ) : null}
       </main>
+      {cashValueDialog}
     </div>
   );
 }
