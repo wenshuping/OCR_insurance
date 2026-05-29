@@ -62,6 +62,9 @@ export type Policy = {
   reportError?: string;
   createdAt: string;
   userMobile?: string;
+  cashflowEntries?: CashflowEntry[];
+  scenarioEntries?: ScenarioEntry[];
+  totalCashflow?: number;
 };
 
 export type PolicyPlan = {
@@ -290,6 +293,8 @@ export type CashflowEntry = {
   policyId: number;
   productName: string;
   calculationText: string;
+  /** Alias used by the server DB store (calc_text column) */
+  calcText?: string | null;
   cashValue?: number | null;
 };
 
