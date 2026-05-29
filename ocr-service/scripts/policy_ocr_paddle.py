@@ -44,6 +44,31 @@ def collect_lines(result) -> list[str]:
     return lines
 
 
+def collect_lines_with_boxes(result) -> dict:
+    """Extract text with bounding box coordinates for table parsing."""
+    lines = []
+    boxes = []
+    for item in result or []:
+        payload = getattr(item, "res", item)
+        if not isinstance(payload, dict):
+            continue
+        texts = payload.get("rec_texts") or []
+        rec_boxes = payload.get("rec_boxes") or []
+        scores = payload.get("rec_scores") or []
+        for i, text in enumerate(texts):
+            text = str(text).strip()
+            if not text:
+                continue
+            lines.append(text)
+            box_entry = {"text": text}
+            if i < len(rec_boxes):
+                box_entry["box"] = rec_boxes[i]
+            if i < len(scores):
+                box_entry["confidence"] = scores[i]
+            boxes.append(box_entry)
+    return {"lines": lines, "boxes": boxes}
+
+
 def normalize_line(value) -> list[str]:
     text = str(value or "").replace("\r", "\n")
     return [line.strip() for line in text.split("\n") if line.strip()]
@@ -157,7 +182,12 @@ def main() -> None:
 
     try:
         result = ocr.predict(image_path)
-        lines = collect_vl_lines(result) if pipeline_kind == "vl" else collect_lines(result)
+        if pipeline_kind == "vl":
+            lines = collect_vl_lines(result)
+            boxes_data = {"lines": lines, "boxes": []}
+        else:
+            boxes_data = collect_lines_with_boxes(result)
+            lines = boxes_data["lines"]
     except Exception:
         fail("POLICY_OCR_FAILED")
 
@@ -169,6 +199,7 @@ def main() -> None:
         "pipeline": pipeline_kind,
         "lines": lines,
         "ocrText": "\n".join(lines),
+        "boxes": boxes_data.get("boxes", []),
     }
     sys.stdout.write(json.dumps(output, ensure_ascii=False))
 
