@@ -1438,6 +1438,42 @@ export function createPolicyOcrApp(options = {}) {
     }
   });
 
+  app.post('/api/admin/cashflow/recompute', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      const productFilter = String(req.query?.product || '').trim().toLowerCase();
+      const policies = productFilter
+        ? state.policies.filter((p) => {
+            const name = String(p.name || '').toLowerCase();
+            const productName = String(p.productName || '').toLowerCase();
+            return name.includes(productFilter) || productName.includes(productFilter);
+          })
+        : state.policies;
+
+      let recomputedCount = 0;
+      for (const policy of policies) {
+        const { cashflowEntries } = computeAndStoreCashflow(policy);
+        if (cashflowEntries.length) recomputedCount++;
+      }
+
+      res.json({
+        ok: true,
+        totalPolicies: policies.length,
+        recomputedCount,
+        status: cashflowStore.getStatus(),
+      });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  app.get('/api/admin/cashflow/status', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    res.json({ ok: true, ...cashflowStore.getStatus() });
+  });
+
   app.post('/api/auth/send-code', async (req, res) => {
     try {
       const mobile = normalizeMobile(req.body?.mobile);
