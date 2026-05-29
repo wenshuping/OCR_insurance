@@ -445,3 +445,46 @@ test('computePolicyCashflow: template with fixed amount', () => {
   assert.equal(entries[0].year, 2033);
   assert.equal(entries[0].amount, 5000);
 });
+
+// ── 10. Responsibility text parsing path (Path 2: computeFromResponsibilities) ──
+
+const policyWithResponsibilities = {
+  id: 1, name: '测试年金', company: '测试保险',
+  amount: 10000, premium: 1000, firstPremium: 1000,
+  date: '2025-01-01', insuredBirthday: '1990-01-01',
+  paymentPeriod: '10年交', coveragePeriod: '至2070年1月1日',
+  responsibilities: [
+    { scenario: '（1）生存保险金\n自本合同生效满5年的首个保单周年日起，每年按基本保额的100%给付生存保险金，至养老年金开始前。' }
+  ],
+};
+
+test('computePolicyCashflow: responsibility text path produces entries when no template', () => {
+  // No template provided → falls through to Path 2: responsibility text parsing
+  const entries = computePolicyCashflow(policyWithResponsibilities, null, []);
+  // effectiveYear=2025, birthYear=1990, coverageEndYear=2070
+  // Pattern A: "生效满5年...首个保单周年日" → startYear=2030
+  // No "养老年金开始领取日" match, so endYear=coverageEndYear-1=2069
+  // Entries: years 2030..2069 = 40 entries
+  assert.ok(entries.length > 0, 'responsibility text path should produce entries');
+  assert.equal(entries[0].year, 2030);
+  assert.equal(entries[0].amount, 10000); // basicAmount * 100%
+  assert.equal(entries[0].age, 40); // 2030 - 1990
+  assert.equal(entries[0].liability, '生存保险金');
+});
+
+test('computePolicyCashflow: responsibility text path has calcText on entries', () => {
+  const entries = computePolicyCashflow(policyWithResponsibilities, null, []);
+  assert.ok(entries.length > 0);
+  // calcText should be present and contain the basic amount
+  assert.ok(entries[0].calcText, 'calcText should be present');
+  assert.match(entries[0].calcText, /10,000/, 'calcText should contain formatted amount');
+});
+
+test('computePolicyCashflow: responsibility text path cumulative is correct', () => {
+  const entries = computePolicyCashflow(policyWithResponsibilities, null, []);
+  assert.ok(entries.length >= 2);
+  // Cumulative is recomputed at top level after sort
+  assert.equal(entries[0].cumulative, 10000);
+  assert.equal(entries[1].cumulative, 20000);
+  assert.equal(entries[entries.length - 1].cumulative, entries.length * 10000);
+});

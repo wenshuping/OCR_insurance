@@ -409,7 +409,7 @@ function buildContext(policy) {
   const birthYear = parseYearFromDate(policy.insuredBirthday);
   const coverageEndYear = parseCoverageEndYear(policy);
   const paymentYears = parsePaymentYearsFromText(policy.paymentPeriod);
-  const firstPremium = Number(policy.premium || policy.firstPremium || 0);
+  const firstPremium = Number(policy.firstPremium || policy.premium || 0);
   const basicAmount = Number(policy.amount || 0);
   const totalPremium = firstPremium * paymentYears;
   return { effectiveYear, birthYear, coverageEndYear, paymentYears, firstPremium, basicAmount, totalPremium, policy };
@@ -419,11 +419,8 @@ function buildContext(policy) {
  * Substitute {{variable}} placeholders in text with resolved param values.
  */
 function substituteVariables(text, resolvedParams) {
-  let result = text;
-  for (const [key, val] of Object.entries(resolvedParams)) {
-    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
-  }
-  return result;
+  // Use a single global regex to avoid regex injection from template keys
+  return text.replace(/\{\{([^}]+)\}\}/g, (_, k) => String(resolvedParams[k.trim()] ?? `{{${k.trim()}}}`));
 }
 
 /**
