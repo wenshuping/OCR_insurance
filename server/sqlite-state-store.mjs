@@ -183,6 +183,19 @@ function createSchema(db) {
       key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS policy_cashflows (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_id   INTEGER NOT NULL REFERENCES policies(id),
+      year        INTEGER NOT NULL,
+      age         INTEGER NOT NULL,
+      amount      REAL    NOT NULL,
+      cumulative  REAL    NOT NULL,
+      liability   TEXT    NOT NULL,
+      calc_text   TEXT,
+      created_at  TEXT    DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_cashflows_policy ON policy_cashflows(policy_id);
   `);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
 }
