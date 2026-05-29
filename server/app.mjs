@@ -1451,18 +1451,13 @@ export function createPolicyOcrApp(options = {}) {
           })
         : state.policies;
 
-      let recomputedCount = 0;
+      let recomputed = 0;
       for (const policy of policies) {
         const { cashflowEntries } = computeAndStoreCashflow(policy);
-        if (cashflowEntries.length) recomputedCount++;
+        if (cashflowEntries.length) recomputed++;
       }
 
-      res.json({
-        ok: true,
-        totalPolicies: policies.length,
-        recomputedCount,
-        status: cashflowStore.getStatus(),
-      });
+      res.json({ ok: true, recomputed });
     } catch (error) {
       sendError(res, error);
     }
