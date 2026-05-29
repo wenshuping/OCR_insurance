@@ -104,3 +104,82 @@ export function createCashflowStore(db) {
 
   return { getEntries, replaceEntries, getAllPolicyIds, getStatus };
 }
+
+// ---------------------------------------------------------------------------
+// Cash-value store — DB operations for the `policy_cash_values` table.
+//
+// Stores OCR-extracted cash value data keyed by policy_id + policy_year.
+// ---------------------------------------------------------------------------
+
+const CREATE_CASH_VALUES_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS policy_cash_values (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_id   INTEGER NOT NULL REFERENCES policies(id),
+    policy_year INTEGER NOT NULL,
+    age         INTEGER,
+    cash_value  REAL    NOT NULL,
+    source      TEXT    DEFAULT 'ocr',
+    created_at  TEXT    DEFAULT (datetime('now')),
+    UNIQUE(policy_id, policy_year)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cash_values_policy
+    ON policy_cash_values(policy_id);
+`;
+
+export function ensureCashValueTable(db) {
+  db.exec(CREATE_CASH_VALUES_TABLE_SQL);
+}
+
+export function createCashValueStore(db) {
+  ensureCashValueTable(db);
+
+  const selectValues = db.prepare(`
+    SELECT policy_year, age, cash_value, source
+      FROM policy_cash_values
+     WHERE policy_id = ?
+     ORDER BY policy_year ASC
+  `);
+
+  const deleteByPolicyId = db.prepare(`
+    DELETE FROM policy_cash_values WHERE policy_id = ?
+  `);
+
+  const insertValue = db.prepare(`
+    INSERT INTO policy_cash_values (policy_id, policy_year, age, cash_value, source)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  function getValues(policyId) {
+    return selectValues.all(policyId).map((row) => ({
+      policyYear: row.policy_year,
+      age: row.age,
+      cashValue: row.cash_value,
+      source: row.source,
+    }));
+  }
+
+  function replaceValues(policyId, rows) {
+    if (!Array.isArray(rows)) {
+      throw new TypeError('replaceValues: rows must be an array');
+    }
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      deleteByPolicyId.run(policyId);
+      for (const row of rows) {
+        insertValue.run(
+          policyId,
+          row.policyYear,
+          row.age ?? null,
+          row.cashValue,
+          row.source || 'ocr',
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  return { getValues, replaceValues };
+}
