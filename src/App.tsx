@@ -141,7 +141,11 @@ function buildCashflowPlansWithFallback(policies: Policy[]): PolicyCashflowPlan[
         annualEntries: p.cashflowEntries,
         scenarioEntries: p.scenarioEntries || [],
         totalDeterministicCashflow: p.totalCashflow ?? 0,
-        expired: false,
+        expired: (() => {
+          const m = String(p.coveragePeriod || '').match(/(\d{4})/);
+          const endYear = m ? Number(m[1]) : 0;
+          return endYear > 0 && endYear < new Date().getFullYear();
+        })(),
       });
     } else {
       fallbackPolicies.push(p);
