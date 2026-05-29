@@ -43,7 +43,8 @@ import {
 import { deliverSmsCode, resolveSmsDeliveryPlan } from './sms-delivery.mjs';
 import { computePolicyCashflow, computeScenarioEntries } from './cashflow-compute.mjs';
 import { findProductCashflowTemplate } from './cashflow-template.mjs';
-import { createCashflowStore } from './cashflow-store.mjs';
+import { createCashflowStore, createCashValueStore } from './cashflow-store.mjs';
+import { extractCashValueWithVisionLlm, isVisionLlmConfigured } from './vision-llm.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -1174,13 +1175,16 @@ export function createPolicyOcrApp(options = {}) {
 
   // Initialize cashflow store: use the shared DB if provided, otherwise use an in-memory DB (for tests)
   let cashflowStore;
+  let cashValueStore;
   if (options.db) {
     cashflowStore = createCashflowStore(options.db);
+    cashValueStore = createCashValueStore(options.db);
   } else {
     const memDb = new DatabaseSync(':memory:');
     // The policy_cashflows table has a FK reference to policies, so ensure a stub exists
     memDb.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
     cashflowStore = createCashflowStore(memDb);
+    cashValueStore = createCashValueStore(memDb);
   }
 
   /**
@@ -1790,7 +1794,20 @@ export function createPolicyOcrApp(options = {}) {
     const policiesWithIndicators = attachPoliciesCoverageIndicators(policies, state.insuranceIndicatorRecords);
     const policiesWithCashflow = policiesWithIndicators.map((p) => {
       const entries = cashflowStore.getEntries(p.id);
-      return { ...p, cashflowEntries: entries.length ? entries : undefined };
+      const totalCashflow = entries.reduce((sum, e) => sum + e.amount, 0);
+      let scenarioEntries = [];
+      try {
+        const policyIndicators = findPolicyCoverageIndicators(p, state.insuranceIndicatorRecords);
+        scenarioEntries = computeScenarioEntries(policyIndicators, p);
+      } catch (_err) {
+        // non-fatal: scenarioEntries stays empty
+      }
+      return {
+        ...p,
+        cashflowEntries: entries.length ? entries : undefined,
+        scenarioEntries: scenarioEntries.length ? scenarioEntries : undefined,
+        totalCashflow: entries.length ? totalCashflow : undefined,
+      };
     });
     res.json({ ok: true, policies: policiesWithCashflow });
   });
@@ -1912,13 +1929,123 @@ export function createPolicyOcrApp(options = {}) {
     if (!user && !guestId) {
       return res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '缺少游客标识' });
     }
+    const policyId = Number(req.params.id);
     const policy = state.policies.find((row) => {
-      if (Number(row.id) !== Number(req.params.id)) return false;
+      if (Number(row.id) !== policyId) return false;
       if (user) return Number(row.userId) === Number(user.id);
       return String(row.guestId || '') === guestId && !row.userId;
     });
     if (!policy) return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
-    res.json({ ok: true, policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords) });
+    const policyWithIndicators = attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
+    const cashValues = cashValueStore.getValues(policyId);
+    res.json({ ok: true, policy: { ...policyWithIndicators, cashValues } });
+  });
+
+  app.post('/api/policies/:id/cash-value/scan', async (req, res) => {
+    try {
+      const user = resolveAuthUser(req, state);
+      const guestId = normalizeGuestId(req.query?.guestId);
+      if (!user && !guestId) {
+        return res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '缺少游客标识' });
+      }
+
+      const policyId = Number(req.params.id);
+      const policy = state.policies.find((row) => {
+        if (Number(row.id) !== policyId) return false;
+        if (user) return Number(row.userId) === Number(user.id);
+        return String(row.guestId || '') === guestId && !row.userId;
+      });
+      if (!policy) {
+        return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
+      }
+
+      const { uploadItem } = req.body || {};
+      if (!uploadItem?.dataUrl) {
+        return res.status(400).json({ ok: false, error: 'MISSING_UPLOAD', message: '缺少上传图片' });
+      }
+
+      // Try OCR service first
+      let result = { ok: false, error: 'PARSE_FAILED' };
+      try {
+        const ocrBaseUrl = resolveOcrServiceUrl();
+        if (ocrBaseUrl) {
+          const ocrResponse = await fetch(`${ocrBaseUrl}/internal/ocr/policies/cash-value/scan`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-internal-service': 'policy-ocr-app',
+              ...(process.env.POLICY_OCR_SERVICE_TOKEN ? { 'x-ocr-service-token': process.env.POLICY_OCR_SERVICE_TOKEN } : {}),
+            },
+            body: JSON.stringify({ uploadItem }),
+            signal: AbortSignal.timeout(120000),
+          });
+          if (ocrResponse.ok) {
+            result = await ocrResponse.json();
+          }
+        }
+      } catch {
+        // OCR service unavailable, fall through to vision LLM
+      }
+
+      // Vision LLM fallback if OCR failed
+      if (!result.ok && isVisionLlmConfigured()) {
+        result = await extractCashValueWithVisionLlm(uploadItem.dataUrl);
+      }
+
+      if (!result.ok) {
+        return res.json(result);
+      }
+
+      return res.json({
+        ok: true,
+        source: result.source || 'ocr',
+        tableType: result.tableType || 2,
+        rows: result.rows,
+        rowCount: result.rowCount || result.rows.length,
+        confidence: result.confidence || 0.5,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        ok: false,
+        error: 'CASH_VALUE_SCAN_FAILED',
+        message: error instanceof Error ? error.message : '现金价值表扫描失败',
+      });
+    }
+  });
+
+  app.post('/api/policies/:id/cash-value/confirm', async (req, res) => {
+    try {
+      const user = resolveAuthUser(req, state);
+      const guestId = normalizeGuestId(req.query?.guestId);
+      if (!user && !guestId) {
+        return res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '缺少游客标识' });
+      }
+
+      const policyId = Number(req.params.id);
+      const policy = state.policies.find((row) => {
+        if (Number(row.id) !== policyId) return false;
+        if (user) return Number(row.userId) === Number(user.id);
+        return String(row.guestId || '') === guestId && !row.userId;
+      });
+      if (!policy) {
+        return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
+      }
+
+      const { rows } = req.body || {};
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ ok: false, code: 'INVALID_ROWS', message: '缺少现金价值数据' });
+      }
+
+      cashValueStore.replaceValues(policyId, rows);
+
+      return res.json({ ok: true, savedCount: rows.length });
+    } catch (error) {
+      return res.status(500).json({
+        ok: false,
+        error: 'CASH_VALUE_SAVE_FAILED',
+        message: error instanceof Error ? error.message : '现金价值数据保存失败',
+      });
+    }
   });
 
   return app;
