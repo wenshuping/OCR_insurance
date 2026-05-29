@@ -75,6 +75,7 @@ import {
 import {
   buildPolicyCashflowPlans,
   buildMemberAnnualSummaries,
+  fillCashflowYears,
 } from './cashflow-engine.mjs';
 
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
@@ -610,14 +611,26 @@ function appendPrintableResponsibilities(parent: HTMLElement, responsibilities: 
   parent.appendChild(list);
 }
 
-function appendPrintableCashflowTable(parent: HTMLElement, entries: CashflowEntry[]) {
+function appendPrintableCashflowTable(
+  parent: HTMLElement,
+  entries: CashflowEntry[],
+  plan: { effectiveDate: string; insuredBirthday: string; policyId: number; productName: string },
+) {
   if (!entries.length) return;
+  const effectiveYear = plan.effectiveDate ? new Date(plan.effectiveDate).getFullYear() : 0;
+  const birthYear = plan.insuredBirthday ? new Date(plan.insuredBirthday).getFullYear() : 0;
+  const lastEntryYear = entries.length ? entries[entries.length - 1].year : 0;
+  const endYear = Math.max(lastEntryYear, effectiveYear + 50, birthYear + 85);
+  const allEntries = (effectiveYear && birthYear)
+    ? fillCashflowYears(entries, effectiveYear, birthYear, endYear, { policyId: plan.policyId, productName: plan.productName })
+    : entries;
+
   const section = document.createElement('section');
   section.setAttribute('style', 'margin-bottom:20px;break-inside:avoid');
 
   const title = document.createElement('h2');
   title.setAttribute('style', 'margin:0 0 14px;font-size:18px;line-height:1.35;font-weight:800;color:#0f172a');
-  title.textContent = `现金流明细（${entries.length}年）`;
+  title.textContent = `现金流明细（${allEntries.length}年）`;
   section.appendChild(title);
 
   const table = document.createElement('table');
@@ -625,7 +638,7 @@ function appendPrintableCashflowTable(parent: HTMLElement, entries: CashflowEntr
 
   const thead = document.createElement('thead');
   const headRow = document.createElement('tr');
-  ['年份/年龄', '领取金额', '累计领取'].forEach((label) => {
+  ['年份', '领取金额', '累计领取', '现金价值'].forEach((label) => {
     const th = document.createElement('th');
     th.setAttribute('style', 'background:#2563eb;color:#fff;padding:8px 10px;text-align:left;font-weight:700');
     th.textContent = label;
@@ -635,16 +648,18 @@ function appendPrintableCashflowTable(parent: HTMLElement, entries: CashflowEntr
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
-  entries.forEach((entry, i) => {
+  allEntries.forEach((entry, i) => {
     const tr = document.createElement('tr');
     tr.setAttribute('style', i % 2 === 0 ? '' : 'background:#f8fafc');
-    const isLastAndMaturity = /满期/.test(entry.liability) && i === entries.length - 1;
+    const hasAmount = entry.amount > 0;
+    const isLastAndMaturity = hasAmount && /满期/.test(entry.liability);
     if (isLastAndMaturity) tr.setAttribute('style', 'background:#fff7ed;font-weight:800;border-left:4px solid #f97316');
 
     const cells = [
       `${entry.year}/${entry.age}`,
-      entry.amount.toLocaleString('zh-CN'),
-      entry.cumulative.toLocaleString('zh-CN'),
+      hasAmount ? entry.amount.toLocaleString('zh-CN') : '—',
+      hasAmount ? entry.cumulative.toLocaleString('zh-CN') : '—',
+      entry.cashValue != null ? entry.cashValue.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—',
     ];
     cells.forEach((text, ci) => {
       const td = document.createElement('td');
@@ -812,7 +827,12 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
     const cashflowPlans = buildPolicyCashflowPlans([policy]);
     for (const plan of cashflowPlans) {
       if (plan.annualEntries.length) {
-        appendPrintableCashflowTable(report, plan.annualEntries);
+        appendPrintableCashflowTable(report, plan.annualEntries, {
+          effectiveDate: plan.effectiveDate,
+          insuredBirthday: plan.insuredBirthday,
+          policyId: plan.policyId,
+          productName: plan.productName,
+        });
       }
       if (plan.scenarioEntries.length) {
         appendPrintableScenarioTable(report, plan.scenarioEntries);
@@ -3290,19 +3310,21 @@ function CustomerApp() {
   );
 }
 
-function CashflowAnnualTable({ entries }: { entries: CashflowEntry[] }) {
-  if (!entries.length) return null;
-  const columnSize = 12;
+function CashflowAnnualTable({ entries, effectiveYear, birthYear, endYear, policyId, productName }: {
+  entries: CashflowEntry[];
+  effectiveYear: number;
+  birthYear: number;
+  endYear: number;
+  policyId: number;
+  productName: string;
+}) {
+  const allEntries = fillCashflowYears(entries, effectiveYear, birthYear, endYear, { policyId, productName });
+  if (!allEntries.length) return null;
+  const columnSize = 14;
   const columns: CashflowEntry[][] = [];
-  for (let i = 0; i < entries.length; i += columnSize) {
-    columns.push(entries.slice(i, i + columnSize));
+  for (let i = 0; i < allEntries.length; i += columnSize) {
+    columns.push(allEntries.slice(i, i + columnSize));
   }
-
-  const liabilityColor = (liability: string) => {
-    if (/满期/.test(liability)) return 'text-orange-600 bg-orange-50';
-    if (/养老/.test(liability)) return 'text-emerald-600 bg-emerald-50';
-    return 'text-blue-600 bg-blue-50';
-  };
 
   return (
     <div>
@@ -3316,27 +3338,37 @@ function CashflowAnnualTable({ entries }: { entries: CashflowEntry[] }) {
             <table key={colIndex} className="border-separate border-spacing-0 text-xs">
               <thead>
                 <tr>
-                  <th className="rounded-tl-lg bg-[#0B72B9] px-2 py-1 text-white font-bold">年份/年龄</th>
-                  <th className="bg-[#0B72B9] px-2 py-1 text-white font-bold">领取</th>
-                  <th className="rounded-tr-lg bg-[#0B72B9] px-2 py-1 text-white font-bold">累计</th>
+                  <th className="rounded-tl-lg bg-[#0B72B9] px-2 py-1 text-white font-bold">年份</th>
+                  <th className="bg-[#0B72B9] px-2 py-1 text-white font-bold">领取金额</th>
+                  <th className="bg-[#0B72B9] px-2 py-1 text-white font-bold">累计领取</th>
+                  <th className="rounded-tr-lg bg-[#0B72B9] px-2 py-1 text-white font-bold">现金价值</th>
                 </tr>
               </thead>
               <tbody>
-                {col.map((entry) => (
-                  <tr key={entry.year} className={entry.year === entries[entries.length - 1]?.year && /满期/.test(entry.liability) ? 'bg-orange-50 font-black' : ''}>
-                    <td className="px-2 py-1 font-bold text-slate-600 ring-1 ring-slate-100">
-                      {entry.year}/{entry.age}
-                    </td>
-                    <td className="px-2 py-1 ring-1 ring-slate-100">
-                      <span className={`inline-block rounded px-1 text-[10px] font-bold ${liabilityColor(entry.liability)}`}>
-                        {entry.amount.toLocaleString('zh-CN')}
-                      </span>
-                    </td>
-                    <td className="px-2 py-1 text-right font-semibold text-slate-500 ring-1 ring-slate-100">
-                      {entry.cumulative.toLocaleString('zh-CN')}
-                    </td>
-                  </tr>
-                ))}
+                {col.map((entry) => {
+                  const hasAmount = entry.amount > 0;
+                  const isLastAndMaturity = hasAmount && /满期/.test(entry.liability);
+                  return (
+                    <tr key={entry.year} className={isLastAndMaturity ? 'bg-orange-50 font-black' : ''}>
+                      <td className="px-2 py-1 font-bold text-slate-600 ring-1 ring-slate-100">
+                        {entry.year}/{entry.age}
+                      </td>
+                      <td className="px-2 py-1 text-right ring-1 ring-slate-100">
+                        {hasAmount ? (
+                          <span className={`inline-block rounded px-1 text-[10px] font-bold ${/满期/.test(entry.liability) ? 'text-orange-600 bg-orange-50' : /养老/.test(entry.liability) ? 'text-emerald-600 bg-emerald-50' : 'text-blue-600 bg-blue-50'}`}>
+                            {entry.amount.toLocaleString('zh-CN')}
+                          </span>
+                        ) : '—'}
+                      </td>
+                      <td className="px-2 py-1 text-right font-semibold text-slate-500 ring-1 ring-slate-100">
+                        {hasAmount ? entry.cumulative.toLocaleString('zh-CN') : '—'}
+                      </td>
+                      <td className="px-2 py-1 text-right text-slate-400 ring-1 ring-slate-100">
+                        {entry.cashValue != null ? entry.cashValue.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ))}
@@ -3503,14 +3535,27 @@ function CashflowDetailPage({
               {plan.insuredBirthday ? <span>生日 {plan.insuredBirthday}</span> : null}
             </div>
 
-            {plan.annualEntries.length ? (
-              <div className="mb-3">
-                <CashflowAnnualTable entries={plan.annualEntries} />
-                <p className="mt-2 text-right text-sm font-black text-slate-800">
-                  确定现金流合计: {plan.totalDeterministicCashflow.toLocaleString('zh-CN')}元
-                </p>
-              </div>
-            ) : null}
+            {plan.annualEntries.length ? (() => {
+              const effectiveYear = plan.effectiveDate ? new Date(plan.effectiveDate).getFullYear() : 0;
+              const birthYear = plan.insuredBirthday ? new Date(plan.insuredBirthday).getFullYear() : 0;
+              const lastEntryYear = plan.annualEntries.length ? plan.annualEntries[plan.annualEntries.length - 1].year : 0;
+              const endYear = Math.max(lastEntryYear, effectiveYear + 50, birthYear + 85);
+              return (
+                <div className="mb-3">
+                  <CashflowAnnualTable
+                    entries={plan.annualEntries}
+                    effectiveYear={effectiveYear}
+                    birthYear={birthYear}
+                    endYear={endYear}
+                    policyId={plan.policyId}
+                    productName={plan.productName}
+                  />
+                  <p className="mt-2 text-right text-sm font-black text-slate-800">
+                    确定现金流合计: {plan.totalDeterministicCashflow.toLocaleString('zh-CN')}元
+                  </p>
+                </div>
+              );
+            })() : null}
 
             {plan.scenarioEntries.length ? (
               <ScenarioDetailTable entries={plan.scenarioEntries} />

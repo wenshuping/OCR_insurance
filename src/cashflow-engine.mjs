@@ -190,6 +190,7 @@ export function buildScenarioEntries(indicators, policy) {
   const entries = [];
   for (const indicator of indicators) {
     if (indicator.coverageType === '现金流') continue;
+    if (indicator.coverageType === '规则参数') continue;
     if (/账户价值|现金价值/.test(indicator.formulaText || '') &&
         !/现金价值不展示/.test(indicator.formulaText || '')) continue;
 
@@ -294,4 +295,42 @@ export function buildMemberAnnualSummaries(plans) {
       totalCashflow: cumulative,
     };
   });
+}
+
+/**
+ * 将年度条目扩展为完整年份范围，无现金流的年份用空条目填充。
+ * @param {Array<object>} annualEntries - CashflowEntry[]
+ * @param {number} effectiveYear - 保单生效年
+ * @param {number} birthYear - 被保人出生年
+ * @param {number} endYear - 结束年份（保障终止年或当前年+50等）
+ * @param {object} policyInfo - { policyId, productName }
+ * @returns {Array<object>} 完整年份的 CashflowEntry[]
+ */
+export function fillCashflowYears(annualEntries, effectiveYear, birthYear, endYear, policyInfo) {
+  const entryMap = new Map();
+  for (const entry of annualEntries) {
+    entryMap.set(entry.year, entry);
+  }
+  const filled = [];
+  let cumulative = 0;
+  for (let year = effectiveYear; year <= endYear; year++) {
+    const existing = entryMap.get(year);
+    if (existing) {
+      cumulative += existing.amount;
+      filled.push({ ...existing, cumulative });
+    } else {
+      filled.push({
+        year,
+        age: year - birthYear,
+        amount: 0,
+        cumulative,
+        liability: '',
+        policyId: policyInfo?.policyId || 0,
+        productName: policyInfo?.productName || '',
+        calculationText: '',
+        cashValue: null,
+      });
+    }
+  }
+  return filled;
 }

@@ -290,6 +290,7 @@ export type CashflowEntry = {
   policyId: number;
   productName: string;
   calculationText: string;
+  cashValue?: number | null;
 };
 
 export type ScenarioEntry = {
