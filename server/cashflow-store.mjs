@@ -1,8 +1,8 @@
 /**
- * Cashflow store — DB operations for the `policy_cashflows` table.
+ * Cashflow & cash-value stores — DB operations for policy financial data.
  *
- * Provides a thin wrapper around `node:sqlite` (DatabaseSync) for storing
- * pre-computed cashflow entries keyed by policy_id + year.
+ * • createCashflowStore:   pre-computed cashflow entries (policy_cashflows)
+ * • createCashValueStore:  OCR-extracted cash value data (policy_cash_values)
  */
 
 const CREATE_TABLE_SQL = `
@@ -171,7 +171,7 @@ export function createCashValueStore(db) {
           row.policyYear,
           row.age ?? null,
           row.cashValue,
-          row.source || 'ocr',
+          row.source ?? 'ocr',
         );
       }
       db.exec('COMMIT');

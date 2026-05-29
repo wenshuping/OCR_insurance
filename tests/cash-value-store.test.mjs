@@ -29,6 +29,10 @@ function seedPoliciesTable() {
     INSERT OR IGNORE INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, payload)
     VALUES (1, 1, '', 'TestCo', 'Product A', 'Insured A', '', '', '{}');
   `).run();
+  db.prepare(`
+    INSERT OR IGNORE INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, payload)
+    VALUES (2, 1, '', 'TestCo', 'Product B', 'Insured B', '', '', '{}');
+  `).run();
 }
 
 async function openTestDb() {
@@ -123,6 +127,28 @@ describe('cash-value-store', () => {
       ]);
       const result = store.getValues(1);
       assert.equal(result[0].source, 'vision_llm');
+    });
+
+    it('replaceValues does not affect entries of other policy_ids', () => {
+      store.replaceValues(1, [
+        { policyYear: 1, age: 30, cashValue: 8500 },
+      ]);
+      store.replaceValues(2, [
+        { policyYear: 1, age: 25, cashValue: 5000 },
+      ]);
+
+      store.replaceValues(1, [
+        { policyYear: 1, age: 30, cashValue: 9000 },
+        { policyYear: 2, age: 31, cashValue: 20000 },
+      ]);
+
+      const result1 = store.getValues(1);
+      assert.equal(result1.length, 2);
+      assert.equal(result1[0].cashValue, 9000);
+
+      const result2 = store.getValues(2);
+      assert.equal(result2.length, 1);
+      assert.equal(result2[0].cashValue, 5000);
     });
   });
 });
