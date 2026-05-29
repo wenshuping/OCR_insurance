@@ -73,7 +73,6 @@ import {
   updatePolicy,
 } from './api';
 import {
-  buildPolicyCashflowPlans,
   buildMemberAnnualSummaries,
   fillCashflowYears,
 } from './cashflow-engine.mjs';
@@ -119,45 +118,6 @@ const emptyForm: PolicyFormData = {
   firstPremium: '',
   plans: [],
 };
-
-/**
- * Build PolicyCashflowPlan[] using server-pre-computed entries when available,
- * falling back to frontend computation via buildPolicyCashflowPlans for policies
- * that have no pre-computed data.
- */
-function buildCashflowPlansWithFallback(policies: Policy[]): PolicyCashflowPlan[] {
-  const preComputedPlans: PolicyCashflowPlan[] = [];
-  const fallbackPolicies: Policy[] = [];
-
-  for (const p of policies) {
-    if (p.cashflowEntries?.length) {
-      preComputedPlans.push({
-        policyId: p.id,
-        productName: p.name || '',
-        company: p.company || '',
-        insured: p.insured || '',
-        insuredBirthday: p.insuredBirthday || '',
-        effectiveDate: p.date || '',
-        annualEntries: p.cashflowEntries,
-        scenarioEntries: p.scenarioEntries || [],
-        totalDeterministicCashflow: p.totalCashflow ?? 0,
-        expired: (() => {
-          const m = String(p.coveragePeriod || '').match(/(\d{4})/);
-          const endYear = m ? Number(m[1]) : 0;
-          return endYear > 0 && endYear < new Date().getFullYear();
-        })(),
-      });
-    } else {
-      fallbackPolicies.push(p);
-    }
-  }
-
-  const fallbackPlans = fallbackPolicies.length
-    ? buildPolicyCashflowPlans(fallbackPolicies)
-    : [];
-
-  return [...preComputedPlans, ...fallbackPlans];
-}
 
 function createGuestId() {
   if (crypto.randomUUID) return `guest-${crypto.randomUUID()}`;
@@ -863,7 +823,23 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
 
   // 现金流明细（如果有）
   if (policy) {
-    const cashflowPlans = buildCashflowPlansWithFallback([policy]);
+    const p = policy;
+    const cashflowPlans: PolicyCashflowPlan[] = [{
+      policyId: p.id,
+      productName: p.name || '',
+      company: p.company || '',
+      insured: p.insured || '',
+      insuredBirthday: p.insuredBirthday || '',
+      effectiveDate: p.date || '',
+      annualEntries: p.cashflowEntries || [],
+      scenarioEntries: p.scenarioEntries || [],
+      totalDeterministicCashflow: p.totalCashflow ?? 0,
+      expired: (() => {
+        const m = String(p.coveragePeriod || '').match(/(\d{4})/);
+        const endYear = m ? Number(m[1]) : 0;
+        return endYear > 0 && endYear < new Date().getFullYear();
+      })(),
+    }];
     for (const plan of cashflowPlans) {
       if (plan.annualEntries.length) {
         appendPrintableCashflowTable(report, plan.annualEntries, {
@@ -3529,7 +3505,22 @@ function CashflowDetailPage({
   onBack: () => void;
 }) {
   const memberPolicies = policies.filter((p) => (p.insured || '').trim() === member);
-  const plans = buildCashflowPlansWithFallback(memberPolicies);
+  const plans: PolicyCashflowPlan[] = memberPolicies.map(p => ({
+    policyId: p.id,
+    productName: p.name || '',
+    company: p.company || '',
+    insured: p.insured || '',
+    insuredBirthday: p.insuredBirthday || '',
+    effectiveDate: p.date || '',
+    annualEntries: p.cashflowEntries || [],
+    scenarioEntries: p.scenarioEntries || [],
+    totalDeterministicCashflow: p.totalCashflow ?? 0,
+    expired: (() => {
+      const m = String(p.coveragePeriod || '').match(/(\d{4})/);
+      const endYear = m ? Number(m[1]) : 0;
+      return endYear > 0 && endYear < new Date().getFullYear();
+    })(),
+  }));
   const summaries = buildMemberAnnualSummaries(plans);
   const summary = summaries[0];
   const notes: string[] = [];
@@ -3638,9 +3629,23 @@ function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overvi
 
         <div className="mb-4 grid gap-2 sm:grid-cols-3">
           {overview.members.map((member) => {
-            const memberPlans = buildCashflowPlansWithFallback(
-              policies.filter((p) => (p.insured || '').trim() === member)
-            );
+            const memberPoliciesForPlan = policies.filter((p) => (p.insured || '').trim() === member);
+            const memberPlans: PolicyCashflowPlan[] = memberPoliciesForPlan.map(p => ({
+              policyId: p.id,
+              productName: p.name || '',
+              company: p.company || '',
+              insured: p.insured || '',
+              insuredBirthday: p.insuredBirthday || '',
+              effectiveDate: p.date || '',
+              annualEntries: p.cashflowEntries || [],
+              scenarioEntries: p.scenarioEntries || [],
+              totalDeterministicCashflow: p.totalCashflow ?? 0,
+              expired: (() => {
+                const m = String(p.coveragePeriod || '').match(/(\d{4})/);
+                const endYear = m ? Number(m[1]) : 0;
+                return endYear > 0 && endYear < new Date().getFullYear();
+              })(),
+            }));
             const hasCashflow = memberPlans.some((p) => p.annualEntries.length > 0 || p.scenarioEntries.length > 0);
             return (
               <div key={member} className="rounded-2xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
