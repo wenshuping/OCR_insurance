@@ -1194,9 +1194,7 @@ export function createPolicyOcrApp(options = {}) {
     const scenarioEntries = computeScenarioEntries(policyIndicators, policy);
     const totalCashflow = cashflowEntries.reduce((sum, e) => sum + e.amount, 0);
 
-    if (cashflowEntries.length) {
-      cashflowStore.replaceEntries(policy.id, cashflowEntries);
-    }
+    cashflowStore.replaceEntries(policy.id, cashflowEntries);
 
     return { cashflowEntries, scenarioEntries, totalCashflow };
   }
@@ -1466,7 +1464,11 @@ export function createPolicyOcrApp(options = {}) {
   app.get('/api/admin/cashflow/status', async (req, res) => {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return;
-    res.json({ ok: true, ...cashflowStore.getStatus() });
+    try {
+      res.json({ ok: true, ...cashflowStore.getStatus() });
+    } catch (error) {
+      sendError(res, error);
+    }
   });
 
   app.post('/api/auth/send-code', async (req, res) => {
@@ -1727,8 +1729,18 @@ export function createPolicyOcrApp(options = {}) {
       if (!user && guestId) clearGuestPendingScans(state, guestId);
       await persist(state);
 
-      // Compute and store cashflow
-      const { cashflowEntries, scenarioEntries, totalCashflow } = computeAndStoreCashflow(policy);
+      // Compute and store cashflow (non-fatal if it fails)
+      let cashflowEntries = [];
+      let scenarioEntries = [];
+      let totalCashflow = 0;
+      try {
+        const result = computeAndStoreCashflow(policy);
+        cashflowEntries = result.cashflowEntries;
+        scenarioEntries = result.scenarioEntries;
+        totalCashflow = result.totalCashflow;
+      } catch (cfError) {
+        console.error('[cashflow] compute failed for policy', policy.id, cfError.message);
+      }
 
       if (!providedAnalysis) {
         startPolicyReportGeneration({
@@ -1804,8 +1816,18 @@ export function createPolicyOcrApp(options = {}) {
       policy.updatedAt = new Date().toISOString();
       await persist(state);
 
-      // Recompute and store cashflow after policy update
-      const { cashflowEntries, scenarioEntries, totalCashflow } = computeAndStoreCashflow(policy);
+      // Recompute and store cashflow after policy update (non-fatal if it fails)
+      let cashflowEntries = [];
+      let scenarioEntries = [];
+      let totalCashflow = 0;
+      try {
+        const result = computeAndStoreCashflow(policy);
+        cashflowEntries = result.cashflowEntries;
+        scenarioEntries = result.scenarioEntries;
+        totalCashflow = result.totalCashflow;
+      } catch (cfError) {
+        console.error('[cashflow] compute failed for policy', policy.id, cfError.message);
+      }
 
       if (identityChanged) {
         startPolicyReportGeneration({
@@ -1840,6 +1862,7 @@ export function createPolicyOcrApp(options = {}) {
         return res.status(result.status).json(result.payload);
       }
       const policyId = Number(result.policy.id);
+      cashflowStore.replaceEntries(policyId, []);
       state.policies = (state.policies || []).filter((policy) => Number(policy.id) !== policyId);
       state.sourceRecords = (state.sourceRecords || []).filter((source) => Number(source.policyId) !== policyId);
       await persist(state);

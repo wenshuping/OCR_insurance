@@ -333,6 +333,7 @@ function insertRows(db, state) {
 
 function clearDbOwnedTables(db) {
   db.exec(`
+    DELETE FROM policy_cashflows;
     DELETE FROM users;
     DELETE FROM sessions;
     DELETE FROM admin_sessions;
