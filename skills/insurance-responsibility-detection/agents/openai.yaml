@@ -1,0 +1,3 @@
+display_name: Insurance Responsibility Detection
+short_description: Audit responsibility text and completeness
+default_prompt: Check whether insurance responsibility text is correct, complete, and sourced from official OCR knowledge records or Feishu tables.

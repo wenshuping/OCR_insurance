@@ -1,0 +1,71 @@
+services:
+  web:
+    build:
+      context: .
+      target: web
+    image: ocr-insurance-web:${OCR_IMAGE_TAG:-local}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${OCR_PUBLIC_BIND:-127.0.0.1}:${OCR_WEB_PORT:-5601}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+
+  api:
+    build:
+      context: .
+      target: runtime
+    image: ocr-insurance-api:${OCR_IMAGE_TAG:-local}
+    restart: unless-stopped
+    command: ["node", "server/index.mjs"]
+    env_file:
+      - path: ./deploy/poptonic.env
+        required: false
+    environment:
+      NODE_ENV: production
+      POLICY_OCR_APP_HOST: 0.0.0.0
+      POLICY_OCR_APP_API_PORT: 4206
+      POLICY_OCR_APP_STATE_PATH: /data/state.json
+      POLICY_OCR_SERVICE_URL: http://ocr:4105
+    volumes:
+      - poptonic_policy_data:/data
+    depends_on:
+      ocr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4206/api/health >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+
+  ocr:
+    build:
+      context: .
+      target: runtime
+    image: ocr-insurance-runtime:${OCR_IMAGE_TAG:-local}
+    restart: unless-stopped
+    command: ["node", "ocr-service/index.mjs"]
+    env_file:
+      - path: ./deploy/poptonic.env
+        required: false
+    environment:
+      NODE_ENV: production
+      OCR_SERVICE_HOST: 0.0.0.0
+      OCR_SERVICE_PORT: 4105
+      POLICY_OCR_CONFIG_PATH: /data/policy-ocr-config.json
+    volumes:
+      - poptonic_ocr_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4105/ready >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  poptonic_policy_data:
+  poptonic_ocr_data:

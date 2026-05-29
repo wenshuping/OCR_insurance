@@ -1,0 +1,48 @@
+# Build output
+dist/
+
+# Runtime data (SQLite, configs)
+.runtime/
+
+# Dependencies
+node_modules/
+
+# Environment files (keep .env.example, ignore actual secrets)
+.env
+.env.local
+server/.env
+server/.env.local
+ocr-service/.env
+ocr-service/.env.local
+
+# Python
+__pycache__/
+*.pyc
+
+# Crawl data (generated)
+crawled/
+
+# Outputs (generated reports/files)
+outputs/
+
+# Temp files
+tmp/
+
+# Test results
+test-results/
+
+# Build artifacts
+releases/
+
+# macOS
+.DS_Store
+
+# Tooling / IDE
+.playwright-cli/
+.superpowers/
+
+# Log files
+*.log
+
+# Crawl log (txt extension)
+crawl_log.txt
