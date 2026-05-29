@@ -1,6 +1,6 @@
 import express from 'express';
 import { respondInsurancePolicyScanError } from './insurance-scan-error.mjs';
-import { scanInsurancePolicyLocal } from './insurance-ocr.service.mjs';
+import { scanCashValueTable, scanInsurancePolicyLocal } from './insurance-ocr.service.mjs';
 import { scanPolicyBodySchema } from './insurance.schemas.mjs';
 import { validateBody } from './middleware.mjs';
 import {
@@ -31,6 +31,23 @@ export function createOcrServiceRouter() {
       return res.json(payload);
     } catch (err) {
       return respondInsurancePolicyScanError(res, err);
+    }
+  });
+
+  router.post('/internal/ocr/policies/cash-value/scan', requireOcrServiceToken, async (req, res) => {
+    try {
+      const { uploadItem } = req.body || {};
+      if (!uploadItem) {
+        return res.status(400).json({ ok: false, error: 'MISSING_UPLOAD', message: '缺少上传图片' });
+      }
+      const result = await scanCashValueTable({ uploadItem });
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({
+        ok: false,
+        error: 'CASH_VALUE_SCAN_FAILED',
+        message: err instanceof Error ? err.message : '现金价值表扫描失败',
+      });
     }
   });
 

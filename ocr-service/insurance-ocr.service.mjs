@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { hasConfiguredOcrServiceBaseUrl, scanInsurancePolicyOverHttp } from './client.mjs';
+import { parseCashValueTable } from './cash-value-parser.mjs';
 import { findBestFuzzyMatch, matchesFuzzyPhrase } from './fuzzy-matching.mjs';
 import { extractPolicyPlansFromLines, matchPolicyFieldsFromLines } from './insurance-field-matcher.mjs';
 import {
@@ -2774,6 +2775,45 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
     data,
     ocrText: bestOcrText,
   };
+}
+
+/**
+ * Scan a cash value table image using Paddle OCR with bounding boxes.
+ * Returns parsed rows or failure info.
+ */
+export async function scanCashValueTable({ uploadItem }) {
+  if (!uploadItem?.dataUrl) {
+    return { ok: false, error: 'CASH_VALUE_TABLE_NOT_DETECTED', message: '缺少图片数据' };
+  }
+
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'cash-value-ocr-'));
+  const imagePath = path.join(tmpDir, 'input.png');
+
+  try {
+    const base64Data = uploadItem.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+    await writeFile(imagePath, Buffer.from(base64Data, 'base64'));
+
+    const { paddleScriptPath } = resolveLocalOcrScriptPaths();
+    assertOcrScriptExists(paddleScriptPath);
+
+    const { stdout } = await execFileAsync('python3', [paddleScriptPath, imagePath], {
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 120000,
+    });
+
+    const ocrOutput = JSON.parse(stdout);
+    if (!ocrOutput.ok) {
+      return { ok: false, error: 'PARSE_FAILED', message: 'OCR 识别失败' };
+    }
+
+    const boxes = ocrOutput.boxes || [];
+    return parseCashValueTable(boxes);
+  } catch (error) {
+    const code = String(error?.message || error?.code || 'PARSE_FAILED');
+    return { ok: false, error: code, message: '现金价值表解析失败' };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function shouldForceLocalOcr(env = process.env) {
