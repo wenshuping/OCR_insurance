@@ -58,7 +58,7 @@ const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 
 const store = await createSqliteStateStore({ dbPath, seedStatePath: statePath });
 const state = await store.load();
-const app = createPolicyOcrApp({ state, persist: store.persist });
+const app = createPolicyOcrApp({ state, persist: store.persist, db: store.db });
 
 app.listen(port, host, () => {
   console.log(`[policy-ocr-app] API listening on http://${host}:${port}`);

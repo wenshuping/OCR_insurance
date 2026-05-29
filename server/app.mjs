@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import express from 'express';
 import {
   allocateId,
@@ -10,6 +11,7 @@ import {
   createInitialState,
   createSession,
   deleteSession,
+  findPolicyCoverageIndicators,
   findSessionUser,
   getBearerToken,
   latestValidSmsCode,
@@ -39,6 +41,9 @@ import {
   normalizeOfficialDomainProfile,
 } from './c-policy-analysis.service.mjs';
 import { deliverSmsCode, resolveSmsDeliveryPlan } from './sms-delivery.mjs';
+import { computePolicyCashflow, computeScenarioEntries } from './cashflow-compute.mjs';
+import { findProductCashflowTemplate } from './cashflow-template.mjs';
+import { createCashflowStore } from './cashflow-store.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -1167,6 +1172,35 @@ export function createPolicyOcrApp(options = {}) {
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
 
+  // Initialize cashflow store: use the shared DB if provided, otherwise use an in-memory DB (for tests)
+  let cashflowStore;
+  if (options.db) {
+    cashflowStore = createCashflowStore(options.db);
+  } else {
+    const memDb = new DatabaseSync(':memory:');
+    // The policy_cashflows table has a FK reference to policies, so ensure a stub exists
+    memDb.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+    cashflowStore = createCashflowStore(memDb);
+  }
+
+  /**
+   * Compute cashflow entries for a policy and persist them to the cashflow store.
+   * Returns { cashflowEntries, scenarioEntries, totalCashflow }.
+   */
+  function computeAndStoreCashflow(policy) {
+    const policyIndicators = findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
+    const template = findProductCashflowTemplate(policy, state.knowledgeRecords);
+    const cashflowEntries = computePolicyCashflow(policy, template, policyIndicators);
+    const scenarioEntries = computeScenarioEntries(policyIndicators, policy);
+    const totalCashflow = cashflowEntries.reduce((sum, e) => sum + e.amount, 0);
+
+    if (cashflowEntries.length) {
+      cashflowStore.replaceEntries(policy.id, cashflowEntries);
+    }
+
+    return { cashflowEntries, scenarioEntries, totalCashflow };
+  }
+
   const app = express();
   app.locals.state = state;
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
@@ -1661,6 +1695,10 @@ export function createPolicyOcrApp(options = {}) {
       if (providedAnalysis) recordPolicySourceRecords(state, policy, providedAnalysis);
       if (!user && guestId) clearGuestPendingScans(state, guestId);
       await persist(state);
+
+      // Compute and store cashflow
+      const { cashflowEntries, scenarioEntries, totalCashflow } = computeAndStoreCashflow(policy);
+
       if (!providedAnalysis) {
         startPolicyReportGeneration({
           state,
@@ -1681,7 +1719,12 @@ export function createPolicyOcrApp(options = {}) {
       });
       res.status(201).json({
         ok: true,
-        policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords),
+        policy: {
+          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords),
+          cashflowEntries,
+          scenarioEntries,
+          totalCashflow,
+        },
         registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
       });
     } catch (error) {

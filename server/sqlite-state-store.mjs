@@ -428,6 +428,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
   }
 
   return {
+    db,
     dbPath,
     seedStatePath,
     load,
