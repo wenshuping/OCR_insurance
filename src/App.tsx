@@ -610,7 +610,103 @@ function appendPrintableResponsibilities(parent: HTMLElement, responsibilities: 
   parent.appendChild(list);
 }
 
-function createPrintableReportNode(target: HTMLElement, title: string) {
+function appendPrintableCashflowTable(parent: HTMLElement, entries: CashflowEntry[]) {
+  if (!entries.length) return;
+  const section = document.createElement('section');
+  section.setAttribute('style', 'margin-bottom:20px;break-inside:avoid');
+
+  const title = document.createElement('h2');
+  title.setAttribute('style', 'margin:0 0 14px;font-size:18px;line-height:1.35;font-weight:800;color:#0f172a');
+  title.textContent = `现金流明细（${entries.length}年）`;
+  section.appendChild(title);
+
+  const table = document.createElement('table');
+  table.setAttribute('style', 'width:100%;border-collapse:collapse;font-size:12px;line-height:1.6');
+
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  ['年份/年龄', '领取金额', '累计领取'].forEach((label) => {
+    const th = document.createElement('th');
+    th.setAttribute('style', 'background:#2563eb;color:#fff;padding:8px 10px;text-align:left;font-weight:700');
+    th.textContent = label;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  entries.forEach((entry, i) => {
+    const tr = document.createElement('tr');
+    tr.setAttribute('style', i % 2 === 0 ? '' : 'background:#f8fafc');
+    const isLastAndMaturity = /满期/.test(entry.liability) && i === entries.length - 1;
+    if (isLastAndMaturity) tr.setAttribute('style', 'background:#fff7ed;font-weight:800;border-left:4px solid #f97316');
+
+    const cells = [
+      `${entry.year}/${entry.age}`,
+      entry.amount.toLocaleString('zh-CN'),
+      entry.cumulative.toLocaleString('zh-CN'),
+    ];
+    cells.forEach((text, ci) => {
+      const td = document.createElement('td');
+      td.setAttribute('style', `padding:6px 10px;border-bottom:1px solid #e2e8f0;${ci > 0 ? 'text-align:right' : ''}`);
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  section.appendChild(table);
+  parent.appendChild(section);
+}
+
+function appendPrintableScenarioTable(parent: HTMLElement, entries: ScenarioEntry[]) {
+  if (!entries.length) return;
+  const section = document.createElement('section');
+  section.setAttribute('style', 'margin-bottom:20px');
+
+  const title = document.createElement('h2');
+  title.setAttribute('style', 'margin:0 0 14px;font-size:18px;line-height:1.35;font-weight:800;color:#0f172a');
+  title.textContent = `保障责任明细（${entries.length}项）`;
+  section.appendChild(title);
+
+  const table = document.createElement('table');
+  table.setAttribute('style', 'width:100%;border-collapse:collapse;font-size:12px;line-height:1.6');
+
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  ['场景', '计算公式', '金额'].forEach((label) => {
+    const th = document.createElement('th');
+    th.setAttribute('style', 'background:#2563eb;color:#fff;padding:8px 10px;text-align:left;font-weight:700');
+    th.textContent = label;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  entries.forEach((entry, i) => {
+    const tr = document.createElement('tr');
+    tr.setAttribute('style', i % 2 === 0 ? '' : 'background:#f8fafc');
+    const isBold = entry.amount >= 1000000;
+
+    [
+      { text: entry.scenario, style: `${entry.condition ? 'padding-left:24px;' : ''}${isBold ? 'font-weight:800' : ''}` },
+      { text: entry.formula, style: 'color:#64748b' },
+      { text: entry.amount.toLocaleString('zh-CN'), style: `text-align:right;${isBold ? 'font-weight:800;color:#1e40af' : ''}` },
+    ].forEach(({ text, style }) => {
+      const td = document.createElement('td');
+      td.setAttribute('style', `padding:6px 10px;border-bottom:1px solid #e2e8f0;${style}`);
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  section.appendChild(table);
+  parent.appendChild(section);
+}
+
+function createPrintableReportNode(target: HTMLElement, title: string, policy?: Policy) {
   const infoRows = extractPrintableInfoRows(target);
   const responsibilities = extractPrintableResponsibilities(target);
   const generatedAt = extractPrintableGeneratedAt(target);
@@ -711,6 +807,19 @@ function createPrintableReportNode(target: HTMLElement, title: string) {
   }
   report.appendChild(responsibilitySection);
 
+  // 现金流明细（如果有）
+  if (policy) {
+    const cashflowPlans = buildPolicyCashflowPlans([policy]);
+    for (const plan of cashflowPlans) {
+      if (plan.annualEntries.length) {
+        appendPrintableCashflowTable(report, plan.annualEntries);
+      }
+      if (plan.scenarioEntries.length) {
+        appendPrintableScenarioTable(report, plan.scenarioEntries);
+      }
+    }
+  }
+
   report.appendChild(
     createPdfElement(
       'footer',
@@ -722,7 +831,7 @@ function createPrintableReportNode(target: HTMLElement, title: string) {
   return report;
 }
 
-function createPdfRenderTarget(target: HTMLElement, title: string) {
+function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Policy) {
   const wrapper = document.createElement('div');
   const width = 760;
   wrapper.setAttribute(
@@ -741,7 +850,7 @@ function createPdfRenderTarget(target: HTMLElement, title: string) {
     ].join(';'),
   );
 
-  const reportNode = createPrintableReportNode(target, title);
+  const reportNode = createPrintableReportNode(target, title, policy);
   wrapper.appendChild(reportNode);
   document.body.appendChild(wrapper);
 
@@ -1349,7 +1458,7 @@ function writePdfPreviewError(previewWindow: Window, fileName: string) {
   previewWindow.document.close();
 }
 
-async function downloadReportPdf(target: HTMLElement | null, title: string) {
+async function downloadReportPdf(target: HTMLElement | null, title: string, policy?: Policy) {
   if (!target) {
     exportCurrentReportAsPdf(title);
     return;
@@ -1369,7 +1478,7 @@ async function downloadReportPdf(target: HTMLElement | null, title: string) {
     document.title = fileName;
     document.body.classList.add('pdf-export-mode');
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    renderTarget = createPdfRenderTarget(target, fileName);
+    renderTarget = createPdfRenderTarget(target, fileName, policy);
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const renderWidth = renderTarget.node.scrollWidth || renderTarget.width;
     const renderHeight = renderTarget.node.scrollHeight || renderTarget.node.offsetHeight;
@@ -4403,7 +4512,7 @@ function AdminPolicyDetail({
               }`}
               type="button"
               disabled={reportGenerating}
-              onClick={() => void downloadReportPdf(reportRef.current, exportTitle)}
+              onClick={() => void downloadReportPdf(reportRef.current, exportTitle, policy)}
             >
               <Download size={17} />
               {exportControlTitle}
