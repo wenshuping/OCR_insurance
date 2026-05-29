@@ -1744,7 +1744,12 @@ export function createPolicyOcrApp(options = {}) {
         return String(policy.guestId || '') === guestId && !policy.userId;
       })
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    res.json({ ok: true, policies: attachPoliciesCoverageIndicators(policies, state.insuranceIndicatorRecords) });
+    const policiesWithIndicators = attachPoliciesCoverageIndicators(policies, state.insuranceIndicatorRecords);
+    const policiesWithCashflow = policiesWithIndicators.map((p) => {
+      const entries = cashflowStore.getEntries(p.id);
+      return { ...p, cashflowEntries: entries.length ? entries : undefined };
+    });
+    res.json({ ok: true, policies: policiesWithCashflow });
   });
 
   app.patch('/api/policies/:id', async (req, res) => {
