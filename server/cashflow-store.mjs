@@ -66,17 +66,27 @@ export function createCashflowStore(db) {
   }
 
   function replaceEntries(policyId, entries) {
-    deleteByPolicyId.run(policyId);
-    for (const entry of entries) {
-      insertEntry.run(
-        policyId,
-        entry.year,
-        entry.age,
-        entry.amount,
-        entry.cumulative,
-        entry.liability,
-        entry.calcText ?? null,
-      );
+    if (!Array.isArray(entries)) {
+      throw new TypeError('replaceEntries: entries must be an array');
+    }
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      deleteByPolicyId.run(policyId);
+      for (const entry of entries) {
+        insertEntry.run(
+          policyId,
+          entry.year,
+          entry.age,
+          entry.amount,
+          entry.cumulative,
+          entry.liability,
+          entry.calcText ?? null,
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
   }
 

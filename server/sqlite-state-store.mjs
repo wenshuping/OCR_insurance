@@ -2,8 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
+import { ensureCashflowTable } from './cashflow-store.mjs';
 
-const SCHEMA_VERSION = '1';
+const SCHEMA_VERSION = '2';
 
 const DB_OWNED_KEYS = new Set([
   'users',
@@ -183,20 +184,8 @@ function createSchema(db) {
       key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
     );
-
-    CREATE TABLE IF NOT EXISTS policy_cashflows (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      policy_id   INTEGER NOT NULL REFERENCES policies(id),
-      year        INTEGER NOT NULL,
-      age         INTEGER NOT NULL,
-      amount      REAL    NOT NULL,
-      cumulative  REAL    NOT NULL,
-      liability   TEXT    NOT NULL,
-      calc_text   TEXT,
-      created_at  TEXT    DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_cashflows_policy ON policy_cashflows(policy_id);
   `);
+  ensureCashflowTable(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
 }
 
@@ -344,6 +333,7 @@ function insertRows(db, state) {
 
 function clearDbOwnedTables(db) {
   db.exec(`
+    DELETE FROM policy_cashflows;
     DELETE FROM users;
     DELETE FROM sessions;
     DELETE FROM admin_sessions;
