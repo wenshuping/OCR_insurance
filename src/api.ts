@@ -281,6 +281,55 @@ export type PolicyProductSuggestion = {
   recordCount: number;
 };
 
+export type CashflowEntry = {
+  year: number;
+  age: number;
+  amount: number;
+  cumulative: number;
+  liability: string;
+  policyId: number;
+  productName: string;
+  calculationText: string;
+};
+
+export type ScenarioEntry = {
+  scenario: string;
+  formula: string;
+  amount: number;
+  condition: string;
+  policyId: number;
+  productName: string;
+  calculationText: string;
+};
+
+export type PolicyCashflowPlan = {
+  policyId: number;
+  productName: string;
+  company: string;
+  insured: string;
+  insuredBirthday: string;
+  effectiveDate: string;
+  annualEntries: CashflowEntry[];
+  scenarioEntries: ScenarioEntry[];
+  totalDeterministicCashflow: number;
+  expired: boolean;
+};
+
+export type MemberYearEntry = {
+  year: number;
+  age: number;
+  totalAmount: number;
+  cumulative: number;
+  details: CashflowEntry[];
+};
+
+export type MemberAnnualSummary = {
+  member: string;
+  birthday: string;
+  entries: MemberYearEntry[];
+  totalCashflow: number;
+};
+
 export type PolicyFormData = {
   company: string;
   name: string;

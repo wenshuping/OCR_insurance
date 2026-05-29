@@ -29,9 +29,13 @@ import {
   AdminOfficialDomainProfile,
   AdminOverview,
   ApiError,
+  CashflowEntry,
   KnowledgeRecord,
+  MemberAnnualSummary,
+  MemberYearEntry,
   Policy,
   PolicyAnalysisResult,
+  PolicyCashflowPlan,
   PolicyCompanySuggestion,
   CoverageIndicator,
   PolicyFormData,
@@ -39,6 +43,7 @@ import {
   PolicyProductSuggestion,
   PolicyScanResult,
   Responsibility,
+  ScenarioEntry,
   UploadItem,
   adminLogin,
   analyzePolicy,
@@ -67,6 +72,10 @@ import {
   updateAdminOcrConfig,
   updatePolicy,
 } from './api';
+import {
+  buildPolicyCashflowPlans,
+  buildMemberAnnualSummaries,
+} from './cashflow-engine.mjs';
 
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
@@ -2039,6 +2048,7 @@ function CustomerApp() {
   const [formProductMatchLoading, setFormProductMatchLoading] = useState(false);
   const [formProductMatchMessage, setFormProductMatchMessage] = useState('');
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
+  const [cashflowMember, setCashflowMember] = useState<string | null>(null);
 
   const canSubmit = Boolean(uploadItem || ocrText.trim() || formData.company.trim() || formData.name.trim());
   const totalCoverage = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [policies]);
@@ -3050,6 +3060,16 @@ function CustomerApp() {
     );
   }
 
+  if (cashflowMember) {
+    return (
+      <CashflowDetailPage
+        member={cashflowMember}
+        policies={policies}
+        onBack={() => setCashflowMember(null)}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 pb-28">
       <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/80 px-4 py-4 backdrop-blur-md">
@@ -3097,7 +3117,7 @@ function CustomerApp() {
           </div>
         </div>
 
-        <FamilyCoverageOverview overview={familyCoverageOverview} policies={policies} />
+        <FamilyCoverageOverview overview={familyCoverageOverview} policies={policies} onViewCashflow={(member) => setCashflowMember(member)} />
 
         <section className="space-y-4 p-4">
           {!policies.length ? (
@@ -3161,7 +3181,253 @@ function CustomerApp() {
   );
 }
 
-function FamilyCoverageOverview({ overview, policies }: { overview: FamilyCoverageOverviewData; policies: Policy[] }) {
+function CashflowAnnualTable({ entries }: { entries: CashflowEntry[] }) {
+  if (!entries.length) return null;
+  const columnSize = 12;
+  const columns: CashflowEntry[][] = [];
+  for (let i = 0; i < entries.length; i += columnSize) {
+    columns.push(entries.slice(i, i + columnSize));
+  }
+
+  const liabilityColor = (liability: string) => {
+    if (/满期/.test(liability)) return 'text-orange-600 bg-orange-50';
+    if (/养老/.test(liability)) return 'text-emerald-600 bg-emerald-50';
+    return 'text-blue-600 bg-blue-50';
+  };
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <h4 className="text-sm font-black text-slate-800">个人现金流明细</h4>
+        <span className="text-xs text-slate-400">(单位:元)</span>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="flex gap-3 min-w-max">
+          {columns.map((col, colIndex) => (
+            <table key={colIndex} className="border-separate border-spacing-0 text-xs">
+              <thead>
+                <tr>
+                  <th className="rounded-tl-lg bg-[#0B72B9] px-2 py-1 text-white font-bold">年份/年龄</th>
+                  <th className="bg-[#0B72B9] px-2 py-1 text-white font-bold">领取</th>
+                  <th className="rounded-tr-lg bg-[#0B72B9] px-2 py-1 text-white font-bold">累计</th>
+                </tr>
+              </thead>
+              <tbody>
+                {col.map((entry) => (
+                  <tr key={entry.year} className={entry.year === entries[entries.length - 1]?.year && /满期/.test(entry.liability) ? 'bg-orange-50 font-black' : ''}>
+                    <td className="px-2 py-1 font-bold text-slate-600 ring-1 ring-slate-100">
+                      {entry.year}/{entry.age}
+                    </td>
+                    <td className="px-2 py-1 ring-1 ring-slate-100">
+                      <span className={`inline-block rounded px-1 text-[10px] font-bold ${liabilityColor(entry.liability)}`}>
+                        {entry.amount.toLocaleString('zh-CN')}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1 text-right font-semibold text-slate-500 ring-1 ring-slate-100">
+                      {entry.cumulative.toLocaleString('zh-CN')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScenarioDetailTable({ entries }: { entries: ScenarioEntry[] }) {
+  if (!entries.length) return null;
+
+  const depthColor = (amount: number) => {
+    if (amount >= 2000000) return 'text-blue-800 font-black';
+    if (amount >= 1000000) return 'text-blue-700 font-bold';
+    if (amount >= 500000) return 'text-blue-600 font-semibold';
+    return 'text-slate-700';
+  };
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <h4 className="text-sm font-black text-slate-800">保障责任明细</h4>
+        <span className="text-xs text-slate-400">(单位:元)</span>
+      </div>
+      <table className="w-full border-separate border-spacing-0 text-xs">
+        <thead>
+          <tr>
+            <th className="rounded-tl-lg bg-[#0B72B9] px-3 py-2 text-left font-bold text-white">场景</th>
+            <th className="bg-[#0B72B9] px-3 py-2 text-left font-bold text-white">计算公式</th>
+            <th className="rounded-tr-lg bg-[#0B72B9] px-3 py-2 text-right font-bold text-white">金额</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry, i) => (
+            <tr key={i} className={entry.condition ? 'bg-slate-50' : ''}>
+              <td className={`px-3 py-2 ring-1 ring-slate-100 ${entry.condition ? 'pl-6' : ''}`}>
+                <span className="font-bold text-slate-800">{entry.scenario}</span>
+                {entry.condition ? (
+                  <span className="ml-1 text-[10px] text-slate-400">({entry.condition})</span>
+                ) : null}
+              </td>
+              <td className="px-3 py-2 text-slate-500 ring-1 ring-slate-100">{entry.formula}</td>
+              <td className={`px-3 py-2 text-right ring-1 ring-slate-100 ${depthColor(entry.amount)}`}>
+                {entry.amount.toLocaleString('zh-CN')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MemberAnnualSummaryTable({ summary }: { summary: MemberAnnualSummary }) {
+  const [expandedYear, setExpandedYear] = useState<number | null>(null);
+  const columnSize = 12;
+  const columns: MemberYearEntry[][] = [];
+  for (let i = 0; i < summary.entries.length; i += columnSize) {
+    columns.push(summary.entries.slice(i, i + columnSize));
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <div className="flex gap-3 min-w-max">
+        {columns.map((col, colIndex) => (
+          <table key={colIndex} className="border-separate border-spacing-0 text-xs">
+            <thead>
+              <tr>
+                <th className="rounded-tl-lg bg-blue-600 px-2 py-1 text-white font-bold">年份/年龄</th>
+                <th className="bg-blue-600 px-2 py-1 text-white font-bold">领取</th>
+                <th className="rounded-tr-lg bg-blue-600 px-2 py-1 text-white font-bold">累计</th>
+              </tr>
+            </thead>
+            <tbody>
+              {col.map((entry) => (
+                <tr
+                  key={entry.year}
+                  className="cursor-pointer hover:bg-blue-50"
+                  onClick={() => setExpandedYear(expandedYear === entry.year ? null : entry.year)}
+                >
+                  <td className="px-2 py-1 font-bold text-slate-600 ring-1 ring-slate-100">
+                    {entry.year}/{entry.age}
+                  </td>
+                  <td className="px-2 py-1 text-right font-black text-slate-800 ring-1 ring-slate-100">
+                    {entry.totalAmount.toLocaleString('zh-CN')}
+                  </td>
+                  <td className="px-2 py-1 text-right font-semibold text-slate-500 ring-1 ring-slate-100">
+                    {entry.cumulative.toLocaleString('zh-CN')}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
+      </div>
+      {expandedYear !== null ? (
+        <div className="mt-1">
+          {summary.entries.filter((e) => e.year === expandedYear).map((entry) => (
+            <div key={entry.year} className="rounded-lg bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
+              {entry.details.map((d, i) => (
+                <p key={i} className="text-[11px] text-blue-700">
+                  {d.productName} - {d.liability}: {d.amount.toLocaleString('zh-CN')}元
+                </p>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CashflowDetailPage({
+  member, policies, onBack,
+}: {
+  member: string;
+  policies: Policy[];
+  onBack: () => void;
+}) {
+  const memberPolicies = policies.filter((p) => (p.insured || '').trim() === member);
+  const plans = buildPolicyCashflowPlans(memberPolicies);
+  const summaries = buildMemberAnnualSummaries(plans);
+  const summary = summaries[0];
+  const notes: string[] = [];
+
+  for (const plan of plans) {
+    if (!plan.insuredBirthday) notes.push(`${plan.productName}缺少被保险人生日，年度现金流无法生成。`);
+    if (!plan.effectiveDate) notes.push(`${plan.productName}缺少生效日，年度现金流无法生成。`);
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 pb-28">
+      <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-slate-100 bg-white/80 px-4 py-4 backdrop-blur-md">
+        <button type="button" onClick={onBack} className="rounded-full p-1 hover:bg-slate-100">
+          <ChevronLeft size={20} className="text-slate-600" />
+        </button>
+        <div>
+          <h1 className="text-lg font-black text-slate-900">{member} · 现金流明细</h1>
+          <p className="text-[11px] font-medium text-slate-400">{plans.length} 张保单</p>
+        </div>
+      </header>
+
+      <main className="space-y-4 p-4">
+        {notes.length ? (
+          <div className="space-y-1 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
+            {notes.map((n) => <p key={n}>* {n}</p>)}
+          </div>
+        ) : null}
+
+        {plans.map((plan) => (
+          <section key={plan.policyId} className="rounded-[20px] border border-[#D9E6F4] bg-white p-4 shadow-[0_12px_24px_-20px_rgba(15,23,42,0.12)]">
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-base font-black text-slate-900">{plan.productName}</h3>
+                <p className="mt-1 text-xs text-slate-400">{plan.company}</p>
+              </div>
+              {plan.expired ? (
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-400">已过期</span>
+              ) : null}
+            </div>
+            <div className="mb-3 flex flex-wrap gap-2 text-xs text-slate-500">
+              {plan.effectiveDate ? <span>生效 {plan.effectiveDate}</span> : null}
+              {plan.insuredBirthday ? <span>生日 {plan.insuredBirthday}</span> : null}
+            </div>
+
+            {plan.annualEntries.length ? (
+              <div className="mb-3">
+                <CashflowAnnualTable entries={plan.annualEntries} />
+                <p className="mt-2 text-right text-sm font-black text-slate-800">
+                  确定现金流合计: {plan.totalDeterministicCashflow.toLocaleString('zh-CN')}元
+                </p>
+              </div>
+            ) : null}
+
+            {plan.scenarioEntries.length ? (
+              <ScenarioDetailTable entries={plan.scenarioEntries} />
+            ) : null}
+
+            {!plan.annualEntries.length && !plan.scenarioEntries.length ? (
+              <p className="py-6 text-center text-sm text-slate-400">暂无现金流或保障责任数据</p>
+            ) : null}
+          </section>
+        ))}
+
+        {summary && summary.entries.length ? (
+          <section className="rounded-[20px] border-2 border-blue-200 bg-white p-4 shadow-[0_12px_24px_-20px_rgba(37,99,235,0.16)]">
+            <h3 className="mb-3 text-base font-black text-blue-700">年度现金流汇总</h3>
+            <MemberAnnualSummaryTable summary={summary} />
+            <p className="mt-2 text-right text-sm font-black text-blue-800">
+              合计: {summary.totalCashflow.toLocaleString('zh-CN')}元
+            </p>
+          </section>
+        ) : null}
+      </main>
+    </div>
+  );
+}
+
+function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overview: FamilyCoverageOverviewData; policies: Policy[]; onViewCashflow: (member: string) => void }) {
   if (!policies.length) return null;
   const displayedRows = overview.rows.slice(0, 10);
   const memberBirthdays = buildMemberBirthdayMap(policies);
@@ -3178,14 +3444,31 @@ function FamilyCoverageOverview({ overview, policies }: { overview: FamilyCovera
         </div>
 
         <div className="mb-4 grid gap-2 sm:grid-cols-3">
-          {overview.members.map((member) => (
-            <div key={member} className="rounded-2xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
-              <p className="truncate text-sm font-black text-slate-900">{member}</p>
-              <p className="mt-1 text-xs font-bold text-[#7890AA]">
-                生日 {memberBirthdays.get(member) || '待识别'}
-              </p>
-            </div>
-          ))}
+          {overview.members.map((member) => {
+            const memberPlans = buildPolicyCashflowPlans(
+              policies.filter((p) => (p.insured || '').trim() === member)
+            );
+            const hasCashflow = memberPlans.some((p) => p.annualEntries.length > 0 || p.scenarioEntries.length > 0);
+            return (
+              <div key={member} className="rounded-2xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-sm font-black text-slate-900">{member}</p>
+                  {hasCashflow ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-600 hover:bg-blue-100"
+                      onClick={() => onViewCashflow(member)}
+                    >
+                      现金流 →
+                    </button>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs font-bold text-[#7890AA]">
+                  生日 {memberBirthdays.get(member) || '待识别'}
+                </p>
+              </div>
+            );
+          })}
         </div>
 
         <div className="overflow-x-auto">
