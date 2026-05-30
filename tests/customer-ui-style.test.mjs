@@ -245,3 +245,28 @@ test('policy edit dialog offers insurer and product suggestions', () => {
   assert.match(detailSource, /aria-label="修改保险产品候选"/);
   assert.match(detailSource, /renderHighlightedSuggestion/);
 });
+
+test('customer app exposes family report after policy inventory and before section analysis', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, /buildFamilyReport/);
+  assert.match(appSource, /FamilyReportPage/);
+  assert.match(appSource, /setShowFamilyReport\(true\)/);
+  assert.match(familySource, /全家总统计/);
+  assert.match(familySource, /家庭保单清单/);
+  assert.match(familySource, /被保人保单明细/);
+  assert.match(familySource, /重疾分析/);
+  assert.match(familySource, /意外分析/);
+  assert.match(familySource, /财富分析/);
+  assert.ok(familySource.indexOf('家庭保单清单') < familySource.indexOf('被保人保单明细'));
+  assert.ok(familySource.indexOf('被保人保单明细') < familySource.indexOf('重疾分析'));
+  assert.ok(familySource.indexOf('重疾分析') < familySource.indexOf('意外分析'));
+  assert.ok(familySource.indexOf('意外分析') < familySource.indexOf('财富分析'));
+});
+
+test('family report export uses raw target mode', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean \}/);
+  assert.match(appSource, /rawTarget: true/);
+  assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
+});

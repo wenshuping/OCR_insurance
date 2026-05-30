@@ -364,6 +364,51 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
   );
 }
 
+export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageProps) {
+  const reportRef = useRef<HTMLElement | null>(null);
+  const exportTitle = '家庭保障分析报告';
+
+  return (
+    <div className="min-h-screen bg-[#F4F8FC] pb-10">
+      <header className="no-print sticky top-0 z-20 flex items-center justify-between border-b border-slate-100 bg-white/90 px-4 py-4 backdrop-blur">
+        <button
+          type="button"
+          onClick={onBack}
+          className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full text-slate-700 active:bg-slate-100"
+          aria-label="返回"
+          title="返回"
+        >
+          <ChevronLeft size={24} />
+        </button>
+        <h1 className="text-lg font-black text-slate-950">家庭保障分析报告</h1>
+        <button
+          type="button"
+          onClick={() => void onExport(reportRef.current, exportTitle)}
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-blue-600 active:bg-blue-100"
+          aria-label="导出报告"
+          title="导出报告"
+        >
+          <Download size={19} />
+        </button>
+      </header>
+
+      <main ref={reportRef} className="print-policy-report space-y-4 p-4">
+        <section className="print-only">
+          <h1>家庭保障分析报告</h1>
+          <p>生成时间：{new Date().toLocaleString('zh-CN', { hour12: false })}</p>
+        </section>
+
+        <SummarySection report={report} />
+        <InventorySection rows={report.policyInventory.rows} />
+        <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
+        <ProtectionSection title="重疾分析" members={report.criticalIllness.members} />
+        <ProtectionSection title="意外分析" members={report.accident.members} />
+        <WealthSection report={report} />
+      </main>
+    </div>
+  );
+}
+
 function WealthAggregateTable({ rows }: { rows: FamilyWealthAggregateRow[] }) {
   return rows.length ? (
     <TableWrap>
@@ -443,50 +488,5 @@ function WealthSection({ report }: { report: FamilyReport }) {
         </div>
       </div>
     </Section>
-  );
-}
-
-export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageProps) {
-  const reportRef = useRef<HTMLElement | null>(null);
-  const exportTitle = '家庭保障分析报告';
-
-  return (
-    <div className="min-h-screen bg-[#F4F8FC] pb-10">
-      <header className="no-print sticky top-0 z-20 flex items-center justify-between border-b border-slate-100 bg-white/90 px-4 py-4 backdrop-blur">
-        <button
-          type="button"
-          onClick={onBack}
-          className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full text-slate-700 active:bg-slate-100"
-          aria-label="返回"
-          title="返回"
-        >
-          <ChevronLeft size={24} />
-        </button>
-        <h1 className="text-lg font-black text-slate-950">家庭保障分析报告</h1>
-        <button
-          type="button"
-          onClick={() => void onExport(reportRef.current, exportTitle)}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-blue-600 active:bg-blue-100"
-          aria-label="导出报告"
-          title="导出报告"
-        >
-          <Download size={19} />
-        </button>
-      </header>
-
-      <main ref={reportRef} className="print-policy-report space-y-4 p-4">
-        <section className="print-only">
-          <h1>家庭保障分析报告</h1>
-          <p>生成时间：{new Date().toLocaleString('zh-CN', { hour12: false })}</p>
-        </section>
-
-        <SummarySection report={report} />
-        <InventorySection rows={report.policyInventory.rows} />
-        <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
-        <ProtectionSection title="重疾分析" members={report.criticalIllness.members} />
-        <ProtectionSection title="意外分析" members={report.accident.members} />
-        <WealthSection report={report} />
-      </main>
-    </div>
   );
 }
