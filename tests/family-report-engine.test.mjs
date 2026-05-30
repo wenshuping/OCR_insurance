@@ -518,6 +518,7 @@ test('buildFamilyReport routes rail and ship accident responsibilities', () => {
       amount: 100000,
       responsibilities: [
         { coverageType: '意外保障', scenario: '轨道交通意外', payout: '300万' },
+        { coverageType: '意外保障', scenario: '客运轮船意外', payout: '100万' },
       ],
     }),
   ]);
@@ -525,7 +526,7 @@ test('buildFamilyReport routes rail and ship accident responsibilities', () => {
   const mother = report.accident.members.find((item) => item.member === '妈妈');
   const railShip = mother.rows.find((row) => row.key === 'rail_ship');
 
-  assert.equal(railShip.amountText, '300万');
+  assert.equal(railShip.amountText, '400万');
 });
 
 test('buildFamilyReport lets responsibility amount improve unresolved accident indicator', () => {

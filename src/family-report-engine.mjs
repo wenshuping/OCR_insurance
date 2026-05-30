@@ -452,9 +452,8 @@ function indicatorImpliesAccident(indicator) {
 }
 
 function classifyAccidentIndicator(indicator) {
-  const specificTransportRows = ACCIDENT_ROWS.filter((definition) => (
-    ['driving', 'public_transport', 'aviation', 'rail_ship'].includes(definition.key)
-  ));
+  const specificTransportRows = ['driving', 'rail_ship', 'public_transport', 'aviation']
+    .map((key) => ACCIDENT_ROWS.find((definition) => definition.key === key));
 
   const liabilityText = String(indicator?.liability || '').normalize('NFKC');
   const liabilityDefinition = classifyByDefinitions(liabilityText, specificTransportRows)
