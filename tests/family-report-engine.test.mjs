@@ -360,3 +360,33 @@ test('buildFamilyReport uses fallback amount when critical first indicator is un
   assert.equal(row.status, 'covered');
   assert.equal(row.conditionText, '按保单基础保额估算');
 });
+
+test('buildFamilyReport combines parsed critical first and fallback policy amounts', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 90,
+      insured: '爸爸',
+      name: '健康无忧重大疾病保险',
+      amount: 300000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '重疾(首次给付)', value: 100, unit: '%', basis: '基本保险金额', formulaText: '基本保额100%', productName: '健康无忧重大疾病保险' },
+      ],
+    }),
+    makePolicy({
+      id: 91,
+      insured: '爸爸',
+      name: '守护重大疾病保险',
+      amount: 200000,
+      coverageIndicators: [],
+    }),
+  ]);
+
+  const father = report.criticalIllness.members.find((item) => item.member === '爸爸');
+  const row = father.rows.find((item) => item.key === 'critical_first');
+
+  assert.equal(row.amountText, '50万');
+  assert.deepEqual(
+    row.sourcePolicies.map((policy) => policy.productName),
+    ['健康无忧重大疾病保险', '守护重大疾病保险'],
+  );
+});

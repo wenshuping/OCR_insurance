@@ -303,13 +303,18 @@ function applyFallbackPolicyToRow(row, policy) {
 
 function buildMemberCriticalRows(memberPolicies) {
   const rowMap = new Map(CRITICAL_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
+  const usableCriticalFirstPolicies = new Set();
 
   for (const policy of memberPolicies) {
     const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
     for (const indicator of indicators) {
       const definition = classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
       if (!definition) continue;
+      const previousAmount = rowMap.get(definition.key).amount;
       applyIndicatorToRow(rowMap.get(definition.key), indicator, policy);
+      if (definition.key === 'critical_first' && rowMap.get(definition.key).amount > previousAmount) {
+        usableCriticalFirstPolicies.add(policy);
+      }
     }
   }
 
@@ -318,12 +323,13 @@ function buildMemberCriticalRows(memberPolicies) {
     if (criticalFirst.status === 'formula') {
       criticalFirst.amount = 0;
       criticalFirst.sourcePolicies = [];
+      usableCriticalFirstPolicies.clear();
     }
+  }
 
-    for (const policy of memberPolicies) {
-      if (policyImpliesCriticalIllness(policy)) {
-        applyFallbackPolicyToRow(criticalFirst, policy);
-      }
+  for (const policy of memberPolicies) {
+    if (policyImpliesCriticalIllness(policy) && !usableCriticalFirstPolicies.has(policy)) {
+      applyFallbackPolicyToRow(criticalFirst, policy);
     }
   }
 
