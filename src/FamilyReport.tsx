@@ -182,7 +182,9 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
                       <tr key={row.policyId}>
                         <td className="min-w-[170px] bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]">
                           <span className="block">{emptyText(row.company)}</span>
-                          <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{emptyText(row.policyNumber)}</span>
+                          {row.policyNumber ? (
+                            <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{row.policyNumber}</span>
+                          ) : null}
                         </td>
                         <td className="min-w-[200px] bg-white px-3 py-2 text-xs font-black text-slate-800 ring-1 ring-[#E1EAF5]">{emptyText(row.productName)}</td>
                         <td className={`${tdClassName} text-right`}>{formatMoney(row.annualPremium)}</td>

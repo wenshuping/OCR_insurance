@@ -108,6 +108,19 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.insuredGroups.length, 2);
   assert.equal(inventory.insuredGroups[0].member, '妈妈');
   assert.equal(inventory.insuredGroups[0].policies[0].beneficiary, '第一顺位');
+  assert.equal(inventory.insuredGroups[0].policies[0].totalPremiumText, '196,000');
+});
+
+test('buildPolicyInventory computes total premium from payment years', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({ id: 1, firstPremium: 8600, paymentPeriod: '10年' }),
+    makePolicy({ id: 2, firstPremium: 12000, paymentPeriod: '趸交' }),
+    makePolicy({ id: 3, firstPremium: 5000, paymentPeriod: '' }),
+  ]);
+
+  assert.equal(inventory.rows[0].totalPremiumText, '86,000');
+  assert.equal(inventory.rows[1].totalPremiumText, '12,000');
+  assert.equal(inventory.rows[2].totalPremiumText, '待识别');
 });
 
 test('buildPolicyInventory uses cumulative payout for coverage fallback', () => {
@@ -252,6 +265,29 @@ test('buildFamilyReport resolves critical illness amounts from formula text', ()
   assert.equal(child.rows.find((row) => row.key === 'moderate').amountText, '30万');
   assert.equal(child.rows.find((row) => row.key === 'mild').amountText, '15万');
   assert.equal(child.rows.find((row) => row.key === 'specific_disease').amountText, '100万');
+});
+
+test('buildFamilyReport uses matched rider amount for critical illness indicator percentages', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 35,
+      insured: '妈妈',
+      name: '家庭保障计划',
+      amount: 500000,
+      plans: [
+        { role: 'main', name: '家庭保障计划', matchedProductName: '家庭保障计划', amount: 500000 },
+        { role: 'rider', name: '附加重大疾病保险', matchedProductName: '新华人寿附加重大疾病保险', amount: 100000 },
+      ],
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', formulaText: '基本保额100%', productName: '附加重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  const mother = report.criticalIllness.members.find((item) => item.member === '妈妈');
+
+  assert.equal(mother.rows.find((row) => row.key === 'critical_first').amount, 100000);
+  assert.equal(mother.rows.find((row) => row.key === 'critical_first').amountText, '10万');
 });
 
 test('buildFamilyReport classifies ordinal critical disease payouts as multiple', () => {
@@ -417,6 +453,29 @@ test('buildFamilyReport creates accident rows per family member without merging 
   assert.equal(father.rows.find((row) => row.key === 'aviation').amountText, '500万');
   assert.equal(father.rows.find((row) => row.key === 'accident_medical').amountText, '2万');
   assert.equal(mother.rows.find((row) => row.key === 'general_accident').status, 'missing');
+});
+
+test('buildFamilyReport uses matched rider amount for accident indicator multiples', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 25,
+      insured: '爸爸',
+      name: '家庭保障计划',
+      amount: 500000,
+      plans: [
+        { role: 'main', name: '家庭保障计划', matchedProductName: '家庭保障计划', amount: 500000 },
+        { role: 'rider', name: '附加综合意外伤害保险', matchedProductName: '新华人寿附加综合意外伤害保险', amount: 100000 },
+      ],
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故/全残', value: 10, unit: '倍', basis: '基本保险金额', formulaText: '基本保额10倍', productName: '综合意外伤害保险' },
+      ],
+    }),
+  ]);
+
+  const father = report.accident.members.find((item) => item.member === '爸爸');
+
+  assert.equal(father.rows.find((row) => row.key === 'general_accident').amount, 1000000);
+  assert.equal(father.rows.find((row) => row.key === 'general_accident').amountText, '100万');
 });
 
 test('buildFamilyReport keeps traffic and public transport accident rows separate', () => {

@@ -45,6 +45,27 @@ function formatNumberText(value) {
   return asNumber(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 }
 
+function parsePaymentYears(value) {
+  const text = String(value || '').normalize('NFKC');
+  if (/趸交|一次交清/u.test(text)) return 1;
+
+  const yearMatch = text.match(/(\d+(?:\.\d+)?)\s*年/u);
+  if (yearMatch) return Math.max(1, Math.floor(asNumber(yearMatch[1])));
+
+  const periodMatch = text.match(/(\d+(?:\.\d+)?)\s*期/u);
+  if (periodMatch) return Math.max(1, Math.floor(asNumber(periodMatch[1])));
+
+  return null;
+}
+
+function totalPremiumText(policy) {
+  const premium = asNumber(policy?.firstPremium);
+  const years = parsePaymentYears(policy?.paymentPeriod);
+  if (premium <= 0) return '待识别';
+  if (years === null) return '待识别';
+  return formatNumberText(premium * years);
+}
+
 function policyTypeLabel(policy) {
   const text = [
     policy?.company,
@@ -104,6 +125,7 @@ function buildInventoryRow(policy) {
     typeLabel: policyTypeLabel(policy),
     annualPremium: asNumber(policy?.firstPremium),
     annualPremiumText: formatNumberText(policy?.firstPremium),
+    totalPremiumText: totalPremiumText(policy),
     coverage: asNumber(policy?.amount),
     coverageText: coverageText(policy),
     paymentPeriod: String(policy?.paymentPeriod || ''),
@@ -181,6 +203,41 @@ function indicatorText(indicator) {
   ].filter(Boolean).join(' ');
 }
 
+function normalizeProductName(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s（）()《》〈〉「」『』【】\[\]·・,，.。:：;；\-_/\\]/gu, '');
+}
+
+function productNameMatchesIndicator(planName, indicatorProductName) {
+  const planText = normalizeProductName(planName);
+  const indicatorTextValue = normalizeProductName(indicatorProductName);
+  if (!planText || !indicatorTextValue) return false;
+  return planText === indicatorTextValue
+    || planText.includes(indicatorTextValue)
+    || indicatorTextValue.includes(planText);
+}
+
+function findPlanForIndicator(policy, indicator) {
+  const productName = indicator?.productName;
+  const plans = Array.isArray(policy?.plans) ? policy.plans : [];
+  if (!productName) return null;
+
+  return plans.find((plan) => {
+    if (!plan || typeof plan === 'string') return productNameMatchesIndicator(plan, productName);
+    return [plan?.matchedProductName, plan?.name].some((value) => productNameMatchesIndicator(value, productName));
+  }) || null;
+}
+
+function indicatorBaseAmount(indicator, policy) {
+  const plan = findPlanForIndicator(policy, indicator);
+  const planAmount = finiteNumber(plan?.amount);
+  if (planAmount !== null && planAmount > 0) return planAmount;
+  return asNumber(policy?.amount);
+}
+
 function classifyByDefinitions(text, definitions) {
   const normalized = String(text || '').normalize('NFKC');
   return definitions.find((definition) => definition.patterns.some((pattern) => pattern.test(normalized))) || null;
@@ -191,22 +248,22 @@ function resolveIndicatorAmount(indicator, policy) {
   const unit = String(indicator?.unit || '').normalize('NFKC');
   const basis = String(indicator?.basis || '').normalize('NFKC');
   const text = indicatorText(indicator).normalize('NFKC');
-  const policyAmount = asNumber(policy?.amount);
+  const baseAmount = indicatorBaseAmount(indicator, policy);
   const baseAmountPattern = /基本(?:保险金额|保额)/u;
 
   if (value !== null && unit === '%' && baseAmountPattern.test(basis)) {
-    return policyAmount * value / 100;
+    return baseAmount * value / 100;
   }
 
   if (value !== null && unit === '倍' && baseAmountPattern.test(basis)) {
-    return policyAmount * value;
+    return baseAmount * value;
   }
 
   const formulaPercentMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*%/u);
-  if (formulaPercentMatch) return policyAmount * asNumber(formulaPercentMatch[1]) / 100;
+  if (formulaPercentMatch) return baseAmount * asNumber(formulaPercentMatch[1]) / 100;
 
   const formulaMultipleMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍/u);
-  if (formulaMultipleMatch) return policyAmount * asNumber(formulaMultipleMatch[1]);
+  if (formulaMultipleMatch) return baseAmount * asNumber(formulaMultipleMatch[1]);
 
   if (value !== null && /^(?:元|圆)$/u.test(unit)) return value;
 
@@ -216,7 +273,7 @@ function resolveIndicatorAmount(indicator, policy) {
   const yuanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:元|圆)/u);
   if (yuanMatch) return asNumber(yuanMatch[1]);
 
-  if (baseAmountPattern.test(text)) return policyAmount;
+  if (baseAmountPattern.test(text)) return baseAmount;
 
   return 0;
 }
@@ -592,19 +649,6 @@ export function buildAccidentSection(policies = []) {
       ...buildMemberAccidentRows(memberPolicies),
     })),
   };
-}
-
-function parsePaymentYears(value) {
-  const text = String(value || '').normalize('NFKC');
-  if (/趸交|一次交清/u.test(text)) return 1;
-
-  const yearMatch = text.match(/(\d+(?:\.\d+)?)\s*年/u);
-  if (yearMatch) return Math.max(1, Math.floor(asNumber(yearMatch[1])));
-
-  const periodMatch = text.match(/(\d+(?:\.\d+)?)\s*期/u);
-  if (periodMatch) return Math.max(1, Math.floor(asNumber(periodMatch[1])));
-
-  return null;
 }
 
 function effectiveYear(policy) {
