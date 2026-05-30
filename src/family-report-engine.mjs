@@ -522,13 +522,16 @@ function responsibilityToAccidentIndicator(responsibility, policy) {
 }
 
 function fallbackPolicyIndicator(policy) {
+  const text = accidentPolicyText(policy);
+
   return {
     coverageType: '意外保障',
-    liability: '一般意外身故/全残',
+    liability: text || '一般意外身故/全残',
     value: asNumber(policy?.amount),
     unit: '元',
     formulaText: '按保单基础保额估算',
     productName: policy?.name,
+    sourceExcerpt: text,
   };
 }
 
@@ -556,13 +559,13 @@ function buildMemberAccidentRows(memberPolicies) {
       const definition = classifyAccidentIndicator(indicator);
       if (!definition) continue;
       const row = rowMap.get(definition.key);
-      if (indicatorRowKeys.has(definition.key)) continue;
+      if (indicatorRowKeys.has(definition.key) && row.amount > 0) continue;
       applyAccidentIndicatorToRow(row, definition, indicator, policy);
     }
 
     if (indicators.length === 0 && responsibilities.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
       const indicator = fallbackPolicyIndicator(policy);
-      const definition = classifyAccidentIndicator(indicator);
+      const definition = classifyAccidentIndicator(indicator) || ACCIDENT_ROWS.find((item) => item.key === 'general_accident');
       applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
     }
   }

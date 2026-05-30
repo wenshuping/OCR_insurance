@@ -488,3 +488,64 @@ test('buildFamilyReport classifies public transport and driving accident respons
   assert.equal(publicTransport.amountText, '200万');
   assert.equal(driving.amountText, '100万');
 });
+
+test('buildFamilyReport routes policy-text-only accident fallback by scenario', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 60,
+      insured: '爸爸',
+      name: '航空意外险',
+      amount: 5000000,
+      coverageIndicators: [],
+      responsibilities: [],
+    }),
+  ]);
+
+  const father = report.accident.members.find((item) => item.member === '爸爸');
+  const aviation = father.rows.find((row) => row.key === 'aviation');
+  const generalAccident = father.rows.find((row) => row.key === 'general_accident');
+
+  assert.equal(aviation.amountText, '500万');
+  assert.equal(generalAccident.status, 'missing');
+});
+
+test('buildFamilyReport routes rail and ship accident responsibilities', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 70,
+      insured: '妈妈',
+      name: '轨道交通意外保障',
+      amount: 100000,
+      responsibilities: [
+        { coverageType: '意外保障', scenario: '轨道交通意外', payout: '300万' },
+      ],
+    }),
+  ]);
+
+  const mother = report.accident.members.find((item) => item.member === '妈妈');
+  const railShip = mother.rows.find((row) => row.key === 'rail_ship');
+
+  assert.equal(railShip.amountText, '300万');
+});
+
+test('buildFamilyReport lets responsibility amount improve unresolved accident indicator', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 80,
+      insured: '爸爸',
+      name: '航空意外险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '航空意外', formulaText: '按条款给付', productName: '航空意外险' },
+      ],
+      responsibilities: [
+        { coverageType: '意外保障', scenario: '航空意外', payout: '500万' },
+      ],
+    }),
+  ]);
+
+  const father = report.accident.members.find((item) => item.member === '爸爸');
+  const aviation = father.rows.find((row) => row.key === 'aviation');
+
+  assert.equal(aviation.amountText, '500万');
+});
