@@ -390,3 +390,31 @@ test('buildFamilyReport combines parsed critical first and fallback policy amoun
     ['健康无忧重大疾病保险', '守护重大疾病保险'],
   );
 });
+
+test('buildFamilyReport creates accident rows per family member without merging scenarios', () => {
+  const policies = [
+    makePolicy({
+      id: 20,
+      insured: '爸爸',
+      name: '综合意外险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故/全残', value: 10, unit: '倍', basis: '基本保险金额', formulaText: '基本保额10倍', productName: '综合意外险' },
+        { coverageType: '意外保障', liability: '交通意外', value: 20, unit: '倍', basis: '基本保险金额', formulaText: '基本保额20倍', condition: '公共交通/自驾/网约车分别列', productName: '综合意外险' },
+        { coverageType: '意外保障', liability: '航空意外', value: 50, unit: '倍', basis: '基本保险金额', formulaText: '基本保额50倍', productName: '综合意外险' },
+        { coverageType: '意外保障', liability: '意外医疗', value: 20000, unit: '元', basis: '医疗费用', formulaText: '限额2万元', productName: '综合意外险' },
+      ],
+    }),
+    makePolicy({ id: 21, insured: '妈妈', name: '年金保险', amount: 0 }),
+  ];
+
+  const report = buildFamilyReport(policies);
+  const father = report.accident.members.find((item) => item.member === '爸爸');
+  const mother = report.accident.members.find((item) => item.member === '妈妈');
+
+  assert.equal(father.rows.find((row) => row.key === 'general_accident').amountText, '100万');
+  assert.equal(father.rows.find((row) => row.key === 'traffic').amountText, '200万');
+  assert.equal(father.rows.find((row) => row.key === 'aviation').amountText, '500万');
+  assert.equal(father.rows.find((row) => row.key === 'accident_medical').amountText, '2万');
+  assert.equal(mother.rows.find((row) => row.key === 'general_accident').status, 'missing');
+});

@@ -206,6 +206,8 @@ function resolveIndicatorAmount(indicator, policy) {
   const formulaMultipleMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍/u);
   if (formulaMultipleMatch) return policyAmount * asNumber(formulaMultipleMatch[1]);
 
+  if (value !== null && /^(?:元|圆)$/u.test(unit)) return value;
+
   const wanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*万/u);
   if (wanMatch) return asNumber(wanMatch[1]) * 10000;
 
@@ -359,6 +361,179 @@ export function buildCriticalIllnessSection(policies = []) {
   };
 }
 
+const ACCIDENT_ROWS = [
+  {
+    key: 'general_accident',
+    label: '一般意外身故/全残',
+    patterns: [/一般意外/u, /意外身故/u, /意外全残/u],
+  },
+  {
+    key: 'accident_disability',
+    label: '意外伤残',
+    patterns: [/意外伤残/u, /残疾/u, /伤残等级/u],
+  },
+  {
+    key: 'accident_medical',
+    label: '意外医疗',
+    patterns: [/意外医疗/u, /医疗费用/u, /报销/u],
+  },
+  {
+    key: 'traffic',
+    label: '交通意外',
+    patterns: [/交通意外/u, /公共交通/u, /网约车/u],
+  },
+  {
+    key: 'driving',
+    label: '自驾/驾乘',
+    patterns: [/自驾/u, /驾乘/u, /驾驶/u],
+  },
+  {
+    key: 'public_transport',
+    label: '公共交通',
+    patterns: [/公共交通/u, /客运汽车/u, /客运轮船/u],
+  },
+  {
+    key: 'aviation',
+    label: '航空意外',
+    patterns: [/航空/u, /民航/u, /飞机/u],
+  },
+  {
+    key: 'rail_ship',
+    label: '轨道/轮船',
+    patterns: [/轨道/u, /列车/u, /轮船/u],
+  },
+  {
+    key: 'sudden_death',
+    label: '猝死',
+    patterns: [/猝死/u],
+  },
+  {
+    key: 'hospital_allowance',
+    label: '住院津贴',
+    patterns: [/住院津贴/u, /津贴/u],
+  },
+];
+
+function accidentPolicyText(policy) {
+  return [
+    policy?.name,
+    policy?.report,
+    policy?.ocrText,
+    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
+      if (typeof plan === 'string') return plan;
+      return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
+    }),
+    ...(Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).map((item) => {
+      if (typeof item === 'string') return item;
+      return [
+        item?.name,
+        item?.title,
+        item?.liability,
+        item?.type,
+        item?.coverageType,
+        item?.scenario,
+        item?.payout,
+        item?.note,
+      ].filter(Boolean).join(' ');
+    }),
+  ].filter(Boolean).join(' ');
+}
+
+function textImpliesAccident(text) {
+  return /(意外|伤残|残疾|交通|公共交通|网约车|自驾|驾乘|航空|民航|飞机|轨道|列车|轮船|猝死)/u
+    .test(String(text || '').normalize('NFKC'));
+}
+
+function indicatorImpliesAccident(indicator) {
+  const coverageType = String(indicator?.coverageType || '').normalize('NFKC');
+  return coverageType === '意外保障' || textImpliesAccident(indicatorText(indicator));
+}
+
+function accidentCountText(definition, indicator) {
+  const text = indicatorText(indicator);
+  if (definition.key === 'accident_medical' || /(医疗费用|报销)/u.test(text)) return '报销型';
+  if (definition.key === 'hospital_allowance' || /津贴/u.test(text)) return '津贴';
+  return '定额给付';
+}
+
+function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
+  const amount = resolveIndicatorAmount(indicator, policy);
+  const formulaText = String(indicator?.formulaText || '').trim();
+  const conditionText = String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim();
+
+  row.amount += amount;
+  row.amountText = amountDisplay(row.amount, formulaText || '待识别');
+  row.countText = accidentCountText(definition, indicator);
+  row.status = row.amount > 0 ? 'covered' : 'formula';
+  row.conditionText = conditionText || '按识别责任计算';
+  row.sourcePolicies.push({
+    policyId: policy?.id,
+    productName: String(indicator?.productName || policy?.name || ''),
+    liability: String(indicator?.liability || ''),
+    formulaText,
+  });
+}
+
+function applyFallbackAccidentPolicyToRow(row, policy) {
+  const amount = asNumber(policy?.amount);
+  if (amount <= 0) return;
+
+  row.amount += amount;
+  row.amountText = amountDisplay(row.amount);
+  row.countText = '定额给付';
+  row.status = 'covered';
+  row.conditionText = '按保单基础保额估算';
+  row.sourcePolicies.push({
+    policyId: policy?.id,
+    productName: String(policy?.name || ''),
+    liability: '一般意外身故/全残',
+    formulaText: '按保单基础保额估算',
+  });
+}
+
+function buildMemberAccidentRows(memberPolicies) {
+  const rowMap = new Map(ACCIDENT_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
+
+  for (const policy of memberPolicies) {
+    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    for (const indicator of indicators) {
+      if (!indicatorImpliesAccident(indicator)) continue;
+
+      const definition = classifyByDefinitions(indicatorText(indicator), ACCIDENT_ROWS);
+      if (!definition) continue;
+      applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
+    }
+
+    if (indicators.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
+      applyFallbackAccidentPolicyToRow(rowMap.get('general_accident'), policy);
+    }
+  }
+
+  const rows = Array.from(rowMap.values());
+  const attentionItems = rows
+    .filter((row) => row.status === 'missing')
+    .map((row) => `${row.label}缺失`);
+
+  return { rows, attentionItems };
+}
+
+export function buildAccidentSection(policies = []) {
+  const groupMap = new Map();
+
+  for (const policy of policies) {
+    const member = memberName(policy);
+    if (!groupMap.has(member)) groupMap.set(member, []);
+    groupMap.get(member).push(policy);
+  }
+
+  return {
+    members: Array.from(groupMap, ([member, memberPolicies]) => ({
+      member,
+      ...buildMemberAccidentRows(memberPolicies),
+    })),
+  };
+}
+
 export function buildFamilyReportSummary(policies = []) {
   const members = new Set(policies.map(memberName));
   return {
@@ -406,7 +581,7 @@ export function buildFamilyReport(policies = []) {
     summary: buildFamilyReportSummary(policies),
     policyInventory: buildPolicyInventory(policies),
     criticalIllness: buildCriticalIllnessSection(policies),
-    accident: { members: [] },
+    accident: buildAccidentSection(policies),
     wealth: { memberReports: [], aggregateRows: [], keyPoints: [] },
     appendix: {
       policies: policies.map((policy) => ({
