@@ -42,7 +42,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-[20px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
+    <section className="space-y-3 border-b border-[#D9E6F4] pb-5 last:border-b-0">
       <h2 className="mb-3 text-base font-black text-[#0F172A]">{title}</h2>
       {children}
     </section>
