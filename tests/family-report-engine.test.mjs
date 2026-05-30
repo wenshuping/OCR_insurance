@@ -442,3 +442,49 @@ test('buildFamilyReport keeps traffic and public transport accident rows separat
   assert.equal(traffic.sourcePolicies.length, 1);
   assert.equal(publicTransport.sourcePolicies.length, 1);
 });
+
+test('buildFamilyReport classifies accident responsibilities when indicators are unrelated', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 40,
+      insured: '爸爸',
+      name: '综合保障计划',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '医疗保障', liability: '住院医疗', value: 10000, unit: '元', basis: '医疗费用', formulaText: '限额1万元', productName: '综合保障计划' },
+      ],
+      responsibilities: [
+        { coverageType: '意外保障', scenario: '航空意外', payout: '500万' },
+      ],
+    }),
+  ]);
+
+  const father = report.accident.members.find((item) => item.member === '爸爸');
+  const aviation = father.rows.find((row) => row.key === 'aviation');
+  const generalAccident = father.rows.find((row) => row.key === 'general_accident');
+
+  assert.equal(aviation.amountText, '500万');
+  assert.equal(generalAccident.status, 'missing');
+});
+
+test('buildFamilyReport classifies public transport and driving accident responsibilities', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 50,
+      insured: '妈妈',
+      name: '出行意外保障',
+      amount: 100000,
+      responsibilities: [
+        { coverageType: '意外保障', scenario: '公共交通', payout: '200万' },
+        { coverageType: '意外保障', scenario: '驾乘意外', payout: '100万' },
+      ],
+    }),
+  ]);
+
+  const mother = report.accident.members.find((item) => item.member === '妈妈');
+  const publicTransport = mother.rows.find((row) => row.key === 'public_transport');
+  const driving = mother.rows.find((row) => row.key === 'driving');
+
+  assert.equal(publicTransport.amountText, '200万');
+  assert.equal(driving.amountText, '100万');
+});

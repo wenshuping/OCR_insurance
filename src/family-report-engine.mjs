@@ -172,6 +172,8 @@ function indicatorText(indicator) {
   return [
     indicator?.coverageType,
     indicator?.liability,
+    indicator?.scenario,
+    indicator?.payout,
     indicator?.formulaText,
     indicator?.condition,
     indicator?.basis,
@@ -474,35 +476,60 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
   const amount = resolveIndicatorAmount(indicator, policy);
   const formulaText = String(indicator?.formulaText || '').trim();
   const conditionText = String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim();
+  const countText = accidentCountText(definition, indicator);
 
   row.amount += amount;
   row.amountText = amountDisplay(row.amount, formulaText || '待识别');
-  row.countText = accidentCountText(definition, indicator);
+  row.countText = row.countText === '-' || row.countText === countText ? countText : `${row.countText}/${countText}`;
   row.status = row.amount > 0 ? 'covered' : 'formula';
-  row.conditionText = conditionText || '按识别责任计算';
+  if (conditionText) {
+    row.conditionText = row.conditionText === '未识别到该责任' || row.conditionText === conditionText
+      ? conditionText
+      : `${row.conditionText}；${conditionText}`;
+  } else if (row.conditionText === '未识别到该责任') {
+    row.conditionText = '按识别责任计算';
+  }
   row.sourcePolicies.push({
     policyId: policy?.id,
     productName: String(indicator?.productName || policy?.name || ''),
-    liability: String(indicator?.liability || ''),
+    liability: String(indicator?.liability || indicator?.scenario || ''),
     formulaText,
   });
 }
 
-function applyFallbackAccidentPolicyToRow(row, policy) {
-  const amount = asNumber(policy?.amount);
-  if (amount <= 0) return;
+function responsibilityToAccidentIndicator(responsibility, policy) {
+  if (typeof responsibility === 'string') {
+    return {
+      coverageType: '',
+      liability: responsibility,
+      formulaText: '',
+      productName: policy?.name,
+      sourceExcerpt: responsibility,
+    };
+  }
 
-  row.amount += amount;
-  row.amountText = amountDisplay(row.amount);
-  row.countText = '定额给付';
-  row.status = 'covered';
-  row.conditionText = '按保单基础保额估算';
-  row.sourcePolicies.push({
-    policyId: policy?.id,
-    productName: String(policy?.name || ''),
+  return {
+    coverageType: responsibility?.coverageType,
+    liability: responsibility?.liability || responsibility?.name || responsibility?.title || responsibility?.type,
+    scenario: responsibility?.scenario,
+    payout: responsibility?.payout,
+    formulaText: responsibility?.formulaText || responsibility?.payout || responsibility?.note || '',
+    condition: responsibility?.condition || responsibility?.note || '',
+    basis: responsibility?.basis,
+    productName: policy?.name,
+    sourceExcerpt: responsibility?.sourceExcerpt,
+  };
+}
+
+function fallbackPolicyIndicator(policy) {
+  return {
+    coverageType: '意外保障',
     liability: '一般意外身故/全残',
+    value: asNumber(policy?.amount),
+    unit: '元',
     formulaText: '按保单基础保额估算',
-  });
+    productName: policy?.name,
+  };
 }
 
 function buildMemberAccidentRows(memberPolicies) {
@@ -510,16 +537,33 @@ function buildMemberAccidentRows(memberPolicies) {
 
   for (const policy of memberPolicies) {
     const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicatorRowKeys = new Set();
+
     for (const indicator of indicators) {
       if (!indicatorImpliesAccident(indicator)) continue;
 
       const definition = classifyAccidentIndicator(indicator);
       if (!definition) continue;
       applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
+      indicatorRowKeys.add(definition.key);
     }
 
-    if (indicators.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
-      applyFallbackAccidentPolicyToRow(rowMap.get('general_accident'), policy);
+    const responsibilities = Array.isArray(policy?.responsibilities) ? policy.responsibilities : [];
+    for (const responsibility of responsibilities) {
+      const indicator = responsibilityToAccidentIndicator(responsibility, policy);
+      if (!indicatorImpliesAccident(indicator)) continue;
+
+      const definition = classifyAccidentIndicator(indicator);
+      if (!definition) continue;
+      const row = rowMap.get(definition.key);
+      if (indicatorRowKeys.has(definition.key)) continue;
+      applyAccidentIndicatorToRow(row, definition, indicator, policy);
+    }
+
+    if (indicators.length === 0 && responsibilities.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
+      const indicator = fallbackPolicyIndicator(policy);
+      const definition = classifyAccidentIndicator(indicator);
+      applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
     }
   }
 
