@@ -291,6 +291,18 @@ test('family report labels match the agreed report structure', () => {
   assert.doesNotMatch(source, /营销落地页|立即购买|推荐产品/);
 });
 
+test('family report wealth policies render a cash value line chart before the table', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  assert.match(source, /function CashValueLineChart/);
+  assert.match(source, /aria-label="现金价值曲线"/);
+  assert.match(source, /<path d=\{path\}/);
+  const chartIndex = source.indexOf('<CashValueLineChart rows={policy.cashValueRows} />');
+  const followingTableIndex = source.indexOf('<TableWrap>', chartIndex);
+  assert.notEqual(chartIndex, -1);
+  assert.notEqual(followingTableIndex, -1);
+  assert.ok(chartIndex < followingTableIndex);
+});
+
 test('family report export uses raw target mode', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean \}/);

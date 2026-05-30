@@ -277,6 +277,72 @@ function ProtectionSection({ title, members }: { title: string; members: FamilyM
   );
 }
 
+function CashValueLineChart({ rows }: { rows: FamilyWealthPolicyReport['cashValueRows'] }) {
+  const chartRows = rows.filter((row) => Number.isFinite(row.cashValue));
+  if (chartRows.length < 2) return <EmptyState text="现金价值点不足，暂无法生成曲线" />;
+
+  const width = 420;
+  const height = 168;
+  const paddingX = 34;
+  const paddingY = 22;
+  const values = chartRows.map((row) => row.cashValue);
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const valueRange = Math.max(1, maxValue - minValue);
+  const xStep = chartRows.length > 1 ? (width - paddingX * 2) / (chartRows.length - 1) : 0;
+  const points = chartRows.map((row, index) => {
+    const x = paddingX + index * xStep;
+    const y = height - paddingY - ((row.cashValue - minValue) / valueRange) * (height - paddingY * 2);
+    return { ...row, x, y };
+  });
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ');
+  const first = points[0];
+  const last = points[points.length - 1];
+  const midValue = minValue + valueRange / 2;
+  const yTicks = [
+    { label: formatMoney(maxValue), y: paddingY },
+    { label: formatMoney(midValue), y: height / 2 },
+    { label: formatMoney(minValue), y: height - paddingY },
+  ];
+
+  return (
+    <div className="mb-3 rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h6 className="text-xs font-black text-slate-700">现金价值曲线</h6>
+        <span className="text-[11px] font-bold text-[#7890AA]">
+          {first.calendarYear || `第${first.policyYear}年`} 至 {last.calendarYear || `第${last.policyYear}年`}
+        </span>
+      </div>
+      <svg className="h-auto w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="现金价值曲线">
+        <rect x="0" y="0" width={width} height={height} rx="12" fill="#FFFFFF" />
+        {yTicks.map((tick) => (
+          <g key={`${tick.label}-${tick.y}`}>
+            <line x1={paddingX} x2={width - paddingX} y1={tick.y} y2={tick.y} stroke="#E2E8F0" strokeDasharray="4 5" />
+            <text x="8" y={tick.y + 4} fontSize="10" fill="#64748B">{tick.label}</text>
+          </g>
+        ))}
+        <path d={path} fill="none" stroke="#0EA5E9" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={`${path} L ${last.x.toFixed(1)} ${height - paddingY} L ${first.x.toFixed(1)} ${height - paddingY} Z`} fill="#0EA5E9" opacity="0.08" />
+        {points.map((point, index) => (
+          <g key={`${point.policyYear}-${point.calendarYear}-${point.cashValue}`}>
+            <circle cx={point.x} cy={point.y} r={index === 0 || index === points.length - 1 ? 4 : 3} fill="#FFFFFF" stroke="#0EA5E9" strokeWidth="2" />
+            {(index === 0 || index === points.length - 1) ? (
+              <>
+                <text x={point.x} y={height - 7} textAnchor={index === 0 ? 'start' : 'end'} fontSize="10" fill="#475569">
+                  {point.calendarYear || `第${point.policyYear}年`}
+                </text>
+                <text x={point.x} y={Math.max(12, point.y - 8)} textAnchor={index === 0 ? 'start' : 'end'} fontSize="10" fontWeight="700" fill="#0369A1">
+                  {formatMoney(point.cashValue)}
+                </text>
+              </>
+            ) : null}
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
   return (
     <article className="rounded-xl border border-[#D9E6F4] bg-white p-3 shadow-[0_12px_24px_-22px_rgba(15,23,42,0.16)]">
@@ -337,26 +403,29 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
         <div>
           <h5 className="mb-2 text-xs font-black text-slate-700">现金价值</h5>
           {policy.cashValueRows.length ? (
-            <TableWrap>
-              <table className="min-w-full border-separate border-spacing-0 text-left">
-                <thead>
-                  <tr>
-                    <th className={`${thClassName} rounded-tl-xl`}>保单年度</th>
-                    <th className={thClassName}>年份/年龄</th>
-                    <th className={`${thClassName} rounded-tr-xl text-right`}>现金价值</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {policy.cashValueRows.map((row) => (
-                    <tr key={`${policy.policyId}-${row.policyYear}-${row.calendarYear}`}>
-                      <td className={tdClassName}>{row.policyYear}</td>
-                      <td className={tdClassName}>{row.calendarYear || '-'}/{row.age ?? '-'}</td>
-                      <td className={`${tdClassName} text-right`}>{formatMoney(row.cashValue)}</td>
+            <>
+              <CashValueLineChart rows={policy.cashValueRows} />
+              <TableWrap>
+                <table className="min-w-full border-separate border-spacing-0 text-left">
+                  <thead>
+                    <tr>
+                      <th className={`${thClassName} rounded-tl-xl`}>保单年度</th>
+                      <th className={thClassName}>年份/年龄</th>
+                      <th className={`${thClassName} rounded-tr-xl text-right`}>现金价值</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </TableWrap>
+                  </thead>
+                  <tbody>
+                    {policy.cashValueRows.map((row) => (
+                      <tr key={`${policy.policyId}-${row.policyYear}-${row.calendarYear}`}>
+                        <td className={tdClassName}>{row.policyYear}</td>
+                        <td className={tdClassName}>{row.calendarYear || '-'}/{row.age ?? '-'}</td>
+                        <td className={`${tdClassName} text-right`}>{formatMoney(row.cashValue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableWrap>
+            </>
           ) : (
             <EmptyState text="暂无现金价值表" />
           )}
