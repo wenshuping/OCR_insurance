@@ -1794,6 +1794,7 @@ export function createPolicyOcrApp(options = {}) {
     const policiesWithIndicators = attachPoliciesCoverageIndicators(policies, state.insuranceIndicatorRecords);
     const policiesWithCashflow = policiesWithIndicators.map((p) => {
       const entries = cashflowStore.getEntries(p.id);
+      const cashValues = cashValueStore.getValues(p.id);
       const totalCashflow = entries.reduce((sum, e) => sum + e.amount, 0);
       let scenarioEntries = [];
       try {
@@ -1805,6 +1806,7 @@ export function createPolicyOcrApp(options = {}) {
       return {
         ...p,
         cashflowEntries: entries.length ? entries : undefined,
+        cashValues: cashValues.length ? cashValues : undefined,
         scenarioEntries: scenarioEntries.length ? scenarioEntries : undefined,
         totalCashflow: entries.length ? totalCashflow : undefined,
       };
