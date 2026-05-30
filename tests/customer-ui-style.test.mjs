@@ -268,5 +268,6 @@ test('family report export uses raw target mode', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean \}/);
   assert.match(appSource, /rawTarget: true/);
+  assert.match(appSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
   assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
 });

@@ -894,6 +894,7 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   );
 
   const reportNode = options?.rawTarget ? (target.cloneNode(true) as HTMLElement) : createPrintableReportNode(target, title, policy);
+  reportNode.classList?.add?.('print-policy-report');
   wrapper.appendChild(reportNode);
   document.body.appendChild(wrapper);
 
