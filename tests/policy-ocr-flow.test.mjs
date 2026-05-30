@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 
 import { createPolicyOcrApp } from '../server/app.mjs';
+import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { latestValidSmsCode } from '../server/policy-ocr.domain.mjs';
 import { scanPolicyWithConfiguredRuntime } from '../server/ocr-runtime.mjs';
 import { extractPolicyFieldsFromText, normalizeExtractedPolicyFields } from '../ocr-service/insurance-ocr.service.mjs';
+import { buildFamilyReport } from '../src/family-report-engine.mjs';
 
 function listen(app) {
   return new Promise((resolve) => {
@@ -3495,6 +3498,102 @@ test('policy list attaches local indicator records for matched policy plans', as
     );
   } finally {
     await server.close();
+  }
+});
+
+test('policy list returns persisted cash values so real family reports can draw wealth charts', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+  db.prepare('INSERT INTO policies (id) VALUES (?)').run(500549);
+  const cashflowStore = createCashflowStore(db);
+  const cashValueStore = createCashValueStore(db);
+  cashflowStore.replaceEntries(500549, [
+    {
+      year: 2030,
+      age: 42,
+      amount: 1465,
+      cumulative: 1465,
+      liability: '生存保险金',
+      calcText: '基本保额 = 1,465元',
+    },
+  ]);
+  cashValueStore.replaceValues(500549, [
+    { policyYear: 1, age: null, cashValue: 282, source: 'ocr' },
+    { policyYear: 2, age: null, cashValue: 663, source: 'ocr' },
+    { policyYear: 3, age: null, cashValue: 1296, source: 'ocr' },
+  ]);
+  const app = createPolicyOcrApp({
+    db,
+    state: {
+      users: [{ id: 1, mobile: '13800000000', createdAt: '2026-05-01T00:00:00.000Z' }],
+      sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-05-01T00:01:00.000Z' }],
+      smsCodes: [],
+      policies: [
+        {
+          id: 500549,
+          userId: 1,
+          guestId: '',
+          company: '新华保险',
+          name: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+          applicant: '温舒萍',
+          insured: '温舒萍',
+          insuredBirthday: '1988-12-16',
+          date: '2025-12-22',
+          paymentPeriod: '2年交',
+          coveragePeriod: '至85岁',
+          amount: 1465,
+          firstPremium: 19600,
+          createdAt: '2026-05-28T17:06:56.018Z',
+          updatedAt: '2026-05-28T19:49:53.416Z',
+          responsibilities: [
+            {
+              coverageType: '现金流',
+              liability: '生存保险金',
+              value: 1465,
+              unit: '元',
+              basis: '固定金额',
+            },
+          ],
+          reportStatus: 'ready',
+        },
+      ],
+      pendingScans: [],
+      insuranceIndicatorRecords: [],
+      nextId: 500600,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const list = await jsonFetch(server.baseUrl, '/api/policies', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+
+    assert.equal(list.response.status, 200);
+    assert.equal(list.payload.policies.length, 1);
+    assert.deepEqual(
+      list.payload.policies[0].cashValues.map((row) => ({
+        policyYear: row.policyYear,
+        age: row.age,
+        cashValue: row.cashValue,
+      })),
+      [
+        { policyYear: 1, age: null, cashValue: 282 },
+        { policyYear: 2, age: null, cashValue: 663 },
+        { policyYear: 3, age: null, cashValue: 1296 },
+      ],
+    );
+
+    const report = buildFamilyReport(list.payload.policies);
+    const wealthPolicy = report.wealth.memberReports
+      .find((member) => member.member === '温舒萍')
+      .policies.find((policy) => Number(policy.policyId) === 500549);
+    assert.equal(wealthPolicy.cashValueRows.length, 3);
+    assert.equal(wealthPolicy.cashValueRows[0].calendarYear, 2025);
+    assert.equal(report.summary.cashValueTotal, 1296);
+  } finally {
+    await server.close();
+    db.close();
   }
 });
 

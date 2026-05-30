@@ -12,6 +12,10 @@ function componentSource(name, nextName) {
   return appSource.slice(start, end);
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 test('customer account sheet uses a blue account logo', () => {
   const source = componentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
   assert.match(source, /h-12 w-12[^"]*bg-blue-500/);
@@ -262,4 +266,82 @@ test('policy edit dialog offers insurer and product suggestions', () => {
   assert.match(detailSource, /aria-label="修改保险公司候选"/);
   assert.match(detailSource, /aria-label="修改保险产品候选"/);
   assert.match(detailSource, /renderHighlightedSuggestion/);
+});
+
+test('customer app exposes family report after policy inventory and before section analysis', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, /buildFamilyReport/);
+  assert.match(appSource, /FamilyReportPage/);
+  assert.match(appSource, /setShowFamilyReport\(true\)/);
+  assert.match(familySource, /全家总统计/);
+  assert.match(familySource, /家庭保单清单/);
+  assert.match(familySource, /被保人保单明细/);
+  assert.match(familySource, /重疾分析/);
+  assert.match(familySource, /意外分析/);
+  assert.match(familySource, /财富分析/);
+  assert.ok(familySource.indexOf('家庭保单清单') < familySource.indexOf('被保人保单明细'));
+  assert.ok(familySource.indexOf('被保人保单明细') < familySource.indexOf('重疾分析'));
+  assert.ok(familySource.indexOf('重疾分析') < familySource.indexOf('意外分析'));
+  assert.ok(familySource.indexOf('意外分析') < familySource.indexOf('财富分析'));
+});
+
+test('family report labels match the agreed report structure', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  [
+    '全家总统计',
+    '家庭保单清单',
+    '被保人保单明细',
+    '重疾分析',
+    '意外分析',
+    '财富分析',
+    '全家财富统计',
+    '保险公司/保单号',
+    '险种名称',
+    '保费(元)',
+    '交费期',
+    '保障期',
+    '生效日期',
+    '保额(元)',
+    '身故受益人',
+    '期交总保费',
+  ].forEach((label) => assert.match(source, new RegExp(escapeRegExp(label))));
+  assert.doesNotMatch(source, /营销落地页|立即购买|推荐产品/);
+});
+
+test('family report wealth policies show cashflow table with cash value and keep cash value as line chart only', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  assert.match(source, /function PolicyAnnualCashflowTable/);
+  assert.match(source, /个人现金流明细/);
+  assert.match(source, /领取金额/);
+  assert.match(source, /累计领取/);
+  assert.match(source, /function CashValueLineChart/);
+  assert.match(source, /aria-label="现金价值曲线"/);
+  assert.match(source, /<path d=\{path\}/);
+  assert.match(source, /<PolicyAnnualCashflowTable policy=\{policy\} \/>/);
+  const cashValueAreaStart = source.indexOf('<h5 className="mb-2 text-xs font-black text-slate-700">现金价值</h5>');
+  const cashValueAreaEnd = source.indexOf('</div>', cashValueAreaStart);
+  const cashValueArea = source.slice(cashValueAreaStart, cashValueAreaEnd);
+  assert.doesNotMatch(cashValueArea, /<TableWrap>/);
+});
+
+test('family report export uses raw target mode', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean \}/);
+  assert.match(appSource, /rawTarget: true/);
+  assert.match(appSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
+  assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
+});
+
+test('family report export expands scrollable table wrappers for pdf capture', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
+
+  assert.match(familySource, /data-pdf-table-wrap/);
+  assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
+  assert.match(appSource, /Math\.max\(width,\s*reportNode\.scrollWidth/);
+  assert.match(cssSource, /\.pdf-export-mode \.print-policy-report \[data-pdf-table-wrap\]/);
+  assert.match(cssSource, /overflow:\s*visible !important/);
+  assert.match(cssSource, /max-width:\s*none !important/);
 });

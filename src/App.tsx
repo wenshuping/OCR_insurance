@@ -80,6 +80,8 @@ import {
   buildMemberAnnualSummaries,
   fillCashflowYears,
 } from './cashflow-engine.mjs';
+import { FamilyReportPage } from './FamilyReport';
+import { buildFamilyReport } from './family-report-engine.mjs';
 
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
@@ -896,7 +898,9 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
   return report;
 }
 
-function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Policy) {
+type ReportExportOptions = { rawTarget?: boolean };
+
+function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Policy, options?: ReportExportOptions) {
   const wrapper = document.createElement('div');
   const width = 760;
   wrapper.setAttribute(
@@ -915,9 +919,20 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
     ].join(';'),
   );
 
-  const reportNode = createPrintableReportNode(target, title, policy);
+  const reportNode = options?.rawTarget ? (target.cloneNode(true) as HTMLElement) : createPrintableReportNode(target, title, policy);
+  reportNode.classList?.add?.('print-policy-report');
   wrapper.appendChild(reportNode);
   document.body.appendChild(wrapper);
+  if (options?.rawTarget) {
+    reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
+      node.style.overflow = 'visible';
+      node.style.width = 'max-content';
+      node.style.maxWidth = 'none';
+    });
+    const rawTargetWidth = Math.max(width, reportNode.scrollWidth || 0);
+    wrapper.style.width = `${rawTargetWidth}px`;
+    reportNode.style.width = `${rawTargetWidth}px`;
+  }
 
   return {
     node: reportNode,
@@ -1523,7 +1538,7 @@ function writePdfPreviewError(previewWindow: Window, fileName: string) {
   previewWindow.document.close();
 }
 
-async function downloadReportPdf(target: HTMLElement | null, title: string, policy?: Policy) {
+async function downloadReportPdf(target: HTMLElement | null, title: string, policy?: Policy, options?: ReportExportOptions) {
   if (!target) {
     exportCurrentReportAsPdf(title);
     return;
@@ -1543,7 +1558,7 @@ async function downloadReportPdf(target: HTMLElement | null, title: string, poli
     document.title = fileName;
     document.body.classList.add('pdf-export-mode');
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    renderTarget = createPdfRenderTarget(target, fileName, policy);
+    renderTarget = createPdfRenderTarget(target, fileName, policy, options);
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const renderWidth = renderTarget.node.scrollWidth || renderTarget.width;
     const renderHeight = renderTarget.node.scrollHeight || renderTarget.node.offsetHeight;
@@ -2223,6 +2238,7 @@ function CustomerApp() {
   const [formProductMatchMessage, setFormProductMatchMessage] = useState('');
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
   const [cashflowMember, setCashflowMember] = useState<string | null>(null);
+  const [showFamilyReport, setShowFamilyReport] = useState(false);
 
   // Cash value upload dialog state
   const [cashValueDialogOpen, setCashValueDialogOpen] = useState(false);
@@ -2238,6 +2254,7 @@ function CustomerApp() {
   const annualPremium = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0), [policies]);
   const policyGroups = useMemo(() => groupPoliciesByInsured(policies), [policies]);
   const familyCoverageOverview = useMemo(() => buildFamilyCoverageOverview(policies), [policies]);
+  const familyReport = useMemo(() => buildFamilyReport(policies), [policies]);
   const isLoggedIn = Boolean(token);
 
   async function refreshPolicies(nextToken = token) {
@@ -3498,6 +3515,16 @@ function CustomerApp() {
     );
   }
 
+  if (showFamilyReport) {
+    return (
+      <FamilyReportPage
+        report={familyReport}
+        onBack={() => setShowFamilyReport(false)}
+        onExport={(target, title) => void downloadReportPdf(target, title, undefined, { rawTarget: true })}
+      />
+    );
+  }
+
   if (cashflowMember) {
     return (
       <CashflowDetailPage
@@ -3561,6 +3588,22 @@ function CustomerApp() {
         </div>
 
         <FamilyCoverageOverview overview={familyCoverageOverview} policies={policies} onViewCashflow={(member) => setCashflowMember(member)} />
+
+        {policies.length ? (
+          <section className="px-4 pt-3">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between rounded-[20px] border border-[#D9E6F4] bg-white px-4 py-3 text-left shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
+              onClick={() => setShowFamilyReport(true)}
+            >
+              <span>
+                <span className="block text-sm font-black text-[#0F172A]">家庭保障分析报告</span>
+                <span className="mt-1 block text-xs font-semibold text-[#7890AA]">全家统计、保单清单、重疾、意外、财富分析</span>
+              </span>
+              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">查看</span>
+            </button>
+          </section>
+        ) : null}
 
         <section className="space-y-4 p-4">
           {!policies.length ? (
