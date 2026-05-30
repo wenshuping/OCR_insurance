@@ -38,6 +38,22 @@ test('entry form exposes local product candidates before responsibility generati
   assert.match(matchPanelSource, /role="listbox"/);
 });
 
+test('photo upload area shows an OCR recognition animation while loading', () => {
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  assert.match(pageSource, /aria-busy=\{loading\}/);
+  assert.match(pageSource, /OCR 识别中/);
+  assert.match(pageSource, /animate-spin/);
+  assert.match(pageSource, /aria-live="polite"/);
+});
+
+test('cash value upload dialog shows a progress bar while scanning', () => {
+  const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  assert.match(appSource, /role="progressbar"/);
+  assert.match(appSource, /aria-valuetext="正在识别现金价值表"/);
+  assert.match(appSource, /现金价值表识别中/);
+  assert.match(appSource, /animate-\[cash-value-progress/);
+});
+
 test('entry form keeps the add rider action visible in plan details', () => {
   const source = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
   assert.match(source, /险种明细/);
@@ -107,13 +123,15 @@ test('entry form and family overview expose insured birthday for age-based repor
   assert.match(appSource, /<FamilyCoverageOverview overview=\{familyCoverageOverview\} policies=\{policies\}/);
 });
 
-test('entry form exposes beneficiary input before saving policy', () => {
+test('entry form separates legal beneficiary from beneficiary name before saving policy', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /beneficiary: string/);
-  assert.match(formSource, /label="受益人"/);
-  assert.match(formSource, /formData\.beneficiary/);
-  assert.match(formSource, /onUpdateForm\('beneficiary'/);
+  assert.match(formSource, /法定受益人/);
+  assert.match(formSource, /type="checkbox"/);
+  assert.match(formSource, /checked=\{formData\.beneficiary === '法定'\}/);
+  assert.match(formSource, /onUpdateForm\('beneficiary', event\.target\.checked \? '法定' : ''\)/);
+  assert.match(formSource, /label="受益人姓名"/);
 });
 
 test('family overview prefers local product indicators over raw OCR responsibility years', () => {

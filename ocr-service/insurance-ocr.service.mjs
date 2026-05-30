@@ -86,6 +86,7 @@ const LABELS = {
   name: ['产品名称', '险种名称', '保险名称', '合同名称', '产品计划', '主险名称', '保险产品名称', '险种计划', '险种/名称', '保险险种'],
   applicant: ['投保人', '投保人姓名', '要保人', '要保人姓名'],
   insured: ['被保险人', '被保险人姓名', '受保人', '受保人姓名', '被保人'],
+  beneficiary: ['身故保险金受益人', '身故受益人', '受益人'],
   date: ['投保日期', '合同成立日期', '合同成立日', '承保日期', '合同生效日期', '合同生效日', '生效日期', '生效时间', '保险起期', '起保日期', '起保日', '保险合同成立及生效日'],
   paymentPeriod: ['交费方式', '交费期间', '缴费期间', '交费年期', '缴费年期', '交费年限', '缴费年限', '交费期限', '缴费期限'],
   coveragePeriod: ['保险期间', '保障期间', '保险期限', '保障期限', '保险责任期间', '合同期限'],
@@ -295,8 +296,8 @@ function formatDateValue(value) {
 
 function extractPreferredDate(lines) {
   const dateGroups = [
-    ['投保日期', '合同成立日期', '合同成立日'],
     ['合同生效日期', '合同生效日', '生效日期', '生效时间', '保险起期', '起保日期', '起保日', '保险合同成立及生效日'],
+    ['投保日期', '合同成立日期', '合同成立日'],
     ['承保日期'],
   ];
 
@@ -445,8 +446,38 @@ function normalizeBeneficiaryValue(value) {
     .replace(/(受益顺序|受益份额|联系电话|邮政编码|本栏以下空白).*$/, '')
     .trim();
   if (!text) return '';
-  if (/法定继承人/.test(text)) return '法定继承人';
+  if (/^(?:被保险人的?)?法定(?:继承人|受益人)?$/.test(text)) return '法定';
+  if (/法定继承人/.test(text)) return '法定';
   return normalizePersonNameValue(text) || text;
+}
+
+function isBeneficiaryPlaceholderLine(value) {
+  const text = compactLine(value);
+  if (!text) return true;
+  return /^(?:[-—－一]+|证件号码|证件号|受益顺序|受益份额|身故保险金受益人|身故受益人|受益人)$/.test(text);
+}
+
+function extractBeneficiaryFromLines(lines) {
+  const inline = normalizeBeneficiaryValue(extractByLabels(lines, LABELS.beneficiary, ['证件号码', '证件号', '受益顺序', '受益份额']));
+  if (inline) return inline;
+
+  const labelIndex = findLooseLabelIndex(lines, LABELS.beneficiary);
+  if (labelIndex < 0) return '';
+  const headerWindow = lines.slice(labelIndex, Math.min(lines.length, labelIndex + 5)).map(compactLine).join(' ');
+  const looksLikeBeneficiaryTable = /证件号码|证件号|受益顺序|受益份额/.test(headerWindow);
+
+  for (let index = labelIndex + 1; index < Math.min(lines.length, labelIndex + 12); index += 1) {
+    const line = compactLine(lines[index]);
+    if (!line) continue;
+    if (/保险利益表|特别约定|保险单说明|保单制作日期|保险公司签章|合同生效日期|合同成立日期|投保人/.test(line)) break;
+    if (/^(被保险人|被保人|受保人)[:：]/.test(line)) break;
+    if (isBeneficiaryPlaceholderLine(line)) continue;
+    const value = normalizeBeneficiaryValue(line);
+    if (!value) continue;
+    if (looksLikeBeneficiaryTable || /法定继承人|继承人|受益人|[一-龥·]{2,8}/.test(value)) return value;
+  }
+
+  return '';
 }
 
 function normalizePaymentPeriodValue(value) {
@@ -578,7 +609,7 @@ export function normalizeExtractedPolicyFields(candidate) {
     company: normalizedCompany,
     name: normalizeNameValue(payload.name || '') || mainPlan?.name || '',
     applicant: normalizePersonNameValue(payload.applicant || ''),
-    beneficiary: normalizeBeneficiaryValue(payload.beneficiary || payload.deathBeneficiary || ''),
+    beneficiary: normalizeBeneficiaryValue(payload.beneficiary || payload.deathBeneficiary || payload.deathBenefitBeneficiary || ''),
     insured: normalizePersonNameValue(payload.insured || ''),
     insuredIdNumber,
     insuredBirthday,
@@ -1844,6 +1875,7 @@ export function extractPolicyFieldsFromText(rawText) {
     || matchedFields.name
     || tableName;
   const applicant = inlineLabeledData.applicant || normalizePersonNameValue(extractByLabels(lines, LABELS.applicant, LABELS.insured));
+  const beneficiary = extractBeneficiaryFromLines(lines);
   const insured =
     inlineLabeledData.insured
     ||
@@ -1864,7 +1896,7 @@ export function extractPolicyFieldsFromText(rawText) {
       ])
     );
   const insuredIdentity = extractInsuredIdentity(lines, insured);
-  const date = inlineLabeledData.date || extractPreferredDate(lines);
+  const date = extractPreferredDate(lines) || inlineLabeledData.date;
   const mappedPaymentPeriod = combineMappedPaymentPeriod(matchedFields);
   const mainPlanPaymentPeriod = isTableStyle ? mainPlan?.paymentPeriod || '' : '';
   const mainPlanCoveragePeriod = isTableStyle ? mainPlan?.coveragePeriod || '' : '';
@@ -1941,6 +1973,7 @@ export function extractPolicyFieldsFromText(rawText) {
     company,
     name,
     applicant,
+    beneficiary,
     insured,
     insuredIdNumber: insuredIdentity.insuredIdNumber,
     insuredBirthday: insuredIdentity.insuredBirthday,
@@ -2216,7 +2249,7 @@ async function postprocessPolicyFieldsWithOllama(ocrText, baseData, fetchImpl = 
             role: 'user',
             content: [
               '请从下面的保单OCR文本中提取字段，并输出 JSON：',
-              '{"company":"","name":"","applicant":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[]}',
+              '{"company":"","name":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[]}',
               '要求：',
               '1. 保险公司优先识别页眉保司全称或英文品牌，例如 PING AN -> 中国平安保险。',
               '2. 如果出现横向表头和下一行数据，要按表头对应值抽取。',
@@ -2224,10 +2257,11 @@ async function postprocessPolicyFieldsWithOllama(ocrText, baseData, fetchImpl = 
               '4. paymentPeriod 用如 25年交、10年交、趸交。',
               '5. amount 和 firstPremium 只保留数字，不要逗号和单位。',
               '6. 如果被保险人身份证/证件号码清晰可见，insuredIdNumber 输出该号码，insuredBirthday 从身份证出生日期推导为 YYYY-MM-DD；不要输出投保人的证件号码。',
-              '7. 不要把 保单号/客户号码/联系电话/证件号码 当作保额或保费。',
-              '8. 如果有“保险利益表/险种名称”表格，plans 必须输出每一条险种，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
-              '9. plans 第一条有效主险 role 用 main；名称含“万能型/万能账户/最低保证利率/账户价值”的账户类险种 role 用 linked_account；其他附加险 role 用 rider。',
-              '10. 扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取“首期保险费合计”，没有合计时取 plans 保费合计。',
+              '7. beneficiary 提取身故保险金受益人；如果表头下方写“被保险人的法定继承人”或“法定继承人”，beneficiary 输出“法定”。',
+              '8. 不要把 保单号/客户号码/联系电话/证件号码 当作保额或保费。',
+              '9. 如果有“保险利益表/险种名称”表格，plans 必须输出每一条险种，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
+              '10. plans 第一条有效主险 role 用 main；名称含“万能型/万能账户/最低保证利率/账户价值”的账户类险种 role 用 linked_account；其他附加险 role 用 rider。',
+              '11. 扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取“首期保险费合计”，没有合计时取 plans 保费合计。',
               '',
               '当前规则解析结果（仅供参考，错了可以纠正）：',
               JSON.stringify(baseData || {}, null, 2),
@@ -2282,7 +2316,7 @@ export async function extractPolicyFieldsFromImageWithOllamaVision(uploadItem, f
             role: 'user',
             content: [
               '请直接阅读这张保单图片，并输出 JSON：',
-              '{"company":"","name":"","applicant":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[]}',
+              '{"company":"","name":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[]}',
               '要求：',
               '1. 保险公司优先识别页眉保司名称或英文品牌，例如 PING AN -> 中国平安保险。',
               '2. 表格里上面是标题、下面或右侧是对应值时，必须按标题和值一一匹配。',
@@ -2290,10 +2324,11 @@ export async function extractPolicyFieldsFromImageWithOllamaVision(uploadItem, f
               '4. paymentPeriod 用如 25年交、10年交、趸交。',
               '5. amount 和 firstPremium 只保留数字，不要逗号和单位。',
               '6. 如果被保险人身份证/证件号码清晰可见，insuredIdNumber 输出该号码，insuredBirthday 从身份证出生日期推导为 YYYY-MM-DD；不要输出投保人的证件号码。',
-              '7. 不要把 保单号/客户号码/联系电话/证件号码 当作保额或保费。',
-              '8. 如果图片里有“保险利益表/险种名称”表格，plans 必须输出每一条险种，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
-              '9. plans 第一条有效主险 role 用 main；名称含“万能型/万能账户/最低保证利率/账户价值”的账户类险种 role 用 linked_account；其他附加险 role 用 rider。',
-              '10. 扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取“首期保险费合计”，没有合计时取 plans 保费合计。',
+              '7. beneficiary 提取身故保险金受益人；如果表头下方写“被保险人的法定继承人”或“法定继承人”，beneficiary 输出“法定”。',
+              '8. 不要把 保单号/客户号码/联系电话/证件号码 当作保额或保费。',
+              '9. 如果图片里有“保险利益表/险种名称”表格，plans 必须输出每一条险种，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
+              '10. plans 第一条有效主险 role 用 main；名称含“万能型/万能账户/最低保证利率/账户价值”的账户类险种 role 用 linked_account；其他附加险 role 用 rider。',
+              '11. 扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取“首期保险费合计”，没有合计时取 plans 保费合计。',
             ].join('\n'),
             images: [buffer.toString('base64')],
           },

@@ -20,6 +20,20 @@ body {
   }
 }
 
+@keyframes cash-value-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  50% {
+    transform: translateX(60%);
+  }
+
+  100% {
+    transform: translateX(210%);
+  }
+}
+
 .print-only {
   display: none;
 }

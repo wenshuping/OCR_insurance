@@ -176,6 +176,47 @@ test('OCR extraction derives insured birthday from the insured identity number',
   assert.equal(data.insuredBirthday, '1991-12-24');
 });
 
+test('OCR extraction reads death beneficiary from New China basic-content table', () => {
+  const data = extractPolicyFieldsFromText(`
+NCI 新华保险
+保险单
+基本内容
+合同成立日期:2026年03月31日
+投保人:温舒萍
+被保险人:温舒萍
+合同生效日期:2026年04月01日
+证件号码:360502198812160922
+证件号码:360502198812160922
+身故保险金受益人
+证件号码
+受益顺序
+受益份额
+被保险人的法定继承人
+--
+--
+--
+保险利益表
+险种名称
+基本保险金额/保险金额/保障计划/份数
+保险期间
+交费方式
+保险费约定支付日/交费期间（续期保险费交费日期）/交费期满日
+保险费
+盛世荣耀臻享版
+终身寿险（分红型）
+24441.00元
+终身
+年交
+/10年
+每年3000.00元
+首期保险费合计:
+￥3000.00
+  `);
+
+  assert.equal(data.beneficiary, '法定');
+  assert.equal(data.date, '2026-04-01');
+});
+
 test('OCR extraction recovers table fields when labels contain OCR mistakes', () => {
   const data = extractPolicyFieldsFromText(`
 心I新华保险
@@ -1759,25 +1800,25 @@ test('scan saves beneficiary and policy update can edit beneficiary without rege
     });
 
     assert.equal(saved.response.status, 201);
-    assert.equal(saved.payload.policy.beneficiary, '法定继承人');
+    assert.equal(saved.payload.policy.beneficiary, '法定');
     assert.equal(saved.payload.policy.date, '2026-05-14');
 
     const detail = await jsonFetch(server.baseUrl, `/api/policies/${saved.payload.policy.id}?guestId=guest-beneficiary`);
     assert.equal(detail.response.status, 200);
     assert.equal(detail.payload.policy.applicant, '张三');
-    assert.equal(detail.payload.policy.beneficiary, '法定继承人');
+    assert.equal(detail.payload.policy.beneficiary, '法定');
     assert.equal(detail.payload.policy.date, '2026-05-14');
 
     const updated = await jsonFetch(server.baseUrl, `/api/policies/${saved.payload.policy.id}?guestId=guest-beneficiary`, {
       method: 'PATCH',
       body: JSON.stringify({
         applicant: '王五',
-        beneficiary: '指定受益人李四',
+        beneficiary: '李四',
       }),
     });
     assert.equal(updated.response.status, 200);
     assert.equal(updated.payload.policy.applicant, '王五');
-    assert.equal(updated.payload.policy.beneficiary, '指定受益人李四');
+    assert.equal(updated.payload.policy.beneficiary, '李四');
     assert.equal(updated.payload.policy.reportStatus, 'ready');
     assert.equal(updated.payload.policy.responsibilities[0].note, '测试受益人保存');
     assert.equal(analyzerCalls, 0);

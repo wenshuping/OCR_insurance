@@ -15,6 +15,7 @@ import {
   findSessionUser,
   getBearerToken,
   latestValidSmsCode,
+  normalizeBeneficiary,
   normalizeGuestId,
   normalizeDateOnly,
   normalizeIdNumber,
@@ -383,10 +384,12 @@ function normalizeSmsSendError(error) {
 function normalizeManualPolicyData(value) {
   if (!value || typeof value !== 'object') return {};
   const data = {};
-  for (const key of ['company', 'name', 'applicant', 'beneficiary', 'insured', 'date', 'paymentPeriod', 'coveragePeriod']) {
+  for (const key of ['company', 'name', 'applicant', 'insured', 'date', 'paymentPeriod', 'coveragePeriod']) {
     const text = String(value[key] || '').trim();
     if (text) data[key] = text;
   }
+  const beneficiary = normalizeBeneficiary(value.beneficiary);
+  if (beneficiary) data.beneficiary = beneficiary;
   const insuredIdNumber = normalizeIdNumber(value.insuredIdNumber || value.insuredIdentityNumber || value.insuredIdCard);
   if (insuredIdNumber) data.insuredIdNumber = insuredIdNumber;
   const insuredBirthday = normalizeDateOnly(value.insuredBirthday || value.insuredBirthDate) || birthdayFromIdNumber(insuredIdNumber);
@@ -426,10 +429,11 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (!value || typeof value !== 'object') return {};
   const input = value.policy && typeof value.policy === 'object' ? value.policy : value;
   const data = {};
-  const textFields = ['company', 'name', 'applicant', 'beneficiary', 'insured', 'paymentPeriod', 'coveragePeriod'];
+  const textFields = ['company', 'name', 'applicant', 'insured', 'paymentPeriod', 'coveragePeriod'];
   for (const key of textFields) {
     if (hasOwn(input, key)) data[key] = trim(input[key]);
   }
+  if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
   if (hasOwn(input, 'date')) data.date = normalizeDateOnly(input.date) || trim(input.date);
   if (hasOwn(input, 'insuredIdNumber') || hasOwn(input, 'insuredIdentityNumber') || hasOwn(input, 'insuredIdCard')) {
     data.insuredIdNumber = normalizeIdNumber(input.insuredIdNumber || input.insuredIdentityNumber || input.insuredIdCard);

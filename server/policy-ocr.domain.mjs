@@ -99,13 +99,23 @@ export function normalizeDateOnly(value) {
   return isValidDateParts(year, month, day) ? `${year}-${month}-${day}` : '';
 }
 
+export function normalizeBeneficiary(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const text = raw
+    .replace(/\s+/gu, '')
+    .replace(/^(身故保险金受益人|身故受益人|受益人)[:：]?/u, '');
+  if (/^(?:被保险人的?)?法定(?:继承人|受益人)?$/u.test(text)) return '法定';
+  return raw;
+}
+
 export function normalizePolicyScanData(data = {}) {
   const insuredIdNumber = normalizeIdNumber(data.insuredIdNumber || data.insuredIdentityNumber || data.insuredIdCard);
   return {
     company: String(data.company || '').trim() || '待补充保险公司',
     name: String(data.name || '').trim() || '未命名保单',
     applicant: String(data.applicant || '').trim(),
-    beneficiary: String(data.beneficiary || '').trim(),
+    beneficiary: normalizeBeneficiary(data.beneficiary),
     applicantRelation: normalizePolicyRelation(data.applicantRelation),
     insured: String(data.insured || '').trim(),
     insuredRelation: normalizePolicyRelation(data.insuredRelation),

@@ -193,12 +193,24 @@ function planProductDisplayName(plan: NonNullable<PolicyFormData['plans']>[numbe
   return String(plan.matchedProductName || plan.name || '未命名险种');
 }
 
+function normalizeBeneficiaryValue(value: string | undefined | null) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const text = raw.replace(/\s+/gu, '').replace(/^(身故保险金受益人|身故受益人|受益人)[:：]?/u, '');
+  if (/^(?:被保险人的?)?法定(?:继承人|受益人)?$/u.test(text)) return '法定';
+  return raw;
+}
+
+function formatBeneficiaryValue(value: string | undefined | null) {
+  return normalizeBeneficiaryValue(value) || '-';
+}
+
 function policyToForm(policy: Policy): PolicyFormData {
   return {
     company: policy.company || '',
     name: policy.name || '',
     applicant: policy.applicant || '',
-    beneficiary: policy.beneficiary || '',
+    beneficiary: normalizeBeneficiaryValue(policy.beneficiary),
     applicantRelation: policy.applicantRelation || '',
     insured: policy.insured || '',
     insuredRelation: policy.insuredRelation || '',
@@ -237,6 +249,7 @@ function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): PolicyForm
     ...data,
     company: nextCompany,
     name: nextName,
+    beneficiary: normalizeBeneficiaryValue(data.beneficiary),
     plans,
   };
 }
@@ -247,7 +260,7 @@ function scanToForm(scan: PolicyScanResult): PolicyFormData {
     company: String(data.company || ''),
     name: String(data.name || ''),
     applicant: String(data.applicant || ''),
-    beneficiary: String(data.beneficiary || ''),
+    beneficiary: normalizeBeneficiaryValue(data.beneficiary),
     applicantRelation: String(data.applicantRelation || ''),
     insured: String(data.insured || ''),
     insuredRelation: String(data.insuredRelation || ''),
@@ -3192,7 +3205,21 @@ function CustomerApp() {
               <p className="mb-3 text-sm text-red-500">{cashValueMessage}</p>
             )}
             {cashValueLoading && (
-              <p className="mb-3 text-sm text-blue-500">正在识别中...</p>
+              <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-left" aria-live="polite">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-sm font-black text-blue-700">现金价值表识别中</span>
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                </div>
+                <div
+                  className="h-2 overflow-hidden rounded-full bg-blue-100"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuetext="正在识别现金价值表"
+                >
+                  <div className="h-full w-1/2 rounded-full bg-blue-500 animate-[cash-value-progress_1.35s_ease-in-out_infinite]" />
+                </div>
+              </div>
             )}
             <div className="flex gap-3 justify-center">
               <button
@@ -5876,14 +5903,24 @@ function UploadPolicyPage(props: {
           </div>
           <button
             onClick={onScanClick}
-            className="relative flex aspect-[2/1] w-full cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border-2 border-dashed border-blue-300 bg-blue-50 transition-transform active:scale-[0.98]"
+            className={`relative flex aspect-[2/1] w-full cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border-2 border-dashed transition-transform active:scale-[0.98] ${
+              loading ? 'border-blue-400 bg-blue-100 shadow-[0_18px_45px_-28px_rgba(37,99,235,0.55)]' : 'border-blue-300 bg-blue-50'
+            }`}
             type="button"
+            aria-busy={loading}
           >
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-100 text-blue-500">
-              <Camera size={28} />
+            {loading ? (
+              <div className="absolute inset-x-8 top-1/2 h-px -translate-y-1/2 bg-blue-400/60 shadow-[0_0_22px_rgba(37,99,235,0.45)] motion-safe:animate-pulse" />
+            ) : null}
+            <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-blue-100 text-blue-500">
+              {loading ? (
+                <Loader2 size={30} className="animate-spin" />
+              ) : (
+                <Camera size={28} />
+              )}
             </div>
-            <span className="max-w-[80%] truncate text-center text-base font-bold text-blue-600">{uploadItem ? uploadItem.name : getWechatUploadLabel()}</span>
-            <p className="px-4 text-center text-xs text-blue-400">{loading ? '处理中...' : uploadItem ? 'OCR 已完成，可继续生成保险责任' : '上传保单基本信息页照片'}</p>
+            <span className="max-w-[80%] truncate text-center text-base font-bold text-blue-600">{loading ? 'OCR 识别中' : uploadItem ? uploadItem.name : getWechatUploadLabel()}</span>
+            <p className="px-4 text-center text-xs text-blue-400" aria-live="polite">{loading ? '正在读取保单信息' : uploadItem ? 'OCR 已完成，可继续生成保险责任' : '上传保单基本信息页照片'}</p>
             <div className="absolute left-3 top-3 h-4 w-4 rounded-tl border-l-2 border-t-2 border-blue-500"></div>
             <div className="absolute right-3 top-3 h-4 w-4 rounded-tr border-r-2 border-t-2 border-blue-500"></div>
             <div className="absolute bottom-3 left-3 h-4 w-4 rounded-bl border-b-2 border-l-2 border-blue-500"></div>
@@ -6026,12 +6063,27 @@ function UploadPolicyPage(props: {
             <TextField label="被保险人" value={formData.insured} onChange={(value) => onUpdateForm('insured', value)} placeholder="姓名" />
           </div>
 
-          <TextField
-            label="受益人"
-            value={formData.beneficiary}
-            onChange={(value) => onUpdateForm('beneficiary', value)}
-            placeholder="如 法定继承人"
-          />
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+            <label className="flex items-center justify-between gap-3">
+              <span className="text-sm font-bold text-slate-700">法定受益人</span>
+              <input
+                type="checkbox"
+                checked={formData.beneficiary === '法定'}
+                onChange={(event) => onUpdateForm('beneficiary', event.target.checked ? '法定' : '')}
+                className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+            </label>
+            {formData.beneficiary === '法定' ? (
+              <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-black text-blue-700">受益人：法定</div>
+            ) : (
+              <TextField
+                label="受益人姓名"
+                value={formData.beneficiary}
+                onChange={(value) => onUpdateForm('beneficiary', value)}
+                placeholder="请输入受益人姓名"
+              />
+            )}
+          </div>
 
           <TextField
             label="被保险人生日"
@@ -6187,7 +6239,7 @@ function AnalysisReportPage(props: {
             <p><strong>保险公司：</strong>{formData.company || '-'}</p>
             <p><strong>产品名称：</strong>{formData.name || '-'}</p>
             <p><strong>投保人：</strong>{formData.applicant || '-'}</p>
-            <p><strong>受益人：</strong>{formData.beneficiary || '-'}</p>
+            <p><strong>受益人：</strong>{formatBeneficiaryValue(formData.beneficiary)}</p>
             <p><strong>投保人和录入人的关系：</strong>{formData.applicantRelation || '-'}</p>
             <p><strong>被保人：</strong>{formData.insured || '-'}</p>
             <p><strong>被保险人和录入人的关系：</strong>{formData.insuredRelation || '-'}</p>
@@ -6586,7 +6638,7 @@ function PolicyDetailSheet({
         <section className="mt-4 grid grid-cols-2 gap-3">
           <MetricBox label="被保人" value={policy.insured || '-'} />
           <MetricBox label="投保人" value={policy.applicant || '-'} />
-          <MetricBox label="受益人" value={policy.beneficiary || '-'} />
+          <MetricBox label="受益人" value={formatBeneficiaryValue(policy.beneficiary)} />
           <MetricBox label="被保人生日" value={policy.insuredBirthday || '-'} />
           <MetricBox label="保单生效日期" value={formatDateLabel(policy.date)} />
           <MetricBox label="年度保费" value={formatCurrency(Number(policy.firstPremium || annualPremium || 0))} />
@@ -6602,7 +6654,7 @@ function PolicyDetailSheet({
             <p><strong>保险公司：</strong>{policy.company || '-'}</p>
             <p><strong>产品名称：</strong>{policy.name || '-'}</p>
             <p><strong>投保人：</strong>{policy.applicant || '-'}</p>
-            <p><strong>受益人：</strong>{policy.beneficiary || '-'}</p>
+            <p><strong>受益人：</strong>{formatBeneficiaryValue(policy.beneficiary)}</p>
             <p><strong>投保人和录入人的关系：</strong>{policy.applicantRelation || '-'}</p>
             <p><strong>被保人：</strong>{policy.insured || '-'}</p>
             <p><strong>被保险人和录入人的关系：</strong>{policy.insuredRelation || '-'}</p>
@@ -6910,7 +6962,22 @@ function PolicyEditDialog({
             <TextField label="投保人" value={draft.applicant} onChange={(value) => updateDraft('applicant', value)} placeholder="投保人姓名" />
             <TextField label="被保人" value={draft.insured} onChange={(value) => updateDraft('insured', value)} placeholder="被保人姓名" />
           </div>
-          <TextField label="受益人" value={draft.beneficiary} onChange={(value) => updateDraft('beneficiary', value)} placeholder="如 法定继承人" />
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+            <label className="flex items-center justify-between gap-3">
+              <span className="text-sm font-bold text-slate-700">法定受益人</span>
+              <input
+                type="checkbox"
+                checked={draft.beneficiary === '法定'}
+                onChange={(event) => updateDraft('beneficiary', event.target.checked ? '法定' : '')}
+                className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+            </label>
+            {draft.beneficiary === '法定' ? (
+              <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-black text-blue-700">受益人：法定</div>
+            ) : (
+              <TextField label="受益人姓名" value={draft.beneficiary} onChange={(value) => updateDraft('beneficiary', value)} placeholder="请输入受益人姓名" />
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <SelectField label="投保人关系" value={draft.applicantRelation} onChange={(value) => updateDraft('applicantRelation', value)} options={POLICY_RELATION_OPTIONS} />
             <SelectField label="被保人关系" value={draft.insuredRelation} onChange={(value) => updateDraft('insuredRelation', value)} options={POLICY_RELATION_OPTIONS} />
