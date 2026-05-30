@@ -598,3 +598,80 @@ test('buildFamilyReport creates per-member wealth policies and calendar-year agg
   assert.equal(row2073.payoutInflow, 110100);
   assert.ok(report.wealth.keyPoints.some((point) => point.label === '领取高峰年' && point.value === '2073'));
 });
+
+test('buildFamilyReport keeps unknown wealth cash value dates out of aggregate rows', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 40,
+      insured: '妈妈',
+      name: '盛世恒盈年金',
+      date: '',
+      paymentPeriod: '1年',
+      cashValues: [{ policyYear: 1, age: 37, cashValue: 282 }],
+    }),
+  ]);
+
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+
+  assert.equal(mother.policies[0].cashValueRows[0].calendarYear, 0);
+  assert.equal(report.wealth.aggregateRows.some((row) => row.year === 0 || row.year === 1), false);
+  assert.ok(mother.attentionItems.includes('生效日待补充'));
+  assert.ok(mother.policies[0].attentionItems.includes('生效日待补充'));
+});
+
+test('buildFamilyReport skips wealth premium rows when payment period is unknown', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 41,
+      insured: '妈妈',
+      name: '教育年金',
+      date: '2025-12-22',
+      paymentPeriod: '',
+      firstPremium: 20000,
+      cashValues: [{ policyYear: 1, age: 37, cashValue: 1000 }],
+    }),
+  ]);
+
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+  const row2025 = report.wealth.aggregateRows.find((row) => row.year === 2025);
+
+  assert.equal(row2025.premiumOutflow, 0);
+  assert.equal(row2025.details.some((detail) => detail.type === 'premium'), false);
+  assert.ok(mother.attentionItems.includes('缴费期待补充'));
+  assert.ok(mother.policies[0].attentionItems.includes('缴费期待补充'));
+});
+
+test('buildFamilyReport does not classify protection policy as wealth from OCR cash value text only', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 42,
+      insured: '爸爸',
+      name: '健康无忧重大疾病保险',
+      cashValues: [],
+      cashflowEntries: [],
+      ocrText: '本页示例说明现金价值对应退保金额。',
+      report: '现金价值仅为通用说明。',
+    }),
+  ]);
+
+  assert.equal(report.wealth.memberReports.length, 0);
+});
+
+test('buildFamilyReport includes calendar year and age in aggregate cash value details', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 43,
+      insured: '妈妈',
+      name: '盛世恒盈年金',
+      date: '2025-12-22',
+      paymentPeriod: '1年',
+      cashValues: [{ policyYear: 1, age: 37, cashValue: 282 }],
+    }),
+  ]);
+
+  const row2025 = report.wealth.aggregateRows.find((row) => row.year === 2025);
+  const cashValueDetail = row2025.details.find((detail) => detail.type === 'cashValue');
+
+  assert.equal(cashValueDetail.calendarYear, 2025);
+  assert.equal(cashValueDetail.age, 37);
+});

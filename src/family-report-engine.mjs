@@ -604,7 +604,7 @@ function parsePaymentYears(value) {
   const periodMatch = text.match(/(\d+(?:\.\d+)?)\s*期/u);
   if (periodMatch) return Math.max(1, Math.floor(asNumber(periodMatch[1])));
 
-  return 1;
+  return null;
 }
 
 function effectiveYear(policy) {
@@ -625,7 +625,7 @@ function cashValueRows(policy) {
       return {
         policyYear,
         age: finiteNumber(row?.age),
-        calendarYear: startYear + policyYear - 1,
+        calendarYear: startYear > 0 ? startYear + policyYear - 1 : 0,
         cashValue,
       };
     })
@@ -664,9 +664,6 @@ function isWealthPolicy(policy) {
     policy?.company,
     policy?.name,
     policy?.coveragePeriod,
-    policy?.paymentPeriod,
-    policy?.ocrText,
-    policy?.report,
     ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
       if (typeof plan === 'string') return plan;
       return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
@@ -693,7 +690,7 @@ function premiumOutflows(policy) {
   const startYear = effectiveYear(policy);
   const paymentYears = parsePaymentYears(policy?.paymentPeriod);
   const amount = asNumber(policy?.firstPremium);
-  if (startYear <= 0 || amount <= 0) return [];
+  if (paymentYears === null || startYear <= 0 || amount <= 0) return [];
 
   return Array.from({ length: paymentYears }, (_, index) => ({
     year: startYear + index,
@@ -709,6 +706,10 @@ function buildWealthPolicyReport(policy) {
   const firstPayout = payouts.find((row) => row.amount > 0);
   const highestPayout = payouts.reduce((highest, row) => (!highest || row.amount > highest.amount ? row : highest), null);
   const lastCashValue = values[values.length - 1];
+  const attentionItems = [
+    values.length > 0 && effectiveYear(policy) <= 0 ? '生效日待补充' : null,
+    asNumber(policy?.firstPremium) > 0 && parsePaymentYears(policy?.paymentPeriod) === null ? '缴费期待补充' : null,
+  ].filter(Boolean);
 
   return {
     policyId: policy?.id,
@@ -717,6 +718,7 @@ function buildWealthPolicyReport(policy) {
     annualPremium: asNumber(policy?.firstPremium),
     cashflowRows: payouts,
     cashValueRows: values,
+    attentionItems,
     keyPoints: [
       firstPayout
         ? { label: '开始领取', value: String(firstPayout.year), amount: firstPayout.amount }
@@ -743,12 +745,17 @@ export function buildWealthSection(policies = []) {
 
   const memberReports = Array.from(groupMap, ([member, memberPolicies]) => {
     const reports = memberPolicies.map(buildWealthPolicyReport);
+    const attentionItems = [
+      ...reports
+        .filter((policyReport) => policyReport.cashValueRows.length === 0)
+        .map((policyReport) => `${policyReport.productName || '未命名保单'}缺少现金价值表`),
+      ...new Set(reports.flatMap((policyReport) => policyReport.attentionItems)),
+    ];
+
     return {
       member,
       policies: reports,
-      attentionItems: reports
-        .filter((policyReport) => policyReport.cashValueRows.length === 0)
-        .map((policyReport) => `${policyReport.productName || '未命名保单'}缺少现金价值表`),
+      attentionItems,
     };
   });
 
@@ -799,6 +806,8 @@ export function buildWealthSection(policies = []) {
     }
 
     for (const value of cashValueRows(policy)) {
+      if (value.calendarYear <= 0) continue;
+
       const row = ensureRow(value.calendarYear);
       row.cashValueTotal += value.cashValue;
       row.details.push({
@@ -807,6 +816,8 @@ export function buildWealthSection(policies = []) {
         policyId,
         productName,
         policyYear: value.policyYear,
+        calendarYear: value.calendarYear,
+        age: value.age,
         amount: value.cashValue,
       });
     }
