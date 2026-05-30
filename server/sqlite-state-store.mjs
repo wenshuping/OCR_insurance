@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
-import { ensureCashflowTable } from './cashflow-store.mjs';
+import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 
 const SCHEMA_VERSION = '2';
 
@@ -186,6 +186,7 @@ function createSchema(db) {
     );
   `);
   ensureCashflowTable(db);
+  ensureCashValueTable(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
 }
 
@@ -333,6 +334,7 @@ function insertRows(db, state) {
 
 function clearDbOwnedTables(db) {
   db.exec(`
+    DELETE FROM policy_cash_values;
     DELETE FROM policy_cashflows;
     DELETE FROM users;
     DELETE FROM sessions;

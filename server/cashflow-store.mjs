@@ -61,7 +61,11 @@ export function createCashflowStore(db) {
       amount: row.amount,
       cumulative: row.cumulative,
       liability: row.liability,
+      calculationText: row.calc_text || '',
       calcText: row.calc_text,
+      policyId,
+      productName: '',
+      cashValue: null,
     }));
   }
 
@@ -80,7 +84,7 @@ export function createCashflowStore(db) {
           entry.amount,
           entry.cumulative,
           entry.liability,
-          entry.calcText ?? null,
+          entry.calcText ?? entry.calculationText ?? null,
         );
       }
       db.exec('COMMIT');
@@ -181,5 +185,9 @@ export function createCashValueStore(db) {
     }
   }
 
-  return { getValues, replaceValues };
+  function deleteValues(policyId) {
+    deleteByPolicyId.run(policyId);
+  }
+
+  return { getValues, replaceValues, deleteValues };
 }

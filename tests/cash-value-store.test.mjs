@@ -150,5 +150,20 @@ describe('cash-value-store', () => {
       assert.equal(result2.length, 1);
       assert.equal(result2[0].cashValue, 5000);
     });
+
+    it('deleteValues removes rows for one policy only', () => {
+      store.replaceValues(1, [
+        { policyYear: 1, age: 30, cashValue: 8500 },
+        { policyYear: 2, age: 31, cashValue: 19200 },
+      ]);
+      store.replaceValues(2, [
+        { policyYear: 1, age: 25, cashValue: 5000 },
+      ]);
+
+      store.deleteValues(1);
+
+      assert.deepEqual(store.getValues(1), []);
+      assert.equal(store.getValues(2).length, 1);
+    });
   });
 });

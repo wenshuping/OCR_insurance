@@ -45,7 +45,6 @@ import { deliverSmsCode, resolveSmsDeliveryPlan } from './sms-delivery.mjs';
 import { computePolicyCashflow, computeScenarioEntries } from './cashflow-compute.mjs';
 import { findProductCashflowTemplate } from './cashflow-template.mjs';
 import { createCashflowStore, createCashValueStore } from './cashflow-store.mjs';
-import { extractCashValueWithVisionLlm, isVisionLlmConfigured } from './vision-llm.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -1173,9 +1172,19 @@ export function createPolicyOcrApp(options = {}) {
     (options.codeGenerator ? localSmsDeliveryPlanResolver(codeGenerator) : resolveSmsDeliveryPlan);
   const smsDeliverer = options.smsDeliverer || deliverSmsCode;
   const knowledgeFetchImpl = options.knowledgeFetchImpl || fetch;
-  const persist = typeof options.persist === 'function' ? options.persist : async () => undefined;
+  const rawPersist = typeof options.persist === 'function' ? options.persist : async () => undefined;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
+
+  // Wrapped persist: after every state save, recompute all cashflow entries
+  // because clearDbOwnedTables() wipes policy_cashflows on each persist.
+  const persist = async (s) => {
+    const result = await rawPersist(s);
+    if (typeof recomputeAllCashflow === 'function') {
+      try { recomputeAllCashflow(); } catch { /* non-fatal */ }
+    }
+    return result;
+  };
 
   // Initialize cashflow store: use the shared DB if provided, otherwise use an in-memory DB (for tests)
   let cashflowStore;
@@ -1205,6 +1214,20 @@ export function createPolicyOcrApp(options = {}) {
     cashflowStore.replaceEntries(policy.id, cashflowEntries);
 
     return { cashflowEntries, scenarioEntries, totalCashflow };
+  }
+
+  /**
+   * Recompute cashflow entries for ALL policies.
+   * Called after persist() to restore cashflow data that was wiped by clearDbOwnedTables.
+   */
+  function recomputeAllCashflow() {
+    for (const policy of state.policies) {
+      try {
+        computeAndStoreCashflow(policy);
+      } catch (err) {
+        console.error('[cashflow] recompute failed for policy', policy.id, err.message);
+      }
+    }
   }
 
   const app = express();
@@ -1811,6 +1834,7 @@ export function createPolicyOcrApp(options = {}) {
         cashflowEntries: entries.length ? entries : undefined,
         scenarioEntries: scenarioEntries.length ? scenarioEntries : undefined,
         totalCashflow: entries.length ? totalCashflow : undefined,
+        cashValues: cashValueStore.getValues(p.id),
       };
     });
     res.json({ ok: true, policies: policiesWithCashflow });
@@ -1884,6 +1908,7 @@ export function createPolicyOcrApp(options = {}) {
       }
       const policyId = Number(result.policy.id);
       cashflowStore.replaceEntries(policyId, []);
+      cashValueStore.deleteValues(policyId);
       state.policies = (state.policies || []).filter((policy) => Number(policy.id) !== policyId);
       state.sourceRecords = (state.sourceRecords || []).filter((source) => Number(source.policyId) !== policyId);
       await persist(state);
@@ -1987,13 +2012,12 @@ export function createPolicyOcrApp(options = {}) {
             result = await ocrResponse.json();
           }
         }
-      } catch {
-        // OCR service unavailable, fall through to vision LLM
-      }
-
-      // Vision LLM fallback if OCR failed
-      if (!result.ok && isVisionLlmConfigured()) {
-        result = await extractCashValueWithVisionLlm(uploadItem.dataUrl);
+      } catch (error) {
+        result = {
+          ok: false,
+          error: 'OCR_SERVICE_UNAVAILABLE',
+          message: error instanceof Error ? error.message : 'OCR 服务不可用',
+        };
       }
 
       if (!result.ok) {
@@ -2052,5 +2076,6 @@ export function createPolicyOcrApp(options = {}) {
     }
   });
 
+  app.recomputeAllCashflow = recomputeAllCashflow;
   return app;
 }

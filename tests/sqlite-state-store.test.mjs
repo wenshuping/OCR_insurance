@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
+import { createCashValueStore } from '../server/cashflow-store.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
 async function makeTempDir() {
@@ -108,4 +109,29 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.insuranceIndicatorRecords.length, 2);
   assert.deepEqual(reloadedAfterRestart.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
   reopened.close();
+});
+
+test('sqlite state store can persist after cash values have been saved', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const state = {
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-05-01T00:00:00.000Z', updatedAt: '2026-05-01T00:00:00.000Z' }],
+    policies: [{ id: 3, userId: 1, guestId: '', company: '新华保险', name: '盛世荣耀', insured: '温舒萍', createdAt: '2026-05-01T00:03:00.000Z', updatedAt: '2026-05-01T00:03:00.000Z' }],
+    nextId: 4,
+  };
+
+  const store = await createSqliteStateStore({ dbPath });
+  await store.persist(state);
+
+  const cashValueStore = createCashValueStore(store.db);
+  cashValueStore.replaceValues(3, [
+    { policyYear: 1, age: 30, cashValue: 8500 },
+    { policyYear: 2, age: 31, cashValue: 19200 },
+  ]);
+
+  state.policies[0].updatedAt = '2026-05-01T00:04:00.000Z';
+  await assert.doesNotReject(() => store.persist(state));
+  assert.deepEqual(cashValueStore.getValues(3), []);
+
+  store.close();
 });
