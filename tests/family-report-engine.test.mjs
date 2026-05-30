@@ -550,3 +550,51 @@ test('buildFamilyReport lets responsibility amount improve unresolved accident i
 
   assert.equal(aviation.amountText, '500万');
 });
+
+test('buildFamilyReport creates per-member wealth policies and calendar-year aggregate rows', () => {
+  const policies = [
+    makePolicy({
+      id: 30,
+      insured: '妈妈',
+      name: '盛世恒盈年金',
+      firstPremium: 19600,
+      date: '2025-12-22',
+      paymentPeriod: '2年',
+      cashflowEntries: [
+        { year: 2030, age: 42, amount: 1465, cumulative: 1465, liability: '生存金', policyId: 30, productName: '盛世恒盈年金', calculationText: '' },
+        { year: 2073, age: 85, amount: 110100, cumulative: 173095, liability: '满期金', policyId: 30, productName: '盛世恒盈年金', calculationText: '' },
+      ],
+      cashValues: [
+        { policyYear: 1, age: 37, cashValue: 282 },
+        { policyYear: 2, age: 38, cashValue: 663 },
+        { policyYear: 49, age: 85, cashValue: 56208 },
+      ],
+    }),
+    makePolicy({
+      id: 31,
+      insured: '孩子',
+      name: '教育年金',
+      firstPremium: 20000,
+      date: '2026-01-01',
+      paymentPeriod: '1年',
+      cashflowEntries: [
+        { year: 2044, age: 18, amount: 30000, cumulative: 30000, liability: '教育金', policyId: 31, productName: '教育年金', calculationText: '' },
+      ],
+      cashValues: [{ policyYear: 1, age: 0, cashValue: 1000 }],
+    }),
+  ];
+
+  const report = buildFamilyReport(policies);
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+  const row2025 = report.wealth.aggregateRows.find((row) => row.year === 2025);
+  const row2030 = report.wealth.aggregateRows.find((row) => row.year === 2030);
+  const row2073 = report.wealth.aggregateRows.find((row) => row.year === 2073);
+
+  assert.equal(mother.policies[0].productName, '盛世恒盈年金');
+  assert.equal(mother.policies[0].cashValueRows[0].calendarYear, 2025);
+  assert.equal(row2025.premiumOutflow, 19600);
+  assert.equal(row2025.cashValueTotal, 282);
+  assert.equal(row2030.payoutInflow, 1465);
+  assert.equal(row2073.payoutInflow, 110100);
+  assert.ok(report.wealth.keyPoints.some((point) => point.label === '领取高峰年' && point.value === '2073'));
+});

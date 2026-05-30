@@ -594,6 +594,250 @@ export function buildAccidentSection(policies = []) {
   };
 }
 
+function parsePaymentYears(value) {
+  const text = String(value || '').normalize('NFKC');
+  if (/趸交|一次交清/u.test(text)) return 1;
+
+  const yearMatch = text.match(/(\d+(?:\.\d+)?)\s*年/u);
+  if (yearMatch) return Math.max(1, Math.floor(asNumber(yearMatch[1])));
+
+  const periodMatch = text.match(/(\d+(?:\.\d+)?)\s*期/u);
+  if (periodMatch) return Math.max(1, Math.floor(asNumber(periodMatch[1])));
+
+  return 1;
+}
+
+function effectiveYear(policy) {
+  const year = new Date(policy?.date).getFullYear();
+  return Number.isFinite(year) ? year : 0;
+}
+
+function cashValueRows(policy) {
+  const startYear = effectiveYear(policy);
+  const rows = Array.isArray(policy?.cashValues) ? policy.cashValues : [];
+
+  return rows
+    .map((row) => {
+      const policyYear = finiteNumber(row?.policyYear);
+      const cashValue = finiteNumber(row?.cashValue);
+      if (policyYear === null || cashValue === null) return null;
+
+      return {
+        policyYear,
+        age: finiteNumber(row?.age),
+        calendarYear: startYear + policyYear - 1,
+        cashValue,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.policyYear - b.policyYear);
+}
+
+function cashflowRows(policy) {
+  const rows = Array.isArray(policy?.cashflowEntries) ? policy.cashflowEntries : [];
+
+  return rows
+    .map((row) => {
+      const year = finiteNumber(row?.year);
+      const amount = finiteNumber(row?.amount);
+      if (year === null || amount === null) return null;
+
+      return {
+        year,
+        age: finiteNumber(row?.age),
+        amount,
+        cumulative: asNumber(row?.cumulative),
+        liability: String(row?.liability || ''),
+        policyId: row?.policyId ?? policy?.id,
+        productName: String(row?.productName || policy?.name || ''),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.year - b.year);
+}
+
+function isWealthPolicy(policy) {
+  if (cashValueRows(policy).length > 0) return true;
+  if (cashflowRows(policy).length > 0) return true;
+
+  const text = [
+    policy?.company,
+    policy?.name,
+    policy?.coveragePeriod,
+    policy?.paymentPeriod,
+    policy?.ocrText,
+    policy?.report,
+    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
+      if (typeof plan === 'string') return plan;
+      return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
+    }),
+    ...(Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).map((item) => {
+      if (typeof item === 'string') return item;
+      return [
+        item?.name,
+        item?.title,
+        item?.liability,
+        item?.type,
+        item?.coverageType,
+        item?.scenario,
+        item?.payout,
+        item?.note,
+      ].filter(Boolean).join(' ');
+    }),
+  ].filter(Boolean).join(' ').normalize('NFKC');
+
+  return /(年金|教育金|生存金|满期|分红|万能|现金价值|终身寿|增额)/u.test(text);
+}
+
+function premiumOutflows(policy) {
+  const startYear = effectiveYear(policy);
+  const paymentYears = parsePaymentYears(policy?.paymentPeriod);
+  const amount = asNumber(policy?.firstPremium);
+  if (startYear <= 0 || amount <= 0) return [];
+
+  return Array.from({ length: paymentYears }, (_, index) => ({
+    year: startYear + index,
+    amount,
+    policyId: policy?.id,
+    productName: String(policy?.name || ''),
+  }));
+}
+
+function buildWealthPolicyReport(policy) {
+  const payouts = cashflowRows(policy);
+  const values = cashValueRows(policy);
+  const firstPayout = payouts.find((row) => row.amount > 0);
+  const highestPayout = payouts.reduce((highest, row) => (!highest || row.amount > highest.amount ? row : highest), null);
+  const lastCashValue = values[values.length - 1];
+
+  return {
+    policyId: policy?.id,
+    productName: String(policy?.name || ''),
+    company: String(policy?.company || ''),
+    annualPremium: asNumber(policy?.firstPremium),
+    cashflowRows: payouts,
+    cashValueRows: values,
+    keyPoints: [
+      firstPayout
+        ? { label: '开始领取', value: String(firstPayout.year), amount: firstPayout.amount }
+        : null,
+      highestPayout
+        ? { label: '单年最高领取', value: String(highestPayout.year), amount: highestPayout.amount }
+        : null,
+      lastCashValue
+        ? { label: '末期现金价值', value: String(lastCashValue.calendarYear), amount: lastCashValue.cashValue }
+        : null,
+    ].filter(Boolean),
+  };
+}
+
+export function buildWealthSection(policies = []) {
+  const wealthPolicies = policies.filter(isWealthPolicy);
+  const groupMap = new Map();
+
+  for (const policy of wealthPolicies) {
+    const member = memberName(policy);
+    if (!groupMap.has(member)) groupMap.set(member, []);
+    groupMap.get(member).push(policy);
+  }
+
+  const memberReports = Array.from(groupMap, ([member, memberPolicies]) => {
+    const reports = memberPolicies.map(buildWealthPolicyReport);
+    return {
+      member,
+      policies: reports,
+      attentionItems: reports
+        .filter((policyReport) => policyReport.cashValueRows.length === 0)
+        .map((policyReport) => `${policyReport.productName || '未命名保单'}缺少现金价值表`),
+    };
+  });
+
+  const aggregateMap = new Map();
+  const ensureRow = (year) => {
+    if (!aggregateMap.has(year)) {
+      aggregateMap.set(year, {
+        year,
+        premiumOutflow: 0,
+        payoutInflow: 0,
+        netCashflow: 0,
+        cumulativeNetCashflow: 0,
+        cashValueTotal: 0,
+        details: [],
+      });
+    }
+    return aggregateMap.get(year);
+  };
+
+  for (const policy of wealthPolicies) {
+    const member = memberName(policy);
+    const policyId = policy?.id;
+    const productName = String(policy?.name || '');
+
+    for (const outflow of premiumOutflows(policy)) {
+      const row = ensureRow(outflow.year);
+      row.premiumOutflow += outflow.amount;
+      row.details.push({
+        type: 'premium',
+        member,
+        policyId,
+        productName,
+        amount: outflow.amount,
+      });
+    }
+
+    for (const payout of cashflowRows(policy)) {
+      const row = ensureRow(payout.year);
+      row.payoutInflow += payout.amount;
+      row.details.push({
+        type: 'payout',
+        member,
+        policyId,
+        productName,
+        liability: payout.liability,
+        amount: payout.amount,
+      });
+    }
+
+    for (const value of cashValueRows(policy)) {
+      const row = ensureRow(value.calendarYear);
+      row.cashValueTotal += value.cashValue;
+      row.details.push({
+        type: 'cashValue',
+        member,
+        policyId,
+        productName,
+        policyYear: value.policyYear,
+        amount: value.cashValue,
+      });
+    }
+  }
+
+  let cumulativeNetCashflow = 0;
+  const aggregateRows = Array.from(aggregateMap.values())
+    .sort((a, b) => a.year - b.year)
+    .map((row) => {
+      row.netCashflow = row.payoutInflow - row.premiumOutflow;
+      cumulativeNetCashflow += row.netCashflow;
+      row.cumulativeNetCashflow = cumulativeNetCashflow;
+      return row;
+    });
+
+  const peakPayoutRow = aggregateRows.reduce((peak, row) => {
+    if (row.payoutInflow <= 0) return peak;
+    return !peak || row.payoutInflow > peak.payoutInflow ? row : peak;
+  }, null);
+
+  return {
+    memberReports,
+    aggregateRows,
+    keyPoints: [
+      peakPayoutRow
+        ? { label: '领取高峰年', value: String(peakPayoutRow.year), amount: peakPayoutRow.payoutInflow }
+        : null,
+    ].filter(Boolean),
+  };
+}
+
 export function buildFamilyReportSummary(policies = []) {
   const members = new Set(policies.map(memberName));
   return {
@@ -642,7 +886,7 @@ export function buildFamilyReport(policies = []) {
     policyInventory: buildPolicyInventory(policies),
     criticalIllness: buildCriticalIllnessSection(policies),
     accident: buildAccidentSection(policies),
-    wealth: { memberReports: [], aggregateRows: [], keyPoints: [] },
+    wealth: buildWealthSection(policies),
     appendix: {
       policies: policies.map((policy) => ({
         policyId: policy.id,
