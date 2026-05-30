@@ -418,3 +418,27 @@ test('buildFamilyReport creates accident rows per family member without merging 
   assert.equal(father.rows.find((row) => row.key === 'accident_medical').amountText, '2万');
   assert.equal(mother.rows.find((row) => row.key === 'general_accident').status, 'missing');
 });
+
+test('buildFamilyReport keeps traffic and public transport accident rows separate', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 30,
+      insured: '爸爸',
+      name: '综合交通意外险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '交通意外', value: 20, unit: '倍', basis: '基本保险金额', formulaText: '基本保额20倍', productName: '综合交通意外险' },
+        { coverageType: '意外保障', liability: '公共交通', value: 30, unit: '倍', basis: '基本保险金额', formulaText: '基本保额30倍', productName: '综合交通意外险' },
+      ],
+    }),
+  ]);
+
+  const father = report.accident.members.find((item) => item.member === '爸爸');
+  const traffic = father.rows.find((row) => row.key === 'traffic');
+  const publicTransport = father.rows.find((row) => row.key === 'public_transport');
+
+  assert.equal(traffic.amountText, '200万');
+  assert.equal(publicTransport.amountText, '300万');
+  assert.equal(traffic.sourcePolicies.length, 1);
+  assert.equal(publicTransport.sourcePolicies.length, 1);
+});

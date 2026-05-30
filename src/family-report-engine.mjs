@@ -449,6 +449,20 @@ function indicatorImpliesAccident(indicator) {
   return coverageType === '意外保障' || textImpliesAccident(indicatorText(indicator));
 }
 
+function classifyAccidentIndicator(indicator) {
+  const specificTransportRows = ACCIDENT_ROWS.filter((definition) => (
+    ['driving', 'public_transport', 'aviation', 'rail_ship'].includes(definition.key)
+  ));
+
+  const liabilityText = String(indicator?.liability || '').normalize('NFKC');
+  const liabilityDefinition = classifyByDefinitions(liabilityText, specificTransportRows)
+    || classifyByDefinitions(liabilityText, ACCIDENT_ROWS);
+  if (liabilityDefinition) return liabilityDefinition;
+
+  const text = indicatorText(indicator);
+  return classifyByDefinitions(text, specificTransportRows) || classifyByDefinitions(text, ACCIDENT_ROWS);
+}
+
 function accidentCountText(definition, indicator) {
   const text = indicatorText(indicator);
   if (definition.key === 'accident_medical' || /(医疗费用|报销)/u.test(text)) return '报销型';
@@ -499,7 +513,7 @@ function buildMemberAccidentRows(memberPolicies) {
     for (const indicator of indicators) {
       if (!indicatorImpliesAccident(indicator)) continue;
 
-      const definition = classifyByDefinitions(indicatorText(indicator), ACCIDENT_ROWS);
+      const definition = classifyAccidentIndicator(indicator);
       if (!definition) continue;
       applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
     }
