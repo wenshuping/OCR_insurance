@@ -291,16 +291,20 @@ test('family report labels match the agreed report structure', () => {
   assert.doesNotMatch(source, /营销落地页|立即购买|推荐产品/);
 });
 
-test('family report wealth policies render a cash value line chart before the table', () => {
+test('family report wealth policies show cashflow table with cash value and keep cash value as line chart only', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  assert.match(source, /function PolicyAnnualCashflowTable/);
+  assert.match(source, /个人现金流明细/);
+  assert.match(source, /领取金额/);
+  assert.match(source, /累计领取/);
   assert.match(source, /function CashValueLineChart/);
   assert.match(source, /aria-label="现金价值曲线"/);
   assert.match(source, /<path d=\{path\}/);
-  const chartIndex = source.indexOf('<CashValueLineChart rows={policy.cashValueRows} />');
-  const followingTableIndex = source.indexOf('<TableWrap>', chartIndex);
-  assert.notEqual(chartIndex, -1);
-  assert.notEqual(followingTableIndex, -1);
-  assert.ok(chartIndex < followingTableIndex);
+  assert.match(source, /<PolicyAnnualCashflowTable policy=\{policy\} \/>/);
+  const cashValueAreaStart = source.indexOf('<h5 className="mb-2 text-xs font-black text-slate-700">现金价值</h5>');
+  const cashValueAreaEnd = source.indexOf('</div>', cashValueAreaStart);
+  const cashValueArea = source.slice(cashValueAreaStart, cashValueAreaEnd);
+  assert.doesNotMatch(cashValueArea, /<TableWrap>/);
 });
 
 test('family report export uses raw target mode', () => {

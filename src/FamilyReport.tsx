@@ -22,6 +22,10 @@ function formatMoneyWithUnit(value: number) {
   return `${formatMoney(value)}元`;
 }
 
+function formatCashValue(value: number) {
+  return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function emptyText(value?: string | number | null) {
   if (value === null || value === undefined || String(value).trim() === '') return '-';
   return String(value);
@@ -64,6 +68,19 @@ function TableWrap({ children }: { children: React.ReactNode }) {
 const thClassName = 'bg-[#0B72B9] px-3 py-2 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
+const compactThClassName = 'bg-[#0B72B9] px-2 py-1 text-center text-xs font-black text-white';
+const compactTdClassName = 'whitespace-nowrap bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
+
+type PolicyAnnualCashflowDisplayRow = {
+  key: string;
+  yearLabel: string;
+  ageLabel: string;
+  amount: number;
+  cumulative: number;
+  cashValue: number | null;
+  hasAmount: boolean;
+  liability: string;
+};
 
 function SummarySection({ report }: { report: FamilyReport }) {
   const { summary } = report;
@@ -343,6 +360,107 @@ function CashValueLineChart({ rows }: { rows: FamilyWealthPolicyReport['cashValu
   );
 }
 
+function buildAnnualCashflowRows(policy: FamilyWealthPolicyReport): PolicyAnnualCashflowDisplayRow[] {
+  const cashValueByDisplayYear = new Map<number, number>();
+  const cashValueMeta = new Map<number, { policyYear: number; age: number | null; calendarYear: number }>();
+
+  for (const row of policy.cashValueRows) {
+    const displayYear = row.calendarYear || row.policyYear;
+    cashValueByDisplayYear.set(displayYear, row.cashValue);
+    cashValueMeta.set(displayYear, row);
+  }
+
+  const payoutByYear = new Map<number, FamilyWealthPolicyReport['cashflowRows'][number]>();
+  for (const row of policy.cashflowRows) {
+    payoutByYear.set(row.year, row);
+  }
+
+  const knownYears = [
+    ...policy.cashflowRows.map((row) => row.year),
+    ...policy.cashValueRows.map((row) => row.calendarYear || row.policyYear),
+  ].filter((year) => year > 0);
+  if (!knownYears.length) return [];
+
+  const minYear = Math.min(...knownYears);
+  const maxYear = Math.max(...knownYears);
+  const years = maxYear - minYear <= 120
+    ? Array.from({ length: maxYear - minYear + 1 }, (_, index) => minYear + index)
+    : Array.from(new Set(knownYears)).sort((a, b) => a - b);
+  const inferredBirthYear = [
+    ...policy.cashflowRows.map((row) => (row.age === null ? null : row.year - row.age)),
+    ...policy.cashValueRows.map((row) => (row.calendarYear > 0 && row.age !== null ? row.calendarYear - row.age : null)),
+  ].find((year) => typeof year === 'number' && Number.isFinite(year));
+
+  return years
+    .map((year) => {
+      const payout = payoutByYear.get(year);
+      const cashValue = cashValueByDisplayYear.get(year) ?? null;
+      const meta = cashValueMeta.get(year);
+      const age = payout?.age ?? meta?.age ?? (inferredBirthYear ? year - inferredBirthYear : null);
+
+      return {
+        key: `${policy.policyId}-${year}`,
+        yearLabel: String(year),
+        ageLabel: age === null ? '-' : String(age),
+        amount: payout?.amount ?? 0,
+        cumulative: payout?.cumulative ?? 0,
+        cashValue,
+        hasAmount: Boolean(payout && payout.amount > 0),
+        liability: payout?.liability || '',
+      };
+    });
+}
+
+function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyReport }) {
+  const rows = buildAnnualCashflowRows(policy);
+  if (!rows.length) return <EmptyState text="暂无现金流明细" />;
+
+  const columnSize = 14;
+  const columns: PolicyAnnualCashflowDisplayRow[][] = [];
+  for (let index = 0; index < rows.length; index += columnSize) {
+    columns.push(rows.slice(index, index + columnSize));
+  }
+
+  return (
+    <TableWrap>
+      <div className="flex min-w-max gap-3">
+        {columns.map((column, columnIndex) => (
+          <table key={`${policy.policyId}-${columnIndex}`} className="border-separate border-spacing-0 text-left">
+            <thead>
+              <tr>
+                <th className={`${compactThClassName} rounded-tl-xl`}>年份</th>
+                <th className={compactThClassName}>领取金额</th>
+                <th className={compactThClassName}>累计领取</th>
+                <th className={`${compactThClassName} rounded-tr-xl`}>现金价值</th>
+              </tr>
+            </thead>
+            <tbody>
+              {column.map((row) => (
+                <tr key={row.key} className={/满期/u.test(row.liability) ? 'bg-orange-50' : undefined}>
+                  <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.yearLabel}/{row.ageLabel}</td>
+                  <td className={`${compactTdClassName} text-right`}>
+                    {row.hasAmount ? (
+                      <span className={`inline-block rounded px-1 text-[11px] font-black ${/满期/u.test(row.liability) ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
+                        {formatMoney(row.amount)}
+                      </span>
+                    ) : '—'}
+                  </td>
+                  <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
+                    {row.hasAmount ? formatMoney(row.cumulative) : '—'}
+                  </td>
+                  <td className={`${compactTdClassName} text-right text-[#7F96B5]`}>
+                    {row.cashValue === null ? '—' : formatCashValue(row.cashValue)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
+      </div>
+    </TableWrap>
+  );
+}
+
 function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
   return (
     <article className="rounded-xl border border-[#D9E6F4] bg-white p-3 shadow-[0_12px_24px_-22px_rgba(15,23,42,0.16)]">
@@ -371,61 +489,17 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
 
       <div className="grid gap-3 xl:grid-cols-2">
         <div>
-          <h5 className="mb-2 text-xs font-black text-slate-700">现金流</h5>
-          {policy.cashflowRows.length ? (
-            <TableWrap>
-              <table className="min-w-full border-separate border-spacing-0 text-left">
-                <thead>
-                  <tr>
-                    <th className={`${thClassName} rounded-tl-xl`}>年份/年龄</th>
-                    <th className={`${thClassName} text-right`}>领取收入</th>
-                    <th className={`${thClassName} text-right`}>累计领取</th>
-                    <th className={`${thClassName} rounded-tr-xl`}>责任</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {policy.cashflowRows.map((row) => (
-                    <tr key={`${policy.policyId}-${row.year}-${row.liability}`}>
-                      <td className={tdClassName}>{row.year}/{row.age ?? '-'}</td>
-                      <td className={`${tdClassName} text-right`}>{formatMoney(row.amount)}</td>
-                      <td className={`${tdClassName} text-right`}>{formatMoney(row.cumulative)}</td>
-                      <td className={tdClassName}>{emptyText(row.liability)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </TableWrap>
-          ) : (
-            <EmptyState text="暂无领取现金流" />
-          )}
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h5 className="text-xs font-black text-slate-700">个人现金流明细</h5>
+            <span className="text-[11px] font-bold text-[#7890AA]">(单位:元)</span>
+          </div>
+          <PolicyAnnualCashflowTable policy={policy} />
         </div>
 
         <div>
           <h5 className="mb-2 text-xs font-black text-slate-700">现金价值</h5>
           {policy.cashValueRows.length ? (
-            <>
-              <CashValueLineChart rows={policy.cashValueRows} />
-              <TableWrap>
-                <table className="min-w-full border-separate border-spacing-0 text-left">
-                  <thead>
-                    <tr>
-                      <th className={`${thClassName} rounded-tl-xl`}>保单年度</th>
-                      <th className={thClassName}>年份/年龄</th>
-                      <th className={`${thClassName} rounded-tr-xl text-right`}>现金价值</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {policy.cashValueRows.map((row) => (
-                      <tr key={`${policy.policyId}-${row.policyYear}-${row.calendarYear}`}>
-                        <td className={tdClassName}>{row.policyYear}</td>
-                        <td className={tdClassName}>{row.calendarYear || '-'}/{row.age ?? '-'}</td>
-                        <td className={`${tdClassName} text-right`}>{formatMoney(row.cashValue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </TableWrap>
-            </>
+            <CashValueLineChart rows={policy.cashValueRows} />
           ) : (
             <EmptyState text="暂无现金价值表" />
           )}
