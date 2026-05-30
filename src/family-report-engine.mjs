@@ -121,6 +121,7 @@ function buildInventoryRow(policy) {
     policyId: policy?.id,
     member: memberName(policy),
     company: String(policy?.company || ''),
+    policyNumber: String(policy?.policyNumber || policy?.policyNo || policy?.contractNumber || policy?.contractNo || policy?.number || '').trim(),
     productName: String(policy?.name || ''),
     typeLabel: policyTypeLabel(policy),
     annualPremium: asNumber(policy?.firstPremium),
@@ -508,17 +509,46 @@ function indicatorImpliesAccident(indicator) {
   return coverageType === '意外保障' || textImpliesAccident(indicatorText(indicator));
 }
 
-function classifyAccidentIndicator(indicator) {
-  const specificTransportRows = ['driving', 'rail_ship', 'public_transport', 'aviation']
-    .map((key) => ACCIDENT_ROWS.find((definition) => definition.key === key));
+function accidentSpecificTransportRows() {
+  return ['driving', 'rail_ship', 'public_transport', 'aviation']
+    .map((key) => ACCIDENT_ROWS.find((definition) => definition.key === key))
+    .filter(Boolean);
+}
 
-  const liabilityText = String(indicator?.liability || '').normalize('NFKC');
-  const liabilityDefinition = classifyByDefinitions(liabilityText, specificTransportRows)
-    || classifyByDefinitions(liabilityText, ACCIDENT_ROWS);
-  if (liabilityDefinition) return liabilityDefinition;
+function uniqueDefinitions(definitions) {
+  const seen = new Set();
+  return definitions.filter((definition) => {
+    if (!definition || seen.has(definition.key)) return false;
+    seen.add(definition.key);
+    return true;
+  });
+}
 
-  const text = indicatorText(indicator);
-  return classifyByDefinitions(text, specificTransportRows) || classifyByDefinitions(text, ACCIDENT_ROWS);
+function accidentTextSegments(text) {
+  const normalized = String(text || '').normalize('NFKC').trim();
+  if (!normalized) return [];
+  const segments = normalized
+    .split(/[\/／、,，;；]+|以及|或者|及|和|或/u)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  return segments.length > 1 ? segments : [normalized];
+}
+
+function classifyAccidentTextDefinitions(text, specificTransportRows) {
+  const matches = [];
+  for (const segment of accidentTextSegments(text)) {
+    const definition = classifyByDefinitions(segment, specificTransportRows)
+      || classifyByDefinitions(segment, ACCIDENT_ROWS);
+    if (definition) matches.push(definition);
+  }
+  return uniqueDefinitions(matches);
+}
+
+function classifyAccidentIndicatorDefinitions(indicator) {
+  const specificTransportRows = accidentSpecificTransportRows();
+  const liabilityMatches = classifyAccidentTextDefinitions(indicator?.liability, specificTransportRows);
+  if (liabilityMatches.length) return liabilityMatches;
+  return classifyAccidentTextDefinitions(indicatorText(indicator), specificTransportRows);
 }
 
 function accidentCountText(definition, indicator) {
@@ -601,10 +631,11 @@ function buildMemberAccidentRows(memberPolicies) {
     for (const indicator of indicators) {
       if (!indicatorImpliesAccident(indicator)) continue;
 
-      const definition = classifyAccidentIndicator(indicator);
-      if (!definition) continue;
-      applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
-      indicatorRowKeys.add(definition.key);
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      for (const definition of definitions) {
+        applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
+        indicatorRowKeys.add(definition.key);
+      }
     }
 
     const responsibilities = Array.isArray(policy?.responsibilities) ? policy.responsibilities : [];
@@ -612,17 +643,21 @@ function buildMemberAccidentRows(memberPolicies) {
       const indicator = responsibilityToAccidentIndicator(responsibility, policy);
       if (!indicatorImpliesAccident(indicator)) continue;
 
-      const definition = classifyAccidentIndicator(indicator);
-      if (!definition) continue;
-      const row = rowMap.get(definition.key);
-      if (indicatorRowKeys.has(definition.key) && row.amount > 0) continue;
-      applyAccidentIndicatorToRow(row, definition, indicator, policy);
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      for (const definition of definitions) {
+        const row = rowMap.get(definition.key);
+        if (indicatorRowKeys.has(definition.key) && row.amount > 0) continue;
+        applyAccidentIndicatorToRow(row, definition, indicator, policy);
+      }
     }
 
     if (indicators.length === 0 && responsibilities.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
       const indicator = fallbackPolicyIndicator(policy);
-      const definition = classifyAccidentIndicator(indicator) || ACCIDENT_ROWS.find((item) => item.key === 'general_accident');
-      applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      const fallbackDefinitions = definitions.length ? definitions : [ACCIDENT_ROWS.find((item) => item.key === 'general_accident')];
+      for (const definition of fallbackDefinitions) {
+        applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
+      }
     }
   }
 
@@ -700,6 +735,74 @@ function cashflowRows(policy) {
     .sort((a, b) => a.year - b.year);
 }
 
+function insuredBirthYear(policy) {
+  const year = new Date(policy?.insuredBirthday).getFullYear();
+  return Number.isFinite(year) ? year : null;
+}
+
+function annualCashflowRows(policy, payouts, values) {
+  const cashValueByDisplayYear = new Map();
+  const cashValueMeta = new Map();
+
+  for (const row of values) {
+    const displayYear = row.calendarYear || row.policyYear;
+    cashValueByDisplayYear.set(displayYear, row.cashValue);
+    cashValueMeta.set(displayYear, row);
+  }
+
+  const payoutByYear = new Map();
+  for (const row of payouts) {
+    if (!payoutByYear.has(row.year)) {
+      payoutByYear.set(row.year, {
+        year: row.year,
+        age: row.age,
+        amount: 0,
+        cumulative: 0,
+        liabilities: [],
+      });
+    }
+    const grouped = payoutByYear.get(row.year);
+    grouped.amount += row.amount;
+    grouped.cumulative = Math.max(grouped.cumulative, asNumber(row.cumulative));
+    if (grouped.age === null && row.age !== null) grouped.age = row.age;
+    if (row.liability && !grouped.liabilities.includes(row.liability)) grouped.liabilities.push(row.liability);
+  }
+
+  const knownYears = [
+    ...payouts.map((row) => row.year),
+    ...values.map((row) => row.calendarYear || row.policyYear),
+  ].filter((year) => year > 0);
+  if (!knownYears.length) return [];
+
+  const minYear = Math.min(...knownYears);
+  const maxYear = Math.max(...knownYears);
+  const years = maxYear - minYear <= 120
+    ? Array.from({ length: maxYear - minYear + 1 }, (_, index) => minYear + index)
+    : Array.from(new Set(knownYears)).sort((a, b) => a - b);
+  const inferredBirthYear = [
+    ...payouts.map((row) => (row.age === null ? null : row.year - row.age)),
+    ...values.map((row) => (row.calendarYear > 0 && row.age !== null ? row.calendarYear - row.age : null)),
+    insuredBirthYear(policy),
+  ].find((year) => typeof year === 'number' && Number.isFinite(year));
+
+  let runningCumulative = 0;
+  return years.map((year) => {
+    const payout = payoutByYear.get(year);
+    if (payout?.amount > 0) runningCumulative += payout.amount;
+    const meta = cashValueMeta.get(year);
+    const age = payout?.age ?? meta?.age ?? (year > 1900 && inferredBirthYear ? year - inferredBirthYear : null);
+
+    return {
+      year,
+      age,
+      amount: payout?.amount ?? 0,
+      cumulative: payout ? Math.max(payout.cumulative, runningCumulative) : 0,
+      cashValue: cashValueByDisplayYear.get(year) ?? null,
+      liabilities: payout?.liabilities ?? [],
+    };
+  });
+}
+
 function isWealthPolicy(policy) {
   if (cashValueRows(policy).length > 0) return true;
   if (cashflowRows(policy).length > 0) return true;
@@ -762,6 +865,7 @@ function buildWealthPolicyReport(policy) {
     annualPremium: asNumber(policy?.firstPremium),
     cashflowRows: payouts,
     cashValueRows: values,
+    annualCashflowRows: annualCashflowRows(policy, payouts, values),
     attentionItems,
     keyPoints: [
       firstPayout

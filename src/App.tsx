@@ -897,6 +897,16 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   reportNode.classList?.add?.('print-policy-report');
   wrapper.appendChild(reportNode);
   document.body.appendChild(wrapper);
+  if (options?.rawTarget) {
+    reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
+      node.style.overflow = 'visible';
+      node.style.width = 'max-content';
+      node.style.maxWidth = 'none';
+    });
+    const rawTargetWidth = Math.max(width, reportNode.scrollWidth || 0);
+    wrapper.style.width = `${rawTargetWidth}px`;
+    reportNode.style.width = `${rawTargetWidth}px`;
+  }
 
   return {
     node: reportNode,

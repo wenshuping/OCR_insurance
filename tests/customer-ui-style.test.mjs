@@ -314,3 +314,16 @@ test('family report export uses raw target mode', () => {
   assert.match(appSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
   assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
 });
+
+test('family report export expands scrollable table wrappers for pdf capture', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
+
+  assert.match(familySource, /data-pdf-table-wrap/);
+  assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
+  assert.match(appSource, /Math\.max\(width,\s*reportNode\.scrollWidth/);
+  assert.match(cssSource, /\.pdf-export-mode \.print-policy-report \[data-pdf-table-wrap\]/);
+  assert.match(cssSource, /overflow:\s*visible !important/);
+  assert.match(cssSource, /max-width:\s*none !important/);
+});

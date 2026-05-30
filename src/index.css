@@ -80,6 +80,16 @@ body {
   color: #334155 !important;
 }
 
+.pdf-export-mode .print-policy-report [data-pdf-table-wrap] {
+  overflow: visible !important;
+  width: max-content !important;
+  max-width: none !important;
+}
+
+.pdf-export-mode .print-policy-report [data-pdf-table-wrap] table {
+  max-width: none !important;
+}
+
 @media print {
   @page {
     size: A4;
@@ -197,5 +207,15 @@ body {
     font-size: 25px !important;
     line-height: 1.8 !important;
     color: #334155 !important;
+  }
+
+  .print-policy-report [data-pdf-table-wrap] {
+    overflow: visible !important;
+    width: max-content !important;
+    max-width: none !important;
+  }
+
+  .print-policy-report [data-pdf-table-wrap] table {
+    max-width: none !important;
   }
 }

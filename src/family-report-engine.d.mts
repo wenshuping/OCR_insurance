@@ -92,6 +92,15 @@ export type FamilyWealthPolicyCashValueRow = {
   cashValue: number;
 };
 
+export type FamilyWealthPolicyAnnualCashflowRow = {
+  year: number;
+  age: number | null;
+  amount: number;
+  cumulative: number;
+  cashValue: number | null;
+  liabilities: string[];
+};
+
 export type FamilyWealthKeyPoint = {
   label: string;
   value: string;
@@ -106,6 +115,7 @@ export type FamilyWealthPolicyReport = {
   annualPremium: number;
   cashflowRows: FamilyWealthPolicyCashflowRow[];
   cashValueRows: FamilyWealthPolicyCashValueRow[];
+  annualCashflowRows: FamilyWealthPolicyAnnualCashflowRow[];
   keyPoints: FamilyWealthKeyPoint[];
   attentionItems: string[];
 };

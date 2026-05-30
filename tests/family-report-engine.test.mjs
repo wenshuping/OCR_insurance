@@ -27,6 +27,7 @@ function makePolicy(overrides = {}) {
     responsibilities: overrides.responsibilities ?? [],
     coverageIndicators: overrides.coverageIndicators ?? [],
     report: overrides.report ?? '',
+    policyNumber: overrides.policyNumber ?? '',
     reportStatus: overrides.reportStatus ?? 'ready',
     createdAt: overrides.createdAt ?? '2026-05-30T00:00:00.000Z',
     cashflowEntries: overrides.cashflowEntries ?? [],
@@ -76,6 +77,7 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
       id: 1,
       insured: '妈妈',
       company: '新华保险',
+      policyNumber: '88775671973',
       name: '盛世恒盈年金',
       firstPremium: 19600,
       amount: 0,
@@ -100,6 +102,7 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   const inventory = buildPolicyInventory(policies);
   assert.equal(inventory.rows.length, 2);
   assert.equal(inventory.rows[0].member, '妈妈');
+  assert.equal(inventory.rows[0].policyNumber, '88775671973');
   assert.equal(inventory.rows[0].typeLabel, '财富/年金');
   assert.equal(inventory.rows[0].cashValueText, '282');
   assert.equal(inventory.rows[0].dataStatus, '现金价值已识别');
@@ -588,6 +591,35 @@ test('buildFamilyReport routes rail and ship accident responsibilities', () => {
   assert.equal(railShip.amountText, '400万');
 });
 
+test('buildFamilyReport fans out combined accident liability labels', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 75,
+      insured: '妈妈',
+      name: '综合交通意外险',
+      amount: 100000,
+      coverageIndicators: [
+        {
+          coverageType: '意外保障',
+          liability: '客运列车/航空意外身故保险金',
+          value: 1000000,
+          unit: '元',
+          basis: '保险金额',
+          formulaText: '列车或航空意外100万元',
+          productName: '综合交通意外险',
+        },
+      ],
+    }),
+  ]);
+
+  const mother = report.accident.members.find((item) => item.member === '妈妈');
+  const railShip = mother.rows.find((row) => row.key === 'rail_ship');
+  const aviation = mother.rows.find((row) => row.key === 'aviation');
+
+  assert.equal(railShip.amountText, '100万');
+  assert.equal(aviation.amountText, '100万');
+});
+
 test('buildFamilyReport lets responsibility amount improve unresolved accident indicator', () => {
   const report = buildFamilyReport([
     makePolicy({
@@ -656,6 +688,36 @@ test('buildFamilyReport creates per-member wealth policies and calendar-year agg
   assert.equal(row2030.payoutInflow, 1465);
   assert.equal(row2073.payoutInflow, 110100);
   assert.ok(report.wealth.keyPoints.some((point) => point.label === '领取高峰年' && point.value === '2073'));
+});
+
+test('buildFamilyReport combines same-year policy cashflow rows for annual wealth table', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 44,
+      insured: '妈妈',
+      name: '盛世恒盈年金',
+      firstPremium: 19600,
+      date: '2025-12-22',
+      paymentPeriod: '2年',
+      cashflowEntries: [
+        { year: 2030, age: 42, amount: 1000, cumulative: 1000, liability: '生存金', policyId: 44, productName: '盛世恒盈年金', calculationText: '' },
+        { year: 2030, age: 42, amount: 2000, cumulative: 3000, liability: '特别生存金', policyId: 44, productName: '盛世恒盈年金', calculationText: '' },
+      ],
+      cashValues: [
+        { policyYear: 6, age: null, cashValue: 6009 },
+      ],
+    }),
+  ]);
+
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+  const policy = mother.policies.find((item) => item.policyId === 44);
+  const row2030 = policy.annualCashflowRows.find((row) => row.year === 2030);
+
+  assert.equal(row2030.amount, 3000);
+  assert.equal(row2030.cumulative, 3000);
+  assert.equal(row2030.cashValue, 6009);
+  assert.deepEqual(row2030.liabilities, ['生存金', '特别生存金']);
+  assert.equal(row2030.age, 42);
 });
 
 test('buildFamilyReport keeps unknown wealth cash value dates out of aggregate rows', () => {

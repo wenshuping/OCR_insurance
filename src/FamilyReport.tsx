@@ -38,6 +38,14 @@ function statusClassName(status: string) {
   return 'bg-blue-50 text-blue-700 ring-blue-100';
 }
 
+function statusLabel(status: string) {
+  if (status === 'covered') return '已覆盖';
+  if (status === 'partial') return '部分覆盖';
+  if (status === 'formula') return '公式型';
+  if (status === 'missing') return '未识别';
+  return '待确认';
+}
+
 function Section({
   title,
   children,
@@ -62,7 +70,7 @@ function EmptyState({ text }: { text: string }) {
 }
 
 function TableWrap({ children }: { children: React.ReactNode }) {
-  return <div className="overflow-x-auto">{children}</div>;
+  return <div data-pdf-table-wrap className="overflow-x-auto">{children}</div>;
 }
 
 const thClassName = 'bg-[#0B72B9] px-3 py-2 text-left text-xs font-black text-white';
@@ -70,17 +78,6 @@ const tdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-semibold 
 const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
 const compactThClassName = 'bg-[#0B72B9] px-2 py-1 text-center text-xs font-black text-white';
 const compactTdClassName = 'whitespace-nowrap bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
-
-type PolicyAnnualCashflowDisplayRow = {
-  key: string;
-  yearLabel: string;
-  ageLabel: string;
-  amount: number;
-  cumulative: number;
-  cashValue: number | null;
-  hasAmount: boolean;
-  liability: string;
-};
 
 function SummarySection({ report }: { report: FamilyReport }) {
   const { summary } = report;
@@ -264,7 +261,7 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
                 <td className={tdClassName}>{emptyText(row.countText)}</td>
                 <td className={tdClassName}>
                   <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${statusClassName(row.status)}`}>
-                    {row.status}
+                    {statusLabel(row.status)}
                   </span>
                 </td>
                 <td className="min-w-[220px] bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]">{emptyText(row.conditionText)}</td>
@@ -360,63 +357,12 @@ function CashValueLineChart({ rows }: { rows: FamilyWealthPolicyReport['cashValu
   );
 }
 
-function buildAnnualCashflowRows(policy: FamilyWealthPolicyReport): PolicyAnnualCashflowDisplayRow[] {
-  const cashValueByDisplayYear = new Map<number, number>();
-  const cashValueMeta = new Map<number, { policyYear: number; age: number | null; calendarYear: number }>();
-
-  for (const row of policy.cashValueRows) {
-    const displayYear = row.calendarYear || row.policyYear;
-    cashValueByDisplayYear.set(displayYear, row.cashValue);
-    cashValueMeta.set(displayYear, row);
-  }
-
-  const payoutByYear = new Map<number, FamilyWealthPolicyReport['cashflowRows'][number]>();
-  for (const row of policy.cashflowRows) {
-    payoutByYear.set(row.year, row);
-  }
-
-  const knownYears = [
-    ...policy.cashflowRows.map((row) => row.year),
-    ...policy.cashValueRows.map((row) => row.calendarYear || row.policyYear),
-  ].filter((year) => year > 0);
-  if (!knownYears.length) return [];
-
-  const minYear = Math.min(...knownYears);
-  const maxYear = Math.max(...knownYears);
-  const years = maxYear - minYear <= 120
-    ? Array.from({ length: maxYear - minYear + 1 }, (_, index) => minYear + index)
-    : Array.from(new Set(knownYears)).sort((a, b) => a - b);
-  const inferredBirthYear = [
-    ...policy.cashflowRows.map((row) => (row.age === null ? null : row.year - row.age)),
-    ...policy.cashValueRows.map((row) => (row.calendarYear > 0 && row.age !== null ? row.calendarYear - row.age : null)),
-  ].find((year) => typeof year === 'number' && Number.isFinite(year));
-
-  return years
-    .map((year) => {
-      const payout = payoutByYear.get(year);
-      const cashValue = cashValueByDisplayYear.get(year) ?? null;
-      const meta = cashValueMeta.get(year);
-      const age = payout?.age ?? meta?.age ?? (inferredBirthYear ? year - inferredBirthYear : null);
-
-      return {
-        key: `${policy.policyId}-${year}`,
-        yearLabel: String(year),
-        ageLabel: age === null ? '-' : String(age),
-        amount: payout?.amount ?? 0,
-        cumulative: payout?.cumulative ?? 0,
-        cashValue,
-        hasAmount: Boolean(payout && payout.amount > 0),
-        liability: payout?.liability || '',
-      };
-    });
-}
-
 function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyReport }) {
-  const rows = buildAnnualCashflowRows(policy);
+  const rows = policy.annualCashflowRows;
   if (!rows.length) return <EmptyState text="暂无现金流明细" />;
 
   const columnSize = 14;
-  const columns: PolicyAnnualCashflowDisplayRow[][] = [];
+  const columns: FamilyWealthPolicyReport['annualCashflowRows'][] = [];
   for (let index = 0; index < rows.length; index += columnSize) {
     columns.push(rows.slice(index, index + columnSize));
   }
@@ -436,17 +382,17 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
             </thead>
             <tbody>
               {column.map((row) => (
-                <tr key={row.key} className={/满期/u.test(row.liability) ? 'bg-orange-50' : undefined}>
-                  <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.yearLabel}/{row.ageLabel}</td>
+                <tr key={`${policy.policyId}-${row.year}`} className={/满期/u.test(row.liabilities.join('/')) ? 'bg-orange-50' : undefined}>
+                  <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
                   <td className={`${compactTdClassName} text-right`}>
-                    {row.hasAmount ? (
-                      <span className={`inline-block rounded px-1 text-[11px] font-black ${/满期/u.test(row.liability) ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
+                    {row.amount > 0 ? (
+                      <span className={`inline-block rounded px-1 text-[11px] font-black ${/满期/u.test(row.liabilities.join('/')) ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
                         {formatMoney(row.amount)}
                       </span>
                     ) : '—'}
                   </td>
                   <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
-                    {row.hasAmount ? formatMoney(row.cumulative) : '—'}
+                    {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
                   </td>
                   <td className={`${compactTdClassName} text-right text-[#7F96B5]`}>
                     {row.cashValue === null ? '—' : formatCashValue(row.cashValue)}
