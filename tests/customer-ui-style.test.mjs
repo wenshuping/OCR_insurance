@@ -12,6 +12,10 @@ function componentSource(name, nextName) {
   return appSource.slice(start, end);
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 test('customer account sheet uses a blue account logo', () => {
   const source = componentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
   assert.match(source, /h-12 w-12[^"]*bg-blue-500/);
@@ -182,7 +186,7 @@ test('pdf export uses a dedicated A4 report layout instead of mobile card clonin
   assert.match(reportSource, /width:760px/);
   assert.match(reportSource, /保单解析报告/);
   assert.match(appSource, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
-  assert.match(renderSource, /createPrintableReportNode\(target, title\)/);
+  assert.match(renderSource, /createPrintableReportNode\(target, title, policy\)/);
   assert.doesNotMatch(appSource, /function applyPdfSafeStyle/);
 });
 
@@ -262,6 +266,29 @@ test('customer app exposes family report after policy inventory and before secti
   assert.ok(familySource.indexOf('被保人保单明细') < familySource.indexOf('重疾分析'));
   assert.ok(familySource.indexOf('重疾分析') < familySource.indexOf('意外分析'));
   assert.ok(familySource.indexOf('意外分析') < familySource.indexOf('财富分析'));
+});
+
+test('family report labels match the agreed report structure', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  [
+    '全家总统计',
+    '家庭保单清单',
+    '被保人保单明细',
+    '重疾分析',
+    '意外分析',
+    '财富分析',
+    '全家财富统计',
+    '保险公司/保单号',
+    '险种名称',
+    '保费(元)',
+    '交费期',
+    '保障期',
+    '生效日期',
+    '保额(元)',
+    '身故受益人',
+    '期交总保费',
+  ].forEach((label) => assert.match(source, new RegExp(escapeRegExp(label))));
+  assert.doesNotMatch(source, /营销落地页|立即购买|推荐产品/);
 });
 
 test('family report export uses raw target mode', () => {
