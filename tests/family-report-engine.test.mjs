@@ -294,3 +294,69 @@ test('buildFamilyReport falls back to critical policy amount when unrelated indi
   assert.equal(row.conditionText, '按保单基础保额估算');
   assert.equal(row.status, 'covered');
 });
+
+test('buildFamilyReport aggregates fallback amounts across critical illness policies', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 60,
+      insured: '爸爸',
+      name: '健康无忧重大疾病保险',
+      amount: 300000,
+      coverageIndicators: [],
+    }),
+    makePolicy({
+      id: 61,
+      insured: '爸爸',
+      name: '守护重大疾病保险',
+      amount: 200000,
+      coverageIndicators: [],
+    }),
+  ]);
+
+  const father = report.criticalIllness.members.find((item) => item.member === '爸爸');
+  const row = father.rows.find((item) => item.key === 'critical_first');
+
+  assert.equal(row.amountText, '50万');
+  assert.equal(row.sourcePolicies.length, 2);
+  assert.equal(row.status, 'covered');
+});
+
+test('buildFamilyReport keeps ordinal mild payouts in mild row', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 70,
+      insured: '孩子',
+      name: '轻症保障计划',
+      amount: 200000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '第二次轻症保险金', value: 30, unit: '%', basis: '基本保险金额', formulaText: '基本保额30%', productName: '轻症保障计划' },
+      ],
+    }),
+  ]);
+
+  const child = report.criticalIllness.members.find((item) => item.member === '孩子');
+
+  assert.equal(child.rows.find((row) => row.key === 'mild').amountText, '6万');
+  assert.equal(child.rows.find((row) => row.key === 'critical_multiple').status, 'missing');
+});
+
+test('buildFamilyReport uses fallback amount when critical first indicator is unresolved', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 80,
+      insured: '妈妈',
+      name: '安心重大疾病保险',
+      amount: 350000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '重大疾病保险金', formulaText: '按条款给付', productName: '安心重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  const mother = report.criticalIllness.members.find((item) => item.member === '妈妈');
+  const row = mother.rows.find((item) => item.key === 'critical_first');
+
+  assert.equal(row.amountText, '35万');
+  assert.equal(row.status, 'covered');
+  assert.equal(row.conditionText, '按保单基础保额估算');
+});

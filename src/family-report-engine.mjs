@@ -122,7 +122,10 @@ const CRITICAL_ROWS = [
   {
     key: 'critical_multiple',
     label: '重疾多次给付',
-    patterns: [/多次/u, /第二次/u, /第2次/u, /再次/u],
+    patterns: [
+      /(?:多次|第二次|第2次|再次).*(?:重疾|重大疾病|重度疾病)/u,
+      /(?:重疾|重大疾病|重度疾病).*(?:多次|第二次|第2次|再次)/u,
+    ],
   },
   {
     key: 'critical_first',
@@ -283,6 +286,21 @@ function policyImpliesCriticalIllness(policy) {
   return /(重疾|重大疾病|轻症|中症|恶性肿瘤|癌)/u.test(criticalPolicyText(policy).normalize('NFKC'));
 }
 
+function applyFallbackPolicyToRow(row, policy) {
+  const amount = asNumber(policy?.amount);
+  row.amount += amount;
+  row.amountText = amountDisplay(row.amount);
+  row.countText = row.amount > 0 ? '基本保额' : '-';
+  row.status = row.amount > 0 ? 'covered' : 'unknown';
+  row.conditionText = '按保单基础保额估算';
+  row.sourcePolicies.push({
+    policyId: policy?.id,
+    productName: String(policy?.name || ''),
+    liability: '重疾首次给付',
+    formulaText: '按保单基础保额估算',
+  });
+}
+
 function buildMemberCriticalRows(memberPolicies) {
   const rowMap = new Map(CRITICAL_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
 
@@ -296,22 +314,16 @@ function buildMemberCriticalRows(memberPolicies) {
   }
 
   const criticalFirst = rowMap.get('critical_first');
-  if (criticalFirst.status === 'missing') {
-    const fallbackPolicy = memberPolicies.find(policyImpliesCriticalIllness);
+  if (criticalFirst.status === 'missing' || criticalFirst.status === 'formula') {
+    if (criticalFirst.status === 'formula') {
+      criticalFirst.amount = 0;
+      criticalFirst.sourcePolicies = [];
+    }
 
-    if (fallbackPolicy) {
-      const amount = asNumber(fallbackPolicy?.amount);
-      criticalFirst.amount = amount;
-      criticalFirst.amountText = amountDisplay(amount);
-      criticalFirst.countText = amount > 0 ? '基本保额' : '-';
-      criticalFirst.status = amount > 0 ? 'covered' : 'unknown';
-      criticalFirst.conditionText = '按保单基础保额估算';
-      criticalFirst.sourcePolicies.push({
-        policyId: fallbackPolicy?.id,
-        productName: String(fallbackPolicy?.name || ''),
-        liability: '重疾首次给付',
-        formulaText: '按保单基础保额估算',
-      });
+    for (const policy of memberPolicies) {
+      if (policyImpliesCriticalIllness(policy)) {
+        applyFallbackPolicyToRow(criticalFirst, policy);
+      }
     }
   }
 
