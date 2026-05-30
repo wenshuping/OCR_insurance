@@ -183,10 +183,10 @@ test('family overview substitutes policy amounts into indicator formulas', () =>
   assert.match(overviewSource, /text-\[11px\]/);
 });
 
-test('responsibility assistant floats at the top right of the screen', () => {
+test('responsibility assistant floats at the bottom right of the screen', () => {
   const source = componentSource('ResponsibilityAssistant', 'PolicyListItem');
-  assert.match(source, /fixed right-4 top-20/);
-  assert.match(source, /sm:right-6 sm:top-6/);
+  assert.match(source, /fixed bottom-6 right-4/);
+  assert.match(source, /sm:right-6/);
   assert.match(source, /输入保险名称查责任/);
   assert.match(source, /保险公司候选/);
   assert.match(source, /保险产品候选/);
@@ -200,7 +200,7 @@ test('pdf export uses a dedicated A4 report layout instead of mobile card clonin
   assert.match(reportSource, /width:760px/);
   assert.match(reportSource, /保单解析报告/);
   assert.match(appSource, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
-  assert.match(renderSource, /createPrintableReportNode\(target, title\)/);
+  assert.match(renderSource, /createPrintableReportNode\(target, title, policy\)/);
   assert.doesNotMatch(appSource, /function applyPdfSafeStyle/);
 });
 

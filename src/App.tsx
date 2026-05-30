@@ -299,6 +299,19 @@ function formatCurrency(value: number) {
   return `¥${amount.toLocaleString('zh-CN')}`;
 }
 
+function summarizeCashValues(cashValues?: CashValueRow[]) {
+  const rows = Array.isArray(cashValues)
+    ? [...cashValues].filter((row) => Number.isFinite(Number(row.policyYear)) && Number.isFinite(Number(row.cashValue)))
+    : [];
+  if (!rows.length) return null;
+  rows.sort((left, right) => Number(left.policyYear) - Number(right.policyYear));
+  return {
+    count: rows.length,
+    first: rows[0],
+    last: rows[rows.length - 1],
+  };
+}
+
 function formatDateLabel(value: string) {
   const text = String(value || '').trim();
   if (!text) return '-';
@@ -3046,6 +3059,8 @@ function CustomerApp() {
 
   async function handleCashValueConfirm() {
     if (cashValuePolicyId === null || cashValueEditRows.length === 0) return;
+    const savedPolicyId = cashValuePolicyId;
+    const savedRows = cashValueEditRows;
     setCashValueLoading(true);
     setCashValueMessage('正在保存...');
 
@@ -3053,24 +3068,27 @@ function CustomerApp() {
       await confirmCashValue({
         token,
         guestId,
-        policyId: cashValuePolicyId,
-        rows: cashValueEditRows,
+        policyId: savedPolicyId,
+        rows: savedRows,
       });
 
       // Refresh the policy data
       const updated = policies.map((p) =>
-        p.id === cashValuePolicyId ? { ...p, cashValues: cashValueEditRows } : p
+        p.id === savedPolicyId ? { ...p, cashValues: savedRows } : p
       );
       setPolicies(updated);
-      if (selectedPolicy?.id === cashValuePolicyId) {
-        setSelectedPolicy({ ...selectedPolicy, cashValues: cashValueEditRows });
+      if (selectedPolicy?.id === savedPolicyId) {
+        setSelectedPolicy({ ...selectedPolicy, cashValues: savedRows });
       }
 
       setCashValueDialogOpen(false);
       setCashValueScanResult(null);
       setCashValueEditRows([]);
       setCashValuePolicyId(null);
-      setCashValueMessage(`现金价值表已保存（${cashValueEditRows.length} 行）`);
+      setCashValueMessage('');
+      setCashflowMember(null);
+      setActiveTab('policies');
+      setMessage(`现金价值表已保存（${savedRows.length} 行）`);
     } catch (error) {
       setCashValueMessage(error instanceof Error ? error.message : '保存失败');
     } finally {
@@ -5188,7 +5206,7 @@ function ResponsibilityAssistant(props: {
   const showProductSuggestions = productFocused && Boolean(companyQuery) && (productSuggestionLoading || visibleProductSuggestions.length);
 
   return (
-    <div className="no-print fixed right-4 top-20 z-[70] flex flex-col items-end sm:right-6 sm:top-6">
+    <div className="no-print fixed bottom-6 right-4 z-[70] flex flex-col-reverse items-end sm:right-6">
       <button
         type="button"
         onClick={open ? onClose : onOpen}
@@ -5211,7 +5229,7 @@ function ResponsibilityAssistant(props: {
       </button>
 
       {open ? (
-        <section className="mt-3 flex max-h-[calc(100vh-10rem)] w-[calc(100vw-2rem)] max-w-[420px] flex-col overflow-hidden rounded-[24px] border border-[#D7E5F6] bg-white shadow-[0_26px_70px_-30px_rgba(15,23,42,0.42)]">
+        <section className="mb-3 flex max-h-[calc(100vh-10rem)] w-[calc(100vw-2rem)] max-w-[420px] flex-col overflow-hidden rounded-[24px] border border-[#D7E5F6] bg-white shadow-[0_26px_70px_-30px_rgba(15,23,42,0.42)]">
           <header className="flex items-center justify-between gap-3 border-b border-slate-100 bg-[#F8FBFF] px-4 py-4">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-blue-500 text-white shadow-lg shadow-blue-500/25">
@@ -5457,6 +5475,7 @@ function ResponsibilityAssistant(props: {
 function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: number; onOpen: () => void }) {
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
+  const cashValueSummary = summarizeCashValues(policy.cashValues);
   const reportStatusClassName = reportGenerating
     ? 'bg-[#FFF7ED] text-[#C2410C] ring-[#FED7AA]'
     : reportFailed
@@ -5501,6 +5520,11 @@ function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: numb
             <span className="rounded-xl bg-white px-3 py-2 text-[#5E7A98] ring-1 ring-[#E1EAF5]">保额 {formatCoverageAmount(Number(policy.amount || 0))}</span>
             <span className="rounded-xl bg-white px-3 py-2 text-[#5E7A98] ring-1 ring-[#E1EAF5]">保费 {formatCurrency(Number(policy.firstPremium || 0))}</span>
           </div>
+          {cashValueSummary ? (
+            <div className="mt-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[12px] font-semibold text-emerald-700">
+              现金价值已录入 {cashValueSummary.count} 年 · 首年 {formatCurrency(cashValueSummary.first.cashValue)} · {cashValueSummary.last.policyYear}年末 {formatCurrency(cashValueSummary.last.cashValue)}
+            </div>
+          ) : null}
         </div>
       </div>
     </button>
@@ -6517,6 +6541,7 @@ function PolicyDetailSheet({
   const reportFailed = isPolicyReportFailed(policy);
   const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
+  const cashValueSummary = summarizeCashValues(policy.cashValues);
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
@@ -6647,6 +6672,22 @@ function PolicyDetailSheet({
           <MetricBox label="投保人关系" value={policy.applicantRelation || '-'} />
           <MetricBox label="被保人关系" value={policy.insuredRelation || '-'} />
         </section>
+
+        {cashValueSummary ? (
+          <section className="mt-4 rounded-[22px] border border-emerald-100 bg-emerald-50 px-4 py-3 text-emerald-800">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-black">保单现金价值</p>
+                <p className="mt-1 text-xs font-semibold leading-5">
+                  已录入 {cashValueSummary.count} 年现金价值，首年 {formatCurrency(cashValueSummary.first.cashValue)}，{cashValueSummary.last.policyYear}年末 {formatCurrency(cashValueSummary.last.cashValue)}。
+                </p>
+              </div>
+              <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-black text-emerald-700">
+                已入库
+              </span>
+            </div>
+          </section>
+        ) : null}
 
         <section className="print-only print-policy-section">
           <h2>保单信息</h2>
