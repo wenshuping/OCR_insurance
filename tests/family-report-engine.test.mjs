@@ -110,6 +110,22 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.insuredGroups[0].policies[0].beneficiary, '第一顺位');
 });
 
+test('buildPolicyInventory uses cumulative payout for coverage fallback', () => {
+  const policy = makePolicy({
+    amount: 0,
+    cashflowEntries: [
+      { year: 2030, age: 42, amount: 1000, cumulative: 1000, liability: '生存金', policyId: 1, productName: 'A', calculationText: '' },
+      { year: 2031, age: 43, amount: 500, cumulative: 1200, liability: '生存金', policyId: 1, productName: 'A', calculationText: '' },
+    ],
+  });
+
+  const summary = buildFamilyReportSummary([policy]);
+  const inventory = buildPolicyInventory([policy]);
+
+  assert.equal(summary.futurePayoutTotal, 1500);
+  assert.equal(inventory.rows[0].coverageText, '累计领取1,200');
+});
+
 test('buildFamilyReport includes summary and inventory sections', () => {
   const report = buildFamilyReport([makePolicy({ id: 1, insured: '爸爸' })]);
   assert.equal(report.summary.memberCount, 1);

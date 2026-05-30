@@ -28,6 +28,11 @@ function futurePayoutTotal(policy) {
   return entries.reduce((total, entry) => total + asNumber(entry?.amount), 0);
 }
 
+function cumulativePayout(policy) {
+  const entries = Array.isArray(policy?.cashflowEntries) ? policy.cashflowEntries : [];
+  return entries.reduce((max, entry) => Math.max(max, asNumber(entry?.cumulative)), 0);
+}
+
 function formatNumberText(value) {
   return asNumber(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 }
@@ -57,8 +62,8 @@ function coverageText(policy) {
   const amount = asNumber(policy?.amount);
   if (amount > 0) return `${formatNumberText(amount / 10000)}万`;
 
-  const payout = futurePayoutTotal(policy);
-  if (payout > 0) return formatNumberText(payout);
+  const payout = cumulativePayout(policy);
+  if (payout > 0) return `累计领取${formatNumberText(payout)}`;
 
   return '按条款';
 }
