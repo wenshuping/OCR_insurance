@@ -8,7 +8,7 @@
  *   4. Validate and compute confidence score
  */
 
-const YEAR_KEYWORDS = ['保单年度', '保险年限', '保险年度', '年度', '保单年', '年份'];
+const YEAR_KEYWORDS = ['保单年度', '保险年限', '保险年度', '年度', '保单年', '年份', '保单年度末'];
 const AGE_KEYWORDS = ['年龄', '被保险年龄', '被保险人年龄'];
 const CASH_VALUE_KEYWORDS = ['现金价值', '退保金', '账户价值', '领取'];
 const SKIP_KEYWORDS = ['累计']; // columns to skip in repeating groups
@@ -37,6 +37,15 @@ function boxXMin(box) {
   }
   const xs = box.map((point) => (Array.isArray(point) ? point[0] : 0));
   return Math.min(...xs);
+}
+
+function boxXMid(box) {
+  if (!box || !Array.isArray(box) || box.length < 4) return 0;
+  if (typeof box[0] === 'number') {
+    return (Math.min(box[0], box[2]) + Math.max(box[0], box[2])) / 2;
+  }
+  const xs = box.map((point) => (Array.isArray(point) ? point[0] : 0));
+  return (Math.min(...xs) + Math.max(...xs)) / 2;
 }
 
 /**
@@ -119,12 +128,19 @@ export function detectTableHeader(rows) {
       }
     }
 
+    const yearHeaderCount = texts.filter((text) => YEAR_KEYWORDS.some((kw) => text.includes(kw))).length;
+    const cashValueHeaderCount = texts.filter((text) => CASH_VALUE_KEYWORDS.some((kw) => text.includes(kw))).length;
+
     let columns;
     if (hasYearAgeCombined) {
       // Combined "年份/年龄" header → 3-column group: [yearAge, cashValue, skip(累计)]
       columns = ['policyYear', 'cashValue', 'skip'];
-    } else if (hasAgeKeyword || row.length >= 3) {
+    } else if (hasAgeKeyword) {
       columns = ['policyYear', 'age', 'cashValue'];
+    } else if (yearHeaderCount >= 2 && cashValueHeaderCount >= 2) {
+      // Same page can contain multiple side-by-side 2-column groups:
+      // 保单年度末 | 现金价值 | 保单年度末 | 现金价值 | ...
+      columns = ['policyYear', 'cashValue'];
     } else {
       columns = ['policyYear', 'cashValue'];
     }
@@ -146,12 +162,30 @@ export function detectTableHeader(rows) {
 function parseNumericValue(text) {
   if (!text || typeof text !== 'string') return null;
   let cleaned = text
+    .replace(/(?<=\d)[:：](?=\d{2}$)/g, '.')
     .replace(/[,，\s]/g, '')
     .replace(/[元¥￥]/g, '')
     .trim();
   if (!cleaned) return null;
   const num = Number(cleaned);
   return Number.isFinite(num) ? num : null;
+}
+
+function parsePolicyYear(text) {
+  if (!text || typeof text !== 'string') return null;
+  const normalized = text
+    .replace(/[｜|]/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+  const yearEndMatch = normalized.match(/^(?:第)?(\d{1,3})(?:个)?年(?:度)?(?:末|未|底)?$/);
+  if (yearEndMatch) {
+    const year = Number(yearEndMatch[1]);
+    return year >= 1 && year <= 150 ? year : null;
+  }
+  if (/[.．]/.test(normalized)) return null;
+  const plain = parseNumericValue(normalized);
+  if (plain === null || plain < 1 || plain > 150 || !Number.isInteger(plain)) return null;
+  return plain;
 }
 
 /**
@@ -208,8 +242,8 @@ export function extractCashValueRows(dataRows, columns) {
           const col = columns[i];
           const text = values[i];
           if (col === 'policyYear') {
-            const num = parseNumericValue(text);
-            if (num === null || num < 1 || !Number.isInteger(num)) { valid = false; break; }
+            const num = parsePolicyYear(text);
+            if (num === null) { valid = false; break; }
             parsed.policyYear = num;
           } else if (col === 'age') {
             parsed.age = parseNumericValue(text);
@@ -232,6 +266,189 @@ export function extractCashValueRows(dataRows, columns) {
   }
 
   return results;
+}
+
+function uniqueRowsByPolicyYear(rows) {
+  const byYear = new Map();
+  for (const row of rows) {
+    const existing = byYear.get(row.policyYear);
+    if (!existing || row.cashValue > existing.cashValue) byYear.set(row.policyYear, row);
+  }
+  return [...byYear.values()].sort((a, b) => a.policyYear - b.policyYear || (a.age ?? 0) - (b.age ?? 0));
+}
+
+function sortBoxesReadingOrder(boxes, options = {}) {
+  return clusterIntoRows(boxes, options)
+    .flatMap((row) => row)
+    .filter((item) => typeof item.text === 'string' && item.text.trim());
+}
+
+function extractSequentialYearValuePairs(items) {
+  const rows = [];
+  for (let i = 0; i < items.length; i++) {
+    const policyYear = parsePolicyYear(items[i]?.text);
+    if (policyYear === null) continue;
+
+    for (let j = i + 1; j < Math.min(items.length, i + 5); j++) {
+      if (parsePolicyYear(items[j]?.text) !== null) break;
+      const cashValue = parseNumericValue(items[j]?.text);
+      if (cashValue === null || cashValue < 0) continue;
+      rows.push({ policyYear, age: null, cashValue });
+      break;
+    }
+  }
+  return uniqueRowsByPolicyYear(rows);
+}
+
+function extractColumnarYearValuePairs(boxes) {
+  const items = boxes
+    .map((item, index) => ({
+      ...item,
+      _index: index,
+      _xMid: boxXMid(item.box),
+      _yMid: boxYMid(item.box),
+    }))
+    .filter((item) => typeof item.text === 'string' && item.text.trim() && item._yMid !== null);
+
+  const yearItems = items
+    .map((item) => ({ ...item, _policyYear: parsePolicyYear(item.text) }))
+    .filter((item) => item._policyYear !== null);
+  const valueItems = items
+    .map((item) => ({ ...item, _cashValue: parseNumericValue(item.text) }))
+    .filter((item) => item._cashValue !== null && item._cashValue >= 0 && parsePolicyYear(item.text) === null);
+
+  const rows = [];
+  for (const yearItem of yearItems) {
+    let best = null;
+    let bestScore = Infinity;
+    for (const valueItem of valueItems) {
+      const yDistance = Math.abs(valueItem._yMid - yearItem._yMid);
+      const rightSidePenalty = valueItem._xMid >= yearItem._xMid ? 0 : 40;
+      const xDistance = Math.abs(valueItem._xMid - yearItem._xMid);
+      const score = yDistance * 4 + xDistance + rightSidePenalty;
+      if (score < bestScore) {
+        best = valueItem;
+        bestScore = score;
+      }
+    }
+    if (best && bestScore < 260) {
+      rows.push({ policyYear: yearItem._policyYear, age: null, cashValue: best._cashValue });
+    }
+  }
+  return uniqueRowsByPolicyYear(rows);
+}
+
+function parseCashValueRowsFromRecognizedOrder(boxes, options = {}) {
+  const candidates = [
+    extractSequentialYearValuePairs(boxes),
+    extractSequentialYearValuePairs(sortBoxesReadingOrder(boxes, options)),
+    extractColumnarYearValuePairs(boxes),
+  ];
+  return candidates.sort((a, b) => b.length - a.length)[0] || [];
+}
+
+function normalizeOcrTextLines(input) {
+  const lines = Array.isArray(input) ? input : String(input || '').split(/\r?\n/u);
+  return lines.map((line) => String(line || '').trim()).filter(Boolean);
+}
+
+function isYearHeader(text) {
+  return YEAR_KEYWORDS.some((kw) => String(text || '').includes(kw));
+}
+
+function isCashValueHeader(text) {
+  return CASH_VALUE_KEYWORDS.some((kw) => String(text || '').includes(kw));
+}
+
+function isTableStopLine(text) {
+  return /^第\d+页/u.test(text) || /^本表/u.test(text) || /^上表/u.test(text) || /^注[:：]/u.test(text);
+}
+
+function parseAlternatingYearValueTokens(tokens) {
+  if (tokens.length < MIN_DATA_ROWS * 2 || tokens.length % 2 !== 0) return [];
+  const rows = [];
+  for (let i = 0; i < tokens.length; i += 2) {
+    const policyYear = parsePolicyYear(tokens[i]);
+    const cashValue = parseNumericValue(tokens[i + 1]);
+    if (policyYear === null || cashValue === null || cashValue < 0) return [];
+    rows.push({ policyYear, age: null, cashValue });
+  }
+  return rows;
+}
+
+function parseSplitYearValueTokens(yearTokens, valueTokens) {
+  if (yearTokens.length < MIN_DATA_ROWS || yearTokens.length !== valueTokens.length) return [];
+  const rows = [];
+  for (let i = 0; i < yearTokens.length; i++) {
+    const policyYear = parsePolicyYear(yearTokens[i]);
+    const cashValue = parseNumericValue(valueTokens[i]);
+    if (policyYear === null || cashValue === null || cashValue < 0) return [];
+    rows.push({ policyYear, age: null, cashValue });
+  }
+  return rows;
+}
+
+function parseCashValueTextSegment(segment) {
+  const yearHeaderIndex = segment.findIndex(isYearHeader);
+  if (yearHeaderIndex < 0) return [];
+  const cashHeaderIndex = segment.findIndex((line, index) => index > yearHeaderIndex && isCashValueHeader(line));
+  if (cashHeaderIndex < 0) return [];
+
+  const beforeCashHeader = segment.slice(yearHeaderIndex + 1, cashHeaderIndex)
+    .filter((line) => parsePolicyYear(line) !== null);
+  const afterCashHeader = segment.slice(cashHeaderIndex + 1)
+    .filter((line) => !isYearHeader(line) && !isCashValueHeader(line));
+
+  const splitRows = parseSplitYearValueTokens(beforeCashHeader, afterCashHeader);
+  if (splitRows.length) return splitRows;
+  return parseAlternatingYearValueTokens(afterCashHeader);
+}
+
+export function parseCashValueText(input, options = {}) {
+  const lines = normalizeOcrTextLines(input);
+  if (!lines.length) {
+    return { ok: false, error: 'CASH_VALUE_TABLE_NOT_DETECTED', message: '未检测到文本内容' };
+  }
+
+  const hasYearHeader = lines.some(isYearHeader);
+  const hasCashValueHeader = lines.some(isCashValueHeader);
+  if (!hasYearHeader || !hasCashValueHeader) {
+    return { ok: false, error: 'CASH_VALUE_TABLE_NOT_DETECTED', message: '未检测到现金价值表表头' };
+  }
+
+  const segments = [];
+  let current = [];
+  for (const line of lines) {
+    if (isTableStopLine(line)) break;
+    if (isYearHeader(line) && current.some(isYearHeader)) {
+      segments.push(current);
+      current = [line];
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length) segments.push(current);
+
+  const parsedRows = uniqueRowsByPolicyYear(segments.flatMap(parseCashValueTextSegment));
+  const { valid, confidence } = validateAndScore(parsedRows, []);
+  if (!valid) {
+    return {
+      ok: false,
+      error: 'PARSE_FAILED',
+      message: `解析结果不可靠：仅 ${parsedRows.length} 行有效数据`,
+      rows: parsedRows,
+      confidence,
+    };
+  }
+
+  return {
+    ok: true,
+    source: options.source || 'ocr',
+    tableType: 2,
+    rows: parsedRows,
+    rowCount: parsedRows.length,
+    confidence,
+  };
 }
 
 /**
@@ -301,9 +518,12 @@ export function parseCashValueTable(boxes, options = {}) {
   }
 
   const dataRows = rows.slice(header.headerRowIndex + 1);
-  const parsedRows = extractCashValueRows(dataRows, header.columns);
+  let parsedRows = extractCashValueRows(dataRows, header.columns);
+  if (parsedRows.length < MIN_DATA_ROWS) {
+    parsedRows = parseCashValueRowsFromRecognizedOrder(boxes, options);
+  }
   // Sort by policyYear (repeating groups interleave years from different column groups)
-  parsedRows.sort((a, b) => a.policyYear - b.policyYear || (a.age ?? 0) - (b.age ?? 0));
+  parsedRows = uniqueRowsByPolicyYear(parsedRows);
   const { valid, confidence } = validateAndScore(parsedRows, boxes);
 
   if (!valid) {

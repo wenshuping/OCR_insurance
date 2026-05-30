@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { hasConfiguredOcrServiceBaseUrl, scanInsurancePolicyOverHttp } from './client.mjs';
-import { parseCashValueTable } from './cash-value-parser.mjs';
+import { parseCashValueTable, parseCashValueText } from './cash-value-parser.mjs';
 import { findBestFuzzyMatch, matchesFuzzyPhrase } from './fuzzy-matching.mjs';
 import { extractPolicyPlansFromLines, matchPolicyFieldsFromLines } from './insurance-field-matcher.mjs';
 import {
@@ -2823,35 +2823,72 @@ export async function scanCashValueTable({ uploadItem }) {
 
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'cash-value-ocr-'));
   const imagePath = path.join(tmpDir, 'input.png');
+  let paddleError = null;
 
   try {
     const base64Data = uploadItem.dataUrl.replace(/^data:image\/\w+;base64,/, '');
     await writeFile(imagePath, Buffer.from(base64Data, 'base64'));
 
-    const { paddleScriptPath } = resolveLocalOcrScriptPaths();
-    assertOcrScriptExists(paddleScriptPath);
+    try {
+      const { paddleScriptPath } = resolveLocalOcrScriptPaths();
+      assertOcrScriptExists(paddleScriptPath);
 
-    // Reuse the same Python environment as the existing policy OCR
-    await warmupPaddleLocalIfNeeded();
-    const pythonCmd = getConfiguredPaddlePython();
-    const env = { ...process.env };
-    const projectDir = String(env.POLICY_OCR_PADDLE_PROJECT_DIR || '').trim();
-    env.POLICY_OCR_PADDLE_PIPELINE = 'ocr';
+      // Reuse the same Python environment as the existing policy OCR
+      await warmupPaddleLocalIfNeeded();
+      const pythonCmd = getConfiguredPaddlePython();
+      const env = { ...process.env };
+      const projectDir = String(env.POLICY_OCR_PADDLE_PROJECT_DIR || '').trim();
+      env.POLICY_OCR_PADDLE_PIPELINE = 'ocr';
 
-    const { stdout } = await execFileAsync(pythonCmd, [paddleScriptPath, imagePath], {
-      env,
-      cwd: projectDir || undefined,
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: 120000,
-    });
+      const { stdout } = await execFileAsync(pythonCmd, [paddleScriptPath, imagePath], {
+        env,
+        cwd: projectDir || undefined,
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: 120000,
+      });
 
-    const ocrOutput = JSON.parse(stdout);
-    if (!ocrOutput.ok) {
-      return { ok: false, error: 'PARSE_FAILED', message: 'OCR 识别失败' };
+      const ocrOutput = JSON.parse(stdout);
+      if (!ocrOutput.ok) {
+        return { ok: false, error: 'PARSE_FAILED', message: 'OCR 识别失败' };
+      }
+
+      const boxes = ocrOutput.boxes || [];
+      const parsed = parseCashValueTable(boxes);
+      if (parsed.ok) return parsed;
+      paddleError = parsed;
+    } catch (error) {
+      const code = String(error?.message || error?.code || 'PARSE_FAILED');
+      const stderr = String(error?.stderr || '').slice(0, 300);
+      paddleError = {
+        ok: false,
+        error: code,
+        message: `PaddleOCR 识别失败: ${code}${stderr ? ` (${stderr})` : ''}`,
+      };
     }
 
-    const boxes = ocrOutput.boxes || [];
-    return parseCashValueTable(boxes);
+    if (process.platform === 'darwin') {
+      try {
+        const { stdout } = await execFileAsync('swift', [OCR_SWIFT_SCRIPT, imagePath], {
+          timeout: 30000,
+          maxBuffer: 20 * 1024 * 1024,
+        });
+        const parsedText = parseCashValueText(stdout, { source: 'ocr' });
+        if (parsedText.ok) return parsedText;
+        return {
+          ...parsedText,
+          message: `${parsedText.message}${paddleError?.message ? `；${paddleError.message}` : ''}`,
+        };
+      } catch (error) {
+        const code = String(error?.message || error?.code || 'PARSE_FAILED');
+        return {
+          ok: false,
+          error: paddleError?.error || code,
+          message: paddleError?.message || `现金价值表 OCR 失败: ${code}`,
+        };
+      }
+    }
+
+    return paddleError || { ok: false, error: 'PARSE_FAILED', message: '现金价值表解析失败' };
   } catch (error) {
     const code = String(error?.message || error?.code || 'PARSE_FAILED');
     const stderr = String(error?.stderr || '').slice(0, 300);
