@@ -202,3 +202,95 @@ test('buildFamilyReport creates critical illness rows per family member', () => 
   assert.equal(elder.rows.find((row) => row.key === 'critical_first').status, 'missing');
   assert.ok(elder.attentionItems.includes('重疾首次给付缺失'));
 });
+
+test('buildFamilyReport aggregates matching critical illness indicators for one member', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 20,
+      insured: '妈妈',
+      name: '健康无忧重大疾病保险',
+      amount: 300000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '重疾首次给付', value: 100, unit: '%', basis: '基本保险金额', formulaText: '基本保额100%', productName: '健康无忧重大疾病保险' },
+      ],
+    }),
+    makePolicy({
+      id: 21,
+      insured: '妈妈',
+      name: '守护重大疾病保险',
+      amount: 200000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', formulaText: '基本保额100%', productName: '守护重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  const mother = report.criticalIllness.members.find((item) => item.member === '妈妈');
+  const row = mother.rows.find((item) => item.key === 'critical_first');
+
+  assert.equal(row.amountText, '50万');
+  assert.equal(row.sourcePolicies.length, 2);
+});
+
+test('buildFamilyReport resolves critical illness amounts from formula text', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 30,
+      insured: '孩子',
+      name: '少儿重大疾病保险',
+      amount: 500000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '中症保险金', formulaText: '基本保额60%', productName: '少儿重大疾病保险' },
+        { coverageType: '疾病保障', liability: '轻症保险金', formulaText: '基本保险金额的30%', productName: '少儿重大疾病保险' },
+        { coverageType: '疾病保障', liability: '特定疾病保险金', formulaText: '基本保额2倍', productName: '少儿重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  const child = report.criticalIllness.members.find((item) => item.member === '孩子');
+
+  assert.equal(child.rows.find((row) => row.key === 'moderate').amountText, '30万');
+  assert.equal(child.rows.find((row) => row.key === 'mild').amountText, '15万');
+  assert.equal(child.rows.find((row) => row.key === 'specific_disease').amountText, '100万');
+});
+
+test('buildFamilyReport classifies ordinal critical disease payouts as multiple', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 40,
+      insured: '爸爸',
+      name: '多倍保障计划',
+      amount: 400000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '第二次重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', formulaText: '基本保额100%', productName: '多倍保障计划' },
+        { coverageType: '疾病保障', liability: '再次重大疾病保险金', value: 50, unit: '%', basis: '基本保险金额', formulaText: '基本保额50%', productName: '多倍保障计划' },
+      ],
+    }),
+  ]);
+
+  const father = report.criticalIllness.members.find((item) => item.member === '爸爸');
+
+  assert.equal(father.rows.find((row) => row.key === 'critical_multiple').amountText, '60万');
+  assert.equal(father.rows.find((row) => row.key === 'critical_first').status, 'missing');
+});
+
+test('buildFamilyReport falls back to critical policy amount when unrelated indicators exist', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 50,
+      insured: '妈妈',
+      name: '康健重大疾病保险',
+      amount: 250000,
+      coverageIndicators: [
+        { coverageType: '医疗保障', liability: '住院津贴', formulaText: '每日100元', productName: '康健重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  const mother = report.criticalIllness.members.find((item) => item.member === '妈妈');
+  const row = mother.rows.find((item) => item.key === 'critical_first');
+
+  assert.equal(row.amountText, '25万');
+  assert.equal(row.conditionText, '按保单基础保额估算');
+  assert.equal(row.status, 'covered');
+});

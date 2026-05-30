@@ -120,6 +120,11 @@ function buildInventoryRow(policy) {
 
 const CRITICAL_ROWS = [
   {
+    key: 'critical_multiple',
+    label: '重疾多次给付',
+    patterns: [/多次/u, /第二次/u, /第2次/u, /再次/u],
+  },
+  {
     key: 'critical_first',
     label: '重疾首次给付',
     patterns: [
@@ -127,11 +132,6 @@ const CRITICAL_ROWS = [
       /重大疾病(?!.*(?:多次|第二次|第2次|再次))/u,
       /重度疾病(?!.*(?:多次|第二次|第2次|再次))/u,
     ],
-  },
-  {
-    key: 'critical_multiple',
-    label: '重疾多次给付',
-    patterns: [/多次/u, /第二次/u, /第2次/u, /再次/u],
   },
   {
     key: 'moderate',
@@ -187,14 +187,21 @@ function resolveIndicatorAmount(indicator, policy) {
   const basis = String(indicator?.basis || '').normalize('NFKC');
   const text = indicatorText(indicator).normalize('NFKC');
   const policyAmount = asNumber(policy?.amount);
+  const baseAmountPattern = /基本(?:保险金额|保额)/u;
 
-  if (value !== null && unit === '%' && /基本(保险金额|保额)/u.test(basis)) {
+  if (value !== null && unit === '%' && baseAmountPattern.test(basis)) {
     return policyAmount * value / 100;
   }
 
-  if (value !== null && unit === '倍' && /基本(保险金额|保额)/u.test(basis)) {
+  if (value !== null && unit === '倍' && baseAmountPattern.test(basis)) {
     return policyAmount * value;
   }
+
+  const formulaPercentMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*%/u);
+  if (formulaPercentMatch) return policyAmount * asNumber(formulaPercentMatch[1]) / 100;
+
+  const formulaMultipleMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍/u);
+  if (formulaMultipleMatch) return policyAmount * asNumber(formulaMultipleMatch[1]);
 
   const wanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*万/u);
   if (wanMatch) return asNumber(wanMatch[1]) * 10000;
@@ -202,7 +209,7 @@ function resolveIndicatorAmount(indicator, policy) {
   const yuanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:元|圆)/u);
   if (yuanMatch) return asNumber(yuanMatch[1]);
 
-  if (/基本(保险金额|保额)/u.test(text)) return policyAmount;
+  if (baseAmountPattern.test(text)) return policyAmount;
 
   return 0;
 }
@@ -234,10 +241,10 @@ function applyIndicatorToRow(row, indicator, policy) {
   const unit = String(indicator?.unit || '').trim();
   const conditionText = String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim();
 
-  row.amount = amount;
-  row.amountText = amountDisplay(amount, formulaText || '待识别');
+  row.amount += amount;
+  row.amountText = amountDisplay(row.amount, formulaText || '待识别');
   row.countText = value !== null && unit ? `${formatNumberText(value)}${unit}` : formulaText || '-';
-  row.status = amount > 0 ? 'covered' : 'formula';
+  row.status = row.amount > 0 ? 'covered' : 'formula';
   row.conditionText = conditionText || '按识别责任计算';
   row.sourcePolicies.push({
     policyId: policy?.id,
@@ -290,10 +297,7 @@ function buildMemberCriticalRows(memberPolicies) {
 
   const criticalFirst = rowMap.get('critical_first');
   if (criticalFirst.status === 'missing') {
-    const fallbackPolicy = memberPolicies.find((policy) => {
-      const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
-      return indicators.length === 0 && policyImpliesCriticalIllness(policy);
-    });
+    const fallbackPolicy = memberPolicies.find(policyImpliesCriticalIllness);
 
     if (fallbackPolicy) {
       const amount = asNumber(fallbackPolicy?.amount);
