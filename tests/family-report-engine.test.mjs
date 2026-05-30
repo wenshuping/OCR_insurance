@@ -173,3 +173,32 @@ test('buildFamilyReport includes summary and inventory sections', () => {
   assert.equal(report.policyInventory.rows.length, 1);
   assert.equal(report.policyInventory.insuredGroups[0].member, '爸爸');
 });
+
+test('buildFamilyReport creates critical illness rows per family member', () => {
+  const policies = [
+    makePolicy({
+      id: 10,
+      insured: '爸爸',
+      name: '健康无忧重大疾病保险',
+      amount: 500000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '重疾(首次给付)', value: 100, unit: '%', basis: '基本保险金额', formulaText: '基本保额100%', productName: '健康无忧重大疾病保险' },
+        { coverageType: '疾病保障', liability: '中症(首次给付)', value: 60, unit: '%', basis: '基本保险金额', formulaText: '基本保额60%', productName: '健康无忧重大疾病保险' },
+        { coverageType: '疾病保障', liability: '轻症(首次给付)', value: 30, unit: '%', basis: '基本保险金额', formulaText: '基本保额30%', productName: '健康无忧重大疾病保险' },
+        { coverageType: '疾病保障', liability: '特定疾病', value: 2, unit: '倍', basis: '基本保险金额', formulaText: '基本保额2倍', productName: '健康无忧重大疾病保险' },
+      ],
+    }),
+    makePolicy({ id: 11, insured: '老人', name: '老人意外险', amount: 100000 }),
+  ];
+
+  const report = buildFamilyReport(policies);
+  const father = report.criticalIllness.members.find((item) => item.member === '爸爸');
+  const elder = report.criticalIllness.members.find((item) => item.member === '老人');
+
+  assert.equal(father.rows.find((row) => row.key === 'critical_first').amountText, '50万');
+  assert.equal(father.rows.find((row) => row.key === 'moderate').amountText, '30万');
+  assert.equal(father.rows.find((row) => row.key === 'mild').amountText, '15万');
+  assert.equal(father.rows.find((row) => row.key === 'specific_disease').amountText, '100万');
+  assert.equal(elder.rows.find((row) => row.key === 'critical_first').status, 'missing');
+  assert.ok(elder.attentionItems.includes('重疾首次给付缺失'));
+});
