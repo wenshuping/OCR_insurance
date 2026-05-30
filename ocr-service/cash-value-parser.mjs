@@ -107,6 +107,10 @@ export function detectTableHeader(rows) {
     // Check for combined year/age header like "年份/年龄"
     const hasYearAgeCombined = /年份\s*[\/／]\s*年龄|年龄\s*[\/／]\s*年份/.test(joinedText);
 
+    // Require both year+cashValue keywords or combined year/age pattern
+    // (avoids false matches on section titles like "年度现金流汇总")
+    if (!hasYearAgeCombined && !(hasYearKeyword && hasCashValueKeyword)) continue;
+
     // Detect repeating groups: count how many times year keywords appear
     let yearKwCount = 0;
     for (const t of texts) {
@@ -116,9 +120,10 @@ export function detectTableHeader(rows) {
     }
 
     let columns;
-    if (hasYearAgeCombined || hasAgeKeyword || row.length >= 3) {
-      // 3-column group: [year(+age combined), age, cashValue] or [year, age, cashValue]
-      // With repeating groups, the "累计" columns are extra and handled in extraction
+    if (hasYearAgeCombined) {
+      // Combined "年份/年龄" header → 3-column group: [yearAge, cashValue, skip(累计)]
+      columns = ['policyYear', 'cashValue', 'skip'];
+    } else if (hasAgeKeyword || row.length >= 3) {
       columns = ['policyYear', 'age', 'cashValue'];
     } else {
       columns = ['policyYear', 'cashValue'];
@@ -185,18 +190,19 @@ export function extractCashValueRows(dataRows, columns) {
 
       const yearAge = parseYearAge(values[0]);
 
-      if (yearAge && groupSize === 2) {
+      if (yearAge) {
+        // "2030/42" combined format: extract year + age from first value
         parsed.policyYear = yearAge.year;
         parsed.age = yearAge.age;
-        const cashNum = parseNumericValue(values[1]);
-        if (cashNum === null || cashNum < 0) { valid = false; }
-        else parsed.cashValue = cashNum;
-      } else if (yearAge && groupSize >= 3 && columns[1] === 'age') {
-        parsed.policyYear = yearAge.year;
-        parsed.age = yearAge.age;
-        const cashNum = parseNumericValue(values[2]);
-        if (cashNum === null || cashNum < 0) { valid = false; }
-        else parsed.cashValue = cashNum;
+        // Find cashValue column index
+        const cvIdx = columns.indexOf('cashValue');
+        if (cvIdx >= 0 && cvIdx < values.length) {
+          const cashNum = parseNumericValue(values[cvIdx]);
+          if (cashNum === null || cashNum < 0) { valid = false; }
+          else parsed.cashValue = cashNum;
+        } else {
+          valid = false;
+        }
       } else {
         for (let i = 0; i < columns.length; i++) {
           const col = columns[i];
@@ -296,6 +302,8 @@ export function parseCashValueTable(boxes, options = {}) {
 
   const dataRows = rows.slice(header.headerRowIndex + 1);
   const parsedRows = extractCashValueRows(dataRows, header.columns);
+  // Sort by policyYear (repeating groups interleave years from different column groups)
+  parsedRows.sort((a, b) => a.policyYear - b.policyYear || (a.age ?? 0) - (b.age ?? 0));
   const { valid, confidence } = validateAndScore(parsedRows, boxes);
 
   if (!valid) {

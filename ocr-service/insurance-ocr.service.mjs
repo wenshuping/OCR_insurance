@@ -2796,7 +2796,16 @@ export async function scanCashValueTable({ uploadItem }) {
     const { paddleScriptPath } = resolveLocalOcrScriptPaths();
     assertOcrScriptExists(paddleScriptPath);
 
-    const { stdout } = await execFileAsync('python3', [paddleScriptPath, imagePath], {
+    // Reuse the same Python environment as the existing policy OCR
+    await warmupPaddleLocalIfNeeded();
+    const pythonCmd = getConfiguredPaddlePython();
+    const env = { ...process.env };
+    const projectDir = String(env.POLICY_OCR_PADDLE_PROJECT_DIR || '').trim();
+    env.POLICY_OCR_PADDLE_PIPELINE = 'ocr';
+
+    const { stdout } = await execFileAsync(pythonCmd, [paddleScriptPath, imagePath], {
+      env,
+      cwd: projectDir || undefined,
       maxBuffer: 50 * 1024 * 1024,
       timeout: 120000,
     });
@@ -2810,7 +2819,8 @@ export async function scanCashValueTable({ uploadItem }) {
     return parseCashValueTable(boxes);
   } catch (error) {
     const code = String(error?.message || error?.code || 'PARSE_FAILED');
-    return { ok: false, error: code, message: '现金价值表解析失败' };
+    const stderr = String(error?.stderr || '').slice(0, 300);
+    return { ok: false, error: code, message: `现金价值表解析失败: ${code}${stderr ? ` (${stderr})` : ''}` };
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }

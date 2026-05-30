@@ -38,7 +38,9 @@ def collect_lines(result) -> list[str]:
         payload = getattr(item, "res", item)
         if not isinstance(payload, dict):
             continue
-        texts = payload.get("rec_texts") or []
+        texts = payload.get("rec_texts")
+        if texts is None:
+            texts = []
         if isinstance(texts, list):
             lines.extend(str(text).strip() for text in texts if str(text).strip())
     return lines
@@ -53,8 +55,12 @@ def collect_lines_with_boxes(result) -> dict:
         if not isinstance(payload, dict):
             continue
         texts = payload.get("rec_texts") or []
-        rec_boxes = payload.get("rec_boxes") or []
-        scores = payload.get("rec_scores") or []
+        rec_boxes = payload.get("rec_boxes")
+        if rec_boxes is None:
+            rec_boxes = []
+        scores = payload.get("rec_scores")
+        if scores is None:
+            scores = []
         for i, text in enumerate(texts):
             text = str(text).strip()
             if not text:
@@ -62,9 +68,11 @@ def collect_lines_with_boxes(result) -> dict:
             lines.append(text)
             box_entry = {"text": text}
             if i < len(rec_boxes):
-                box_entry["box"] = rec_boxes[i]
+                raw_box = rec_boxes[i]
+                box_entry["box"] = raw_box.tolist() if hasattr(raw_box, "tolist") else list(raw_box)
             if i < len(scores):
-                box_entry["confidence"] = scores[i]
+                raw_score = scores[i]
+                box_entry["confidence"] = float(raw_score) if not isinstance(raw_score, (int, float)) else raw_score
             boxes.append(box_entry)
     return {"lines": lines, "boxes": boxes}
 
