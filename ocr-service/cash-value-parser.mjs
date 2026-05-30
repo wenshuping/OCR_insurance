@@ -8,9 +8,10 @@
  *   4. Validate and compute confidence score
  */
 
-const YEAR_KEYWORDS = ['保单年度', '保险年限', '保险年度', '年度', '保单年'];
+const YEAR_KEYWORDS = ['保单年度', '保险年限', '保险年度', '年度', '保单年', '年份'];
 const AGE_KEYWORDS = ['年龄', '被保险年龄', '被保险人年龄'];
-const CASH_VALUE_KEYWORDS = ['现金价值', '退保金', '账户价值'];
+const CASH_VALUE_KEYWORDS = ['现金价值', '退保金', '账户价值', '领取'];
+const SKIP_KEYWORDS = ['累计']; // columns to skip in repeating groups
 
 const DEFAULT_Y_THRESHOLD = 15;
 const MIN_DATA_ROWS = 3;
@@ -18,16 +19,22 @@ const CONFIDENCE_THRESHOLD = 0.7;
 
 /**
  * Compute the Y midpoint from a bounding box.
- * Box format: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] (top-left, top-right, bottom-right, bottom-left)
+ * Supports both flat [x_min, y_min, x_max, y_max] and nested [[x1,y1],...] formats.
  */
 function boxYMid(box) {
   if (!box || !Array.isArray(box) || box.length < 4) return null;
+  if (typeof box[0] === 'number') {
+    return (box[1] + box[3]) / 2;
+  }
   const ys = box.map((point) => (Array.isArray(point) ? point[1] : 0));
   return (Math.min(...ys) + Math.max(...ys)) / 2;
 }
 
 function boxXMin(box) {
   if (!box || !Array.isArray(box) || box.length < 4) return 0;
+  if (typeof box[0] === 'number') {
+    return Math.min(box[0], box[2]);
+  }
   const xs = box.map((point) => (Array.isArray(point) ? point[0] : 0));
   return Math.min(...xs);
 }
@@ -96,11 +103,22 @@ export function detectTableHeader(rows) {
 
     if (!hasYearKeyword && !hasCashValueKeyword) continue;
 
-    // Determine columns
     const hasAgeKeyword = AGE_KEYWORDS.some((kw) => joinedText.includes(kw));
+    // Check for combined year/age header like "年份/年龄"
+    const hasYearAgeCombined = /年份\s*[\/／]\s*年龄|年龄\s*[\/／]\s*年份/.test(joinedText);
+
+    // Detect repeating groups: count how many times year keywords appear
+    let yearKwCount = 0;
+    for (const t of texts) {
+      if (YEAR_KEYWORDS.some((kw) => t.includes(kw)) || /\d{4}\s*[\/／]\s*\d{1,3}/.test(t)) {
+        yearKwCount++;
+      }
+    }
 
     let columns;
-    if (row.length >= 3 || hasAgeKeyword) {
+    if (hasYearAgeCombined || hasAgeKeyword || row.length >= 3) {
+      // 3-column group: [year(+age combined), age, cashValue] or [year, age, cashValue]
+      // With repeating groups, the "累计" columns are extra and handled in extraction
       columns = ['policyYear', 'age', 'cashValue'];
     } else {
       columns = ['policyYear', 'cashValue'];
@@ -132,42 +150,78 @@ function parseNumericValue(text) {
 }
 
 /**
+ * Parse a "year/age" combined value like "2030/42".
+ * Returns { year, age } or null if not a combined format.
+ */
+function parseYearAge(text) {
+  if (!text || typeof text !== 'string') return null;
+  const match = text.match(/^(\d{4})\s*[\/／]\s*(\d{1,3})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const age = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(age)) return null;
+  return { year, age };
+}
+
+/**
  * Step 3: Extract structured rows from data rows based on column mapping.
+ * Handles repeating column groups and "year/age" combined format.
  */
 export function extractCashValueRows(dataRows, columns) {
   const results = [];
+  const groupSize = columns.length;
 
   for (const row of dataRows) {
-    if (row.length < columns.length) continue;
+    const itemCount = row.length;
+    const groupCount = Math.max(1, Math.floor(itemCount / groupSize));
 
-    const values = row.slice(0, columns.length).map((item) => item.text);
-    const parsed = {};
-    let valid = true;
+    for (let g = 0; g < groupCount; g++) {
+      const groupItems = row.slice(g * groupSize, (g + 1) * groupSize);
+      if (groupItems.length < groupSize) break;
 
-    for (let i = 0; i < columns.length; i++) {
-      const col = columns[i];
-      const text = values[i];
+      const values = groupItems.map((item) => item.text);
+      const parsed = {};
+      let valid = true;
 
-      if (col === 'policyYear') {
-        const num = parseNumericValue(text);
-        if (num === null || num < 1 || !Number.isInteger(num)) { valid = false; break; }
-        parsed.policyYear = num;
-      } else if (col === 'age') {
-        const num = parseNumericValue(text);
-        parsed.age = num;
-      } else if (col === 'cashValue') {
-        const num = parseNumericValue(text);
-        if (num === null || num < 0) { valid = false; break; }
-        parsed.cashValue = num;
+      const yearAge = parseYearAge(values[0]);
+
+      if (yearAge && groupSize === 2) {
+        parsed.policyYear = yearAge.year;
+        parsed.age = yearAge.age;
+        const cashNum = parseNumericValue(values[1]);
+        if (cashNum === null || cashNum < 0) { valid = false; }
+        else parsed.cashValue = cashNum;
+      } else if (yearAge && groupSize >= 3 && columns[1] === 'age') {
+        parsed.policyYear = yearAge.year;
+        parsed.age = yearAge.age;
+        const cashNum = parseNumericValue(values[2]);
+        if (cashNum === null || cashNum < 0) { valid = false; }
+        else parsed.cashValue = cashNum;
+      } else {
+        for (let i = 0; i < columns.length; i++) {
+          const col = columns[i];
+          const text = values[i];
+          if (col === 'policyYear') {
+            const num = parseNumericValue(text);
+            if (num === null || num < 1 || !Number.isInteger(num)) { valid = false; break; }
+            parsed.policyYear = num;
+          } else if (col === 'age') {
+            parsed.age = parseNumericValue(text);
+          } else if (col === 'cashValue') {
+            const num = parseNumericValue(text);
+            if (num === null || num < 0) { valid = false; break; }
+            parsed.cashValue = num;
+          }
+        }
       }
-    }
 
-    if (valid && parsed.policyYear != null && parsed.cashValue != null) {
-      results.push({
-        policyYear: parsed.policyYear,
-        age: parsed.age ?? null,
-        cashValue: parsed.cashValue,
-      });
+      if (valid && parsed.policyYear != null && parsed.cashValue != null) {
+        results.push({
+          policyYear: parsed.policyYear,
+          age: parsed.age ?? null,
+          cashValue: parsed.cashValue,
+        });
+      }
     }
   }
 
@@ -182,14 +236,14 @@ function validateAndScore(rows, boxes) {
     return { valid: false, confidence: 0 };
   }
 
-  // Check year ordering
-  let yearOrdered = true;
+  // Check year ordering (allow some disorder from repeating groups)
+  let ascendingCount = 0;
+  let totalPairs = 0;
   for (let i = 1; i < rows.length; i++) {
-    if (rows[i].policyYear <= rows[i - 1].policyYear) {
-      yearOrdered = false;
-      break;
-    }
+    totalPairs++;
+    if (rows[i].policyYear >= rows[i - 1].policyYear) ascendingCount++;
   }
+  const yearOrdered = totalPairs === 0 || ascendingCount / totalPairs >= 0.5;
 
   // Check cash value non-negative (already enforced in parsing)
   // Check age ordering if present
