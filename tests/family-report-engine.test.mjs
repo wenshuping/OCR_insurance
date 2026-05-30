@@ -126,6 +126,47 @@ test('buildPolicyInventory uses cumulative payout for coverage fallback', () => 
   assert.equal(inventory.rows[0].coverageText, '累计领取1,200');
 });
 
+test('buildPolicyInventory ignores malformed cash value rows', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      id: 1,
+      name: '基础保障',
+      cashValues: [
+        { policyYear: 1, age: 37, cashValue: 500 },
+        { policyYear: 2, age: 38 },
+      ],
+    }),
+    makePolicy({
+      id: 2,
+      name: '基础保障',
+      amount: 0,
+      cashValues: [
+        { policyYear: '', age: 37, cashValue: 100 },
+        { age: 38, cashValue: 'invalid' },
+      ],
+    }),
+  ]);
+
+  assert.equal(inventory.rows[0].cashValueText, '500');
+  assert.equal(inventory.rows[0].dataStatus, '现金价值已识别');
+  assert.equal(inventory.rows[1].cashValueText, '');
+  assert.equal(inventory.rows[1].dataStatus, '待补充责任');
+});
+
+test('buildPolicyInventory classifies policies from responsibility fields', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      name: '基础保障',
+      amount: 0,
+      responsibilities: [
+        { coverageType: '医疗保障', scenario: '住院', payout: '报销', note: '门诊费用' },
+      ],
+    }),
+  ]);
+
+  assert.equal(inventory.rows[0].typeLabel, '医疗');
+});
+
 test('buildFamilyReport includes summary and inventory sections', () => {
   const report = buildFamilyReport([makePolicy({ id: 1, insured: '爸爸' })]);
   assert.equal(report.summary.memberCount, 1);

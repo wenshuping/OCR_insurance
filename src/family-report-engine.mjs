@@ -3,6 +3,12 @@ function asNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function finiteNumber(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function memberName(policy) {
   const name = String(policy?.insured || '').trim();
   return name || '未识别被保人';
@@ -11,12 +17,14 @@ function memberName(policy) {
 function latestCashValue(policy) {
   const cashValues = Array.isArray(policy?.cashValues) ? policy.cashValues : [];
   return cashValues.reduce((latest, row) => {
-    const policyYear = asNumber(row?.policyYear);
+    const policyYear = finiteNumber(row?.policyYear);
+    const cashValue = finiteNumber(row?.cashValue);
+    if (policyYear === null || cashValue === null) return latest;
     if (!latest || policyYear > latest.policyYear) {
       return {
         row,
         policyYear,
-        cashValue: asNumber(row?.cashValue),
+        cashValue,
       };
     }
     return latest;
@@ -41,13 +49,23 @@ function policyTypeLabel(policy) {
   const text = [
     policy?.company,
     policy?.name,
+    policy?.coveragePeriod,
     ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
       if (typeof plan === 'string') return plan;
       return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
     }),
     ...(Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).map((item) => {
       if (typeof item === 'string') return item;
-      return [item?.name, item?.title, item?.liability, item?.type].filter(Boolean).join(' ');
+      return [
+        item?.name,
+        item?.title,
+        item?.liability,
+        item?.type,
+        item?.coverageType,
+        item?.scenario,
+        item?.payout,
+        item?.note,
+      ].filter(Boolean).join(' ');
     }),
   ].filter(Boolean).join(' ');
 
