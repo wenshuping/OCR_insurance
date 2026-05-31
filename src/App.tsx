@@ -8,11 +8,13 @@ import {
   Copy,
   Database,
   Download,
+  ExternalLink,
   FileText,
   LayoutDashboard,
   Loader2,
   LogOut,
   Pencil,
+  Plus,
   RefreshCw,
   Save,
   Search,
@@ -312,6 +314,119 @@ function summarizeCashValues(cashValues?: CashValueRow[]) {
     first: rows[0],
     last: rows[rows.length - 1],
   };
+}
+
+function parseNumericInput(value: string | number | null | undefined) {
+  const normalized = String(value ?? '').replace(/[,，\s元¥￥]/g, '');
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function makeManualCashValueRow(policyYear = 1, age: number | null = null): CashValueRow {
+  return { policyYear, age, cashValue: 0, source: 'manual' };
+}
+
+function normalizeCashValueRowsForEditing(cashValues?: CashValueRow[]) {
+  const rows: CashValueRow[] = [];
+  if (Array.isArray(cashValues)) {
+    for (const row of cashValues) {
+      const policyYear = parseNumericInput(row.policyYear);
+      const age = row.age === null || row.age === undefined ? null : parseNumericInput(row.age);
+      const cashValue = parseNumericInput(row.cashValue);
+      if (policyYear === null || cashValue === null) continue;
+      rows.push({
+        policyYear,
+        age,
+        cashValue,
+        source: row.source || 'manual',
+      });
+    }
+    rows.sort((left, right) => left.policyYear - right.policyYear);
+  }
+  return rows.length ? rows : [makeManualCashValueRow()];
+}
+
+function nextManualCashValueRow(rows: CashValueRow[]) {
+  const sortedRows = [...rows]
+    .filter((row) => Number.isFinite(Number(row.policyYear)))
+    .sort((left, right) => Number(left.policyYear) - Number(right.policyYear));
+  const last = sortedRows[sortedRows.length - 1];
+  const nextPolicyYear = Number(last?.policyYear || 0) + 1 || 1;
+  const nextAge = last?.age === null || last?.age === undefined ? null : Number(last.age) + 1;
+  return makeManualCashValueRow(nextPolicyYear, Number.isFinite(Number(nextAge)) ? nextAge : null);
+}
+
+function normalizeCashValueRowsForSaving(rows: CashValueRow[], source = 'manual') {
+  const normalized: CashValueRow[] = [];
+  for (const row of rows) {
+    const policyYear = parseNumericInput(row.policyYear);
+    const age = row.age === null || row.age === undefined ? null : parseNumericInput(row.age);
+    const cashValue = parseNumericInput(row.cashValue);
+    if (policyYear === null || policyYear <= 0 || cashValue === null || cashValue < 0) continue;
+    normalized.push({
+      policyYear,
+      age,
+      cashValue,
+      source: row.source || source,
+    });
+  }
+  normalized.sort((left, right) => left.policyYear - right.policyYear);
+  const byPolicyYear = new Map<number, CashValueRow>();
+  for (const row of normalized) byPolicyYear.set(row.policyYear, row);
+  return [...byPolicyYear.values()];
+}
+
+type ResponsibilitySourceLink = {
+  title: string;
+  url: string;
+  official: boolean;
+  sourceType?: string;
+};
+
+function formatSourceUrlHost(url: string) {
+  try {
+    return new URL(url).hostname || url;
+  } catch (_error) {
+    return url;
+  }
+}
+
+function getPolicyResponsibilitySourceLinks(policy: Policy): ResponsibilitySourceLink[] {
+  const links: ResponsibilitySourceLink[] = [];
+  const seenUrls = new Set<string>();
+  const pushLink = (source: { title?: string; url?: string; official?: boolean; evidenceLevel?: string; sourceType?: string; liability?: string; productName?: string } | null | undefined) => {
+    const url = String(source?.url || '').trim();
+    if (!url || seenUrls.has(url)) return;
+    seenUrls.add(url);
+    links.push({
+      title: String(source?.title || source?.liability || source?.productName || formatSourceUrlHost(url)).trim(),
+      url,
+      official: Boolean(source?.official) || String(source?.evidenceLevel || '') === 'insurer_official',
+      sourceType: source?.sourceType,
+    });
+  };
+
+  (policy.sources || []).forEach(pushLink);
+  (policy.coverageIndicators || []).forEach((indicator) => {
+    pushLink({
+      title: indicator.liability || indicator.productName,
+      url: indicator.sourceUrl,
+      official: true,
+      evidenceLevel: 'insurer_official',
+    });
+  });
+  (policy.responsibilities || []).forEach((responsibility) => {
+    pushLink({
+      title: responsibility.sourceTitle || responsibility.coverageType,
+      url: responsibility.sourceUrl,
+      official: true,
+      evidenceLevel: 'insurer_official',
+    });
+  });
+
+  return links
+    .sort((left, right) => Number(right.official) - Number(left.official))
+    .slice(0, 5);
 }
 
 function formatDateLabel(value: string) {
@@ -898,11 +1013,11 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
   return report;
 }
 
-type ReportExportOptions = { rawTarget?: boolean };
+type ReportExportOptions = { rawTarget?: boolean; preservePageStyle?: boolean };
 
 function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Policy, options?: ReportExportOptions) {
   const wrapper = document.createElement('div');
-  const width = 760;
+  const width = options?.preservePageStyle ? 1120 : 760;
   wrapper.setAttribute(
     'style',
     [
@@ -923,7 +1038,10 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   reportNode.classList?.add?.('print-policy-report');
   wrapper.appendChild(reportNode);
   document.body.appendChild(wrapper);
-  if (options?.rawTarget) {
+
+  if (options?.rawTarget && options.preservePageStyle) {
+    preparePageStyleReportNode(reportNode, width);
+  } else if (options?.rawTarget) {
     reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
       node.style.overflow = 'visible';
       node.style.width = 'max-content';
@@ -937,10 +1055,42 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   return {
     node: reportNode,
     width,
+    captureWidth: options?.preservePageStyle ? width : Math.max(width, reportNode.scrollWidth || 0),
     cleanup() {
       wrapper.remove();
     },
   };
+}
+
+function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
+  reportNode.classList.add('family-report-pdf-target');
+  reportNode.style.boxSizing = 'border-box';
+  reportNode.style.width = `${width}px`;
+  reportNode.style.maxWidth = 'none';
+  reportNode.style.minHeight = '1px';
+  reportNode.style.overflow = 'visible';
+  reportNode.style.background = '#F4F8FC';
+  reportNode.style.padding = '24px';
+
+  reportNode.querySelectorAll<HTMLElement>('.print-only').forEach((node) => {
+    node.style.display = 'none';
+  });
+  reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
+    node.style.overflow = 'visible';
+    node.style.width = '100%';
+    node.style.maxWidth = '100%';
+  });
+  reportNode.querySelectorAll<HTMLElement>('table').forEach((table) => {
+    table.style.width = '100%';
+    table.style.minWidth = '0';
+    table.style.tableLayout = 'fixed';
+  });
+  reportNode.querySelectorAll<HTMLElement>('th,td').forEach((cell) => {
+    cell.style.minWidth = '0';
+    cell.style.whiteSpace = 'normal';
+    cell.style.wordBreak = 'break-word';
+    cell.style.verticalAlign = 'top';
+  });
 }
 
 function escapeHtml(value: string) {
@@ -998,6 +1148,30 @@ function triggerPdfBlobDownload(pdfBlob: Blob, fileName: string) {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(pdfUrl), 60 * 1000);
+}
+
+function triggerImageBlobDownload(imageBlob: Blob, fileName: string) {
+  const imageUrl = URL.createObjectURL(imageBlob);
+  const link = document.createElement('a');
+  link.href = imageUrl;
+  link.download = `${fileName}.jpg`;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(imageUrl), 60 * 1000);
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/jpeg', quality = 0.92) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error('REPORT_IMAGE_BLOB_UNAVAILABLE'));
+      }
+    }, type, quality);
+  });
 }
 
 function addCanvasPagesToPdf(pdf: import('jspdf').jsPDF, canvas: HTMLCanvasElement) {
@@ -1556,11 +1730,11 @@ async function downloadReportPdf(target: HTMLElement | null, title: string, poli
   try {
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')]);
     document.title = fileName;
-    document.body.classList.add('pdf-export-mode');
+    document.body.classList.add(options?.preservePageStyle ? 'pdf-page-style-export-mode' : 'pdf-export-mode');
     await new Promise((resolve) => requestAnimationFrame(resolve));
     renderTarget = createPdfRenderTarget(target, fileName, policy, options);
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    const renderWidth = renderTarget.node.scrollWidth || renderTarget.width;
+    const renderWidth = renderTarget.captureWidth || renderTarget.node.scrollWidth || renderTarget.width;
     const renderHeight = renderTarget.node.scrollHeight || renderTarget.node.offsetHeight;
     const canvas = await html2canvas(renderTarget.node, {
       backgroundColor: '#ffffff',
@@ -1573,7 +1747,7 @@ async function downloadReportPdf(target: HTMLElement | null, title: string, poli
     });
     renderTarget.cleanup();
     renderTarget = null;
-    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pdf = new jsPDF(options?.preservePageStyle ? 'l' : 'p', 'mm', 'a4');
     addCanvasPagesToPdf(pdf, canvas);
     if (shouldUsePreviewWindow) {
       const pdfBlob = pdf.output('blob');
@@ -1603,6 +1777,59 @@ async function downloadReportPdf(target: HTMLElement | null, title: string, poli
     renderTarget?.cleanup();
     if (!shouldUsePreviewWindow) feedback?.close();
     document.body.classList.remove('pdf-export-mode');
+    document.body.classList.remove('pdf-page-style-export-mode');
+    document.title = previousTitle;
+  }
+}
+
+async function downloadReportImage(target: HTMLElement | null, title: string, options?: ReportExportOptions) {
+  const imageTarget = target || document.querySelector<HTMLElement>('.print-policy-report');
+  if (!imageTarget) {
+    const feedback = showPdfExportFeedback('图片生成失败');
+    feedback.update('图片生成失败', '没有找到可导出的报告内容，请刷新后重试。');
+    feedback.close(1600);
+    return;
+  }
+  const fileName = normalizePdfFileName(title);
+  if (shouldUseInPageReportExport()) {
+    await exportReportInCurrentPage(imageTarget, fileName);
+    return;
+  }
+
+  const previousTitle = document.title;
+  const feedback = showPdfExportFeedback('正在生成图片');
+  let renderTarget: ReturnType<typeof createPdfRenderTarget> | null = null;
+  try {
+    const { default: html2canvas } = await import('html2canvas');
+    document.title = fileName;
+    document.body.classList.add('pdf-page-style-export-mode');
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    renderTarget = createPdfRenderTarget(imageTarget, fileName, undefined, { rawTarget: true, preservePageStyle: true, ...options });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const renderWidth = renderTarget.captureWidth || renderTarget.node.scrollWidth || renderTarget.width;
+    const renderHeight = renderTarget.node.scrollHeight || renderTarget.node.offsetHeight;
+    const canvas = await html2canvas(renderTarget.node, {
+      backgroundColor: '#F4F8FC',
+      scale: getPdfRenderScale(),
+      useCORS: false,
+      width: renderWidth,
+      height: renderHeight,
+      windowWidth: renderWidth,
+      windowHeight: renderHeight,
+    });
+    renderTarget.cleanup();
+    renderTarget = null;
+    const imageBlob = await canvasToBlob(canvas);
+    triggerImageBlobDownload(imageBlob, fileName);
+    feedback.update('图片已生成', '已下载为 JPG 长图。');
+    feedback.close(900);
+  } catch (error) {
+    console.error('[policy-ocr-app] report image export failed', error);
+    feedback.update('图片生成失败', '请刷新报告页后重试。');
+    feedback.close(1800);
+  } finally {
+    renderTarget?.cleanup();
+    document.body.classList.remove('pdf-page-style-export-mode');
     document.title = previousTitle;
   }
 }
@@ -3077,7 +3304,11 @@ function CustomerApp() {
   async function handleCashValueConfirm() {
     if (cashValuePolicyId === null || cashValueEditRows.length === 0) return;
     const savedPolicyId = cashValuePolicyId;
-    const savedRows = cashValueEditRows;
+    const savedRows = normalizeCashValueRowsForSaving(cashValueEditRows, cashValueScanResult?.source || 'manual');
+    if (!savedRows.length) {
+      setCashValueMessage('请至少录入一行现金价值');
+      return;
+    }
     setCashValueLoading(true);
     setCashValueMessage('正在保存...');
 
@@ -3116,13 +3347,24 @@ function CustomerApp() {
   function handleCashValueCellEdit(rowIndex: number, field: 'policyYear' | 'age' | 'cashValue', value: string) {
     setCashValueEditRows((prev) => {
       const updated = [...prev];
-      const num = Number(value.replace(/[,，\s元]/g, ''));
+      const num = parseNumericInput(value);
       if (field === 'age') {
-        updated[rowIndex] = { ...updated[rowIndex], age: Number.isFinite(num) ? num : null };
-      } else if (Number.isFinite(num)) {
+        updated[rowIndex] = { ...updated[rowIndex], age: num };
+      } else if (num !== null) {
         updated[rowIndex] = { ...updated[rowIndex], [field]: num };
       }
       return updated;
+    });
+  }
+
+  function handleAddCashValueRow() {
+    setCashValueEditRows((prev) => [...prev, nextManualCashValueRow(prev)]);
+  }
+
+  function handleRemoveCashValueRow(rowIndex: number) {
+    setCashValueEditRows((prev) => {
+      const nextRows = prev.filter((_, index) => index !== rowIndex);
+      return nextRows.length ? nextRows : [makeManualCashValueRow()];
     });
   }
 
@@ -3133,6 +3375,36 @@ function CustomerApp() {
     setCashValuePolicyId(null);
     setCashValueMessage('');
     setActiveTab('policies');
+  }
+
+  function openManualCashValueEditor(policy: Policy) {
+    const rows = normalizeCashValueRowsForEditing(policy.cashValues);
+    setCashValuePolicyId(policy.id);
+    setCashValueEditRows(rows);
+    setCashValueScanResult({
+      ok: true,
+      source: 'manual',
+      tableType: 3,
+      rows,
+      rowCount: rows.length,
+    });
+    setCashValueMessage('');
+    setCashValueDialogOpen(true);
+  }
+
+  function startManualCashValueEntry() {
+    if (cashValuePolicyId === null) return;
+    const policy = policies.find((row) => Number(row.id) === Number(cashValuePolicyId));
+    const rows = normalizeCashValueRowsForEditing(policy?.cashValues);
+    setCashValueEditRows(rows);
+    setCashValueScanResult({
+      ok: true,
+      source: 'manual',
+      tableType: 3,
+      rows,
+      rowCount: rows.length,
+    });
+    setCashValueMessage('');
   }
 
   async function openPolicy(policy: Policy) {
@@ -3231,7 +3503,7 @@ function CustomerApp() {
           /* Step 1: Upload prompt */
           <div className="text-center">
             <h3 className="mb-2 text-lg font-bold text-slate-800">
-              保单已保存！是否上传现金价值表？
+              录入保单现金价值
             </h3>
             <p className="mb-5 text-sm text-slate-500">
               拍照上传保单的现金价值页面，系统将自动识别并录入
@@ -3256,8 +3528,9 @@ function CustomerApp() {
                 </div>
               </div>
             )}
-            <div className="flex gap-3 justify-center">
+            <div className="flex flex-wrap justify-center gap-3">
               <button
+                type="button"
                 className="rounded-lg bg-[#0B72B9] px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
                 disabled={cashValueLoading}
                 onClick={() => cashValueInputRef.current?.click()}
@@ -3265,6 +3538,15 @@ function CustomerApp() {
                 拍照上传
               </button>
               <button
+                type="button"
+                className="rounded-lg bg-emerald-500 px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+                disabled={cashValueLoading}
+                onClick={startManualCashValueEntry}
+              >
+                手动录入
+              </button>
+              <button
+                type="button"
                 className="rounded-lg border border-slate-200 px-5 py-2.5 text-sm font-medium text-slate-600"
                 onClick={closeCashValueDialog}
               >
@@ -3283,16 +3565,28 @@ function CustomerApp() {
         ) : (
           /* Step 2: Preview and edit results */
           <div>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-bold text-slate-800">现金价值表识别结果</h3>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-lg font-bold text-slate-800">
+                {cashValueScanResult.source === 'manual' ? '录入现金价值' : '现金价值表识别结果'}
+              </h3>
               <span className="text-xs text-slate-400">
-                {cashValueScanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
+                {cashValueScanResult.source === 'manual' ? '手动录入' : cashValueScanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
                 {cashValueScanResult.confidence != null && ` · 置信度 ${Math.round(cashValueScanResult.confidence * 100)}%`}
               </span>
             </div>
             {cashValueMessage && (
               <p className="mb-2 text-sm text-red-500">{cashValueMessage}</p>
             )}
+            <div className="mb-3 flex justify-end">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
+                onClick={handleAddCashValueRow}
+              >
+                <Plus size={14} />
+                添加年度
+              </button>
+            </div>
             <div className="max-h-[50vh] overflow-y-auto">
               <table className="w-full text-xs border-collapse">
                 <thead>
@@ -3302,6 +3596,7 @@ function CustomerApp() {
                       <th className="px-2 py-1.5 text-left font-bold text-slate-600">年龄</th>
                     )}
                     <th className="px-2 py-1.5 text-left font-bold text-slate-600">现金价值(元)</th>
+                    <th className="w-10 px-2 py-1.5 text-right font-bold text-slate-600">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3333,6 +3628,16 @@ function CustomerApp() {
                           onBlur={(e) => handleCashValueCellEdit(i, 'cashValue', e.target.value)}
                         />
                       </td>
+                      <td className="px-1 py-0.5 text-right">
+                        <button
+                          type="button"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-50 text-slate-400 active:bg-red-50 active:text-red-500"
+                          onClick={() => handleRemoveCashValueRow(i)}
+                          aria-label="删除现金价值行"
+                        >
+                          <X size={14} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -3340,6 +3645,7 @@ function CustomerApp() {
             </div>
             <div className="mt-4 flex gap-2 justify-center">
               <button
+                type="button"
                 className="rounded-lg bg-[#0B72B9] px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
                 disabled={cashValueLoading || cashValueEditRows.length === 0}
                 onClick={() => { void handleCashValueConfirm(); }}
@@ -3347,6 +3653,7 @@ function CustomerApp() {
                 确认保存
               </button>
               <button
+                type="button"
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 disabled:opacity-50"
                 disabled={cashValueLoading}
                 onClick={() => {
@@ -3356,13 +3663,14 @@ function CustomerApp() {
                   cashValueInputRef.current?.click();
                 }}
               >
-                重新拍照
+                {cashValueScanResult.source === 'manual' ? '拍照识别' : '重新拍照'}
               </button>
               <button
+                type="button"
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-400"
                 onClick={closeCashValueDialog}
               >
-                跳过
+                取消
               </button>
             </div>
           </div>
@@ -3450,6 +3758,16 @@ function CustomerApp() {
     />
   );
 
+  if (showFamilyReport) {
+    return (
+      <FamilyReportPage
+        report={familyReport}
+        onBack={() => setShowFamilyReport(false)}
+        onExport={(target, title) => void downloadReportImage(target, title, { rawTarget: true, preservePageStyle: true })}
+      />
+    );
+  }
+
   if (activeTab === 'entry' && showAnalysisReport && analysisDraft) {
     return (
       <>
@@ -3504,6 +3822,7 @@ function CustomerApp() {
           isLoggedIn={isLoggedIn}
           mobile={mobile}
           onOpenAccount={() => setShowAccountSheet(true)}
+          onOpenReport={() => setShowFamilyReport(true)}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
         />
@@ -3512,16 +3831,6 @@ function CustomerApp() {
         {accountSheet}
         {cashValueDialog}
       </>
-    );
-  }
-
-  if (showFamilyReport) {
-    return (
-      <FamilyReportPage
-        report={familyReport}
-        onBack={() => setShowFamilyReport(false)}
-        onExport={(target, title) => void downloadReportPdf(target, title, undefined, { rawTarget: true })}
-      />
     );
   }
 
@@ -3587,7 +3896,12 @@ function CustomerApp() {
           </div>
         </div>
 
-        <FamilyCoverageOverview overview={familyCoverageOverview} policies={policies} onViewCashflow={(member) => setCashflowMember(member)} />
+        <FamilyCoverageOverview
+          overview={familyCoverageOverview}
+          policies={policies}
+          onViewCashflow={(member) => setCashflowMember(member)}
+          onViewReport={() => setShowFamilyReport(true)}
+        />
 
         {policies.length ? (
           <section className="px-4 pt-3">
@@ -3645,7 +3959,7 @@ function CustomerApp() {
         </section>
       </main>
 
-      <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />
+      <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
       {!selectedPolicy ? responsibilityAssistant : null}
 
       {selectedPolicy ? (
@@ -3659,6 +3973,7 @@ function CustomerApp() {
           updating={savingPolicyId === selectedPolicy.id}
           onDeletePolicy={handleDeletePolicy}
           deleting={deletingPolicyId === selectedPolicy.id}
+          onEditCashValue={openManualCashValueEditor}
         />
       ) : null}
       {authDialog}
@@ -3984,7 +4299,17 @@ function CashflowDetailPage({
   );
 }
 
-function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overview: FamilyCoverageOverviewData; policies: Policy[]; onViewCashflow: (member: string) => void }) {
+function FamilyCoverageOverview({
+  overview,
+  policies,
+  onViewCashflow,
+  onViewReport,
+}: {
+  overview: FamilyCoverageOverviewData;
+  policies: Policy[];
+  onViewCashflow: (member: string) => void;
+  onViewReport: () => void;
+}) {
   if (!policies.length) return null;
   const displayedRows = overview.rows.slice(0, 10);
   const memberBirthdays = buildMemberBirthdayMap(policies);
@@ -3992,12 +4317,20 @@ function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overvi
   return (
     <section className="p-4 pb-0">
       <div className="rounded-[24px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-        <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xs font-black uppercase text-[#7890AA]">Family Report</p>
             <h2 className="mt-1 text-lg font-black text-[#0F172A]">家庭保障总览</h2>
           </div>
-          <span className="rounded-full bg-[#EEF4FF] px-3 py-1 text-xs font-bold text-[#1152D4]">第一版</span>
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-2 rounded-full bg-blue-50 px-3 py-2 text-xs font-black text-blue-600 ring-1 ring-blue-100 hover:bg-blue-100 active:bg-blue-100"
+            onClick={onViewReport}
+            aria-label="查看家庭保障分析报告"
+          >
+            <FileText size={14} />
+            <span>查看报告</span>
+          </button>
         </div>
 
         <div className="mb-4 grid gap-2 sm:grid-cols-3">
@@ -4957,6 +5290,7 @@ function AdminPolicyDetail({
   const reportFailed = isPolicyReportFailed(policy);
   const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
   const policySources = Array.isArray(policy.sources) ? policy.sources : [];
+  const responsibilitySourceLinks = getPolicyResponsibilitySourceLinks(policy);
   const exportControlTitle = getReportExportControlTitle();
 
   return (
@@ -5034,6 +5368,28 @@ function AdminPolicyDetail({
           <section>
             <h3 className="mb-3 text-sm font-black">责任解析</h3>
             <div className="space-y-3">
+              {responsibilitySourceLinks.length ? (
+                <div className="rounded-2xl border border-blue-100 bg-blue-50 px-3 py-3">
+                  <p className="text-xs font-black text-blue-700">官网地址</p>
+                  <div className="mt-2 space-y-2">
+                    {responsibilitySourceLinks.map((source) => (
+                      <a
+                        key={`${source.title}-${source.url}`}
+                        href={source.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-start gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-blue-700"
+                      >
+                        <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0">
+                          <span className="block truncate font-black">{source.title || formatSourceUrlHost(source.url)}</span>
+                          <span className="block break-all text-blue-500">{source.url}</span>
+                        </span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {responsibilities.length ? (
                 responsibilities.map((row, index) => (
                   <article key={`${row.coverageType}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -5574,14 +5930,24 @@ function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: numb
   );
 }
 
-function CustomerBottomTabs({ activeTab, onChange, fixed = true }: { activeTab: CustomerTab; onChange: (tab: CustomerTab) => void; fixed?: boolean }) {
+function CustomerBottomTabs({
+  activeTab,
+  onChange,
+  onOpenReport,
+  fixed = true,
+}: {
+  activeTab: CustomerTab;
+  onChange: (tab: CustomerTab) => void;
+  onOpenReport?: () => void;
+  fixed?: boolean;
+}) {
   const tabs: Array<{ key: CustomerTab; label: string; icon: typeof UploadCloud }> = [
     { key: 'entry', label: '录入保单', icon: UploadCloud },
     { key: 'policies', label: '我的保单', icon: FileText },
   ];
   return (
     <nav className={fixed ? 'pb-safe fixed bottom-0 left-0 right-0 z-40 border-t border-slate-100 bg-white px-4 pt-2 shadow-[0_-10px_20px_-12px_rgba(15,23,42,0.12)]' : ''}>
-      <div className="grid grid-cols-2 gap-2">
+      <div className={`grid gap-2 ${onOpenReport ? 'grid-cols-3' : 'grid-cols-2'}`}>
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const active = activeTab === tab.key;
@@ -5599,6 +5965,17 @@ function CustomerBottomTabs({ activeTab, onChange, fixed = true }: { activeTab: 
             </button>
           );
         })}
+        {onOpenReport ? (
+          <button
+            type="button"
+            onClick={onOpenReport}
+            className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-blue-50 text-sm font-black text-blue-600 ring-1 ring-blue-100 transition hover:bg-blue-100 active:bg-blue-100"
+            aria-label="查看家庭保障分析报告"
+          >
+            <LayoutDashboard size={18} />
+            查看报告
+          </button>
+        ) : null}
       </div>
     </nav>
   );
@@ -5830,6 +6207,7 @@ function UploadPolicyPage(props: {
   onGenerateAnalysis: () => void;
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
+  onOpenReport: () => void;
   onScanClick: () => void;
   onSelectFormCompany: (company: string) => void;
   onSelectFormProduct: (suggestion: PolicyProductSuggestion) => void;
@@ -5864,6 +6242,7 @@ function UploadPolicyPage(props: {
     onGenerateAnalysis,
     onOcrTextChange,
     onOpenAccount,
+    onOpenReport,
     onScanClick,
     onSelectFormCompany,
     onSelectFormProduct,
@@ -5950,15 +6329,26 @@ function UploadPolicyPage(props: {
         <div></div>
         <h1 className="text-lg font-bold">录入保单</h1>
         <div className="flex justify-end">
-          <button
-            className="flex h-10 max-w-[128px] items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onOpenAccount}
-            aria-label="查看账号"
-          >
-            <CircleUserRound size={18} />
-            <span className="truncate">{isLoggedIn ? maskMobile(mobile) : '游客'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-600 ring-1 ring-blue-100 transition-colors hover:bg-blue-100"
+              type="button"
+              onClick={onOpenReport}
+              aria-label="查看家庭保障分析报告"
+            >
+              <LayoutDashboard size={18} />
+              <span className="hidden sm:inline">查看报告</span>
+            </button>
+            <button
+              className="flex h-10 max-w-[128px] items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
+              type="button"
+              onClick={onOpenAccount}
+              aria-label="查看账号"
+            >
+              <CircleUserRound size={18} />
+              <span className="truncate">{isLoggedIn ? maskMobile(mobile) : '游客'}</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -6233,7 +6623,7 @@ function UploadPolicyPage(props: {
           </button>
         </div>
         <div className="mt-3">
-          <CustomerBottomTabs activeTab={activeTab} onChange={onChangeTab} fixed={false} />
+          <CustomerBottomTabs activeTab={activeTab} onChange={onChangeTab} onOpenReport={onOpenReport} fixed={false} />
         </div>
       </div>
     </div>
@@ -6564,6 +6954,7 @@ function PolicyDetailSheet({
   updating = false,
   onDeletePolicy,
   deleting = false,
+  onEditCashValue,
 }: {
   policy: Policy;
   onClose: () => void;
@@ -6574,6 +6965,7 @@ function PolicyDetailSheet({
   updating?: boolean;
   onDeletePolicy?: (policy: Policy) => void | Promise<void>;
   deleting?: boolean;
+  onEditCashValue?: (policy: Policy) => void;
 }) {
   const reportRef = useRef<HTMLElement | null>(null);
   const [editing, setEditing] = useState(false);
@@ -6585,6 +6977,7 @@ function PolicyDetailSheet({
   const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
+  const responsibilitySourceLinks = getPolicyResponsibilitySourceLinks(policy);
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
@@ -6716,18 +7109,35 @@ function PolicyDetailSheet({
           <MetricBox label="被保人关系" value={policy.insuredRelation || '-'} />
         </section>
 
-        {cashValueSummary ? (
-          <section className="mt-4 rounded-[22px] border border-emerald-100 bg-emerald-50 px-4 py-3 text-emerald-800">
-            <div className="flex items-start justify-between gap-3">
+        {cashValueSummary || onEditCashValue ? (
+          <section className={`mt-4 rounded-[22px] border px-4 py-3 ${
+            cashValueSummary ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-blue-100 bg-blue-50 text-blue-800'
+          }`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-black">保单现金价值</p>
                 <p className="mt-1 text-xs font-semibold leading-5">
-                  已录入 {cashValueSummary.count} 年现金价值，首年 {formatCurrency(cashValueSummary.first.cashValue)}，{cashValueSummary.last.policyYear}年末 {formatCurrency(cashValueSummary.last.cashValue)}。
+                  {cashValueSummary
+                    ? `已录入 ${cashValueSummary.count} 年现金价值，首年 ${formatCurrency(cashValueSummary.first.cashValue)}，${cashValueSummary.last.policyYear}年末 ${formatCurrency(cashValueSummary.last.cashValue)}。`
+                    : '未录入现金价值。'}
                 </p>
               </div>
-              <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-black text-emerald-700">
-                已入库
-              </span>
+              <div className="flex shrink-0 items-center gap-2">
+                {cashValueSummary ? (
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-emerald-700">
+                    已入库
+                  </span>
+                ) : null}
+                {onEditCashValue ? (
+                  <button
+                    type="button"
+                    className="no-print rounded-full bg-white px-3 py-1.5 text-xs font-black text-blue-700 ring-1 ring-blue-100 active:bg-blue-50"
+                    onClick={() => onEditCashValue(policy)}
+                  >
+                    {cashValueSummary ? '修改现金价值' : '录入现金价值'}
+                  </button>
+                ) : null}
+              </div>
             </div>
           </section>
         ) : null}
@@ -6758,6 +7168,28 @@ function PolicyDetailSheet({
             <h3 className="text-base font-bold text-slate-900">保险责任</h3>
             <p className="mt-1 text-xs text-slate-500">以下内容来自本次 OCR 识别和责任解析。</p>
           </div>
+          {responsibilitySourceLinks.length ? (
+            <div className="rounded-[18px] border border-blue-100 bg-blue-50/70 px-3 py-3">
+              <p className="text-xs font-black text-blue-700">官网地址</p>
+              <div className="mt-2 space-y-2">
+                {responsibilitySourceLinks.map((source) => (
+                  <a
+                    key={`${source.title}-${source.url}`}
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-start gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-blue-700 ring-1 ring-blue-100"
+                  >
+                    <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0">
+                      <span className="block truncate font-black">{source.title || formatSourceUrlHost(source.url)}</span>
+                      <span className="block break-all text-blue-500">{source.url}</span>
+                    </span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {responsibilities.length ? (
             responsibilities.map((row, index) => (
               <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">

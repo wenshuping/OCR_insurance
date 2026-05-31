@@ -104,6 +104,51 @@ body {
   max-width: none !important;
 }
 
+.pdf-page-style-export-mode .print-policy-report {
+  height: auto !important;
+  overflow: visible !important;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.pdf-page-style-export-mode .print-policy-report,
+.pdf-page-style-export-mode .print-policy-report * {
+  filter: none !important;
+  text-shadow: none !important;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.pdf-page-style-export-mode .no-print,
+.pdf-page-style-export-mode .no-print * {
+  display: none !important;
+}
+
+.pdf-page-style-export-mode .family-report-pdf-target section,
+.pdf-page-style-export-mode .family-report-pdf-target article {
+  break-inside: avoid;
+}
+
+.pdf-page-style-export-mode .family-report-pdf-target [data-pdf-table-wrap] {
+  overflow: visible !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.pdf-page-style-export-mode .family-report-pdf-target [data-pdf-table-wrap] table {
+  width: 100% !important;
+  min-width: 0 !important;
+  table-layout: fixed !important;
+}
+
+.pdf-page-style-export-mode .family-report-pdf-target th,
+.pdf-page-style-export-mode .family-report-pdf-target td {
+  min-width: 0 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  vertical-align: top !important;
+}
+
 @media print {
   @page {
     size: A4;

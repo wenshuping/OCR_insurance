@@ -90,7 +90,10 @@ function policyTypeLabel(policy) {
     }),
   ].filter(Boolean).join(' ');
 
-  if (/(年金|终身寿|增额|分红|万能|两全|满期|生存金|财富|养老)/u.test(text)) return '财富/年金';
+  if (/(万能|万能型|万能险|万能账户|账户价值|最低保证利率|结算利率)/u.test(text)) return '万能账户';
+  if (/(年金|养老|教育金|生存金)/u.test(text)) return '年金';
+  if (/(终身寿|增额|分红|现金价值|财富)/u.test(text)) return '财富/终身寿';
+  if (/(两全|满期)/u.test(text)) return '两全/满期';
   if (/(重疾|重大疾病|轻症|中症|恶性肿瘤|癌)/u.test(text)) return '重疾';
   if (/(意外|伤残|身故|航空|交通)/u.test(text)) return '意外';
   if (/(医疗|住院|门诊|医保|百万医疗|手术)/u.test(text)) return '医疗';
@@ -299,6 +302,28 @@ function baseProtectionRow(definition) {
   };
 }
 
+function sourcePolicyKey(source) {
+  const policyId = source?.policyId;
+  if (policyId !== undefined && policyId !== null && String(policyId).trim() !== '') return `policy:${policyId}`;
+  return `product:${normalizeProductName(source?.productName)}:${String(source?.liability || '').trim()}`;
+}
+
+function addSourcePolicy(row, source) {
+  const key = sourcePolicyKey(source);
+  if (row.sourcePolicies.some((item) => sourcePolicyKey(item) === key)) return;
+  row.sourcePolicies.push(source);
+}
+
+function indicatorIsAccidentCoverage(indicator) {
+  const coverageType = String(indicator?.coverageType || '').normalize('NFKC');
+  const primaryText = [
+    indicator?.coverageType,
+    indicator?.liability,
+    indicator?.scenario,
+  ].filter(Boolean).join(' ').normalize('NFKC');
+  return coverageType === '意外保障' || /(意外|交通|公共交通|航空|民航|飞机|轨道|列车|轮船|自驾|驾乘|猝死)/u.test(primaryText);
+}
+
 function applyIndicatorToRow(row, indicator, policy) {
   const amount = resolveIndicatorAmount(indicator, policy);
   const formulaText = String(indicator?.formulaText || '').trim();
@@ -311,7 +336,7 @@ function applyIndicatorToRow(row, indicator, policy) {
   row.countText = value !== null && unit ? `${formatNumberText(value)}${unit}` : formulaText || '-';
   row.status = row.amount > 0 ? 'covered' : 'formula';
   row.conditionText = conditionText || '按识别责任计算';
-  row.sourcePolicies.push({
+  addSourcePolicy(row, {
     policyId: policy?.id,
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || ''),
@@ -355,7 +380,7 @@ function applyFallbackPolicyToRow(row, policy) {
   row.countText = row.amount > 0 ? '基本保额' : '-';
   row.status = row.amount > 0 ? 'covered' : 'unknown';
   row.conditionText = '按保单基础保额估算';
-  row.sourcePolicies.push({
+  addSourcePolicy(row, {
     policyId: policy?.id,
     productName: String(policy?.name || ''),
     liability: '重疾首次给付',
@@ -370,6 +395,7 @@ function buildMemberCriticalRows(memberPolicies) {
   for (const policy of memberPolicies) {
     const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
     for (const indicator of indicators) {
+      if (indicatorIsAccidentCoverage(indicator)) continue;
       const definition = classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
       if (!definition) continue;
       const previousAmount = rowMap.get(definition.key).amount;
@@ -575,7 +601,7 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
   } else if (row.conditionText === '未识别到该责任') {
     row.conditionText = '按识别责任计算';
   }
-  row.sourcePolicies.push({
+  addSourcePolicy(row, {
     policyId: policy?.id,
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || indicator?.scenario || ''),

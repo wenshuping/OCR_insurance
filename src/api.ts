@@ -3,6 +3,8 @@ export type Responsibility = {
   scenario: string;
   payout: string;
   note: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
 };
 
 export type PolicySource = {
@@ -308,7 +310,7 @@ export type CashValueRow = {
 
 export type CashValueScanResult = {
   ok: boolean;
-  source?: 'ocr' | 'vision_llm';
+  source?: 'ocr' | 'vision_llm' | 'manual';
   tableType?: 2 | 3;
   rows: CashValueRow[];
   rowCount?: number;

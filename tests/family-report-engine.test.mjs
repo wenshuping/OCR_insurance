@@ -103,7 +103,7 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.rows.length, 2);
   assert.equal(inventory.rows[0].member, '妈妈');
   assert.equal(inventory.rows[0].policyNumber, '88775671973');
-  assert.equal(inventory.rows[0].typeLabel, '财富/年金');
+  assert.equal(inventory.rows[0].typeLabel, '年金');
   assert.equal(inventory.rows[0].cashValueText, '282');
   assert.equal(inventory.rows[0].dataStatus, '现金价值已识别');
   assert.equal(inventory.rows[1].member, '未识别被保人');
@@ -112,6 +112,20 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.insuredGroups[0].member, '妈妈');
   assert.equal(inventory.insuredGroups[0].policies[0].beneficiary, '第一顺位');
   assert.equal(inventory.insuredGroups[0].policies[0].totalPremiumText, '196,000');
+});
+
+test('buildPolicyInventory separates whole life wealth from annuity label', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      id: 1,
+      insured: '温舒萍',
+      name: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+      firstPremium: 3000,
+      amount: 24410,
+    }),
+  ]);
+
+  assert.equal(inventory.rows[0].typeLabel, '财富/终身寿');
 });
 
 test('buildPolicyInventory computes total premium from payment years', () => {
@@ -246,6 +260,54 @@ test('buildFamilyReport aggregates matching critical illness indicators for one 
 
   assert.equal(row.amountText, '50万');
   assert.equal(row.sourcePolicies.length, 2);
+});
+
+test('buildFamilyReport keeps accident indicators out of critical death and disability row', () => {
+  const xinhuaNursing = '新华人寿保险股份有限公司安鑫优选终身护理保险';
+  const xinhuaWholeLife = '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）';
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 500534,
+      insured: '温舒萍',
+      name: xinhuaNursing,
+      amount: 60312,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '疾病身故', value: 160, unit: '%', basis: '基本保额', productName: xinhuaNursing },
+      ],
+    }),
+    makePolicy({
+      id: 500557,
+      insured: '温舒萍',
+      name: xinhuaWholeLife,
+      amount: 24441,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '疾病全残', unit: '公式', basis: '已交保费', formulaText: '疾病全残 = 现金价值', productName: xinhuaWholeLife },
+        {
+          coverageType: '意外保障',
+          liability: '交通/航空等给付倍数',
+          value: 1.5,
+          unit: '倍',
+          basis: '特定意外额外给付倍数',
+          productName: xinhuaWholeLife,
+          sourceExcerpt: '特定公共交通工具意外伤害身故或身体全残保险金，金额为基本保险金额的1.5倍。',
+        },
+        { coverageType: '意外保障', liability: '意外全残', value: 1.5, unit: '倍', basis: '基本保额', productName: xinhuaWholeLife },
+        { coverageType: '意外保障', liability: '特定意外身故/全残', value: 1.5, unit: '倍', basis: '基本保额', productName: xinhuaWholeLife },
+      ],
+    }),
+  ]);
+
+  const criticalMember = report.criticalIllness.members.find((item) => item.member === '温舒萍');
+  const deathRow = criticalMember.rows.find((row) => row.key === 'death_disability');
+  const wholeLifeSourceCount = deathRow.sourcePolicies.filter((policy) => policy.productName === xinhuaWholeLife).length;
+
+  assert.equal(Number(deathRow.amount.toFixed(1)), 96499.2);
+  assert.equal(wholeLifeSourceCount, 1);
+  assert.deepEqual(deathRow.sourcePolicies.map((policy) => policy.productName), [xinhuaNursing, xinhuaWholeLife]);
+
+  const accidentMember = report.accident.members.find((item) => item.member === '温舒萍');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'general_accident').status, 'covered');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'aviation').status, 'covered');
 });
 
 test('buildFamilyReport resolves critical illness amounts from formula text', () => {

@@ -124,7 +124,7 @@ test('entry form and family overview expose insured birthday for age-based repor
   assert.match(overviewSource, /家庭保障总览/);
   assert.match(overviewSource, /memberBirthdays/);
   assert.match(appSource, /buildFamilyCoverageOverview\(policies\)/);
-  assert.match(appSource, /<FamilyCoverageOverview overview=\{familyCoverageOverview\} policies=\{policies\}/);
+  assert.match(appSource, /<FamilyCoverageOverview[\s\S]*overview=\{familyCoverageOverview\}[\s\S]*policies=\{policies\}/);
 });
 
 test('entry form separates legal beneficiary from beneficiary name before saving policy', () => {
@@ -257,6 +257,44 @@ test('customer policy detail shows applicant beneficiary and effective date', ()
   assert.match(detailSource, /formatDateLabel\(policy\.date/);
 });
 
+test('customer policy detail displays responsibility official urls', () => {
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const adminDetailSource = componentSource('AdminPolicyDetail', 'MetricBox');
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /sourceUrl\?: string/);
+  assert.match(apiSource, /sourceTitle\?: string/);
+  assert.match(appSource, /function getPolicyResponsibilitySourceLinks\(policy: Policy\)/);
+  assert.match(appSource, /policy\.sources/);
+  assert.match(appSource, /policy\.coverageIndicators/);
+  assert.match(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
+  assert.match(detailSource, /官网地址/);
+  assert.match(detailSource, /href=\{source\.url\}/);
+  assert.match(detailSource, /target="_blank"/);
+  assert.match(detailSource, /ExternalLink/);
+  assert.match(adminDetailSource, /官网地址/);
+});
+
+test('customer policy detail can open manual cash value entry', () => {
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /source\?: 'ocr' \| 'vision_llm' \| 'manual'/);
+  assert.match(customerSource, /openManualCashValueEditor/);
+  assert.match(customerSource, /startManualCashValueEntry/);
+  assert.match(customerSource, /handleAddCashValueRow/);
+  assert.match(customerSource, /handleRemoveCashValueRow/);
+  assert.match(customerSource, /normalizeCashValueRowsForSaving/);
+  assert.match(customerSource, /confirmCashValue/);
+  assert.match(customerSource, /手动录入/);
+  assert.match(customerSource, /添加年度/);
+  assert.match(detailSource, /onEditCashValue/);
+  assert.match(detailSource, /录入现金价值/);
+  assert.match(detailSource, /修改现金价值/);
+});
+
 test('policy edit dialog offers insurer and product suggestions', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
   assert.match(detailSource, /editCompanySuggestions/);
@@ -284,6 +322,17 @@ test('customer app exposes family report after policy inventory and before secti
   assert.ok(familySource.indexOf('被保人保单明细') < familySource.indexOf('重疾分析'));
   assert.ok(familySource.indexOf('重疾分析') < familySource.indexOf('意外分析'));
   assert.ok(familySource.indexOf('意外分析') < familySource.indexOf('财富分析'));
+});
+
+test('family overview header exposes a direct family report entry', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
+
+  assert.match(customerSource, /onViewReport=\{\(\) => setShowFamilyReport\(true\)\}/);
+  assert.match(overviewSource, /onViewReport/);
+  assert.match(overviewSource, /家庭保障分析报告/);
+  assert.match(overviewSource, /查看报告/);
+  assert.match(overviewSource, /onClick=\{onViewReport\}/);
 });
 
 test('family report labels match the agreed report structure', () => {
@@ -325,23 +374,41 @@ test('family report wealth policies show cashflow table with cash value and keep
   assert.doesNotMatch(cashValueArea, /<TableWrap>/);
 });
 
-test('family report export uses raw target mode', () => {
+test('family report export downloads a page-styled image instead of paginated pdf', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean \}/);
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean \}/);
   assert.match(appSource, /rawTarget: true/);
+  assert.match(appSource, /preservePageStyle: true/);
+  assert.match(appSource, /downloadReportImage\(target,\s*title/);
+  assert.match(appSource, /triggerImageBlobDownload\(imageBlob,\s*fileName\)/);
+  assert.match(appSource, /link\.download = `\$\{fileName\}\.jpg`/);
+  const imageExportSource = componentSource('downloadReportImage', 'buildDraftReportTitle');
+  assert.doesNotMatch(imageExportSource, /exportCurrentReportAsPdf/);
+  assert.doesNotMatch(imageExportSource, /new jsPDF/);
+  assert.doesNotMatch(imageExportSource, /PDF/);
   assert.match(appSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
   assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
+  assert.match(familySource, /aria-label="下载报告图片"/);
+  assert.match(familySource, /title="下载报告图片"/);
 });
 
-test('family report export expands scrollable table wrappers for pdf capture', () => {
+test('family report export keeps page styling and wraps wide tables for pdf capture', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
   assert.match(familySource, /data-pdf-table-wrap/);
+  assert.match(appSource, /preparePageStyleReportNode\(reportNode,\s*width\)/);
+  assert.match(appSource, /family-report-pdf-target/);
   assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
-  assert.match(appSource, /Math\.max\(width,\s*reportNode\.scrollWidth/);
-  assert.match(cssSource, /\.pdf-export-mode \.print-policy-report \[data-pdf-table-wrap\]/);
+  assert.match(appSource, /captureWidth: options\?\.preservePageStyle \? width/);
+  assert.match(appSource, /new jsPDF\(options\?\.preservePageStyle \? 'l' : 'p'/);
+  assert.match(cssSource, /\.pdf-page-style-export-mode \.family-report-pdf-target \[data-pdf-table-wrap\]/);
   assert.match(cssSource, /overflow:\s*visible !important/);
-  assert.match(cssSource, /max-width:\s*none !important/);
+  assert.match(cssSource, /max-width:\s*100% !important/);
+  assert.match(cssSource, /table-layout:\s*fixed !important/);
+  assert.match(cssSource, /white-space:\s*normal !important/);
+  assert.match(cssSource, /print-color-adjust:\s*exact/);
 });
