@@ -93,6 +93,7 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
       coveragePeriod: '至85岁',
       date: '2025-12-22',
       beneficiary: '第一顺位',
+      coverageIndicators: [{ productType: '年金险', coverageType: '现金流', liability: '生存金', productName: '盛世恒盈年金' }],
       cashValues: [{ policyYear: 1, age: 37, cashValue: 282 }],
       cashflowEntries: [{ year: 2030, age: 42, amount: 1465, cumulative: 1465, liability: '生存金', policyId: 1, productName: '盛世恒盈年金', calculationText: '' }],
     }),
@@ -111,7 +112,7 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.rows.length, 2);
   assert.equal(inventory.rows[0].member, '妈妈');
   assert.equal(inventory.rows[0].policyNumber, '88775671973');
-  assert.equal(inventory.rows[0].typeLabel, '年金');
+  assert.equal(inventory.rows[0].typeLabel, '年金险');
   assert.equal(inventory.rows[0].cashValueText, '282');
   assert.equal(inventory.rows[0].dataStatus, '现金价值已识别');
   assert.equal(inventory.rows[1].member, '未识别被保人');
@@ -122,7 +123,7 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.insuredGroups[0].policies[0].totalPremiumText, '196,000');
 });
 
-test('buildPolicyInventory separates whole life wealth from annuity label', () => {
+test('buildPolicyInventory uses indicator product type verbatim without name mapping', () => {
   const inventory = buildPolicyInventory([
     makePolicy({
       id: 1,
@@ -130,10 +131,27 @@ test('buildPolicyInventory separates whole life wealth from annuity label', () =
       name: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
       firstPremium: 3000,
       amount: 24410,
+      coverageIndicators: [{ productType: '寿险', coverageType: '身故保险金', liability: '身故保险金', productName: '盛世荣耀臻享版终身寿险（分红型）' }],
     }),
   ]);
 
-  assert.equal(inventory.rows[0].typeLabel, '财富/终身寿');
+  assert.equal(inventory.rows[0].typeLabel, '寿险');
+});
+
+test('buildPolicyInventory dedupes compound indicator product types without mapping', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      id: 1,
+      insured: '温舒萍',
+      name: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+      coverageIndicators: [
+        { productType: '年金险', coverageType: '现金流', liability: '生存金', productName: '盛世恒盈年金保险（分红型）' },
+        { productType: '年金险、万能账户', coverageType: '现金流', liability: '养老年金', productName: '鑫天利卓越版养老年金保险（万能型）' },
+      ],
+    }),
+  ]);
+
+  assert.equal(inventory.rows[0].typeLabel, '年金险、万能账户');
 });
 
 test('buildPolicyInventory computes total premium from payment years', () => {
@@ -191,7 +209,7 @@ test('buildPolicyInventory ignores malformed cash value rows', () => {
   assert.equal(inventory.rows[1].dataStatus, '待补充责任');
 });
 
-test('buildPolicyInventory classifies policies from responsibility fields', () => {
+test('buildPolicyInventory does not classify policies from responsibility fields', () => {
   const inventory = buildPolicyInventory([
     makePolicy({
       name: '基础保障',
@@ -202,7 +220,18 @@ test('buildPolicyInventory classifies policies from responsibility fields', () =
     }),
   ]);
 
-  assert.equal(inventory.rows[0].typeLabel, '医疗');
+  assert.equal(inventory.rows[0].typeLabel, '');
+});
+
+test('buildPolicyInventory falls back to plan product type verbatim', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      name: '新华人寿保险股份有限公司畅行万里智慧版两全保险',
+      plans: [{ name: '畅行万里智慧版两全保险', productType: '两全保险' }],
+    }),
+  ]);
+
+  assert.equal(inventory.rows[0].typeLabel, '两全保险');
 });
 
 test('buildFamilyReport includes summary and inventory sections', () => {

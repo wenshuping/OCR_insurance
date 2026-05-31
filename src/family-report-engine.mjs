@@ -66,38 +66,29 @@ function totalPremiumText(policy) {
   return formatNumberText(premium * years);
 }
 
-function policyTypeLabel(policy) {
-  const text = [
-    policy?.company,
-    policy?.name,
-    policy?.coveragePeriod,
-    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
-      if (typeof plan === 'string') return plan;
-      return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
-    }),
-    ...(Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).map((item) => {
-      if (typeof item === 'string') return item;
-      return [
-        item?.name,
-        item?.title,
-        item?.liability,
-        item?.type,
-        item?.coverageType,
-        item?.scenario,
-        item?.payout,
-        item?.note,
-      ].filter(Boolean).join(' ');
-    }),
-  ].filter(Boolean).join(' ');
+function uniqueJoinedText(values = []) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const parts = String(value || '').split(/[、,，;；/／]+/u);
+    for (const part of parts) {
+      const text = part.trim();
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      result.push(text);
+    }
+  }
+  return result.join('、');
+}
 
-  if (/(万能|万能型|万能险|万能账户|账户价值|最低保证利率|结算利率)/u.test(text)) return '万能账户';
-  if (/(年金|养老|教育金|生存金)/u.test(text)) return '年金';
-  if (/(终身寿|增额|分红|现金价值|财富)/u.test(text)) return '财富/终身寿';
-  if (/(两全|满期)/u.test(text)) return '两全/满期';
-  if (/(重疾|重大疾病|轻症|中症|恶性肿瘤|癌)/u.test(text)) return '重疾';
-  if (/(意外|伤残|身故|航空|交通)/u.test(text)) return '意外';
-  if (/(医疗|住院|门诊|医保|百万医疗|手术)/u.test(text)) return '医疗';
-  return '其他';
+function policyTypeLabel(policy) {
+  const indicatorType = uniqueJoinedText((Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : []).map((indicator) => indicator?.productType));
+  if (indicatorType) return indicatorType;
+
+  const policyType = uniqueJoinedText([policy?.productType, policy?.type]);
+  if (policyType) return policyType;
+
+  return uniqueJoinedText((Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => plan?.productType));
 }
 
 function coverageText(policy) {
@@ -1233,7 +1224,7 @@ function medicalRadarAmount(policies) {
       if (amount > 0) parts.push({ sourceKey: policySourceKey(policy), policyId: policy?.id, label: String(indicator?.liability || '医疗额度'), amount });
     }
     const sourceKey = policySourceKey(policy);
-    if (!parts.some((part) => part.sourceKey === sourceKey) && policyTypeLabel(policy) === '医疗') {
+    if (!parts.some((part) => part.sourceKey === sourceKey) && /(医疗|住院|门诊|报销|百万医疗|手术|医疗费用)/u.test(radarPolicyText(policy))) {
       const amount = asNumber(policy?.amount);
       if (amount > 0) parts.push({ sourceKey, policyId: policy?.id, label: '医疗额度', amount });
     }
