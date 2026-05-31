@@ -384,6 +384,31 @@ test('buildFamilyReport counts one combined accident liability once even when it
   assert.match(accident.note, /航空公共交通意外身故保险金500,000/);
 });
 
+test('buildFamilyReport keeps long accident responsibility text out of radar notes', () => {
+  const longScenario = '保险责任 在本合同保险期间内，我们按以下约定承担保险责任并给付保险金。被保险人以乘客身份乘坐公共交通工具期间遭受意外伤害事故。';
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 403,
+      insured: '爸爸',
+      name: '综合交通意外保险',
+      amount: 0,
+      responsibilities: [
+        {
+          coverageType: '意外保障',
+          scenario: longScenario,
+          payout: '航空意外身故保险金 500000元',
+        },
+      ],
+    }),
+  ]);
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 500000);
+  assert.ok(accident.note.length < 80);
+  assert.doesNotMatch(accident.note, /本合同保险期间|我们按以下约定/u);
+  assert.match(accident.note, /公共交通|航空意外|意外/u);
+});
+
 test('buildFamilyReport keeps same accident liability with different scenarios separate', () => {
   const report = buildFamilyReport([
     makePolicy({

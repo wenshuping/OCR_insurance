@@ -1110,13 +1110,25 @@ function uniquePolicyCount(parts) {
   return new Set(parts.map((part) => part.sourceKey || sourcePolicyKey(part)).filter(Boolean)).size;
 }
 
+function compactRadarLabel(value, fallback = '已识别责任') {
+  const normalized = String(value || '')
+    .normalize('NFKC')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!normalized) return fallback;
+
+  const firstPhrase = normalized.split(/[。；;\n\r]/u)[0]?.trim() || normalized;
+  if (firstPhrase.length > 24) return fallback;
+  return firstPhrase;
+}
+
 function radarAmountResult(amount, parts, fallbackNote = '') {
   const amountParts = parts.filter((part) => asNumber(part.amount) > 0);
   const note = amount > 0
     ? (
       amountParts.length
-        ? amountParts.map((part) => `${part.label}${formatNumberText(part.amount)}`).join('，')
-        : `合计${formatNumberText(amount)}，来源${parts.map((part) => part.label).filter(Boolean).join('、') || '已识别责任'}`
+        ? amountParts.map((part) => `${compactRadarLabel(part.label)}${formatNumberText(part.amount)}`).join('，')
+        : `合计${formatNumberText(amount)}，来源${parts.map((part) => compactRadarLabel(part.label)).filter(Boolean).join('、') || '已识别责任'}`
     )
     : fallbackNote || '未识别到可落地金额';
   return {
@@ -1166,7 +1178,7 @@ function accidentIndicatorRadarAmount(indicator, policy) {
       definitions.map((definition) => definition.key).sort().join('|'),
     ].join(':scenario:'),
     policyId: policy?.id,
-    label: String(indicator?.liability || indicator?.scenario || definitions[0]?.label || '意外保障'),
+    label: compactRadarLabel(indicator?.liability || indicator?.scenario, definitions[0]?.label || '意外保障'),
     amount,
   };
 }

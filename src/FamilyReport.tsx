@@ -85,6 +85,14 @@ function radarShortAmount(score: RadarSeries['scores'][number]) {
   return score.amountText || formatMoneyWithUnit(score.amount);
 }
 
+function radarScoreSummary(score: RadarSeries['scores'][number]) {
+  if (score.amount <= 0) return score.note;
+  if (score.key === 'wealth') return '现金价值与未来领取合计';
+  return score.policyCount > 0
+    ? `来源${score.policyCount}张保单，按金额合计绘制`
+    : '按已识别责任金额绘制';
+}
+
 const thClassName = 'bg-[#0B72B9] px-3 py-2 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
@@ -257,7 +265,7 @@ function FamilyRadarSection({ report }: { report: FamilyReport }) {
             <div key={score.key} className="min-w-0 rounded-xl bg-white/15 px-3 py-2">
               <p className="text-[11px] font-bold text-white/70">{score.label}</p>
               <p className="mt-0.5 break-words text-sm font-black leading-tight text-white">{radarShortAmount(score)}</p>
-              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/75">{score.note}</p>
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/75">{radarScoreSummary(score)}</p>
             </div>
           ))}
           {wealth ? (
