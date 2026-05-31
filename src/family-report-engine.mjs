@@ -14,31 +14,95 @@ function memberName(policy) {
   return name || '未识别被保人';
 }
 
-function policyStatusText(policy) {
+const INACTIVE_STATUS_PATTERN = /(失效|停效|中止|终止|退保|已退保|过期|作废|无效|inactive|expired|lapsed|terminated|surrendered|cancelled|canceled|void)/iu;
+
+function statusText(record) {
   return [
-    policy?.policyStatus,
-    policy?.policyState,
-    policy?.contractStatus,
-    policy?.contractState,
-    policy?.validStatus,
-    policy?.validityStatus,
-    policy?.coverageStatus,
-    policy?.state,
-    policy?.status,
-    policy?.['保单状态'],
-    policy?.['合同状态'],
-    policy?.['效力状态'],
-    policy?.['状态'],
+    record?.policyStatus,
+    record?.policyState,
+    record?.contractStatus,
+    record?.contractState,
+    record?.validStatus,
+    record?.validityStatus,
+    record?.coverageStatus,
+    record?.state,
+    record?.status,
+    record?.['保单状态'],
+    record?.['合同状态'],
+    record?.['效力状态'],
+    record?.['状态'],
   ]
     .filter((value) => value !== null && value !== undefined && String(value).trim() !== '')
     .map((value) => String(value).normalize('NFKC').trim())
     .join(' ');
 }
 
+function policyStatusText(policy) {
+  return statusText(policy);
+}
+
+function inactiveStatusText(text) {
+  return INACTIVE_STATUS_PATTERN.test(String(text || '').normalize('NFKC'));
+}
+
 function policyIsInactive(policy) {
   if (policy?.expired === true) return true;
   const text = policyStatusText(policy);
-  return /(失效|停效|中止|终止|退保|已退保|过期|作废|无效|inactive|expired|lapsed|terminated|surrendered|cancelled|canceled|void)/iu.test(text);
+  return inactiveStatusText(text);
+}
+
+function validEndOfDayDate(year, month, day) {
+  const parsedYear = Number(year);
+  const parsedMonth = Number(month);
+  const parsedDay = Number(day);
+  if (!Number.isInteger(parsedYear) || !Number.isInteger(parsedMonth) || !Number.isInteger(parsedDay)) return null;
+  if (parsedYear < 1900 || parsedYear > 2200 || parsedMonth < 1 || parsedMonth > 12 || parsedDay < 1 || parsedDay > 31) return null;
+  const date = new Date(parsedYear, parsedMonth - 1, parsedDay, 23, 59, 59, 999);
+  if (date.getFullYear() !== parsedYear || date.getMonth() !== parsedMonth - 1 || date.getDate() !== parsedDay) return null;
+  return date;
+}
+
+function parseCoverageEndDate(value) {
+  const text = String(value || '').normalize('NFKC').trim();
+  if (!text || /终身|永久|lifelong|whole\s*life/iu.test(text)) return null;
+
+  const chineseDateMatches = [...text.matchAll(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?/gu)];
+  if (chineseDateMatches.length) {
+    const match = chineseDateMatches[chineseDateMatches.length - 1];
+    return validEndOfDayDate(match[1], match[2], match[3]);
+  }
+
+  const numericDateMatches = [...text.matchAll(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/gu)];
+  if (numericDateMatches.length) {
+    const match = numericDateMatches[numericDateMatches.length - 1];
+    return validEndOfDayDate(match[1], match[2], match[3]);
+  }
+
+  return null;
+}
+
+function coveragePeriodExpired(value, today = new Date()) {
+  const endDate = parseCoverageEndDate(value);
+  if (!endDate) return false;
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return endDate < startOfToday;
+}
+
+function planStatusText(plan) {
+  if (!plan || typeof plan === 'string') return '';
+  return statusText(plan);
+}
+
+function planIsInactive(policy, plan) {
+  if (policyIsInactive(policy)) return true;
+  if (!plan || typeof plan === 'string') return false;
+  if (plan?.expired === true) return true;
+  if (inactiveStatusText(planStatusText(plan))) return true;
+  return coveragePeriodExpired(plan?.coveragePeriod);
+}
+
+function activePlans(policy) {
+  return (Array.isArray(policy?.plans) ? policy.plans : []).filter((plan) => !planIsInactive(policy, plan));
 }
 
 function activePolicies(policies = []) {
@@ -264,6 +328,20 @@ function findPlanForIndicator(policy, indicator) {
   }) || null;
 }
 
+function indicatorPlanIsInactive(policy, indicator) {
+  const plan = findPlanForIndicator(policy, indicator);
+  return Boolean(plan && planIsInactive(policy, plan));
+}
+
+function indicatorSourceProductName(policy, indicator) {
+  const plan = findPlanForIndicator(policy, indicator);
+  if (plan && typeof plan !== 'string') {
+    const productName = String(plan?.matchedProductName || plan?.name || '').trim();
+    if (productName) return productName;
+  }
+  return String(indicator?.productName || policy?.name || '').trim();
+}
+
 function indicatorBaseAmount(indicator, policy) {
   const plan = findPlanForIndicator(policy, indicator);
   const planAmount = finiteNumber(plan?.amount);
@@ -274,6 +352,11 @@ function indicatorBaseAmount(indicator, policy) {
 function classifyByDefinitions(text, definitions) {
   const normalized = String(text || '').normalize('NFKC');
   return definitions.find((definition) => definition.patterns.some((pattern) => pattern.test(normalized))) || null;
+}
+
+function formulaNeedsManualAmount(text) {
+  return /(较大|较高|最大|取|现金价值|现价|账户价值|已交|所交|实际交纳|保险费|保费|余额|两者|三者|max)/iu
+    .test(String(text || '').normalize('NFKC'));
 }
 
 function resolveIndicatorAmount(indicator, policy) {
@@ -306,7 +389,7 @@ function resolveIndicatorAmount(indicator, policy) {
   const yuanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:元|圆)/u);
   if (yuanMatch) return asNumber(yuanMatch[1]);
 
-  if (baseAmountPattern.test(text)) return baseAmount;
+  if (baseAmountPattern.test(text) && !formulaNeedsManualAmount(text)) return baseAmount;
 
   return 0;
 }
@@ -421,7 +504,7 @@ function applyIndicatorToRow(row, indicator, policy) {
     sourceKey: policySourceKey(policy),
     policyId: policy?.id,
     company: String(policy?.company || ''),
-    productName: String(indicator?.productName || policy?.name || ''),
+    productName: indicatorSourceProductName(policy, indicator),
     liability: String(indicator?.liability || ''),
     formulaText,
     amount,
@@ -436,7 +519,7 @@ function criticalPolicyText(policy) {
     policy?.name,
     policy?.report,
     policy?.ocrText,
-    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
+    ...activePlans(policy).map((plan) => {
       if (typeof plan === 'string') return plan;
       return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
     }),
@@ -480,24 +563,46 @@ function applyFallbackPolicyToRow(row, policy) {
   });
 }
 
-function markInactiveSourceOnRow(row, policy, liability) {
+function indicatorCountText(indicator, fallback = '-') {
+  const formulaText = String(indicator?.formulaText || '').trim();
+  const value = finiteNumber(indicator?.value);
+  const unit = String(indicator?.unit || '').trim();
+  return value !== null && unit ? `${formatNumberText(value)}${unit}` : formulaText || fallback;
+}
+
+function markInactiveSourceOnRow(row, policy, liability, options = {}) {
   if (!row || row.amount > 0 || row.status === 'covered') return;
   const normalizedLiability = String(liability || row.label || '').trim();
+  const productName = String(options.productName || policy?.name || '').trim();
+  const reasonText = String(options.reasonText || '历史识别到该责任，但保单已失效，未计入当前保障').trim();
+  const inactiveAmount = asNumber(options.amount);
   row.amount = 0;
-  row.amountText = '未统计';
-  row.countText = '-';
+  if (inactiveAmount > 0) {
+    row.inactiveAmount = asNumber(row.inactiveAmount) + inactiveAmount;
+    row.amountText = amountDisplay(row.inactiveAmount);
+  } else if (options.amountText) {
+    row.amountText = String(options.amountText);
+  } else if (row.amountText === '未统计') {
+    row.amountText = '未识别';
+  }
+  const countText = String(options.countText || '').trim();
+  if (countText) {
+    row.countText = row.countText === '-' || row.countText === countText ? countText : `${row.countText}/${countText}`;
+  } else if (row.countText === '未统计') {
+    row.countText = '-';
+  }
   row.status = 'inactive';
-  row.conditionText = '保单状态为失效，未计入统计';
+  row.conditionText = reasonText;
   addSourcePolicy(row, {
-    sourceKey: `${policySourceKey(policy)}:inactive:${row.key}`,
+    sourceKey: `${policySourceKey(policy)}:inactive:${row.key}:${normalizeProductName(productName)}:${normalizeProductName(normalizedLiability)}`,
     policyId: policy?.id,
     company: String(policy?.company || ''),
-    productName: String(policy?.name || ''),
+    productName,
     liability: normalizedLiability,
-    formulaText: '失效保单未计入统计',
-    amount: 0,
-    amountText: '未统计',
-    calculationText: '保单状态为失效，未计入统计',
+    formulaText: reasonText,
+    amount: inactiveAmount,
+    amountText: inactiveAmount > 0 ? formatRadarMoney(inactiveAmount) : '未识别',
+    calculationText: inactiveAmount > 0 ? `${formatRadarMoney(inactiveAmount)}；${reasonText}` : reasonText,
   });
 }
 
@@ -510,10 +615,18 @@ function markInactiveCriticalPolicies(rowMap, memberPolicies) {
       const definition = classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
       if (!definition) continue;
       matched = true;
-      markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || definition.label);
+      const amount = indicatorAmountForPolicy(indicator, policy);
+      markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || definition.label, {
+        productName: indicatorSourceProductName(policy, indicator),
+        amount,
+        countText: indicatorCountText(indicator),
+      });
     }
     if (!matched && policyImpliesCriticalIllness(policy)) {
-      markInactiveSourceOnRow(rowMap.get('critical_first'), policy, '重疾首次给付');
+      markInactiveSourceOnRow(rowMap.get('critical_first'), policy, '重疾首次给付', {
+        amount: asNumber(policy?.amount),
+        countText: '基本保额',
+      });
     }
   }
 }
@@ -526,6 +639,7 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = []) {
   const rowMap = new Map(CRITICAL_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
   const usableCriticalFirstPolicies = new Set();
   const formulaCriticalFirstPolicies = new Set();
+  const inactiveCriticalPolicies = new Set();
 
   for (const policy of memberPolicies) {
     const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
@@ -533,6 +647,16 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = []) {
       if (indicatorIsAccidentCoverage(indicator)) continue;
       const definition = classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
       if (!definition) continue;
+      if (indicatorPlanIsInactive(policy, indicator)) {
+        inactiveCriticalPolicies.add(policy);
+        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || definition.label, {
+          productName: indicatorSourceProductName(policy, indicator),
+          reasonText: '历史识别到该责任，但对应险种已失效，未计入当前保障',
+          amount: indicatorAmountForPolicy(indicator, policy),
+          countText: indicatorCountText(indicator),
+        });
+        continue;
+      }
       const amount = applyIndicatorToRow(rowMap.get(definition.key), indicator, policy);
       if (definition.key === 'critical_first') {
         if (amount > 0) {
@@ -554,7 +678,12 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = []) {
   }
 
   for (const policy of memberPolicies) {
-    if (policyImpliesCriticalIllness(policy) && !usableCriticalFirstPolicies.has(policy) && !formulaCriticalFirstPolicies.has(policy)) {
+    if (
+      policyImpliesCriticalIllness(policy)
+      && !usableCriticalFirstPolicies.has(policy)
+      && !formulaCriticalFirstPolicies.has(policy)
+      && !inactiveCriticalPolicies.has(policy)
+    ) {
       applyFallbackPolicyToRow(criticalFirst, policy);
     }
   }
@@ -649,7 +778,7 @@ function accidentPolicyText(policy) {
     policy?.name,
     policy?.report,
     policy?.ocrText,
-    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
+    ...activePlans(policy).map((plan) => {
       if (typeof plan === 'string') return plan;
       return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
     }),
@@ -749,7 +878,7 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
     sourceKey: policySourceKey(policy),
     policyId: policy?.id,
     company: String(policy?.company || ''),
-    productName: String(indicator?.productName || policy?.name || ''),
+    productName: indicatorSourceProductName(policy, indicator),
     liability: String(indicator?.liability || indicator?.scenario || ''),
     formulaText,
     amount,
@@ -777,7 +906,7 @@ function responsibilityToAccidentIndicator(responsibility, policy) {
     formulaText: responsibility?.formulaText || responsibility?.payout || responsibility?.note || '',
     condition: responsibility?.condition || responsibility?.note || '',
     basis: responsibility?.basis,
-    productName: policy?.name,
+    productName: responsibility?.productName || responsibility?.matchedProductName || responsibility?.sourceProductName || responsibility?.planName || policy?.name,
     sourceExcerpt: responsibility?.sourceExcerpt,
   };
 }
@@ -808,7 +937,11 @@ function markInactiveAccidentPolicies(rowMap, memberPolicies) {
       if (!definitions.length) continue;
       matched = true;
       for (const definition of definitions) {
-        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label);
+        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label, {
+          productName: indicatorSourceProductName(policy, indicator),
+          amount: indicatorAmountForPolicy(indicator, policy),
+          countText: accidentCountText(definition, indicator),
+        });
       }
     }
 
@@ -819,7 +952,11 @@ function markInactiveAccidentPolicies(rowMap, memberPolicies) {
       if (!definitions.length) continue;
       matched = true;
       for (const definition of definitions) {
-        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label);
+        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label, {
+          productName: indicatorSourceProductName(policy, indicator),
+          amount: indicatorAmountForPolicy(indicator, policy),
+          countText: accidentCountText(definition, indicator),
+        });
       }
     }
 
@@ -828,7 +965,11 @@ function markInactiveAccidentPolicies(rowMap, memberPolicies) {
       const definitions = classifyAccidentIndicatorDefinitions(indicator);
       const fallbackDefinitions = definitions.length ? definitions : [ACCIDENT_ROWS.find((item) => item.key === 'general_accident')];
       for (const definition of fallbackDefinitions) {
-        markInactiveSourceOnRow(rowMap.get(definition?.key), policy, indicator?.liability || definition?.label);
+        markInactiveSourceOnRow(rowMap.get(definition?.key), policy, indicator?.liability || definition?.label, {
+          productName: indicatorSourceProductName(policy, indicator),
+          amount: indicatorAmountForPolicy(indicator, policy),
+          countText: definition ? accidentCountText(definition, indicator) : '定额给付',
+        });
       }
     }
   }
@@ -846,6 +987,15 @@ function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
 
       const definitions = classifyAccidentIndicatorDefinitions(indicator);
       for (const definition of definitions) {
+        if (indicatorPlanIsInactive(policy, indicator)) {
+          markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label, {
+            productName: indicatorSourceProductName(policy, indicator),
+            reasonText: '历史识别到该责任，但对应险种已失效，未计入当前保障',
+            amount: indicatorAmountForPolicy(indicator, policy),
+            countText: accidentCountText(definition, indicator),
+          });
+          continue;
+        }
         applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
         indicatorRowKeys.add(definition.key);
       }
@@ -860,6 +1010,15 @@ function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
       for (const definition of definitions) {
         const row = rowMap.get(definition.key);
         if (indicatorRowKeys.has(definition.key) && row.amount > 0) continue;
+        if (indicatorPlanIsInactive(policy, indicator)) {
+          markInactiveSourceOnRow(row, policy, indicator?.liability || indicator?.scenario || definition.label, {
+            productName: indicatorSourceProductName(policy, indicator),
+            reasonText: '历史识别到该责任，但对应险种已失效，未计入当前保障',
+            amount: indicatorAmountForPolicy(indicator, policy),
+            countText: accidentCountText(definition, indicator),
+          });
+          continue;
+        }
         applyAccidentIndicatorToRow(row, definition, indicator, policy);
       }
     }
@@ -1030,7 +1189,7 @@ function isWealthPolicy(policy) {
     policy?.company,
     policy?.name,
     policy?.coveragePeriod,
-    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
+    ...activePlans(policy).map((plan) => {
       if (typeof plan === 'string') return plan;
       return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
     }),
@@ -1351,7 +1510,7 @@ function radarPolicyText(policy) {
     policy?.coveragePeriod,
     policy?.report,
     policy?.ocrText,
-    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
+    ...activePlans(policy).map((plan) => {
       if (typeof plan === 'string') return plan;
       return [plan?.name, plan?.title, plan?.liability, plan?.type, plan?.matchedProductName].filter(Boolean).join(' ');
     }),
@@ -1368,17 +1527,19 @@ function radarPolicyText(policy) {
         item?.note,
       ].filter(Boolean).join(' ');
     }),
-    ...(Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : []).map(indicatorText),
+    ...(Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [])
+      .filter((indicator) => !indicatorPlanIsInactive(policy, indicator))
+      .map(indicatorText),
   ].filter(Boolean).join(' ').normalize('NFKC');
 }
 
-function indicatorIsFormulaOnly(indicator) {
+function indicatorIsFormulaOnly(indicator, policy = {}) {
   const unit = String(indicator?.unit || '').normalize('NFKC');
-  return unit === '公式' && resolveIndicatorAmount(indicator, {}) <= 0;
+  return unit === '公式' && resolveIndicatorAmount(indicator, policy) <= 0;
 }
 
 function indicatorAmountForPolicy(indicator, policy) {
-  if (indicatorIsFormulaOnly(indicator)) return 0;
+  if (indicatorIsFormulaOnly(indicator, policy)) return 0;
   return resolveIndicatorAmount(indicator, policy);
 }
 
@@ -1486,6 +1647,7 @@ const ACCIDENT_RADAR_ROW_KEYS = new Set(['general_accident', 'traffic', 'driving
 
 function accidentIndicatorRadarAmount(indicator, policy) {
   if (!indicatorImpliesAccident(indicator)) return null;
+  if (indicatorPlanIsInactive(policy, indicator)) return null;
   const definitions = classifyAccidentIndicatorDefinitions(indicator)
     .filter((definition) => ACCIDENT_RADAR_ROW_KEYS.has(definition.key));
   if (!definitions.length) return null;
@@ -1505,7 +1667,7 @@ function accidentIndicatorRadarAmount(indicator, policy) {
     policyId: policy?.id,
     label: compactRadarLabel(indicator?.liability || indicator?.scenario, definitions[0]?.label || '意外保障'),
     company: String(policy?.company || ''),
-    productName: String(indicator?.productName || policy?.name || ''),
+    productName: indicatorSourceProductName(policy, indicator),
     liability: String(indicator?.liability || indicator?.scenario || ''),
     amount,
     effectiveAmount: amount * weight,
@@ -1556,7 +1718,8 @@ function medicalRadarAmount(policies) {
     for (const indicator of indicators) {
       const text = indicatorText(indicator);
       if (!/(医疗|住院|门诊|报销|百万医疗|手术|医疗费用)/u.test(text)) continue;
-      if (indicatorIsFormulaOnly(indicator)) {
+      if (indicatorPlanIsInactive(policy, indicator)) continue;
+      if (indicatorIsFormulaOnly(indicator, policy)) {
         hasFormula = true;
         continue;
       }
@@ -1567,7 +1730,7 @@ function medicalRadarAmount(policies) {
           policyId: policy?.id,
           label: String(indicator?.liability || '医疗额度'),
           company: String(policy?.company || ''),
-          productName: String(indicator?.productName || policy?.name || ''),
+          productName: indicatorSourceProductName(policy, indicator),
           liability: String(indicator?.liability || ''),
           amount,
           calculationText: indicatorAmountCalculationText(indicator, policy, amount),
@@ -1604,7 +1767,8 @@ function lifeRadarAmount(policies) {
       if (!/(身故|全残|终身寿|人寿保障|护理)/u.test(text)) continue;
       if (indicatorImpliesAccident(indicator)) continue;
       if (/(重疾|重大疾病|中症|轻症|恶性肿瘤|癌)/u.test(text)) continue;
-      if (indicatorIsFormulaOnly(indicator)) {
+      if (indicatorPlanIsInactive(policy, indicator)) continue;
+      if (indicatorIsFormulaOnly(indicator, policy)) {
         hasFormula = true;
         continue;
       }
@@ -1615,7 +1779,7 @@ function lifeRadarAmount(policies) {
           policyId: policy?.id,
           label: String(indicator?.liability || '寿险保额'),
           company: String(policy?.company || ''),
-          productName: String(indicator?.productName || policy?.name || ''),
+          productName: indicatorSourceProductName(policy, indicator),
           liability: String(indicator?.liability || ''),
           amount,
           calculationText: indicatorAmountCalculationText(indicator, policy, amount),
