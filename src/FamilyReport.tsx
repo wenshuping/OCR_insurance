@@ -73,6 +73,18 @@ function TableWrap({ children }: { children: React.ReactNode }) {
   return <div data-pdf-table-wrap className="overflow-x-auto">{children}</div>;
 }
 
+type RadarSeries = FamilyReport['radar']['family'];
+
+const radarColors = ['#0EA5E9', '#22C55E', '#F97316', '#8B5CF6'];
+
+function scoreByKey(series: RadarSeries, key: string) {
+  return series.scores.find((score) => score.key === key);
+}
+
+function radarShortAmount(score: RadarSeries['scores'][number]) {
+  return score.amountText || formatMoneyWithUnit(score.amount);
+}
+
 const thClassName = 'bg-[#0B72B9] px-3 py-2 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
@@ -142,7 +154,156 @@ function ReportHero({ report, attentionItems }: { report: FamilyReport; attentio
           ))}
         </div>
       </div>
+      <FamilyRadarSection report={report} />
     </section>
+  );
+}
+
+function RadarChart({
+  dimensions,
+  series,
+  ariaLabel,
+}: {
+  dimensions: FamilyReport['radar']['dimensions'];
+  series: RadarSeries[];
+  ariaLabel: string;
+}) {
+  const width = 320;
+  const height = 250;
+  const centerX = width / 2;
+  const centerY = 118;
+  const radius = 82;
+  const rings = [0.25, 0.5, 0.75, 1];
+  const axisPoints = dimensions.map((dimension, index) => {
+    const angle = -Math.PI / 2 + (Math.PI * 2 * index) / dimensions.length;
+    return {
+      ...dimension,
+      angle,
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius,
+      labelX: centerX + Math.cos(angle) * (radius + 24),
+      labelY: centerY + Math.sin(angle) * (radius + 24),
+    };
+  });
+  const hasShape = series.some((item) => item.scores.some((score) => score.score > 0));
+
+  if (!hasShape) return <EmptyState text="暂无可绘制雷达图的金额数据" />;
+
+  const polygonForSeries = (item: RadarSeries) => axisPoints.map((point) => {
+    const score = Math.max(0, Math.min(100, scoreByKey(item, point.key)?.score || 0));
+    const pointRadius = (radius * score) / 100;
+    return `${(centerX + Math.cos(point.angle) * pointRadius).toFixed(1)},${(centerY + Math.sin(point.angle) * pointRadius).toFixed(1)}`;
+  }).join(' ');
+
+  return (
+    <svg className="h-auto w-full max-w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
+      <rect x="0" y="0" width={width} height={height} rx="16" fill="#FFFFFF" />
+      {rings.map((ring) => (
+        <polygon
+          key={ring}
+          points={axisPoints.map((point) => `${(centerX + Math.cos(point.angle) * radius * ring).toFixed(1)},${(centerY + Math.sin(point.angle) * radius * ring).toFixed(1)}`).join(' ')}
+          fill="none"
+          stroke="#E2E8F0"
+          strokeWidth="1"
+        />
+      ))}
+      {axisPoints.map((point) => (
+        <g key={point.key}>
+          <line x1={centerX} y1={centerY} x2={point.x} y2={point.y} stroke="#E2E8F0" strokeWidth="1" />
+          <text x={point.labelX} y={point.labelY + 4} textAnchor="middle" fontSize="11" fontWeight="700" fill="#334155">
+            {point.label}
+          </text>
+        </g>
+      ))}
+      {series.map((item, index) => {
+        const color = radarColors[index % radarColors.length];
+        return (
+          <g key={item.name}>
+            <polygon points={polygonForSeries(item)} fill={color} opacity={series.length === 1 ? 0.18 : 0.1} stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
+          </g>
+        );
+      })}
+      <g transform="translate(16 218)">
+        {series.map((item, index) => {
+          const color = radarColors[index % radarColors.length];
+          const x = index * 76;
+          return (
+            <g key={item.name} transform={`translate(${x} 0)`}>
+              <rect x="0" y="0" width="10" height="10" rx="2" fill={color} />
+              <text x="14" y="9" fontSize="10" fontWeight="700" fill="#475569">{item.name}</text>
+            </g>
+          );
+        })}
+      </g>
+    </svg>
+  );
+}
+
+function FamilyRadarSection({ report }: { report: FamilyReport }) {
+  const family = report.radar.family;
+  const wealth = scoreByKey(family, 'wealth');
+
+  return (
+    <div className="mt-5 rounded-2xl bg-white/15 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-black text-white">全家保障均衡雷达</h3>
+        <span className="text-[11px] font-bold leading-4 text-white/75">雷达图按本家庭内部金额比例绘制，非行业达标分。</span>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr]">
+        <RadarChart dimensions={report.radar.dimensions} series={[family]} ariaLabel="全家保障均衡雷达" />
+        <div className="grid gap-2 sm:grid-cols-2">
+          {family.scores.map((score) => (
+            <div key={score.key} className="min-w-0 rounded-xl bg-white/15 px-3 py-2">
+              <p className="text-[11px] font-bold text-white/70">{score.label}</p>
+              <p className="mt-0.5 break-words text-sm font-black leading-tight text-white">{radarShortAmount(score)}</p>
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/75">{score.note}</p>
+            </div>
+          ))}
+          {wealth ? (
+            <div className="min-w-0 rounded-xl bg-white/15 px-3 py-2 sm:col-span-2">
+              <p className="text-[11px] font-bold text-white/70">财富拆分</p>
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/80">{wealth.note}</p>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MemberRadarSection({ report }: { report: FamilyReport }) {
+  const members = report.radar.members;
+  if (!members.length) return null;
+
+  return (
+    <Section title="家庭成员保障对比雷达">
+      <div className="rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
+        <p className="mb-3 text-xs font-bold leading-5 text-[#7890AA]">雷达图按本家庭内部金额比例绘制，非行业达标分。</p>
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,420px)_1fr]">
+          <RadarChart dimensions={report.radar.dimensions} series={members} ariaLabel="家庭成员保障对比雷达" />
+          <div className="space-y-2">
+            {members.map((member, index) => (
+              <div key={member.name} className="min-w-0 rounded-xl bg-white px-3 py-2 ring-1 ring-[#E1EAF5]">
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: radarColors[index % radarColors.length] }} />
+                  <div className="min-w-0">
+                    <p className="break-words text-xs font-black leading-5 text-[#0F172A]">{member.name} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
+                    <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-[#7890AA]">
+                      {member.notes.length ? member.notes.join('；') : '五维均有可落地金额'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {report.radar.hiddenMembers.length ? (
+              <div className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700 ring-1 ring-amber-100">
+                未展示成员: {report.radar.hiddenMembers.map((member) => `${member.name}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </Section>
   );
 }
 
@@ -520,6 +681,7 @@ export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageP
         <ReportHero report={report} attentionItems={attentionItems} />
         <AttentionSection attentionItems={attentionItems} />
         <InventorySection rows={report.policyInventory.rows} />
+        <MemberRadarSection report={report} />
         <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
         <ProtectionSection title="重疾分析" members={report.criticalIllness.members} />
         <ProtectionSection title="意外分析" members={report.accident.members} />
