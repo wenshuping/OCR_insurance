@@ -446,8 +446,8 @@ function normalizeBeneficiaryValue(value) {
     .replace(/(受益顺序|受益份额|联系电话|邮政编码|本栏以下空白).*$/, '')
     .trim();
   if (!text) return '';
-  if (/^(?:被保险人的?)?法定(?:继承人|受益人)?$/.test(text)) return '法定';
-  if (/法定继承人/.test(text)) return '法定';
+  if (/^(?:被保险人)?的?法定(?:继承人|继本人|维承人|受益人)?$/.test(text)) return '法定';
+  if (/法定(?:继承人|继本人|维承人|受益人)/.test(text)) return '法定';
   return normalizePersonNameValue(text) || text;
 }
 

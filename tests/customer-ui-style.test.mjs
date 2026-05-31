@@ -124,13 +124,16 @@ test('entry form and family overview expose insured birthday for age-based repor
   assert.match(overviewSource, /家庭保障总览/);
   assert.match(overviewSource, /memberBirthdays/);
   assert.match(appSource, /buildFamilyCoverageOverview\(policies\)/);
-  assert.match(appSource, /<FamilyCoverageOverview overview=\{familyCoverageOverview\} policies=\{policies\}/);
+  assert.match(appSource, /<FamilyCoverageOverview[\s\S]*overview=\{familyCoverageOverview\}[\s\S]*policies=\{policies\}/);
 });
 
 test('entry form separates legal beneficiary from beneficiary name before saving policy', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const normalizeSource = componentSource('normalizeBeneficiaryValue', 'formatBeneficiaryValue');
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /beneficiary: string/);
+  assert.match(normalizeSource, /继本人/);
+  assert.match(normalizeSource, /维承人/);
   assert.match(formSource, /法定受益人/);
   assert.match(formSource, /type="checkbox"/);
   assert.match(formSource, /checked=\{formData\.beneficiary === '法定'\}/);
@@ -257,6 +260,22 @@ test('customer policy detail shows applicant beneficiary and effective date', ()
   assert.match(detailSource, /formatDateLabel\(policy\.date/);
 });
 
+test('customer policy detail moves coverage amount into plan details', () => {
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const summarySource = componentSource('PolicyPlanSummary', 'SelectField');
+  const infoGridStart = detailSource.indexOf('<section className="mt-4 grid grid-cols-2 gap-3">');
+  const infoGridEnd = detailSource.indexOf('{cashValueSummary || onEditCashValue', infoGridStart);
+  assert.notEqual(infoGridStart, -1, 'policy detail metric grid should exist');
+  assert.notEqual(infoGridEnd, -1, 'policy detail cash value section should follow metric grid');
+  const infoGridSource = detailSource.slice(infoGridStart, infoGridEnd);
+
+  assert.doesNotMatch(infoGridSource, /label="年度保费"/);
+  assert.doesNotMatch(infoGridSource, /label="保障额度"/);
+  assert.doesNotMatch(infoGridSource, /label="保障期间"/);
+  assert.match(summarySource, /险种明细/);
+  assert.match(summarySource, /保额：\{formatCoverageAmount\(Number\(plan\.amount \|\| 0\)\)\}/);
+});
+
 test('customer policy cards derive validity status from coverage period', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const validitySource = fs.readFileSync(new URL('../src/policy-validity.mjs', import.meta.url), 'utf8');
@@ -271,6 +290,97 @@ test('customer policy cards derive validity status from coverage period', () => 
   assert.match(summarySource, /const validityStatus = resolvePolicyValidityStatus\(plan\.coveragePeriod,\s*\{\s*effectiveDate/);
   assert.match(summarySource, /状态：[\s\S]*\{validityStatus\.label\}/);
   assert.match(summarySource, /policyValidityClassName\(validityStatus\.tone\)/);
+});
+
+test('customer policy detail displays responsibility official urls', () => {
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const adminDetailSource = componentSource('AdminPolicyDetail', 'MetricBox');
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /sourceUrl\?: string/);
+  assert.match(apiSource, /sourceTitle\?: string/);
+  assert.match(appSource, /function getPolicyResponsibilitySourceLinks\(policy: Policy\)/);
+  assert.match(appSource, /policy\.sources/);
+  assert.match(appSource, /policy\.coverageIndicators/);
+  assert.match(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
+  assert.match(detailSource, /官网地址/);
+  assert.match(detailSource, /href=\{source\.url\}/);
+  assert.match(detailSource, /target="_blank"/);
+  assert.match(detailSource, /ExternalLink/);
+  assert.match(adminDetailSource, /官网地址/);
+});
+
+test('customer entry and policy detail expose optional responsibility selection controls', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const analysisSource = componentSource('AnalysisReportPage', 'TextField');
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const reviewSource = componentSource('OptionalResponsibilityReview', 'PolicyPlanEditor');
+
+  assert.match(apiSource, /export type OptionalResponsibility/);
+  assert.match(apiSource, /selectionStatus: ResponsibilitySelectionStatus/);
+  assert.match(appSource, /updateAnalysisOptionalResponsibility/);
+  assert.match(appSource, /handleUpdateOptionalResponsibility/);
+  assert.match(appSource, /selectedCoverageIndicators\(policy\.coverageIndicators\)/);
+  assert.match(analysisSource, /OptionalResponsibilityReview/);
+  assert.match(analysisSource, /onUpdateOptionalResponsibility/);
+  assert.match(detailSource, /policy\.optionalResponsibilities/);
+  assert.match(detailSource, /onUpdateOptionalResponsibility/);
+  assert.match(reviewSource, /可选责任确认/);
+  assert.match(appSource, /value: 'selected', label: '已投保'/);
+  assert.match(appSource, /value: 'not_selected', label: '未投保'/);
+  assert.match(appSource, /value: 'unknown', label: '不确定'/);
+});
+
+test('optional responsibility review displays quantification status and selected gap warning', () => {
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const reviewSource = componentSource('OptionalResponsibilityReview', 'PolicyPlanEditor');
+
+  assert.match(apiSource, /quantificationStatus\?: QuantificationStatus/);
+  assert.match(reviewSource, /量化状态/);
+  assert.match(reviewSource, /该可选责任已确认投保，但尚未完成指标量化/);
+  assert.match(reviewSource, /optionalResponsibilityQuantificationLabel/);
+});
+
+test('family report renders optional responsibility gaps', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /optionalResponsibilityGaps/);
+  assert.match(source, /已投保但未量化责任/);
+  assert.match(source, /quantificationReason/);
+});
+
+test('admin app exposes optional responsibility quantification governance list', () => {
+  const appText = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /OptionalResponsibilityGap/);
+  assert.match(apiSource, /markOptionalResponsibilityNotQuantifiable/);
+  assert.match(apiSource, /reextractOptionalResponsibilities/);
+  assert.match(appText, /AdminOptionalResponsibilityGapPanel/);
+  assert.match(appText, /可选责任量化缺口/);
+  assert.match(appText, /标记不可量化/);
+  assert.match(appText, /重新拆解/);
+});
+
+test('customer policy detail can open manual cash value entry', () => {
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /source\?: 'ocr' \| 'vision_llm' \| 'manual'/);
+  assert.match(customerSource, /openManualCashValueEditor/);
+  assert.match(customerSource, /startManualCashValueEntry/);
+  assert.match(customerSource, /handleAddCashValueRow/);
+  assert.match(customerSource, /handleRemoveCashValueRow/);
+  assert.match(customerSource, /normalizeCashValueRowsForSaving/);
+  assert.match(customerSource, /confirmCashValue/);
+  assert.match(customerSource, /手动录入/);
+  assert.match(customerSource, /添加年度/);
+  assert.match(detailSource, /onEditCashValue/);
+  assert.match(detailSource, /录入现金价值/);
+  assert.match(detailSource, /修改现金价值/);
 });
 
 test('policy edit dialog offers insurer and product suggestions', () => {
@@ -300,6 +410,17 @@ test('customer app exposes family report after policy inventory and before secti
   assert.ok(familySource.indexOf('被保人保单明细') < familySource.indexOf('重疾分析'));
   assert.ok(familySource.indexOf('重疾分析') < familySource.indexOf('意外分析'));
   assert.ok(familySource.indexOf('意外分析') < familySource.indexOf('财富分析'));
+});
+
+test('family overview header exposes a direct family report entry', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
+
+  assert.match(customerSource, /onViewReport=\{\(\) => setShowFamilyReport\(true\)\}/);
+  assert.match(overviewSource, /onViewReport/);
+  assert.match(overviewSource, /家庭保障分析报告/);
+  assert.match(overviewSource, /查看报告/);
+  assert.match(overviewSource, /onClick=\{onViewReport\}/);
 });
 
 test('family report labels match the agreed report structure', () => {
@@ -341,23 +462,41 @@ test('family report wealth policies show cashflow table with cash value and keep
   assert.doesNotMatch(cashValueArea, /<TableWrap>/);
 });
 
-test('family report export uses raw target mode', () => {
+test('family report export downloads a page-styled image instead of paginated pdf', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean \}/);
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean \}/);
   assert.match(appSource, /rawTarget: true/);
+  assert.match(appSource, /preservePageStyle: true/);
+  assert.match(appSource, /downloadReportImage\(target,\s*title/);
+  assert.match(appSource, /triggerImageBlobDownload\(imageBlob,\s*fileName\)/);
+  assert.match(appSource, /link\.download = `\$\{fileName\}\.jpg`/);
+  const imageExportSource = componentSource('downloadReportImage', 'buildDraftReportTitle');
+  assert.doesNotMatch(imageExportSource, /exportCurrentReportAsPdf/);
+  assert.doesNotMatch(imageExportSource, /new jsPDF/);
+  assert.doesNotMatch(imageExportSource, /PDF/);
   assert.match(appSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
   assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
+  assert.match(familySource, /aria-label="下载报告图片"/);
+  assert.match(familySource, /title="下载报告图片"/);
 });
 
-test('family report export expands scrollable table wrappers for pdf capture', () => {
+test('family report export keeps page styling and wraps wide tables for pdf capture', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
   assert.match(familySource, /data-pdf-table-wrap/);
+  assert.match(appSource, /preparePageStyleReportNode\(reportNode,\s*width\)/);
+  assert.match(appSource, /family-report-pdf-target/);
   assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
-  assert.match(appSource, /Math\.max\(width,\s*reportNode\.scrollWidth/);
-  assert.match(cssSource, /\.pdf-export-mode \.print-policy-report \[data-pdf-table-wrap\]/);
+  assert.match(appSource, /captureWidth: options\?\.preservePageStyle \? width/);
+  assert.match(appSource, /new jsPDF\(options\?\.preservePageStyle \? 'l' : 'p'/);
+  assert.match(cssSource, /\.pdf-page-style-export-mode \.family-report-pdf-target \[data-pdf-table-wrap\]/);
   assert.match(cssSource, /overflow:\s*visible !important/);
-  assert.match(cssSource, /max-width:\s*none !important/);
+  assert.match(cssSource, /max-width:\s*100% !important/);
+  assert.match(cssSource, /table-layout:\s*fixed !important/);
+  assert.match(cssSource, /white-space:\s*normal !important/);
+  assert.match(cssSource, /print-color-adjust:\s*exact/);
 });

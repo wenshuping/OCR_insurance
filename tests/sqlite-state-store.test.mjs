@@ -6,6 +6,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
 import { createCashValueStore } from '../server/cashflow-store.mjs';
+import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
 async function makeTempDir() {
@@ -133,5 +134,35 @@ test('sqlite state store can persist after cash values have been saved', async (
   await assert.doesNotReject(() => store.persist(state));
   assert.deepEqual(cashValueStore.getValues(3), []);
 
+  store.close();
+});
+
+test('sqlite state store persists product optional responsibility records', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    optionalResponsibilityRecords: [
+      {
+        id: 'optrec_xinhua_zhixiang_1',
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+        liability: '可选责任一',
+        title: '可选责任一',
+        quantificationStatus: 'pending_review',
+        quantificationReason: '缺少结构化指标',
+        indicatorIds: [],
+        sourceExcerpt: '3.可选责任一 （1）轻度疾病保险金。',
+      },
+    ],
+  };
+
+  await store.persist(state);
+  const reloaded = await store.load();
+
+  assert.equal(reloaded.optionalResponsibilityRecords.length, 1);
+  assert.equal(reloaded.optionalResponsibilityRecords[0].liability, '可选责任一');
+  assert.equal(reloaded.optionalResponsibilityRecords[0].quantificationStatus, 'pending_review');
   store.close();
 });

@@ -173,6 +173,8 @@ export function buildLocalKnowledgeResponsibilityAnalysis(records = []) {
         scenario: formatResponsibilityText(pageText),
         payout: '',
         note: text(record.productName || record.title),
+        sourceUrl: text(record.url),
+        sourceTitle: text(record.title) || text(record.url),
       });
     }
     break;

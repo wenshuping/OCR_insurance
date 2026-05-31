@@ -8,11 +8,13 @@ import {
   Copy,
   Database,
   Download,
+  ExternalLink,
   FileText,
   LayoutDashboard,
   Loader2,
   LogOut,
   Pencil,
+  Plus,
   RefreshCw,
   Save,
   Search,
@@ -35,6 +37,8 @@ import {
   KnowledgeRecord,
   MemberAnnualSummary,
   MemberYearEntry,
+  OptionalResponsibility,
+  OptionalResponsibilityGap,
   Policy,
   PolicyAnalysisResult,
   PolicyCashflowPlan,
@@ -65,9 +69,11 @@ import {
   logClientPerformance,
   logoutCustomer,
   matchPolicyResponsibilities,
+  markOptionalResponsibilityNotQuantifiable,
   queryPolicyResponsibilities,
   register,
   regeneratePolicyReport,
+  reextractOptionalResponsibilities,
   recognizePolicy,
   scanCashValue,
   scanPolicy,
@@ -200,7 +206,8 @@ function normalizeBeneficiaryValue(value: string | undefined | null) {
   const raw = String(value || '').trim();
   if (!raw) return '';
   const text = raw.replace(/\s+/gu, '').replace(/^(身故保险金受益人|身故受益人|受益人)[:：]?/u, '');
-  if (/^(?:被保险人的?)?法定(?:继承人|受益人)?$/u.test(text)) return '法定';
+  if (/^(?:被保险人)?的?法定(?:继承人|继本人|维承人|受益人)?$/u.test(text)) return '法定';
+  if (/法定(?:继承人|继本人|维承人|受益人)/u.test(text)) return '法定';
   return raw;
 }
 
@@ -315,6 +322,119 @@ function summarizeCashValues(cashValues?: CashValueRow[]) {
   };
 }
 
+function parseNumericInput(value: string | number | null | undefined) {
+  const normalized = String(value ?? '').replace(/[,，\s元¥￥]/g, '');
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function makeManualCashValueRow(policyYear = 1, age: number | null = null): CashValueRow {
+  return { policyYear, age, cashValue: 0, source: 'manual' };
+}
+
+function normalizeCashValueRowsForEditing(cashValues?: CashValueRow[]) {
+  const rows: CashValueRow[] = [];
+  if (Array.isArray(cashValues)) {
+    for (const row of cashValues) {
+      const policyYear = parseNumericInput(row.policyYear);
+      const age = row.age === null || row.age === undefined ? null : parseNumericInput(row.age);
+      const cashValue = parseNumericInput(row.cashValue);
+      if (policyYear === null || cashValue === null) continue;
+      rows.push({
+        policyYear,
+        age,
+        cashValue,
+        source: row.source || 'manual',
+      });
+    }
+    rows.sort((left, right) => left.policyYear - right.policyYear);
+  }
+  return rows.length ? rows : [makeManualCashValueRow()];
+}
+
+function nextManualCashValueRow(rows: CashValueRow[]) {
+  const sortedRows = [...rows]
+    .filter((row) => Number.isFinite(Number(row.policyYear)))
+    .sort((left, right) => Number(left.policyYear) - Number(right.policyYear));
+  const last = sortedRows[sortedRows.length - 1];
+  const nextPolicyYear = Number(last?.policyYear || 0) + 1 || 1;
+  const nextAge = last?.age === null || last?.age === undefined ? null : Number(last.age) + 1;
+  return makeManualCashValueRow(nextPolicyYear, Number.isFinite(Number(nextAge)) ? nextAge : null);
+}
+
+function normalizeCashValueRowsForSaving(rows: CashValueRow[], source = 'manual') {
+  const normalized: CashValueRow[] = [];
+  for (const row of rows) {
+    const policyYear = parseNumericInput(row.policyYear);
+    const age = row.age === null || row.age === undefined ? null : parseNumericInput(row.age);
+    const cashValue = parseNumericInput(row.cashValue);
+    if (policyYear === null || policyYear <= 0 || cashValue === null || cashValue < 0) continue;
+    normalized.push({
+      policyYear,
+      age,
+      cashValue,
+      source: row.source || source,
+    });
+  }
+  normalized.sort((left, right) => left.policyYear - right.policyYear);
+  const byPolicyYear = new Map<number, CashValueRow>();
+  for (const row of normalized) byPolicyYear.set(row.policyYear, row);
+  return [...byPolicyYear.values()];
+}
+
+type ResponsibilitySourceLink = {
+  title: string;
+  url: string;
+  official: boolean;
+  sourceType?: string;
+};
+
+function formatSourceUrlHost(url: string) {
+  try {
+    return new URL(url).hostname || url;
+  } catch (_error) {
+    return url;
+  }
+}
+
+function getPolicyResponsibilitySourceLinks(policy: Policy): ResponsibilitySourceLink[] {
+  const links: ResponsibilitySourceLink[] = [];
+  const seenUrls = new Set<string>();
+  const pushLink = (source: { title?: string; url?: string; official?: boolean; evidenceLevel?: string; sourceType?: string; liability?: string; productName?: string } | null | undefined) => {
+    const url = String(source?.url || '').trim();
+    if (!url || seenUrls.has(url)) return;
+    seenUrls.add(url);
+    links.push({
+      title: String(source?.title || source?.liability || source?.productName || formatSourceUrlHost(url)).trim(),
+      url,
+      official: Boolean(source?.official) || String(source?.evidenceLevel || '') === 'insurer_official',
+      sourceType: source?.sourceType,
+    });
+  };
+
+  (policy.sources || []).forEach(pushLink);
+  (policy.coverageIndicators || []).forEach((indicator) => {
+    pushLink({
+      title: indicator.liability || indicator.productName,
+      url: indicator.sourceUrl,
+      official: true,
+      evidenceLevel: 'insurer_official',
+    });
+  });
+  (policy.responsibilities || []).forEach((responsibility) => {
+    pushLink({
+      title: responsibility.sourceTitle || responsibility.coverageType,
+      url: responsibility.sourceUrl,
+      official: true,
+      evidenceLevel: 'insurer_official',
+    });
+  });
+
+  return links
+    .sort((left, right) => Number(right.official) - Number(left.official))
+    .slice(0, 5);
+}
+
 function formatDateLabel(value: string) {
   const text = String(value || '').trim();
   if (!text) return '-';
@@ -341,6 +461,63 @@ function productLookupKey(company: string, name: string) {
 
 function hasAnalysisResult(analysis: PolicyAnalysisResult | null) {
   return Boolean(analysis?.report?.trim() || analysis?.coverageTable?.length);
+}
+
+const OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS: Array<{ value: OptionalResponsibility['selectionStatus']; label: string }> = [
+  { value: 'selected', label: '已投保' },
+  { value: 'not_selected', label: '未投保' },
+  { value: 'unknown', label: '不确定' },
+];
+
+function optionalResponsibilityStatusLabel(status?: string) {
+  if (status === 'selected') return '已投保';
+  if (status === 'not_selected') return '未投保';
+  return '待核对';
+}
+
+function optionalResponsibilityQuantificationLabel(status?: string) {
+  if (status === 'quantified') return '已量化';
+  if (status === 'not_quantifiable') return '不进入量化';
+  return '待量化';
+}
+
+function optionalResponsibilityHasQuantificationGap(item: OptionalResponsibility) {
+  return item.selectionStatus === 'selected' && item.quantificationStatus !== 'quantified';
+}
+
+function optionalResponsibilityEvidenceLabel(evidence?: string) {
+  if (evidence === 'manual') return '人工确认';
+  if (evidence === 'policy_ocr') return '保单识别';
+  if (evidence === 'policy_plan') return '险种明细';
+  if (evidence === 'official_terms') return '官网条款';
+  return '待核对';
+}
+
+function isSelectedCoverageIndicator(indicator: CoverageIndicator) {
+  const scope = String(indicator.responsibilityScope || 'basic');
+  const status = indicator.selectionStatus || (scope === 'optional' ? 'unknown' : 'selected');
+  const quantificationStatus = indicator.quantificationStatus || 'pending_review';
+  return scope !== 'optional' || (status === 'selected' && quantificationStatus === 'quantified');
+}
+
+function selectedCoverageIndicators(indicators?: CoverageIndicator[]) {
+  return (Array.isArray(indicators) ? indicators : []).filter(isSelectedCoverageIndicator);
+}
+
+function updateOptionalResponsibilityItems(
+  items: OptionalResponsibility[] | undefined,
+  id: string,
+  selectionStatus: OptionalResponsibility['selectionStatus'],
+) {
+  return (Array.isArray(items) ? items : []).map((item) =>
+    item.id === id
+      ? {
+          ...item,
+          selectionStatus,
+          selectionEvidence: 'manual',
+        }
+      : item,
+  );
 }
 
 function getPolicyReportStatus(policy: Policy | null | undefined) {
@@ -898,11 +1075,11 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
   return report;
 }
 
-type ReportExportOptions = { rawTarget?: boolean };
+type ReportExportOptions = { rawTarget?: boolean; preservePageStyle?: boolean };
 
 function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Policy, options?: ReportExportOptions) {
   const wrapper = document.createElement('div');
-  const width = 760;
+  const width = options?.preservePageStyle ? 1120 : 760;
   wrapper.setAttribute(
     'style',
     [
@@ -923,7 +1100,10 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   reportNode.classList?.add?.('print-policy-report');
   wrapper.appendChild(reportNode);
   document.body.appendChild(wrapper);
-  if (options?.rawTarget) {
+
+  if (options?.rawTarget && options.preservePageStyle) {
+    preparePageStyleReportNode(reportNode, width);
+  } else if (options?.rawTarget) {
     reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
       node.style.overflow = 'visible';
       node.style.width = 'max-content';
@@ -937,10 +1117,42 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   return {
     node: reportNode,
     width,
+    captureWidth: options?.preservePageStyle ? width : Math.max(width, reportNode.scrollWidth || 0),
     cleanup() {
       wrapper.remove();
     },
   };
+}
+
+function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
+  reportNode.classList.add('family-report-pdf-target');
+  reportNode.style.boxSizing = 'border-box';
+  reportNode.style.width = `${width}px`;
+  reportNode.style.maxWidth = 'none';
+  reportNode.style.minHeight = '1px';
+  reportNode.style.overflow = 'visible';
+  reportNode.style.background = '#F4F8FC';
+  reportNode.style.padding = '24px';
+
+  reportNode.querySelectorAll<HTMLElement>('.print-only').forEach((node) => {
+    node.style.display = 'none';
+  });
+  reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
+    node.style.overflow = 'visible';
+    node.style.width = '100%';
+    node.style.maxWidth = '100%';
+  });
+  reportNode.querySelectorAll<HTMLElement>('table').forEach((table) => {
+    table.style.width = '100%';
+    table.style.minWidth = '0';
+    table.style.tableLayout = 'fixed';
+  });
+  reportNode.querySelectorAll<HTMLElement>('th,td').forEach((cell) => {
+    cell.style.minWidth = '0';
+    cell.style.whiteSpace = 'normal';
+    cell.style.wordBreak = 'break-word';
+    cell.style.verticalAlign = 'top';
+  });
 }
 
 function escapeHtml(value: string) {
@@ -998,6 +1210,30 @@ function triggerPdfBlobDownload(pdfBlob: Blob, fileName: string) {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(pdfUrl), 60 * 1000);
+}
+
+function triggerImageBlobDownload(imageBlob: Blob, fileName: string) {
+  const imageUrl = URL.createObjectURL(imageBlob);
+  const link = document.createElement('a');
+  link.href = imageUrl;
+  link.download = `${fileName}.jpg`;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(imageUrl), 60 * 1000);
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/jpeg', quality = 0.92) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error('REPORT_IMAGE_BLOB_UNAVAILABLE'));
+      }
+    }, type, quality);
+  });
 }
 
 function addCanvasPagesToPdf(pdf: import('jspdf').jsPDF, canvas: HTMLCanvasElement) {
@@ -1556,11 +1792,11 @@ async function downloadReportPdf(target: HTMLElement | null, title: string, poli
   try {
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')]);
     document.title = fileName;
-    document.body.classList.add('pdf-export-mode');
+    document.body.classList.add(options?.preservePageStyle ? 'pdf-page-style-export-mode' : 'pdf-export-mode');
     await new Promise((resolve) => requestAnimationFrame(resolve));
     renderTarget = createPdfRenderTarget(target, fileName, policy, options);
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    const renderWidth = renderTarget.node.scrollWidth || renderTarget.width;
+    const renderWidth = renderTarget.captureWidth || renderTarget.node.scrollWidth || renderTarget.width;
     const renderHeight = renderTarget.node.scrollHeight || renderTarget.node.offsetHeight;
     const canvas = await html2canvas(renderTarget.node, {
       backgroundColor: '#ffffff',
@@ -1573,7 +1809,7 @@ async function downloadReportPdf(target: HTMLElement | null, title: string, poli
     });
     renderTarget.cleanup();
     renderTarget = null;
-    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pdf = new jsPDF(options?.preservePageStyle ? 'l' : 'p', 'mm', 'a4');
     addCanvasPagesToPdf(pdf, canvas);
     if (shouldUsePreviewWindow) {
       const pdfBlob = pdf.output('blob');
@@ -1603,6 +1839,59 @@ async function downloadReportPdf(target: HTMLElement | null, title: string, poli
     renderTarget?.cleanup();
     if (!shouldUsePreviewWindow) feedback?.close();
     document.body.classList.remove('pdf-export-mode');
+    document.body.classList.remove('pdf-page-style-export-mode');
+    document.title = previousTitle;
+  }
+}
+
+async function downloadReportImage(target: HTMLElement | null, title: string, options?: ReportExportOptions) {
+  const imageTarget = target || document.querySelector<HTMLElement>('.print-policy-report');
+  if (!imageTarget) {
+    const feedback = showPdfExportFeedback('图片生成失败');
+    feedback.update('图片生成失败', '没有找到可导出的报告内容，请刷新后重试。');
+    feedback.close(1600);
+    return;
+  }
+  const fileName = normalizePdfFileName(title);
+  if (shouldUseInPageReportExport()) {
+    await exportReportInCurrentPage(imageTarget, fileName);
+    return;
+  }
+
+  const previousTitle = document.title;
+  const feedback = showPdfExportFeedback('正在生成图片');
+  let renderTarget: ReturnType<typeof createPdfRenderTarget> | null = null;
+  try {
+    const { default: html2canvas } = await import('html2canvas');
+    document.title = fileName;
+    document.body.classList.add('pdf-page-style-export-mode');
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    renderTarget = createPdfRenderTarget(imageTarget, fileName, undefined, { rawTarget: true, preservePageStyle: true, ...options });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const renderWidth = renderTarget.captureWidth || renderTarget.node.scrollWidth || renderTarget.width;
+    const renderHeight = renderTarget.node.scrollHeight || renderTarget.node.offsetHeight;
+    const canvas = await html2canvas(renderTarget.node, {
+      backgroundColor: '#F4F8FC',
+      scale: getPdfRenderScale(),
+      useCORS: false,
+      width: renderWidth,
+      height: renderHeight,
+      windowWidth: renderWidth,
+      windowHeight: renderHeight,
+    });
+    renderTarget.cleanup();
+    renderTarget = null;
+    const imageBlob = await canvasToBlob(canvas);
+    triggerImageBlobDownload(imageBlob, fileName);
+    feedback.update('图片已生成', '已下载为 JPG 长图。');
+    feedback.close(900);
+  } catch (error) {
+    console.error('[policy-ocr-app] report image export failed', error);
+    feedback.update('图片生成失败', '请刷新报告页后重试。');
+    feedback.close(1800);
+  } finally {
+    renderTarget?.cleanup();
+    document.body.classList.remove('pdf-page-style-export-mode');
     document.title = previousTitle;
   }
 }
@@ -1947,7 +2236,7 @@ function buildFamilyCoverageOverview(policies: Policy[]): FamilyCoverageOverview
 
   for (const policy of policies) {
     const member = resolvePolicyMemberKey(policy);
-    const indicators = Array.isArray(policy.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicators = selectedCoverageIndicators(policy.coverageIndicators);
 
     for (const indicator of indicators) {
       const coverageType = String(indicator.coverageType || '').trim() || '人寿保障';
@@ -2829,6 +3118,16 @@ function CustomerApp() {
     }
   }
 
+  function updateAnalysisOptionalResponsibility(id: string, selectionStatus: OptionalResponsibility['selectionStatus']) {
+    setAnalysisDraft((current) => current
+      ? {
+          ...current,
+          optionalResponsibilities: updateOptionalResponsibilityItems(current.optionalResponsibilities, id, selectionStatus),
+        }
+      : current,
+    );
+  }
+
   function openResponsibilityAssistant() {
     setAssistantCompany((current) => current || formData.company.trim());
     setAssistantName((current) => current || formData.name.trim());
@@ -3077,7 +3376,11 @@ function CustomerApp() {
   async function handleCashValueConfirm() {
     if (cashValuePolicyId === null || cashValueEditRows.length === 0) return;
     const savedPolicyId = cashValuePolicyId;
-    const savedRows = cashValueEditRows;
+    const savedRows = normalizeCashValueRowsForSaving(cashValueEditRows, cashValueScanResult?.source || 'manual');
+    if (!savedRows.length) {
+      setCashValueMessage('请至少录入一行现金价值');
+      return;
+    }
     setCashValueLoading(true);
     setCashValueMessage('正在保存...');
 
@@ -3116,13 +3419,24 @@ function CustomerApp() {
   function handleCashValueCellEdit(rowIndex: number, field: 'policyYear' | 'age' | 'cashValue', value: string) {
     setCashValueEditRows((prev) => {
       const updated = [...prev];
-      const num = Number(value.replace(/[,，\s元]/g, ''));
+      const num = parseNumericInput(value);
       if (field === 'age') {
-        updated[rowIndex] = { ...updated[rowIndex], age: Number.isFinite(num) ? num : null };
-      } else if (Number.isFinite(num)) {
+        updated[rowIndex] = { ...updated[rowIndex], age: num };
+      } else if (num !== null) {
         updated[rowIndex] = { ...updated[rowIndex], [field]: num };
       }
       return updated;
+    });
+  }
+
+  function handleAddCashValueRow() {
+    setCashValueEditRows((prev) => [...prev, nextManualCashValueRow(prev)]);
+  }
+
+  function handleRemoveCashValueRow(rowIndex: number) {
+    setCashValueEditRows((prev) => {
+      const nextRows = prev.filter((_, index) => index !== rowIndex);
+      return nextRows.length ? nextRows : [makeManualCashValueRow()];
     });
   }
 
@@ -3133,6 +3447,36 @@ function CustomerApp() {
     setCashValuePolicyId(null);
     setCashValueMessage('');
     setActiveTab('policies');
+  }
+
+  function openManualCashValueEditor(policy: Policy) {
+    const rows = normalizeCashValueRowsForEditing(policy.cashValues);
+    setCashValuePolicyId(policy.id);
+    setCashValueEditRows(rows);
+    setCashValueScanResult({
+      ok: true,
+      source: 'manual',
+      tableType: 3,
+      rows,
+      rowCount: rows.length,
+    });
+    setCashValueMessage('');
+    setCashValueDialogOpen(true);
+  }
+
+  function startManualCashValueEntry() {
+    if (cashValuePolicyId === null) return;
+    const policy = policies.find((row) => Number(row.id) === Number(cashValuePolicyId));
+    const rows = normalizeCashValueRowsForEditing(policy?.cashValues);
+    setCashValueEditRows(rows);
+    setCashValueScanResult({
+      ok: true,
+      source: 'manual',
+      tableType: 3,
+      rows,
+      rowCount: rows.length,
+    });
+    setCashValueMessage('');
   }
 
   async function openPolicy(policy: Policy) {
@@ -3163,6 +3507,29 @@ function CustomerApp() {
       return payload;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '保单修改失败');
+      throw error;
+    } finally {
+      setSavingPolicyId(null);
+    }
+  }
+
+  async function handleUpdateOptionalResponsibility(policy: Policy, id: string, selectionStatus: OptionalResponsibility['selectionStatus']) {
+    if (savingPolicyId) return;
+    const optionalResponsibilities = updateOptionalResponsibilityItems(policy.optionalResponsibilities, id, selectionStatus);
+    setSavingPolicyId(policy.id);
+    setMessage('正在保存可选责任');
+    try {
+      const payload = await updatePolicy({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        id: policy.id,
+        policy: { optionalResponsibilities },
+      });
+      setSelectedPolicy(payload.policy);
+      setPolicies((current) => current.map((row) => (Number(row.id) === Number(payload.policy.id) ? payload.policy : row)));
+      setMessage('可选责任已更新');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '可选责任保存失败');
       throw error;
     } finally {
       setSavingPolicyId(null);
@@ -3231,7 +3598,7 @@ function CustomerApp() {
           /* Step 1: Upload prompt */
           <div className="text-center">
             <h3 className="mb-2 text-lg font-bold text-slate-800">
-              保单已保存！是否上传现金价值表？
+              录入保单现金价值
             </h3>
             <p className="mb-5 text-sm text-slate-500">
               拍照上传保单的现金价值页面，系统将自动识别并录入
@@ -3256,8 +3623,9 @@ function CustomerApp() {
                 </div>
               </div>
             )}
-            <div className="flex gap-3 justify-center">
+            <div className="flex flex-wrap justify-center gap-3">
               <button
+                type="button"
                 className="rounded-lg bg-[#0B72B9] px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
                 disabled={cashValueLoading}
                 onClick={() => cashValueInputRef.current?.click()}
@@ -3265,6 +3633,15 @@ function CustomerApp() {
                 拍照上传
               </button>
               <button
+                type="button"
+                className="rounded-lg bg-emerald-500 px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+                disabled={cashValueLoading}
+                onClick={startManualCashValueEntry}
+              >
+                手动录入
+              </button>
+              <button
+                type="button"
                 className="rounded-lg border border-slate-200 px-5 py-2.5 text-sm font-medium text-slate-600"
                 onClick={closeCashValueDialog}
               >
@@ -3283,16 +3660,28 @@ function CustomerApp() {
         ) : (
           /* Step 2: Preview and edit results */
           <div>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-bold text-slate-800">现金价值表识别结果</h3>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-lg font-bold text-slate-800">
+                {cashValueScanResult.source === 'manual' ? '录入现金价值' : '现金价值表识别结果'}
+              </h3>
               <span className="text-xs text-slate-400">
-                {cashValueScanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
+                {cashValueScanResult.source === 'manual' ? '手动录入' : cashValueScanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
                 {cashValueScanResult.confidence != null && ` · 置信度 ${Math.round(cashValueScanResult.confidence * 100)}%`}
               </span>
             </div>
             {cashValueMessage && (
               <p className="mb-2 text-sm text-red-500">{cashValueMessage}</p>
             )}
+            <div className="mb-3 flex justify-end">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
+                onClick={handleAddCashValueRow}
+              >
+                <Plus size={14} />
+                添加年度
+              </button>
+            </div>
             <div className="max-h-[50vh] overflow-y-auto">
               <table className="w-full text-xs border-collapse">
                 <thead>
@@ -3302,6 +3691,7 @@ function CustomerApp() {
                       <th className="px-2 py-1.5 text-left font-bold text-slate-600">年龄</th>
                     )}
                     <th className="px-2 py-1.5 text-left font-bold text-slate-600">现金价值(元)</th>
+                    <th className="w-10 px-2 py-1.5 text-right font-bold text-slate-600">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3333,6 +3723,16 @@ function CustomerApp() {
                           onBlur={(e) => handleCashValueCellEdit(i, 'cashValue', e.target.value)}
                         />
                       </td>
+                      <td className="px-1 py-0.5 text-right">
+                        <button
+                          type="button"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-50 text-slate-400 active:bg-red-50 active:text-red-500"
+                          onClick={() => handleRemoveCashValueRow(i)}
+                          aria-label="删除现金价值行"
+                        >
+                          <X size={14} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -3340,6 +3740,7 @@ function CustomerApp() {
             </div>
             <div className="mt-4 flex gap-2 justify-center">
               <button
+                type="button"
                 className="rounded-lg bg-[#0B72B9] px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
                 disabled={cashValueLoading || cashValueEditRows.length === 0}
                 onClick={() => { void handleCashValueConfirm(); }}
@@ -3347,6 +3748,7 @@ function CustomerApp() {
                 确认保存
               </button>
               <button
+                type="button"
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 disabled:opacity-50"
                 disabled={cashValueLoading}
                 onClick={() => {
@@ -3356,13 +3758,14 @@ function CustomerApp() {
                   cashValueInputRef.current?.click();
                 }}
               >
-                重新拍照
+                {cashValueScanResult.source === 'manual' ? '拍照识别' : '重新拍照'}
               </button>
               <button
+                type="button"
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-400"
                 onClick={closeCashValueDialog}
               >
-                跳过
+                取消
               </button>
             </div>
           </div>
@@ -3450,6 +3853,16 @@ function CustomerApp() {
     />
   );
 
+  if (showFamilyReport) {
+    return (
+      <FamilyReportPage
+        report={familyReport}
+        onBack={() => setShowFamilyReport(false)}
+        onExport={(target, title) => void downloadReportImage(target, title, { rawTarget: true, preservePageStyle: true })}
+      />
+    );
+  }
+
   if (activeTab === 'entry' && showAnalysisReport && analysisDraft) {
     return (
       <>
@@ -3461,6 +3874,7 @@ function CustomerApp() {
           message={message}
           onBack={() => setShowAnalysisReport(false)}
           onSave={handleSubmit}
+          onUpdateOptionalResponsibility={updateAnalysisOptionalResponsibility}
         />
         {responsibilityAssistant}
         {authDialog}
@@ -3504,6 +3918,7 @@ function CustomerApp() {
           isLoggedIn={isLoggedIn}
           mobile={mobile}
           onOpenAccount={() => setShowAccountSheet(true)}
+          onOpenReport={() => setShowFamilyReport(true)}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
         />
@@ -3512,16 +3927,6 @@ function CustomerApp() {
         {accountSheet}
         {cashValueDialog}
       </>
-    );
-  }
-
-  if (showFamilyReport) {
-    return (
-      <FamilyReportPage
-        report={familyReport}
-        onBack={() => setShowFamilyReport(false)}
-        onExport={(target, title) => void downloadReportPdf(target, title, undefined, { rawTarget: true })}
-      />
     );
   }
 
@@ -3587,7 +3992,12 @@ function CustomerApp() {
           </div>
         </div>
 
-        <FamilyCoverageOverview overview={familyCoverageOverview} policies={policies} onViewCashflow={(member) => setCashflowMember(member)} />
+        <FamilyCoverageOverview
+          overview={familyCoverageOverview}
+          policies={policies}
+          onViewCashflow={(member) => setCashflowMember(member)}
+          onViewReport={() => setShowFamilyReport(true)}
+        />
 
         {policies.length ? (
           <section className="px-4 pt-3">
@@ -3645,20 +4055,21 @@ function CustomerApp() {
         </section>
       </main>
 
-      <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />
+      <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
       {!selectedPolicy ? responsibilityAssistant : null}
 
       {selectedPolicy ? (
         <PolicyDetailSheet
           policy={selectedPolicy}
           onClose={() => setSelectedPolicy(null)}
-          annualPremium={annualPremium}
           onRetryReport={retryPolicyReport}
           retrying={retryingPolicyId === selectedPolicy.id}
           onUpdatePolicy={handleUpdatePolicy}
+          onUpdateOptionalResponsibility={handleUpdateOptionalResponsibility}
           updating={savingPolicyId === selectedPolicy.id}
           onDeletePolicy={handleDeletePolicy}
           deleting={deletingPolicyId === selectedPolicy.id}
+          onEditCashValue={openManualCashValueEditor}
         />
       ) : null}
       {authDialog}
@@ -3983,7 +4394,17 @@ function CashflowDetailPage({
   );
 }
 
-function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overview: FamilyCoverageOverviewData; policies: Policy[]; onViewCashflow: (member: string) => void }) {
+function FamilyCoverageOverview({
+  overview,
+  policies,
+  onViewCashflow,
+  onViewReport,
+}: {
+  overview: FamilyCoverageOverviewData;
+  policies: Policy[];
+  onViewCashflow: (member: string) => void;
+  onViewReport: () => void;
+}) {
   if (!policies.length) return null;
   const displayedRows = overview.rows.slice(0, 10);
   const memberBirthdays = buildMemberBirthdayMap(policies);
@@ -3991,12 +4412,20 @@ function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overvi
   return (
     <section className="p-4 pb-0">
       <div className="rounded-[24px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-        <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xs font-black uppercase text-[#7890AA]">Family Report</p>
             <h2 className="mt-1 text-lg font-black text-[#0F172A]">家庭保障总览</h2>
           </div>
-          <span className="rounded-full bg-[#EEF4FF] px-3 py-1 text-xs font-bold text-[#1152D4]">第一版</span>
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-2 rounded-full bg-blue-50 px-3 py-2 text-xs font-black text-blue-600 ring-1 ring-blue-100 hover:bg-blue-100 active:bg-blue-100"
+            onClick={onViewReport}
+            aria-label="查看家庭保障分析报告"
+          >
+            <FileText size={14} />
+            <span>查看报告</span>
+          </button>
         </div>
 
         <div className="mb-4 grid gap-2 sm:grid-cols-3">
@@ -4326,6 +4755,36 @@ function AdminApp() {
     }
   }
 
+  async function handleMarkOptionalNotQuantifiable(gap: OptionalResponsibilityGap) {
+    if (!adminToken || loading) return;
+    setLoading(true);
+    setMessage('正在标记可选责任不可量化');
+    try {
+      await markOptionalResponsibilityNotQuantifiable(adminToken, gap.id, '该责任暂不进入金额量化计算');
+      await loadOverview(adminToken);
+      setMessage('可选责任已标记为不可量化');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '标记失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleReextractOptionalResponsibilities() {
+    if (!adminToken || loading) return;
+    setLoading(true);
+    setMessage('正在重新拆解可选责任');
+    try {
+      await reextractOptionalResponsibilities(adminToken);
+      await loadOverview(adminToken);
+      setMessage('可选责任拆解已刷新');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '重新拆解失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const normalizedQuery = query.trim().toLowerCase();
   const selectedAdminUser = useMemo(
     () => (overview?.users || []).find((user) => Number(user.id) === Number(selectedAdminUserId)) || null,
@@ -4562,6 +5021,13 @@ function AdminApp() {
               onDelete={(profile) => void removeOfficialDomainProfile(profile)}
             />
 
+            <AdminOptionalResponsibilityGapPanel
+              gaps={overview?.optionalResponsibilityGaps || []}
+              loading={loading}
+              onMarkNotQuantifiable={(gap) => void handleMarkOptionalNotQuantifiable(gap)}
+              onReextract={() => void handleReextractOptionalResponsibilities()}
+            />
+
             <AdminKnowledgePanel
               records={knowledgeRecords}
               form={knowledgeCrawlForm}
@@ -4660,6 +5126,48 @@ function AdminStatCard({ label, value }: { label: string; value: string }) {
       <p className="text-xs font-black uppercase text-slate-400">{label}</p>
       <p className="mt-2 text-2xl font-black text-slate-950">{value}</p>
     </div>
+  );
+}
+
+function AdminOptionalResponsibilityGapPanel({
+  gaps,
+  loading,
+  onMarkNotQuantifiable,
+  onReextract,
+}: {
+  gaps: OptionalResponsibilityGap[];
+  loading: boolean;
+  onMarkNotQuantifiable: (gap: OptionalResponsibilityGap) => void;
+  onReextract: () => void;
+}) {
+  return (
+    <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_-42px_rgba(15,23,42,0.45)]">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-black">可选责任量化缺口</p>
+          <p className="mt-1 text-xs font-medium text-slate-400">已识别但未完成结构化指标的可选责任</p>
+        </div>
+        <button type="button" disabled={loading} onClick={onReextract} className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-50">
+          重新拆解
+        </button>
+      </div>
+      <div className="max-h-[320px] space-y-2 overflow-auto pr-1">
+        {gaps.map((gap) => (
+          <article key={gap.id} className="rounded-[16px] border border-amber-100 bg-amber-50 px-3 py-2.5 text-xs">
+            <p className="font-black text-amber-900">{gap.productName}</p>
+            <p className="mt-1 font-semibold text-amber-800">{gap.company} · {gap.liability}</p>
+            <p className="mt-1 leading-5 text-amber-700">{gap.quantificationReason}</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="rounded-full bg-white px-2.5 py-1 font-black text-amber-700">{gap.recentPolicyCount} 张相关保单</span>
+              <button type="button" disabled={loading} onClick={() => onMarkNotQuantifiable(gap)} className="rounded-full bg-white px-2.5 py-1 font-black text-slate-700 ring-1 ring-amber-100 disabled:opacity-50">
+                标记不可量化
+              </button>
+            </div>
+          </article>
+        ))}
+        {!gaps.length ? <p className="rounded-[16px] bg-slate-50 px-3 py-4 text-sm font-bold text-slate-400">暂无量化缺口</p> : null}
+      </div>
+    </section>
   );
 }
 
@@ -4955,6 +5463,7 @@ function AdminPolicyDetail({
   const reportFailed = isPolicyReportFailed(policy);
   const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
   const policySources = Array.isArray(policy.sources) ? policy.sources : [];
+  const responsibilitySourceLinks = getPolicyResponsibilitySourceLinks(policy);
   const exportControlTitle = getReportExportControlTitle();
 
   return (
@@ -5032,6 +5541,28 @@ function AdminPolicyDetail({
           <section>
             <h3 className="mb-3 text-sm font-black">责任解析</h3>
             <div className="space-y-3">
+              {responsibilitySourceLinks.length ? (
+                <div className="rounded-2xl border border-blue-100 bg-blue-50 px-3 py-3">
+                  <p className="text-xs font-black text-blue-700">官网地址</p>
+                  <div className="mt-2 space-y-2">
+                    {responsibilitySourceLinks.map((source) => (
+                      <a
+                        key={`${source.title}-${source.url}`}
+                        href={source.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-start gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-blue-700"
+                      >
+                        <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0">
+                          <span className="block truncate font-black">{source.title || formatSourceUrlHost(source.url)}</span>
+                          <span className="block break-all text-blue-500">{source.url}</span>
+                        </span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {responsibilities.length ? (
                 responsibilities.map((row, index) => (
                   <article key={`${row.coverageType}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -5577,14 +6108,24 @@ function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: numb
   );
 }
 
-function CustomerBottomTabs({ activeTab, onChange, fixed = true }: { activeTab: CustomerTab; onChange: (tab: CustomerTab) => void; fixed?: boolean }) {
+function CustomerBottomTabs({
+  activeTab,
+  onChange,
+  onOpenReport,
+  fixed = true,
+}: {
+  activeTab: CustomerTab;
+  onChange: (tab: CustomerTab) => void;
+  onOpenReport?: () => void;
+  fixed?: boolean;
+}) {
   const tabs: Array<{ key: CustomerTab; label: string; icon: typeof UploadCloud }> = [
     { key: 'entry', label: '录入保单', icon: UploadCloud },
     { key: 'policies', label: '我的保单', icon: FileText },
   ];
   return (
     <nav className={fixed ? 'pb-safe fixed bottom-0 left-0 right-0 z-40 border-t border-slate-100 bg-white px-4 pt-2 shadow-[0_-10px_20px_-12px_rgba(15,23,42,0.12)]' : ''}>
-      <div className="grid grid-cols-2 gap-2">
+      <div className={`grid gap-2 ${onOpenReport ? 'grid-cols-3' : 'grid-cols-2'}`}>
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const active = activeTab === tab.key;
@@ -5602,6 +6143,17 @@ function CustomerBottomTabs({ activeTab, onChange, fixed = true }: { activeTab: 
             </button>
           );
         })}
+        {onOpenReport ? (
+          <button
+            type="button"
+            onClick={onOpenReport}
+            className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-blue-50 text-sm font-black text-blue-600 ring-1 ring-blue-100 transition hover:bg-blue-100 active:bg-blue-100"
+            aria-label="查看家庭保障分析报告"
+          >
+            <LayoutDashboard size={18} />
+            查看报告
+          </button>
+        ) : null}
       </div>
     </nav>
   );
@@ -5833,6 +6385,7 @@ function UploadPolicyPage(props: {
   onGenerateAnalysis: () => void;
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
+  onOpenReport: () => void;
   onScanClick: () => void;
   onSelectFormCompany: (company: string) => void;
   onSelectFormProduct: (suggestion: PolicyProductSuggestion) => void;
@@ -5867,6 +6420,7 @@ function UploadPolicyPage(props: {
     onGenerateAnalysis,
     onOcrTextChange,
     onOpenAccount,
+    onOpenReport,
     onScanClick,
     onSelectFormCompany,
     onSelectFormProduct,
@@ -5953,15 +6507,26 @@ function UploadPolicyPage(props: {
         <div></div>
         <h1 className="text-lg font-bold">录入保单</h1>
         <div className="flex justify-end">
-          <button
-            className="flex h-10 max-w-[128px] items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onOpenAccount}
-            aria-label="查看账号"
-          >
-            <CircleUserRound size={18} />
-            <span className="truncate">{isLoggedIn ? maskMobile(mobile) : '游客'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-600 ring-1 ring-blue-100 transition-colors hover:bg-blue-100"
+              type="button"
+              onClick={onOpenReport}
+              aria-label="查看家庭保障分析报告"
+            >
+              <LayoutDashboard size={18} />
+              <span className="hidden sm:inline">查看报告</span>
+            </button>
+            <button
+              className="flex h-10 max-w-[128px] items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
+              type="button"
+              onClick={onOpenAccount}
+              aria-label="查看账号"
+            >
+              <CircleUserRound size={18} />
+              <span className="truncate">{isLoggedIn ? maskMobile(mobile) : '游客'}</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -6236,7 +6801,7 @@ function UploadPolicyPage(props: {
           </button>
         </div>
         <div className="mt-3">
-          <CustomerBottomTabs activeTab={activeTab} onChange={onChangeTab} fixed={false} />
+          <CustomerBottomTabs activeTab={activeTab} onChange={onChangeTab} onOpenReport={onOpenReport} fixed={false} />
         </div>
       </div>
     </div>
@@ -6251,9 +6816,10 @@ function AnalysisReportPage(props: {
   message: string;
   onBack: () => void;
   onSave: () => void;
+  onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
 }) {
   const reportRef = useRef<HTMLElement | null>(null);
-  const { analysis, canSave, formData, loading, message, onBack, onSave } = props;
+  const { analysis, canSave, formData, loading, message, onBack, onSave, onUpdateOptionalResponsibility } = props;
   const responsibilities = Array.isArray(analysis.coverageTable) ? analysis.coverageTable : [];
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const exportTitle = buildDraftReportTitle(formData);
@@ -6325,6 +6891,12 @@ function AnalysisReportPage(props: {
           plans={normalizePolicyPlanList(formData.plans, formData.company)}
           effectiveDate={formData.date}
           insuredBirthday={formData.insuredBirthday}
+        />
+
+        <OptionalResponsibilityReview
+          items={analysis.optionalResponsibilities}
+          disabled={loading}
+          onChange={onUpdateOptionalResponsibility}
         />
 
         {hasReportText ? (
@@ -6417,6 +6989,109 @@ function TextField(props: {
         className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
       />
     </div>
+  );
+}
+
+function OptionalResponsibilityReview({
+  items = [],
+  disabled = false,
+  saving = false,
+  title = '可选责任确认',
+  description = '未投保或不确定的可选责任不会进入保障金额和现金流计算。',
+  onChange,
+}: {
+  items?: OptionalResponsibility[];
+  disabled?: boolean;
+  saving?: boolean;
+  title?: string;
+  description?: string;
+  onChange?: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
+}) {
+  const visibleItems = (Array.isArray(items) ? items : []).filter((item) => item?.id);
+  if (!visibleItems.length) return null;
+
+  return (
+    <section className="rounded-[24px] border border-amber-100 bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Shield className="h-5 w-5 text-amber-600" />
+            <h3 className="text-base font-black text-slate-950">{title}</h3>
+          </div>
+          <p className="mt-1 text-xs font-medium leading-5 text-slate-500">{description}</p>
+        </div>
+        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">
+          {visibleItems.length} 项
+        </span>
+      </div>
+
+      <div className="mt-3 space-y-3">
+        {visibleItems.map((item) => {
+          const status = item.selectionStatus || 'unknown';
+          return (
+            <article key={item.id} className="rounded-[18px] border border-slate-100 bg-slate-50 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-black leading-6 text-slate-900">
+                    {item.liability || item.coverageType || '可选责任'}
+                  </p>
+                  <p className="mt-0.5 text-xs font-medium leading-5 text-slate-500">
+                    {[item.productName, item.coverageType].filter(Boolean).join(' · ') || '产品责任'}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
+                    {optionalResponsibilityEvidenceLabel(item.selectionEvidence)}
+                  </span>
+                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${
+                    status === 'selected'
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : status === 'not_selected'
+                        ? 'bg-slate-100 text-slate-600'
+                        : 'bg-amber-50 text-amber-700'
+                  }`}>
+                    {optionalResponsibilityStatusLabel(status)}
+                  </span>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
+                    量化状态：{optionalResponsibilityQuantificationLabel(item.quantificationStatus)}
+                  </span>
+                </div>
+              </div>
+              {item.sourceExcerpt ? (
+                <p className="mt-2 line-clamp-2 text-xs font-medium leading-5 text-slate-500">{item.sourceExcerpt}</p>
+              ) : null}
+              {optionalResponsibilityHasQuantificationGap(item) ? (
+                <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-black leading-5 text-amber-700 ring-1 ring-amber-100">
+                  该可选责任已确认投保，但尚未完成指标量化，暂不进入家庭报告计算。
+                </p>
+              ) : null}
+              {onChange ? (
+                <div className="mt-3 grid grid-cols-3 gap-2" role="group" aria-label={`${item.liability || item.coverageType || '可选责任'}投保状态`}>
+                  {OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS.map((option) => {
+                    const active = status === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        disabled={disabled || saving}
+                        onClick={() => onChange(item.id, option.value)}
+                        className={`h-9 rounded-xl px-2 text-xs font-black transition-colors disabled:opacity-50 ${
+                          active
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'bg-white text-slate-600 ring-1 ring-slate-200 active:bg-blue-50'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -6535,6 +7210,7 @@ function PolicyPlanSummary({
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs font-bold leading-5 text-slate-500">
                 <p>分类：{plan.productType || '-'}</p>
+                <p>保额：{formatCoverageAmount(Number(plan.amount || 0))}</p>
                 <p>保费：{formatCurrency(Number(plan.premium || 0))}</p>
                 <p>期间：{plan.coveragePeriod || '-'}</p>
                 <p>缴费：{plan.paymentPeriod || plan.paymentMode || '-'}</p>
@@ -6585,23 +7261,25 @@ function SelectField(props: {
 function PolicyDetailSheet({
   policy,
   onClose,
-  annualPremium,
   onRetryReport,
   retrying = false,
   onUpdatePolicy,
+  onUpdateOptionalResponsibility,
   updating = false,
   onDeletePolicy,
   deleting = false,
+  onEditCashValue,
 }: {
   policy: Policy;
   onClose: () => void;
-  annualPremium: number;
   onRetryReport?: (policy: Policy) => void | Promise<void>;
   retrying?: boolean;
   onUpdatePolicy?: (policy: Policy, data: PolicyFormData) => Promise<{ reportRegenerating: boolean } | void>;
+  onUpdateOptionalResponsibility?: (policy: Policy, id: string, status: OptionalResponsibility['selectionStatus']) => void | Promise<void>;
   updating?: boolean;
   onDeletePolicy?: (policy: Policy) => void | Promise<void>;
   deleting?: boolean;
+  onEditCashValue?: (policy: Policy) => void;
 }) {
   const reportRef = useRef<HTMLElement | null>(null);
   const [editing, setEditing] = useState(false);
@@ -6611,8 +7289,10 @@ function PolicyDetailSheet({
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
   const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
+  const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
+  const responsibilitySourceLinks = getPolicyResponsibilitySourceLinks(policy);
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
@@ -6737,25 +7417,39 @@ function PolicyDetailSheet({
           <MetricBox label="受益人" value={formatBeneficiaryValue(policy.beneficiary)} />
           <MetricBox label="被保人生日" value={policy.insuredBirthday || '-'} />
           <MetricBox label="保单生效日期" value={formatDateLabel(policy.date)} />
-          <MetricBox label="年度保费" value={formatCurrency(Number(policy.firstPremium || annualPremium || 0))} />
-          <MetricBox label="保障额度" value={formatCoverageAmount(Number(policy.amount || 0))} />
-          <MetricBox label="保障期间" value={policy.coveragePeriod || '-'} />
           <MetricBox label="投保人关系" value={policy.applicantRelation || '-'} />
           <MetricBox label="被保人关系" value={policy.insuredRelation || '-'} />
         </section>
 
-        {cashValueSummary ? (
-          <section className="mt-4 rounded-[22px] border border-emerald-100 bg-emerald-50 px-4 py-3 text-emerald-800">
-            <div className="flex items-start justify-between gap-3">
+        {cashValueSummary || onEditCashValue ? (
+          <section className={`mt-4 rounded-[22px] border px-4 py-3 ${
+            cashValueSummary ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-blue-100 bg-blue-50 text-blue-800'
+          }`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-black">保单现金价值</p>
                 <p className="mt-1 text-xs font-semibold leading-5">
-                  已录入 {cashValueSummary.count} 年现金价值，首年 {formatCurrency(cashValueSummary.first.cashValue)}，{cashValueSummary.last.policyYear}年末 {formatCurrency(cashValueSummary.last.cashValue)}。
+                  {cashValueSummary
+                    ? `已录入 ${cashValueSummary.count} 年现金价值，首年 ${formatCurrency(cashValueSummary.first.cashValue)}，${cashValueSummary.last.policyYear}年末 ${formatCurrency(cashValueSummary.last.cashValue)}。`
+                    : '未录入现金价值。'}
                 </p>
               </div>
-              <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-black text-emerald-700">
-                已入库
-              </span>
+              <div className="flex shrink-0 items-center gap-2">
+                {cashValueSummary ? (
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-emerald-700">
+                    已入库
+                  </span>
+                ) : null}
+                {onEditCashValue ? (
+                  <button
+                    type="button"
+                    className="no-print rounded-full bg-white px-3 py-1.5 text-xs font-black text-blue-700 ring-1 ring-blue-100 active:bg-blue-50"
+                    onClick={() => onEditCashValue(policy)}
+                  >
+                    {cashValueSummary ? '修改现金价值' : '录入现金价值'}
+                  </button>
+                ) : null}
+              </div>
             </div>
           </section>
         ) : null}
@@ -6785,11 +7479,45 @@ function PolicyDetailSheet({
           insuredBirthday={policy.insuredBirthday}
         />
 
+        {optionalResponsibilities.length ? (
+          <div className="mt-4">
+            <OptionalResponsibilityReview
+              items={optionalResponsibilities}
+              disabled={updating || deleting}
+              saving={updating}
+              onChange={onUpdateOptionalResponsibility ? (id, status) => void onUpdateOptionalResponsibility(policy, id, status) : undefined}
+              description="未投保或不确定的可选责任不会进入当前保单和家庭报告的量化计算。"
+            />
+          </div>
+        ) : null}
+
         <section className="mt-4 space-y-3">
           <div>
             <h3 className="text-base font-bold text-slate-900">保险责任</h3>
             <p className="mt-1 text-xs text-slate-500">以下内容来自本次 OCR 识别和责任解析。</p>
           </div>
+          {responsibilitySourceLinks.length ? (
+            <div className="rounded-[18px] border border-blue-100 bg-blue-50/70 px-3 py-3">
+              <p className="text-xs font-black text-blue-700">官网地址</p>
+              <div className="mt-2 space-y-2">
+                {responsibilitySourceLinks.map((source) => (
+                  <a
+                    key={`${source.title}-${source.url}`}
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-start gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-blue-700 ring-1 ring-blue-100"
+                  >
+                    <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0">
+                      <span className="block truncate font-black">{source.title || formatSourceUrlHost(source.url)}</span>
+                      <span className="block break-all text-blue-500">{source.url}</span>
+                    </span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {responsibilities.length ? (
             responsibilities.map((row, index) => (
               <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">

@@ -6,6 +6,7 @@ import {
   assertValidMobile,
   attachPoliciesCoverageIndicators,
   attachPolicyCoverageIndicators,
+  buildOptionalResponsibilityReview,
   buildPolicyFromScan,
   birthdayFromIdNumber,
   createInitialState,
@@ -18,11 +19,13 @@ import {
   normalizeBeneficiary,
   normalizeGuestId,
   normalizeDateOnly,
+  normalizeOptionalResponsibilities,
   normalizeIdNumber,
   normalizePolicyPlans,
   normalizeMobile,
   normalizePolicyRelation,
   normalizePolicySources,
+  selectedCoverageIndicators,
   publicUser,
 } from './policy-ocr.domain.mjs';
 import { scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
@@ -45,6 +48,10 @@ import { deliverSmsCode, resolveSmsDeliveryPlan } from './sms-delivery.mjs';
 import { computePolicyCashflow, computeScenarioEntries } from './cashflow-compute.mjs';
 import { findProductCashflowTemplate } from './cashflow-template.mjs';
 import { createCashflowStore, createCashValueStore } from './cashflow-store.mjs';
+import {
+  buildOptionalResponsibilityGaps,
+  rebuildOptionalResponsibilityGovernance,
+} from './optional-responsibility-governance.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -457,6 +464,9 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (hasOwn(input, 'plans')) {
     data.plans = normalizePolicyPlans(input.plans, data.company || existingPolicy.company || '');
   }
+  if (hasOwn(input, 'optionalResponsibilities')) {
+    data.optionalResponsibilities = normalizeOptionalResponsibilities(input.optionalResponsibilities);
+  }
   if (hasOwn(data, 'company') && !data.company) {
     const error = new Error('保险公司不能为空');
     error.code = 'POLICY_COMPANY_REQUIRED';
@@ -488,6 +498,7 @@ function policyProductIdentity(policy = {}) {
 
 function clearPolicyReportForRegeneration(state, policy) {
   policy.responsibilities = [];
+  policy.optionalResponsibilities = [];
   policy.report = '';
   policy.sources = [];
   policy.reportStatus = 'generating';
@@ -617,14 +628,27 @@ function buildAdminOverview(state) {
   return {
     users,
     insureds: [...insuredMap.values()].sort((a, b) => b.policyCount - a.policyCount || a.insured.localeCompare(b.insured)),
-    policies: attachPoliciesCoverageIndicators(policyRows, state.insuranceIndicatorRecords),
+    policies: attachPoliciesCoverageIndicators(
+      policyRows,
+      state.insuranceIndicatorRecords,
+      state.knowledgeRecords,
+      state.optionalResponsibilityRecords,
+    ),
     sourceRecords,
+    optionalResponsibilityGaps: buildOptionalResponsibilityGaps({
+      optionalResponsibilityRecords: state.optionalResponsibilityRecords,
+      policies: policyRows,
+    }),
     summary: {
       userCount: users.length,
       insuredCount: insuredMap.size,
       policyCount: policyRows.length,
       sourceRecordCount: sourceRecords.length,
       knowledgeRecordCount: Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0,
+      optionalResponsibilityGapCount: buildOptionalResponsibilityGaps({
+        optionalResponsibilityRecords: state.optionalResponsibilityRecords,
+        policies: policyRows,
+      }).length,
       totalCoverage: policyRows.reduce((sum, policy) => sum + Number(policy.amount || 0), 0),
       annualPremium: policyRows.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0),
     },
@@ -908,16 +932,20 @@ function normalizeProvidedAnalysis(value) {
           scenario: String(row?.scenario || '').trim(),
           payout: String(row?.payout || '').trim(),
           note: String(row?.note || '').trim(),
+          sourceUrl: String(row?.sourceUrl || '').trim(),
+          sourceTitle: String(row?.sourceTitle || row?.source || '').trim(),
         }))
         .filter((row) => row.coverageType || row.scenario || row.payout || row.note)
     : [];
   const report = String(value.report || '').trim();
   if (!report && !coverageTable.length) return null;
+  const optionalResponsibilities = normalizeOptionalResponsibilities(value.optionalResponsibilities);
   return {
     ...value,
     report,
     coverageTable,
     sources: normalizePolicySources(value.sources),
+    optionalResponsibilities,
   };
 }
 
@@ -1023,9 +1051,14 @@ function applyAnalysisToPolicy(policy, analysis) {
     scenario: String(row.scenario || '').trim() || '以条款约定为准',
     payout: String(row.payout || '').trim() || '以正式条款为准',
     note: String(row.note || '').trim(),
+    sourceUrl: String(row.sourceUrl || '').trim(),
+    sourceTitle: String(row.sourceTitle || '').trim(),
   }));
   policy.report = String(normalized.report || '').trim();
   policy.sources = normalizePolicySources(normalized.sources);
+  if (Array.isArray(normalized.optionalResponsibilities)) {
+    policy.optionalResponsibilities = normalized.optionalResponsibilities;
+  }
   policy.reportStatus = 'ready';
   policy.reportError = '';
   policy.updatedAt = new Date().toISOString();
@@ -1133,6 +1166,7 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.sourceRecords)) state.sourceRecords = [];
   if (!Array.isArray(state.knowledgeRecords)) state.knowledgeRecords = [];
   if (!Array.isArray(state.insuranceIndicatorRecords)) state.insuranceIndicatorRecords = [];
+  if (!Array.isArray(state.optionalResponsibilityRecords)) state.optionalResponsibilityRecords = [];
   if (!Array.isArray(state.officialDomainProfiles)) state.officialDomainProfiles = [];
   if (!Number(state.nextId)) state.nextId = 1;
 
@@ -1206,9 +1240,10 @@ export function createPolicyOcrApp(options = {}) {
    */
   function computeAndStoreCashflow(policy) {
     const policyIndicators = findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
+    const selectedIndicators = selectedCoverageIndicators(policyIndicators);
     const template = findProductCashflowTemplate(policy, state.knowledgeRecords);
-    const cashflowEntries = computePolicyCashflow(policy, template, policyIndicators);
-    const scenarioEntries = computeScenarioEntries(policyIndicators, policy);
+    const cashflowEntries = computePolicyCashflow(policy, template, selectedIndicators);
+    const scenarioEntries = computeScenarioEntries(selectedIndicators, policy);
     const totalCashflow = cashflowEntries.reduce((sum, e) => sum + e.amount, 0);
 
     cashflowStore.replaceEntries(policy.id, cashflowEntries);
@@ -1348,6 +1383,41 @@ export function createPolicyOcrApp(options = {}) {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return;
     res.json({ ok: true, ...buildAdminOverview(state) });
+  });
+
+  app.post('/api/admin/optional-responsibilities/:id/not-quantifiable', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      const id = String(req.params.id || '').trim();
+      const record = (state.optionalResponsibilityRecords || []).find((row) => String(row.id || '') === id);
+      if (!record) {
+        return res.status(404).json({ ok: false, code: 'OPTIONAL_RESPONSIBILITY_NOT_FOUND', message: '可选责任不存在' });
+      }
+      record.quantificationStatus = 'not_quantifiable';
+      record.quantificationReason = String(req.body?.reason || '不进入量化计算').trim();
+      record.updatedAt = new Date().toISOString();
+      await persist(state);
+      res.json({ ok: true, record });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  app.post('/api/admin/optional-responsibilities/reextract', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      Object.assign(state, rebuildOptionalResponsibilityGovernance(state));
+      await persist(state);
+      res.json({
+        ok: true,
+        optionalResponsibilityCount: (state.optionalResponsibilityRecords || []).length,
+        optionalIndicatorCount: (state.insuranceIndicatorRecords || []).filter((row) => row.responsibilityScope === 'optional').length,
+      });
+    } catch (error) {
+      sendError(res, error);
+    }
   });
 
   app.get('/api/admin/ocr-config', async (req, res) => {
@@ -1615,7 +1685,12 @@ export function createPolicyOcrApp(options = {}) {
         token,
         user: publicUser(user),
         migratedPolicyCount,
-        policies: attachPoliciesCoverageIndicators(policies, state.insuranceIndicatorRecords),
+        policies: attachPoliciesCoverageIndicators(
+          policies,
+          state.insuranceIndicatorRecords,
+          state.knowledgeRecords,
+          state.optionalResponsibilityRecords,
+        ),
       });
     } catch (error) {
       sendError(res, error, 400);
@@ -1686,6 +1761,21 @@ export function createPolicyOcrApp(options = {}) {
       }
       const analysisStartedAt = nowMs();
       const analysis = await analyzer({ scan: normalizedScan });
+      const policyDraft = {
+        ...(normalizedScan?.data || {}),
+        ocrText: String(normalizedScan?.ocrText || '').trim(),
+        responsibilities: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [],
+        optionalResponsibilities: normalizeOptionalResponsibilities(analysis?.optionalResponsibilities),
+      };
+      const analysisWithOptionalResponsibilities = {
+        ...analysis,
+        optionalResponsibilities: buildOptionalResponsibilityReview(
+          policyDraft,
+          findPolicyCoverageIndicators(policyDraft, state.insuranceIndicatorRecords),
+          state.knowledgeRecords,
+          state.optionalResponsibilityRecords,
+        ),
+      };
       logPerformance(performanceLogger, 'policy.analyze.analysis', {
         route: '/api/policies/analyze',
         durationMs: elapsedMs(analysisStartedAt),
@@ -1694,7 +1784,7 @@ export function createPolicyOcrApp(options = {}) {
         responsibilityCount: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable.length : 0,
       });
       if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan: normalizedScan, analysis });
+        storeGuestPendingScan(state, { guestId, scan: normalizedScan, analysis: analysisWithOptionalResponsibilities });
         await persist(state);
       }
       logPerformance(performanceLogger, 'policy.analyze.complete', {
@@ -1705,7 +1795,7 @@ export function createPolicyOcrApp(options = {}) {
       res.json({
         ok: true,
         scan: normalizedScan,
-        analysis,
+        analysis: analysisWithOptionalResponsibilities,
         registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
       });
     } catch (error) {
@@ -1794,7 +1884,7 @@ export function createPolicyOcrApp(options = {}) {
       res.status(201).json({
         ok: true,
         policy: {
-          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords),
+          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
           cashflowEntries,
           scenarioEntries,
           totalCashflow,
@@ -1818,7 +1908,12 @@ export function createPolicyOcrApp(options = {}) {
         return String(policy.guestId || '') === guestId && !policy.userId;
       })
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const policiesWithIndicators = attachPoliciesCoverageIndicators(policies, state.insuranceIndicatorRecords);
+    const policiesWithIndicators = attachPoliciesCoverageIndicators(
+      policies,
+      state.insuranceIndicatorRecords,
+      state.knowledgeRecords,
+      state.optionalResponsibilityRecords,
+    );
     const policiesWithCashflow = policiesWithIndicators.map((p) => {
       const entries = cashflowStore.getEntries(p.id);
       const cashValues = cashValueStore.getValues(p.id);
@@ -1826,7 +1921,7 @@ export function createPolicyOcrApp(options = {}) {
       let scenarioEntries = [];
       try {
         const policyIndicators = findPolicyCoverageIndicators(p, state.insuranceIndicatorRecords);
-        scenarioEntries = computeScenarioEntries(policyIndicators, p);
+        scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), p);
       } catch (_err) {
         // non-fatal: scenarioEntries stays empty
       }
@@ -1890,7 +1985,7 @@ export function createPolicyOcrApp(options = {}) {
       res.status(identityChanged ? 202 : 200).json({
         ok: true,
         policy: {
-          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords),
+          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
           cashflowEntries,
           scenarioEntries,
           totalCashflow,
@@ -1928,7 +2023,11 @@ export function createPolicyOcrApp(options = {}) {
       }
       const { policy } = result;
       if (policy.reportStatus === 'ready') {
-        return res.json({ ok: true, policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords), skipped: true });
+        return res.json({
+          ok: true,
+          policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
+          skipped: true,
+        });
       }
       if (policy.reportStatus !== 'generating') {
         policy.reportStatus = 'generating';
@@ -1948,7 +2047,10 @@ export function createPolicyOcrApp(options = {}) {
           requestMetrics: { inputOcrChars: String(policy.ocrText || '').length },
         });
       }
-      res.status(202).json({ ok: true, policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords) });
+      res.status(202).json({
+        ok: true,
+        policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
+      });
     } catch (error) {
       sendError(res, error);
     }
@@ -1967,7 +2069,12 @@ export function createPolicyOcrApp(options = {}) {
       return String(row.guestId || '') === guestId && !row.userId;
     });
     if (!policy) return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
-    const policyWithIndicators = attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
+    const policyWithIndicators = attachPolicyCoverageIndicators(
+      policy,
+      state.insuranceIndicatorRecords,
+      state.knowledgeRecords,
+      state.optionalResponsibilityRecords,
+    );
     const cashValues = cashValueStore.getValues(policyId);
     res.json({ ok: true, policy: { ...policyWithIndicators, cashValues } });
   });

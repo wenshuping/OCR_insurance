@@ -643,6 +643,35 @@ function computeFromTemplate(rules, params, ctx, cashflowIndicators) {
 /**
  * Compute cashflow entries from policy responsibility text.
  */
+function normalizeOptionalText(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/g, '').trim();
+}
+
+function responsibilityMatchesOptionalResponsibility(row, optional) {
+  const rowText = normalizeOptionalText([
+    row?.coverageType,
+    row?.scenario,
+    row?.payout,
+    row?.note,
+  ].join(' '));
+  const liability = normalizeOptionalText(optional?.liability);
+  if (liability && liability.length >= 2 && rowText.includes(liability)) return true;
+
+  const coverageType = normalizeOptionalText(optional?.coverageType);
+  if (!coverageType || coverageType.length < 3 || /可选责任|保险责任/.test(coverageType)) return false;
+  return rowText.includes(coverageType);
+}
+
+function isSelectedResponsibilityRow(policy, row) {
+  const matchingOptionalResponsibilities = (Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : [])
+    .filter((optional) => responsibilityMatchesOptionalResponsibility(row, optional));
+  if (!matchingOptionalResponsibilities.length) return true;
+  return matchingOptionalResponsibilities.some((optional) =>
+    String(optional?.selectionStatus || '') === 'selected' &&
+    String(optional?.quantificationStatus || 'pending_review') === 'quantified'
+  );
+}
+
 function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
   const { effectiveYear, birthYear, coverageEndYear } = ctx;
   const productName = policy.name || '';
@@ -661,6 +690,7 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
 
   // Concatenate responsibility texts
   const respText = (Array.isArray(policy.responsibilities) ? policy.responsibilities : [])
+    .filter((row) => isSelectedResponsibilityRow(policy, row))
     .map((r) => String(r.scenario || '')).join('\n');
 
   if (!respText) {
@@ -769,7 +799,8 @@ function computeFromIndicators(cashflowIndicators, ctx) {
  */
 export function computePolicyCashflow(policy, template, indicators) {
   const ctx = buildContext(policy);
-  const cashflowIndicators = indicators.filter(i => i.coverageType === '现金流');
+  const effectiveIndicators = (Array.isArray(indicators) ? indicators : []).filter(isSelectedCoverageIndicator);
+  const cashflowIndicators = effectiveIndicators.filter(i => i.coverageType === '现金流');
   const rules = template?.rules || [];
 
   let entries = [];
@@ -808,7 +839,8 @@ export function computePolicyCashflow(policy, template, indicators) {
  */
 export function computeScenarioEntries(indicators, policy) {
   const entries = [];
-  for (const indicator of indicators) {
+  for (const indicator of (Array.isArray(indicators) ? indicators : [])) {
+    if (!isSelectedCoverageIndicator(indicator)) continue;
     if (indicator.coverageType === '现金流') continue;
     if (indicator.coverageType === '规则参数') continue;
     if (/账户价值|现金价值/.test(indicator.formulaText || '') &&
@@ -828,4 +860,11 @@ export function computeScenarioEntries(indicators, policy) {
     });
   }
   return entries;
+}
+
+function isSelectedCoverageIndicator(indicator) {
+  const scope = String(indicator?.responsibilityScope || 'basic');
+  const status = String(indicator?.selectionStatus || (scope === 'optional' ? 'unknown' : 'selected'));
+  const quantificationStatus = String(indicator?.quantificationStatus || 'pending_review');
+  return scope !== 'optional' || (status === 'selected' && quantificationStatus === 'quantified');
 }

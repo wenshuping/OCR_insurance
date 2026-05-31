@@ -26,6 +26,7 @@ function makePolicy(overrides = {}) {
     ocrText: overrides.ocrText ?? '',
     responsibilities: overrides.responsibilities ?? [],
     coverageIndicators: overrides.coverageIndicators ?? [],
+    optionalResponsibilities: overrides.optionalResponsibilities ?? [],
     report: overrides.report ?? '',
     policyNumber: overrides.policyNumber ?? '',
     reportStatus: overrides.reportStatus ?? 'ready',
@@ -289,6 +290,112 @@ test('buildFamilyReport aggregates matching critical illness indicators for one 
 
   assert.equal(row.amountText, '50万');
   assert.equal(row.sourcePolicies.length, 2);
+});
+
+test('buildFamilyReport excludes unselected optional indicators from critical totals', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 901,
+      insured: '妈妈',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '疾病保障', liability: '重疾首次给付', value: 100, unit: '%', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'unknown' },
+        { coverageType: '疾病保障', liability: '重疾首次给付', value: 50, unit: '%', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'selected', quantificationStatus: 'quantified' },
+      ],
+    }),
+  ]);
+
+  const criticalMember = report.criticalIllness.members.find((item) => item.member === '妈妈');
+  const row = criticalMember.rows.find((item) => item.key === 'critical_first');
+
+  assert.equal(row.amount, 50000);
+  assert.equal(row.sourcePolicies.length, 1);
+});
+
+test('buildFamilyReport reports selected optional responsibilities that are not quantified as gaps', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 90,
+      insured: '妈妈',
+      name: '测试重疾',
+      optionalResponsibilities: [
+        {
+          id: 'opt_gap',
+          productName: '测试重疾',
+          liability: '可选责任一',
+          responsibilityScope: 'optional',
+          selectionStatus: 'selected',
+          quantificationStatus: 'pending_review',
+          quantificationReason: '缺少可计算结构化指标',
+        },
+      ],
+      coverageIndicators: [
+        {
+          coverageType: '疾病保障',
+          liability: '轻症保险金',
+          value: 30,
+          unit: '%',
+          basis: '基本保额',
+          responsibilityScope: 'optional',
+          selectionStatus: 'selected',
+          quantificationStatus: 'pending_review',
+        },
+      ],
+    }),
+  ]);
+
+  assert.equal(report.optionalResponsibilityGaps.length, 1);
+  assert.equal(report.optionalResponsibilityGaps[0].member, '妈妈');
+  assert.equal(report.optionalResponsibilityGaps[0].liability, '可选责任一');
+  assert.equal(report.criticalIllness.members[0].rows.find((row) => row.key === 'mild').amount, 0);
+});
+
+test('buildFamilyReport keeps accident indicators out of critical death and disability row', () => {
+  const xinhuaNursing = '新华人寿保险股份有限公司安鑫优选终身护理保险';
+  const xinhuaWholeLife = '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）';
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 500534,
+      insured: '温舒萍',
+      name: xinhuaNursing,
+      amount: 60312,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '疾病身故', value: 160, unit: '%', basis: '基本保额', productName: xinhuaNursing },
+      ],
+    }),
+    makePolicy({
+      id: 500557,
+      insured: '温舒萍',
+      name: xinhuaWholeLife,
+      amount: 24441,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '疾病全残', unit: '公式', basis: '已交保费', formulaText: '疾病全残 = 现金价值', productName: xinhuaWholeLife },
+        {
+          coverageType: '意外保障',
+          liability: '交通/航空等给付倍数',
+          value: 1.5,
+          unit: '倍',
+          basis: '特定意外额外给付倍数',
+          productName: xinhuaWholeLife,
+          sourceExcerpt: '特定公共交通工具意外伤害身故或身体全残保险金，金额为基本保险金额的1.5倍。',
+        },
+        { coverageType: '意外保障', liability: '意外全残', value: 1.5, unit: '倍', basis: '基本保额', productName: xinhuaWholeLife },
+        { coverageType: '意外保障', liability: '特定意外身故/全残', value: 1.5, unit: '倍', basis: '基本保额', productName: xinhuaWholeLife },
+      ],
+    }),
+  ]);
+
+  const criticalMember = report.criticalIllness.members.find((item) => item.member === '温舒萍');
+  const deathRow = criticalMember.rows.find((row) => row.key === 'death_disability');
+  const wholeLifeSourceCount = deathRow.sourcePolicies.filter((policy) => policy.productName === xinhuaWholeLife).length;
+
+  assert.equal(Number(deathRow.amount.toFixed(1)), 96499.2);
+  assert.equal(wholeLifeSourceCount, 1);
+  assert.deepEqual(deathRow.sourcePolicies.map((policy) => policy.productName), [xinhuaNursing, xinhuaWholeLife]);
+
+  const accidentMember = report.accident.members.find((item) => item.member === '温舒萍');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'general_accident').status, 'covered');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'aviation').status, 'covered');
 });
 
 test('buildFamilyReport resolves critical illness amounts from formula text', () => {

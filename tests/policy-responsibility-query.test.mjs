@@ -255,6 +255,8 @@ test('responsibility assistant returns local responsibility text as one raw row 
   assert.match(result.coverageTable[0].scenario, /1\. 生存保险金\n被保险人生存至约定日期/u);
   assert.match(result.coverageTable[0].scenario, /2\. 身故保险金\n被保险人身故/u);
   assert.equal(result.coverageTable[0].payout, '');
+  assert.equal(result.coverageTable[0].sourceUrl, 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf');
+  assert.equal(result.coverageTable[0].sourceTitle, '尊尚人生两全保险条款');
   assert.equal(result.sources[0].url, 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf');
   assert.equal(result.rawAnalysis.generatedBy, 'local_knowledge_fast_path');
 });
@@ -333,4 +335,6 @@ test('local knowledge responsibility analysis falls back to a single row for uns
   assert.equal(result.coverageTable[0].coverageType, '保险责任');
   assert.equal(result.coverageTable[0].scenario, '保险责任\n\n在本合同保险期间内，本公司按照合同约定承担保险责任并给付保险金。');
   assert.equal(result.coverageTable[0].payout, '');
+  assert.equal(result.coverageTable[0].sourceUrl, 'https://official.example.test/policy.pdf');
+  assert.equal(result.coverageTable[0].sourceTitle, '测试产品条款');
 });

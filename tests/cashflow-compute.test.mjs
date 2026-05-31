@@ -305,6 +305,18 @@ test('computeScenarioEntries: skips cashflow and rule-parameter types', () => {
   assert.equal(entries[0].amount, 300000);
 });
 
+test('computeScenarioEntries: skips optional indicators unless selected', () => {
+  const indicators = [
+    { coverageType: '意外保障', liability: '可选航空意外', value: 20, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'unknown' },
+    { coverageType: '意外保障', liability: '可选交通意外', value: 10, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'not_selected' },
+    { coverageType: '意外保障', liability: '已投保航空意外', value: 5, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'selected', quantificationStatus: 'quantified' },
+  ];
+  const entries = computeScenarioEntries(indicators, changxingPolicy);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].scenario, '已投保航空意外');
+  assert.equal(entries[0].amount, 300000);
+});
+
 test('computeScenarioEntries: nursing care with max pattern', () => {
   const indicators = [
     { coverageType: '疾病保障', liability: '护理金(18岁前)', value: null, unit: '公式', basis: '已交保费', formulaText: '实际交纳保险费，现金价值不展示', condition: '18岁前' },
@@ -320,6 +332,61 @@ test('computeScenarioEntries: nursing care with max pattern', () => {
   assert.equal(entries[0].amount, 24000);   // totalPremium
   assert.equal(entries[1].amount, 38400);   // totalPremium * 1.6
   assert.equal(entries[2].amount, 60312);   // max(28800, 60312)
+});
+
+test('computePolicyCashflow: skips optional cashflow indicators unless selected', () => {
+  const optionalMaturity = {
+    coverageType: '现金流',
+    liability: '可选满期金',
+    value: 100,
+    unit: '%',
+    basis: '基本保额',
+    formulaText: '基本保额 × 100%',
+    condition: '保障期满',
+    responsibilityScope: 'optional',
+    selectionStatus: 'unknown',
+  };
+  const selectedMaturity = { ...optionalMaturity, liability: '已投保满期金', selectionStatus: 'selected', quantificationStatus: 'quantified' };
+
+  assert.deepEqual(computePolicyCashflow(shengshiPolicy, null, [optionalMaturity]), []);
+
+  const entries = computePolicyCashflow(shengshiPolicy, null, [selectedMaturity]);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].liability, '已投保满期金');
+  assert.equal(entries[0].amount, shengshiPolicy.amount);
+});
+
+test('computeScenarioEntries skips selected optional indicators that are not quantified', () => {
+  const indicators = [
+    {
+      coverageType: '意外保障',
+      liability: '可选航空意外',
+      value: 20,
+      unit: '倍',
+      basis: '基本保额',
+      responsibilityScope: 'optional',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+    },
+  ];
+
+  assert.deepEqual(computeScenarioEntries(indicators, changxingPolicy), []);
+});
+
+test('computePolicyCashflow skips selected optional cashflow indicators that are not quantified', () => {
+  const indicator = {
+    coverageType: '现金流',
+    liability: '可选满期金',
+    value: 100,
+    unit: '%',
+    basis: '基本保额',
+    formulaText: '基本保额 × 100%',
+    responsibilityScope: 'optional',
+    selectionStatus: 'selected',
+    quantificationStatus: 'pending_review',
+  };
+
+  assert.deepEqual(computePolicyCashflow(shengshiPolicy, null, [indicator]), []);
 });
 
 // ── 9. Template variable substitution ──
@@ -470,6 +537,22 @@ test('computePolicyCashflow: responsibility text path produces entries when no t
   assert.equal(entries[0].amount, 10000); // basicAmount * 100%
   assert.equal(entries[0].age, 40); // 2030 - 1990
   assert.equal(entries[0].liability, '生存保险金');
+});
+
+test('computePolicyCashflow: responsibility text path skips unselected optional rows', () => {
+  const policy = {
+    ...policyWithResponsibilities,
+    optionalResponsibilities: [
+      {
+        productName: '测试年金',
+        coverageType: '可选责任',
+        liability: '生存保险金',
+        selectionStatus: 'unknown',
+      },
+    ],
+  };
+  const entries = computePolicyCashflow(policy, null, []);
+  assert.deepEqual(entries, []);
 });
 
 test('computePolicyCashflow: responsibility text path has calcText on entries', () => {

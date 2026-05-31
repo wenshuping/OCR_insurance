@@ -16,6 +16,7 @@ const DB_OWNED_KEYS = new Set([
   'sourceRecords',
   'knowledgeRecords',
   'insuranceIndicatorRecords',
+  'optionalResponsibilityRecords',
   'officialDomainProfiles',
   'nextId',
 ]);
@@ -175,6 +176,16 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_insurance_indicator_records_company ON insurance_indicator_records(company);
     CREATE INDEX IF NOT EXISTS idx_insurance_indicator_records_product_name ON insurance_indicator_records(product_name);
 
+    CREATE TABLE IF NOT EXISTS optional_responsibility_records (
+      id TEXT PRIMARY KEY,
+      company TEXT,
+      product_name TEXT,
+      liability TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_company ON optional_responsibility_records(company);
+    CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_product_name ON optional_responsibility_records(product_name);
+
     CREATE TABLE IF NOT EXISTS official_domain_profiles (
       id TEXT PRIMARY KEY,
       payload TEXT NOT NULL
@@ -312,6 +323,22 @@ function insertRows(db, state) {
     );
   }
 
+  const insertOptionalResponsibilityRecord = db.prepare(`
+    INSERT INTO optional_responsibility_records (id, company, product_name, liability, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const record of normalizeArray(state.optionalResponsibilityRecords)) {
+    const id = String(record?.id || '').trim();
+    if (!id) continue;
+    insertOptionalResponsibilityRecord.run(
+      id,
+      String(record.company || ''),
+      String(record.productName || ''),
+      String(record.liability || ''),
+      jsonPayload(record),
+    );
+  }
+
   const insertProfile = db.prepare(`
     INSERT INTO official_domain_profiles (id, payload)
     VALUES (?, ?)
@@ -345,6 +372,7 @@ function clearDbOwnedTables(db) {
     DELETE FROM source_records;
     DELETE FROM knowledge_records;
     DELETE FROM insurance_indicator_records;
+    DELETE FROM optional_responsibility_records;
     DELETE FROM official_domain_profiles;
     DELETE FROM state_documents;
   `);
@@ -368,6 +396,7 @@ function loadDbOwnedState(db) {
     sourceRecords: loadPayloadRows(db, 'source_records', 'id ASC'),
     knowledgeRecords: loadPayloadRows(db, 'knowledge_records', 'id ASC'),
     insuranceIndicatorRecords: loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC'),
+    optionalResponsibilityRecords: loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC'),
     officialDomainProfiles: loadPayloadRows(db, 'official_domain_profiles', 'id ASC'),
   };
   for (const row of db.prepare('SELECT key, payload FROM state_documents ORDER BY key ASC').all()) {

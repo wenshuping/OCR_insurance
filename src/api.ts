@@ -3,6 +3,8 @@ export type Responsibility = {
   scenario: string;
   payout: string;
   note: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
 };
 
 export type PolicySource = {
@@ -13,6 +15,28 @@ export type PolicySource = {
   evidenceLevel?: string;
   official?: boolean;
   sourceType?: string;
+};
+
+export type ResponsibilitySelectionStatus = 'selected' | 'not_selected' | 'unknown';
+
+export type QuantificationStatus = 'quantified' | 'pending_review' | 'not_quantifiable';
+
+export type ResponsibilityScope = 'basic' | 'optional' | 'rider' | 'plan' | string;
+
+export type OptionalResponsibility = {
+  id: string;
+  company?: string;
+  productName?: string;
+  coverageType?: string;
+  liability?: string;
+  title?: string;
+  responsibilityScope: 'optional';
+  selectionStatus: ResponsibilitySelectionStatus;
+  selectionEvidence?: string;
+  quantificationStatus?: QuantificationStatus;
+  quantificationReason?: string;
+  indicatorIds?: string[];
+  sourceExcerpt?: string;
 };
 
 export type CoverageIndicator = {
@@ -34,6 +58,11 @@ export type CoverageIndicator = {
   sourceRecordId?: string;
   sourceUrl?: string;
   sourceExcerpt?: string;
+  responsibilityScope?: ResponsibilityScope;
+  selectionStatus?: ResponsibilitySelectionStatus;
+  selectionEvidence?: string;
+  quantificationStatus?: QuantificationStatus;
+  optionalResponsibilityId?: string;
 };
 
 export type Policy = {
@@ -56,6 +85,7 @@ export type Policy = {
   ocrText: string;
   responsibilities: Responsibility[];
   coverageIndicators?: CoverageIndicator[];
+  optionalResponsibilities?: OptionalResponsibility[];
   report: string;
   sources?: PolicySource[];
   reportStatus?: 'generating' | 'ready' | 'failed' | string;
@@ -132,6 +162,18 @@ export type AdminInsuredSummary = {
   annualPremium: number;
 };
 
+export type OptionalResponsibilityGap = {
+  id: string;
+  company: string;
+  productName: string;
+  liability: string;
+  quantificationStatus: QuantificationStatus;
+  quantificationReason: string;
+  missingFields: string[];
+  sourceExcerpt: string;
+  recentPolicyCount: number;
+};
+
 export type AdminOverview = {
   ok: true;
   summary: {
@@ -140,6 +182,7 @@ export type AdminOverview = {
     policyCount: number;
     sourceRecordCount?: number;
     knowledgeRecordCount?: number;
+    optionalResponsibilityGapCount?: number;
     totalCoverage: number;
     annualPremium: number;
   };
@@ -147,6 +190,7 @@ export type AdminOverview = {
   insureds: AdminInsuredSummary[];
   policies: Policy[];
   sourceRecords?: SourceRecord[];
+  optionalResponsibilityGaps: OptionalResponsibilityGap[];
 };
 
 export type AdminOcrModeOption = {
@@ -249,6 +293,7 @@ export type PolicyScanResult = {
 export type PolicyAnalysisResult = {
   report: string;
   coverageTable: Responsibility[];
+  optionalResponsibilities?: OptionalResponsibility[];
   notes?: string[];
   sources?: PolicySource[];
   productOverview?: string;
@@ -308,7 +353,7 @@ export type CashValueRow = {
 
 export type CashValueScanResult = {
   ok: boolean;
-  source?: 'ocr' | 'vision_llm';
+  source?: 'ocr' | 'vision_llm' | 'manual';
   tableType?: 2 | 3;
   rows: CashValueRow[];
   rowCount?: number;
@@ -373,7 +418,9 @@ export type PolicyFormData = {
   plans?: PolicyPlan[];
 };
 
-export type PolicyUpdateInput = Partial<PolicyFormData>;
+export type PolicyUpdateInput = Partial<PolicyFormData> & {
+  optionalResponsibilities?: OptionalResponsibility[];
+};
 
 type ApiOptions = {
   token?: string;
@@ -611,6 +658,21 @@ export function adminLogin(password: string) {
 
 export function getAdminOverview(token: string) {
   return request<AdminOverview>('/api/admin/overview', { token });
+}
+
+export function markOptionalResponsibilityNotQuantifiable(token: string, id: string, reason: string) {
+  return request<{ ok: true; record: OptionalResponsibility }>(`/api/admin/optional-responsibilities/${encodeURIComponent(id)}/not-quantifiable`, {
+    token,
+    method: 'POST',
+    body: { reason },
+  });
+}
+
+export function reextractOptionalResponsibilities(token: string) {
+  return request<{ ok: true; optionalResponsibilityCount: number; optionalIndicatorCount: number }>('/api/admin/optional-responsibilities/reextract', {
+    token,
+    method: 'POST',
+  });
 }
 
 export function getAdminOcrConfig(token: string) {

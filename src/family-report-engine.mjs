@@ -81,8 +81,19 @@ function uniqueJoinedText(values = []) {
   return result.join('、');
 }
 
+function isSelectedCoverageIndicator(indicator = {}) {
+  const scope = String(indicator?.responsibilityScope || 'basic');
+  const status = String(indicator?.selectionStatus || (scope === 'optional' ? 'unknown' : 'selected'));
+  const quantificationStatus = String(indicator?.quantificationStatus || 'pending_review');
+  return scope !== 'optional' || (status === 'selected' && quantificationStatus === 'quantified');
+}
+
+function selectedCoverageIndicators(indicators = []) {
+  return (Array.isArray(indicators) ? indicators : []).filter(isSelectedCoverageIndicator);
+}
+
 function policyTypeLabel(policy) {
-  const indicatorType = uniqueJoinedText((Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : []).map((indicator) => indicator?.productType));
+  const indicatorType = uniqueJoinedText(selectedCoverageIndicators(policy?.coverageIndicators).map((indicator) => indicator?.productType));
   if (indicatorType) return indicatorType;
 
   const policyType = uniqueJoinedText([policy?.productType, policy?.type]);
@@ -293,6 +304,28 @@ function baseProtectionRow(definition) {
   };
 }
 
+function sourcePolicyKey(source) {
+  const policyId = source?.policyId;
+  if (policyId !== undefined && policyId !== null && String(policyId).trim() !== '') return `policy:${policyId}`;
+  return `product:${normalizeProductName(source?.productName)}:${String(source?.liability || '').trim()}`;
+}
+
+function addSourcePolicy(row, source) {
+  const key = sourcePolicyKey(source);
+  if (row.sourcePolicies.some((item) => sourcePolicyKey(item) === key)) return;
+  row.sourcePolicies.push(source);
+}
+
+function indicatorIsAccidentCoverage(indicator) {
+  const coverageType = String(indicator?.coverageType || '').normalize('NFKC');
+  const primaryText = [
+    indicator?.coverageType,
+    indicator?.liability,
+    indicator?.scenario,
+  ].filter(Boolean).join(' ').normalize('NFKC');
+  return coverageType === '意外保障' || /(意外|交通|公共交通|航空|民航|飞机|轨道|列车|轮船|自驾|驾乘|猝死)/u.test(primaryText);
+}
+
 function applyIndicatorToRow(row, indicator, policy) {
   const amount = resolveIndicatorAmount(indicator, policy);
   const formulaText = String(indicator?.formulaText || '').trim();
@@ -305,7 +338,7 @@ function applyIndicatorToRow(row, indicator, policy) {
   row.countText = value !== null && unit ? `${formatNumberText(value)}${unit}` : formulaText || '-';
   row.status = row.amount > 0 ? 'covered' : 'formula';
   row.conditionText = conditionText || '按识别责任计算';
-  row.sourcePolicies.push({
+  addSourcePolicy(row, {
     policyId: policy?.id,
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || ''),
@@ -349,7 +382,7 @@ function applyFallbackPolicyToRow(row, policy) {
   row.countText = row.amount > 0 ? '基本保额' : '-';
   row.status = row.amount > 0 ? 'covered' : 'unknown';
   row.conditionText = '按保单基础保额估算';
-  row.sourcePolicies.push({
+  addSourcePolicy(row, {
     policyId: policy?.id,
     productName: String(policy?.name || ''),
     liability: '重疾首次给付',
@@ -362,8 +395,9 @@ function buildMemberCriticalRows(memberPolicies) {
   const usableCriticalFirstPolicies = new Set();
 
   for (const policy of memberPolicies) {
-    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     for (const indicator of indicators) {
+      if (indicatorIsAccidentCoverage(indicator)) continue;
       const definition = classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
       if (!definition) continue;
       const previousAmount = rowMap.get(definition.key).amount;
@@ -569,7 +603,7 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
   } else if (row.conditionText === '未识别到该责任') {
     row.conditionText = '按识别责任计算';
   }
-  row.sourcePolicies.push({
+  addSourcePolicy(row, {
     policyId: policy?.id,
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || indicator?.scenario || ''),
@@ -619,7 +653,7 @@ function buildMemberAccidentRows(memberPolicies) {
   const rowMap = new Map(ACCIDENT_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
 
   for (const policy of memberPolicies) {
-    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     const indicatorRowKeys = new Set();
 
     for (const indicator of indicators) {
@@ -1033,10 +1067,30 @@ export function buildPolicyInventory(policies = []) {
   };
 }
 
+function buildOptionalResponsibilityGaps(policies = []) {
+  const gaps = [];
+  for (const policy of Array.isArray(policies) ? policies : []) {
+    for (const item of Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : []) {
+      if (String(item?.selectionStatus || '') !== 'selected') continue;
+      if (String(item?.quantificationStatus || '') === 'quantified') continue;
+      gaps.push({
+        member: memberName(policy),
+        policyId: policy?.id,
+        productName: String(policy?.name || item?.productName || ''),
+        liability: String(item?.liability || item?.title || '可选责任'),
+        quantificationStatus: String(item?.quantificationStatus || 'pending_review'),
+        quantificationReason: String(item?.quantificationReason || '缺少可计算结构化指标'),
+      });
+    }
+  }
+  return gaps;
+}
+
 export function buildFamilyReport(policies = []) {
   return {
     summary: buildFamilyReportSummary(policies),
     policyInventory: buildPolicyInventory(policies),
+    optionalResponsibilityGaps: buildOptionalResponsibilityGaps(policies),
     criticalIllness: buildCriticalIllnessSection(policies),
     accident: buildAccidentSection(policies),
     wealth: buildWealthSection(policies),

@@ -14,6 +14,19 @@ type FamilyReportPageProps = {
   onExport: (target: HTMLElement | null, title: string) => void | Promise<void>;
 };
 
+type OptionalResponsibilityGap = {
+  member: string;
+  policyId?: number;
+  productName: string;
+  liability: string;
+  quantificationStatus: string;
+  quantificationReason: string;
+};
+
+type FamilyReportWithOptionalGaps = FamilyReport & {
+  optionalResponsibilityGaps?: OptionalResponsibilityGap[];
+};
+
 function formatMoney(value: number) {
   return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 }
@@ -79,15 +92,18 @@ const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medi
 const compactThClassName = 'bg-[#0B72B9] px-2 py-1 text-center text-xs font-black text-white';
 const compactTdClassName = 'whitespace-nowrap bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 
-function SummarySection({ report }: { report: FamilyReport }) {
-  const { summary } = report;
-  const attentionItems = [
-    ...summary.attentionItems,
+function getFamilyAttentionItems(report: FamilyReport) {
+  return [
+    ...report.summary.attentionItems,
     ...report.criticalIllness.members.flatMap((member) => member.attentionItems.map((item) => `${member.member}: ${item}`)),
     ...report.accident.members.flatMap((member) => member.attentionItems.map((item) => `${member.member}: ${item}`)),
     ...report.wealth.memberReports.flatMap((member) => member.attentionItems.map((item) => `${member.member}: ${item}`)),
   ];
-  const metrics = [
+}
+
+function getFamilySummaryMetrics(report: FamilyReport, attentionItems: string[]) {
+  const { summary } = report;
+  return [
     { label: '家庭成员', value: `${summary.memberCount}人` },
     { label: '有效保单', value: `${summary.policyCount}张` },
     { label: '年交保费', value: formatMoneyWithUnit(summary.annualPremium) },
@@ -95,23 +111,69 @@ function SummarySection({ report }: { report: FamilyReport }) {
     { label: '现金价值合计', value: formatMoneyWithUnit(summary.cashValueTotal) },
     { label: '待关注', value: `${attentionItems.length}项` },
   ];
+}
+
+function AttentionSection({ attentionItems }: { attentionItems: string[] }) {
+  if (!attentionItems.length) return null;
 
   return (
-    <Section title="全家总统计">
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {metrics.map((metric) => (
-          <div key={metric.label} className="rounded-xl bg-[#F8FBFF] px-3 py-3 ring-1 ring-[#E1EAF5]">
-            <p className="text-xs font-bold text-[#7890AA]">{metric.label}</p>
-            <p className="mt-1 text-base font-black text-[#0F172A]">{metric.value}</p>
+    <Section title="待关注事项">
+      <div className="space-y-1 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-700 ring-1 ring-amber-100">
+        {attentionItems.map((item, index) => <p key={`${item}-${index}`}>{item}</p>)}
+      </div>
+    </Section>
+  );
+}
+
+function OptionalResponsibilityGapSection({ gaps = [] }: { gaps?: OptionalResponsibilityGap[] }) {
+  if (!gaps?.length) return null;
+
+  return (
+    <Section title="已投保但未量化责任">
+      <div className="space-y-2">
+        {gaps.map((gap, index) => (
+          <div key={`${gap.policyId}-${gap.liability}-${index}`} className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-800 ring-1 ring-amber-100">
+            <p className="font-black">{gap.member} · {gap.productName}</p>
+            <p>{gap.liability}</p>
+            <p>{gap.quantificationReason || '缺少可计算结构化指标'}</p>
           </div>
         ))}
       </div>
-      {attentionItems.length ? (
-        <div className="mt-3 space-y-1 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-700 ring-1 ring-amber-100">
-          {attentionItems.map((item, index) => <p key={`${item}-${index}`}>{item}</p>)}
-        </div>
-      ) : null}
     </Section>
+  );
+}
+
+function ReportHero({ report, attentionItems }: { report: FamilyReport; attentionItems: string[] }) {
+  const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+  const metrics = getFamilySummaryMetrics(report, attentionItems);
+
+  return (
+    <section className="rounded-[24px] bg-gradient-to-br from-blue-600 via-sky-500 to-emerald-400 p-5 text-white shadow-[0_18px_42px_-22px_rgba(14,116,144,0.75)]">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-black uppercase text-white/70">Family Policy Report</p>
+          <h2 className="mt-2 text-2xl font-black leading-tight">家庭保障分析报告</h2>
+          <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-white/85">
+            按家庭成员汇总重疾、意外、财富三大板块，并保留每张保单的责任、现金流和现金价值。
+          </p>
+        </div>
+        <div className="rounded-2xl bg-white/15 px-3 py-2 text-right text-xs font-bold leading-5 text-white/80">
+          <span className="block">生成时间</span>
+          <span className="block text-white">{generatedAt}</span>
+        </div>
+      </div>
+      <div className="mt-5">
+        <p className="text-xs font-black text-white/70">全家总统计</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          {metrics.map((metric) => (
+            <div key={metric.label} className="min-w-0 rounded-2xl bg-white/15 px-3 py-3">
+              <p className="text-xs font-bold text-white/70">{metric.label}</p>
+              <p className="mt-1 break-words text-base font-black leading-tight text-white">{metric.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -458,6 +520,8 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
 export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageProps) {
   const reportRef = useRef<HTMLElement | null>(null);
   const exportTitle = '家庭保障分析报告';
+  const attentionItems = getFamilyAttentionItems(report);
+  const reportWithOptionalGaps = report as FamilyReportWithOptionalGaps;
 
   return (
     <div className="min-h-screen bg-[#F4F8FC] pb-10">
@@ -475,21 +539,19 @@ export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageP
         <button
           type="button"
           onClick={() => void onExport(reportRef.current, exportTitle)}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-blue-600 active:bg-blue-100"
-          aria-label="导出报告"
-          title="导出报告"
+          className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-600 active:bg-blue-100"
+          aria-label="下载报告图片"
+          title="下载报告图片"
         >
-          <Download size={19} />
+          <Download size={18} />
+          <span>图片</span>
         </button>
       </header>
 
       <main ref={reportRef} className="print-policy-report space-y-4 p-4">
-        <section className="print-only">
-          <h1>家庭保障分析报告</h1>
-          <p>生成时间：{new Date().toLocaleString('zh-CN', { hour12: false })}</p>
-        </section>
-
-        <SummarySection report={report} />
+        <ReportHero report={report} attentionItems={attentionItems} />
+        <AttentionSection attentionItems={attentionItems} />
+        <OptionalResponsibilityGapSection gaps={reportWithOptionalGaps.optionalResponsibilityGaps} />
         <InventorySection rows={report.policyInventory.rows} />
         <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
         <ProtectionSection title="重疾分析" members={report.criticalIllness.members} />

@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createPolicyOcrApp } from '../server/app.mjs';
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { latestValidSmsCode } from '../server/policy-ocr.domain.mjs';
+import { rebuildOptionalResponsibilityGovernance } from '../server/optional-responsibility-governance.mjs';
 import { scanPolicyWithConfiguredRuntime } from '../server/ocr-runtime.mjs';
 import { extractPolicyFieldsFromText, normalizeExtractedPolicyFields } from '../ocr-service/insurance-ocr.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
@@ -218,6 +219,28 @@ NCI 新华保险
 
   assert.equal(data.beneficiary, '法定');
   assert.equal(data.date, '2026-04-01');
+});
+
+test('OCR extraction recognizes legal beneficiary when inheritance text has OCR mistakes', () => {
+  const data = extractPolicyFieldsFromText(`
+NCI 新华保险
+保险单
+基本内容
+投保人:温舒萍
+被保险人:温舒萍
+身故保险金受益人
+被保险人的法定继本人
+保险利益表
+险种名称
+多倍保障重大疾病保险（智享版）
+60000.00元
+终身
+年交
+/15年
+每年3030.00元
+  `);
+
+  assert.equal(data.beneficiary, '法定');
 });
 
 test('OCR extraction recovers table fields when labels contain OCR mistakes', () => {
@@ -3749,6 +3772,143 @@ test('admin can crawl official product materials into local knowledge base', asy
     assert.equal(listed.payload.summary.count, 1);
     assert.equal(listed.payload.records[0].company, '测试保险');
     assert.ok(persisted.length >= 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('admin overview lists optional responsibility quantification gaps and can mark one not quantifiable', async () => {
+  const state = {
+    users: [],
+    adminSessions: [],
+    sessions: [],
+    smsCodes: [],
+    policies: [
+      {
+        id: 1,
+        userId: null,
+        guestId: 'guest-gap',
+        company: '新华保险',
+        name: '测试重疾',
+        insured: '妈妈',
+        optionalResponsibilities: [
+          {
+            id: 'opt_gap',
+            productName: '测试重疾',
+            liability: '可选责任一',
+            responsibilityScope: 'optional',
+            selectionStatus: 'selected',
+            quantificationStatus: 'pending_review',
+            quantificationReason: '缺少可计算结构化指标',
+          },
+        ],
+        createdAt: '2026-05-31T00:00:00.000Z',
+      },
+    ],
+    pendingScans: [],
+    sourceRecords: [],
+    knowledgeRecords: [],
+    insuranceIndicatorRecords: [],
+    optionalResponsibilityRecords: [
+      {
+        id: 'opt_gap',
+        company: '新华保险',
+        productName: '测试重疾',
+        liability: '可选责任一',
+        quantificationStatus: 'pending_review',
+        quantificationReason: '缺少可计算结构化指标',
+        indicatorIds: [],
+      },
+    ],
+    nextId: 2,
+  };
+  const app = createPolicyOcrApp({ state, adminPassword: 'admin123456' });
+  const server = await listen(app);
+
+  try {
+    const login = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin123456' }),
+    });
+    const token = login.payload.token;
+
+    const overview = await jsonFetch(server.baseUrl, '/api/admin/overview', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(overview.payload.optionalResponsibilityGaps.length, 1);
+    assert.equal(overview.payload.optionalResponsibilityGaps[0].recentPolicyCount, 1);
+
+    const updated = await jsonFetch(server.baseUrl, '/api/admin/optional-responsibilities/opt_gap/not-quantifiable', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ reason: '该责任仅提示权益，不进入金额计算' }),
+    });
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.payload.record.quantificationStatus, 'not_quantifiable');
+  } finally {
+    await server.close();
+  }
+});
+
+test('xinhua optional critical illness policy shows selected quantified optional responsibility', async () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
+  const state = {
+    users: [],
+    sessions: [],
+    smsCodes: [],
+    adminSessions: [],
+    policies: [],
+    pendingScans: [],
+    sourceRecords: [],
+    knowledgeRecords: [
+      {
+        id: 1,
+        company: '新华保险',
+        productName,
+        pageText: '保险责任。3.可选责任一 （1）轻度疾病保险金 被保险人确诊轻度疾病，我们按基本保险金额的20%给付轻度疾病保险金。（2）中度疾病保险金 按基本保险金额的50%给付。',
+      },
+    ],
+    insuranceIndicatorRecords: [],
+    optionalResponsibilityRecords: [],
+    nextId: 2,
+  };
+  Object.assign(state, rebuildOptionalResponsibilityGovernance(state));
+  const app = createPolicyOcrApp({
+    state,
+    analyzer: async () => ({
+      report: '测试报告',
+      coverageTable: [],
+      optionalResponsibilities: [],
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const analyzed = await jsonFetch(server.baseUrl, '/api/policies/analyze', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-xinhua-optional',
+        scan: {
+          ocrText: '备注:《多倍保障重大疾病保险（智赢版）》的保险责任包含基本责任和可选责任一。可选责任一经确定，在本合同保险期间内不得变更。',
+          data: {
+            company: '新华保险',
+            name: productName,
+            applicant: '温舒萍',
+            insured: '温舒萍',
+            date: '2024-11-01',
+            paymentPeriod: '15年交',
+            coveragePeriod: '终身',
+            amount: 60000,
+            firstPremium: 3030,
+          },
+        },
+      }),
+    });
+
+    const optionalOne = analyzed.payload.analysis.optionalResponsibilities.find((item) => item.liability === '可选责任一');
+    assert.equal(optionalOne.selectionStatus, 'selected');
+    assert.equal(optionalOne.quantificationStatus, 'quantified');
+    assert.ok(optionalOne.indicatorIds.length >= 1);
   } finally {
     await server.close();
   }
