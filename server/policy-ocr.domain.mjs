@@ -417,14 +417,15 @@ export function normalizeOptionalResponsibilities(items = []) {
 }
 
 function mergeOptionalResponsibilityCandidate(candidates, candidate) {
+  const company = String(candidate?.company || '').trim();
   const productName = String(candidate?.productName || '').trim();
   const coverageType = String(candidate?.coverageType || '').trim();
   const liability = String(candidate?.liability || '').trim();
-  const id = normalizeOptionalResponsibilityId(candidate?.id) || buildOptionalResponsibilityId({ productName, coverageType, liability });
+  const id = normalizeOptionalResponsibilityId(candidate?.id) || buildOptionalResponsibilityId({ company, productName, coverageType, liability });
   if (!id || (!productName && !coverageType && !liability)) return;
   const normalized = {
     id,
-    company: String(candidate?.company || '').trim(),
+    company,
     productName,
     coverageType,
     liability,
@@ -549,6 +550,7 @@ function buildOptionalResponsibilitiesFromKnowledge(policy = {}, knowledgeRecord
       const liability = `可选责任${suffix}`;
       const productName = String(policy.name || knowledgeRecordProductNames(record)[0] || '').trim();
       const candidate = {
+        company: String(policy.company || record?.company || parseKnowledgeRecordPayload(record)?.company || '').trim(),
         productName,
         coverageType: '可选责任',
         liability,

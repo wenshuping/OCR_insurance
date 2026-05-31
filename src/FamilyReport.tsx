@@ -39,6 +39,13 @@ function formatCashValue(value: number) {
   return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatCashValueAxis(value: number) {
+  if (!Number.isFinite(value)) return '-';
+  if (Math.abs(value) >= 100000000) return `${Number((value / 100000000).toFixed(1))}亿`;
+  if (Math.abs(value) >= 10000) return `${Number((value / 10000).toFixed(1))}万`;
+  return formatMoney(value);
+}
+
 function emptyText(value?: string | number | null) {
   if (value === null || value === undefined || String(value).trim() === '') return '-';
   return String(value);
@@ -57,6 +64,79 @@ function statusLabel(status: string) {
   if (status === 'formula') return '公式型';
   if (status === 'missing') return '未识别';
   return '待确认';
+}
+
+function compactText(value?: string | number | null) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function truncateText(value: string, maxLength: number) {
+  const text = compactText(value);
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}...`;
+}
+
+function isVerboseConditionText(text: string) {
+  return text.length > 80 || /保险责任|本合同|保险期间|官网条款|已截取|我们按/u.test(text);
+}
+
+function summarizeConditionText(value?: string | number | null) {
+  const raw = compactText(value);
+  if (!raw) return '-';
+  if (!isVerboseConditionText(raw)) return raw;
+
+  const tags = [
+    { label: '等待期', pattern: /等待期/u },
+    { label: '重疾', pattern: /重大疾病|重疾|重度疾病/u },
+    { label: '中症', pattern: /中症|中度疾病/u },
+    { label: '轻症', pattern: /轻症|轻度疾病/u },
+    { label: '特定疾病', pattern: /特定疾病|少儿特疾|癌|恶性肿瘤/u },
+    { label: '护理金', pattern: /护理/u },
+    { label: '身故/全残', pattern: /身故|全残|身体全残/u },
+    { label: '给付比例', pattern: /给付比例|赔付比例|[0-9]+(?:\.[0-9]+)?%/u },
+    { label: '给付次数', pattern: /给付次数|赔付次数|限[0-9一二三四五六七八九十]+次/u },
+    { label: '保额/保费公式', pattern: /基本保险金额|基本保额|保险费|现金价值|较大者|最大者|max/iu },
+  ].filter((tag) => tag.pattern.test(raw)).map((tag) => tag.label);
+
+  const uniqueTags = Array.from(new Set(tags)).slice(0, 4);
+  if (uniqueTags.length) return `${uniqueTags.join('、')}相关条款`;
+
+  const cleaned = raw
+    .replace(/^[^。；;]{0,80}?(?:官网条款|已截取保险责任正文)[。；;]*/u, '')
+    .replace(/^保险责任\s*/u, '')
+    .replace(/^在本合同保险期间内[，,]?(?:我们|本公司)?(?:按下列规定)?承担保险责任[:：]?/u, '')
+    .trim();
+  return truncateText(cleaned || raw, 42);
+}
+
+function ConditionSummary({ text }: { text?: string | number | null }) {
+  const raw = compactText(text);
+  if (!raw) return <span>-</span>;
+
+  const summary = summarizeConditionText(raw);
+  const collapsed = summary !== raw;
+
+  return (
+    <div className="max-w-[280px] leading-5">
+      <p className="break-words text-xs font-semibold text-slate-600">{summary}</p>
+      {collapsed ? (
+        <details data-family-report-raw-note className="mt-1">
+          <summary className="cursor-pointer text-[11px] font-black text-[#0B72B9]">查看原文</summary>
+          <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-medium leading-5 text-slate-500 ring-1 ring-slate-100">
+            {raw}
+          </p>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function sourcePolicyText(row: FamilyMemberProtectionReport['rows'][number]) {
+  if (!row.sourcePolicies.length) return '-';
+  const names = row.sourcePolicies
+    .map((policy) => compactText(policy.productName || policy.liability || '未命名保单'))
+    .filter(Boolean);
+  return Array.from(new Set(names)).join(' / ') || '-';
 }
 
 function Section({
@@ -303,7 +383,37 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
           ))}
         </div>
       ) : null}
-      <TableWrap>
+      <div data-report-export-cards className="space-y-2 md:hidden">
+        {member.rows.map((row) => (
+          <div key={row.key} className="rounded-xl bg-white p-3 ring-1 ring-[#E1EAF5]">
+            <div className="flex items-start justify-between gap-3">
+              <h4 className="min-w-0 break-words text-sm font-black leading-5 text-[#176B94]">{row.label}</h4>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${statusClassName(row.status)}`}>
+                {statusLabel(row.status)}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] leading-5">
+              <div className="rounded-lg bg-[#F8FBFF] px-2 py-1.5">
+                <p className="font-bold text-[#7890AA]">金额/比例</p>
+                <p className="mt-0.5 break-words font-black text-slate-800">{emptyText(row.amountText)}</p>
+              </div>
+              <div className="rounded-lg bg-[#F8FBFF] px-2 py-1.5">
+                <p className="font-bold text-[#7890AA]">次数/方式</p>
+                <p className="mt-0.5 break-words font-black text-slate-800">{emptyText(row.countText)}</p>
+              </div>
+            </div>
+            <div className="mt-2 rounded-lg bg-[#F8FBFF] px-2 py-1.5">
+              <p data-report-canvas-skip className="mb-0.5 text-[11px] font-bold text-[#7890AA]">条件/说明</p>
+              <ConditionSummary text={row.conditionText} />
+            </div>
+            <p data-report-canvas-skip className="mt-2 break-words text-[11px] font-medium leading-5 text-slate-400">
+              来源: {truncateText(sourcePolicyText(row), 42)}
+            </p>
+          </div>
+        ))}
+      </div>
+      <div data-report-canvas-skip data-report-export-table className="hidden md:block">
+        <TableWrap>
         <table className="min-w-full border-separate border-spacing-0 text-left">
           <thead>
             <tr>
@@ -326,15 +436,18 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
                     {statusLabel(row.status)}
                   </span>
                 </td>
-                <td className="min-w-[220px] bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]">{emptyText(row.conditionText)}</td>
-                <td className="min-w-[180px] bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]">
-                  {row.sourcePolicies.length ? row.sourcePolicies.map((policy) => policy.productName || policy.liability || '未命名保单').join(' / ') : '-'}
+                <td className="max-w-[300px] bg-white px-3 py-2 align-top text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]">
+                  <ConditionSummary text={row.conditionText} />
+                </td>
+                <td className="max-w-[240px] bg-white px-3 py-2 align-top text-xs font-medium leading-5 text-slate-500 ring-1 ring-[#E1EAF5]">
+                  {truncateText(sourcePolicyText(row), 56)}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-      </TableWrap>
+        </TableWrap>
+      </div>
     </article>
   );
 }
@@ -353,69 +466,199 @@ function ProtectionSection({ title, members }: { title: string; members: FamilyM
   );
 }
 
-function CashValueLineChart({ rows }: { rows: FamilyWealthPolicyReport['cashValueRows'] }) {
-  const chartRows = rows.filter((row) => Number.isFinite(row.cashValue));
-  if (chartRows.length < 2) return <EmptyState text="现金价值点不足，暂无法生成曲线" />;
+type CashValueTrendPoint = FamilyWealthPolicyReport['cashValueRows'][number] & {
+  xValue: number;
+  xLabel: string;
+};
 
-  const width = 420;
-  const height = 168;
-  const paddingX = 34;
-  const paddingY = 22;
-  const values = chartRows.map((row) => row.cashValue);
-  const minValue = Math.min(...values);
-  const maxValue = Math.max(...values);
-  const valueRange = Math.max(1, maxValue - minValue);
-  const xStep = chartRows.length > 1 ? (width - paddingX * 2) / (chartRows.length - 1) : 0;
-  const points = chartRows.map((row, index) => {
-    const x = paddingX + index * xStep;
-    const y = height - paddingY - ((row.cashValue - minValue) / valueRange) * (height - paddingY * 2);
-    return { ...row, x, y };
-  });
-  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ');
-  const first = points[0];
-  const last = points[points.length - 1];
-  const midValue = minValue + valueRange / 2;
-  const yTicks = [
-    { label: formatMoney(maxValue), y: paddingY },
-    { label: formatMoney(midValue), y: height / 2 },
-    { label: formatMoney(minValue), y: height - paddingY },
-  ];
+type CashValueTrendSeries = {
+  id: string;
+  label: string;
+  meta: string;
+  color: string;
+  rows: CashValueTrendPoint[];
+};
+
+const cashValueTrendColors = ['#0F766E', '#2563EB', '#D97706', '#BE123C', '#7C3AED', '#0891B2', '#65A30D', '#C2410C'];
+
+function cashValueChartXValue(row: FamilyWealthPolicyReport['cashValueRows'][number]) {
+  return typeof row.cashValueTime === 'number' && Number.isFinite(row.cashValueTime) ? row.cashValueTime : null;
+}
+
+function cashValueChartXLabel(row: FamilyWealthPolicyReport['cashValueRows'][number]) {
+  return row.cashValueDateLabel || row.cashValueDate || `第${row.policyYear}年末`;
+}
+
+function formatCashValueTimeTick(value: number) {
+  if (!Number.isFinite(value)) return '-';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '-';
+  return `${date.getUTCFullYear()}.${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function buildCashValueTrendSeries(report: FamilyReport): CashValueTrendSeries[] {
+  return report.wealth.memberReports
+    .flatMap((member) => member.policies.map((policy) => ({ member: member.member, policy })))
+    .map(({ member, policy }, index) => {
+      const rows = policy.cashValueRows
+        .filter((row) => Number.isFinite(row.cashValue) && cashValueChartXValue(row) !== null)
+        .map((row) => ({
+          ...row,
+          xValue: cashValueChartXValue(row) as number,
+          xLabel: cashValueChartXLabel(row),
+        }))
+        .sort((a, b) => a.xValue - b.xValue);
+      if (!rows.length) return null;
+
+      return {
+        id: `${policy.policyId}-${member}`,
+        label: compactText(policy.productName) || '未命名产品',
+        meta: [member, compactText(policy.company)].filter(Boolean).join(' · '),
+        color: cashValueTrendColors[index % cashValueTrendColors.length],
+        rows,
+      };
+    })
+    .filter((series): series is CashValueTrendSeries => Boolean(series));
+}
+
+function niceCashValueCeiling(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const scaled = value / magnitude;
+  const factor = scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+  return factor * magnitude;
+}
+
+function uniqueTicks(values: number[]) {
+  return Array.from(new Set(values.filter((value) => Number.isFinite(value)))).sort((a, b) => a - b);
+}
+
+function CashValueTrendChart({ report }: { report: FamilyReport }) {
+  const series = buildCashValueTrendSeries(report);
+  if (!series.length) return <EmptyState text="暂无现金价值趋势数据" />;
+
+  const width = 760;
+  const height = 310;
+  const paddingLeft = 74;
+  const paddingRight = 28;
+  const paddingTop = 30;
+  const paddingBottom = 48;
+  const plotWidth = width - paddingLeft - paddingRight;
+  const plotHeight = height - paddingTop - paddingBottom;
+  const allPoints = series.flatMap((item) => item.rows);
+  const xMin = Math.min(...allPoints.map((point) => point.xValue));
+  const xMax = Math.max(...allPoints.map((point) => point.xValue));
+  const xRange = Math.max(1, xMax - xMin);
+  const yMax = niceCashValueCeiling(Math.max(...allPoints.map((point) => point.cashValue)));
+  const xFor = (value: number) => paddingLeft + ((value - xMin) / xRange) * plotWidth;
+  const yFor = (value: number) => paddingTop + plotHeight - (Math.max(0, value) / yMax) * plotHeight;
+  const yTicks = [yMax, yMax / 2, 0];
+  const xTicks = uniqueTicks([xMin, Math.round((xMin + xMax) / 2), xMax]);
+  const seriesRanges = series.map((item) => ({
+    first: item.rows[0],
+    last: item.rows[item.rows.length - 1],
+  }));
 
   return (
-    <div className="mb-3 rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <h6 className="text-xs font-black text-slate-700">现金价值曲线</h6>
-        <span className="text-[11px] font-bold text-[#7890AA]">
-          {first.calendarYear || `第${first.policyYear}年`} 至 {last.calendarYear || `第${last.policyYear}年`}
-        </span>
+    <article className="overflow-hidden rounded-2xl border border-[#D7E4F2] bg-white p-4 shadow-[0_18px_45px_-30px_rgba(15,23,42,0.28)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[#0F766E]">Cash Value Timeline</p>
+          <h3 className="mt-1 text-base font-black text-[#0F172A]">现金价值趋势</h3>
+        </div>
+        <div className="rounded-xl bg-[#F2F7F7] px-3 py-2 text-right ring-1 ring-[#D7E9E7]">
+          <p className="text-[11px] font-bold text-[#64748B]">产品数</p>
+          <p className="text-sm font-black text-[#0F766E]">{series.length}款</p>
+        </div>
       </div>
-      <svg className="h-auto w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="现金价值曲线">
-        <rect x="0" y="0" width={width} height={height} rx="12" fill="#FFFFFF" />
-        {yTicks.map((tick) => (
-          <g key={`${tick.label}-${tick.y}`}>
-            <line x1={paddingX} x2={width - paddingX} y1={tick.y} y2={tick.y} stroke="#E2E8F0" strokeDasharray="4 5" />
-            <text x="8" y={tick.y + 4} fontSize="10" fill="#64748B">{tick.label}</text>
-          </g>
-        ))}
-        <path d={path} fill="none" stroke="#0EA5E9" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-        <path d={`${path} L ${last.x.toFixed(1)} ${height - paddingY} L ${first.x.toFixed(1)} ${height - paddingY} Z`} fill="#0EA5E9" opacity="0.08" />
-        {points.map((point, index) => (
-          <g key={`${point.policyYear}-${point.calendarYear}-${point.cashValue}`}>
-            <circle cx={point.x} cy={point.y} r={index === 0 || index === points.length - 1 ? 4 : 3} fill="#FFFFFF" stroke="#0EA5E9" strokeWidth="2" />
-            {(index === 0 || index === points.length - 1) ? (
-              <>
-                <text x={point.x} y={height - 7} textAnchor={index === 0 ? 'start' : 'end'} fontSize="10" fill="#475569">
-                  {point.calendarYear || `第${point.policyYear}年`}
+
+      <div className="mt-4 overflow-x-auto">
+        <svg
+          className="h-auto min-w-[680px] w-full"
+          data-cash-value-trend-chart
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label="现金价值趋势对比图"
+        >
+          <rect x="0" y="0" width={width} height={height} rx="18" fill="#F8FBFF" />
+          <rect x={paddingLeft} y={paddingTop} width={plotWidth} height={plotHeight} rx="10" fill="#FFFFFF" />
+          {yTicks.map((tick) => {
+            const y = yFor(tick);
+            return (
+              <g key={`y-${tick}`}>
+                <line x1={paddingLeft} x2={width - paddingRight} y1={y} y2={y} stroke="#DDE7F1" strokeDasharray="5 6" />
+                <text x={paddingLeft - 10} y={y + 4} textAnchor="end" fontSize="11" fontWeight="700" fill="#64748B">
+                  {formatCashValueAxis(tick)}
                 </text>
-                <text x={point.x} y={Math.max(12, point.y - 8)} textAnchor={index === 0 ? 'start' : 'end'} fontSize="10" fontWeight="700" fill="#0369A1">
-                  {formatMoney(point.cashValue)}
+              </g>
+            );
+          })}
+          {xTicks.map((tick) => {
+            const x = xFor(tick);
+            return (
+              <g key={`x-${tick}`}>
+                <line x1={x} x2={x} y1={paddingTop} y2={paddingTop + plotHeight} stroke="#EEF3F8" />
+                <text x={x} y={height - 19} textAnchor="middle" fontSize="11" fontWeight="700" fill="#64748B">
+                  {formatCashValueTimeTick(tick)}
                 </text>
-              </>
+              </g>
+            );
+          })}
+          <line x1={paddingLeft} x2={paddingLeft} y1={paddingTop} y2={paddingTop + plotHeight} stroke="#94A3B8" strokeWidth="1.2" />
+          <line x1={paddingLeft} x2={width - paddingRight} y1={paddingTop + plotHeight} y2={paddingTop + plotHeight} stroke="#94A3B8" strokeWidth="1.2" />
+          <text x={paddingLeft + plotWidth / 2} y={height - 4} textAnchor="middle" fontSize="12" fontWeight="800" fill="#334155">时间</text>
+          <text x="18" y={paddingTop + plotHeight / 2} textAnchor="middle" transform={`rotate(-90 18 ${paddingTop + plotHeight / 2})`} fontSize="12" fontWeight="800" fill="#334155">
+            现金价值
+          </text>
+
+          {series.map((item) => {
+            const path = item.rows
+              .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(point.xValue).toFixed(1)} ${yFor(point.cashValue).toFixed(1)}`)
+              .join(' ');
+            return (
+              <g key={item.id}>
+                <path d={path} fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                {item.rows.map((point, index) => (
+                  <circle
+                    key={`${item.id}-${point.xValue}-${point.cashValue}`}
+                    cx={xFor(point.xValue)}
+                    cy={yFor(point.cashValue)}
+                    r={index === item.rows.length - 1 ? 2.8 : 1.7}
+                    fill={item.color}
+                    stroke="#FFFFFF"
+                    strokeWidth="0.8"
+                  >
+                    <title>{`${item.label} ${point.xLabel}（第${point.policyYear}年末）: ${formatCashValue(point.cashValue)}元`}</title>
+                  </circle>
+                ))}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {series.map((item, index) => (
+          <div key={item.id} className="min-w-0 rounded-xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
+            <div className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+              <p className="min-w-0 truncate text-xs font-black text-[#0F172A]">{truncateText(item.label, 24)}</p>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-bold text-[#64748B]">
+              <span className="min-w-0 truncate">{item.meta || `产品${index + 1}`}</span>
+              <span className="shrink-0 text-[#0F766E]">
+                {seriesRanges[index]?.first.xLabel}-{seriesRanges[index]?.last.xLabel} · {formatCashValueAxis(seriesRanges[index]?.last.cashValue ?? 0)}
+              </span>
+            </div>
+            {seriesRanges[index]?.first.policyYear > 1 ? (
+              <p className="mt-1 text-[10px] font-bold text-amber-600">
+                缺第1-{seriesRanges[index].first.policyYear - 1}年
+              </p>
             ) : null}
-          </g>
+          </div>
         ))}
-      </svg>
-    </div>
+      </div>
+    </article>
   );
 }
 
@@ -438,8 +681,7 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
               <tr>
                 <th className={`${compactThClassName} rounded-tl-xl`}>年份</th>
                 <th className={compactThClassName}>领取金额</th>
-                <th className={compactThClassName}>累计领取</th>
-                <th className={`${compactThClassName} rounded-tr-xl`}>现金价值</th>
+                <th className={`${compactThClassName} rounded-tr-xl`}>累计领取</th>
               </tr>
             </thead>
             <tbody>
@@ -455,9 +697,6 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
                   </td>
                   <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
                     {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
-                  </td>
-                  <td className={`${compactTdClassName} text-right text-[#7F96B5]`}>
-                    {row.cashValue === null ? '—' : formatCashValue(row.cashValue)}
                   </td>
                 </tr>
               ))}
@@ -495,23 +734,12 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
         </div>
       ) : null}
 
-      <div className="grid gap-3 xl:grid-cols-2">
-        <div>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <h5 className="text-xs font-black text-slate-700">个人现金流明细</h5>
-            <span className="text-[11px] font-bold text-[#7890AA]">(单位:元)</span>
-          </div>
-          <PolicyAnnualCashflowTable policy={policy} />
+      <div>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h5 className="text-xs font-black text-slate-700">个人现金流明细</h5>
+          <span className="text-[11px] font-bold text-[#7890AA]">(单位:元)</span>
         </div>
-
-        <div>
-          <h5 className="mb-2 text-xs font-black text-slate-700">现金价值</h5>
-          {policy.cashValueRows.length ? (
-            <CashValueLineChart rows={policy.cashValueRows} />
-          ) : (
-            <EmptyState text="暂无现金价值表" />
-          )}
-        </div>
+        <PolicyAnnualCashflowTable policy={policy} />
       </div>
     </article>
   );
@@ -599,6 +827,8 @@ function WealthSection({ report }: { report: FamilyReport }) {
   return (
     <Section title="财富分析">
       <div className="space-y-3">
+        <CashValueTrendChart report={report} />
+
         {report.wealth.memberReports.length ? report.wealth.memberReports.map((member) => (
           <article key={member.member} className="rounded-xl border border-[#D9E6F4] bg-[#F8FBFF] p-3">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

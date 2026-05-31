@@ -119,9 +119,67 @@ body {
   print-color-adjust: exact;
 }
 
+.pdf-page-style-export-mode .html2canvas-safe-export {
+  background-color: #f4f8fc !important;
+  color: #0f172a !important;
+}
+
+.pdf-page-style-export-mode .html2canvas-safe-export,
+.pdf-page-style-export-mode .html2canvas-safe-export * {
+  background-image: none !important;
+  border-color: #dbe4ef !important;
+  box-shadow: none !important;
+  color: #0f172a !important;
+  outline-color: #dbe4ef !important;
+  text-decoration-color: #2563eb !important;
+}
+
+.pdf-page-style-export-mode .html2canvas-safe-export * {
+  background-color: transparent !important;
+}
+
+.pdf-page-style-export-mode .html2canvas-safe-export section,
+.pdf-page-style-export-mode .html2canvas-safe-export article,
+.pdf-page-style-export-mode .html2canvas-safe-export [data-pdf-table-wrap],
+.pdf-page-style-export-mode .html2canvas-safe-export table,
+.pdf-page-style-export-mode .html2canvas-safe-export thead,
+.pdf-page-style-export-mode .html2canvas-safe-export tbody,
+.pdf-page-style-export-mode .html2canvas-safe-export tr {
+  background-color: #ffffff !important;
+}
+
+.pdf-page-style-export-mode .html2canvas-safe-export th {
+  background-color: #f8fafc !important;
+}
+
+.pdf-page-style-export-mode .html2canvas-safe-export svg:not([data-cash-value-trend-chart]),
+.pdf-page-style-export-mode .html2canvas-safe-export svg:not([data-cash-value-trend-chart]) * {
+  color: #2563eb !important;
+  fill: none !important;
+  stroke: #2563eb !important;
+}
+
+.pdf-page-style-export-mode .html2canvas-safe-export svg:not([data-cash-value-trend-chart]) text,
+.pdf-page-style-export-mode .html2canvas-safe-export svg:not([data-cash-value-trend-chart]) text * {
+  fill: #475569 !important;
+  stroke: none !important;
+}
+
 .pdf-page-style-export-mode .no-print,
 .pdf-page-style-export-mode .no-print * {
   display: none !important;
+}
+
+.pdf-page-style-export-mode .family-report-pdf-target [data-family-report-raw-note] {
+  display: none !important;
+}
+
+.pdf-page-style-export-mode .family-report-pdf-target [data-report-export-table] {
+  display: none !important;
+}
+
+.pdf-page-style-export-mode .family-report-pdf-target [data-report-export-cards] {
+  display: block !important;
 }
 
 .pdf-page-style-export-mode .family-report-pdf-target section,

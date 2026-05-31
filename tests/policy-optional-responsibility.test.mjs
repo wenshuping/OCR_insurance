@@ -106,6 +106,40 @@ test('optional responsibility review falls back to official terms when structure
   assert.equal(optionalTwo.selectionEvidence, 'policy_ocr');
 });
 
+test('optional responsibility review dedupes governance records and official-term fallback records', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
+  const policy = {
+    company: '新华保险',
+    name: productName,
+    ocrText: '保险责任包含基本责任和可选责任一。',
+  };
+  const knowledgeRecords = [
+    {
+      company: '新华保险',
+      productName,
+      pageText: '保险责任。3.可选责任一 （1）轻度疾病保险金。',
+    },
+  ];
+  const optionalResponsibilityRecords = [
+    {
+      company: '新华保险',
+      productName,
+      coverageType: '可选责任',
+      liability: '可选责任一',
+      selectionStatus: 'unknown',
+      selectionEvidence: 'official_terms',
+      quantificationStatus: 'pending_review',
+    },
+  ];
+
+  const reviewItems = buildOptionalResponsibilityReview(policy, [], knowledgeRecords, optionalResponsibilityRecords);
+
+  assert.equal(reviewItems.length, 1);
+  assert.equal(reviewItems[0].company, '新华保险');
+  assert.equal(reviewItems[0].liability, '可选责任一');
+  assert.equal(reviewItems[0].selectionStatus, 'selected');
+});
+
 test('buildPolicyFromScan stores selected optional responsibilities from analysis draft', () => {
   const state = createInitialState();
   const policy = buildPolicyFromScan({

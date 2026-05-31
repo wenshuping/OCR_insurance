@@ -1126,6 +1126,7 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
 
 function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
   reportNode.classList.add('family-report-pdf-target');
+  reportNode.classList.add('html2canvas-safe-export');
   reportNode.style.boxSizing = 'border-box';
   reportNode.style.width = `${width}px`;
   reportNode.style.maxWidth = 'none';
@@ -1134,6 +1135,14 @@ function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
   reportNode.style.background = '#F4F8FC';
   reportNode.style.padding = '24px';
 
+  reportNode.querySelectorAll<HTMLElement>('[data-family-report-raw-note], [data-report-canvas-skip], [data-report-export-table]').forEach((node) => {
+    node.remove();
+  });
+  reportNode.querySelectorAll<HTMLElement>('[data-report-export-cards]').forEach((node) => {
+    node.classList.remove('hidden', 'md:hidden');
+    node.style.setProperty('display', 'block', 'important');
+    node.style.setProperty('width', '100%', 'important');
+  });
   reportNode.querySelectorAll<HTMLElement>('.print-only').forEach((node) => {
     node.style.display = 'none';
   });
@@ -1299,6 +1308,18 @@ function normalizeReportCanvasText(value: string) {
   return String(value || '').replace(/\s+/g, ' ').replace(/\s*：\s*/g, '：').trim();
 }
 
+function truncateReportCanvasText(value: string, maxLength: number) {
+  const normalized = normalizeReportCanvasText(value);
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function compactReportCanvasText(kind: ReportCanvasBlockKind, value: string) {
+  const normalized = normalizeReportCanvasText(value);
+  if (kind === 'section' || kind === 'heading' || kind === 'meta') return normalized;
+  return truncateReportCanvasText(normalized, kind === 'item' ? 64 : 78);
+}
+
 function shouldSkipReportCanvasText(value: string) {
   return [
     '保单解析报告',
@@ -1310,7 +1331,7 @@ function shouldSkipReportCanvasText(value: string) {
 }
 
 function pushReportCanvasBlock(blocks: ReportCanvasBlock[], kind: ReportCanvasBlockKind, text: string) {
-  const normalized = normalizeReportCanvasText(text);
+  const normalized = compactReportCanvasText(kind, text);
   if (!normalized || shouldSkipReportCanvasText(normalized)) return;
   if (/^生成时间：/.test(normalized)) return;
   const previous = blocks[blocks.length - 1];
@@ -1320,7 +1341,7 @@ function pushReportCanvasBlock(blocks: ReportCanvasBlock[], kind: ReportCanvasBl
 
 function extractReportBlocksForCanvas(target: HTMLElement) {
   const clone = target.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('.no-print, script, style, svg, button, input, textarea, select').forEach((node) => node.remove());
+  clone.querySelectorAll('.no-print, script, style, svg, button, input, textarea, select, [data-family-report-raw-note], [data-report-canvas-skip]').forEach((node) => node.remove());
   const blocks: ReportCanvasBlock[] = [
     {
       kind: 'meta',
@@ -3665,7 +3686,7 @@ function CustomerApp() {
                 {cashValueScanResult.source === 'manual' ? '录入现金价值' : '现金价值表识别结果'}
               </h3>
               <span className="text-xs text-slate-400">
-                {cashValueScanResult.source === 'manual' ? '手动录入' : cashValueScanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
+                {cashValueScanResult.source === 'manual' ? '手动录入' : cashValueScanResult.source === 'macos_vision' ? '本机Vision' : cashValueScanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
                 {cashValueScanResult.confidence != null && ` · 置信度 ${Math.round(cashValueScanResult.confidence * 100)}%`}
               </span>
             </div>
@@ -4094,7 +4115,7 @@ function CashflowAnnualTable({ entries, effectiveYear, birthYear, endYear, polic
   const cashValueMap = new Map<number, number>();
   if (cashValues) {
     for (const cv of cashValues) {
-      const calendarYear = effectiveYear + cv.policyYear - 1;
+      const calendarYear = effectiveYear + cv.policyYear;
       cashValueMap.set(calendarYear, cv.cashValue);
     }
   }

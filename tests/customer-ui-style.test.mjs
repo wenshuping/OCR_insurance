@@ -351,6 +351,21 @@ test('family report renders optional responsibility gaps', () => {
   assert.match(source, /quantificationReason/);
 });
 
+test('family report keeps verbose protection notes readable on mobile', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /function ConditionSummary/);
+  assert.match(source, /summarizeConditionText/);
+  assert.match(source, /查看原文/);
+  assert.match(source, /data-family-report-raw-note/);
+  assert.match(source, /data-report-canvas-skip/);
+  assert.match(source, /data-report-export-cards/);
+  assert.match(source, /data-report-export-table/);
+  assert.match(source, /md:hidden/);
+  assert.match(source, /hidden md:block/);
+  assert.match(source, /max-h-28 overflow-y-auto/);
+});
+
 test('admin app exposes optional responsibility quantification governance list', () => {
   const appText = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
@@ -369,7 +384,7 @@ test('customer policy detail can open manual cash value entry', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
-  assert.match(apiSource, /source\?: 'ocr' \| 'vision_llm' \| 'manual'/);
+  assert.match(apiSource, /source\?: 'ocr' \| 'macos_vision' \| 'vision_llm' \| 'manual'/);
   assert.match(customerSource, /openManualCashValueEditor/);
   assert.match(customerSource, /startManualCashValueEntry/);
   assert.match(customerSource, /handleAddCashValueRow/);
@@ -446,20 +461,39 @@ test('family report labels match the agreed report structure', () => {
   assert.doesNotMatch(source, /营销落地页|立即购买|推荐产品/);
 });
 
-test('family report wealth policies show cashflow table with cash value and keep cash value as line chart only', () => {
+test('family report wealth section separates cash value into a multi-product trend chart', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   assert.match(source, /function PolicyAnnualCashflowTable/);
   assert.match(source, /个人现金流明细/);
   assert.match(source, /领取金额/);
   assert.match(source, /累计领取/);
-  assert.match(source, /function CashValueLineChart/);
-  assert.match(source, /aria-label="现金价值曲线"/);
-  assert.match(source, /<path d=\{path\}/);
+  assert.match(source, /function CashValueTrendChart/);
+  assert.match(source, /buildCashValueTrendSeries/);
+  assert.match(source, /aria-label="现金价值趋势对比图"/);
+  assert.match(source, /data-cash-value-trend-chart/);
+  assert.match(source, /现金价值趋势/);
+  assert.match(source, /现金价值/);
+  assert.match(source, /row\.cashValueTime/);
+  assert.match(source, /formatCashValueTimeTick/);
+  assert.match(source, /现金价值趋势对比图/);
+  assert.match(source, />时间</);
+  assert.match(source, /缺第1-/);
+  assert.match(source, /r=\{index === item\.rows\.length - 1 \? 2\.8 : 1\.7\}/);
+  assert.match(source, /fill=\{item\.color\}/);
+  assert.match(source, /<CashValueTrendChart report=\{report\} \/>/);
   assert.match(source, /<PolicyAnnualCashflowTable policy=\{policy\} \/>/);
-  const cashValueAreaStart = source.indexOf('<h5 className="mb-2 text-xs font-black text-slate-700">现金价值</h5>');
-  const cashValueAreaEnd = source.indexOf('</div>', cashValueAreaStart);
-  const cashValueArea = source.slice(cashValueAreaStart, cashValueAreaEnd);
-  assert.doesNotMatch(cashValueArea, /<TableWrap>/);
+  const policyCardStart = source.indexOf('function WealthPolicyCard');
+  const policyCardEnd = source.indexOf('export function FamilyReportPage', policyCardStart + 1);
+  assert.notEqual(policyCardStart, -1, 'WealthPolicyCard component should exist');
+  assert.notEqual(policyCardEnd, -1, 'FamilyReportPage component should exist');
+  const policyCardSource = source.slice(policyCardStart, policyCardEnd);
+  assert.doesNotMatch(policyCardSource, /CashValueTrendChart/);
+  assert.doesNotMatch(policyCardSource, /CashValueLineChart/);
+  assert.doesNotMatch(policyCardSource, />现金价值<\/th>/);
+  assert.doesNotMatch(source, /function CashValueLineChart/);
+  assert.doesNotMatch(source, /return row\.policyYear;/);
+  assert.doesNotMatch(source, /row\.calendarYear > 0 \? row\.calendarYear : row\.policyYear/);
+  assert.doesNotMatch(source, /fill="#FFFFFF"[\s\S]{0,120}stroke=\{item\.color\}/);
 });
 
 test('family report export downloads a page-styled image instead of paginated pdf', () => {
@@ -490,9 +524,23 @@ test('family report export keeps page styling and wraps wide tables for pdf capt
   assert.match(familySource, /data-pdf-table-wrap/);
   assert.match(appSource, /preparePageStyleReportNode\(reportNode,\s*width\)/);
   assert.match(appSource, /family-report-pdf-target/);
+  assert.match(appSource, /html2canvas-safe-export/);
+  assert.match(appSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\], \[data-report-export-table\]/);
+  assert.match(appSource, /node\.remove\(\)/);
+  assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-report-export-cards\]'\)/);
+  assert.match(appSource, /classList\.remove\('hidden', 'md:hidden'\)/);
+  assert.match(appSource, /setProperty\('display', 'block', 'important'\)/);
   assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
+  assert.match(appSource, /compactReportCanvasText/);
+  assert.match(appSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\]/);
   assert.match(appSource, /captureWidth: options\?\.preservePageStyle \? width/);
   assert.match(appSource, /new jsPDF\(options\?\.preservePageStyle \? 'l' : 'p'/);
+  assert.match(cssSource, /\.pdf-page-style-export-mode \.html2canvas-safe-export/);
+  assert.match(cssSource, /background-color:\s*transparent !important/);
+  assert.match(cssSource, /svg:not\(\[data-cash-value-trend-chart\]\)/);
+  assert.match(cssSource, /\[data-family-report-raw-note\]/);
+  assert.match(cssSource, /\[data-report-export-cards\]/);
+  assert.match(cssSource, /\[data-report-export-table\]/);
   assert.match(cssSource, /\.pdf-page-style-export-mode \.family-report-pdf-target \[data-pdf-table-wrap\]/);
   assert.match(cssSource, /overflow:\s*visible !important/);
   assert.match(cssSource, /max-width:\s*100% !important/);

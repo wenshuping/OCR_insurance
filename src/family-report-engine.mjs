@@ -9,6 +9,45 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function parseDateParts(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/u);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day) && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return { year, month, day };
+    }
+  }
+  const date = new Date(text);
+  if (!Number.isFinite(date.getTime())) return null;
+  return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() };
+}
+
+function daysInMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function addYearsToDateParts(parts, years) {
+  if (!parts || !Number.isFinite(years)) return null;
+  const year = parts.year + years;
+  const day = Math.min(parts.day, daysInMonth(year, parts.month));
+  return { year, month: parts.month, day };
+}
+
+function formatDateParts(parts) {
+  if (!parts) return '';
+  const month = String(parts.month).padStart(2, '0');
+  const day = String(parts.day).padStart(2, '0');
+  return `${parts.year}-${month}-${day}`;
+}
+
+function datePartsToTime(parts) {
+  return parts ? Date.UTC(parts.year, parts.month - 1, parts.day) : null;
+}
+
 function memberName(policy) {
   const name = String(policy?.insured || '').trim();
   return name || '未识别被保人';
@@ -714,13 +753,16 @@ export function buildAccidentSection(policies = []) {
   };
 }
 
+function effectiveDateParts(policy) {
+  return parseDateParts(policy?.date || policy?.effectiveDate);
+}
+
 function effectiveYear(policy) {
-  const year = new Date(policy?.date).getFullYear();
-  return Number.isFinite(year) ? year : 0;
+  return effectiveDateParts(policy)?.year || 0;
 }
 
 function cashValueRows(policy) {
-  const startYear = effectiveYear(policy);
+  const startDate = effectiveDateParts(policy);
   const rows = Array.isArray(policy?.cashValues) ? policy.cashValues : [];
 
   return rows
@@ -728,11 +770,16 @@ function cashValueRows(policy) {
       const policyYear = finiteNumber(row?.policyYear);
       const cashValue = finiteNumber(row?.cashValue);
       if (policyYear === null || cashValue === null) return null;
+      const cashValueEndDate = startDate ? addYearsToDateParts(startDate, policyYear) : null;
+      const cashValueDate = formatDateParts(cashValueEndDate);
 
       return {
         policyYear,
         age: finiteNumber(row?.age),
-        calendarYear: startYear > 0 ? startYear + policyYear - 1 : 0,
+        calendarYear: cashValueEndDate?.year || 0,
+        cashValueDate,
+        cashValueDateLabel: cashValueDate || `第${policyYear}年末`,
+        cashValueTime: datePartsToTime(cashValueEndDate),
         cashValue,
       };
     })
@@ -903,7 +950,7 @@ function buildWealthPolicyReport(policy) {
         ? { label: '单年最高领取', value: String(highestPayout.year), amount: highestPayout.amount }
         : null,
       lastCashValue
-        ? { label: '末期现金价值', value: String(lastCashValue.calendarYear), amount: lastCashValue.cashValue }
+        ? { label: '末期现金价值', value: lastCashValue.cashValueDateLabel || String(lastCashValue.calendarYear || lastCashValue.policyYear), amount: lastCashValue.cashValue }
         : null,
     ].filter(Boolean),
   };

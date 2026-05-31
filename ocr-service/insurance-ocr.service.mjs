@@ -2813,34 +2813,63 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
 }
 
 /**
- * Scan a cash value table image using Paddle OCR with bounding boxes.
- * Returns parsed rows or failure info.
+ * Scan a cash value table image using local OCR.
+ * macOS Vision runs first for speed; PaddleOCR remains the table-coordinate fallback.
  */
-export async function scanCashValueTable({ uploadItem }) {
+export async function scanCashValueTable({ uploadItem }, dependencies = {}) {
   if (!uploadItem?.dataUrl) {
     return { ok: false, error: 'CASH_VALUE_TABLE_NOT_DETECTED', message: '缺少图片数据' };
   }
 
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'cash-value-ocr-'));
   const imagePath = path.join(tmpDir, 'input.png');
+  let visionError = null;
   let paddleError = null;
+  const execFileImpl = dependencies.execFile || execFileAsync;
+  const platform = dependencies.platform || process.platform;
+  const envBase = dependencies.env || process.env;
+  const warmupPaddle = dependencies.warmupPaddle || warmupPaddleLocalIfNeeded;
+  const resolveScriptPaths = dependencies.resolveScriptPaths || resolveLocalOcrScriptPaths;
+  const assertScriptExists = dependencies.assertScriptExists || assertOcrScriptExists;
+  const getPaddlePython = dependencies.getPaddlePython || getConfiguredPaddlePython;
 
   try {
     const base64Data = uploadItem.dataUrl.replace(/^data:image\/\w+;base64,/, '');
     await writeFile(imagePath, Buffer.from(base64Data, 'base64'));
 
+    if (platform === 'darwin') {
+      try {
+        const { visionScriptPath } = resolveScriptPaths();
+        assertScriptExists(visionScriptPath);
+        const { stdout } = await execFileImpl('swift', [visionScriptPath, imagePath], {
+          timeout: 30000,
+          maxBuffer: 20 * 1024 * 1024,
+        });
+        const parsedText = parseCashValueText(stdout, { source: 'macos_vision' });
+        if (parsedText.ok) return parsedText;
+        visionError = parsedText;
+      } catch (error) {
+        const code = String(error?.message || error?.code || 'PARSE_FAILED');
+        visionError = {
+          ok: false,
+          error: code,
+          message: `macOS Vision OCR 失败: ${code}`,
+        };
+      }
+    }
+
     try {
-      const { paddleScriptPath } = resolveLocalOcrScriptPaths();
-      assertOcrScriptExists(paddleScriptPath);
+      const { paddleScriptPath } = resolveScriptPaths();
+      assertScriptExists(paddleScriptPath);
 
       // Reuse the same Python environment as the existing policy OCR
-      await warmupPaddleLocalIfNeeded();
-      const pythonCmd = getConfiguredPaddlePython();
-      const env = { ...process.env };
+      await warmupPaddle();
+      const pythonCmd = getPaddlePython();
+      const env = { ...envBase };
       const projectDir = String(env.POLICY_OCR_PADDLE_PROJECT_DIR || '').trim();
       env.POLICY_OCR_PADDLE_PIPELINE = 'ocr';
 
-      const { stdout } = await execFileAsync(pythonCmd, [paddleScriptPath, imagePath], {
+      const { stdout } = await execFileImpl(pythonCmd, [paddleScriptPath, imagePath], {
         env,
         cwd: projectDir || undefined,
         maxBuffer: 50 * 1024 * 1024,
@@ -2866,29 +2895,14 @@ export async function scanCashValueTable({ uploadItem }) {
       };
     }
 
-    if (process.platform === 'darwin') {
-      try {
-        const { stdout } = await execFileAsync('swift', [OCR_SWIFT_SCRIPT, imagePath], {
-          timeout: 30000,
-          maxBuffer: 20 * 1024 * 1024,
-        });
-        const parsedText = parseCashValueText(stdout, { source: 'ocr' });
-        if (parsedText.ok) return parsedText;
-        return {
-          ...parsedText,
-          message: `${parsedText.message}${paddleError?.message ? `；${paddleError.message}` : ''}`,
-        };
-      } catch (error) {
-        const code = String(error?.message || error?.code || 'PARSE_FAILED');
-        return {
-          ok: false,
-          error: paddleError?.error || code,
-          message: paddleError?.message || `现金价值表 OCR 失败: ${code}`,
-        };
-      }
+    if (visionError && paddleError) {
+      return {
+        ...paddleError,
+        message: `${visionError.message}；${paddleError.message}`,
+      };
     }
 
-    return paddleError || { ok: false, error: 'PARSE_FAILED', message: '现金价值表解析失败' };
+    return paddleError || visionError || { ok: false, error: 'PARSE_FAILED', message: '现金价值表解析失败' };
   } catch (error) {
     const code = String(error?.message || error?.code || 'PARSE_FAILED');
     const stderr = String(error?.stderr || '').slice(0, 300);

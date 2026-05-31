@@ -6,7 +6,7 @@ const NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
   'https://www.newchinalife.com/info/4596',
   'https://www.newchinalife.com/info/3279_23',
 ];
-const MAX_KNOWLEDGE_PAGE_TEXT_CHARS = 2600;
+const MAX_KNOWLEDGE_PAGE_TEXT_CHARS = 12000;
 const MAX_KNOWLEDGE_PDF_BYTES = 1_500_000;
 const DEFAULT_MAX_KNOWLEDGE_RESULTS = 5;
 const RESPONSIBILITY_MATERIAL_LABEL_PATTERN = /^(?:条款|保险条款|利益条款|产品说明书|产品说明)$/u;

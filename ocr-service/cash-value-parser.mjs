@@ -388,12 +388,27 @@ function parseSplitYearValueTokens(yearTokens, valueTokens) {
   return rows;
 }
 
-function parseCashValueTextSegment(segment) {
+function parseSequentialYearValueTextRows(lines) {
+  const rows = [];
+  for (let i = 0; i < lines.length - 1; i++) {
+    const policyYear = parsePolicyYear(lines[i]);
+    if (policyYear === null) continue;
+    const nextLine = lines[i + 1];
+    if (isYearHeader(nextLine) || isCashValueHeader(nextLine) || parsePolicyYear(nextLine) !== null) continue;
+    const cashValue = parseNumericValue(nextLine);
+    if (cashValue === null || cashValue < 0) continue;
+    rows.push({ policyYear, age: null, cashValue });
+  }
+  return rows;
+}
+
+function parseCashValueTextSegment(segment, options = {}) {
   const yearHeaderIndex = segment.findIndex(isYearHeader);
   if (yearHeaderIndex < 0) return [];
   const cashHeaderIndex = segment.findIndex((line, index) => index > yearHeaderIndex && isCashValueHeader(line));
   if (cashHeaderIndex < 0) return [];
 
+  const excludedPolicyYears = options.excludedPolicyYears || new Set();
   const beforeCashHeader = segment.slice(yearHeaderIndex + 1, cashHeaderIndex)
     .filter((line) => parsePolicyYear(line) !== null);
   const afterCashHeader = segment.slice(cashHeaderIndex + 1)
@@ -401,6 +416,10 @@ function parseCashValueTextSegment(segment) {
 
   const splitRows = parseSplitYearValueTokens(beforeCashHeader, afterCashHeader);
   if (splitRows.length) return splitRows;
+  const remainingYearTokens = beforeCashHeader
+    .filter((line) => !excludedPolicyYears.has(parsePolicyYear(line)));
+  const remainingSplitRows = parseSplitYearValueTokens(remainingYearTokens, afterCashHeader);
+  if (remainingSplitRows.length) return remainingSplitRows;
   return parseAlternatingYearValueTokens(afterCashHeader);
 }
 
@@ -429,7 +448,12 @@ export function parseCashValueText(input, options = {}) {
   }
   if (current.length) segments.push(current);
 
-  const parsedRows = uniqueRowsByPolicyYear(segments.flatMap(parseCashValueTextSegment));
+  const sequentialRows = parseSequentialYearValueTextRows(lines);
+  const sequentialYears = new Set(sequentialRows.map((row) => row.policyYear));
+  const parsedRows = uniqueRowsByPolicyYear([
+    ...sequentialRows,
+    ...segments.flatMap((segment) => parseCashValueTextSegment(segment, { excludedPolicyYears: sequentialYears })),
+  ]);
   const { valid, confidence } = validateAndScore(parsedRows, []);
   if (!valid) {
     return {

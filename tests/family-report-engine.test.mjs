@@ -792,7 +792,7 @@ test('buildFamilyReport lets responsibility amount improve unresolved accident i
   assert.equal(aviation.amountText, '500万');
 });
 
-test('buildFamilyReport creates per-member wealth policies and calendar-year aggregate rows', () => {
+test('buildFamilyReport creates per-member wealth policies and cash value year-end aggregate rows', () => {
   const policies = [
     makePolicy({
       id: 30,
@@ -828,13 +828,17 @@ test('buildFamilyReport creates per-member wealth policies and calendar-year agg
   const report = buildFamilyReport(policies);
   const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
   const row2025 = report.wealth.aggregateRows.find((row) => row.year === 2025);
+  const row2026 = report.wealth.aggregateRows.find((row) => row.year === 2026);
   const row2030 = report.wealth.aggregateRows.find((row) => row.year === 2030);
   const row2073 = report.wealth.aggregateRows.find((row) => row.year === 2073);
 
   assert.equal(mother.policies[0].productName, '盛世恒盈年金');
-  assert.equal(mother.policies[0].cashValueRows[0].calendarYear, 2025);
+  assert.equal(mother.policies[0].cashValueRows[0].calendarYear, 2026);
+  assert.equal(mother.policies[0].cashValueRows[0].cashValueDate, '2026-12-22');
+  assert.equal(mother.policies[0].cashValueRows[0].cashValueDateLabel, '2026-12-22');
   assert.equal(row2025.premiumOutflow, 19600);
-  assert.equal(row2025.cashValueTotal, 282);
+  assert.equal(row2025.cashValueTotal, 0);
+  assert.equal(row2026.cashValueTotal, 282);
   assert.equal(row2030.payoutInflow, 1465);
   assert.equal(row2073.payoutInflow, 110100);
   assert.ok(report.wealth.keyPoints.some((point) => point.label === '领取高峰年' && point.value === '2073'));
@@ -862,12 +866,14 @@ test('buildFamilyReport combines same-year policy cashflow rows for annual wealt
   const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
   const policy = mother.policies.find((item) => item.policyId === 44);
   const row2030 = policy.annualCashflowRows.find((row) => row.year === 2030);
+  const row2031 = policy.annualCashflowRows.find((row) => row.year === 2031);
 
   assert.equal(row2030.amount, 3000);
   assert.equal(row2030.cumulative, 3000);
-  assert.equal(row2030.cashValue, 6009);
+  assert.equal(row2030.cashValue, null);
   assert.deepEqual(row2030.liabilities, ['生存金', '特别生存金']);
   assert.equal(row2030.age, 42);
+  assert.equal(row2031.cashValue, 6009);
 });
 
 test('buildFamilyReport keeps unknown wealth cash value dates out of aggregate rows', () => {
@@ -904,10 +910,10 @@ test('buildFamilyReport skips wealth premium rows when payment period is unknown
   ]);
 
   const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
-  const row2025 = report.wealth.aggregateRows.find((row) => row.year === 2025);
+  const row2026 = report.wealth.aggregateRows.find((row) => row.year === 2026);
 
-  assert.equal(row2025.premiumOutflow, 0);
-  assert.equal(row2025.details.some((detail) => detail.type === 'premium'), false);
+  assert.equal(row2026.premiumOutflow, 0);
+  assert.equal(row2026.details.some((detail) => detail.type === 'premium'), false);
   assert.ok(mother.attentionItems.includes('缴费期待补充'));
   assert.ok(mother.policies[0].attentionItems.includes('缴费期待补充'));
 });
@@ -940,9 +946,9 @@ test('buildFamilyReport includes calendar year and age in aggregate cash value d
     }),
   ]);
 
-  const row2025 = report.wealth.aggregateRows.find((row) => row.year === 2025);
-  const cashValueDetail = row2025.details.find((detail) => detail.type === 'cashValue');
+  const row2026 = report.wealth.aggregateRows.find((row) => row.year === 2026);
+  const cashValueDetail = row2026.details.find((detail) => detail.type === 'cashValue');
 
-  assert.equal(cashValueDetail.calendarYear, 2025);
+  assert.equal(cashValueDetail.calendarYear, 2026);
   assert.equal(cashValueDetail.age, 37);
 });

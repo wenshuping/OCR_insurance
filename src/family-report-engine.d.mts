@@ -89,6 +89,9 @@ export type FamilyWealthPolicyCashValueRow = {
   policyYear: number;
   age: number | null;
   calendarYear: number;
+  cashValueDate: string;
+  cashValueDateLabel: string;
+  cashValueTime: number | null;
   cashValue: number;
 };
 

@@ -7,7 +7,12 @@ const OPTIONAL_WORDING_PATTERN =
   /可选(?:保险)?责任|可选部分|可选保障|可选择的保险责任项目|必选部分和可选部分|基本部分和可选部分|基本(?:保险)?责任和可选(?:保险)?责任|可由.{0,30}决定是否投保|可选择投保/u;
 const OPTIONAL_NEGATIVE_PATTERN =
   /不含可选(?:保险)?责任|未选择投保可选(?:保险)?责任|未投保可选(?:保险)?责任|不投保可选(?:保险)?责任|不包含.{0,30}可选(?:保险)?责任/u;
-const OPTIONAL_SECTION_PATTERN = /(?:^|[。；;:：]\s*|\d+[.．、]\s*)可选(?:保险)?责任\s*([一二三四五六七八九十\d]*)/gu;
+const SECTION_PREFIX_PATTERN = String.raw`(?:^|[。；;:：]\s*|(?:\d+[.．、]\s*)+|第\s*[一二三四五六七八九十\d]+\s*条\s*)`;
+const OPTIONAL_SECTION_PATTERN = new RegExp(`${SECTION_PREFIX_PATTERN}可选(?:保险)?责任\\s*([一二三四五六七八九十\\d]*)`, 'gu');
+const OPTIONAL_SECTION_BOUNDARY_PATTERN = new RegExp(
+  `${SECTION_PREFIX_PATTERN}(?:可选(?:保险)?责任\\s*[一二三四五六七八九十\\d]*|基本(?:保险)?责任|责任免除|释义)`,
+  'u',
+);
 
 export function normalizeLookupText(value) {
   return String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
@@ -70,6 +75,15 @@ function productNames(record = {}) {
     .filter(Boolean);
 }
 
+function knowledgeSourceFields(record = {}) {
+  const payload = parsePayload(record);
+  return {
+    sourceRecordId: String(record.id || payload.id || '').trim(),
+    sourceUrl: String(record.url || payload.url || '').trim(),
+    sourceTitle: String(record.title || payload.title || record.productName || payload.productName || '').trim(),
+  };
+}
+
 function policyProductNames(policy = {}) {
   return [
     policy.name,
@@ -94,19 +108,32 @@ function excerptAround(text, index, length = 900) {
   return normalized.slice(Math.max(0, Number(index || 0) - 24), Math.max(0, Number(index || 0) - 24) + length).trim();
 }
 
+function sectionExcerpt(text, match) {
+  const source = String(text || '').replace(/\s+/gu, ' ').trim();
+  const markerOffset = String(match?.[0] || '').search(/可选/u);
+  const start = Number(match?.index || 0) + Math.max(0, markerOffset);
+  const rest = source.slice(start + Math.max(1, String(match?.[0] || '').length - Math.max(0, markerOffset)));
+  const next = rest.search(OPTIONAL_SECTION_BOUNDARY_PATTERN);
+  if (next > 40) {
+    return source.slice(start, start + String(match?.[0] || '').length - Math.max(0, markerOffset) + next).trim();
+  }
+  return source.slice(start, start + 6000).trim();
+}
+
 function extractOptionalSections(text = '') {
   const source = String(text || '').replace(/\s+/gu, ' ').trim();
-  if (!OPTIONAL_WORDING_PATTERN.test(source) || OPTIONAL_NEGATIVE_PATTERN.test(source)) return [];
+  if (!OPTIONAL_WORDING_PATTERN.test(source)) return [];
   const matches = [...source.matchAll(OPTIONAL_SECTION_PATTERN)]
     .map((match) => {
       const suffix = String(match[1] || '').trim();
       return {
         liability: `可选责任${suffix}`,
-        sourceExcerpt: excerptAround(source, match.index),
+        sourceExcerpt: sectionExcerpt(source, match),
       };
     })
     .filter((section, index, list) => list.findIndex((item) => item.liability === section.liability) === index);
   const specific = matches.filter((section) => section.liability !== '可选责任');
+  if (!specific.length && OPTIONAL_NEGATIVE_PATTERN.test(source)) return [];
   return specific.length ? specific : matches.slice(0, 1);
 }
 
@@ -119,6 +146,12 @@ function responsibilityKey(record = {}) {
 }
 
 function indicatorLinkedTo(record, indicator = {}) {
+  const company = normalizeLookupText(record.company);
+  const indicatorCompany = normalizeLookupText(indicator.company);
+  if (company && indicatorCompany && company !== indicatorCompany) return false;
+  const productName = normalizeLookupText(record.productName);
+  const indicatorProductName = normalizeLookupText(indicator.productName);
+  if (productName && indicatorProductName && productName !== indicatorProductName) return false;
   if (indicator?.optionalResponsibilityId && indicator.optionalResponsibilityId === record.id) return true;
   const text = normalizeLookupText([indicator.coverageType, indicator.liability, indicator.sourceExcerpt].join(' '));
   const liability = normalizeLookupText(record.liability);
@@ -169,7 +202,10 @@ export function normalizeOptionalResponsibilityRecord(record = {}) {
     ),
     quantificationReason: String(record.quantificationReason || '').trim(),
     indicatorIds,
-    sourceExcerpt: String(record.sourceExcerpt || '').trim().slice(0, 900),
+    sourceExcerpt: String(record.sourceExcerpt || '').trim().slice(0, 4000),
+    sourceRecordId: String(record.sourceRecordId || '').trim(),
+    sourceUrl: String(record.sourceUrl || '').trim(),
+    sourceTitle: String(record.sourceTitle || '').trim(),
   };
 }
 
@@ -191,6 +227,7 @@ export function buildOptionalResponsibilityRecords({ policy = {}, knowledgeRecor
         productName: policy.name || productNames(knowledgeRecord)[0],
         liability: section.liability,
         sourceExcerpt: section.sourceExcerpt,
+        ...knowledgeSourceFields(knowledgeRecord),
         selectionStatus: inferSelectionStatus(policy, section.liability),
         selectionEvidence: 'policy_ocr',
       });
@@ -207,6 +244,10 @@ export function buildOptionalResponsibilityRecords({ policy = {}, knowledgeRecor
         ...existing,
         selectionStatus: base.selectionStatus,
         selectionEvidence: base.selectionEvidence,
+        sourceExcerpt: base.sourceExcerpt || existing?.sourceExcerpt || '',
+        sourceRecordId: base.sourceRecordId || existing?.sourceRecordId || '',
+        sourceUrl: base.sourceUrl || existing?.sourceUrl || '',
+        sourceTitle: base.sourceTitle || existing?.sourceTitle || '',
         indicatorIds: quantifiedIds.length ? quantifiedIds : existing?.indicatorIds || [],
         quantificationStatus: status,
         quantificationReason: status === 'pending_review'
@@ -247,28 +288,56 @@ function classifyCoverageType(liability) {
 }
 
 function extractLiability(clause) {
-  const match = String(clause || '').match(/(?:（\d+）)?\s*([一-龥A-Za-z0-9（）()]{2,30}?(?:保险金|豁免|年金|津贴|给付))/u);
+  const text = String(clause || '').replace(/\s+/gu, ' ').trim();
+  const directCandidates = [...text.matchAll(/[一-龥A-Za-z0-9（）()]{2,30}(?:保险金(?!额)|豁免保险费|豁免|年金|津贴)/gu)]
+    .map((match) => match[0].trim()
+      .replace(/^（\d+）/u, '')
+      .replace(/^(?:给付|按|以|向|将按|本公司按|我们按)/u, ''))
+    .filter((value) => !/本合同可选责任|我们除按|按本合同|给付条件|保险金金额|领取人|基本保险金$/u.test(value));
+  if (directCandidates.length) return directCandidates.at(-1);
+  const match = text.match(/(?:（\d+）)?\s*([一-龥A-Za-z0-9（）()]{2,30}?(?:保险金|豁免|年金|津贴|给付))/u);
   return match?.[1] || '';
 }
 
 function extractFormula(clause) {
   const text = String(clause || '').normalize('NFKC');
-  const percent = text.match(/基本保险金额的\s*(\d+(?:\.\d+)?)\s*%/u);
+  if (/利益演示|退保金|现金价值/u.test(text)) return null;
+  const percent = text.match(/(?:本合同|合同|该被保险人名下的)?(?:的)?(?:基本保险金额|基本保额|保险金额|意外伤害保险金额)(?:的)?\s*(\d+(?:\.\d+)?)\s*%/u);
   if (percent) {
+    const basis = percent[0].replace(/(?:的)?\s*\d+(?:\.\d+)?\s*%.*/u, '').trim() || '基本保险金额';
     return {
       value: Number(percent[1]),
       unit: '%',
-      basis: '基本保险金额',
-      formulaText: `基本保额 × ${percent[1]}%`,
+      basis,
+      formulaText: `${basis} × ${percent[1]}%`,
     };
   }
-  const multiple = text.match(/基本保险金额的\s*(\d+(?:\.\d+)?)\s*倍/u);
+  const multiple = text.match(/(?:本合同|合同|该被保险人名下的)?(?:的)?(?:基本保险金额|基本保额|保险金额|意外伤害保险金额)(?:的)?\s*(\d+(?:\.\d+)?)\s*倍/u);
   if (multiple) {
+    const basis = multiple[0].replace(/(?:的)?\s*\d+(?:\.\d+)?\s*倍.*/u, '').trim() || '基本保险金额';
     return {
       value: Number(multiple[1]),
       unit: '倍',
-      basis: '基本保险金额',
-      formulaText: `基本保额 × ${multiple[1]}`,
+      basis,
+      formulaText: `${basis} × ${multiple[1]}`,
+    };
+  }
+  const baseAmount = text.match(/(?:按|以)(?:本合同|合同|该被保险人名下的)?(?:的)?(基本保险金额|基本保额|保险金额|意外伤害保险金额)(?:额外)?给付|给付(?:本合同|合同|该被保险人名下的)?(?:的)?(基本保险金额|基本保额|保险金额|意外伤害保险金额)/u);
+  if (baseAmount) {
+    const basis = baseAmount[1] || baseAmount[2] || '基本保险金额';
+    return {
+      value: 100,
+      unit: '%',
+      basis,
+      formulaText: `${basis} × 100%`,
+    };
+  }
+  if (/津贴日额与住院日数相乘|住院日数\s*[×xX*]\s*.*津贴日额|津贴日额\s*[×xX*]\s*.*住院日数/u.test(text)) {
+    return {
+      value: null,
+      unit: '公式',
+      basis: '住院津贴日额',
+      formulaText: '住院津贴日额 × 住院日数',
     };
   }
   const fixed = text.match(/(\d+(?:,\d{3})*(?:\.\d+)?)\s*元/u);
@@ -310,6 +379,10 @@ export function extractOptionalIndicatorsFromSection(section = {}) {
         optionalResponsibilityId,
         quantificationStatus: 'quantified',
         sourceExcerpt: clause.slice(0, 500),
+        sourceRecordId: String(section.sourceRecordId || '').trim(),
+        sourceUrl: String(section.sourceUrl || '').trim(),
+        sourceTitle: String(section.sourceTitle || '').trim(),
+        sourceEvidenceLevel: section.sourceRecordId || section.sourceUrl ? 'official_terms' : '',
         extractionMethod: 'optional_terms_rule',
         updatedAt: new Date().toISOString(),
       };
@@ -318,12 +391,14 @@ export function extractOptionalIndicatorsFromSection(section = {}) {
 }
 
 export function rebuildOptionalResponsibilityGovernance(state = {}) {
+  const groupKey = (company = '', productName = '') =>
+    `${normalizeLookupText(company)}\u001f${normalizeLookupText(productName)}`;
   const knowledgeGroups = new Map();
   for (const record of Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : []) {
     const payload = parsePayload(record);
     const company = String(record.company || payload.company || '').trim();
     const name = String(record.productName || record.title || payload.productName || payload.title || productNames(record)[0] || '').trim();
-    const key = `${normalizeLookupText(company)}\u001f${normalizeLookupText(name)}`;
+    const key = groupKey(company, name);
     if (!normalizeLookupText(name)) continue;
     const group = knowledgeGroups.get(key) || {
       policy: { company, name },
@@ -332,25 +407,56 @@ export function rebuildOptionalResponsibilityGovernance(state = {}) {
     group.records.push(record);
     knowledgeGroups.set(key, group);
   }
+  const indicatorGroups = new Map();
+  for (const indicator of Array.isArray(state.insuranceIndicatorRecords) ? state.insuranceIndicatorRecords : []) {
+    const productName = String(indicator?.productName || '').trim();
+    if (!normalizeLookupText(productName)) continue;
+    const key = groupKey(indicator?.company, productName);
+    const group = indicatorGroups.get(key) || [];
+    group.push(indicator);
+    indicatorGroups.set(key, group);
+  }
   const optionalRecords = [];
   const optionalIndicators = [];
+  const existingOptionalIndicators = (Array.isArray(state.insuranceIndicatorRecords) ? state.insuranceIndicatorRecords : [])
+    .filter((indicator) => String(indicator.responsibilityScope || '') === 'optional');
   for (const { policy, records: groupedKnowledgeRecords } of knowledgeGroups.values()) {
+    const groupedIndicators = [
+      ...(indicatorGroups.get(groupKey(policy.company, policy.name)) || []),
+      ...(indicatorGroups.get(groupKey('', policy.name)) || []),
+    ];
     const records = buildOptionalResponsibilityRecords({
       policy,
       knowledgeRecords: groupedKnowledgeRecords,
-      indicators: state.insuranceIndicatorRecords,
+      indicators: groupedIndicators,
       existingRecords: state.optionalResponsibilityRecords,
     });
     for (const record of records) {
       const derivedIndicators = extractOptionalIndicatorsFromSection(record);
+      const retainedIndicators = derivedIndicators.length
+        ? []
+        : existingOptionalIndicators.filter((indicator) => {
+          const id = String(indicator?.id || '').trim();
+          return id
+            && (String(indicator?.optionalResponsibilityId || '').trim() === record.id
+              || (Array.isArray(record.indicatorIds) && record.indicatorIds.includes(id)))
+            && indicatorLinkedTo(record, indicator);
+        });
+      const nextIndicators = derivedIndicators.length ? derivedIndicators : retainedIndicators;
+      const indicatorIds = nextIndicators.map((indicator) => indicator.id);
+      const quantificationStatus = indicatorIds.length
+        ? 'quantified'
+        : record.quantificationStatus === 'not_quantifiable'
+          ? 'not_quantifiable'
+          : 'pending_review';
       const nextRecord = normalizeOptionalResponsibilityRecord({
         ...record,
-        indicatorIds: derivedIndicators.map((indicator) => indicator.id),
-        quantificationStatus: derivedIndicators.length ? 'quantified' : record.quantificationStatus,
-        quantificationReason: derivedIndicators.length ? '' : record.quantificationReason,
+        indicatorIds,
+        quantificationStatus,
+        quantificationReason: indicatorIds.length ? '' : record.quantificationReason || '缺少可计算结构化指标',
       });
       optionalRecords.push(nextRecord);
-      optionalIndicators.push(...derivedIndicators);
+      optionalIndicators.push(...nextIndicators);
     }
   }
   const existingNonOptionalIndicators = (Array.isArray(state.insuranceIndicatorRecords) ? state.insuranceIndicatorRecords : [])
