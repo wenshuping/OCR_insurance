@@ -22,6 +22,9 @@ function makePolicy(overrides = {}) {
     coveragePeriod: overrides.coveragePeriod ?? '终身',
     amount: overrides.amount ?? 500000,
     firstPremium: overrides.firstPremium ?? 8600,
+    policyStatus: overrides.policyStatus,
+    status: overrides.status,
+    expired: overrides.expired,
     plans: overrides.plans ?? [],
     ocrText: overrides.ocrText ?? '',
     responsibilities: overrides.responsibilities ?? [],
@@ -239,6 +242,47 @@ test('buildFamilyReport includes summary and inventory sections', () => {
   assert.equal(report.summary.memberCount, 1);
   assert.equal(report.policyInventory.rows.length, 1);
   assert.equal(report.policyInventory.insuredGroups[0].member, '爸爸');
+});
+
+test('buildFamilyReport separates inactive policies from counted values and marks them inactive', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 91,
+      insured: '爸爸',
+      name: '有效重疾险',
+      amount: 100000,
+      firstPremium: 2000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '有效重疾险' },
+      ],
+    }),
+    makePolicy({
+      id: 92,
+      insured: '妈妈',
+      name: '失效重疾险',
+      amount: 500000,
+      firstPremium: 8000,
+      policyStatus: '失效',
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '失效重疾险' },
+      ],
+    }),
+  ]);
+
+  assert.equal(report.summary.memberCount, 2);
+  assert.equal(report.summary.policyCount, 1);
+  assert.equal(report.summary.annualPremium, 2000);
+  assert.equal(report.summary.totalCoverage, 100000);
+  assert.equal(radarScore(report.radar.family, 'critical').amount, 100000);
+  assert.equal(report.policyInventory.rows.find((row) => row.policyId === 92).dataStatus, '失效');
+  assert.equal(report.policyInventory.rows.find((row) => row.policyId === 92).isInactive, true);
+
+  const inactiveMember = report.criticalIllness.members.find((member) => member.member === '妈妈');
+  const inactiveRow = inactiveMember.rows.find((row) => row.key === 'critical_first');
+  assert.equal(inactiveRow.status, 'inactive');
+  assert.equal(inactiveRow.amount, 0);
+  assert.equal(inactiveRow.amountText, '未统计');
+  assert.match(inactiveRow.conditionText, /未计入统计/);
 });
 
 test('buildFamilyReport creates structure radar with compressed display scores and real amounts', () => {

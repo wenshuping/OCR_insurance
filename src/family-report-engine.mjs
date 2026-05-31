@@ -14,6 +14,41 @@ function memberName(policy) {
   return name || '未识别被保人';
 }
 
+function policyStatusText(policy) {
+  return [
+    policy?.policyStatus,
+    policy?.policyState,
+    policy?.contractStatus,
+    policy?.contractState,
+    policy?.validStatus,
+    policy?.validityStatus,
+    policy?.coverageStatus,
+    policy?.state,
+    policy?.status,
+    policy?.['保单状态'],
+    policy?.['合同状态'],
+    policy?.['效力状态'],
+    policy?.['状态'],
+  ]
+    .filter((value) => value !== null && value !== undefined && String(value).trim() !== '')
+    .map((value) => String(value).normalize('NFKC').trim())
+    .join(' ');
+}
+
+function policyIsInactive(policy) {
+  if (policy?.expired === true) return true;
+  const text = policyStatusText(policy);
+  return /(失效|停效|中止|终止|退保|已退保|过期|作废|无效|inactive|expired|lapsed|terminated|surrendered|cancelled|canceled|void)/iu.test(text);
+}
+
+function activePolicies(policies = []) {
+  return policies.filter((policy) => !policyIsInactive(policy));
+}
+
+function inactivePolicies(policies = []) {
+  return policies.filter(policyIsInactive);
+}
+
 function latestCashValue(policy) {
   const cashValues = Array.isArray(policy?.cashValues) ? policy.cashValues : [];
   return cashValues.reduce((latest, row) => {
@@ -102,6 +137,7 @@ function coverageText(policy) {
 }
 
 function dataStatus(policy) {
+  if (policyIsInactive(policy)) return '失效';
   if (policy?.reportStatus === 'generating') return '责任生成中';
   if (policy?.reportStatus === 'failed') return '报告失败';
   if (latestCashValue(policy)) return '现金价值已识别';
@@ -118,6 +154,8 @@ function buildInventoryRow(policy) {
     policyNumber: String(policy?.policyNumber || policy?.policyNo || policy?.contractNumber || policy?.contractNo || policy?.number || '').trim(),
     productName: String(policy?.name || ''),
     typeLabel: policyTypeLabel(policy),
+    isInactive: policyIsInactive(policy),
+    policyStatusText: policyStatusText(policy),
     annualPremium: asNumber(policy?.firstPremium),
     annualPremiumText: formatNumberText(policy?.firstPremium),
     totalPremiumText: totalPremiumText(policy),
@@ -442,11 +480,49 @@ function applyFallbackPolicyToRow(row, policy) {
   });
 }
 
+function markInactiveSourceOnRow(row, policy, liability) {
+  if (!row || row.amount > 0 || row.status === 'covered') return;
+  const normalizedLiability = String(liability || row.label || '').trim();
+  row.amount = 0;
+  row.amountText = '未统计';
+  row.countText = '-';
+  row.status = 'inactive';
+  row.conditionText = '保单状态为失效，未计入统计';
+  addSourcePolicy(row, {
+    sourceKey: `${policySourceKey(policy)}:inactive:${row.key}`,
+    policyId: policy?.id,
+    company: String(policy?.company || ''),
+    productName: String(policy?.name || ''),
+    liability: normalizedLiability,
+    formulaText: '失效保单未计入统计',
+    amount: 0,
+    amountText: '未统计',
+    calculationText: '保单状态为失效，未计入统计',
+  });
+}
+
+function markInactiveCriticalPolicies(rowMap, memberPolicies) {
+  for (const policy of memberPolicies) {
+    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    let matched = false;
+    for (const indicator of indicators) {
+      if (indicatorIsAccidentCoverage(indicator)) continue;
+      const definition = classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
+      if (!definition) continue;
+      matched = true;
+      markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || definition.label);
+    }
+    if (!matched && policyImpliesCriticalIllness(policy)) {
+      markInactiveSourceOnRow(rowMap.get('critical_first'), policy, '重疾首次给付');
+    }
+  }
+}
+
 function indicatorHasFormulaUnit(indicator) {
   return String(indicator?.unit || '').normalize('NFKC').trim() === '公式';
 }
 
-function buildMemberCriticalRows(memberPolicies) {
+function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = []) {
   const rowMap = new Map(CRITICAL_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
   const usableCriticalFirstPolicies = new Set();
   const formulaCriticalFirstPolicies = new Set();
@@ -483,6 +559,8 @@ function buildMemberCriticalRows(memberPolicies) {
     }
   }
 
+  markInactiveCriticalPolicies(rowMap, inactiveMemberPolicies);
+
   const rows = Array.from(rowMap.values());
   const attentionItems = [];
   if (rowMap.get('critical_first')?.status === 'missing') {
@@ -502,10 +580,14 @@ export function buildCriticalIllnessSection(policies = []) {
   }
 
   return {
-    members: Array.from(groupMap, ([member, memberPolicies]) => ({
-      member,
-      ...buildMemberCriticalRows(memberPolicies),
-    })),
+    members: Array.from(groupMap, ([member, memberPolicies]) => {
+      const activeMemberPolicies = activePolicies(memberPolicies);
+      const inactiveMemberPolicies = inactivePolicies(memberPolicies);
+      return {
+        member,
+        ...buildMemberCriticalRows(activeMemberPolicies, inactiveMemberPolicies),
+      };
+    }),
   };
 }
 
@@ -714,7 +796,45 @@ function fallbackPolicyIndicator(policy) {
   };
 }
 
-function buildMemberAccidentRows(memberPolicies) {
+function markInactiveAccidentPolicies(rowMap, memberPolicies) {
+  for (const policy of memberPolicies) {
+    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const responsibilities = Array.isArray(policy?.responsibilities) ? policy.responsibilities : [];
+    let matched = false;
+
+    for (const indicator of indicators) {
+      if (!indicatorImpliesAccident(indicator)) continue;
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      if (!definitions.length) continue;
+      matched = true;
+      for (const definition of definitions) {
+        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label);
+      }
+    }
+
+    for (const responsibility of responsibilities) {
+      const indicator = responsibilityToAccidentIndicator(responsibility, policy);
+      if (!indicatorImpliesAccident(indicator)) continue;
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      if (!definitions.length) continue;
+      matched = true;
+      for (const definition of definitions) {
+        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label);
+      }
+    }
+
+    if (!matched && textImpliesAccident(accidentPolicyText(policy))) {
+      const indicator = fallbackPolicyIndicator(policy);
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      const fallbackDefinitions = definitions.length ? definitions : [ACCIDENT_ROWS.find((item) => item.key === 'general_accident')];
+      for (const definition of fallbackDefinitions) {
+        markInactiveSourceOnRow(rowMap.get(definition?.key), policy, indicator?.liability || definition?.label);
+      }
+    }
+  }
+}
+
+function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
   const rowMap = new Map(ACCIDENT_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
 
   for (const policy of memberPolicies) {
@@ -754,6 +874,8 @@ function buildMemberAccidentRows(memberPolicies) {
     }
   }
 
+  markInactiveAccidentPolicies(rowMap, inactiveMemberPolicies);
+
   const rows = Array.from(rowMap.values());
   const attentionItems = rows
     .filter((row) => row.status === 'missing')
@@ -772,10 +894,14 @@ export function buildAccidentSection(policies = []) {
   }
 
   return {
-    members: Array.from(groupMap, ([member, memberPolicies]) => ({
-      member,
-      ...buildMemberAccidentRows(memberPolicies),
-    })),
+    members: Array.from(groupMap, ([member, memberPolicies]) => {
+      const activeMemberPolicies = activePolicies(memberPolicies);
+      const inactiveMemberPolicies = inactivePolicies(memberPolicies);
+      return {
+        member,
+        ...buildMemberAccidentRows(activeMemberPolicies, inactiveMemberPolicies),
+      };
+    }),
   };
 }
 
@@ -975,7 +1101,7 @@ function buildWealthPolicyReport(policy) {
 }
 
 export function buildWealthSection(policies = []) {
-  const wealthPolicies = policies.filter(isWealthPolicy);
+  const wealthPolicies = activePolicies(policies).filter(isWealthPolicy);
   const groupMap = new Map();
 
   for (const policy of wealthPolicies) {
@@ -1730,7 +1856,8 @@ function selectDisplayedRadarMembers(memberSeries) {
 }
 
 export function buildFamilyRadarReport(policies = [], planningProfile = null) {
-  const familyScores = buildRadarScores(policies);
+  const reportPolicies = activePolicies(policies);
+  const familyScores = buildRadarScores(reportPolicies);
   const normalizedPlanningProfile = normalizeFamilyPlanningProfile(planningProfile);
   const planningEnabled = hasFamilyPlanningProfile(normalizedPlanningProfile);
   const family = {
@@ -1743,7 +1870,7 @@ export function buildFamilyRadarReport(policies = [], planningProfile = null) {
   };
 
   const groupMap = new Map();
-  for (const policy of policies) {
+  for (const policy of reportPolicies) {
     const member = memberName(policy);
     if (!groupMap.has(member)) groupMap.set(member, []);
     groupMap.get(member).push(policy);
@@ -1768,14 +1895,15 @@ export function buildFamilyRadarReport(policies = [], planningProfile = null) {
 }
 
 export function buildFamilyReportSummary(policies = []) {
+  const reportPolicies = activePolicies(policies);
   const members = new Set(policies.map(memberName));
   return {
     memberCount: members.size,
-    policyCount: policies.length,
-    annualPremium: policies.reduce((total, policy) => total + asNumber(policy?.firstPremium), 0),
-    totalCoverage: policies.reduce((total, policy) => total + asNumber(policy?.amount), 0),
-    cashValueTotal: policies.reduce((total, policy) => total + (latestCashValue(policy)?.cashValue || 0), 0),
-    futurePayoutTotal: policies.reduce((total, policy) => total + futurePayoutTotal(policy), 0),
+    policyCount: reportPolicies.length,
+    annualPremium: reportPolicies.reduce((total, policy) => total + asNumber(policy?.firstPremium), 0),
+    totalCoverage: reportPolicies.reduce((total, policy) => total + asNumber(policy?.amount), 0),
+    cashValueTotal: reportPolicies.reduce((total, policy) => total + (latestCashValue(policy)?.cashValue || 0), 0),
+    futurePayoutTotal: reportPolicies.reduce((total, policy) => total + futurePayoutTotal(policy), 0),
     attentionItems: [],
   };
 }
@@ -1797,10 +1925,12 @@ export function buildPolicyInventory(policies = []) {
     }
     const group = groupMap.get(row.member);
     group.policies.push(row);
-    group.annualPremium += row.annualPremium;
-    group.totalCoverage += row.coverage;
-    group.cashValueTotal += row.cashValue;
-    group.futurePayoutTotal += row.futurePayout;
+    if (!row.isInactive) {
+      group.annualPremium += row.annualPremium;
+      group.totalCoverage += row.coverage;
+      group.cashValueTotal += row.cashValue;
+      group.futurePayoutTotal += row.futurePayout;
+    }
   }
 
   return {

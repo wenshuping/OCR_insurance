@@ -379,6 +379,8 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /score\.amountDetails/);
   assert.match(familySource, /radarAmountPolicyTitle/);
   assert.match(familySource, /责任：/);
+  assert.match(familySource, /inactive/);
+  assert.match(familySource, /失效/);
   assert.match(familySource, /calculationRowsForScore/);
   assert.match(familySource, /按有效保障 \/ 系统估算目标计算/);
   assert.match(familySource, /避免高额责任压低其他维度/);

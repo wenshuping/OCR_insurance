@@ -17,6 +17,8 @@ export type FamilyPolicyInventoryRow = {
   policyNumber?: string;
   productName: string;
   typeLabel: string;
+  isInactive: boolean;
+  policyStatusText: string;
   annualPremium: number;
   annualPremiumText: string;
   paymentPeriod: string;
@@ -65,7 +67,7 @@ export type FamilyProtectionRow = {
   amount: number;
   amountText: string;
   countText: string;
-  status: 'covered' | 'partial' | 'missing' | 'formula' | 'unknown';
+  status: 'covered' | 'partial' | 'missing' | 'formula' | 'inactive' | 'unknown';
   conditionText: string;
   sourcePolicies: FamilyProtectionSourcePolicy[];
 };
