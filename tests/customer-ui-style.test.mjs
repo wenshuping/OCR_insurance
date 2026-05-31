@@ -358,6 +358,22 @@ test('family report labels match the agreed report structure', () => {
   assert.doesNotMatch(source, /营销落地页|立即购买|推荐产品/);
 });
 
+test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const packageSource = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+
+  assert.match(familySource, /function RadarChart/);
+  assert.match(familySource, /aria-label=\{ariaLabel\}/);
+  assert.match(familySource, /全家保障均衡雷达/);
+  assert.match(familySource, /家庭成员保障对比雷达/);
+  assert.match(familySource, /雷达图按本家庭内部金额比例绘制，非行业达标分。/);
+  assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
+  assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);
+  assert.ok(familySource.indexOf('<FamilyRadarSection report={report} />') < familySource.indexOf('<InventorySection rows={report.policyInventory.rows} />'));
+  assert.ok(familySource.indexOf('<MemberRadarSection report={report} />') < familySource.indexOf('<InsuredPolicyDetailSection rows={report.policyInventory.rows} />'));
+  assert.doesNotMatch(packageSource, /recharts|victory|d3|chart\.js|echarts/);
+});
+
 test('family report wealth policies show cashflow table with cash value and keep cash value as line chart only', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   assert.match(source, /function PolicyAnnualCashflowTable/);
