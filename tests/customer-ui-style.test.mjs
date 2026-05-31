@@ -362,15 +362,28 @@ test('family report renders amount-based radar sections in the agreed order with
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   const packageSource = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 
-  assert.match(familySource, /function RadarChart/);
-  assert.match(familySource, /aria-label=\{ariaLabel\}/);
+  assert.match(familySource, /\bRadarChart\b/);
+  assert.match(familySource, /<svg\b/);
+  assert.match(familySource, /role="img"/);
+  assert.match(familySource, /aria-label/);
   assert.match(familySource, /全家保障均衡雷达/);
   assert.match(familySource, /家庭成员保障对比雷达/);
   assert.match(familySource, /雷达图按本家庭内部金额比例绘制，非行业达标分。/);
   assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
   assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);
-  assert.ok(familySource.indexOf('<FamilyRadarSection report={report} />') < familySource.indexOf('<InventorySection rows={report.policyInventory.rows} />'));
-  assert.ok(familySource.indexOf('<MemberRadarSection report={report} />') < familySource.indexOf('<InsuredPolicyDetailSection rows={report.policyInventory.rows} />'));
+  const familyRadarIndex = familySource.indexOf('<FamilyRadarSection report={report} />');
+  const inventoryIndex = familySource.indexOf('<InventorySection rows={report.policyInventory.rows} />');
+  const memberRadarIndex = familySource.indexOf('<MemberRadarSection report={report} />');
+  const insuredDetailIndex = familySource.indexOf('<InsuredPolicyDetailSection rows={report.policyInventory.rows} />');
+
+  assert.notEqual(familyRadarIndex, -1, 'FamilyRadarSection render call should exist');
+  assert.notEqual(inventoryIndex, -1, 'InventorySection render call should exist');
+  assert.notEqual(memberRadarIndex, -1, 'MemberRadarSection render call should exist');
+  assert.notEqual(insuredDetailIndex, -1, 'InsuredPolicyDetailSection render call should exist');
+  assert.ok(
+    familyRadarIndex < inventoryIndex && inventoryIndex < memberRadarIndex && memberRadarIndex < insuredDetailIndex,
+    'radar sections should render in order: family radar, inventory, member radar, insured detail',
+  );
   assert.doesNotMatch(packageSource, /recharts|victory|d3|chart\.js|echarts/);
 });
 
