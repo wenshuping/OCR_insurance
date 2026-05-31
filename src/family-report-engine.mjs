@@ -303,6 +303,7 @@ function baseProtectionRow(definition) {
 }
 
 function sourcePolicyKey(source) {
+  if (source?.sourceKey) return String(source.sourceKey);
   const policyId = source?.policyId;
   if (policyId !== undefined && policyId !== null && String(policyId).trim() !== '') return `policy:${policyId}`;
   return `product:${normalizeProductName(source?.productName)}:${String(source?.liability || '').trim()}`;
@@ -337,6 +338,7 @@ function applyIndicatorToRow(row, indicator, policy) {
   row.status = row.amount > 0 ? 'covered' : 'formula';
   row.conditionText = conditionText || '按识别责任计算';
   addSourcePolicy(row, {
+    sourceKey: policySourceKey(policy),
     policyId: policy?.id,
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || ''),
@@ -381,6 +383,7 @@ function applyFallbackPolicyToRow(row, policy) {
   row.status = row.amount > 0 ? 'covered' : 'unknown';
   row.conditionText = '按保单基础保额估算';
   addSourcePolicy(row, {
+    sourceKey: policySourceKey(policy),
     policyId: policy?.id,
     productName: String(policy?.name || ''),
     liability: '重疾首次给付',
@@ -602,6 +605,7 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
     row.conditionText = '按识别责任计算';
   }
   addSourcePolicy(row, {
+    sourceKey: policySourceKey(policy),
     policyId: policy?.id,
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || indicator?.scenario || ''),
@@ -1035,6 +1039,22 @@ function formatRadarMoney(value) {
   return `${formatNumberText(value)}元`;
 }
 
+const fallbackPolicySourceKeys = new WeakMap();
+let fallbackPolicySourceKeyIndex = 0;
+
+function policySourceKey(policy) {
+  const policyId = policy?.id;
+  if (policyId !== undefined && policyId !== null && String(policyId).trim() !== '') return `policy:${policyId}`;
+  if (policy && typeof policy === 'object') {
+    if (!fallbackPolicySourceKeys.has(policy)) {
+      fallbackPolicySourceKeyIndex += 1;
+      fallbackPolicySourceKeys.set(policy, `policy:fallback:${fallbackPolicySourceKeyIndex}`);
+    }
+    return fallbackPolicySourceKeys.get(policy);
+  }
+  return 'policy:fallback:unknown';
+}
+
 function radarPolicyText(policy) {
   return [
     policy?.company,
@@ -1078,12 +1098,17 @@ function amountPartsTotal(parts) {
 }
 
 function uniquePolicyCount(parts) {
-  return new Set(parts.map((part) => part.policyId).filter((id) => id !== undefined && id !== null)).size;
+  return new Set(parts.map((part) => part.sourceKey || sourcePolicyKey(part)).filter(Boolean)).size;
 }
 
 function radarAmountResult(amount, parts, fallbackNote = '') {
+  const amountParts = parts.filter((part) => asNumber(part.amount) > 0);
   const note = amount > 0
-    ? parts.map((part) => `${part.label}${formatNumberText(part.amount)}`).join('，')
+    ? (
+      amountParts.length
+        ? amountParts.map((part) => `${part.label}${formatNumberText(part.amount)}`).join('，')
+        : `合计${formatNumberText(amount)}，来源${parts.map((part) => part.label).filter(Boolean).join('、') || '已识别责任'}`
+    )
     : fallbackNote || '未识别到可落地金额';
   return {
     amount,
@@ -1097,23 +1122,67 @@ function criticalRadarAmount(policies) {
   const first = rows.find((row) => row.key === 'critical_first');
   const formulaOnly = rows.some((row) => row.status === 'formula');
   const amount = asNumber(first?.amount);
+  const sourceParts = amount > 0
+    ? (first?.sourcePolicies || []).map((source) => ({
+      sourceKey: sourcePolicyKey(source),
+      policyId: source.policyId,
+      label: source.productName || source.liability || '重疾保额',
+      amount: 0,
+    }))
+    : [];
   return radarAmountResult(
     amount,
-    amount > 0 ? [{ policyId: first.sourcePolicies[0]?.policyId, label: '重疾保额', amount }] : [],
+    sourceParts,
     formulaOnly ? '公式型待确认' : '未识别到可落地金额',
   );
 }
 
+const ACCIDENT_RADAR_ROW_KEYS = new Set(['general_accident', 'traffic', 'driving', 'public_transport', 'aviation', 'rail_ship', 'sudden_death']);
+
+function accidentIndicatorRadarAmount(indicator, policy) {
+  if (!indicatorImpliesAccident(indicator)) return null;
+  const definitions = classifyAccidentIndicatorDefinitions(indicator)
+    .filter((definition) => ACCIDENT_RADAR_ROW_KEYS.has(definition.key));
+  if (!definitions.length) return null;
+
+  const amount = indicatorAmountForPolicy(indicator, policy);
+  if (amount <= 0) return null;
+
+  return {
+    sourceKey: policySourceKey(policy),
+    policyId: policy?.id,
+    label: String(indicator?.liability || indicator?.scenario || definitions[0]?.label || '意外保障'),
+    amount,
+  };
+}
+
 function accidentRadarAmount(policies) {
-  const { rows } = buildMemberAccidentRows(policies);
-  const keys = new Set(['general_accident', 'traffic', 'driving', 'public_transport', 'aviation', 'rail_ship', 'sudden_death']);
-  const parts = rows
-    .filter((row) => keys.has(row.key) && row.amount > 0)
-    .map((row) => ({
-      policyId: row.sourcePolicies[0]?.policyId,
-      label: row.label,
-      amount: row.amount,
-    }));
+  const bestByPolicy = new Map();
+
+  for (const policy of policies) {
+    const candidates = [];
+    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    for (const indicator of indicators) {
+      const part = accidentIndicatorRadarAmount(indicator, policy);
+      if (part) candidates.push(part);
+    }
+
+    const responsibilities = Array.isArray(policy?.responsibilities) ? policy.responsibilities : [];
+    for (const responsibility of responsibilities) {
+      const part = accidentIndicatorRadarAmount(responsibilityToAccidentIndicator(responsibility, policy), policy);
+      if (part) candidates.push(part);
+    }
+
+    if (!indicators.length && !responsibilities.length && textImpliesAccident(accidentPolicyText(policy))) {
+      const part = accidentIndicatorRadarAmount(fallbackPolicyIndicator(policy), policy);
+      if (part) candidates.push(part);
+    }
+
+    const best = candidates.reduce((highest, part) => (!highest || part.amount > highest.amount ? part : highest), null);
+    if (best) bestByPolicy.set(best.sourceKey, best);
+  }
+
+  const parts = Array.from(bestByPolicy.values());
   return radarAmountResult(amountPartsTotal(parts), parts);
 }
 
@@ -1130,11 +1199,12 @@ function medicalRadarAmount(policies) {
         continue;
       }
       const amount = indicatorAmountForPolicy(indicator, policy);
-      if (amount > 0) parts.push({ policyId: policy?.id, label: String(indicator?.liability || '医疗额度'), amount });
+      if (amount > 0) parts.push({ sourceKey: policySourceKey(policy), policyId: policy?.id, label: String(indicator?.liability || '医疗额度'), amount });
     }
-    if (!parts.some((part) => part.policyId === policy?.id) && policyTypeLabel(policy) === '医疗') {
+    const sourceKey = policySourceKey(policy);
+    if (!parts.some((part) => part.sourceKey === sourceKey) && policyTypeLabel(policy) === '医疗') {
       const amount = asNumber(policy?.amount);
-      if (amount > 0) parts.push({ policyId: policy?.id, label: '医疗额度', amount });
+      if (amount > 0) parts.push({ sourceKey, policyId: policy?.id, label: '医疗额度', amount });
     }
   }
   return radarAmountResult(amountPartsTotal(parts), parts, hasFormula ? '公式型待确认' : '未识别到可落地金额');
@@ -1155,12 +1225,13 @@ function lifeRadarAmount(policies) {
         continue;
       }
       const amount = indicatorAmountForPolicy(indicator, policy);
-      if (amount > 0) parts.push({ policyId: policy?.id, label: String(indicator?.liability || '寿险保额'), amount });
+      if (amount > 0) parts.push({ sourceKey: policySourceKey(policy), policyId: policy?.id, label: String(indicator?.liability || '寿险保额'), amount });
     }
     const text = radarPolicyText(policy);
-    if (!parts.some((part) => part.policyId === policy?.id) && /(终身寿|人寿|寿险|身故|全残|护理)/u.test(text) && !/(重疾|意外)/u.test(text)) {
+    const sourceKey = policySourceKey(policy);
+    if (!parts.some((part) => part.sourceKey === sourceKey) && /(终身寿|人寿|寿险|身故|全残|护理)/u.test(text) && !/(重疾|意外)/u.test(text)) {
       const amount = asNumber(policy?.amount);
-      if (amount > 0) parts.push({ policyId: policy?.id, label: '寿险保额', amount });
+      if (amount > 0) parts.push({ sourceKey, policyId: policy?.id, label: '寿险保额', amount });
     }
   }
   return radarAmountResult(amountPartsTotal(parts), parts, hasFormula ? '公式型待确认' : '未识别到可落地金额');
@@ -1257,9 +1328,14 @@ function selectDisplayedRadarMembers(memberSeries) {
 }
 
 export function buildFamilyRadarReport(policies = []) {
+  const familyScores = buildRadarScores(policies);
   const family = {
-    ...buildRadarSeries('全家', policies),
-    scores: normalizeFamilyScores(buildRadarScores(policies)),
+    name: '全家',
+    scores: normalizeFamilyScores(familyScores),
+    totalAmount: familyScores.reduce((total, score) => total + score.amount, 0),
+    notes: familyScores.some((score) => score.amount <= 0)
+      ? [`缺口维度: ${familyScores.filter((score) => score.amount <= 0).map((score) => score.label).join('、')}`]
+      : [],
   };
 
   const groupMap = new Map();

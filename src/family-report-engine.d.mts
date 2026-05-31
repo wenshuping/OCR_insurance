@@ -154,12 +154,42 @@ export type FamilyWealthReport = {
   keyPoints: FamilyWealthKeyPoint[];
 };
 
+export type FamilyRadarDimension = {
+  key: 'critical' | 'accident' | 'medical' | 'life' | 'wealth';
+  label: string;
+};
+
+export type FamilyRadarScore = {
+  key: FamilyRadarDimension['key'];
+  label: string;
+  amount: number;
+  score: number;
+  amountText: string;
+  policyCount: number;
+  note: string;
+};
+
+export type FamilyRadarSeries = {
+  name: string;
+  scores: FamilyRadarScore[];
+  totalAmount: number;
+  notes: string[];
+};
+
+export type FamilyRadarReport = {
+  dimensions: FamilyRadarDimension[];
+  family: FamilyRadarSeries;
+  members: FamilyRadarSeries[];
+  hiddenMembers: FamilyRadarSeries[];
+};
+
 export type FamilyReport = {
   summary: FamilyReportSummary;
   policyInventory: FamilyPolicyInventory;
   criticalIllness: FamilySectionReport;
   accident: FamilySectionReport;
   wealth: FamilyWealthReport;
+  radar: FamilyRadarReport;
   appendix: { policies: Array<{ policyId: number; productName: string; ocrText: string }> };
 };
 
@@ -169,3 +199,4 @@ export function buildPolicyInventory(policies: Policy[]): FamilyPolicyInventory;
 export function buildCriticalIllnessSection(policies: Policy[]): FamilySectionReport;
 export function buildAccidentSection(policies: Policy[]): FamilySectionReport;
 export function buildWealthSection(policies: Policy[]): FamilyWealthReport;
+export function buildFamilyRadarReport(policies: Policy[]): FamilyRadarReport;
