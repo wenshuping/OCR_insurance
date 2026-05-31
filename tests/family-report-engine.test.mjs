@@ -358,6 +358,25 @@ test('buildFamilyReport counts one combined accident liability once even when it
   assert.match(accident.note, /航空公共交通意外身故保险金500,000/);
 });
 
+test('buildFamilyReport keeps same accident liability with different scenarios separate', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 403,
+      insured: '爸爸',
+      name: '综合交通意外保险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '交通意外身故保险金', scenario: '航空', value: 500000, unit: '元', basis: '航空交通意外保额', productName: '综合交通意外保险' },
+        { coverageType: '意外保障', liability: '交通意外身故保险金', scenario: '轨道交通', value: 300000, unit: '元', basis: '轨道交通意外保额', productName: '综合交通意外保险' },
+      ],
+    }),
+  ]);
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 800000);
+  assert.equal(accident.policyCount, 1);
+});
+
 test('buildFamilyReport counts distinct radar policies without policy ids', () => {
   const report = buildFamilyReport([
     makePolicy({ id: '', insured: '妈妈', name: '百万医疗保险', amount: 100000, coverageIndicators: [] }),

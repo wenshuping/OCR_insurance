@@ -48,7 +48,8 @@ export type FamilyPolicyInventory = {
 };
 
 export type FamilyProtectionSourcePolicy = {
-  policyId: number;
+  sourceKey?: string;
+  policyId: number | string | null | undefined;
   productName: string;
   liability: string;
   formulaText: string;

@@ -1152,7 +1152,9 @@ function accidentIndicatorRadarAmount(indicator, policy) {
     sourceKey: policySourceKey(policy),
     scenarioKey: [
       policySourceKey(policy),
-      normalizeProductName(indicator?.liability || indicator?.scenario || indicatorText(indicator) || definitions[0]?.key || 'accident'),
+      normalizeProductName(indicator?.liability || 'accident'),
+      normalizeProductName(indicator?.scenario || ''),
+      definitions.map((definition) => definition.key).sort().join('|'),
     ].join(':scenario:'),
     policyId: policy?.id,
     label: String(indicator?.liability || indicator?.scenario || definitions[0]?.label || '意外保障'),
