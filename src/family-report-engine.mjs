@@ -1023,6 +1023,263 @@ export function buildWealthSection(policies = []) {
   };
 }
 
+const RADAR_DIMENSIONS = [
+  { key: 'critical', label: '重疾' },
+  { key: 'accident', label: '意外' },
+  { key: 'medical', label: '医疗' },
+  { key: 'life', label: '寿险' },
+  { key: 'wealth', label: '财富' },
+];
+
+function formatRadarMoney(value) {
+  return `${formatNumberText(value)}元`;
+}
+
+function radarPolicyText(policy) {
+  return [
+    policy?.company,
+    policy?.name,
+    policy?.coveragePeriod,
+    policy?.report,
+    policy?.ocrText,
+    ...(Array.isArray(policy?.plans) ? policy.plans : []).map((plan) => {
+      if (typeof plan === 'string') return plan;
+      return [plan?.name, plan?.title, plan?.liability, plan?.type, plan?.matchedProductName].filter(Boolean).join(' ');
+    }),
+    ...(Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).map((item) => {
+      if (typeof item === 'string') return item;
+      return [
+        item?.name,
+        item?.title,
+        item?.liability,
+        item?.type,
+        item?.coverageType,
+        item?.scenario,
+        item?.payout,
+        item?.note,
+      ].filter(Boolean).join(' ');
+    }),
+    ...(Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : []).map(indicatorText),
+  ].filter(Boolean).join(' ').normalize('NFKC');
+}
+
+function indicatorIsFormulaOnly(indicator) {
+  const unit = String(indicator?.unit || '').normalize('NFKC');
+  return unit === '公式' && resolveIndicatorAmount(indicator, {}) <= 0;
+}
+
+function indicatorAmountForPolicy(indicator, policy) {
+  if (indicatorIsFormulaOnly(indicator)) return 0;
+  return resolveIndicatorAmount(indicator, policy);
+}
+
+function amountPartsTotal(parts) {
+  return parts.reduce((total, part) => total + asNumber(part.amount), 0);
+}
+
+function uniquePolicyCount(parts) {
+  return new Set(parts.map((part) => part.policyId).filter((id) => id !== undefined && id !== null)).size;
+}
+
+function radarAmountResult(amount, parts, fallbackNote = '') {
+  const note = amount > 0
+    ? parts.map((part) => `${part.label}${formatNumberText(part.amount)}`).join('，')
+    : fallbackNote || '未识别到可落地金额';
+  return {
+    amount,
+    policyCount: uniquePolicyCount(parts),
+    note,
+  };
+}
+
+function criticalRadarAmount(policies) {
+  const { rows } = buildMemberCriticalRows(policies);
+  const first = rows.find((row) => row.key === 'critical_first');
+  const formulaOnly = rows.some((row) => row.status === 'formula');
+  const amount = asNumber(first?.amount);
+  return radarAmountResult(
+    amount,
+    amount > 0 ? [{ policyId: first.sourcePolicies[0]?.policyId, label: '重疾保额', amount }] : [],
+    formulaOnly ? '公式型待确认' : '未识别到可落地金额',
+  );
+}
+
+function accidentRadarAmount(policies) {
+  const { rows } = buildMemberAccidentRows(policies);
+  const keys = new Set(['general_accident', 'traffic', 'driving', 'public_transport', 'aviation', 'rail_ship', 'sudden_death']);
+  const parts = rows
+    .filter((row) => keys.has(row.key) && row.amount > 0)
+    .map((row) => ({
+      policyId: row.sourcePolicies[0]?.policyId,
+      label: row.label,
+      amount: row.amount,
+    }));
+  return radarAmountResult(amountPartsTotal(parts), parts);
+}
+
+function medicalRadarAmount(policies) {
+  const parts = [];
+  let hasFormula = false;
+  for (const policy of policies) {
+    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    for (const indicator of indicators) {
+      const text = indicatorText(indicator);
+      if (!/(医疗|住院|门诊|报销|百万医疗|手术|医疗费用)/u.test(text)) continue;
+      if (indicatorIsFormulaOnly(indicator)) {
+        hasFormula = true;
+        continue;
+      }
+      const amount = indicatorAmountForPolicy(indicator, policy);
+      if (amount > 0) parts.push({ policyId: policy?.id, label: String(indicator?.liability || '医疗额度'), amount });
+    }
+    if (!parts.some((part) => part.policyId === policy?.id) && policyTypeLabel(policy) === '医疗') {
+      const amount = asNumber(policy?.amount);
+      if (amount > 0) parts.push({ policyId: policy?.id, label: '医疗额度', amount });
+    }
+  }
+  return radarAmountResult(amountPartsTotal(parts), parts, hasFormula ? '公式型待确认' : '未识别到可落地金额');
+}
+
+function lifeRadarAmount(policies) {
+  const parts = [];
+  let hasFormula = false;
+  for (const policy of policies) {
+    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    for (const indicator of indicators) {
+      const text = indicatorText(indicator);
+      if (!/(身故|全残|终身寿|人寿保障|护理)/u.test(text)) continue;
+      if (indicatorImpliesAccident(indicator)) continue;
+      if (/(重疾|重大疾病|中症|轻症|恶性肿瘤|癌)/u.test(text)) continue;
+      if (indicatorIsFormulaOnly(indicator)) {
+        hasFormula = true;
+        continue;
+      }
+      const amount = indicatorAmountForPolicy(indicator, policy);
+      if (amount > 0) parts.push({ policyId: policy?.id, label: String(indicator?.liability || '寿险保额'), amount });
+    }
+    const text = radarPolicyText(policy);
+    if (!parts.some((part) => part.policyId === policy?.id) && /(终身寿|人寿|寿险|身故|全残|护理)/u.test(text) && !/(重疾|意外)/u.test(text)) {
+      const amount = asNumber(policy?.amount);
+      if (amount > 0) parts.push({ policyId: policy?.id, label: '寿险保额', amount });
+    }
+  }
+  return radarAmountResult(amountPartsTotal(parts), parts, hasFormula ? '公式型待确认' : '未识别到可落地金额');
+}
+
+function wealthRadarAmount(policies) {
+  const cashValue = policies.reduce((total, policy) => total + (latestCashValue(policy)?.cashValue || 0), 0);
+  const futurePayout = policies.reduce((total, policy) => total + futurePayoutTotal(policy), 0);
+  const amount = cashValue + futurePayout;
+  return {
+    amount,
+    policyCount: policies.filter((policy) => (latestCashValue(policy)?.cashValue || 0) > 0 || futurePayoutTotal(policy) > 0).length,
+    note: amount > 0 ? `现金价值${formatNumberText(cashValue)}，未来领取${formatNumberText(futurePayout)}` : '未识别到可落地金额',
+  };
+}
+
+function radarAmountForDimension(policies, key) {
+  if (key === 'critical') return criticalRadarAmount(policies);
+  if (key === 'accident') return accidentRadarAmount(policies);
+  if (key === 'medical') return medicalRadarAmount(policies);
+  if (key === 'life') return lifeRadarAmount(policies);
+  return wealthRadarAmount(policies);
+}
+
+function buildRadarScores(policies) {
+  return RADAR_DIMENSIONS.map((dimension) => {
+    const result = radarAmountForDimension(policies, dimension.key);
+    return {
+      key: dimension.key,
+      label: dimension.label,
+      amount: result.amount,
+      score: 0,
+      amountText: formatRadarMoney(result.amount),
+      policyCount: result.policyCount,
+      note: result.note,
+    };
+  });
+}
+
+function normalizeFamilyScores(scores) {
+  const maxAmount = Math.max(0, ...scores.map((score) => score.amount));
+  return scores.map((score) => ({
+    ...score,
+    score: maxAmount > 0 ? Math.round((score.amount / maxAmount) * 100) : 0,
+  }));
+}
+
+function radarScoreAmount(series, key) {
+  return asNumber(series.scores.find((score) => score.key === key)?.amount);
+}
+
+function normalizeMemberScores(memberSeries) {
+  const maxByDimension = new Map();
+  for (const dimension of RADAR_DIMENSIONS) {
+    maxByDimension.set(dimension.key, Math.max(0, ...memberSeries.map((series) => radarScoreAmount(series, dimension.key))));
+  }
+  return memberSeries.map((series) => ({
+    ...series,
+    scores: series.scores.map((score) => {
+      const maxAmount = maxByDimension.get(score.key) || 0;
+      return {
+        ...score,
+        score: maxAmount > 0 ? Math.round((score.amount / maxAmount) * 100) : 0,
+      };
+    }),
+  }));
+}
+
+function buildRadarSeries(name, policies) {
+  const scores = buildRadarScores(policies);
+  const totalAmount = scores.reduce((total, score) => total + score.amount, 0);
+  const missingLabels = scores.filter((score) => score.amount <= 0).map((score) => score.label);
+  return {
+    name,
+    scores,
+    totalAmount,
+    notes: missingLabels.length ? [`缺口维度: ${missingLabels.join('、')}`] : [],
+  };
+}
+
+function selectDisplayedRadarMembers(memberSeries) {
+  if (memberSeries.length <= 4) return { members: memberSeries, hiddenMembers: [] };
+  const byHigh = [...memberSeries].sort((a, b) => b.totalAmount - a.totalAmount);
+  const lowest = [...memberSeries].sort((a, b) => a.totalAmount - b.totalAmount)[0];
+  const selected = [];
+  for (const series of [...byHigh.slice(0, 3), lowest, ...byHigh]) {
+    if (selected.length >= 4) break;
+    if (!selected.some((item) => item.name === series.name)) selected.push(series);
+  }
+  return {
+    members: selected,
+    hiddenMembers: memberSeries.filter((series) => !selected.some((item) => item.name === series.name)),
+  };
+}
+
+export function buildFamilyRadarReport(policies = []) {
+  const family = {
+    ...buildRadarSeries('全家', policies),
+    scores: normalizeFamilyScores(buildRadarScores(policies)),
+  };
+
+  const groupMap = new Map();
+  for (const policy of policies) {
+    const member = memberName(policy);
+    if (!groupMap.has(member)) groupMap.set(member, []);
+    groupMap.get(member).push(policy);
+  }
+
+  const allMembers = normalizeMemberScores(Array.from(groupMap, ([member, memberPolicies]) => buildRadarSeries(member, memberPolicies)));
+  const { members, hiddenMembers } = selectDisplayedRadarMembers(allMembers);
+
+  return {
+    dimensions: RADAR_DIMENSIONS,
+    family,
+    members,
+    hiddenMembers,
+  };
+}
+
 export function buildFamilyReportSummary(policies = []) {
   const members = new Set(policies.map(memberName));
   return {
@@ -1072,6 +1329,7 @@ export function buildFamilyReport(policies = []) {
     criticalIllness: buildCriticalIllnessSection(policies),
     accident: buildAccidentSection(policies),
     wealth: buildWealthSection(policies),
+    radar: buildFamilyRadarReport(policies),
     appendix: {
       policies: policies.map((policy) => ({
         policyId: policy.id,
