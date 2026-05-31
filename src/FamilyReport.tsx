@@ -1,5 +1,5 @@
-import { useRef } from 'react';
-import { ChevronLeft, Download, RotateCcw } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Calculator, ChevronLeft, Download, RotateCcw } from 'lucide-react';
 import type {
   FamilyPlanningProfile,
   FamilyMemberProtectionReport,
@@ -111,6 +111,45 @@ function radarPrimaryValue(score: RadarSeries['scores'][number], mode: FamilyRep
 function radarCardSummary(score: RadarSeries['scores'][number], mode: FamilyReport['radar']['mode']) {
   if (mode === 'planning') return radarPlanningSummary(score);
   return radarScoreSummary(score);
+}
+
+function radarStructureAmount(score: RadarSeries['scores'][number]) {
+  return score.key === 'accident' ? Number(score.effectiveAmount || score.amount || 0) : Number(score.amount || 0);
+}
+
+function calculationRowsForScore(
+  score: RadarSeries['scores'][number],
+  series: RadarSeries,
+  mode: FamilyReport['radar']['mode'],
+) {
+  if (mode === 'planning') {
+    if (!score.target || score.target <= 0) {
+      return [
+        { label: '原始金额', value: score.amountText },
+        { label: '计算结果', value: '目标为0，雷达值按0显示' },
+      ];
+    }
+
+    return [
+      { label: '原始金额', value: score.amountText },
+      { label: '有效保障', value: score.effectiveAmountText },
+      { label: '估算目标', value: score.targetText || formatMoneyWithUnit(score.target) },
+      { label: '雷达值', value: `${score.effectiveAmountText} ÷ ${score.targetText || formatMoneyWithUnit(score.target)} ≈ ${score.adequacyText || `${score.score}%`}` },
+    ];
+  }
+
+  const amount = radarStructureAmount(score);
+  const maxAmount = Math.max(0, ...series.scores.map(radarStructureAmount));
+  const amountText = formatMoneyWithUnit(amount);
+  const maxText = formatMoneyWithUnit(maxAmount);
+  const basisLabel = score.key === 'accident' ? '有效金额' : '原始金额';
+
+  return [
+    { label: '原始金额', value: score.amountText },
+    { label: basisLabel, value: amountText },
+    { label: '压缩处理', value: `√${amountText} ÷ √${maxText} × 100` },
+    { label: '雷达值', value: `${score.score}/100` },
+  ];
 }
 
 function profileValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
@@ -381,6 +420,7 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
   const members = report.radar.members;
   if (!members.length) return null;
   const planningMode = report.radar.mode === 'planning';
+  const [expandedCalculations, setExpandedCalculations] = useState<Record<string, boolean>>({});
 
   return (
     <Section title={planningMode ? '个人保障估算雷达' : '个人保额结构雷达'}>
@@ -396,9 +436,22 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                   <p className="break-words text-sm font-black leading-5 text-[#0F172A]">{member.name}</p>
                   <p className="mt-0.5 text-[11px] font-bold text-[#7890AA]">{member.roleLabel || '成员'} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
                 </div>
-                <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-600">
-                  {planningMode ? '系统估算' : '结构展示'}
-                </span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-600">
+                    {planningMode ? '系统估算' : '结构展示'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedCalculations((current) => ({ ...current, [member.name]: !current[member.name] }))}
+                    className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600 active:bg-slate-200"
+                    aria-expanded={Boolean(expandedCalculations[member.name])}
+                    aria-label={`${member.name}雷达值怎么算`}
+                    title="雷达值怎么算"
+                  >
+                    <Calculator size={13} />
+                    <span>怎么算</span>
+                  </button>
+                </div>
               </div>
               <div className="grid gap-3 xl:grid-cols-[minmax(0,220px)_1fr]">
                 <RadarChart dimensions={report.radar.dimensions} series={[member]} ariaLabel={`${member.name}保障雷达`} framed={false} />
@@ -414,6 +467,29 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                   ))}
                 </div>
               </div>
+              {expandedCalculations[member.name] ? (
+                <div className="mt-3 rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
+                  <p className="mb-2 text-[11px] font-black text-[#7890AA]">
+                    {planningMode ? '按有效保障 / 系统估算目标计算' : '按有效金额开平方后对比，避免高额责任压低其他维度'}
+                  </p>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {member.scores.map((score) => (
+                      <div key={score.key} className="min-w-0 rounded-lg bg-white px-3 py-2 ring-1 ring-[#E1EAF5]">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
+                          <p className="shrink-0 text-xs font-black text-[#0B72B9]">{planningMode ? (score.adequacyText || `${score.score}%`) : `${score.score}/100`}</p>
+                        </div>
+                        {calculationRowsForScore(score, member, report.radar.mode).map((row) => (
+                          <div key={row.label} className="flex min-w-0 justify-between gap-2 py-0.5 text-[11px] font-semibold leading-4">
+                            <span className="shrink-0 text-[#7890AA]">{row.label}</span>
+                            <span className="min-w-0 break-words text-right text-[#475569]">{row.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {!planningMode && member.notes.length ? (
                 <p className="mt-3 break-words rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700">{member.notes.join('；')}</p>
               ) : null}

@@ -373,6 +373,11 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /按有效金额压缩比例绘制/);
   assert.match(familySource, /按家庭目标自动分摊到成员/);
   assert.match(familySource, /客户未录入家庭目标时/);
+  assert.match(familySource, /Calculator/);
+  assert.match(familySource, /怎么算/);
+  assert.match(familySource, /calculationRowsForScore/);
+  assert.match(familySource, /按有效保障 \/ 系统估算目标计算/);
+  assert.match(familySource, /避免高额责任压低其他维度/);
   assert.match(familySource, /function radarScoreSummary/);
   assert.match(familySource, /radarScoreSummary\(score\)/);
   assert.match(familySource, /FamilyPlanningProfilePanel/);
