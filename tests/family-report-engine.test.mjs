@@ -316,7 +316,7 @@ test('buildFamilyReport keeps formula-only radar amounts out of numeric radar va
   assert.match(life.note, /公式型待确认/);
 });
 
-test('buildFamilyReport does not stack mutually exclusive accident radar scenarios from one policy', () => {
+test('buildFamilyReport sums distinct accident radar scenarios from one policy', () => {
   const report = buildFamilyReport([
     makePolicy({
       id: 401,
@@ -324,8 +324,8 @@ test('buildFamilyReport does not stack mutually exclusive accident radar scenari
       name: '综合交通意外保险',
       amount: 100000,
       coverageIndicators: [
-        { coverageType: '意外保障', liability: '交通意外身故保险金', value: 300000, unit: '元', basis: '交通意外保额', productName: '综合交通意外保险' },
-        { coverageType: '意外保障', liability: '公共交通意外身故保险金', value: 300000, unit: '元', basis: '公共交通意外保额', productName: '综合交通意外保险' },
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 100000, unit: '元', basis: '一般意外保额', productName: '综合交通意外保险' },
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 80000, unit: '元', basis: '一般意外保额', productName: '综合交通意外保险' },
         { coverageType: '意外保障', liability: '航空意外身故保险金', value: 500000, unit: '元', basis: '航空意外保额', productName: '综合交通意外保险' },
         { coverageType: '意外保障', liability: '意外医疗费用保险金', value: 20000, unit: '元', basis: '医疗费用限额', productName: '综合交通意外保险' },
       ],
@@ -333,9 +333,29 @@ test('buildFamilyReport does not stack mutually exclusive accident radar scenari
   ]);
 
   const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 600000);
+  assert.equal(accident.policyCount, 1);
+  assert.match(accident.note, /一般意外身故保险金100,000/);
+  assert.match(accident.note, /航空意外身故保险金500,000/);
+});
+
+test('buildFamilyReport counts one combined accident liability once even when it matches multiple traffic classes', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 402,
+      insured: '爸爸',
+      name: '综合交通意外保险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '航空公共交通意外身故保险金', value: 500000, unit: '元', basis: '航空公共交通意外保额', productName: '综合交通意外保险' },
+      ],
+    }),
+  ]);
+
+  const accident = radarScore(report.radar.family, 'accident');
   assert.equal(accident.amount, 500000);
   assert.equal(accident.policyCount, 1);
-  assert.match(accident.note, /航空意外身故保险金500,000/);
+  assert.match(accident.note, /航空公共交通意外身故保险金500,000/);
 });
 
 test('buildFamilyReport counts distinct radar policies without policy ids', () => {

@@ -1150,6 +1150,10 @@ function accidentIndicatorRadarAmount(indicator, policy) {
 
   return {
     sourceKey: policySourceKey(policy),
+    scenarioKey: [
+      policySourceKey(policy),
+      normalizeProductName(indicator?.liability || indicator?.scenario || indicatorText(indicator) || definitions[0]?.key || 'accident'),
+    ].join(':scenario:'),
     policyId: policy?.id,
     label: String(indicator?.liability || indicator?.scenario || definitions[0]?.label || '意外保障'),
     amount,
@@ -1157,7 +1161,7 @@ function accidentIndicatorRadarAmount(indicator, policy) {
 }
 
 function accidentRadarAmount(policies) {
-  const bestByPolicy = new Map();
+  const bestByScenario = new Map();
 
   for (const policy of policies) {
     const candidates = [];
@@ -1178,11 +1182,15 @@ function accidentRadarAmount(policies) {
       if (part) candidates.push(part);
     }
 
-    const best = candidates.reduce((highest, part) => (!highest || part.amount > highest.amount ? part : highest), null);
-    if (best) bestByPolicy.set(best.sourceKey, best);
+    for (const part of candidates) {
+      const previous = bestByScenario.get(part.scenarioKey);
+      if (!previous || part.amount > previous.amount) {
+        bestByScenario.set(part.scenarioKey, part);
+      }
+    }
   }
 
-  const parts = Array.from(bestByPolicy.values());
+  const parts = Array.from(bestByScenario.values());
   return radarAmountResult(amountPartsTotal(parts), parts);
 }
 
