@@ -316,6 +316,32 @@ test('buildFamilyReport keeps formula-only radar amounts out of numeric radar va
   assert.match(life.note, /公式型待确认/);
 });
 
+test('buildFamilyReport keeps formula critical illness amounts out of radar fallback', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 302,
+      insured: '妈妈',
+      name: '公式型重疾',
+      amount: 500000,
+      coverageIndicators: [
+        {
+          coverageType: '重大疾病保障',
+          liability: '重大疾病保险金',
+          unit: '公式',
+          formulaText: '取已交保费、现金价值、基本保额较大者',
+          productName: '公式型重疾',
+        },
+      ],
+    }),
+  ]);
+
+  const critical = radarScore(report.radar.family, 'critical');
+  assert.equal(critical.amount, 0);
+  assert.equal(critical.score, 0);
+  assert.equal(critical.amountText, '0元');
+  assert.match(critical.note, /公式型待确认/);
+});
+
 test('buildFamilyReport sums distinct accident radar scenarios from one policy', () => {
   const report = buildFamilyReport([
     makePolicy({

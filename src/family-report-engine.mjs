@@ -326,7 +326,7 @@ function indicatorIsAccidentCoverage(indicator) {
 }
 
 function applyIndicatorToRow(row, indicator, policy) {
-  const amount = resolveIndicatorAmount(indicator, policy);
+  const amount = indicatorAmountForPolicy(indicator, policy);
   const formulaText = String(indicator?.formulaText || '').trim();
   const value = finiteNumber(indicator?.value);
   const unit = String(indicator?.unit || '').trim();
@@ -344,6 +344,7 @@ function applyIndicatorToRow(row, indicator, policy) {
     liability: String(indicator?.liability || ''),
     formulaText,
   });
+  return amount;
 }
 
 function criticalPolicyText(policy) {
@@ -391,9 +392,14 @@ function applyFallbackPolicyToRow(row, policy) {
   });
 }
 
+function indicatorHasFormulaUnit(indicator) {
+  return String(indicator?.unit || '').normalize('NFKC').trim() === '公式';
+}
+
 function buildMemberCriticalRows(memberPolicies) {
   const rowMap = new Map(CRITICAL_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
   const usableCriticalFirstPolicies = new Set();
+  const formulaCriticalFirstPolicies = new Set();
 
   for (const policy of memberPolicies) {
     const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
@@ -401,10 +407,13 @@ function buildMemberCriticalRows(memberPolicies) {
       if (indicatorIsAccidentCoverage(indicator)) continue;
       const definition = classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
       if (!definition) continue;
-      const previousAmount = rowMap.get(definition.key).amount;
-      applyIndicatorToRow(rowMap.get(definition.key), indicator, policy);
-      if (definition.key === 'critical_first' && rowMap.get(definition.key).amount > previousAmount) {
-        usableCriticalFirstPolicies.add(policy);
+      const amount = applyIndicatorToRow(rowMap.get(definition.key), indicator, policy);
+      if (definition.key === 'critical_first') {
+        if (amount > 0) {
+          usableCriticalFirstPolicies.add(policy);
+        } else if (indicatorHasFormulaUnit(indicator)) {
+          formulaCriticalFirstPolicies.add(policy);
+        }
       }
     }
   }
@@ -419,7 +428,7 @@ function buildMemberCriticalRows(memberPolicies) {
   }
 
   for (const policy of memberPolicies) {
-    if (policyImpliesCriticalIllness(policy) && !usableCriticalFirstPolicies.has(policy)) {
+    if (policyImpliesCriticalIllness(policy) && !usableCriticalFirstPolicies.has(policy) && !formulaCriticalFirstPolicies.has(policy)) {
       applyFallbackPolicyToRow(criticalFirst, policy);
     }
   }
