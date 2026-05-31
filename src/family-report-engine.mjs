@@ -382,6 +382,7 @@ function applyIndicatorToRow(row, indicator, policy) {
   addSourcePolicy(row, {
     sourceKey: policySourceKey(policy),
     policyId: policy?.id,
+    company: String(policy?.company || ''),
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || ''),
     formulaText,
@@ -431,6 +432,7 @@ function applyFallbackPolicyToRow(row, policy) {
   addSourcePolicy(row, {
     sourceKey: policySourceKey(policy),
     policyId: policy?.id,
+    company: String(policy?.company || ''),
     productName: String(policy?.name || ''),
     liability: '重疾首次给付',
     formulaText: '按保单基础保额估算',
@@ -664,6 +666,7 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
   addSourcePolicy(row, {
     sourceKey: policySourceKey(policy),
     policyId: policy?.id,
+    company: String(policy?.company || ''),
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || indicator?.scenario || ''),
     formulaText,
@@ -1283,6 +1286,7 @@ function accidentScenarioWeight(definitions) {
 function radarAmountDetailFromPart(part) {
   const amount = asNumber(part?.amount);
   if (amount <= 0) return null;
+  const company = String(part?.company || '').trim();
   const productName = String(part?.productName || '').trim();
   const liability = String(part?.liability || '').trim();
   const label = compactRadarLabel(part?.label || productName || liability, '已识别责任');
@@ -1290,6 +1294,7 @@ function radarAmountDetailFromPart(part) {
   return {
     sourceKey: part?.sourceKey,
     policyId: part?.policyId,
+    company,
     productName,
     liability,
     label,
@@ -1337,6 +1342,7 @@ function criticalRadarAmount(policies) {
       sourceKey: sourcePolicyKey(source),
       policyId: source.policyId,
       label: source.productName || source.liability || '重疾保额',
+      company: source.company,
       productName: source.productName,
       liability: source.liability,
       amount: source.amount,
@@ -1372,6 +1378,7 @@ function accidentIndicatorRadarAmount(indicator, policy) {
     ].join(':scenario:'),
     policyId: policy?.id,
     label: compactRadarLabel(indicator?.liability || indicator?.scenario, definitions[0]?.label || '意外保障'),
+    company: String(policy?.company || ''),
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || indicator?.scenario || ''),
     amount,
@@ -1433,6 +1440,7 @@ function medicalRadarAmount(policies) {
           sourceKey: policySourceKey(policy),
           policyId: policy?.id,
           label: String(indicator?.liability || '医疗额度'),
+          company: String(policy?.company || ''),
           productName: String(indicator?.productName || policy?.name || ''),
           liability: String(indicator?.liability || ''),
           amount,
@@ -1448,6 +1456,7 @@ function medicalRadarAmount(policies) {
           sourceKey,
           policyId: policy?.id,
           label: '医疗额度',
+          company: String(policy?.company || ''),
           productName: String(policy?.name || ''),
           liability: '医疗额度',
           amount,
@@ -1479,6 +1488,7 @@ function lifeRadarAmount(policies) {
           sourceKey: policySourceKey(policy),
           policyId: policy?.id,
           label: String(indicator?.liability || '寿险保额'),
+          company: String(policy?.company || ''),
           productName: String(indicator?.productName || policy?.name || ''),
           liability: String(indicator?.liability || ''),
           amount,
@@ -1495,6 +1505,7 @@ function lifeRadarAmount(policies) {
           sourceKey,
           policyId: policy?.id,
           label: '寿险保额',
+          company: String(policy?.company || ''),
           productName: String(policy?.name || ''),
           liability: '寿险保额',
           amount,
@@ -1523,12 +1534,14 @@ function wealthRadarAmount(policies) {
   const amountDetails = [];
   for (const policy of policies) {
     const sourceKey = policySourceKey(policy);
+    const company = String(policy?.company || '');
     const productName = String(policy?.name || '');
     const policyCashValue = latestCashValue(policy)?.cashValue || 0;
     if (policyCashValue > 0) {
       amountDetails.push(radarAmountDetailFromPart({
         sourceKey: `${sourceKey}:cash-value`,
         policyId: policy?.id,
+        company,
         productName,
         label: productName || '现金价值',
         liability: '现金价值',
@@ -1542,6 +1555,7 @@ function wealthRadarAmount(policies) {
       amountDetails.push(radarAmountDetailFromPart({
         sourceKey: `${sourceKey}:future-payout`,
         policyId: policy?.id,
+        company,
         productName,
         label: productName || '未来领取',
         liability: '未来领取',

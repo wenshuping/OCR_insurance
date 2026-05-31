@@ -50,6 +50,7 @@ export type FamilyPolicyInventory = {
 export type FamilyProtectionSourcePolicy = {
   sourceKey?: string;
   policyId: number | string | null | undefined;
+  company?: string;
   productName: string;
   liability: string;
   formulaText: string;
@@ -166,6 +167,7 @@ export type FamilyRadarDimension = {
 export type FamilyRadarAmountDetail = {
   sourceKey?: string;
   policyId?: number | string | null | undefined;
+  company: string;
   productName: string;
   liability: string;
   label: string;

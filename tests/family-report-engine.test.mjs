@@ -327,6 +327,8 @@ test('buildFamilyReport explains the raw critical radar amount before chart scor
   assert.equal(critical.amountText, '60,312元');
   assert.equal(critical.amountDetails.length, 1);
   assert.equal(critical.amountDetails[0].amount, 60312);
+  assert.equal(critical.amountDetails[0].company, '新华保险');
+  assert.equal(critical.amountDetails[0].productName, '新华健康无忧重大疾病保险');
   assert.equal(critical.amountDetails[0].liability, '重大疾病保险金');
   assert.match(critical.amountDetails[0].calculationText, /基本保险金额60,312元 × 100% = 60,312元/);
 });

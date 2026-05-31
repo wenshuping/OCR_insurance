@@ -156,12 +156,22 @@ function radarAmountSourceDetails(score: RadarSeries['scores'][number]) {
   return (score.amountDetails || []).filter((detail) => Number(detail.amount || 0) > 0);
 }
 
-function radarAmountSourceTitle(detail: ReturnType<typeof radarAmountSourceDetails>[number]) {
-  const parts = [detail.label, detail.liability]
+function radarAmountPolicyTitle(detail: ReturnType<typeof radarAmountSourceDetails>[number]) {
+  const parts = [detail.company, detail.productName]
     .map((part) => String(part || '').trim())
     .filter(Boolean)
     .filter((part, index, all) => all.indexOf(part) === index);
-  return parts.join(' · ') || '金额来源';
+  return parts.join(' · ') || '未命名保单';
+}
+
+function radarAmountLiabilityTitle(detail: ReturnType<typeof radarAmountSourceDetails>[number]) {
+  const productName = String(detail.productName || '').trim();
+  const parts = [detail.liability, detail.label]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .filter((part) => part !== productName)
+    .filter((part, index, all) => all.indexOf(part) === index);
+  return parts.join(' · ') || '已识别责任';
 }
 
 function profileValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
@@ -501,7 +511,8 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                               <div className="space-y-1">
                                 {visibleDetails.map((detail) => (
                                   <div key={`${detail.sourceKey || detail.policyId || detail.label}-${detail.liability}-${detail.amountText}`} className="min-w-0">
-                                    <p className="break-words text-[11px] font-bold leading-4 text-[#0F172A]">{radarAmountSourceTitle(detail)}</p>
+                                    <p className="break-words text-[11px] font-bold leading-4 text-[#0F172A]">{radarAmountPolicyTitle(detail)}</p>
+                                    <p className="break-words text-[11px] font-semibold leading-4 text-[#7890AA]">责任：{radarAmountLiabilityTitle(detail)}</p>
                                     <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{detail.calculationText}</p>
                                   </div>
                                 ))}
