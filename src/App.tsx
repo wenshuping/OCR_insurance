@@ -82,6 +82,7 @@ import {
 } from './cashflow-engine.mjs';
 import { FamilyReportPage } from './FamilyReport';
 import { buildFamilyReport } from './family-report-engine.mjs';
+import { policyValidityClassName, resolvePolicyValidityStatus } from './policy-validity.mjs';
 
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
@@ -866,11 +867,10 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
       annualEntries: p.cashflowEntries || [],
       scenarioEntries: p.scenarioEntries || [],
       totalDeterministicCashflow: p.totalCashflow ?? 0,
-      expired: (() => {
-        const m = String(p.coveragePeriod || '').match(/(\d{4})/);
-        const endYear = m ? Number(m[1]) : 0;
-        return endYear > 0 && endYear < new Date().getFullYear();
-      })(),
+      expired: resolvePolicyValidityStatus(p.coveragePeriod, {
+        effectiveDate: p.date,
+        insuredBirthday: p.insuredBirthday,
+      }).tone === 'expired',
     }];
     for (const plan of cashflowPlans) {
       if (plan.annualEntries.length) {
@@ -3878,11 +3878,10 @@ function CashflowDetailPage({
     annualEntries: p.cashflowEntries || [],
     scenarioEntries: p.scenarioEntries || [],
     totalDeterministicCashflow: p.totalCashflow ?? 0,
-    expired: (() => {
-      const m = String(p.coveragePeriod || '').match(/(\d{4})/);
-      const endYear = m ? Number(m[1]) : 0;
-      return endYear > 0 && endYear < new Date().getFullYear();
-    })(),
+    expired: resolvePolicyValidityStatus(p.coveragePeriod, {
+      effectiveDate: p.date,
+      insuredBirthday: p.insuredBirthday,
+    }).tone === 'expired',
   }));
   const summaries = buildMemberAnnualSummaries(plans);
   const summary = summaries[0];
@@ -4013,11 +4012,10 @@ function FamilyCoverageOverview({ overview, policies, onViewCashflow }: { overvi
               annualEntries: p.cashflowEntries || [],
               scenarioEntries: p.scenarioEntries || [],
               totalDeterministicCashflow: p.totalCashflow ?? 0,
-              expired: (() => {
-                const m = String(p.coveragePeriod || '').match(/(\d{4})/);
-                const endYear = m ? Number(m[1]) : 0;
-                return endYear > 0 && endYear < new Date().getFullYear();
-              })(),
+              expired: resolvePolicyValidityStatus(p.coveragePeriod, {
+                effectiveDate: p.date,
+                insuredBirthday: p.insuredBirthday,
+              }).tone === 'expired',
             }));
             const hasCashflow = memberPlans.some((p) => p.annualEntries.length > 0 || p.scenarioEntries.length > 0);
             return (
@@ -5519,6 +5517,11 @@ function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: numb
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
   const cashValueSummary = summarizeCashValues(policy.cashValues);
+  const validityStatus = resolvePolicyValidityStatus(policy.coveragePeriod, {
+    effectiveDate: policy.date,
+    insuredBirthday: policy.insuredBirthday,
+  });
+  const validityStatusClassName = policyValidityClassName(validityStatus.tone);
   const reportStatusClassName = reportGenerating
     ? 'bg-[#FFF7ED] text-[#C2410C] ring-[#FED7AA]'
     : reportFailed
@@ -5541,7 +5544,7 @@ function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: numb
             <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#68829F] ring-1 ring-[#DFE8F4]">
               {String(index + 1).padStart(2, '0')}
             </span>
-            <span className="rounded-full bg-[#EBFBF1] px-2.5 py-1 text-[11px] font-semibold text-[#16A34A] ring-1 ring-[#CFF3DA]">有效</span>
+            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${validityStatusClassName}`}>{validityStatus.label}</span>
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${reportStatusClassName}`}>{reportStatusLabel}</span>
           </div>
           <p
@@ -6318,7 +6321,11 @@ function AnalysisReportPage(props: {
           </div>
         </section>
 
-        <PolicyPlanSummary plans={normalizePolicyPlanList(formData.plans, formData.company)} />
+        <PolicyPlanSummary
+          plans={normalizePolicyPlanList(formData.plans, formData.company)}
+          effectiveDate={formData.date}
+          insuredBirthday={formData.insuredBirthday}
+        />
 
         {hasReportText ? (
           <section className="rounded-[24px] border border-[#DCE8F5] bg-white p-5 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
@@ -6494,7 +6501,15 @@ function PolicyPlanEditor(props: {
   );
 }
 
-function PolicyPlanSummary({ plans }: { plans: NonNullable<PolicyFormData['plans']> }) {
+function PolicyPlanSummary({
+  plans,
+  effectiveDate,
+  insuredBirthday,
+}: {
+  plans: NonNullable<PolicyFormData['plans']>;
+  effectiveDate?: string;
+  insuredBirthday?: string;
+}) {
   const visiblePlans = normalizePolicyPlanList(plans);
   if (!visiblePlans.length) return null;
   return (
@@ -6504,22 +6519,35 @@ function PolicyPlanSummary({ plans }: { plans: NonNullable<PolicyFormData['plans
         <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">{visiblePlans.length} 个险种</span>
       </div>
       <div className="space-y-3">
-        {visiblePlans.map((plan, index) => (
-          <article key={`${planProductDisplayName(plan)}-${index}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-            <div className="mb-2 flex items-start justify-between gap-3">
-              <h4 className="min-w-0 flex-1 break-words text-sm font-black leading-5 text-slate-900">{planProductDisplayName(plan)}</h4>
-              <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
-                {normalizePolicyPlanRoleLabel(String(plan.role || ''))}
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-xs font-bold leading-5 text-slate-500">
-              <p>分类：{plan.productType || '-'}</p>
-              <p>保费：{formatCurrency(Number(plan.premium || 0))}</p>
-              <p>期间：{plan.coveragePeriod || '-'}</p>
-              <p>缴费：{plan.paymentPeriod || plan.paymentMode || '-'}</p>
-            </div>
-          </article>
-        ))}
+        {visiblePlans.map((plan, index) => {
+          const validityStatus = resolvePolicyValidityStatus(plan.coveragePeriod, {
+            effectiveDate,
+            insuredBirthday,
+          });
+          const validityStatusClassName = policyValidityClassName(validityStatus.tone);
+          return (
+            <article key={`${planProductDisplayName(plan)}-${index}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <h4 className="min-w-0 flex-1 break-words text-sm font-black leading-5 text-slate-900">{planProductDisplayName(plan)}</h4>
+                <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
+                  {normalizePolicyPlanRoleLabel(String(plan.role || ''))}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs font-bold leading-5 text-slate-500">
+                <p>分类：{plan.productType || '-'}</p>
+                <p>保费：{formatCurrency(Number(plan.premium || 0))}</p>
+                <p>期间：{plan.coveragePeriod || '-'}</p>
+                <p>缴费：{plan.paymentPeriod || plan.paymentMode || '-'}</p>
+                <p>
+                  状态：
+                  <span className={`ml-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ring-1 ${validityStatusClassName}`}>
+                    {validityStatus.label}
+                  </span>
+                </p>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </section>
   );
@@ -6751,7 +6779,11 @@ function PolicyDetailSheet({
           </div>
         </section>
 
-        <PolicyPlanSummary plans={normalizePolicyPlanList(policy.plans, policy.company)} />
+        <PolicyPlanSummary
+          plans={normalizePolicyPlanList(policy.plans, policy.company)}
+          effectiveDate={policy.date}
+          insuredBirthday={policy.insuredBirthday}
+        />
 
         <section className="mt-4 space-y-3">
           <div>

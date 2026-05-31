@@ -257,6 +257,22 @@ test('customer policy detail shows applicant beneficiary and effective date', ()
   assert.match(detailSource, /formatDateLabel\(policy\.date/);
 });
 
+test('customer policy cards derive validity status from coverage period', () => {
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const validitySource = fs.readFileSync(new URL('../src/policy-validity.mjs', import.meta.url), 'utf8');
+  const listItemSource = componentSource('PolicyListItem', 'CustomerBottomTabs');
+  const summarySource = componentSource('PolicyPlanSummary', 'SelectField');
+
+  assert.match(appSource, /from '\.\/policy-validity\.mjs'/);
+  assert.match(validitySource, /function resolvePolicyValidityStatus|export function resolvePolicyValidityStatus/);
+  assert.match(validitySource, /parseCoveragePeriodEndDate/);
+  assert.match(listItemSource, /const validityStatus = resolvePolicyValidityStatus\(policy\.coveragePeriod,\s*\{\s*effectiveDate: policy\.date,\s*insuredBirthday: policy\.insuredBirthday/);
+  assert.doesNotMatch(listItemSource, /<span className="rounded-full bg-\[#EBFBF1\][\s\S]*>有效<\/span>/);
+  assert.match(summarySource, /const validityStatus = resolvePolicyValidityStatus\(plan\.coveragePeriod,\s*\{\s*effectiveDate/);
+  assert.match(summarySource, /状态：[\s\S]*\{validityStatus\.label\}/);
+  assert.match(summarySource, /policyValidityClassName\(validityStatus\.tone\)/);
+});
+
 test('policy edit dialog offers insurer and product suggestions', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
   assert.match(detailSource, /editCompanySuggestions/);
