@@ -1,6 +1,7 @@
-import { useRef } from 'react';
-import { ChevronLeft, Download } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Calculator, ChevronLeft, Download, RotateCcw } from 'lucide-react';
 import type {
+  FamilyPlanningProfile,
   FamilyMemberProtectionReport,
   FamilyPolicyInventoryRow,
   FamilyReport,
@@ -10,6 +11,8 @@ import type {
 
 type FamilyReportPageProps = {
   report: FamilyReport;
+  planningProfile: FamilyPlanningProfile;
+  onPlanningProfileChange: (profile: FamilyPlanningProfile) => void;
   onBack: () => void;
   onExport: (target: HTMLElement | null, title: string) => void | Promise<void>;
 };
@@ -54,6 +57,7 @@ function emptyText(value?: string | number | null) {
 function statusClassName(status: string) {
   if (status === 'covered') return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
   if (status === 'partial' || status === 'formula') return 'bg-amber-50 text-amber-700 ring-amber-100';
+  if (status === 'inactive') return 'bg-red-50 text-red-700 ring-red-100';
   if (status === 'missing') return 'bg-slate-100 text-slate-500 ring-slate-200';
   return 'bg-blue-50 text-blue-700 ring-blue-100';
 }
@@ -62,6 +66,7 @@ function statusLabel(status: string) {
   if (status === 'covered') return '已覆盖';
   if (status === 'partial') return '部分覆盖';
   if (status === 'formula') return '公式型';
+  if (status === 'inactive') return '已失效';
   if (status === 'missing') return '未识别';
   return '待确认';
 }
@@ -166,6 +171,121 @@ function TableWrap({ children }: { children: React.ReactNode }) {
   return <div data-pdf-table-wrap className="overflow-x-auto">{children}</div>;
 }
 
+type RadarSeries = FamilyReport['radar']['family'];
+
+const radarColors = ['#0EA5E9', '#22C55E', '#F97316', '#8B5CF6'];
+
+function scoreByKey(series: RadarSeries, key: string) {
+  return series.scores.find((score) => score.key === key);
+}
+
+function radarShortAmount(score: RadarSeries['scores'][number]) {
+  return score.amountText || formatMoneyWithUnit(score.amount);
+}
+
+function radarScoreSummary(score: RadarSeries['scores'][number]) {
+  if (score.amount <= 0) return score.note;
+  if (score.key === 'wealth') return '现金价值与未来领取合计';
+  return score.policyCount > 0
+    ? `来源${score.policyCount}张保单，按金额合计绘制`
+    : '按已识别责任金额绘制';
+}
+
+function radarPlanningSummary(score: RadarSeries['scores'][number]) {
+  if (!score.target || score.target <= 0) return '目标待录入';
+  if ((score.gap || 0) > 0) return `有效${score.effectiveAmountText}，目标${score.targetText}，缺口${score.gapText}`;
+  if ((score.over || 0) > 0) return `有效${score.effectiveAmountText}，目标${score.targetText}，超配${score.overText}`;
+  return `有效${score.effectiveAmountText}，目标${score.targetText}`;
+}
+
+function radarPrimaryValue(score: RadarSeries['scores'][number], mode: FamilyReport['radar']['mode']) {
+  if (mode === 'planning' && score.target && score.target > 0) return score.adequacyText || `${score.score}%`;
+  return radarShortAmount(score);
+}
+
+function radarCardSummary(score: RadarSeries['scores'][number], mode: FamilyReport['radar']['mode']) {
+  if (mode === 'planning') return radarPlanningSummary(score);
+  return radarScoreSummary(score);
+}
+
+function radarStructureAmount(score: RadarSeries['scores'][number]) {
+  return score.key === 'accident' ? Number(score.effectiveAmount || score.amount || 0) : Number(score.amount || 0);
+}
+
+function calculationRowsForScore(
+  score: RadarSeries['scores'][number],
+  series: RadarSeries,
+  mode: FamilyReport['radar']['mode'],
+) {
+  if (mode === 'planning') {
+    if (!score.target || score.target <= 0) {
+      return [
+        { label: '金额合计', value: score.amountText },
+        { label: '计算结果', value: '目标为0，雷达值按0显示' },
+      ];
+    }
+
+    return [
+      { label: '金额合计', value: score.amountText },
+      { label: '有效保障', value: score.effectiveAmountText },
+      { label: '估算目标', value: score.targetText || formatMoneyWithUnit(score.target) },
+      { label: '雷达值', value: `${score.effectiveAmountText} ÷ ${score.targetText || formatMoneyWithUnit(score.target)} ≈ ${score.adequacyText || `${score.score}%`}` },
+    ];
+  }
+
+  const amount = radarStructureAmount(score);
+  const maxAmount = Math.max(0, ...series.scores.map(radarStructureAmount));
+  const amountText = formatMoneyWithUnit(amount);
+  const maxText = formatMoneyWithUnit(maxAmount);
+  const basisLabel = score.key === 'accident' ? '有效金额' : '原始金额';
+
+  return [
+    { label: '金额合计', value: score.amountText },
+    { label: basisLabel, value: amountText },
+    { label: '压缩处理', value: `√${amountText} ÷ √${maxText} × 100` },
+    { label: '雷达值', value: `${score.score}/100` },
+  ];
+}
+
+function radarAmountSourceDetails(score: RadarSeries['scores'][number]) {
+  return (score.amountDetails || []).filter((detail) => Number(detail.amount || 0) > 0);
+}
+
+function radarAmountPolicyTitle(detail: ReturnType<typeof radarAmountSourceDetails>[number]) {
+  const parts = [detail.company, detail.productName]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .filter((part, index, all) => all.indexOf(part) === index);
+  return parts.join(' · ') || '未命名保单';
+}
+
+function radarAmountLiabilityTitle(detail: ReturnType<typeof radarAmountSourceDetails>[number]) {
+  const productName = String(detail.productName || '').trim();
+  const parts = [detail.liability, detail.label]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .filter((part) => part !== productName)
+    .filter((part, index, all) => all.indexOf(part) === index);
+  return parts.join(' · ') || '已识别责任';
+}
+
+function profileValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
+  const value = Number(profile[key] || 0);
+  return value > 0 ? String(Number((value / 10000).toFixed(2))) : '';
+}
+
+function profileWithWanValue(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile, value: string) {
+  const amount = Math.max(0, Number(value) || 0) * 10000;
+  return {
+    ...profile,
+    [key]: amount,
+  };
+}
+
+function profileHasValue(profile: FamilyPlanningProfile) {
+  return Object.values(profile).some((value) => Number(value || 0) > 0);
+}
+
 const thClassName = 'bg-[#0B72B9] px-3 py-2 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
@@ -223,6 +343,61 @@ function OptionalResponsibilityGapSection({ gaps = [] }: { gaps?: OptionalRespon
   );
 }
 
+const planningFields: Array<{ key: keyof FamilyPlanningProfile; label: string }> = [
+  { key: 'annualExpense', label: '家庭年支出' },
+  { key: 'debt', label: '家庭负债' },
+  { key: 'educationGoal', label: '子女教育目标' },
+  { key: 'retirementGoal', label: '养老/财富目标' },
+  { key: 'availableAssets', label: '可用资产' },
+];
+
+function FamilyPlanningProfilePanel({
+  profile,
+  onChange,
+}: {
+  profile: FamilyPlanningProfile;
+  onChange: (profile: FamilyPlanningProfile) => void;
+}) {
+  const enabled = profileHasValue(profile);
+
+  return (
+    <section className="no-print mx-4 mt-4 rounded-2xl bg-white p-3 ring-1 ring-[#D9E6F4]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-black text-[#7890AA]">雷达模型</p>
+          <h2 className="text-base font-black text-[#0F172A]">{enabled ? '保障规划版' : '保额结构版'}</h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange({})}
+          className="flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-2 text-xs font-black text-slate-600 active:bg-slate-200"
+          aria-label="清空保障目标"
+          title="清空保障目标"
+        >
+          <RotateCcw size={14} />
+          <span>清空目标</span>
+        </button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {planningFields.map((field) => (
+          <label key={field.key} className="block rounded-xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
+            <span className="text-[11px] font-bold text-[#7890AA]">{field.label}(万元)</span>
+            <input
+              type="number"
+              min="0"
+              inputMode="decimal"
+              value={profileValueInWan(profile, field.key)}
+              onChange={(event) => onChange(profileWithWanValue(profile, field.key, event.target.value))}
+              className="mt-1 w-full bg-transparent text-sm font-black text-[#0F172A] outline-none"
+              placeholder="0"
+            />
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ReportHero({ report, attentionItems }: { report: FamilyReport; attentionItems: string[] }) {
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const metrics = getFamilySummaryMetrics(report, attentionItems);
@@ -253,7 +428,240 @@ function ReportHero({ report, attentionItems }: { report: FamilyReport; attentio
           ))}
         </div>
       </div>
+      <FamilyRadarSection report={report} />
     </section>
+  );
+}
+
+function RadarChart({
+  dimensions,
+  series,
+  ariaLabel,
+  framed = true,
+}: {
+  dimensions: FamilyReport['radar']['dimensions'];
+  series: RadarSeries[];
+  ariaLabel: string;
+  framed?: boolean;
+}) {
+  const width = 320;
+  const height = 218;
+  const centerX = width / 2;
+  const centerY = 118;
+  const radius = 82;
+  const rings = [0.25, 0.5, 0.75, 1];
+  const axisPoints = dimensions.map((dimension, index) => {
+    const angle = -Math.PI / 2 + (Math.PI * 2 * index) / dimensions.length;
+    return {
+      ...dimension,
+      angle,
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius,
+      labelX: centerX + Math.cos(angle) * (radius + 24),
+      labelY: centerY + Math.sin(angle) * (radius + 24),
+    };
+  });
+  const hasShape = series.some((item) => item.scores.some((score) => score.score > 0));
+
+  if (!hasShape) return <EmptyState text="暂无可绘制雷达图的金额数据" />;
+
+  const polygonForSeries = (item: RadarSeries) => axisPoints.map((point) => {
+    const score = Math.max(0, Math.min(100, scoreByKey(item, point.key)?.score || 0));
+    const pointRadius = (radius * score) / 100;
+    return `${(centerX + Math.cos(point.angle) * pointRadius).toFixed(1)},${(centerY + Math.sin(point.angle) * pointRadius).toFixed(1)}`;
+  }).join(' ');
+
+  return (
+    <div className={framed ? 'min-w-0 rounded-2xl bg-white p-2' : 'min-w-0'}>
+      <svg className="h-auto w-full max-w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
+        <rect x="0" y="0" width={width} height={height} rx="16" fill="#FFFFFF" />
+        {rings.map((ring) => (
+          <polygon
+            key={ring}
+            points={axisPoints.map((point) => `${(centerX + Math.cos(point.angle) * radius * ring).toFixed(1)},${(centerY + Math.sin(point.angle) * radius * ring).toFixed(1)}`).join(' ')}
+            fill="none"
+            stroke="#E2E8F0"
+            strokeWidth="1"
+          />
+        ))}
+        {axisPoints.map((point) => (
+          <g key={point.key}>
+            <line x1={centerX} y1={centerY} x2={point.x} y2={point.y} stroke="#E2E8F0" strokeWidth="1" />
+            <text x={point.labelX} y={point.labelY + 4} textAnchor="middle" fontSize="11" fontWeight="700" fill="#334155">
+              {point.label}
+            </text>
+          </g>
+        ))}
+        {series.map((item, index) => {
+          const color = radarColors[index % radarColors.length];
+          return (
+            <g key={item.name}>
+              <polygon points={polygonForSeries(item)} fill={color} opacity={series.length === 1 ? 0.18 : 0.1} stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
+            </g>
+          );
+        })}
+      </svg>
+      <div className="mt-2 flex min-w-0 flex-wrap gap-x-3 gap-y-1 px-1 pb-1" aria-hidden="true">
+        {series.map((item, index) => {
+          const color = radarColors[index % radarColors.length];
+          return (
+            <div key={item.name} className="flex min-w-0 max-w-full items-start gap-1.5">
+              <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: color }} />
+              <span className="min-w-0 break-words text-[11px] font-bold leading-4 text-[#475569]">{item.name}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FamilyRadarSection({ report }: { report: FamilyReport }) {
+  const family = report.radar.family;
+  const wealth = scoreByKey(family, 'wealth');
+  const planningMode = report.radar.mode === 'planning';
+
+  return (
+    <div className="mt-5 rounded-2xl bg-white/15 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-black text-white">{planningMode ? '全家保障充足率雷达' : '全家保额结构雷达'}</h3>
+        <span className="text-[11px] font-bold leading-4 text-white/75">
+          {planningMode ? '按当前有效保障/家庭目标绘制，超出部分单独显示。' : '按有效金额压缩比例绘制，避免高额责任压低其他维度。'}
+        </span>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr]">
+        <RadarChart dimensions={report.radar.dimensions} series={[family]} ariaLabel="全家保障均衡雷达" />
+        <div className="grid gap-2 sm:grid-cols-2">
+          {family.scores.map((score) => (
+            <div key={score.key} className="min-w-0 rounded-xl bg-white/15 px-3 py-2">
+              <p className="text-[11px] font-bold text-white/70">{score.label}</p>
+              <p className="mt-0.5 break-words text-sm font-black leading-tight text-white">{radarPrimaryValue(score, report.radar.mode)}</p>
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/75">{radarCardSummary(score, report.radar.mode)}</p>
+            </div>
+          ))}
+          {wealth ? (
+            <div className="min-w-0 rounded-xl bg-white/15 px-3 py-2 sm:col-span-2">
+              <p className="text-[11px] font-bold text-white/70">财富拆分</p>
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/80">{wealth.note}</p>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MemberRadarSection({ report }: { report: FamilyReport }) {
+  const members = report.radar.members;
+  if (!members.length) return null;
+  const planningMode = report.radar.mode === 'planning';
+  const [expandedCalculations, setExpandedCalculations] = useState<Record<string, boolean>>({});
+
+  return (
+    <Section title={planningMode ? '个人保障估算雷达' : '个人保额结构雷达'}>
+      <div className="rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
+        <p className="mb-3 text-xs font-bold leading-5 text-[#7890AA]">
+          {planningMode ? '按家庭目标自动分摊到成员，仅供初步估算；未要求客户录入个人收入、负债或资产。' : '客户未录入家庭目标时，按有效金额压缩比例展示个人结构，非保障充足率。'}
+        </p>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {members.map((member, index) => (
+            <article key={member.name} className="min-w-0 rounded-xl bg-white p-3 ring-1 ring-[#E1EAF5]">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-black leading-5 text-[#0F172A]">{member.name}</p>
+                  <p className="mt-0.5 text-[11px] font-bold text-[#7890AA]">{member.roleLabel || '成员'} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-600">
+                    {planningMode ? '系统估算' : '结构展示'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedCalculations((current) => ({ ...current, [member.name]: !current[member.name] }))}
+                    className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600 active:bg-slate-200"
+                    aria-expanded={Boolean(expandedCalculations[member.name])}
+                    aria-label={`${member.name}金额和雷达值怎么算`}
+                    title="金额来源和雷达值怎么算"
+                  >
+                    <Calculator size={13} />
+                    <span>金额怎么算</span>
+                  </button>
+                </div>
+              </div>
+              <div className="grid gap-3 xl:grid-cols-[minmax(0,220px)_1fr]">
+                <RadarChart dimensions={report.radar.dimensions} series={[member]} ariaLabel={`${member.name}保障雷达`} framed={false} />
+                <div className="divide-y divide-[#E1EAF5]">
+                  {member.scores.map((score) => (
+                    <div key={score.key} className="flex min-w-0 items-start justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
+                        <p className="mt-0.5 break-words text-[11px] font-semibold leading-4 text-[#7890AA]">{radarCardSummary(score, report.radar.mode)}</p>
+                      </div>
+                      <p className="shrink-0 text-right text-sm font-black text-[#0B72B9]">{radarPrimaryValue(score, report.radar.mode)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {expandedCalculations[member.name] ? (
+                <div className="mt-3 rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
+                  <p className="mb-2 text-[11px] font-black text-[#7890AA]">
+                    {planningMode ? '先看金额来源，再按有效保障 / 系统估算目标计算' : '先看金额来源，再按有效金额开平方后对比，避免高额责任压低其他维度'}
+                  </p>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {member.scores.map((score) => {
+                      const amountDetails = radarAmountSourceDetails(score);
+                      const visibleDetails = amountDetails.slice(0, 3);
+                      const hiddenDetailCount = amountDetails.length - visibleDetails.length;
+                      return (
+                        <div key={score.key} className="min-w-0 rounded-lg bg-white px-3 py-2 ring-1 ring-[#E1EAF5]">
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
+                            <p className="shrink-0 text-xs font-black text-[#0B72B9]">{planningMode ? (score.adequacyText || `${score.score}%`) : `${score.score}/100`}</p>
+                          </div>
+                          <div className="mb-1.5 rounded-md bg-slate-50 px-2 py-1.5">
+                            <p className="mb-1 text-[11px] font-black text-[#7890AA]">金额来源</p>
+                            {visibleDetails.length ? (
+                              <div className="space-y-1">
+                                {visibleDetails.map((detail) => (
+                                  <div key={`${detail.sourceKey || detail.policyId || detail.label}-${detail.liability}-${detail.amountText}`} className="min-w-0">
+                                    <p className="break-words text-[11px] font-bold leading-4 text-[#0F172A]">{radarAmountPolicyTitle(detail)}</p>
+                                    <p className="break-words text-[11px] font-semibold leading-4 text-[#7890AA]">责任：{radarAmountLiabilityTitle(detail)}</p>
+                                    <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{detail.calculationText}</p>
+                                  </div>
+                                ))}
+                                {hiddenDetailCount > 0 ? (
+                                  <p className="text-[11px] font-semibold text-[#7890AA]">另有{hiddenDetailCount}项已计入合计</p>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{score.note}</p>
+                            )}
+                          </div>
+                          {calculationRowsForScore(score, member, report.radar.mode).map((row) => (
+                            <div key={row.label} className="flex min-w-0 justify-between gap-2 py-0.5 text-[11px] font-semibold leading-4">
+                              <span className="shrink-0 text-[#7890AA]">{row.label}</span>
+                              <span className="min-w-0 break-words text-right text-[#475569]">{row.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              {!planningMode && member.notes.length ? (
+                <p className="mt-3 break-words rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700">{member.notes.join('；')}</p>
+              ) : null}
+            </article>
+          ))}
+          {report.radar.hiddenMembers.length ? (
+            <div className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700 ring-1 ring-amber-100 lg:col-span-2">
+              未展示成员: {report.radar.hiddenMembers.map((member) => `${member.name}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </Section>
   );
 }
 
@@ -745,7 +1153,13 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
   );
 }
 
-export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageProps) {
+export function FamilyReportPage({
+  report,
+  planningProfile,
+  onPlanningProfileChange,
+  onBack,
+  onExport,
+}: FamilyReportPageProps) {
   const reportRef = useRef<HTMLElement | null>(null);
   const exportTitle = '家庭保障分析报告';
   const attentionItems = getFamilyAttentionItems(report);
@@ -776,11 +1190,14 @@ export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageP
         </button>
       </header>
 
+      <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} />
+
       <main ref={reportRef} className="print-policy-report space-y-4 p-4">
         <ReportHero report={report} attentionItems={attentionItems} />
         <AttentionSection attentionItems={attentionItems} />
         <OptionalResponsibilityGapSection gaps={reportWithOptionalGaps.optionalResponsibilityGaps} />
         <InventorySection rows={report.policyInventory.rows} />
+        <MemberRadarSection report={report} />
         <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
         <ProtectionSection title="重疾分析" members={report.criticalIllness.members} />
         <ProtectionSection title="意外分析" members={report.accident.members} />

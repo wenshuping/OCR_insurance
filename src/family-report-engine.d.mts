@@ -17,6 +17,8 @@ export type FamilyPolicyInventoryRow = {
   policyNumber?: string;
   productName: string;
   typeLabel: string;
+  isInactive: boolean;
+  policyStatusText: string;
   annualPremium: number;
   annualPremiumText: string;
   paymentPeriod: string;
@@ -48,10 +50,15 @@ export type FamilyPolicyInventory = {
 };
 
 export type FamilyProtectionSourcePolicy = {
-  policyId: number;
+  sourceKey?: string;
+  policyId: number | string | null | undefined;
+  company?: string;
   productName: string;
   liability: string;
   formulaText: string;
+  amount?: number;
+  amountText?: string;
+  calculationText?: string;
 };
 
 export type FamilyProtectionRow = {
@@ -60,7 +67,7 @@ export type FamilyProtectionRow = {
   amount: number;
   amountText: string;
   countText: string;
-  status: 'covered' | 'partial' | 'missing' | 'formula' | 'unknown';
+  status: 'covered' | 'partial' | 'missing' | 'formula' | 'inactive' | 'unknown';
   conditionText: string;
   sourcePolicies: FamilyProtectionSourcePolicy[];
 };
@@ -157,18 +164,97 @@ export type FamilyWealthReport = {
   keyPoints: FamilyWealthKeyPoint[];
 };
 
+export type FamilyRadarDimension = {
+  key: 'critical' | 'accident' | 'medical' | 'life' | 'wealth';
+  label: string;
+};
+
+export type FamilyRadarAmountDetail = {
+  sourceKey?: string;
+  policyId?: number | string | null | undefined;
+  company: string;
+  productName: string;
+  liability: string;
+  label: string;
+  amount: number;
+  amountText: string;
+  calculationText: string;
+};
+
+export type FamilyPlanningProfile = {
+  annualExpense?: number;
+  debt?: number;
+  educationGoal?: number;
+  retirementGoal?: number;
+  availableAssets?: number;
+};
+
+export type FamilyPlanningAssumptions = {
+  criticalRecoveryYears: number;
+  criticalRecoveryReserve: number;
+  medicalTarget: number;
+  accidentExpenseYears: number;
+  lifeExpenseYears: number;
+  wealthDiscountRate: number;
+};
+
+export type FamilyRadarScore = {
+  key: FamilyRadarDimension['key'];
+  label: string;
+  amount: number;
+  effectiveAmount: number;
+  score: number;
+  amountText: string;
+  effectiveAmountText: string;
+  policyCount: number;
+  note: string;
+  amountDetails: FamilyRadarAmountDetail[];
+  target?: number;
+  targetText?: string;
+  gap?: number;
+  gapText?: string;
+  over?: number;
+  overText?: string;
+  adequacyRate?: number;
+  adequacyText?: string;
+  targetSource?: 'family' | 'system_estimate' | string;
+};
+
+export type FamilyRadarSeries = {
+  name: string;
+  role?: 'adult' | 'child' | 'elder' | string;
+  roleLabel?: string;
+  targetSource?: 'system_estimate' | string;
+  scores: FamilyRadarScore[];
+  totalAmount: number;
+  notes: string[];
+};
+
+export type FamilyRadarReport = {
+  dimensions: FamilyRadarDimension[];
+  mode: 'structure' | 'planning';
+  planningProfile: FamilyPlanningProfile | null;
+  planningTargets: Record<FamilyRadarDimension['key'], number> | null;
+  assumptions: FamilyPlanningAssumptions;
+  family: FamilyRadarSeries;
+  members: FamilyRadarSeries[];
+  hiddenMembers: FamilyRadarSeries[];
+};
+
 export type FamilyReport = {
   summary: FamilyReportSummary;
   policyInventory: FamilyPolicyInventory;
   criticalIllness: FamilySectionReport;
   accident: FamilySectionReport;
   wealth: FamilyWealthReport;
+  radar: FamilyRadarReport;
   appendix: { policies: Array<{ policyId: number; productName: string; ocrText: string }> };
 };
 
-export function buildFamilyReport(policies: Policy[]): FamilyReport;
+export function buildFamilyReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null): FamilyReport;
 export function buildFamilyReportSummary(policies: Policy[]): FamilyReportSummary;
 export function buildPolicyInventory(policies: Policy[]): FamilyPolicyInventory;
 export function buildCriticalIllnessSection(policies: Policy[]): FamilySectionReport;
 export function buildAccidentSection(policies: Policy[]): FamilySectionReport;
 export function buildWealthSection(policies: Policy[]): FamilyWealthReport;
+export function buildFamilyRadarReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null): FamilyRadarReport;

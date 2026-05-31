@@ -22,6 +22,9 @@ function makePolicy(overrides = {}) {
     coveragePeriod: overrides.coveragePeriod ?? '终身',
     amount: overrides.amount ?? 500000,
     firstPremium: overrides.firstPremium ?? 8600,
+    policyStatus: overrides.policyStatus,
+    status: overrides.status,
+    expired: overrides.expired,
     plans: overrides.plans ?? [],
     ocrText: overrides.ocrText ?? '',
     responsibilities: overrides.responsibilities ?? [],
@@ -36,6 +39,14 @@ function makePolicy(overrides = {}) {
     totalCashflow: overrides.totalCashflow ?? 0,
     cashValues: overrides.cashValues ?? [],
   };
+}
+
+function radarScore(series, key) {
+  return series.scores.find((score) => score.key === key);
+}
+
+function radarMember(report, name) {
+  return report.radar.members.find((member) => member.name === name);
 }
 
 test('buildFamilyReportSummary counts members, policies, premiums, coverage, cash value, and payouts', () => {
@@ -232,6 +243,485 @@ test('buildFamilyReport includes summary and inventory sections', () => {
   assert.equal(report.summary.memberCount, 1);
   assert.equal(report.policyInventory.rows.length, 1);
   assert.equal(report.policyInventory.insuredGroups[0].member, '爸爸');
+});
+
+test('buildFamilyReport separates inactive policies from counted values and marks them inactive', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 91,
+      insured: '爸爸',
+      name: '有效重疾险',
+      amount: 100000,
+      firstPremium: 2000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '有效重疾险' },
+      ],
+    }),
+    makePolicy({
+      id: 92,
+      insured: '妈妈',
+      name: '失效重疾险',
+      amount: 500000,
+      firstPremium: 8000,
+      policyStatus: '失效',
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '失效重疾险' },
+      ],
+    }),
+  ]);
+
+  assert.equal(report.summary.memberCount, 2);
+  assert.equal(report.summary.policyCount, 1);
+  assert.equal(report.summary.annualPremium, 2000);
+  assert.equal(report.summary.totalCoverage, 100000);
+  assert.equal(radarScore(report.radar.family, 'critical').amount, 100000);
+  assert.equal(report.policyInventory.rows.find((row) => row.policyId === 92).dataStatus, '失效');
+  assert.equal(report.policyInventory.rows.find((row) => row.policyId === 92).isInactive, true);
+
+  const inactiveMember = report.criticalIllness.members.find((member) => member.member === '妈妈');
+  const inactiveRow = inactiveMember.rows.find((row) => row.key === 'critical_first');
+  assert.equal(inactiveRow.status, 'inactive');
+  assert.equal(inactiveRow.amount, 0);
+  assert.equal(inactiveRow.amountText, '50万');
+  assert.match(inactiveRow.conditionText, /未计入当前保障/);
+});
+
+test('buildFamilyReport creates structure radar with compressed display scores and real amounts', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 101,
+      insured: '妈妈',
+      name: '重大疾病保险',
+      amount: 500000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '重大疾病保险' },
+      ],
+    }),
+    makePolicy({
+      id: 102,
+      insured: '爸爸',
+      name: '综合意外保险',
+      amount: 250000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 250000, unit: '元', basis: '意外身故保额', productName: '综合意外保险' },
+      ],
+    }),
+    makePolicy({
+      id: 103,
+      insured: '孩子',
+      name: '百万医疗保险',
+      amount: 0,
+      coverageIndicators: [
+        { coverageType: '医疗保障', liability: '住院医疗费用保险金', value: 100000, unit: '元', basis: '医疗费用限额', productName: '百万医疗保险' },
+      ],
+    }),
+    makePolicy({
+      id: 104,
+      insured: '妈妈',
+      name: '终身寿险',
+      amount: 1000000,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '身故保险金', value: 1000000, unit: '元', basis: '身故保额', productName: '终身寿险' },
+      ],
+    }),
+    makePolicy({
+      id: 105,
+      insured: '爸爸',
+      name: '年金保险',
+      amount: 0,
+      cashValues: [{ policyYear: 1, cashValue: 80000 }, { policyYear: 2, cashValue: 150000 }],
+      cashflowEntries: [
+        { year: 2030, age: 42, amount: 30000, cumulative: 30000, liability: '生存金', policyId: 105, productName: '年金保险' },
+        { year: 2031, age: 43, amount: 20000, cumulative: 50000, liability: '生存金', policyId: 105, productName: '年金保险' },
+      ],
+    }),
+  ]);
+
+  assert.deepEqual(report.radar.dimensions.map((dimension) => dimension.label), ['重疾', '意外', '医疗', '寿险', '财富']);
+  assert.equal(radarScore(report.radar.family, 'critical').amount, 500000);
+  assert.equal(radarScore(report.radar.family, 'accident').amount, 250000);
+  assert.equal(radarScore(report.radar.family, 'medical').amount, 100000);
+  assert.equal(radarScore(report.radar.family, 'life').amount, 1000000);
+  assert.equal(radarScore(report.radar.family, 'wealth').amount, 200000);
+  assert.equal(radarScore(report.radar.family, 'life').score, 100);
+  assert.equal(radarScore(report.radar.family, 'critical').score, 71);
+  assert.equal(radarScore(report.radar.family, 'accident').score, 50);
+  assert.equal(radarScore(report.radar.family, 'medical').score, 32);
+  assert.equal(radarScore(report.radar.family, 'wealth').score, 45);
+  assert.match(radarScore(report.radar.family, 'critical').amountDetails[0].calculationText, /基本保险金额500,000元 × 100% = 500,000元/);
+  assert.match(radarScore(report.radar.family, 'wealth').note, /现金价值150,000/);
+  assert.match(radarScore(report.radar.family, 'wealth').note, /未来领取50,000/);
+  assert.match(radarScore(report.radar.family, 'wealth').amountDetails[0].calculationText, /最新现金价值 = 150,000元/);
+});
+
+test('buildFamilyReport explains the raw critical radar amount before chart scoring', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 106,
+      insured: '爸爸',
+      name: '新华健康无忧重大疾病保险',
+      amount: 60312,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '新华健康无忧重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  const critical = radarScore(report.radar.family, 'critical');
+  assert.equal(critical.amount, 60312);
+  assert.equal(critical.amountText, '60,312元');
+  assert.equal(critical.amountDetails.length, 1);
+  assert.equal(critical.amountDetails[0].amount, 60312);
+  assert.equal(critical.amountDetails[0].company, '新华保险');
+  assert.equal(critical.amountDetails[0].productName, '新华健康无忧重大疾病保险');
+  assert.equal(critical.amountDetails[0].liability, '重大疾病保险金');
+  assert.match(critical.amountDetails[0].calculationText, /基本保险金额60,312元 × 100% = 60,312元/);
+});
+
+test('buildFamilyReport keeps high accident amounts from flattening other structure dimensions', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 106,
+      insured: '爸爸',
+      name: '高额意外保险',
+      amount: 10000000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 10000000, unit: '元', basis: '意外身故保额', productName: '高额意外保险' },
+      ],
+    }),
+    makePolicy({
+      id: 107,
+      insured: '妈妈',
+      name: '重大疾病保险',
+      amount: 500000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  assert.equal(radarScore(report.radar.family, 'accident').score, 100);
+  assert.equal(radarScore(report.radar.family, 'critical').score, 22);
+  assert.equal(radarScore(report.radar.family, 'critical').amount, 500000);
+});
+
+test('buildFamilyReport switches family radar to target adequacy when planning profile is provided', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 111,
+      insured: '妈妈',
+      name: '重大疾病保险',
+      amount: 500000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '重大疾病保险' },
+      ],
+    }),
+    makePolicy({
+      id: 112,
+      insured: '爸爸',
+      name: '综合意外保险',
+      amount: 250000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 250000, unit: '元', basis: '意外身故保额', productName: '综合意外保险' },
+      ],
+    }),
+    makePolicy({
+      id: 113,
+      insured: '孩子',
+      name: '百万医疗保险',
+      amount: 0,
+      coverageIndicators: [
+        { coverageType: '医疗保障', liability: '住院医疗费用保险金', value: 100000, unit: '元', basis: '医疗费用限额', productName: '百万医疗保险' },
+      ],
+    }),
+    makePolicy({
+      id: 114,
+      insured: '妈妈',
+      name: '终身寿险',
+      amount: 1000000,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '身故保险金', value: 1000000, unit: '元', basis: '身故保额', productName: '终身寿险' },
+      ],
+    }),
+  ], {
+    annualExpense: 300000,
+    debt: 2000000,
+    educationGoal: 800000,
+    retirementGoal: 1000000,
+    availableAssets: 500000,
+  });
+
+  const critical = radarScore(report.radar.family, 'critical');
+  const accident = radarScore(report.radar.family, 'accident');
+  const medical = radarScore(report.radar.family, 'medical');
+  const life = radarScore(report.radar.family, 'life');
+  const wealth = radarScore(report.radar.family, 'wealth');
+
+  assert.equal(report.radar.mode, 'planning');
+  assert.equal(critical.target, 1100000);
+  assert.equal(accident.target, 3000000);
+  assert.equal(medical.target, 3000000);
+  assert.equal(life.target, 5300000);
+  assert.equal(wealth.target, 1800000);
+  assert.equal(critical.score, 45);
+  assert.equal(life.score, 19);
+  assert.equal(critical.gap, 600000);
+  assert.equal(life.gap, 4300000);
+  assert.equal(critical.adequacyText, '45%');
+});
+
+test('buildFamilyReport weights scenario-only accident coverages for planning adequacy', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 115,
+      insured: '爸爸',
+      name: '航空意外保险',
+      amount: 0,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '航空意外身故保险金', value: 1000000, unit: '元', basis: '航空意外保额', productName: '航空意外保险' },
+      ],
+    }),
+  ], {
+    annualExpense: 100000,
+  });
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 1000000);
+  assert.equal(accident.effectiveAmount, 200000);
+  assert.equal(accident.target, 500000);
+  assert.equal(accident.score, 40);
+});
+
+test('buildFamilyReport discounts future wealth payouts for planning adequacy', () => {
+  const payoutYear = new Date().getFullYear() + 10;
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 116,
+      insured: '妈妈',
+      name: '年金保险',
+      amount: 0,
+      cashflowEntries: [
+        { year: payoutYear, age: 55, amount: 100000, cumulative: 100000, liability: '生存金', policyId: 116, productName: '年金保险' },
+      ],
+    }),
+  ], {
+    retirementGoal: 1000000,
+  });
+
+  const wealth = radarScore(report.radar.family, 'wealth');
+  assert.equal(wealth.amount, 100000);
+  assert.ok(wealth.effectiveAmount < 100000);
+  assert.equal(wealth.target, 1000000);
+  assert.equal(wealth.score, 7);
+});
+
+test('buildFamilyReport shows member radar as each member own amount structure and limits displayed members', () => {
+  const report = buildFamilyReport([
+    makePolicy({ id: 201, insured: '妈妈', name: '妈妈重疾', amount: 1000000, coverageIndicators: [{ coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '妈妈重疾' }] }),
+    makePolicy({ id: 202, insured: '爸爸', name: '爸爸重疾', amount: 800000, coverageIndicators: [{ coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '爸爸重疾' }] }),
+    makePolicy({ id: 203, insured: '孩子', name: '孩子重疾', amount: 600000, coverageIndicators: [{ coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '孩子重疾' }] }),
+    makePolicy({ id: 204, insured: '老人', name: '老人重疾', amount: 400000, coverageIndicators: [{ coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '老人重疾' }] }),
+    makePolicy({ id: 205, insured: '未成年二', name: '未成年二', amount: 0 }),
+  ]);
+
+  assert.equal(report.radar.members.length, 4);
+  assert.deepEqual(report.radar.members.map((member) => member.name), ['妈妈', '爸爸', '孩子', '未成年二']);
+  assert.deepEqual(report.radar.hiddenMembers.map((member) => member.name), ['老人']);
+  assert.equal(radarScore(radarMember(report, '妈妈'), 'critical').score, 100);
+  assert.equal(radarScore(radarMember(report, '爸爸'), 'critical').score, 100);
+  assert.equal(radarScore(radarMember(report, '孩子'), 'critical').score, 100);
+  assert.equal(radarScore(radarMember(report, '未成年二'), 'critical').score, 0);
+  assert.equal(radarMember(report, '妈妈').role, 'adult');
+  assert.equal(radarMember(report, '孩子').role, 'child');
+});
+
+test('buildFamilyReport allocates family planning targets to member estimated radar without personal inputs', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 211,
+      insured: '爸爸',
+      insuredRelation: '本人',
+      insuredBirthday: '1988-01-01',
+      name: '爸爸寿险',
+      amount: 1000000,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '身故保险金', value: 1000000, unit: '元', basis: '身故保额', productName: '爸爸寿险' },
+      ],
+    }),
+    makePolicy({
+      id: 212,
+      insured: '孩子',
+      insuredRelation: '子女',
+      insuredBirthday: '2018-01-01',
+      name: '孩子重疾',
+      amount: 300000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '孩子重疾' },
+      ],
+    }),
+  ], {
+    annualExpense: 300000,
+    debt: 2000000,
+    educationGoal: 800000,
+    retirementGoal: 1000000,
+    availableAssets: 500000,
+  });
+
+  const father = radarMember(report, '爸爸');
+  const child = radarMember(report, '孩子');
+  assert.equal(report.radar.mode, 'planning');
+  assert.equal(father.targetSource, 'system_estimate');
+  assert.equal(father.role, 'adult');
+  assert.equal(child.role, 'child');
+  assert.equal(radarScore(father, 'life').target, 5300000);
+  assert.equal(radarScore(child, 'life').target, 0);
+  assert.equal(radarScore(child, 'wealth').target, 800000);
+  assert.equal(radarScore(father, 'wealth').target, 1000000);
+  assert.equal(radarScore(father, 'life').score, 19);
+  assert.equal(radarScore(child, 'medical').target, 3000000);
+});
+
+test('buildFamilyReport keeps formula-only radar amounts out of numeric radar value', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 301,
+      insured: '妈妈',
+      name: '公式型寿险',
+      amount: 0,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '身故保险金', unit: '公式', basis: '已交保费', formulaText: '取已交保费、现金价值、基本保额较大者', productName: '公式型寿险' },
+      ],
+    }),
+  ]);
+
+  const life = radarScore(report.radar.family, 'life');
+  assert.equal(life.amount, 0);
+  assert.equal(life.score, 0);
+  assert.equal(life.amountText, '0元');
+  assert.match(life.note, /公式型待确认/);
+});
+
+test('buildFamilyReport keeps formula critical illness amounts out of radar fallback', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 302,
+      insured: '妈妈',
+      name: '公式型重疾',
+      amount: 500000,
+      coverageIndicators: [
+        {
+          coverageType: '重大疾病保障',
+          liability: '重大疾病保险金',
+          unit: '公式',
+          formulaText: '取已交保费、现金价值、基本保额较大者',
+          productName: '公式型重疾',
+        },
+      ],
+    }),
+  ]);
+
+  const critical = radarScore(report.radar.family, 'critical');
+  assert.equal(critical.amount, 0);
+  assert.equal(critical.score, 0);
+  assert.equal(critical.amountText, '0元');
+  assert.match(critical.note, /公式型待确认/);
+});
+
+test('buildFamilyReport sums distinct accident radar scenarios from one policy', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 401,
+      insured: '爸爸',
+      name: '综合交通意外保险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 100000, unit: '元', basis: '一般意外保额', productName: '综合交通意外保险' },
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 80000, unit: '元', basis: '一般意外保额', productName: '综合交通意外保险' },
+        { coverageType: '意外保障', liability: '航空意外身故保险金', value: 500000, unit: '元', basis: '航空意外保额', productName: '综合交通意外保险' },
+        { coverageType: '意外保障', liability: '意外医疗费用保险金', value: 20000, unit: '元', basis: '医疗费用限额', productName: '综合交通意外保险' },
+      ],
+    }),
+  ]);
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 600000);
+  assert.equal(accident.policyCount, 1);
+  assert.match(accident.note, /一般意外身故保险金100,000/);
+  assert.match(accident.note, /航空意外身故保险金500,000/);
+});
+
+test('buildFamilyReport counts one combined accident liability once even when it matches multiple traffic classes', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 402,
+      insured: '爸爸',
+      name: '综合交通意外保险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '航空公共交通意外身故保险金', value: 500000, unit: '元', basis: '航空公共交通意外保额', productName: '综合交通意外保险' },
+      ],
+    }),
+  ]);
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 500000);
+  assert.equal(accident.policyCount, 1);
+  assert.match(accident.note, /航空公共交通意外身故保险金500,000/);
+});
+
+test('buildFamilyReport keeps long accident responsibility text out of radar notes', () => {
+  const longScenario = '保险责任 在本合同保险期间内，我们按以下约定承担保险责任并给付保险金。被保险人以乘客身份乘坐公共交通工具期间遭受意外伤害事故。';
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 403,
+      insured: '爸爸',
+      name: '综合交通意外保险',
+      amount: 0,
+      responsibilities: [
+        {
+          coverageType: '意外保障',
+          scenario: longScenario,
+          payout: '航空意外身故保险金 500000元',
+        },
+      ],
+    }),
+  ]);
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 500000);
+  assert.ok(accident.note.length < 80);
+  assert.doesNotMatch(accident.note, /本合同保险期间|我们按以下约定/u);
+  assert.match(accident.note, /公共交通|航空意外|意外/u);
+});
+
+test('buildFamilyReport keeps same accident liability with different scenarios separate', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 403,
+      insured: '爸爸',
+      name: '综合交通意外保险',
+      amount: 100000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '交通意外身故保险金', scenario: '航空', value: 500000, unit: '元', basis: '航空交通意外保额', productName: '综合交通意外保险' },
+        { coverageType: '意外保障', liability: '交通意外身故保险金', scenario: '轨道交通', value: 300000, unit: '元', basis: '轨道交通意外保额', productName: '综合交通意外保险' },
+      ],
+    }),
+  ]);
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 800000);
+  assert.equal(accident.policyCount, 1);
+});
+
+test('buildFamilyReport counts distinct radar policies without policy ids', () => {
+  const report = buildFamilyReport([
+    makePolicy({ id: '', insured: '妈妈', name: '百万医疗保险', amount: 100000, coverageIndicators: [] }),
+    makePolicy({ id: '', insured: '爸爸', name: '百万医疗保险', amount: 200000, coverageIndicators: [] }),
+  ]);
+
+  const medical = radarScore(report.radar.family, 'medical');
+  assert.equal(medical.amount, 300000);
+  assert.equal(medical.policyCount, 2);
 });
 
 test('buildFamilyReport creates critical illness rows per family member', () => {
@@ -441,6 +931,62 @@ test('buildFamilyReport uses matched rider amount for critical illness indicator
 
   assert.equal(mother.rows.find((row) => row.key === 'critical_first').amount, 100000);
   assert.equal(mother.rows.find((row) => row.key === 'critical_first').amountText, '10万');
+});
+
+test('buildFamilyReport excludes inactive rider plan indicators while keeping active main policy', () => {
+  const riderName = '新华人寿保险股份有限公司i他男性特定疾病保险';
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 36,
+      insured: '冯力',
+      name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+      amount: 60000,
+      firstPremium: 3296,
+      plans: [
+        {
+          role: 'main',
+          name: '畅行万里智赢版两全保险',
+          matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+          amount: 60000,
+          coveragePeriod: '至2068年9月30日零时',
+          status: '有效',
+        },
+        {
+          role: 'rider',
+          name: 'i他男性特定疾病保险',
+          matchedProductName: riderName,
+          amount: 50000,
+          coveragePeriod: '至2025年09月29日',
+          status: '失效',
+        },
+      ],
+      coverageIndicators: [
+        {
+          coverageType: '疾病保障',
+          liability: '防癌/恶性肿瘤(首次给付)',
+          unit: '公式',
+          basis: '基本保险金额',
+          formulaText: '防癌/恶性肿瘤(首次给付) = 基本保险金额/30日',
+          productName: riderName,
+        },
+      ],
+    }),
+  ]);
+
+  const inventoryRow = report.policyInventory.rows.find((row) => row.policyId === 36);
+  assert.equal(inventoryRow.isInactive, false);
+  assert.equal(report.summary.policyCount, 1);
+  assert.equal(radarScore(report.radar.family, 'critical').amount, 0);
+
+  const member = report.criticalIllness.members.find((item) => item.member === '冯力');
+  const row = member.rows.find((item) => item.key === 'specific_disease');
+  assert.equal(row.status, 'inactive');
+  assert.equal(row.amount, 0);
+  assert.equal(row.amountText, '5万');
+  assert.match(row.countText, /基本保险金额/);
+  assert.match(row.conditionText, /对应险种已失效/);
+  assert.equal(row.sourcePolicies[0].productName, riderName);
+  assert.equal(row.sourcePolicies[0].amount, 50000);
 });
 
 test('buildFamilyReport classifies ordinal critical disease payouts as multiple', () => {

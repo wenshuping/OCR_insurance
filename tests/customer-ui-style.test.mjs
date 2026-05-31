@@ -496,6 +496,95 @@ test('family report wealth section separates cash value into a multi-product tre
   assert.doesNotMatch(source, /fill="#FFFFFF"[\s\S]{0,120}stroke=\{item\.color\}/);
 });
 
+test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const packageSource = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+
+  assert.match(familySource, /\bRadarChart\b/);
+  assert.match(familySource, /<svg\b/);
+  assert.match(familySource, /role="img"/);
+  assert.match(familySource, /aria-label/);
+  assert.match(familySource, /全家保障均衡雷达/);
+  assert.match(familySource, /个人保障估算雷达/);
+  assert.match(familySource, /个人保额结构雷达/);
+  assert.match(familySource, /按有效金额压缩比例绘制/);
+  assert.match(familySource, /按家庭目标自动分摊到成员/);
+  assert.match(familySource, /客户未录入家庭目标时/);
+  assert.match(familySource, /Calculator/);
+  assert.match(familySource, /怎么算/);
+  assert.match(familySource, /金额来源/);
+  assert.match(familySource, /score\.amountDetails/);
+  assert.match(familySource, /radarAmountPolicyTitle/);
+  assert.match(familySource, /责任：/);
+  assert.match(familySource, /inactive/);
+  assert.match(familySource, /失效/);
+  assert.match(familySource, /bg-red-50 text-red-700 ring-red-100/);
+  assert.match(familySource, /calculationRowsForScore/);
+  assert.match(familySource, /按有效保障 \/ 系统估算目标计算/);
+  assert.match(familySource, /避免高额责任压低其他维度/);
+  assert.match(familySource, /function radarScoreSummary/);
+  assert.match(familySource, /radarScoreSummary\(score\)/);
+  assert.match(familySource, /FamilyPlanningProfilePanel/);
+  assert.match(familySource, /保障规划版/);
+  assert.match(familySource, /保额结构版/);
+  assert.match(familySource, /家庭年支出/);
+  assert.match(familySource, /onPlanningProfileChange/);
+  assert.match(appSource, /FAMILY_PLANNING_PROFILE_KEY/);
+  assert.match(appSource, /buildFamilyReport\(policies,\s*familyPlanningProfile\)/);
+  assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
+  assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);
+  const familyRadarIndex = familySource.indexOf('<FamilyRadarSection report={report} />');
+  const inventoryIndex = familySource.indexOf('<InventorySection rows={report.policyInventory.rows} />');
+  const memberRadarIndex = familySource.indexOf('<MemberRadarSection report={report} />');
+  const insuredDetailIndex = familySource.indexOf('<InsuredPolicyDetailSection rows={report.policyInventory.rows} />');
+
+  assert.notEqual(familyRadarIndex, -1, 'FamilyRadarSection render call should exist');
+  assert.notEqual(inventoryIndex, -1, 'InventorySection render call should exist');
+  assert.notEqual(memberRadarIndex, -1, 'MemberRadarSection render call should exist');
+  assert.notEqual(insuredDetailIndex, -1, 'InsuredPolicyDetailSection render call should exist');
+  assert.ok(
+    familyRadarIndex < inventoryIndex && inventoryIndex < memberRadarIndex && memberRadarIndex < insuredDetailIndex,
+    'radar sections should render in order: family radar, inventory, member radar, insured detail',
+  );
+  assert.doesNotMatch(packageSource, /recharts|victory|d3|chart\.js|echarts/);
+});
+
+test('family report wealth policies show cashflow table with cash value and keep cash value as line chart only', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  assert.match(source, /function PolicyAnnualCashflowTable/);
+  assert.match(source, /个人现金流明细/);
+  assert.match(source, /领取金额/);
+  assert.match(source, /累计领取/);
+  assert.match(source, /function CashValueTrendChart/);
+  assert.match(source, /buildCashValueTrendSeries/);
+  assert.match(source, /aria-label="现金价值趋势对比图"/);
+  assert.match(source, /data-cash-value-trend-chart/);
+  assert.match(source, /现金价值趋势/);
+  assert.match(source, /现金价值/);
+  assert.match(source, /row\.cashValueTime/);
+  assert.match(source, /formatCashValueTimeTick/);
+  assert.match(source, /现金价值趋势对比图/);
+  assert.match(source, />时间</);
+  assert.match(source, /缺第1-/);
+  assert.match(source, /r=\{index === item\.rows\.length - 1 \? 2\.8 : 1\.7\}/);
+  assert.match(source, /fill=\{item\.color\}/);
+  assert.match(source, /<CashValueTrendChart report=\{report\} \/>/);
+  assert.match(source, /<PolicyAnnualCashflowTable policy=\{policy\} \/>/);
+  const policyCardStart = source.indexOf('function WealthPolicyCard');
+  const policyCardEnd = source.indexOf('export function FamilyReportPage', policyCardStart + 1);
+  assert.notEqual(policyCardStart, -1, 'WealthPolicyCard component should exist');
+  assert.notEqual(policyCardEnd, -1, 'FamilyReportPage component should exist');
+  const policyCardSource = source.slice(policyCardStart, policyCardEnd);
+  assert.doesNotMatch(policyCardSource, /CashValueTrendChart/);
+  assert.doesNotMatch(policyCardSource, /CashValueLineChart/);
+  assert.doesNotMatch(policyCardSource, />现金价值<\/th>/);
+  assert.doesNotMatch(source, /function CashValueLineChart/);
+  assert.doesNotMatch(source, /return row\.policyYear;/);
+  assert.doesNotMatch(source, /row\.calendarYear > 0 \? row\.calendarYear : row\.policyYear/);
+  assert.doesNotMatch(source, /fill="#FFFFFF"[\s\S]{0,120}stroke=\{item\.color\}/);
+});
+
 test('family report export downloads a page-styled image instead of paginated pdf', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
