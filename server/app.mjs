@@ -1223,15 +1223,35 @@ export function createPolicyOcrApp(options = {}) {
   // Initialize cashflow store: use the shared DB if provided, otherwise use an in-memory DB (for tests)
   let cashflowStore;
   let cashValueStore;
+  let cashflowDb;
+  let ownsCashflowDb = false;
   if (options.db) {
-    cashflowStore = createCashflowStore(options.db);
-    cashValueStore = createCashValueStore(options.db);
+    cashflowDb = options.db;
+    cashflowStore = createCashflowStore(cashflowDb);
+    cashValueStore = createCashValueStore(cashflowDb);
   } else {
     const memDb = new DatabaseSync(':memory:');
     // The policy_cashflows table has a FK reference to policies, so ensure a stub exists
     memDb.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+    cashflowDb = memDb;
+    ownsCashflowDb = true;
     cashflowStore = createCashflowStore(memDb);
     cashValueStore = createCashValueStore(memDb);
+  }
+
+  function ensureCashflowPolicyParent(policyId) {
+    const id = Number(policyId);
+    if (!Number.isFinite(id)) return false;
+    if (!cashflowDb) return true;
+    if (ownsCashflowDb) {
+      cashflowDb.prepare('INSERT OR IGNORE INTO policies (id) VALUES (?)').run(id);
+      return true;
+    }
+    try {
+      return Boolean(cashflowDb.prepare('SELECT 1 FROM policies WHERE id = ?').get(id));
+    } catch {
+      return true;
+    }
   }
 
   /**
@@ -1246,7 +1266,9 @@ export function createPolicyOcrApp(options = {}) {
     const scenarioEntries = computeScenarioEntries(selectedIndicators, policy);
     const totalCashflow = cashflowEntries.reduce((sum, e) => sum + e.amount, 0);
 
-    cashflowStore.replaceEntries(policy.id, cashflowEntries);
+    if (!cashflowEntries.length || ensureCashflowPolicyParent(policy.id)) {
+      cashflowStore.replaceEntries(policy.id, cashflowEntries);
+    }
 
     return { cashflowEntries, scenarioEntries, totalCashflow };
   }
@@ -1263,6 +1285,10 @@ export function createPolicyOcrApp(options = {}) {
         console.error('[cashflow] recompute failed for policy', policy.id, err.message);
       }
     }
+  }
+
+  if (options.recomputeCashflowOnStartup !== false) {
+    recomputeAllCashflow();
   }
 
   const app = express();

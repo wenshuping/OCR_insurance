@@ -3612,10 +3612,152 @@ test('policy list returns persisted cash values so real family reports can draw 
       .find((member) => member.member === '温舒萍')
       .policies.find((policy) => Number(policy.policyId) === 500549);
     assert.equal(wealthPolicy.cashValueRows.length, 3);
-    assert.equal(wealthPolicy.cashValueRows[0].calendarYear, 2025);
+    assert.equal(wealthPolicy.cashValueRows[0].calendarYear, 2026);
     assert.equal(report.summary.cashValueTotal, 1296);
   } finally {
     await server.close();
+    db.close();
+  }
+});
+
+test('policy app recomputes cashflow cache on startup for persisted policies', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+  db.prepare('INSERT INTO policies (id) VALUES (?)').run(500700);
+  const app = createPolicyOcrApp({
+    db,
+    state: {
+      users: [{ id: 1, mobile: '13800000000', createdAt: '2026-05-01T00:00:00.000Z' }],
+      sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-05-01T00:01:00.000Z' }],
+      smsCodes: [],
+      policies: [
+        {
+          id: 500700,
+          userId: 1,
+          guestId: '',
+          company: '新华保险',
+          name: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+          applicant: '温舒萍',
+          insured: '温舒萍',
+          insuredBirthday: '1988-12-16',
+          date: '2025-12-22',
+          paymentPeriod: '2年交',
+          coveragePeriod: '至85周岁',
+          amount: 1465,
+          firstPremium: 19600,
+          createdAt: '2026-05-28T17:06:56.018Z',
+          updatedAt: '2026-05-28T19:49:53.416Z',
+          reportStatus: 'ready',
+        },
+      ],
+      pendingScans: [],
+      knowledgeRecords: [],
+      insuranceIndicatorRecords: [
+        {
+          id: 'ind_cashflow_startup_1',
+          company: '新华保险',
+          productName: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+          coverageType: '现金流',
+          liability: '满期生存保险金',
+          value: 100,
+          unit: '%',
+          basis: '基本保额',
+          condition: '保障期满',
+        },
+      ],
+      nextId: 500701,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const list = await jsonFetch(server.baseUrl, '/api/policies', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+
+    assert.equal(list.response.status, 200);
+    assert.equal(list.payload.policies.length, 1);
+    assert.deepEqual(
+      list.payload.policies[0].cashflowEntries.map((entry) => ({
+        year: entry.year,
+        age: entry.age,
+        amount: entry.amount,
+        cumulative: entry.cumulative,
+        liability: entry.liability,
+      })),
+      [
+        {
+          year: 2073,
+          age: 85,
+          amount: 1465,
+          cumulative: 1465,
+          liability: '满期生存保险金',
+        },
+      ],
+    );
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
+test('policy app startup cashflow recompute skips cache writes without a persisted policy parent', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => {
+    errors.push(args);
+  };
+
+  try {
+    createPolicyOcrApp({
+      db,
+      state: {
+        users: [{ id: 1, mobile: '13800000000', createdAt: '2026-05-01T00:00:00.000Z' }],
+        sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-05-01T00:01:00.000Z' }],
+        smsCodes: [],
+        policies: [
+          {
+            id: 500701,
+            userId: 1,
+            guestId: '',
+            company: '新华保险',
+            name: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+            insured: '温舒萍',
+            insuredBirthday: '1988-12-16',
+            date: '2025-12-22',
+            paymentPeriod: '2年交',
+            coveragePeriod: '至85周岁',
+            amount: 1465,
+            firstPremium: 19600,
+            createdAt: '2026-05-28T17:06:56.018Z',
+            updatedAt: '2026-05-28T19:49:53.416Z',
+            reportStatus: 'ready',
+          },
+        ],
+        pendingScans: [],
+        knowledgeRecords: [],
+        insuranceIndicatorRecords: [
+          {
+            id: 'ind_cashflow_startup_2',
+            company: '新华保险',
+            productName: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+            coverageType: '现金流',
+            liability: '满期生存保险金',
+            value: 100,
+            unit: '%',
+            basis: '基本保额',
+            condition: '保障期满',
+          },
+        ],
+        nextId: 500702,
+      },
+    });
+
+    assert.deepEqual(errors, []);
+  } finally {
+    console.error = originalError;
     db.close();
   }
 });

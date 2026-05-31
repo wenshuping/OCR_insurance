@@ -132,7 +132,10 @@ test('sqlite state store can persist after cash values have been saved', async (
 
   state.policies[0].updatedAt = '2026-05-01T00:04:00.000Z';
   await assert.doesNotReject(() => store.persist(state));
-  assert.deepEqual(cashValueStore.getValues(3), []);
+  assert.deepEqual(cashValueStore.getValues(3), [
+    { policyYear: 1, age: 30, cashValue: 8500, source: 'ocr' },
+    { policyYear: 2, age: 31, cashValue: 19200, source: 'ocr' },
+  ]);
 
   store.close();
 });
