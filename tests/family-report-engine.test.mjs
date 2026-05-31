@@ -103,7 +103,7 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.rows.length, 2);
   assert.equal(inventory.rows[0].member, '妈妈');
   assert.equal(inventory.rows[0].policyNumber, '88775671973');
-  assert.equal(inventory.rows[0].typeLabel, '财富/年金');
+  assert.equal(inventory.rows[0].typeLabel, '年金');
   assert.equal(inventory.rows[0].cashValueText, '282');
   assert.equal(inventory.rows[0].dataStatus, '现金价值已识别');
   assert.equal(inventory.rows[1].member, '未识别被保人');
@@ -112,6 +112,20 @@ test('buildPolicyInventory creates top inventory rows and insured detail groups'
   assert.equal(inventory.insuredGroups[0].member, '妈妈');
   assert.equal(inventory.insuredGroups[0].policies[0].beneficiary, '第一顺位');
   assert.equal(inventory.insuredGroups[0].policies[0].totalPremiumText, '196,000');
+});
+
+test('buildPolicyInventory separates whole life wealth from annuity label', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      id: 1,
+      insured: '温舒萍',
+      name: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+      firstPremium: 3000,
+      amount: 24410,
+    }),
+  ]);
+
+  assert.equal(inventory.rows[0].typeLabel, '财富/终身寿');
 });
 
 test('buildPolicyInventory computes total premium from payment years', () => {

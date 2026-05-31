@@ -90,7 +90,10 @@ function policyTypeLabel(policy) {
     }),
   ].filter(Boolean).join(' ');
 
-  if (/(年金|终身寿|增额|分红|万能|两全|满期|生存金|财富|养老)/u.test(text)) return '财富/年金';
+  if (/(万能|万能型|万能险|万能账户|账户价值|最低保证利率|结算利率)/u.test(text)) return '万能账户';
+  if (/(年金|养老|教育金|生存金)/u.test(text)) return '年金';
+  if (/(终身寿|增额|分红|现金价值|财富)/u.test(text)) return '财富/终身寿';
+  if (/(两全|满期)/u.test(text)) return '两全/满期';
   if (/(重疾|重大疾病|轻症|中症|恶性肿瘤|癌)/u.test(text)) return '重疾';
   if (/(意外|伤残|身故|航空|交通)/u.test(text)) return '意外';
   if (/(医疗|住院|门诊|医保|百万医疗|手术)/u.test(text)) return '医疗';
