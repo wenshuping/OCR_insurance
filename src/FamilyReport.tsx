@@ -125,13 +125,13 @@ function calculationRowsForScore(
   if (mode === 'planning') {
     if (!score.target || score.target <= 0) {
       return [
-        { label: '原始金额', value: score.amountText },
+        { label: '金额合计', value: score.amountText },
         { label: '计算结果', value: '目标为0，雷达值按0显示' },
       ];
     }
 
     return [
-      { label: '原始金额', value: score.amountText },
+      { label: '金额合计', value: score.amountText },
       { label: '有效保障', value: score.effectiveAmountText },
       { label: '估算目标', value: score.targetText || formatMoneyWithUnit(score.target) },
       { label: '雷达值', value: `${score.effectiveAmountText} ÷ ${score.targetText || formatMoneyWithUnit(score.target)} ≈ ${score.adequacyText || `${score.score}%`}` },
@@ -145,11 +145,23 @@ function calculationRowsForScore(
   const basisLabel = score.key === 'accident' ? '有效金额' : '原始金额';
 
   return [
-    { label: '原始金额', value: score.amountText },
+    { label: '金额合计', value: score.amountText },
     { label: basisLabel, value: amountText },
     { label: '压缩处理', value: `√${amountText} ÷ √${maxText} × 100` },
     { label: '雷达值', value: `${score.score}/100` },
   ];
+}
+
+function radarAmountSourceDetails(score: RadarSeries['scores'][number]) {
+  return (score.amountDetails || []).filter((detail) => Number(detail.amount || 0) > 0);
+}
+
+function radarAmountSourceTitle(detail: ReturnType<typeof radarAmountSourceDetails>[number]) {
+  const parts = [detail.label, detail.liability]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .filter((part, index, all) => all.indexOf(part) === index);
+  return parts.join(' · ') || '金额来源';
 }
 
 function profileValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
@@ -445,11 +457,11 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                     onClick={() => setExpandedCalculations((current) => ({ ...current, [member.name]: !current[member.name] }))}
                     className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600 active:bg-slate-200"
                     aria-expanded={Boolean(expandedCalculations[member.name])}
-                    aria-label={`${member.name}雷达值怎么算`}
-                    title="雷达值怎么算"
+                    aria-label={`${member.name}金额和雷达值怎么算`}
+                    title="金额来源和雷达值怎么算"
                   >
                     <Calculator size={13} />
-                    <span>怎么算</span>
+                    <span>金额怎么算</span>
                   </button>
                 </div>
               </div>
@@ -470,23 +482,46 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
               {expandedCalculations[member.name] ? (
                 <div className="mt-3 rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
                   <p className="mb-2 text-[11px] font-black text-[#7890AA]">
-                    {planningMode ? '按有效保障 / 系统估算目标计算' : '按有效金额开平方后对比，避免高额责任压低其他维度'}
+                    {planningMode ? '先看金额来源，再按有效保障 / 系统估算目标计算' : '先看金额来源，再按有效金额开平方后对比，避免高额责任压低其他维度'}
                   </p>
                   <div className="grid gap-2 md:grid-cols-2">
-                    {member.scores.map((score) => (
-                      <div key={score.key} className="min-w-0 rounded-lg bg-white px-3 py-2 ring-1 ring-[#E1EAF5]">
-                        <div className="mb-1 flex items-center justify-between gap-2">
-                          <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
-                          <p className="shrink-0 text-xs font-black text-[#0B72B9]">{planningMode ? (score.adequacyText || `${score.score}%`) : `${score.score}/100`}</p>
-                        </div>
-                        {calculationRowsForScore(score, member, report.radar.mode).map((row) => (
-                          <div key={row.label} className="flex min-w-0 justify-between gap-2 py-0.5 text-[11px] font-semibold leading-4">
-                            <span className="shrink-0 text-[#7890AA]">{row.label}</span>
-                            <span className="min-w-0 break-words text-right text-[#475569]">{row.value}</span>
+                    {member.scores.map((score) => {
+                      const amountDetails = radarAmountSourceDetails(score);
+                      const visibleDetails = amountDetails.slice(0, 3);
+                      const hiddenDetailCount = amountDetails.length - visibleDetails.length;
+                      return (
+                        <div key={score.key} className="min-w-0 rounded-lg bg-white px-3 py-2 ring-1 ring-[#E1EAF5]">
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
+                            <p className="shrink-0 text-xs font-black text-[#0B72B9]">{planningMode ? (score.adequacyText || `${score.score}%`) : `${score.score}/100`}</p>
                           </div>
-                        ))}
-                      </div>
-                    ))}
+                          <div className="mb-1.5 rounded-md bg-slate-50 px-2 py-1.5">
+                            <p className="mb-1 text-[11px] font-black text-[#7890AA]">金额来源</p>
+                            {visibleDetails.length ? (
+                              <div className="space-y-1">
+                                {visibleDetails.map((detail) => (
+                                  <div key={`${detail.sourceKey || detail.policyId || detail.label}-${detail.liability}-${detail.amountText}`} className="min-w-0">
+                                    <p className="break-words text-[11px] font-bold leading-4 text-[#0F172A]">{radarAmountSourceTitle(detail)}</p>
+                                    <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{detail.calculationText}</p>
+                                  </div>
+                                ))}
+                                {hiddenDetailCount > 0 ? (
+                                  <p className="text-[11px] font-semibold text-[#7890AA]">另有{hiddenDetailCount}项已计入合计</p>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{score.note}</p>
+                            )}
+                          </div>
+                          {calculationRowsForScore(score, member, report.radar.mode).map((row) => (
+                            <div key={row.label} className="flex min-w-0 justify-between gap-2 py-0.5 text-[11px] font-semibold leading-4">
+                              <span className="shrink-0 text-[#7890AA]">{row.label}</span>
+                              <span className="min-w-0 break-words text-right text-[#475569]">{row.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}

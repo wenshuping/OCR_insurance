@@ -273,6 +273,57 @@ function resolveIndicatorAmount(indicator, policy) {
   return 0;
 }
 
+function indicatorAmountCalculationText(indicator, policy, amount) {
+  const numericAmount = asNumber(amount);
+  const value = finiteNumber(indicator?.value);
+  const unit = String(indicator?.unit || '').normalize('NFKC').trim();
+  const basis = String(indicator?.basis || '').normalize('NFKC').trim();
+  const text = indicatorText(indicator).normalize('NFKC');
+  const baseAmount = indicatorBaseAmount(indicator, policy);
+  const baseAmountPattern = /基本(?:保险金额|保额)/u;
+  const baseLabel = baseAmountPattern.test(basis) || baseAmountPattern.test(text) ? '基本保险金额' : (basis || '基准金额');
+
+  if (value !== null && unit === '%' && baseAmountPattern.test(basis)) {
+    return `${baseLabel}${formatRadarMoney(baseAmount)} × ${formatNumberText(value)}% = ${formatRadarMoney(numericAmount)}`;
+  }
+
+  if (value !== null && unit === '倍' && baseAmountPattern.test(basis)) {
+    return `${baseLabel}${formatRadarMoney(baseAmount)} × ${formatNumberText(value)}倍 = ${formatRadarMoney(numericAmount)}`;
+  }
+
+  const formulaPercentMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*%/u);
+  if (formulaPercentMatch) {
+    return `基本保险金额${formatRadarMoney(baseAmount)} × ${formatNumberText(asNumber(formulaPercentMatch[1]))}% = ${formatRadarMoney(numericAmount)}`;
+  }
+
+  const formulaMultipleMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍/u);
+  if (formulaMultipleMatch) {
+    return `基本保险金额${formatRadarMoney(baseAmount)} × ${formatNumberText(asNumber(formulaMultipleMatch[1]))}倍 = ${formatRadarMoney(numericAmount)}`;
+  }
+
+  if (value !== null && /^(?:元|圆)$/u.test(unit)) {
+    return `识别金额${formatRadarMoney(numericAmount)}`;
+  }
+
+  const wanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*万/u);
+  if (wanMatch) {
+    return `文本识别${formatNumberText(asNumber(wanMatch[1]))}万 = ${formatRadarMoney(numericAmount)}`;
+  }
+
+  const yuanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:元|圆)/u);
+  if (yuanMatch) {
+    return `文本识别${formatRadarMoney(numericAmount)}`;
+  }
+
+  if (baseAmountPattern.test(text)) {
+    return `基本保险金额${formatRadarMoney(baseAmount)} = ${formatRadarMoney(numericAmount)}`;
+  }
+
+  const formulaText = String(indicator?.formulaText || '').trim();
+  if (formulaText) return `${formulaText} = ${formatRadarMoney(numericAmount)}`;
+  return `按识别责任金额合计 = ${formatRadarMoney(numericAmount)}`;
+}
+
 function amountDisplay(amount, fallback = '') {
   const numericAmount = asNumber(amount);
   if (numericAmount >= 10000) return `${formatNumberText(numericAmount / 10000)}万`;
@@ -334,6 +385,9 @@ function applyIndicatorToRow(row, indicator, policy) {
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || ''),
     formulaText,
+    amount,
+    amountText: formatRadarMoney(amount),
+    calculationText: indicatorAmountCalculationText(indicator, policy, amount),
   });
   return amount;
 }
@@ -380,6 +434,9 @@ function applyFallbackPolicyToRow(row, policy) {
     productName: String(policy?.name || ''),
     liability: '重疾首次给付',
     formulaText: '按保单基础保额估算',
+    amount,
+    amountText: formatRadarMoney(amount),
+    calculationText: `保单基础保额${formatRadarMoney(amount)} = ${formatRadarMoney(amount)}`,
   });
 }
 
@@ -610,6 +667,9 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
     productName: String(indicator?.productName || policy?.name || ''),
     liability: String(indicator?.liability || indicator?.scenario || ''),
     formulaText,
+    amount,
+    amountText: formatRadarMoney(amount),
+    calculationText: indicatorAmountCalculationText(indicator, policy, amount),
   });
 }
 
@@ -1220,8 +1280,30 @@ function accidentScenarioWeight(definitions) {
   return weights.length ? Math.max(...weights) : 1;
 }
 
+function radarAmountDetailFromPart(part) {
+  const amount = asNumber(part?.amount);
+  if (amount <= 0) return null;
+  const productName = String(part?.productName || '').trim();
+  const liability = String(part?.liability || '').trim();
+  const label = compactRadarLabel(part?.label || productName || liability, '已识别责任');
+  const calculationText = String(part?.calculationText || '').trim();
+  return {
+    sourceKey: part?.sourceKey,
+    policyId: part?.policyId,
+    productName,
+    liability,
+    label,
+    amount,
+    amountText: formatRadarMoney(amount),
+    calculationText: calculationText || `${label} = ${formatRadarMoney(amount)}`,
+  };
+}
+
 function radarAmountResult(amount, parts, fallbackNote = '') {
   const amountParts = parts.filter((part) => asNumber(part.amount) > 0);
+  const amountDetails = amountParts
+    .map(radarAmountDetailFromPart)
+    .filter(Boolean);
   const effectiveAmount = amount > 0
     ? (
       amountParts.length
@@ -1241,6 +1323,7 @@ function radarAmountResult(amount, parts, fallbackNote = '') {
     effectiveAmount,
     policyCount: uniquePolicyCount(parts),
     note,
+    amountDetails,
   };
 }
 
@@ -1254,7 +1337,10 @@ function criticalRadarAmount(policies) {
       sourceKey: sourcePolicyKey(source),
       policyId: source.policyId,
       label: source.productName || source.liability || '重疾保额',
-      amount: 0,
+      productName: source.productName,
+      liability: source.liability,
+      amount: source.amount,
+      calculationText: source.calculationText || source.formulaText,
     }))
     : [];
   return radarAmountResult(
@@ -1286,9 +1372,12 @@ function accidentIndicatorRadarAmount(indicator, policy) {
     ].join(':scenario:'),
     policyId: policy?.id,
     label: compactRadarLabel(indicator?.liability || indicator?.scenario, definitions[0]?.label || '意外保障'),
+    productName: String(indicator?.productName || policy?.name || ''),
+    liability: String(indicator?.liability || indicator?.scenario || ''),
     amount,
     effectiveAmount: amount * weight,
     weight,
+    calculationText: indicatorAmountCalculationText(indicator, policy, amount),
   };
 }
 
@@ -1339,12 +1428,32 @@ function medicalRadarAmount(policies) {
         continue;
       }
       const amount = indicatorAmountForPolicy(indicator, policy);
-      if (amount > 0) parts.push({ sourceKey: policySourceKey(policy), policyId: policy?.id, label: String(indicator?.liability || '医疗额度'), amount });
+      if (amount > 0) {
+        parts.push({
+          sourceKey: policySourceKey(policy),
+          policyId: policy?.id,
+          label: String(indicator?.liability || '医疗额度'),
+          productName: String(indicator?.productName || policy?.name || ''),
+          liability: String(indicator?.liability || ''),
+          amount,
+          calculationText: indicatorAmountCalculationText(indicator, policy, amount),
+        });
+      }
     }
     const sourceKey = policySourceKey(policy);
     if (!parts.some((part) => part.sourceKey === sourceKey) && /(医疗|住院|门诊|报销|百万医疗|手术|医疗费用)/u.test(radarPolicyText(policy))) {
       const amount = asNumber(policy?.amount);
-      if (amount > 0) parts.push({ sourceKey, policyId: policy?.id, label: '医疗额度', amount });
+      if (amount > 0) {
+        parts.push({
+          sourceKey,
+          policyId: policy?.id,
+          label: '医疗额度',
+          productName: String(policy?.name || ''),
+          liability: '医疗额度',
+          amount,
+          calculationText: `保单基础保额${formatRadarMoney(amount)} = ${formatRadarMoney(amount)}`,
+        });
+      }
     }
   }
   return radarAmountResult(amountPartsTotal(parts), parts, hasFormula ? '公式型待确认' : '未识别到可落地金额');
@@ -1365,13 +1474,33 @@ function lifeRadarAmount(policies) {
         continue;
       }
       const amount = indicatorAmountForPolicy(indicator, policy);
-      if (amount > 0) parts.push({ sourceKey: policySourceKey(policy), policyId: policy?.id, label: String(indicator?.liability || '寿险保额'), amount });
+      if (amount > 0) {
+        parts.push({
+          sourceKey: policySourceKey(policy),
+          policyId: policy?.id,
+          label: String(indicator?.liability || '寿险保额'),
+          productName: String(indicator?.productName || policy?.name || ''),
+          liability: String(indicator?.liability || ''),
+          amount,
+          calculationText: indicatorAmountCalculationText(indicator, policy, amount),
+        });
+      }
     }
     const text = radarPolicyText(policy);
     const sourceKey = policySourceKey(policy);
     if (!parts.some((part) => part.sourceKey === sourceKey) && /(终身寿|人寿|寿险|身故|全残|护理)/u.test(text) && !/(重疾|意外)/u.test(text)) {
       const amount = asNumber(policy?.amount);
-      if (amount > 0) parts.push({ sourceKey, policyId: policy?.id, label: '寿险保额', amount });
+      if (amount > 0) {
+        parts.push({
+          sourceKey,
+          policyId: policy?.id,
+          label: '寿险保额',
+          productName: String(policy?.name || ''),
+          liability: '寿险保额',
+          amount,
+          calculationText: `保单基础保额${formatRadarMoney(amount)} = ${formatRadarMoney(amount)}`,
+        });
+      }
     }
   }
   return radarAmountResult(amountPartsTotal(parts), parts, hasFormula ? '公式型待确认' : '未识别到可落地金额');
@@ -1391,11 +1520,42 @@ function wealthRadarAmount(policies) {
   const futurePayout = policies.reduce((total, policy) => total + futurePayoutTotal(policy), 0);
   const futurePayoutPresent = policies.reduce((total, policy) => total + futurePayoutPresentValue(policy), 0);
   const amount = cashValue + futurePayout;
+  const amountDetails = [];
+  for (const policy of policies) {
+    const sourceKey = policySourceKey(policy);
+    const productName = String(policy?.name || '');
+    const policyCashValue = latestCashValue(policy)?.cashValue || 0;
+    if (policyCashValue > 0) {
+      amountDetails.push(radarAmountDetailFromPart({
+        sourceKey: `${sourceKey}:cash-value`,
+        policyId: policy?.id,
+        productName,
+        label: productName || '现金价值',
+        liability: '现金价值',
+        amount: policyCashValue,
+        calculationText: `最新现金价值 = ${formatRadarMoney(policyCashValue)}`,
+      }));
+    }
+
+    const policyFuturePayout = futurePayoutTotal(policy);
+    if (policyFuturePayout > 0) {
+      amountDetails.push(radarAmountDetailFromPart({
+        sourceKey: `${sourceKey}:future-payout`,
+        policyId: policy?.id,
+        productName,
+        label: productName || '未来领取',
+        liability: '未来领取',
+        amount: policyFuturePayout,
+        calculationText: `未来确定领取合计 = ${formatRadarMoney(policyFuturePayout)}`,
+      }));
+    }
+  }
   return {
     amount,
     effectiveAmount: cashValue + futurePayoutPresent,
     policyCount: policies.filter((policy) => (latestCashValue(policy)?.cashValue || 0) > 0 || futurePayoutTotal(policy) > 0).length,
     note: amount > 0 ? `现金价值${formatNumberText(cashValue)}，未来领取${formatNumberText(futurePayout)}` : '未识别到可落地金额',
+    amountDetails: amountDetails.filter(Boolean),
   };
 }
 
@@ -1421,6 +1581,7 @@ function buildRadarScores(policies) {
       effectiveAmountText: formatRadarMoney(effectiveAmount),
       policyCount: result.policyCount,
       note: result.note,
+      amountDetails: result.amountDetails || [],
     };
   });
 }

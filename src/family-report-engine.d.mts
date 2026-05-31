@@ -53,6 +53,9 @@ export type FamilyProtectionSourcePolicy = {
   productName: string;
   liability: string;
   formulaText: string;
+  amount?: number;
+  amountText?: string;
+  calculationText?: string;
 };
 
 export type FamilyProtectionRow = {
@@ -160,6 +163,17 @@ export type FamilyRadarDimension = {
   label: string;
 };
 
+export type FamilyRadarAmountDetail = {
+  sourceKey?: string;
+  policyId?: number | string | null | undefined;
+  productName: string;
+  liability: string;
+  label: string;
+  amount: number;
+  amountText: string;
+  calculationText: string;
+};
+
 export type FamilyPlanningProfile = {
   annualExpense?: number;
   debt?: number;
@@ -187,6 +201,7 @@ export type FamilyRadarScore = {
   effectiveAmountText: string;
   policyCount: number;
   note: string;
+  amountDetails: FamilyRadarAmountDetail[];
   target?: number;
   targetText?: string;
   gap?: number;

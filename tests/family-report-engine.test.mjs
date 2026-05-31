@@ -303,8 +303,32 @@ test('buildFamilyReport creates structure radar with compressed display scores a
   assert.equal(radarScore(report.radar.family, 'accident').score, 50);
   assert.equal(radarScore(report.radar.family, 'medical').score, 32);
   assert.equal(radarScore(report.radar.family, 'wealth').score, 45);
+  assert.match(radarScore(report.radar.family, 'critical').amountDetails[0].calculationText, /基本保险金额500,000元 × 100% = 500,000元/);
   assert.match(radarScore(report.radar.family, 'wealth').note, /现金价值150,000/);
   assert.match(radarScore(report.radar.family, 'wealth').note, /未来领取50,000/);
+  assert.match(radarScore(report.radar.family, 'wealth').amountDetails[0].calculationText, /最新现金价值 = 150,000元/);
+});
+
+test('buildFamilyReport explains the raw critical radar amount before chart scoring', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 106,
+      insured: '爸爸',
+      name: '新华健康无忧重大疾病保险',
+      amount: 60312,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '新华健康无忧重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  const critical = radarScore(report.radar.family, 'critical');
+  assert.equal(critical.amount, 60312);
+  assert.equal(critical.amountText, '60,312元');
+  assert.equal(critical.amountDetails.length, 1);
+  assert.equal(critical.amountDetails[0].amount, 60312);
+  assert.equal(critical.amountDetails[0].liability, '重大疾病保险金');
+  assert.match(critical.amountDetails[0].calculationText, /基本保险金额60,312元 × 100% = 60,312元/);
 });
 
 test('buildFamilyReport keeps high accident amounts from flattening other structure dimensions', () => {
