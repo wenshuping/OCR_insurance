@@ -352,7 +352,7 @@ function FamilyRadarSection({ report }: { report: FamilyReport }) {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-black text-white">{planningMode ? '全家保障充足率雷达' : '全家保额结构雷达'}</h3>
         <span className="text-[11px] font-bold leading-4 text-white/75">
-          {planningMode ? '按当前有效保障/家庭目标绘制，超出部分单独显示。' : '按本家庭内部金额比例绘制，非保障充足率。'}
+          {planningMode ? '按当前有效保障/家庭目标绘制，超出部分单独显示。' : '按有效金额压缩比例绘制，避免高额责任压低其他维度。'}
         </span>
       </div>
       <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr]">
@@ -386,7 +386,7 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
     <Section title={planningMode ? '个人保障估算雷达' : '个人保额结构雷达'}>
       <div className="rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
         <p className="mb-3 text-xs font-bold leading-5 text-[#7890AA]">
-          {planningMode ? '按家庭目标自动分摊到成员，仅供初步估算；未要求客户录入个人收入、负债或资产。' : '客户未录入家庭目标时，仅按各成员已识别保单金额展示，非保障充足率。'}
+          {planningMode ? '按家庭目标自动分摊到成员，仅供初步估算；未要求客户录入个人收入、负债或资产。' : '客户未录入家庭目标时，按有效金额压缩比例展示个人结构，非保障充足率。'}
         </p>
         <div className="grid gap-3 lg:grid-cols-2">
           {members.map((member, index) => (

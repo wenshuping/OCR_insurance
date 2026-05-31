@@ -241,7 +241,7 @@ test('buildFamilyReport includes summary and inventory sections', () => {
   assert.equal(report.policyInventory.insuredGroups[0].member, '爸爸');
 });
 
-test('buildFamilyReport creates amount-based family radar using real amounts', () => {
+test('buildFamilyReport creates structure radar with compressed display scores and real amounts', () => {
   const report = buildFamilyReport([
     makePolicy({
       id: 101,
@@ -299,12 +299,39 @@ test('buildFamilyReport creates amount-based family radar using real amounts', (
   assert.equal(radarScore(report.radar.family, 'life').amount, 1000000);
   assert.equal(radarScore(report.radar.family, 'wealth').amount, 200000);
   assert.equal(radarScore(report.radar.family, 'life').score, 100);
-  assert.equal(radarScore(report.radar.family, 'critical').score, 50);
-  assert.equal(radarScore(report.radar.family, 'accident').score, 25);
-  assert.equal(radarScore(report.radar.family, 'medical').score, 10);
-  assert.equal(radarScore(report.radar.family, 'wealth').score, 20);
+  assert.equal(radarScore(report.radar.family, 'critical').score, 71);
+  assert.equal(radarScore(report.radar.family, 'accident').score, 50);
+  assert.equal(radarScore(report.radar.family, 'medical').score, 32);
+  assert.equal(radarScore(report.radar.family, 'wealth').score, 45);
   assert.match(radarScore(report.radar.family, 'wealth').note, /现金价值150,000/);
   assert.match(radarScore(report.radar.family, 'wealth').note, /未来领取50,000/);
+});
+
+test('buildFamilyReport keeps high accident amounts from flattening other structure dimensions', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 106,
+      insured: '爸爸',
+      name: '高额意外保险',
+      amount: 10000000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 10000000, unit: '元', basis: '意外身故保额', productName: '高额意外保险' },
+      ],
+    }),
+    makePolicy({
+      id: 107,
+      insured: '妈妈',
+      name: '重大疾病保险',
+      amount: 500000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  assert.equal(radarScore(report.radar.family, 'accident').score, 100);
+  assert.equal(radarScore(report.radar.family, 'critical').score, 22);
+  assert.equal(radarScore(report.radar.family, 'critical').amount, 500000);
 });
 
 test('buildFamilyReport switches family radar to target adequacy when planning profile is provided', () => {

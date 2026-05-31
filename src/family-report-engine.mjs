@@ -1431,11 +1431,18 @@ function normalizeFamilyScores(scores, planningProfile = null) {
     return normalizeScoresAgainstTargets(scores, targets, 'family');
   }
 
-  const maxAmount = Math.max(0, ...scores.map((score) => score.amount));
+  const maxAmount = Math.max(0, ...scores.map(structureScoreBase));
   return scores.map((score) => ({
     ...score,
-    score: maxAmount > 0 ? Math.round((score.amount / maxAmount) * 100) : 0,
+    score: maxAmount > 0 ? Math.round((structureScoreBase(score) / maxAmount) * 100) : 0,
   }));
+}
+
+function structureScoreBase(score) {
+  const amount = score.key === 'accident'
+    ? asNumber(score.effectiveAmount ?? score.amount)
+    : asNumber(score.amount);
+  return Math.sqrt(Math.max(0, amount));
 }
 
 function normalizeScoresAgainstTargets(scores, targets, targetSource) {
@@ -1465,10 +1472,10 @@ function normalizeMemberStructureScores(memberSeries) {
   return memberSeries.map((series) => ({
     ...series,
     scores: series.scores.map((score) => {
-      const maxAmount = Math.max(0, ...series.scores.map((item) => item.amount));
+      const maxAmount = Math.max(0, ...series.scores.map(structureScoreBase));
       return {
         ...score,
-        score: maxAmount > 0 ? Math.round((score.amount / maxAmount) * 100) : 0,
+        score: maxAmount > 0 ? Math.round((structureScoreBase(score) / maxAmount) * 100) : 0,
       };
     }),
   }));
