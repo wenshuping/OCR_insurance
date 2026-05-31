@@ -360,6 +360,7 @@ test('family report labels match the agreed report structure', () => {
 
 test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const packageSource = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 
   assert.match(familySource, /\bRadarChart\b/);
@@ -371,6 +372,13 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /雷达图按本家庭内部金额比例绘制，非行业达标分。/);
   assert.match(familySource, /function radarScoreSummary/);
   assert.match(familySource, /radarScoreSummary\(score\)/);
+  assert.match(familySource, /FamilyPlanningProfilePanel/);
+  assert.match(familySource, /保障规划版/);
+  assert.match(familySource, /保额结构版/);
+  assert.match(familySource, /家庭年支出/);
+  assert.match(familySource, /onPlanningProfileChange/);
+  assert.match(appSource, /FAMILY_PLANNING_PROFILE_KEY/);
+  assert.match(appSource, /buildFamilyReport\(policies,\s*familyPlanningProfile\)/);
   assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
   assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);
   const familyRadarIndex = familySource.indexOf('<FamilyRadarSection report={report} />');

@@ -1035,8 +1035,73 @@ const RADAR_DIMENSIONS = [
   { key: 'wealth', label: '财富' },
 ];
 
+const FAMILY_PLANNING_DEFAULTS = {
+  criticalRecoveryYears: 3,
+  criticalRecoveryReserve: 200000,
+  medicalTarget: 3000000,
+  accidentExpenseYears: 5,
+  lifeExpenseYears: 10,
+  wealthDiscountRate: 0.03,
+};
+
+const ACCIDENT_RADAR_WEIGHTS = {
+  general_accident: 1,
+  sudden_death: 1,
+  driving: 0.5,
+  traffic: 0.3,
+  public_transport: 0.3,
+  rail_ship: 0.3,
+  aviation: 0.2,
+};
+
 function formatRadarMoney(value) {
   return `${formatNumberText(value)}元`;
+}
+
+function formatPercentText(value) {
+  return `${Math.round(asNumber(value))}%`;
+}
+
+function planningNumber(value) {
+  return Math.max(0, asNumber(value));
+}
+
+function normalizeFamilyPlanningProfile(profile = {}) {
+  return {
+    annualExpense: planningNumber(profile?.annualExpense),
+    debt: planningNumber(profile?.debt),
+    educationGoal: planningNumber(profile?.educationGoal),
+    retirementGoal: planningNumber(profile?.retirementGoal),
+    availableAssets: planningNumber(profile?.availableAssets),
+  };
+}
+
+function hasFamilyPlanningProfile(profile = {}) {
+  return Object.values(normalizeFamilyPlanningProfile(profile)).some((value) => value > 0);
+}
+
+function familyPlanningTargets(profile = {}) {
+  const normalized = normalizeFamilyPlanningProfile(profile);
+  const annualExpense = normalized.annualExpense;
+  const debt = normalized.debt;
+  const educationGoal = normalized.educationGoal;
+  const retirementGoal = normalized.retirementGoal;
+  const availableAssets = normalized.availableAssets;
+
+  return {
+    critical: annualExpense * FAMILY_PLANNING_DEFAULTS.criticalRecoveryYears + FAMILY_PLANNING_DEFAULTS.criticalRecoveryReserve,
+    medical: FAMILY_PLANNING_DEFAULTS.medicalTarget,
+    accident: Math.max(
+      annualExpense * FAMILY_PLANNING_DEFAULTS.accidentExpenseYears,
+      debt + annualExpense * FAMILY_PLANNING_DEFAULTS.accidentExpenseYears - availableAssets,
+      0,
+    ),
+    life: Math.max(
+      debt + educationGoal + annualExpense * FAMILY_PLANNING_DEFAULTS.lifeExpenseYears - availableAssets,
+      0,
+    ),
+    wealth: Math.max(educationGoal + retirementGoal, 0),
+  };
 }
 
 const fallbackPolicySourceKeys = new WeakMap();
@@ -1113,8 +1178,22 @@ function compactRadarLabel(value, fallback = '已识别责任') {
   return firstPhrase;
 }
 
+function accidentScenarioWeight(definitions) {
+  const weights = definitions
+    .map((definition) => ACCIDENT_RADAR_WEIGHTS[definition.key] || 0)
+    .filter((weight) => weight > 0);
+  return weights.length ? Math.max(...weights) : 1;
+}
+
 function radarAmountResult(amount, parts, fallbackNote = '') {
   const amountParts = parts.filter((part) => asNumber(part.amount) > 0);
+  const effectiveAmount = amount > 0
+    ? (
+      amountParts.length
+        ? amountParts.reduce((total, part) => total + asNumber(part.effectiveAmount ?? part.amount), 0)
+        : amount
+    )
+    : 0;
   const note = amount > 0
     ? (
       amountParts.length
@@ -1124,6 +1203,7 @@ function radarAmountResult(amount, parts, fallbackNote = '') {
     : fallbackNote || '未识别到可落地金额';
   return {
     amount,
+    effectiveAmount,
     policyCount: uniquePolicyCount(parts),
     note,
   };
@@ -1159,6 +1239,7 @@ function accidentIndicatorRadarAmount(indicator, policy) {
 
   const amount = indicatorAmountForPolicy(indicator, policy);
   if (amount <= 0) return null;
+  const weight = accidentScenarioWeight(definitions);
 
   return {
     sourceKey: policySourceKey(policy),
@@ -1171,6 +1252,8 @@ function accidentIndicatorRadarAmount(indicator, policy) {
     policyId: policy?.id,
     label: compactRadarLabel(indicator?.liability || indicator?.scenario, definitions[0]?.label || '意外保障'),
     amount,
+    effectiveAmount: amount * weight,
+    weight,
   };
 }
 
@@ -1259,12 +1342,23 @@ function lifeRadarAmount(policies) {
   return radarAmountResult(amountPartsTotal(parts), parts, hasFormula ? '公式型待确认' : '未识别到可落地金额');
 }
 
+function futurePayoutPresentValue(policy, discountRate = FAMILY_PLANNING_DEFAULTS.wealthDiscountRate) {
+  const currentYear = new Date().getFullYear();
+  return cashflowRows(policy).reduce((total, row) => {
+    const years = Math.max(0, asNumber(row.year) - currentYear);
+    const divisor = (1 + discountRate) ** years;
+    return total + (asNumber(row.amount) / divisor);
+  }, 0);
+}
+
 function wealthRadarAmount(policies) {
   const cashValue = policies.reduce((total, policy) => total + (latestCashValue(policy)?.cashValue || 0), 0);
   const futurePayout = policies.reduce((total, policy) => total + futurePayoutTotal(policy), 0);
+  const futurePayoutPresent = policies.reduce((total, policy) => total + futurePayoutPresentValue(policy), 0);
   const amount = cashValue + futurePayout;
   return {
     amount,
+    effectiveAmount: cashValue + futurePayoutPresent,
     policyCount: policies.filter((policy) => (latestCashValue(policy)?.cashValue || 0) > 0 || futurePayoutTotal(policy) > 0).length,
     note: amount > 0 ? `现金价值${formatNumberText(cashValue)}，未来领取${formatNumberText(futurePayout)}` : '未识别到可落地金额',
   };
@@ -1281,19 +1375,45 @@ function radarAmountForDimension(policies, key) {
 function buildRadarScores(policies) {
   return RADAR_DIMENSIONS.map((dimension) => {
     const result = radarAmountForDimension(policies, dimension.key);
+    const effectiveAmount = asNumber(result.effectiveAmount ?? result.amount);
     return {
       key: dimension.key,
       label: dimension.label,
       amount: result.amount,
+      effectiveAmount,
       score: 0,
       amountText: formatRadarMoney(result.amount),
+      effectiveAmountText: formatRadarMoney(effectiveAmount),
       policyCount: result.policyCount,
       note: result.note,
     };
   });
 }
 
-function normalizeFamilyScores(scores) {
+function normalizeFamilyScores(scores, planningProfile = null) {
+  if (hasFamilyPlanningProfile(planningProfile)) {
+    const targets = familyPlanningTargets(planningProfile);
+    return scores.map((score) => {
+      const target = asNumber(targets[score.key]);
+      const effectiveAmount = asNumber(score.effectiveAmount ?? score.amount);
+      const adequacyRate = target > 0 ? (effectiveAmount / target) * 100 : 0;
+      const gap = target > 0 ? Math.max(target - effectiveAmount, 0) : 0;
+      const over = target > 0 ? Math.max(effectiveAmount - target, 0) : 0;
+      return {
+        ...score,
+        target,
+        targetText: formatRadarMoney(target),
+        gap,
+        gapText: formatRadarMoney(gap),
+        over,
+        overText: formatRadarMoney(over),
+        adequacyRate,
+        adequacyText: formatPercentText(adequacyRate),
+        score: target > 0 ? Math.min(Math.round(adequacyRate), 100) : 0,
+      };
+    });
+  }
+
   const maxAmount = Math.max(0, ...scores.map((score) => score.amount));
   return scores.map((score) => ({
     ...score,
@@ -1349,11 +1469,13 @@ function selectDisplayedRadarMembers(memberSeries) {
   };
 }
 
-export function buildFamilyRadarReport(policies = []) {
+export function buildFamilyRadarReport(policies = [], planningProfile = null) {
   const familyScores = buildRadarScores(policies);
+  const normalizedPlanningProfile = normalizeFamilyPlanningProfile(planningProfile);
+  const planningEnabled = hasFamilyPlanningProfile(normalizedPlanningProfile);
   const family = {
     name: '全家',
-    scores: normalizeFamilyScores(familyScores),
+    scores: normalizeFamilyScores(familyScores, planningEnabled ? normalizedPlanningProfile : null),
     totalAmount: familyScores.reduce((total, score) => total + score.amount, 0),
     notes: familyScores.some((score) => score.amount <= 0)
       ? [`缺口维度: ${familyScores.filter((score) => score.amount <= 0).map((score) => score.label).join('、')}`]
@@ -1372,6 +1494,10 @@ export function buildFamilyRadarReport(policies = []) {
 
   return {
     dimensions: RADAR_DIMENSIONS,
+    mode: planningEnabled ? 'planning' : 'structure',
+    planningProfile: planningEnabled ? normalizedPlanningProfile : null,
+    planningTargets: planningEnabled ? familyPlanningTargets(normalizedPlanningProfile) : null,
+    assumptions: FAMILY_PLANNING_DEFAULTS,
     family,
     members,
     hiddenMembers,
@@ -1420,14 +1546,14 @@ export function buildPolicyInventory(policies = []) {
   };
 }
 
-export function buildFamilyReport(policies = []) {
+export function buildFamilyReport(policies = [], planningProfile = null) {
   return {
     summary: buildFamilyReportSummary(policies),
     policyInventory: buildPolicyInventory(policies),
     criticalIllness: buildCriticalIllnessSection(policies),
     accident: buildAccidentSection(policies),
     wealth: buildWealthSection(policies),
-    radar: buildFamilyRadarReport(policies),
+    radar: buildFamilyRadarReport(policies, planningProfile),
     appendix: {
       policies: policies.map((policy) => ({
         policyId: policy.id,

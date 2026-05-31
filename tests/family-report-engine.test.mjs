@@ -307,6 +307,116 @@ test('buildFamilyReport creates amount-based family radar using real amounts', (
   assert.match(radarScore(report.radar.family, 'wealth').note, /未来领取50,000/);
 });
 
+test('buildFamilyReport switches family radar to target adequacy when planning profile is provided', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 111,
+      insured: '妈妈',
+      name: '重大疾病保险',
+      amount: 500000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '重大疾病保险' },
+      ],
+    }),
+    makePolicy({
+      id: 112,
+      insured: '爸爸',
+      name: '综合意外保险',
+      amount: 250000,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 250000, unit: '元', basis: '意外身故保额', productName: '综合意外保险' },
+      ],
+    }),
+    makePolicy({
+      id: 113,
+      insured: '孩子',
+      name: '百万医疗保险',
+      amount: 0,
+      coverageIndicators: [
+        { coverageType: '医疗保障', liability: '住院医疗费用保险金', value: 100000, unit: '元', basis: '医疗费用限额', productName: '百万医疗保险' },
+      ],
+    }),
+    makePolicy({
+      id: 114,
+      insured: '妈妈',
+      name: '终身寿险',
+      amount: 1000000,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '身故保险金', value: 1000000, unit: '元', basis: '身故保额', productName: '终身寿险' },
+      ],
+    }),
+  ], {
+    annualExpense: 300000,
+    debt: 2000000,
+    educationGoal: 800000,
+    retirementGoal: 1000000,
+    availableAssets: 500000,
+  });
+
+  const critical = radarScore(report.radar.family, 'critical');
+  const accident = radarScore(report.radar.family, 'accident');
+  const medical = radarScore(report.radar.family, 'medical');
+  const life = radarScore(report.radar.family, 'life');
+  const wealth = radarScore(report.radar.family, 'wealth');
+
+  assert.equal(report.radar.mode, 'planning');
+  assert.equal(critical.target, 1100000);
+  assert.equal(accident.target, 3000000);
+  assert.equal(medical.target, 3000000);
+  assert.equal(life.target, 5300000);
+  assert.equal(wealth.target, 1800000);
+  assert.equal(critical.score, 45);
+  assert.equal(life.score, 19);
+  assert.equal(critical.gap, 600000);
+  assert.equal(life.gap, 4300000);
+  assert.equal(critical.adequacyText, '45%');
+});
+
+test('buildFamilyReport weights scenario-only accident coverages for planning adequacy', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 115,
+      insured: '爸爸',
+      name: '航空意外保险',
+      amount: 0,
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '航空意外身故保险金', value: 1000000, unit: '元', basis: '航空意外保额', productName: '航空意外保险' },
+      ],
+    }),
+  ], {
+    annualExpense: 100000,
+  });
+
+  const accident = radarScore(report.radar.family, 'accident');
+  assert.equal(accident.amount, 1000000);
+  assert.equal(accident.effectiveAmount, 200000);
+  assert.equal(accident.target, 500000);
+  assert.equal(accident.score, 40);
+});
+
+test('buildFamilyReport discounts future wealth payouts for planning adequacy', () => {
+  const payoutYear = new Date().getFullYear() + 10;
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 116,
+      insured: '妈妈',
+      name: '年金保险',
+      amount: 0,
+      cashflowEntries: [
+        { year: payoutYear, age: 55, amount: 100000, cumulative: 100000, liability: '生存金', policyId: 116, productName: '年金保险' },
+      ],
+    }),
+  ], {
+    retirementGoal: 1000000,
+  });
+
+  const wealth = radarScore(report.radar.family, 'wealth');
+  assert.equal(wealth.amount, 100000);
+  assert.ok(wealth.effectiveAmount < 100000);
+  assert.equal(wealth.target, 1000000);
+  assert.equal(wealth.score, 7);
+});
+
 test('buildFamilyReport normalizes member radar by dimension and limits displayed members', () => {
   const report = buildFamilyReport([
     makePolicy({ id: 201, insured: '妈妈', name: '妈妈重疾', amount: 1000000, coverageIndicators: [{ coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '妈妈重疾' }] }),

@@ -84,11 +84,13 @@ import {
 } from './cashflow-engine.mjs';
 import { FamilyReportPage } from './FamilyReport';
 import { buildFamilyReport } from './family-report-engine.mjs';
+import type { FamilyPlanningProfile } from './family-report-engine.mjs';
 
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
 const ADMIN_TOKEN_KEY = 'policy-ocr-app.adminToken';
+const FAMILY_PLANNING_PROFILE_KEY = 'policy-ocr-app.familyPlanningProfile';
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const MAX_OCR_IMAGE_DIMENSION = 3600;
 const OCR_IMAGE_JPEG_QUALITY = 0.96;
@@ -138,6 +140,33 @@ function getOrCreateGuestId() {
   const next = createGuestId();
   localStorage.setItem(GUEST_ID_KEY, next);
   return next;
+}
+
+function normalizePlanningProfile(value: unknown): FamilyPlanningProfile {
+  if (!value || typeof value !== 'object') return {};
+  const source = value as Record<string, unknown>;
+  return {
+    annualExpense: Math.max(0, Number(source.annualExpense) || 0),
+    debt: Math.max(0, Number(source.debt) || 0),
+    educationGoal: Math.max(0, Number(source.educationGoal) || 0),
+    retirementGoal: Math.max(0, Number(source.retirementGoal) || 0),
+    availableAssets: Math.max(0, Number(source.availableAssets) || 0),
+  };
+}
+
+function readFamilyPlanningProfile(): FamilyPlanningProfile {
+  try {
+    const raw = localStorage.getItem(FAMILY_PLANNING_PROFILE_KEY);
+    return raw ? normalizePlanningProfile(JSON.parse(raw)) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveFamilyPlanningProfile(profile: FamilyPlanningProfile) {
+  const normalized = normalizePlanningProfile(profile);
+  localStorage.setItem(FAMILY_PLANNING_PROFILE_KEY, JSON.stringify(normalized));
+  return normalized;
 }
 
 function normalizePolicyPlanRoleLabel(role: string) {
@@ -2466,6 +2495,7 @@ function CustomerApp() {
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
   const [cashflowMember, setCashflowMember] = useState<string | null>(null);
   const [showFamilyReport, setShowFamilyReport] = useState(false);
+  const [familyPlanningProfile, setFamilyPlanningProfile] = useState<FamilyPlanningProfile>(readFamilyPlanningProfile);
 
   // Cash value upload dialog state
   const [cashValueDialogOpen, setCashValueDialogOpen] = useState(false);
@@ -2481,8 +2511,12 @@ function CustomerApp() {
   const annualPremium = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0), [policies]);
   const policyGroups = useMemo(() => groupPoliciesByInsured(policies), [policies]);
   const familyCoverageOverview = useMemo(() => buildFamilyCoverageOverview(policies), [policies]);
-  const familyReport = useMemo(() => buildFamilyReport(policies), [policies]);
+  const familyReport = useMemo(() => buildFamilyReport(policies, familyPlanningProfile), [policies, familyPlanningProfile]);
   const isLoggedIn = Boolean(token);
+
+  function handleFamilyPlanningProfileChange(next: FamilyPlanningProfile) {
+    setFamilyPlanningProfile(saveFamilyPlanningProfile(next));
+  }
 
   async function refreshPolicies(nextToken = token) {
     const payload = await listPolicies({ token: nextToken || undefined, guestId: nextToken ? undefined : guestId });
@@ -3762,6 +3796,8 @@ function CustomerApp() {
     return (
       <FamilyReportPage
         report={familyReport}
+        planningProfile={familyPlanningProfile}
+        onPlanningProfileChange={handleFamilyPlanningProfileChange}
         onBack={() => setShowFamilyReport(false)}
         onExport={(target, title) => void downloadReportImage(target, title, { rawTarget: true, preservePageStyle: true })}
       />

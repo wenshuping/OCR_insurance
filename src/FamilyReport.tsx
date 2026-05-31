@@ -1,6 +1,7 @@
 import { useRef } from 'react';
-import { ChevronLeft, Download } from 'lucide-react';
+import { ChevronLeft, Download, RotateCcw } from 'lucide-react';
 import type {
+  FamilyPlanningProfile,
   FamilyMemberProtectionReport,
   FamilyPolicyInventoryRow,
   FamilyReport,
@@ -10,6 +11,8 @@ import type {
 
 type FamilyReportPageProps = {
   report: FamilyReport;
+  planningProfile: FamilyPlanningProfile;
+  onPlanningProfileChange: (profile: FamilyPlanningProfile) => void;
   onBack: () => void;
   onExport: (target: HTMLElement | null, title: string) => void | Promise<void>;
 };
@@ -93,6 +96,40 @@ function radarScoreSummary(score: RadarSeries['scores'][number]) {
     : '按已识别责任金额绘制';
 }
 
+function radarPlanningSummary(score: RadarSeries['scores'][number]) {
+  if (!score.target || score.target <= 0) return '目标待录入';
+  if ((score.gap || 0) > 0) return `有效${score.effectiveAmountText}，目标${score.targetText}，缺口${score.gapText}`;
+  if ((score.over || 0) > 0) return `有效${score.effectiveAmountText}，目标${score.targetText}，超配${score.overText}`;
+  return `有效${score.effectiveAmountText}，目标${score.targetText}`;
+}
+
+function radarPrimaryValue(score: RadarSeries['scores'][number], mode: FamilyReport['radar']['mode']) {
+  if (mode === 'planning' && score.target && score.target > 0) return score.adequacyText || `${score.score}%`;
+  return radarShortAmount(score);
+}
+
+function radarCardSummary(score: RadarSeries['scores'][number], mode: FamilyReport['radar']['mode']) {
+  if (mode === 'planning') return radarPlanningSummary(score);
+  return radarScoreSummary(score);
+}
+
+function profileValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
+  const value = Number(profile[key] || 0);
+  return value > 0 ? String(Number((value / 10000).toFixed(2))) : '';
+}
+
+function profileWithWanValue(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile, value: string) {
+  const amount = Math.max(0, Number(value) || 0) * 10000;
+  return {
+    ...profile,
+    [key]: amount,
+  };
+}
+
+function profileHasValue(profile: FamilyPlanningProfile) {
+  return Object.values(profile).some((value) => Number(value || 0) > 0);
+}
+
 const thClassName = 'bg-[#0B72B9] px-3 py-2 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
@@ -129,6 +166,61 @@ function AttentionSection({ attentionItems }: { attentionItems: string[] }) {
         {attentionItems.map((item, index) => <p key={`${item}-${index}`}>{item}</p>)}
       </div>
     </Section>
+  );
+}
+
+const planningFields: Array<{ key: keyof FamilyPlanningProfile; label: string }> = [
+  { key: 'annualExpense', label: '家庭年支出' },
+  { key: 'debt', label: '家庭负债' },
+  { key: 'educationGoal', label: '子女教育目标' },
+  { key: 'retirementGoal', label: '养老/财富目标' },
+  { key: 'availableAssets', label: '可用资产' },
+];
+
+function FamilyPlanningProfilePanel({
+  profile,
+  onChange,
+}: {
+  profile: FamilyPlanningProfile;
+  onChange: (profile: FamilyPlanningProfile) => void;
+}) {
+  const enabled = profileHasValue(profile);
+
+  return (
+    <section className="no-print mx-4 mt-4 rounded-2xl bg-white p-3 ring-1 ring-[#D9E6F4]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-black text-[#7890AA]">雷达模型</p>
+          <h2 className="text-base font-black text-[#0F172A]">{enabled ? '保障规划版' : '保额结构版'}</h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange({})}
+          className="flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-2 text-xs font-black text-slate-600 active:bg-slate-200"
+          aria-label="清空保障目标"
+          title="清空保障目标"
+        >
+          <RotateCcw size={14} />
+          <span>清空目标</span>
+        </button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {planningFields.map((field) => (
+          <label key={field.key} className="block rounded-xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
+            <span className="text-[11px] font-bold text-[#7890AA]">{field.label}(万元)</span>
+            <input
+              type="number"
+              min="0"
+              inputMode="decimal"
+              value={profileValueInWan(profile, field.key)}
+              onChange={(event) => onChange(profileWithWanValue(profile, field.key, event.target.value))}
+              className="mt-1 w-full bg-transparent text-sm font-black text-[#0F172A] outline-none"
+              placeholder="0"
+            />
+          </label>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -251,12 +343,15 @@ function RadarChart({
 function FamilyRadarSection({ report }: { report: FamilyReport }) {
   const family = report.radar.family;
   const wealth = scoreByKey(family, 'wealth');
+  const planningMode = report.radar.mode === 'planning';
 
   return (
     <div className="mt-5 rounded-2xl bg-white/15 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-black text-white">全家保障均衡雷达</h3>
-        <span className="text-[11px] font-bold leading-4 text-white/75">雷达图按本家庭内部金额比例绘制，非行业达标分。</span>
+        <h3 className="text-sm font-black text-white">{planningMode ? '全家保障充足率雷达' : '全家保额结构雷达'}</h3>
+        <span className="text-[11px] font-bold leading-4 text-white/75">
+          {planningMode ? '按当前有效保障/家庭目标绘制，超出部分单独显示。' : '按本家庭内部金额比例绘制，非保障充足率。'}
+        </span>
       </div>
       <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr]">
         <RadarChart dimensions={report.radar.dimensions} series={[family]} ariaLabel="全家保障均衡雷达" />
@@ -264,8 +359,8 @@ function FamilyRadarSection({ report }: { report: FamilyReport }) {
           {family.scores.map((score) => (
             <div key={score.key} className="min-w-0 rounded-xl bg-white/15 px-3 py-2">
               <p className="text-[11px] font-bold text-white/70">{score.label}</p>
-              <p className="mt-0.5 break-words text-sm font-black leading-tight text-white">{radarShortAmount(score)}</p>
-              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/75">{radarScoreSummary(score)}</p>
+              <p className="mt-0.5 break-words text-sm font-black leading-tight text-white">{radarPrimaryValue(score, report.radar.mode)}</p>
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/75">{radarCardSummary(score, report.radar.mode)}</p>
             </div>
           ))}
           {wealth ? (
@@ -656,7 +751,13 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
   );
 }
 
-export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageProps) {
+export function FamilyReportPage({
+  report,
+  planningProfile,
+  onPlanningProfileChange,
+  onBack,
+  onExport,
+}: FamilyReportPageProps) {
   const reportRef = useRef<HTMLElement | null>(null);
   const exportTitle = '家庭保障分析报告';
   const attentionItems = getFamilyAttentionItems(report);
@@ -685,6 +786,8 @@ export function FamilyReportPage({ report, onBack, onExport }: FamilyReportPageP
           <span>图片</span>
         </button>
       </header>
+
+      <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} />
 
       <main ref={reportRef} className="print-policy-report space-y-4 p-4">
         <ReportHero report={report} attentionItems={attentionItems} />
