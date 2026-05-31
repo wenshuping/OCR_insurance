@@ -130,6 +130,22 @@ test('buildPolicyInventory uses indicator product type verbatim without name map
   assert.equal(inventory.rows[0].typeLabel, '寿险');
 });
 
+test('buildPolicyInventory dedupes compound indicator product types without mapping', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      id: 1,
+      insured: '温舒萍',
+      name: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+      coverageIndicators: [
+        { productType: '年金险', coverageType: '现金流', liability: '生存金', productName: '盛世恒盈年金保险（分红型）' },
+        { productType: '年金险、万能账户', coverageType: '现金流', liability: '养老年金', productName: '鑫天利卓越版养老年金保险（万能型）' },
+      ],
+    }),
+  ]);
+
+  assert.equal(inventory.rows[0].typeLabel, '年金险、万能账户');
+});
+
 test('buildPolicyInventory computes total premium from payment years', () => {
   const inventory = buildPolicyInventory([
     makePolicy({ id: 1, firstPremium: 8600, paymentPeriod: '10年' }),

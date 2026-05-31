@@ -70,10 +70,13 @@ function uniqueJoinedText(values = []) {
   const seen = new Set();
   const result = [];
   for (const value of values) {
-    const text = String(value || '').trim();
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    result.push(text);
+    const parts = String(value || '').split(/[、,，;；/／]+/u);
+    for (const part of parts) {
+      const text = part.trim();
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      result.push(text);
+    }
   }
   return result.join('、');
 }
