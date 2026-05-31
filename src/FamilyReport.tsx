@@ -169,7 +169,7 @@ function RadarChart({
   ariaLabel: string;
 }) {
   const width = 320;
-  const height = 250;
+  const height = 218;
   const centerX = width / 2;
   const centerY = 118;
   const radius = 82;
@@ -196,46 +196,47 @@ function RadarChart({
   }).join(' ');
 
   return (
-    <svg className="h-auto w-full max-w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
-      <rect x="0" y="0" width={width} height={height} rx="16" fill="#FFFFFF" />
-      {rings.map((ring) => (
-        <polygon
-          key={ring}
-          points={axisPoints.map((point) => `${(centerX + Math.cos(point.angle) * radius * ring).toFixed(1)},${(centerY + Math.sin(point.angle) * radius * ring).toFixed(1)}`).join(' ')}
-          fill="none"
-          stroke="#E2E8F0"
-          strokeWidth="1"
-        />
-      ))}
-      {axisPoints.map((point) => (
-        <g key={point.key}>
-          <line x1={centerX} y1={centerY} x2={point.x} y2={point.y} stroke="#E2E8F0" strokeWidth="1" />
-          <text x={point.labelX} y={point.labelY + 4} textAnchor="middle" fontSize="11" fontWeight="700" fill="#334155">
-            {point.label}
-          </text>
-        </g>
-      ))}
-      {series.map((item, index) => {
-        const color = radarColors[index % radarColors.length];
-        return (
-          <g key={item.name}>
-            <polygon points={polygonForSeries(item)} fill={color} opacity={series.length === 1 ? 0.18 : 0.1} stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
+    <div className="min-w-0 rounded-2xl bg-white p-2">
+      <svg className="h-auto w-full max-w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
+        <rect x="0" y="0" width={width} height={height} rx="16" fill="#FFFFFF" />
+        {rings.map((ring) => (
+          <polygon
+            key={ring}
+            points={axisPoints.map((point) => `${(centerX + Math.cos(point.angle) * radius * ring).toFixed(1)},${(centerY + Math.sin(point.angle) * radius * ring).toFixed(1)}`).join(' ')}
+            fill="none"
+            stroke="#E2E8F0"
+            strokeWidth="1"
+          />
+        ))}
+        {axisPoints.map((point) => (
+          <g key={point.key}>
+            <line x1={centerX} y1={centerY} x2={point.x} y2={point.y} stroke="#E2E8F0" strokeWidth="1" />
+            <text x={point.labelX} y={point.labelY + 4} textAnchor="middle" fontSize="11" fontWeight="700" fill="#334155">
+              {point.label}
+            </text>
           </g>
-        );
-      })}
-      <g transform="translate(16 218)">
+        ))}
         {series.map((item, index) => {
           const color = radarColors[index % radarColors.length];
-          const x = index * 76;
           return (
-            <g key={item.name} transform={`translate(${x} 0)`}>
-              <rect x="0" y="0" width="10" height="10" rx="2" fill={color} />
-              <text x="14" y="9" fontSize="10" fontWeight="700" fill="#475569">{item.name}</text>
+            <g key={item.name}>
+              <polygon points={polygonForSeries(item)} fill={color} opacity={series.length === 1 ? 0.18 : 0.1} stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
             </g>
           );
         })}
-      </g>
-    </svg>
+      </svg>
+      <div className="mt-2 flex min-w-0 flex-wrap gap-x-3 gap-y-1 px-1 pb-1" aria-hidden="true">
+        {series.map((item, index) => {
+          const color = radarColors[index % radarColors.length];
+          return (
+            <div key={item.name} className="flex min-w-0 max-w-full items-start gap-1.5">
+              <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: color }} />
+              <span className="min-w-0 break-words text-[11px] font-bold leading-4 text-[#475569]">{item.name}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
