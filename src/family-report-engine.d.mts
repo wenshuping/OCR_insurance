@@ -195,10 +195,14 @@ export type FamilyRadarScore = {
   overText?: string;
   adequacyRate?: number;
   adequacyText?: string;
+  targetSource?: 'family' | 'system_estimate' | string;
 };
 
 export type FamilyRadarSeries = {
   name: string;
+  role?: 'adult' | 'child' | 'elder' | string;
+  roleLabel?: string;
+  targetSource?: 'system_estimate' | string;
   scores: FamilyRadarScore[];
   totalAmount: number;
   notes: string[];

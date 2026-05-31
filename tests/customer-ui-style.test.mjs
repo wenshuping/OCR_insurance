@@ -368,8 +368,10 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /role="img"/);
   assert.match(familySource, /aria-label/);
   assert.match(familySource, /全家保障均衡雷达/);
-  assert.match(familySource, /家庭成员保障对比雷达/);
-  assert.match(familySource, /雷达图按本家庭内部金额比例绘制，非行业达标分。/);
+  assert.match(familySource, /个人保障估算雷达/);
+  assert.match(familySource, /个人保额结构雷达/);
+  assert.match(familySource, /按家庭目标自动分摊到成员/);
+  assert.match(familySource, /客户未录入家庭目标时/);
   assert.match(familySource, /function radarScoreSummary/);
   assert.match(familySource, /radarScoreSummary\(score\)/);
   assert.match(familySource, /FamilyPlanningProfilePanel/);

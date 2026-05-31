@@ -1054,6 +1054,12 @@ const ACCIDENT_RADAR_WEIGHTS = {
   aviation: 0.2,
 };
 
+const MEMBER_TARGET_WEIGHTS = {
+  critical: { adult: 1, child: 0.55, elder: 0.35 },
+  accident: { adult: 1, child: 0.25, elder: 0.35 },
+  life: { adult: 1, child: 0, elder: 0.1 },
+};
+
 function formatRadarMoney(value) {
   return `${formatNumberText(value)}元`;
 }
@@ -1078,6 +1084,35 @@ function normalizeFamilyPlanningProfile(profile = {}) {
 
 function hasFamilyPlanningProfile(profile = {}) {
   return Object.values(normalizeFamilyPlanningProfile(profile)).some((value) => value > 0);
+}
+
+function ageFromBirthday(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const year = new Date(text).getFullYear();
+  if (!Number.isFinite(year)) return null;
+  const age = new Date().getFullYear() - year;
+  return age >= 0 && age < 130 ? age : null;
+}
+
+function memberRole(member, policies = []) {
+  const nameText = String(member || '').normalize('NFKC');
+  const relationText = policies.map((policy) => policy?.insuredRelation).filter(Boolean).join(' ').normalize('NFKC');
+  const text = `${nameText} ${relationText}`;
+  const ages = policies.map((policy) => ageFromBirthday(policy?.insuredBirthday)).filter((age) => age !== null);
+  const age = ages.length ? Math.min(...ages) : null;
+
+  if (/(子|女|儿|孩|宝宝|未成年|孙|外孙)/u.test(text) || (age !== null && age < 18)) return 'child';
+  if (/(父母|父亲|母亲|公公|婆婆|岳父|岳母|爷爷|奶奶|外公|外婆|姥|祖)/u.test(relationText)
+    || /(老人|爷爷|奶奶|外公|外婆|姥|祖)/u.test(nameText)
+    || (age !== null && age >= 60)) return 'elder';
+  return 'adult';
+}
+
+function memberRoleLabel(role) {
+  if (role === 'child') return '子女';
+  if (role === 'elder') return '长辈';
+  return '成人';
 }
 
 function familyPlanningTargets(profile = {}) {
@@ -1393,25 +1428,7 @@ function buildRadarScores(policies) {
 function normalizeFamilyScores(scores, planningProfile = null) {
   if (hasFamilyPlanningProfile(planningProfile)) {
     const targets = familyPlanningTargets(planningProfile);
-    return scores.map((score) => {
-      const target = asNumber(targets[score.key]);
-      const effectiveAmount = asNumber(score.effectiveAmount ?? score.amount);
-      const adequacyRate = target > 0 ? (effectiveAmount / target) * 100 : 0;
-      const gap = target > 0 ? Math.max(target - effectiveAmount, 0) : 0;
-      const over = target > 0 ? Math.max(effectiveAmount - target, 0) : 0;
-      return {
-        ...score,
-        target,
-        targetText: formatRadarMoney(target),
-        gap,
-        gapText: formatRadarMoney(gap),
-        over,
-        overText: formatRadarMoney(over),
-        adequacyRate,
-        adequacyText: formatPercentText(adequacyRate),
-        score: target > 0 ? Math.min(Math.round(adequacyRate), 100) : 0,
-      };
-    });
+    return normalizeScoresAgainstTargets(scores, targets, 'family');
   }
 
   const maxAmount = Math.max(0, ...scores.map((score) => score.amount));
@@ -1421,19 +1438,34 @@ function normalizeFamilyScores(scores, planningProfile = null) {
   }));
 }
 
-function radarScoreAmount(series, key) {
-  return asNumber(series.scores.find((score) => score.key === key)?.amount);
+function normalizeScoresAgainstTargets(scores, targets, targetSource) {
+  return scores.map((score) => {
+    const target = asNumber(targets?.[score.key]);
+    const effectiveAmount = asNumber(score.effectiveAmount ?? score.amount);
+    const adequacyRate = target > 0 ? (effectiveAmount / target) * 100 : 0;
+    const gap = target > 0 ? Math.max(target - effectiveAmount, 0) : 0;
+    const over = target > 0 ? Math.max(effectiveAmount - target, 0) : 0;
+    return {
+      ...score,
+      target,
+      targetText: formatRadarMoney(target),
+      gap,
+      gapText: formatRadarMoney(gap),
+      over,
+      overText: formatRadarMoney(over),
+      adequacyRate,
+      adequacyText: formatPercentText(adequacyRate),
+      targetSource,
+      score: target > 0 ? Math.min(Math.round(adequacyRate), 100) : 0,
+    };
+  });
 }
 
-function normalizeMemberScores(memberSeries) {
-  const maxByDimension = new Map();
-  for (const dimension of RADAR_DIMENSIONS) {
-    maxByDimension.set(dimension.key, Math.max(0, ...memberSeries.map((series) => radarScoreAmount(series, dimension.key))));
-  }
+function normalizeMemberStructureScores(memberSeries) {
   return memberSeries.map((series) => ({
     ...series,
     scores: series.scores.map((score) => {
-      const maxAmount = maxByDimension.get(score.key) || 0;
+      const maxAmount = Math.max(0, ...series.scores.map((item) => item.amount));
       return {
         ...score,
         score: maxAmount > 0 ? Math.round((score.amount / maxAmount) * 100) : 0,
@@ -1442,12 +1474,58 @@ function normalizeMemberScores(memberSeries) {
   }));
 }
 
+function distributeTarget(memberSeries, totalTarget, weightsByRole) {
+  const weights = memberSeries.map((series) => Math.max(0, weightsByRole?.[series.role] ?? 1));
+  const weightTotal = weights.reduce((total, weight) => total + weight, 0);
+  if (totalTarget <= 0) return new Map(memberSeries.map((series) => [series.name, 0]));
+  if (weightTotal <= 0) {
+    const equalTarget = totalTarget / Math.max(memberSeries.length, 1);
+    return new Map(memberSeries.map((series) => [series.name, equalTarget]));
+  }
+  return new Map(memberSeries.map((series, index) => [series.name, totalTarget * (weights[index] / weightTotal)]));
+}
+
+function memberEstimatedTargets(memberSeries, planningProfile) {
+  const normalized = normalizeFamilyPlanningProfile(planningProfile);
+  const familyTargets = familyPlanningTargets(normalized);
+  const criticalTargets = distributeTarget(memberSeries, familyTargets.critical, MEMBER_TARGET_WEIGHTS.critical);
+  const accidentTargets = distributeTarget(memberSeries, familyTargets.accident, MEMBER_TARGET_WEIGHTS.accident);
+  const lifeTargets = distributeTarget(memberSeries, familyTargets.life, MEMBER_TARGET_WEIGHTS.life);
+  const children = memberSeries.filter((series) => series.role === 'child');
+  const retirementMembers = memberSeries.filter((series) => series.role !== 'child');
+  const educationTargets = distributeTarget(children.length ? children : memberSeries, normalized.educationGoal, {});
+  const retirementTargets = distributeTarget(retirementMembers.length ? retirementMembers : memberSeries, normalized.retirementGoal, {});
+
+  return new Map(memberSeries.map((series) => [
+    series.name,
+    {
+      critical: criticalTargets.get(series.name) || 0,
+      medical: FAMILY_PLANNING_DEFAULTS.medicalTarget,
+      accident: accidentTargets.get(series.name) || 0,
+      life: lifeTargets.get(series.name) || 0,
+      wealth: (educationTargets.get(series.name) || 0) + (retirementTargets.get(series.name) || 0),
+    },
+  ]));
+}
+
+function normalizeMemberEstimatedScores(memberSeries, planningProfile) {
+  const targetsByMember = memberEstimatedTargets(memberSeries, planningProfile);
+  return memberSeries.map((series) => ({
+    ...series,
+    targetSource: 'system_estimate',
+    scores: normalizeScoresAgainstTargets(series.scores, targetsByMember.get(series.name), 'system_estimate'),
+  }));
+}
+
 function buildRadarSeries(name, policies) {
   const scores = buildRadarScores(policies);
   const totalAmount = scores.reduce((total, score) => total + score.amount, 0);
   const missingLabels = scores.filter((score) => score.amount <= 0).map((score) => score.label);
+  const role = memberRole(name, policies);
   return {
     name,
+    role,
+    roleLabel: memberRoleLabel(role),
     scores,
     totalAmount,
     notes: missingLabels.length ? [`缺口维度: ${missingLabels.join('、')}`] : [],
@@ -1489,7 +1567,10 @@ export function buildFamilyRadarReport(policies = [], planningProfile = null) {
     groupMap.get(member).push(policy);
   }
 
-  const allMembers = normalizeMemberScores(Array.from(groupMap, ([member, memberPolicies]) => buildRadarSeries(member, memberPolicies)));
+  const rawMembers = Array.from(groupMap, ([member, memberPolicies]) => buildRadarSeries(member, memberPolicies));
+  const allMembers = planningEnabled
+    ? normalizeMemberEstimatedScores(rawMembers, normalizedPlanningProfile)
+    : normalizeMemberStructureScores(rawMembers);
   const { members, hiddenMembers } = selectDisplayedRadarMembers(allMembers);
 
   return {

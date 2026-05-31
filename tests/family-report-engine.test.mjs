@@ -417,7 +417,7 @@ test('buildFamilyReport discounts future wealth payouts for planning adequacy', 
   assert.equal(wealth.score, 7);
 });
 
-test('buildFamilyReport normalizes member radar by dimension and limits displayed members', () => {
+test('buildFamilyReport shows member radar as each member own amount structure and limits displayed members', () => {
   const report = buildFamilyReport([
     makePolicy({ id: 201, insured: '妈妈', name: '妈妈重疾', amount: 1000000, coverageIndicators: [{ coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '妈妈重疾' }] }),
     makePolicy({ id: 202, insured: '爸爸', name: '爸爸重疾', amount: 800000, coverageIndicators: [{ coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '爸爸重疾' }] }),
@@ -430,9 +430,57 @@ test('buildFamilyReport normalizes member radar by dimension and limits displaye
   assert.deepEqual(report.radar.members.map((member) => member.name), ['妈妈', '爸爸', '孩子', '未成年二']);
   assert.deepEqual(report.radar.hiddenMembers.map((member) => member.name), ['老人']);
   assert.equal(radarScore(radarMember(report, '妈妈'), 'critical').score, 100);
-  assert.equal(radarScore(radarMember(report, '爸爸'), 'critical').score, 80);
-  assert.equal(radarScore(radarMember(report, '孩子'), 'critical').score, 60);
+  assert.equal(radarScore(radarMember(report, '爸爸'), 'critical').score, 100);
+  assert.equal(radarScore(radarMember(report, '孩子'), 'critical').score, 100);
   assert.equal(radarScore(radarMember(report, '未成年二'), 'critical').score, 0);
+  assert.equal(radarMember(report, '妈妈').role, 'adult');
+  assert.equal(radarMember(report, '孩子').role, 'child');
+});
+
+test('buildFamilyReport allocates family planning targets to member estimated radar without personal inputs', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 211,
+      insured: '爸爸',
+      insuredRelation: '本人',
+      insuredBirthday: '1988-01-01',
+      name: '爸爸寿险',
+      amount: 1000000,
+      coverageIndicators: [
+        { coverageType: '人寿保障', liability: '身故保险金', value: 1000000, unit: '元', basis: '身故保额', productName: '爸爸寿险' },
+      ],
+    }),
+    makePolicy({
+      id: 212,
+      insured: '孩子',
+      insuredRelation: '子女',
+      insuredBirthday: '2018-01-01',
+      name: '孩子重疾',
+      amount: 300000,
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保额', productName: '孩子重疾' },
+      ],
+    }),
+  ], {
+    annualExpense: 300000,
+    debt: 2000000,
+    educationGoal: 800000,
+    retirementGoal: 1000000,
+    availableAssets: 500000,
+  });
+
+  const father = radarMember(report, '爸爸');
+  const child = radarMember(report, '孩子');
+  assert.equal(report.radar.mode, 'planning');
+  assert.equal(father.targetSource, 'system_estimate');
+  assert.equal(father.role, 'adult');
+  assert.equal(child.role, 'child');
+  assert.equal(radarScore(father, 'life').target, 5300000);
+  assert.equal(radarScore(child, 'life').target, 0);
+  assert.equal(radarScore(child, 'wealth').target, 800000);
+  assert.equal(radarScore(father, 'wealth').target, 1000000);
+  assert.equal(radarScore(father, 'life').score, 19);
+  assert.equal(radarScore(child, 'medical').target, 3000000);
 });
 
 test('buildFamilyReport keeps formula-only radar amounts out of numeric radar value', () => {

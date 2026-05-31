@@ -263,10 +263,12 @@ function RadarChart({
   dimensions,
   series,
   ariaLabel,
+  framed = true,
 }: {
   dimensions: FamilyReport['radar']['dimensions'];
   series: RadarSeries[];
   ariaLabel: string;
+  framed?: boolean;
 }) {
   const width = 320;
   const height = 218;
@@ -296,7 +298,7 @@ function RadarChart({
   }).join(' ');
 
   return (
-    <div className="min-w-0 rounded-2xl bg-white p-2">
+    <div className={framed ? 'min-w-0 rounded-2xl bg-white p-2' : 'min-w-0'}>
       <svg className="h-auto w-full max-w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
         <rect x="0" y="0" width={width} height={height} rx="16" fill="#FFFFFF" />
         {rings.map((ring) => (
@@ -378,33 +380,50 @@ function FamilyRadarSection({ report }: { report: FamilyReport }) {
 function MemberRadarSection({ report }: { report: FamilyReport }) {
   const members = report.radar.members;
   if (!members.length) return null;
+  const planningMode = report.radar.mode === 'planning';
 
   return (
-    <Section title="家庭成员保障对比雷达">
+    <Section title={planningMode ? '个人保障估算雷达' : '个人保额结构雷达'}>
       <div className="rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
-        <p className="mb-3 text-xs font-bold leading-5 text-[#7890AA]">雷达图按本家庭内部金额比例绘制，非行业达标分。</p>
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,420px)_1fr]">
-          <RadarChart dimensions={report.radar.dimensions} series={members} ariaLabel="家庭成员保障对比雷达" />
-          <div className="space-y-2">
-            {members.map((member, index) => (
-              <div key={member.name} className="min-w-0 rounded-xl bg-white px-3 py-2 ring-1 ring-[#E1EAF5]">
-                <div className="flex items-start gap-2">
-                  <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: radarColors[index % radarColors.length] }} />
-                  <div className="min-w-0">
-                    <p className="break-words text-xs font-black leading-5 text-[#0F172A]">{member.name} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
-                    <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-[#7890AA]">
-                      {member.notes.length ? member.notes.join('；') : '五维均有可落地金额'}
-                    </p>
-                  </div>
+        <p className="mb-3 text-xs font-bold leading-5 text-[#7890AA]">
+          {planningMode ? '按家庭目标自动分摊到成员，仅供初步估算；未要求客户录入个人收入、负债或资产。' : '客户未录入家庭目标时，仅按各成员已识别保单金额展示，非保障充足率。'}
+        </p>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {members.map((member, index) => (
+            <article key={member.name} className="min-w-0 rounded-xl bg-white p-3 ring-1 ring-[#E1EAF5]">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-black leading-5 text-[#0F172A]">{member.name}</p>
+                  <p className="mt-0.5 text-[11px] font-bold text-[#7890AA]">{member.roleLabel || '成员'} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
+                </div>
+                <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-600">
+                  {planningMode ? '系统估算' : '结构展示'}
+                </span>
+              </div>
+              <div className="grid gap-3 xl:grid-cols-[minmax(0,220px)_1fr]">
+                <RadarChart dimensions={report.radar.dimensions} series={[member]} ariaLabel={`${member.name}保障雷达`} framed={false} />
+                <div className="divide-y divide-[#E1EAF5]">
+                  {member.scores.map((score) => (
+                    <div key={score.key} className="flex min-w-0 items-start justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
+                        <p className="mt-0.5 break-words text-[11px] font-semibold leading-4 text-[#7890AA]">{radarCardSummary(score, report.radar.mode)}</p>
+                      </div>
+                      <p className="shrink-0 text-right text-sm font-black text-[#0B72B9]">{radarPrimaryValue(score, report.radar.mode)}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
-            {report.radar.hiddenMembers.length ? (
-              <div className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700 ring-1 ring-amber-100">
-                未展示成员: {report.radar.hiddenMembers.map((member) => `${member.name}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
-              </div>
-            ) : null}
-          </div>
+              {!planningMode && member.notes.length ? (
+                <p className="mt-3 break-words rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700">{member.notes.join('；')}</p>
+              ) : null}
+            </article>
+          ))}
+          {report.radar.hiddenMembers.length ? (
+            <div className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700 ring-1 ring-amber-100 lg:col-span-2">
+              未展示成员: {report.radar.hiddenMembers.map((member) => `${member.name}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
+            </div>
+          ) : null}
         </div>
       </div>
     </Section>
