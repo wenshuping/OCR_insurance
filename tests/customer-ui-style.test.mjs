@@ -975,3 +975,13 @@ test('client API exposes family profile types and endpoints', () => {
   assert.match(apiSource, /applicantMemberId\?: number/);
   assert.match(apiSource, /insuredMemberId\?: number/);
 });
+
+test('deleting a rider does not force-refresh optional responsibilities when main product is unchanged', () => {
+  const source = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /function mainProductIdentityKey\(/u);
+  assert.match(source, /const beforeMainProductKey = mainProductIdentityKey\(formData\)/u);
+  assert.match(source, /const afterMainProductKey = mainProductIdentityKey\(nextData\)/u);
+  assert.match(source, /if \(beforeMainProductKey !== afterMainProductKey\)/u);
+  assert.doesNotMatch(source, /已删除附加险，正在重新带出可选责任['"`]\);\s*void loadFormProductAnalysisDraft\(nextData/u);
+});

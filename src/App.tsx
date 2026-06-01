@@ -241,6 +241,16 @@ function primaryPlanFromPolicyForm(form: PolicyFormData) {
   return plans.find((plan) => plan.role === 'main') || plans[0] || null;
 }
 
+function mainProductIdentityKey(form: PolicyFormData) {
+  const primary = primaryPlanFromPolicyForm(form);
+  return [
+    String(primary?.canonicalProductId || form.canonicalProductId || '').trim(),
+    String(primary?.matchedProductName || '').trim(),
+    String(primary?.company || form.company || '').trim(),
+    String(primary?.name || form.name || '').trim(),
+  ].join('\u001f');
+}
+
 function setMainPolicyPlanProduct(plans: PolicyFormData['plans'], company: string, name: string, canonicalProductId = '') {
   const normalizedPlans = normalizePolicyPlanList(plans, company, { keepEmpty: true });
   let updatedMain = false;
@@ -3262,25 +3272,74 @@ function CustomerApp() {
     }));
   }
 
-  function removePolicyPlan(index: number) {
+  async function loadFormProductAnalysisDraft(nextData: PolicyFormData, successMessage: string) {
+    const startedAt = clientPerfNow();
     setAnalysisDraft(null);
+    setLoading(true);
+    try {
+      const payload = await analyzePolicy({
+        token,
+        guestId,
+        ocrText,
+        uploadItem: scanResult ? null : uploadItem,
+        manualData: nextData,
+        scan: scanResult,
+      });
+      reportClientPerformance('client.analyze.request', {
+        durationMs: clientElapsedMs(startedAt),
+        requestMs: clientElapsedMs(startedAt),
+        uploadBytes: uploadItem?.size || 0,
+        hasUpload: Boolean(uploadItem),
+        reusedScan: Boolean(scanResult),
+        outputOcrChars: String(payload.scan?.ocrText || '').length,
+        responsibilityCount: payload.analysis?.coverageTable?.length || 0,
+      });
+      setScanResult(payload.scan);
+      setOcrText(payload.scan.ocrText || '');
+      setAnalysisDraft(payload.analysis);
+      setShowAnalysisReport(true);
+      setMessage(successMessage);
+    } catch (error) {
+      reportClientPerformance('client.analyze.error', {
+        durationMs: clientElapsedMs(startedAt),
+        uploadBytes: uploadItem?.size || 0,
+        hasUpload: Boolean(uploadItem),
+        reusedScan: Boolean(scanResult),
+      });
+      if (handleRegistrationRequiredError(error)) return;
+      setMessage(error instanceof Error ? error.message : '保险责任生成失败，请稍后重试');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function removePolicyPlan(index: number) {
     setShowAnalysisReport(false);
-    setFormData((current) => {
-      const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true }).filter((_plan, planIndex) => planIndex !== index);
-      const primary = plans.find((plan) => plan.role === 'main') || plans[0] || null;
-      return {
-        ...current,
-        plans,
-        ...(primary
-          ? {
-              name: primary.matchedProductName || primary.name || current.name,
-              amount: primary.amount ? String(primary.amount) : current.amount,
-              coveragePeriod: primary.coveragePeriod || current.coveragePeriod,
-              paymentPeriod: primary.paymentPeriod || current.paymentPeriod,
-            }
-          : {}),
-      };
-    });
+    const current = formData;
+    const beforeMainProductKey = mainProductIdentityKey(formData);
+    const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true }).filter((_plan, planIndex) => planIndex !== index);
+    const primary = plans.find((plan) => plan.role === 'main') || plans[0] || null;
+    const nextData = {
+      ...formData,
+      plans,
+      ...(primary
+        ? {
+            name: primary.matchedProductName || primary.name || formData.name,
+            canonicalProductId: primary.canonicalProductId || formData.canonicalProductId,
+            amount: primary.amount ? String(primary.amount) : formData.amount,
+            coveragePeriod: primary.coveragePeriod || formData.coveragePeriod,
+            paymentPeriod: primary.paymentPeriod || formData.paymentPeriod,
+          }
+        : {}),
+    };
+    const afterMainProductKey = mainProductIdentityKey(nextData);
+    setFormData(nextData);
+    if (beforeMainProductKey !== afterMainProductKey) {
+      setMessage('已删除险种，正在重新带出可选责任');
+      void loadFormProductAnalysisDraft(nextData, '已删除险种，已重新带出可选责任');
+      return;
+    }
+    setMessage('已删除附加险');
   }
 
   function selectFormProductMatch(match: PolicyKnowledgeMatch) {
