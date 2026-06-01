@@ -2241,6 +2241,7 @@ test('policy update regenerates responsibilities when insurer or product changes
         guestId: 'guest-regenerate-policy',
         company: '新华保险',
         name: '旧产品',
+        canonicalProductId: 'product_old',
         applicant: '张三',
         insured: '张三',
         date: '2026-05-14',
@@ -2311,13 +2312,15 @@ test('policy update regenerates responsibilities when insurer or product changes
     const response = await fetch(`${server.baseUrl}/api/policies/11?guestId=guest-regenerate-policy`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: '新产品' }),
+      body: JSON.stringify({ name: '新产品', canonicalProductId: '' }),
     });
 
     assert.equal(response.status, 202);
     const payload = await response.json();
     assert.equal(payload.ok, true);
     assert.equal(payload.policy.name, '新产品');
+    assert.notEqual(payload.policy.canonicalProductId, 'product_old');
+    assert.equal(payload.policy.canonicalProductId || '', '');
     assert.equal(payload.policy.reportStatus, 'generating');
     assert.equal(payload.policy.responsibilities.length, 0);
     await waitUntil(() => {

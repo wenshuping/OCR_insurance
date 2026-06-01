@@ -498,12 +498,12 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (!value || typeof value !== 'object') return {};
   const input = value.policy && typeof value.policy === 'object' ? value.policy : value;
   const data = {};
+  const hasCanonicalProductIdInput = hasOwn(input, 'canonicalProductId');
   const textFields = ['company', 'name', 'applicant', 'insured', 'paymentPeriod', 'coveragePeriod'];
   for (const key of textFields) {
     if (hasOwn(input, key)) data[key] = trim(input[key]);
   }
-  const canonicalProductId = trim(input.canonicalProductId);
-  if (canonicalProductId) data.canonicalProductId = canonicalProductId;
+  if (hasCanonicalProductIdInput) data.canonicalProductId = trim(input.canonicalProductId);
   if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
   if (hasOwn(input, 'date')) data.date = normalizeDateOnly(input.date) || trim(input.date);
   if (hasOwn(input, 'insuredIdNumber') || hasOwn(input, 'insuredIdentityNumber') || hasOwn(input, 'insuredIdCard')) {
@@ -529,7 +529,7 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (hasOwn(input, 'plans')) {
     data.plans = normalizePolicyPlans(input.plans, data.company || existingPolicy.company || '');
   }
-  if (Array.isArray(data.plans) && data.plans.length && !data.canonicalProductId) {
+  if (!hasCanonicalProductIdInput && Array.isArray(data.plans) && data.plans.length && !data.canonicalProductId) {
     const mainPlan = data.plans.find((plan) => plan.role === 'main') || data.plans[0];
     data.canonicalProductId = trim(mainPlan?.canonicalProductId);
   }
