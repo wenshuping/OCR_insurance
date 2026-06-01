@@ -13,6 +13,13 @@ const RELATION_MAP = new Map([
   ['核心人员', { relationToCore: 'self', relationLabel: '本人', role: 'core' }],
   ['spouse', { relationToCore: 'spouse', relationLabel: '配偶', role: 'adult' }],
   ['配偶', { relationToCore: 'spouse', relationLabel: '配偶', role: 'adult' }],
+  ['丈夫', { relationToCore: 'spouse', relationLabel: '配偶', role: 'adult' }],
+  ['妻子', { relationToCore: 'spouse', relationLabel: '配偶', role: 'adult' }],
+  ['夫妻', { relationToCore: 'spouse', relationLabel: '配偶', role: 'adult' }],
+  ['child', { relationToCore: 'child', relationLabel: '子女', role: 'child' }],
+  ['子女', { relationToCore: 'child', relationLabel: '子女', role: 'child' }],
+  ['孩子', { relationToCore: 'child', relationLabel: '子女', role: 'child' }],
+  ['小孩', { relationToCore: 'child', relationLabel: '子女', role: 'child' }],
   ['son', { relationToCore: 'son', relationLabel: '儿子', role: 'child' }],
   ['儿子', { relationToCore: 'son', relationLabel: '儿子', role: 'child' }],
   ['daughter', { relationToCore: 'daughter', relationLabel: '女儿', role: 'child' }],
@@ -38,12 +45,18 @@ function ensureFamilyState(state) {
 }
 
 function normalizeOwner(owner = {}) {
+  owner ||= {};
   const userId = Number(owner.userId || owner.ownerUserId || 0) || 0;
   const guestId = normalizeGuestId(owner.guestId || owner.ownerGuestId);
   return {
     ownerUserId: userId || null,
     ownerGuestId: userId ? '' : guestId,
   };
+}
+
+function hasOwnerPrincipal(owner) {
+  const normalizedOwner = normalizeOwner(owner);
+  return Boolean(normalizedOwner.ownerUserId || normalizedOwner.ownerGuestId);
 }
 
 function normalizeName(value) {
@@ -89,6 +102,26 @@ function familyBindingError(code, message = code) {
   error.code = code;
   error.status = 400;
   return error;
+}
+
+function peopleAreCompatible(left, right) {
+  if (normalizeName(left?.name) !== normalizeName(right?.name)) return false;
+  const leftBirthday = normalizeDateOnly(left?.birthday || left?.birthDate);
+  const rightBirthday = normalizeDateOnly(right?.birthday || right?.birthDate);
+  if (leftBirthday && rightBirthday && leftBirthday !== rightBirthday) return false;
+  const leftTail = normalizeIdNumberTail(left?.idNumberTail || left?.idNumber || left?.identityNumber || left?.idCard);
+  const rightTail = normalizeIdNumberTail(right?.idNumberTail || right?.idNumber || right?.identityNumber || right?.idCard);
+  if (leftTail && rightTail && leftTail !== rightTail) return false;
+  return true;
+}
+
+function personIdentityKey(person, index) {
+  const name = normalizeName(person?.name);
+  if (!name) return '';
+  const birthday = normalizeDateOnly(person?.birthday || person?.birthDate);
+  const idNumberTail = normalizeIdNumberTail(person?.idNumberTail || person?.idNumber || person?.identityNumber || person?.idCard);
+  if (!birthday && !idNumberTail) return name;
+  return [name, birthday, idNumberTail, index].join('\u001f');
 }
 
 export function normalizeFamilyRelation(value) {
@@ -229,21 +262,27 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
   const family = createFamilyProfile(state, { familyName: DEFAULT_FAMILY_NAME }, owner);
   const policies = (Array.isArray(state.policies) ? state.policies : [])
     .filter((policy) => policyOwnerMatches(policy, owner));
-  const peopleByName = new Map();
+  const peopleByIdentity = new Map();
   for (const policy of policies) {
     for (const role of ['applicant', 'insured']) {
       const person = policyPerson(policy, role);
       if (!person.name) continue;
-      const existing = peopleByName.get(person.name) || { ...person, count: 0 };
+      const existingEntry = [...peopleByIdentity.entries()]
+        .find(([, candidate]) => peopleAreCompatible(candidate, person));
+      const key = existingEntry?.[0] || personIdentityKey(person, peopleByIdentity.size);
+      const existing = existingEntry?.[1] || { ...person, count: 0 };
       existing.count += 1;
       existing.birthday ||= person.birthday;
       existing.idNumberTail ||= person.idNumberTail;
-      peopleByName.set(person.name, existing);
+      peopleByIdentity.set(key, existing);
     }
   }
 
-  const people = [...peopleByName.values()].sort((left, right) => (
-    right.count - left.count || left.name.localeCompare(right.name, 'zh-CN')
+  const people = [...peopleByIdentity.values()].sort((left, right) => (
+    right.count - left.count ||
+    left.name.localeCompare(right.name, 'zh-CN') ||
+    String(left.birthday || '').localeCompare(String(right.birthday || '')) ||
+    String(left.idNumberTail || '').localeCompare(String(right.idNumberTail || ''))
   ));
   const corePerson = people[0] || { name: '本人', birthday: '', idNumberTail: '' };
   const coreMember = createFamilyMember(state, family.id, {
@@ -282,7 +321,7 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
   return family;
 }
 
-export function validatePolicyFamilyBinding(state, input = {}) {
+export function validatePolicyFamilyBinding(state, input = {}, owner = null) {
   ensureFamilyState(state);
   const familyId = Number(input.familyId || 0);
   const family = state.familyProfiles.find((item) => (
@@ -291,6 +330,10 @@ export function validatePolicyFamilyBinding(state, input = {}) {
   ));
   if (!family) {
     throw familyBindingError('POLICY_FAMILY_REQUIRED');
+  }
+  const bindingOwner = owner || input.owner || null;
+  if (hasOwnerPrincipal(bindingOwner) && !familyOwnerMatches(family, bindingOwner)) {
+    throw familyBindingError('POLICY_FAMILY_FORBIDDEN');
   }
 
   const members = listFamilyMembers(state, family.id);

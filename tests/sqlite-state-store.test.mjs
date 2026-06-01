@@ -42,6 +42,7 @@ test('sqlite state store imports JSON once and keeps database as the source of t
     officialDomainProfiles: [{ id: 'profile-1', company: '新华保险', domains: ['example.test'] }],
     familyProfiles: [{ id: 8, ownerUserId: 1, ownerGuestId: '', familyName: '张三家庭', coreMemberId: 9, status: 'active', createdAt: '2026-05-01T00:09:00.000Z', updatedAt: '2026-05-01T00:09:00.000Z' }],
     familyMembers: [{ id: 9, familyId: 8, name: '张三', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-05-01T00:09:00.000Z', updatedAt: '2026-05-01T00:09:00.000Z' }],
+    familyReportShares: [{ id: 10, familyId: 8, ownerUserId: 1, ownerGuestId: '', token: 'share-token-1', status: 'active', createdAt: '2026-05-01T00:10:00.000Z', updatedAt: '2026-05-01T00:10:00.000Z' }],
     insuranceIndicatorSnapshot: { syncedAt: '2026-05-01T00:05:00.000Z', count: 1 },
     nextId: 6,
   });
@@ -57,8 +58,11 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familyProfiles[0].familyName, '张三家庭');
   assert.equal(imported.familyMembers.length, 1);
   assert.equal(imported.familyMembers[0].name, '张三');
+  assert.equal(imported.familyReportShares.length, 1);
+  assert.equal(imported.familyReportShares[0].familyId, 8);
+  assert.equal(imported.familyReportShares[0].token, 'share-token-1');
   assert.deepEqual(imported.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:05:00.000Z', count: 1 });
-  assert.equal(imported.nextId, 10);
+  assert.equal(imported.nextId, 11);
 
   imported.users.push({ id: 6, mobile: '13900000000', createdAt: '2026-05-01T00:06:00.000Z', updatedAt: '2026-05-01T00:06:00.000Z' });
   imported.policies.push({ id: 7, userId: 6, guestId: '', company: '平安人寿', name: '平安福', insured: '张三', createdAt: '2026-05-01T00:07:00.000Z', updatedAt: '2026-05-01T00:07:00.000Z' });
@@ -80,6 +84,7 @@ test('sqlite state store imports JSON once and keeps database as the source of t
     assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 2);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_profiles').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_members').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_shares').get().count, 1);
     assert.equal(
       JSON.parse(db.prepare('SELECT payload FROM insurance_indicator_records WHERE id = ?').get('ind_2').payload).formulaText,
       '重疾(首次给付) = 基本保险金额',
@@ -106,12 +111,15 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloaded.familyProfiles[0].familyName, '张三家庭');
   assert.equal(reloaded.familyMembers.length, 1);
   assert.equal(reloaded.familyMembers[0].name, '张三');
+  assert.equal(reloaded.familyReportShares.length, 1);
+  assert.equal(reloaded.familyReportShares[0].familyId, 8);
+  assert.equal(reloaded.familyReportShares[0].token, 'share-token-1');
   assert.equal(
     reloaded.insuranceIndicatorRecords.find((record) => record.id === 'ind_2')?.formulaText,
     '重疾(首次给付) = 基本保险金额',
   );
   assert.deepEqual(reloaded.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
-  assert.equal(reloaded.nextId, 10);
+  assert.equal(reloaded.nextId, 11);
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath, seedStatePath });
@@ -124,6 +132,9 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familyProfiles[0].familyName, '张三家庭');
   assert.equal(reloadedAfterRestart.familyMembers.length, 1);
   assert.equal(reloadedAfterRestart.familyMembers[0].name, '张三');
+  assert.equal(reloadedAfterRestart.familyReportShares.length, 1);
+  assert.equal(reloadedAfterRestart.familyReportShares[0].familyId, 8);
+  assert.equal(reloadedAfterRestart.familyReportShares[0].token, 'share-token-1');
   assert.deepEqual(reloadedAfterRestart.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
   reopened.close();
 });
