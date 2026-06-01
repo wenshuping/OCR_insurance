@@ -202,6 +202,43 @@ test('buildOptionalResponsibilityRecords prefers canonical product id when linki
   assert.deepEqual(records[0].indicatorIds, ['ind_xiang']);
 });
 
+test('buildOptionalResponsibilityRecords does not link mismatched optional responsibility ids by liability fallback', () => {
+  const records = buildOptionalResponsibilityRecords({
+    policy: {
+      company: '新华保险',
+      name: productName,
+    },
+    knowledgeRecords: [
+      {
+        company: '新华保险',
+        productName,
+        pageText: '保险责任。3.可选责任一 （1）轻度疾病保险金。',
+      },
+    ],
+    indicators: [
+      {
+        id: 'ind_mismatch',
+        company: '新华保险',
+        productName,
+        coverageType: '疾病保障',
+        liability: '轻度疾病保险金',
+        value: 20,
+        unit: '%',
+        basis: '基本保险金额',
+        formulaText: '基本保额 × 20%',
+        responsibilityScope: 'optional',
+        optionalResponsibilityId: 'opt_other',
+        quantificationStatus: 'quantified',
+        sourceExcerpt: '3.可选责任一 （1）轻度疾病保险金 按基本保险金额的20%给付。',
+      },
+    ],
+  });
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].quantificationStatus, 'pending_review');
+  assert.deepEqual(records[0].indicatorIds, []);
+});
+
 test('normalizeOptionalResponsibilityRecord preserves manual not quantifiable state', () => {
   const normalized = normalizeOptionalResponsibilityRecord({
     company: '新华保险',

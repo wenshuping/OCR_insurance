@@ -324,18 +324,32 @@ function hasSpecificOptionalResponsibilityEvidence(evidenceText, suffix, pattern
   return new RegExp(`(?:${patternPrefix}).{0,16}${liabilityPattern}|${liabilityPattern}.{0,16}(?:${patternPrefix})`, 'u').test(text);
 }
 
-function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = '') {
+function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = '', hasExplicitOptionalResponsibilityId = false) {
   const existing = buildOptionalResponsibilitySelectionMap(policy?.optionalResponsibilities);
   const key = optionalResponsibilityKey({
     productName: indicator?.productName,
     coverageType: indicator?.coverageType,
     liability: indicator?.liability,
   });
-  const override = existing.byId.get(id) || existing.byKey.get(key);
+  const override = existing.byId.get(id);
   if (override?.selectionStatus) {
     return {
+      optionalResponsibilityId: override.id || id,
       selectionStatus: override.selectionStatus,
       selectionEvidence: override.selectionEvidence || 'manual',
+      ...(override.id ? { selectedOptionalResponsibilityId: override.id } : {}),
+    };
+  }
+  if (hasExplicitOptionalResponsibilityId) {
+    return { selectionStatus: 'unknown', selectionEvidence: 'official_terms' };
+  }
+
+  const keyOverride = existing.byKey.get(key);
+  if (keyOverride?.selectionStatus) {
+    return {
+      ...(keyOverride.id ? { optionalResponsibilityId: keyOverride.id, selectedOptionalResponsibilityId: keyOverride.id } : {}),
+      selectionStatus: keyOverride.selectionStatus,
+      selectionEvidence: keyOverride.selectionEvidence || 'manual',
     };
   }
 
@@ -388,8 +402,9 @@ function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
       selectionEvidence: 'official_terms',
     };
   }
-  const id = normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId) || buildOptionalResponsibilityId(indicator);
-  const selection = inferOptionalResponsibilitySelection(policy, indicator, id);
+  const explicitOptionalResponsibilityId = normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId);
+  const id = explicitOptionalResponsibilityId || buildOptionalResponsibilityId(indicator);
+  const selection = inferOptionalResponsibilitySelection(policy, indicator, id, Boolean(explicitOptionalResponsibilityId));
   return {
     ...indicator,
     ...(canonicalProductId ? { canonicalProductId } : {}),

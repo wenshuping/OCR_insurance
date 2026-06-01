@@ -204,6 +204,47 @@ test('canonical product id prevents similar product editions from sharing option
   assert.deepEqual(selectedCoverageIndicators(indicators).map((item) => item.id), ['ind_xiang_cancer']);
 });
 
+test('optional indicator with mismatched optional responsibility id is not selected by key fallback', () => {
+  const canonicalProductId = 'product_selected';
+  const policy = {
+    company: '新华保险',
+    name: '测试重疾',
+    canonicalProductId,
+    optionalResponsibilities: [
+      {
+        id: 'opt_selected',
+        company: '新华保险',
+        productName: '测试重疾',
+        canonicalProductId,
+        coverageType: '重大疾病保障',
+        liability: '重度恶性肿瘤多次给付保险金',
+        selectionStatus: 'selected',
+        quantificationStatus: 'quantified',
+      },
+    ],
+  };
+  const indicators = findPolicyCoverageIndicators(policy, [
+    {
+      id: 'ind_mismatch',
+      company: '新华保险',
+      productName: '测试重疾',
+      canonicalProductId,
+      coverageType: '重大疾病保障',
+      liability: '重度恶性肿瘤多次给付保险金',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_other',
+      quantificationStatus: 'quantified',
+      value: 100,
+      unit: '%',
+      basis: '基本保险金额',
+    },
+  ]);
+
+  assert.equal(indicators[0].optionalResponsibilityId, 'opt_other');
+  assert.notEqual(indicators[0].selectionStatus, 'selected');
+  assert.equal(selectedCoverageIndicators(indicators).some((item) => item.id === 'ind_mismatch'), false);
+});
+
 test('optional responsibility review matches canonical product id before name fallback', () => {
   const xiangId = 'product_xiang';
   const yingId = 'product_ying';

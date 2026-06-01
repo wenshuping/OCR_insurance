@@ -188,7 +188,8 @@ function indicatorLinkedTo(record, indicator = {}) {
   const productName = normalizeLookupText(record.productName);
   const indicatorProductName = normalizeLookupText(indicator.productName);
   if (productName && indicatorProductName && productName !== indicatorProductName) return false;
-  if (indicator?.optionalResponsibilityId && indicator.optionalResponsibilityId === record.id) return true;
+  const indicatorOptionalResponsibilityId = String(indicator?.optionalResponsibilityId || '').trim();
+  if (indicatorOptionalResponsibilityId) return indicatorOptionalResponsibilityId === String(record.id || '').trim();
   const text = normalizeLookupText([indicator.coverageType, indicator.liability, indicator.sourceExcerpt].join(' '));
   const liability = normalizeLookupText(record.liability);
   return liability.length >= 2 && text.includes(liability);
