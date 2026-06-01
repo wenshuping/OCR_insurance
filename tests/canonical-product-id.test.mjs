@@ -67,3 +67,14 @@ test('withCanonicalProductId fills missing id and preserves existing id', () => 
   assert.match(filled.canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.equal(preserved.canonicalProductId, 'product_existing');
 });
+
+test('withCanonicalProductId ignores ambiguous external productId values', () => {
+  const filled = withCanonicalProductId({
+    company: '新华保险',
+    productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+    productId: 'external_123',
+  });
+
+  assert.match(filled.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.notEqual(filled.canonicalProductId, 'external_123');
+});
