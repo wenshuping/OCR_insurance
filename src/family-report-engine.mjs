@@ -1154,8 +1154,8 @@ function cashValueReferenceTypeFor({ hasCashValue, hasPayout, isMaturityPayout, 
 function cashValueReferenceNote(type) {
   if (type === 'pre_maturity') return '满期金给付后合同终止，不与现金价值叠加领取';
   if (type === 'pre_termination') return '该给付后合同终止，不与现金价值叠加领取';
-  if (type === 'surrender') return '现金价值为退保参考，不与当年领取金额叠加领取';
-  if (type === 'reference') return '现金价值为退保参考，不等同于可直接领取金额';
+  if (type === 'surrender') return '现金价值不与当年领取金额叠加领取';
+  if (type === 'reference') return '现金价值不等同于可直接领取金额';
   return '';
 }
 

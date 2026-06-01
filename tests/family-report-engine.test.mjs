@@ -1736,7 +1736,7 @@ test('buildFamilyReport marks same-year non-terminal cash value as surrender ref
   assert.equal(annualRow.isContractTerminatingPayout, false);
   assert.equal(annualRow.cashValueReferenceType, 'surrender');
   assert.equal(annualRow.cashValueIsNonAdditiveReference, true);
-  assert.match(annualRow.cashValueNote, /退保参考/u);
+  assert.match(annualRow.cashValueNote, /不与当年领取金额叠加领取/u);
   assert.equal(policy.keyPoints.find((item) => item.amount === 30000)?.label, '末期现金价值参考');
 });
 

@@ -1469,13 +1469,6 @@ function CashValueTrendChart({ report }: { report: FamilyReport }) {
   );
 }
 
-function cashValueReferenceShortLabel(row: FamilyWealthPolicyReport['annualCashflowRows'][number]) {
-  if (row.cashValueReferenceType === 'pre_maturity') return '期满前参考';
-  if (row.cashValueReferenceType === 'pre_termination') return '终止前参考';
-  if (row.cashValueReferenceType === 'surrender') return '退保参考';
-  return '';
-}
-
 function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyReport }) {
   const rows = policy.annualCashflowRows;
   if (!rows.length) return <EmptyState text="暂无现金流明细" />;
@@ -1502,42 +1495,32 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
                 </tr>
               </thead>
               <tbody>
-                {column.map((row) => {
-                  const cashValueLabel = cashValueReferenceShortLabel(row);
-                  return (
-                    <tr key={`${policy.policyId}-${row.year}`} className={row.isContractTerminatingPayout ? 'bg-orange-50' : undefined}>
-                      <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
-                      <td className={`${compactTdClassName} text-right`}>
-                        {row.amount > 0 ? (
-                          <span className={`inline-block rounded px-1 text-[11px] font-black ${row.isContractTerminatingPayout ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
-                            {formatMoney(row.amount)}
-                          </span>
-                        ) : '—'}
-                      </td>
-                      <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
-                        {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
-                      </td>
-                      <td className={`${compactTdClassName} text-right ${row.cashValueIsNonAdditiveReference ? 'text-[#A6531B]' : 'text-[#0B72B9]'}`}>
-                        {row.cashValue != null ? (
-                          cashValueLabel ? (
-                            <span className="block leading-4">
-                              <span className="block text-[10px] font-black text-[#A6531B]">{cashValueLabel}</span>
-                              <span className="block">{formatMoney(row.cashValue)}</span>
-                            </span>
-                          ) : formatMoney(row.cashValue)
-                        ) : '—'}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {column.map((row) => (
+                  <tr key={`${policy.policyId}-${row.year}`} className={row.isContractTerminatingPayout ? 'bg-orange-50' : undefined}>
+                    <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
+                    <td className={`${compactTdClassName} text-right`}>
+                      {row.amount > 0 ? (
+                        <span className={`inline-block rounded px-1 text-[11px] font-black ${row.isContractTerminatingPayout ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
+                          {formatMoney(row.amount)}
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
+                      {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
+                    </td>
+                    <td className={`${compactTdClassName} text-right text-[#0B72B9]`}>
+                      {row.cashValue != null ? formatMoney(row.cashValue) : '—'}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           ))}
         </div>
       </TableWrap>
       {hasCashValueReference ? (
-        <p className="mt-2 rounded-[14px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-5 text-[#9A4A16]">
-          现金价值为退保参考，不等同于当年可直接领取金额；与领取金额同年出现时不代表可叠加领取。合同终止型给付发生后，现金价值不再保留。
+        <p className="mt-2 rounded-[14px] border border-[#D7E2EA] bg-[#F8FBFF] px-3 py-2 text-[11px] font-semibold leading-5 text-[#5E7290]">
+          现金价值不等同于当年可直接领取金额；与领取金额同年出现时不代表可叠加领取。合同终止型给付发生后，现金价值不再保留。
         </p>
       ) : null}
     </div>
