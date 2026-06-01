@@ -11,10 +11,10 @@ function parseJson(value) {
   }
   try {
     const parsed = JSON.parse(String(value || '{}'));
-    return {
-      value: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
-      valid: true,
-    };
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { value: {}, valid: false };
+    }
+    return { value: parsed, valid: true };
   } catch {
     return { value: {}, valid: false };
   }
