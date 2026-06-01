@@ -3317,15 +3317,19 @@ function CustomerApp() {
     setShowAnalysisReport(false);
     const current = formData;
     const beforeMainProductKey = mainProductIdentityKey(formData);
-    const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true }).filter((_plan, planIndex) => planIndex !== index);
+    const normalizedPlans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
+    const removedPlan = normalizedPlans[index];
+    const mainPlanIndex = normalizedPlans.findIndex((plan) => plan.role === 'main');
+    const removingMainPlan = String(removedPlan?.role || '') === 'main' || index === mainPlanIndex;
+    const plans = normalizedPlans.filter((_plan, planIndex) => planIndex !== index);
     const primary = plans.find((plan) => plan.role === 'main') || plans[0] || null;
     const nextData = {
       ...formData,
       plans,
+      name: primary ? primary.matchedProductName || primary.name || formData.name : '',
+      canonicalProductId: primary?.canonicalProductId || '',
       ...(primary
         ? {
-            name: primary.matchedProductName || primary.name || formData.name,
-            canonicalProductId: primary.canonicalProductId || formData.canonicalProductId,
             amount: primary.amount ? String(primary.amount) : formData.amount,
             coveragePeriod: primary.coveragePeriod || formData.coveragePeriod,
             paymentPeriod: primary.paymentPeriod || formData.paymentPeriod,
@@ -3335,6 +3339,11 @@ function CustomerApp() {
     const afterMainProductKey = mainProductIdentityKey(nextData);
     setFormData(nextData);
     if (beforeMainProductKey !== afterMainProductKey) {
+      setMessage('已删除险种，正在重新带出可选责任');
+      void loadFormProductAnalysisDraft(nextData, '已删除险种，已重新带出可选责任');
+      return;
+    }
+    if (removingMainPlan) {
       setMessage('已删除险种，正在重新带出可选责任');
       void loadFormProductAnalysisDraft(nextData, '已删除险种，已重新带出可选责任');
       return;

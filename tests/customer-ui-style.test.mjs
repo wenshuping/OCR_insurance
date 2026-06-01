@@ -983,5 +983,7 @@ test('deleting a rider does not force-refresh optional responsibilities when mai
   assert.match(source, /const beforeMainProductKey = mainProductIdentityKey\(formData\)/u);
   assert.match(source, /const afterMainProductKey = mainProductIdentityKey\(nextData\)/u);
   assert.match(source, /if \(beforeMainProductKey !== afterMainProductKey\)/u);
+  assert.match(source, /canonicalProductId: primary\?\.canonicalProductId \|\| ''/u);
+  assert.doesNotMatch(source, /canonicalProductId: primary\.canonicalProductId \|\| formData\.canonicalProductId/u);
   assert.doesNotMatch(source, /已删除附加险，正在重新带出可选责任['"`]\);\s*void loadFormProductAnalysisDraft\(nextData/u);
 });
