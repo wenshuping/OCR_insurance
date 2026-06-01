@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import {
@@ -8,8 +12,11 @@ import {
   withCanonicalProductId,
 } from '../server/canonical-product-id.mjs';
 import {
+  backfillDatabase,
   backfillCanonicalProductIdsInObject,
 } from '../scripts/backfill-canonical-product-ids.mjs';
+
+const officialProductName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
 
 test('canonical product id is stable for the same official company and product', () => {
   const left = buildCanonicalProductId({
@@ -128,4 +135,146 @@ test('backfill helper adds ids to plans that only have official name', () => {
 
   assert.match(output.plans[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.equal(output.canonicalProductId, output.plans[0].canonicalProductId);
+});
+
+test('backfill helper treats whitespace-only canonical id as missing', () => {
+  const output = backfillCanonicalProductIdsInObject({
+    company: '新华保险',
+    productName: officialProductName,
+    canonicalProductId: '   ',
+  });
+
+  assert.match(output.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+});
+
+test('backfill database dry-run rolls back, write commits, and second write is idempotent', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'canonical-product-id-'));
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE knowledge_records (
+        id INTEGER,
+        company TEXT,
+        product_name TEXT,
+        url TEXT,
+        payload TEXT
+      );
+      CREATE TABLE insurance_indicator_records (
+        id TEXT,
+        company TEXT,
+        product_name TEXT,
+        coverage_type TEXT,
+        liability TEXT,
+        payload TEXT
+      );
+      CREATE TABLE optional_responsibility_records (
+        id TEXT,
+        company TEXT,
+        product_name TEXT,
+        liability TEXT,
+        payload TEXT
+      );
+      CREATE TABLE policies (
+        id INTEGER,
+        company TEXT,
+        name TEXT,
+        payload TEXT
+      );
+    `);
+
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(1, '新华保险', officialProductName, 'https://example.test/product', '{ }');
+    db.prepare(`
+      INSERT INTO insurance_indicator_records (id, company, product_name, coverage_type, liability, payload)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('ind_1', '新华保险', officialProductName, '疾病保障', '重大疾病保险金', '{"liability":"重大疾病保险金"}');
+    db.prepare(`
+      INSERT INTO optional_responsibility_records (id, company, product_name, liability, payload)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('opt_1', '新华保险', officialProductName, '可选责任', '{"liability":"可选责任"}');
+    db.prepare('INSERT INTO policies (id, company, name, payload) VALUES (?, ?, ?, ?)')
+      .run(1, '新华保险', officialProductName, JSON.stringify({
+        plans: [
+          {
+            role: 'main',
+            company: '新华保险',
+            name: officialProductName,
+          },
+        ],
+      }));
+  } finally {
+    db.close();
+  }
+
+  const readState = () => {
+    const readDb = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const knowledge = readDb.prepare('SELECT company, product_name, payload FROM knowledge_records WHERE id = 1').get();
+      const indicator = readDb.prepare('SELECT company, product_name, payload FROM insurance_indicator_records WHERE id = ?').get('ind_1');
+      const optional = readDb.prepare('SELECT company, product_name, payload FROM optional_responsibility_records WHERE id = ?').get('opt_1');
+      const policy = readDb.prepare('SELECT company, name, payload FROM policies WHERE id = 1').get();
+      return {
+        knowledge,
+        indicator,
+        optional,
+        policy,
+        payloads: {
+          knowledge: JSON.parse(knowledge.payload),
+          indicator: JSON.parse(indicator.payload),
+          optional: JSON.parse(optional.payload),
+          policy: JSON.parse(policy.payload),
+        },
+      };
+    } finally {
+      readDb.close();
+    }
+  };
+
+  try {
+    const dryRun = backfillDatabase(dbPath, { dryRun: true });
+    assert.equal(dryRun.dryRun, true);
+    assert.ok(dryRun.knowledgeRecords.updated > 0);
+    assert.ok(dryRun.insuranceIndicatorRecords.updated > 0);
+    assert.ok(dryRun.optionalResponsibilityRecords.updated > 0);
+    assert.ok(dryRun.policies.updated > 0);
+
+    const afterDryRun = readState();
+    assert.equal(afterDryRun.payloads.knowledge.canonicalProductId, undefined);
+    assert.equal(afterDryRun.payloads.indicator.canonicalProductId, undefined);
+    assert.equal(afterDryRun.payloads.optional.canonicalProductId, undefined);
+    assert.equal(afterDryRun.payloads.policy.canonicalProductId, undefined);
+    assert.equal(afterDryRun.payloads.policy.plans[0].canonicalProductId, undefined);
+
+    const write = backfillDatabase(dbPath, { dryRun: false });
+    assert.equal(write.dryRun, false);
+    assert.ok(write.knowledgeRecords.updated > 0);
+    assert.ok(write.insuranceIndicatorRecords.updated > 0);
+    assert.ok(write.optionalResponsibilityRecords.updated > 0);
+    assert.ok(write.policies.updated > 0);
+
+    const afterWrite = readState();
+    assert.match(afterWrite.payloads.knowledge.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+    assert.match(afterWrite.payloads.indicator.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+    assert.match(afterWrite.payloads.optional.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+    assert.match(afterWrite.payloads.policy.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+    assert.equal(afterWrite.payloads.policy.canonicalProductId, afterWrite.payloads.policy.plans[0].canonicalProductId);
+
+    assert.equal(afterWrite.knowledge.company, '新华保险');
+    assert.equal(afterWrite.knowledge.product_name, officialProductName);
+    assert.equal(afterWrite.indicator.company, '新华保险');
+    assert.equal(afterWrite.indicator.product_name, officialProductName);
+    assert.equal(afterWrite.optional.company, '新华保险');
+    assert.equal(afterWrite.optional.product_name, officialProductName);
+    assert.equal(afterWrite.policy.company, '新华保险');
+    assert.equal(afterWrite.policy.name, officialProductName);
+
+    const secondWrite = backfillDatabase(dbPath, { dryRun: false });
+    assert.equal(secondWrite.knowledgeRecords.updated, 0);
+    assert.equal(secondWrite.insuranceIndicatorRecords.updated, 0);
+    assert.equal(secondWrite.optionalResponsibilityRecords.updated, 0);
+    assert.equal(secondWrite.policies.updated, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

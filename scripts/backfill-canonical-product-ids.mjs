@@ -2,21 +2,21 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
 
 import { canonicalProductIdFromOfficialProduct } from '../server/canonical-product-id.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'policy-ocr.sqlite');
-
 function parseJson(value) {
-  if (value && typeof value === 'object') return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { value, valid: true };
+  }
   try {
     const parsed = JSON.parse(String(value || '{}'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    return {
+      value: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
+      valid: true,
+    };
   } catch {
-    return {};
+    return { value: {}, valid: false };
   }
 }
 
@@ -49,7 +49,7 @@ function backfillPlan(plan = {}, fallbackCompany = '') {
 export function backfillCanonicalProductIdsInObject(input = {}) {
   const record = { ...input };
   const company = trim(record.company);
-  if (!record.canonicalProductId) {
+  if (!trim(record.canonicalProductId)) {
     const productName = trim(record.productName || record.product_name || record.matchedProductName || record.name);
     const id = canonicalProductIdFromOfficialProduct({ company, productName });
     if (id) record.canonicalProductId = id;
@@ -57,7 +57,7 @@ export function backfillCanonicalProductIdsInObject(input = {}) {
   if (Array.isArray(record.plans)) {
     record.plans = record.plans.map((plan) => backfillPlan(plan, company));
     const primary = record.plans.find((plan) => plan.role === 'main') || record.plans[0];
-    if (!record.canonicalProductId && primary?.canonicalProductId) {
+    if (!trim(record.canonicalProductId) && primary?.canonicalProductId) {
       record.canonicalProductId = primary.canonicalProductId;
     }
   }
@@ -81,11 +81,12 @@ function updatePayloadTable(db, tableName, idColumn = 'id', dryRun = true) {
   const summary = { scanned: rows.length, updated: 0, skippedInvalidJson: 0, missingTable: false };
 
   for (const row of rows) {
-    const payload = parseJson(row.payload);
-    if (!Object.keys(payload).length && trim(row.payload) && trim(row.payload) !== '{}') {
+    const parsed = parseJson(row.payload);
+    if (!parsed.valid) {
       summary.skippedInvalidJson += 1;
       continue;
     }
+    const payload = parsed.value;
 
     const hadCompany = hasOwn(payload, 'company');
     const hadProductName = hasOwn(payload, 'productName');
@@ -118,11 +119,12 @@ function updatePolicies(db, dryRun = true) {
   const summary = { scanned: rows.length, updated: 0, skippedInvalidJson: 0, missingTable: false };
 
   for (const row of rows) {
-    const payload = parseJson(row.payload);
-    if (!Object.keys(payload).length && trim(row.payload) && trim(row.payload) !== '{}') {
+    const parsed = parseJson(row.payload);
+    if (!parsed.valid) {
       summary.skippedInvalidJson += 1;
       continue;
     }
+    const payload = parsed.value;
 
     const hadCompany = hasOwn(payload, 'company');
     const hadName = hasOwn(payload, 'name');
@@ -189,7 +191,7 @@ function printUsageAndExit() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const dbPath = readArg('db', DEFAULT_DB_PATH);
+  const dbPath = readArg('db');
   if (!dbPath) printUsageAndExit();
   const dryRun = !hasFlag('write');
   const summary = backfillDatabase(path.resolve(dbPath), { dryRun });
