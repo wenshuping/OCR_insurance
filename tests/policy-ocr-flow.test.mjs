@@ -4372,3 +4372,74 @@ test('family owner routes hide and reject mutations from another guest owner', a
     await server.close();
   }
 });
+
+test('share snapshots only selected family members and policies', async () => {
+  const state = createInitialState();
+  state.familyProfiles = [
+    {
+      id: 1,
+      ownerUserId: null,
+      ownerGuestId: 'guest-share',
+      familyName: '一号家庭',
+      coreMemberId: 11,
+      status: 'active',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 2,
+      ownerUserId: null,
+      ownerGuestId: 'guest-share',
+      familyName: '二号家庭',
+      coreMemberId: 21,
+      status: 'active',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+  state.familyMembers = [
+    { id: 11, familyId: 1, name: '张一', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 12, familyId: 1, name: '张二', relationToCore: 'spouse', relationLabel: '配偶', role: 'adult', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 21, familyId: 2, name: '李一', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 22, familyId: 2, name: '李二', relationToCore: 'child', relationLabel: '子女', role: 'child', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+  ];
+  state.policies = [
+    { id: 101, userId: null, guestId: 'guest-share', familyId: 1, applicantMemberId: 11, insuredMemberId: 12, company: 'A保险', name: '一号保单', applicant: '张一', insured: '张二', responsibilities: [], coverageIndicators: [], createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 102, userId: null, guestId: 'guest-share', familyId: 2, applicantMemberId: 21, insuredMemberId: 22, company: 'B保险', name: '二号保单', applicant: '李一', insured: '李二', responsibilities: [], coverageIndicators: [], createdAt: '2026-01-01T00:00:00.000Z' },
+  ];
+  state.nextId = 200;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const created = await jsonFetch(server.baseUrl, '/api/family-profiles/1/share?guestId=guest-share', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(created.response.status, 201);
+    assert.equal(created.payload.ok, true);
+    assert.equal(created.payload.share.familyId, 1);
+    assert.match(created.payload.share.token, /^[a-f0-9]{32}$/);
+
+    const fetched = await jsonFetch(server.baseUrl, `/api/family-report-shares/${created.payload.share.token}`);
+    assert.equal(fetched.response.status, 200);
+    assert.equal(fetched.payload.ok, true);
+    assert.equal(fetched.payload.family.id, 1);
+    assert.equal(fetched.payload.family.familyName, '一号家庭');
+    assert.deepEqual(fetched.payload.members.map((member) => member.familyId), [1, 1]);
+    assert.deepEqual(fetched.payload.members.map((member) => member.name), ['张一', '张二']);
+    assert.deepEqual(fetched.payload.policies.map((policy) => policy.familyId), [1]);
+    assert.deepEqual(fetched.payload.policies.map((policy) => policy.name), ['一号保单']);
+    assert.ok(fetched.payload.snapshotAt);
+    assert.equal(fetched.payload.members.some((member) => Number(member.familyId) === 2), false);
+    assert.equal(fetched.payload.members.some((member) => member.name === '李一' || member.name === '李二'), false);
+    assert.equal(fetched.payload.policies.some((policy) => Number(policy.familyId) === 2), false);
+  } finally {
+    await server.close();
+  }
+});

@@ -1270,6 +1270,7 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.insuranceIndicatorRecords)) state.insuranceIndicatorRecords = [];
   if (!Array.isArray(state.optionalResponsibilityRecords)) state.optionalResponsibilityRecords = [];
   if (!Array.isArray(state.officialDomainProfiles)) state.officialDomainProfiles = [];
+  if (!Array.isArray(state.familyReportShares)) state.familyReportShares = [];
   if (!Number(state.nextId)) state.nextId = 1;
 
   const scanner = options.scanner || ((input) => scanPolicyWithConfiguredRuntime(input));
@@ -1870,6 +1871,10 @@ export function createPolicyOcrApp(options = {}) {
     };
   }
 
+  function cloneFamilySharePayload(payload) {
+    return JSON.parse(JSON.stringify(payload || {}));
+  }
+
   app.get('/api/family-profiles', async (req, res) => {
     const owner = resolveFamilyRequestOwner(req, res);
     if (!owner) return;
@@ -1969,6 +1974,53 @@ export function createPolicyOcrApp(options = {}) {
     } catch (error) {
       sendError(res, error, 400);
     }
+  });
+
+  app.post('/api/family-profiles/:id/share', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res);
+    if (!owner) return;
+    const family = findOwnedFamily(req.params.id, owner);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+
+    const now = new Date().toISOString();
+    const members = listFamilyMembers(state, family.id);
+    const policies = (state.policies || [])
+      .filter((policy) => Number(policy?.familyId || 0) === Number(family.id))
+      .map((policy) => attachPolicyFamilyDisplay(policy, state));
+    const share = {
+      id: allocateId(state),
+      token: crypto.randomUUID().replace(/-/g, ''),
+      familyId: Number(family.id),
+      createdAt: now,
+      payload: cloneFamilySharePayload({
+        family,
+        members,
+        policies,
+        snapshotAt: now,
+      }),
+    };
+    state.familyReportShares.push(share);
+    await persist(state);
+    res.status(201).json({
+      ok: true,
+      share: {
+        id: share.id,
+        token: share.token,
+        familyId: share.familyId,
+        createdAt: share.createdAt,
+      },
+    });
+  });
+
+  app.get('/api/family-report-shares/:token', async (req, res) => {
+    const token = String(req.params.token || '').trim();
+    const share = (state.familyReportShares || []).find((row) => String(row?.token || '') === token);
+    if (!share) {
+      return res.status(404).json({ ok: false, code: 'SHARE_NOT_FOUND', message: '分享报告不存在' });
+    }
+    res.json({ ok: true, ...cloneFamilySharePayload(share.payload || {}) });
   });
 
   app.post('/api/policies/recognize', async (req, res) => {

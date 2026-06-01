@@ -109,6 +109,13 @@ export type FamilyProfile = {
   members?: FamilyMember[];
 };
 
+export type FamilyReportShare = {
+  id: number;
+  token: string;
+  familyId: number;
+  createdAt: string;
+};
+
 export type Policy = {
   id: number;
   company: string;
@@ -759,6 +766,19 @@ export function setFamilyCoreMember(input: { token?: string; guestId?: string; f
     method: 'PATCH',
     body: { memberId: input.memberId },
   });
+}
+
+export function createFamilyReportShare(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; share: FamilyReportShare }>(`/api/family-profiles/${input.familyId}/share${authQuery(input)}`, {
+    token: input.token,
+    body: {},
+  });
+}
+
+export function getFamilyReportShare(shareToken: string) {
+  return request<{ ok: true; family: FamilyProfile; members: FamilyMember[]; policies: Policy[]; snapshotAt: string }>(
+    `/api/family-report-shares/${encodeURIComponent(shareToken)}`,
+  );
 }
 
 export function getWechatJsSdkSignature(url: string) {

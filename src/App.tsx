@@ -58,6 +58,7 @@ import {
   confirmCashValue,
   crawlAdminKnowledge,
   createAdminOfficialDomainProfile,
+  createFamilyReportShare,
   createFamilyMember,
   createFamilyProfile,
   deleteAdminOfficialDomainProfile,
@@ -2809,7 +2810,10 @@ function CustomerApp() {
     () => selectedFamilyId ? policies.filter((policy) => Number(policy.familyId) === Number(selectedFamilyId)) : policies,
     [policies, selectedFamilyId],
   );
-  const familyReport = useMemo(() => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile), [selectedFamilyPolicies, familyPlanningProfile]);
+  const familyReport = useMemo(
+    () => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile, { familyId: selectedFamilyId }),
+    [selectedFamilyPolicies, familyPlanningProfile, selectedFamilyId],
+  );
   const selectedFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
     [familyProfiles, selectedFamilyId],
@@ -3199,6 +3203,25 @@ function CustomerApp() {
   function openFamilyReport(familyId: number) {
     handleSelectFamily(familyId);
     setShowFamilyReport(true);
+  }
+
+  async function handleShareFamilyReport() {
+    if (!selectedFamilyId) {
+      setMessage('请先选择家庭档案');
+      return;
+    }
+    try {
+      const payload = await createFamilyReportShare({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: selectedFamilyId,
+      });
+      const shareUrl = `${window.location.origin}${window.location.pathname}#/family-share/${payload.share.token}`;
+      await navigator.clipboard.writeText(shareUrl);
+      setMessage('家庭报告分享链接已复制');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '家庭报告分享失败');
+    }
   }
 
   async function createFamilyProfileByName(familyName: string) {
@@ -4316,13 +4339,25 @@ function CustomerApp() {
 
   if (showFamilyReport) {
     return (
-      <FamilyReportPage
-        report={familyReport}
-        planningProfile={familyPlanningProfile}
-        onPlanningProfileChange={handleFamilyPlanningProfileChange}
-        onBack={() => setShowFamilyReport(false)}
-        onExport={(target, title) => void downloadReportImage(target, title, { rawTarget: true, preservePageStyle: true })}
-      />
+      <>
+        <FamilyReportPage
+          report={familyReport}
+          planningProfile={familyPlanningProfile}
+          onPlanningProfileChange={handleFamilyPlanningProfileChange}
+          onBack={() => setShowFamilyReport(false)}
+          onExport={(target, title) => void downloadReportImage(target, title, { rawTarget: true, preservePageStyle: true })}
+        />
+        <button
+          type="button"
+          onClick={() => void handleShareFamilyReport()}
+          className="no-print fixed bottom-24 right-4 z-30 flex h-12 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white shadow-xl shadow-slate-950/20 active:scale-[0.98]"
+          aria-label="分享家庭报告"
+          title="分享家庭报告"
+        >
+          <Copy size={18} />
+          <span>分享</span>
+        </button>
+      </>
     );
   }
 
