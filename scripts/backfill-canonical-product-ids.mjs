@@ -49,15 +49,19 @@ function backfillPlan(plan = {}, fallbackCompany = '') {
   return canonicalProductId ? { ...plan, canonicalProductId } : { ...plan };
 }
 
-export function backfillCanonicalProductIdsInObject(input = {}, { officialProductName = '' } = {}) {
+export function backfillCanonicalProductIdsInObject(
+  input = {},
+  { officialProductName = '', allowMatchedProductName = true, includePlans = true } = {},
+) {
   const record = { ...input };
   const company = trim(record.company);
   if (!trim(record.canonicalProductId)) {
-    const productName = trim(officialProductName || record.matchedProductName);
+    const productName = trim(officialProductName)
+      || (allowMatchedProductName ? trim(record.matchedProductName) : '');
     const id = canonicalProductIdFromOfficialProduct({ company, productName });
     if (id) record.canonicalProductId = id;
   }
-  if (Array.isArray(record.plans)) {
+  if (includePlans && Array.isArray(record.plans)) {
     record.plans = record.plans.map((plan) => backfillPlan(plan, company));
     const primary = record.plans.find((plan) => plan.role === 'main') || record.plans[0];
     if (!trim(record.canonicalProductId) && primary?.canonicalProductId) {
@@ -99,6 +103,8 @@ function updatePayloadTable(db, tableName, idColumn = 'id', dryRun = true) {
     };
     const next = backfillCanonicalProductIdsInObject(candidate, {
       officialProductName: row.product_name,
+      allowMatchedProductName: false,
+      includePlans: false,
     });
     if (!hadCompany) delete next.company;
 

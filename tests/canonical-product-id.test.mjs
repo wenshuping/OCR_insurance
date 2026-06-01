@@ -209,6 +209,16 @@ test('backfill database dry-run rolls back, write commits, and second write is i
       .run(4, '新华保险', officialProductName, 'https://example.test/product-string', '"not-an-object"');
     db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
       .run(5, '新华保险', officialProductName, 'https://example.test/product-broken', '{broken');
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(6, '新华保险', '', 'https://example.test/product-payload-matched', JSON.stringify({
+        matchedProductName: officialProductName,
+        plans: [
+          {
+            role: 'main',
+            matchedProductName: officialProductName,
+          },
+        ],
+      }));
     db.prepare(`
       INSERT INTO insurance_indicator_records (id, company, product_name, coverage_type, liability, payload)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -250,6 +260,7 @@ test('backfill database dry-run rolls back, write commits, and second write is i
       const knowledgeNullPayload = readDb.prepare('SELECT payload FROM knowledge_records WHERE id = 3').get().payload;
       const knowledgeStringPayload = readDb.prepare('SELECT payload FROM knowledge_records WHERE id = 4').get().payload;
       const knowledgeBrokenPayload = readDb.prepare('SELECT payload FROM knowledge_records WHERE id = 5').get().payload;
+      const knowledgePayloadMatched = readDb.prepare('SELECT company, product_name, payload FROM knowledge_records WHERE id = 6').get();
       const indicator = readDb.prepare('SELECT company, product_name, payload FROM insurance_indicator_records WHERE id = ?').get('ind_1');
       const optional = readDb.prepare('SELECT company, product_name, payload FROM optional_responsibility_records WHERE id = ?').get('opt_1');
       const policy = readDb.prepare('SELECT company, name, payload FROM policies WHERE id = 1').get();
@@ -260,12 +271,14 @@ test('backfill database dry-run rolls back, write commits, and second write is i
         knowledgeNullPayload,
         knowledgeStringPayload,
         knowledgeBrokenPayload,
+        knowledgePayloadMatched,
         indicator,
         optional,
         policy,
         rawNameOnlyPolicy,
         payloads: {
           knowledge: JSON.parse(knowledge.payload),
+          knowledgePayloadMatched: JSON.parse(knowledgePayloadMatched.payload),
           indicator: JSON.parse(indicator.payload),
           optional: JSON.parse(optional.payload),
           policy: JSON.parse(policy.payload),
@@ -292,6 +305,8 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     assert.equal(afterDryRun.knowledgeNullPayload, null);
     assert.equal(afterDryRun.knowledgeStringPayload, '"not-an-object"');
     assert.equal(afterDryRun.knowledgeBrokenPayload, '{broken');
+    assert.equal(afterDryRun.payloads.knowledgePayloadMatched.canonicalProductId, undefined);
+    assert.equal(afterDryRun.payloads.knowledgePayloadMatched.plans[0].canonicalProductId, undefined);
     assert.equal(afterDryRun.payloads.indicator.canonicalProductId, undefined);
     assert.equal(afterDryRun.payloads.optional.canonicalProductId, undefined);
     assert.equal(afterDryRun.payloads.policy.canonicalProductId, undefined);
@@ -313,6 +328,8 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     assert.equal(afterWrite.knowledgeNullPayload, null);
     assert.equal(afterWrite.knowledgeStringPayload, '"not-an-object"');
     assert.equal(afterWrite.knowledgeBrokenPayload, '{broken');
+    assert.equal(afterWrite.payloads.knowledgePayloadMatched.canonicalProductId, undefined);
+    assert.equal(afterWrite.payloads.knowledgePayloadMatched.plans[0].canonicalProductId, undefined);
     assert.match(afterWrite.payloads.indicator.canonicalProductId, /^product_[a-f0-9]{16}$/u);
     assert.match(afterWrite.payloads.optional.canonicalProductId, /^product_[a-f0-9]{16}$/u);
     assert.match(afterWrite.payloads.policy.canonicalProductId, /^product_[a-f0-9]{16}$/u);
