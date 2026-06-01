@@ -112,9 +112,9 @@ export function normalizeFamilyMemberInput(input = {}) {
     name: normalizeName(input.name),
     birthday: normalizeDateOnly(input.birthday || input.birthDate),
     idNumberTail: normalizeIdNumberTail(input.idNumberTail || idNumber),
-    relationToCore: input.relationToCore || relation.relationToCore,
-    relationLabel: input.relationLabel || relation.relationLabel,
-    role: input.role || relation.role,
+    relationToCore: relation.relationToCore,
+    relationLabel: relation.relationLabel,
+    role: relation.role,
     status: String(input.status || 'active').trim() || 'active',
   };
 }
@@ -207,7 +207,7 @@ export function matchFamilyMemberByPerson(members = [], person = {}) {
     if (!birthdayMatches.length) return null;
     if (idNumberTail) {
       const exact = birthdayMatches.find((member) => normalizeIdNumberTail(member?.idNumberTail) === idNumberTail);
-      if (exact) return exact;
+      return exact || null;
     }
     return birthdayMatches[0] || null;
   }

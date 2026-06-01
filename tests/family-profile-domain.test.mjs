@@ -5,6 +5,7 @@ import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import {
   ensureDefaultFamilyProfileForPrincipal,
   matchFamilyMemberByPerson,
+  normalizeFamilyMemberInput,
   normalizeFamilyRelation,
   validatePolicyFamilyBinding,
 } from '../server/family-profile.domain.mjs';
@@ -39,6 +40,7 @@ test('matchFamilyMemberByPerson prefers exact name and birthday matches', () => 
 
   assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '3333' })?.id, 2);
   assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01' })?.id, 2);
+  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '9999' }), null);
   assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1970-01-01' }), null);
 });
 
@@ -62,4 +64,19 @@ test('normalizeFamilyRelation maps common labels to stable values', () => {
   assert.deepEqual(normalizeFamilyRelation('儿子'), { relationToCore: 'son', relationLabel: '儿子', role: 'child' });
   assert.deepEqual(normalizeFamilyRelation('核心人员'), { relationToCore: 'self', relationLabel: '本人', role: 'core' });
   assert.deepEqual(normalizeFamilyRelation(''), { relationToCore: 'pending', relationLabel: '待确认', role: 'unknown' });
+});
+
+test('normalizeFamilyMemberInput applies relation normalization to member fields', () => {
+  assert.deepEqual(
+    normalizeFamilyMemberInput({ name: '张三', relationToCore: '核心人员' }),
+    {
+      name: '张三',
+      birthday: '',
+      idNumberTail: '',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+      status: 'active',
+    },
+  );
 });
