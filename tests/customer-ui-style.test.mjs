@@ -53,6 +53,22 @@ test('entry form exposes local product candidates before responsibility generati
   assert.match(matchPanelSource, /role="listbox"/);
 });
 
+test('entry form requires family profile and supports core setup after OCR', () => {
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  assert.match(pageSource, /家庭档案/);
+  assert.match(pageSource, /新建家庭档案/);
+  assert.match(pageSource, /家庭关系中心/);
+  assert.match(pageSource, /以谁作为家庭关系基准/);
+  assert.match(pageSource, /新增为家庭成员/);
+  assert.match(customerSource, /familyProfiles/);
+  assert.match(customerSource, /selectedFamilyId/);
+  assert.match(customerSource, /createFamilyProfile/);
+  assert.match(customerSource, /createFamilyMember/);
+  assert.match(customerSource, /applicantMemberId/);
+  assert.match(customerSource, /insuredMemberId/);
+});
+
 test('photo upload area shows an OCR recognition animation while loading', () => {
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(pageSource, /aria-busy=\{loading\}/);

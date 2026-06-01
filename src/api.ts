@@ -741,7 +741,7 @@ export function createFamilyMember(input: {
   idNumberTail?: string;
   setAsCore?: boolean;
 }) {
-  return request<{ ok: true; family: FamilyProfile; member: FamilyMember }>(`/api/family-profiles/${input.familyId}/members${authQuery(input)}`, {
+  return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(`/api/family-profiles/${input.familyId}/members${authQuery(input)}`, {
     token: input.token,
     body: {
       name: input.name,

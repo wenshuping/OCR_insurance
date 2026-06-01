@@ -44,6 +44,8 @@ import {
   PolicyCashflowPlan,
   PolicyCompanySuggestion,
   CoverageIndicator,
+  FamilyMember,
+  FamilyProfile,
   PolicyFormData,
   PolicyKnowledgeMatch,
   PolicyProductSuggestion,
@@ -56,6 +58,8 @@ import {
   confirmCashValue,
   crawlAdminKnowledge,
   createAdminOfficialDomainProfile,
+  createFamilyMember,
+  createFamilyProfile,
   deleteAdminOfficialDomainProfile,
   deletePolicy,
   getAdminOfficialDomainProfiles,
@@ -64,6 +68,7 @@ import {
   getAdminOverview,
   getPolicy,
   listPolicies,
+  listFamilyProfiles,
   listPolicyResponsibilityCompanySuggestions,
   listPolicyResponsibilityProductSuggestions,
   logClientPerformance,
@@ -109,6 +114,7 @@ const OCR_MODE_LABELS: Record<string, string> = {
   minicpm_v_4x_local: 'MiniCPM-V',
 };
 const POLICY_RELATION_OPTIONS = ['本人', '子女', '父母', '夫妻'];
+const FAMILY_MEMBER_RELATION_OPTIONS = ['本人', '配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'];
 
 declare global {
   interface Window {
@@ -132,6 +138,9 @@ const emptyForm: PolicyFormData = {
   amount: '',
   firstPremium: '',
   plans: [],
+  familyId: null,
+  applicantMemberId: null,
+  insuredMemberId: null,
 };
 
 function createGuestId() {
@@ -261,6 +270,14 @@ function policyToForm(policy: Policy): PolicyFormData {
     amount: policy.amount ? String(policy.amount) : '',
     firstPremium: policy.firstPremium ? String(policy.firstPremium) : '',
     plans: normalizePolicyPlanList(policy.plans, policy.company),
+    familyId: policy.familyId ?? null,
+    applicantMemberId: policy.applicantMemberId ?? null,
+    insuredMemberId: policy.insuredMemberId ?? null,
+    familyName: policy.familyName || '',
+    applicantMemberName: policy.applicantMemberName || '',
+    applicantRelationLabel: policy.applicantRelationLabel || '',
+    insuredMemberName: policy.insuredMemberName || '',
+    insuredRelationLabel: policy.insuredRelationLabel || '',
   };
 }
 
@@ -295,6 +312,7 @@ function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): PolicyForm
 
 function scanToForm(scan: PolicyScanResult): PolicyFormData {
   const data = scan.data || {};
+  const familyData = data as Partial<PolicyFormData>;
   return {
     company: String(data.company || ''),
     name: String(data.name || ''),
@@ -311,6 +329,9 @@ function scanToForm(scan: PolicyScanResult): PolicyFormData {
     amount: data.amount ? String(data.amount) : '',
     firstPremium: data.firstPremium ? String(data.firstPremium) : '',
     plans: normalizePolicyPlanList(data.plans, String(data.company || ''), { assignRolesByRecognizedOrder: true }),
+    familyId: familyData.familyId ?? null,
+    applicantMemberId: familyData.applicantMemberId ?? null,
+    insuredMemberId: familyData.insuredMemberId ?? null,
   };
 }
 
@@ -323,6 +344,9 @@ function mergeScanToForm(scan: PolicyScanResult, current: PolicyFormData): Polic
     insuredRelation: next.insuredRelation || current.insuredRelation,
     insuredIdNumber: next.insuredIdNumber || current.insuredIdNumber,
     insuredBirthday: next.insuredBirthday || current.insuredBirthday,
+    familyId: next.familyId ?? current.familyId ?? null,
+    applicantMemberId: next.applicantMemberId ?? current.applicantMemberId ?? null,
+    insuredMemberId: next.insuredMemberId ?? current.insuredMemberId ?? null,
   };
 }
 
@@ -2727,6 +2751,8 @@ function CustomerApp() {
   const [analysisDraft, setAnalysisDraft] = useState<PolicyAnalysisResult | null>(null);
   const [showAnalysisReport, setShowAnalysisReport] = useState(false);
   const [policies, setPolicies] = useState<Policy[]>([]);
+  const [familyProfiles, setFamilyProfiles] = useState<FamilyProfile[]>([]);
+  const [selectedFamilyId, setSelectedFamilyId] = useState<number | null>(null);
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [activeTab, setActiveTab] = useState<CustomerTab>('entry');
   const [message, setMessage] = useState('可以直接录入保单');
@@ -2779,6 +2805,14 @@ function CustomerApp() {
   const annualPremium = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0), [policies]);
   const policyGroups = useMemo(() => groupPoliciesByInsured(policies), [policies]);
   const familyReport = useMemo(() => buildFamilyReport(policies, familyPlanningProfile), [policies, familyPlanningProfile]);
+  const selectedFamily = useMemo(
+    () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
+    [familyProfiles, selectedFamilyId],
+  );
+  const selectedFamilyMembers = useMemo(
+    () => (Array.isArray(selectedFamily?.members) ? selectedFamily.members : []),
+    [selectedFamily],
+  );
   const isLoggedIn = Boolean(token);
 
   function handleFamilyPlanningProfileChange(next: FamilyPlanningProfile) {
@@ -2794,6 +2828,19 @@ function CustomerApp() {
     });
   }
 
+  async function refreshFamilyProfiles(nextToken = token) {
+    const payload = await listFamilyProfiles({ token: nextToken || undefined, guestId: nextToken ? undefined : guestId });
+    const families = Array.isArray(payload.families) ? payload.families : [];
+    setFamilyProfiles(families);
+    setSelectedFamilyId((current) => {
+      const nextId = current && families.some((family) => Number(family.id) === Number(current))
+        ? current
+        : families[0]?.id ?? null;
+      setFormData((currentForm) => ({ ...currentForm, familyId: nextId }));
+      return nextId;
+    });
+  }
+
   function clearCustomerSession(nextMessage = '已退出登录，当前为游客模式') {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_MOBILE_KEY);
@@ -2806,6 +2853,8 @@ function CustomerApp() {
     setShowAccountSheet(false);
     setSelectedPolicy(null);
     setPolicies([]);
+    setFamilyProfiles([]);
+    setSelectedFamilyId(null);
     setMessage(nextMessage);
   }
 
@@ -2821,7 +2870,7 @@ function CustomerApp() {
   }
 
   useEffect(() => {
-    refreshPolicies().catch((error) => {
+    Promise.all([refreshPolicies(), refreshFamilyProfiles()]).catch((error) => {
       if (error instanceof ApiError && error.status === 401) {
         clearCustomerSession('登录已失效，请重新验证手机号');
       }
@@ -2996,7 +3045,7 @@ function CustomerApp() {
     };
   }, [activeTab, confirmedProductMatchKey, formData.company, formData.name]);
 
-  function updateForm(key: keyof PolicyFormData, value: string) {
+  function updateForm(key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) {
     setAnalysisDraft(null);
     setShowAnalysisReport(false);
     if (key === 'company' || key === 'name') {
@@ -3130,6 +3179,63 @@ function CustomerApp() {
         : current,
     );
     setMessage(`已选择保险产品：${name}`);
+  }
+
+  function handleSelectFamily(familyId: number | null) {
+    setSelectedFamilyId(familyId);
+    setFormData((current) => ({
+      ...current,
+      familyId,
+      applicantMemberId: familyId === current.familyId ? current.applicantMemberId ?? null : null,
+      insuredMemberId: familyId === current.familyId ? current.insuredMemberId ?? null : null,
+    }));
+  }
+
+  async function handleCreateFamilyProfile() {
+    const familyName = window.prompt('请输入家庭档案名称', '默认家庭')?.trim();
+    if (!familyName) return null;
+    const payload = await createFamilyProfile({ token: token || undefined, guestId: token ? undefined : guestId, familyName });
+    const family = { ...payload.family, members: payload.members };
+    setFamilyProfiles((current) => [family, ...current.filter((item) => Number(item.id) !== Number(family.id))]);
+    handleSelectFamily(family.id);
+    setMessage(`已创建家庭档案：${family.familyName}`);
+    return family;
+  }
+
+  function findFamilyMemberByName(name: string) {
+    const normalizedName = name.trim();
+    if (!normalizedName) return null;
+    const matches = selectedFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  async function ensureFamilyBeforeSave() {
+    if (selectedFamily) return selectedFamily;
+    const payload = await createFamilyProfile({ token: token || undefined, guestId: token ? undefined : guestId, familyName: '默认家庭' });
+    const family = { ...payload.family, members: payload.members };
+    setFamilyProfiles((current) => [family, ...current.filter((item) => Number(item.id) !== Number(family.id))]);
+    handleSelectFamily(family.id);
+    return family;
+  }
+
+  async function createFamilyMemberForFamily(family: FamilyProfile, input: { name: string; relationLabel: string; setAsCore?: boolean }) {
+    const name = input.name.trim();
+    if (!name) return null;
+    const payload = await createFamilyMember({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      name,
+      relationLabel: input.relationLabel || '待确认',
+      setAsCore: input.setAsCore,
+    });
+    await refreshFamilyProfiles();
+    return payload.member;
+  }
+
+  async function createMemberForCurrentFamily(input: { name: string; relationLabel: string; setAsCore?: boolean }) {
+    const family = await ensureFamilyBeforeSave();
+    return createFamilyMemberForFamily(family, input);
   }
 
   function handleOcrTextChange(value: string) {
@@ -3518,12 +3624,82 @@ function CustomerApp() {
     setLoading(true);
     setMessage(hasGeneratedAnalysis ? '正在保存保单信息' : '正在保存保单信息，报告将在后台生成');
     try {
+      let submitFamily = await ensureFamilyBeforeSave();
+      let submitFamilyMembers = Array.isArray(submitFamily.members) ? [...submitFamily.members] : [...selectedFamilyMembers];
+      const findActiveMemberById = (id: number | null | undefined) =>
+        submitFamilyMembers.find((member) => member.status === 'active' && Number(member.id) === Number(id || 0)) || null;
+      const findActiveSingleMemberByName = (name: string) => {
+        const normalizedName = name.trim();
+        if (!normalizedName) return null;
+        const matches = submitFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
+        return matches.length === 1 ? matches[0] : null;
+      };
+      const createSubmitMember = async (input: { name: string; relationLabel: string; setAsCore?: boolean }) => {
+        const member = await createFamilyMemberForFamily(submitFamily, input);
+        if (member) {
+          submitFamilyMembers = [member, ...submitFamilyMembers.filter((item) => Number(item.id) !== Number(member.id))];
+          if (input.setAsCore) submitFamily = { ...submitFamily, coreMemberId: member.id };
+        }
+        return member;
+      };
+      const resolveSubmitMember = async (input: {
+        name: string;
+        memberId?: number | null;
+        relationLabel?: string;
+        setAsCore?: boolean;
+      }) => {
+        if (input.memberId && !input.setAsCore) {
+          const selectedMember = findActiveMemberById(input.memberId);
+          if (selectedMember) return selectedMember;
+        }
+        const normalizedName = input.name.trim();
+        if (!normalizedName) return null;
+        const exactMember = input.setAsCore
+          ? null
+          : findActiveSingleMemberByName(normalizedName) ||
+            (Number(submitFamily.id) === Number(selectedFamilyId) ? findFamilyMemberByName(normalizedName) : null);
+        if (exactMember) return exactMember;
+        return createSubmitMember({
+          name: normalizedName,
+          relationLabel: input.setAsCore ? '本人' : input.relationLabel || '待确认',
+          setAsCore: input.setAsCore,
+        });
+      };
+
+      const applicantName = formData.applicant.trim();
+      const insuredName = formData.insured.trim();
+      const applicantMember = await resolveSubmitMember({
+        name: applicantName,
+        memberId: formData.applicantMemberId,
+        relationLabel: formData.applicantRelationLabel || '待确认',
+        setAsCore: !submitFamily.coreMemberId,
+      });
+      if (!applicantMember) {
+        setMessage('请确认投保人的家庭成员身份后再保存');
+        return;
+      }
+      const insuredMember = await resolveSubmitMember({
+        name: insuredName,
+        memberId: formData.insuredMemberId,
+        relationLabel: formData.insuredRelationLabel || '待确认',
+      });
+      if (!insuredMember) {
+        setMessage('请确认被保险人的家庭成员身份后再保存');
+        return;
+      }
+      const submitData: PolicyFormData = {
+        ...formData,
+        familyId: submitFamily.id,
+        applicantMemberId: applicantMember.id,
+        insuredMemberId: insuredMember.id,
+      };
+      setFormData(submitData);
       const payload = await scanPolicy({
         token,
         guestId,
         ocrText,
         uploadItem: scanResult ? null : uploadItem,
-        manualData: formData,
+        manualData: submitData,
         scan: scanResult,
         analysis: hasGeneratedAnalysis ? analysisDraft : null,
       });
@@ -4138,6 +4314,7 @@ function CustomerApp() {
       <>
         <UploadPolicyPage
           canSubmit={canSubmit}
+          familyProfiles={familyProfiles}
           formData={formData}
           formCompanySuggestionLoading={formCompanySuggestionLoading}
           formCompanySuggestions={formCompanySuggestions}
@@ -4149,10 +4326,15 @@ function CustomerApp() {
           productMatchLoading={formProductMatchLoading}
           productMatchMessage={formProductMatchMessage}
           productMatches={formProductMatches}
+          selectedFamilyId={selectedFamilyId}
+          selectedFamilyMembers={selectedFamilyMembers}
           onFileChange={handleFileChange}
+          onCreateFamily={() => void handleCreateFamilyProfile()}
+          onCreateFamilyMember={(input) => createMemberForCurrentFamily(input)}
           onGenerateAnalysis={() => void handleGenerateAnalysis()}
           onOcrTextChange={handleOcrTextChange}
           onScanClick={handleScanClick}
+          onSelectFamily={handleSelectFamily}
           onSelectFormCompany={(company) => updateForm('company', company)}
           onSelectFormProduct={(suggestion) => selectFormProductSuggestion(suggestion)}
           onSelectProductMatch={selectFormProductMatch}
@@ -6519,6 +6701,7 @@ function ProductMatchSelectPanel(props: {
 
 function UploadPolicyPage(props: {
   canSubmit: boolean;
+  familyProfiles: FamilyProfile[];
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   formData: PolicyFormData;
   formCompanySuggestionLoading: boolean;
@@ -6533,12 +6716,17 @@ function UploadPolicyPage(props: {
   productMatchLoading: boolean;
   productMatchMessage: string;
   productMatches: PolicyKnowledgeMatch[];
+  selectedFamilyId: number | null;
+  selectedFamilyMembers: FamilyMember[];
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onCreateFamily: () => void;
+  onCreateFamilyMember: (input: { name: string; relationLabel: string; setAsCore?: boolean }) => Promise<FamilyMember | null>;
   onGenerateAnalysis: () => void;
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
   onOpenReport: () => void;
   onScanClick: () => void;
+  onSelectFamily: (familyId: number | null) => void;
   onSelectFormCompany: (company: string) => void;
   onSelectFormProduct: (suggestion: PolicyProductSuggestion) => void;
   onSelectProductMatch: (match: PolicyKnowledgeMatch) => void;
@@ -6546,11 +6734,12 @@ function UploadPolicyPage(props: {
   onAddPlan: () => void;
   onRemovePlan: (index: number) => void;
   onUpdatePlan: (index: number, key: string, value: string) => void;
-  onUpdateForm: (key: keyof PolicyFormData, value: string) => void;
+  onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
   uploadItem: UploadItem | null;
 }) {
   const {
     canSubmit,
+    familyProfiles,
     fileInputRef,
     formData,
     formCompanySuggestionLoading,
@@ -6565,12 +6754,17 @@ function UploadPolicyPage(props: {
     productMatchLoading,
     productMatchMessage,
     productMatches,
+    selectedFamilyId,
+    selectedFamilyMembers,
     onFileChange,
+    onCreateFamily,
+    onCreateFamilyMember,
     onGenerateAnalysis,
     onOcrTextChange,
     onOpenAccount,
     onOpenReport,
     onScanClick,
+    onSelectFamily,
     onSelectFormCompany,
     onSelectFormProduct,
     onSelectProductMatch,
@@ -6584,8 +6778,11 @@ function UploadPolicyPage(props: {
   const [ocrCopyMessage, setOcrCopyMessage] = useState('');
   const [companyFocused, setCompanyFocused] = useState(false);
   const [productFocused, setProductFocused] = useState(false);
+  const [applicantFamilyRelation, setApplicantFamilyRelation] = useState(formData.applicantRelationLabel || '本人');
+  const [insuredFamilyRelation, setInsuredFamilyRelation] = useState(formData.insuredRelationLabel || '待确认');
   const companyQuery = formData.company.trim();
   const productQuery = formData.name.trim();
+  const selectedFamily = familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null;
   const visibleCompanySuggestions = useMemo(() => {
     const normalizedQuery = normalizeSuggestionQuery(companyQuery);
     if (!normalizedQuery) return [];
@@ -6650,6 +6847,63 @@ function UploadPolicyPage(props: {
     }
   }
 
+  async function handleAddFamilyMember(kind: 'applicant' | 'insured') {
+    const name = (kind === 'applicant' ? formData.applicant : formData.insured).trim();
+    const relationLabel = kind === 'applicant' ? applicantFamilyRelation : insuredFamilyRelation;
+    if (!name) return;
+    const member = await onCreateFamilyMember({ name, relationLabel, setAsCore: relationLabel === '本人' });
+    if (!member) return;
+    onUpdateForm(kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId', member.id);
+    onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', member.relationLabel || relationLabel);
+  }
+
+  function renderFamilyMemberFields(kind: 'applicant' | 'insured', label: string) {
+    const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
+    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
+    const relation = kind === 'applicant' ? applicantFamilyRelation : insuredFamilyRelation;
+    const setRelation = kind === 'applicant' ? setApplicantFamilyRelation : setInsuredFamilyRelation;
+    return (
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+        <TextField label={label} value={String(formData[nameKey] || '')} onChange={(value) => onUpdateForm(nameKey, value)} placeholder="姓名" />
+        <SelectField
+          label={`${label}家庭成员`}
+          value={formData[memberIdKey] ? String(formData[memberIdKey]) : ''}
+          onChange={(value) => {
+            const member = selectedFamilyMembers.find((item) => Number(item.id) === Number(value));
+            onUpdateForm(memberIdKey, value ? Number(value) : null);
+            if (member) {
+              onUpdateForm(nameKey, member.name);
+              onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', member.relationLabel);
+              setRelation(member.relationLabel || relation);
+            }
+          }}
+          options={selectedFamilyMembers.map((member) => ({ value: String(member.id), label: `${member.name}（${member.relationLabel || '待确认'}）` }))}
+          placeholder="选择家庭成员"
+        />
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <SelectField
+            label="家庭关系"
+            value={relation}
+            onChange={(value) => {
+              setRelation(value);
+              onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', value);
+            }}
+            options={FAMILY_MEMBER_RELATION_OPTIONS}
+            placeholder="请选择关系"
+          />
+          <button
+            type="button"
+            disabled={!String(formData[nameKey] || '').trim()}
+            onClick={() => void handleAddFamilyMember(kind)}
+            className="mt-6 h-11 whitespace-nowrap rounded-xl bg-blue-50 px-3 text-xs font-black text-blue-700 ring-1 ring-blue-100 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            新增为家庭成员
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
       <header className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-slate-100 bg-white px-4 py-4">
@@ -6681,6 +6935,33 @@ function UploadPolicyPage(props: {
 
       <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto pb-32">
         <section className="p-4">
+          <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">家庭档案</h2>
+                <p className="mt-1 text-xs font-medium text-slate-500">用于把投保人、被保险人归入同一个家庭关系。</p>
+              </div>
+              <button
+                type="button"
+                onClick={onCreateFamily}
+                className="shrink-0 rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 ring-1 ring-blue-100 transition hover:bg-blue-100"
+              >
+                新建家庭档案
+              </button>
+            </div>
+            <SelectField
+              label="选择家庭档案"
+              value={selectedFamilyId ? String(selectedFamilyId) : ''}
+              onChange={(value) => onSelectFamily(value ? Number(value) : null)}
+              options={familyProfiles.map((family) => ({ value: String(family.id), label: family.familyName || `家庭 ${family.id}` }))}
+              placeholder="保存时自动创建默认家庭"
+            />
+            {selectedFamily && !selectedFamily.coreMemberId ? (
+              <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-700 ring-1 ring-amber-100">
+                家庭关系中心尚未设置，请确认以谁作为家庭关系基准；保存时默认以投保人为本人。
+              </p>
+            ) : null}
+          </section>
           <div className="mb-3">
             <h2 className="text-lg font-bold">拍照自动识别</h2>
             <p className="mt-1 text-xs text-slate-500">先做 OCR 识别，再按保司和产品生成保险责任</p>
@@ -6842,9 +7123,9 @@ function UploadPolicyPage(props: {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <TextField label="投保人" value={formData.applicant} onChange={(value) => onUpdateForm('applicant', value)} placeholder="姓名" />
-            <TextField label="被保险人" value={formData.insured} onChange={(value) => onUpdateForm('insured', value)} placeholder="姓名" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {renderFamilyMemberFields('applicant', '投保人')}
+            {renderFamilyMemberFields('insured', '被保险人')}
           </div>
 
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
