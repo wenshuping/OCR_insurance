@@ -3646,37 +3646,40 @@ function CustomerApp() {
         name: string;
         memberId?: number | null;
         relationLabel?: string;
-        setAsCore?: boolean;
+        setAsCoreOnCreate?: boolean;
       }) => {
-        if (input.memberId && !input.setAsCore) {
+        if (input.memberId) {
           const selectedMember = findActiveMemberById(input.memberId);
           if (selectedMember) return selectedMember;
         }
         const normalizedName = input.name.trim();
         if (!normalizedName) return null;
-        const exactMember = input.setAsCore
-          ? null
-          : findActiveSingleMemberByName(normalizedName) ||
-            (Number(submitFamily.id) === Number(selectedFamilyId) ? findFamilyMemberByName(normalizedName) : null);
+        const exactMember =
+          findActiveSingleMemberByName(normalizedName) ||
+          (Number(submitFamily.id) === Number(selectedFamilyId) ? findFamilyMemberByName(normalizedName) : null);
         if (exactMember) return exactMember;
         return createSubmitMember({
           name: normalizedName,
-          relationLabel: input.setAsCore ? '本人' : input.relationLabel || '待确认',
-          setAsCore: input.setAsCore,
+          relationLabel: input.setAsCoreOnCreate ? '本人' : input.relationLabel || '待确认',
+          setAsCore: input.setAsCoreOnCreate,
         });
       };
 
       const applicantName = formData.applicant.trim();
       const insuredName = formData.insured.trim();
+      const shouldCreateApplicantAsCore = !submitFamily.coreMemberId;
       const applicantMember = await resolveSubmitMember({
         name: applicantName,
         memberId: formData.applicantMemberId,
         relationLabel: formData.applicantRelationLabel || '待确认',
-        setAsCore: !submitFamily.coreMemberId,
+        setAsCoreOnCreate: shouldCreateApplicantAsCore,
       });
       if (!applicantMember) {
         setMessage('请确认投保人的家庭成员身份后再保存');
         return;
+      }
+      if (!submitFamily.coreMemberId) {
+        submitFamily = { ...submitFamily, coreMemberId: applicantMember.id };
       }
       const insuredMember = await resolveSubmitMember({
         name: insuredName,
