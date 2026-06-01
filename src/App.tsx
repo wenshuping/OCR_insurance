@@ -243,11 +243,12 @@ function primaryPlanFromPolicyForm(form: PolicyFormData) {
 
 function mainProductIdentityKey(form: PolicyFormData) {
   const primary = primaryPlanFromPolicyForm(form);
+  if (!primary) return ['no-main', String(form.company || '').trim(), String(form.name || '').trim()].join('\u001f');
   return [
-    String(primary?.canonicalProductId || form.canonicalProductId || '').trim(),
-    String(primary?.matchedProductName || '').trim(),
-    String(primary?.company || form.company || '').trim(),
-    String(primary?.name || form.name || '').trim(),
+    String(primary.canonicalProductId || '').trim(),
+    String(primary.matchedProductName || '').trim(),
+    String(primary.company || form.company || '').trim(),
+    String(primary.name || form.name || '').trim(),
   ].join('\u001f');
 }
 
