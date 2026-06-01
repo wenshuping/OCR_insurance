@@ -3045,6 +3045,62 @@ test('responsibility product suggestions include canonical product id', async ()
   }
 });
 
+test('responsibility product suggestions omit canonical id for non-official and policy-derived names', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '新华保险',
+          productName: '非官方多倍保障重大疾病保险',
+          title: '非官方多倍保障重大疾病保险',
+          url: 'https://example.test/non-official.pdf',
+          pageText: '保险责任。',
+          official: false,
+        },
+        {
+          id: 2,
+          company: '新华保险',
+          title: '标题多倍保障重大疾病保险',
+          url: 'https://static-cdn.newchinalife.com/ncl/pdf/title-only.pdf',
+          pageText: '保险责任。',
+          official: true,
+        },
+      ],
+      policies: [
+        {
+          id: 3,
+          company: '新华保险',
+          name: '用户录入多倍保障重大疾病保险',
+        },
+      ],
+      nextId: 4,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const suggested = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/product-suggestions?company=新华保险&q=多倍');
+    assert.equal(suggested.response.status, 200);
+    assert.equal(suggested.payload.ok, true);
+    assert.ok(suggested.payload.suggestions.some((item) => item.productName === '非官方多倍保障重大疾病保险'));
+    assert.ok(suggested.payload.suggestions.some((item) => item.productName === '用户录入多倍保障重大疾病保险'));
+    assert.equal(suggested.payload.suggestions.some((item) => item.productName === '标题多倍保障重大疾病保险'), false);
+    for (const suggestion of suggested.payload.suggestions) {
+      assert.equal(Object.hasOwn(suggestion, 'canonicalProductId') ? suggestion.canonicalProductId : undefined, undefined);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test('responsibility product suggestions match one-character product keywords within selected company', async () => {
   const app = createPolicyOcrApp({
     state: {

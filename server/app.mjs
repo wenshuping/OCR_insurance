@@ -974,7 +974,7 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
   if (!normalizedCompany) return [];
   const normalizedQuery = normalizeSuggestionText(query);
   const stats = new Map();
-  const addProduct = (recordCompany, productName, weight = 1) => {
+  const addProduct = (recordCompany, productName, weight = 1, { official = false } = {}) => {
     const sourceCompany = trim(recordCompany);
     const name = trim(productName);
     if (!sourceCompany || !name) return;
@@ -985,12 +985,18 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
       normalizedCompany.includes(sourceCompanyKey);
     if (!companyMatches) return;
     const key = `${sourceCompany}\u001f${name}`;
-    const current = stats.get(key) || { company: sourceCompany, productName: name, recordCount: 0 };
+    const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId: '', recordCount: 0 };
+    if (official && !current.canonicalProductId) {
+      current.canonicalProductId = canonicalProductIdFromOfficialProduct({
+        company: sourceCompany,
+        productName: name,
+      });
+    }
     current.recordCount += weight;
     stats.set(key, current);
   };
-  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName || record.title, 1);
-  for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1);
+  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName, 1, { official: record.official === true });
+  for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1, { official: false });
 
   return [...stats.values()]
     .map((item) => {
@@ -1013,13 +1019,10 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
         left.productName.localeCompare(right.productName, 'zh-CN'),
     )
     .slice(0, maxResults)
-    .map(({ company: itemCompany, productName, recordCount }) => ({
+    .map(({ company: itemCompany, productName, canonicalProductId, recordCount }) => ({
       company: itemCompany,
       productName,
-      canonicalProductId: canonicalProductIdFromOfficialProduct({
-        company: itemCompany,
-        productName,
-      }),
+      canonicalProductId: canonicalProductId || undefined,
       recordCount,
     }));
 }
