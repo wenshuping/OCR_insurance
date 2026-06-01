@@ -113,3 +113,19 @@ test('backfill helper ignores external productId values', () => {
   assert.match(output.canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.notEqual(output.canonicalProductId, 'external_123');
 });
+
+test('backfill helper adds ids to plans that only have official name', () => {
+  const output = backfillCanonicalProductIdsInObject({
+    company: '新华保险',
+    plans: [
+      {
+        role: 'main',
+        company: '新华保险',
+        name: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+      },
+    ],
+  });
+
+  assert.match(output.plans[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.equal(output.canonicalProductId, output.plans[0].canonicalProductId);
+});

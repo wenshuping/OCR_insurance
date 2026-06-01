@@ -37,7 +37,7 @@ function semanticJson(value) {
 }
 
 function backfillPlan(plan = {}, fallbackCompany = '') {
-  const productName = trim(plan.matchedProductName || plan.productName);
+  const productName = trim(plan.matchedProductName || plan.productName || plan.name);
   const canonicalProductId = trim(plan.canonicalProductId)
     || canonicalProductIdFromOfficialProduct({
       company: trim(plan.company || fallbackCompany),
