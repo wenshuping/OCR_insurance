@@ -20,6 +20,10 @@ export function createInitialState() {
     knowledgeRecords: [],
     insuranceIndicatorRecords: [],
     optionalResponsibilityRecords: [],
+    officialDomainProfiles: [],
+    familyProfiles: [],
+    familyMembers: [],
+    familyReportShares: [],
     nextId: 1,
   };
 }
