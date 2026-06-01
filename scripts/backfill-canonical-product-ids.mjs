@@ -40,7 +40,7 @@ function semanticJson(value) {
 }
 
 function backfillPlan(plan = {}, fallbackCompany = '') {
-  const productName = trim(plan.matchedProductName || plan.productName || plan.name);
+  const productName = trim(plan.matchedProductName);
   const canonicalProductId = trim(plan.canonicalProductId)
     || canonicalProductIdFromOfficialProduct({
       company: trim(plan.company || fallbackCompany),
@@ -49,11 +49,11 @@ function backfillPlan(plan = {}, fallbackCompany = '') {
   return canonicalProductId ? { ...plan, canonicalProductId } : { ...plan };
 }
 
-export function backfillCanonicalProductIdsInObject(input = {}) {
+export function backfillCanonicalProductIdsInObject(input = {}, { officialProductName = '' } = {}) {
   const record = { ...input };
   const company = trim(record.company);
   if (!trim(record.canonicalProductId)) {
-    const productName = trim(record.productName || record.product_name || record.matchedProductName || record.name);
+    const productName = trim(officialProductName || record.matchedProductName);
     const id = canonicalProductIdFromOfficialProduct({ company, productName });
     if (id) record.canonicalProductId = id;
   }
@@ -92,17 +92,15 @@ function updatePayloadTable(db, tableName, idColumn = 'id', dryRun = true) {
     const payload = parsed.value;
 
     const hadCompany = hasOwn(payload, 'company');
-    const hadProductName = hasOwn(payload, 'productName');
     const fallbackCompany = trim(payload.company || row.company);
-    const fallbackProductName = trim(payload.productName || payload.product_name || row.product_name);
     const candidate = {
       ...payload,
       company: fallbackCompany,
-      productName: fallbackProductName,
     };
-    const next = backfillCanonicalProductIdsInObject(candidate);
+    const next = backfillCanonicalProductIdsInObject(candidate, {
+      officialProductName: row.product_name,
+    });
     if (!hadCompany) delete next.company;
-    if (!hadProductName) delete next.productName;
 
     if (semanticJson(payload) === semanticJson(next)) continue;
     summary.updated += 1;

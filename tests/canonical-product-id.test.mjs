@@ -113,7 +113,7 @@ test('backfill helper adds ids to policy and plan payload without changing names
 test('backfill helper ignores external productId values', () => {
   const output = backfillCanonicalProductIdsInObject({
     company: '新华保险',
-    productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+    matchedProductName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
     productId: 'external_123',
   });
 
@@ -121,9 +121,12 @@ test('backfill helper ignores external productId values', () => {
   assert.notEqual(output.canonicalProductId, 'external_123');
 });
 
-test('backfill helper adds ids to plans that only have official name', () => {
+test('backfill helper does not derive ids from raw product display names', () => {
   const output = backfillCanonicalProductIdsInObject({
     company: '新华保险',
+    productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+    product_name: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+    name: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
     plans: [
       {
         role: 'main',
@@ -133,14 +136,27 @@ test('backfill helper adds ids to plans that only have official name', () => {
     ],
   });
 
-  assert.match(output.plans[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
-  assert.equal(output.canonicalProductId, output.plans[0].canonicalProductId);
+  assert.equal(output.canonicalProductId || '', '');
+  assert.equal(output.plans[0].canonicalProductId || '', '');
+});
+
+test('backfill helper can derive ids from explicit official table product name', () => {
+  const output = backfillCanonicalProductIdsInObject(
+    {
+      company: '新华保险',
+      productName: 'OCR 识别出来的展示名不作为官方名',
+    },
+    { officialProductName },
+  );
+
+  assert.match(output.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.equal(output.productName, 'OCR 识别出来的展示名不作为官方名');
 });
 
 test('backfill helper treats whitespace-only canonical id as missing', () => {
   const output = backfillCanonicalProductIdsInObject({
     company: '新华保险',
-    productName: officialProductName,
+    matchedProductName: officialProductName,
     canonicalProductId: '   ',
   });
 
@@ -208,6 +224,17 @@ test('backfill database dry-run rolls back, write commits, and second write is i
             role: 'main',
             company: '新华保险',
             name: officialProductName,
+            matchedProductName: officialProductName,
+          },
+        ],
+      }));
+    db.prepare('INSERT INTO policies (id, company, name, payload) VALUES (?, ?, ?, ?)')
+      .run(2, '新华保险', officialProductName, JSON.stringify({
+        plans: [
+          {
+            role: 'main',
+            company: '新华保险',
+            name: officialProductName,
           },
         ],
       }));
@@ -226,6 +253,7 @@ test('backfill database dry-run rolls back, write commits, and second write is i
       const indicator = readDb.prepare('SELECT company, product_name, payload FROM insurance_indicator_records WHERE id = ?').get('ind_1');
       const optional = readDb.prepare('SELECT company, product_name, payload FROM optional_responsibility_records WHERE id = ?').get('opt_1');
       const policy = readDb.prepare('SELECT company, name, payload FROM policies WHERE id = 1').get();
+      const rawNameOnlyPolicy = readDb.prepare('SELECT company, name, payload FROM policies WHERE id = 2').get();
       return {
         knowledge,
         knowledgeArrayPayload,
@@ -235,11 +263,13 @@ test('backfill database dry-run rolls back, write commits, and second write is i
         indicator,
         optional,
         policy,
+        rawNameOnlyPolicy,
         payloads: {
           knowledge: JSON.parse(knowledge.payload),
           indicator: JSON.parse(indicator.payload),
           optional: JSON.parse(optional.payload),
           policy: JSON.parse(policy.payload),
+          rawNameOnlyPolicy: JSON.parse(rawNameOnlyPolicy.payload),
         },
       };
     } finally {
@@ -254,7 +284,7 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     assert.equal(dryRun.knowledgeRecords.skippedInvalidJson, 4);
     assert.ok(dryRun.insuranceIndicatorRecords.updated > 0);
     assert.ok(dryRun.optionalResponsibilityRecords.updated > 0);
-    assert.ok(dryRun.policies.updated > 0);
+    assert.equal(dryRun.policies.updated, 1);
 
     const afterDryRun = readState();
     assert.equal(afterDryRun.payloads.knowledge.canonicalProductId, undefined);
@@ -266,6 +296,8 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     assert.equal(afterDryRun.payloads.optional.canonicalProductId, undefined);
     assert.equal(afterDryRun.payloads.policy.canonicalProductId, undefined);
     assert.equal(afterDryRun.payloads.policy.plans[0].canonicalProductId, undefined);
+    assert.equal(afterDryRun.payloads.rawNameOnlyPolicy.canonicalProductId, undefined);
+    assert.equal(afterDryRun.payloads.rawNameOnlyPolicy.plans[0].canonicalProductId, undefined);
 
     const write = backfillDatabase(dbPath, { dryRun: false });
     assert.equal(write.dryRun, false);
@@ -273,7 +305,7 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     assert.equal(write.knowledgeRecords.skippedInvalidJson, 4);
     assert.ok(write.insuranceIndicatorRecords.updated > 0);
     assert.ok(write.optionalResponsibilityRecords.updated > 0);
-    assert.ok(write.policies.updated > 0);
+    assert.equal(write.policies.updated, 1);
 
     const afterWrite = readState();
     assert.match(afterWrite.payloads.knowledge.canonicalProductId, /^product_[a-f0-9]{16}$/u);
@@ -285,6 +317,8 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     assert.match(afterWrite.payloads.optional.canonicalProductId, /^product_[a-f0-9]{16}$/u);
     assert.match(afterWrite.payloads.policy.canonicalProductId, /^product_[a-f0-9]{16}$/u);
     assert.equal(afterWrite.payloads.policy.canonicalProductId, afterWrite.payloads.policy.plans[0].canonicalProductId);
+    assert.equal(afterWrite.payloads.rawNameOnlyPolicy.canonicalProductId, undefined);
+    assert.equal(afterWrite.payloads.rawNameOnlyPolicy.plans[0].canonicalProductId, undefined);
 
     assert.equal(afterWrite.knowledge.company, '新华保险');
     assert.equal(afterWrite.knowledge.product_name, officialProductName);
