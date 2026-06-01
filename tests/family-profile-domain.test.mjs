@@ -68,6 +68,33 @@ test('ensureDefaultFamilyProfileForPrincipal keeps same-name insured people dist
   assert.equal(state.familyMembers.find((member) => member.id === state.policies[1].insuredMemberId)?.idNumberTail, '0033');
 });
 
+test('ensureDefaultFamilyProfileForPrincipal preserves same-name applicant and insured identities', () => {
+  const state = {
+    ...createInitialState(),
+    nextId: 30,
+    policies: [
+      {
+        id: 1,
+        userId: 8,
+        guestId: '',
+        applicant: '张三',
+        insured: '张三',
+        insuredBirthday: '1990-01-01',
+        insuredIdNumber: '110101199001010033',
+      },
+    ],
+  };
+
+  ensureDefaultFamilyProfileForPrincipal(state, { userId: 8 });
+  const zhangMembers = state.familyMembers.filter((member) => member.name === '张三');
+  const insuredMember = state.familyMembers.find((member) => member.id === state.policies[0].insuredMemberId);
+
+  assert.equal(zhangMembers.length, 2);
+  assert.ok(state.policies[0].insuredMemberId);
+  assert.equal(insuredMember?.birthday, '1990-01-01');
+  assert.equal(insuredMember?.idNumberTail, '0033');
+});
+
 test('matchFamilyMemberByPerson prefers exact name and birthday matches', () => {
   const members = [
     { id: 1, familyId: 20, name: '张三', birthday: '1980-01-01', idNumberTail: '2222', status: 'active' },

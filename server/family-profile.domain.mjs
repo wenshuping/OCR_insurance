@@ -104,24 +104,34 @@ function familyBindingError(code, message = code) {
   return error;
 }
 
+function personIdentityParts(person) {
+  return {
+    birthday: normalizeDateOnly(person?.birthday || person?.birthDate),
+    idNumberTail: normalizeIdNumberTail(person?.idNumberTail || person?.idNumber || person?.identityNumber || person?.idCard),
+  };
+}
+
+function hasPersonIdentity(person) {
+  const identity = personIdentityParts(person);
+  return Boolean(identity.birthday || identity.idNumberTail);
+}
+
 function peopleAreCompatible(left, right) {
   if (normalizeName(left?.name) !== normalizeName(right?.name)) return false;
-  const leftBirthday = normalizeDateOnly(left?.birthday || left?.birthDate);
-  const rightBirthday = normalizeDateOnly(right?.birthday || right?.birthDate);
-  if (leftBirthday && rightBirthday && leftBirthday !== rightBirthday) return false;
-  const leftTail = normalizeIdNumberTail(left?.idNumberTail || left?.idNumber || left?.identityNumber || left?.idCard);
-  const rightTail = normalizeIdNumberTail(right?.idNumberTail || right?.idNumber || right?.identityNumber || right?.idCard);
-  if (leftTail && rightTail && leftTail !== rightTail) return false;
+  if (hasPersonIdentity(left) !== hasPersonIdentity(right)) return false;
+  const leftIdentity = personIdentityParts(left);
+  const rightIdentity = personIdentityParts(right);
+  if (leftIdentity.birthday && rightIdentity.birthday && leftIdentity.birthday !== rightIdentity.birthday) return false;
+  if (leftIdentity.idNumberTail && rightIdentity.idNumberTail && leftIdentity.idNumberTail !== rightIdentity.idNumberTail) return false;
   return true;
 }
 
 function personIdentityKey(person, index) {
   const name = normalizeName(person?.name);
   if (!name) return '';
-  const birthday = normalizeDateOnly(person?.birthday || person?.birthDate);
-  const idNumberTail = normalizeIdNumberTail(person?.idNumberTail || person?.idNumber || person?.identityNumber || person?.idCard);
-  if (!birthday && !idNumberTail) return name;
-  return [name, birthday, idNumberTail, index].join('\u001f');
+  const identity = personIdentityParts(person);
+  if (!identity.birthday && !identity.idNumberTail) return name;
+  return [name, identity.birthday, identity.idNumberTail, index].join('\u001f');
 }
 
 export function normalizeFamilyRelation(value) {
@@ -295,7 +305,7 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
   family.updatedAt = new Date().toISOString();
 
   for (const person of people) {
-    if (person.name === corePerson.name) continue;
+    if (peopleAreCompatible(person, corePerson)) continue;
     createFamilyMember(state, family.id, {
       ...person,
       relationToCore: 'pending',
