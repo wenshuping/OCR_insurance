@@ -2164,7 +2164,7 @@ function buildPolicyReportTitle(policy: Policy) {
   return `${policy.insured || '客户'}-${policy.name || '保单'}-解析报告`;
 }
 
-type CustomerTab = 'entry' | 'policies';
+type CustomerTab = 'entry' | 'policies' | 'families';
 
 type OfficialDomainForm = {
   id: string;
@@ -2805,7 +2805,11 @@ function CustomerApp() {
   const totalCoverage = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [policies]);
   const annualPremium = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0), [policies]);
   const policyGroups = useMemo(() => groupPoliciesByInsured(policies), [policies]);
-  const familyReport = useMemo(() => buildFamilyReport(policies, familyPlanningProfile), [policies, familyPlanningProfile]);
+  const selectedFamilyPolicies = useMemo(
+    () => selectedFamilyId ? policies.filter((policy) => Number(policy.familyId) === Number(selectedFamilyId)) : policies,
+    [policies, selectedFamilyId],
+  );
+  const familyReport = useMemo(() => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile), [selectedFamilyPolicies, familyPlanningProfile]);
   const selectedFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
     [familyProfiles, selectedFamilyId],
@@ -3192,15 +3196,26 @@ function CustomerApp() {
     }));
   }
 
-  async function handleCreateFamilyProfile() {
-    const familyName = window.prompt('请输入家庭档案名称', '默认家庭')?.trim();
-    if (!familyName) return null;
-    const payload = await createFamilyProfile({ token: token || undefined, guestId: token ? undefined : guestId, familyName });
+  function openFamilyReport(familyId: number) {
+    handleSelectFamily(familyId);
+    setShowFamilyReport(true);
+  }
+
+  async function createFamilyProfileByName(familyName: string) {
+    const normalizedFamilyName = familyName.trim();
+    if (!normalizedFamilyName) return null;
+    const payload = await createFamilyProfile({ token: token || undefined, guestId: token ? undefined : guestId, familyName: normalizedFamilyName });
     const family = { ...payload.family, members: payload.members };
     setFamilyProfiles((current) => [family, ...current.filter((item) => Number(item.id) !== Number(family.id))]);
     handleSelectFamily(family.id);
     setMessage(`已创建家庭档案：${family.familyName}`);
     return family;
+  }
+
+  async function handleCreateFamilyProfile() {
+    const familyName = window.prompt('请输入家庭档案名称', '默认家庭')?.trim();
+    if (!familyName) return null;
+    return createFamilyProfileByName(familyName);
   }
 
   function findFamilyMemberByName(name: string) {
@@ -4381,6 +4396,30 @@ function CustomerApp() {
     );
   }
 
+  if (activeTab === 'families') {
+    return (
+      <>
+        <FamilyProfileManager
+          familyProfiles={familyProfiles}
+          selectedFamilyId={selectedFamilyId}
+          onSelectFamily={(familyId) => handleSelectFamily(familyId)}
+          onCreateFamily={async (familyName) => {
+            await createFamilyProfileByName(familyName);
+          }}
+          onBackToEntry={() => {
+            setActiveTab('entry');
+            setMessage('可以继续录入保单');
+          }}
+          onOpenReport={openFamilyReport}
+        />
+        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
+        {authDialog}
+        {accountSheet}
+        {cashValueDialog}
+      </>
+    );
+  }
+
   if (cashflowMember) {
     return (
       <CashflowDetailPage
@@ -4524,6 +4563,145 @@ function CustomerApp() {
       {authDialog}
       {accountSheet}
       {cashValueDialog}
+    </div>
+  );
+}
+
+function FamilyProfileManager({
+  familyProfiles,
+  selectedFamilyId,
+  onSelectFamily,
+  onCreateFamily,
+  onBackToEntry,
+  onOpenReport,
+}: {
+  familyProfiles: FamilyProfile[];
+  selectedFamilyId: number | null;
+  onSelectFamily: (familyId: number) => void;
+  onCreateFamily: (familyName: string) => Promise<void>;
+  onBackToEntry: () => void;
+  onOpenReport: (familyId: number) => void;
+}) {
+  const families = Array.isArray(familyProfiles) ? familyProfiles : [];
+
+  function activeMembers(family: FamilyProfile) {
+    const members = Array.isArray(family.members) ? family.members : [];
+    return members.filter((member) => member.status === 'active');
+  }
+
+  function corePersonLabel(family: FamilyProfile) {
+    const members = activeMembers(family);
+    const coreMember = members.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
+    return coreMember?.name || members[0]?.name || '待设置';
+  }
+
+  async function handleCreateFamily() {
+    const familyName = window.prompt('请输入家庭档案名称', '默认家庭')?.trim();
+    if (!familyName) return;
+    await onCreateFamily(familyName);
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 pb-28">
+      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/90 px-4 py-4 backdrop-blur">
+        <button
+          type="button"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200"
+          onClick={onBackToEntry}
+          aria-label="返回录入保单"
+        >
+          <ChevronLeft size={20} />
+        </button>
+        <h1 className="text-lg font-black text-slate-950">家庭档案列表</h1>
+        <button
+          type="button"
+          className="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white shadow-lg shadow-blue-500/20"
+          onClick={() => void handleCreateFamily()}
+        >
+          新建家庭档案
+        </button>
+      </header>
+
+      <main className="mx-auto w-full max-w-3xl space-y-3 p-4">
+        {families.length ? families.map((family) => {
+          const members = activeMembers(family);
+          const selected = Number(family.id) === Number(selectedFamilyId);
+          return (
+            <section
+              key={family.id}
+              className={`rounded-2xl border bg-white p-4 shadow-[0_16px_32px_-28px_rgba(15,23,42,0.18)] ${
+                selected ? 'border-blue-200 ring-2 ring-blue-100' : 'border-slate-200'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="truncate text-lg font-black text-slate-950">{family.familyName || `家庭 ${family.id}`}</h2>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">核心成员：{corePersonLabel(family)}</p>
+                </div>
+                {selected ? (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">
+                    <CheckCircle2 size={14} />
+                    当前选择
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="rounded-xl bg-slate-50 px-3 py-2">
+                  <p className="text-xs font-black text-slate-400">成员数</p>
+                  <p className="mt-1 text-xl font-black text-slate-950">{members.length}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-3 py-2">
+                  <p className="text-xs font-black text-slate-400">核心成员</p>
+                  <p className="mt-1 truncate text-sm font-black text-slate-950">{corePersonLabel(family)}</p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-500 text-xs font-black text-white shadow-lg shadow-blue-500/20"
+                  onClick={() => onOpenReport(family.id)}
+                >
+                  <LayoutDashboard size={16} />
+                  查看报告
+                </button>
+                <button
+                  type="button"
+                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-100 text-xs font-black text-slate-700"
+                  onClick={() => onSelectFamily(family.id)}
+                >
+                  <Pencil size={16} />
+                  编辑家庭
+                </button>
+                <button
+                  type="button"
+                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-emerald-50 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
+                  onClick={() => {
+                    onSelectFamily(family.id);
+                    onBackToEntry();
+                  }}
+                >
+                  <UploadCloud size={16} />
+                  录入保单
+                </button>
+              </div>
+            </section>
+          );
+        }) : (
+          <section className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-10 text-center">
+            <p className="text-base font-black text-slate-950">暂无家庭档案</p>
+            <p className="mt-2 text-sm leading-6 text-slate-500">新建后可把成员和保单归入同一个家庭。</p>
+            <button
+              type="button"
+              className="mt-5 rounded-xl bg-blue-500 px-5 py-3 text-sm font-black text-white shadow-lg shadow-blue-500/20"
+              onClick={() => void handleCreateFamily()}
+            >
+              新建家庭档案
+            </button>
+          </section>
+        )}
+      </main>
     </div>
   );
 }
@@ -6462,10 +6640,11 @@ function CustomerBottomTabs({
   const tabs: Array<{ key: CustomerTab; label: string; icon: typeof UploadCloud }> = [
     { key: 'entry', label: '录入保单', icon: UploadCloud },
     { key: 'policies', label: '我的保单', icon: FileText },
+    { key: 'families', label: '家庭档案', icon: Users },
   ];
   return (
     <nav className={fixed ? 'pb-safe fixed bottom-0 left-0 right-0 z-40 border-t border-slate-100 bg-white px-4 pt-2 shadow-[0_-10px_20px_-12px_rgba(15,23,42,0.12)]' : ''}>
-      <div className={`grid gap-2 ${onOpenReport ? 'grid-cols-3' : 'grid-cols-2'}`}>
+      <div className={`grid gap-2 ${onOpenReport ? 'grid-cols-4' : 'grid-cols-3'}`}>
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const active = activeTab === tab.key;
@@ -6474,7 +6653,7 @@ function CustomerBottomTabs({
               key={tab.key}
               type="button"
               onClick={() => onChange(tab.key)}
-              className={`flex h-12 items-center justify-center gap-2 rounded-2xl text-sm font-black transition ${
+              className={`flex h-12 items-center justify-center gap-1.5 rounded-2xl text-xs font-black transition sm:text-sm ${
                 active ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-50 text-slate-500'
               }`}
             >
@@ -6487,7 +6666,7 @@ function CustomerBottomTabs({
           <button
             type="button"
             onClick={onOpenReport}
-            className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-blue-50 text-sm font-black text-blue-600 ring-1 ring-blue-100 transition hover:bg-blue-100 active:bg-blue-100"
+            className="flex h-12 items-center justify-center gap-1.5 rounded-2xl bg-blue-50 text-xs font-black text-blue-600 ring-1 ring-blue-100 transition hover:bg-blue-100 active:bg-blue-100 sm:text-sm"
             aria-label="查看家庭保障分析报告"
           >
             <LayoutDashboard size={18} />

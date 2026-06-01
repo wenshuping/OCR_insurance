@@ -75,6 +75,16 @@ test('entry form requires family profile and supports core setup after OCR', () 
   assert.doesNotMatch(customerSource, /input\.setAsCore\s*\?\s*null/);
 });
 
+test('customer app exposes family profile management surface', () => {
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  assert.match(customerSource, /FamilyProfileManager/);
+  assert.match(customerSource, /家庭档案列表/);
+  assert.match(customerSource, /成员数/);
+  assert.match(customerSource, /查看报告/);
+  assert.match(customerSource, /编辑家庭/);
+  assert.match(customerSource, /录入保单/);
+});
+
 test('photo upload area shows an OCR recognition animation while loading', () => {
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(pageSource, /aria-busy=\{loading\}/);
@@ -166,7 +176,8 @@ test('entry form captures insured birthday for age-based reports', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(formSource, /被保险人生日/);
   assert.match(formSource, /insuredBirthday/);
-  assert.match(customerSource, /buildFamilyReport\(policies,\s*familyPlanningProfile\)/);
+  assert.match(customerSource, /selectedFamilyPolicies/);
+  assert.match(customerSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile\)/);
   assert.match(customerSource, /<FamilyCoverageOverview[\s\S]*report=\{familyReport\}[\s\S]*policies=\{policies\}/);
 });
 
@@ -746,7 +757,7 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /家庭年支出/);
   assert.match(familySource, /onPlanningProfileChange/);
   assert.match(appSource, /FAMILY_PLANNING_PROFILE_KEY/);
-  assert.match(appSource, /buildFamilyReport\(policies,\s*familyPlanningProfile\)/);
+  assert.match(appSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile\)/);
   assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
   assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);
   const familyRadarIndex = familySource.indexOf('<FamilyRadarSection report={report} />');
