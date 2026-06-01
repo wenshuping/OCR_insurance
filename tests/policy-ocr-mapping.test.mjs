@@ -138,3 +138,53 @@ test('OCR mapping gives similar New China product editions different canonical i
   assert.match(ying.data.canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.notEqual(xiang.data.canonicalProductId, ying.data.canonicalProductId);
 });
+
+test('OCR mapping preserves existing plan canonical product id when rematching product name', () => {
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state: {
+      policies: [],
+      knowledgeRecords: [
+        { company: '新华保险', productName: '新华人寿保险股份有限公司畅行万里智赢版两全保险' },
+      ],
+    },
+    scan: {
+      ocrText: '新华保险 畅行万里智赢版 两全保险',
+      data: {
+        company: '新华保险',
+        name: '畅行万里智赢版两全保险',
+        plans: [
+          {
+            role: 'main',
+            name: '畅行万里智赢版两全保险',
+            canonicalProductId: 'product_existing_plan',
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.plans[0].canonicalProductId, 'product_existing_plan');
+  assert.equal(mapped.data.canonicalProductId, 'product_existing_plan');
+});
+
+test('OCR mapping does not create canonical product id from historical policy-only product names', () => {
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state: {
+      knowledgeRecords: [],
+      policies: [
+        { company: '新华保险', name: '用户录入的多倍保障重大疾病保险（智享版）' },
+      ],
+    },
+    scan: {
+      ocrText: '新华保险 用户录入的多倍保障重大疾病保险（智享版）',
+      data: {
+        company: '新华保险',
+        name: '用户录入的多倍保障重大疾病保险（智享版）',
+        plans: [{ role: 'main', name: '用户录入的多倍保障重大疾病保险（智享版）' }],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.canonicalProductId, undefined);
+  assert.equal(mapped.data.plans[0].canonicalProductId, '');
+});

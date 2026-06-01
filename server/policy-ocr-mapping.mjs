@@ -193,20 +193,31 @@ function companyMatches(left, right) {
 
 function buildKnownProductStats(state = {}, company = '') {
   const stats = new Map();
-  const addProduct = (recordCompany, productName, weight = 1) => {
+  const addProduct = (recordCompany, productName, weight = 1, options = {}) => {
     const sourceCompany = trim(recordCompany);
     const name = trim(productName);
     if (!sourceCompany || !name) return;
     if (trim(company) && !companyMatches(sourceCompany, company)) return;
     const key = `${sourceCompany}\u001f${name}`;
-    const canonicalProductId = canonicalProductIdFromOfficialProduct({ company: sourceCompany, productName: name });
-    const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId, recordCount: 0 };
+    const official = Boolean(options.official);
+    const canonicalProductId = official
+      ? canonicalProductIdFromOfficialProduct({ company: sourceCompany, productName: name })
+      : '';
+    const current = stats.get(key) || {
+      company: sourceCompany,
+      productName: name,
+      canonicalProductId: '',
+      recordCount: 0,
+      official: false,
+    };
     current.recordCount += weight;
+    current.official = current.official || official;
+    if (!current.canonicalProductId && canonicalProductId) current.canonicalProductId = canonicalProductId;
     stats.set(key, current);
   };
 
-  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName || record.title, 1);
-  for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1);
+  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName || record.title, 1, { official: true });
+  for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1, { official: false });
   return [...stats.values()];
 }
 
@@ -238,7 +249,7 @@ export function matchInsuranceProductFromOcr(ocrText, state = {}, company = '') 
       matches.push({
         company: product.company,
         productName: product.productName,
-        canonicalProductId: product.canonicalProductId,
+        ...(product.canonicalProductId ? { canonicalProductId: product.canonicalProductId } : {}),
         keyword: keyword.raw,
         score: keyword.normalized.length * 2 + Math.min(product.recordCount, 20) / 10,
       });
@@ -344,8 +355,7 @@ function attachPlanProductMatches({ plans = [], ocrText = '', state = {}, compan
   return normalizedPlans.map((plan) => {
     const match = findBestProductMatchForName(ocrText, state, company, plan.name);
     if (!match?.productName) return plan;
-    const canonicalProductId = match.canonicalProductId
-      || canonicalProductIdFromOfficialProduct({ company: match.company, productName: match.productName });
+    const canonicalProductId = plan.canonicalProductId || match.canonicalProductId || '';
     return {
       ...plan,
       company: match.company || plan.company || company,
@@ -448,7 +458,7 @@ export function enhancePolicyScanWithOcrMapping({ scan, state }) {
   const productMatch = company
     ? findBestProductMatchForName(ocrText, state, company, mainPlan?.name || data.name) || matchInsuranceProductFromOcr(ocrText, state, company)
     : null;
-  const canonicalProductId = productMatch?.canonicalProductId || mainPlan?.canonicalProductId || '';
+  const canonicalProductId = mainPlan?.canonicalProductId || productMatch?.canonicalProductId || '';
   const durations = extractDurationFieldsFromOcrText(ocrText);
   const planPremiumTotal = sumPlanPremiums(plans);
   const insuredIdentity = data.insuredIdNumber
