@@ -4384,6 +4384,7 @@ function CustomerApp() {
           isLoggedIn={isLoggedIn}
           mobile={mobile}
           onOpenAccount={() => setShowAccountSheet(true)}
+          onOpenFamilies={() => setActiveTab('families')}
           onOpenReport={() => setShowFamilyReport(true)}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
@@ -6926,6 +6927,7 @@ function UploadPolicyPage(props: {
   onGenerateAnalysis: () => void;
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
+  onOpenFamilies: () => void;
   onOpenReport: () => void;
   onScanClick: () => void;
   onSelectFamily: (familyId: number | null) => void;
@@ -6964,6 +6966,7 @@ function UploadPolicyPage(props: {
     onGenerateAnalysis,
     onOcrTextChange,
     onOpenAccount,
+    onOpenFamilies,
     onOpenReport,
     onScanClick,
     onSelectFamily,
@@ -7135,7 +7138,16 @@ function UploadPolicyPage(props: {
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
       <header className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-slate-100 bg-white px-4 py-4">
-        <div></div>
+        <div className="flex justify-start">
+          <button
+            className="flex h-10 items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
+            type="button"
+            onClick={onOpenFamilies}
+          >
+            <Users size={18} />
+            <span>家庭档案</span>
+          </button>
+        </div>
         <h1 className="text-lg font-bold">录入保单</h1>
         <div className="flex justify-end">
           <div className="flex items-center gap-2">

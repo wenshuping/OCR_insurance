@@ -77,8 +77,12 @@ test('entry form requires family profile and supports core setup after OCR', () 
 
 test('customer app exposes family profile management surface', () => {
   const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /FamilyProfileManager/);
+  assert.match(customerSource, /onOpenFamilies=\{\(\) => setActiveTab\('families'\)\}/);
+  assert.match(pageSource, /onOpenFamilies/);
   assert.match(customerSource, /家庭档案列表/);
+  assert.match(pageSource, /家庭档案/);
   assert.match(customerSource, /成员数/);
   assert.match(customerSource, /查看报告/);
   assert.match(customerSource, /编辑家庭/);
