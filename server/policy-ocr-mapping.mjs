@@ -1,3 +1,5 @@
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+
 const GENERIC_COMPANY_KEYWORDS = new Set(['保险', '保司', '人寿', '寿险', '公司', '集团', '中国', '股份', '有限责任公司', '股份有限公司']);
 
 const COMMON_COMPANY_KEYWORDS = [
@@ -197,7 +199,8 @@ function buildKnownProductStats(state = {}, company = '') {
     if (!sourceCompany || !name) return;
     if (trim(company) && !companyMatches(sourceCompany, company)) return;
     const key = `${sourceCompany}\u001f${name}`;
-    const current = stats.get(key) || { company: sourceCompany, productName: name, recordCount: 0 };
+    const canonicalProductId = canonicalProductIdFromOfficialProduct({ company: sourceCompany, productName: name });
+    const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId, recordCount: 0 };
     current.recordCount += weight;
     stats.set(key, current);
   };
@@ -235,6 +238,7 @@ export function matchInsuranceProductFromOcr(ocrText, state = {}, company = '') 
       matches.push({
         company: product.company,
         productName: product.productName,
+        canonicalProductId: product.canonicalProductId,
         keyword: keyword.raw,
         score: keyword.normalized.length * 2 + Math.min(product.recordCount, 20) / 10,
       });
@@ -318,6 +322,7 @@ function normalizePolicyPlan(plan = {}, index = 0, company = '') {
     premiumText: trim(plan.premiumText),
     matchScore: Number(plan.matchScore || 0) || 0,
     matchReason: trim(plan.matchReason),
+    canonicalProductId: trim(plan.canonicalProductId),
   };
 }
 
@@ -339,12 +344,15 @@ function attachPlanProductMatches({ plans = [], ocrText = '', state = {}, compan
   return normalizedPlans.map((plan) => {
     const match = findBestProductMatchForName(ocrText, state, company, plan.name);
     if (!match?.productName) return plan;
+    const canonicalProductId = match.canonicalProductId
+      || canonicalProductIdFromOfficialProduct({ company: match.company, productName: match.productName });
     return {
       ...plan,
       company: match.company || plan.company || company,
       matchedProductName: match.productName,
       matchScore: Number(match.score || 0) || plan.matchScore || 0,
       matchReason: '本地产品名称匹配',
+      ...(canonicalProductId ? { canonicalProductId } : {}),
     };
   });
 }
@@ -440,6 +448,7 @@ export function enhancePolicyScanWithOcrMapping({ scan, state }) {
   const productMatch = company
     ? findBestProductMatchForName(ocrText, state, company, mainPlan?.name || data.name) || matchInsuranceProductFromOcr(ocrText, state, company)
     : null;
+  const canonicalProductId = productMatch?.canonicalProductId || mainPlan?.canonicalProductId || '';
   const durations = extractDurationFieldsFromOcrText(ocrText);
   const planPremiumTotal = sumPlanPremiums(plans);
   const insuredIdentity = data.insuredIdNumber
@@ -461,6 +470,7 @@ export function enhancePolicyScanWithOcrMapping({ scan, state }) {
       coveragePeriod: mainPlan?.coveragePeriod || durations.coveragePeriod || data.coveragePeriod || '',
       amount: mainPlan?.amount || data.amount || '',
       firstPremium: chooseFirstPremium(data.firstPremium, planPremiumTotal),
+      ...(canonicalProductId ? { canonicalProductId } : {}),
       ...(plans.length ? { plans } : {}),
     },
   };

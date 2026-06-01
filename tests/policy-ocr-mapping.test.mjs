@@ -93,4 +93,48 @@ test('OCR mapping infers insurer and matched products from recognized plan names
   assert.equal(mapped.data.plans[0].matchedProductName, '新华人寿保险股份有限公司畅行万里智赢版两全保险');
   assert.equal(mapped.data.plans[1].company, '新华保险');
   assert.equal(mapped.data.plans[1].matchedProductName, '新华人寿保险股份有限公司i他男性特定疾病保险');
+  assert.match(mapped.data.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.equal(mapped.data.canonicalProductId, mapped.data.plans[0].canonicalProductId);
+  assert.match(mapped.data.plans[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.match(mapped.data.plans[1].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.notEqual(mapped.data.plans[0].canonicalProductId, mapped.data.plans[1].canonicalProductId);
+});
+
+test('OCR mapping gives similar New China product editions different canonical ids', () => {
+  const state = {
+    policies: [],
+    knowledgeRecords: [
+      { company: '新华保险', productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）' },
+      { company: '新华保险', productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）' },
+      { company: '新华保险', productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（庆典版）' },
+    ],
+  };
+  const xiang = enhancePolicyScanWithOcrMapping({
+    state,
+    scan: {
+      ocrText: '新华保险 多倍保障重大疾病保险（智享版） 基本责任和可选责任',
+      data: {
+        company: '新华保险',
+        name: '多倍保障重大疾病保险（智享版）',
+        plans: [{ role: 'main', name: '多倍保障重大疾病保险（智享版）' }],
+      },
+    },
+  });
+  const ying = enhancePolicyScanWithOcrMapping({
+    state,
+    scan: {
+      ocrText: '新华保险 多倍保障重大疾病保险（智赢版） 基本责任和可选责任',
+      data: {
+        company: '新华保险',
+        name: '多倍保障重大疾病保险（智赢版）',
+        plans: [{ role: 'main', name: '多倍保障重大疾病保险（智赢版）' }],
+      },
+    },
+  });
+
+  assert.equal(xiang.data.name, '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）');
+  assert.equal(ying.data.name, '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）');
+  assert.match(xiang.data.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.match(ying.data.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.notEqual(xiang.data.canonicalProductId, ying.data.canonicalProductId);
 });
