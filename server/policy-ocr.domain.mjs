@@ -726,7 +726,7 @@ export function normalizePolicySources(sources = []) {
     .slice(0, 12);
 }
 
-export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, analysis }) {
+export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, analysis, familyBinding = null }) {
   const data = normalizePolicyScanData(scan?.data || {});
   const plans = normalizePolicyPlans(scan?.data?.plans, data.company);
   const now = new Date().toISOString();
@@ -767,6 +767,18 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     optionalResponsibilities,
     report: String(analysis?.report || '').trim(),
     sources: normalizePolicySources(analysis?.sources),
+    familyId: familyBinding?.familyId || null,
+    applicantMemberId: familyBinding?.applicantMemberId || null,
+    insuredMemberId: familyBinding?.insuredMemberId || null,
+    applicantNameSnapshot: String(familyBinding?.applicantNameSnapshot || '').trim(),
+    insuredNameSnapshot: String(familyBinding?.insuredNameSnapshot || '').trim(),
+    applicantRelationSnapshot: String(familyBinding?.applicantRelationSnapshot || '').trim(),
+    insuredRelationSnapshot: String(familyBinding?.insuredRelationSnapshot || '').trim(),
+    participantReviewStatus: String(familyBinding?.participantReviewStatus || '').trim(),
+    insuredMemberName: String(familyBinding?.insuredMemberName || '').trim(),
+    insuredRelationLabel: String(familyBinding?.insuredRelationLabel || '').trim(),
+    applicantMemberName: String(familyBinding?.applicantMemberName || '').trim(),
+    applicantRelationLabel: String(familyBinding?.applicantRelationLabel || '').trim(),
     reportStatus: hasAnalysis ? 'ready' : 'generating',
     reportError: '',
     createdAt: now,

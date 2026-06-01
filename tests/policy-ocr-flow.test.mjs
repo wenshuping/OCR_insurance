@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { createPolicyOcrApp } from '../server/app.mjs';
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
-import { latestValidSmsCode } from '../server/policy-ocr.domain.mjs';
+import { createInitialState, latestValidSmsCode } from '../server/policy-ocr.domain.mjs';
 import { rebuildOptionalResponsibilityGovernance } from '../server/optional-responsibility-governance.mjs';
 import { scanPolicyWithConfiguredRuntime } from '../server/ocr-runtime.mjs';
 import { extractPolicyFieldsFromText, normalizeExtractedPolicyFields } from '../ocr-service/insurance-ocr.service.mjs';
@@ -4051,6 +4051,107 @@ test('xinhua optional critical illness policy shows selected quantified optional
     assert.equal(optionalOne.selectionStatus, 'selected');
     assert.equal(optionalOne.quantificationStatus, 'quantified');
     assert.ok(optionalOne.indicatorIds.length >= 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family APIs create family, set core member, and save policy with participant member ids', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({
+      ocrText: '投保人:张三\n被保险人:李四',
+      data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '李四' },
+    }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '张三家庭' }),
+    });
+    assert.equal(familyRes.response.status, 201);
+    const familyId = familyRes.payload.family.id;
+
+    const coreRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '张三', relationLabel: '本人', setAsCore: true }),
+    });
+    const insuredRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '李四', relationLabel: '配偶' }),
+    });
+
+    const scanRes = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-family',
+        scan: { ocrText: '投保人:张三\n被保险人:李四', data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '李四' } },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId,
+          applicantMemberId: coreRes.payload.member.id,
+          insuredMemberId: insuredRes.payload.member.id,
+        },
+      }),
+    });
+
+    assert.equal(scanRes.response.status, 201);
+    assert.equal(scanRes.payload.policy.familyId, familyId);
+    assert.equal(scanRes.payload.policy.applicantMemberId, coreRes.payload.member.id);
+    assert.equal(scanRes.payload.policy.insuredMemberName, '李四');
+    assert.equal(scanRes.payload.policy.insuredRelationLabel, '配偶');
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy save rejects applicant and insured members from different families', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const familyA = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: 'A家庭' }),
+    });
+    const familyB = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: 'B家庭' }),
+    });
+    const coreA = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyA.payload.family.id}/members?guestId=guest-family`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '张三', relationLabel: '本人', setAsCore: true }),
+    });
+    const coreB = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyB.payload.family.id}/members?guestId=guest-family`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '李四', relationLabel: '本人', setAsCore: true }),
+    });
+
+    const result = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-family',
+        scan: { ocrText: '', data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '李四' } },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId: familyA.payload.family.id,
+          applicantMemberId: coreA.payload.member.id,
+          insuredMemberId: coreB.payload.member.id,
+        },
+      }),
+    });
+
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.code, 'POLICY_FAMILY_MEMBER_MISMATCH');
   } finally {
     await server.close();
   }

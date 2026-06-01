@@ -52,6 +52,15 @@ import {
   buildOptionalResponsibilityGaps,
   rebuildOptionalResponsibilityGovernance,
 } from './optional-responsibility-governance.mjs';
+import {
+  createFamilyMember,
+  createFamilyProfile,
+  ensureDefaultFamilyProfileForPrincipal,
+  familyOwnerMatches,
+  listFamilyMembers,
+  listFamilyProfilesForOwner,
+  validatePolicyFamilyBinding,
+} from './family-profile.domain.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -233,6 +242,20 @@ async function createWechatJsSdkSignature(rawUrl) {
 
 function resolveAuthUser(req, state) {
   return findSessionUser(state, getBearerToken(req));
+}
+
+function requestOwner(req, user) {
+  return user
+    ? { userId: Number(user.id), guestId: '' }
+    : { userId: null, guestId: normalizeGuestId(req.query?.guestId || req.body?.guestId) };
+}
+
+function policyOwner(policy = {}) {
+  const userId = Number(policy.userId || 0) || null;
+  return {
+    userId,
+    guestId: userId ? '' : normalizeGuestId(policy.guestId),
+  };
 }
 
 function requireAuth(req, res, state) {
@@ -467,6 +490,11 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (hasOwn(input, 'optionalResponsibilities')) {
     data.optionalResponsibilities = normalizeOptionalResponsibilities(input.optionalResponsibilities);
   }
+  for (const key of ['familyId', 'applicantMemberId', 'insuredMemberId']) {
+    if (!hasOwn(input, key)) continue;
+    const id = Number(input[key] || 0);
+    data[key] = Number.isFinite(id) && id > 0 ? id : null;
+  }
   if (hasOwn(data, 'company') && !data.company) {
     const error = new Error('保险公司不能为空');
     error.code = 'POLICY_COMPANY_REQUIRED';
@@ -480,6 +508,69 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
     throw error;
   }
   return data;
+}
+
+function familyInputHasBindingFields(input = {}) {
+  return ['familyId', 'applicantMemberId', 'insuredMemberId'].some((key) => hasOwn(input, key));
+}
+
+function normalizeFamilyBindingInput(input = {}) {
+  return {
+    familyId: Number(input.familyId || 0) || null,
+    applicantMemberId: Number(input.applicantMemberId || 0) || null,
+    insuredMemberId: Number(input.insuredMemberId || 0) || null,
+  };
+}
+
+function familyBindingInputFromPolicyUpdate(updates = {}, policy = {}) {
+  return normalizeFamilyBindingInput({
+    familyId: hasOwn(updates, 'familyId') ? updates.familyId : policy.familyId,
+    applicantMemberId: hasOwn(updates, 'applicantMemberId') ? updates.applicantMemberId : policy.applicantMemberId,
+    insuredMemberId: hasOwn(updates, 'insuredMemberId') ? updates.insuredMemberId : policy.insuredMemberId,
+  });
+}
+
+function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}) {
+  const normalizedInput = normalizeFamilyBindingInput(input);
+  validatePolicyFamilyBinding(state, normalizedInput, owner);
+  const family = (state.familyProfiles || []).find((row) => Number(row.id) === Number(normalizedInput.familyId));
+  const members = listFamilyMembers(state, normalizedInput.familyId);
+  const applicant = members.find((row) => Number(row.id) === Number(normalizedInput.applicantMemberId));
+  const insured = members.find((row) => Number(row.id) === Number(normalizedInput.insuredMemberId));
+  const applicantNameSnapshot = trim(personData.applicant);
+  const insuredNameSnapshot = trim(personData.insured);
+  const nameMismatch = (
+    (applicantNameSnapshot && applicant?.name && applicantNameSnapshot !== trim(applicant.name)) ||
+    (insuredNameSnapshot && insured?.name && insuredNameSnapshot !== trim(insured.name))
+  );
+  return {
+    familyId: Number(family?.id || normalizedInput.familyId),
+    applicantMemberId: Number(applicant?.id || normalizedInput.applicantMemberId),
+    insuredMemberId: Number(insured?.id || normalizedInput.insuredMemberId),
+    applicantNameSnapshot,
+    insuredNameSnapshot,
+    applicantRelationSnapshot: trim(applicant?.relationLabel),
+    insuredRelationSnapshot: trim(insured?.relationLabel),
+    participantReviewStatus: nameMismatch ? 'name_mismatch' : 'ok',
+    applicantMemberName: trim(applicant?.name),
+    applicantRelationLabel: trim(applicant?.relationLabel),
+    insuredMemberName: trim(insured?.name),
+    insuredRelationLabel: trim(insured?.relationLabel),
+  };
+}
+
+function attachPolicyFamilyDisplay(policy, state) {
+  const family = (state.familyProfiles || []).find((row) => Number(row.id) === Number(policy.familyId));
+  const applicant = (state.familyMembers || []).find((row) => Number(row.id) === Number(policy.applicantMemberId));
+  const insured = (state.familyMembers || []).find((row) => Number(row.id) === Number(policy.insuredMemberId));
+  return {
+    ...policy,
+    familyName: family?.familyName || '',
+    applicantMemberName: applicant?.name || policy.applicantMemberName || '',
+    applicantRelationLabel: applicant?.relationLabel || policy.applicantRelationLabel || '',
+    insuredMemberName: insured?.name || policy.insuredMemberName || '',
+    insuredRelationLabel: insured?.relationLabel || policy.insuredRelationLabel || '',
+  };
 }
 
 function policyProductIdentity(policy = {}) {
@@ -629,7 +720,7 @@ function buildAdminOverview(state) {
     users,
     insureds: [...insuredMap.values()].sort((a, b) => b.policyCount - a.policyCount || a.insured.localeCompare(b.insured)),
     policies: attachPoliciesCoverageIndicators(
-      policyRows,
+      policyRows.map((policy) => attachPolicyFamilyDisplay(policy, state)),
       state.insuranceIndicatorRecords,
       state.knowledgeRecords,
       state.optionalResponsibilityRecords,
@@ -1712,7 +1803,7 @@ export function createPolicyOcrApp(options = {}) {
         user: publicUser(user),
         migratedPolicyCount,
         policies: attachPoliciesCoverageIndicators(
-          policies,
+          policies.map((policy) => attachPolicyFamilyDisplay(policy, state)),
           state.insuranceIndicatorRecords,
           state.knowledgeRecords,
           state.optionalResponsibilityRecords,
@@ -1733,6 +1824,95 @@ export function createPolicyOcrApp(options = {}) {
       res.json({ ok: true });
     } catch (error) {
       sendError(res, error, 500);
+    }
+  });
+
+  function resolveFamilyRequestOwner(req, res) {
+    const user = resolveAuthUser(req, state);
+    const owner = requestOwner(req, user);
+    if (!owner.userId && !owner.guestId) {
+      res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '缺少游客标识' });
+      return null;
+    }
+    return owner;
+  }
+
+  function findOwnedFamily(familyId, owner) {
+    return (state.familyProfiles || []).find((family) => (
+      Number(family.id) === Number(familyId) &&
+      String(family.status || 'active') === 'active' &&
+      familyOwnerMatches(family, owner)
+    )) || null;
+  }
+
+  function familyWithMembers(family) {
+    return {
+      ...family,
+      members: listFamilyMembers(state, family.id),
+    };
+  }
+
+  app.get('/api/family-profiles', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res);
+    if (!owner) return;
+    const families = listFamilyProfilesForOwner(state, owner).map((family) => familyWithMembers(family));
+    res.json({ ok: true, families });
+  });
+
+  app.post('/api/family-profiles', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res);
+    if (!owner) return;
+    try {
+      const family = createFamilyProfile(state, req.body || {}, owner);
+      await persist(state);
+      res.status(201).json({ ok: true, family, members: [] });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  app.post('/api/family-profiles/default', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res);
+    if (!owner) return;
+    try {
+      const family = ensureDefaultFamilyProfileForPrincipal(state, owner);
+      await persist(state);
+      res.json({ ok: true, family, members: listFamilyMembers(state, family.id) });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  app.post('/api/family-profiles/:id/members', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res);
+    if (!owner) return;
+    const family = findOwnedFamily(req.params.id, owner);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    try {
+      const existingMembers = listFamilyMembers(state, family.id);
+      const existingCore = existingMembers.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
+      const shouldSetAsCore = Boolean(req.body?.setAsCore) || !existingCore;
+      const memberInput = {
+        ...(req.body || {}),
+        ...(shouldSetAsCore ? { relationToCore: 'self', relationLabel: '本人', role: 'core' } : {}),
+      };
+      const member = createFamilyMember(state, family.id, memberInput);
+      if (shouldSetAsCore) {
+        if (existingCore && Number(existingCore.id) !== Number(member.id)) {
+          existingCore.relationToCore = 'pending';
+          existingCore.relationLabel = '待确认';
+          existingCore.role = 'adult';
+          existingCore.updatedAt = new Date().toISOString();
+        }
+        family.coreMemberId = member.id;
+      }
+      family.updatedAt = new Date().toISOString();
+      await persist(state);
+      res.status(201).json({ ok: true, member, family, members: listFamilyMembers(state, family.id) });
+    } catch (error) {
+      sendError(res, error, 400);
     }
   });
 
@@ -1864,12 +2044,25 @@ export function createPolicyOcrApp(options = {}) {
           reusedAnalysis: true,
         });
       }
+      const familyInputSource = {
+        ...(req.body || {}),
+        ...(req.body?.manualData && typeof req.body.manualData === 'object' ? req.body.manualData : {}),
+      };
+      const familyBinding = familyInputHasBindingFields(familyInputSource)
+        ? buildPolicyFamilyBinding(
+            state,
+            normalizeFamilyBindingInput(familyInputSource),
+            requestOwner(req, user),
+            normalizedScan?.data || {},
+          )
+        : null;
       const policy = buildPolicyFromScan({
         state,
         userId: user?.id || null,
         guestId,
         scan: normalizedScan,
         analysis: providedAnalysis,
+        familyBinding,
       });
       state.policies.push(policy);
       if (providedAnalysis) recordPolicySourceRecords(state, policy, providedAnalysis);
@@ -1910,7 +2103,12 @@ export function createPolicyOcrApp(options = {}) {
       res.status(201).json({
         ok: true,
         policy: {
-          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
+          ...attachPolicyCoverageIndicators(
+            attachPolicyFamilyDisplay(policy, state),
+            state.insuranceIndicatorRecords,
+            state.knowledgeRecords,
+            state.optionalResponsibilityRecords,
+          ),
           cashflowEntries,
           scenarioEntries,
           totalCashflow,
@@ -1935,7 +2133,7 @@ export function createPolicyOcrApp(options = {}) {
       })
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     const policiesWithIndicators = attachPoliciesCoverageIndicators(
-      policies,
+      policies.map((policy) => attachPolicyFamilyDisplay(policy, state)),
       state.insuranceIndicatorRecords,
       state.knowledgeRecords,
       state.optionalResponsibilityRecords,
@@ -1978,6 +2176,18 @@ export function createPolicyOcrApp(options = {}) {
       if (hasOwn(updates, 'insuredIdNumber') && !hasOwn(updates, 'insuredBirthday')) {
         updates.insuredBirthday = birthdayFromIdNumber(updates.insuredIdNumber);
       }
+      if (familyInputHasBindingFields(updates)) {
+        const familyBinding = buildPolicyFamilyBinding(
+          state,
+          familyBindingInputFromPolicyUpdate(updates, policy),
+          policyOwner(policy),
+          {
+            applicant: hasOwn(updates, 'applicant') ? updates.applicant : policy.applicant,
+            insured: hasOwn(updates, 'insured') ? updates.insured : policy.insured,
+          },
+        );
+        Object.assign(updates, familyBinding);
+      }
       Object.assign(policy, updates);
       const identityChanged = beforeIdentity !== policyProductIdentity(policy);
       if (identityChanged) clearPolicyReportForRegeneration(state, policy);
@@ -2011,7 +2221,12 @@ export function createPolicyOcrApp(options = {}) {
       res.status(identityChanged ? 202 : 200).json({
         ok: true,
         policy: {
-          ...attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
+          ...attachPolicyCoverageIndicators(
+            attachPolicyFamilyDisplay(policy, state),
+            state.insuranceIndicatorRecords,
+            state.knowledgeRecords,
+            state.optionalResponsibilityRecords,
+          ),
           cashflowEntries,
           scenarioEntries,
           totalCashflow,
@@ -2051,7 +2266,12 @@ export function createPolicyOcrApp(options = {}) {
       if (policy.reportStatus === 'ready') {
         return res.json({
           ok: true,
-          policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
+          policy: attachPolicyCoverageIndicators(
+            attachPolicyFamilyDisplay(policy, state),
+            state.insuranceIndicatorRecords,
+            state.knowledgeRecords,
+            state.optionalResponsibilityRecords,
+          ),
           skipped: true,
         });
       }
@@ -2075,7 +2295,12 @@ export function createPolicyOcrApp(options = {}) {
       }
       res.status(202).json({
         ok: true,
-        policy: attachPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords, state.knowledgeRecords, state.optionalResponsibilityRecords),
+        policy: attachPolicyCoverageIndicators(
+          attachPolicyFamilyDisplay(policy, state),
+          state.insuranceIndicatorRecords,
+          state.knowledgeRecords,
+          state.optionalResponsibilityRecords,
+        ),
       });
     } catch (error) {
       sendError(res, error);
@@ -2096,7 +2321,7 @@ export function createPolicyOcrApp(options = {}) {
     });
     if (!policy) return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
     const policyWithIndicators = attachPolicyCoverageIndicators(
-      policy,
+      attachPolicyFamilyDisplay(policy, state),
       state.insuranceIndicatorRecords,
       state.knowledgeRecords,
       state.optionalResponsibilityRecords,
