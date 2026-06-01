@@ -64,14 +64,53 @@ function coverageEndDateParts(policy) {
   return parseDateParts(policy?.coveragePeriod);
 }
 
+function memberId(policy) {
+  return finiteNumber(policy?.insuredMemberId);
+}
+
 function memberName(policy) {
-  const name = String(policy?.insured || '').trim();
+  const name = String(policy?.insuredMemberName || policy?.insured || '').trim();
   return name || '未识别被保人';
 }
 
+function memberRelationLabel(policy) {
+  return String(policy?.insuredRelationLabel || '').trim();
+}
+
+function memberKey(policy) {
+  const id = memberId(policy);
+  return id !== null ? `member:${id}` : `name:${memberName(policy)}`;
+}
+
+function memberGroupMeta(policy) {
+  return {
+    memberKey: memberKey(policy),
+    memberId: memberId(policy),
+    member: memberName(policy),
+    relationLabel: memberRelationLabel(policy),
+  };
+}
+
 function policyholderName(policy) {
-  const name = String(policy?.applicant || '').trim();
+  const name = String(policy?.applicantMemberName || policy?.applicant || '').trim();
   return name || '未识别投保人';
+}
+
+function policyholderMemberId(policy) {
+  return finiteNumber(policy?.applicantMemberId);
+}
+
+function policyholderRelationLabel(policy) {
+  return String(policy?.applicantRelationLabel || '').trim();
+}
+
+function reportPoliciesForFamily(policies = [], options = {}) {
+  const source = Array.isArray(policies) ? policies : [];
+  const familyId = options?.familyId;
+  if (familyId === null || familyId === undefined || String(familyId).trim() === '') return source;
+  const selectedFamilyId = finiteNumber(familyId);
+  if (selectedFamilyId === null) return [];
+  return source.filter((policy) => finiteNumber(policy?.familyId) === selectedFamilyId);
 }
 
 const INACTIVE_STATUS_PATTERN = /(失效|停效|中止|终止|退保|已退保|过期|作废|无效|inactive|expired|lapsed|terminated|surrendered|cancelled|canceled|void)/iu;
@@ -257,9 +296,17 @@ function dataStatus(policy) {
 
 function buildInventoryRow(policy) {
   const latestCash = latestCashValue(policy);
+  const member = memberGroupMeta(policy);
   return {
     policyId: policy?.id,
-    member: memberName(policy),
+    memberKey: member.memberKey,
+    memberId: member.memberId,
+    member: member.member,
+    relationLabel: member.relationLabel,
+    applicant: policyholderName(policy),
+    applicantMemberId: policyholderMemberId(policy),
+    applicantRelationLabel: policyholderRelationLabel(policy),
+    participantReviewStatus: String(policy?.participantReviewStatus || ''),
     company: String(policy?.company || ''),
     policyNumber: String(policy?.policyNumber || policy?.policyNo || policy?.contractNumber || policy?.contractNo || policy?.number || '').trim(),
     productName: String(policy?.name || ''),
@@ -753,17 +800,26 @@ export function buildCriticalIllnessSection(policies = []) {
   const groupMap = new Map();
 
   for (const policy of policies) {
-    const member = memberName(policy);
-    if (!groupMap.has(member)) groupMap.set(member, []);
-    groupMap.get(member).push(policy);
+    const member = memberGroupMeta(policy);
+    if (!groupMap.has(member.memberKey)) {
+      groupMap.set(member.memberKey, {
+        ...member,
+        policies: [],
+      });
+    }
+    groupMap.get(member.memberKey).policies.push(policy);
   }
 
   return {
-    members: Array.from(groupMap, ([member, memberPolicies]) => {
+    members: Array.from(groupMap.values(), (group) => {
+      const memberPolicies = group.policies;
       const activeMemberPolicies = activePolicies(memberPolicies);
       const inactiveMemberPolicies = inactivePolicies(memberPolicies);
       return {
-        member,
+        memberKey: group.memberKey,
+        memberId: group.memberId,
+        member: group.member,
+        relationLabel: group.relationLabel,
         ...buildMemberCriticalRows(activeMemberPolicies, inactiveMemberPolicies),
       };
     }),
@@ -1099,17 +1155,26 @@ export function buildAccidentSection(policies = []) {
   const groupMap = new Map();
 
   for (const policy of policies) {
-    const member = memberName(policy);
-    if (!groupMap.has(member)) groupMap.set(member, []);
-    groupMap.get(member).push(policy);
+    const member = memberGroupMeta(policy);
+    if (!groupMap.has(member.memberKey)) {
+      groupMap.set(member.memberKey, {
+        ...member,
+        policies: [],
+      });
+    }
+    groupMap.get(member.memberKey).policies.push(policy);
   }
 
   return {
-    members: Array.from(groupMap, ([member, memberPolicies]) => {
+    members: Array.from(groupMap.values(), (group) => {
+      const memberPolicies = group.policies;
       const activeMemberPolicies = activePolicies(memberPolicies);
       const inactiveMemberPolicies = inactivePolicies(memberPolicies);
       return {
-        member,
+        memberKey: group.memberKey,
+        memberId: group.memberId,
+        member: group.member,
+        relationLabel: group.relationLabel,
         ...buildMemberAccidentRows(activeMemberPolicies, inactiveMemberPolicies),
       };
     }),
@@ -1549,12 +1614,18 @@ export function buildWealthSection(policies = []) {
   const groupMap = new Map();
 
   for (const policy of wealthPolicies) {
-    const member = memberName(policy);
-    if (!groupMap.has(member)) groupMap.set(member, []);
-    groupMap.get(member).push(policy);
+    const member = memberGroupMeta(policy);
+    if (!groupMap.has(member.memberKey)) {
+      groupMap.set(member.memberKey, {
+        ...member,
+        policies: [],
+      });
+    }
+    groupMap.get(member.memberKey).policies.push(policy);
   }
 
-  const memberReports = Array.from(groupMap, ([member, memberPolicies]) => {
+  const memberReports = Array.from(groupMap.values(), (group) => {
+    const memberPolicies = group.policies;
     const reports = memberPolicies.map(buildWealthPolicyReport);
     const attentionItems = [
       ...reports
@@ -1564,7 +1635,10 @@ export function buildWealthSection(policies = []) {
     ];
 
     return {
-      member,
+      memberKey: group.memberKey,
+      memberId: group.memberId,
+      member: group.member,
+      relationLabel: group.relationLabel,
       policies: reports,
       attentionItems,
     };
@@ -2281,15 +2355,19 @@ function normalizeMemberStructureScores(memberSeries) {
   }));
 }
 
+function radarSeriesKey(series) {
+  return series?.memberKey || series?.name || '';
+}
+
 function distributeTarget(memberSeries, totalTarget, weightsByRole) {
   const weights = memberSeries.map((series) => Math.max(0, weightsByRole?.[series.role] ?? 1));
   const weightTotal = weights.reduce((total, weight) => total + weight, 0);
-  if (totalTarget <= 0) return new Map(memberSeries.map((series) => [series.name, 0]));
+  if (totalTarget <= 0) return new Map(memberSeries.map((series) => [radarSeriesKey(series), 0]));
   if (weightTotal <= 0) {
     const equalTarget = totalTarget / Math.max(memberSeries.length, 1);
-    return new Map(memberSeries.map((series) => [series.name, equalTarget]));
+    return new Map(memberSeries.map((series) => [radarSeriesKey(series), equalTarget]));
   }
-  return new Map(memberSeries.map((series, index) => [series.name, totalTarget * (weights[index] / weightTotal)]));
+  return new Map(memberSeries.map((series, index) => [radarSeriesKey(series), totalTarget * (weights[index] / weightTotal)]));
 }
 
 function memberEstimatedTargets(memberSeries, planningProfile) {
@@ -2304,13 +2382,13 @@ function memberEstimatedTargets(memberSeries, planningProfile) {
   const retirementTargets = distributeTarget(retirementMembers.length ? retirementMembers : memberSeries, normalized.retirementGoal, {});
 
   return new Map(memberSeries.map((series) => [
-    series.name,
+    radarSeriesKey(series),
     {
-      critical: criticalTargets.get(series.name) || 0,
+      critical: criticalTargets.get(radarSeriesKey(series)) || 0,
       medical: FAMILY_PLANNING_DEFAULTS.medicalTarget,
-      accident: accidentTargets.get(series.name) || 0,
-      life: lifeTargets.get(series.name) || 0,
-      wealth: (educationTargets.get(series.name) || 0) + (retirementTargets.get(series.name) || 0),
+      accident: accidentTargets.get(radarSeriesKey(series)) || 0,
+      life: lifeTargets.get(radarSeriesKey(series)) || 0,
+      wealth: (educationTargets.get(radarSeriesKey(series)) || 0) + (retirementTargets.get(radarSeriesKey(series)) || 0),
     },
   ]));
 }
@@ -2320,17 +2398,21 @@ function normalizeMemberEstimatedScores(memberSeries, planningProfile) {
   return memberSeries.map((series) => ({
     ...series,
     targetSource: 'system_estimate',
-    scores: normalizeScoresAgainstTargets(series.scores, targetsByMember.get(series.name), 'system_estimate'),
+    scores: normalizeScoresAgainstTargets(series.scores, targetsByMember.get(radarSeriesKey(series)), 'system_estimate'),
   }));
 }
 
-function buildRadarSeries(name, policies) {
+function buildRadarSeries(group, policies) {
   const scores = buildRadarScores(policies);
   const totalAmount = scores.reduce((total, score) => total + score.amount, 0);
   const missingLabels = scores.filter((score) => score.amount <= 0).map((score) => score.label);
+  const name = group.member;
   const role = memberRole(name, policies);
   return {
+    memberKey: group.memberKey,
+    memberId: group.memberId,
     name,
+    relationLabel: group.relationLabel,
     role,
     roleLabel: memberRoleLabel(role),
     scores,
@@ -2346,11 +2428,11 @@ function selectDisplayedRadarMembers(memberSeries) {
   const selected = [];
   for (const series of [...byHigh.slice(0, 3), lowest, ...byHigh]) {
     if (selected.length >= 4) break;
-    if (!selected.some((item) => item.name === series.name)) selected.push(series);
+    if (!selected.some((item) => radarSeriesKey(item) === radarSeriesKey(series))) selected.push(series);
   }
   return {
     members: selected,
-    hiddenMembers: memberSeries.filter((series) => !selected.some((item) => item.name === series.name)),
+    hiddenMembers: memberSeries.filter((series) => !selected.some((item) => radarSeriesKey(item) === radarSeriesKey(series))),
   };
 }
 
@@ -2370,12 +2452,17 @@ export function buildFamilyRadarReport(policies = [], planningProfile = null) {
 
   const groupMap = new Map();
   for (const policy of reportPolicies) {
-    const member = memberName(policy);
-    if (!groupMap.has(member)) groupMap.set(member, []);
-    groupMap.get(member).push(policy);
+    const member = memberGroupMeta(policy);
+    if (!groupMap.has(member.memberKey)) {
+      groupMap.set(member.memberKey, {
+        ...member,
+        policies: [],
+      });
+    }
+    groupMap.get(member.memberKey).policies.push(policy);
   }
 
-  const rawMembers = Array.from(groupMap, ([member, memberPolicies]) => buildRadarSeries(member, memberPolicies));
+  const rawMembers = Array.from(groupMap.values(), (group) => buildRadarSeries(group, group.policies));
   const allMembers = planningEnabled
     ? normalizeMemberEstimatedScores(rawMembers, normalizedPlanningProfile)
     : normalizeMemberStructureScores(rawMembers);
@@ -2395,7 +2482,7 @@ export function buildFamilyRadarReport(policies = [], planningProfile = null) {
 
 export function buildFamilyReportSummary(policies = []) {
   const reportPolicies = activePolicies(policies);
-  const members = new Set(reportPolicies.map(memberName));
+  const members = new Set(reportPolicies.map(memberKey));
   return {
     memberCount: members.size,
     policyCount: reportPolicies.length,
@@ -2412,9 +2499,12 @@ export function buildPolicyInventory(policies = []) {
   const groupMap = new Map();
 
   for (const row of rows) {
-    if (!groupMap.has(row.member)) {
-      groupMap.set(row.member, {
+    if (!groupMap.has(row.memberKey)) {
+      groupMap.set(row.memberKey, {
+        memberKey: row.memberKey,
+        memberId: row.memberId,
         member: row.member,
+        relationLabel: row.relationLabel,
         policies: [],
         annualPremium: 0,
         totalCoverage: 0,
@@ -2422,7 +2512,7 @@ export function buildPolicyInventory(policies = []) {
         futurePayoutTotal: 0,
       });
     }
-    const group = groupMap.get(row.member);
+    const group = groupMap.get(row.memberKey);
     group.policies.push(row);
     if (!row.isInactive) {
       group.annualPremium += row.annualPremium;
@@ -2457,17 +2547,18 @@ function buildOptionalResponsibilityGaps(policies = []) {
   return gaps;
 }
 
-export function buildFamilyReport(policies = [], planningProfile = null) {
+export function buildFamilyReport(policies = [], planningProfile = null, options = {}) {
+  const reportPolicies = reportPoliciesForFamily(policies, options);
   return {
-    summary: buildFamilyReportSummary(policies),
-    policyInventory: buildPolicyInventory(policies),
-    optionalResponsibilityGaps: buildOptionalResponsibilityGaps(policies),
-    criticalIllness: buildCriticalIllnessSection(policies),
-    accident: buildAccidentSection(policies),
-    wealth: buildWealthSection(policies),
-    radar: buildFamilyRadarReport(policies, planningProfile),
+    summary: buildFamilyReportSummary(reportPolicies),
+    policyInventory: buildPolicyInventory(reportPolicies),
+    optionalResponsibilityGaps: buildOptionalResponsibilityGaps(reportPolicies),
+    criticalIllness: buildCriticalIllnessSection(reportPolicies),
+    accident: buildAccidentSection(reportPolicies),
+    wealth: buildWealthSection(reportPolicies),
+    radar: buildFamilyRadarReport(reportPolicies, planningProfile),
     appendix: {
-      policies: policies.map((policy) => ({
+      policies: reportPolicies.map((policy) => ({
         policyId: policy.id,
         productName: String(policy.name || ''),
         ocrText: String(policy.ocrText || ''),

@@ -91,6 +91,15 @@ function emptyText(value?: string | number | null) {
   return String(value);
 }
 
+function memberDisplayName(member: { member?: string; name?: string; relationLabel?: string }) {
+  const name = member.member || member.name || '';
+  return [member.relationLabel, name].filter(Boolean).join(' · ') || name;
+}
+
+function reportMemberKey(member: { memberKey?: string; member?: string; name?: string }) {
+  return member.memberKey || member.member || member.name || '';
+}
+
 function statusClassName(status: string) {
   if (status === 'covered') return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
   if (status === 'partial' || status === 'formula') return 'bg-amber-50 text-amber-700 ring-amber-100';
@@ -395,7 +404,7 @@ function getFamilyAttentionItems(report: FamilyReport) {
     ...report.summary.attentionItems,
     ...memberSeries.flatMap((member) => member.scores
       .filter((score) => score.coveragePresent === false)
-      .map((score) => `${member.name}: ${score.label}缺失`)),
+      .map((score) => `${memberDisplayName(member)}: ${score.label}缺失`)),
   ];
 }
 
@@ -752,11 +761,13 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
           {planningMode ? '按家庭目标自动分摊到成员，仅供初步估算；未要求客户录入个人收入、负债或资产。' : '客户未录入家庭目标时，按有效金额压缩比例展示个人结构，非保障充足率。'}
         </p>
         <div className="grid gap-3 lg:grid-cols-2">
-          {members.map((member, index) => (
-            <article key={member.name} className="min-w-0 rounded-[20px] border border-[#E1E8EF] bg-white p-3 shadow-[0_14px_34px_-32px_rgba(15,23,42,0.34)]">
+          {members.map((member) => {
+            const memberKey = reportMemberKey(member);
+            return (
+            <article key={memberKey} className="min-w-0 rounded-[20px] border border-[#E1E8EF] bg-white p-3 shadow-[0_14px_34px_-32px_rgba(15,23,42,0.34)]">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="break-words text-base font-black leading-5 text-[#102033]">{member.name}</p>
+                  <p className="break-words text-base font-black leading-5 text-[#102033]">{memberDisplayName(member)}</p>
                   <p className="mt-1 text-[11px] font-bold text-[#72849A]">{member.roleLabel || '成员'} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -765,9 +776,9 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                   </span>
                   <button
                     type="button"
-                    onClick={() => setExpandedCalculations((current) => ({ ...current, [member.name]: !current[member.name] }))}
+                    onClick={() => setExpandedCalculations((current) => ({ ...current, [memberKey]: !current[memberKey] }))}
                     className="flex items-center gap-1 rounded-full bg-[#EEF3F7] px-2 py-1 text-[11px] font-black text-[#42566B] active:bg-[#E1E8EF]"
-                    aria-expanded={Boolean(expandedCalculations[member.name])}
+                    aria-expanded={Boolean(expandedCalculations[memberKey])}
                     aria-label={`${member.name}金额和雷达值怎么算`}
                     title="金额来源和雷达值怎么算"
                   >
@@ -790,17 +801,18 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                   ))}
                 </div>
               </div>
-              {expandedCalculations[member.name] ? (
+              {expandedCalculations[memberKey] ? (
                 <RadarCalculationDetails series={member} mode={report.radar.mode} />
               ) : null}
               {!planningMode && member.notes.length ? (
                 <p className="mt-3 break-words rounded-[14px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-4 text-[#9A4A16]">{member.notes.join('；')}</p>
               ) : null}
             </article>
-          ))}
+            );
+          })}
           {report.radar.hiddenMembers.length ? (
             <div className="rounded-[16px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-4 text-[#9A4A16] lg:col-span-2">
-              未展示成员: {report.radar.hiddenMembers.map((member) => `${member.name}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
+              未展示成员: {report.radar.hiddenMembers.map((member) => `${memberDisplayName(member)}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
             </div>
           ) : null}
         </div>
@@ -817,7 +829,9 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
           <table className="min-w-full border-separate border-spacing-0 text-left">
             <thead>
               <tr>
-                <th className={`${thClassName} rounded-tl-[18px]`}>被保人</th>
+                <th className={`${thClassName} rounded-tl-[18px]`}>投保人</th>
+                <th className={thClassName}>被保人</th>
+                <th className={thClassName}>家庭身份</th>
                 <th className={thClassName}>保单/产品</th>
                 <th className={thClassName}>类型</th>
                 <th className={`${thClassName} text-right`}>年交保费</th>
@@ -829,7 +843,14 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
             <tbody>
               {rows.map((row) => (
                 <tr key={row.policyId}>
-                  <td className={tdClassName}>{row.member}</td>
+                  <td className={tdClassName}>{emptyText(row.applicant)}</td>
+                  <td className={tdClassName}>
+                    <span className="block">{row.member}</span>
+                    {row.participantReviewStatus === 'name_mismatch' ? (
+                      <span className="mt-1 inline-flex rounded-full bg-[#FFF8EB] px-2 py-0.5 text-[11px] font-black text-[#9A4A16] ring-1 ring-[#F3D9B4]">姓名待核对</span>
+                    ) : null}
+                  </td>
+                  <td className={tdClassName}>{emptyText(row.relationLabel)}</td>
                   <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
                     <span className="block font-black text-slate-900">{emptyText(row.productName)}</span>
                     <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{emptyText(row.company)}</span>
@@ -852,22 +873,28 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
 }
 
 function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
-  const groups = new Map<string, FamilyPolicyInventoryRow[]>();
+  const groups = new Map<string, { member: string; relationLabel?: string; policies: FamilyPolicyInventoryRow[] }>();
   rows.forEach((row) => {
-    if (!groups.has(row.member)) groups.set(row.member, []);
-    groups.get(row.member)?.push(row);
+    if (!groups.has(row.memberKey)) {
+      groups.set(row.memberKey, {
+        member: row.member,
+        relationLabel: row.relationLabel,
+        policies: [],
+      });
+    }
+    groups.get(row.memberKey)?.policies.push(row);
   });
 
   return (
     <Section title="被保人保单明细">
       {groups.size ? (
         <div className="space-y-3">
-          {Array.from(groups, ([member, policies]) => (
-            <article key={member} className={`${reportMutedSurfaceClassName} p-3`}>
+          {Array.from(groups, ([memberKey, group]) => (
+            <article key={memberKey} className={`${reportMutedSurfaceClassName} p-3`}>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-black text-[#102033]">{member}</h3>
+                <h3 className="text-sm font-black text-[#102033]">{memberDisplayName(group)}</h3>
                 <span className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-[#0B72B9] ring-1 ring-[#D7E2EA]">
-                  {policies.length}张保单
+                  {group.policies.length}张保单
                 </span>
               </div>
               <TableWrap>
@@ -886,7 +913,7 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
                     </tr>
                   </thead>
                   <tbody>
-                    {policies.map((row) => (
+                    {group.policies.map((row) => (
                       <tr key={row.policyId}>
                         <td className="min-w-[170px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
                           <span className="block">{emptyText(row.company)}</span>
@@ -921,7 +948,7 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
   return (
     <article className={`${reportMutedSurfaceClassName} p-3`}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-black text-[#102033]">{member.member}</h3>
+        <h3 className="text-sm font-black text-[#102033]">{memberDisplayName(member)}</h3>
         {member.attentionItems.length ? (
           <span className="rounded-full bg-[#FFF8EB] px-2 py-1 text-[11px] font-bold text-[#9A4A16] ring-1 ring-[#F3D9B4]">
             待关注 {member.attentionItems.length}
@@ -1012,7 +1039,7 @@ function ProtectionSection({ title, members }: { title: string; members: FamilyM
     <Section title={title}>
       {members.length ? (
         <div className="space-y-3">
-          {members.map((member) => <ProtectionMemberTable key={member.member} member={member} />)}
+          {members.map((member) => <ProtectionMemberTable key={reportMemberKey(member)} member={member} />)}
         </div>
       ) : (
         <EmptyState text={`暂无${title}数据`} />
@@ -1072,8 +1099,8 @@ function formatCashValueTimeTick(value: number) {
 
 function buildPolicyCashValueTrendSeries(report: FamilyReport): CashValueTrendSeries[] {
   return report.wealth.memberReports
-    .flatMap((member) => member.policies.map((policy) => ({ member: member.member, policy })))
-    .flatMap(({ member, policy }, index) => {
+    .flatMap((member) => member.policies.map((policy) => ({ member: memberDisplayName(member), memberKey: reportMemberKey(member), policy })))
+    .flatMap(({ member, memberKey, policy }, index) => {
       const rows = policy.cashValueRows
         .filter((row) => Number.isFinite(row.cashValue) && cashValueChartXValue(row) !== null)
         .map((row) => ({
@@ -1085,7 +1112,7 @@ function buildPolicyCashValueTrendSeries(report: FamilyReport): CashValueTrendSe
       if (!rows.length) return [];
 
       return [{
-        id: `${policy.policyId}-${member}`,
+        id: `${policy.policyId}-${memberKey}`,
         kind: 'policy' as const,
         label: compactText(policy.productName) || '未命名产品',
         meta: [member, compactText(policy.company)].filter(Boolean).join(' · '),
@@ -1773,9 +1800,9 @@ function WealthSection({ report }: { report: FamilyReport }) {
         <CashValueTrendChart report={report} />
 
         {report.wealth.memberReports.length ? report.wealth.memberReports.map((member) => (
-          <article key={member.member} className={`${reportMutedSurfaceClassName} p-3`}>
+          <article key={reportMemberKey(member)} className={`${reportMutedSurfaceClassName} p-3`}>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-black text-[#102033]">{member.member}</h3>
+              <h3 className="text-sm font-black text-[#102033]">{memberDisplayName(member)}</h3>
               {member.attentionItems.length ? (
                 <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-black text-[#0B72B9] ring-1 ring-[#D7E2EA]" title={member.attentionItems.join('；')}>
                   {member.attentionItems.length}项未入统计

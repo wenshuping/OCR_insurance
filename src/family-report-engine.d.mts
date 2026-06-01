@@ -12,7 +12,14 @@ export type FamilyReportSummary = {
 
 export type FamilyPolicyInventoryRow = {
   policyId: number;
+  memberKey: string;
+  memberId: number | null;
   member: string;
+  relationLabel: string;
+  applicant: string;
+  applicantMemberId: number | null;
+  applicantRelationLabel: string;
+  participantReviewStatus: string;
   company: string;
   policyNumber?: string;
   productName: string;
@@ -36,7 +43,10 @@ export type FamilyPolicyInventoryRow = {
 };
 
 export type FamilyInsuredPolicyGroup = {
+  memberKey?: string;
+  memberId?: number | null;
   member: string;
+  relationLabel?: string;
   policies: FamilyPolicyInventoryRow[];
   annualPremium: number;
   totalCoverage: number;
@@ -73,7 +83,10 @@ export type FamilyProtectionRow = {
 };
 
 export type FamilyMemberProtectionReport = {
+  memberKey?: string;
+  memberId?: number | null;
   member: string;
+  relationLabel?: string;
   rows: FamilyProtectionRow[];
   attentionItems: string[];
 };
@@ -150,7 +163,10 @@ export type FamilyWealthPolicyReport = {
 };
 
 export type FamilyMemberWealthReport = {
+  memberKey?: string;
+  memberId?: number | null;
   member: string;
+  relationLabel?: string;
   policies: FamilyWealthPolicyReport[];
   attentionItems: string[];
 };
@@ -256,7 +272,10 @@ export type FamilyRadarScore = {
 };
 
 export type FamilyRadarSeries = {
+  memberKey?: string;
+  memberId?: number | null;
   name: string;
+  relationLabel?: string;
   role?: 'adult' | 'child' | 'elder' | string;
   roleLabel?: string;
   targetSource?: 'system_estimate' | string;
@@ -286,7 +305,11 @@ export type FamilyReport = {
   appendix: { policies: Array<{ policyId: number; productName: string; ocrText: string }> };
 };
 
-export function buildFamilyReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null): FamilyReport;
+export type FamilyReportOptions = {
+  familyId?: number | null;
+};
+
+export function buildFamilyReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null, options?: FamilyReportOptions): FamilyReport;
 export function buildFamilyReportSummary(policies: Policy[]): FamilyReportSummary;
 export function buildPolicyInventory(policies: Policy[]): FamilyPolicyInventory;
 export function buildCriticalIllnessSection(policies: Policy[]): FamilySectionReport;

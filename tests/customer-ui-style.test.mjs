@@ -387,6 +387,15 @@ test('family report renders optional responsibility gaps', () => {
   assert.match(source, /quantificationReason/);
 });
 
+test('family report renders household identity fields', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /家庭身份/);
+  assert.match(source, /投保人/);
+  assert.match(source, /姓名待核对/);
+  assert.match(source, /relationLabel/);
+});
+
 test('family report keeps verbose protection notes readable on mobile', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
