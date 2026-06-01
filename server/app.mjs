@@ -59,6 +59,7 @@ import {
   familyOwnerMatches,
   listFamilyMembers,
   listFamilyProfilesForOwner,
+  matchFamilyMemberByPerson,
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
 
@@ -568,6 +569,107 @@ function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}
     insuredMemberName: trim(insured?.name),
     insuredRelationLabel: trim(insured?.relationLabel),
   };
+}
+
+function familyPersonFromPolicyData(data = {}, role = 'insured') {
+  const prefix = role === 'applicant' ? 'applicant' : 'insured';
+  const idNumber = normalizeIdNumber(
+    data?.[`${prefix}IdNumber`] ||
+      data?.[`${prefix}IdentityNumber`] ||
+      data?.[`${prefix}IdCard`],
+  );
+  return {
+    name: trim(data?.[prefix]),
+    birthday: normalizeDateOnly(data?.[`${prefix}Birthday`] || data?.[`${prefix}BirthDate`]),
+    idNumberTail: idNumber ? idNumber.slice(-4) : '',
+  };
+}
+
+function activeFamilyForOwner(state, owner = {}) {
+  return listFamilyProfilesForOwner(state, owner)
+    .find((family) => String(family?.status || 'active') === 'active') || null;
+}
+
+function activeCoreMemberForFamily(state, family) {
+  return listFamilyMembers(state, family.id)
+    .find((member) => Number(member?.id || 0) === Number(family?.coreMemberId || 0)) || null;
+}
+
+function ensureMemberForPolicyPerson(state, family, person = {}, relationLabel = '待确认') {
+  if (!trim(person.name)) return null;
+  const members = listFamilyMembers(state, family.id);
+  const existing = matchFamilyMemberByPerson(members, person);
+  if (existing) return existing;
+  return createFamilyMember(state, family.id, {
+    ...person,
+    relationLabel,
+  });
+}
+
+function markFamilyCoreMember(family, member) {
+  if (!member) return;
+  family.coreMemberId = member.id;
+  family.updatedAt = new Date().toISOString();
+  member.relationToCore = 'self';
+  member.relationLabel = '本人';
+  member.role = 'core';
+  member.updatedAt = family.updatedAt;
+}
+
+function policyMatchesOwnerPrincipal(policy, owner = {}) {
+  if (owner.userId) return Number(policy?.userId || 0) === Number(owner.userId);
+  if (owner.guestId) return normalizeGuestId(policy?.guestId) === owner.guestId && !Number(policy?.userId || 0);
+  return !policy?.userId && !normalizeGuestId(policy?.guestId);
+}
+
+function ensureDefaultPolicyFamilyBinding(state, owner = {}, personData = {}) {
+  const applicantPerson = familyPersonFromPolicyData(personData, 'applicant');
+  const insuredPerson = familyPersonFromPolicyData(personData, 'insured');
+  const ownerPolicies = (state.policies || []).filter((policy) => policyMatchesOwnerPrincipal(policy, owner));
+  const existingFamily = activeFamilyForOwner(state, owner);
+  const family = ownerPolicies.length
+    ? ensureDefaultFamilyProfileForPrincipal(state, owner)
+    : (existingFamily || createFamilyProfile(state, {}, owner));
+
+  let coreMember = activeCoreMemberForFamily(state, family);
+  const applicantMember = ensureMemberForPolicyPerson(
+    state,
+    family,
+    applicantPerson,
+    coreMember ? '待确认' : '本人',
+  );
+  if (!coreMember && applicantMember) {
+    markFamilyCoreMember(family, applicantMember);
+    coreMember = applicantMember;
+  }
+
+  const insuredMember = ensureMemberForPolicyPerson(
+    state,
+    family,
+    insuredPerson,
+    coreMember && applicantMember?.id !== coreMember.id ? '待确认' : '本人',
+  );
+  if (!coreMember && insuredMember) {
+    markFamilyCoreMember(family, insuredMember);
+    coreMember = insuredMember;
+  }
+
+  if (!coreMember) {
+    const firstMember = listFamilyMembers(state, family.id)[0];
+    coreMember = firstMember || createFamilyMember(state, family.id, { name: '本人', relationLabel: '本人' });
+    markFamilyCoreMember(family, coreMember);
+  }
+
+  return buildPolicyFamilyBinding(
+    state,
+    {
+      familyId: family.id,
+      applicantMemberId: applicantMember?.id || coreMember.id,
+      insuredMemberId: insuredMember?.id || applicantMember?.id || coreMember.id,
+    },
+    owner,
+    personData,
+  );
 }
 
 function attachPolicyFamilyDisplay(policy, state) {
@@ -1800,12 +1902,18 @@ export function createPolicyOcrApp(options = {}) {
         }
       }
       for (const { pending, analysis } of pendingAnalyses) {
+        const familyBinding = ensureDefaultPolicyFamilyBinding(
+          state,
+          { userId: user.id },
+          pending.scan?.data || {},
+        );
         const policy = buildPolicyFromScan({
           state,
           userId: user.id,
           guestId: '',
           scan: pending.scan,
           analysis,
+          familyBinding,
         });
         state.policies.push(policy);
         recordPolicySourceRecords(state, policy, analysis);
@@ -1932,7 +2040,46 @@ export function createPolicyOcrApp(options = {}) {
   app.get('/api/family-profiles', async (req, res) => {
     const owner = resolveFamilyRequestOwner(req, res);
     if (!owner) return;
-    const families = listFamilyProfilesForOwner(state, owner).map((family) => familyWithMembers(family));
+    const ownerPolicies = (state.policies || []).filter((policy) => familySharePolicyMatchesOwner(policy, owner));
+    let familiesForOwner = listFamilyProfilesForOwner(state, owner);
+    const needsDefaultMigration = (
+      ownerPolicies.length > 0 &&
+      (
+        !familiesForOwner.some((family) => String(family?.status || 'active') === 'active') ||
+        ownerPolicies.some((policy) => !policyHasFamilyBinding(policy))
+      )
+    );
+    if (needsDefaultMigration) {
+      const beforeMarker = JSON.stringify({
+        nextId: state.nextId,
+        familyProfiles: state.familyProfiles,
+        familyMembers: state.familyMembers,
+        policyBindings: ownerPolicies.map((policy) => ({
+          id: policy.id,
+          familyId: policy.familyId,
+          applicantMemberId: policy.applicantMemberId,
+          insuredMemberId: policy.insuredMemberId,
+          participantReviewStatus: policy.participantReviewStatus,
+        })),
+      });
+      ensureDefaultFamilyProfileForPrincipal(state, owner);
+      familiesForOwner = listFamilyProfilesForOwner(state, owner);
+      const migratedPolicies = (state.policies || []).filter((policy) => familySharePolicyMatchesOwner(policy, owner));
+      const afterMarker = JSON.stringify({
+        nextId: state.nextId,
+        familyProfiles: state.familyProfiles,
+        familyMembers: state.familyMembers,
+        policyBindings: migratedPolicies.map((policy) => ({
+          id: policy.id,
+          familyId: policy.familyId,
+          applicantMemberId: policy.applicantMemberId,
+          insuredMemberId: policy.insuredMemberId,
+          participantReviewStatus: policy.participantReviewStatus,
+        })),
+      });
+      if (afterMarker !== beforeMarker) await persist(state);
+    }
+    const families = familiesForOwner.map((family) => familyWithMembers(family));
     res.json({ ok: true, families });
   });
 
@@ -2200,14 +2347,15 @@ export function createPolicyOcrApp(options = {}) {
         ...(req.body || {}),
         ...(req.body?.manualData && typeof req.body.manualData === 'object' ? req.body.manualData : {}),
       };
+      const owner = requestOwner(req, user);
       const familyBinding = familyInputHasBindingFields(familyInputSource)
         ? buildPolicyFamilyBinding(
             state,
             normalizeFamilyBindingInput(familyInputSource),
-            requestOwner(req, user),
+            owner,
             normalizedScan?.data || {},
           )
-        : null;
+        : ensureDefaultPolicyFamilyBinding(state, owner, normalizedScan?.data || {});
       const policy = buildPolicyFromScan({
         state,
         userId: user?.id || null,

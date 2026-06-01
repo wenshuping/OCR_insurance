@@ -4222,6 +4222,135 @@ test('policy save rejects applicant and insured members from different families'
   }
 });
 
+test('policy scan without explicit family binding saves into a default family', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({
+      ocrText: '投保人:张三\n被保险人:李四',
+      data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '李四' },
+    }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-default-family-save',
+        scan: { ocrText: '投保人:张三\n被保险人:李四', data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '李四' } },
+        analysis: { report: 'ok', coverageTable: [] },
+      }),
+    });
+
+    assert.equal(result.response.status, 201);
+    assert.ok(result.payload.policy.familyId);
+    assert.ok(result.payload.policy.applicantMemberId);
+    assert.ok(result.payload.policy.insuredMemberId);
+    assert.equal(result.payload.policy.applicantMemberName, '张三');
+    assert.equal(result.payload.policy.insuredMemberName, '李四');
+    assert.equal(state.familyProfiles.length, 1);
+    assert.equal(state.familyProfiles[0].ownerGuestId, 'guest-default-family-save');
+    assert.equal(state.familyMembers.find((member) => member.id === state.familyProfiles[0].coreMemberId)?.name, '张三');
+    assert.equal(state.familyMembers.some((member) => member.name === '李四'), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family profile list migrates existing policies into a default family', async () => {
+  const state = {
+    ...createInitialState(),
+    nextId: 20,
+    policies: [
+      {
+        id: 1,
+        userId: null,
+        guestId: 'guest-existing-family',
+        company: '新华保险',
+        name: '老保单',
+        applicant: '张三',
+        insured: '李四',
+        responsibilities: [],
+        coverageIndicators: [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  };
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-existing-family');
+
+    assert.equal(result.response.status, 200);
+    assert.equal(result.payload.families.length, 1);
+    assert.equal(result.payload.families[0].familyName, '默认家庭');
+    assert.equal(result.payload.families[0].members.map((member) => member.name).sort().join(','), '张三,李四');
+    assert.equal(state.policies[0].familyId, result.payload.families[0].id);
+    assert.ok(state.policies[0].applicantMemberId);
+    assert.ok(state.policies[0].insuredMemberId);
+  } finally {
+    await server.close();
+  }
+});
+
+test('registration saves pending recognized policy into a family profile', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({
+      ocrText: '投保人:张三\n被保险人:李四',
+      data: { company: '新华保险', name: '待注册保单', applicant: '张三', insured: '李四' },
+    }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+    codeGenerator: () => '246810',
+  });
+  const server = await listen(app);
+  try {
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-pending-family',
+        ocrText: '投保人:张三\n被保险人:李四',
+      }),
+    });
+    assert.equal(recognized.response.status, 200);
+    assert.equal(state.policies.length, 0);
+
+    await jsonFetch(server.baseUrl, '/api/auth/send-code', {
+      method: 'POST',
+      body: JSON.stringify({ mobile: '13600000000' }),
+    });
+    const registered = await jsonFetch(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        mobile: '13600000000',
+        code: '246810',
+        guestId: 'guest-pending-family',
+      }),
+    });
+
+    assert.equal(registered.response.status, 200);
+    assert.equal(registered.payload.policies.length, 1);
+    assert.ok(registered.payload.policies[0].familyId);
+    assert.ok(registered.payload.policies[0].applicantMemberId);
+    assert.ok(registered.payload.policies[0].insuredMemberId);
+    assert.equal(registered.payload.policies[0].familyName, '默认家庭');
+    assert.equal(state.familyProfiles[0].ownerUserId, registered.payload.user.id);
+    assert.equal(state.familyMembers.some((member) => member.name === '张三'), true);
+    assert.equal(state.familyMembers.some((member) => member.name === '李四'), true);
+  } finally {
+    await server.close();
+  }
+});
+
 test('PATCH recomputes family participant snapshots when insured name changes', async () => {
   const state = createInitialState();
   const app = createPolicyOcrApp({

@@ -267,11 +267,12 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
   ensureFamilyState(state);
   const existingFamily = listFamilyProfilesForOwner(state, owner)
     .find((family) => String(family?.status || 'active') === 'active');
-  if (existingFamily) return existingFamily;
-
-  const family = createFamilyProfile(state, { familyName: DEFAULT_FAMILY_NAME }, owner);
+  const family = existingFamily || createFamilyProfile(state, { familyName: DEFAULT_FAMILY_NAME }, owner);
   const policies = (Array.isArray(state.policies) ? state.policies : [])
-    .filter((policy) => policyOwnerMatches(policy, owner));
+    .filter((policy) => (
+      policyOwnerMatches(policy, owner) &&
+      (!Number(policy?.familyId || 0) || Number(policy?.familyId || 0) === Number(family.id))
+    ));
   const peopleByIdentity = new Map();
   for (const policy of policies) {
     for (const role of ['applicant', 'insured']) {
@@ -288,24 +289,40 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
     }
   }
 
+  const members = listFamilyMembers(state, family.id);
   const people = [...peopleByIdentity.values()].sort((left, right) => (
     right.count - left.count ||
     left.name.localeCompare(right.name, 'zh-CN') ||
     String(left.birthday || '').localeCompare(String(right.birthday || '')) ||
     String(left.idNumberTail || '').localeCompare(String(right.idNumberTail || ''))
   ));
-  const corePerson = people[0] || { name: '本人', birthday: '', idNumberTail: '' };
-  const coreMember = createFamilyMember(state, family.id, {
-    ...corePerson,
-    relationToCore: 'self',
-    relationLabel: '本人',
-    role: 'core',
-  });
+  let coreMember = members.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
+  const corePerson = people[0] || (coreMember ? {
+    name: coreMember.name,
+    birthday: coreMember.birthday,
+    idNumberTail: coreMember.idNumberTail,
+  } : { name: '本人', birthday: '', idNumberTail: '' });
+  if (!coreMember && corePerson.name) {
+    coreMember = matchFamilyMemberByPerson(members, corePerson);
+  }
+  if (!coreMember) {
+    coreMember = createFamilyMember(state, family.id, {
+      ...corePerson,
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+    });
+    members.push(coreMember);
+  }
+  coreMember.relationToCore = 'self';
+  coreMember.relationLabel = '本人';
+  coreMember.role = 'core';
   family.coreMemberId = coreMember.id;
   family.updatedAt = new Date().toISOString();
 
   for (const person of people) {
     if (peopleAreCompatible(person, corePerson)) continue;
+    if (matchFamilyMemberByPerson(members, person)) continue;
     createFamilyMember(state, family.id, {
       ...person,
       relationToCore: 'pending',
@@ -314,18 +331,26 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
     });
   }
 
-  const members = listFamilyMembers(state, family.id);
+  const updatedMembers = listFamilyMembers(state, family.id);
   for (const policy of policies) {
     const applicant = policyPerson(policy, 'applicant');
     const insured = policyPerson(policy, 'insured');
-    const applicantMember = matchFamilyMemberByPerson(members, applicant);
-    const insuredMember = matchFamilyMemberByPerson(members, insured);
+    const applicantMember = matchFamilyMemberByPerson(updatedMembers, applicant) || coreMember;
+    const insuredMember = matchFamilyMemberByPerson(updatedMembers, insured) || applicantMember || coreMember;
     policy.familyId = family.id;
     policy.applicantMemberId = applicantMember?.id || null;
     policy.insuredMemberId = insuredMember?.id || null;
     policy.applicantSnapshot = applicant.name ? applicant : null;
     policy.insuredSnapshot = insured.name ? insured : null;
-    policy.participantReviewStatus = applicantMember && insuredMember ? 'auto_matched' : 'pending_review';
+    policy.applicantNameSnapshot = applicant.name;
+    policy.insuredNameSnapshot = insured.name;
+    policy.applicantRelationSnapshot = applicantMember?.relationLabel || '';
+    policy.insuredRelationSnapshot = insuredMember?.relationLabel || '';
+    policy.applicantMemberName = applicantMember?.name || '';
+    policy.insuredMemberName = insuredMember?.name || '';
+    policy.applicantRelationLabel = applicantMember?.relationLabel || '';
+    policy.insuredRelationLabel = insuredMember?.relationLabel || '';
+    policy.participantReviewStatus = applicant.name && insured.name ? 'auto_matched' : 'pending_review';
   }
 
   return family;
