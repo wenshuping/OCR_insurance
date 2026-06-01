@@ -9,8 +9,11 @@ function parseJson(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return { value, valid: true };
   }
+  if (typeof value !== 'string') {
+    return { value: {}, valid: false };
+  }
   try {
-    const parsed = JSON.parse(String(value || '{}'));
+    const parsed = JSON.parse(value);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { value: {}, valid: false };
     }

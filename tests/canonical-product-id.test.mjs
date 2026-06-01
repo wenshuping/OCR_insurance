@@ -187,6 +187,12 @@ test('backfill database dry-run rolls back, write commits, and second write is i
       .run(1, '新华保险', officialProductName, 'https://example.test/product', '{ }');
     db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
       .run(2, '新华保险', officialProductName, 'https://example.test/product-array', '[]');
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(3, '新华保险', officialProductName, 'https://example.test/product-null', null);
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(4, '新华保险', officialProductName, 'https://example.test/product-string', '"not-an-object"');
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(5, '新华保险', officialProductName, 'https://example.test/product-broken', '{broken');
     db.prepare(`
       INSERT INTO insurance_indicator_records (id, company, product_name, coverage_type, liability, payload)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -214,12 +220,18 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     try {
       const knowledge = readDb.prepare('SELECT company, product_name, payload FROM knowledge_records WHERE id = 1').get();
       const knowledgeArrayPayload = readDb.prepare('SELECT payload FROM knowledge_records WHERE id = 2').get().payload;
+      const knowledgeNullPayload = readDb.prepare('SELECT payload FROM knowledge_records WHERE id = 3').get().payload;
+      const knowledgeStringPayload = readDb.prepare('SELECT payload FROM knowledge_records WHERE id = 4').get().payload;
+      const knowledgeBrokenPayload = readDb.prepare('SELECT payload FROM knowledge_records WHERE id = 5').get().payload;
       const indicator = readDb.prepare('SELECT company, product_name, payload FROM insurance_indicator_records WHERE id = ?').get('ind_1');
       const optional = readDb.prepare('SELECT company, product_name, payload FROM optional_responsibility_records WHERE id = ?').get('opt_1');
       const policy = readDb.prepare('SELECT company, name, payload FROM policies WHERE id = 1').get();
       return {
         knowledge,
         knowledgeArrayPayload,
+        knowledgeNullPayload,
+        knowledgeStringPayload,
+        knowledgeBrokenPayload,
         indicator,
         optional,
         policy,
@@ -239,7 +251,7 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     const dryRun = backfillDatabase(dbPath, { dryRun: true });
     assert.equal(dryRun.dryRun, true);
     assert.equal(dryRun.knowledgeRecords.updated, 1);
-    assert.equal(dryRun.knowledgeRecords.skippedInvalidJson, 1);
+    assert.equal(dryRun.knowledgeRecords.skippedInvalidJson, 4);
     assert.ok(dryRun.insuranceIndicatorRecords.updated > 0);
     assert.ok(dryRun.optionalResponsibilityRecords.updated > 0);
     assert.ok(dryRun.policies.updated > 0);
@@ -247,6 +259,9 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     const afterDryRun = readState();
     assert.equal(afterDryRun.payloads.knowledge.canonicalProductId, undefined);
     assert.equal(afterDryRun.knowledgeArrayPayload, '[]');
+    assert.equal(afterDryRun.knowledgeNullPayload, null);
+    assert.equal(afterDryRun.knowledgeStringPayload, '"not-an-object"');
+    assert.equal(afterDryRun.knowledgeBrokenPayload, '{broken');
     assert.equal(afterDryRun.payloads.indicator.canonicalProductId, undefined);
     assert.equal(afterDryRun.payloads.optional.canonicalProductId, undefined);
     assert.equal(afterDryRun.payloads.policy.canonicalProductId, undefined);
@@ -255,7 +270,7 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     const write = backfillDatabase(dbPath, { dryRun: false });
     assert.equal(write.dryRun, false);
     assert.equal(write.knowledgeRecords.updated, 1);
-    assert.equal(write.knowledgeRecords.skippedInvalidJson, 1);
+    assert.equal(write.knowledgeRecords.skippedInvalidJson, 4);
     assert.ok(write.insuranceIndicatorRecords.updated > 0);
     assert.ok(write.optionalResponsibilityRecords.updated > 0);
     assert.ok(write.policies.updated > 0);
@@ -263,6 +278,9 @@ test('backfill database dry-run rolls back, write commits, and second write is i
     const afterWrite = readState();
     assert.match(afterWrite.payloads.knowledge.canonicalProductId, /^product_[a-f0-9]{16}$/u);
     assert.equal(afterWrite.knowledgeArrayPayload, '[]');
+    assert.equal(afterWrite.knowledgeNullPayload, null);
+    assert.equal(afterWrite.knowledgeStringPayload, '"not-an-object"');
+    assert.equal(afterWrite.knowledgeBrokenPayload, '{broken');
     assert.match(afterWrite.payloads.indicator.canonicalProductId, /^product_[a-f0-9]{16}$/u);
     assert.match(afterWrite.payloads.optional.canonicalProductId, /^product_[a-f0-9]{16}$/u);
     assert.match(afterWrite.payloads.policy.canonicalProductId, /^product_[a-f0-9]{16}$/u);
@@ -279,7 +297,7 @@ test('backfill database dry-run rolls back, write commits, and second write is i
 
     const secondWrite = backfillDatabase(dbPath, { dryRun: false });
     assert.equal(secondWrite.knowledgeRecords.updated, 0);
-    assert.equal(secondWrite.knowledgeRecords.skippedInvalidJson, 1);
+    assert.equal(secondWrite.knowledgeRecords.skippedInvalidJson, 4);
     assert.equal(secondWrite.insuranceIndicatorRecords.updated, 0);
     assert.equal(secondWrite.optionalResponsibilityRecords.updated, 0);
     assert.equal(secondWrite.policies.updated, 0);
