@@ -4156,3 +4156,154 @@ test('policy save rejects applicant and insured members from different families'
     await server.close();
   }
 });
+
+test('PATCH recomputes family participant snapshots when insured name changes', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family-patch', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '张三家庭' }),
+    });
+    const familyId = familyRes.payload.family.id;
+    const applicantRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family-patch`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '张三', relationLabel: '本人', setAsCore: true }),
+    });
+    const insuredRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family-patch`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '李四', relationLabel: '配偶' }),
+    });
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-family-patch',
+        scan: { ocrText: '', data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '李四' } },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId,
+          applicantMemberId: applicantRes.payload.member.id,
+          insuredMemberId: insuredRes.payload.member.id,
+        },
+      }),
+    });
+    assert.equal(saved.response.status, 201);
+    assert.equal(saved.payload.policy.participantReviewStatus, 'ok');
+
+    const updated = await jsonFetch(server.baseUrl, `/api/policies/${saved.payload.policy.id}?guestId=guest-family-patch`, {
+      method: 'PATCH',
+      body: JSON.stringify({ insured: '李四OCR错字' }),
+    });
+
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.payload.policy.insured, '李四OCR错字');
+    assert.equal(updated.payload.policy.insuredMemberId, insuredRes.payload.member.id);
+    assert.equal(updated.payload.policy.insuredMemberName, '李四');
+    assert.equal(updated.payload.policy.insuredNameSnapshot, '李四OCR错字');
+    assert.equal(updated.payload.policy.participantReviewStatus, 'name_mismatch');
+  } finally {
+    await server.close();
+  }
+});
+
+test('registration migrates guest family ownership and lists family profiles for the user', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+    codeGenerator: () => '975310',
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-register-family', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '注册迁移家庭' }),
+    });
+    const familyId = familyRes.payload.family.id;
+    const memberRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-register-family`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '张三', relationLabel: '本人', setAsCore: true }),
+    });
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-register-family',
+        scan: { ocrText: '', data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '张三' } },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId,
+          applicantMemberId: memberRes.payload.member.id,
+          insuredMemberId: memberRes.payload.member.id,
+        },
+      }),
+    });
+    assert.equal(saved.response.status, 201);
+
+    await jsonFetch(server.baseUrl, '/api/auth/send-code', {
+      method: 'POST',
+      body: JSON.stringify({ mobile: '13700000000' }),
+    });
+    const registered = await jsonFetch(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        mobile: '13700000000',
+        code: '975310',
+        guestId: 'guest-register-family',
+      }),
+    });
+    assert.equal(registered.response.status, 200);
+
+    const families = await jsonFetch(server.baseUrl, '/api/family-profiles', {
+      headers: { authorization: `Bearer ${registered.payload.token}` },
+    });
+
+    assert.equal(families.response.status, 200);
+    assert.equal(families.payload.families.length, 1);
+    assert.equal(families.payload.families[0].id, familyId);
+    assert.equal(families.payload.families[0].familyName, '注册迁移家庭');
+    assert.equal(families.payload.families[0].ownerUserId, registered.payload.user.id);
+    assert.equal(families.payload.families[0].ownerGuestId, '');
+    assert.equal(families.payload.families[0].members[0].name, '张三');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family owner routes hide and reject mutations from another guest owner', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-owner-a', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: 'A家庭' }),
+    });
+    assert.equal(familyRes.response.status, 201);
+
+    const hidden = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-owner-b');
+    assert.equal(hidden.response.status, 200);
+    assert.equal(hidden.payload.families.length, 0);
+
+    const mutation = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyRes.payload.family.id}/members?guestId=guest-owner-b`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '李四', relationLabel: '配偶' }),
+    });
+    assert.equal(mutation.response.status, 404);
+    assert.equal(mutation.payload.code, 'FAMILY_NOT_FOUND');
+  } finally {
+    await server.close();
+  }
+});

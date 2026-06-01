@@ -530,6 +530,17 @@ function familyBindingInputFromPolicyUpdate(updates = {}, policy = {}) {
   });
 }
 
+function policyHasFamilyBinding(policy = {}) {
+  return Boolean(policy.familyId && policy.applicantMemberId && policy.insuredMemberId);
+}
+
+function shouldRebuildPolicyFamilyBinding(updates = {}, policy = {}) {
+  return (
+    familyInputHasBindingFields(updates) ||
+    (policyHasFamilyBinding(policy) && (hasOwn(updates, 'applicant') || hasOwn(updates, 'insured')))
+  );
+}
+
 function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}) {
   const normalizedInput = normalizeFamilyBindingInput(input);
   validatePolicyFamilyBinding(state, normalizedInput, owner);
@@ -1772,6 +1783,13 @@ export function createPolicyOcrApp(options = {}) {
 
       let migratedPolicyCount = 0;
       if (guestId) {
+        for (const family of state.familyProfiles || []) {
+          if (Number(family.ownerUserId || 0)) continue;
+          if (normalizeGuestId(family.ownerGuestId) !== guestId) continue;
+          family.ownerUserId = Number(user.id);
+          family.ownerGuestId = '';
+          family.updatedAt = new Date().toISOString();
+        }
         for (const policy of state.policies) {
           if (String(policy.guestId || '') !== guestId || policy.userId) continue;
           policy.userId = Number(user.id);
@@ -2176,7 +2194,7 @@ export function createPolicyOcrApp(options = {}) {
       if (hasOwn(updates, 'insuredIdNumber') && !hasOwn(updates, 'insuredBirthday')) {
         updates.insuredBirthday = birthdayFromIdNumber(updates.insuredIdNumber);
       }
-      if (familyInputHasBindingFields(updates)) {
+      if (shouldRebuildPolicyFamilyBinding(updates, policy)) {
         const familyBinding = buildPolicyFamilyBinding(
           state,
           familyBindingInputFromPolicyUpdate(updates, policy),
