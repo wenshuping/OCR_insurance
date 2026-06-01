@@ -65,6 +65,49 @@ export type CoverageIndicator = {
   optionalResponsibilityId?: string;
 };
 
+export type FamilyRelationToCore =
+  | 'self'
+  | 'spouse'
+  | 'son'
+  | 'daughter'
+  | 'father'
+  | 'mother'
+  | 'parent'
+  | 'parent_in_law'
+  | 'grandparent'
+  | 'sibling'
+  | 'other'
+  | 'pending';
+
+export type FamilyMember = {
+  id: number;
+  familyId: number;
+  name: string;
+  relationToCore: FamilyRelationToCore;
+  relationLabel: string;
+  role: 'core' | 'adult' | 'child' | 'elder' | 'unknown';
+  gender?: 'male' | 'female' | 'unknown';
+  birthday?: string;
+  idNumberTail?: string;
+  mobile?: string;
+  notes?: string;
+  status: 'active' | 'archived';
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FamilyProfile = {
+  id: number;
+  ownerUserId?: number | null;
+  ownerGuestId?: string;
+  familyName: string;
+  coreMemberId: number | null;
+  status: 'active' | 'archived';
+  createdAt: string;
+  updatedAt: string;
+  members?: FamilyMember[];
+};
+
 export type Policy = {
   id: number;
   company: string;
@@ -90,6 +133,19 @@ export type Policy = {
   sources?: PolicySource[];
   reportStatus?: 'generating' | 'ready' | 'failed' | string;
   reportError?: string;
+  familyId?: number | null;
+  applicantMemberId?: number | null;
+  insuredMemberId?: number | null;
+  applicantNameSnapshot?: string;
+  insuredNameSnapshot?: string;
+  applicantRelationSnapshot?: string;
+  insuredRelationSnapshot?: string;
+  participantReviewStatus?: 'ok' | 'name_mismatch' | 'pending_member' | string;
+  familyName?: string;
+  applicantMemberName?: string;
+  applicantRelationLabel?: string;
+  insuredMemberName?: string;
+  insuredRelationLabel?: string;
   createdAt: string;
   userMobile?: string;
   cashflowEntries?: CashflowEntry[];
@@ -416,6 +472,19 @@ export type PolicyFormData = {
   amount: string;
   firstPremium: string;
   plans?: PolicyPlan[];
+  familyId?: number | null;
+  applicantMemberId?: number | null;
+  insuredMemberId?: number | null;
+  applicantNameSnapshot?: string;
+  insuredNameSnapshot?: string;
+  applicantRelationSnapshot?: string;
+  insuredRelationSnapshot?: string;
+  participantReviewStatus?: 'ok' | 'name_mismatch' | 'pending_member' | string;
+  familyName?: string;
+  applicantMemberName?: string;
+  applicantRelationLabel?: string;
+  insuredMemberName?: string;
+  insuredRelationLabel?: string;
 };
 
 export type PolicyUpdateInput = Partial<PolicyFormData> & {
@@ -452,6 +521,10 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
     throw new ApiError(response.status, payload?.code || 'REQUEST_FAILED', payload?.message || '请求失败');
   }
   return payload as T;
+}
+
+function authQuery(input: { guestId?: string } = {}) {
+  return input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
 }
 
 export function scanPolicy(input: {
@@ -596,18 +669,15 @@ export function logoutCustomer(token: string) {
 }
 
 export function listPolicies(input: { token?: string; guestId?: string } = {}) {
-  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
-  return request<{ ok: true; policies: Policy[] }>(`/api/policies${query}`, { token: input.token });
+  return request<{ ok: true; policies: Policy[] }>(`/api/policies${authQuery(input)}`, { token: input.token });
 }
 
 export function getPolicy(input: { token?: string; guestId?: string; id: number }) {
-  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
-  return request<{ ok: true; policy: Policy }>(`/api/policies/${input.id}${query}`, { token: input.token });
+  return request<{ ok: true; policy: Policy }>(`/api/policies/${input.id}${authQuery(input)}`, { token: input.token });
 }
 
 export function updatePolicy(input: { token?: string; guestId?: string; id: number; policy: PolicyUpdateInput }) {
-  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
-  return request<{ ok: true; policy: Policy; reportRegenerating: boolean }>(`/api/policies/${input.id}${query}`, {
+  return request<{ ok: true; policy: Policy; reportRegenerating: boolean }>(`/api/policies/${input.id}${authQuery(input)}`, {
     token: input.token,
     method: 'PATCH',
     body: input.policy,
@@ -615,34 +685,70 @@ export function updatePolicy(input: { token?: string; guestId?: string; id: numb
 }
 
 export function deletePolicy(input: { token?: string; guestId?: string; id: number }) {
-  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
-  return request<{ ok: true; deletedId: number }>(`/api/policies/${input.id}${query}`, {
+  return request<{ ok: true; deletedId: number }>(`/api/policies/${input.id}${authQuery(input)}`, {
     token: input.token,
     method: 'DELETE',
   });
 }
 
 export function regeneratePolicyReport(input: { token?: string; guestId?: string; id: number }) {
-  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
-  return request<{ ok: true; policy: Policy; skipped?: boolean }>(`/api/policies/${input.id}/report${query}`, {
+  return request<{ ok: true; policy: Policy; skipped?: boolean }>(`/api/policies/${input.id}/report${authQuery(input)}`, {
     token: input.token,
     body: {},
   });
 }
 
 export function scanCashValue(input: { token?: string; guestId?: string; policyId: number; uploadItem: UploadItem }) {
-  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
-  return request<CashValueScanResult>(`/api/policies/${input.policyId}/cash-value/scan${query}`, {
+  return request<CashValueScanResult>(`/api/policies/${input.policyId}/cash-value/scan${authQuery(input)}`, {
     token: input.token,
     body: { uploadItem: input.uploadItem },
   });
 }
 
 export function confirmCashValue(input: { token?: string; guestId?: string; policyId: number; rows: CashValueRow[] }) {
-  const query = input.guestId ? `?guestId=${encodeURIComponent(input.guestId)}` : '';
-  return request<{ ok: true; savedCount: number }>(`/api/policies/${input.policyId}/cash-value/confirm${query}`, {
+  return request<{ ok: true; savedCount: number }>(`/api/policies/${input.policyId}/cash-value/confirm${authQuery(input)}`, {
     token: input.token,
     body: { rows: input.rows },
+  });
+}
+
+export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
+  return request<{ ok: true; familyProfiles: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
+}
+
+export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string }) {
+  return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles${authQuery(input)}`, {
+    token: input.token,
+    body: { familyName: input.familyName },
+  });
+}
+
+export function ensureDefaultFamilyProfile(input: { token?: string; guestId?: string } = {}) {
+  return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles/default${authQuery(input)}`, {
+    token: input.token,
+    body: {},
+  });
+}
+
+export function createFamilyMember(input: {
+  token?: string;
+  guestId?: string;
+  familyId: number;
+  name: string;
+  relationLabel: string;
+  birthday?: string;
+  idNumberTail?: string;
+  setAsCore?: boolean;
+}) {
+  return request<{ ok: true; family: FamilyProfile; member: FamilyMember }>(`/api/family-profiles/${input.familyId}/members${authQuery(input)}`, {
+    token: input.token,
+    body: {
+      name: input.name,
+      relationLabel: input.relationLabel,
+      birthday: input.birthday,
+      idNumberTail: input.idNumberTail,
+      setAsCore: input.setAsCore,
+    },
   });
 }
 

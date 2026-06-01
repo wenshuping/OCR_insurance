@@ -889,3 +889,16 @@ test('family report export keeps page styling and still supports safe pdf captur
   assert.match(cssSource, /\.family-report-number/);
   assert.match(cssSource, /font-variant-numeric:\s*tabular-nums/);
 });
+
+test('client API exposes family profile types and endpoints', () => {
+  const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+  assert.match(apiSource, /export type FamilyProfile/);
+  assert.match(apiSource, /export type FamilyMember/);
+  assert.match(apiSource, /listFamilyProfiles/);
+  assert.match(apiSource, /createFamilyProfile/);
+  assert.match(apiSource, /createFamilyMember/);
+  assert.match(apiSource, /ensureDefaultFamilyProfile/);
+  assert.match(apiSource, /familyId\?: number/);
+  assert.match(apiSource, /applicantMemberId\?: number/);
+  assert.match(apiSource, /insuredMemberId\?: number/);
+});
