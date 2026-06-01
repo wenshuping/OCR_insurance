@@ -1934,6 +1934,36 @@ export function createPolicyOcrApp(options = {}) {
     }
   });
 
+  app.patch('/api/family-profiles/:id/core', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res);
+    if (!owner) return;
+    const family = findOwnedFamily(req.params.id, owner);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const members = listFamilyMembers(state, family.id);
+    const member = members.find((row) => Number(row.id) === Number(req.body?.memberId || 0) && String(row.status || 'active') === 'active');
+    if (!member) {
+      return res.status(400).json({ ok: false, code: 'FAMILY_MEMBER_NOT_FOUND', message: '家庭成员不存在' });
+    }
+    const existingCore = members.find((row) => Number(row.id) === Number(family.coreMemberId || 0));
+    const now = new Date().toISOString();
+    if (existingCore && Number(existingCore.id) !== Number(member.id)) {
+      existingCore.relationToCore = 'pending';
+      existingCore.relationLabel = '待确认';
+      existingCore.role = 'adult';
+      existingCore.updatedAt = now;
+    }
+    member.relationToCore = 'self';
+    member.relationLabel = '本人';
+    member.role = 'core';
+    member.updatedAt = now;
+    family.coreMemberId = member.id;
+    family.updatedAt = now;
+    await persist(state);
+    res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
+  });
+
   app.post('/api/policies/recognize', async (req, res) => {
     const routeStartedAt = nowMs();
     try {

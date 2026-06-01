@@ -753,6 +753,14 @@ export function createFamilyMember(input: {
   });
 }
 
+export function setFamilyCoreMember(input: { token?: string; guestId?: string; familyId: number; memberId: number }) {
+  return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(`/api/family-profiles/${input.familyId}/core${authQuery(input)}`, {
+    token: input.token,
+    method: 'PATCH',
+    body: { memberId: input.memberId },
+  });
+}
+
 export function getWechatJsSdkSignature(url: string) {
   return request<WechatJsSdkSignature>(`/api/wechat/js-sdk-signature?url=${encodeURIComponent(url)}`);
 }

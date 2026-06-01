@@ -83,6 +83,7 @@ import {
   scanCashValue,
   scanPolicy,
   sendCode,
+  setFamilyCoreMember,
   updateAdminOfficialDomainProfile,
   updateAdminOcrConfig,
   updatePolicy,
@@ -3238,6 +3239,24 @@ function CustomerApp() {
     return createFamilyMemberForFamily(family, input);
   }
 
+  function replaceFamilyProfile(family: FamilyProfile, members: FamilyMember[]) {
+    const nextFamily = { ...family, members };
+    setFamilyProfiles((current) => [nextFamily, ...current.filter((item) => Number(item.id) !== Number(nextFamily.id))]);
+    setSelectedFamilyId(nextFamily.id);
+    setFormData((current) => ({ ...current, familyId: nextFamily.id }));
+    return nextFamily;
+  }
+
+  async function setCoreMemberForCurrentFamily(family: FamilyProfile, member: FamilyMember) {
+    const payload = await setFamilyCoreMember({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      memberId: member.id,
+    });
+    return replaceFamilyProfile(payload.family, payload.members);
+  }
+
   function handleOcrTextChange(value: string) {
     setOcrText(value);
     setScanResult((current) => (current ? { ...current, ocrText: value } : current));
@@ -3679,7 +3698,8 @@ function CustomerApp() {
         return;
       }
       if (!submitFamily.coreMemberId) {
-        submitFamily = { ...submitFamily, coreMemberId: applicantMember.id };
+        submitFamily = await setCoreMemberForCurrentFamily(submitFamily, applicantMember);
+        submitFamilyMembers = Array.isArray(submitFamily.members) ? [...submitFamily.members] : submitFamilyMembers;
       }
       const insuredMember = await resolveSubmitMember({
         name: insuredName,
