@@ -67,6 +67,7 @@ import {
   getAdminKnowledgeRecords,
   getAdminOcrConfig,
   getAdminOverview,
+  getFamilyReportShare,
   getPolicy,
   listPolicies,
   listFamilyProfiles,
@@ -2738,7 +2739,86 @@ export default function App() {
   if (window.location.pathname.startsWith('/admin')) {
     return <AdminApp />;
   }
+  const shareToken = familyShareTokenFromHash(window.location.hash);
+  if (shareToken) {
+    return <SharedFamilyReportApp shareToken={shareToken} />;
+  }
   return <CustomerApp />;
+}
+
+function familyShareTokenFromHash(hash: string) {
+  const match = hash.match(/^#\/family-share\/([^/?#]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+function SharedFamilyReportApp({ shareToken }: { shareToken: string }) {
+  const [sharedFamilyReport, setSharedFamilyReport] = useState<{
+    loading: boolean;
+    message: string;
+    report: FamilyReport | null;
+  }>({
+    loading: true,
+    message: '正在加载家庭分享报告',
+    report: null,
+  });
+
+  useEffect(() => {
+    let active = true;
+    async function loadFamilyShare() {
+      try {
+        const payload = await getFamilyReportShare(shareToken);
+        const familyId = Number(payload.family?.id || 0) || null;
+        const report = buildFamilyReport(payload.policies || [], {}, { familyId });
+        if (active) setSharedFamilyReport({ loading: false, message: '', report });
+      } catch (error) {
+        if (active) {
+          setSharedFamilyReport({
+            loading: false,
+            message: error instanceof Error ? error.message : '分享报告不存在',
+            report: null,
+          });
+        }
+      }
+    }
+    void loadFamilyShare();
+    return () => {
+      active = false;
+    };
+  }, [shareToken]);
+
+  function backToEntry() {
+    window.location.href = `${window.location.origin}${window.location.pathname}`;
+  }
+
+  if (sharedFamilyReport.loading || !sharedFamilyReport.report) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6 text-center">
+        <div>
+          <p className="text-base font-black text-slate-950">{sharedFamilyReport.message}</p>
+          {!sharedFamilyReport.loading ? (
+            <button
+              type="button"
+              className="mt-4 rounded-full bg-blue-500 px-4 py-2 text-sm font-black text-white"
+              onClick={backToEntry}
+            >
+              返回录入页
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <FamilyReportPage
+      report={sharedFamilyReport.report}
+      planningProfile={{}}
+      onPlanningProfileChange={() => {}}
+      onBack={backToEntry}
+      onExport={(target, title) => void downloadReportImage(target, title, { rawTarget: true, preservePageStyle: true })}
+      readOnly
+    />
+  );
 }
 
 function CustomerApp() {
@@ -3217,8 +3297,12 @@ function CustomerApp() {
         familyId: selectedFamilyId,
       });
       const shareUrl = `${window.location.origin}${window.location.pathname}#/family-share/${payload.share.token}`;
-      await navigator.clipboard.writeText(shareUrl);
-      setMessage('家庭报告分享链接已复制');
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        setMessage('家庭报告分享链接已复制');
+      } catch {
+        setMessage(`分享链接：${shareUrl}`);
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '家庭报告分享失败');
     }

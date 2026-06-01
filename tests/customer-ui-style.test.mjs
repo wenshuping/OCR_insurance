@@ -94,9 +94,15 @@ test('customer app exposes family report share flow', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /createFamilyReportShare/);
   assert.match(apiSource, /getFamilyReportShare/);
+  assert.match(appSource, /getFamilyReportShare/);
+  assert.match(appSource, /family-share/);
+  assert.match(appSource, /SharedFamilyReportApp/);
+  assert.match(appSource, /sharedFamilyReport/);
+  assert.match(appSource, /readOnly/);
   assert.match(customerSource, /handleShareFamilyReport/);
   assert.match(customerSource, /selectedFamilyId/);
   assert.match(customerSource, /navigator\.clipboard\.writeText/);
+  assert.match(customerSource, /分享链接：\$\{shareUrl\}/);
 });
 
 test('photo upload area shows an OCR recognition animation while loading', () => {

@@ -27,6 +27,7 @@ type FamilyReportPageProps = {
   onPlanningProfileChange: (profile: FamilyPlanningProfile) => void;
   onBack: () => void;
   onExport: (target: HTMLElement | null, title: string) => void | Promise<void>;
+  readOnly?: boolean;
 };
 
 type OptionalResponsibilityGap = {
@@ -1615,6 +1616,7 @@ export function FamilyReportPage({
   onPlanningProfileChange,
   onBack,
   onExport,
+  readOnly = false,
 }: FamilyReportPageProps) {
   const reportRef = useRef<HTMLElement | null>(null);
   const exportTitle = '家庭保障分析报告';
@@ -1651,7 +1653,7 @@ export function FamilyReportPage({
         </div>
       </header>
 
-      <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} />
+      {readOnly ? null : <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} />}
 
       <main ref={reportRef} className="family-report-content print-policy-report space-y-4 py-4 md:space-y-5 md:py-5">
         <ReportHero report={report} attentionItems={attentionItems} />

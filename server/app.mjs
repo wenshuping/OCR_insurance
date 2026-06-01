@@ -1875,6 +1875,60 @@ export function createPolicyOcrApp(options = {}) {
     return JSON.parse(JSON.stringify(payload || {}));
   }
 
+  const FAMILY_SHARE_PRIVATE_KEYS = new Set([
+    'adminSession',
+    'adminSessions',
+    'adminToken',
+    'authorization',
+    'guestId',
+    'idCard',
+    'idNumber',
+    'idNumberTail',
+    'identityNumber',
+    'mobile',
+    'ownerGuestId',
+    'ownerUserId',
+    'password',
+    'session',
+    'sessions',
+    'token',
+    'tokens',
+    'userId',
+    'userMobile',
+  ]);
+
+  function sanitizeFamilyShareValue(value) {
+    if (Array.isArray(value)) return value.map((item) => sanitizeFamilyShareValue(item));
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !FAMILY_SHARE_PRIVATE_KEYS.has(key))
+        .map(([key, item]) => [key, sanitizeFamilyShareValue(item)]),
+    );
+  }
+
+  function familySharePolicyMatchesOwner(policy, owner) {
+    if (owner.userId) return Number(policy?.userId || 0) === Number(owner.userId);
+    if (owner.guestId) return normalizeGuestId(policy?.guestId) === owner.guestId && !Number(policy?.userId || 0);
+    return false;
+  }
+
+  function buildFamilySharePayload(family, owner, snapshotAt) {
+    const members = listFamilyMembers(state, family.id).map((member) => sanitizeFamilyShareValue(member));
+    const policies = (state.policies || [])
+      .filter((policy) => (
+        Number(policy?.familyId || 0) === Number(family.id) &&
+        familySharePolicyMatchesOwner(policy, owner)
+      ))
+      .map((policy) => sanitizeFamilyShareValue(attachPolicyFamilyDisplay(policy, state)));
+    return {
+      family: sanitizeFamilyShareValue(family),
+      members,
+      policies,
+      snapshotAt,
+    };
+  }
+
   app.get('/api/family-profiles', async (req, res) => {
     const owner = resolveFamilyRequestOwner(req, res);
     if (!owner) return;
@@ -1985,21 +2039,12 @@ export function createPolicyOcrApp(options = {}) {
     }
 
     const now = new Date().toISOString();
-    const members = listFamilyMembers(state, family.id);
-    const policies = (state.policies || [])
-      .filter((policy) => Number(policy?.familyId || 0) === Number(family.id))
-      .map((policy) => attachPolicyFamilyDisplay(policy, state));
     const share = {
       id: allocateId(state),
       token: crypto.randomUUID().replace(/-/g, ''),
       familyId: Number(family.id),
       createdAt: now,
-      payload: cloneFamilySharePayload({
-        family,
-        members,
-        policies,
-        snapshotAt: now,
-      }),
+      payload: buildFamilySharePayload(family, owner, now),
     };
     state.familyReportShares.push(share);
     await persist(state);
@@ -2020,7 +2065,7 @@ export function createPolicyOcrApp(options = {}) {
     if (!share) {
       return res.status(404).json({ ok: false, code: 'SHARE_NOT_FOUND', message: '分享报告不存在' });
     }
-    res.json({ ok: true, ...cloneFamilySharePayload(share.payload || {}) });
+    res.json({ ok: true, ...sanitizeFamilyShareValue(cloneFamilySharePayload(share.payload || {})) });
   });
 
   app.post('/api/policies/recognize', async (req, res) => {

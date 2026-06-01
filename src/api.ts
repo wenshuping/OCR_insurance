@@ -116,6 +116,14 @@ export type FamilyReportShare = {
   createdAt: string;
 };
 
+export type FamilyReportSharePayload = {
+  ok: true;
+  family: Omit<FamilyProfile, 'ownerUserId' | 'ownerGuestId'>;
+  members: FamilyMember[];
+  policies: Policy[];
+  snapshotAt: string;
+};
+
 export type Policy = {
   id: number;
   company: string;
@@ -776,9 +784,7 @@ export function createFamilyReportShare(input: { token?: string; guestId?: strin
 }
 
 export function getFamilyReportShare(shareToken: string) {
-  return request<{ ok: true; family: FamilyProfile; members: FamilyMember[]; policies: Policy[]; snapshotAt: string }>(
-    `/api/family-report-shares/${encodeURIComponent(shareToken)}`,
-  );
+  return request<FamilyReportSharePayload>(`/api/family-report-shares/${encodeURIComponent(shareToken)}`);
 }
 
 export function getWechatJsSdkSignature(url: string) {

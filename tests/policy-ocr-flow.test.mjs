@@ -4374,6 +4374,21 @@ test('family owner routes hide and reject mutations from another guest owner', a
 });
 
 test('share snapshots only selected family members and policies', async () => {
+  const privateKeys = ['ownerGuestId', 'ownerUserId', 'guestId', 'userId'];
+  function assertNoPrivateKeys(value, path = 'payload') {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => assertNoPrivateKeys(item, `${path}[${index}]`));
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const key of privateKeys) {
+      assert.equal(Object.prototype.hasOwnProperty.call(value, key), false, `${path} should not expose ${key}`);
+    }
+    for (const [key, item] of Object.entries(value)) {
+      assertNoPrivateKeys(item, `${path}.${key}`);
+    }
+  }
+
   const state = createInitialState();
   state.familyProfiles = [
     {
@@ -4398,14 +4413,15 @@ test('share snapshots only selected family members and policies', async () => {
     },
   ];
   state.familyMembers = [
-    { id: 11, familyId: 1, name: '张一', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
-    { id: 12, familyId: 1, name: '张二', relationToCore: 'spouse', relationLabel: '配偶', role: 'adult', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 11, userId: 99, guestId: 'member-secret', familyId: 1, name: '张一', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 12, userId: 99, guestId: 'member-secret', familyId: 1, name: '张二', relationToCore: 'spouse', relationLabel: '配偶', role: 'adult', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
     { id: 21, familyId: 2, name: '李一', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
     { id: 22, familyId: 2, name: '李二', relationToCore: 'child', relationLabel: '子女', role: 'child', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
   ];
   state.policies = [
     { id: 101, userId: null, guestId: 'guest-share', familyId: 1, applicantMemberId: 11, insuredMemberId: 12, company: 'A保险', name: '一号保单', applicant: '张一', insured: '张二', responsibilities: [], coverageIndicators: [], createdAt: '2026-01-01T00:00:00.000Z' },
     { id: 102, userId: null, guestId: 'guest-share', familyId: 2, applicantMemberId: 21, insuredMemberId: 22, company: 'B保险', name: '二号保单', applicant: '李一', insured: '李二', responsibilities: [], coverageIndicators: [], createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 103, userId: null, guestId: 'guest-other', familyId: 1, applicantMemberId: 11, insuredMemberId: 12, company: 'C保险', name: '串户保单', applicant: '张一', insured: '张二', responsibilities: [], coverageIndicators: [], createdAt: '2026-01-01T00:00:00.000Z' },
   ];
   state.nextId = 200;
   const app = createPolicyOcrApp({
@@ -4431,6 +4447,9 @@ test('share snapshots only selected family members and policies', async () => {
     assert.equal(fetched.payload.ok, true);
     assert.equal(fetched.payload.family.id, 1);
     assert.equal(fetched.payload.family.familyName, '一号家庭');
+    assertNoPrivateKeys(fetched.payload.family, 'family');
+    assertNoPrivateKeys(fetched.payload.members, 'members');
+    assertNoPrivateKeys(fetched.payload.policies, 'policies');
     assert.deepEqual(fetched.payload.members.map((member) => member.familyId), [1, 1]);
     assert.deepEqual(fetched.payload.members.map((member) => member.name), ['张一', '张二']);
     assert.deepEqual(fetched.payload.policies.map((policy) => policy.familyId), [1]);
@@ -4439,6 +4458,8 @@ test('share snapshots only selected family members and policies', async () => {
     assert.equal(fetched.payload.members.some((member) => Number(member.familyId) === 2), false);
     assert.equal(fetched.payload.members.some((member) => member.name === '李一' || member.name === '李二'), false);
     assert.equal(fetched.payload.policies.some((policy) => Number(policy.familyId) === 2), false);
+    assert.equal(fetched.payload.policies.some((policy) => policy.name === '串户保单'), false);
+    assert.doesNotMatch(JSON.stringify(fetched.payload), /guest-share|guest-other|member-secret/);
   } finally {
     await server.close();
   }
