@@ -21,6 +21,17 @@ test('customer account sheet uses a blue account logo', () => {
   assert.match(source, /h-12 w-12[^"]*bg-blue-500/);
 });
 
+test('customer account sheet exposes account actions and policy navigation', () => {
+  const sheetSource = componentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
+  const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  assert.match(sheetSource, /onOpenPolicies/);
+  assert.match(sheetSource, /我的基本信息/);
+  assert.match(sheetSource, /我的保单/);
+  assert.match(sheetSource, /onClick=\{onOpenPolicies\}/);
+  assert.match(sheetSource, /退出/);
+  assert.match(appSource, /setShowAccountSheet\(false\);\s*setActiveTab\('policies'\);/);
+});
+
 test('phone verification send-code button uses the blue primary style', () => {
   const source = componentSource('PhoneVerificationDialog', 'UploadPolicyPage');
   assert.match(source, /className="[^"]*bg-blue-500[^"]*"[\s\S]*发验证码/);
@@ -48,6 +59,18 @@ test('photo upload area shows an OCR recognition animation while loading', () =>
   assert.match(pageSource, /OCR 识别中/);
   assert.match(pageSource, /animate-spin/);
   assert.match(pageSource, /aria-live="polite"/);
+});
+
+test('entry form keeps bottom actions focused on saving workflow', () => {
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  assert.match(pageSource, /max-w-3xl/);
+  assert.match(pageSource, /生成责任/);
+  assert.match(pageSource, /保存保单/);
+  assert.match(customerSource, /renderResponsibilityAssistant\('bottom-24'\)/);
+  assert.doesNotMatch(pageSource, /aria-label="进入我的保单"/);
+  assert.doesNotMatch(pageSource, /CustomerBottomTabs/);
+  assert.doesNotMatch(pageSource, /确认信息后保存保单/);
 });
 
 test('cash value upload dialog shows a progress bar while scanning', () => {
@@ -116,15 +139,13 @@ test('recognized plans assign first product as main and later products as riders
   assert.match(scanSource, /normalizePolicyPlanList\(data\.plans,\s*String\(data\.company \|\| ''\),\s*\{\s*assignRolesByRecognizedOrder:\s*true\s*\}\)/);
 });
 
-test('entry form and family overview expose insured birthday for age-based reports', () => {
+test('entry form captures insured birthday for age-based reports', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
-  const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(formSource, /被保险人生日/);
   assert.match(formSource, /insuredBirthday/);
-  assert.match(overviewSource, /家庭保障总览/);
-  assert.match(overviewSource, /memberBirthdays/);
-  assert.match(appSource, /buildFamilyCoverageOverview\(policies\)/);
-  assert.match(appSource, /<FamilyCoverageOverview[\s\S]*overview=\{familyCoverageOverview\}[\s\S]*policies=\{policies\}/);
+  assert.match(customerSource, /buildFamilyReport\(policies,\s*familyPlanningProfile\)/);
+  assert.match(customerSource, /<FamilyCoverageOverview[\s\S]*report=\{familyReport\}[\s\S]*policies=\{policies\}/);
 });
 
 test('entry form separates legal beneficiary from beneficiary name before saving policy', () => {
@@ -147,12 +168,10 @@ test('family overview prefers local product indicators over raw OCR responsibili
     appSource.indexOf('function parseAmountFromText'),
     appSource.indexOf('type PolicyUploadSource'),
   );
-  const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
   assert.match(apiSource, /coverageIndicators/);
   assert.match(overviewBuilderSource, /policy\.coverageIndicators/);
   assert.match(overviewBuilderSource, /formatCoverageIndicator/);
   assert.doesNotMatch(overviewBuilderSource, /\\d\{4,\}/);
-  assert.match(overviewSource, /cell\.displayText/);
 });
 
 test('family overview treats annuity payouts as cashflow instead of cash value table prerequisites', () => {
@@ -160,14 +179,12 @@ test('family overview treats annuity payouts as cashflow instead of cash value t
     appSource.indexOf('function parseAmountFromText'),
     appSource.indexOf('type PolicyUploadSource'),
   );
-  const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
   assert.match(overviewBuilderSource, /isCashflowPayoutIndicator/);
   assert.match(overviewBuilderSource, /生存保险金/);
   assert.match(overviewBuilderSource, /养老年金/);
   assert.match(overviewBuilderSource, /满期生存保险金/);
   assert.match(overviewBuilderSource, /resolveIndicatorAmount/);
   assert.doesNotMatch(overviewBuilderSource, /缺少现金价值表/);
-  assert.doesNotMatch(overviewSource, /待现金价值表/);
 });
 
 test('family overview substitutes policy amounts into indicator formulas', () => {
@@ -175,7 +192,6 @@ test('family overview substitutes policy amounts into indicator formulas', () =>
     appSource.indexOf('function parseAmountFromText'),
     appSource.indexOf('type PolicyUploadSource'),
   );
-  const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
   assert.match(overviewBuilderSource, /indicatorCoreText/);
   assert.match(overviewBuilderSource, /isNonPayoutCashflowIndicator/);
   assert.match(overviewBuilderSource, /resolveIndicatorAmount/);
@@ -186,8 +202,6 @@ test('family overview substitutes policy amounts into indicator formulas', () =>
   assert.match(overviewBuilderSource, /年交保费 × 缴费年期/);
   assert.match(overviewBuilderSource, /实际交纳保险费/);
   assert.match(overviewBuilderSource, /领取起始年龄|开始领取年龄/);
-  assert.match(overviewSource, /cell\.calculationText/);
-  assert.match(overviewSource, /text-\[11px\]/);
 });
 
 test('responsibility assistant floats at the bottom right of the screen', () => {
@@ -427,19 +441,24 @@ test('customer app exposes family report after policy inventory and before secti
   assert.ok(familySource.indexOf('意外分析') < familySource.indexOf('财富分析'));
 });
 
-test('family overview header exposes a direct family report entry', () => {
+test('customer policy overview renders the family radar card instead of the summary table', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
 
-  assert.match(customerSource, /onViewReport=\{\(\) => setShowFamilyReport\(true\)\}/);
-  assert.match(overviewSource, /onViewReport/);
-  assert.match(overviewSource, /家庭保障分析报告/);
-  assert.match(overviewSource, /查看报告/);
-  assert.match(overviewSource, /onClick=\{onViewReport\}/);
+  assert.match(customerSource, /report=\{familyReport\}/);
+  assert.match(overviewSource, /FamilyRadarSection/);
+  assert.match(overviewSource, /family-report-shell/);
+  assert.doesNotMatch(overviewSource, /<table/);
+  assert.doesNotMatch(overviewSource, /家庭保障总览/);
 });
 
 test('family report labels match the agreed report structure', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const attentionStart = source.indexOf('function AttentionSection');
+  const attentionEnd = source.indexOf('function OptionalResponsibilityGapSection', attentionStart + 1);
+  assert.notEqual(attentionStart, -1, 'AttentionSection component should exist');
+  assert.notEqual(attentionEnd, -1, 'OptionalResponsibilityGapSection component should follow AttentionSection');
+  const attentionSource = source.slice(attentionStart, attentionEnd);
   [
     '全家总统计',
     '家庭保单清单',
@@ -458,10 +477,137 @@ test('family report labels match the agreed report structure', () => {
     '身故受益人',
     '期交总保费',
   ].forEach((label) => assert.match(source, new RegExp(escapeRegExp(label))));
+  assert.match(attentionSource, /sm:grid-cols-2 lg:grid-cols-4/);
+  assert.match(source, /family-report-heading/);
+  assert.match(source, /family-report-kicker/);
+  assert.match(source, /family-report-number/);
   assert.doesNotMatch(source, /营销落地页|立即购买|推荐产品/);
 });
 
-test('family report wealth section separates cash value into a multi-product trend chart', () => {
+test('family report aggregate wealth table splits cashflow details into compact columns', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const tableStart = source.indexOf('function WealthAggregateTable');
+  const tableEnd = source.indexOf('function WealthSection', tableStart + 1);
+
+  assert.notEqual(tableStart, -1, 'WealthAggregateTable component should exist');
+  assert.notEqual(tableEnd, -1, 'WealthSection component should follow the aggregate table');
+
+  const tableSource = source.slice(tableStart, tableEnd);
+  assert.match(tableSource, />年度汇总<\/span>/);
+  assert.match(tableSource, />仅统计确定领取现金流<\/span>/);
+  assert.match(tableSource, />左侧：年度合计<\/span>/);
+  assert.match(tableSource, />右侧：现金流明细<\/span>/);
+  assert.match(tableSource, /aria-label="当年现金流"/);
+  assert.match(tableSource, /aria-label="累计现金流"/);
+  assert.doesNotMatch(tableSource, /aria-label="总现金价值"/);
+  assert.doesNotMatch(tableSource, /aria-label="总价值"/);
+  assert.match(tableSource, />当年现金流<\/th>/);
+  assert.match(tableSource, />累计现金流<\/th>/);
+  assert.doesNotMatch(tableSource, />总现金价值<\/th>/);
+  assert.doesNotMatch(tableSource, />总价值<\/th>/);
+  assert.match(tableSource, />投保人<\/th>/);
+  assert.match(tableSource, />产品<\/th>/);
+  assert.match(tableSource, />项目<\/th>/);
+  assert.match(tableSource, />现金流<\/th>/);
+  assert.match(tableSource, /table-fixed/);
+  assert.match(tableSource, /<colgroup>/);
+  assert.match(tableSource, /row\.cumulativePayoutInflow/);
+  assert.doesNotMatch(tableSource, /row\.cashValueTotal/);
+  assert.doesNotMatch(tableSource, /row\.totalValue/);
+  assert.match(tableSource, /detail\.policyholder/);
+  assert.match(tableSource, /detail\.liability/);
+  assert.match(tableSource, /detailStartTdClassName/);
+  assert.match(tableSource, /border-l border-\[#CAD7E4\]/);
+  assert.match(tableSource, /border-l border-blue-300/);
+  assert.doesNotMatch(tableSource, /border-l-4 border-white/);
+  assert.match(source, /cashflowAggregateDetails\(row\)/);
+  assert.match(source, /wealthAggregateDetailRows\(row\)/);
+  assert.match(source, /detail\.type === 'payout'/);
+  assert.match(source, /insuranceProductKeyword\(detail\.productName\)/);
+  assert.match(source, /rowSpan=\{detailRows\.length\}/);
+  assert.doesNotMatch(tableSource, /现金价值明细/);
+  assert.doesNotMatch(tableSource, /colSpan=\{2\}>现金流/);
+  assert.doesNotMatch(tableSource, /colSpan=\{4\}>现金价值明细/);
+  assert.doesNotMatch(tableSource, />右侧：现金价值明细<\/span>/);
+  assert.doesNotMatch(tableSource, />年增<\/th>/);
+  assert.doesNotMatch(tableSource, />累增<\/th>/);
+  assert.doesNotMatch(tableSource, />领取<\/th>/);
+  assert.doesNotMatch(tableSource, />累领<\/th>/);
+  assert.doesNotMatch(tableSource, />现增<\/th>/);
+  assert.doesNotMatch(tableSource, />现价<\/th>/);
+  assert.doesNotMatch(tableSource, />总值<\/th>/);
+  assert.doesNotMatch(tableSource, />现金价值<\/th>/);
+  assert.doesNotMatch(tableSource, />增额<\/th>/);
+  assert.doesNotMatch(tableSource, />现价\+现金流<\/span>/);
+  assert.doesNotMatch(tableSource, />当年增额<\/th>/);
+  assert.doesNotMatch(tableSource, />期末现价<\/th>/);
+  assert.doesNotMatch(tableSource, /row\.cashValueIncrease/);
+  assert.doesNotMatch(tableSource, /detail\.increase/);
+  assert.doesNotMatch(tableSource, />谁<\/th>/);
+  assert.doesNotMatch(tableSource, />保单年<\/th>/);
+  assert.doesNotMatch(tableSource, /第\$\{detail\.policyYear\}年/);
+  assert.doesNotMatch(tableSource, />保费支出<\/th>/);
+  assert.doesNotMatch(tableSource, />年度净现金流<\/th>/);
+  assert.doesNotMatch(tableSource, />累计净现金流<\/th>/);
+  assert.doesNotMatch(tableSource, /row\.premiumOutflow/);
+});
+
+test('family report aggregate wealth is drawn inside the cash value trend chart', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
+
+  assert.match(source, /function CashValueTrendChart/);
+  assert.match(source, /buildAggregateCashValueTrendSeries/);
+  assert.match(source, /cashValueAggregateTrendSeriesConfig/);
+  assert.match(source, /data-cash-value-trend-chart/);
+  assert.match(source, /aria-label="现金价值与现金流趋势对比图"/);
+  assert.match(source, /label: '现金流'/);
+  assert.match(source, /label: '累计现金流'/);
+  assert.match(source, /meta: '当年领取现金流'/);
+  assert.match(source, /meta: '累计领取现金流'/);
+  assert.match(source, /key: 'payoutInflow'/);
+  assert.match(source, /key: 'cumulativePayoutInflow'/);
+  assert.match(source, /'#1D4ED8', '#BE123C', '#7C3AED', '#0E7490'/);
+  assert.match(source, /color: '#EA580C', strokeWidth: 1\.2/);
+  assert.match(source, /color: '#0F766E', strokeDasharray: '6 5', strokeWidth: 1\.2/);
+  assert.doesNotMatch(source, /label: '总价值'/);
+  assert.doesNotMatch(source, /label: '总现金价值'/);
+  assert.match(source, /activePolicyPoints/);
+  assert.match(source, /useCashflowAxis/);
+  assert.match(source, /primaryYMax/);
+  assert.match(source, /secondaryYMax/);
+  assert.match(source, /yForSeries/);
+  assert.match(source, /保单现价/);
+  assert.match(source, /右轴/);
+  assert.match(source, /hoverCashValuePoint/);
+  assert.match(source, /data-cash-value-hover-tooltip/);
+  assert.match(source, /data-cash-value-hover-x/);
+  assert.match(source, /data-cash-value-hover-y/);
+  assert.match(source, /onPointerMove=\{updateHoverCashValuePoint\}/);
+  assert.match(source, /onPointerDown=\{\(event\) =>/);
+  assert.match(source, /touchAction: 'none'/);
+  assert.match(source, /当前年份对应值/);
+  assert.match(source, /坐标/);
+  assert.match(source, /aggregateCashValueChartXValue/);
+  assert.match(source, /Date\.UTC\(row\.year, 11, 31\)/);
+  assert.match(source, /\.\.\.buildAggregateCashValueTrendSeries\(report\.wealth\.aggregateRows\)/);
+  assert.match(source, /kind: 'aggregate' as const/);
+  assert.match(source, /hiddenCashValueSeriesIds/);
+  assert.match(source, /setHiddenCashValueSeriesIds/);
+  assert.match(source, /const activeSeries = series\.filter/);
+  assert.match(source, /activeSeries\.map/);
+  assert.match(source, /aria-pressed=\{!hidden\}/);
+  assert.match(source, /onClick=\{\(\) =>/);
+  assert.match(source, /next\.has\(item\.id\)/);
+  assert.doesNotMatch(source, /function WealthAggregateTrendChart/);
+  assert.doesNotMatch(source, /data-wealth-aggregate-trend-chart/);
+  assert.doesNotMatch(source, /<WealthAggregateTrendChart/);
+  assert.match(source, /<WealthAggregateTable rows=\{report\.wealth\.aggregateRows\} \/>/);
+  assert.doesNotMatch(cssSource, /data-wealth-aggregate-trend-chart/);
+  assert.match(cssSource, /svg:not\(\[data-cash-value-trend-chart\]\)/);
+});
+
+test('family report wealth section shows cash value in each policy table and keeps the trend chart', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   assert.match(source, /function PolicyAnnualCashflowTable/);
   assert.match(source, /个人现金流明细/);
@@ -469,31 +615,66 @@ test('family report wealth section separates cash value into a multi-product tre
   assert.match(source, /累计领取/);
   assert.match(source, /function CashValueTrendChart/);
   assert.match(source, /buildCashValueTrendSeries/);
-  assert.match(source, /aria-label="现金价值趋势对比图"/);
+  assert.match(source, /aria-label="现金价值与现金流趋势对比图"/);
   assert.match(source, /data-cash-value-trend-chart/);
   assert.match(source, /现金价值趋势/);
   assert.match(source, /现金价值/);
   assert.match(source, /row\.cashValueTime/);
   assert.match(source, /formatCashValueTimeTick/);
-  assert.match(source, /现金价值趋势对比图/);
+  assert.match(source, /现金价值与现金流趋势对比图/);
   assert.match(source, />时间</);
   assert.match(source, /缺第1-/);
-  assert.match(source, /r=\{index === item\.rows\.length - 1 \? 2\.8 : 1\.7\}/);
-  assert.match(source, /fill=\{item\.color\}/);
+  assert.match(source, /strokeWidth=\{item\.strokeWidth \?\? 1\.1\}/);
+  assert.match(source, /type="button"/);
+  assert.match(source, /aria-label=\{`\$\{hidden \? '显示' : '隐藏'\}\$\{item\.label\}折线`\}/);
+  assert.doesNotMatch(source, /r=\{index === item\.rows\.length - 1 \? 2\.8 : 1\.7\}/);
+  assert.doesNotMatch(source, /<circle/);
   assert.match(source, /<CashValueTrendChart report=\{report\} \/>/);
   assert.match(source, /<PolicyAnnualCashflowTable policy=\{policy\} \/>/);
   const policyCardStart = source.indexOf('function WealthPolicyCard');
   const policyCardEnd = source.indexOf('export function FamilyReportPage', policyCardStart + 1);
+  const policyTableStart = source.indexOf('function PolicyAnnualCashflowTable');
+  const policyTableEnd = source.indexOf('function WealthPolicyCard', policyTableStart + 1);
   assert.notEqual(policyCardStart, -1, 'WealthPolicyCard component should exist');
   assert.notEqual(policyCardEnd, -1, 'FamilyReportPage component should exist');
+  assert.notEqual(policyTableStart, -1, 'PolicyAnnualCashflowTable component should exist');
+  assert.notEqual(policyTableEnd, -1, 'WealthPolicyCard component should follow the cashflow table');
   const policyCardSource = source.slice(policyCardStart, policyCardEnd);
+  const policyTableSource = source.slice(policyTableStart, policyTableEnd);
   assert.doesNotMatch(policyCardSource, /CashValueTrendChart/);
   assert.doesNotMatch(policyCardSource, /CashValueLineChart/);
-  assert.doesNotMatch(policyCardSource, />现金价值<\/th>/);
+  assert.match(policyTableSource, />现金价值参考<\/th>/);
+  assert.match(source, /期满前参考/);
+  assert.match(source, /终止前参考/);
+  assert.match(source, /退保参考/);
+  assert.match(policyTableSource, /现金价值为退保参考，不等同于当年可直接领取金额/);
+  assert.match(policyTableSource, /合同终止型给付发生后，现金价值不再保留/);
+  assert.match(policyTableSource, /row\.cashValue != null/);
   assert.doesNotMatch(source, /function CashValueLineChart/);
   assert.doesNotMatch(source, /return row\.policyYear;/);
   assert.doesNotMatch(source, /row\.calendarYear > 0 \? row\.calendarYear : row\.policyYear/);
   assert.doesNotMatch(source, /fill="#FFFFFF"[\s\S]{0,120}stroke=\{item\.color\}/);
+});
+
+test('family report wealth section explains dividend and universal account statistics scope', () => {
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const typeSource = fs.readFileSync(new URL('../src/family-report-engine.d.mts', import.meta.url), 'utf8');
+  const engineSource = fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8');
+
+  assert.match(engineSource, /wealthUncertaintyItems/);
+  assert.match(engineSource, /分红\/红利/);
+  assert.match(engineSource, /万能账户/);
+  assert.match(engineSource, /当前财富统计仅包含已识别的确定领取现金流/);
+  assert.match(familySource, /统计口径/);
+  assert.match(familySource, /report\.wealth\.statisticsScopeNote/);
+  assert.match(familySource, /report\.wealth\.excludedPolicies/);
+  assert.match(familySource, /不确定未计入/);
+  assert.match(familySource, /已排除\{uncertaintyLabels\}不确定金额/);
+  assert.match(familySource, /仅统计确定领取现金流/);
+  assert.match(familySource, /未计入 \{excludedCount\} 张/);
+  assert.match(typeSource, /FamilyWealthUncertaintyItem/);
+  assert.match(typeSource, /excludedPolicies: FamilyWealthExcludedPolicy\[\]/);
+  assert.match(typeSource, /statisticsScopeNote: string/);
 });
 
 test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {
@@ -513,7 +694,9 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /客户未录入家庭目标时/);
   assert.match(familySource, /Calculator/);
   assert.match(familySource, /怎么算/);
-  assert.match(familySource, /金额来源/);
+  assert.match(familySource, /金额计算方法/);
+  assert.match(familySource, /全家金额和雷达值怎么算/);
+  assert.match(familySource, /RadarCalculationDetails/);
   assert.match(familySource, /score\.amountDetails/);
   assert.match(familySource, /radarAmountPolicyTitle/);
   assert.match(familySource, /责任：/);
@@ -550,7 +733,25 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.doesNotMatch(packageSource, /recharts|victory|d3|chart\.js|echarts/);
 });
 
-test('family report wealth policies show cashflow table with cash value and keep cash value as line chart only', () => {
+test('family report attention items use radar dimensions instead of accident subrows', () => {
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+  const functionStart = familySource.indexOf('function getFamilyAttentionItems');
+  const functionEnd = familySource.indexOf('function getFamilySummaryMetrics', functionStart + 1);
+  assert.notEqual(functionStart, -1, 'getFamilyAttentionItems should exist');
+  assert.notEqual(functionEnd, -1, 'getFamilySummaryMetrics should follow getFamilyAttentionItems');
+
+  const attentionSource = familySource.slice(functionStart, functionEnd);
+  assert.match(attentionSource, /report\.radar\.members/);
+  assert.match(attentionSource, /report\.radar\.hiddenMembers/);
+  assert.match(attentionSource, /score\.label/);
+  assert.match(attentionSource, /score\.coveragePresent === false/);
+  assert.doesNotMatch(attentionSource, /Number\(score\.amount \|\| 0\) <= 0/);
+  assert.doesNotMatch(attentionSource, /report\.accident\.members/);
+  assert.doesNotMatch(attentionSource, /report\.criticalIllness\.members/);
+  assert.doesNotMatch(attentionSource, /report\.wealth\.memberReports/);
+});
+
+test('family report wealth policies show cashflow table with cash value and keep one trend chart', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   assert.match(source, /function PolicyAnnualCashflowTable/);
   assert.match(source, /个人现金流明细/);
@@ -558,27 +759,41 @@ test('family report wealth policies show cashflow table with cash value and keep
   assert.match(source, /累计领取/);
   assert.match(source, /function CashValueTrendChart/);
   assert.match(source, /buildCashValueTrendSeries/);
-  assert.match(source, /aria-label="现金价值趋势对比图"/);
+  assert.match(source, /aria-label="现金价值与现金流趋势对比图"/);
   assert.match(source, /data-cash-value-trend-chart/);
   assert.match(source, /现金价值趋势/);
   assert.match(source, /现金价值/);
   assert.match(source, /row\.cashValueTime/);
   assert.match(source, /formatCashValueTimeTick/);
-  assert.match(source, /现金价值趋势对比图/);
+  assert.match(source, /现金价值与现金流趋势对比图/);
   assert.match(source, />时间</);
   assert.match(source, /缺第1-/);
-  assert.match(source, /r=\{index === item\.rows\.length - 1 \? 2\.8 : 1\.7\}/);
-  assert.match(source, /fill=\{item\.color\}/);
+  assert.match(source, /strokeWidth=\{item\.strokeWidth \?\? 1\.1\}/);
+  assert.match(source, /type="button"/);
+  assert.match(source, /aria-label=\{`\$\{hidden \? '显示' : '隐藏'\}\$\{item\.label\}折线`\}/);
+  assert.doesNotMatch(source, /r=\{index === item\.rows\.length - 1 \? 2\.8 : 1\.7\}/);
+  assert.doesNotMatch(source, /<circle/);
   assert.match(source, /<CashValueTrendChart report=\{report\} \/>/);
   assert.match(source, /<PolicyAnnualCashflowTable policy=\{policy\} \/>/);
   const policyCardStart = source.indexOf('function WealthPolicyCard');
   const policyCardEnd = source.indexOf('export function FamilyReportPage', policyCardStart + 1);
+  const policyTableStart = source.indexOf('function PolicyAnnualCashflowTable');
+  const policyTableEnd = source.indexOf('function WealthPolicyCard', policyTableStart + 1);
   assert.notEqual(policyCardStart, -1, 'WealthPolicyCard component should exist');
   assert.notEqual(policyCardEnd, -1, 'FamilyReportPage component should exist');
+  assert.notEqual(policyTableStart, -1, 'PolicyAnnualCashflowTable component should exist');
+  assert.notEqual(policyTableEnd, -1, 'WealthPolicyCard component should follow the cashflow table');
   const policyCardSource = source.slice(policyCardStart, policyCardEnd);
+  const policyTableSource = source.slice(policyTableStart, policyTableEnd);
   assert.doesNotMatch(policyCardSource, /CashValueTrendChart/);
   assert.doesNotMatch(policyCardSource, /CashValueLineChart/);
-  assert.doesNotMatch(policyCardSource, />现金价值<\/th>/);
+  assert.match(policyTableSource, />现金价值参考<\/th>/);
+  assert.match(source, /期满前参考/);
+  assert.match(source, /终止前参考/);
+  assert.match(source, /退保参考/);
+  assert.match(policyTableSource, /现金价值为退保参考，不等同于当年可直接领取金额/);
+  assert.match(policyTableSource, /合同终止型给付发生后，现金价值不再保留/);
+  assert.match(policyTableSource, /row\.cashValue != null/);
   assert.doesNotMatch(source, /function CashValueLineChart/);
   assert.doesNotMatch(source, /return row\.policyYear;/);
   assert.doesNotMatch(source, /row\.calendarYear > 0 \? row\.calendarYear : row\.policyYear/);
@@ -589,28 +804,54 @@ test('family report export downloads a page-styled image instead of paginated pd
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
-  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean \}/);
+  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean; matchScreenStyle\?: boolean \}/);
   assert.match(appSource, /rawTarget: true/);
-  assert.match(appSource, /preservePageStyle: true/);
+  assert.match(appSource, /matchScreenStyle: true/);
   assert.match(appSource, /downloadReportImage\(target,\s*title/);
+  assert.match(appSource, /captureReportImageCanvas\(imageTarget,\s*fileName/);
+  assert.match(appSource, /exportScreenStyledReportImageInCurrentPage\(imageTarget,\s*fileName/);
+  assert.match(appSource, /await import\('html-to-image'\)/);
+  assert.match(appSource, /toCanvas\(renderTarget\.node/);
+  assert.match(appSource, /isWeChatBrowser\(\)/);
+  assert.match(appSource, /isWeChatMiniProgramWebView\(\)/);
+  assert.match(appSource, /MiniProgram\|miniProgram/);
   assert.match(appSource, /triggerImageBlobDownload\(imageBlob,\s*fileName\)/);
   assert.match(appSource, /link\.download = `\$\{fileName\}\.jpg`/);
   const imageExportSource = componentSource('downloadReportImage', 'buildDraftReportTitle');
+  const imageCaptureSource = componentSource('captureReportImageCanvas', 'downloadReportPdf');
   assert.doesNotMatch(imageExportSource, /exportCurrentReportAsPdf/);
+  assert.doesNotMatch(imageExportSource, /renderReportToLongImage/);
   assert.doesNotMatch(imageExportSource, /new jsPDF/);
   assert.doesNotMatch(imageExportSource, /PDF/);
+  assert.doesNotMatch(imageExportSource, /document\.body\.classList\.add\('pdf-page-style-export-mode'\)/);
+  assert.doesNotMatch(imageCaptureSource, /html2canvas/);
+  assert.match(imageCaptureSource, /pixelRatio:\s*getPdfRenderScale\(\)/);
+  assert.match(imageCaptureSource, /skipFonts:\s*true/);
+  assert.match(imageCaptureSource, /createPdfRenderTarget\(target,\s*_title,\s*undefined,\s*\{ rawTarget: true,\s*matchScreenStyle: true \}\)/);
+  assert.match(imageCaptureSource, /margin:\s*'0'/);
+  assert.match(imageCaptureSource, /renderTarget\?\.cleanup\(\)/);
+  assert.match(appSource, /max-width:min\(1180px,calc\(100vw - 28px\)\)/);
   assert.match(appSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
   assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
+  assert.match(familySource, /family-report-content print-policy-report/);
   assert.match(familySource, /aria-label="下载报告图片"/);
   assert.match(familySource, /title="下载报告图片"/);
 });
 
-test('family report export keeps page styling and wraps wide tables for pdf capture', () => {
+test('family report export keeps page styling and still supports safe pdf capture', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
   assert.match(familySource, /data-pdf-table-wrap/);
+  assert.match(appSource, /prepareScreenStyleReportNode\(reportNode,\s*width,\s*backgroundColor\)/);
+  assert.match(appSource, /family-report-screen-export-target/);
+  assert.match(appSource, /getScreenStyleReportBackground\(target\)/);
+  assert.match(appSource, /convertCssOklchToRgb/);
+  assert.match(appSource, /normalizeCanvasColorValues\(reportNode\)/);
+  assert.match(appSource, /reportNode\.style\.margin = '0'/);
+  assert.match(appSource, /reportNode\.style\.marginLeft = '0'/);
+  assert.match(appSource, /reportNode\.style\.marginRight = '0'/);
   assert.match(appSource, /preparePageStyleReportNode\(reportNode,\s*width\)/);
   assert.match(appSource, /family-report-pdf-target/);
   assert.match(appSource, /html2canvas-safe-export/);
@@ -622,7 +863,7 @@ test('family report export keeps page styling and wraps wide tables for pdf capt
   assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
   assert.match(appSource, /compactReportCanvasText/);
   assert.match(appSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\]/);
-  assert.match(appSource, /captureWidth: options\?\.preservePageStyle \? width/);
+  assert.match(appSource, /captureWidth: options\?\.matchScreenStyle \|\| options\?\.preservePageStyle \? width/);
   assert.match(appSource, /new jsPDF\(options\?\.preservePageStyle \? 'l' : 'p'/);
   assert.match(cssSource, /\.pdf-page-style-export-mode \.html2canvas-safe-export/);
   assert.match(cssSource, /background-color:\s*transparent !important/);
@@ -636,4 +877,13 @@ test('family report export keeps page styling and wraps wide tables for pdf capt
   assert.match(cssSource, /table-layout:\s*fixed !important/);
   assert.match(cssSource, /white-space:\s*normal !important/);
   assert.match(cssSource, /print-color-adjust:\s*exact/);
+  assert.match(cssSource, /\.family-report-content/);
+  assert.match(cssSource, /width:\s*min\(1180px, calc\(100% - 32px\)\)/);
+  assert.match(cssSource, /overflow-x:\s*hidden/);
+  assert.match(cssSource, /--family-report-font-sans:/);
+  assert.match(cssSource, /--family-report-font-display:/);
+  assert.match(cssSource, /--family-report-font-number:/);
+  assert.match(cssSource, /\.family-report-shell \.font-black/);
+  assert.match(cssSource, /\.family-report-number/);
+  assert.match(cssSource, /font-variant-numeric:\s*tabular-nums/);
 });

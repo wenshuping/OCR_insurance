@@ -26,6 +26,7 @@ const __dirname = path.dirname(__filename);
 const OCR_SCRIPTS_DIR = path.resolve(__dirname, 'scripts');
 const OCR_SWIFT_SCRIPT = path.join(OCR_SCRIPTS_DIR, 'policy_ocr_vision.swift');
 const OCR_PADDLE_SCRIPT = path.join(OCR_SCRIPTS_DIR, 'policy_ocr_paddle.py');
+const LOCAL_PADDLE_VENV_PYTHON = path.resolve(__dirname, '../.runtime/paddleocr-venv/bin/python');
 const DEFAULT_MAX_SCAN_BYTES = 12 * 1024 * 1024;
 const DEFAULT_MLX_MAX_IMAGE_DIMENSION = 1800;
 const OCR_POSTPROCESSOR_NONE = 'none';
@@ -2599,6 +2600,7 @@ async function recognizeTextWithVision(uploadItem) {
 function getConfiguredPaddlePython() {
   const explicitPython = String(process.env.POLICY_OCR_PADDLE_PYTHON || '').trim();
   if (explicitPython) return explicitPython;
+  if (existsSync(LOCAL_PADDLE_VENV_PYTHON)) return LOCAL_PADDLE_VENV_PYTHON;
   return 'python3';
 }
 
@@ -2814,7 +2816,8 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
 
 /**
  * Scan a cash value table image using local OCR.
- * macOS Vision runs first for speed; PaddleOCR remains the table-coordinate fallback.
+ * PaddleOCR runs first because table coordinates are more reliable for cash value grids;
+ * macOS Vision remains the fast text-only fallback when PaddleOCR is unavailable.
  */
 export async function scanCashValueTable({ uploadItem }, dependencies = {}) {
   if (!uploadItem?.dataUrl) {
@@ -2837,6 +2840,43 @@ export async function scanCashValueTable({ uploadItem }, dependencies = {}) {
     const base64Data = uploadItem.dataUrl.replace(/^data:image\/\w+;base64,/, '');
     await writeFile(imagePath, Buffer.from(base64Data, 'base64'));
 
+    try {
+      const { paddleScriptPath } = resolveScriptPaths();
+      assertScriptExists(paddleScriptPath);
+
+      // Reuse the same Python environment as the existing policy OCR
+      await warmupPaddle();
+      const pythonCmd = getPaddlePython();
+      const env = { ...envBase };
+      const projectDir = String(env.POLICY_OCR_PADDLE_PROJECT_DIR || '').trim();
+      env.POLICY_OCR_PADDLE_PIPELINE = 'ocr';
+
+      const { stdout } = await execFileImpl(pythonCmd, [paddleScriptPath, imagePath], {
+        env,
+        cwd: projectDir || undefined,
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: 120000,
+      });
+
+      const ocrOutput = JSON.parse(stdout);
+      if (!ocrOutput.ok) {
+        paddleError = { ok: false, error: 'PARSE_FAILED', message: 'OCR 识别失败' };
+      } else {
+        const boxes = ocrOutput.boxes || [];
+        const parsed = parseCashValueTable(boxes);
+        if (parsed.ok) return parsed;
+        paddleError = parsed;
+      }
+    } catch (error) {
+      const code = String(error?.message || error?.code || 'PARSE_FAILED');
+      const stderr = String(error?.stderr || '').slice(0, 300);
+      paddleError = {
+        ok: false,
+        error: code,
+        message: `PaddleOCR 识别失败: ${code}${stderr ? ` (${stderr})` : ''}`,
+      };
+    }
+
     if (platform === 'darwin') {
       try {
         const { visionScriptPath } = resolveScriptPaths();
@@ -2858,47 +2898,10 @@ export async function scanCashValueTable({ uploadItem }, dependencies = {}) {
       }
     }
 
-    try {
-      const { paddleScriptPath } = resolveScriptPaths();
-      assertScriptExists(paddleScriptPath);
-
-      // Reuse the same Python environment as the existing policy OCR
-      await warmupPaddle();
-      const pythonCmd = getPaddlePython();
-      const env = { ...envBase };
-      const projectDir = String(env.POLICY_OCR_PADDLE_PROJECT_DIR || '').trim();
-      env.POLICY_OCR_PADDLE_PIPELINE = 'ocr';
-
-      const { stdout } = await execFileImpl(pythonCmd, [paddleScriptPath, imagePath], {
-        env,
-        cwd: projectDir || undefined,
-        maxBuffer: 50 * 1024 * 1024,
-        timeout: 120000,
-      });
-
-      const ocrOutput = JSON.parse(stdout);
-      if (!ocrOutput.ok) {
-        return { ok: false, error: 'PARSE_FAILED', message: 'OCR 识别失败' };
-      }
-
-      const boxes = ocrOutput.boxes || [];
-      const parsed = parseCashValueTable(boxes);
-      if (parsed.ok) return parsed;
-      paddleError = parsed;
-    } catch (error) {
-      const code = String(error?.message || error?.code || 'PARSE_FAILED');
-      const stderr = String(error?.stderr || '').slice(0, 300);
-      paddleError = {
-        ok: false,
-        error: code,
-        message: `PaddleOCR 识别失败: ${code}${stderr ? ` (${stderr})` : ''}`,
-      };
-    }
-
     if (visionError && paddleError) {
       return {
         ...paddleError,
-        message: `${visionError.message}；${paddleError.message}`,
+        message: `${paddleError.message}；${visionError.message}`,
       };
     }
 

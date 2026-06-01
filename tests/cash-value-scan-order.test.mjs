@@ -49,7 +49,7 @@ function testDependencies(execFile) {
 }
 
 describe('cash value OCR scan order', () => {
-  it('uses macOS Vision before PaddleOCR and skips PaddleOCR when Vision succeeds', async () => {
+  it('uses PaddleOCR before macOS Vision and skips Vision when PaddleOCR succeeds', async () => {
     const calls = [];
     const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, testDependencies(async (command, args) => {
       calls.push({ command, args });
@@ -58,22 +58,22 @@ describe('cash value OCR scan order', () => {
     }));
 
     assert.equal(result.ok, true);
-    assert.equal(result.source, 'macos_vision');
-    assert.equal(calls[0]?.command, 'swift');
-    assert.equal(calls.some((call) => call.command === 'python3'), false);
-    assert.equal(result.rows[0].cashValue, 100);
+    assert.equal(calls[0]?.command, 'python3');
+    assert.equal(calls.some((call) => call.command === 'swift'), false);
+    assert.equal(result.rows[0].cashValue, 900);
   });
 
-  it('falls back to PaddleOCR when macOS Vision text is not parseable', async () => {
+  it('falls back to macOS Vision when PaddleOCR text is not parseable', async () => {
     const calls = [];
     const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, testDependencies(async (command, args) => {
       calls.push({ command, args });
-      if (command === 'swift') return { stdout: '不是现金价值表', stderr: '' };
-      return { stdout: PADDLE_STDOUT, stderr: '' };
+      if (command === 'swift') return { stdout: VISION_TEXT, stderr: '' };
+      return { stdout: JSON.stringify({ ok: true, boxes: [] }), stderr: '' };
     }));
 
     assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.command), ['swift', 'python3']);
-    assert.equal(result.rows[0].cashValue, 900);
+    assert.equal(result.source, 'macos_vision');
+    assert.deepEqual(calls.map((call) => call.command), ['python3', 'swift']);
+    assert.equal(result.rows[0].cashValue, 100);
   });
 });

@@ -75,6 +75,70 @@ function parseCoverageEndYear(policy) {
   return 0;
 }
 
+function parseDateParts(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = text.match(/(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})/u);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { year, month, day };
+}
+
+function daysInMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function addYearsToDateParts(parts, years) {
+  if (!parts || !Number.isFinite(years)) return null;
+  const year = parts.year + years;
+  const day = Math.min(parts.day, daysInMonth(year, parts.month));
+  return { year, month: parts.month, day };
+}
+
+function coverageEndDateParts(policy) {
+  return parseDateParts(policy?.coveragePeriod);
+}
+
+function effectiveDateParts(policy) {
+  return parseDateParts(policy?.date || policy?.effectiveDate);
+}
+
+function ageAtDate(policy, dateParts) {
+  const birth = parseDateParts(policy?.insuredBirthday);
+  if (!birth || !dateParts) return null;
+  let age = dateParts.year - birth.year;
+  if (dateParts.month < birth.month || (dateParts.month === birth.month && dateParts.day < birth.day)) {
+    age -= 1;
+  }
+  return age >= 0 ? age : null;
+}
+
+function ageAtPolicyYearEnd(policy, policyYear) {
+  return ageAtDate(policy, addYearsToDateParts(effectiveDateParts(policy), policyYear));
+}
+
+function ageAtCalendarYear(policy, year, fallbackAge = null) {
+  const effectiveDate = effectiveDateParts(policy);
+  const effectiveYear = effectiveDate?.year || parseYearFromDate(policy?.date || policy?.effectiveDate);
+  if (effectiveDate && effectiveYear && year >= effectiveYear) {
+    const age = ageAtPolicyYearEnd(policy, year - effectiveYear);
+    if (age !== null) return age;
+  }
+  const birthYear = parseYearFromDate(policy?.insuredBirthday);
+  return birthYear ? year - birthYear : fallbackAge;
+}
+
+function ageAtCoverageEnd(policy) {
+  const exactAge = ageAtDate(policy, coverageEndDateParts(policy));
+  if (exactAge !== null) return exactAge;
+  const coverageEndYear = parseCoverageEndYear(policy);
+  return coverageEndYear ? ageAtCalendarYear(policy, coverageEndYear) : null;
+}
+
 /** Resolve amount from indicator. */
 function resolveIndicatorAmountForCashflow(indicator, policy) {
   const text = `${indicator.formulaText || ''} ${indicator.basis || ''} ${indicator.liability || ''}`;
@@ -132,7 +196,7 @@ function expandCashflowIndicator(indicator, policy) {
     cumulative += amount;
     entries.push({
       year,
-      age: year - birthYear,
+      age: ageAtCalendarYear(policy, year, year - birthYear),
       amount,
       cumulative,
       liability: indicator.liability || '现金流',
@@ -271,7 +335,7 @@ function parseBenefitSection(sec, ctx) {
     for (const age of ages) {
       const year = birthYear + age;
       if (year >= minYear) {
-        results.push({ year, amount: benefitAmount, liability: name, calculationText: buildCalcText(benefitAmount, amount, text) });
+        results.push({ year, age, amount: benefitAmount, liability: name, calculationText: buildCalcText(benefitAmount, amount, text) });
       }
     }
     return results;
@@ -283,7 +347,7 @@ function parseBenefitSection(sec, ctx) {
     const age = Number(singleAgeMatch[1]);
     const year = birthYear + age;
     if (year >= effectiveYear && year <= coverageEndYear) {
-      results.push({ year, amount: benefitAmount, liability: name, calculationText: buildCalcText(benefitAmount, amount, text) });
+      results.push({ year, age, amount: benefitAmount, liability: name, calculationText: buildCalcText(benefitAmount, amount, text) });
     }
     return results;
   }
@@ -371,7 +435,7 @@ function synthesizeCashflowFromIndicatorsOnly(cashflowIndicators, policy, effect
       for (let year = birthYear + pensionStartAge; year <= coverageEndYear - 1; year++) {
         cumulative += amount;
         entries.push({
-          year, age: year - birthYear, amount, cumulative,
+          year, age: ageAtCalendarYear(policy, year, year - birthYear), amount, cumulative,
           liability: '年金', policyId: policy.id, productName,
           calcText: formatCashflowCalculation(ind, policy, amount),
         });
@@ -383,7 +447,7 @@ function synthesizeCashflowFromIndicatorsOnly(cashflowIndicators, policy, effect
       if (amount <= 0) continue;
       cumulative += amount;
       entries.push({
-        year: coverageEndYear, age: coverageEndYear - birthYear, amount, cumulative,
+        year: coverageEndYear, age: ageAtCoverageEnd(policy) ?? (coverageEndYear - birthYear), amount, cumulative,
         liability: '满期金', policyId: policy.id, productName,
         calcText: formatCashflowCalculation(ind, policy, amount),
       });
@@ -572,7 +636,7 @@ function expandRule(rule, ctx, resolvedParams) {
       if (year < ctx.effectiveYear || year > ctx.coverageEndYear) continue;
       entries.push({
         year,
-        age: year - ctx.birthYear,
+        age: ageAtCalendarYear(ctx.policy, year, year - ctx.birthYear),
         amount,
         liability,
         productName,
@@ -615,7 +679,7 @@ function expandRule(rule, ctx, resolvedParams) {
     if (year >= ctx.effectiveYear) {
       entries.push({
         year,
-        age: year - ctx.birthYear,
+        age: ageAtCoverageEnd(ctx.policy) ?? (year - ctx.birthYear),
         amount,
         liability,
         productName,
@@ -713,7 +777,7 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
       cumulative += item.amount;
       entries.push({
         year: item.year,
-        age: item.year - birthYear,
+        age: item.age ?? ageAtCalendarYear(policy, item.year, item.year - birthYear),
         amount: item.amount,
         cumulative,
         liability: item.liability || sec.name,
@@ -740,7 +804,7 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
           cumulative += indAmount;
           entries.push({
             year: coverageEndYear,
-            age: coverageEndYear - birthYear,
+            age: ageAtCoverageEnd(policy) ?? (coverageEndYear - birthYear),
             amount: indAmount,
             cumulative,
             liability: '满期金',

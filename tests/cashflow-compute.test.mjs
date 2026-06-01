@@ -104,6 +104,7 @@ test('computePolicyCashflow: template maturity with max basis', () => {
   const entries = computePolicyCashflow(changxingPolicy, template, []);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].year, 2068);
+  assert.equal(entries[0].age, 80);
   assert.equal(entries[0].amount, 60000);
 });
 
@@ -119,7 +120,26 @@ test('computePolicyCashflow: template maturity with 已交保费 factor 1.2', ()
   // changxingPolicy: totalPremium=32960, * 1.2 = 39552
   const entries = computePolicyCashflow(changxingPolicy, template, []);
   assert.equal(entries.length, 1);
+  assert.equal(entries[0].age, 80);
   assert.equal(entries[0].amount, 39552);
+});
+
+test('computePolicyCashflow: indicator maturity uses exact coverage end age before birthday', () => {
+  const indicators = [
+    {
+      coverageType: '现金流',
+      liability: '满期生存保险金',
+      unit: '公式',
+      basis: '已交保费',
+      formulaText: '满期生存保险金 = 实际交纳保险费',
+    },
+  ];
+
+  const entries = computePolicyCashflow(changxingPolicy, null, indicators);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].year, 2068);
+  assert.equal(entries[0].age, 80);
+  assert.equal(entries[0].amount, 32960);
 });
 
 // ── 4. Template with pointList timing ──

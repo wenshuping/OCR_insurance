@@ -348,6 +348,41 @@ describe('cash-value-parser', () => {
       assert.deepEqual(result.rows[62], { policyYear: 63, age: null, cashValue: 71658 });
     });
 
+    it('recovers macOS Vision text with split decimal values and OCR year suffix errors', () => {
+      const ocrText = [
+        '保单年度末',
+        '现金价值（元）',
+        '保单年度末',
+        '1年末', '336.00', '22年末',
+        '2年末', '1272.00', '23年末',
+        '3年末', '2304.00', '24年末',
+        '16年木', '26472.00', '25年末',
+        '现金价值（元）',
+        '29976.00',
+        '30600.00',
+        '31272.',
+        '00',
+        '31896.00',
+        '保单年度末',
+        '43年末',
+        '44年末',
+        '45年末',
+        '现金价值（元）',
+        '46224.00',
+        '46680.00',
+        '47088.00',
+        '1.本表仅为保单年度末的现金价值，保单年度之内的现金价值金额您可以向我们查询。',
+      ].join('\n');
+
+      const result = parseCashValueText(ocrText, { source: 'macos_vision' });
+      assert.equal(result.ok, true);
+      assert.equal(result.rowCount, 11);
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 16), { policyYear: 16, age: null, cashValue: 26472 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 22), { policyYear: 22, age: null, cashValue: 29976 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 24), { policyYear: 24, age: null, cashValue: 31272 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 45), { policyYear: 45, age: null, cashValue: 47088 });
+    });
+
     it('fails when text does not contain table headers', () => {
       const result = parseCashValueText('1年末\n282.00\n2年末\n663.00\n3年末\n1296.00');
       assert.equal(result.ok, false);

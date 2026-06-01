@@ -86,9 +86,9 @@ import {
   buildMemberAnnualSummaries,
   fillCashflowYears,
 } from './cashflow-engine.mjs';
-import { FamilyReportPage } from './FamilyReport';
+import { FamilyRadarSection, FamilyReportPage } from './FamilyReport';
 import { buildFamilyReport } from './family-report-engine.mjs';
-import type { FamilyPlanningProfile } from './family-report-engine.mjs';
+import type { FamilyPlanningProfile, FamilyReport } from './family-report-engine.mjs';
 import { policyValidityClassName, resolvePolicyValidityStatus } from './policy-validity.mjs';
 
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
@@ -1104,11 +1104,128 @@ function createPrintableReportNode(target: HTMLElement, title: string, policy?: 
   return report;
 }
 
-type ReportExportOptions = { rawTarget?: boolean; preservePageStyle?: boolean };
+type ReportExportOptions = { rawTarget?: boolean; preservePageStyle?: boolean; matchScreenStyle?: boolean };
+
+function getScreenStyleReportWidth(target: HTMLElement) {
+  const rect = target.getBoundingClientRect();
+  return Math.ceil(rect.width || target.offsetWidth || Math.min(target.scrollWidth || 0, window.innerWidth || 0) || 1120);
+}
+
+function getScreenStyleReportBackground(target: HTMLElement) {
+  let node: HTMLElement | null = target;
+  while (node) {
+    const backgroundColor = window.getComputedStyle(node).backgroundColor;
+    if (backgroundColor && backgroundColor !== 'transparent' && backgroundColor !== 'rgba(0, 0, 0, 0)') return backgroundColor;
+    node = node.parentElement;
+  }
+  return '#EEF3F7';
+}
+
+const canvasColorStyleProperties = [
+  'color',
+  'background-color',
+  'border-top-color',
+  'border-right-color',
+  'border-bottom-color',
+  'border-left-color',
+  'outline-color',
+  'text-decoration-color',
+  'caret-color',
+  'fill',
+  'stroke',
+];
+
+const canvasCompositeColorStyleProperties = [
+  'background-image',
+  'box-shadow',
+  'text-shadow',
+];
+
+function parseOklchNumber(value: string, percentageBase = 1) {
+  const trimmed = value.trim();
+  if (trimmed.endsWith('%')) return (Number.parseFloat(trimmed) / 100) * percentageBase;
+  return Number.parseFloat(trimmed);
+}
+
+function convertOklabToRgbCss(lightness: number, a: number, b: number, alpha: number) {
+  const lPrime = lightness + 0.3963377774 * a + 0.2158037573 * b;
+  const mPrime = lightness - 0.1055613458 * a - 0.0638541728 * b;
+  const sPrime = lightness - 0.0894841775 * a - 1.291485548 * b;
+
+  const l = lPrime ** 3;
+  const m = mPrime ** 3;
+  const s = sPrime ** 3;
+
+  const linearR = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  const linearG = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  const linearB = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+
+  const toSrgbChannel = (channel: number) => {
+    const corrected = channel <= 0.0031308 ? 12.92 * channel : 1.055 * channel ** (1 / 2.4) - 0.055;
+    return Math.round(Math.min(1, Math.max(0, corrected)) * 255);
+  };
+
+  const red = toSrgbChannel(linearR);
+  const green = toSrgbChannel(linearG);
+  const blue = toSrgbChannel(linearB);
+  if (alpha < 1) return `rgba(${red}, ${green}, ${blue}, ${Math.min(1, Math.max(0, alpha))})`;
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
+function convertOklchColorToRgb(value: string) {
+  const [channelsRaw, alphaRaw] = value.split('/').map((part) => part.trim());
+  const channels = channelsRaw.split(/\s+/).filter(Boolean);
+  if (channels.length < 3) return `oklch(${value})`;
+
+  const lightness = parseOklchNumber(channels[0]);
+  const chroma = parseOklchNumber(channels[1]);
+  const hue = channels[2] === 'none' ? 0 : Number.parseFloat(channels[2]);
+  const alpha = alphaRaw ? parseOklchNumber(alphaRaw) : 1;
+  if (![lightness, chroma, hue, alpha].every(Number.isFinite)) return `oklch(${value})`;
+
+  const hueRadians = (hue * Math.PI) / 180;
+  const a = chroma * Math.cos(hueRadians);
+  const b = chroma * Math.sin(hueRadians);
+  return convertOklabToRgbCss(lightness, a, b, alpha);
+}
+
+function convertOklabColorToRgb(value: string) {
+  const [channelsRaw, alphaRaw] = value.split('/').map((part) => part.trim());
+  const channels = channelsRaw.split(/\s+/).filter(Boolean);
+  if (channels.length < 3) return `oklab(${value})`;
+
+  const lightness = parseOklchNumber(channels[0]);
+  const a = parseOklchNumber(channels[1]);
+  const b = parseOklchNumber(channels[2]);
+  const alpha = alphaRaw ? parseOklchNumber(alphaRaw) : 1;
+  if (![lightness, a, b, alpha].every(Number.isFinite)) return `oklab(${value})`;
+
+  return convertOklabToRgbCss(lightness, a, b, alpha);
+}
+
+function convertCssOklchToRgb(value: string) {
+  if (!value || (!value.includes('oklch(') && !value.includes('oklab('))) return value;
+  return value
+    .replace(/oklch\(([^)]*)\)/g, (_, colorValue: string) => convertOklchColorToRgb(colorValue))
+    .replace(/oklab\(([^)]*)\)/g, (_, colorValue: string) => convertOklabColorToRgb(colorValue));
+}
+
+function normalizeCanvasColorValues(root: HTMLElement) {
+  const nodes = [root, ...Array.from(root.querySelectorAll<HTMLElement | SVGElement>('*'))];
+  nodes.forEach((node) => {
+    const computed = window.getComputedStyle(node);
+    [...canvasColorStyleProperties, ...canvasCompositeColorStyleProperties].forEach((property) => {
+      const current = computed.getPropertyValue(property);
+      const converted = convertCssOklchToRgb(current);
+      if (converted && converted !== current) node.style.setProperty(property, converted);
+    });
+  });
+}
 
 function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Policy, options?: ReportExportOptions) {
   const wrapper = document.createElement('div');
-  const width = options?.preservePageStyle ? 1120 : 760;
+  const width = options?.matchScreenStyle ? getScreenStyleReportWidth(target) : options?.preservePageStyle ? 1120 : 760;
+  const backgroundColor = options?.matchScreenStyle ? getScreenStyleReportBackground(target) : '#ffffff';
   wrapper.setAttribute(
     'style',
     [
@@ -1117,7 +1234,7 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
       'top:0',
       `width:${width}px`,
       'min-height:1px',
-      'background:#ffffff',
+      `background:${backgroundColor}`,
       'color:#0f172a',
       'z-index:-1',
       'overflow:visible',
@@ -1130,7 +1247,9 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   wrapper.appendChild(reportNode);
   document.body.appendChild(wrapper);
 
-  if (options?.rawTarget && options.preservePageStyle) {
+  if (options?.rawTarget && options.matchScreenStyle) {
+    prepareScreenStyleReportNode(reportNode, width, backgroundColor);
+  } else if (options?.rawTarget && options.preservePageStyle) {
     preparePageStyleReportNode(reportNode, width);
   } else if (options?.rawTarget) {
     reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
@@ -1146,11 +1265,26 @@ function createPdfRenderTarget(target: HTMLElement, title: string, policy?: Poli
   return {
     node: reportNode,
     width,
-    captureWidth: options?.preservePageStyle ? width : Math.max(width, reportNode.scrollWidth || 0),
+    captureWidth: options?.matchScreenStyle || options?.preservePageStyle ? width : Math.max(width, reportNode.scrollWidth || 0),
     cleanup() {
       wrapper.remove();
     },
   };
+}
+
+function prepareScreenStyleReportNode(reportNode: HTMLElement, width: number, backgroundColor: string) {
+  reportNode.classList.add('family-report-screen-export-target');
+  reportNode.style.display = 'block';
+  reportNode.style.boxSizing = 'border-box';
+  reportNode.style.width = `${width}px`;
+  reportNode.style.maxWidth = 'none';
+  reportNode.style.margin = '0';
+  reportNode.style.marginLeft = '0';
+  reportNode.style.marginRight = '0';
+  reportNode.style.minHeight = '1px';
+  reportNode.style.overflow = 'visible';
+  reportNode.style.background = backgroundColor;
+  normalizeCanvasColorValues(reportNode);
 }
 
 function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
@@ -1209,6 +1343,8 @@ function escapeHtml(value: string) {
 function shouldOpenPdfPreviewWindow() {
   const userAgent = navigator.userAgent || '';
   return (
+    isWeChatBrowser() ||
+    isWeChatMiniProgramWebView() ||
     /MicroMessenger|Mobi|Android|iPhone|iPad|iPod/i.test(userAgent) ||
     (navigator.maxTouchPoints > 1 && window.innerWidth <= 820)
   );
@@ -1216,7 +1352,12 @@ function shouldOpenPdfPreviewWindow() {
 
 function shouldUseInPageReportExport() {
   const userAgent = navigator.userAgent || '';
-  return /MicroMessenger|Mobi|Android|iPhone|iPad|iPod/i.test(userAgent) || (navigator.maxTouchPoints > 1 && window.innerWidth <= 820);
+  return (
+    isWeChatBrowser() ||
+    isWeChatMiniProgramWebView() ||
+    /MicroMessenger|MiniProgram|miniProgram|Mobi|Android|iPhone|iPad|iPod/i.test(userAgent) ||
+    (navigator.maxTouchPoints > 1 && window.innerWidth <= 820)
+  );
 }
 
 function getReportExportControlText() {
@@ -1639,7 +1780,7 @@ function createInPageReportExportPanel(fileName: string) {
             </div>
             <p style="margin:10px 0 0;color:#64748b;font-size:12px;line-height:1.7">下面只有一张图，包含整份报告。微信内长按这张长图，选择保存到手机。</p>
           </section>
-          <section style="margin:0 auto;max-width:520px">
+          <section style="margin:0 auto;max-width:min(1180px,calc(100vw - 28px))">
             <figure style="margin:14px 0 0">
               <img src="${reportImage}" alt="完整报告长图" style="display:block;width:100%;border:1px solid #dbe4ef;border-radius:12px;background:#fff;box-sizing:border-box" />
               <figcaption style="margin-top:6px;color:#64748b;font-size:12px;text-align:center">完整报告长图，长按图片可保存整份报告</figcaption>
@@ -1672,6 +1813,25 @@ async function exportReportInCurrentPage(target: HTMLElement, fileName: string) 
     panel.showResult(reportImage);
   } catch (error) {
     console.error('[policy-ocr-app] in-page report image export failed', error);
+    if (reportImage) {
+      panel.showResult(reportImage);
+    } else {
+      panel.showError();
+    }
+  }
+}
+
+async function exportScreenStyledReportImageInCurrentPage(target: HTMLElement, fileName: string, options?: ReportExportOptions) {
+  const panel = createInPageReportExportPanel(fileName);
+  let reportImage = '';
+  try {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    panel.update('正在生成完整报告长图', '生成完成后会在本页显示一张与当前报告样式一致的长图。');
+    const canvas = await captureReportImageCanvas(target, fileName, options);
+    reportImage = canvas.toDataURL('image/jpeg', 0.92);
+    panel.showResult(reportImage);
+  } catch (error) {
+    console.error('[policy-ocr-app] in-page styled report image export failed', error);
     if (reportImage) {
       panel.showResult(reportImage);
     } else {
@@ -1824,6 +1984,50 @@ function writePdfPreviewError(previewWindow: Window, fileName: string) {
   previewWindow.document.close();
 }
 
+async function captureReportImageCanvas(target: HTMLElement, _title: string, _options?: ReportExportOptions) {
+  const { toCanvas } = await import('html-to-image');
+  const backgroundColor = getScreenStyleReportBackground(target);
+  const previousScrollX = window.scrollX;
+  const previousScrollY = window.scrollY;
+  let renderTarget: ReturnType<typeof createPdfRenderTarget> | null = null;
+
+  window.scrollTo(0, 0);
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  try {
+    renderTarget = createPdfRenderTarget(target, _title, undefined, { rawTarget: true, matchScreenStyle: true });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const renderWidth = renderTarget.captureWidth || getScreenStyleReportWidth(target);
+    const renderHeight = Math.ceil(renderTarget.node.scrollHeight || renderTarget.node.offsetHeight || renderTarget.node.getBoundingClientRect().height || 1);
+    return await toCanvas(renderTarget.node, {
+      backgroundColor,
+      width: renderWidth,
+      height: renderHeight,
+      canvasWidth: renderWidth,
+      canvasHeight: renderHeight,
+      pixelRatio: getPdfRenderScale(),
+      skipFonts: true,
+      skipAutoScale: true,
+      cacheBust: true,
+      includeQueryParams: true,
+      style: {
+        display: 'block',
+        width: `${renderWidth}px`,
+        maxWidth: 'none',
+        margin: '0',
+        marginLeft: '0',
+        marginRight: '0',
+        minHeight: `${renderHeight}px`,
+        overflow: 'visible',
+        background: backgroundColor,
+        backgroundColor,
+      },
+    });
+  } finally {
+    renderTarget?.cleanup();
+    window.scrollTo(previousScrollX, previousScrollY);
+  }
+}
+
 async function downloadReportPdf(target: HTMLElement | null, title: string, policy?: Policy, options?: ReportExportOptions) {
   if (!target) {
     exportCurrentReportAsPdf(title);
@@ -1904,33 +2108,16 @@ async function downloadReportImage(target: HTMLElement | null, title: string, op
   }
   const fileName = normalizePdfFileName(title);
   if (shouldUseInPageReportExport()) {
-    await exportReportInCurrentPage(imageTarget, fileName);
+    await exportScreenStyledReportImageInCurrentPage(imageTarget, fileName, { rawTarget: true, matchScreenStyle: true, ...options });
     return;
   }
 
   const previousTitle = document.title;
   const feedback = showPdfExportFeedback('正在生成图片');
-  let renderTarget: ReturnType<typeof createPdfRenderTarget> | null = null;
   try {
-    const { default: html2canvas } = await import('html2canvas');
     document.title = fileName;
-    document.body.classList.add('pdf-page-style-export-mode');
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    renderTarget = createPdfRenderTarget(imageTarget, fileName, undefined, { rawTarget: true, preservePageStyle: true, ...options });
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    const renderWidth = renderTarget.captureWidth || renderTarget.node.scrollWidth || renderTarget.width;
-    const renderHeight = renderTarget.node.scrollHeight || renderTarget.node.offsetHeight;
-    const canvas = await html2canvas(renderTarget.node, {
-      backgroundColor: '#F4F8FC',
-      scale: getPdfRenderScale(),
-      useCORS: false,
-      width: renderWidth,
-      height: renderHeight,
-      windowWidth: renderWidth,
-      windowHeight: renderHeight,
-    });
-    renderTarget.cleanup();
-    renderTarget = null;
+    const canvas = await captureReportImageCanvas(imageTarget, fileName, { rawTarget: true, matchScreenStyle: true, ...options });
     const imageBlob = await canvasToBlob(canvas);
     triggerImageBlobDownload(imageBlob, fileName);
     feedback.update('图片已生成', '已下载为 JPG 长图。');
@@ -1940,8 +2127,6 @@ async function downloadReportImage(target: HTMLElement | null, title: string, op
     feedback.update('图片生成失败', '请刷新报告页后重试。');
     feedback.close(1800);
   } finally {
-    renderTarget?.cleanup();
-    document.body.classList.remove('pdf-page-style-export-mode');
     document.title = previousTitle;
   }
 }
@@ -2593,7 +2778,6 @@ function CustomerApp() {
   const totalCoverage = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [policies]);
   const annualPremium = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0), [policies]);
   const policyGroups = useMemo(() => groupPoliciesByInsured(policies), [policies]);
-  const familyCoverageOverview = useMemo(() => buildFamilyCoverageOverview(policies), [policies]);
   const familyReport = useMemo(() => buildFamilyReport(policies, familyPlanningProfile), [policies, familyPlanningProfile]);
   const isLoggedIn = Boolean(token);
 
@@ -3850,6 +4034,10 @@ function CustomerApp() {
       mobile={mobile}
       policyCount={policies.length}
       onClose={() => setShowAccountSheet(false)}
+      onOpenPolicies={() => {
+        setShowAccountSheet(false);
+        setActiveTab('policies');
+      }}
       onLogin={() => {
         setShowAccountSheet(false);
         openPhoneVerificationDialog('验证手机号后可查看账号名下所有保单');
@@ -3857,9 +4045,11 @@ function CustomerApp() {
       onLogout={() => void handleCustomerLogout()}
     />
   ) : null;
-  const responsibilityAssistant = (
+  function renderResponsibilityAssistant(anchorClassName?: string) {
+    return (
     <ResponsibilityAssistant
       analysis={assistantAnalysis}
+      anchorClassName={anchorClassName}
       company={assistantCompany}
       companySuggestionLoading={assistantCompanySuggestionLoading}
       companySuggestions={assistantCompanySuggestions}
@@ -3906,7 +4096,9 @@ function CustomerApp() {
       }}
       open={assistantOpen}
     />
-  );
+    );
+  }
+  const responsibilityAssistant = renderResponsibilityAssistant('bottom-24');
 
   if (showFamilyReport) {
     return (
@@ -3933,7 +4125,7 @@ function CustomerApp() {
           onSave={handleSubmit}
           onUpdateOptionalResponsibility={updateAnalysisOptionalResponsibility}
         />
-        {responsibilityAssistant}
+        {renderResponsibilityAssistant('bottom-24')}
         {authDialog}
         {accountSheet}
         {cashValueDialog}
@@ -3957,9 +4149,6 @@ function CustomerApp() {
           productMatchLoading={formProductMatchLoading}
           productMatchMessage={formProductMatchMessage}
           productMatches={formProductMatches}
-          activeTab={activeTab}
-          onBack={() => setActiveTab('policies')}
-          onChangeTab={setActiveTab}
           onFileChange={handleFileChange}
           onGenerateAnalysis={() => void handleGenerateAnalysis()}
           onOcrTextChange={handleOcrTextChange}
@@ -3979,7 +4168,7 @@ function CustomerApp() {
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
         />
-        {responsibilityAssistant}
+        {renderResponsibilityAssistant('bottom-24')}
         {authDialog}
         {accountSheet}
         {cashValueDialog}
@@ -4050,10 +4239,8 @@ function CustomerApp() {
         </div>
 
         <FamilyCoverageOverview
-          overview={familyCoverageOverview}
+          report={familyReport}
           policies={policies}
-          onViewCashflow={(member) => setCashflowMember(member)}
-          onViewReport={() => setShowFamilyReport(true)}
         />
 
         {policies.length ? (
@@ -4452,131 +4639,17 @@ function CashflowDetailPage({
 }
 
 function FamilyCoverageOverview({
-  overview,
+  report,
   policies,
-  onViewCashflow,
-  onViewReport,
 }: {
-  overview: FamilyCoverageOverviewData;
+  report: FamilyReport;
   policies: Policy[];
-  onViewCashflow: (member: string) => void;
-  onViewReport: () => void;
 }) {
   if (!policies.length) return null;
-  const displayedRows = overview.rows.slice(0, 10);
-  const memberBirthdays = buildMemberBirthdayMap(policies);
 
   return (
-    <section className="p-4 pb-0">
-      <div className="rounded-[24px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-black uppercase text-[#7890AA]">Family Report</p>
-            <h2 className="mt-1 text-lg font-black text-[#0F172A]">家庭保障总览</h2>
-          </div>
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center gap-2 rounded-full bg-blue-50 px-3 py-2 text-xs font-black text-blue-600 ring-1 ring-blue-100 hover:bg-blue-100 active:bg-blue-100"
-            onClick={onViewReport}
-            aria-label="查看家庭保障分析报告"
-          >
-            <FileText size={14} />
-            <span>查看报告</span>
-          </button>
-        </div>
-
-        <div className="mb-4 grid gap-2 sm:grid-cols-3">
-          {overview.members.map((member) => {
-            const memberPoliciesForPlan = policies.filter((p) => (p.insured || '').trim() === member);
-            const memberPlans: PolicyCashflowPlan[] = memberPoliciesForPlan.map(p => ({
-              policyId: p.id,
-              productName: p.name || '',
-              company: p.company || '',
-              insured: p.insured || '',
-              insuredBirthday: p.insuredBirthday || '',
-              effectiveDate: p.date || '',
-              annualEntries: p.cashflowEntries || [],
-              scenarioEntries: p.scenarioEntries || [],
-              totalDeterministicCashflow: p.totalCashflow ?? 0,
-              expired: resolvePolicyValidityStatus(p.coveragePeriod, {
-                effectiveDate: p.date,
-                insuredBirthday: p.insuredBirthday,
-              }).tone === 'expired',
-            }));
-            const hasCashflow = memberPlans.some((p) => p.annualEntries.length > 0 || p.scenarioEntries.length > 0);
-            return (
-              <div key={member} className="rounded-2xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="truncate text-sm font-black text-slate-900">{member}</p>
-                  {hasCashflow ? (
-                    <button
-                      type="button"
-                      className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-600 hover:bg-blue-100"
-                      onClick={() => onViewCashflow(member)}
-                    >
-                      现金流 →
-                    </button>
-                  ) : null}
-                </div>
-                <p className="mt-1 text-xs font-bold text-[#7890AA]">
-                  生日 {memberBirthdays.get(member) || '待识别'}
-                </p>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
-            <thead>
-              <tr>
-                <th className="sticky left-0 z-[1] rounded-tl-2xl bg-[#0B72B9] px-3 py-2 font-black text-white">保障类型</th>
-                <th className="bg-[#0B72B9] px-3 py-2 font-black text-white">责任类别</th>
-                {overview.members.map((member, index) => (
-                  <th key={member} className={`bg-[#0B72B9] px-3 py-2 font-black text-white ${index === overview.members.length - 1 ? 'rounded-tr-2xl' : ''}`}>
-                    {member}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {displayedRows.map((row) => (
-                <tr key={`${row.coverageType}-${row.liability}`}>
-                  <td className="sticky left-0 bg-white px-3 py-3 font-black text-[#176B94] ring-1 ring-[#E1EAF5]">{row.coverageType}</td>
-                  <td className="bg-white px-3 py-3 font-bold text-slate-700 ring-1 ring-[#E1EAF5]">{row.liability}</td>
-                  {overview.members.map((member) => {
-                    const cell = row.cells[member];
-                    return (
-                      <td key={member} className="min-w-[120px] bg-white px-3 py-3 font-semibold text-slate-700 ring-1 ring-[#E1EAF5]">
-                        {cell ? (
-                          <span className="block">
-                            <span className="block text-sm font-black text-slate-800">
-                              {cell.displayText || (cell.amount > 0 ? `${cell.amount.toLocaleString('zh-CN')}元` : cell.missingCashflowDetail ? '待领取明细' : '按条款公式')}
-                            </span>
-                            {cell.calculationText && cell.calculationText !== cell.displayText ? (
-                              <span className="mt-1 block text-[11px] font-bold leading-4 text-slate-400">{cell.calculationText}</span>
-                            ) : null}
-                          </span>
-                        ) : (
-                          <span className="text-slate-300">-</span>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {overview.notes.length ? (
-          <div className="mt-3 space-y-1 rounded-2xl bg-[#FFF7ED] px-3 py-2 text-xs font-semibold leading-5 text-[#9A3412]">
-            {overview.notes.slice(0, 3).map((note) => (
-              <p key={note}>* {note}</p>
-            ))}
-          </div>
-        ) : null}
-      </div>
+    <section className="family-report-shell p-4 pb-0 text-[#102033]">
+      <FamilyRadarSection report={report} />
     </section>
   );
 }
@@ -5728,6 +5801,7 @@ function renderHighlightedSuggestion(value: string, query: string) {
 
 function ResponsibilityAssistant(props: {
   analysis: PolicyAnalysisResult | null;
+  anchorClassName?: string;
   company: string;
   companySuggestionLoading: boolean;
   companySuggestions: PolicyCompanySuggestion[];
@@ -5751,6 +5825,7 @@ function ResponsibilityAssistant(props: {
 }) {
   const {
     analysis,
+    anchorClassName,
     company,
     companySuggestionLoading,
     companySuggestions,
@@ -5833,9 +5908,12 @@ function ResponsibilityAssistant(props: {
       .slice(0, 8);
   }, [companyQuery, productQuery, productSuggestions]);
   const showProductSuggestions = productFocused && Boolean(companyQuery) && (productSuggestionLoading || visibleProductSuggestions.length);
+  const rootClassName = anchorClassName
+    ? `no-print fixed ${anchorClassName} right-4 z-[70] flex flex-col-reverse items-end sm:right-6`
+    : 'no-print fixed bottom-6 right-4 z-[70] flex flex-col-reverse items-end sm:right-6';
 
   return (
-    <div className="no-print fixed bottom-6 right-4 z-[70] flex flex-col-reverse items-end sm:right-6">
+    <div className={rootClassName}>
       <button
         type="button"
         onClick={open ? onClose : onOpen}
@@ -6223,9 +6301,10 @@ function CustomerAccountSheet(props: {
   onClose: () => void;
   onLogin: () => void;
   onLogout: () => void;
+  onOpenPolicies: () => void;
   policyCount: number;
 }) {
-  const { insuredCount, isLoggedIn, mobile, onClose, onLogin, onLogout, policyCount } = props;
+  const { insuredCount, isLoggedIn, mobile, onClose, onLogin, onLogout, onOpenPolicies, policyCount } = props;
   return (
     <div className="fixed inset-0 z-[75] flex items-end bg-slate-950/35 px-4 pb-4 sm:items-center sm:justify-center">
       <section className="w-full rounded-[24px] bg-white p-5 shadow-2xl sm:max-w-md">
@@ -6265,17 +6344,36 @@ function CustomerAccountSheet(props: {
           </div>
         </div>
 
+        <div className="mt-5 grid gap-2">
+          <button
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-sm font-black text-slate-700 transition-colors hover:bg-slate-50"
+            type="button"
+            aria-current="page"
+          >
+            <CircleUserRound size={18} />
+            我的基本信息
+          </button>
+          <button
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-blue-100 bg-blue-50 text-sm font-black text-blue-700 transition-colors hover:bg-blue-100"
+            type="button"
+            onClick={onOpenPolicies}
+          >
+            <FileText size={18} />
+            我的保单
+          </button>
+        </div>
+
         {isLoggedIn ? (
           <button
-            className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-red-100 bg-red-50 text-base font-black text-red-600 transition-colors hover:bg-red-100"
+            className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-red-100 bg-red-50 text-sm font-black text-red-600 transition-colors hover:bg-red-100"
             type="button"
             onClick={onLogout}
           >
             <LogOut size={19} />
-            退出账号
+            退出
           </button>
         ) : (
-          <button className="mt-5 flex h-12 w-full items-center justify-center rounded-xl bg-blue-500 text-base font-black text-white shadow-lg shadow-blue-500/25" type="button" onClick={onLogin}>
+          <button className="mt-2 flex h-12 w-full items-center justify-center rounded-xl bg-blue-500 text-sm font-black text-white shadow-lg shadow-blue-500/25" type="button" onClick={onLogin}>
             验证手机号
           </button>
         )}
@@ -6420,7 +6518,6 @@ function ProductMatchSelectPanel(props: {
 }
 
 function UploadPolicyPage(props: {
-  activeTab: CustomerTab;
   canSubmit: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   formData: PolicyFormData;
@@ -6436,8 +6533,6 @@ function UploadPolicyPage(props: {
   productMatchLoading: boolean;
   productMatchMessage: string;
   productMatches: PolicyKnowledgeMatch[];
-  onBack: () => void;
-  onChangeTab: (tab: CustomerTab) => void;
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onGenerateAnalysis: () => void;
   onOcrTextChange: (value: string) => void;
@@ -6455,7 +6550,6 @@ function UploadPolicyPage(props: {
   uploadItem: UploadItem | null;
 }) {
   const {
-    activeTab,
     canSubmit,
     fileInputRef,
     formData,
@@ -6471,8 +6565,6 @@ function UploadPolicyPage(props: {
     productMatchLoading,
     productMatchMessage,
     productMatches,
-    onBack,
-    onChangeTab,
     onFileChange,
     onGenerateAnalysis,
     onOcrTextChange,
@@ -6587,7 +6679,7 @@ function UploadPolicyPage(props: {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto pb-44">
+      <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto pb-32">
         <section className="p-4">
           <div className="mb-3">
             <h2 className="text-lg font-bold">拍照自动识别</h2>
@@ -6829,36 +6921,25 @@ function UploadPolicyPage(props: {
         </form>
       </main>
 
-      <div className="pb-safe fixed bottom-0 left-0 right-0 z-50 border-t border-slate-100 bg-white p-4 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)]">
-        <p className="mb-3 text-center text-xs text-slate-500">确认信息后保存保单</p>
-        <div className="flex gap-3">
-          <button
-            onClick={onBack}
-            type="button"
-            className="h-12 flex-[0.8] rounded-xl border border-slate-200 bg-white text-sm font-bold text-slate-700 transition-transform active:scale-[0.98]"
-          >
-            取消
-          </button>
+      <div className="pb-safe fixed bottom-0 left-0 right-0 z-50 border-t border-slate-100 bg-white/95 px-3 pt-3 shadow-[0_-18px_34px_-26px_rgba(15,23,42,0.45)] backdrop-blur">
+        <div className="mx-auto flex w-full max-w-3xl gap-2">
           <button
             onClick={onGenerateAnalysis}
             disabled={loading || !canSubmit}
             type="button"
-            className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl border border-blue-100 bg-blue-50 px-2 text-sm font-bold text-blue-700 transition-transform active:scale-[0.98] disabled:opacity-60"
+            className="flex h-12 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-2xl border border-blue-100 bg-blue-50 px-3 text-sm font-black text-blue-700 transition hover:bg-blue-100 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
           >
             {loading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
-            生成责任
+            <span className="truncate">生成责任</span>
           </button>
           <button
             onClick={onSubmit}
             disabled={loading || !canSubmit}
-            className="flex h-12 flex-[1.25] items-center justify-center gap-2 rounded-xl bg-blue-500 px-2 text-sm font-bold text-white shadow-lg shadow-blue-500/30 transition-transform active:scale-[0.98] disabled:opacity-60"
+            className="flex h-12 min-w-0 flex-[1.35] items-center justify-center gap-2 rounded-2xl bg-blue-500 px-4 text-sm font-black text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
           >
             <CheckCircle2 size={20} />
-            {loading ? '保存中...' : '保存保单'}
+            <span className="truncate">{loading ? '保存中...' : '保存保单'}</span>
           </button>
-        </div>
-        <div className="mt-3">
-          <CustomerBottomTabs activeTab={activeTab} onChange={onChangeTab} onOpenReport={onOpenReport} fixed={false} />
         </div>
       </div>
     </div>

@@ -1,5 +1,17 @@
 import { useRef, useState } from 'react';
-import { Calculator, ChevronLeft, Download, RotateCcw } from 'lucide-react';
+import {
+  AlertTriangle,
+  Calculator,
+  ChevronLeft,
+  Download,
+  FileText,
+  RotateCcw,
+  ShieldCheck,
+  Target,
+  TrendingUp,
+  Users,
+  Wallet,
+} from 'lucide-react';
 import type {
   FamilyPlanningProfile,
   FamilyMemberProtectionReport,
@@ -32,6 +44,31 @@ type FamilyReportWithOptionalGaps = FamilyReport & {
 
 function formatMoney(value: number) {
   return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
+function insuranceProductKeyword(productName?: string | null) {
+  const original = String(productName || '').replace(/\s+/g, '').trim();
+  if (!original) return '未命名';
+
+  const withoutInsurer = original
+    .replace(/（[^）]*）|\([^)]*\)/g, '')
+    .replace(/^.*?(保险股份有限公司|保险有限责任公司|保险有限公司|人寿保险公司|保险公司)/u, '')
+    .replace(/^(新华保险|平安人寿|中国人寿|太平洋人寿|泰康人寿|太平人寿|友邦人寿)/u, '');
+  const keyword = [
+    /终身护理保险$/u,
+    /重大疾病保险$/u,
+    /意外伤害保险$/u,
+    /两全保险$/u,
+    /年金保险$/u,
+    /医疗保险$/u,
+    /终身寿险$/u,
+    /万能保险$/u,
+    /护理保险$/u,
+    /保险$/u,
+    /寿险$/u,
+  ].reduce((text, suffix) => text.replace(suffix, ''), withoutInsurer).trim();
+
+  return truncateText(keyword || original, 12);
 }
 
 function formatMoneyWithUnit(value: number) {
@@ -122,11 +159,11 @@ function ConditionSummary({ text }: { text?: string | number | null }) {
   const collapsed = summary !== raw;
 
   return (
-    <div className="max-w-[280px] leading-5">
+    <div className="min-w-0 max-w-full leading-5">
       <p className="break-words text-xs font-semibold text-slate-600">{summary}</p>
       {collapsed ? (
-        <details data-family-report-raw-note className="mt-1">
-          <summary className="cursor-pointer text-[11px] font-black text-[#0B72B9]">查看原文</summary>
+        <details data-family-report-raw-note className="mt-1 block">
+          <summary className="block cursor-pointer text-[11px] font-black leading-5 text-[#0B72B9]">查看原文</summary>
           <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-medium leading-5 text-slate-500 ring-1 ring-slate-100">
             {raw}
           </p>
@@ -152,8 +189,11 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-3 border-b border-[#D9E6F4] pb-5 last:border-b-0">
-      <h2 className="mb-3 text-base font-black text-[#0F172A]">{title}</h2>
+    <section className={`${reportSurfaceClassName} space-y-4 p-4 md:p-5`}>
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="h-7 w-1.5 shrink-0 rounded-full bg-[#0B72B9]" aria-hidden="true" />
+        <h2 className="family-report-heading min-w-0 break-words text-lg font-black leading-tight text-[#102033]">{title}</h2>
+      </div>
       {children}
     </section>
   );
@@ -161,14 +201,14 @@ function Section({
 
 function EmptyState({ text }: { text: string }) {
   return (
-    <div className="rounded-xl border border-dashed border-[#D9E6F4] bg-[#F8FBFF] px-4 py-6 text-center text-sm font-semibold text-[#7890AA]">
+    <div className="rounded-[18px] border border-dashed border-[#CBD7E1] bg-[#F8FAFC] px-4 py-6 text-center text-sm font-semibold text-[#72849A]">
       {text}
     </div>
   );
 }
 
 function TableWrap({ children }: { children: React.ReactNode }) {
-  return <div data-pdf-table-wrap className="overflow-x-auto">{children}</div>;
+  return <div data-pdf-table-wrap className="overflow-x-auto rounded-[18px] border border-[#E1E8EF] bg-white">{children}</div>;
 }
 
 type RadarSeries = FamilyReport['radar']['family'];
@@ -269,6 +309,59 @@ function radarAmountLiabilityTitle(detail: ReturnType<typeof radarAmountSourceDe
   return parts.join(' · ') || '已识别责任';
 }
 
+function RadarCalculationDetails({
+  series,
+  mode,
+}: {
+  series: RadarSeries;
+  mode: FamilyReport['radar']['mode'];
+}) {
+  const planningMode = mode === 'planning';
+
+  return (
+    <div className="mt-3 rounded-[18px] border border-[#E1E8EF] bg-[#F8FAFC] p-3">
+      <p className="mb-2 text-[11px] font-black text-[#72849A]">
+        {planningMode ? '先看金额计算方法，再按有效保障 / 系统估算目标计算' : '先看金额计算方法，再按有效金额开平方后对比，避免高额责任压低其他维度'}
+      </p>
+      <div className="grid gap-2 md:grid-cols-2">
+        {series.scores.map((score) => {
+          const amountDetails = radarAmountSourceDetails(score);
+          return (
+            <div key={score.key} className="min-w-0 rounded-[14px] border border-[#E1E8EF] bg-white px-3 py-2">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <p className="text-xs font-black text-[#102033]">{score.label}</p>
+                <p className="shrink-0 text-xs font-black text-[#0B72B9]">{planningMode ? (score.adequacyText || `${score.score}%`) : `${score.score}/100`}</p>
+              </div>
+              <div className="mb-1.5 rounded-xl bg-[#F8FAFC] px-2 py-1.5">
+                <p className="mb-1 text-[11px] font-black text-[#72849A]">金额计算方法</p>
+                {amountDetails.length ? (
+                  <div className="max-h-[260px] space-y-1 overflow-y-auto pr-1">
+                    {amountDetails.map((detail) => (
+                      <div key={`${detail.sourceKey || detail.policyId || detail.label}-${detail.liability}-${detail.amountText}`} className="min-w-0">
+                        <p className="break-words text-[11px] font-bold leading-4 text-[#102033]">{radarAmountPolicyTitle(detail)}</p>
+                        <p className="break-words text-[11px] font-semibold leading-4 text-[#72849A]">责任：{radarAmountLiabilityTitle(detail)}</p>
+                        <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{detail.calculationText}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{score.note}</p>
+                )}
+              </div>
+              {calculationRowsForScore(score, series, mode).map((row) => (
+                <div key={row.label} className="flex min-w-0 justify-between gap-2 py-0.5 text-[11px] font-semibold leading-4">
+                  <span className="shrink-0 text-[#72849A]">{row.label}</span>
+                  <span className="min-w-0 break-words text-right text-[#475569]">{row.value}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function profileValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
   const value = Number(profile[key] || 0);
   return value > 0 ? String(Number((value / 10000).toFixed(2))) : '';
@@ -286,18 +379,23 @@ function profileHasValue(profile: FamilyPlanningProfile) {
   return Object.values(profile).some((value) => Number(value || 0) > 0);
 }
 
-const thClassName = 'bg-[#0B72B9] px-3 py-2 text-left text-xs font-black text-white';
-const tdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
-const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
-const compactThClassName = 'bg-[#0B72B9] px-2 py-1 text-center text-xs font-black text-white';
-const compactTdClassName = 'whitespace-nowrap bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
+const thClassName = 'bg-blue-500 px-3 py-2.5 text-left text-xs font-black text-white';
+const tdClassName = 'whitespace-nowrap bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
+const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2.5 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
+const compactThClassName = 'bg-blue-500 px-2 py-1.5 text-center text-xs font-black text-white';
+const compactTdClassName = 'whitespace-nowrap bg-white px-2 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 
 function getFamilyAttentionItems(report: FamilyReport) {
+  const memberSeries = [
+    ...report.radar.members,
+    ...report.radar.hiddenMembers,
+  ];
+
   return [
     ...report.summary.attentionItems,
-    ...report.criticalIllness.members.flatMap((member) => member.attentionItems.map((item) => `${member.member}: ${item}`)),
-    ...report.accident.members.flatMap((member) => member.attentionItems.map((item) => `${member.member}: ${item}`)),
-    ...report.wealth.memberReports.flatMap((member) => member.attentionItems.map((item) => `${member.member}: ${item}`)),
+    ...memberSeries.flatMap((member) => member.scores
+      .filter((score) => score.coveragePresent === false)
+      .map((score) => `${member.name}: ${score.label}缺失`)),
   ];
 }
 
@@ -318,8 +416,15 @@ function AttentionSection({ attentionItems }: { attentionItems: string[] }) {
 
   return (
     <Section title="待关注事项">
-      <div className="space-y-1 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-700 ring-1 ring-amber-100">
-        {attentionItems.map((item, index) => <p key={`${item}-${index}`}>{item}</p>)}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {attentionItems.map((item, index) => (
+          <div key={`${item}-${index}`} className="flex min-w-0 items-center gap-2 rounded-[16px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-xs font-bold leading-5 text-[#9A4A16]">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#F97316] text-white">
+              <AlertTriangle size={12} />
+            </span>
+            <p className="min-w-0 break-words">{item}</p>
+          </div>
+        ))}
       </div>
     </Section>
   );
@@ -330,12 +435,12 @@ function OptionalResponsibilityGapSection({ gaps = [] }: { gaps?: OptionalRespon
 
   return (
     <Section title="已投保但未量化责任">
-      <div className="space-y-2">
+      <div className="grid gap-2 md:grid-cols-2">
         {gaps.map((gap, index) => (
-          <div key={`${gap.policyId}-${gap.liability}-${index}`} className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-800 ring-1 ring-amber-100">
-            <p className="font-black">{gap.member} · {gap.productName}</p>
-            <p>{gap.liability}</p>
-            <p>{gap.quantificationReason || '缺少可计算结构化指标'}</p>
+          <div key={`${gap.policyId}-${gap.liability}-${index}`} className="min-w-0 rounded-[16px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2.5 text-xs font-semibold leading-5 text-[#9A4A16]">
+            <p className="break-words font-black text-[#7C2D12]">{gap.member} · {gap.productName}</p>
+            <p className="mt-1 break-words">{gap.liability}</p>
+            <p className="mt-1 break-words text-[#B45309]">{gap.quantificationReason || '缺少可计算结构化指标'}</p>
           </div>
         ))}
       </div>
@@ -351,6 +456,36 @@ const planningFields: Array<{ key: keyof FamilyPlanningProfile; label: string }>
   { key: 'availableAssets', label: '可用资产' },
 ];
 
+const reportSurfaceClassName = 'rounded-[24px] border border-[#D7E2EA] bg-white shadow-[0_18px_48px_-36px_rgba(15,23,42,0.38)]';
+const reportMutedSurfaceClassName = 'rounded-[20px] border border-[#E1E8EF] bg-[#F7FAFC]';
+
+function metricIcon(label: string) {
+  if (/成员/u.test(label)) return <Users size={17} />;
+  if (/保单/u.test(label)) return <FileText size={17} />;
+  if (/保费|现金|财富/u.test(label)) return <Wallet size={17} />;
+  if (/保障|保额/u.test(label)) return <ShieldCheck size={17} />;
+  if (/关注/u.test(label)) return <AlertTriangle size={17} />;
+  return <TrendingUp size={17} />;
+}
+
+function MetricTile({ label, value, dark = false }: { label: string; value: string; dark?: boolean }) {
+  return (
+    <div className={`min-w-0 rounded-[18px] border px-2.5 py-2.5 md:px-3 md:py-3 ${
+      dark
+        ? 'border-white/25 bg-white/[0.16] text-white'
+        : 'border-[#E1EAF5] bg-[#F8FBFF] text-[#0F172A]'
+    }`}>
+      <div className={`mb-2 flex h-7 w-7 items-center justify-center rounded-xl md:h-8 md:w-8 ${
+        dark ? 'bg-white/18 text-white' : 'bg-blue-50 text-[#0B72B9]'
+      }`}>
+        {metricIcon(label)}
+      </div>
+      <p className={`family-report-kicker text-[11px] uppercase ${dark ? 'text-white/62' : 'text-[#72849A]'}`}>{label}</p>
+      <p className={`family-report-number mt-1 break-words text-base font-black leading-tight md:text-lg ${dark ? 'text-white' : 'text-[#0F172A]'}`}>{value}</p>
+    </div>
+  );
+}
+
 function FamilyPlanningProfilePanel({
   profile,
   onChange,
@@ -359,40 +494,71 @@ function FamilyPlanningProfilePanel({
   onChange: (profile: FamilyPlanningProfile) => void;
 }) {
   const enabled = profileHasValue(profile);
+  const [expanded, setExpanded] = useState(false);
 
   return (
-    <section className="no-print mx-4 mt-4 rounded-2xl bg-white p-3 ring-1 ring-[#D9E6F4]">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-xs font-black text-[#7890AA]">雷达模型</p>
-          <h2 className="text-base font-black text-[#0F172A]">{enabled ? '保障规划版' : '保额结构版'}</h2>
+    <section className="family-report-content no-print mt-4">
+      <div className={`${reportSurfaceClassName} overflow-hidden p-3 md:p-4`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-[#0B72B9]">
+              <Target size={19} />
+            </span>
+            <div className="min-w-0">
+              <p className="family-report-kicker text-[11px] uppercase text-[#72849A]">雷达模型</p>
+              <h2 className="family-report-heading break-words text-base font-black leading-tight text-[#102033]">{enabled ? '保障规划版' : '保额结构版'}</h2>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setExpanded((current) => !current)}
+              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-blue-500 px-3 text-xs font-black text-white active:bg-blue-600"
+              aria-expanded={expanded}
+              aria-label={expanded ? '收起保障目标' : '调整保障目标'}
+              title={expanded ? '收起保障目标' : '调整保障目标'}
+            >
+              <Target size={14} />
+              <span>{expanded ? '收起' : '调整目标'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange({})}
+              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-700 active:bg-blue-100"
+              aria-label="清空保障目标"
+              title="清空保障目标"
+            >
+              <RotateCcw size={14} />
+              <span>清空</span>
+            </button>
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={() => onChange({})}
-          className="flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-2 text-xs font-black text-slate-600 active:bg-slate-200"
-          aria-label="清空保障目标"
-          title="清空保障目标"
-        >
-          <RotateCcw size={14} />
-          <span>清空目标</span>
-        </button>
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-        {planningFields.map((field) => (
-          <label key={field.key} className="block rounded-xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
-            <span className="text-[11px] font-bold text-[#7890AA]">{field.label}(万元)</span>
-            <input
-              type="number"
-              min="0"
-              inputMode="decimal"
-              value={profileValueInWan(profile, field.key)}
-              onChange={(event) => onChange(profileWithWanValue(profile, field.key, event.target.value))}
-              className="mt-1 w-full bg-transparent text-sm font-black text-[#0F172A] outline-none"
-              placeholder="0"
-            />
-          </label>
-        ))}
+        <div className="family-report-goals-scroll mt-3 flex gap-2 overflow-x-auto pb-1 md:grid md:grid-cols-5 md:overflow-visible md:pb-0">
+          {planningFields.map((field) => (
+            <div key={field.key} className="min-w-[136px] rounded-[16px] border border-[#E1E8EF] bg-[#F8FAFC] px-3 py-2 md:min-w-0">
+              <p className="text-[11px] font-bold text-[#72849A]">{field.label}</p>
+              <p className="family-report-number mt-1 text-base font-black leading-tight text-[#102033]">{profileValueInWan(profile, field.key) || '0'}万</p>
+            </div>
+          ))}
+        </div>
+        {expanded ? (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            {planningFields.map((field) => (
+              <label key={field.key} className="block rounded-[16px] border border-[#D7E2EA] bg-white px-3 py-2.5">
+                <span className="text-[11px] font-bold text-[#72849A]">{field.label}(万元)</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="decimal"
+                  value={profileValueInWan(profile, field.key)}
+                  onChange={(event) => onChange(profileWithWanValue(profile, field.key, event.target.value))}
+                  className="mt-1 w-full bg-transparent text-sm font-black text-[#102033] outline-none"
+                  placeholder="0"
+                />
+              </label>
+            ))}
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -401,34 +567,42 @@ function FamilyPlanningProfilePanel({
 function ReportHero({ report, attentionItems }: { report: FamilyReport; attentionItems: string[] }) {
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const metrics = getFamilySummaryMetrics(report, attentionItems);
+  const headlineMetrics = metrics.slice(0, 3);
+  const secondaryMetrics = metrics.slice(3);
 
   return (
-    <section className="rounded-[24px] bg-gradient-to-br from-blue-600 via-sky-500 to-emerald-400 p-5 text-white shadow-[0_18px_42px_-22px_rgba(14,116,144,0.75)]">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-black uppercase text-white/70">Family Policy Report</p>
-          <h2 className="mt-2 text-2xl font-black leading-tight">家庭保障分析报告</h2>
-          <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-white/85">
+    <section className="overflow-hidden rounded-[28px] border border-[#7CC7F4] bg-gradient-to-br from-blue-600 via-sky-500 to-emerald-400 text-white shadow-[0_26px_70px_-42px_rgba(14,116,144,0.78)]">
+      <div className="grid gap-0 lg:grid-cols-[minmax(0,1.12fr)_minmax(340px,0.88fr)]">
+        <div className="relative min-w-0 p-5 md:p-7">
+          <div className="absolute inset-y-6 left-0 w-1 rounded-r-full bg-white/70" aria-hidden="true" />
+          <p className="family-report-kicker text-[11px] uppercase text-white/75">Family Policy Dossier</p>
+          <h2 className="family-report-heading mt-3 max-w-[720px] text-[30px] font-black leading-tight md:text-[40px]">家庭保障分析报告</h2>
+          <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-white/72">
             按家庭成员汇总重疾、意外、财富三大板块，并保留每张保单的责任、现金流和现金价值。
           </p>
+          <p className="family-report-kicker mt-5 text-[11px] uppercase text-white/48">全家总统计</p>
+          <div className="mt-2 grid grid-cols-3 gap-2 md:gap-3">
+            {headlineMetrics.map((metric) => <MetricTile key={metric.label} label={metric.label} value={metric.value} dark />)}
+          </div>
         </div>
-        <div className="rounded-2xl bg-white/15 px-3 py-2 text-right text-xs font-bold leading-5 text-white/80">
-          <span className="block">生成时间</span>
-          <span className="block text-white">{generatedAt}</span>
-        </div>
-      </div>
-      <div className="mt-5">
-        <p className="text-xs font-black text-white/70">全家总统计</p>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          {metrics.map((metric) => (
-            <div key={metric.label} className="min-w-0 rounded-2xl bg-white/15 px-3 py-3">
-              <p className="text-xs font-bold text-white/70">{metric.label}</p>
-              <p className="mt-1 break-words text-base font-black leading-tight text-white">{metric.value}</p>
+        <div className="min-w-0 border-t border-white/20 bg-white/[0.12] p-5 md:p-7 lg:border-l lg:border-t-0">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="family-report-kicker text-[11px] uppercase text-white/48">生成时间</p>
+              <p className="family-report-number mt-1 text-base font-black text-white">{generatedAt}</p>
             </div>
-          ))}
+            <div className={`rounded-[16px] px-3 py-2 text-right ${
+              attentionItems.length ? 'bg-[#FFF8EB] text-[#9A4A16]' : 'bg-blue-50 text-[#0B72B9]'
+            }`}>
+              <p className="text-[11px] font-black">待关注</p>
+              <p className="family-report-number text-lg font-black">{attentionItems.length}项</p>
+            </div>
+          </div>
+          <div className="mt-5 grid grid-cols-3 gap-2 md:gap-3 lg:grid-cols-1 xl:grid-cols-3">
+            {secondaryMetrics.map((metric) => <MetricTile key={metric.label} label={metric.label} value={metric.value} dark />)}
+          </div>
         </div>
       </div>
-      <FamilyRadarSection report={report} />
     </section>
   );
 }
@@ -516,38 +690,52 @@ function RadarChart({
   );
 }
 
-function FamilyRadarSection({ report }: { report: FamilyReport }) {
+export function FamilyRadarSection({ report }: { report: FamilyReport }) {
   const family = report.radar.family;
   const wealth = scoreByKey(family, 'wealth');
   const planningMode = report.radar.mode === 'planning';
+  const [calculationExpanded, setCalculationExpanded] = useState(false);
 
   return (
-    <div className="mt-5 rounded-2xl bg-white/15 p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-black text-white">{planningMode ? '全家保障充足率雷达' : '全家保额结构雷达'}</h3>
-        <span className="text-[11px] font-bold leading-4 text-white/75">
+    <Section title={planningMode ? '全家保障充足率雷达' : '全家保额结构雷达'}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-bold leading-5 text-[#72849A]">
           {planningMode ? '按当前有效保障/家庭目标绘制，超出部分单独显示。' : '按有效金额压缩比例绘制，避免高额责任压低其他维度。'}
-        </span>
+        </p>
+        <button
+          type="button"
+          onClick={() => setCalculationExpanded((current) => !current)}
+          className="flex items-center gap-1 rounded-full bg-[#EEF3F7] px-2 py-1 text-[11px] font-black text-[#42566B] active:bg-[#E1E8EF]"
+          aria-expanded={calculationExpanded}
+          aria-label="全家金额和雷达值怎么算"
+          title="金额计算方法和雷达值怎么算"
+        >
+          <Calculator size={13} />
+          <span>金额怎么算</span>
+        </button>
       </div>
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(280px,380px)_1fr]">
         <RadarChart dimensions={report.radar.dimensions} series={[family]} ariaLabel="全家保障均衡雷达" />
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2">
           {family.scores.map((score) => (
-            <div key={score.key} className="min-w-0 rounded-xl bg-white/15 px-3 py-2">
-              <p className="text-[11px] font-bold text-white/70">{score.label}</p>
-              <p className="mt-0.5 break-words text-sm font-black leading-tight text-white">{radarPrimaryValue(score, report.radar.mode)}</p>
-              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/75">{radarCardSummary(score, report.radar.mode)}</p>
+            <div key={score.key} className="min-w-0 rounded-[18px] border border-[#E1E8EF] bg-[#F8FAFC] px-3 py-3">
+              <p className="text-[11px] font-black uppercase text-[#72849A]">{score.label}</p>
+              <p className="mt-1 break-words text-lg font-black leading-tight text-[#102033]">{radarPrimaryValue(score, report.radar.mode)}</p>
+              <p className="mt-2 break-words text-[11px] font-semibold leading-4 text-[#64748B]">{radarCardSummary(score, report.radar.mode)}</p>
             </div>
           ))}
           {wealth ? (
-            <div className="min-w-0 rounded-xl bg-white/15 px-3 py-2 sm:col-span-2">
-              <p className="text-[11px] font-bold text-white/70">财富拆分</p>
-              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-white/80">{wealth.note}</p>
+            <div className="min-w-0 rounded-[18px] border border-[#D9E6F4] bg-[#F8FBFF] px-3 py-3 sm:col-span-2">
+              <p className="text-[11px] font-black uppercase text-[#0B72B9]">财富拆分</p>
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-[#425570]">{wealth.note}</p>
             </div>
           ) : null}
         </div>
       </div>
-    </div>
+      {calculationExpanded ? (
+        <RadarCalculationDetails series={family} mode={report.radar.mode} />
+      ) : null}
+    </Section>
   );
 }
 
@@ -559,26 +747,26 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
 
   return (
     <Section title={planningMode ? '个人保障估算雷达' : '个人保额结构雷达'}>
-      <div className="rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
-        <p className="mb-3 text-xs font-bold leading-5 text-[#7890AA]">
+      <div className={`${reportMutedSurfaceClassName} p-3 md:p-4`}>
+        <p className="mb-3 text-xs font-bold leading-5 text-[#64748B]">
           {planningMode ? '按家庭目标自动分摊到成员，仅供初步估算；未要求客户录入个人收入、负债或资产。' : '客户未录入家庭目标时，按有效金额压缩比例展示个人结构，非保障充足率。'}
         </p>
         <div className="grid gap-3 lg:grid-cols-2">
           {members.map((member, index) => (
-            <article key={member.name} className="min-w-0 rounded-xl bg-white p-3 ring-1 ring-[#E1EAF5]">
+            <article key={member.name} className="min-w-0 rounded-[20px] border border-[#E1E8EF] bg-white p-3 shadow-[0_14px_34px_-32px_rgba(15,23,42,0.34)]">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="break-words text-sm font-black leading-5 text-[#0F172A]">{member.name}</p>
-                  <p className="mt-0.5 text-[11px] font-bold text-[#7890AA]">{member.roleLabel || '成员'} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
+                  <p className="break-words text-base font-black leading-5 text-[#102033]">{member.name}</p>
+                  <p className="mt-1 text-[11px] font-bold text-[#72849A]">{member.roleLabel || '成员'} · 合计 {formatMoneyWithUnit(member.totalAmount)}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-600">
+                  <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-[#0B72B9]">
                     {planningMode ? '系统估算' : '结构展示'}
                   </span>
                   <button
                     type="button"
                     onClick={() => setExpandedCalculations((current) => ({ ...current, [member.name]: !current[member.name] }))}
-                    className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600 active:bg-slate-200"
+                    className="flex items-center gap-1 rounded-full bg-[#EEF3F7] px-2 py-1 text-[11px] font-black text-[#42566B] active:bg-[#E1E8EF]"
                     aria-expanded={Boolean(expandedCalculations[member.name])}
                     aria-label={`${member.name}金额和雷达值怎么算`}
                     title="金额来源和雷达值怎么算"
@@ -590,12 +778,12 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
               </div>
               <div className="grid gap-3 xl:grid-cols-[minmax(0,220px)_1fr]">
                 <RadarChart dimensions={report.radar.dimensions} series={[member]} ariaLabel={`${member.name}保障雷达`} framed={false} />
-                <div className="divide-y divide-[#E1EAF5]">
+                <div className="divide-y divide-[#E1E8EF]">
                   {member.scores.map((score) => (
                     <div key={score.key} className="flex min-w-0 items-start justify-between gap-3 py-2 first:pt-0 last:pb-0">
                       <div className="min-w-0">
-                        <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
-                        <p className="mt-0.5 break-words text-[11px] font-semibold leading-4 text-[#7890AA]">{radarCardSummary(score, report.radar.mode)}</p>
+                        <p className="text-xs font-black text-[#102033]">{score.label}</p>
+                        <p className="mt-0.5 break-words text-[11px] font-semibold leading-4 text-[#72849A]">{radarCardSummary(score, report.radar.mode)}</p>
                       </div>
                       <p className="shrink-0 text-right text-sm font-black text-[#0B72B9]">{radarPrimaryValue(score, report.radar.mode)}</p>
                     </div>
@@ -603,59 +791,15 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                 </div>
               </div>
               {expandedCalculations[member.name] ? (
-                <div className="mt-3 rounded-xl bg-[#F8FBFF] p-3 ring-1 ring-[#E1EAF5]">
-                  <p className="mb-2 text-[11px] font-black text-[#7890AA]">
-                    {planningMode ? '先看金额来源，再按有效保障 / 系统估算目标计算' : '先看金额来源，再按有效金额开平方后对比，避免高额责任压低其他维度'}
-                  </p>
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {member.scores.map((score) => {
-                      const amountDetails = radarAmountSourceDetails(score);
-                      const visibleDetails = amountDetails.slice(0, 3);
-                      const hiddenDetailCount = amountDetails.length - visibleDetails.length;
-                      return (
-                        <div key={score.key} className="min-w-0 rounded-lg bg-white px-3 py-2 ring-1 ring-[#E1EAF5]">
-                          <div className="mb-1 flex items-center justify-between gap-2">
-                            <p className="text-xs font-black text-[#0F172A]">{score.label}</p>
-                            <p className="shrink-0 text-xs font-black text-[#0B72B9]">{planningMode ? (score.adequacyText || `${score.score}%`) : `${score.score}/100`}</p>
-                          </div>
-                          <div className="mb-1.5 rounded-md bg-slate-50 px-2 py-1.5">
-                            <p className="mb-1 text-[11px] font-black text-[#7890AA]">金额来源</p>
-                            {visibleDetails.length ? (
-                              <div className="space-y-1">
-                                {visibleDetails.map((detail) => (
-                                  <div key={`${detail.sourceKey || detail.policyId || detail.label}-${detail.liability}-${detail.amountText}`} className="min-w-0">
-                                    <p className="break-words text-[11px] font-bold leading-4 text-[#0F172A]">{radarAmountPolicyTitle(detail)}</p>
-                                    <p className="break-words text-[11px] font-semibold leading-4 text-[#7890AA]">责任：{radarAmountLiabilityTitle(detail)}</p>
-                                    <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{detail.calculationText}</p>
-                                  </div>
-                                ))}
-                                {hiddenDetailCount > 0 ? (
-                                  <p className="text-[11px] font-semibold text-[#7890AA]">另有{hiddenDetailCount}项已计入合计</p>
-                                ) : null}
-                              </div>
-                            ) : (
-                              <p className="break-words text-[11px] font-semibold leading-4 text-[#475569]">{score.note}</p>
-                            )}
-                          </div>
-                          {calculationRowsForScore(score, member, report.radar.mode).map((row) => (
-                            <div key={row.label} className="flex min-w-0 justify-between gap-2 py-0.5 text-[11px] font-semibold leading-4">
-                              <span className="shrink-0 text-[#7890AA]">{row.label}</span>
-                              <span className="min-w-0 break-words text-right text-[#475569]">{row.value}</span>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                <RadarCalculationDetails series={member} mode={report.radar.mode} />
               ) : null}
               {!planningMode && member.notes.length ? (
-                <p className="mt-3 break-words rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700">{member.notes.join('；')}</p>
+                <p className="mt-3 break-words rounded-[14px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-4 text-[#9A4A16]">{member.notes.join('；')}</p>
               ) : null}
             </article>
           ))}
           {report.radar.hiddenMembers.length ? (
-            <div className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-4 text-amber-700 ring-1 ring-amber-100 lg:col-span-2">
+            <div className="rounded-[16px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-4 text-[#9A4A16] lg:col-span-2">
               未展示成员: {report.radar.hiddenMembers.map((member) => `${member.name}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
             </div>
           ) : null}
@@ -673,20 +817,20 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
           <table className="min-w-full border-separate border-spacing-0 text-left">
             <thead>
               <tr>
-                <th className={`${thClassName} rounded-tl-xl`}>被保人</th>
+                <th className={`${thClassName} rounded-tl-[18px]`}>被保人</th>
                 <th className={thClassName}>保单/产品</th>
                 <th className={thClassName}>类型</th>
                 <th className={`${thClassName} text-right`}>年交保费</th>
                 <th className={thClassName}>保障/保额</th>
                 <th className={`${thClassName} text-right`}>现金价值</th>
-                <th className={`${thClassName} rounded-tr-xl`}>数据状态</th>
+                <th className={`${thClassName} rounded-tr-[18px]`}>数据状态</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.policyId}>
                   <td className={tdClassName}>{row.member}</td>
-                  <td className="min-w-[220px] bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]">
+                  <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
                     <span className="block font-black text-slate-900">{emptyText(row.productName)}</span>
                     <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{emptyText(row.company)}</span>
                   </td>
@@ -719,10 +863,10 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
       {groups.size ? (
         <div className="space-y-3">
           {Array.from(groups, ([member, policies]) => (
-            <article key={member} className="rounded-xl border border-[#D9E6F4] bg-[#F8FBFF] p-3">
+            <article key={member} className={`${reportMutedSurfaceClassName} p-3`}>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-black text-[#0F172A]">{member}</h3>
-                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-[#1152D4] ring-1 ring-[#D9E6F4]">
+                <h3 className="text-sm font-black text-[#102033]">{member}</h3>
+                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-[#0B72B9] ring-1 ring-[#D7E2EA]">
                   {policies.length}张保单
                 </span>
               </div>
@@ -730,7 +874,7 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
                 <table className="min-w-full border-separate border-spacing-0 text-left">
                   <thead>
                     <tr>
-                      <th className={`${thClassName} rounded-tl-xl`}>保险公司/保单号</th>
+                      <th className={`${thClassName} rounded-tl-[18px]`}>保险公司/保单号</th>
                       <th className={thClassName}>险种名称</th>
                       <th className={`${thClassName} text-right`}>保费(元)</th>
                       <th className={thClassName}>交费期</th>
@@ -738,19 +882,19 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
                       <th className={thClassName}>生效日期</th>
                       <th className={`${thClassName} text-right`}>保额(元)</th>
                       <th className={thClassName}>身故受益人</th>
-                      <th className={`${thClassName} rounded-tr-xl text-right`}>期交总保费</th>
+                      <th className={`${thClassName} rounded-tr-[18px] text-right`}>期交总保费</th>
                     </tr>
                   </thead>
                   <tbody>
                     {policies.map((row) => (
                       <tr key={row.policyId}>
-                        <td className="min-w-[170px] bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]">
+                        <td className="min-w-[170px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
                           <span className="block">{emptyText(row.company)}</span>
                           {row.policyNumber ? (
                             <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{row.policyNumber}</span>
                           ) : null}
                         </td>
-                        <td className="min-w-[200px] bg-white px-3 py-2 text-xs font-black text-slate-800 ring-1 ring-[#E1EAF5]">{emptyText(row.productName)}</td>
+                        <td className="min-w-[200px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-black text-slate-800">{emptyText(row.productName)}</td>
                         <td className={`${tdClassName} text-right`}>{formatMoney(row.annualPremium)}</td>
                         <td className={tdClassName}>{emptyText(row.paymentPeriod)}</td>
                         <td className={tdClassName}>{emptyText(row.coveragePeriod)}</td>
@@ -775,11 +919,11 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
 
 function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionReport }) {
   return (
-    <article className="rounded-xl border border-[#D9E6F4] bg-[#F8FBFF] p-3">
+    <article className={`${reportMutedSurfaceClassName} p-3`}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-black text-[#0F172A]">{member.member}</h3>
+        <h3 className="text-sm font-black text-[#102033]">{member.member}</h3>
         {member.attentionItems.length ? (
-          <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-100">
+          <span className="rounded-full bg-[#FFF8EB] px-2 py-1 text-[11px] font-bold text-[#9A4A16] ring-1 ring-[#F3D9B4]">
             待关注 {member.attentionItems.length}
           </span>
         ) : null}
@@ -787,13 +931,13 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
       {member.attentionItems.length ? (
         <div className="mb-2 flex flex-wrap gap-1">
           {member.attentionItems.map((item) => (
-            <span key={item} className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-100">{item}</span>
+            <span key={item} className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-[#9A4A16] ring-1 ring-[#F3D9B4]">{item}</span>
           ))}
         </div>
       ) : null}
       <div data-report-export-cards className="space-y-2 md:hidden">
         {member.rows.map((row) => (
-          <div key={row.key} className="rounded-xl bg-white p-3 ring-1 ring-[#E1EAF5]">
+          <div key={row.key} className="rounded-[18px] border border-[#E1E8EF] bg-white p-3">
             <div className="flex items-start justify-between gap-3">
               <h4 className="min-w-0 break-words text-sm font-black leading-5 text-[#176B94]">{row.label}</h4>
               <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${statusClassName(row.status)}`}>
@@ -801,22 +945,25 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
               </span>
             </div>
             <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] leading-5">
-              <div className="rounded-lg bg-[#F8FBFF] px-2 py-1.5">
-                <p className="font-bold text-[#7890AA]">金额/比例</p>
+              <div className="rounded-xl bg-[#F8FAFC] px-2 py-1.5">
+                <p className="font-bold text-[#72849A]">金额/比例</p>
                 <p className="mt-0.5 break-words font-black text-slate-800">{emptyText(row.amountText)}</p>
               </div>
-              <div className="rounded-lg bg-[#F8FBFF] px-2 py-1.5">
-                <p className="font-bold text-[#7890AA]">次数/方式</p>
+              <div className="rounded-xl bg-[#F8FAFC] px-2 py-1.5">
+                <p className="font-bold text-[#72849A]">次数/方式</p>
                 <p className="mt-0.5 break-words font-black text-slate-800">{emptyText(row.countText)}</p>
               </div>
             </div>
-            <div className="mt-2 rounded-lg bg-[#F8FBFF] px-2 py-1.5">
-              <p data-report-canvas-skip className="mb-0.5 text-[11px] font-bold text-[#7890AA]">条件/说明</p>
+            <div className="mt-2 rounded-xl bg-[#F8FAFC] px-2 py-1.5">
+              <p data-report-canvas-skip className="mb-0.5 text-[11px] font-bold text-[#72849A]">条件/说明</p>
               <ConditionSummary text={row.conditionText} />
             </div>
-            <p data-report-canvas-skip className="mt-2 break-words text-[11px] font-medium leading-5 text-slate-400">
-              来源: {truncateText(sourcePolicyText(row), 42)}
-            </p>
+            <div data-report-canvas-skip className="mt-3 border-t border-[#E1E8EF] pt-2">
+              <p className="text-[11px] font-bold leading-4 text-[#72849A]">来源保单</p>
+              <p className="mt-1 break-words text-[11px] font-medium leading-5 text-slate-500">
+                {truncateText(sourcePolicyText(row), 42)}
+              </p>
+            </div>
           </div>
         ))}
       </div>
@@ -825,12 +972,12 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
         <table className="min-w-full border-separate border-spacing-0 text-left">
           <thead>
             <tr>
-              <th className={`${thClassName} rounded-tl-xl`}>责任颗粒度</th>
+              <th className={`${thClassName} rounded-tl-[18px]`}>责任颗粒度</th>
               <th className={thClassName}>金额/比例</th>
               <th className={thClassName}>次数/方式</th>
               <th className={thClassName}>状态</th>
               <th className={thClassName}>条件/说明</th>
-              <th className={`${thClassName} rounded-tr-xl`}>来源保单</th>
+              <th className={`${thClassName} rounded-tr-[18px]`}>来源保单</th>
             </tr>
           </thead>
           <tbody>
@@ -844,10 +991,10 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
                     {statusLabel(row.status)}
                   </span>
                 </td>
-                <td className="max-w-[300px] bg-white px-3 py-2 align-top text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]">
+                <td className="max-w-[300px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium text-slate-500">
                   <ConditionSummary text={row.conditionText} />
                 </td>
-                <td className="max-w-[240px] bg-white px-3 py-2 align-top text-xs font-medium leading-5 text-slate-500 ring-1 ring-[#E1EAF5]">
+                <td className="max-w-[240px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium leading-5 text-slate-500">
                   {truncateText(sourcePolicyText(row), 56)}
                 </td>
               </tr>
@@ -874,20 +1021,39 @@ function ProtectionSection({ title, members }: { title: string; members: FamilyM
   );
 }
 
-type CashValueTrendPoint = FamilyWealthPolicyReport['cashValueRows'][number] & {
+type CashValueTrendPoint = {
   xValue: number;
   xLabel: string;
+  cashValue: number;
+  policyYear?: number;
 };
 
 type CashValueTrendSeries = {
   id: string;
+  kind: 'policy' | 'aggregate';
   label: string;
   meta: string;
   color: string;
+  strokeDasharray?: string;
+  strokeWidth?: number;
   rows: CashValueTrendPoint[];
 };
 
-const cashValueTrendColors = ['#0F766E', '#2563EB', '#D97706', '#BE123C', '#7C3AED', '#0891B2', '#65A30D', '#C2410C'];
+const cashValueTrendColors = ['#1D4ED8', '#BE123C', '#7C3AED', '#0E7490', '#B45309', '#A21CAF', '#4338CA', '#64748B'];
+
+type CashValueAggregateTrendKey = keyof Pick<FamilyWealthAggregateRow, 'payoutInflow' | 'cumulativePayoutInflow'>;
+
+const cashValueAggregateTrendSeriesConfig: Array<{
+  key: CashValueAggregateTrendKey;
+  label: string;
+  meta: string;
+  color: string;
+  strokeDasharray?: string;
+  strokeWidth?: number;
+}> = [
+  { key: 'payoutInflow', label: '现金流', meta: '当年领取现金流', color: '#EA580C', strokeWidth: 1.2 },
+  { key: 'cumulativePayoutInflow', label: '累计现金流', meta: '累计领取现金流', color: '#0F766E', strokeDasharray: '6 5', strokeWidth: 1.2 },
+];
 
 function cashValueChartXValue(row: FamilyWealthPolicyReport['cashValueRows'][number]) {
   return typeof row.cashValueTime === 'number' && Number.isFinite(row.cashValueTime) ? row.cashValueTime : null;
@@ -904,10 +1070,10 @@ function formatCashValueTimeTick(value: number) {
   return `${date.getUTCFullYear()}.${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-function buildCashValueTrendSeries(report: FamilyReport): CashValueTrendSeries[] {
+function buildPolicyCashValueTrendSeries(report: FamilyReport): CashValueTrendSeries[] {
   return report.wealth.memberReports
     .flatMap((member) => member.policies.map((policy) => ({ member: member.member, policy })))
-    .map(({ member, policy }, index) => {
+    .flatMap(({ member, policy }, index) => {
       const rows = policy.cashValueRows
         .filter((row) => Number.isFinite(row.cashValue) && cashValueChartXValue(row) !== null)
         .map((row) => ({
@@ -916,24 +1082,58 @@ function buildCashValueTrendSeries(report: FamilyReport): CashValueTrendSeries[]
           xLabel: cashValueChartXLabel(row),
         }))
         .sort((a, b) => a.xValue - b.xValue);
-      if (!rows.length) return null;
+      if (!rows.length) return [];
 
-      return {
+      return [{
         id: `${policy.policyId}-${member}`,
+        kind: 'policy' as const,
         label: compactText(policy.productName) || '未命名产品',
         meta: [member, compactText(policy.company)].filter(Boolean).join(' · '),
         color: cashValueTrendColors[index % cashValueTrendColors.length],
         rows,
-      };
-    })
-    .filter((series): series is CashValueTrendSeries => Boolean(series));
+      }];
+    });
+}
+
+function aggregateCashValueChartXValue(row: FamilyWealthAggregateRow) {
+  return Date.UTC(row.year, 11, 31);
+}
+
+function buildAggregateCashValueTrendSeries(rows: FamilyWealthAggregateRow[]): CashValueTrendSeries[] {
+  const sortedRows = [...rows]
+    .filter((row) => Number.isFinite(row.year))
+    .sort((a, b) => a.year - b.year);
+
+  return cashValueAggregateTrendSeriesConfig.map((series) => ({
+    id: `aggregate-${series.key}`,
+    kind: 'aggregate' as const,
+    label: series.label,
+    meta: series.meta,
+    color: series.color,
+    strokeDasharray: series.strokeDasharray,
+    strokeWidth: series.strokeWidth,
+    rows: sortedRows.map((row) => ({
+      xValue: aggregateCashValueChartXValue(row),
+      xLabel: `${row.year}年`,
+      cashValue: Math.max(0, Number(row[series.key] || 0)),
+      policyYear: row.year,
+    })),
+  })).filter((series) => series.rows.length);
+}
+
+function buildCashValueTrendSeries(report: FamilyReport): CashValueTrendSeries[] {
+  return [
+    ...buildPolicyCashValueTrendSeries(report),
+    ...buildAggregateCashValueTrendSeries(report.wealth.aggregateRows),
+  ];
 }
 
 function niceCashValueCeiling(value: number) {
   if (!Number.isFinite(value) || value <= 0) return 1;
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  const scaled = value / magnitude;
-  const factor = scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+  const paddedValue = value * 1.08;
+  const magnitude = 10 ** Math.floor(Math.log10(paddedValue));
+  const scaled = paddedValue / magnitude;
+  const factor = [1, 1.2, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 8, 10].find((step) => scaled <= step) ?? 10;
   return factor * magnitude;
 }
 
@@ -941,42 +1141,136 @@ function uniqueTicks(values: number[]) {
   return Array.from(new Set(values.filter((value) => Number.isFinite(value)))).sort((a, b) => a - b);
 }
 
+function maxCashValue(points: CashValueTrendPoint[]) {
+  if (!points.length) return 0;
+  return Math.max(0, ...points.map((point) => Number(point.cashValue || 0)).filter((value) => Number.isFinite(value)));
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function cashValuePointYear(point: CashValueTrendPoint) {
+  return new Date(point.xValue).getUTCFullYear();
+}
+
 function CashValueTrendChart({ report }: { report: FamilyReport }) {
   const series = buildCashValueTrendSeries(report);
+  const policySeries = series.filter((item) => item.kind === 'policy');
+  const [hiddenCashValueSeriesIds, setHiddenCashValueSeriesIds] = useState<Set<string>>(() => new Set());
+  const [hoverCashValuePoint, setHoverCashValuePoint] = useState<{ x: number; y: number } | null>(null);
   if (!series.length) return <EmptyState text="暂无现金价值趋势数据" />;
 
+  const activeSeries = series.filter((item) => !hiddenCashValueSeriesIds.has(item.id));
   const width = 760;
   const height = 310;
   const paddingLeft = 74;
-  const paddingRight = 28;
+  const paddingRight = 56;
   const paddingTop = 30;
   const paddingBottom = 48;
   const plotWidth = width - paddingLeft - paddingRight;
   const plotHeight = height - paddingTop - paddingBottom;
   const allPoints = series.flatMap((item) => item.rows);
+  const activePoints = activeSeries.flatMap((item) => item.rows);
+  const activePolicyPoints = activeSeries.filter((item) => item.kind === 'policy').flatMap((item) => item.rows);
+  const activeAggregatePoints = activeSeries.filter((item) => item.kind === 'aggregate').flatMap((item) => item.rows);
+  const visibleScalePoints = activePoints.length ? activePoints : allPoints;
+  const policyScalePoints = activePolicyPoints.length ? activePolicyPoints : visibleScalePoints;
+  const policyYMax = niceCashValueCeiling(maxCashValue(policyScalePoints));
+  const aggregateYMax = niceCashValueCeiling(maxCashValue(activeAggregatePoints));
+  const useCashflowAxis = activePolicyPoints.length > 0
+    && activeAggregatePoints.length > 0
+    && aggregateYMax > policyYMax * 1.45;
+  const primaryYMax = useCashflowAxis ? policyYMax : niceCashValueCeiling(maxCashValue(visibleScalePoints));
+  const secondaryYMax = Math.max(1, aggregateYMax);
   const xMin = Math.min(...allPoints.map((point) => point.xValue));
   const xMax = Math.max(...allPoints.map((point) => point.xValue));
   const xRange = Math.max(1, xMax - xMin);
-  const yMax = niceCashValueCeiling(Math.max(...allPoints.map((point) => point.cashValue)));
   const xFor = (value: number) => paddingLeft + ((value - xMin) / xRange) * plotWidth;
-  const yFor = (value: number) => paddingTop + plotHeight - (Math.max(0, value) / yMax) * plotHeight;
-  const yTicks = [yMax, yMax / 2, 0];
+  const primaryYFor = (value: number) => paddingTop + plotHeight - (Math.max(0, value) / primaryYMax) * plotHeight;
+  const secondaryYFor = (value: number) => paddingTop + plotHeight - (Math.max(0, value) / secondaryYMax) * plotHeight;
+  const yForSeries = (item: CashValueTrendSeries, value: number) => (
+    useCashflowAxis && item.kind === 'aggregate' ? secondaryYFor(value) : primaryYFor(value)
+  );
+  const yTicks = [primaryYMax, primaryYMax / 2, 0];
+  const secondaryYTicks = [secondaryYMax, secondaryYMax / 2, 0];
   const xTicks = uniqueTicks([xMin, Math.round((xMin + xMax) / 2), xMax]);
   const seriesRanges = series.map((item) => ({
     first: item.rows[0],
     last: item.rows[item.rows.length - 1],
   }));
+  const hoverXValue = hoverCashValuePoint
+    ? xMin + ((hoverCashValuePoint.x - paddingLeft) / plotWidth) * xRange
+    : null;
+  const hoverPrimaryYValue = hoverCashValuePoint
+    ? Math.max(0, ((paddingTop + plotHeight - hoverCashValuePoint.y) / plotHeight) * primaryYMax)
+    : 0;
+  const hoverSecondaryYValue = hoverCashValuePoint
+    ? Math.max(0, ((paddingTop + plotHeight - hoverCashValuePoint.y) / plotHeight) * secondaryYMax)
+    : 0;
+  const hoverYears = uniqueTicks(activePoints.map(cashValuePointYear));
+  const hoverYear = hoverXValue !== null && hoverYears.length
+    ? hoverYears.reduce((nearest, year) => {
+      const currentDistance = Math.abs(Date.UTC(year, 6, 1) - hoverXValue);
+      const nearestDistance = Math.abs(Date.UTC(nearest, 6, 1) - hoverXValue);
+      return currentDistance < nearestDistance ? year : nearest;
+    }, hoverYears[0])
+    : null;
+  const hoverItems = hoverYear === null || hoverXValue === null
+    ? []
+    : activeSeries
+      .map((item) => {
+        const sameYearRows = item.rows.filter((point) => cashValuePointYear(point) === hoverYear);
+        if (!sameYearRows.length) return null;
+        const point = sameYearRows.reduce((nearest, row) => (
+          Math.abs(row.xValue - hoverXValue) < Math.abs(nearest.xValue - hoverXValue) ? row : nearest
+        ), sameYearRows[0]);
+        return {
+          id: item.id,
+          label: item.label,
+          color: item.color,
+          value: point.cashValue,
+          xLabel: point.xLabel,
+          x: xFor(point.xValue),
+          y: yForSeries(item, point.cashValue),
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const hoverTooltipWidth = 276;
+  const hoverTooltipHeight = 58 + hoverItems.length * 18;
+  const hoverTooltipX = hoverCashValuePoint
+    ? clampNumber(
+      hoverCashValuePoint.x > paddingLeft + plotWidth - hoverTooltipWidth - 12
+        ? hoverCashValuePoint.x - hoverTooltipWidth - 12
+        : hoverCashValuePoint.x + 12,
+      paddingLeft + 8,
+      width - paddingRight - hoverTooltipWidth - 8,
+    )
+    : 0;
+  const hoverTooltipY = hoverCashValuePoint
+    ? clampNumber(hoverCashValuePoint.y - 34, paddingTop + 8, paddingTop + plotHeight - hoverTooltipHeight - 8)
+    : 0;
+
+  const updateHoverCashValuePoint = (event: React.PointerEvent<SVGSVGElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const nextX = ((event.clientX - rect.left) / Math.max(1, rect.width)) * width;
+    const nextY = ((event.clientY - rect.top) / Math.max(1, rect.height)) * height;
+    setHoverCashValuePoint({
+      x: clampNumber(nextX, paddingLeft, width - paddingRight),
+      y: clampNumber(nextY, paddingTop, paddingTop + plotHeight),
+    });
+  };
 
   return (
-    <article className="overflow-hidden rounded-2xl border border-[#D7E4F2] bg-white p-4 shadow-[0_18px_45px_-30px_rgba(15,23,42,0.28)]">
+    <article className="overflow-hidden rounded-[22px] border border-[#D7E2EA] bg-white p-4 shadow-[0_18px_45px_-34px_rgba(15,23,42,0.36)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[#0F766E]">Cash Value Timeline</p>
-          <h3 className="mt-1 text-base font-black text-[#0F172A]">现金价值趋势</h3>
+          <p className="text-[11px] font-black uppercase text-[#0B72B9]">Cash Value Timeline</p>
+          <h3 className="mt-1 text-base font-black text-[#102033]">现金价值趋势</h3>
         </div>
-        <div className="rounded-xl bg-[#F2F7F7] px-3 py-2 text-right ring-1 ring-[#D7E9E7]">
+        <div className="rounded-[16px] bg-blue-50 px-3 py-2 text-right ring-1 ring-[#D9E6F4]">
           <p className="text-[11px] font-bold text-[#64748B]">产品数</p>
-          <p className="text-sm font-black text-[#0F766E]">{series.length}款</p>
+          <p className="text-sm font-black text-[#0B72B9]">{policySeries.length}款</p>
         </div>
       </div>
 
@@ -986,12 +1280,25 @@ function CashValueTrendChart({ report }: { report: FamilyReport }) {
           data-cash-value-trend-chart
           viewBox={`0 0 ${width} ${height}`}
           role="img"
-          aria-label="现金价值趋势对比图"
+          aria-label="现金价值与现金流趋势对比图"
+          style={{ touchAction: 'none' }}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            updateHoverCashValuePoint(event);
+          }}
+          onPointerMove={updateHoverCashValuePoint}
+          onPointerLeave={() => setHoverCashValuePoint(null)}
+          onPointerCancel={() => setHoverCashValuePoint(null)}
+          onPointerUp={(event) => {
+            if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+          }}
         >
-          <rect x="0" y="0" width={width} height={height} rx="18" fill="#F8FBFF" />
+          <rect x="0" y="0" width={width} height={height} rx="18" fill="#F8FAFC" />
           <rect x={paddingLeft} y={paddingTop} width={plotWidth} height={plotHeight} rx="10" fill="#FFFFFF" />
           {yTicks.map((tick) => {
-            const y = yFor(tick);
+            const y = primaryYFor(tick);
             return (
               <g key={`y-${tick}`}>
                 <line x1={paddingLeft} x2={width - paddingRight} y1={y} y2={y} stroke="#DDE7F1" strokeDasharray="5 6" />
@@ -1001,6 +1308,16 @@ function CashValueTrendChart({ report }: { report: FamilyReport }) {
               </g>
             );
           })}
+          {useCashflowAxis ? secondaryYTicks.map((tick) => {
+            const y = secondaryYFor(tick);
+            return (
+              <g key={`cashflow-y-${tick}`}>
+                <text x={width - paddingRight + 10} y={y + 4} textAnchor="start" fontSize="10" fontWeight="800" fill="#0F766E">
+                  {formatCashValueAxis(tick)}
+                </text>
+              </g>
+            );
+          }) : null}
           {xTicks.map((tick) => {
             const x = xFor(tick);
             return (
@@ -1013,66 +1330,156 @@ function CashValueTrendChart({ report }: { report: FamilyReport }) {
             );
           })}
           <line x1={paddingLeft} x2={paddingLeft} y1={paddingTop} y2={paddingTop + plotHeight} stroke="#94A3B8" strokeWidth="1.2" />
+          {useCashflowAxis ? <line x1={width - paddingRight} x2={width - paddingRight} y1={paddingTop} y2={paddingTop + plotHeight} stroke="#99D6CC" strokeWidth="1" /> : null}
           <line x1={paddingLeft} x2={width - paddingRight} y1={paddingTop + plotHeight} y2={paddingTop + plotHeight} stroke="#94A3B8" strokeWidth="1.2" />
           <text x={paddingLeft + plotWidth / 2} y={height - 4} textAnchor="middle" fontSize="12" fontWeight="800" fill="#334155">时间</text>
           <text x="18" y={paddingTop + plotHeight / 2} textAnchor="middle" transform={`rotate(-90 18 ${paddingTop + plotHeight / 2})`} fontSize="12" fontWeight="800" fill="#334155">
-            现金价值
+            {useCashflowAxis ? '保单现价' : '金额'}
           </text>
+          {useCashflowAxis ? (
+            <text x={width - 14} y={paddingTop + plotHeight / 2} textAnchor="middle" transform={`rotate(90 ${width - 14} ${paddingTop + plotHeight / 2})`} fontSize="11" fontWeight="900" fill="#0F766E">
+              现金流
+            </text>
+          ) : null}
 
-          {series.map((item) => {
+          {activeSeries.map((item) => {
             const path = item.rows
-              .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(point.xValue).toFixed(1)} ${yFor(point.cashValue).toFixed(1)}`)
+              .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(point.xValue).toFixed(1)} ${yForSeries(item, point.cashValue).toFixed(1)}`)
               .join(' ');
+            const firstPoint = item.rows[0];
+            const lastPoint = item.rows[item.rows.length - 1];
             return (
               <g key={item.id}>
-                <path d={path} fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                {item.rows.map((point, index) => (
-                  <circle
-                    key={`${item.id}-${point.xValue}-${point.cashValue}`}
-                    cx={xFor(point.xValue)}
-                    cy={yFor(point.cashValue)}
-                    r={index === item.rows.length - 1 ? 2.8 : 1.7}
-                    fill={item.color}
-                    stroke="#FFFFFF"
-                    strokeWidth="0.8"
-                  >
-                    <title>{`${item.label} ${point.xLabel}（第${point.policyYear}年末）: ${formatCashValue(point.cashValue)}元`}</title>
-                  </circle>
-                ))}
+                <title>{`${item.label} ${firstPoint?.xLabel || ''}-${lastPoint?.xLabel || ''}: ${formatCashValue(lastPoint?.cashValue ?? 0)}元`}</title>
+                <path d={path} fill="none" stroke={item.color} strokeWidth={item.strokeWidth ?? 1.1} strokeDasharray={item.strokeDasharray} strokeLinecap="round" strokeLinejoin="round" />
               </g>
             );
           })}
+          {hoverCashValuePoint && hoverYear !== null ? (
+            <g data-cash-value-hover-tooltip>
+              <line
+                data-cash-value-hover-x
+                x1={hoverCashValuePoint.x}
+                x2={hoverCashValuePoint.x}
+                y1={paddingTop}
+                y2={paddingTop + plotHeight}
+                stroke="#0F172A"
+                strokeOpacity="0.28"
+                strokeDasharray="4 4"
+              />
+              <line
+                data-cash-value-hover-y
+                x1={paddingLeft}
+                x2={width - paddingRight}
+                y1={hoverCashValuePoint.y}
+                y2={hoverCashValuePoint.y}
+                stroke="#0F172A"
+                strokeOpacity="0.2"
+                strokeDasharray="4 4"
+              />
+              <rect x={hoverCashValuePoint.x - 24} y={paddingTop + plotHeight + 7} width="48" height="18" rx="9" fill="#0F172A" opacity="0.9" />
+              <text x={hoverCashValuePoint.x} y={paddingTop + plotHeight + 20} textAnchor="middle" fontSize="10" fontWeight="800" fill="#FFFFFF">
+                {hoverYear}年
+              </text>
+              <rect x={paddingLeft - 66} y={hoverCashValuePoint.y - 9} width="58" height="18" rx="9" fill="#0F172A" opacity="0.9" />
+              <text x={paddingLeft - 37} y={hoverCashValuePoint.y + 4} textAnchor="middle" fontSize="10" fontWeight="800" fill="#FFFFFF">
+                {formatCashValueAxis(hoverPrimaryYValue)}
+              </text>
+              {hoverItems.map((entry) => (
+                <rect key={`hover-marker-${entry.id}`} x={entry.x - 2.5} y={entry.y - 2.5} width="5" height="5" rx="1.5" fill={entry.color} stroke="#FFFFFF" strokeWidth="1" />
+              ))}
+              <rect x={hoverTooltipX} y={hoverTooltipY} width={hoverTooltipWidth} height={hoverTooltipHeight} rx="14" fill="#FFFFFF" stroke="#CBD7E1" />
+              <text x={hoverTooltipX + 12} y={hoverTooltipY + 18} fontSize="11" fontWeight="900" fill="#0F172A">
+                {hoverYear}年 · 坐标 {formatCashValueTimeTick(hoverXValue ?? 0)} / {formatCashValueAxis(hoverPrimaryYValue)}
+              </text>
+              {useCashflowAxis ? (
+                <text x={hoverTooltipX + hoverTooltipWidth - 12} y={hoverTooltipY + 34} textAnchor="end" fontSize="10" fontWeight="800" fill="#0F766E">
+                  右轴 {formatCashValueAxis(hoverSecondaryYValue)}
+                </text>
+              ) : null}
+              <text x={hoverTooltipX + 12} y={hoverTooltipY + 34} fontSize="10" fontWeight="700" fill="#64748B">
+                当前年份对应值
+              </text>
+              {hoverItems.map((entry, index) => {
+                const rowY = hoverTooltipY + 53 + index * 18;
+                return (
+                  <g key={`hover-value-${entry.id}`}>
+                    <rect x={hoverTooltipX + 12} y={rowY - 7} width="7" height="7" rx="1.5" fill={entry.color} />
+                    <text x={hoverTooltipX + 26} y={rowY} fontSize="10.5" fontWeight="800" fill="#334155">
+                      {truncateText(entry.label, 15)}
+                    </text>
+                    <text x={hoverTooltipX + hoverTooltipWidth - 12} y={rowY} textAnchor="end" fontSize="10.5" fontWeight="900" fill="#0F172A">
+                      {formatCashValue(entry.value)}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
+          ) : null}
         </svg>
       </div>
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-        {series.map((item, index) => (
-          <div key={item.id} className="min-w-0 rounded-xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
-              <p className="min-w-0 truncate text-xs font-black text-[#0F172A]">{truncateText(item.label, 24)}</p>
-            </div>
-            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-bold text-[#64748B]">
-              <span className="min-w-0 truncate">{item.meta || `产品${index + 1}`}</span>
-              <span className="shrink-0 text-[#0F766E]">
-                {seriesRanges[index]?.first.xLabel}-{seriesRanges[index]?.last.xLabel} · {formatCashValueAxis(seriesRanges[index]?.last.cashValue ?? 0)}
-              </span>
-            </div>
-            {seriesRanges[index]?.first.policyYear > 1 ? (
-              <p className="mt-1 text-[10px] font-bold text-amber-600">
-                缺第1-{seriesRanges[index].first.policyYear - 1}年
-              </p>
-            ) : null}
-          </div>
-        ))}
+        {series.map((item, index) => {
+          const hidden = hiddenCashValueSeriesIds.has(item.id);
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={`min-w-0 rounded-[16px] border px-3 py-2 text-left transition ${
+                hidden
+                  ? 'border-[#E1E8EF] bg-[#F8FAFC] opacity-45'
+                  : 'border-[#D7E2EA] bg-[#F8FAFC] hover:border-[#A7C7E8] active:bg-blue-50'
+              }`}
+              aria-pressed={!hidden}
+              aria-label={`${hidden ? '显示' : '隐藏'}${item.label}折线`}
+              title={`${hidden ? '显示' : '隐藏'}${item.label}折线`}
+              onClick={() => {
+                setHiddenCashValueSeriesIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(item.id)) {
+                    next.delete(item.id);
+                  } else {
+                    next.add(item.id);
+                  }
+                  return next;
+                });
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: hidden ? '#CBD5E1' : item.color }} />
+                <p className={`min-w-0 truncate text-xs font-black ${hidden ? 'text-[#64748B]' : 'text-[#0F172A]'}`}>{truncateText(item.label, 24)}</p>
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-bold text-[#64748B]">
+                <span className="min-w-0 truncate">{item.meta || `产品${index + 1}`}</span>
+                <span className={`shrink-0 ${hidden ? 'text-[#94A3B8]' : 'text-[#0B72B9]'}`}>
+                  {seriesRanges[index]?.first.xLabel}-{seriesRanges[index]?.last.xLabel} · {formatCashValueAxis(seriesRanges[index]?.last.cashValue ?? 0)}
+                </span>
+              </div>
+              {item.kind === 'policy' && (seriesRanges[index]?.first.policyYear ?? 0) > 1 ? (
+                <p className="mt-1 text-[10px] font-bold text-amber-600">
+                  缺第1-{(seriesRanges[index].first.policyYear ?? 1) - 1}年
+                </p>
+              ) : null}
+            </button>
+          );
+        })}
       </div>
     </article>
   );
 }
 
+function cashValueReferenceShortLabel(row: FamilyWealthPolicyReport['annualCashflowRows'][number]) {
+  if (row.cashValueReferenceType === 'pre_maturity') return '期满前参考';
+  if (row.cashValueReferenceType === 'pre_termination') return '终止前参考';
+  if (row.cashValueReferenceType === 'surrender') return '退保参考';
+  return '';
+}
+
 function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyReport }) {
   const rows = policy.annualCashflowRows;
   if (!rows.length) return <EmptyState text="暂无现金流明细" />;
+  const hasCashValueReference = rows.some((row) => row.cashValue != null);
 
   const columnSize = 14;
   const columns: FamilyWealthPolicyReport['annualCashflowRows'][] = [];
@@ -1081,51 +1488,82 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
   }
 
   return (
-    <TableWrap>
-      <div className="flex min-w-max gap-3">
-        {columns.map((column, columnIndex) => (
-          <table key={`${policy.policyId}-${columnIndex}`} className="border-separate border-spacing-0 text-left">
-            <thead>
-              <tr>
-                <th className={`${compactThClassName} rounded-tl-xl`}>年份</th>
-                <th className={compactThClassName}>领取金额</th>
-                <th className={`${compactThClassName} rounded-tr-xl`}>累计领取</th>
-              </tr>
-            </thead>
-            <tbody>
-              {column.map((row) => (
-                <tr key={`${policy.policyId}-${row.year}`} className={/满期/u.test(row.liabilities.join('/')) ? 'bg-orange-50' : undefined}>
-                  <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
-                  <td className={`${compactTdClassName} text-right`}>
-                    {row.amount > 0 ? (
-                      <span className={`inline-block rounded px-1 text-[11px] font-black ${/满期/u.test(row.liabilities.join('/')) ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
-                        {formatMoney(row.amount)}
-                      </span>
-                    ) : '—'}
-                  </td>
-                  <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
-                    {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
-                  </td>
+    <div>
+      <TableWrap>
+        <div className="flex min-w-max gap-3">
+          {columns.map((column, columnIndex) => (
+            <table key={`${policy.policyId}-${columnIndex}`} className="border-separate border-spacing-0 text-left">
+              <thead>
+                <tr>
+                  <th className={`${compactThClassName} rounded-tl-[14px]`}>年份</th>
+                  <th className={compactThClassName}>领取金额</th>
+                  <th className={compactThClassName}>累计领取</th>
+                  <th className={`${compactThClassName} rounded-tr-[14px]`}>现金价值参考</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        ))}
-      </div>
-    </TableWrap>
+              </thead>
+              <tbody>
+                {column.map((row) => {
+                  const cashValueLabel = cashValueReferenceShortLabel(row);
+                  return (
+                    <tr key={`${policy.policyId}-${row.year}`} className={row.isContractTerminatingPayout ? 'bg-orange-50' : undefined}>
+                      <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
+                      <td className={`${compactTdClassName} text-right`}>
+                        {row.amount > 0 ? (
+                          <span className={`inline-block rounded px-1 text-[11px] font-black ${row.isContractTerminatingPayout ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
+                            {formatMoney(row.amount)}
+                          </span>
+                        ) : '—'}
+                      </td>
+                      <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
+                        {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
+                      </td>
+                      <td className={`${compactTdClassName} text-right ${row.cashValueIsNonAdditiveReference ? 'text-[#A6531B]' : 'text-[#0B72B9]'}`}>
+                        {row.cashValue != null ? (
+                          cashValueLabel ? (
+                            <span className="block leading-4">
+                              <span className="block text-[10px] font-black text-[#A6531B]">{cashValueLabel}</span>
+                              <span className="block">{formatMoney(row.cashValue)}</span>
+                            </span>
+                          ) : formatMoney(row.cashValue)
+                        ) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ))}
+        </div>
+      </TableWrap>
+      {hasCashValueReference ? (
+        <p className="mt-2 rounded-[14px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-5 text-[#9A4A16]">
+          现金价值为退保参考，不等同于当年可直接领取金额；与领取金额同年出现时不代表可叠加领取。合同终止型给付发生后，现金价值不再保留。
+        </p>
+      ) : null}
+    </div>
   );
 }
 
 function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
+  const uncertaintyLabels = policy.uncertaintyItems.map((item) => item.label).join('、');
+  const excludedStatisticRowsCount = policy.excludedCashflowRows.length + policy.excludedCashValueRows.length;
+
   return (
-    <article className="rounded-xl border border-[#D9E6F4] bg-white p-3 shadow-[0_12px_24px_-22px_rgba(15,23,42,0.16)]">
+    <article className="rounded-[20px] border border-[#E1E8EF] bg-white p-3 shadow-[0_12px_28px_-26px_rgba(15,23,42,0.24)]">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h4 className="text-sm font-black text-[#0F172A]">{emptyText(policy.productName)}</h4>
-          <p className="mt-1 text-xs font-medium text-[#7890AA]">{emptyText(policy.company)} · 年交 {formatMoneyWithUnit(policy.annualPremium)}</p>
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <h4 className="min-w-0 break-words text-sm font-black text-[#102033]">{emptyText(policy.productName)}</h4>
+            {policy.hasUncertainWealthFactors ? (
+              <span className="shrink-0 rounded-full bg-[#FFF8EB] px-1.5 py-0.5 text-[10px] font-black text-[#A6531B] ring-1 ring-[#F3D9B4]">
+                不确定未计入
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-xs font-medium text-[#72849A]">{emptyText(policy.company)} · 年交 {formatMoneyWithUnit(policy.annualPremium)}</p>
         </div>
         {policy.attentionItems.length ? (
-          <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-100">
+          <span className="rounded-full bg-[#FFF8EB] px-2 py-1 text-[11px] font-bold text-[#9A4A16] ring-1 ring-[#F3D9B4]">
             {policy.attentionItems.length}项待关注
           </span>
         ) : null}
@@ -1134,17 +1572,25 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
       {policy.keyPoints.length ? (
         <div className="mb-3 grid gap-2 sm:grid-cols-3">
           {policy.keyPoints.map((point) => (
-            <div key={`${point.label}-${point.value}`} className="rounded-xl bg-[#F8FBFF] px-3 py-2 ring-1 ring-[#E1EAF5]">
-              <p className="text-[11px] font-bold text-[#7890AA]">{point.label}</p>
+            <div key={`${point.label}-${point.value}`} className="rounded-[16px] border border-[#E1E8EF] bg-[#F8FAFC] px-3 py-2">
+              <p className="text-[11px] font-bold text-[#72849A]">{point.label}</p>
               <p className="mt-0.5 text-xs font-black text-slate-900">{point.value} · {formatMoneyWithUnit(point.amount)}</p>
+              {point.note ? <p className="mt-1 text-[10px] font-semibold leading-4 text-[#9A4A16]">{point.note}</p> : null}
             </div>
           ))}
         </div>
       ) : null}
 
       <div>
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <h5 className="text-xs font-black text-slate-700">个人现金流明细</h5>
+        <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+          <div className="min-w-0">
+            <h5 className="text-xs font-black text-slate-700">个人现金流明细</h5>
+            {policy.hasUncertainWealthFactors ? (
+              <p className="mt-0.5 break-words text-[11px] font-semibold leading-4 text-[#72849A]">
+                已排除{uncertaintyLabels}不确定金额{excludedStatisticRowsCount > 0 ? ` ${excludedStatisticRowsCount}条` : ''}
+              </p>
+            ) : null}
+          </div>
           <span className="text-[11px] font-bold text-[#7890AA]">(单位:元)</span>
         </div>
         <PolicyAnnualCashflowTable policy={policy} />
@@ -1166,34 +1612,40 @@ export function FamilyReportPage({
   const reportWithOptionalGaps = report as FamilyReportWithOptionalGaps;
 
   return (
-    <div className="min-h-screen bg-[#F4F8FC] pb-10">
-      <header className="no-print sticky top-0 z-20 flex items-center justify-between border-b border-slate-100 bg-white/90 px-4 py-4 backdrop-blur">
-        <button
-          type="button"
-          onClick={onBack}
-          className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full text-slate-700 active:bg-slate-100"
-          aria-label="返回"
-          title="返回"
-        >
-          <ChevronLeft size={24} />
-        </button>
-        <h1 className="text-lg font-black text-slate-950">家庭保障分析报告</h1>
-        <button
-          type="button"
-          onClick={() => void onExport(reportRef.current, exportTitle)}
-          className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-600 active:bg-blue-100"
-          aria-label="下载报告图片"
-          title="下载报告图片"
-        >
-          <Download size={18} />
-          <span>图片</span>
-        </button>
+    <div className="family-report-shell min-h-screen bg-[#EEF3F7] pb-10 text-[#102033]">
+      <header className="no-print sticky top-0 z-20 border-b border-[#DDE6EE] bg-white/95 backdrop-blur">
+        <div className="family-report-content grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full text-[#42566B] active:bg-[#EEF3F7]"
+            aria-label="返回"
+            title="返回"
+          >
+            <ChevronLeft size={24} />
+          </button>
+          <div className="min-w-0 text-center">
+            <h1 className="family-report-heading truncate text-lg font-black text-[#102033]">家庭保障分析报告</h1>
+            <p className="family-report-kicker mt-0.5 hidden text-[11px] text-[#72849A] sm:block">Family Policy Dossier</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void onExport(reportRef.current, exportTitle)}
+            className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-[#0B72B9] active:bg-blue-100"
+            aria-label="下载报告图片"
+            title="下载报告图片"
+          >
+            <Download size={18} />
+            <span>图片</span>
+          </button>
+        </div>
       </header>
 
       <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} />
 
-      <main ref={reportRef} className="print-policy-report space-y-4 p-4">
+      <main ref={reportRef} className="family-report-content print-policy-report space-y-4 py-4 md:space-y-5 md:py-5">
         <ReportHero report={report} attentionItems={attentionItems} />
+        <FamilyRadarSection report={report} />
         <AttentionSection attentionItems={attentionItems} />
         <OptionalResponsibilityGapSection gaps={reportWithOptionalGaps.optionalResponsibilityGaps} />
         <InventorySection rows={report.policyInventory.rows} />
@@ -1207,36 +1659,127 @@ export function FamilyReportPage({
   );
 }
 
+function cashflowAggregateDetails(row: FamilyWealthAggregateRow) {
+  return row.details.filter((detail) => detail.type === 'payout');
+}
+
+function wealthAggregateDetailRows(row: FamilyWealthAggregateRow) {
+  const details = cashflowAggregateDetails(row);
+  return details.length ? details : [null];
+}
+
 function WealthAggregateTable({ rows }: { rows: FamilyWealthAggregateRow[] }) {
+  const summaryTdClassName = `${tdClassName} align-top`;
+  const detailTdClassName = 'bg-[#F8FBFF] px-2.5 py-2 text-xs font-semibold text-slate-700 align-top ring-1 ring-[#E1EAF5]';
+  const detailStartTdClassName = `${detailTdClassName} border-l border-[#CAD7E4]`;
+
   return rows.length ? (
     <TableWrap>
-      <table className="min-w-full border-separate border-spacing-0 text-left">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E1E8EF] bg-[#F8FBFF] px-3 py-2 text-[11px] font-black">
+        <div className="flex flex-wrap items-center gap-2 text-[#36516A]">
+          <span className="rounded-full bg-blue-50 px-2 py-1 text-[#0B72B9] ring-1 ring-blue-100">年度汇总</span>
+          <span>仅统计确定领取现金流</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 text-[#72849A]">
+          <span className="rounded-full bg-white px-2 py-1 ring-1 ring-[#E1E8EF]">左侧：年度合计</span>
+          <span className="rounded-full bg-white px-2 py-1 ring-1 ring-[#E1E8EF]">右侧：现金流明细</span>
+        </div>
+      </div>
+      <table className="min-w-[1060px] table-fixed border-separate border-spacing-0 text-left">
+        <colgroup>
+          <col className="w-[72px]" />
+          <col className="w-[116px]" />
+          <col className="w-[116px]" />
+          <col className="w-[96px]" />
+          <col className="w-[158px]" />
+          <col className="w-[110px]" />
+          <col className="w-[120px]" />
+        </colgroup>
         <thead>
           <tr>
-            <th className={`${thClassName} rounded-tl-xl`}>年份</th>
-            <th className={`${thClassName} text-right`}>保费支出</th>
-            <th className={`${thClassName} text-right`}>领取收入</th>
-            <th className={`${thClassName} text-right`}>年度净现金流</th>
-            <th className={`${thClassName} text-right`}>累计净现金流</th>
-            <th className={`${thClassName} rounded-tr-xl text-right`}>现金价值合计</th>
+            <th className={thClassName} title="年份" aria-label="年份">年</th>
+            <th className={`${thClassName} text-right`} title="当年领取现金流" aria-label="当年现金流">当年现金流</th>
+            <th className={`${thClassName} text-right`} title="累计领取现金流" aria-label="累计现金流">累计现金流</th>
+            <th className={`${thClassName} border-l border-blue-300`} title="现金流明细：投保人">投保人</th>
+            <th className={thClassName} title="现金流明细产品">产品</th>
+            <th className={thClassName} title="现金流项目">项目</th>
+            <th className={`${thClassName} text-right`} title="该保单当年领取现金流" aria-label="该保单现金流">现金流</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.year}>
-              <td className={tdClassName}>{row.year}</td>
-              <td className={`${tdClassName} text-right`}>{formatMoney(row.premiumOutflow)}</td>
-              <td className={`${tdClassName} text-right`}>{formatMoney(row.payoutInflow)}</td>
-              <td className={`${tdClassName} text-right`}>{formatMoney(row.netCashflow)}</td>
-              <td className={`${tdClassName} text-right`}>{formatMoney(row.cumulativeNetCashflow)}</td>
-              <td className={`${tdClassName} text-right`}>{formatMoney(row.cashValueTotal)}</td>
-            </tr>
-          ))}
+          {rows.flatMap((row) => {
+            const detailRows = wealthAggregateDetailRows(row);
+            return detailRows.map((detail, index) => (
+              <tr key={`${row.year}-${detail?.policyId ?? 'empty'}-${detail?.policyYear ?? index}-${index}`}>
+                {index === 0 ? (
+                  <>
+                    <td className={summaryTdClassName} rowSpan={detailRows.length}>{row.year}</td>
+                    <td className={`${summaryTdClassName} text-right`} rowSpan={detailRows.length}>{formatMoney(row.payoutInflow)}</td>
+                    <td className={`${summaryTdClassName} text-right`} rowSpan={detailRows.length}>{formatMoney(row.cumulativePayoutInflow)}</td>
+                  </>
+                ) : null}
+                <td className={detailStartTdClassName}>
+                  {detail ? (
+                    <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-black text-[#0B72B9] ring-1 ring-blue-100">
+                      {detail.policyholder || '-'}
+                    </span>
+                  ) : <span className="text-[#8AA0B8]">—</span>}
+                </td>
+                <td className={`${detailTdClassName} min-w-[116px] max-w-[150px]`}>
+                  {detail ? (
+                    <span title={detail.productName || ''} className="font-black text-[#102033]">
+                      {insuranceProductKeyword(detail.productName)}
+                    </span>
+                  ) : <span className="text-[#8AA0B8]">—</span>}
+                </td>
+                <td className={`${detailTdClassName} min-w-[86px] max-w-[110px]`}>
+                  {detail ? (
+                    <span title={detail.liability || ''} className="font-bold text-[#36516A]">
+                      {truncateText(detail.liability || '领取', 8)}
+                    </span>
+                  ) : <span className="text-[#8AA0B8]">—</span>}
+                </td>
+                <td className={`${detailTdClassName} text-right font-black text-[#0B72B9] tabular-nums`}>
+                  {detail ? formatMoney(detail.amount) : '—'}
+                </td>
+              </tr>
+            ));
+          })}
         </tbody>
       </table>
     </TableWrap>
   ) : (
     <EmptyState text="暂无全家财富统计" />
+  );
+}
+
+function WealthStatisticsScope({ report }: { report: FamilyReport }) {
+  if (!report.wealth.statisticsScopeNote) return null;
+
+  const reasonLabels = Array.from(new Set(report.wealth.excludedPolicies.flatMap((policy) => policy.reasons)));
+  const excludedCount = report.wealth.excludedPolicies.length;
+
+  return (
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-[#D7E2EA] bg-white px-2.5 py-1.5 text-[11px] shadow-[0_8px_24px_-22px_rgba(15,23,42,0.28)]">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <span className="h-5 w-1 shrink-0 rounded-full bg-[#0B72B9]" aria-hidden="true" />
+        <span className="font-black text-[#102033]">财富统计口径</span>
+        <span className="font-semibold text-[#5E7290]">仅统计确定领取现金流</span>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <span className="rounded-full bg-[#F8FBFF] px-2 py-0.5 font-black text-[#0B72B9] ring-1 ring-[#D7E2EA]">
+          未计入 {excludedCount} 张
+        </span>
+        {reasonLabels.map((label) => (
+          <span key={label} className="rounded-full bg-[#FFF8EB] px-1.5 py-0.5 font-black text-[#A6531B] ring-1 ring-[#F3D9B4]">
+            {label}
+          </span>
+        ))}
+        <div className="min-w-0 basis-full text-[10px] font-semibold leading-4 text-[#7890AA] sm:basis-auto">
+          分红/万能账户因红利分配、结算利率、账户价值不确定，暂不进入统计。
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1247,22 +1790,15 @@ function WealthSection({ report }: { report: FamilyReport }) {
         <CashValueTrendChart report={report} />
 
         {report.wealth.memberReports.length ? report.wealth.memberReports.map((member) => (
-          <article key={member.member} className="rounded-xl border border-[#D9E6F4] bg-[#F8FBFF] p-3">
+          <article key={member.member} className={`${reportMutedSurfaceClassName} p-3`}>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-black text-[#0F172A]">{member.member}</h3>
+              <h3 className="text-sm font-black text-[#102033]">{member.member}</h3>
               {member.attentionItems.length ? (
-                <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-100">
-                  待关注 {member.attentionItems.length}
+                <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-black text-[#0B72B9] ring-1 ring-[#D7E2EA]" title={member.attentionItems.join('；')}>
+                  {member.attentionItems.length}项未入统计
                 </span>
               ) : null}
             </div>
-            {member.attentionItems.length ? (
-              <div className="mb-3 flex flex-wrap gap-1">
-                {member.attentionItems.map((item) => (
-                  <span key={item} className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-100">{item}</span>
-                ))}
-              </div>
-            ) : null}
             <div className="space-y-3">
               {member.policies.map((policy) => <WealthPolicyCard key={policy.policyId} policy={policy} />)}
             </div>
@@ -1271,20 +1807,23 @@ function WealthSection({ report }: { report: FamilyReport }) {
           <EmptyState text="暂无财富型保单数据" />
         )}
 
-        <div className="rounded-xl border border-[#D9E6F4] bg-[#F8FBFF] p-3">
+        <div className={`${reportMutedSurfaceClassName} p-3`}>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-black text-[#0F172A]">全家财富统计</h3>
+            <h3 className="text-sm font-black text-[#102033]">全家财富统计</h3>
             {report.wealth.keyPoints.length ? (
               <div className="flex flex-wrap gap-1">
                 {report.wealth.keyPoints.map((point) => (
-                  <span key={`${point.label}-${point.value}`} className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-[#1152D4] ring-1 ring-[#D9E6F4]">
+                  <span key={`${point.label}-${point.value}`} className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-[#0B72B9] ring-1 ring-[#D7E2EA]">
                     {point.label}: {point.value}
                   </span>
                 ))}
               </div>
             ) : null}
           </div>
-          <WealthAggregateTable rows={report.wealth.aggregateRows} />
+          <WealthStatisticsScope report={report} />
+          <div className="space-y-3">
+            <WealthAggregateTable rows={report.wealth.aggregateRows} />
+          </div>
         </div>
       </div>
     </Section>

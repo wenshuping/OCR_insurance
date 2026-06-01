@@ -10,6 +10,61 @@ body {
   margin: 0;
 }
 
+.family-report-shell {
+  --family-report-font-sans: "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --family-report-font-display: "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --family-report-font-number: "DIN Alternate", "DIN Condensed", "SF Pro Display", "Avenir Next", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--family-report-font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-optical-sizing: auto;
+  overflow-x: hidden;
+  text-rendering: geometricPrecision;
+}
+
+.family-report-shell * {
+  letter-spacing: 0;
+}
+
+.family-report-shell .font-black {
+  font-weight: 760;
+}
+
+.family-report-shell .font-bold {
+  font-weight: 650;
+}
+
+.family-report-shell .font-semibold {
+  font-weight: 560;
+}
+
+.family-report-heading {
+  font-family: var(--family-report-font-display);
+}
+
+.family-report-kicker {
+  font-family: var(--family-report-font-display);
+  font-weight: 650;
+}
+
+.family-report-number {
+  font-family: var(--family-report-font-number);
+  font-variant-numeric: tabular-nums;
+}
+
+.family-report-content {
+  width: min(1180px, calc(100% - 32px));
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.family-report-goals-scroll {
+  scrollbar-width: none;
+}
+
+.family-report-goals-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }

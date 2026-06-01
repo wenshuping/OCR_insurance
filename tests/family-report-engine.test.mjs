@@ -270,7 +270,7 @@ test('buildFamilyReport separates inactive policies from counted values and mark
     }),
   ]);
 
-  assert.equal(report.summary.memberCount, 2);
+  assert.equal(report.summary.memberCount, 1);
   assert.equal(report.summary.policyCount, 1);
   assert.equal(report.summary.annualPremium, 2000);
   assert.equal(report.summary.totalCoverage, 100000);
@@ -284,6 +284,76 @@ test('buildFamilyReport separates inactive policies from counted values and mark
   assert.equal(inactiveRow.amount, 0);
   assert.equal(inactiveRow.amountText, '50万');
   assert.match(inactiveRow.conditionText, /未计入当前保障/);
+});
+
+test('buildFamilyReport excludes coverage-period expired policies from radar and counted values', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 93,
+      insured: '爸爸',
+      name: '有效重疾险',
+      amount: 100000,
+      firstPremium: 2000,
+      coveragePeriod: '终身',
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '有效重疾险' },
+      ],
+    }),
+    makePolicy({
+      id: 94,
+      insured: '妈妈',
+      name: '保障期已过重疾险',
+      amount: 500000,
+      firstPremium: 8000,
+      coveragePeriod: '至2025年09月29日',
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '保障期已过重疾险' },
+      ],
+    }),
+  ]);
+
+  assert.equal(report.summary.memberCount, 1);
+  assert.equal(report.summary.policyCount, 1);
+  assert.equal(report.summary.annualPremium, 2000);
+  assert.equal(report.summary.totalCoverage, 100000);
+  assert.equal(radarScore(report.radar.family, 'critical').amount, 100000);
+  assert.equal(radarScore(report.radar.family, 'critical').policyCount, 1);
+  assert.equal(report.radar.members.some((member) => member.name === '妈妈'), false);
+
+  const inactiveRow = report.policyInventory.rows.find((row) => row.policyId === 94);
+  assert.equal(inactiveRow.isInactive, true);
+  assert.equal(inactiveRow.dataStatus, '失效');
+});
+
+test('buildFamilyReport excludes inactive-only members from attention gaps', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 95,
+      insured: '爸爸',
+      name: '有效重疾险',
+      amount: 100000,
+      coveragePeriod: '终身',
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '有效重疾险' },
+      ],
+    }),
+    makePolicy({
+      id: 96,
+      insured: '妈妈',
+      name: '保障期已过意外险',
+      amount: 500000,
+      coveragePeriod: '至2025年09月29日',
+      coverageIndicators: [
+        { coverageType: '意外保障', liability: '一般意外身故保险金', value: 500000, unit: '元', basis: '意外身故保额', productName: '保障期已过意外险' },
+      ],
+    }),
+  ]);
+
+  const inactiveCriticalMember = report.criticalIllness.members.find((member) => member.member === '妈妈');
+  const inactiveAccidentMember = report.accident.members.find((member) => member.member === '妈妈');
+
+  assert.deepEqual(inactiveCriticalMember.attentionItems, []);
+  assert.deepEqual(inactiveAccidentMember.attentionItems, []);
 });
 
 test('buildFamilyReport creates structure radar with compressed display scores and real amounts', () => {
@@ -342,16 +412,45 @@ test('buildFamilyReport creates structure radar with compressed display scores a
   assert.equal(radarScore(report.radar.family, 'accident').amount, 250000);
   assert.equal(radarScore(report.radar.family, 'medical').amount, 100000);
   assert.equal(radarScore(report.radar.family, 'life').amount, 1000000);
-  assert.equal(radarScore(report.radar.family, 'wealth').amount, 200000);
+  assert.equal(radarScore(report.radar.family, 'wealth').amount, 50000);
   assert.equal(radarScore(report.radar.family, 'life').score, 100);
   assert.equal(radarScore(report.radar.family, 'critical').score, 71);
   assert.equal(radarScore(report.radar.family, 'accident').score, 50);
   assert.equal(radarScore(report.radar.family, 'medical').score, 32);
-  assert.equal(radarScore(report.radar.family, 'wealth').score, 45);
+  assert.equal(radarScore(report.radar.family, 'wealth').score, 22);
   assert.match(radarScore(report.radar.family, 'critical').amountDetails[0].calculationText, /基本保险金额500,000元 × 100% = 500,000元/);
-  assert.match(radarScore(report.radar.family, 'wealth').note, /现金价值150,000/);
   assert.match(radarScore(report.radar.family, 'wealth').note, /未来领取50,000/);
-  assert.match(radarScore(report.radar.family, 'wealth').amountDetails[0].calculationText, /最新现金价值 = 150,000元/);
+  assert.match(radarScore(report.radar.family, 'wealth').note, /现金价值参考150,000未计入合计/);
+  assert.match(radarScore(report.radar.family, 'wealth').amountDetails[0].calculationText, /未来确定领取合计 = 生存金30,000元\(2030\) \+ 生存金20,000元\(2031\) = 50,000元/);
+});
+
+test('buildFamilyReport marks wealth coverage by wealth insurance type, not cash value amount', () => {
+  const annuityReport = buildFamilyReport([
+    makePolicy({
+      id: 106,
+      insured: '妈妈',
+      name: '养老年金保险',
+      amount: 0,
+      cashValues: [],
+      cashflowEntries: [],
+    }),
+  ]);
+  const annuityWealth = radarScore(annuityReport.radar.family, 'wealth');
+  assert.equal(annuityWealth.amount, 0);
+  assert.equal(annuityWealth.coveragePresent, true);
+
+  const cashValueOnlyReport = buildFamilyReport([
+    makePolicy({
+      id: 107,
+      insured: '爸爸',
+      name: '健康无忧重大疾病保险',
+      amount: 100000,
+      cashValues: [{ policyYear: 1, cashValue: 1000 }],
+    }),
+  ]);
+  const cashValueOnlyWealth = radarScore(cashValueOnlyReport.radar.family, 'wealth');
+  assert.equal(cashValueOnlyWealth.amount, 1000);
+  assert.equal(cashValueOnlyWealth.coveragePresent, false);
 });
 
 test('buildFamilyReport explains the raw critical radar amount before chart scoring', () => {
@@ -965,8 +1064,9 @@ test('buildFamilyReport excludes inactive rider plan indicators while keeping ac
           coverageType: '疾病保障',
           liability: '防癌/恶性肿瘤(首次给付)',
           unit: '公式',
-          basis: '基本保险金额',
-          formulaText: '防癌/恶性肿瘤(首次给付) = 基本保险金额/30日',
+          basis: '已交保费',
+          formulaText: '防癌/恶性肿瘤(首次给付) = 基本保险金额',
+          sourceExcerpt: '等待期内给付本保险实际交纳的保险费，本合同终止。被保险人于本合同生效之日起30日后确诊初次发生特定重度恶性肿瘤，本公司按基本保险金额给付特定重度恶性肿瘤保险金，本合同终止。',
           productName: riderName,
         },
       ],
@@ -1338,7 +1438,7 @@ test('buildFamilyReport lets responsibility amount improve unresolved accident i
   assert.equal(aviation.amountText, '500万');
 });
 
-test('buildFamilyReport creates per-member wealth policies and cash value year-end aggregate rows', () => {
+test('buildFamilyReport calculates aggregate wealth from confirmed payouts without premium or cash value stock', () => {
   const policies = [
     makePolicy({
       id: 30,
@@ -1375,6 +1475,7 @@ test('buildFamilyReport creates per-member wealth policies and cash value year-e
   const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
   const row2025 = report.wealth.aggregateRows.find((row) => row.year === 2025);
   const row2026 = report.wealth.aggregateRows.find((row) => row.year === 2026);
+  const row2027 = report.wealth.aggregateRows.find((row) => row.year === 2027);
   const row2030 = report.wealth.aggregateRows.find((row) => row.year === 2030);
   const row2073 = report.wealth.aggregateRows.find((row) => row.year === 2073);
 
@@ -1382,12 +1483,112 @@ test('buildFamilyReport creates per-member wealth policies and cash value year-e
   assert.equal(mother.policies[0].cashValueRows[0].calendarYear, 2026);
   assert.equal(mother.policies[0].cashValueRows[0].cashValueDate, '2026-12-22');
   assert.equal(mother.policies[0].cashValueRows[0].cashValueDateLabel, '2026-12-22');
-  assert.equal(row2025.premiumOutflow, 19600);
-  assert.equal(row2025.cashValueTotal, 0);
-  assert.equal(row2026.cashValueTotal, 282);
+  assert.equal(row2025, undefined);
+  assert.equal(row2026, undefined);
+  assert.equal(row2027, undefined);
   assert.equal(row2030.payoutInflow, 1465);
+  assert.equal(row2030.cashValueIncrease, 0);
+  assert.equal(row2030.netCashflow, 1465);
+  assert.equal(row2030.details.some((detail) => detail.type === 'premium'), false);
+  assert.equal(row2030.details.some((detail) => detail.type === 'cashValue'), false);
   assert.equal(row2073.payoutInflow, 110100);
+  assert.equal(report.wealth.aggregateRows.some((row) => row.details.some((detail) => detail.type === 'premium')), false);
+  assert.equal(report.wealth.aggregateRows.some((row) => row.details.some((detail) => detail.type === 'cashValue')), false);
   assert.ok(report.wealth.keyPoints.some((point) => point.label === '领取高峰年' && point.value === '2073'));
+});
+
+test('buildFamilyReport keeps dividend and universal account uncertainty out of wealth statistics', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 32,
+      insured: '妈妈',
+      name: '盛世恒盈年金保险（分红型）',
+      date: '2026-01-01',
+      firstPremium: 19600,
+      cashValues: [
+        { policyYear: 1, age: 38, cashValue: 5000 },
+      ],
+      cashflowEntries: [
+        { year: 2030, age: 42, amount: 1000, cumulative: 1000, liability: '生存金', policyId: 32, productName: '盛世恒盈年金保险（分红型）', calculationText: '' },
+        { year: 2031, age: 43, amount: 2000, cumulative: 3000, liability: '年度红利', policyId: 32, productName: '盛世恒盈年金保险（分红型）', calculationText: '' },
+        { year: 2032, age: 44, amount: 3000, cumulative: 6000, liability: '养老年金', policyId: 32, productName: '鑫天利卓越版养老年金保险（万能型）', calculationText: '' },
+      ],
+      coverageIndicators: [
+        { productType: '年金险', coverageType: '现金流', liability: '生存金', productName: '盛世恒盈年金保险（分红型）' },
+        { productType: '万能账户', coverageType: '现金流', liability: '养老年金', productName: '鑫天利卓越版养老年金保险（万能型）' },
+      ],
+    }),
+  ]);
+
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+  const policy = mother.policies.find((item) => item.policyId === 32);
+  const row2030 = report.wealth.aggregateRows.find((row) => row.year === 2030);
+
+  assert.equal(policy.hasUncertainWealthFactors, true);
+  assert.deepEqual(policy.uncertaintyItems.map((item) => item.key), ['dividend', 'universal_account']);
+  assert.equal(policy.cashflowRows.length, 1);
+  assert.equal(policy.excludedCashflowRows.length, 2);
+  assert.equal(policy.cashValueRows.length, 1);
+  assert.equal(policy.excludedCashValueRows.length, 0);
+  assert.ok(policy.attentionItems.some((item) => /分红\/红利、万能账户存在不确定因素，未进入财富统计/u.test(item)));
+  assert.equal(row2030.payoutInflow, 1000);
+  assert.equal(report.wealth.aggregateRows.some((row) => row.year === 2031 || row.year === 2032), false);
+  assert.equal(report.wealth.excludedPolicies.length, 1);
+  assert.deepEqual(report.wealth.excludedPolicies[0].reasons, ['分红/红利', '万能账户']);
+  assert.match(report.wealth.statisticsScopeNote, /分红、万能账户存在收益或账户价值不确定因素/);
+
+  const wealth = radarScore(report.radar.family, 'wealth');
+  assert.equal(wealth.amount, 1000);
+  assert.equal(wealth.policyCount, 1);
+  assert.match(wealth.note, /分红、万能账户不确定金额未统计/);
+  assert.match(wealth.note, /现金价值参考5,000未计入合计/);
+
+  const universalReport = buildFamilyReport([
+    makePolicy({
+      id: 33,
+      insured: '爸爸',
+      name: '鑫天利卓越版养老年金保险（万能型）',
+      date: '2026-01-01',
+      cashValues: [
+        { policyYear: 1, age: 40, cashValue: 30000 },
+      ],
+      coverageIndicators: [
+        { productType: '万能账户', coverageType: '现金流', liability: '账户价值', productName: '鑫天利卓越版养老年金保险（万能型）' },
+      ],
+    }),
+  ]);
+  const father = universalReport.wealth.memberReports.find((item) => item.member === '爸爸');
+  const universalPolicy = father.policies.find((item) => item.policyId === 33);
+  assert.equal(universalPolicy.cashValueRows.length, 0);
+  assert.equal(universalPolicy.excludedCashValueRows.length, 1);
+  assert.equal(universalReport.wealth.aggregateRows.length, 0);
+  assert.equal(radarScore(universalReport.radar.family, 'wealth').amount, 0);
+  assert.equal(universalPolicy.attentionItems.some((item) => /缺少现金价值表/u.test(item)), false);
+});
+
+test('buildFamilyReport explains future deterministic payout totals by liability and year range', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 321,
+      insured: '妈妈',
+      name: '测试年金保险',
+      cashflowEntries: [
+        { year: 2030, age: 42, amount: 1465, cumulative: 1465, liability: '生存保险金', policyId: 321, productName: '测试年金保险' },
+        { year: 2031, age: 43, amount: 1465, cumulative: 2930, liability: '生存保险金', policyId: 321, productName: '测试年金保险' },
+        { year: 2032, age: 44, amount: 1465, cumulative: 4395, liability: '生存保险金', policyId: 321, productName: '测试年金保险' },
+        { year: 2033, age: 45, amount: 1465, cumulative: 5860, liability: '养老年金', policyId: 321, productName: '测试年金保险' },
+        { year: 2034, age: 46, amount: 1465, cumulative: 7325, liability: '养老年金', policyId: 321, productName: '测试年金保险' },
+        { year: 2035, age: 47, amount: 110100, cumulative: 117425, liability: '满期生存保险金', policyId: 321, productName: '测试年金保险' },
+      ],
+    }),
+  ]);
+
+  const wealth = radarScore(report.radar.family, 'wealth');
+  assert.equal(wealth.amount, 117425);
+  assert.match(
+    wealth.amountDetails[0].calculationText,
+    /未来确定领取合计 = 生存保险金1,465元 × 3年\(2030-2032\) \+ 养老年金1,465元 × 2年\(2033-2034\) \+ 满期生存保险金110,100元\(2035\) = 117,425元/u,
+  );
 });
 
 test('buildFamilyReport combines same-year policy cashflow rows for annual wealth table', () => {
@@ -1420,6 +1621,183 @@ test('buildFamilyReport combines same-year policy cashflow rows for annual wealt
   assert.deepEqual(row2030.liabilities, ['生存金', '特别生存金']);
   assert.equal(row2030.age, 42);
   assert.equal(row2031.cashValue, 6009);
+});
+
+test('buildFamilyReport uses exact policy-year age for Changxing final cash value row', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 500552,
+      insured: '冯力',
+      insuredBirthday: '1987-12-07',
+      name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+      date: '2024-09-29',
+      paymentPeriod: '10年交',
+      coveragePeriod: '至2068年9月30日零时',
+      amount: 60000,
+      firstPremium: 3296,
+      cashflowEntries: [
+        {
+          year: 2068,
+          age: 81,
+          amount: 32960,
+          cumulative: 32960,
+          liability: '满期生存保险金',
+          policyId: 500552,
+          productName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+        },
+      ],
+      cashValues: [
+        { policyYear: 44, age: 0, cashValue: 31560 },
+      ],
+    }),
+  ]);
+
+  const member = report.wealth.memberReports.find((item) => item.member === '冯力');
+  const policy = member.policies.find((item) => item.policyId === 500552);
+  const cashValueRow = policy.cashValueRows.find((row) => row.policyYear === 44);
+  const annualRow = policy.annualCashflowRows.find((row) => row.year === 2068);
+
+  assert.equal(cashValueRow.calendarYear, 2068);
+  assert.equal(cashValueRow.age, 80);
+  assert.equal(cashValueRow.cashValue, 31560);
+  assert.equal(annualRow.age, 80);
+  assert.equal(annualRow.cashValue, 31560);
+  assert.equal(annualRow.isMaturityPayout, true);
+  assert.equal(annualRow.isContractTerminatingPayout, true);
+  assert.equal(annualRow.cashValueReferenceType, 'pre_maturity');
+  assert.equal(annualRow.cashValueIsNonAdditiveReference, true);
+  assert.equal(annualRow.cashValueIsPreMaturityReference, true);
+  assert.match(annualRow.cashValueNote, /不与现金价值叠加领取/u);
+  assert.equal(policy.keyPoints.find((item) => item.amount === 31560)?.label, '期满前现金价值参考');
+  assert.match(policy.keyPoints.find((item) => item.amount === 31560)?.note, /合同终止/u);
+  assert.equal(radarScore(report.radar.family, 'wealth').amount, 32960);
+  assert.match(radarScore(report.radar.family, 'wealth').note, /现金价值参考31,560未计入合计/u);
+});
+
+test('buildFamilyReport marks any terminating payout cash value as non-additive reference', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 47,
+      insured: '爸爸',
+      insuredBirthday: '1988-01-01',
+      name: '终身寿险',
+      date: '2026-01-01',
+      cashflowEntries: [
+        {
+          year: 2030,
+          age: 42,
+          amount: 100000,
+          cumulative: 100000,
+          liability: '身故保险金',
+          calculationText: '身故保险金给付后，本合同终止。',
+          policyId: 47,
+          productName: '终身寿险',
+        },
+      ],
+      cashValues: [
+        { policyYear: 4, age: 42, cashValue: 30000 },
+      ],
+    }),
+  ]);
+
+  const father = report.wealth.memberReports.find((item) => item.member === '爸爸');
+  const policy = father.policies.find((item) => item.policyId === 47);
+  const annualRow = policy.annualCashflowRows.find((row) => row.year === 2030);
+
+  assert.equal(annualRow.isContractTerminatingPayout, true);
+  assert.equal(annualRow.isMaturityPayout, false);
+  assert.equal(annualRow.cashValueReferenceType, 'pre_termination');
+  assert.equal(annualRow.cashValueIsNonAdditiveReference, true);
+  assert.match(annualRow.cashValueNote, /给付后合同终止/u);
+  assert.equal(policy.keyPoints.find((item) => item.amount === 30000)?.label, '终止前现金价值参考');
+});
+
+test('buildFamilyReport marks same-year non-terminal cash value as surrender reference', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 48,
+      insured: '妈妈',
+      insuredBirthday: '1988-01-01',
+      name: '年金保险',
+      date: '2026-01-01',
+      cashflowEntries: [
+        { year: 2030, age: 42, amount: 1000, cumulative: 1000, liability: '生存金', policyId: 48, productName: '年金保险' },
+      ],
+      cashValues: [
+        { policyYear: 4, age: 42, cashValue: 30000 },
+      ],
+    }),
+  ]);
+
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+  const policy = mother.policies.find((item) => item.policyId === 48);
+  const annualRow = policy.annualCashflowRows.find((row) => row.year === 2030);
+
+  assert.equal(annualRow.isContractTerminatingPayout, false);
+  assert.equal(annualRow.cashValueReferenceType, 'surrender');
+  assert.equal(annualRow.cashValueIsNonAdditiveReference, true);
+  assert.match(annualRow.cashValueNote, /退保参考/u);
+  assert.equal(policy.keyPoints.find((item) => item.amount === 30000)?.label, '末期现金价值参考');
+});
+
+test('buildFamilyReport does not synthesize blank cash value years for incomplete OCR rows', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 46,
+      insured: '妈妈',
+      insuredBirthday: '1988-12-16',
+      name: '新华人寿保险股份有限公司安鑫优选终身护理保险',
+      date: '2026-03-26',
+      cashValues: [
+        { policyYear: 1, age: 0, cashValue: 336 },
+        { policyYear: 2, age: 0, cashValue: 1272 },
+        { policyYear: 4, age: 0, cashValue: 3432 },
+      ],
+    }),
+  ]);
+
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+  const policy = mother.policies.find((item) => item.policyId === 46);
+
+  assert.deepEqual(policy.annualCashflowRows.map((row) => row.year), [2027, 2028, 2030]);
+  assert.equal(policy.annualCashflowRows.some((row) => row.year === 2029), false);
+  assert.equal(policy.annualCashflowRows[0].age, 38);
+  assert.ok(policy.attentionItems.includes('现金价值表缺少第3年'));
+});
+
+test('buildFamilyReport keeps cash value stock out of annual aggregate wealth totals', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 45,
+      applicant: '温舒萍',
+      insured: '妈妈',
+      name: '现金流年金',
+      date: '2025-01-01',
+      paymentPeriod: '1年',
+      cashflowEntries: [
+        { year: 2027, age: 39, amount: 20, cumulative: 20, liability: '生存金', policyId: 45, productName: '现金流年金', calculationText: '' },
+        { year: 2028, age: 40, amount: 30, cumulative: 50, liability: '生存金', policyId: 45, productName: '现金流年金', calculationText: '' },
+      ],
+      cashValues: [
+        { policyYear: 1, age: 38, cashValue: 100 },
+        { policyYear: 2, age: 39, cashValue: 130 },
+        { policyYear: 3, age: 40, cashValue: 160 },
+      ],
+    }),
+  ]);
+
+  const row2026 = report.wealth.aggregateRows.find((row) => row.year === 2026);
+  const row2027 = report.wealth.aggregateRows.find((row) => row.year === 2027);
+  const row2028 = report.wealth.aggregateRows.find((row) => row.year === 2028);
+
+  assert.equal(row2026, undefined);
+  assert.equal(row2027.cashValueTotal, 0);
+  assert.equal(row2027.cumulativePayoutInflow, 20);
+  assert.equal(row2027.totalValue, 20);
+  assert.equal(row2028.cashValueTotal, 0);
+  assert.equal(row2028.cumulativePayoutInflow, 50);
+  assert.equal(row2028.totalValue, 50);
+  assert.equal(report.wealth.aggregateRows.some((row) => row.details.some((detail) => detail.type === 'cashValue')), false);
 });
 
 test('buildFamilyReport keeps unknown wealth cash value dates out of aggregate rows', () => {
@@ -1458,8 +1836,8 @@ test('buildFamilyReport skips wealth premium rows when payment period is unknown
   const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
   const row2026 = report.wealth.aggregateRows.find((row) => row.year === 2026);
 
-  assert.equal(row2026.premiumOutflow, 0);
-  assert.equal(row2026.details.some((detail) => detail.type === 'premium'), false);
+  assert.equal(row2026, undefined);
+  assert.equal(report.wealth.aggregateRows.length, 0);
   assert.ok(mother.attentionItems.includes('缴费期待补充'));
   assert.ok(mother.policies[0].attentionItems.includes('缴费期待补充'));
 });
@@ -1480,10 +1858,11 @@ test('buildFamilyReport does not classify protection policy as wealth from OCR c
   assert.equal(report.wealth.memberReports.length, 0);
 });
 
-test('buildFamilyReport includes calendar year and age in aggregate cash value details', () => {
+test('buildFamilyReport keeps cash value date and age on policy rows, not aggregate rows', () => {
   const report = buildFamilyReport([
     makePolicy({
       id: 43,
+      applicant: '温舒萍',
       insured: '妈妈',
       name: '盛世恒盈年金',
       date: '2025-12-22',
@@ -1493,8 +1872,11 @@ test('buildFamilyReport includes calendar year and age in aggregate cash value d
   ]);
 
   const row2026 = report.wealth.aggregateRows.find((row) => row.year === 2026);
-  const cashValueDetail = row2026.details.find((detail) => detail.type === 'cashValue');
+  const mother = report.wealth.memberReports.find((item) => item.member === '妈妈');
+  const policy = mother.policies.find((item) => item.policyId === 43);
+  const cashValueRow = policy.cashValueRows[0];
 
-  assert.equal(cashValueDetail.calendarYear, 2026);
-  assert.equal(cashValueDetail.age, 37);
+  assert.equal(row2026, undefined);
+  assert.equal(cashValueRow.calendarYear, 2026);
+  assert.equal(cashValueRow.age, 37);
 });

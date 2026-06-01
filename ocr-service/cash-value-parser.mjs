@@ -177,7 +177,7 @@ function parsePolicyYear(text) {
     .replace(/[｜|]/g, '')
     .replace(/\s+/g, '')
     .trim();
-  const yearEndMatch = normalized.match(/^(?:第)?(\d{1,3})(?:个)?年(?:度)?(?:末|未|底)?$/);
+  const yearEndMatch = normalized.match(/^(?:第)?(\d{1,3})(?:个)?年(?:度)?(?:末|未|木|底)?$/);
   if (yearEndMatch) {
     const year = Number(yearEndMatch[1]);
     return year >= 1 && year <= 150 ? year : null;
@@ -349,7 +349,19 @@ function parseCashValueRowsFromRecognizedOrder(boxes, options = {}) {
 
 function normalizeOcrTextLines(input) {
   const lines = Array.isArray(input) ? input : String(input || '').split(/\r?\n/u);
-  return lines.map((line) => String(line || '').trim()).filter(Boolean);
+  const normalized = lines.map((line) => String(line || '').trim()).filter(Boolean);
+  const merged = [];
+  for (let i = 0; i < normalized.length; i++) {
+    const line = normalized[i];
+    const nextLine = normalized[i + 1];
+    if (/^\d+[.．]$/.test(line) && /^\d{1,2}$/.test(nextLine || '')) {
+      merged.push(`${line.replace('．', '.')}${nextLine}`);
+      i++;
+      continue;
+    }
+    merged.push(line);
+  }
+  return merged;
 }
 
 function isYearHeader(text) {

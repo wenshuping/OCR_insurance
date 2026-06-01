@@ -88,6 +88,7 @@ export type FamilyWealthPolicyCashflowRow = {
   amount: number;
   cumulative: number;
   liability: string;
+  calculationText?: string;
   policyId: number;
   productName: string;
 };
@@ -109,6 +110,12 @@ export type FamilyWealthPolicyAnnualCashflowRow = {
   cumulative: number;
   cashValue: number | null;
   liabilities: string[];
+  isMaturityPayout?: boolean;
+  isContractTerminatingPayout?: boolean;
+  cashValueReferenceType?: 'pre_maturity' | 'pre_termination' | 'surrender' | 'reference' | '';
+  cashValueIsNonAdditiveReference?: boolean;
+  cashValueIsPreMaturityReference?: boolean;
+  cashValueNote?: string;
 };
 
 export type FamilyWealthKeyPoint = {
@@ -116,6 +123,13 @@ export type FamilyWealthKeyPoint = {
   value: string;
   amount: number;
   year?: number;
+  note?: string;
+};
+
+export type FamilyWealthUncertaintyItem = {
+  key: 'dividend' | 'universal_account' | string;
+  label: string;
+  reason: string;
 };
 
 export type FamilyWealthPolicyReport = {
@@ -125,7 +139,12 @@ export type FamilyWealthPolicyReport = {
   annualPremium: number;
   cashflowRows: FamilyWealthPolicyCashflowRow[];
   cashValueRows: FamilyWealthPolicyCashValueRow[];
+  excludedCashflowRows: FamilyWealthPolicyCashflowRow[];
+  excludedCashValueRows: FamilyWealthPolicyCashValueRow[];
   annualCashflowRows: FamilyWealthPolicyAnnualCashflowRow[];
+  uncertaintyItems: FamilyWealthUncertaintyItem[];
+  uncertaintyNote: string;
+  hasUncertainWealthFactors: boolean;
   keyPoints: FamilyWealthKeyPoint[];
   attentionItems: string[];
 };
@@ -141,7 +160,9 @@ export type FamilyWealthAggregateDetail = {
   policyId: number;
   productName: string;
   member: string;
+  policyholder: string;
   amount: number;
+  increase?: number;
   liability?: string;
   policyYear?: number;
   calendarYear?: number;
@@ -152,14 +173,27 @@ export type FamilyWealthAggregateRow = {
   year: number;
   premiumOutflow: number;
   payoutInflow: number;
+  cashValueIncrease: number;
   netCashflow: number;
   cumulativeNetCashflow: number;
+  cumulativePayoutInflow: number;
   cashValueTotal: number;
+  totalValue: number;
   details: FamilyWealthAggregateDetail[];
+};
+
+export type FamilyWealthExcludedPolicy = {
+  policyId: number;
+  member: string;
+  productName: string;
+  reasons: string[];
+  note: string;
 };
 
 export type FamilyWealthReport = {
   memberReports: FamilyMemberWealthReport[];
+  excludedPolicies: FamilyWealthExcludedPolicy[];
+  statisticsScopeNote: string;
   aggregateRows: FamilyWealthAggregateRow[];
   keyPoints: FamilyWealthKeyPoint[];
 };
@@ -203,6 +237,7 @@ export type FamilyRadarScore = {
   label: string;
   amount: number;
   effectiveAmount: number;
+  coveragePresent: boolean;
   score: number;
   amountText: string;
   effectiveAmountText: string;

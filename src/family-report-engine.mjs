@@ -1,3 +1,5 @@
+import { resolvePolicyValidityStatus } from './policy-validity.mjs';
+
 function asNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -12,7 +14,7 @@ function finiteNumber(value) {
 function parseDateParts(value) {
   const text = String(value || '').trim();
   if (!text) return null;
-  const match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/u);
+  const match = text.match(/(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})/u);
   if (match) {
     const year = Number(match[1]);
     const month = Number(match[2]);
@@ -48,9 +50,28 @@ function datePartsToTime(parts) {
   return parts ? Date.UTC(parts.year, parts.month - 1, parts.day) : null;
 }
 
+function ageAtDateParts(birthday, parts) {
+  const birth = parseDateParts(birthday);
+  if (!birth || !parts) return null;
+  let age = parts.year - birth.year;
+  if (parts.month < birth.month || (parts.month === birth.month && parts.day < birth.day)) {
+    age -= 1;
+  }
+  return age >= 0 ? age : null;
+}
+
+function coverageEndDateParts(policy) {
+  return parseDateParts(policy?.coveragePeriod);
+}
+
 function memberName(policy) {
   const name = String(policy?.insured || '').trim();
   return name || '未识别被保人';
+}
+
+function policyholderName(policy) {
+  const name = String(policy?.applicant || '').trim();
+  return name || '未识别投保人';
 }
 
 const INACTIVE_STATUS_PATTERN = /(失效|停效|中止|终止|退保|已退保|过期|作废|无效|inactive|expired|lapsed|terminated|surrendered|cancelled|canceled|void)/iu;
@@ -84,47 +105,22 @@ function inactiveStatusText(text) {
   return INACTIVE_STATUS_PATTERN.test(String(text || '').normalize('NFKC'));
 }
 
+function policyValidityContext(record, fallback = {}) {
+  return {
+    effectiveDate: record?.date || record?.effectiveDate || fallback.effectiveDate,
+    insuredBirthday: record?.insuredBirthday || fallback.insuredBirthday,
+  };
+}
+
 function policyIsInactive(policy) {
   if (policy?.expired === true) return true;
   const text = policyStatusText(policy);
-  return inactiveStatusText(text);
+  if (inactiveStatusText(text)) return true;
+  return coveragePeriodExpired(policy?.coveragePeriod, policyValidityContext(policy));
 }
 
-function validEndOfDayDate(year, month, day) {
-  const parsedYear = Number(year);
-  const parsedMonth = Number(month);
-  const parsedDay = Number(day);
-  if (!Number.isInteger(parsedYear) || !Number.isInteger(parsedMonth) || !Number.isInteger(parsedDay)) return null;
-  if (parsedYear < 1900 || parsedYear > 2200 || parsedMonth < 1 || parsedMonth > 12 || parsedDay < 1 || parsedDay > 31) return null;
-  const date = new Date(parsedYear, parsedMonth - 1, parsedDay, 23, 59, 59, 999);
-  if (date.getFullYear() !== parsedYear || date.getMonth() !== parsedMonth - 1 || date.getDate() !== parsedDay) return null;
-  return date;
-}
-
-function parseCoverageEndDate(value) {
-  const text = String(value || '').normalize('NFKC').trim();
-  if (!text || /终身|永久|lifelong|whole\s*life/iu.test(text)) return null;
-
-  const chineseDateMatches = [...text.matchAll(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?/gu)];
-  if (chineseDateMatches.length) {
-    const match = chineseDateMatches[chineseDateMatches.length - 1];
-    return validEndOfDayDate(match[1], match[2], match[3]);
-  }
-
-  const numericDateMatches = [...text.matchAll(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/gu)];
-  if (numericDateMatches.length) {
-    const match = numericDateMatches[numericDateMatches.length - 1];
-    return validEndOfDayDate(match[1], match[2], match[3]);
-  }
-
-  return null;
-}
-
-function coveragePeriodExpired(value, today = new Date()) {
-  const endDate = parseCoverageEndDate(value);
-  if (!endDate) return false;
-  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  return endDate < startOfToday;
+function coveragePeriodExpired(value, context = {}) {
+  return resolvePolicyValidityStatus(value, context).tone === 'expired';
 }
 
 function planStatusText(plan) {
@@ -137,7 +133,7 @@ function planIsInactive(policy, plan) {
   if (!plan || typeof plan === 'string') return false;
   if (plan?.expired === true) return true;
   if (inactiveStatusText(planStatusText(plan))) return true;
-  return coveragePeriodExpired(plan?.coveragePeriod);
+  return coveragePeriodExpired(plan?.coveragePeriod, policyValidityContext(plan, policyValidityContext(policy)));
 }
 
 function activePlans(policy) {
@@ -414,6 +410,7 @@ function resolveIndicatorAmount(indicator, policy) {
   const unit = String(indicator?.unit || '').normalize('NFKC');
   const basis = String(indicator?.basis || '').normalize('NFKC');
   const text = indicatorText(indicator).normalize('NFKC');
+  const formulaText = String(indicator?.formulaText || '').normalize('NFKC');
   const baseAmount = indicatorBaseAmount(indicator, policy);
   const baseAmountPattern = /基本(?:保险金额|保额)/u;
 
@@ -425,10 +422,12 @@ function resolveIndicatorAmount(indicator, policy) {
     return baseAmount * value;
   }
 
-  const formulaPercentMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*%/u);
+  const formulaPercentMatch = formulaText.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*%/u)
+    || text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*%/u);
   if (formulaPercentMatch) return baseAmount * asNumber(formulaPercentMatch[1]) / 100;
 
-  const formulaMultipleMatch = text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍/u);
+  const formulaMultipleMatch = formulaText.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍/u)
+    || text.match(/基本(?:保险金额|保额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍/u);
   if (formulaMultipleMatch) return baseAmount * asNumber(formulaMultipleMatch[1]);
 
   if (value !== null && /^(?:元|圆)$/u.test(unit)) return value;
@@ -439,6 +438,7 @@ function resolveIndicatorAmount(indicator, policy) {
   const yuanMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:元|圆)/u);
   if (yuanMatch) return asNumber(yuanMatch[1]);
 
+  if (baseAmountPattern.test(formulaText) && !formulaNeedsManualAmount(formulaText)) return baseAmount;
   if (baseAmountPattern.test(text) && !formulaNeedsManualAmount(text)) return baseAmount;
 
   return 0;
@@ -742,7 +742,7 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = []) {
 
   const rows = Array.from(rowMap.values());
   const attentionItems = [];
-  if (rowMap.get('critical_first')?.status === 'missing') {
+  if (memberPolicies.length > 0 && rowMap.get('critical_first')?.status === 'missing') {
     attentionItems.push('重疾首次给付缺失');
   }
 
@@ -1086,9 +1086,11 @@ function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
   markInactiveAccidentPolicies(rowMap, inactiveMemberPolicies);
 
   const rows = Array.from(rowMap.values());
-  const attentionItems = rows
-    .filter((row) => row.status === 'missing')
-    .map((row) => `${row.label}缺失`);
+  const attentionItems = memberPolicies.length > 0
+    ? rows
+      .filter((row) => row.status === 'missing')
+      .map((row) => `${row.label}缺失`)
+    : [];
 
   return { rows, attentionItems };
 }
@@ -1122,6 +1124,47 @@ function effectiveYear(policy) {
   return effectiveDateParts(policy)?.year || 0;
 }
 
+const MATURITY_PAYOUT_PATTERN = /(满期|期满|保险期间届满|合同期满)/u;
+const CONTRACT_TERMINATING_PAYOUT_PATTERN = /(满期|期满|保险期间届满|合同期满|身故|全残|身体全残|退保|解约|解除合同|本合同终止|合同终止|保险责任终止|责任终止|效力终止|终止保险合同)/u;
+
+function cashflowTerminationText(row) {
+  return [
+    row?.liability,
+    row?.calculationText,
+    row?.calcText,
+  ].filter(Boolean).join(' ').normalize('NFKC');
+}
+
+function isMaturityPayoutRow(row) {
+  return asNumber(row?.amount) > 0 && MATURITY_PAYOUT_PATTERN.test(cashflowTerminationText(row));
+}
+
+function isContractTerminatingPayoutRow(row) {
+  return asNumber(row?.amount) > 0 && CONTRACT_TERMINATING_PAYOUT_PATTERN.test(cashflowTerminationText(row));
+}
+
+function cashValueReferenceTypeFor({ hasCashValue, hasPayout, isMaturityPayout, isContractTerminatingPayout }) {
+  if (!hasCashValue) return '';
+  if (isMaturityPayout) return 'pre_maturity';
+  if (isContractTerminatingPayout) return 'pre_termination';
+  if (hasPayout) return 'surrender';
+  return 'reference';
+}
+
+function cashValueReferenceNote(type) {
+  if (type === 'pre_maturity') return '满期金给付后合同终止，不与现金价值叠加领取';
+  if (type === 'pre_termination') return '该给付后合同终止，不与现金价值叠加领取';
+  if (type === 'surrender') return '现金价值为退保参考，不与当年领取金额叠加领取';
+  if (type === 'reference') return '现金价值为退保参考，不等同于可直接领取金额';
+  return '';
+}
+
+function cashValueKeyPointLabel(type) {
+  if (type === 'pre_maturity') return '期满前现金价值参考';
+  if (type === 'pre_termination') return '终止前现金价值参考';
+  return '末期现金价值参考';
+}
+
 function cashValueRows(policy) {
   const startDate = effectiveDateParts(policy);
   const rows = Array.isArray(policy?.cashValues) ? policy.cashValues : [];
@@ -1133,10 +1176,15 @@ function cashValueRows(policy) {
       if (policyYear === null || cashValue === null) return null;
       const cashValueEndDate = startDate ? addYearsToDateParts(startDate, policyYear) : null;
       const cashValueDate = formatDateParts(cashValueEndDate);
+      const rowAge = finiteNumber(row?.age);
+      const inferredAge = ageAtDateParts(policy?.insuredBirthday, cashValueEndDate);
+      const age = rowAge !== null && rowAge > 0
+        ? rowAge
+        : (inferredAge !== null && inferredAge >= 0 ? inferredAge : rowAge);
 
       return {
         policyYear,
-        age: finiteNumber(row?.age),
+        age,
         calendarYear: cashValueEndDate?.year || 0,
         cashValueDate,
         cashValueDateLabel: cashValueDate || `第${policyYear}年末`,
@@ -1163,6 +1211,7 @@ function cashflowRows(policy) {
         amount,
         cumulative: asNumber(row?.cumulative),
         liability: String(row?.liability || ''),
+        calculationText: String(row?.calculationText || row?.calcText || ''),
         policyId: row?.policyId ?? policy?.id,
         productName: String(row?.productName || policy?.name || ''),
       };
@@ -1195,6 +1244,8 @@ function annualCashflowRows(policy, payouts, values) {
         amount: 0,
         cumulative: 0,
         liabilities: [],
+        isMaturityPayout: false,
+        isContractTerminatingPayout: false,
       });
     }
     const grouped = payoutByYear.get(row.year);
@@ -1202,6 +1253,8 @@ function annualCashflowRows(policy, payouts, values) {
     grouped.cumulative = Math.max(grouped.cumulative, asNumber(row.cumulative));
     if (grouped.age === null && row.age !== null) grouped.age = row.age;
     if (row.liability && !grouped.liabilities.includes(row.liability)) grouped.liabilities.push(row.liability);
+    grouped.isMaturityPayout = grouped.isMaturityPayout || isMaturityPayoutRow(row);
+    grouped.isContractTerminatingPayout = grouped.isContractTerminatingPayout || isContractTerminatingPayoutRow(row);
   }
 
   const knownYears = [
@@ -1210,11 +1263,8 @@ function annualCashflowRows(policy, payouts, values) {
   ].filter((year) => year > 0);
   if (!knownYears.length) return [];
 
-  const minYear = Math.min(...knownYears);
-  const maxYear = Math.max(...knownYears);
-  const years = maxYear - minYear <= 120
-    ? Array.from({ length: maxYear - minYear + 1 }, (_, index) => minYear + index)
-    : Array.from(new Set(knownYears)).sort((a, b) => a - b);
+  const years = Array.from(new Set(knownYears)).sort((a, b) => a - b);
+  const coverageEndDate = coverageEndDateParts(policy);
   const inferredBirthYear = [
     ...payouts.map((row) => (row.age === null ? null : row.year - row.age)),
     ...values.map((row) => (row.calendarYear > 0 && row.age !== null ? row.calendarYear - row.age : null)),
@@ -1226,17 +1276,55 @@ function annualCashflowRows(policy, payouts, values) {
     const payout = payoutByYear.get(year);
     if (payout?.amount > 0) runningCumulative += payout.amount;
     const meta = cashValueMeta.get(year);
-    const age = payout?.age ?? meta?.age ?? (year > 1900 && inferredBirthYear ? year - inferredBirthYear : null);
+    const coverageEndAge = coverageEndDate?.year === year ? ageAtDateParts(policy?.insuredBirthday, coverageEndDate) : null;
+    const age = meta?.age ?? coverageEndAge ?? payout?.age ?? (year > 1900 && inferredBirthYear ? year - inferredBirthYear : null);
+    const liabilities = payout?.liabilities ?? [];
+    const cashValue = cashValueByDisplayYear.get(year) ?? null;
+    const hasPayout = (payout?.amount ?? 0) > 0;
+    const isMaturityPayout = Boolean(payout?.isMaturityPayout);
+    const isContractTerminatingPayout = Boolean(payout?.isContractTerminatingPayout);
+    const cashValueReferenceType = cashValueReferenceTypeFor({
+      hasCashValue: cashValue !== null,
+      hasPayout,
+      isMaturityPayout,
+      isContractTerminatingPayout,
+    });
+    const cashValueIsNonAdditiveReference = cashValue !== null && hasPayout;
 
     return {
       year,
       age,
       amount: payout?.amount ?? 0,
       cumulative: payout ? Math.max(payout.cumulative, runningCumulative) : 0,
-      cashValue: cashValueByDisplayYear.get(year) ?? null,
-      liabilities: payout?.liabilities ?? [],
+      cashValue,
+      liabilities,
+      isMaturityPayout,
+      isContractTerminatingPayout,
+      cashValueReferenceType,
+      cashValueIsNonAdditiveReference,
+      cashValueIsPreMaturityReference: cashValueReferenceType === 'pre_maturity',
+      cashValueNote: cashValueReferenceNote(cashValueReferenceType),
     };
   });
+}
+
+function cashValuePolicyYearGapRanges(values) {
+  const policyYears = Array.from(new Set(values.map((row) => row.policyYear)))
+    .filter((year) => Number.isFinite(year) && year > 0)
+    .sort((a, b) => a - b);
+  const ranges = [];
+  for (let index = 1; index < policyYears.length; index += 1) {
+    const previous = policyYears[index - 1];
+    const current = policyYears[index];
+    if (current - previous > 1) {
+      ranges.push({ start: previous + 1, end: current - 1 });
+    }
+  }
+  return ranges;
+}
+
+function policyYearGapText(range) {
+  return range.start === range.end ? `第${range.start}年` : `第${range.start}-${range.end}年`;
 }
 
 function isWealthPolicy(policy) {
@@ -1269,6 +1357,122 @@ function isWealthPolicy(policy) {
   return /(年金|教育金|生存金|满期|分红|万能|现金价值|终身寿|增额)/u.test(text);
 }
 
+function wealthInsuranceText(policy) {
+  return [
+    policy?.company,
+    policy?.name,
+    policy?.productName,
+    policy?.productType,
+    policy?.type,
+    policy?.category,
+    ...activePlans(policy).map((plan) => {
+      if (typeof plan === 'string') return plan;
+      return [
+        plan?.name,
+        plan?.title,
+        plan?.productName,
+        plan?.productType,
+        plan?.matchedProductName,
+        plan?.liability,
+        plan?.type,
+      ].filter(Boolean).join(' ');
+    }),
+    ...(Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : []).map((indicator) => [
+      indicator?.productType,
+      indicator?.productName,
+      indicator?.name,
+      indicator?.title,
+      indicator?.coverageType,
+      indicator?.liability,
+    ].filter(Boolean).join(' ')),
+  ].filter(Boolean).join(' ').normalize('NFKC');
+}
+
+function wealthPolicyIdentityText(policy) {
+  return [
+    policy?.company,
+    policy?.name,
+    policy?.productName,
+    policy?.productType,
+    policy?.type,
+    policy?.category,
+  ].filter(Boolean).join(' ').normalize('NFKC');
+}
+
+function wealthUncertaintyItems(policy) {
+  const text = wealthInsuranceText(policy);
+  const items = [];
+  if (/分红|红利/u.test(text)) {
+    items.push({
+      key: 'dividend',
+      label: '分红/红利',
+      reason: '红利分配不保证，实际金额取决于保险公司分配',
+    });
+  }
+  if (/万能(?:账户|型|保险|险)|账户价值|保单账户|最低保证利率|结算利率/u.test(text)) {
+    items.push({
+      key: 'universal_account',
+      label: '万能账户',
+      reason: '结算利率和账户价值会随实际账户变动',
+    });
+  }
+  return items;
+}
+
+function wealthUncertaintyAttentionText(items) {
+  if (!items.length) return '';
+  return `${items.map((item) => item.label).join('、')}存在不确定因素，未进入财富统计`;
+}
+
+function wealthUncertaintyNote(items) {
+  if (!items.length) return '';
+  return `${items.map((item) => item.reason).join('；')}。当前财富统计仅包含已识别的确定领取现金流，现金价值仅在保单明细展示。`;
+}
+
+function isWealthInsurancePolicy(policy) {
+  const text = wealthInsuranceText(policy);
+  return /年金/u.test(text)
+    || /万能(?:账户|型|保险|险)/u.test(text)
+    || /(?:增额|递增).{0,12}终身寿/u.test(text)
+    || /终身寿.{0,12}(?:增额|递增)/u.test(text);
+}
+
+function cashflowRowHasUncertainWealthFactor(row) {
+  const liabilityText = String(row?.liability || '').normalize('NFKC');
+  const productText = String(row?.productName || '').normalize('NFKC');
+  if (/分红|红利/u.test(liabilityText)) return true;
+  return /万能(?:账户|型|保险|险)|账户价值|保单账户|最低保证利率|结算利率/u.test(`${liabilityText} ${productText}`);
+}
+
+function policyCashValuesAreUncertain(policy) {
+  return /万能(?:账户|型|保险|险)|账户价值|保单账户|最低保证利率|结算利率/u.test(wealthPolicyIdentityText(policy));
+}
+
+function deterministicCashflowRows(policy) {
+  return cashflowRows(policy).filter((row) => !cashflowRowHasUncertainWealthFactor(row));
+}
+
+function excludedUncertainCashflowRows(policy) {
+  return cashflowRows(policy).filter(cashflowRowHasUncertainWealthFactor);
+}
+
+function deterministicCashValueRows(policy) {
+  return policyCashValuesAreUncertain(policy) ? [] : cashValueRows(policy);
+}
+
+function excludedUncertainCashValueRows(policy) {
+  return policyCashValuesAreUncertain(policy) ? cashValueRows(policy) : [];
+}
+
+function deterministicLatestCashValue(policy) {
+  if (policyCashValuesAreUncertain(policy)) return null;
+  return latestCashValue(policy);
+}
+
+function deterministicFuturePayoutTotal(policy) {
+  return deterministicCashflowRows(policy).reduce((total, entry) => total + asNumber(entry?.amount), 0);
+}
+
 function premiumOutflows(policy) {
   const startYear = effectiveYear(policy);
   const paymentYears = parsePaymentYears(policy?.paymentPeriod);
@@ -1284,14 +1488,27 @@ function premiumOutflows(policy) {
 }
 
 function buildWealthPolicyReport(policy) {
-  const payouts = cashflowRows(policy);
-  const values = cashValueRows(policy);
+  const payouts = deterministicCashflowRows(policy);
+  const excludedCashflowRows = excludedUncertainCashflowRows(policy);
+  const values = deterministicCashValueRows(policy);
+  const excludedCashValueRows = excludedUncertainCashValueRows(policy);
+  const uncertaintyItems = wealthUncertaintyItems(policy);
+  const uncertaintyAttention = wealthUncertaintyAttentionText(uncertaintyItems);
+  const excludedStatisticRowsCount = excludedCashflowRows.length + excludedCashValueRows.length;
+  const cashValueGapRanges = cashValuePolicyYearGapRanges(values);
+  const annualRows = annualCashflowRows(policy, payouts, values);
   const firstPayout = payouts.find((row) => row.amount > 0);
   const highestPayout = payouts.reduce((highest, row) => (!highest || row.amount > highest.amount ? row : highest), null);
   const lastCashValue = values[values.length - 1];
+  const lastCashValueYear = lastCashValue?.calendarYear || lastCashValue?.policyYear;
+  const lastCashValueAnnualRow = annualRows.find((row) => row.year === lastCashValueYear);
+  const lastCashValueReferenceType = lastCashValueAnnualRow?.cashValueReferenceType || (lastCashValue ? 'reference' : '');
   const attentionItems = [
+    uncertaintyAttention || null,
+    excludedStatisticRowsCount > 0 ? `已排除${excludedStatisticRowsCount}条不确定财富数据` : null,
     values.length > 0 && effectiveYear(policy) <= 0 ? '生效日待补充' : null,
     asNumber(policy?.firstPremium) > 0 && parsePaymentYears(policy?.paymentPeriod) === null ? '缴费期待补充' : null,
+    cashValueGapRanges.length ? `现金价值表缺少${cashValueGapRanges.map(policyYearGapText).join('、')}` : null,
   ].filter(Boolean);
 
   return {
@@ -1301,7 +1518,12 @@ function buildWealthPolicyReport(policy) {
     annualPremium: asNumber(policy?.firstPremium),
     cashflowRows: payouts,
     cashValueRows: values,
-    annualCashflowRows: annualCashflowRows(policy, payouts, values),
+    excludedCashflowRows,
+    excludedCashValueRows,
+    annualCashflowRows: annualRows,
+    uncertaintyItems,
+    uncertaintyNote: wealthUncertaintyNote(uncertaintyItems),
+    hasUncertainWealthFactors: uncertaintyItems.length > 0,
     attentionItems,
     keyPoints: [
       firstPayout
@@ -1311,7 +1533,12 @@ function buildWealthPolicyReport(policy) {
         ? { label: '单年最高领取', value: String(highestPayout.year), amount: highestPayout.amount }
         : null,
       lastCashValue
-        ? { label: '末期现金价值', value: lastCashValue.cashValueDateLabel || String(lastCashValue.calendarYear || lastCashValue.policyYear), amount: lastCashValue.cashValue }
+        ? {
+          label: cashValueKeyPointLabel(lastCashValueReferenceType),
+          value: lastCashValue.cashValueDateLabel || String(lastCashValue.calendarYear || lastCashValue.policyYear),
+          amount: lastCashValue.cashValue,
+          note: cashValueReferenceNote(lastCashValueReferenceType),
+        }
         : null,
     ].filter(Boolean),
   };
@@ -1331,7 +1558,7 @@ export function buildWealthSection(policies = []) {
     const reports = memberPolicies.map(buildWealthPolicyReport);
     const attentionItems = [
       ...reports
-        .filter((policyReport) => policyReport.cashValueRows.length === 0)
+        .filter((policyReport) => policyReport.cashValueRows.length === 0 && policyReport.excludedCashValueRows.length === 0)
         .map((policyReport) => `${policyReport.productName || '未命名保单'}缺少现金价值表`),
       ...new Set(reports.flatMap((policyReport) => policyReport.attentionItems)),
     ];
@@ -1342,6 +1569,15 @@ export function buildWealthSection(policies = []) {
       attentionItems,
     };
   });
+  const excludedPolicies = memberReports.flatMap((memberReport) => memberReport.policies
+    .filter((policyReport) => policyReport.hasUncertainWealthFactors)
+    .map((policyReport) => ({
+      policyId: policyReport.policyId,
+      member: memberReport.member,
+      productName: policyReport.productName,
+      reasons: policyReport.uncertaintyItems.map((item) => item.label),
+      note: policyReport.uncertaintyNote,
+    })));
 
   const aggregateMap = new Map();
   const ensureRow = (year) => {
@@ -1350,9 +1586,12 @@ export function buildWealthSection(policies = []) {
         year,
         premiumOutflow: 0,
         payoutInflow: 0,
+        cashValueIncrease: 0,
         netCashflow: 0,
         cumulativeNetCashflow: 0,
+        cumulativePayoutInflow: 0,
         cashValueTotal: 0,
+        totalValue: 0,
         details: [],
       });
     }
@@ -1361,27 +1600,17 @@ export function buildWealthSection(policies = []) {
 
   for (const policy of wealthPolicies) {
     const member = memberName(policy);
+    const policyholder = policyholderName(policy);
     const policyId = policy?.id;
     const productName = String(policy?.name || '');
 
-    for (const outflow of premiumOutflows(policy)) {
-      const row = ensureRow(outflow.year);
-      row.premiumOutflow += outflow.amount;
-      row.details.push({
-        type: 'premium',
-        member,
-        policyId,
-        productName,
-        amount: outflow.amount,
-      });
-    }
-
-    for (const payout of cashflowRows(policy)) {
+    for (const payout of deterministicCashflowRows(policy)) {
       const row = ensureRow(payout.year);
       row.payoutInflow += payout.amount;
       row.details.push({
         type: 'payout',
         member,
+        policyholder,
         policyId,
         productName,
         liability: payout.liability,
@@ -1389,31 +1618,19 @@ export function buildWealthSection(policies = []) {
       });
     }
 
-    for (const value of cashValueRows(policy)) {
-      if (value.calendarYear <= 0) continue;
-
-      const row = ensureRow(value.calendarYear);
-      row.cashValueTotal += value.cashValue;
-      row.details.push({
-        type: 'cashValue',
-        member,
-        policyId,
-        productName,
-        policyYear: value.policyYear,
-        calendarYear: value.calendarYear,
-        age: value.age,
-        amount: value.cashValue,
-      });
-    }
   }
 
   let cumulativeNetCashflow = 0;
+  let cumulativePayoutInflow = 0;
   const aggregateRows = Array.from(aggregateMap.values())
     .sort((a, b) => a.year - b.year)
     .map((row) => {
-      row.netCashflow = row.payoutInflow - row.premiumOutflow;
+      row.netCashflow = row.payoutInflow;
       cumulativeNetCashflow += row.netCashflow;
       row.cumulativeNetCashflow = cumulativeNetCashflow;
+      cumulativePayoutInflow += row.payoutInflow;
+      row.cumulativePayoutInflow = cumulativePayoutInflow;
+      row.totalValue = row.cumulativePayoutInflow;
       return row;
     });
 
@@ -1424,6 +1641,10 @@ export function buildWealthSection(policies = []) {
 
   return {
     memberReports,
+    excludedPolicies,
+    statisticsScopeNote: excludedPolicies.length
+      ? '分红、万能账户存在收益或账户价值不确定因素，无法进入现金流统计；当前统计仅包含已识别的确定领取现金流，现金价值仅在保单明细展示。'
+      : '',
     aggregateRows,
     keyPoints: [
       peakPayoutRow
@@ -1867,39 +2088,71 @@ function lifeRadarAmount(policies) {
 
 function futurePayoutPresentValue(policy, discountRate = FAMILY_PLANNING_DEFAULTS.wealthDiscountRate) {
   const currentYear = new Date().getFullYear();
-  return cashflowRows(policy).reduce((total, row) => {
+  return deterministicCashflowRows(policy).reduce((total, row) => {
     const years = Math.max(0, asNumber(row.year) - currentYear);
     const divisor = (1 + discountRate) ** years;
     return total + (asNumber(row.amount) / divisor);
   }, 0);
 }
 
+function payoutRunText(rows) {
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  const liability = String(first?.liability || '未来领取').trim() || '未来领取';
+  const amountText = formatRadarMoney(first?.amount);
+  const years = rows.map((row) => asNumber(row.year)).filter((year) => year > 0);
+  const contiguous = years.length > 1 && years.every((year, index) => index === 0 || year === years[index - 1] + 1);
+
+  if (rows.length === 1) return `${liability}${amountText}(${first.year})`;
+  if (contiguous) return `${liability}${amountText} × ${rows.length}年(${first.year}-${last.year})`;
+  return `${liability}${amountText} × ${rows.length}次(${years.join('、')})`;
+}
+
+function futurePayoutCalculationText(rows) {
+  const payouts = (Array.isArray(rows) ? rows : [])
+    .filter((row) => asNumber(row?.amount) > 0)
+    .sort((a, b) => asNumber(a.year) - asNumber(b.year));
+  const total = payouts.reduce((sum, row) => sum + asNumber(row.amount), 0);
+  if (!payouts.length) return `未来确定领取合计 = ${formatRadarMoney(0)}`;
+
+  const runs = [];
+  for (const row of payouts) {
+    const previous = runs[runs.length - 1];
+    const previousLast = previous?.[previous.length - 1];
+    const sameRun = previousLast
+      && String(previousLast.liability || '') === String(row.liability || '')
+      && asNumber(previousLast.amount) === asNumber(row.amount)
+      && asNumber(row.year) === asNumber(previousLast.year) + 1;
+    if (sameRun) {
+      previous.push(row);
+    } else {
+      runs.push([row]);
+    }
+  }
+
+  return `未来确定领取合计 = ${runs.map(payoutRunText).join(' + ')} = ${formatRadarMoney(total)}`;
+}
+
 function wealthRadarAmount(policies) {
-  const cashValue = policies.reduce((total, policy) => total + (latestCashValue(policy)?.cashValue || 0), 0);
-  const futurePayout = policies.reduce((total, policy) => total + futurePayoutTotal(policy), 0);
-  const futurePayoutPresent = policies.reduce((total, policy) => total + futurePayoutPresentValue(policy), 0);
-  const amount = cashValue + futurePayout;
+  let countedCashValue = 0;
+  let referenceOnlyCashValue = 0;
+  let futurePayout = 0;
+  let futurePayoutPresent = 0;
   const amountDetails = [];
+  const hasUncertainWealthFactors = policies.some((policy) => wealthUncertaintyItems(policy).length > 0);
   for (const policy of policies) {
     const sourceKey = policySourceKey(policy);
     const company = String(policy?.company || '');
     const productName = String(policy?.name || '');
-    const policyCashValue = latestCashValue(policy)?.cashValue || 0;
-    if (policyCashValue > 0) {
-      amountDetails.push(radarAmountDetailFromPart({
-        sourceKey: `${sourceKey}:cash-value`,
-        policyId: policy?.id,
-        company,
-        productName,
-        label: productName || '现金价值',
-        liability: '现金价值',
-        amount: policyCashValue,
-        calculationText: `最新现金价值 = ${formatRadarMoney(policyCashValue)}`,
-      }));
-    }
+    const policyCashValue = deterministicLatestCashValue(policy)?.cashValue || 0;
+    const policyPayoutRows = deterministicCashflowRows(policy);
+    const policyFuturePayout = policyPayoutRows.reduce((total, row) => total + asNumber(row?.amount), 0);
+    const hasFuturePayout = policyFuturePayout > 0;
 
-    const policyFuturePayout = futurePayoutTotal(policy);
-    if (policyFuturePayout > 0) {
+    if (hasFuturePayout) {
+      futurePayout += policyFuturePayout;
+      futurePayoutPresent += futurePayoutPresentValue(policy);
+      if (policyCashValue > 0) referenceOnlyCashValue += policyCashValue;
       amountDetails.push(radarAmountDetailFromPart({
         sourceKey: `${sourceKey}:future-payout`,
         policyId: policy?.id,
@@ -1908,15 +2161,37 @@ function wealthRadarAmount(policies) {
         label: productName || '未来领取',
         liability: '未来领取',
         amount: policyFuturePayout,
-        calculationText: `未来确定领取合计 = ${formatRadarMoney(policyFuturePayout)}`,
+        calculationText: futurePayoutCalculationText(policyPayoutRows),
+      }));
+    } else if (policyCashValue > 0) {
+      countedCashValue += policyCashValue;
+      amountDetails.push(radarAmountDetailFromPart({
+        sourceKey: `${sourceKey}:cash-value`,
+        policyId: policy?.id,
+        company,
+        productName,
+        label: productName || '现金价值参考',
+        liability: '现金价值参考',
+        amount: policyCashValue,
+        calculationText: `现金价值参考 = ${formatRadarMoney(policyCashValue)}`,
       }));
     }
   }
+  const amount = countedCashValue + futurePayout;
+  const noteParts = [
+    countedCashValue > 0 ? `现金价值参考${formatNumberText(countedCashValue)}` : null,
+    futurePayout > 0 ? `未来领取${formatNumberText(futurePayout)}` : null,
+    referenceOnlyCashValue > 0 ? `现金价值参考${formatNumberText(referenceOnlyCashValue)}未计入合计` : null,
+  ].filter(Boolean);
+  const uncertainNote = hasUncertainWealthFactors ? '；分红、万能账户不确定金额未统计' : '';
   return {
     amount,
-    effectiveAmount: cashValue + futurePayoutPresent,
-    policyCount: policies.filter((policy) => (latestCashValue(policy)?.cashValue || 0) > 0 || futurePayoutTotal(policy) > 0).length,
-    note: amount > 0 ? `现金价值${formatNumberText(cashValue)}，未来领取${formatNumberText(futurePayout)}` : '未识别到可落地金额',
+    effectiveAmount: countedCashValue + futurePayoutPresent,
+    policyCount: policies.filter((policy) => (deterministicLatestCashValue(policy)?.cashValue || 0) > 0 || deterministicFuturePayoutTotal(policy) > 0).length,
+    coveragePresent: policies.some((policy) => isWealthInsurancePolicy(policy) || wealthUncertaintyItems(policy).length > 0),
+    note: amount > 0
+      ? `${noteParts.join('，')}${uncertainNote}`
+      : (hasUncertainWealthFactors ? '分红、万能账户不确定金额未统计' : '未识别到可落地金额'),
     amountDetails: amountDetails.filter(Boolean),
   };
 }
@@ -1933,11 +2208,13 @@ function buildRadarScores(policies) {
   return RADAR_DIMENSIONS.map((dimension) => {
     const result = radarAmountForDimension(policies, dimension.key);
     const effectiveAmount = asNumber(result.effectiveAmount ?? result.amount);
+    const coveragePresent = result.coveragePresent ?? result.amount > 0;
     return {
       key: dimension.key,
       label: dimension.label,
       amount: result.amount,
       effectiveAmount,
+      coveragePresent,
       score: 0,
       amountText: formatRadarMoney(result.amount),
       effectiveAmountText: formatRadarMoney(effectiveAmount),
@@ -2118,14 +2395,14 @@ export function buildFamilyRadarReport(policies = [], planningProfile = null) {
 
 export function buildFamilyReportSummary(policies = []) {
   const reportPolicies = activePolicies(policies);
-  const members = new Set(policies.map(memberName));
+  const members = new Set(reportPolicies.map(memberName));
   return {
     memberCount: members.size,
     policyCount: reportPolicies.length,
     annualPremium: reportPolicies.reduce((total, policy) => total + asNumber(policy?.firstPremium), 0),
     totalCoverage: reportPolicies.reduce((total, policy) => total + asNumber(policy?.amount), 0),
-    cashValueTotal: reportPolicies.reduce((total, policy) => total + (latestCashValue(policy)?.cashValue || 0), 0),
-    futurePayoutTotal: reportPolicies.reduce((total, policy) => total + futurePayoutTotal(policy), 0),
+    cashValueTotal: reportPolicies.reduce((total, policy) => total + (deterministicLatestCashValue(policy)?.cashValue || 0), 0),
+    futurePayoutTotal: reportPolicies.reduce((total, policy) => total + deterministicFuturePayoutTotal(policy), 0),
     attentionItems: [],
   };
 }
