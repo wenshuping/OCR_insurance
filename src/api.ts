@@ -70,6 +70,7 @@ export type FamilyRelationToCore =
   | 'spouse'
   | 'son'
   | 'daughter'
+  | 'child'
   | 'father'
   | 'mother'
   | 'parent'
@@ -713,7 +714,7 @@ export function confirmCashValue(input: { token?: string; guestId?: string; poli
 }
 
 export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
-  return request<{ ok: true; familyProfiles: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
+  return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
 }
 
 export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string }) {

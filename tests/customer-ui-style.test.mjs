@@ -894,7 +894,10 @@ test('client API exposes family profile types and endpoints', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /export type FamilyProfile/);
   assert.match(apiSource, /export type FamilyMember/);
+  assert.match(apiSource, /\|\s*'child'/);
   assert.match(apiSource, /listFamilyProfiles/);
+  assert.match(apiSource, /request<\{ ok: true; families: FamilyProfile\[\] \}>/);
+  assert.doesNotMatch(apiSource, /request<\{ ok: true; familyProfiles: FamilyProfile\[\] \}>/);
   assert.match(apiSource, /createFamilyProfile/);
   assert.match(apiSource, /createFamilyMember/);
   assert.match(apiSource, /ensureDefaultFamilyProfile/);
