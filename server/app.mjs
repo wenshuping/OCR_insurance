@@ -1911,7 +1911,7 @@ export function createPolicyOcrApp(options = {}) {
     try {
       const existingMembers = listFamilyMembers(state, family.id);
       const existingCore = existingMembers.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
-      const shouldSetAsCore = Boolean(req.body?.setAsCore) || !existingCore;
+      const shouldSetAsCore = Boolean(req.body?.setAsCore);
       const memberInput = {
         ...(req.body || {}),
         ...(shouldSetAsCore ? { relationToCore: 'self', relationLabel: '本人', role: 'core' } : {}),
@@ -1941,27 +1941,34 @@ export function createPolicyOcrApp(options = {}) {
     if (!family) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
-    const members = listFamilyMembers(state, family.id);
-    const member = members.find((row) => Number(row.id) === Number(req.body?.memberId || 0) && String(row.status || 'active') === 'active');
-    if (!member) {
-      return res.status(400).json({ ok: false, code: 'FAMILY_MEMBER_NOT_FOUND', message: '家庭成员不存在' });
+    try {
+      const members = listFamilyMembers(state, family.id);
+      const member = members.find((row) => Number(row.id) === Number(req.body?.memberId || 0) && String(row.status || 'active') === 'active');
+      if (!member) {
+        const error = new Error('家庭成员不存在');
+        error.code = 'FAMILY_MEMBER_NOT_FOUND';
+        error.status = 400;
+        throw error;
+      }
+      const existingCore = members.find((row) => Number(row.id) === Number(family.coreMemberId || 0));
+      const now = new Date().toISOString();
+      if (existingCore && Number(existingCore.id) !== Number(member.id)) {
+        existingCore.relationToCore = 'pending';
+        existingCore.relationLabel = '待确认';
+        existingCore.role = 'adult';
+        existingCore.updatedAt = now;
+      }
+      member.relationToCore = 'self';
+      member.relationLabel = '本人';
+      member.role = 'core';
+      member.updatedAt = now;
+      family.coreMemberId = member.id;
+      family.updatedAt = now;
+      await persist(state);
+      res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
+    } catch (error) {
+      sendError(res, error, 400);
     }
-    const existingCore = members.find((row) => Number(row.id) === Number(family.coreMemberId || 0));
-    const now = new Date().toISOString();
-    if (existingCore && Number(existingCore.id) !== Number(member.id)) {
-      existingCore.relationToCore = 'pending';
-      existingCore.relationLabel = '待确认';
-      existingCore.role = 'adult';
-      existingCore.updatedAt = now;
-    }
-    member.relationToCore = 'self';
-    member.relationLabel = '本人';
-    member.role = 'core';
-    member.updatedAt = now;
-    family.coreMemberId = member.id;
-    family.updatedAt = now;
-    await persist(state);
-    res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
   });
 
   app.post('/api/policies/recognize', async (req, res) => {

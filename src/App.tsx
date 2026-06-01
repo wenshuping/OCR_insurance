@@ -6874,10 +6874,36 @@ function UploadPolicyPage(props: {
     const name = (kind === 'applicant' ? formData.applicant : formData.insured).trim();
     const relationLabel = kind === 'applicant' ? applicantFamilyRelation : insuredFamilyRelation;
     if (!name) return;
+    const existingMember = selectedFamilyMembers.find((member) => member.status === 'active' && member.name.trim() === name);
+    if (existingMember) {
+      selectFamilyParticipantMember(kind, existingMember, relationLabel);
+      return;
+    }
     const member = await onCreateFamilyMember({ name, relationLabel, setAsCore: relationLabel === '本人' });
     if (!member) return;
+    selectFamilyParticipantMember(kind, member, relationLabel);
+  }
+
+  function selectFamilyParticipantMember(kind: 'applicant' | 'insured', member: FamilyMember, fallbackRelationLabel: string) {
+    const relationLabel = member.relationLabel || fallbackRelationLabel;
     onUpdateForm(kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId', member.id);
-    onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', member.relationLabel || relationLabel);
+    onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', relationLabel);
+    if (kind === 'applicant') {
+      setApplicantFamilyRelation(relationLabel);
+    } else {
+      setInsuredFamilyRelation(relationLabel);
+    }
+  }
+
+  function updateParticipantName(kind: 'applicant' | 'insured', value: string) {
+    const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
+    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
+    const selectedMemberId = formData[memberIdKey];
+    const selectedMember = selectedFamilyMembers.find((member) => Number(member.id) === Number(selectedMemberId || 0));
+    onUpdateForm(nameKey, value);
+    if (!selectedMember || selectedMember.name.trim() !== value.trim()) {
+      onUpdateForm(memberIdKey, null);
+    }
   }
 
   function renderFamilyMemberFields(kind: 'applicant' | 'insured', label: string) {
@@ -6887,7 +6913,7 @@ function UploadPolicyPage(props: {
     const setRelation = kind === 'applicant' ? setApplicantFamilyRelation : setInsuredFamilyRelation;
     return (
       <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
-        <TextField label={label} value={String(formData[nameKey] || '')} onChange={(value) => onUpdateForm(nameKey, value)} placeholder="姓名" />
+        <TextField label={label} value={String(formData[nameKey] || '')} onChange={(value) => updateParticipantName(kind, value)} placeholder="姓名" />
         <SelectField
           label={`${label}家庭成员`}
           value={formData[memberIdKey] ? String(formData[memberIdKey]) : ''}
@@ -6896,7 +6922,7 @@ function UploadPolicyPage(props: {
             onUpdateForm(memberIdKey, value ? Number(value) : null);
             if (member) {
               onUpdateForm(nameKey, member.name);
-              onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', member.relationLabel);
+              selectFamilyParticipantMember(kind, member, relation);
               setRelation(member.relationLabel || relation);
             }
           }}

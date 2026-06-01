@@ -69,6 +69,8 @@ test('entry form requires family profile and supports core setup after OCR', () 
   assert.match(customerSource, /insuredMemberId/);
   assert.match(customerSource, /setFamilyCoreMember/);
   assert.match(customerSource, /setAsCoreOnCreate/);
+  assert.match(pageSource, /updateParticipantName/);
+  assert.match(pageSource, /selectFamilyParticipantMember/);
   assert.doesNotMatch(customerSource, /input\.memberId && !input\.setAsCore/);
   assert.doesNotMatch(customerSource, /input\.setAsCore\s*\?\s*null/);
 });

@@ -4133,12 +4133,9 @@ test('family API sets existing member as core before saving policy', async () =>
       method: 'POST',
       body: JSON.stringify({ name: '张三', relationLabel: '待确认' }),
     });
-    const familyRow = state.familyProfiles.find((row) => Number(row.id) === Number(familyId));
-    const applicantRow = state.familyMembers.find((row) => Number(row.id) === Number(applicantRes.payload.member.id));
-    familyRow.coreMemberId = null;
-    applicantRow.relationToCore = 'pending';
-    applicantRow.relationLabel = '待确认';
-    applicantRow.role = 'adult';
+    assert.equal(applicantRes.response.status, 201);
+    assert.equal(applicantRes.payload.family.coreMemberId, null);
+    assert.notEqual(applicantRes.payload.member.role, 'core');
 
     const coreRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/core?guestId=guest-family-core`, {
       method: 'PATCH',
