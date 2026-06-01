@@ -463,6 +463,13 @@ NCI 新华保险
         guestId: 'guest-linked-account',
         ocrText,
         scan: recognized.payload.scan,
+        manualData: {
+          canonicalProductId: '',
+          plans: recognized.payload.scan.data.plans.map((plan) => ({
+            ...plan,
+            canonicalProductId: '',
+          })),
+        },
         analysis: {
           report: '已生成责任。',
           coverageTable: [

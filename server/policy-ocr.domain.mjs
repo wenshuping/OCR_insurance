@@ -125,7 +125,7 @@ export function normalizeBeneficiary(value) {
 
 export function normalizePolicyScanData(data = {}) {
   const insuredIdNumber = normalizeIdNumber(data.insuredIdNumber || data.insuredIdentityNumber || data.insuredIdCard);
-  return {
+  const normalized = {
     company: String(data.company || '').trim() || '待补充保险公司',
     name: String(data.name || '').trim() || '未命名保单',
     applicant: String(data.applicant || '').trim(),
@@ -140,8 +140,10 @@ export function normalizePolicyScanData(data = {}) {
     coveragePeriod: String(data.coveragePeriod || '').trim(),
     amount: Number(data.amount || 0) || 0,
     firstPremium: Number(data.firstPremium || 0) || 0,
-    canonicalProductId: String(data.canonicalProductId || '').trim(),
   };
+  const canonicalProductId = String(data.canonicalProductId || '').trim();
+  if (canonicalProductId) normalized.canonicalProductId = canonicalProductId;
+  return normalized;
 }
 
 function normalizePolicyPlanRole(value, index, name) {
@@ -160,12 +162,11 @@ export function normalizePolicyPlans(plans = [], company = '') {
       const matchedProductName = String(plan?.matchedProductName || '').trim();
       const effectiveName = matchedProductName || name;
       if (!effectiveName) return null;
-      return {
+      const normalized = {
         company: String(plan?.company || company || '').trim(),
         role: normalizePolicyPlanRole(plan?.role, index, name || effectiveName),
         name: name || effectiveName,
         matchedProductName,
-        canonicalProductId: String(plan?.canonicalProductId || '').trim(),
         productType: String(plan?.productType || '').trim(),
         amount: Number(plan?.amount || 0) || 0,
         coveragePeriod: String(plan?.coveragePeriod || '').trim(),
@@ -176,6 +177,9 @@ export function normalizePolicyPlans(plans = [], company = '') {
         matchScore: Number(plan?.matchScore || 0) || 0,
         matchReason: String(plan?.matchReason || '').trim(),
       };
+      const canonicalProductId = String(plan?.canonicalProductId || '').trim();
+      if (canonicalProductId) normalized.canonicalProductId = canonicalProductId;
+      return normalized;
     })
     .filter(Boolean);
 }

@@ -435,27 +435,63 @@ function normalizeManualPolicyData(value) {
   }
   if (Array.isArray(value.plans)) {
     const plans = value.plans
-      .map((plan) => ({
-        company: trim(plan?.company),
-        role: trim(plan?.role),
-        name: trim(plan?.name || plan?.productName),
-        matchedProductName: trim(plan?.matchedProductName),
-        canonicalProductId: trim(plan?.canonicalProductId),
-        productType: trim(plan?.productType),
-        amount: Number(plan?.amount || 0) || 0,
-        coveragePeriod: trim(plan?.coveragePeriod),
-        paymentMode: trim(plan?.paymentMode),
-        paymentPeriod: trim(plan?.paymentPeriod),
-        premium: Number(plan?.premium || plan?.firstPremium || 0) || 0,
-        premiumText: trim(plan?.premiumText),
-        matchScore: Number(plan?.matchScore || 0) || 0,
-        matchReason: trim(plan?.matchReason),
-      }))
+      .map((plan) => {
+        const normalized = {
+          company: trim(plan?.company),
+          role: trim(plan?.role),
+          name: trim(plan?.name || plan?.productName),
+          matchedProductName: trim(plan?.matchedProductName),
+          productType: trim(plan?.productType),
+          amount: Number(plan?.amount || 0) || 0,
+          coveragePeriod: trim(plan?.coveragePeriod),
+          paymentMode: trim(plan?.paymentMode),
+          paymentPeriod: trim(plan?.paymentPeriod),
+          premium: Number(plan?.premium || plan?.firstPremium || 0) || 0,
+          premiumText: trim(plan?.premiumText),
+          matchScore: Number(plan?.matchScore || 0) || 0,
+          matchReason: trim(plan?.matchReason),
+        };
+        const canonicalProductId = trim(plan?.canonicalProductId);
+        if (canonicalProductId) normalized.canonicalProductId = canonicalProductId;
+        return normalized;
+      })
       .filter((plan) => plan.name || plan.matchedProductName);
     if (plans.length) data.plans = plans;
   }
-  if (hasOwn(value, 'canonicalProductId')) data.canonicalProductId = trim(value.canonicalProductId);
+  const canonicalProductId = trim(value.canonicalProductId);
+  if (canonicalProductId) data.canonicalProductId = canonicalProductId;
   return data;
+}
+
+function normalizedPlanIdentity(plan = {}, fallbackCompany = '') {
+  return [
+    trim(plan?.company || fallbackCompany),
+    trim(plan?.role),
+    trim(plan?.matchedProductName || plan?.name || plan?.productName),
+  ].join('::');
+}
+
+function preserveMappedCanonicalIdsInManualData(manualData = {}, scanData = {}) {
+  const next = { ...manualData };
+  const manualProductName = trim(next.name);
+  const mappedProductName = trim(scanData.name);
+  if (!next.canonicalProductId && trim(scanData.canonicalProductId) && (!manualProductName || manualProductName === mappedProductName)) {
+    next.canonicalProductId = trim(scanData.canonicalProductId);
+  }
+  if (Array.isArray(next.plans) && Array.isArray(scanData.plans)) {
+    next.plans = next.plans.map((plan, index) => {
+      if (trim(plan?.canonicalProductId)) return plan;
+      const mappedPlan = scanData.plans[index] || null;
+      const mappedCanonicalProductId = trim(mappedPlan?.canonicalProductId);
+      if (!mappedCanonicalProductId) return plan;
+      const manualIdentity = normalizedPlanIdentity(plan, next.company || scanData.company);
+      const mappedIdentity = normalizedPlanIdentity(mappedPlan, scanData.company || next.company);
+      return manualIdentity === mappedIdentity
+        ? { ...plan, canonicalProductId: mappedCanonicalProductId }
+        : plan;
+    });
+  }
+  return next;
 }
 
 function normalizePolicyUpdateData(value, existingPolicy = {}) {
@@ -466,7 +502,8 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   for (const key of textFields) {
     if (hasOwn(input, key)) data[key] = trim(input[key]);
   }
-  if (hasOwn(input, 'canonicalProductId')) data.canonicalProductId = trim(input.canonicalProductId);
+  const canonicalProductId = trim(input.canonicalProductId);
+  if (canonicalProductId) data.canonicalProductId = canonicalProductId;
   if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
   if (hasOwn(input, 'date')) data.date = normalizeDateOnly(input.date) || trim(input.date);
   if (hasOwn(input, 'insuredIdNumber') || hasOwn(input, 'insuredIdentityNumber') || hasOwn(input, 'insuredIdCard')) {
@@ -1102,11 +1139,12 @@ function clearGuestPendingScans(state, guestId) {
 
 function mergeManualPolicyDataIntoScan(scan, body) {
   const manualData = normalizeManualPolicyData(body?.manualData);
+  const mergedManualData = preserveMappedCanonicalIdsInManualData(manualData, scan?.data || {});
   return {
     ...scan,
     data: {
       ...(scan?.data || {}),
-      ...manualData,
+      ...mergedManualData,
     },
   };
 }
