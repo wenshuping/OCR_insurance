@@ -146,6 +146,7 @@ test('buildOptionalResponsibilityRecords prefers canonical product id when linki
   const optionalId = buildOptionalResponsibilityId({
     company: '新华保险',
     productName: 'OCR短名',
+    canonicalProductId: xiangId,
     liability: '可选责任一',
   });
   const records = buildOptionalResponsibilityRecords({
@@ -392,6 +393,39 @@ test('rebuildOptionalResponsibilityGovernance produces records and indicators fr
   assert.equal(next.insuranceIndicatorRecords.some((row) => row.responsibilityScope === 'optional'), true);
   assert.equal(next.optionalResponsibilityRecords[0].sourceRecordId, '902');
   assert.equal(next.insuranceIndicatorRecords.find((row) => row.responsibilityScope === 'optional')?.sourceRecordId, '902');
+});
+
+test('rebuildOptionalResponsibilityGovernance keeps canonical products with colliding legacy optional ids separate', () => {
+  const state = {
+    knowledgeRecords: [
+      {
+        id: 'terms_a',
+        company: '新华保险',
+        productName,
+        canonicalProductId: 'product_a',
+        pageText: '保险责任。3.可选责任一 轻度疾病保险金按基本保险金额20%给付。',
+      },
+      {
+        id: 'terms_b',
+        company: '新华保险',
+        productName,
+        canonicalProductId: 'product_b',
+        pageText: '保险责任。3.可选责任一 轻度疾病保险金按基本保险金额20%给付。',
+      },
+    ],
+    insuranceIndicatorRecords: [],
+    optionalResponsibilityRecords: [],
+  };
+
+  const next = rebuildOptionalResponsibilityGovernance(state);
+  const optionalRecords = next.optionalResponsibilityRecords;
+
+  assert.equal(optionalRecords.length, 2);
+  assert.equal(new Set(optionalRecords.map((record) => record.id)).size, 2);
+  assert.deepEqual(
+    optionalRecords.map((record) => record.canonicalProductId).sort(),
+    ['product_a', 'product_b'],
+  );
 });
 
 test('rebuildOptionalResponsibilityGovernance preserves same-product linked optional indicators only', () => {

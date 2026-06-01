@@ -222,6 +222,7 @@ function buildOptionalResponsibilityId(value = {}) {
   return buildGovernanceOptionalResponsibilityId({
     company: value.company,
     productName: value.productName,
+    canonicalProductId: String(value.canonicalProductId || '').trim(),
     liability: value.liability || value.coverageType,
   });
 }
@@ -431,7 +432,8 @@ export function normalizeOptionalResponsibilities(items = []) {
       const productName = String(item?.productName || '').trim();
       const coverageType = String(item?.coverageType || '').trim();
       const liability = String(item?.liability || item?.name || item?.title || '').trim();
-      const id = normalizeOptionalResponsibilityId(item?.id) || buildOptionalResponsibilityId({ company, productName, coverageType, liability });
+      const canonicalProductId = String(item?.canonicalProductId || '').trim();
+      const id = normalizeOptionalResponsibilityId(item?.id) || buildOptionalResponsibilityId({ company, productName, canonicalProductId, coverageType, liability });
       if (!id || (!productName && !coverageType && !liability)) return null;
       return normalizeGovernanceOptionalResponsibilityRecord({
         ...item,
@@ -457,7 +459,13 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
   const coverageType = String(candidate?.coverageType || '').trim();
   const liability = String(candidate?.liability || '').trim();
   const canonicalProductId = canonicalProductIdForRecord(candidate);
-  const id = normalizeOptionalResponsibilityId(candidate?.id) || buildOptionalResponsibilityId({ company, productName, coverageType, liability });
+  const id = normalizeOptionalResponsibilityId(candidate?.id) || buildOptionalResponsibilityId({
+    company,
+    productName,
+    canonicalProductId: String(candidate?.canonicalProductId || '').trim(),
+    coverageType,
+    liability,
+  });
   if (!id || (!productName && !coverageType && !liability)) return;
   const normalized = {
     id,
@@ -589,13 +597,11 @@ function buildOptionalResponsibilitiesFromKnowledge(policy = {}, knowledgeRecord
       const suffix = String(match[1] || '').trim();
       const liability = `可选责任${suffix}`;
       const productName = String(policy.name || knowledgeRecordProductNames(record)[0] || '').trim();
+      const canonicalProductId = explicitCanonicalProductId(record) || explicitCanonicalProductId(policy);
       const candidate = {
         company: String(policy.company || record?.company || parseKnowledgeRecordPayload(record)?.company || '').trim(),
         productName,
-        ...(() => {
-          const canonicalProductId = canonicalProductIdForRecord(record, policy.company) || canonicalProductIdForRecord(policy);
-          return canonicalProductId ? { canonicalProductId } : {};
-        })(),
+        ...(canonicalProductId ? { canonicalProductId } : {}),
         coverageType: '可选责任',
         liability,
         sourceExcerpt: excerptAround(text, match.index),

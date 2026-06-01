@@ -32,10 +32,13 @@ export function normalizeQuantificationStatus(value, fallback = 'pending_review'
   return QUANTIFICATION_STATUSES.has(status) ? status : fallback;
 }
 
-export function buildOptionalResponsibilityId({ company = '', productName = '', liability = '', coverageType = '' } = {}) {
+export function buildOptionalResponsibilityId({ company = '', productName = '', canonicalProductId = '', liability = '', coverageType = '' } = {}) {
+  const idSeed = canonicalProductId
+    ? ['canonical-product', canonicalProductId, liability || coverageType]
+    : [company, productName, liability || coverageType];
   const digest = crypto
     .createHash('sha1')
-    .update([company, productName, liability || coverageType].map(normalizeLookupText).join('\u001f'))
+    .update(idSeed.map(normalizeLookupText).join('\u001f'))
     .digest('hex')
     .slice(0, 16);
   return `opt_${digest}`;
@@ -170,6 +173,7 @@ function extractOptionalSections(text = '') {
 
 function responsibilityKey(record = {}) {
   return [
+    explicitCanonicalProductId(record),
     record.company,
     record.productName,
     record.liability || record.title || record.coverageType,
@@ -219,11 +223,17 @@ export function normalizeOptionalResponsibilityRecord(record = {}) {
   const company = String(record.company || '').trim();
   const productName = String(record.productName || '').trim();
   const canonicalProductId = canonicalProductIdForRecord(record);
+  const explicitIdCanonicalProductId = explicitCanonicalProductId(record);
   const liability = String(record.liability || record.title || record.coverageType || '可选责任').trim();
   const indicatorIds = (Array.isArray(record.indicatorIds) ? record.indicatorIds : [])
     .map((item) => String(item || '').trim())
     .filter(Boolean);
-  const id = String(record.id || '').trim() || buildOptionalResponsibilityId({ company, productName, liability });
+  const id = String(record.id || '').trim() || buildOptionalResponsibilityId({
+    company,
+    productName,
+    canonicalProductId: explicitIdCanonicalProductId,
+    liability,
+  });
   return {
     id,
     company,
@@ -264,7 +274,7 @@ export function buildOptionalResponsibilityRecords({ policy = {}, knowledgeRecor
       const base = normalizeOptionalResponsibilityRecord({
         company: policy.company || knowledgeRecord.company,
         productName: policy.name || productNames(knowledgeRecord)[0],
-        canonicalProductId: canonicalProductIdForRecord(knowledgeRecord, policy.company) || canonicalProductIdForRecord(policy),
+        canonicalProductId: explicitCanonicalProductId(knowledgeRecord) || explicitCanonicalProductId(policy),
         liability: section.liability,
         sourceExcerpt: section.sourceExcerpt,
         ...knowledgeSourceFields(knowledgeRecord),
@@ -510,7 +520,10 @@ export function rebuildOptionalResponsibilityGovernance(state = {}) {
   }
   const existingNonOptionalIndicators = (Array.isArray(state.insuranceIndicatorRecords) ? state.insuranceIndicatorRecords : [])
     .filter((indicator) => String(indicator.responsibilityScope || 'basic') !== 'optional');
-  const uniqueOptionalRecords = [...new Map(optionalRecords.map((record) => [record.id, record])).values()];
+  const uniqueOptionalRecords = [...new Map(optionalRecords.map((record) => [
+    `${record.id}\u001f${explicitCanonicalProductId(record)}`,
+    record,
+  ])).values()];
   const uniqueIndicators = [...new Map([...existingNonOptionalIndicators, ...optionalIndicators]
     .map((indicator) => [String(indicator.id || ''), indicator]))
     .values()]
