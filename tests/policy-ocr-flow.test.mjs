@@ -3006,6 +3006,45 @@ test('responsibility assistant product suggestions are scoped to selected compan
   }
 });
 
+test('responsibility product suggestions include canonical product id', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '新华保险',
+          productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+          title: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+          url: 'https://static-cdn.newchinalife.com/ncl/pdf/xiang.pdf',
+          pageText: '保险责任。',
+          official: true,
+          sourceType: 'pdf',
+          materialType: 'terms',
+        },
+      ],
+      policies: [],
+      nextId: 2,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const suggested = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/product-suggestions?company=新华保险&q=多倍');
+    assert.equal(suggested.response.status, 200);
+    assert.equal(suggested.payload.suggestions[0].productName, '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）');
+    assert.match(suggested.payload.suggestions[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  } finally {
+    await server.close();
+  }
+});
+
 test('responsibility product suggestions match one-character product keywords within selected company', async () => {
   const app = createPolicyOcrApp({
     state: {

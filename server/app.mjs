@@ -62,6 +62,7 @@ import {
   matchFamilyMemberByPerson,
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -1012,7 +1013,15 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
         left.productName.localeCompare(right.productName, 'zh-CN'),
     )
     .slice(0, maxResults)
-    .map(({ company: itemCompany, productName, recordCount }) => ({ company: itemCompany, productName, recordCount }));
+    .map(({ company: itemCompany, productName, recordCount }) => ({
+      company: itemCompany,
+      productName,
+      canonicalProductId: canonicalProductIdFromOfficialProduct({
+        company: itemCompany,
+        productName,
+      }),
+      recordCount,
+    }));
 }
 
 function assertUploadItemSize(uploadItem) {

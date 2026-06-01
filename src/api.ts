@@ -378,6 +378,7 @@ export type PolicyAnalysisResult = {
 export type PolicyKnowledgeMatch = {
   company: string;
   productName: string;
+  canonicalProductId?: string;
   title: string;
   score: number;
   matchReason: string;
@@ -399,6 +400,7 @@ export type PolicyCompanySuggestion = {
 export type PolicyProductSuggestion = {
   company: string;
   productName: string;
+  canonicalProductId?: string;
   recordCount: number;
 };
 

@@ -207,6 +207,12 @@ test('knowledge product candidates fuzzy match similar local official products',
   assert.ok(matches.some((match) => match.productName === '尊享人生年金保险（分红型）'));
   assert.ok(matches.some((match) => match.productName === '新华人寿保险股份有限公司尊尚人生两全保险（分红型）'));
   assert.equal(matches.some((match) => match.productName === '健康无忧重大疾病保险'), false);
+  for (const match of matches) {
+    assert.match(match.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  }
+  const zunxiang = matches.find((match) => match.productName === '尊享人生年金保险（分红型）');
+  const zunshang = matches.find((match) => match.productName === '新华人寿保险股份有限公司尊尚人生两全保险（分红型）');
+  assert.notEqual(zunxiang.canonicalProductId, zunshang.canonicalProductId);
 });
 
 test('responsibility assistant returns local responsibility text as one raw row without model call', async () => {

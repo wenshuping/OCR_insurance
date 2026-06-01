@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+
 const NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
   'https://www.newchinalife.com/info/4596',
   'https://www.newchinalife.com/info/3279_23',
@@ -868,6 +870,10 @@ export function findKnowledgeProductCandidates({
       grouped.set(key, {
         company: record.company,
         productName: record.productName,
+        canonicalProductId: canonicalProductIdFromOfficialProduct({
+          company: record.company,
+          productName: record.productName,
+        }),
         title: record.title,
         score,
         matchReason: knowledgeMatchReason(score),
