@@ -1,5 +1,11 @@
 import crypto from 'node:crypto';
 import {
+  canonicalProductIdForRecord,
+  canonicalProductIdFromOfficialProduct,
+  resolveRecordCompany,
+  resolveRecordProductName,
+} from './canonical-product-id.mjs';
+import {
   buildOptionalResponsibilityId as buildGovernanceOptionalResponsibilityId,
   buildOptionalResponsibilityRecords as buildGovernanceOptionalResponsibilityRecords,
   isSelectedQuantifiedIndicator,
@@ -232,6 +238,7 @@ function optionalResponsibilityText(value = {}) {
 }
 
 function indicatorLooksOptional(indicator = {}) {
+  if (String(indicator?.responsibilityScope || '') === 'optional') return true;
   const directText = [
     indicator?.liability,
     indicator?.coverageType,
@@ -371,18 +378,21 @@ function indicatorQuantificationStatus(indicator = {}) {
 
 function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
   const optional = indicatorLooksOptional(indicator);
+  const canonicalProductId = canonicalProductIdForRecord(indicator, policy.company);
   if (!optional) {
     return {
       ...indicator,
+      ...(canonicalProductId ? { canonicalProductId } : {}),
       responsibilityScope: 'basic',
       selectionStatus: 'selected',
       selectionEvidence: 'official_terms',
     };
   }
-  const id = buildOptionalResponsibilityId(indicator);
+  const id = normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId) || buildOptionalResponsibilityId(indicator);
   const selection = inferOptionalResponsibilitySelection(policy, indicator, id);
   return {
     ...indicator,
+    ...(canonicalProductId ? { canonicalProductId } : {}),
     optionalResponsibilityId: id,
     responsibilityScope: 'optional',
     quantificationStatus: indicatorQuantificationStatus(indicator),
@@ -431,12 +441,14 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
   const productName = String(candidate?.productName || '').trim();
   const coverageType = String(candidate?.coverageType || '').trim();
   const liability = String(candidate?.liability || '').trim();
+  const canonicalProductId = canonicalProductIdForRecord(candidate);
   const id = normalizeOptionalResponsibilityId(candidate?.id) || buildOptionalResponsibilityId({ company, productName, coverageType, liability });
   if (!id || (!productName && !coverageType && !liability)) return;
   const normalized = {
     id,
     company,
     productName,
+    ...(canonicalProductId ? { canonicalProductId } : {}),
     coverageType,
     liability,
     title: String(candidate?.title || liability || coverageType || '可选责任').trim(),
@@ -538,8 +550,11 @@ function optionalResponsibilityMatchLooksLikeSection(text, index) {
 
 function findPolicyKnowledgeRecords(policy = {}, knowledgeRecords = []) {
   const keys = new Set(policyProductIndicatorKeys(policy));
-  if (!keys.size) return [];
+  const canonicalIds = new Set(policyCanonicalProductIds(policy));
+  if (!keys.size && !canonicalIds.size) return [];
   return (Array.isArray(knowledgeRecords) ? knowledgeRecords : []).filter((record) => {
+    const recordCanonicalProductId = explicitCanonicalProductId(record);
+    if (canonicalIds.size && recordCanonicalProductId) return canonicalIds.has(recordCanonicalProductId);
     const company = normalizeLookupText(record?.company || parseKnowledgeRecordPayload(record)?.company || policy.company);
     return knowledgeRecordProductNames(record).some((productName) => keys.has(`${company}\u001f${normalizeLookupText(productName)}`));
   });
@@ -562,6 +577,10 @@ function buildOptionalResponsibilitiesFromKnowledge(policy = {}, knowledgeRecord
       const candidate = {
         company: String(policy.company || record?.company || parseKnowledgeRecordPayload(record)?.company || '').trim(),
         productName,
+        ...(() => {
+          const canonicalProductId = canonicalProductIdForRecord(record, policy.company) || canonicalProductIdForRecord(policy);
+          return canonicalProductId ? { canonicalProductId } : {};
+        })(),
         coverageType: '可选责任',
         liability,
         sourceExcerpt: excerptAround(text, match.index),
@@ -605,6 +624,7 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
       id,
       company: String(indicator.company || policy.company || '').trim(),
       productName: String(indicator.productName || policy.name || '').trim(),
+      ...(indicator.canonicalProductId ? { canonicalProductId: indicator.canonicalProductId } : {}),
       coverageType: String(indicator.coverageType || '').trim(),
       liability: String(indicator.liability || '').trim(),
       responsibilityScope: 'optional',
@@ -663,11 +683,38 @@ function dedupePolicyIndicatorRows(rows = []) {
 }
 
 function optionalResponsibilityRecordMatchesPolicy(policy = {}, record = {}) {
+  const canonicalIds = new Set(policyCanonicalProductIds(policy));
+  const recordCanonicalProductId = explicitCanonicalProductId(record);
+  if (canonicalIds.size && recordCanonicalProductId) return canonicalIds.has(recordCanonicalProductId);
   const keys = new Set(policyProductIndicatorKeys(policy));
   if (!keys.size) return false;
   const company = normalizeLookupText(record?.company || policy.company);
   const productName = normalizeLookupText(record?.productName || record?.name || record?.title);
   return productName && keys.has(`${company}\u001f${productName}`);
+}
+
+function explicitCanonicalProductId(record = {}) {
+  return String(record?.canonicalProductId || '').trim();
+}
+
+export function policyCanonicalProductIds(policy = {}) {
+  const ids = [];
+  const add = (canonicalProductId) => {
+    const id = String(canonicalProductId || '').trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+  add(policy.canonicalProductId);
+  for (const plan of Array.isArray(policy.plans) ? policy.plans : []) {
+    add(plan?.canonicalProductId);
+    const matchedProductName = String(plan?.matchedProductName || '').trim();
+    if (matchedProductName) {
+      add(canonicalProductIdFromOfficialProduct({
+        company: plan?.company || policy.company,
+        productName: matchedProductName,
+      }));
+    }
+  }
+  return ids;
 }
 
 export function policyProductIndicatorKeys(policy = {}) {
@@ -692,11 +739,14 @@ export function policyProductIndicatorKeys(policy = {}) {
 
 export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = []) {
   const keys = new Set(policyProductIndicatorKeys(policy));
-  if (!keys.size) return [];
+  const canonicalIds = new Set(policyCanonicalProductIds(policy));
+  if (!keys.size && !canonicalIds.size) return [];
   return dedupePolicyIndicatorRows(
-    (Array.isArray(indicatorRecords) ? indicatorRecords : []).filter((record) =>
-      keys.has(`${normalizeLookupText(record?.company)}\u001f${normalizeLookupText(record?.productName)}`),
-    ),
+    (Array.isArray(indicatorRecords) ? indicatorRecords : []).filter((record) => {
+      const recordCanonicalProductId = explicitCanonicalProductId(record);
+      if (canonicalIds.size && recordCanonicalProductId) return canonicalIds.has(recordCanonicalProductId);
+      return keys.has(`${normalizeLookupText(resolveRecordCompany(record))}\u001f${normalizeLookupText(resolveRecordProductName(record))}`);
+    }),
   ).map((record) => annotateCoverageIndicatorSelection(policy, record));
 }
 

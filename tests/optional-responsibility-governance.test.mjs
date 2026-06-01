@@ -140,6 +140,68 @@ test('buildOptionalResponsibilityRecords does not link optional indicators from 
   assert.deepEqual(records[0].indicatorIds, []);
 });
 
+test('buildOptionalResponsibilityRecords prefers canonical product id when linking optional indicators', () => {
+  const xiangId = 'product_xiang';
+  const yingId = 'product_ying';
+  const optionalId = buildOptionalResponsibilityId({
+    company: '新华保险',
+    productName: 'OCR短名',
+    liability: '可选责任一',
+  });
+  const records = buildOptionalResponsibilityRecords({
+    policy: {
+      company: '新华保险',
+      name: 'OCR短名',
+      canonicalProductId: xiangId,
+    },
+    knowledgeRecords: [
+      {
+        id: 'xiang_terms',
+        company: '新华保险',
+        productName: 'OCR短名',
+        canonicalProductId: xiangId,
+        pageText: '保险责任。3.可选责任一 （1）轻度疾病保险金。',
+      },
+    ],
+    indicators: [
+      {
+        id: 'ind_xiang',
+        company: '新华保险',
+        productName: 'OCR短名',
+        canonicalProductId: xiangId,
+        coverageType: '疾病保障',
+        liability: '轻度疾病保险金',
+        value: 20,
+        unit: '%',
+        basis: '基本保险金额',
+        formulaText: '基本保额 × 20%',
+        responsibilityScope: 'optional',
+        optionalResponsibilityId: optionalId,
+        quantificationStatus: 'quantified',
+      },
+      {
+        id: 'ind_ying',
+        company: '新华保险',
+        productName: 'OCR短名',
+        canonicalProductId: yingId,
+        coverageType: '疾病保障',
+        liability: '轻度疾病保险金',
+        value: 20,
+        unit: '%',
+        basis: '基本保险金额',
+        formulaText: '基本保额 × 20%',
+        responsibilityScope: 'optional',
+        optionalResponsibilityId: optionalId,
+        quantificationStatus: 'quantified',
+      },
+    ],
+  });
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].canonicalProductId, xiangId);
+  assert.deepEqual(records[0].indicatorIds, ['ind_xiang']);
+});
+
 test('normalizeOptionalResponsibilityRecord preserves manual not quantifiable state', () => {
   const normalized = normalizeOptionalResponsibilityRecord({
     company: '新华保险',

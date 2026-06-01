@@ -140,6 +140,112 @@ test('optional responsibility review dedupes governance records and official-ter
   assert.equal(reviewItems[0].selectionStatus, 'selected');
 });
 
+test('canonical product id prevents similar product editions from sharing optional indicators', () => {
+  const xiangId = 'product_xiang';
+  const yingId = 'product_ying';
+  const policy = {
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+    canonicalProductId: xiangId,
+    plans: [
+      {
+        role: 'main',
+        company: '新华保险',
+        name: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+        matchedProductName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+        canonicalProductId: xiangId,
+      },
+    ],
+    optionalResponsibilities: [
+      {
+        id: 'opt_xiang_2',
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+        canonicalProductId: xiangId,
+        liability: '可选责任二',
+        selectionStatus: 'selected',
+        quantificationStatus: 'quantified',
+        indicatorIds: ['ind_xiang_cancer'],
+      },
+    ],
+  };
+  const indicators = findPolicyCoverageIndicators(policy, [
+    {
+      id: 'ind_xiang_cancer',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+      canonicalProductId: xiangId,
+      coverageType: '重大疾病保障',
+      liability: '重度恶性肿瘤多次给付保险金',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_xiang_2',
+      quantificationStatus: 'quantified',
+      value: 100,
+      unit: '%',
+      basis: '基本保险金额',
+    },
+    {
+      id: 'ind_ying_cancer',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）',
+      canonicalProductId: yingId,
+      coverageType: '重大疾病保障',
+      liability: '重度恶性肿瘤多次给付保险金',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_ying_2',
+      quantificationStatus: 'quantified',
+      value: 100,
+      unit: '%',
+      basis: '基本保险金额',
+    },
+  ]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['ind_xiang_cancer']);
+  assert.deepEqual(selectedCoverageIndicators(indicators).map((item) => item.id), ['ind_xiang_cancer']);
+});
+
+test('optional responsibility review matches canonical product id before name fallback', () => {
+  const xiangId = 'product_xiang';
+  const yingId = 'product_ying';
+  const policy = {
+    company: '新华保险',
+    name: 'OCR短名',
+    canonicalProductId: xiangId,
+    plans: [
+      {
+        role: 'main',
+        company: '新华保险',
+        name: 'OCR短名',
+        matchedProductName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+        canonicalProductId: xiangId,
+      },
+    ],
+  };
+  const records = buildOptionalResponsibilityReview(policy, [], [], [
+    {
+      id: 'opt_xiang_1',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+      canonicalProductId: xiangId,
+      liability: '可选责任一',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+    },
+    {
+      id: 'opt_ying_1',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）',
+      canonicalProductId: yingId,
+      liability: '可选责任一',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+    },
+  ]);
+
+  assert.deepEqual(records.map((record) => record.id), ['opt_xiang_1']);
+  assert.equal(records[0].canonicalProductId, xiangId);
+});
+
 test('buildPolicyFromScan stores selected optional responsibilities from analysis draft', () => {
   const state = createInitialState();
   const policy = buildPolicyFromScan({

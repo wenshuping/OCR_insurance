@@ -1,4 +1,8 @@
 import crypto from 'node:crypto';
+import {
+  canonicalProductIdForRecord,
+  canonicalProductIdFromOfficialProduct,
+} from './canonical-product-id.mjs';
 
 export const RESPONSIBILITY_SELECTION_STATUSES = new Set(['selected', 'not_selected', 'unknown']);
 export const QUANTIFICATION_STATUSES = new Set(['quantified', 'pending_review', 'not_quantifiable']);
@@ -94,7 +98,34 @@ function policyProductNames(policy = {}) {
   ].map((item) => String(item || '').trim()).filter(Boolean);
 }
 
+function explicitCanonicalProductId(record = {}) {
+  return String(record?.canonicalProductId || '').trim();
+}
+
+function policyCanonicalProductIds(policy = {}) {
+  const ids = [];
+  const add = (canonicalProductId) => {
+    const id = String(canonicalProductId || '').trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+  add(policy.canonicalProductId);
+  for (const plan of Array.isArray(policy.plans) ? policy.plans : []) {
+    add(plan?.canonicalProductId);
+    const matchedProductName = String(plan?.matchedProductName || '').trim();
+    if (matchedProductName) {
+      add(canonicalProductIdFromOfficialProduct({
+        company: plan?.company || policy.company,
+        productName: matchedProductName,
+      }));
+    }
+  }
+  return ids;
+}
+
 function recordMatchesPolicy(record = {}, policy = {}) {
+  const canonicalIds = new Set(policyCanonicalProductIds(policy));
+  const recordCanonicalProductId = explicitCanonicalProductId(record);
+  if (canonicalIds.size && recordCanonicalProductId) return canonicalIds.has(recordCanonicalProductId);
   const payload = parsePayload(record);
   const company = normalizeLookupText(record.company || payload.company || policy.company);
   const policyCompany = normalizeLookupText(policy.company);
@@ -149,6 +180,11 @@ function indicatorLinkedTo(record, indicator = {}) {
   const company = normalizeLookupText(record.company);
   const indicatorCompany = normalizeLookupText(indicator.company);
   if (company && indicatorCompany && company !== indicatorCompany) return false;
+  const recordCanonicalProductId = explicitCanonicalProductId(record);
+  const indicatorCanonicalProductId = explicitCanonicalProductId(indicator);
+  if (recordCanonicalProductId && indicatorCanonicalProductId) {
+    if (recordCanonicalProductId !== indicatorCanonicalProductId) return false;
+  }
   const productName = normalizeLookupText(record.productName);
   const indicatorProductName = normalizeLookupText(indicator.productName);
   if (productName && indicatorProductName && productName !== indicatorProductName) return false;
@@ -181,6 +217,7 @@ function inferSelectionStatus(policy = {}, liability = '') {
 export function normalizeOptionalResponsibilityRecord(record = {}) {
   const company = String(record.company || '').trim();
   const productName = String(record.productName || '').trim();
+  const canonicalProductId = canonicalProductIdForRecord(record);
   const liability = String(record.liability || record.title || record.coverageType || '可选责任').trim();
   const indicatorIds = (Array.isArray(record.indicatorIds) ? record.indicatorIds : [])
     .map((item) => String(item || '').trim())
@@ -190,6 +227,7 @@ export function normalizeOptionalResponsibilityRecord(record = {}) {
     id,
     company,
     productName,
+    ...(canonicalProductId ? { canonicalProductId } : {}),
     coverageType: String(record.coverageType || '可选责任').trim() || '可选责任',
     liability,
     title: String(record.title || liability).trim(),
@@ -225,6 +263,7 @@ export function buildOptionalResponsibilityRecords({ policy = {}, knowledgeRecor
       const base = normalizeOptionalResponsibilityRecord({
         company: policy.company || knowledgeRecord.company,
         productName: policy.name || productNames(knowledgeRecord)[0],
+        canonicalProductId: canonicalProductIdForRecord(knowledgeRecord, policy.company) || canonicalProductIdForRecord(policy),
         liability: section.liability,
         sourceExcerpt: section.sourceExcerpt,
         ...knowledgeSourceFields(knowledgeRecord),
@@ -371,6 +410,7 @@ export function extractOptionalIndicatorsFromSection(section = {}) {
         id: indicatorIdFor({ ...section, liability, optionalResponsibilityId }),
         company: String(section.company || '').trim(),
         productName: String(section.productName || '').trim(),
+        ...(section.canonicalProductId ? { canonicalProductId: section.canonicalProductId } : {}),
         coverageType: classifyCoverageType(liability),
         liability,
         ...formula,
@@ -391,17 +431,24 @@ export function extractOptionalIndicatorsFromSection(section = {}) {
 }
 
 export function rebuildOptionalResponsibilityGovernance(state = {}) {
-  const groupKey = (company = '', productName = '') =>
-    `${normalizeLookupText(company)}\u001f${normalizeLookupText(productName)}`;
+  const groupKey = (company = '', productName = '', canonicalProductId = '') =>
+    canonicalProductId
+      ? `canonical\u001f${canonicalProductId}`
+      : `${normalizeLookupText(company)}\u001f${normalizeLookupText(productName)}`;
   const knowledgeGroups = new Map();
   for (const record of Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : []) {
     const payload = parsePayload(record);
     const company = String(record.company || payload.company || '').trim();
     const name = String(record.productName || record.title || payload.productName || payload.title || productNames(record)[0] || '').trim();
-    const key = groupKey(company, name);
+    const canonicalProductId = explicitCanonicalProductId(record) || canonicalProductIdForRecord(record, company);
+    const key = groupKey(company, name, explicitCanonicalProductId(record));
     if (!normalizeLookupText(name)) continue;
     const group = knowledgeGroups.get(key) || {
-      policy: { company, name },
+      policy: {
+        company,
+        name,
+        ...(canonicalProductId ? { canonicalProductId } : {}),
+      },
       records: [],
     };
     group.records.push(record);
@@ -411,7 +458,7 @@ export function rebuildOptionalResponsibilityGovernance(state = {}) {
   for (const indicator of Array.isArray(state.insuranceIndicatorRecords) ? state.insuranceIndicatorRecords : []) {
     const productName = String(indicator?.productName || '').trim();
     if (!normalizeLookupText(productName)) continue;
-    const key = groupKey(indicator?.company, productName);
+    const key = groupKey(indicator?.company, productName, explicitCanonicalProductId(indicator));
     const group = indicatorGroups.get(key) || [];
     group.push(indicator);
     indicatorGroups.set(key, group);
@@ -422,6 +469,7 @@ export function rebuildOptionalResponsibilityGovernance(state = {}) {
     .filter((indicator) => String(indicator.responsibilityScope || '') === 'optional');
   for (const { policy, records: groupedKnowledgeRecords } of knowledgeGroups.values()) {
     const groupedIndicators = [
+      ...(indicatorGroups.get(groupKey(policy.company, policy.name, explicitCanonicalProductId(policy))) || []),
       ...(indicatorGroups.get(groupKey(policy.company, policy.name)) || []),
       ...(indicatorGroups.get(groupKey('', policy.name)) || []),
     ];
