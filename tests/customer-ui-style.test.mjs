@@ -191,6 +191,14 @@ test('recognized plans assign first product as main and later products as riders
   assert.match(scanSource, /normalizePolicyPlanList\(data\.plans,\s*String\(data\.company \|\| ''\),\s*\{\s*assignRolesByRecognizedOrder:\s*true\s*\}\)/);
 });
 
+test('entry form preserves canonical product id and clears it when product name changes', () => {
+  assert.match(appSource, /canonicalProductId: String\(plan\?\.canonicalProductId \|\| ''\)\.trim\(\)/u);
+  assert.match(appSource, /matchedProductName: productChanged \? '' : plan\.matchedProductName/u);
+  assert.match(appSource, /canonicalProductId: productChanged \? '' : plan\.canonicalProductId/u);
+  assert.match(appSource, /canonicalProductId: String\(match\.canonicalProductId \|\| ''\)\.trim\(\)/u);
+  assert.match(appSource, /canonicalProductId: String\(suggestion\.canonicalProductId \|\| ''\)\.trim\(\)/u);
+});
+
 test('entry form captures insured birthday for age-based reports', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');

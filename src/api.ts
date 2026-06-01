@@ -128,6 +128,7 @@ export type Policy = {
   id: number;
   company: string;
   name: string;
+  canonicalProductId?: string;
   applicant: string;
   beneficiary?: string;
   applicantRelation: string;
@@ -175,6 +176,7 @@ export type PolicyPlan = {
   role: 'main' | 'rider' | 'linked_account' | 'unknown' | string;
   name: string;
   matchedProductName?: string;
+  canonicalProductId?: string;
   productType?: string;
   amount: number | string;
   coveragePeriod: string;
@@ -342,6 +344,7 @@ export type WechatJsSdkSignature = {
 export type PolicyScanData = {
   company: string;
   name: string;
+  canonicalProductId?: string;
   applicant: string;
   beneficiary?: string;
   applicantRelation: string;
@@ -477,6 +480,7 @@ export type MemberAnnualSummary = {
 export type PolicyFormData = {
   company: string;
   name: string;
+  canonicalProductId?: string;
   applicant: string;
   beneficiary: string;
   applicantRelation: string;

@@ -128,6 +128,7 @@ declare global {
 const emptyForm: PolicyFormData = {
   company: '',
   name: '',
+  canonicalProductId: '',
   applicant: '',
   beneficiary: '',
   applicantRelation: '',
@@ -218,6 +219,7 @@ function normalizePolicyPlanList(
       role: String(assignRolesByRecognizedOrder ? (index === 0 ? 'main' : 'rider') : plan?.role || (index === 0 ? 'main' : 'rider')),
       name: name || matchedProductName,
       matchedProductName,
+      canonicalProductId: String(plan?.canonicalProductId || '').trim(),
       productType: String(plan?.productType || '').trim(),
       amount: plan?.amount ? String(plan.amount) : '',
       coveragePeriod: String(plan?.coveragePeriod || ''),
@@ -237,6 +239,44 @@ function normalizePolicyPlanList(
 function primaryPlanFromPolicyForm(form: PolicyFormData) {
   const plans = normalizePolicyPlanList(form.plans, form.company);
   return plans.find((plan) => plan.role === 'main') || plans[0] || null;
+}
+
+function setMainPolicyPlanProduct(plans: PolicyFormData['plans'], company: string, name: string, canonicalProductId = '') {
+  const normalizedPlans = normalizePolicyPlanList(plans, company, { keepEmpty: true });
+  let updatedMain = false;
+  const nextPlans = normalizedPlans.map((plan, index) => {
+    const role = String(plan.role || (index === 0 ? 'main' : 'rider'));
+    if (updatedMain || (role !== 'main' && index !== 0)) return plan;
+    updatedMain = true;
+    return {
+      ...plan,
+      company,
+      role: 'main',
+      name,
+      matchedProductName: name,
+      canonicalProductId,
+    };
+  });
+  if (updatedMain) return nextPlans;
+  return [
+    {
+      company,
+      role: 'main',
+      name,
+      matchedProductName: name,
+      canonicalProductId,
+      productType: '',
+      amount: '',
+      coveragePeriod: '',
+      paymentMode: '',
+      paymentPeriod: '',
+      premium: '',
+      premiumText: '',
+      matchScore: 0,
+      matchReason: '',
+    },
+    ...nextPlans,
+  ];
 }
 
 function planProductDisplayName(plan: NonNullable<PolicyFormData['plans']>[number]) {
@@ -260,6 +300,7 @@ function policyToForm(policy: Policy): PolicyFormData {
   return {
     company: policy.company || '',
     name: policy.name || '',
+    canonicalProductId: policy.canonicalProductId || '',
     applicant: policy.applicant || '',
     beneficiary: normalizeBeneficiaryValue(policy.beneficiary),
     applicantRelation: policy.applicantRelation || '',
@@ -297,6 +338,7 @@ function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): PolicyForm
         company: nextCompany,
         name: productChanged ? nextName : plan.name,
         matchedProductName: productChanged ? '' : plan.matchedProductName,
+        canonicalProductId: productChanged ? '' : plan.canonicalProductId,
       };
     }
     return {
@@ -308,6 +350,7 @@ function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): PolicyForm
     ...data,
     company: nextCompany,
     name: nextName,
+    canonicalProductId: productChanged ? '' : data.canonicalProductId,
     beneficiary: normalizeBeneficiaryValue(data.beneficiary),
     plans,
   };
@@ -319,6 +362,7 @@ function scanToForm(scan: PolicyScanResult): PolicyFormData {
   return {
     company: String(data.company || ''),
     name: String(data.name || ''),
+    canonicalProductId: String(data.canonicalProductId || ''),
     applicant: String(data.applicant || ''),
     beneficiary: normalizeBeneficiaryValue(data.beneficiary),
     applicantRelation: String(data.applicantRelation || ''),
@@ -3140,7 +3184,26 @@ function CustomerApp() {
     if (key === 'company' || key === 'name') {
       setConfirmedProductMatchKey('');
     }
-    setFormData((current) => ({ ...current, [key]: value }));
+    setFormData((current) => {
+      if (key !== 'company' && key !== 'name') return { ...current, [key]: value };
+      const nextCompany = key === 'company' ? String(value || '') : current.company;
+      const nextName = key === 'name' ? String(value || '') : current.name;
+      const plans = normalizePolicyPlanList(current.plans, nextCompany, { keepEmpty: true }).map((plan, index) => {
+        const role = String(plan.role || (index === 0 ? 'main' : 'rider'));
+        if (role !== 'main' && index !== 0) return plan;
+        return {
+          ...plan,
+          company: nextCompany,
+          ...(key === 'name' ? { name: nextName, matchedProductName: '', canonicalProductId: '' } : { canonicalProductId: '' }),
+        };
+      });
+      return {
+        ...current,
+        [key]: value,
+        canonicalProductId: '',
+        plans,
+      };
+    });
   }
 
   function updatePolicyPlan(index: number, key: string, value: string) {
@@ -3155,7 +3218,7 @@ function CustomerApp() {
         return {
           ...plan,
           [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
-          ...(key === 'name' ? { matchedProductName: '' } : {}),
+          ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
         };
       });
       const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
@@ -3223,13 +3286,20 @@ function CustomerApp() {
   function selectFormProductMatch(match: PolicyKnowledgeMatch) {
     const company = match.company.trim();
     const name = match.productName.trim();
+    const canonicalProductId = String(match.canonicalProductId || '').trim();
     if (!company || !name) return;
     setAnalysisDraft(null);
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey(productLookupKey(company, name));
     setFormProductMatches([]);
     setFormProductMatchMessage('');
-    setFormData((current) => ({ ...current, company, name }));
+    setFormData((current) => ({
+      ...current,
+      company,
+      name,
+      canonicalProductId,
+      plans: setMainPolicyPlanProduct(current.plans, company, name, canonicalProductId),
+    }));
     setScanResult((current) =>
       current
         ? {
@@ -3238,6 +3308,7 @@ function CustomerApp() {
               ...current.data,
               company,
               name,
+              canonicalProductId: String(match.canonicalProductId || '').trim(),
             },
           }
         : current,
@@ -3248,13 +3319,20 @@ function CustomerApp() {
   function selectFormProductSuggestion(suggestion: PolicyProductSuggestion) {
     const company = suggestion.company.trim();
     const name = suggestion.productName.trim();
+    const canonicalProductId = String(suggestion.canonicalProductId || '').trim();
     if (!company || !name) return;
     setAnalysisDraft(null);
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey(productLookupKey(company, name));
     setFormProductMatches([]);
     setFormProductMatchMessage('');
-    setFormData((current) => ({ ...current, company, name }));
+    setFormData((current) => ({
+      ...current,
+      company,
+      name,
+      canonicalProductId,
+      plans: setMainPolicyPlanProduct(current.plans, company, name, canonicalProductId),
+    }));
     setScanResult((current) =>
       current
         ? {
@@ -3263,6 +3341,7 @@ function CustomerApp() {
               ...current.data,
               company,
               name,
+              canonicalProductId: String(suggestion.canonicalProductId || '').trim(),
             },
           }
         : current,

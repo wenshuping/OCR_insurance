@@ -140,6 +140,7 @@ export function normalizePolicyScanData(data = {}) {
     coveragePeriod: String(data.coveragePeriod || '').trim(),
     amount: Number(data.amount || 0) || 0,
     firstPremium: Number(data.firstPremium || 0) || 0,
+    canonicalProductId: String(data.canonicalProductId || '').trim(),
   };
 }
 
@@ -164,6 +165,7 @@ export function normalizePolicyPlans(plans = [], company = '') {
         role: normalizePolicyPlanRole(plan?.role, index, name || effectiveName),
         name: name || effectiveName,
         matchedProductName,
+        canonicalProductId: String(plan?.canonicalProductId || '').trim(),
         productType: String(plan?.productType || '').trim(),
         amount: Number(plan?.amount || 0) || 0,
         coveragePeriod: String(plan?.coveragePeriod || '').trim(),
@@ -729,6 +731,8 @@ export function normalizePolicySources(sources = []) {
 export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, analysis, familyBinding = null }) {
   const data = normalizePolicyScanData(scan?.data || {});
   const plans = normalizePolicyPlans(scan?.data?.plans, data.company);
+  const mainPlan = plans.find((plan) => plan.role === 'main') || plans[0] || null;
+  const canonicalProductId = data.canonicalProductId || mainPlan?.canonicalProductId || '';
   const now = new Date().toISOString();
   const hasAnalysis = Boolean(analysis?.report || analysis?.coverageTable?.length);
   const responsibilities = Array.isArray(analysis?.coverageTable)
@@ -761,6 +765,7 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     coveragePeriod: data.coveragePeriod,
     amount: data.amount,
     firstPremium: data.firstPremium,
+    canonicalProductId,
     plans,
     ocrText: String(scan?.ocrText || '').trim(),
     responsibilities,

@@ -440,6 +440,7 @@ function normalizeManualPolicyData(value) {
         role: trim(plan?.role),
         name: trim(plan?.name || plan?.productName),
         matchedProductName: trim(plan?.matchedProductName),
+        canonicalProductId: trim(plan?.canonicalProductId),
         productType: trim(plan?.productType),
         amount: Number(plan?.amount || 0) || 0,
         coveragePeriod: trim(plan?.coveragePeriod),
@@ -453,6 +454,7 @@ function normalizeManualPolicyData(value) {
       .filter((plan) => plan.name || plan.matchedProductName);
     if (plans.length) data.plans = plans;
   }
+  if (hasOwn(value, 'canonicalProductId')) data.canonicalProductId = trim(value.canonicalProductId);
   return data;
 }
 
@@ -464,6 +466,7 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   for (const key of textFields) {
     if (hasOwn(input, key)) data[key] = trim(input[key]);
   }
+  if (hasOwn(input, 'canonicalProductId')) data.canonicalProductId = trim(input.canonicalProductId);
   if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
   if (hasOwn(input, 'date')) data.date = normalizeDateOnly(input.date) || trim(input.date);
   if (hasOwn(input, 'insuredIdNumber') || hasOwn(input, 'insuredIdentityNumber') || hasOwn(input, 'insuredIdCard')) {
@@ -488,6 +491,10 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   }
   if (hasOwn(input, 'plans')) {
     data.plans = normalizePolicyPlans(input.plans, data.company || existingPolicy.company || '');
+  }
+  if (Array.isArray(data.plans) && data.plans.length && !data.canonicalProductId) {
+    const mainPlan = data.plans.find((plan) => plan.role === 'main') || data.plans[0];
+    data.canonicalProductId = trim(mainPlan?.canonicalProductId);
   }
   if (hasOwn(input, 'optionalResponsibilities')) {
     data.optionalResponsibilities = normalizeOptionalResponsibilities(input.optionalResponsibilities);

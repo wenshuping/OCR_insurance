@@ -483,6 +483,8 @@ NCI 新华保险
     assert.equal(saved.payload.policy.plans.length, 2);
     assert.equal(saved.payload.policy.plans[0].role, 'main');
     assert.equal(saved.payload.policy.plans[0].matchedProductName, '新华保险盛世恒盈年金保险（分红型）');
+    assert.match(saved.payload.policy.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+    assert.equal(saved.payload.policy.canonicalProductId, saved.payload.policy.plans[0].canonicalProductId);
     assert.equal(saved.payload.policy.plans[1].role, 'linked_account');
     assert.equal(saved.payload.policy.plans[1].matchedProductName, '鑫天利卓越版养老年金保险（万能型）');
   } finally {
