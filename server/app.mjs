@@ -7,6 +7,7 @@ import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
 import { createFamilyRoutes } from './routes/families.routes.mjs';
+import { createPolicyRoutes } from './routes/policies.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import {
@@ -1622,12 +1623,15 @@ export function createPolicyOcrApp(options = {}) {
     cashflowStore,
     cashValueStore,
     requireAdmin,
+    nowMs,
+    elapsedMs,
     resolveOcrServiceUrl,
     computeAndStoreCashflow,
     recomputeAllCashflow,
     createWechatJsSdkSignature,
     sanitizeClientPerformancePayload,
     logPerformance,
+    policyInputMetrics,
     normalizeMobile,
     assertValidMobile,
     assertSmsSendAllowed,
@@ -1638,11 +1642,19 @@ export function createPolicyOcrApp(options = {}) {
     latestValidSmsCode,
     hasPendingSmsCode,
     normalizeGuestId,
+    assertGuestCanScan,
+    recognizePolicyInput,
+    resolvePolicyScanInput,
     normalizeFamilyRelation,
     policyHasFamilyBinding,
+    familyInputHasBindingFields,
+    buildPolicyFamilyBinding,
+    normalizeFamilyBindingInput,
     requestOwner,
     resolveAuthUser,
     guestPendingScans,
+    storeGuestPendingScan,
+    guestRegistrationRequiredNext,
     normalizeProvidedAnalysis,
     ensureDefaultPolicyFamilyBinding,
     buildPolicyFromScan,
@@ -1651,7 +1663,11 @@ export function createPolicyOcrApp(options = {}) {
     createSession,
     publicUser,
     attachPoliciesCoverageIndicators,
+    attachPolicyCoverageIndicators,
     attachPolicyFamilyDisplay,
+    selectedCoverageIndicators,
+    computeScenarioEntries,
+    findPolicyCoverageIndicators,
     getBearerToken,
     deleteSession,
     assistantAnalyzer,
@@ -1659,8 +1675,20 @@ export function createPolicyOcrApp(options = {}) {
     normalizePolicyScanData,
     normalizePolicyPlans,
     normalizeOptionalResponsibilities,
+    buildOptionalResponsibilityReview,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    findPolicyForReportRequest,
+    policyProductIdentity,
+    normalizePolicyUpdateData,
+    hasOwn,
+    birthdayFromIdNumber,
+    shouldRebuildPolicyFamilyBinding,
+    familyBindingInputFromPolicyUpdate,
+    policyOwner,
+    clearPolicyReportForRegeneration,
+    startPolicyReportGeneration,
+    buildPolicyReportScan,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
@@ -1687,6 +1715,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/auth', createAuthRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
   app.use('/api', createFamilyRoutes(routeContext));
+  app.use('/api', createPolicyRoutes(routeContext));
   app.use('/api', createCashflowRoutes(routeContext));
 
   app.post('/api/admin/login', async (req, res) => {
@@ -1868,430 +1897,6 @@ export function createPolicyOcrApp(options = {}) {
       sendError(res, error, 400);
     }
   });
-
-
-  app.post('/api/policies/recognize', async (req, res) => {
-    const routeStartedAt = nowMs();
-    try {
-      const user = resolveAuthUser(req, state);
-      const guestId = normalizeGuestId(req.body?.guestId);
-      assertGuestCanScan({ state, user, guestId });
-      const ocrStartedAt = nowMs();
-      const scan = await recognizePolicyInput({ scanner, body: req.body, state, applyManualData: false });
-      logPerformance(performanceLogger, 'policy.recognize.ocr', {
-        route: '/api/policies/recognize',
-        durationMs: elapsedMs(ocrStartedAt),
-        ...policyInputMetrics(req.body),
-        outputOcrChars: String(scan?.ocrText || '').length,
-      });
-      const analysis = buildRecognizedPolicyAnalysisDraft({
-        state,
-        scan,
-        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
-      });
-      if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan, analysis });
-        await persist(state);
-      }
-      logPerformance(performanceLogger, 'policy.recognize.complete', {
-        route: '/api/policies/recognize',
-        durationMs: elapsedMs(routeStartedAt),
-        ...policyInputMetrics(req.body),
-      });
-      const payload = {
-        ok: true,
-        scan,
-        registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
-      };
-      if (analysis) payload.analysis = analysis;
-      res.json(payload);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.post('/api/policies/analyze', async (req, res) => {
-    const routeStartedAt = nowMs();
-    try {
-      const user = resolveAuthUser(req, state);
-      const guestId = normalizeGuestId(req.body?.guestId);
-      assertGuestCanScan({ state, user, guestId });
-      const scanStartedAt = nowMs();
-      const normalizedScan = await resolvePolicyScanInput({ scanner, body: req.body, state });
-      if (!req.body?.scan) {
-        logPerformance(performanceLogger, 'policy.analyze.ocr', {
-          route: '/api/policies/analyze',
-          durationMs: elapsedMs(scanStartedAt),
-          ...policyInputMetrics(req.body),
-          outputOcrChars: String(normalizedScan?.ocrText || '').length,
-        });
-      }
-      const analysisStartedAt = nowMs();
-      const analysis = await analyzer({ scan: normalizedScan });
-      const policyDraft = {
-        ...(normalizedScan?.data || {}),
-        ocrText: String(normalizedScan?.ocrText || '').trim(),
-        responsibilities: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [],
-        optionalResponsibilities: normalizeOptionalResponsibilities(analysis?.optionalResponsibilities),
-      };
-      const analysisWithOptionalResponsibilities = {
-        ...analysis,
-        optionalResponsibilities: buildOptionalResponsibilityReview(
-          policyDraft,
-          findPolicyCoverageIndicators(policyDraft, state.insuranceIndicatorRecords),
-          state.knowledgeRecords,
-          state.optionalResponsibilityRecords,
-        ),
-      };
-      logPerformance(performanceLogger, 'policy.analyze.analysis', {
-        route: '/api/policies/analyze',
-        durationMs: elapsedMs(analysisStartedAt),
-        ...policyInputMetrics(req.body),
-        outputOcrChars: String(normalizedScan?.ocrText || '').length,
-        responsibilityCount: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable.length : 0,
-      });
-      if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan: normalizedScan, analysis: analysisWithOptionalResponsibilities });
-        await persist(state);
-      }
-      logPerformance(performanceLogger, 'policy.analyze.complete', {
-        route: '/api/policies/analyze',
-        durationMs: elapsedMs(routeStartedAt),
-        ...policyInputMetrics(req.body),
-      });
-      res.json({
-        ok: true,
-        scan: normalizedScan,
-        analysis: analysisWithOptionalResponsibilities,
-        registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
-      });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.post('/api/policies/scan', async (req, res) => {
-    const routeStartedAt = nowMs();
-    try {
-      const user = resolveAuthUser(req, state);
-      const guestId = normalizeGuestId(req.body?.guestId);
-      assertGuestCanScan({ state, user, guestId });
-      const scanStartedAt = nowMs();
-      const normalizedScan = await resolvePolicyScanInput({ scanner, body: req.body, state });
-      if (!req.body?.scan) {
-        logPerformance(performanceLogger, 'policy.scan.ocr', {
-          route: '/api/policies/scan',
-          durationMs: elapsedMs(scanStartedAt),
-          ...policyInputMetrics(req.body),
-          outputOcrChars: String(normalizedScan?.ocrText || '').length,
-        });
-      } else {
-        logPerformance(performanceLogger, 'policy.scan.ocr', {
-          route: '/api/policies/scan',
-          durationMs: elapsedMs(scanStartedAt),
-          ...policyInputMetrics(req.body),
-          outputOcrChars: String(normalizedScan?.ocrText || '').length,
-          reusedScan: true,
-        });
-      }
-      const providedAnalysis = normalizeProvidedAnalysis(req.body?.analysis);
-      if (providedAnalysis) {
-        logPerformance(performanceLogger, 'policy.scan.analysis', {
-          route: '/api/policies/scan',
-          durationMs: 0,
-          ...policyInputMetrics(req.body),
-          outputOcrChars: String(normalizedScan?.ocrText || '').length,
-          responsibilityCount: Array.isArray(providedAnalysis?.coverageTable) ? providedAnalysis.coverageTable.length : 0,
-          reusedAnalysis: true,
-        });
-      }
-      const familyInputSource = {
-        ...(req.body || {}),
-        ...(req.body?.manualData && typeof req.body.manualData === 'object' ? req.body.manualData : {}),
-      };
-      const owner = requestOwner(req, user);
-      const familyBinding = familyInputHasBindingFields(familyInputSource)
-        ? buildPolicyFamilyBinding(
-            state,
-            normalizeFamilyBindingInput(familyInputSource),
-            owner,
-            normalizedScan?.data || {},
-          )
-        : ensureDefaultPolicyFamilyBinding(state, owner, normalizedScan?.data || {});
-      const policy = buildPolicyFromScan({
-        state,
-        userId: user?.id || null,
-        guestId,
-        scan: normalizedScan,
-        analysis: providedAnalysis,
-        familyBinding,
-      });
-      state.policies.push(policy);
-      if (providedAnalysis) recordPolicySourceRecords(state, policy, providedAnalysis);
-      if (!user && guestId) clearGuestPendingScans(state, guestId);
-      await persist(state);
-
-      // Compute and store cashflow (non-fatal if it fails)
-      let cashflowEntries = [];
-      let scenarioEntries = [];
-      let totalCashflow = 0;
-      try {
-        const result = computeAndStoreCashflow(policy);
-        cashflowEntries = result.cashflowEntries;
-        scenarioEntries = result.scenarioEntries;
-        totalCashflow = result.totalCashflow;
-      } catch (cfError) {
-        console.error('[cashflow] compute failed for policy', policy.id, cfError.message);
-      }
-
-      if (!providedAnalysis) {
-        startPolicyReportGeneration({
-          state,
-          policy,
-          scan: normalizedScan,
-          analyzer,
-          persist: () => persist(state),
-          performanceLogger,
-          requestMetrics: policyInputMetrics(req.body),
-        });
-      }
-      logPerformance(performanceLogger, 'policy.scan.complete', {
-        route: '/api/policies/scan',
-        durationMs: elapsedMs(routeStartedAt),
-        ...policyInputMetrics(req.body),
-        outputOcrChars: String(normalizedScan?.ocrText || '').length,
-        policyId: policy.id,
-      });
-      res.status(201).json({
-        ok: true,
-        policy: {
-          ...attachPolicyCoverageIndicators(
-            attachPolicyFamilyDisplay(policy, state),
-            state.insuranceIndicatorRecords,
-            state.knowledgeRecords,
-            state.optionalResponsibilityRecords,
-          ),
-          cashflowEntries,
-          scenarioEntries,
-          totalCashflow,
-        },
-        registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
-      });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.get('/api/policies', async (req, res) => {
-    const user = resolveAuthUser(req, state);
-    const guestId = normalizeGuestId(req.query?.guestId);
-    if (!user && !guestId) {
-      return res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '缺少游客标识' });
-    }
-    const policies = state.policies
-      .filter((policy) => {
-        if (user) return Number(policy.userId) === Number(user.id);
-        return String(policy.guestId || '') === guestId && !policy.userId;
-      })
-      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const policiesWithIndicators = attachPoliciesCoverageIndicators(
-      policies.map((policy) => attachPolicyFamilyDisplay(policy, state)),
-      state.insuranceIndicatorRecords,
-      state.knowledgeRecords,
-      state.optionalResponsibilityRecords,
-    );
-    const policiesWithCashflow = policiesWithIndicators.map((p) => {
-      const entries = cashflowStore.getEntries(p.id);
-      const cashValues = cashValueStore.getValues(p.id);
-      const totalCashflow = entries.reduce((sum, e) => sum + e.amount, 0);
-      let scenarioEntries = [];
-      try {
-        const policyIndicators = findPolicyCoverageIndicators(p, state.insuranceIndicatorRecords);
-        scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), p);
-      } catch (_err) {
-        // non-fatal: scenarioEntries stays empty
-      }
-      return {
-        ...p,
-        cashflowEntries: entries.length ? entries : undefined,
-        cashValues: cashValues.length ? cashValues : undefined,
-        scenarioEntries: scenarioEntries.length ? scenarioEntries : undefined,
-        totalCashflow: entries.length ? totalCashflow : undefined,
-        cashValues: cashValueStore.getValues(p.id),
-      };
-    });
-    res.json({ ok: true, policies: policiesWithCashflow });
-  });
-
-  app.patch('/api/policies/:id', async (req, res) => {
-    try {
-      const result = findPolicyForReportRequest(req, state, adminPassword);
-      if (!result.policy) {
-        return res.status(result.status).json(result.payload);
-      }
-      const { policy } = result;
-      const beforeIdentity = policyProductIdentity(policy);
-      const updates = normalizePolicyUpdateData(req.body || {}, policy);
-      if (!Object.keys(updates).length) {
-        return res.status(400).json({ ok: false, code: 'POLICY_UPDATE_EMPTY', message: '没有可更新的保单数据' });
-      }
-      if (hasOwn(updates, 'insuredIdNumber') && !hasOwn(updates, 'insuredBirthday')) {
-        updates.insuredBirthday = birthdayFromIdNumber(updates.insuredIdNumber);
-      }
-      if (shouldRebuildPolicyFamilyBinding(updates, policy)) {
-        const familyBinding = buildPolicyFamilyBinding(
-          state,
-          familyBindingInputFromPolicyUpdate(updates, policy),
-          policyOwner(policy),
-          {
-            applicant: hasOwn(updates, 'applicant') ? updates.applicant : policy.applicant,
-            insured: hasOwn(updates, 'insured') ? updates.insured : policy.insured,
-          },
-        );
-        Object.assign(updates, familyBinding);
-      }
-      Object.assign(policy, updates);
-      const identityChanged = beforeIdentity !== policyProductIdentity(policy);
-      if (identityChanged) clearPolicyReportForRegeneration(state, policy);
-      policy.updatedAt = new Date().toISOString();
-      await persist(state);
-
-      // Recompute and store cashflow after policy update (non-fatal if it fails)
-      let cashflowEntries = [];
-      let scenarioEntries = [];
-      let totalCashflow = 0;
-      try {
-        const result = computeAndStoreCashflow(policy);
-        cashflowEntries = result.cashflowEntries;
-        scenarioEntries = result.scenarioEntries;
-        totalCashflow = result.totalCashflow;
-      } catch (cfError) {
-        console.error('[cashflow] compute failed for policy', policy.id, cfError.message);
-      }
-
-      if (identityChanged) {
-        startPolicyReportGeneration({
-          state,
-          policy,
-          scan: buildPolicyReportScan(policy),
-          analyzer,
-          persist: () => persist(state),
-          performanceLogger,
-          requestMetrics: { inputOcrChars: String(policy.ocrText || '').length },
-        });
-      }
-      res.status(identityChanged ? 202 : 200).json({
-        ok: true,
-        policy: {
-          ...attachPolicyCoverageIndicators(
-            attachPolicyFamilyDisplay(policy, state),
-            state.insuranceIndicatorRecords,
-            state.knowledgeRecords,
-            state.optionalResponsibilityRecords,
-          ),
-          cashflowEntries,
-          scenarioEntries,
-          totalCashflow,
-        },
-        reportRegenerating: identityChanged,
-      });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.delete('/api/policies/:id', async (req, res) => {
-    try {
-      const result = findPolicyForReportRequest(req, state, adminPassword);
-      if (!result.policy) {
-        return res.status(result.status).json(result.payload);
-      }
-      const policyId = Number(result.policy.id);
-      cashflowStore.replaceEntries(policyId, []);
-      cashValueStore.deleteValues(policyId);
-      state.policies = (state.policies || []).filter((policy) => Number(policy.id) !== policyId);
-      state.sourceRecords = (state.sourceRecords || []).filter((source) => Number(source.policyId) !== policyId);
-      await persist(state);
-      res.json({ ok: true, deletedId: policyId });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.post('/api/policies/:id/report', async (req, res) => {
-    try {
-      const result = findPolicyForReportRequest(req, state, adminPassword);
-      if (!result.policy) {
-        return res.status(result.status).json(result.payload);
-      }
-      const { policy } = result;
-      if (policy.reportStatus === 'ready') {
-        return res.json({
-          ok: true,
-          policy: attachPolicyCoverageIndicators(
-            attachPolicyFamilyDisplay(policy, state),
-            state.insuranceIndicatorRecords,
-            state.knowledgeRecords,
-            state.optionalResponsibilityRecords,
-          ),
-          skipped: true,
-        });
-      }
-      if (policy.reportStatus !== 'generating') {
-        policy.reportStatus = 'generating';
-        policy.reportError = '';
-        policy.responsibilities = [];
-        policy.report = '';
-        policy.sources = [];
-        policy.updatedAt = new Date().toISOString();
-        await persist(state);
-        startPolicyReportGeneration({
-          state,
-          policy,
-          scan: buildPolicyReportScan(policy),
-          analyzer,
-          persist: () => persist(state),
-          performanceLogger,
-          requestMetrics: { inputOcrChars: String(policy.ocrText || '').length },
-        });
-      }
-      res.status(202).json({
-        ok: true,
-        policy: attachPolicyCoverageIndicators(
-          attachPolicyFamilyDisplay(policy, state),
-          state.insuranceIndicatorRecords,
-          state.knowledgeRecords,
-          state.optionalResponsibilityRecords,
-        ),
-      });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.get('/api/policies/:id', async (req, res) => {
-    const user = resolveAuthUser(req, state);
-    const guestId = normalizeGuestId(req.query?.guestId);
-    if (!user && !guestId) {
-      return res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '缺少游客标识' });
-    }
-    const policyId = Number(req.params.id);
-    const policy = state.policies.find((row) => {
-      if (Number(row.id) !== policyId) return false;
-      if (user) return Number(row.userId) === Number(user.id);
-      return String(row.guestId || '') === guestId && !row.userId;
-    });
-    if (!policy) return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
-    const policyWithIndicators = attachPolicyCoverageIndicators(
-      attachPolicyFamilyDisplay(policy, state),
-      state.insuranceIndicatorRecords,
-      state.knowledgeRecords,
-      state.optionalResponsibilityRecords,
-    );
-    const cashValues = cashValueStore.getValues(policyId);
-    res.json({ ok: true, policy: { ...policyWithIndicators, cashValues } });
-  });
-
 
   app.recomputeAllCashflow = recomputeAllCashflow;
   return app;
