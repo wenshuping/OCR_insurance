@@ -3,13 +3,19 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const formatterSource = fs.readFileSync(new URL('../src/shared/formatters.ts', import.meta.url), 'utf8');
+const reportExportSource = fs.readFileSync(new URL('../src/features/report-export/report-export.ts', import.meta.url), 'utf8');
 
-function componentSource(name, nextName) {
-  const start = appSource.indexOf(`function ${name}`);
-  const end = nextName ? appSource.indexOf(`function ${nextName}`, start + 1) : appSource.length;
+function functionSource(source, name, nextName) {
+  const start = source.indexOf(`function ${name}`);
+  const end = nextName ? source.indexOf(`function ${nextName}`, start + 1) : source.length;
   assert.notEqual(start, -1, `${name} component should exist`);
   assert.notEqual(end, -1, `${nextName} component should exist`);
-  return appSource.slice(start, end);
+  return source.slice(start, end);
+}
+
+function componentSource(name, nextName) {
+  return functionSource(appSource, name, nextName);
 }
 
 function escapeRegExp(value) {
@@ -258,7 +264,7 @@ test('entry form captures insured birthday for age-based reports', () => {
 
 test('entry form separates legal beneficiary from beneficiary name before saving policy', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
-  const normalizeSource = componentSource('normalizeBeneficiaryValue', 'formatBeneficiaryValue');
+  const normalizeSource = functionSource(formatterSource, 'normalizeBeneficiaryValue', 'formatBeneficiaryValue');
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /beneficiary: string/);
   assert.match(normalizeSource, /继本人/);
@@ -324,11 +330,11 @@ test('responsibility assistant floats at the bottom right of the screen', () => 
 });
 
 test('pdf export uses a dedicated A4 report layout instead of mobile card cloning', () => {
-  const reportSource = componentSource('createPrintableReportNode', 'createPdfRenderTarget');
-  const renderSource = componentSource('createPdfRenderTarget', 'escapeHtml');
+  const reportSource = functionSource(reportExportSource, 'createPrintableReportNode', 'createPdfRenderTarget');
+  const renderSource = functionSource(reportExportSource, 'createPdfRenderTarget', 'escapeHtml');
   assert.match(reportSource, /width:760px/);
   assert.match(reportSource, /保单解析报告/);
-  assert.match(appSource, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(reportExportSource, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(renderSource, /createPrintableReportNode\(target, title, policy\)/);
   assert.doesNotMatch(appSource, /function applyPdfSafeStyle/);
 });
@@ -960,21 +966,21 @@ test('family report export downloads a page-styled image instead of paginated pd
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
-  assert.match(appSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean; matchScreenStyle\?: boolean \}/);
-  assert.match(appSource, /rawTarget: true/);
-  assert.match(appSource, /matchScreenStyle: true/);
+  assert.match(reportExportSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean; matchScreenStyle\?: boolean \}/);
+  assert.match(reportExportSource, /rawTarget: true/);
+  assert.match(reportExportSource, /matchScreenStyle: true/);
   assert.match(appSource, /downloadReportImage\(target,\s*title/);
-  assert.match(appSource, /captureReportImageCanvas\(imageTarget,\s*fileName/);
-  assert.match(appSource, /exportScreenStyledReportImageInCurrentPage\(imageTarget,\s*fileName/);
-  assert.match(appSource, /await import\('html-to-image'\)/);
-  assert.match(appSource, /toCanvas\(renderTarget\.node/);
-  assert.match(appSource, /isWeChatBrowser\(\)/);
-  assert.match(appSource, /isWeChatMiniProgramWebView\(\)/);
-  assert.match(appSource, /MiniProgram\|miniProgram/);
-  assert.match(appSource, /triggerImageBlobDownload\(imageBlob,\s*fileName\)/);
-  assert.match(appSource, /link\.download = `\$\{fileName\}\.jpg`/);
-  const imageExportSource = componentSource('downloadReportImage', 'buildDraftReportTitle');
-  const imageCaptureSource = componentSource('captureReportImageCanvas', 'downloadReportPdf');
+  assert.match(reportExportSource, /captureReportImageCanvas\(imageTarget,\s*fileName/);
+  assert.match(reportExportSource, /exportScreenStyledReportImageInCurrentPage\(imageTarget,\s*fileName/);
+  assert.match(reportExportSource, /await import\('html-to-image'\)/);
+  assert.match(reportExportSource, /toCanvas\(renderTarget\.node/);
+  assert.match(reportExportSource, /isWeChatBrowser\(\)/);
+  assert.match(reportExportSource, /isWeChatMiniProgramWebView\(\)/);
+  assert.match(reportExportSource, /MiniProgram\|miniProgram/);
+  assert.match(reportExportSource, /triggerImageBlobDownload\(imageBlob,\s*fileName\)/);
+  assert.match(reportExportSource, /link\.download = `\$\{fileName\}\.jpg`/);
+  const imageExportSource = functionSource(reportExportSource, 'downloadReportImage', null);
+  const imageCaptureSource = functionSource(reportExportSource, 'captureReportImageCanvas', 'downloadReportPdf');
   assert.doesNotMatch(imageExportSource, /exportCurrentReportAsPdf/);
   assert.doesNotMatch(imageExportSource, /renderReportToLongImage/);
   assert.doesNotMatch(imageExportSource, /new jsPDF/);
@@ -986,9 +992,9 @@ test('family report export downloads a page-styled image instead of paginated pd
   assert.match(imageCaptureSource, /createPdfRenderTarget\(target,\s*_title,\s*undefined,\s*\{ rawTarget: true,\s*matchScreenStyle: true \}\)/);
   assert.match(imageCaptureSource, /margin:\s*'0'/);
   assert.match(imageCaptureSource, /renderTarget\?\.cleanup\(\)/);
-  assert.match(appSource, /max-width:min\(1180px,calc\(100vw - 28px\)\)/);
-  assert.match(appSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
-  assert.match(appSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
+  assert.match(reportExportSource, /max-width:min\(1180px,calc\(100vw - 28px\)\)/);
+  assert.match(reportExportSource, /reportNode\.classList\?\.add\?\.\('print-policy-report'\)/);
+  assert.match(reportExportSource, /createPdfRenderTarget\(target,\s*fileName,\s*policy,\s*options\)/);
   assert.match(familySource, /family-report-content print-policy-report/);
   assert.match(familySource, /aria-label="下载报告图片"/);
   assert.match(familySource, /title="下载报告图片"/);
@@ -1000,27 +1006,27 @@ test('family report export keeps page styling and still supports safe pdf captur
   const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
   assert.match(familySource, /data-pdf-table-wrap/);
-  assert.match(appSource, /prepareScreenStyleReportNode\(reportNode,\s*width,\s*backgroundColor\)/);
-  assert.match(appSource, /family-report-screen-export-target/);
-  assert.match(appSource, /getScreenStyleReportBackground\(target\)/);
-  assert.match(appSource, /convertCssOklchToRgb/);
-  assert.match(appSource, /normalizeCanvasColorValues\(reportNode\)/);
-  assert.match(appSource, /reportNode\.style\.margin = '0'/);
-  assert.match(appSource, /reportNode\.style\.marginLeft = '0'/);
-  assert.match(appSource, /reportNode\.style\.marginRight = '0'/);
-  assert.match(appSource, /preparePageStyleReportNode\(reportNode,\s*width\)/);
-  assert.match(appSource, /family-report-pdf-target/);
-  assert.match(appSource, /html2canvas-safe-export/);
-  assert.match(appSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\], \[data-report-export-table\]/);
-  assert.match(appSource, /node\.remove\(\)/);
-  assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-report-export-cards\]'\)/);
-  assert.match(appSource, /classList\.remove\('hidden', 'md:hidden'\)/);
-  assert.match(appSource, /setProperty\('display', 'block', 'important'\)/);
-  assert.match(appSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
-  assert.match(appSource, /compactReportCanvasText/);
-  assert.match(appSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\]/);
-  assert.match(appSource, /captureWidth: options\?\.matchScreenStyle \|\| options\?\.preservePageStyle \? width/);
-  assert.match(appSource, /new jsPDF\(options\?\.preservePageStyle \? 'l' : 'p'/);
+  assert.match(reportExportSource, /prepareScreenStyleReportNode\(reportNode,\s*width,\s*backgroundColor\)/);
+  assert.match(reportExportSource, /family-report-screen-export-target/);
+  assert.match(reportExportSource, /getScreenStyleReportBackground\(target\)/);
+  assert.match(reportExportSource, /convertCssOklchToRgb/);
+  assert.match(reportExportSource, /normalizeCanvasColorValues\(reportNode\)/);
+  assert.match(reportExportSource, /reportNode\.style\.margin = '0'/);
+  assert.match(reportExportSource, /reportNode\.style\.marginLeft = '0'/);
+  assert.match(reportExportSource, /reportNode\.style\.marginRight = '0'/);
+  assert.match(reportExportSource, /preparePageStyleReportNode\(reportNode,\s*width\)/);
+  assert.match(reportExportSource, /family-report-pdf-target/);
+  assert.match(reportExportSource, /html2canvas-safe-export/);
+  assert.match(reportExportSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\], \[data-report-export-table\]/);
+  assert.match(reportExportSource, /node\.remove\(\)/);
+  assert.match(reportExportSource, /querySelectorAll<HTMLElement>\('\[data-report-export-cards\]'\)/);
+  assert.match(reportExportSource, /classList\.remove\('hidden', 'md:hidden'\)/);
+  assert.match(reportExportSource, /setProperty\('display', 'block', 'important'\)/);
+  assert.match(reportExportSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
+  assert.match(reportExportSource, /compactReportCanvasText/);
+  assert.match(reportExportSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\]/);
+  assert.match(reportExportSource, /captureWidth: options\?\.matchScreenStyle \|\| options\?\.preservePageStyle \? width/);
+  assert.match(reportExportSource, /new jsPDF\(options\?\.preservePageStyle \? 'l' : 'p'/);
   assert.match(cssSource, /\.pdf-page-style-export-mode \.html2canvas-safe-export/);
   assert.match(cssSource, /background-color:\s*transparent !important/);
   assert.match(cssSource, /svg:not\(\[data-cash-value-trend-chart\]\)/);
