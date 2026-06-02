@@ -103,17 +103,23 @@ function componentSource(name, nextName, source = owningSource(name)) {
   return functionSource(source, name, nextName);
 }
 
+function extractedOrBoundedComponentSource(name, fallbackNextName) {
+  const source = owningSource(name);
+  const nextName = source === normalizedCustomerAppSource || source === normalizedAdminAppSource ? fallbackNextName : null;
+  return componentSource(name, nextName, source);
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 test('customer account sheet uses a blue account logo', () => {
-  const source = componentSource('CustomerAccountSheet', null);
+  const source = extractedOrBoundedComponentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
   assert.match(source, /h-12 w-12[^"]*bg-blue-500/);
 });
 
 test('customer account sheet exposes account actions and policy navigation', () => {
-  const sheetSource = componentSource('CustomerAccountSheet', null);
+  const sheetSource = extractedOrBoundedComponentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
   const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
   assert.match(sheetSource, /onOpenPolicies/);
   assert.match(sheetSource, /我的基本信息/);
@@ -124,7 +130,7 @@ test('customer account sheet exposes account actions and policy navigation', () 
 });
 
 test('phone verification send-code button uses the blue primary style', () => {
-  const source = componentSource('PhoneVerificationDialog', null);
+  const source = extractedOrBoundedComponentSource('PhoneVerificationDialog', null);
   assert.match(source, /className="[^"]*bg-blue-500[^"]*"[\s\S]*发验证码/);
 });
 
@@ -211,7 +217,7 @@ test('customer app exposes family profile management surface', () => {
 });
 
 test('customer bottom tabs expose entry policy family and report navigation', () => {
-  const source = componentSource('CustomerBottomTabs', null);
+  const source = extractedOrBoundedComponentSource('CustomerBottomTabs', 'CustomerAccountSheet');
 
   assert.match(source, /key: 'entry'/);
   assert.match(source, /key: 'policies'/);
@@ -464,7 +470,7 @@ test('pdf export uses a dedicated A4 report layout instead of mobile card clonin
 });
 
 test('admin policy detail exposes policy source links', () => {
-  const source = componentSource('AdminPolicyDetail', null);
+  const source = extractedOrBoundedComponentSource('AdminPolicyDetail', null);
   assert.match(source, /资料来源/);
   assert.match(source, /policy\.sources/);
   assert.match(source, /href=\{source\.url\}/);
@@ -473,8 +479,8 @@ test('admin policy detail exposes policy source links', () => {
 
 test('admin app includes official domain whitelist maintenance panel', () => {
   const adminSource = componentSource('AdminApp', 'AdminStatCard');
-  const panelSource = componentSource('AdminOfficialDomainPanel', null);
-  const ocrPanelSource = componentSource('AdminOcrModePanel', null);
+  const panelSource = extractedOrBoundedComponentSource('AdminOfficialDomainPanel', 'AdminOcrModePanel');
+  const ocrPanelSource = extractedOrBoundedComponentSource('AdminOcrModePanel', 'AdminPolicyDetail');
   assert.match(adminSource, /AdminOfficialDomainPanel/);
   assert.match(panelSource, /保险公司官方域名/);
   assert.match(panelSource, /保存白名单/);
