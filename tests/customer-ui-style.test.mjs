@@ -6,8 +6,30 @@ const appShellSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url
 const customerAppSource = fs.readFileSync(new URL('../src/apps/customer/CustomerApp.tsx', import.meta.url), 'utf8');
 const adminAppSource = fs.readFileSync(new URL('../src/apps/admin/AdminApp.tsx', import.meta.url), 'utf8');
 const sharedReportUiSource = fs.readFileSync(new URL('../src/shared/policy-report-ui.tsx', import.meta.url), 'utf8');
+const customerPolicyFormSource = fs.readFileSync(new URL('../src/shared/customer-policy-form.ts', import.meta.url), 'utf8');
+const customerCashValueSource = fs.readFileSync(new URL('../src/shared/customer-cash-value.ts', import.meta.url), 'utf8');
+const customerPolicyComponentsSource = fs.readFileSync(new URL('../src/shared/customer-policy-components.tsx', import.meta.url), 'utf8');
+const customerPolicyListSource = fs.readFileSync(new URL('../src/shared/customer-policy-list.tsx', import.meta.url), 'utf8');
+const familyProfileSource = fs.readFileSync(new URL('../src/features/family-profile/FamilyProfileManager.tsx', import.meta.url), 'utf8');
+const policyEntrySource = fs.readFileSync(new URL('../src/features/policy-entry/UploadPolicyPage.tsx', import.meta.url), 'utf8');
+const policyDetailSource = fs.readFileSync(new URL('../src/features/policy-detail/PolicyDetailSheet.tsx', import.meta.url), 'utf8');
+const responsibilityAssistantSource = fs.readFileSync(new URL('../src/features/responsibility-assistant/ResponsibilityAssistant.tsx', import.meta.url), 'utf8');
 const normalizedCustomerAppSource = customerAppSource.replaceAll("from '../../", "from './");
 const normalizedAdminAppSource = adminAppSource.replaceAll("from '../../", "from './");
+const normalizedCustomerPolicyFormSource = customerPolicyFormSource.replaceAll("from '../", "from './");
+const normalizedCustomerCashValueSource = customerCashValueSource.replaceAll("from '../", "from './");
+const normalizedCustomerPolicyComponentsSource = customerPolicyComponentsSource.replaceAll("from '../", "from './");
+const normalizedCustomerPolicyListSource = customerPolicyListSource.replaceAll("from '../", "from './");
+const normalizedCustomerPolicySharedSource = [
+  normalizedCustomerPolicyFormSource,
+  normalizedCustomerCashValueSource,
+  normalizedCustomerPolicyComponentsSource,
+  normalizedCustomerPolicyListSource,
+].join('\n');
+const normalizedFamilyProfileSource = familyProfileSource.replaceAll("from '../../", "from './");
+const normalizedPolicyEntrySource = policyEntrySource.replaceAll("from '../../", "from './");
+const normalizedPolicyDetailSource = policyDetailSource.replaceAll("from '../../", "from './");
+const normalizedResponsibilityAssistantSource = responsibilityAssistantSource.replaceAll("from '../../", "from './");
 const formatterSource = fs.readFileSync(new URL('../src/shared/formatters.ts', import.meta.url), 'utf8');
 const reportExportSource = fs.readFileSync(new URL('../src/features/report-export/report-export.ts', import.meta.url), 'utf8');
 
@@ -22,6 +44,14 @@ function functionSource(source, name, nextName) {
 function owningSource(name) {
   const marker = `function ${name}`;
   if (normalizedCustomerAppSource.includes(marker)) return normalizedCustomerAppSource;
+  if (normalizedFamilyProfileSource.includes(marker)) return normalizedFamilyProfileSource;
+  if (normalizedPolicyEntrySource.includes(marker)) return normalizedPolicyEntrySource;
+  if (normalizedPolicyDetailSource.includes(marker)) return normalizedPolicyDetailSource;
+  if (normalizedResponsibilityAssistantSource.includes(marker)) return normalizedResponsibilityAssistantSource;
+  if (normalizedCustomerPolicyComponentsSource.includes(marker)) return normalizedCustomerPolicyComponentsSource;
+  if (normalizedCustomerPolicyListSource.includes(marker)) return normalizedCustomerPolicyListSource;
+  if (normalizedCustomerPolicyFormSource.includes(marker)) return normalizedCustomerPolicyFormSource;
+  if (normalizedCustomerCashValueSource.includes(marker)) return normalizedCustomerCashValueSource;
   if (normalizedAdminAppSource.includes(marker)) return normalizedAdminAppSource;
   if (sharedReportUiSource.includes(marker)) return sharedReportUiSource;
   if (appShellSource.includes(marker)) return appShellSource;
@@ -53,7 +83,7 @@ test('customer account sheet exposes account actions and policy navigation', () 
 });
 
 test('phone verification send-code button uses the blue primary style', () => {
-  const source = componentSource('PhoneVerificationDialog', 'UploadPolicyPage');
+  const source = componentSource('PhoneVerificationDialog', null);
   assert.match(source, /className="[^"]*bg-blue-500[^"]*"[\s\S]*发验证码/);
 });
 
@@ -112,27 +142,59 @@ test('entry form requires family profile and supports core setup after OCR', () 
 
 test('customer app exposes family profile management surface', () => {
   const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const familySource = componentSource('FamilyProfileManager', 'FamilyPolicyManagerPanel');
+  const familyPolicyPanelSource = componentSource('FamilyPolicyManagerPanel', null);
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /FamilyProfileManager/);
   assert.match(customerSource, /onOpenFamilies=\{\(\) => setActiveTab\('families'\)\}/);
+  assert.match(customerSource, /<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} onOpenReport=\{\(\) => setShowFamilyReport\(true\)\} \/>/);
   assert.match(pageSource, /onOpenFamilies/);
-  assert.match(customerSource, /家庭档案列表/);
+  assert.match(familySource, /家庭档案列表/);
   assert.match(pageSource, /家庭档案/);
   assert.match(pageSource, /<header[\s\S]*<h1 className="text-lg font-bold">录入保单<\/h1>[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
   assert.match(pageSource, /bg-blue-50 px-3 text-sm font-black text-blue-600[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
   assert.doesNotMatch(pageSource, /onOpenReport/);
   assert.doesNotMatch(pageSource, /查看报告/);
-  assert.match(customerSource, /成员数/);
-  assert.match(customerSource, /查看报告/);
-  assert.match(customerSource, /管理成员/);
-  assert.doesNotMatch(customerSource, /添加成员/);
-  assert.doesNotMatch(customerSource, /成员姓名/);
-  assert.doesNotMatch(customerSource, /handleAddFamilyMember/);
-  assert.match(customerSource, /设为核心/);
-  assert.match(customerSource, /onUpdateFamilyMemberRelation/);
-  assert.match(customerSource, /设置\$\{member\.name\}家庭关系/);
-  assert.doesNotMatch(customerSource, /编辑家庭/);
-  assert.match(customerSource, /录入保单/);
+  assert.match(familySource, /成员数/);
+  assert.match(familySource, /查看报告/);
+  assert.match(familySource, /管理成员/);
+  assert.match(familySource, /保单管理/);
+  assert.match(familySource, /FamilyPolicyManagerPanel/);
+  assert.match(customerSource, /policies=\{policies\}/);
+  assert.match(customerSource, /onOpenPolicy=\{\(policy\) => void openPolicy\(policy\)\}/);
+  assert.match(familySource, /Number\(policy\.familyId\) === Number\(family\.id\)/);
+  assert.match(familyPolicyPanelSource, /groupPoliciesByInsured\(policies\)/);
+  assert.match(familyPolicyPanelSource, /<PolicyListItem[\s\S]*onOpen=\{\(\) => onOpenPolicy\(policy\)\}/);
+  assert.doesNotMatch(familySource, /添加成员/);
+  assert.doesNotMatch(familySource, /成员姓名/);
+  assert.doesNotMatch(familySource, /handleAddFamilyMember/);
+  assert.match(familySource, /设为核心/);
+  assert.match(familySource, /onUpdateFamilyMemberRelation/);
+  assert.match(familySource, /设置\$\{member\.name\}家庭关系/);
+  assert.doesNotMatch(familySource, /编辑家庭/);
+  assert.match(familySource, /录入保单/);
+});
+
+test('customer bottom tabs expose entry policy family and report navigation', () => {
+  const source = componentSource('CustomerBottomTabs', 'CustomerAccountSheet');
+
+  assert.match(source, /key: 'entry'/);
+  assert.match(source, /key: 'policies'/);
+  assert.match(source, /key: 'families'/);
+  assert.match(source, /我的保单/);
+  assert.match(source, /onOpenReport/);
+  assert.match(source, /查看报告/);
+  assert.match(source, /查看家庭保障分析报告/);
+  assert.match(source, /grid-cols-4/);
+});
+
+test('policy relation controls keep prior policy edit options', () => {
+  const source = `${normalizedCustomerPolicySharedSource}\n${normalizedPolicyDetailSource}`;
+
+  assert.match(source, /const FAMILY_MEMBER_RELATION_OPTIONS = \['本人', '配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'\]/u);
+  assert.match(source, /const POLICY_RELATION_OPTIONS = \['本人', '子女', '父母', '夫妻'\]/u);
+  assert.match(source, /SelectField label="投保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
+  assert.match(source, /SelectField label="被保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
 });
 
 test('customer app exposes family report share flow', () => {
@@ -147,8 +209,10 @@ test('customer app exposes family report share flow', () => {
   assert.match(appShellSource, /readOnly/);
   assert.match(customerSource, /handleShareFamilyReport/);
   assert.match(customerSource, /selectedFamilyId/);
-  assert.match(customerSource, /navigator\.clipboard\.writeText/);
+  assert.match(customerSource, /navigator\.clipboard\.writeText\(shareUrl\)/);
   assert.match(customerSource, /分享链接：\$\{shareUrl\}/);
+  assert.match(customerSource, /分享家庭报告/);
+  assert.match(customerSource, /<span>分享<\/span>/);
 });
 
 test('photo upload area shows an OCR recognition animation while loading', () => {
@@ -179,6 +243,17 @@ test('cash value upload dialog shows a progress bar while scanning', () => {
   assert.match(appSource, /animate-\[cash-value-progress/);
 });
 
+test('cash value upload uses rear camera capture path', () => {
+  const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const inputRefIndex = appSource.indexOf('ref={cashValueInputRef}');
+  assert.notEqual(inputRefIndex, -1, 'cash value upload input should exist');
+  const inputSource = appSource.slice(inputRefIndex, appSource.indexOf('/>', inputRefIndex));
+  assert.match(appSource, /拍照上传/);
+  assert.match(inputSource, /type="file"/);
+  assert.match(inputSource, /accept="image\/\*"/);
+  assert.match(inputSource, /capture="environment"/);
+});
+
 test('entry form keeps the add rider action visible in plan details', () => {
   const source = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
   assert.match(source, /险种明细/);
@@ -201,7 +276,7 @@ test('entry plan editor shows only riders and linked accounts', () => {
 
 test('plan type selector displays Chinese role labels instead of internal values', () => {
   const editorSource = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
-  const selectSource = componentSource('SelectField', 'PolicyDetailSheet');
+  const selectSource = componentSource('SelectField', null);
   assert.match(editorSource, /options=\{\[/);
   assert.match(editorSource, /label: '附加险'/);
   assert.match(editorSource, /label: '万能账户'/);
@@ -259,16 +334,16 @@ test('recognized plans assign first product as main and later products as riders
 });
 
 test('entry form preserves canonical product id and clears it when product name changes', () => {
-  assert.match(normalizedCustomerAppSource, /canonicalProductId: String\(plan\?\.canonicalProductId \|\| ''\)\.trim\(\)/u);
-  assert.match(normalizedCustomerAppSource, /matchedProductName: productChanged \? '' : plan\.matchedProductName/u);
-  assert.match(normalizedCustomerAppSource, /canonicalProductId: productChanged \? '' : plan\.canonicalProductId/u);
+  assert.match(normalizedCustomerPolicyFormSource, /canonicalProductId: String\(plan\?\.canonicalProductId \|\| ''\)\.trim\(\)/u);
+  assert.match(normalizedCustomerPolicyFormSource, /matchedProductName: productChanged \? '' : plan\.matchedProductName/u);
+  assert.match(normalizedCustomerPolicyFormSource, /canonicalProductId: productChanged \? '' : plan\.canonicalProductId/u);
   assert.match(normalizedCustomerAppSource, /canonicalProductId: String\(match\.canonicalProductId \|\| ''\)\.trim\(\)/u);
   assert.match(normalizedCustomerAppSource, /canonicalProductId: String\(suggestion\.canonicalProductId \|\| ''\)\.trim\(\)/u);
 });
 
 test('entry form captures insured birthday for age-based reports', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
-  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
   assert.match(formSource, /被保险人生日/);
   assert.match(formSource, /insuredBirthday/);
   assert.match(customerSource, /selectedFamilyPolicies/);
@@ -290,50 +365,37 @@ test('entry form separates legal beneficiary from beneficiary name before saving
   assert.match(formSource, /label="受益人姓名"/);
 });
 
-test('family overview prefers local product indicators over raw OCR responsibility years', () => {
+test('family report engine prefers local product indicators over raw OCR responsibility years', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
-  const overviewBuilderSource = normalizedCustomerAppSource.slice(
-    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
-    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
-  );
+  const overviewBuilderSource = fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8');
   assert.match(apiSource, /coverageIndicators/);
-  assert.match(overviewBuilderSource, /policy\.coverageIndicators/);
-  assert.match(overviewBuilderSource, /formatCoverageIndicator/);
-  assert.doesNotMatch(overviewBuilderSource, /\\d\{4,\}/);
+  assert.match(overviewBuilderSource, /selectedCoverageIndicators\(policy\?\.coverageIndicators\)/);
+  assert.match(overviewBuilderSource, /policyTypeLabel/);
+  assert.match(overviewBuilderSource, /indicatorSourceProductName/);
 });
 
-test('family overview treats annuity payouts as cashflow instead of cash value table prerequisites', () => {
-  const overviewBuilderSource = normalizedCustomerAppSource.slice(
-    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
-    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
-  );
-  assert.match(overviewBuilderSource, /isCashflowPayoutIndicator/);
-  assert.match(overviewBuilderSource, /生存保险金/);
-  assert.match(overviewBuilderSource, /养老年金/);
-  assert.match(overviewBuilderSource, /满期生存保险金/);
+test('family report engine treats annuity payouts as cashflow instead of cash value table prerequisites', () => {
+  const overviewBuilderSource = fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8');
+  assert.match(overviewBuilderSource, /cashflowEntries/);
+  assert.match(overviewBuilderSource, /indicator\?\.scenario/);
+  assert.match(overviewBuilderSource, /futurePayoutTotal/);
+  assert.match(overviewBuilderSource, /cumulativePayout/);
   assert.match(overviewBuilderSource, /resolveIndicatorAmount/);
-  assert.doesNotMatch(overviewBuilderSource, /缺少现金价值表/);
+  assert.match(overviewBuilderSource, /indicatorAmountForPolicy/);
 });
 
-test('family overview substitutes policy amounts into indicator formulas', () => {
-  const overviewBuilderSource = normalizedCustomerAppSource.slice(
-    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
-    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
-  );
-  assert.match(overviewBuilderSource, /indicatorCoreText/);
-  assert.match(overviewBuilderSource, /isNonPayoutCashflowIndicator/);
+test('family report engine substitutes policy amounts into indicator formulas', () => {
+  const overviewBuilderSource = fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8');
+  assert.match(overviewBuilderSource, /indicatorText/);
+  assert.match(overviewBuilderSource, /formulaNeedsManualAmount/);
   assert.match(overviewBuilderSource, /resolveIndicatorAmount/);
-  assert.match(overviewBuilderSource, /formatIndicatorCalculation/);
-  assert.match(overviewBuilderSource, /基本保额 × 倍数/);
-  assert.match(overviewBuilderSource, /基本保额 × 比例/);
-  assert.match(overviewBuilderSource, /基本保额 = /);
-  assert.match(overviewBuilderSource, /年交保费 × 缴费年期/);
-  assert.match(overviewBuilderSource, /实际交纳保险费/);
-  assert.match(overviewBuilderSource, /领取起始年龄|开始领取年龄/);
+  assert.match(overviewBuilderSource, /indicatorAmountCalculationText/);
+  assert.match(overviewBuilderSource, /基本保险金额/);
+  assert.match(overviewBuilderSource, /formatRadarMoney/);
 });
 
 test('responsibility assistant floats at the bottom right of the screen', () => {
-  const source = componentSource('ResponsibilityAssistant', 'PolicyListItem');
+  const source = componentSource('ResponsibilityAssistant', null);
   assert.match(source, /fixed bottom-6 right-4/);
   assert.match(source, /sm:right-6/);
   assert.match(source, /输入保险名称查责任/);
@@ -376,7 +438,7 @@ test('admin app includes official domain whitelist maintenance panel', () => {
 
 test('customer policy detail exposes edit and delete actions through policy APIs', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
-  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
   const detailSource = componentSource('PolicyDetailSheet', null);
   assert.match(apiSource, /export function updatePolicy/);
   assert.match(apiSource, /method:\s*'PATCH'/);
@@ -420,10 +482,10 @@ test('customer policy detail moves coverage amount into plan details', () => {
 
 test('customer policy cards derive validity status from coverage period', () => {
   const validitySource = fs.readFileSync(new URL('../src/policy-validity.mjs', import.meta.url), 'utf8');
-  const listItemSource = componentSource('PolicyListItem', 'CustomerBottomTabs');
+  const listItemSource = componentSource('PolicyListItem', null);
   const summarySource = componentSource('PolicyPlanSummary', 'SelectField');
 
-  assert.match(normalizedCustomerAppSource, /from '\.\/policy-validity\.mjs'/);
+  assert.match(normalizedCustomerPolicyListSource, /from '\.\/policy-validity\.mjs'/);
   assert.match(validitySource, /function resolvePolicyValidityStatus|export function resolvePolicyValidityStatus/);
   assert.match(validitySource, /parseCoveragePeriodEndDate/);
   assert.match(listItemSource, /const validityStatus = resolvePolicyValidityStatus\(policy\.coveragePeriod,\s*\{\s*effectiveDate: policy\.date,\s*insuredBirthday: policy\.insuredBirthday/);
@@ -454,7 +516,7 @@ test('customer policy detail displays responsibility official urls', () => {
 test('customer entry and policy detail expose optional responsibility selection controls', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   const entrySource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
-  const analysisSource = componentSource('AnalysisReportPage', 'TextField');
+  const analysisSource = componentSource('AnalysisReportPage', null);
   const detailSource = componentSource('PolicyDetailSheet', null);
   const reviewSource = componentSource('OptionalResponsibilityReview', 'PolicyPlanEditor');
 
@@ -472,15 +534,15 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(entrySource, /onUpdateOptionalResponsibility/);
   assert.match(normalizedCustomerAppSource, /updateAnalysisOptionalResponsibility/);
   assert.match(normalizedCustomerAppSource, /handleUpdateOptionalResponsibility/);
-  assert.match(normalizedCustomerAppSource, /selectedCoverageIndicators\(policy\.coverageIndicators\)/);
+  assert.match(fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8'), /selectedCoverageIndicators\(policy\?\.coverageIndicators\)/);
   assert.match(analysisSource, /OptionalResponsibilityReview/);
   assert.match(analysisSource, /onUpdateOptionalResponsibility/);
   assert.match(detailSource, /policy\.optionalResponsibilities/);
   assert.match(detailSource, /onUpdateOptionalResponsibility/);
   assert.match(reviewSource, /可选责任确认/);
-  assert.match(normalizedCustomerAppSource, /value: 'selected', label: '已投保'/);
-  assert.match(normalizedCustomerAppSource, /value: 'not_selected', label: '未投保'/);
-  assert.match(normalizedCustomerAppSource, /value: 'unknown', label: '不确定'/);
+  assert.match(normalizedCustomerPolicyComponentsSource, /value: 'selected', label: '已投保'/);
+  assert.match(normalizedCustomerPolicyComponentsSource, /value: 'not_selected', label: '未投保'/);
+  assert.match(normalizedCustomerPolicyComponentsSource, /value: 'unknown', label: '不确定'/);
 });
 
 test('ocr recognition stays on entry form while carrying matched responsibility draft', () => {
@@ -584,11 +646,13 @@ test('policy edit dialog offers insurer and product suggestions', () => {
   assert.match(detailSource, /renderHighlightedSuggestion/);
 });
 
-test('customer app exposes family report after policy inventory and before section analysis', () => {
+test('customer app exposes family report from family cards and policy dashboard', () => {
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   assert.match(normalizedCustomerAppSource, /buildFamilyReport/);
   assert.match(normalizedCustomerAppSource, /FamilyReportPage/);
-  assert.match(normalizedCustomerAppSource, /setShowFamilyReport\(true\)/);
+  assert.match(normalizedCustomerAppSource, /function openFamilyReport\(familyId: number\)/);
+  assert.match(normalizedCustomerAppSource, /onOpenReport=\{openFamilyReport\}/);
+  assert.match(normalizedCustomerAppSource, /onClick=\{\(\) => setShowFamilyReport\(true\)\}/);
   assert.match(familySource, /全家总统计/);
   assert.match(familySource, /家庭保单清单/);
   assert.match(familySource, /被保人保单明细/);
@@ -601,15 +665,13 @@ test('customer app exposes family report after policy inventory and before secti
   assert.ok(familySource.indexOf('意外分析') < familySource.indexOf('财富分析'));
 });
 
-test('customer policy overview renders the family radar card instead of the summary table', () => {
-  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
-  const overviewSource = componentSource('FamilyCoverageOverview', 'normalizeSuggestionQuery');
+test('customer app renders global policy overview report shortcut', () => {
+  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
 
-  assert.match(customerSource, /report=\{familyReport\}/);
-  assert.match(overviewSource, /FamilyRadarSection/);
-  assert.match(overviewSource, /family-report-shell/);
-  assert.doesNotMatch(overviewSource, /<table/);
-  assert.doesNotMatch(overviewSource, /家庭保障总览/);
+  assert.match(customerSource, /FamilyCoverageOverview/);
+  assert.match(customerSource, /家庭保障分析报告/);
+  assert.match(customerSource, /policyGroups\.map/);
+  assert.match(customerSource, /if \(cashflowMember\)[\s\S]*<CashflowDetailPage/);
 });
 
 test('family report labels match the agreed report structure', () => {
@@ -836,6 +898,16 @@ test('family report wealth section explains dividend and universal account stati
   assert.match(typeSource, /FamilyWealthUncertaintyItem/);
   assert.match(typeSource, /excludedPolicies: FamilyWealthExcludedPolicy\[\]/);
   assert.match(typeSource, /statisticsScopeNote: string/);
+});
+
+test('family report renders plan types separately instead of a merged policy type cell', () => {
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(familySource, /function PolicyPlanTypeList/);
+  assert.match(familySource, /<PolicyPlanTypeList row=\{row\} \/>/);
+  assert.match(familySource, /item\.roleLabel/);
+  assert.match(familySource, /item\.typeLabel/);
+  assert.doesNotMatch(familySource, /<td className=\{tdClassName\}>\{emptyText\(row\.typeLabel\)\}<\/td>/);
 });
 
 test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {
@@ -1075,7 +1147,7 @@ test('client API exposes family profile types and endpoints', () => {
 });
 
 test('deleting a rider does not force-refresh optional responsibilities when main product is unchanged', () => {
-  const source = normalizedCustomerAppSource;
+  const source = `${normalizedCustomerPolicyFormSource}\n${normalizedCustomerAppSource}`;
 
   assert.match(source, /function mainProductIdentityKey\(/u);
   assert.match(source, /const beforeMainProductKey = mainProductIdentityKey\(formData\)/u);
@@ -1086,4 +1158,15 @@ test('deleting a rider does not force-refresh optional responsibilities when mai
   assert.doesNotMatch(source, /primary\?\.canonicalProductId \|\| formData\.canonicalProductId/u);
   assert.doesNotMatch(source, /canonicalProductId: primary\.canonicalProductId \|\| formData\.canonicalProductId/u);
   assert.doesNotMatch(source, /已删除附加险，正在重新带出可选责任['"`]\);\s*void loadFormProductAnalysisDraft\(nextData/u);
+});
+
+test('policy save keeps existing core when another scanned member relation is recognized as self', () => {
+  const source = normalizedCustomerAppSource;
+
+  assert.match(source, /!submitFamily\.coreMemberId && applicantShouldBeCore && insuredShouldBeCore/u);
+  assert.match(source, /const shouldPersistAsCore = \(member: FamilyMember, relationLabel: string\) => \(/u);
+  assert.match(source, /!submitFamily\.coreMemberId \|\| Number\(member\.id\) === Number\(submitFamily\.coreMemberId\)/u);
+  assert.match(source, /return member\.relationLabel && member\.relationLabel !== '本人' \? member\.relationLabel : '待确认'/u);
+  assert.match(source, /applicantRelation: applicantFinalRelation/u);
+  assert.match(source, /insuredRelation: insuredFinalRelation/u);
 });

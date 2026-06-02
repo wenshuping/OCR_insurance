@@ -6,27 +6,16 @@ import {
   useState,
 } from 'react';
 import {
-  Bot,
-  Camera,
-  CheckCircle2,
   ChevronLeft,
   CircleUserRound,
   Copy,
-  Download,
-  ExternalLink,
   FileText,
   LayoutDashboard,
   Loader2,
   LogOut,
-  Pencil,
   Plus,
-  RefreshCw,
-  Save,
-  Search,
-  SendHorizontal,
   Shield,
   Sparkles,
-  Trash2,
   UploadCloud,
   Users,
   X,
@@ -55,9 +44,9 @@ import {
   UploadItem,
   analyzePolicy,
   confirmCashValue,
-  createFamilyReportShare,
   createFamilyMember,
   createFamilyProfile,
+  createFamilyReportShare,
   deletePolicy,
   getLocalPolicyAnalysisDraft,
   getPolicy,
@@ -91,8 +80,8 @@ import {
   buildFamilyReport,
 } from '../../family-report-engine.mjs';
 import type {
-  FamilyPlanningProfile,
   FamilyReport,
+  FamilyPlanningProfile,
 } from '../../family-report-engine.mjs';
 import {
   policyValidityClassName,
@@ -100,26 +89,15 @@ import {
 } from '../../policy-validity.mjs';
 import {
   areSameParticipantName,
-  formatBeneficiaryValue,
   formatCoverageAmount,
-  formatCurrency,
-  formatDateLabel,
   formatNumberText,
   maskMobile,
-  normalizeBeneficiaryValue,
-  normalizeParticipantName,
-  normalizePolicyPlanRoleLabel,
-  policyPlanRoleOrder,
 } from '../../shared/formatters';
 import {
   createCodedError,
   getErrorCode,
   getErrorMessage,
 } from '../../shared/errors';
-import {
-  isWeChatBrowser,
-  isWeChatMiniProgramWebView,
-} from '../../shared/browser-env';
 import {
   MAX_POLICY_UPLOAD_BYTES,
   type ClientPerformanceTimings,
@@ -129,28 +107,45 @@ import {
 } from '../../shared/image-utils';
 import {
   downloadReportImage,
-  downloadReportPdf,
-  getReportExportControlText,
-  getReportExportControlTitle,
 } from '../../features/report-export/report-export';
 import {
-  MetricBox,
-  ReportText,
-  buildDraftReportTitle,
-  buildPolicyReportTitle,
-  formatSourceUrlHost,
-  getPolicyResponsibilitySourceLinks,
-  getReportPlaceholder,
-  isPolicyReportFailed,
   isPolicyReportGenerating,
 } from '../../shared/policy-report-ui';
+import {
+  FamilyProfileManager,
+} from '../../features/family-profile/FamilyProfileManager';
+import {
+  PolicyListItem,
+  groupPoliciesByInsured,
+} from '../../shared/customer-policy-list';
+import { AnalysisReportPage, UploadPolicyPage } from '../../features/policy-entry/UploadPolicyPage';
+import { PolicyDetailSheet } from '../../features/policy-detail/PolicyDetailSheet';
+import { ResponsibilityAssistant } from '../../features/responsibility-assistant/ResponsibilityAssistant';
+import {
+  buildPolicyUpdateData,
+  hasAnalysisResult,
+  mainProductIdentityKey,
+  mergeScanToForm,
+  normalizePolicyPlanList,
+  policyToForm,
+  productLookupKey,
+  sanitizeAmount,
+  scanToForm,
+  setMainPolicyPlanProduct,
+  updateOptionalResponsibilityItems,
+} from '../../shared/customer-policy-form';
+import {
+  makeManualCashValueRow,
+  nextManualCashValueRow,
+  normalizeCashValueRowsForEditing,
+  normalizeCashValueRowsForSaving,
+  parseNumericInput,
+} from '../../shared/customer-cash-value';
 
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
 const FAMILY_PLANNING_PROFILE_KEY = 'policy-ocr-app.familyPlanningProfile';
-const POLICY_RELATION_OPTIONS = ['本人', '子女', '父母', '夫妻'];
-const FAMILY_MEMBER_RELATION_OPTIONS = ['本人', '配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'];
 
 declare global {
   interface Window {
@@ -220,388 +215,7 @@ function saveFamilyPlanningProfile(profile: FamilyPlanningProfile) {
   return normalized;
 }
 
-function normalizePolicyPlanList(
-  plans: PolicyFormData['plans'] = [],
-  company = '',
-  options: { keepEmpty?: boolean; assignRolesByRecognizedOrder?: boolean } = {},
-) {
-  const keepEmpty = Boolean(options.keepEmpty);
-  const assignRolesByRecognizedOrder = Boolean(options.assignRolesByRecognizedOrder);
-  const normalizedPlans: Array<NonNullable<PolicyFormData['plans']>[number] & { __originalIndex: number }> = [];
-  (Array.isArray(plans) ? plans : []).forEach((plan, index) => {
-    const name = String(plan?.name || plan?.matchedProductName || '').trim();
-    const matchedProductName = String(plan?.matchedProductName || '').trim();
-    if (!name && !matchedProductName && !keepEmpty) return;
-    normalizedPlans.push({
-      __originalIndex: index,
-      company: String(plan?.company || company || '').trim(),
-      role: String(assignRolesByRecognizedOrder ? (index === 0 ? 'main' : 'rider') : plan?.role || (index === 0 ? 'main' : 'rider')),
-      name: name || matchedProductName,
-      matchedProductName,
-      canonicalProductId: String(plan?.canonicalProductId || '').trim(),
-      productType: String(plan?.productType || '').trim(),
-      amount: plan?.amount ? String(plan.amount) : '',
-      coveragePeriod: String(plan?.coveragePeriod || ''),
-      paymentMode: String(plan?.paymentMode || ''),
-      paymentPeriod: String(plan?.paymentPeriod || ''),
-      premium: plan?.premium ? String(plan.premium) : '',
-      premiumText: String(plan?.premiumText || ''),
-      matchScore: Number(plan?.matchScore || 0) || 0,
-      matchReason: String(plan?.matchReason || ''),
-    });
-  });
-  return normalizedPlans
-    .sort((left, right) => policyPlanRoleOrder(left.role) - policyPlanRoleOrder(right.role) || left.__originalIndex - right.__originalIndex)
-    .map(({ __originalIndex, ...plan }) => plan) as NonNullable<PolicyFormData['plans']>;
-}
-
-function primaryPlanFromPolicyForm(form: PolicyFormData) {
-  const plans = normalizePolicyPlanList(form.plans, form.company);
-  return plans.find((plan) => plan.role === 'main') || plans[0] || null;
-}
-
-function mainProductIdentityKey(form: PolicyFormData) {
-  const primary = primaryPlanFromPolicyForm(form);
-  if (!primary) return ['no-main', String(form.company || '').trim(), String(form.name || '').trim()].join('\u001f');
-  return [
-    String(primary.canonicalProductId || '').trim(),
-    String(primary.matchedProductName || '').trim(),
-    String(primary.company || form.company || '').trim(),
-    String(primary.name || form.name || '').trim(),
-  ].join('\u001f');
-}
-
-function setMainPolicyPlanProduct(plans: PolicyFormData['plans'], company: string, name: string, canonicalProductId = '') {
-  const normalizedPlans = normalizePolicyPlanList(plans, company, { keepEmpty: true });
-  let updatedMain = false;
-  const nextPlans = normalizedPlans.map((plan, index) => {
-    const role = String(plan.role || (index === 0 ? 'main' : 'rider'));
-    if (updatedMain || (role !== 'main' && index !== 0)) return plan;
-    updatedMain = true;
-    return {
-      ...plan,
-      company,
-      role: 'main',
-      name,
-      matchedProductName: name,
-      canonicalProductId,
-    };
-  });
-  if (updatedMain) return nextPlans;
-  return [
-    {
-      company,
-      role: 'main',
-      name,
-      matchedProductName: name,
-      canonicalProductId,
-      productType: '',
-      amount: '',
-      coveragePeriod: '',
-      paymentMode: '',
-      paymentPeriod: '',
-      premium: '',
-      premiumText: '',
-      matchScore: 0,
-      matchReason: '',
-    },
-    ...nextPlans,
-  ];
-}
-
-function planProductDisplayName(plan: NonNullable<PolicyFormData['plans']>[number]) {
-  return String(plan.matchedProductName || plan.name || '未命名险种');
-}
-
-function policyToForm(policy: Policy): PolicyFormData {
-  return {
-    company: policy.company || '',
-    name: policy.name || '',
-    canonicalProductId: policy.canonicalProductId || '',
-    applicant: policy.applicant || '',
-    beneficiary: normalizeBeneficiaryValue(policy.beneficiary),
-    applicantRelation: policy.applicantRelation || '',
-    insured: policy.insured || '',
-    insuredRelation: policy.insuredRelation || '',
-    insuredIdNumber: policy.insuredIdNumber || '',
-    insuredBirthday: policy.insuredBirthday || '',
-    date: policy.date || '',
-    paymentPeriod: policy.paymentPeriod || '',
-    coveragePeriod: policy.coveragePeriod || '',
-    amount: policy.amount ? String(policy.amount) : '',
-    firstPremium: policy.firstPremium ? String(policy.firstPremium) : '',
-    plans: normalizePolicyPlanList(policy.plans, policy.company),
-    familyId: policy.familyId ?? null,
-    applicantMemberId: policy.applicantMemberId ?? null,
-    insuredMemberId: policy.insuredMemberId ?? null,
-    familyName: policy.familyName || '',
-    applicantMemberName: policy.applicantMemberName || '',
-    applicantRelationLabel: policy.applicantRelationLabel || '',
-    insuredMemberName: policy.insuredMemberName || '',
-    insuredRelationLabel: policy.insuredRelationLabel || '',
-  };
-}
-
-function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): PolicyFormData {
-  const nextCompany = data.company.trim();
-  const nextName = data.name.trim();
-  const companyChanged = nextCompany !== String(policy.company || '').trim();
-  const productChanged = nextName !== String(policy.name || '').trim();
-  const plans = normalizePolicyPlanList(data.plans, nextCompany).map((plan, index) => {
-    const role = String(plan.role || (index === 0 ? 'main' : 'rider'));
-    if (role === 'main' || index === 0) {
-      return {
-        ...plan,
-        company: nextCompany,
-        name: productChanged ? nextName : plan.name,
-        matchedProductName: productChanged ? '' : plan.matchedProductName,
-        canonicalProductId: productChanged ? '' : plan.canonicalProductId,
-      };
-    }
-    return {
-      ...plan,
-      company: companyChanged ? nextCompany : plan.company || nextCompany,
-    };
-  });
-  return {
-    ...data,
-    company: nextCompany,
-    name: nextName,
-    canonicalProductId: productChanged ? '' : data.canonicalProductId,
-    beneficiary: normalizeBeneficiaryValue(data.beneficiary),
-    plans,
-  };
-}
-
-function scanToForm(scan: PolicyScanResult): PolicyFormData {
-  const data = scan.data || {};
-  const familyData = data as Partial<PolicyFormData>;
-  return {
-    company: String(data.company || ''),
-    name: String(data.name || ''),
-    canonicalProductId: String(data.canonicalProductId || ''),
-    applicant: String(data.applicant || ''),
-    beneficiary: normalizeBeneficiaryValue(data.beneficiary),
-    applicantRelation: String(data.applicantRelation || ''),
-    insured: String(data.insured || ''),
-    insuredRelation: String(data.insuredRelation || ''),
-    insuredIdNumber: String(data.insuredIdNumber || ''),
-    insuredBirthday: String(data.insuredBirthday || ''),
-    date: String(data.date || ''),
-    paymentPeriod: String(data.paymentPeriod || ''),
-    coveragePeriod: String(data.coveragePeriod || ''),
-    amount: data.amount ? String(data.amount) : '',
-    firstPremium: data.firstPremium ? String(data.firstPremium) : '',
-    plans: normalizePolicyPlanList(data.plans, String(data.company || ''), { assignRolesByRecognizedOrder: true }),
-    familyId: familyData.familyId ?? null,
-    applicantMemberId: familyData.applicantMemberId ?? null,
-    insuredMemberId: familyData.insuredMemberId ?? null,
-  };
-}
-
-function mergeScanToForm(scan: PolicyScanResult, current: PolicyFormData): PolicyFormData {
-  const next = scanToForm(scan);
-  return {
-    ...next,
-    beneficiary: next.beneficiary || current.beneficiary,
-    applicantRelation: next.applicantRelation || current.applicantRelation,
-    insuredRelation: next.insuredRelation || current.insuredRelation,
-    insuredIdNumber: next.insuredIdNumber || current.insuredIdNumber,
-    insuredBirthday: next.insuredBirthday || current.insuredBirthday,
-    familyId: next.familyId ?? current.familyId ?? null,
-    applicantMemberId: next.applicantMemberId ?? current.applicantMemberId ?? null,
-    insuredMemberId: next.insuredMemberId ?? current.insuredMemberId ?? null,
-  };
-}
-
-function summarizeCashValues(cashValues?: CashValueRow[]) {
-  const rows = Array.isArray(cashValues)
-    ? [...cashValues].filter((row) => Number.isFinite(Number(row.policyYear)) && Number.isFinite(Number(row.cashValue)))
-    : [];
-  if (!rows.length) return null;
-  rows.sort((left, right) => Number(left.policyYear) - Number(right.policyYear));
-  return {
-    count: rows.length,
-    first: rows[0],
-    last: rows[rows.length - 1],
-  };
-}
-
-function parseNumericInput(value: string | number | null | undefined) {
-  const normalized = String(value ?? '').replace(/[,，\s元¥￥]/g, '');
-  const amount = Number(normalized);
-  return Number.isFinite(amount) ? amount : null;
-}
-
-function makeManualCashValueRow(policyYear = 1, age: number | null = null): CashValueRow {
-  return { policyYear, age, cashValue: 0, source: 'manual' };
-}
-
-function normalizeCashValueRowsForEditing(cashValues?: CashValueRow[]) {
-  const rows: CashValueRow[] = [];
-  if (Array.isArray(cashValues)) {
-    for (const row of cashValues) {
-      const policyYear = parseNumericInput(row.policyYear);
-      const age = row.age === null || row.age === undefined ? null : parseNumericInput(row.age);
-      const cashValue = parseNumericInput(row.cashValue);
-      if (policyYear === null || cashValue === null) continue;
-      rows.push({
-        policyYear,
-        age,
-        cashValue,
-        source: row.source || 'manual',
-      });
-    }
-    rows.sort((left, right) => left.policyYear - right.policyYear);
-  }
-  return rows.length ? rows : [makeManualCashValueRow()];
-}
-
-function nextManualCashValueRow(rows: CashValueRow[]) {
-  const sortedRows = [...rows]
-    .filter((row) => Number.isFinite(Number(row.policyYear)))
-    .sort((left, right) => Number(left.policyYear) - Number(right.policyYear));
-  const last = sortedRows[sortedRows.length - 1];
-  const nextPolicyYear = Number(last?.policyYear || 0) + 1 || 1;
-  const nextAge = last?.age === null || last?.age === undefined ? null : Number(last.age) + 1;
-  return makeManualCashValueRow(nextPolicyYear, Number.isFinite(Number(nextAge)) ? nextAge : null);
-}
-
-function normalizeCashValueRowsForSaving(rows: CashValueRow[], source = 'manual') {
-  const normalized: CashValueRow[] = [];
-  for (const row of rows) {
-    const policyYear = parseNumericInput(row.policyYear);
-    const age = row.age === null || row.age === undefined ? null : parseNumericInput(row.age);
-    const cashValue = parseNumericInput(row.cashValue);
-    if (policyYear === null || policyYear <= 0 || cashValue === null || cashValue < 0) continue;
-    normalized.push({
-      policyYear,
-      age,
-      cashValue,
-      source: row.source || source,
-    });
-  }
-  normalized.sort((left, right) => left.policyYear - right.policyYear);
-  const byPolicyYear = new Map<number, CashValueRow>();
-  for (const row of normalized) byPolicyYear.set(row.policyYear, row);
-  return [...byPolicyYear.values()];
-}
-
-function sanitizeAmount(value: string) {
-  return value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1');
-}
-
-function productLookupKey(company: string, name: string) {
-  return `${company.trim()}::${name.trim()}`;
-}
-
-function hasAnalysisResult(analysis: PolicyAnalysisResult | null | undefined) {
-  return Boolean(analysis?.report?.trim() || analysis?.coverageTable?.length || analysis?.optionalResponsibilities?.length);
-}
-
-const OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS: Array<{ value: OptionalResponsibility['selectionStatus']; label: string }> = [
-  { value: 'selected', label: '已投保' },
-  { value: 'not_selected', label: '未投保' },
-  { value: 'unknown', label: '不确定' },
-];
-
-function optionalResponsibilityStatusLabel(status?: string) {
-  if (status === 'selected') return '已投保';
-  if (status === 'not_selected') return '未投保';
-  return '待核对';
-}
-
-function optionalResponsibilityQuantificationLabel(status?: string) {
-  if (status === 'quantified') return '已量化';
-  if (status === 'not_quantifiable') return '不进入量化';
-  return '待量化';
-}
-
-function optionalResponsibilityHasQuantificationGap(item: OptionalResponsibility) {
-  return item.selectionStatus === 'selected' && item.quantificationStatus !== 'quantified';
-}
-
-function optionalResponsibilityEvidenceLabel(evidence?: string) {
-  if (evidence === 'manual') return '人工确认';
-  if (evidence === 'policy_ocr') return '保单识别';
-  if (evidence === 'policy_plan') return '险种明细';
-  if (evidence === 'official_terms') return '官网条款';
-  return '待核对';
-}
-
-function isSelectedCoverageIndicator(indicator: CoverageIndicator) {
-  const scope = String(indicator.responsibilityScope || 'basic');
-  const status = indicator.selectionStatus || (scope === 'optional' ? 'unknown' : 'selected');
-  const quantificationStatus = indicator.quantificationStatus || 'pending_review';
-  return scope !== 'optional' || (status === 'selected' && quantificationStatus === 'quantified');
-}
-
-function selectedCoverageIndicators(indicators?: CoverageIndicator[]) {
-  return (Array.isArray(indicators) ? indicators : []).filter(isSelectedCoverageIndicator);
-}
-
-function updateOptionalResponsibilityItems(
-  items: OptionalResponsibility[] | undefined,
-  id: string,
-  selectionStatus: OptionalResponsibility['selectionStatus'],
-) {
-  return (Array.isArray(items) ? items : []).map((item) =>
-    item.id === id
-      ? {
-          ...item,
-          selectionStatus,
-          selectionEvidence: 'manual',
-        }
-      : item,
-  );
-}
-
 type CustomerTab = 'entry' | 'policies' | 'families';
-
-type PolicyGroup = {
-  insured: string;
-  policies: Policy[];
-  totalCoverage: number;
-  annualPremium: number;
-};
-
-type FamilyCoverageCell = {
-  amount: number;
-  displayText: string;
-  calculationText: string;
-  labels: string[];
-  missingCashflowDetail: boolean;
-};
-
-type FamilyCoverageOverviewRow = {
-  coverageType: string;
-  liability: string;
-  cells: Record<string, FamilyCoverageCell>;
-};
-
-type FamilyCoverageOverviewData = {
-  members: string[];
-  rows: FamilyCoverageOverviewRow[];
-  notes: string[];
-};
-
-function groupPoliciesByInsured(policies: Policy[]): PolicyGroup[] {
-  const groups = new Map<string, PolicyGroup>();
-  for (const policy of policies) {
-    const insured = String(policy.insured || '').trim() || '未识别被保人';
-    const existing = groups.get(insured) || {
-      insured,
-      policies: [],
-      totalCoverage: 0,
-      annualPremium: 0,
-    };
-    existing.policies.push(policy);
-    existing.totalCoverage += Number(policy.amount || 0);
-    existing.annualPremium += Number(policy.firstPremium || 0);
-    groups.set(insured, existing);
-  }
-  return [...groups.values()].sort((left, right) => right.policies.length - left.policies.length || left.insured.localeCompare(right.insured));
-}
 
 function resolvePolicyMemberKey(policy: Policy) {
   return String(policy.insured || '').trim() || '未识别被保人';
@@ -820,107 +434,6 @@ function resolveCoverageAmount(row: Responsibility, policy: Policy) {
   return 0;
 }
 
-function buildFamilyCoverageOverview(policies: Policy[]): FamilyCoverageOverviewData {
-  const members = Array.from(new Set(policies.map(resolvePolicyMemberKey))).filter(Boolean);
-  const rowMap = new Map<string, FamilyCoverageOverviewRow>();
-  const notes = new Set<string>();
-
-  for (const policy of policies) {
-    const member = resolvePolicyMemberKey(policy);
-    const indicators = selectedCoverageIndicators(policy.coverageIndicators);
-
-    for (const indicator of indicators) {
-      const coverageType = String(indicator.coverageType || '').trim() || '人寿保障';
-      if (coverageType === '现金流' && (!isCashflowPayoutIndicator(indicator) || isNonPayoutCashflowIndicator(indicator))) continue;
-      const liability = coverageType === '现金流'
-        ? resolveCashflowLiabilityFromText(indicatorOverviewText(indicator))
-        : String(indicator.liability || '').trim() || '身故/全残';
-      const key = `${coverageType}\u001f${liability}`;
-      const row = rowMap.get(key) || {
-        coverageType,
-        liability,
-        cells: {},
-      };
-      const current = row.cells[member] || { amount: 0, displayText: '', calculationText: '', labels: [], missingCashflowDetail: false };
-      const amount = resolveIndicatorAmount(indicator, policy);
-      const displayText = formatCoverageIndicator(indicator, policy);
-      const calculationText = formatIndicatorCalculation(indicator, policy);
-      current.amount += amount;
-      current.displayText = current.displayText
-        ? Array.from(new Set([...current.displayText.split('；'), displayText])).filter(Boolean).join('；')
-        : displayText;
-      current.calculationText = current.calculationText
-        ? Array.from(new Set([...current.calculationText.split('；'), calculationText])).filter(Boolean).join('；')
-        : calculationText;
-      current.labels.push(policy.name || indicator.productName || '保单');
-      if (coverageType === '现金流' && amount <= 0 && /账户价值|分红|红利/u.test(indicatorOverviewText(indicator))) {
-        current.missingCashflowDetail = true;
-        notes.add(`${member}的${policy.name || indicator.productName || '保单'}含账户价值/分红类领取，缺少账户价值或红利明细，暂不生成确定现金流曲线。`);
-      }
-      row.cells[member] = current;
-      rowMap.set(key, row);
-    }
-
-    if (indicators.length) {
-      if (!policy.insuredBirthday) {
-        notes.add(`${member}缺少被保险人生日，现金流年龄轴需补充后生成。`);
-      }
-      continue;
-    }
-
-    const responsibilities = Array.isArray(policy.responsibilities) && policy.responsibilities.length
-      ? policy.responsibilities
-      : [{
-          coverageType: policy.name || '保单责任',
-          scenario: policy.coveragePeriod || '',
-          payout: Number(policy.amount || 0) > 0 ? `基本保险金额${Number(policy.amount).toLocaleString('zh-CN')}元` : '',
-          note: '',
-        }];
-
-    if (!policy.insuredBirthday) {
-      notes.add(`${member}缺少被保险人生日，现金流年龄轴需补充后生成。`);
-    }
-
-    for (const responsibility of responsibilities) {
-      const classified = classifyCoverageLiability(responsibility, policy);
-      const key = `${classified.coverageType}\u001f${classified.liability}`;
-      const row = rowMap.get(key) || {
-        coverageType: classified.coverageType,
-        liability: classified.liability,
-        cells: {},
-      };
-      const current = row.cells[member] || { amount: 0, displayText: '', calculationText: '', labels: [], missingCashflowDetail: false };
-      const amount = resolveCoverageAmount(responsibility, policy);
-      current.amount += amount;
-      current.labels.push(policy.name || responsibility.coverageType || '保单');
-      const combinedText = `${responsibility.coverageType || ''} ${responsibility.scenario || ''} ${responsibility.payout || ''}`;
-      if (classified.coverageType === '现金流' && amount <= 0 && !/基本保险金额|基本保额|元|万|实际交纳|已交保险费|所交保险费/u.test(combinedText)) {
-        current.missingCashflowDetail = true;
-        notes.add(`${member}的${policy.name || '保单'}缺少年金/生存金领取金额明细，暂不生成确定现金流曲线。`);
-      }
-      row.cells[member] = current;
-      rowMap.set(key, row);
-    }
-  }
-
-  const order = ['人寿保障', '疾病保障', '医疗保障', '意外保障', '现金流'];
-  return {
-    members,
-    rows: [...rowMap.values()].sort(
-      (left, right) =>
-        order.indexOf(left.coverageType) - order.indexOf(right.coverageType) ||
-        left.liability.localeCompare(right.liability, 'zh-CN'),
-    ),
-    notes: [...notes],
-  };
-}
-
-function getWechatUploadLabel() {
-  if (isWeChatMiniProgramWebView()) return '系统相册/拍照上传';
-  if (isWeChatBrowser()) return '系统拍照/相册上传';
-  return '点击拍照上传';
-}
-
 type PolicyUploadSource = 'file-input';
 
 function getNetworkType() {
@@ -1010,7 +523,6 @@ export function CustomerApp() {
 
   const canSubmit = Boolean(uploadItem || ocrText.trim() || formData.company.trim() || formData.name.trim());
   const totalCoverage = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [policies]);
-  const annualPremium = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0), [policies]);
   const policyGroups = useMemo(() => groupPoliciesByInsured(policies), [policies]);
   const selectedFamilyPolicies = useMemo(
     () => selectedFamilyId ? policies.filter((policy) => Number(policy.familyId) === Number(selectedFamilyId)) : policies,
@@ -2061,7 +1573,7 @@ export function CustomerApp() {
       const insuredRelationForSubmit = formData.insuredRelationLabel || formData.insuredRelation || '待确认';
       const applicantShouldBeCore = applicantRelationForSubmit === '本人';
       const insuredShouldBeCore = insuredRelationForSubmit === '本人';
-      if (applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
+      if (!submitFamily.coreMemberId && applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
         setMessage('家庭核心人员只能选择一个');
         return;
       }
@@ -2106,19 +1618,30 @@ export function CustomerApp() {
         setMessage('请确认被保险人的家庭成员身份后再保存');
         return;
       }
-      if (applicantShouldBeCore) applicantMember = await setSubmitCoreMember(applicantMember);
-      if (insuredShouldBeCore) insuredMember = await setSubmitCoreMember(insuredMember);
-      if (!applicantShouldBeCore) applicantMember = await syncSubmitMemberRelation(applicantMember, applicantRelationForSubmit);
-      if (!insuredShouldBeCore) insuredMember = await syncSubmitMemberRelation(insuredMember, insuredRelationForSubmit);
+      const shouldPersistAsCore = (member: FamilyMember, relationLabel: string) => (
+        relationLabel === '本人' &&
+        (!submitFamily.coreMemberId || Number(member.id) === Number(submitFamily.coreMemberId))
+      );
+      const relationLabelForMember = (member: FamilyMember, relationLabel: string) => {
+        if (shouldPersistAsCore(member, relationLabel)) return '本人';
+        if (relationLabel !== '本人') return relationLabel || '待确认';
+        return member.relationLabel && member.relationLabel !== '本人' ? member.relationLabel : '待确认';
+      };
+      const applicantFinalRelation = relationLabelForMember(applicantMember, applicantRelationForSubmit);
+      const insuredFinalRelation = relationLabelForMember(insuredMember, insuredRelationForSubmit);
+      if (applicantFinalRelation === '本人') applicantMember = await setSubmitCoreMember(applicantMember);
+      if (insuredFinalRelation === '本人') insuredMember = await setSubmitCoreMember(insuredMember);
+      if (applicantFinalRelation !== '本人') applicantMember = await syncSubmitMemberRelation(applicantMember, applicantFinalRelation);
+      if (insuredFinalRelation !== '本人') insuredMember = await syncSubmitMemberRelation(insuredMember, insuredFinalRelation);
       const submitData: PolicyFormData = {
         ...formData,
         familyId: submitFamily.id,
         applicantMemberId: applicantMember.id,
         insuredMemberId: insuredMember.id,
-        applicantRelation: applicantRelationForSubmit,
-        insuredRelation: insuredRelationForSubmit,
-        applicantRelationLabel: applicantRelationForSubmit,
-        insuredRelationLabel: insuredRelationForSubmit,
+        applicantRelation: applicantFinalRelation,
+        insuredRelation: insuredFinalRelation,
+        applicantRelationLabel: applicantFinalRelation,
+        insuredRelationLabel: insuredFinalRelation,
       };
       setFormData(submitData);
       const payload = await scanPolicy({
@@ -2798,32 +2321,6 @@ export function CustomerApp() {
     );
   }
 
-  if (activeTab === 'families') {
-    return (
-      <>
-        <FamilyProfileManager
-          familyProfiles={familyProfiles}
-          selectedFamilyId={selectedFamilyId}
-          onSelectFamily={(familyId) => handleSelectFamily(familyId)}
-          onCreateFamily={async (familyName) => {
-            await createFamilyProfileByName(familyName);
-          }}
-          onSetCoreMember={setCoreMemberForCurrentFamily}
-          onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
-          onBackToEntry={() => {
-            setActiveTab('entry');
-            setMessage('可以继续录入保单');
-          }}
-          onOpenReport={openFamilyReport}
-        />
-        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
-        {authDialog}
-        {accountSheet}
-        {cashValueDialog}
-      </>
-    );
-  }
-
   if (cashflowMember) {
     return (
       <CashflowDetailPage
@@ -2839,379 +2336,197 @@ export function CustomerApp() {
     );
   }
 
-  return (
-    <div className="min-h-screen bg-slate-50 pb-28">
-      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/80 px-4 py-4 backdrop-blur-md">
-        <div className="flex items-center gap-2">
-          <Shield className="text-blue-500" size={24} />
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">保障管理</h1>
-            <p className="text-[11px] font-medium text-slate-400">{maskMobile(mobile)}</p>
-          </div>
-        </div>
-        <button
-          className="flex max-w-[148px] items-center gap-2 rounded-full bg-slate-100 px-3 py-2 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
-          type="button"
-          onClick={() => setShowAccountSheet(true)}
-          aria-label="查看账号"
-        >
-          <CircleUserRound size={18} />
-          <span className="truncate">{isLoggedIn ? maskMobile(mobile) : '游客'}</span>
-        </button>
-      </header>
-
-      <main className="overflow-y-auto">
-        <div className="px-4 pt-4">
-          <div className="w-full overflow-hidden rounded-[28px] bg-gradient-to-br from-sky-600 via-cyan-500 to-emerald-400 p-5 text-left text-white shadow-[0_18px_40px_-18px_rgba(14,165,233,0.75)]">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs font-semibold uppercase text-white/70">Policy OCR</p>
-                <h2 className="mt-2 text-2xl font-black leading-tight">保单分析</h2>
-                <p className="mt-2 max-w-xl text-sm leading-6 text-white/85">{message}</p>
-              </div>
-              <div className="rounded-2xl bg-white/15 p-3">
-                <Sparkles size={28} />
-              </div>
-            </div>
-            <div className="mt-5 grid grid-cols-2 gap-3">
-              <div className="rounded-2xl bg-white/15 px-4 py-3">
-                <p className="text-xs text-white/70">已录入</p>
-                <p className="mt-1 text-xl font-black">{policies.length} 张</p>
-              </div>
-              <div className="rounded-2xl bg-white/15 px-4 py-3">
-                <p className="text-xs text-white/70">总保额</p>
-                <p className="mt-1 text-xl font-black">{formatCoverageAmount(totalCoverage)}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <FamilyCoverageOverview
-          report={familyReport}
+  if (activeTab === 'families') {
+    return (
+      <>
+        <FamilyProfileManager
+          familyProfiles={familyProfiles}
           policies={policies}
+          selectedFamilyId={selectedFamilyId}
+          onSelectFamily={(familyId) => handleSelectFamily(familyId)}
+          onCreateFamily={async (familyName) => {
+            await createFamilyProfileByName(familyName);
+          }}
+          onSetCoreMember={setCoreMemberForCurrentFamily}
+          onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
+          onBackToEntry={() => {
+            setActiveTab('entry');
+            setMessage('可以继续录入保单');
+          }}
+          onOpenReport={openFamilyReport}
+          onOpenPolicy={(policy) => void openPolicy(policy)}
         />
-
-        {policies.length ? (
-          <section className="px-4 pt-3">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between rounded-[20px] border border-[#D9E6F4] bg-white px-4 py-3 text-left shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
-              onClick={() => setShowFamilyReport(true)}
-            >
-              <span>
-                <span className="block text-sm font-black text-[#0F172A]">家庭保障分析报告</span>
-                <span className="mt-1 block text-xs font-semibold text-[#7890AA]">全家统计、保单清单、重疾、意外、财富分析</span>
-              </span>
-              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">查看</span>
-            </button>
-          </section>
+        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
+        {selectedPolicy ? (
+          <PolicyDetailSheet
+            policy={selectedPolicy}
+            onClose={() => setSelectedPolicy(null)}
+            onRetryReport={retryPolicyReport}
+            retrying={retryingPolicyId === selectedPolicy.id}
+            onUpdatePolicy={handleUpdatePolicy}
+            onUpdateOptionalResponsibility={handleUpdateOptionalResponsibility}
+            updating={savingPolicyId === selectedPolicy.id}
+            onDeletePolicy={handleDeletePolicy}
+            deleting={deletingPolicyId === selectedPolicy.id}
+            onEditCashValue={openManualCashValueEditor}
+          />
         ) : null}
+        {authDialog}
+        {accountSheet}
+        {cashValueDialog}
+      </>
+    );
+  }
 
-        <section className="space-y-4 p-4">
-          {!policies.length ? (
-            <div className="rounded-[24px] border border-dashed border-[#D6E4F5] bg-white px-5 py-10 text-center shadow-[0_18px_34px_-30px_rgba(15,23,42,0.12)]">
-              <p className="text-base font-semibold text-[#0F172A]">还没有录入保单</p>
-              <p className="mt-2 text-sm leading-6 text-[#6C87A5]">录入后会在这里统一查看你的保单责任和保障明细。</p>
-              <button
-                className="mt-5 rounded-2xl bg-blue-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-500/20"
-                type="button"
-                onClick={startEntryForm}
-              >
-                去录入第一张保单
-              </button>
+  if (activeTab === 'policies') {
+    return (
+      <div className="min-h-screen bg-slate-50 pb-28">
+        <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/80 px-4 py-4 backdrop-blur-md">
+          <div className="flex items-center gap-2">
+            <Shield className="text-blue-500" size={24} />
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">保障管理</h1>
+              <p className="text-[11px] font-medium text-slate-400">{maskMobile(mobile)}</p>
             </div>
-          ) : null}
-          {policyGroups.map((group) => (
-            <section key={group.insured} className="rounded-[24px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-              <div className="mb-3 flex items-start justify-between gap-3">
+          </div>
+          <button
+            className="flex max-w-[148px] items-center gap-2 rounded-full bg-slate-100 px-3 py-2 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
+            type="button"
+            onClick={() => setShowAccountSheet(true)}
+            aria-label="查看账号"
+          >
+            <CircleUserRound size={18} />
+            <span className="truncate">{isLoggedIn ? maskMobile(mobile) : '游客'}</span>
+          </button>
+        </header>
+
+        <main className="overflow-y-auto">
+          <div className="px-4 pt-4">
+            <div className="w-full overflow-hidden rounded-[28px] bg-gradient-to-br from-sky-600 via-cyan-500 to-emerald-400 p-5 text-left text-white shadow-[0_18px_40px_-18px_rgba(14,165,233,0.75)]">
+              <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h3 className="text-lg font-black text-[#0F172A]">{group.insured}</h3>
-                  <p className="mt-1 text-xs font-medium text-[#7890AA]">
-                    {group.policies.length} 张保单 · 总保额 {formatCoverageAmount(group.totalCoverage)}
-                  </p>
+                  <p className="text-xs font-semibold uppercase text-white/70">Policy OCR</p>
+                  <h2 className="mt-2 text-2xl font-black leading-tight">保单分析</h2>
+                  <p className="mt-2 max-w-xl text-sm leading-6 text-white/85">{message}</p>
                 </div>
-                <span className="rounded-full bg-[#EEF4FF] px-3 py-1 text-xs font-bold text-[#1152D4]">被保人</span>
+                <div className="rounded-2xl bg-white/15 p-3">
+                  <Sparkles size={28} />
+                </div>
               </div>
-              <div className="space-y-3">
-                {group.policies.map((policy, index) => (
-                  <PolicyListItem
-                    key={policy.id}
-                    policy={policy}
-                    index={index}
-                    onOpen={() => void openPolicy(policy)}
-                  />
-                ))}
+              <div className="mt-5 grid grid-cols-2 gap-3">
+                <div className="rounded-2xl bg-white/15 px-4 py-3">
+                  <p className="text-xs text-white/70">已录入</p>
+                  <p className="mt-1 text-xl font-black">{policies.length} 张</p>
+                </div>
+                <div className="rounded-2xl bg-white/15 px-4 py-3">
+                  <p className="text-xs text-white/70">总保额</p>
+                  <p className="mt-1 text-xl font-black">{formatCoverageAmount(totalCoverage)}</p>
+                </div>
               </div>
+            </div>
+          </div>
+
+          <FamilyCoverageOverview
+            report={familyReport}
+            policies={policies}
+          />
+
+          {policies.length ? (
+            <section className="px-4 pt-3">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between rounded-[20px] border border-[#D9E6F4] bg-white px-4 py-3 text-left shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
+                onClick={() => setShowFamilyReport(true)}
+              >
+                <span>
+                  <span className="block text-sm font-black text-[#0F172A]">家庭保障分析报告</span>
+                  <span className="mt-1 block text-xs font-semibold text-[#7890AA]">全家统计、保单清单、重疾、意外、财富分析</span>
+                </span>
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">查看</span>
+              </button>
             </section>
-          ))}
-        </section>
-      </main>
+          ) : null}
 
-      <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
-      {!selectedPolicy ? responsibilityAssistant : null}
+          <section className="space-y-4 p-4">
+            {!policies.length ? (
+              <div className="rounded-[24px] border border-dashed border-[#D6E4F5] bg-white px-5 py-10 text-center shadow-[0_18px_34px_-30px_rgba(15,23,42,0.12)]">
+                <p className="text-base font-semibold text-[#0F172A]">还没有录入保单</p>
+                <p className="mt-2 text-sm leading-6 text-[#6C87A5]">录入后会在这里统一查看你的保单责任和保障明细。</p>
+                <button
+                  className="mt-5 rounded-2xl bg-blue-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-500/20"
+                  type="button"
+                  onClick={startEntryForm}
+                >
+                  去录入第一张保单
+                </button>
+              </div>
+            ) : null}
+            {policyGroups.map((group) => (
+              <section key={group.insured} className="rounded-[24px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-black text-[#0F172A]">{group.insured}</h3>
+                    <p className="mt-1 text-xs font-medium text-[#7890AA]">
+                      {group.policies.length} 张保单 · 总保额 {formatCoverageAmount(group.totalCoverage)}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-[#EEF4FF] px-3 py-1 text-xs font-bold text-[#1152D4]">被保人</span>
+                </div>
+                <div className="space-y-3">
+                  {group.policies.map((policy, index) => (
+                    <PolicyListItem
+                      key={policy.id}
+                      policy={policy}
+                      index={index}
+                      onOpen={() => void openPolicy(policy)}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </section>
+        </main>
 
-      {selectedPolicy ? (
-        <PolicyDetailSheet
-          policy={selectedPolicy}
-          onClose={() => setSelectedPolicy(null)}
-          onRetryReport={retryPolicyReport}
-          retrying={retryingPolicyId === selectedPolicy.id}
-          onUpdatePolicy={handleUpdatePolicy}
-          onUpdateOptionalResponsibility={handleUpdateOptionalResponsibility}
-          updating={savingPolicyId === selectedPolicy.id}
-          onDeletePolicy={handleDeletePolicy}
-          deleting={deletingPolicyId === selectedPolicy.id}
-          onEditCashValue={openManualCashValueEditor}
-        />
-      ) : null}
-      {authDialog}
-      {accountSheet}
-      {cashValueDialog}
-    </div>
-  );
+        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
+        {!selectedPolicy ? responsibilityAssistant : null}
+
+        {selectedPolicy ? (
+          <PolicyDetailSheet
+            policy={selectedPolicy}
+            onClose={() => setSelectedPolicy(null)}
+            onRetryReport={retryPolicyReport}
+            retrying={retryingPolicyId === selectedPolicy.id}
+            onUpdatePolicy={handleUpdatePolicy}
+            onUpdateOptionalResponsibility={handleUpdateOptionalResponsibility}
+            updating={savingPolicyId === selectedPolicy.id}
+            onDeletePolicy={handleDeletePolicy}
+            deleting={deletingPolicyId === selectedPolicy.id}
+            onEditCashValue={openManualCashValueEditor}
+          />
+        ) : null}
+        {authDialog}
+        {accountSheet}
+        {cashValueDialog}
+      </div>
+    );
+  }
+
+  return null;
 }
 
-function FamilyProfileManager({
-  familyProfiles,
-  selectedFamilyId,
-  onSelectFamily,
-  onCreateFamily,
-  onSetCoreMember,
-  onUpdateFamilyMemberRelation,
-  onBackToEntry,
-  onOpenReport,
+function FamilyCoverageOverview({
+  report,
+  policies,
 }: {
-  familyProfiles: FamilyProfile[];
-  selectedFamilyId: number | null;
-  onSelectFamily: (familyId: number) => void;
-  onCreateFamily: (familyName: string) => Promise<void>;
-  onSetCoreMember: (family: FamilyProfile, member: FamilyMember) => Promise<FamilyProfile>;
-  onUpdateFamilyMemberRelation: (family: FamilyProfile, member: FamilyMember, relationLabel: string) => Promise<FamilyProfile>;
-  onBackToEntry: () => void;
-  onOpenReport: (familyId: number) => void;
+  report: FamilyReport;
+  policies: Policy[];
 }) {
-  const families = Array.isArray(familyProfiles) ? familyProfiles : [];
-  const [editingFamilyId, setEditingFamilyId] = useState<number | null>(null);
-  const [editingMessage, setEditingMessage] = useState('');
-  const [editingBusy, setEditingBusy] = useState(false);
-
-  useEffect(() => {
-    if (!editingFamilyId) return;
-    if (!families.some((family) => Number(family.id) === Number(editingFamilyId))) {
-      setEditingFamilyId(null);
-    }
-  }, [editingFamilyId, families]);
-
-  function activeMembers(family: FamilyProfile) {
-    const members = Array.isArray(family.members) ? family.members : [];
-    return members.filter((member) => member.status === 'active');
-  }
-
-  function corePersonLabel(family: FamilyProfile) {
-    const members = activeMembers(family);
-    const coreMember = members.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
-    return coreMember?.name || members[0]?.name || '待设置';
-  }
-
-  function isCoreMember(family: FamilyProfile, member: FamilyMember) {
-    return Number(member.id) === Number(family.coreMemberId || 0);
-  }
-
-  function editableRelationOptions(value: string) {
-    const options = FAMILY_MEMBER_RELATION_OPTIONS.filter((relation) => relation !== '本人');
-    return value && !options.includes(value) ? [value, ...options] : options;
-  }
-
-  async function handleCreateFamily() {
-    const familyName = window.prompt('请输入家庭档案名称', '默认家庭')?.trim();
-    if (!familyName) return;
-    await onCreateFamily(familyName);
-  }
-
-  function toggleFamilyEditor(family: FamilyProfile) {
-    const nextEditing = Number(editingFamilyId) === Number(family.id) ? null : family.id;
-    onSelectFamily(family.id);
-    setEditingFamilyId(nextEditing);
-    setEditingMessage('');
-  }
-
-  async function handleSetCoreMember(family: FamilyProfile, member: FamilyMember) {
-    setEditingBusy(true);
-    setEditingMessage('');
-    try {
-      await onSetCoreMember(family, member);
-      setEditingMessage(`已设置核心成员：${member.name}`);
-    } catch (error) {
-      setEditingMessage(error instanceof Error ? error.message : '设置核心成员失败');
-    } finally {
-      setEditingBusy(false);
-    }
-  }
-
-  async function handleUpdateFamilyMemberRelation(family: FamilyProfile, member: FamilyMember, relationLabel: string) {
-    setEditingBusy(true);
-    setEditingMessage('');
-    try {
-      await onUpdateFamilyMemberRelation(family, member, relationLabel);
-      setEditingMessage(`已更新${member.name}的家庭关系`);
-    } catch (error) {
-      setEditingMessage(error instanceof Error ? error.message : '更新家庭关系失败');
-    } finally {
-      setEditingBusy(false);
-    }
-  }
+  if (!policies.length) return null;
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-28">
-      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/90 px-4 py-4 backdrop-blur">
-        <button
-          type="button"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200"
-          onClick={onBackToEntry}
-          aria-label="返回录入保单"
-        >
-          <ChevronLeft size={20} />
-        </button>
-        <h1 className="text-lg font-black text-slate-950">家庭档案列表</h1>
-        <button
-          type="button"
-          className="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white shadow-lg shadow-blue-500/20"
-          onClick={() => void handleCreateFamily()}
-        >
-          新建家庭档案
-        </button>
-      </header>
-
-      <main className="mx-auto w-full max-w-3xl space-y-3 p-4">
-        {families.length ? families.map((family) => {
-          const members = activeMembers(family);
-          const selected = Number(family.id) === Number(selectedFamilyId);
-          const editing = Number(family.id) === Number(editingFamilyId);
-          return (
-            <section
-              key={family.id}
-              className={`rounded-2xl border bg-white p-4 shadow-[0_16px_32px_-28px_rgba(15,23,42,0.18)] ${
-                selected ? 'border-blue-200 ring-2 ring-blue-100' : 'border-slate-200'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h2 className="truncate text-lg font-black text-slate-950">{family.familyName || `家庭 ${family.id}`}</h2>
-                  <p className="mt-1 text-sm font-semibold text-slate-500">核心成员：{corePersonLabel(family)}</p>
-                </div>
-                {selected ? (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">
-                    <CheckCircle2 size={14} />
-                    当前选择
-                  </span>
-                ) : null}
-              </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-slate-50 px-3 py-2">
-                  <p className="text-xs font-black text-slate-400">成员数</p>
-                  <p className="mt-1 text-xl font-black text-slate-950">{members.length}</p>
-                </div>
-                <div className="rounded-xl bg-slate-50 px-3 py-2">
-                  <p className="text-xs font-black text-slate-400">核心成员</p>
-                  <p className="mt-1 truncate text-sm font-black text-slate-950">{corePersonLabel(family)}</p>
-                </div>
-              </div>
-
-              <div className="mt-4 grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-500 text-xs font-black text-white shadow-lg shadow-blue-500/20"
-                  onClick={() => onOpenReport(family.id)}
-                >
-                  <LayoutDashboard size={16} />
-                  查看报告
-                </button>
-                <button
-                  type="button"
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-100 text-xs font-black text-slate-700"
-                  onClick={() => toggleFamilyEditor(family)}
-                >
-                  <Pencil size={16} />
-                  {editing ? '收起管理' : '管理成员'}
-                </button>
-                <button
-                  type="button"
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-emerald-50 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
-                  onClick={() => {
-                    onSelectFamily(family.id);
-                    onBackToEntry();
-                  }}
-                >
-                  <UploadCloud size={16} />
-                  录入保单
-                </button>
-              </div>
-
-              {editing ? (
-                <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="space-y-2">
-                    {members.length ? members.map((member) => (
-                      <div key={member.id} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-black text-slate-950">{member.name}</p>
-                          {isCoreMember(family, member) ? (
-                            <p className="mt-0.5 text-xs font-semibold text-slate-500">{member.relationLabel || '本人'}</p>
-                          ) : (
-                            <select
-                              aria-label={`设置${member.name}家庭关系`}
-                              value={member.relationLabel || '待确认'}
-                              disabled={editingBusy}
-                              onChange={(event) => void handleUpdateFamilyMemberRelation(family, member, event.target.value)}
-                              className="mt-1 h-8 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-bold text-slate-600 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
-                            >
-                              {editableRelationOptions(member.relationLabel || '待确认').map((relation) => (
-                                <option key={relation} value={relation}>{relation}</option>
-                              ))}
-                            </select>
-                          )}
-                        </div>
-                        {isCoreMember(family, member) ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">
-                            <CheckCircle2 size={14} />
-                            核心
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-black text-slate-700 ring-1 ring-slate-200 disabled:opacity-50"
-                            disabled={editingBusy}
-                            onClick={() => void handleSetCoreMember(family, member)}
-                          >
-                            设为核心
-                          </button>
-                        )}
-                      </div>
-                    )) : (
-                      <p className="rounded-xl bg-white px-3 py-3 text-sm font-semibold text-slate-500">暂无成员</p>
-                    )}
-                  </div>
-
-                  {editingMessage ? <p className="text-xs font-bold text-slate-500">{editingMessage}</p> : null}
-                </div>
-              ) : null}
-            </section>
-          );
-        }) : (
-          <section className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-10 text-center">
-            <p className="text-base font-black text-slate-950">暂无家庭档案</p>
-            <p className="mt-2 text-sm leading-6 text-slate-500">新建后可把成员和保单归入同一个家庭。</p>
-            <button
-              type="button"
-              className="mt-5 rounded-xl bg-blue-500 px-5 py-3 text-sm font-black text-white shadow-lg shadow-blue-500/20"
-              onClick={() => void handleCreateFamily()}
-            >
-              新建家庭档案
-            </button>
-          </section>
-        )}
-      </main>
-    </div>
+    <section className="family-report-shell p-4 pb-0 text-[#102033]">
+      <FamilyRadarSection report={report} />
+    </section>
   );
 }
 
@@ -3530,484 +2845,6 @@ function CashflowDetailPage({
   );
 }
 
-function FamilyCoverageOverview({
-  report,
-  policies,
-}: {
-  report: FamilyReport;
-  policies: Policy[];
-}) {
-  if (!policies.length) return null;
-
-  return (
-    <section className="family-report-shell p-4 pb-0 text-[#102033]">
-      <FamilyRadarSection report={report} />
-    </section>
-  );
-}
-
-function normalizeSuggestionQuery(value: string) {
-  return value.trim().replace(/\s+/g, '').toLowerCase();
-}
-
-function renderHighlightedSuggestion(value: string, query: string) {
-  const normalizedQuery = normalizeSuggestionQuery(query);
-  if (!normalizedQuery) return value;
-  const index = value.toLowerCase().indexOf(normalizedQuery);
-  if (index < 0) return value;
-  return (
-    <>
-      {value.slice(0, index)}
-      <mark className="rounded bg-yellow-100 px-0.5 font-black text-blue-700">{value.slice(index, index + normalizedQuery.length)}</mark>
-      {value.slice(index + normalizedQuery.length)}
-    </>
-  );
-}
-
-function ResponsibilityAssistant(props: {
-  analysis: PolicyAnalysisResult | null;
-  anchorClassName?: string;
-  company: string;
-  companySuggestionLoading: boolean;
-  companySuggestions: PolicyCompanySuggestion[];
-  localSearched: boolean;
-  loading: boolean;
-  matches: PolicyKnowledgeMatch[];
-  message: string;
-  name: string;
-  productSuggestionLoading: boolean;
-  productSuggestions: PolicyProductSuggestion[];
-  onChangeCompany: (value: string) => void;
-  onChangeName: (value: string) => void;
-  onClose: () => void;
-  onOpen: () => void;
-  onQuery: () => void;
-  onSearchMore: () => void;
-  onSelectCompany: (company: string) => void;
-  onSelectMatch: (match: PolicyKnowledgeMatch) => void;
-  onSelectProduct: (suggestion: PolicyProductSuggestion) => void;
-  open: boolean;
-}) {
-  const {
-    analysis,
-    anchorClassName,
-    company,
-    companySuggestionLoading,
-    companySuggestions,
-    localSearched,
-    loading,
-    matches,
-    message,
-    name,
-    productSuggestionLoading,
-    productSuggestions,
-    onChangeCompany,
-    onChangeName,
-    onClose,
-    onOpen,
-    onQuery,
-    onSearchMore,
-    onSelectCompany,
-    onSelectMatch,
-    onSelectProduct,
-    open,
-  } = props;
-  const [companyFocused, setCompanyFocused] = useState(false);
-  const [productFocused, setProductFocused] = useState(false);
-  const responsibilities = Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [];
-  const sources = Array.isArray(analysis?.sources) ? analysis.sources : [];
-  const productMatches = Array.isArray(matches) ? matches : [];
-  const canQuery = Boolean(company.trim() && name.trim() && !loading);
-  const canSearchMore = Boolean(localSearched && company.trim() && name.trim() && !responsibilities.length);
-  const companyQuery = company.trim();
-  const productQuery = name.trim();
-  const visibleCompanySuggestions = useMemo(() => {
-    const normalizedQuery = normalizeSuggestionQuery(companyQuery);
-    if (!normalizedQuery) return [];
-    return (Array.isArray(companySuggestions) ? companySuggestions : [])
-      .map((suggestion) => {
-        const normalizedCompany = normalizeSuggestionQuery(suggestion.company);
-        return {
-          ...suggestion,
-          matchIndex: normalizedCompany.indexOf(normalizedQuery),
-          startsWith: normalizedCompany.startsWith(normalizedQuery),
-        };
-      })
-      .filter((suggestion) => suggestion.matchIndex >= 0 && suggestion.company !== companyQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.company.localeCompare(right.company, 'zh-CN'),
-      )
-      .slice(0, 8);
-  }, [companyQuery, companySuggestions]);
-  const showCompanySuggestions = companyFocused && companyQuery && (companySuggestionLoading || visibleCompanySuggestions.length);
-  const visibleProductSuggestions = useMemo(() => {
-    const normalizedCompany = normalizeSuggestionQuery(companyQuery);
-    const normalizedQuery = normalizeSuggestionQuery(productQuery);
-    if (!normalizedCompany) return [];
-    return (Array.isArray(productSuggestions) ? productSuggestions : [])
-      .map((suggestion) => {
-        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
-        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
-        return {
-          ...suggestion,
-          companyMatches:
-            normalizedSuggestionCompany === normalizedCompany ||
-            normalizedSuggestionCompany.includes(normalizedCompany) ||
-            normalizedCompany.includes(normalizedSuggestionCompany),
-          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
-          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
-        };
-      })
-      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.productName.localeCompare(right.productName, 'zh-CN'),
-      )
-      .slice(0, 8);
-  }, [companyQuery, productQuery, productSuggestions]);
-  const showProductSuggestions = productFocused && Boolean(companyQuery) && (productSuggestionLoading || visibleProductSuggestions.length);
-  const rootClassName = anchorClassName
-    ? `no-print fixed ${anchorClassName} right-4 z-[70] flex flex-col-reverse items-end sm:right-6`
-    : 'no-print fixed bottom-6 right-4 z-[70] flex flex-col-reverse items-end sm:right-6';
-
-  return (
-    <div className={rootClassName}>
-      <button
-        type="button"
-        onClick={open ? onClose : onOpen}
-        className={
-          open
-            ? 'flex h-14 w-14 items-center justify-center rounded-full bg-blue-500 text-white shadow-[0_18px_35px_-16px_rgba(37,99,235,0.75)] ring-4 ring-white transition hover:bg-blue-600 active:scale-95'
-            : 'flex h-14 max-w-[calc(100vw-2rem)] items-center justify-center gap-2 rounded-full bg-blue-500 px-4 pr-5 text-white shadow-[0_18px_35px_-16px_rgba(37,99,235,0.75)] ring-4 ring-white transition hover:bg-blue-600 active:scale-95'
-        }
-        aria-label={open ? '关闭保险责任助手' : '打开保险责任助手'}
-        title={open ? '关闭保险责任助手' : '打开保险责任助手'}
-      >
-        {open ? (
-          <X size={23} />
-        ) : (
-          <>
-            <Bot className="shrink-0" size={22} />
-            <span className="whitespace-nowrap text-sm font-black leading-none">输入保险名称查责任</span>
-          </>
-        )}
-      </button>
-
-      {open ? (
-        <section className="mb-3 flex max-h-[calc(100vh-10rem)] w-[calc(100vw-2rem)] max-w-[420px] flex-col overflow-hidden rounded-[24px] border border-[#D7E5F6] bg-white shadow-[0_26px_70px_-30px_rgba(15,23,42,0.42)]">
-          <header className="flex items-center justify-between gap-3 border-b border-slate-100 bg-[#F8FBFF] px-4 py-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-blue-500 text-white shadow-lg shadow-blue-500/25">
-                <Bot size={21} />
-              </div>
-              <div className="min-w-0">
-                <h2 className="truncate text-base font-black text-slate-950">保险责任助手</h2>
-                <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">{message}</p>
-              </div>
-            </div>
-            <button
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-slate-500 ring-1 ring-slate-200 transition-colors hover:bg-slate-100"
-              type="button"
-              onClick={onClose}
-              aria-label="关闭保险责任助手"
-            >
-              <X size={18} />
-            </button>
-          </header>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            <div className="grid gap-3">
-              <label className="relative block">
-                <span className="mb-1.5 block text-xs font-black text-slate-500">保险公司</span>
-                <input
-                  value={company}
-                  onChange={(event) => onChangeCompany(event.target.value)}
-                  onFocus={() => setCompanyFocused(true)}
-                  onBlur={() => window.setTimeout(() => setCompanyFocused(false), 120)}
-                  placeholder="例如：中国平安"
-                  autoComplete="off"
-                  className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-                />
-                {showCompanySuggestions ? (
-                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="保险公司候选">
-                    {companySuggestionLoading ? (
-                      <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        正在加载保险公司
-                      </div>
-                    ) : (
-                      visibleCompanySuggestions.map((suggestion) => (
-                        <button
-                          key={suggestion.company}
-                          type="button"
-                          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                          role="option"
-                          aria-selected={false}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            onSelectCompany(suggestion.company);
-                            setCompanyFocused(false);
-                          }}
-                        >
-                          <span className="min-w-0 truncate">{renderHighlightedSuggestion(suggestion.company, companyQuery)}</span>
-                          <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                ) : null}
-              </label>
-              <label className="relative block">
-                <span className="mb-1.5 block text-xs font-black text-slate-500">保险产品</span>
-                <input
-                  value={name}
-                  onChange={(event) => onChangeName(event.target.value)}
-                  placeholder="例如：平安福"
-                  onFocus={() => setProductFocused(true)}
-                  onBlur={() => window.setTimeout(() => setProductFocused(false), 120)}
-                  autoComplete="off"
-                  className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-                />
-                {showProductSuggestions ? (
-                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="保险产品候选">
-                    {productSuggestionLoading ? (
-                      <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        正在加载保险产品
-                      </div>
-                    ) : (
-                      visibleProductSuggestions.map((suggestion) => (
-                        <button
-                          key={`${suggestion.company}-${suggestion.productName}`}
-                          type="button"
-                          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                          role="option"
-                          aria-selected={false}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            onSelectProduct(suggestion);
-                            setProductFocused(false);
-                          }}
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate">{renderHighlightedSuggestion(suggestion.productName, productQuery)}</span>
-                            {suggestion.company !== companyQuery ? (
-                              <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
-                            ) : null}
-                          </span>
-                          <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                ) : null}
-              </label>
-              <button
-                type="button"
-                disabled={!canQuery}
-                onClick={onQuery}
-                className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-blue-500 text-sm font-black text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                {loading ? <Loader2 className="animate-spin" size={18} /> : <SendHorizontal size={18} />}
-                {loading ? '查询中...' : '查询保险责任'}
-              </button>
-            </div>
-
-            {productMatches.length ? (
-              <section className="mt-4">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-black text-slate-950">请选择产品</h3>
-                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
-                    {productMatches.length} 个匹配
-                  </span>
-                </div>
-                <div className="space-y-2.5">
-                  {productMatches.map((match, index) => (
-                    <button
-                      key={`${match.company}-${match.productName}-${index}`}
-                      type="button"
-                      disabled={loading}
-                      onClick={() => onSelectMatch(match)}
-                      className="block w-full rounded-[18px] border border-[#DDE8F5] bg-white p-3.5 text-left shadow-[0_14px_30px_-28px_rgba(15,23,42,0.35)] transition hover:border-blue-200 hover:bg-[#F8FBFF] active:scale-[0.99] disabled:opacity-60"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[11px] font-black text-blue-600">{match.company}</p>
-                          <h4 className="mt-1 break-words text-sm font-black leading-6 text-slate-950">{match.productName}</h4>
-                          <p className="mt-1 break-words text-xs font-semibold leading-5 text-slate-500">
-                            {match.bestSource?.title || match.title || match.matchReason}
-                          </p>
-                        </div>
-                        <span className="shrink-0 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700">
-                          {Math.round(match.score * 100)}%
-                        </span>
-                      </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-black text-slate-400">
-                        <span className="rounded-full bg-slate-50 px-2 py-1">{match.matchReason}</span>
-                        <span className="rounded-full bg-slate-50 px-2 py-1">{match.evidenceLabel}</span>
-                        <span className="rounded-full bg-slate-50 px-2 py-1">{match.sourceCount} 份资料</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            {canSearchMore ? (
-              <section className="mt-4 rounded-[18px] border border-blue-100 bg-[#F8FBFF] p-3.5">
-                <button
-                  type="button"
-                  disabled={loading}
-                  onClick={onSearchMore}
-                  className="flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-white text-sm font-black text-blue-700 shadow-sm transition hover:bg-blue-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
-                >
-                  {loading ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />}
-                  查找更多保单
-                </button>
-              </section>
-            ) : null}
-
-            <section className="mt-4">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-black text-slate-950">保险责任</h3>
-                {responsibilities.length ? (
-                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{responsibilities.length} 项</span>
-                ) : null}
-              </div>
-              <div className="space-y-2.5">
-                {responsibilities.length ? (
-                  responsibilities.map((row, index) => (
-                    <article key={`${row.coverageType}-${index}`} className="rounded-[18px] border border-[#DDE8F5] bg-[#F8FBFF] p-3.5">
-                      <div className="flex items-start gap-3">
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white text-xs font-black text-blue-600 ring-1 ring-blue-100">
-                          {index + 1}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <h4 className="break-words text-sm font-black leading-6 text-slate-950">{row.coverageType || '保险责任'}</h4>
-                          {row.scenario ? <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">{row.scenario}</p> : null}
-                          {row.payout ? <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700">{row.payout}</p> : null}
-                          {row.note ? <p className="mt-2 break-words text-xs font-medium leading-5 text-slate-500">{row.note}</p> : null}
-                        </div>
-                      </div>
-                    </article>
-                  ))
-                ) : productMatches.length ? (
-                  <div className="rounded-[18px] border border-dashed border-blue-100 bg-blue-50/50 px-4 py-6 text-center text-sm font-bold text-blue-500">
-                    点击上方产品后输出保险责任
-                  </div>
-                ) : localSearched ? (
-                  <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
-                    本地库未找到匹配产品
-                  </div>
-                ) : (
-                  <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
-                    暂无查询结果
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {sources.length ? (
-              <section className="mt-4">
-                <h3 className="mb-2 text-sm font-black text-slate-950">资料来源</h3>
-                <div className="space-y-2">
-                  {sources.slice(0, 3).map((source, index) => (
-                    <a
-                      key={`${source.url}-${index}`}
-                      href={source.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-xs transition hover:border-blue-200 hover:bg-blue-50"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 truncate font-black text-slate-700">{source.title || source.url}</span>
-                        <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 font-black text-blue-700">{source.evidenceLabel || (source.official ? '官方资料' : '资料')}</span>
-                      </div>
-                      <p className="mt-1 truncate font-medium text-slate-400">{source.url}</p>
-                    </a>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
-    </div>
-  );
-}
-
-function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: number; onOpen: () => void }) {
-  const reportGenerating = isPolicyReportGenerating(policy);
-  const reportFailed = isPolicyReportFailed(policy);
-  const cashValueSummary = summarizeCashValues(policy.cashValues);
-  const validityStatus = resolvePolicyValidityStatus(policy.coveragePeriod, {
-    effectiveDate: policy.date,
-    insuredBirthday: policy.insuredBirthday,
-  });
-  const validityStatusClassName = policyValidityClassName(validityStatus.tone);
-  const reportStatusClassName = reportGenerating
-    ? 'bg-[#FFF7ED] text-[#C2410C] ring-[#FED7AA]'
-    : reportFailed
-      ? 'bg-[#FEF2F2] text-[#DC2626] ring-[#FECACA]'
-      : 'bg-[#EFF6FF] text-[#1D4ED8] ring-[#DBEAFE]';
-  const reportStatusLabel = reportGenerating ? '报告生成中' : reportFailed ? '报告失败' : 'OCR 已识别';
-
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="group block w-full cursor-pointer rounded-[20px] border border-[#E3ECF8] bg-[linear-gradient(180deg,rgba(17,82,212,0.045)_0%,rgba(248,251,255,0.96)_100%)] px-4 py-4 text-left transition hover:border-[#BCD1EE] active:scale-[0.995]"
-    >
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[16px] border border-[#CFE0F4] bg-white text-[#1152D4] shadow-[0_10px_22px_-20px_rgba(17,82,212,0.45)]">
-          <FileText className="h-[18px] w-[18px]" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#68829F] ring-1 ring-[#DFE8F4]">
-              {String(index + 1).padStart(2, '0')}
-            </span>
-            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${validityStatusClassName}`}>{validityStatus.label}</span>
-            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${reportStatusClassName}`}>{reportStatusLabel}</span>
-          </div>
-          <p
-            className="mt-2 text-[16px] font-semibold leading-[1.45] text-[#0F172A]"
-            style={{
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-            }}
-          >
-            {policy.name}
-          </p>
-          <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-full bg-white px-3 py-1.5 text-[12px] font-medium text-[#5E7A98] ring-1 ring-[#DCE7F4]">
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#1152D4]/45" />
-            <span className="truncate">{policy.company}</span>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2 text-[12px]">
-            <span className="rounded-xl bg-white px-3 py-2 text-[#5E7A98] ring-1 ring-[#E1EAF5]">保额 {formatCoverageAmount(Number(policy.amount || 0))}</span>
-            <span className="rounded-xl bg-white px-3 py-2 text-[#5E7A98] ring-1 ring-[#E1EAF5]">保费 {formatCurrency(Number(policy.firstPremium || 0))}</span>
-          </div>
-          {cashValueSummary ? (
-            <div className="mt-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[12px] font-semibold text-emerald-700">
-              现金价值已录入 {cashValueSummary.count} 年 · 首年 {formatCurrency(cashValueSummary.first.cashValue)} · {cashValueSummary.last.policyYear}年末 {formatCurrency(cashValueSummary.last.cashValue)}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </button>
-  );
-}
-
 function CustomerBottomTabs({
   activeTab,
   onChange,
@@ -4217,1777 +3054,6 @@ function PhoneVerificationDialog(props: {
         >
           {loading ? '处理中...' : '验证并继续录入'}
         </button>
-      </section>
-    </div>
-  );
-}
-
-function ProductMatchSelectPanel(props: {
-  loading: boolean;
-  matches: PolicyKnowledgeMatch[];
-  message: string;
-  onSelect: (match: PolicyKnowledgeMatch) => void;
-}) {
-  const matches = Array.isArray(props.matches) ? props.matches : [];
-  const statusMessage = props.loading ? '正在匹配本地产品' : props.message;
-  if (!props.loading && !matches.length && !statusMessage) return null;
-
-  return (
-    <section className="mt-2 overflow-hidden rounded-xl border border-[#DDE8F5] bg-[#F8FBFF]" aria-label="保险产品匹配候选">
-      <div className="flex items-center justify-between gap-3 border-b border-blue-100/70 px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <Search className="h-4 w-4 shrink-0 text-blue-500" />
-          <span className="truncate text-xs font-black text-slate-700">相似产品</span>
-        </div>
-        {props.loading ? (
-          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-500" />
-        ) : matches.length ? (
-          <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-black text-blue-700">{matches.length} 个</span>
-        ) : null}
-      </div>
-
-      {matches.length ? (
-        <div className="max-h-[260px] overflow-y-auto p-2" role="listbox" aria-label="选择本地匹配产品">
-          {matches.map((match, index) => (
-            <button
-              key={`${match.company}-${match.productName}-${index}`}
-              type="button"
-              onClick={() => props.onSelect(match)}
-              className="block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white active:scale-[0.99]"
-              role="option"
-              aria-selected={false}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[11px] font-black text-blue-600">{match.company}</p>
-                  <p className="mt-0.5 break-words text-sm font-black leading-5 text-slate-950">{match.productName}</p>
-                  <p className="mt-1 line-clamp-2 break-words text-xs font-medium leading-5 text-slate-500">
-                    {match.bestSource?.title || match.title || match.matchReason}
-                  </p>
-                </div>
-                <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">
-                  {Math.round(match.score * 100)}%
-                </span>
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] font-black text-slate-400">
-                <span className="rounded-full bg-white px-2 py-0.5">{match.matchReason}</span>
-                <span className="rounded-full bg-white px-2 py-0.5">{match.sourceCount} 份资料</span>
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : statusMessage ? (
-        <p className="px-3 py-3 text-xs font-semibold leading-5 text-slate-500">{statusMessage}</p>
-      ) : null}
-    </section>
-  );
-}
-
-function UploadPolicyPage(props: {
-  canSubmit: boolean;
-  familyProfiles: FamilyProfile[];
-  fileInputRef: React.RefObject<HTMLInputElement | null>;
-  formData: PolicyFormData;
-  formCompanySuggestionLoading: boolean;
-  formCompanySuggestions: PolicyCompanySuggestion[];
-  formProductSuggestionLoading: boolean;
-  formProductSuggestions: PolicyProductSuggestion[];
-  isLoggedIn: boolean;
-  loading: boolean;
-  message: string;
-  mobile: string;
-  ocrText: string;
-  productMatchLoading: boolean;
-  productMatchMessage: string;
-  productMatches: PolicyKnowledgeMatch[];
-  optionalResponsibilities?: OptionalResponsibility[];
-  selectedFamilyId: number | null;
-  selectedFamilyMembers: FamilyMember[];
-  onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
-  onCreateFamily: () => void;
-  onGenerateAnalysis: () => void;
-  onOcrTextChange: (value: string) => void;
-  onOpenAccount: () => void;
-  onOpenFamilies: () => void;
-  onScanClick: () => void;
-  onSelectFamily: (familyId: number | null) => void;
-  onSelectFormCompany: (company: string) => void;
-  onSelectFormProduct: (suggestion: PolicyProductSuggestion) => void;
-  onSelectProductMatch: (match: PolicyKnowledgeMatch) => void;
-  onSubmit: () => void;
-  onAddPlan: () => void;
-  onRemovePlan: (index: number) => void;
-  onUpdatePlan: (index: number, key: string, value: string) => void;
-  onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
-  onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
-  uploadItem: UploadItem | null;
-}) {
-  const {
-    canSubmit,
-    familyProfiles,
-    fileInputRef,
-    formData,
-    formCompanySuggestionLoading,
-    formCompanySuggestions,
-    formProductSuggestionLoading,
-    formProductSuggestions,
-    isLoggedIn,
-    loading,
-    message,
-    mobile,
-    ocrText,
-    productMatchLoading,
-    productMatchMessage,
-    productMatches,
-    optionalResponsibilities = [],
-    selectedFamilyId,
-    selectedFamilyMembers,
-    onFileChange,
-    onCreateFamily,
-    onGenerateAnalysis,
-    onOcrTextChange,
-    onOpenAccount,
-    onOpenFamilies,
-    onScanClick,
-    onSelectFamily,
-    onSelectFormCompany,
-    onSelectFormProduct,
-    onSelectProductMatch,
-    onSubmit,
-    onAddPlan,
-    onRemovePlan,
-    onUpdatePlan,
-    onUpdateForm,
-    onUpdateOptionalResponsibility,
-    uploadItem,
-  } = props;
-  const [ocrCopyMessage, setOcrCopyMessage] = useState('');
-  const [companyFocused, setCompanyFocused] = useState(false);
-  const [productFocused, setProductFocused] = useState(false);
-  const samePersonRelationResetKeyRef = useRef('');
-  const companyQuery = formData.company.trim();
-  const productQuery = formData.name.trim();
-  const selectedFamily = familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null;
-  const visibleCompanySuggestions = useMemo(() => {
-    const normalizedQuery = normalizeSuggestionQuery(companyQuery);
-    if (!normalizedQuery) return [];
-    return (Array.isArray(formCompanySuggestions) ? formCompanySuggestions : [])
-      .map((suggestion) => {
-        const normalizedCompany = normalizeSuggestionQuery(suggestion.company);
-        return {
-          ...suggestion,
-          matchIndex: normalizedCompany.indexOf(normalizedQuery),
-          startsWith: normalizedCompany.startsWith(normalizedQuery),
-        };
-      })
-      .filter((suggestion) => suggestion.matchIndex >= 0 && suggestion.company !== companyQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.company.localeCompare(right.company, 'zh-CN'),
-      )
-      .slice(0, 8);
-  }, [companyQuery, formCompanySuggestions]);
-  const visibleProductSuggestions = useMemo(() => {
-    const normalizedCompany = normalizeSuggestionQuery(companyQuery);
-    const normalizedQuery = normalizeSuggestionQuery(productQuery);
-    if (!normalizedCompany) return [];
-    return (Array.isArray(formProductSuggestions) ? formProductSuggestions : [])
-      .map((suggestion) => {
-        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
-        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
-        return {
-          ...suggestion,
-          companyMatches:
-            normalizedSuggestionCompany === normalizedCompany ||
-            normalizedSuggestionCompany.includes(normalizedCompany) ||
-            normalizedCompany.includes(normalizedSuggestionCompany),
-          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
-          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
-        };
-      })
-      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.productName.localeCompare(right.productName, 'zh-CN'),
-      )
-      .slice(0, 8);
-  }, [companyQuery, formProductSuggestions, productQuery]);
-  const showCompanySuggestions = companyFocused && companyQuery && (formCompanySuggestionLoading || visibleCompanySuggestions.length);
-  const showProductSuggestions = productFocused && companyQuery && (formProductSuggestionLoading || visibleProductSuggestions.length);
-
-  useEffect(() => {
-    const applicantName = normalizeParticipantName(formData.applicant);
-    const insuredName = normalizeParticipantName(formData.insured);
-    if (!applicantName || applicantName !== insuredName) {
-      samePersonRelationResetKeyRef.current = '';
-      return;
-    }
-    const samePersonKey = `${applicantName}:${insuredName}`;
-    if (samePersonRelationResetKeyRef.current === samePersonKey) return;
-    samePersonRelationResetKeyRef.current = samePersonKey;
-    const applicantRelation = formData.applicantRelationLabel || formData.applicantRelation;
-    const insuredRelation = formData.insuredRelationLabel || formData.insuredRelation;
-    if (
-      applicantRelation === '本人' &&
-      insuredRelation === '本人' &&
-      !formData.applicantMemberId &&
-      !formData.insuredMemberId
-    ) {
-      onUpdateForm('applicantRelationLabel', '待确认');
-      onUpdateForm('applicantRelation', '待确认');
-      onUpdateForm('insuredRelationLabel', '待确认');
-      onUpdateForm('insuredRelation', '待确认');
-    }
-  }, [
-    formData.applicant,
-    formData.insured,
-    formData.applicantMemberId,
-    formData.insuredMemberId,
-    formData.applicantRelation,
-    formData.applicantRelationLabel,
-    formData.insuredRelation,
-    formData.insuredRelationLabel,
-    onUpdateForm,
-  ]);
-
-  async function handleCopyOcrText() {
-    const text = ocrText.trim();
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setOcrCopyMessage('已复制 OCR 原文');
-    } catch {
-      setOcrCopyMessage('复制失败，请手动选择文本');
-    }
-  }
-
-  function updateParticipantName(kind: 'applicant' | 'insured', value: string) {
-    const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
-    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
-    const selectedMemberId = formData[memberIdKey];
-    const selectedMember = selectedFamilyMembers.find((member) => Number(member.id) === Number(selectedMemberId || 0));
-    onUpdateForm(nameKey, value);
-    if (!selectedMember || selectedMember.name.trim() !== value.trim()) {
-      onUpdateForm(memberIdKey, null);
-    }
-  }
-
-  function participantRelation(kind: 'applicant' | 'insured') {
-    if (kind === 'applicant') return formData.applicantRelationLabel || formData.applicantRelation || '待确认';
-    return formData.insuredRelationLabel || formData.insuredRelation || '待确认';
-  }
-
-  function participantsAreSamePerson() {
-    return areSameParticipantName(formData.applicant, formData.insured);
-  }
-
-  function updateParticipantRelation(kind: 'applicant' | 'insured', value: string) {
-    const relation = value || '待确认';
-    const updateOne = (target: 'applicant' | 'insured') => {
-      if (target === 'applicant') {
-        onUpdateForm('applicantRelationLabel', relation);
-        onUpdateForm('applicantRelation', relation);
-      } else {
-        onUpdateForm('insuredRelationLabel', relation);
-        onUpdateForm('insuredRelation', relation);
-      }
-    };
-    if (participantsAreSamePerson()) {
-      updateOne('applicant');
-      updateOne('insured');
-      return;
-    }
-    if (kind === 'applicant') {
-      onUpdateForm('applicantRelationLabel', relation);
-      onUpdateForm('applicantRelation', relation);
-    } else {
-      onUpdateForm('insuredRelationLabel', relation);
-      onUpdateForm('insuredRelation', relation);
-    }
-  }
-
-  function setParticipantAsCore(kind: 'applicant' | 'insured', checked: boolean) {
-    if (participantsAreSamePerson()) {
-      updateParticipantRelation(kind, checked ? '本人' : '待确认');
-      return;
-    }
-    if (!checked) {
-      updateParticipantRelation(kind, '待确认');
-      return;
-    }
-    const otherKind = kind === 'applicant' ? 'insured' : 'applicant';
-    updateParticipantRelation(kind, '本人');
-    if (participantRelation(otherKind) === '本人') updateParticipantRelation(otherKind, '待确认');
-  }
-
-  function nonCoreRelationOptions(value: string) {
-    const options = FAMILY_MEMBER_RELATION_OPTIONS.filter((relation) => relation !== '本人');
-    return value && value !== '本人' && !options.includes(value) ? [value, ...options] : options;
-  }
-
-  function renderPolicyPersonFields(kind: 'applicant' | 'insured', label: string) {
-    const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
-    const relation = participantRelation(kind);
-    const isCore = relation === '本人';
-    return (
-      <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.5)]">
-        <div className="flex items-center justify-between gap-3">
-          <h3 className="text-sm font-black text-slate-900">{label}</h3>
-          <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${isCore ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-50 text-slate-600 ring-slate-200'}`}>
-            <input
-              type="checkbox"
-              checked={isCore}
-              onChange={(event) => setParticipantAsCore(kind, event.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-            />
-            家庭核心人员
-          </label>
-        </div>
-        <TextField label="姓名" value={String(formData[nameKey] || '')} onChange={(value) => updateParticipantName(kind, value)} placeholder="姓名" />
-        {isCore ? (
-          <div>
-            <span className="mb-1.5 block text-sm font-bold text-slate-700">与核心人员家庭关系</span>
-            <div className="flex h-11 items-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700">
-              本人
-            </div>
-          </div>
-        ) : (
-          <SelectField
-            label="与核心人员家庭关系"
-            value={relation}
-            onChange={(value) => updateParticipantRelation(kind, value)}
-            options={nonCoreRelationOptions(relation)}
-            placeholder="请选择关系"
-          />
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex min-h-screen flex-col bg-slate-50">
-      <header className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-slate-100 bg-white px-4 py-4">
-        <div />
-        <h1 className="text-lg font-bold">录入保单</h1>
-        <div className="flex justify-end">
-          <div className="flex items-center gap-2">
-            <button
-              className="flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-sm font-black text-blue-600 ring-1 ring-blue-100 transition-colors hover:bg-blue-100"
-              type="button"
-              onClick={onOpenFamilies}
-            >
-              <Users size={18} />
-              <span className="hidden sm:inline">家庭档案</span>
-            </button>
-            <button
-              className="flex h-10 max-w-[128px] items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
-              type="button"
-              onClick={onOpenAccount}
-              aria-label="查看账号"
-            >
-              <CircleUserRound size={18} />
-              <span className="truncate">{isLoggedIn ? maskMobile(mobile) : '游客'}</span>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto pb-32">
-        <section className="p-4">
-          <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">家庭档案</h2>
-                <p className="mt-1 text-xs font-medium text-slate-500">用于把投保人、被保险人归入同一个家庭关系。</p>
-              </div>
-              <button
-                type="button"
-                onClick={onCreateFamily}
-                className="shrink-0 rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 ring-1 ring-blue-100 transition hover:bg-blue-100"
-              >
-                新建家庭档案
-              </button>
-            </div>
-            <SelectField
-              label="选择家庭档案"
-              value={selectedFamilyId ? String(selectedFamilyId) : ''}
-              onChange={(value) => onSelectFamily(value ? Number(value) : null)}
-              options={familyProfiles.map((family) => ({ value: String(family.id), label: family.familyName || `家庭 ${family.id}` }))}
-              placeholder="保存时自动创建默认家庭"
-            />
-            {selectedFamily && !selectedFamily.coreMemberId ? (
-              <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-700 ring-1 ring-amber-100">
-                家庭关系中心尚未设置，保存前请选择家庭核心人员。
-              </p>
-            ) : null}
-          </section>
-          <div className="mb-3">
-            <h2 className="text-lg font-bold">拍照自动识别</h2>
-            <p className="mt-1 text-xs text-slate-500">先做 OCR 识别，再按保司和产品生成保险责任</p>
-          </div>
-          <button
-            onClick={onScanClick}
-            className={`relative flex aspect-[2/1] w-full cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border-2 border-dashed transition-transform active:scale-[0.98] ${
-              loading ? 'border-blue-400 bg-blue-100 shadow-[0_18px_45px_-28px_rgba(37,99,235,0.55)]' : 'border-blue-300 bg-blue-50'
-            }`}
-            type="button"
-            aria-busy={loading}
-          >
-            {loading ? (
-              <div className="absolute inset-x-8 top-1/2 h-px -translate-y-1/2 bg-blue-400/60 shadow-[0_0_22px_rgba(37,99,235,0.45)] motion-safe:animate-pulse" />
-            ) : null}
-            <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-blue-100 text-blue-500">
-              {loading ? (
-                <Loader2 size={30} className="animate-spin" />
-              ) : (
-                <Camera size={28} />
-              )}
-            </div>
-            <span className="max-w-[80%] truncate text-center text-base font-bold text-blue-600">{loading ? 'OCR 识别中' : uploadItem ? uploadItem.name : getWechatUploadLabel()}</span>
-            <p className="px-4 text-center text-xs text-blue-400" aria-live="polite">{loading ? '正在读取保单信息' : uploadItem ? 'OCR 已完成，可继续生成保险责任' : '上传保单基本信息页照片'}</p>
-            <div className="absolute left-3 top-3 h-4 w-4 rounded-tl border-l-2 border-t-2 border-blue-500"></div>
-            <div className="absolute right-3 top-3 h-4 w-4 rounded-tr border-r-2 border-t-2 border-blue-500"></div>
-            <div className="absolute bottom-3 left-3 h-4 w-4 rounded-bl border-b-2 border-l-2 border-blue-500"></div>
-            <div className="absolute bottom-3 right-3 h-4 w-4 rounded-br border-b-2 border-r-2 border-blue-500"></div>
-          </button>
-          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
-
-          <div className="mt-4 rounded-xl border border-blue-100 bg-white px-4 py-3 text-sm font-medium text-blue-700">{message}</div>
-
-          <details className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-700">查看或粘贴 OCR 文本</summary>
-            <div className="mt-3 flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate text-xs font-bold text-slate-400">
-                {ocrText.trim() ? `${ocrText.trim().length} 字 OCR 原文` : '暂无 OCR 原文'}
-              </span>
-              <button
-                type="button"
-                disabled={!ocrText.trim()}
-                onClick={() => void handleCopyOcrText()}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-600 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <Copy size={14} />
-                复制原文
-              </button>
-            </div>
-            <textarea
-              value={ocrText}
-              onChange={(event) => onOcrTextChange(event.target.value)}
-              rows={8}
-              placeholder="本地测试可粘贴：保司名称 险种名称 基本保险金额30万 20年交 终身"
-              className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm leading-6 text-slate-700 selection:bg-blue-200 focus:border-blue-500 focus:ring-blue-500"
-            />
-            {ocrCopyMessage ? <p className="mt-2 text-xs font-bold text-slate-500">{ocrCopyMessage}</p> : null}
-          </details>
-        </section>
-
-        <div className="flex items-center gap-4 px-4 py-2">
-          <div className="h-px flex-1 bg-slate-200"></div>
-          <span className="text-xs font-medium text-slate-400">或 手动输入保单信息</span>
-          <div className="h-px flex-1 bg-slate-200"></div>
-        </div>
-
-        <form className="space-y-4 p-4" onSubmit={(event) => event.preventDefault()}>
-          <div className="space-y-4">
-            <label className="relative block">
-              <span className="mb-1.5 block text-sm font-bold text-slate-700">保险公司</span>
-              <input
-                value={formData.company}
-                onChange={(event) => onUpdateForm('company', event.target.value)}
-                onFocus={() => setCompanyFocused(true)}
-                onBlur={() => window.setTimeout(() => setCompanyFocused(false), 120)}
-                placeholder="输入保险公司，可模糊匹配"
-                autoComplete="off"
-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
-              />
-              {showCompanySuggestions ? (
-                <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="录入保险公司候选">
-                  {formCompanySuggestionLoading ? (
-                    <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      正在加载保险公司
-                    </div>
-                  ) : (
-                    visibleCompanySuggestions.map((suggestion) => (
-                      <button
-                        key={suggestion.company}
-                        type="button"
-                        className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                        role="option"
-                        aria-selected={false}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => {
-                          onSelectFormCompany(suggestion.company);
-                          setCompanyFocused(false);
-                        }}
-                      >
-                        <span className="min-w-0 truncate">{renderHighlightedSuggestion(suggestion.company, companyQuery)}</span>
-                        <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              ) : null}
-            </label>
-            <div>
-              <label className="relative block">
-                <span className="mb-1.5 block text-sm font-bold text-slate-700">保险名称</span>
-                <input
-                  value={formData.name}
-                  onChange={(event) => onUpdateForm('name', event.target.value)}
-                  onFocus={() => setProductFocused(true)}
-                  onBlur={() => window.setTimeout(() => setProductFocused(false), 120)}
-                  placeholder="输入保单上的险种全称"
-                  autoComplete="off"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
-                />
-                {showProductSuggestions ? (
-                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="录入保险产品候选">
-                    {formProductSuggestionLoading ? (
-                      <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        正在加载保险产品
-                      </div>
-                    ) : (
-                      visibleProductSuggestions.map((suggestion) => (
-                        <button
-                          key={`${suggestion.company}-${suggestion.productName}`}
-                          type="button"
-                          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                          role="option"
-                          aria-selected={false}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            onSelectFormProduct(suggestion);
-                            setProductFocused(false);
-                          }}
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate">{renderHighlightedSuggestion(suggestion.productName, productQuery)}</span>
-                            <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
-                          </span>
-                          <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                ) : null}
-              </label>
-              <ProductMatchSelectPanel
-                loading={productMatchLoading}
-                matches={productMatches}
-                message={productMatchMessage}
-                onSelect={onSelectProductMatch}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {renderPolicyPersonFields('applicant', '投保人')}
-            {renderPolicyPersonFields('insured', '被保险人')}
-          </div>
-
-          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-            <label className="flex items-center justify-between gap-3">
-              <span className="text-sm font-bold text-slate-700">法定受益人</span>
-              <input
-                type="checkbox"
-                checked={formData.beneficiary === '法定'}
-                onChange={(event) => onUpdateForm('beneficiary', event.target.checked ? '法定' : '')}
-                className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-              />
-            </label>
-            {formData.beneficiary === '法定' ? (
-              <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-black text-blue-700">受益人：法定</div>
-            ) : (
-              <TextField
-                label="受益人姓名"
-                value={formData.beneficiary}
-                onChange={(value) => onUpdateForm('beneficiary', value)}
-                placeholder="请输入受益人姓名"
-              />
-            )}
-          </div>
-
-          <TextField
-            label="被保险人生日"
-            value={formData.insuredBirthday}
-            onChange={(value) => onUpdateForm('insuredBirthday', value)}
-            type="date"
-          />
-
-          <TextField label="投保时间" value={formData.date} onChange={(value) => onUpdateForm('date', value)} type="date" />
-
-          <div className="grid grid-cols-2 gap-4">
-            <TextField label="缴费期间" value={formData.paymentPeriod} onChange={(value) => onUpdateForm('paymentPeriod', value)} placeholder="如 10年交 或 趸交" />
-            <TextField label="保障期间" value={formData.coveragePeriod} onChange={(value) => onUpdateForm('coveragePeriod', value)} placeholder="如 终身、30年、至70岁" />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <TextField label="保额 (元)" value={formData.amount} onChange={(value) => onUpdateForm('amount', sanitizeAmount(value))} inputMode="decimal" placeholder="0.00" />
-            <TextField
-              label="首期保费 (元)"
-              value={formData.firstPremium}
-              onChange={(value) => onUpdateForm('firstPremium', sanitizeAmount(value))}
-              inputMode="decimal"
-              placeholder="0.00"
-            />
-          </div>
-
-          <OptionalResponsibilityReview
-            items={optionalResponsibilities}
-            disabled={loading}
-            compact
-            title="主险可选责任确认"
-            description="已按主险匹配产品带出，请按保单页面确认是否投保。"
-            onChange={onUpdateOptionalResponsibility}
-          />
-
-          <PolicyPlanEditor
-            company={formData.company}
-            plans={normalizePolicyPlanList(formData.plans, formData.company, { keepEmpty: true })}
-            onAdd={onAddPlan}
-            onRemove={onRemovePlan}
-            onUpdate={onUpdatePlan}
-          />
-        </form>
-      </main>
-
-      <div className="pb-safe fixed bottom-0 left-0 right-0 z-50 border-t border-slate-100 bg-white/95 px-3 pt-3 shadow-[0_-18px_34px_-26px_rgba(15,23,42,0.45)] backdrop-blur">
-        <div className="mx-auto flex w-full max-w-3xl gap-2">
-          <button
-            onClick={onGenerateAnalysis}
-            disabled={loading || !canSubmit}
-            type="button"
-            className="flex h-12 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-2xl border border-blue-100 bg-blue-50 px-3 text-sm font-black text-blue-700 transition hover:bg-blue-100 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
-          >
-            {loading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
-            <span className="truncate">生成责任</span>
-          </button>
-          <button
-            onClick={onSubmit}
-            disabled={loading || !canSubmit}
-            className="flex h-12 min-w-0 flex-[1.35] items-center justify-center gap-2 rounded-2xl bg-blue-500 px-4 text-sm font-black text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
-          >
-            <CheckCircle2 size={20} />
-            <span className="truncate">{loading ? '保存中...' : '保存保单'}</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AnalysisReportPage(props: {
-  analysis: PolicyAnalysisResult;
-  canSave: boolean;
-  formData: PolicyFormData;
-  loading: boolean;
-  message: string;
-  onBack: () => void;
-  onSave: () => void;
-  onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
-}) {
-  const reportRef = useRef<HTMLElement | null>(null);
-  const { analysis, canSave, formData, loading, message, onBack, onSave, onUpdateOptionalResponsibility } = props;
-  const responsibilities = Array.isArray(analysis.coverageTable) ? analysis.coverageTable : [];
-  const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
-  const exportTitle = buildDraftReportTitle(formData);
-  const exportControlText = getReportExportControlText();
-  const exportControlTitle = getReportExportControlTitle();
-  const hasReportText = Boolean(analysis.report?.trim());
-
-  return (
-    <div className="min-h-screen bg-[#F4F8FC] pb-32">
-      <header className="no-print sticky top-0 z-20 flex items-center justify-between border-b border-slate-100 bg-white/90 px-4 py-4 backdrop-blur">
-        <button onClick={onBack} className="-ml-2 rounded-full p-2 text-slate-700 active:bg-slate-100" type="button">
-          <ChevronLeft size={24} />
-        </button>
-        <div className="text-center">
-          <h1 className="text-lg font-black text-slate-950">保险责任</h1>
-          <p className="mt-0.5 text-[11px] font-medium text-slate-400">阅读确认后保存保单</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => void downloadReportPdf(reportRef.current, exportTitle)}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-blue-600 active:bg-blue-100"
-          aria-label={exportControlTitle}
-          title={exportControlTitle}
-        >
-          <Download size={19} />
-        </button>
-      </header>
-
-      <main ref={reportRef} className="print-policy-report space-y-4 p-4">
-        <section className="print-only">
-          <h1>保险责任解析</h1>
-          <p>生成时间：{generatedAt}</p>
-        </section>
-
-        <section className="rounded-[28px] bg-gradient-to-br from-blue-600 via-sky-500 to-cyan-400 p-5 text-white shadow-[0_20px_44px_-22px_rgba(37,99,235,0.72)]">
-          <p className="text-xs font-semibold text-white/75">{formData.company || '待补充保险公司'}</p>
-          <h2 className="mt-2 text-[24px] font-black leading-tight">{formData.name || '未命名保单'}</h2>
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <div className="rounded-2xl bg-white/15 px-4 py-3">
-              <p className="text-xs text-white/70">被保人</p>
-              <p className="mt-1 truncate text-base font-black">{formData.insured || '-'}</p>
-            </div>
-            <div className="rounded-2xl bg-white/15 px-4 py-3">
-              <p className="text-xs text-white/70">责任项</p>
-              <p className="mt-1 text-base font-black">{responsibilities.length} 项</p>
-            </div>
-          </div>
-        </section>
-
-        <section className="print-only print-policy-section">
-          <h2>保单信息</h2>
-          <div className="print-policy-grid">
-            <p><strong>保险公司：</strong>{formData.company || '-'}</p>
-            <p><strong>产品名称：</strong>{formData.name || '-'}</p>
-            <p><strong>投保人：</strong>{formData.applicant || '-'}</p>
-            <p><strong>受益人：</strong>{formatBeneficiaryValue(formData.beneficiary)}</p>
-            <p><strong>投保人与核心人员家庭关系：</strong>{formData.applicantRelation || '-'}</p>
-            <p><strong>被保人：</strong>{formData.insured || '-'}</p>
-            <p><strong>被保险人与核心人员家庭关系：</strong>{formData.insuredRelation || '-'}</p>
-            <p><strong>生效日期：</strong>{formData.date || '-'}</p>
-            <p><strong>缴费期间：</strong>{formData.paymentPeriod || '-'}</p>
-            <p><strong>保障期间：</strong>{formData.coveragePeriod || '-'}</p>
-            <p><strong>保障额度：</strong>{formatCoverageAmount(Number(formData.amount || 0))}</p>
-            <p><strong>首期保费：</strong>{formatCurrency(Number(formData.firstPremium || 0))}</p>
-          </div>
-        </section>
-
-        <PolicyPlanSummary
-          plans={normalizePolicyPlanList(formData.plans, formData.company)}
-          effectiveDate={formData.date}
-          insuredBirthday={formData.insuredBirthday}
-        />
-
-        <OptionalResponsibilityReview
-          items={analysis.optionalResponsibilities}
-          disabled={loading}
-          onChange={onUpdateOptionalResponsibility}
-        />
-
-        {hasReportText ? (
-          <section className="rounded-[24px] border border-[#DCE8F5] bg-white p-5 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-            <div className="mb-3 flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-blue-600" />
-              <h3 className="text-base font-black text-slate-950">保险责任说明</h3>
-            </div>
-            <ReportText text={analysis.report} />
-          </section>
-        ) : null}
-
-        <section className="space-y-3">
-          <div className="flex items-end justify-between">
-            <div>
-              <h3 className="text-base font-black text-slate-950">保险责任</h3>
-              <p className="mt-1 text-xs text-slate-500">保存后会进入“我的保单”详情。</p>
-            </div>
-            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">{responsibilities.length} 项</span>
-          </div>
-
-          {responsibilities.map((row, index) => (
-            <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-              <div className="flex items-start gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] bg-[#EEF6FF] text-sm font-black text-blue-600">
-                  {index + 1}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h4 className="text-lg font-black leading-7 text-slate-950">{row.coverageType || '保险责任'}</h4>
-                  {row.scenario ? <p className="mt-1 whitespace-pre-wrap text-base leading-7 text-slate-500">{row.scenario}</p> : null}
-                  {row.payout ? <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{row.payout}</p> : null}
-                  {row.note ? <p className="mt-2 text-base leading-7 text-slate-500">{row.note}</p> : null}
-                </div>
-              </div>
-            </article>
-          ))}
-        </section>
-
-        <div className="no-print rounded-xl border border-blue-100 bg-white px-4 py-3 text-sm font-medium text-blue-700">{message}</div>
-      </main>
-
-      <div className="no-print pb-safe fixed bottom-0 left-0 right-0 z-50 border-t border-slate-100 bg-white p-4 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)]">
-        <div className="flex gap-3">
-          <button
-            onClick={() => void downloadReportPdf(reportRef.current, exportTitle)}
-            type="button"
-            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-bold text-blue-700 transition-transform active:scale-[0.98]"
-          >
-            <Download size={18} />
-            {exportControlText}
-          </button>
-          <button
-            onClick={onBack}
-            type="button"
-            className="h-12 flex-1 rounded-xl border border-slate-200 bg-white text-sm font-bold text-slate-700 transition-transform active:scale-[0.98]"
-          >
-            返回修改
-          </button>
-          <button
-            onClick={onSave}
-            disabled={loading || !canSave}
-            className="flex h-12 flex-[1.45] items-center justify-center gap-2 rounded-xl bg-blue-500 text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-transform active:scale-[0.98] disabled:opacity-60"
-          >
-            <CheckCircle2 size={20} />
-            {loading ? '保存中...' : '保存保单信息'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TextField(props: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  type?: string;
-  inputMode?: 'text' | 'decimal' | 'numeric' | 'tel';
-}) {
-  return (
-    <div>
-      <label className="mb-1.5 block text-sm font-bold text-slate-700">{props.label}</label>
-      <input
-        type={props.type || 'text'}
-        inputMode={props.inputMode}
-        value={props.value}
-        onChange={(event) => props.onChange(event.target.value)}
-        placeholder={props.placeholder}
-        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
-      />
-    </div>
-  );
-}
-
-function OptionalResponsibilityReview({
-  items = [],
-  disabled = false,
-  saving = false,
-  compact = false,
-  title = '可选责任确认',
-  description = '未投保或不确定的可选责任不会进入保障金额和现金流计算。',
-  onChange,
-}: {
-  items?: OptionalResponsibility[];
-  disabled?: boolean;
-  saving?: boolean;
-  compact?: boolean;
-  title?: string;
-  description?: string;
-  onChange?: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
-}) {
-  const visibleItems = (Array.isArray(items) ? items : []).filter((item) => item?.id);
-  if (!visibleItems.length) return null;
-  const statusOptions = compact
-    ? OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS.filter((option) => option.value !== 'unknown')
-    : OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS;
-
-  return (
-    <section className="rounded-[24px] border border-amber-100 bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-amber-600" />
-            <h3 className="text-base font-black text-slate-950">{title}</h3>
-          </div>
-          <p className="mt-1 text-xs font-medium leading-5 text-slate-500">{description}</p>
-        </div>
-        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">
-          {visibleItems.length} 项
-        </span>
-      </div>
-
-      <div className="mt-3 space-y-3">
-        {visibleItems.map((item) => {
-          const status = item.selectionStatus || 'unknown';
-          return (
-            <article key={item.id} className="rounded-[18px] border border-slate-100 bg-slate-50 p-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-black leading-6 text-slate-900">
-                    {item.liability || item.coverageType || '可选责任'}
-                  </p>
-                  <p className="mt-0.5 text-xs font-medium leading-5 text-slate-500">
-                    {[item.productName, item.coverageType].filter(Boolean).join(' · ') || '产品责任'}
-                  </p>
-                </div>
-                {!compact ? (
-                  <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-                    <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
-                      {optionalResponsibilityEvidenceLabel(item.selectionEvidence)}
-                    </span>
-                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${
-                      status === 'selected'
-                        ? 'bg-emerald-50 text-emerald-700'
-                        : status === 'not_selected'
-                          ? 'bg-slate-100 text-slate-600'
-                          : 'bg-amber-50 text-amber-700'
-                    }`}>
-                      {optionalResponsibilityStatusLabel(status)}
-                    </span>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
-                      量化状态：{optionalResponsibilityQuantificationLabel(item.quantificationStatus)}
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-              {!compact && item.sourceExcerpt ? (
-                <p className="mt-2 line-clamp-2 text-xs font-medium leading-5 text-slate-500">{item.sourceExcerpt}</p>
-              ) : null}
-              {!compact && optionalResponsibilityHasQuantificationGap(item) ? (
-                <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-black leading-5 text-amber-700 ring-1 ring-amber-100">
-                  该可选责任已确认投保，但尚未完成指标量化，暂不进入家庭报告计算。
-                </p>
-              ) : null}
-              {onChange ? (
-                <div className={`mt-3 grid ${compact ? 'grid-cols-2' : 'grid-cols-3'} gap-2`} role="group" aria-label={`${item.liability || item.coverageType || '可选责任'}投保状态`}>
-                  {statusOptions.map((option) => {
-                    const active = status === option.value;
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        disabled={disabled || saving}
-                        onClick={() => onChange(item.id, option.value)}
-                        className={`h-9 rounded-xl px-2 text-xs font-black transition-colors disabled:opacity-50 ${
-                          active
-                            ? 'bg-blue-600 text-white shadow-sm'
-                            : 'bg-white text-slate-600 ring-1 ring-slate-200 active:bg-blue-50'
-                        }`}
-                      >
-                        {option.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function PolicyPlanEditor(props: {
-  company: string;
-  plans: NonNullable<PolicyFormData['plans']>;
-  onAdd: () => void;
-  onRemove: (index: number) => void;
-  onUpdate: (index: number, key: string, value: string) => void;
-}) {
-  const { company, plans, onAdd, onRemove, onUpdate } = props;
-  const editablePlans = plans
-    .map((plan, originalIndex) => ({ ...plan, originalIndex }))
-    .filter((plan) => String(plan.role || '') !== 'main');
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="mb-4 space-y-3">
-        <h3 className="text-sm font-black text-slate-900">险种明细</h3>
-        <p className="text-xs font-medium leading-5 text-slate-500">附加险或万能账户会按保险公司分别匹配产品。</p>
-        <button
-          className="flex h-11 w-full items-center justify-center rounded-xl bg-blue-500 px-4 text-sm font-black text-white shadow-lg shadow-blue-500/20 active:bg-blue-600"
-          type="button"
-          onClick={onAdd}
-        >
-          手动添加附加险
-        </button>
-      </div>
-
-      {editablePlans.length ? (
-        <div className="space-y-3">
-          {editablePlans.map((plan) => (
-            <article key={`${plan.name}-${plan.originalIndex}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-600 ring-1 ring-slate-200">
-                  {normalizePolicyPlanRoleLabel(String(plan.role || ''))}
-                </span>
-                {editablePlans.length > 0 ? (
-                  <button className="text-xs font-black text-red-500" type="button" onClick={() => onRemove(plan.originalIndex)}>
-                    删除
-                  </button>
-                ) : null}
-              </div>
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <SelectField
-                    label="类型"
-                    value={String(plan.role || '')}
-                    onChange={(value) => onUpdate(plan.originalIndex, 'role', value)}
-                    options={[
-                      { value: 'rider', label: '附加险' },
-                      { value: 'linked_account', label: '万能账户' },
-                      { value: 'unknown', label: '未分类' },
-                    ]}
-                    placeholder="请选择"
-                  />
-                  <TextField label="产品分类" value={String(plan.productType || '')} onChange={(value) => onUpdate(plan.originalIndex, 'productType', value)} placeholder="如 年金险" />
-                </div>
-                <TextField label="险种名称" value={String(plan.name || '')} onChange={(value) => onUpdate(plan.originalIndex, 'name', value)} placeholder="保单上的险种全称" />
-                {plan.matchedProductName ? (
-                  <p className="rounded-xl bg-white px-3 py-2 text-xs font-bold leading-5 text-blue-700 ring-1 ring-blue-100">
-                    已按 {plan.company || company || '保险公司'} 匹配：{plan.matchedProductName}
-                  </p>
-                ) : null}
-                <div className="grid grid-cols-2 gap-3">
-                  <TextField label="保额 (元)" value={String(plan.amount || '')} onChange={(value) => onUpdate(plan.originalIndex, 'amount', value)} inputMode="decimal" placeholder="0.00" />
-                  <TextField label="保费 (元)" value={String(plan.premium || '')} onChange={(value) => onUpdate(plan.originalIndex, 'premium', value)} inputMode="decimal" placeholder="0.00" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <TextField label="保障期间" value={String(plan.coveragePeriod || '')} onChange={(value) => onUpdate(plan.originalIndex, 'coveragePeriod', value)} placeholder="如 终身" />
-                  <TextField label="缴费期间" value={String(plan.paymentPeriod || '')} onChange={(value) => onUpdate(plan.originalIndex, 'paymentPeriod', value)} placeholder="如 10年交" />
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <article className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm font-medium leading-6 text-slate-500">
-          附加险或万能账户为可选项；如保单包含但 OCR 未带出，可点击上方按钮补充。
-        </article>
-      )}
-    </section>
-  );
-}
-
-function PolicyPlanSummary({
-  plans,
-  effectiveDate,
-  insuredBirthday,
-}: {
-  plans: NonNullable<PolicyFormData['plans']>;
-  effectiveDate?: string;
-  insuredBirthday?: string;
-}) {
-  const visiblePlans = normalizePolicyPlanList(plans);
-  if (!visiblePlans.length) return null;
-  return (
-    <section className="mt-4 rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="text-base font-black text-slate-950">险种明细</h3>
-        <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">{visiblePlans.length} 个险种</span>
-      </div>
-      <div className="space-y-3">
-        {visiblePlans.map((plan, index) => {
-          const validityStatus = resolvePolicyValidityStatus(plan.coveragePeriod, {
-            effectiveDate,
-            insuredBirthday,
-          });
-          const validityStatusClassName = policyValidityClassName(validityStatus.tone);
-          return (
-            <article key={`${planProductDisplayName(plan)}-${index}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-              <div className="mb-2 flex items-start justify-between gap-3">
-                <h4 className="min-w-0 flex-1 break-words text-sm font-black leading-5 text-slate-900">{planProductDisplayName(plan)}</h4>
-                <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
-                  {normalizePolicyPlanRoleLabel(String(plan.role || ''))}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs font-bold leading-5 text-slate-500">
-                <p>分类：{plan.productType || '-'}</p>
-                <p>保额：{formatCoverageAmount(Number(plan.amount || 0))}</p>
-                <p>保费：{formatCurrency(Number(plan.premium || 0))}</p>
-                <p>期间：{plan.coveragePeriod || '-'}</p>
-                <p>缴费：{plan.paymentPeriod || plan.paymentMode || '-'}</p>
-                <p>
-                  状态：
-                  <span className={`ml-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ring-1 ${validityStatusClassName}`}>
-                    {validityStatus.label}
-                  </span>
-                </p>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function SelectField(props: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: Array<string | { value: string; label: string }>;
-  placeholder?: string;
-}) {
-  return (
-    <div>
-      <label className="mb-1.5 block text-sm font-bold text-slate-700">{props.label}</label>
-      <select
-        value={props.value}
-        onChange={(event) => props.onChange(event.target.value)}
-        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-blue-500 focus:ring-blue-500"
-      >
-        <option value="">{props.placeholder || '请选择'}</option>
-        {props.options.map((option) => {
-          const normalizedOption = typeof option === 'string' ? { value: option, label: option } : option;
-          return (
-          <option key={normalizedOption.value} value={normalizedOption.value}>
-            {normalizedOption.label || normalizedOption.value}
-          </option>
-          );
-        })}
-      </select>
-    </div>
-  );
-}
-
-function PolicyDetailSheet({
-  policy,
-  onClose,
-  onRetryReport,
-  retrying = false,
-  onUpdatePolicy,
-  onUpdateOptionalResponsibility,
-  updating = false,
-  onDeletePolicy,
-  deleting = false,
-  onEditCashValue,
-}: {
-  policy: Policy;
-  onClose: () => void;
-  onRetryReport?: (policy: Policy) => void | Promise<void>;
-  retrying?: boolean;
-  onUpdatePolicy?: (policy: Policy, data: PolicyFormData) => Promise<{ reportRegenerating: boolean } | void>;
-  onUpdateOptionalResponsibility?: (policy: Policy, id: string, status: OptionalResponsibility['selectionStatus']) => void | Promise<void>;
-  updating?: boolean;
-  onDeletePolicy?: (policy: Policy) => void | Promise<void>;
-  deleting?: boolean;
-  onEditCashValue?: (policy: Policy) => void;
-}) {
-  const reportRef = useRef<HTMLElement | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
-  const exportTitle = buildPolicyReportTitle(policy);
-  const reportGenerating = isPolicyReportGenerating(policy);
-  const reportFailed = isPolicyReportFailed(policy);
-  const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
-  const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
-  const exportControlTitle = getReportExportControlTitle();
-  const cashValueSummary = summarizeCashValues(policy.cashValues);
-  const responsibilitySourceLinks = getPolicyResponsibilitySourceLinks(policy);
-
-  return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
-      <header className="no-print sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-4 py-4">
-        <button onClick={onClose} className="-ml-2 rounded-full p-2 text-slate-700 active:bg-slate-100" type="button">
-          <ChevronLeft size={24} />
-        </button>
-        <h1 className="text-lg font-bold">保单详情</h1>
-        <div className="flex items-center gap-2">
-          {onUpdatePolicy ? (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              disabled={updating || deleting}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 active:bg-slate-200 disabled:text-slate-300"
-              aria-label="修改保单"
-              title="修改保单"
-            >
-              <Pencil size={18} />
-            </button>
-          ) : null}
-          {onDeletePolicy ? (
-            <button
-              type="button"
-              onClick={() => setConfirmingDelete(true)}
-              disabled={updating || deleting}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-red-50 text-red-600 active:bg-red-100 disabled:text-red-200"
-              aria-label="删除保单"
-              title="删除保单"
-            >
-              <Trash2 size={18} />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => void downloadReportPdf(reportRef.current, exportTitle)}
-            disabled={reportGenerating}
-            className={`flex h-10 w-10 items-center justify-center rounded-full active:bg-blue-100 ${
-              reportGenerating ? 'bg-slate-100 text-slate-300' : 'bg-blue-50 text-blue-600'
-            }`}
-            aria-label={exportControlTitle}
-            title={exportControlTitle}
-          >
-            <Download size={19} />
-          </button>
-        </div>
-      </header>
-      <main ref={reportRef} className="print-policy-report flex-1 overflow-y-auto p-4 pb-10">
-        <section className="print-only">
-          <h1>保单解析报告</h1>
-          <p>生成时间：{generatedAt}</p>
-        </section>
-
-        <section className="rounded-[28px] bg-gradient-to-br from-blue-600 to-cyan-500 p-5 text-white shadow-[0_18px_40px_-18px_rgba(37,99,235,0.75)]">
-          <p className="text-xs font-semibold text-white/70">{policy.company}</p>
-          <h2 className="mt-2 text-2xl font-black leading-tight">{policy.name}</h2>
-          {policy.report?.trim() ? (
-            <div className="mt-3">
-              <ReportText text={policy.report} compact inverted />
-            </div>
-          ) : (
-            <p className="mt-3 text-sm font-semibold leading-6 text-white/85">{getReportPlaceholder(policy)}</p>
-          )}
-        </section>
-
-        {onUpdatePolicy || onDeletePolicy ? (
-          <section className="no-print mt-4 grid grid-cols-2 gap-3">
-            {onUpdatePolicy ? (
-              <button
-                className="flex h-12 items-center justify-center gap-2 rounded-xl bg-blue-500 text-sm font-black text-white shadow-lg shadow-blue-500/20 disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
-                type="button"
-                onClick={() => setEditing(true)}
-                disabled={updating || deleting}
-              >
-                <Pencil size={18} />
-                修改保单
-              </button>
-            ) : null}
-            {onDeletePolicy ? (
-              <button
-                className="flex h-12 items-center justify-center gap-2 rounded-xl border border-red-100 bg-red-50 text-sm font-black text-red-600 transition-colors hover:bg-red-100 disabled:text-red-200"
-                type="button"
-                onClick={() => setConfirmingDelete(true)}
-                disabled={updating || deleting}
-              >
-                <Trash2 size={18} />
-                删除保单
-              </button>
-            ) : null}
-          </section>
-        ) : null}
-
-        {reportGenerating || reportFailed ? (
-          <section className={`mt-4 rounded-[22px] border px-4 py-3 ${
-            reportFailed ? 'border-red-100 bg-red-50 text-red-700' : 'border-orange-100 bg-orange-50 text-orange-700'
-          }`}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-black">{reportFailed ? '报告生成失败' : '报告正在后台生成'}</p>
-                <p className="mt-1 text-xs font-medium leading-5">
-                  {reportFailed ? policy.reportError || '可以稍后刷新查看，或重新生成报告。' : '保单信息已经保存，完整保险责任生成后会自动刷新。'}
-                </p>
-              </div>
-              {reportFailed && onRetryReport ? (
-                <button
-                  className="flex shrink-0 items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white shadow-sm disabled:opacity-60"
-                  type="button"
-                  disabled={retrying}
-                  onClick={() => void onRetryReport(policy)}
-                >
-                  <RefreshCw size={14} className={retrying ? 'animate-spin' : ''} />
-                  {retrying ? '提交中' : '重新生成报告'}
-                </button>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
-
-        <section className="mt-4 grid grid-cols-2 gap-3">
-          <MetricBox label="被保人" value={policy.insured || '-'} />
-          <MetricBox label="投保人" value={policy.applicant || '-'} />
-          <MetricBox label="受益人" value={formatBeneficiaryValue(policy.beneficiary)} />
-          <MetricBox label="被保人生日" value={policy.insuredBirthday || '-'} />
-          <MetricBox label="保单生效日期" value={formatDateLabel(policy.date)} />
-          <MetricBox label="投保人关系" value={policy.applicantRelation || '-'} />
-          <MetricBox label="被保人关系" value={policy.insuredRelation || '-'} />
-        </section>
-
-        {cashValueSummary || onEditCashValue ? (
-          <section className={`mt-4 rounded-[22px] border px-4 py-3 ${
-            cashValueSummary ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-blue-100 bg-blue-50 text-blue-800'
-          }`}>
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-black">保单现金价值</p>
-                <p className="mt-1 text-xs font-semibold leading-5">
-                  {cashValueSummary
-                    ? `已录入 ${cashValueSummary.count} 年现金价值，首年 ${formatCurrency(cashValueSummary.first.cashValue)}，${cashValueSummary.last.policyYear}年末 ${formatCurrency(cashValueSummary.last.cashValue)}。`
-                    : '未录入现金价值。'}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {cashValueSummary ? (
-                  <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-emerald-700">
-                    已入库
-                  </span>
-                ) : null}
-                {onEditCashValue ? (
-                  <button
-                    type="button"
-                    className="no-print rounded-full bg-white px-3 py-1.5 text-xs font-black text-blue-700 ring-1 ring-blue-100 active:bg-blue-50"
-                    onClick={() => onEditCashValue(policy)}
-                  >
-                    {cashValueSummary ? '修改现金价值' : '录入现金价值'}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </section>
-        ) : null}
-
-        <section className="print-only print-policy-section">
-          <h2>保单信息</h2>
-          <div className="print-policy-grid">
-            <p><strong>保险公司：</strong>{policy.company || '-'}</p>
-            <p><strong>产品名称：</strong>{policy.name || '-'}</p>
-            <p><strong>投保人：</strong>{policy.applicant || '-'}</p>
-            <p><strong>受益人：</strong>{formatBeneficiaryValue(policy.beneficiary)}</p>
-            <p><strong>投保人与核心人员家庭关系：</strong>{policy.applicantRelation || '-'}</p>
-            <p><strong>被保人：</strong>{policy.insured || '-'}</p>
-            <p><strong>被保险人与核心人员家庭关系：</strong>{policy.insuredRelation || '-'}</p>
-            <p><strong>被保险人生日：</strong>{policy.insuredBirthday || '-'}</p>
-            <p><strong>生效日期：</strong>{policy.date || '-'}</p>
-            <p><strong>缴费期间：</strong>{policy.paymentPeriod || '-'}</p>
-            <p><strong>保障期间：</strong>{policy.coveragePeriod || '-'}</p>
-            <p><strong>保障额度：</strong>{formatCoverageAmount(Number(policy.amount || 0))}</p>
-            <p><strong>首期保费：</strong>{formatCurrency(Number(policy.firstPremium || 0))}</p>
-          </div>
-        </section>
-
-        <PolicyPlanSummary
-          plans={normalizePolicyPlanList(policy.plans, policy.company)}
-          effectiveDate={policy.date}
-          insuredBirthday={policy.insuredBirthday}
-        />
-
-        {optionalResponsibilities.length ? (
-          <div className="mt-4">
-            <OptionalResponsibilityReview
-              items={optionalResponsibilities}
-              disabled={updating || deleting}
-              saving={updating}
-              onChange={onUpdateOptionalResponsibility ? (id, status) => void onUpdateOptionalResponsibility(policy, id, status) : undefined}
-              description="未投保或不确定的可选责任不会进入当前保单和家庭报告的量化计算。"
-            />
-          </div>
-        ) : null}
-
-        <section className="mt-4 space-y-3">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">保险责任</h3>
-            <p className="mt-1 text-xs text-slate-500">以下内容来自本次 OCR 识别和责任解析。</p>
-          </div>
-          {responsibilitySourceLinks.length ? (
-            <div className="rounded-[18px] border border-blue-100 bg-blue-50/70 px-3 py-3">
-              <p className="text-xs font-black text-blue-700">官网地址</p>
-              <div className="mt-2 space-y-2">
-                {responsibilitySourceLinks.map((source) => (
-                  <a
-                    key={`${source.title}-${source.url}`}
-                    href={source.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-start gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-blue-700 ring-1 ring-blue-100"
-                  >
-                    <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0">
-                      <span className="block truncate font-black">{source.title || formatSourceUrlHost(source.url)}</span>
-                      <span className="block break-all text-blue-500">{source.url}</span>
-                    </span>
-                  </a>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {responsibilities.length ? (
-            responsibilities.map((row, index) => (
-              <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] bg-blue-50 text-blue-600">
-                    <Sparkles className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-lg font-bold leading-7 text-slate-900">{row.coverageType}</h4>
-                    <p className="mt-1 whitespace-pre-wrap text-base leading-7 text-slate-500">{row.scenario}</p>
-                    <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{row.payout}</p>
-                    {row.note ? <p className="mt-2 text-base leading-7 text-slate-500">{row.note}</p> : null}
-                  </div>
-                </div>
-              </article>
-            ))
-          ) : (
-            <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">
-              {reportGenerating ? '正在生成完整保险责任解析，请稍后。' : '暂无保险责任解析。'}
-            </article>
-          )}
-        </section>
-
-        <details className="no-print mt-4 rounded-xl border border-slate-200 bg-white p-3">
-          <summary className="cursor-pointer text-sm font-semibold text-slate-700">查看原始 OCR 文本</summary>
-          <pre className="mt-3 whitespace-pre-wrap break-all rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">{policy.ocrText || '暂无 OCR 原文'}</pre>
-        </details>
-      </main>
-      {editing && onUpdatePolicy ? (
-        <PolicyEditDialog
-          policy={policy}
-          loading={updating}
-          onClose={() => setEditing(false)}
-          onSave={async (nextData) => {
-            const result = await onUpdatePolicy(policy, nextData);
-            if (result?.reportRegenerating) {
-              setEditing(false);
-              return;
-            }
-            setEditing(false);
-          }}
-        />
-      ) : null}
-      {confirmingDelete && onDeletePolicy ? (
-        <PolicyDeleteDialog
-          policy={policy}
-          loading={deleting}
-          onClose={() => setConfirmingDelete(false)}
-          onConfirm={() => void onDeletePolicy(policy)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function PolicyEditDialog({
-  policy,
-  loading,
-  onClose,
-  onSave,
-}: {
-  policy: Policy;
-  loading: boolean;
-  onClose: () => void;
-  onSave: (data: PolicyFormData) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState<PolicyFormData>(() => policyToForm(policy));
-  const [companyFocused, setCompanyFocused] = useState(false);
-  const [productFocused, setProductFocused] = useState(false);
-  const [editCompanySuggestions, setEditCompanySuggestions] = useState<PolicyCompanySuggestion[]>([]);
-  const [editCompanySuggestionLoading, setEditCompanySuggestionLoading] = useState(false);
-  const [editProductSuggestions, setEditProductSuggestions] = useState<PolicyProductSuggestion[]>([]);
-  const [editProductSuggestionLoading, setEditProductSuggestionLoading] = useState(false);
-  const updateDraft = (key: keyof PolicyFormData, value: string) => {
-    setDraft((current) => ({ ...current, [key]: key === 'amount' || key === 'firstPremium' ? sanitizeAmount(value) : value }));
-  };
-  const canSave = Boolean(draft.company.trim() && draft.name.trim());
-  const companyQuery = draft.company.trim();
-  const productQuery = draft.name.trim();
-  const visibleCompanySuggestions = useMemo(() => {
-    const normalizedQuery = normalizeSuggestionQuery(companyQuery);
-    if (!normalizedQuery) return [];
-    return editCompanySuggestions
-      .map((suggestion) => {
-        const normalizedCompany = normalizeSuggestionQuery(suggestion.company);
-        return {
-          ...suggestion,
-          matchIndex: normalizedCompany.indexOf(normalizedQuery),
-          startsWith: normalizedCompany.startsWith(normalizedQuery),
-        };
-      })
-      .filter((suggestion) => suggestion.matchIndex >= 0 && suggestion.company !== companyQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.company.localeCompare(right.company, 'zh-CN'),
-      )
-      .slice(0, 8);
-  }, [companyQuery, editCompanySuggestions]);
-  const visibleProductSuggestions = useMemo(() => {
-    const normalizedCompany = normalizeSuggestionQuery(companyQuery);
-    const normalizedQuery = normalizeSuggestionQuery(productQuery);
-    if (!normalizedCompany) return [];
-    return editProductSuggestions
-      .map((suggestion) => {
-        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
-        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
-        return {
-          ...suggestion,
-          companyMatches:
-            normalizedSuggestionCompany === normalizedCompany ||
-            normalizedSuggestionCompany.includes(normalizedCompany) ||
-            normalizedCompany.includes(normalizedSuggestionCompany),
-          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
-          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
-        };
-      })
-      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.productName.localeCompare(right.productName, 'zh-CN'),
-      )
-      .slice(0, 8);
-  }, [companyQuery, editProductSuggestions, productQuery]);
-  const showCompanySuggestions = companyFocused && companyQuery && (editCompanySuggestionLoading || visibleCompanySuggestions.length);
-  const showProductSuggestions = productFocused && companyQuery && (editProductSuggestionLoading || visibleProductSuggestions.length);
-
-  useEffect(() => {
-    let cancelled = false;
-    setEditCompanySuggestionLoading(true);
-    listPolicyResponsibilityCompanySuggestions({ limit: 50 })
-      .then((payload) => {
-        if (!cancelled) setEditCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
-      })
-      .catch(() => {
-        if (!cancelled) setEditCompanySuggestions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setEditCompanySuggestionLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    const company = draft.company.trim();
-    const q = draft.name.trim();
-    if (!company) {
-      setEditProductSuggestions([]);
-      setEditProductSuggestionLoading(false);
-      return;
-    }
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      setEditProductSuggestionLoading(true);
-      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
-        .then((payload) => {
-          if (!cancelled) setEditProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
-        })
-        .catch(() => {
-          if (!cancelled) setEditProductSuggestions([]);
-        })
-        .finally(() => {
-          if (!cancelled) setEditProductSuggestionLoading(false);
-        });
-    }, 220);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [draft.company, draft.name]);
-
-  return (
-    <div className="fixed inset-0 z-[80] flex items-end bg-slate-950/35 px-4 pb-4 sm:items-center sm:justify-center">
-      <section className="max-h-[88vh] w-full overflow-y-auto rounded-[24px] bg-white p-5 shadow-2xl sm:max-w-2xl">
-        <div className="mb-5 flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h2 className="text-lg font-black text-slate-950">修改保单</h2>
-            <p className="mt-1 text-xs font-bold leading-5 text-slate-500">修改保险公司或产品名称后会重新生成保险责任。</p>
-          </div>
-          <button
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onClose}
-            aria-label="关闭修改"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="space-y-4">
-          <label className="relative block">
-            <span className="mb-1.5 block text-sm font-bold text-slate-700">保险公司</span>
-            <input
-              value={draft.company}
-              onChange={(event) => updateDraft('company', event.target.value)}
-              onFocus={() => setCompanyFocused(true)}
-              onBlur={() => window.setTimeout(() => setCompanyFocused(false), 120)}
-              placeholder="输入保险公司，可模糊匹配"
-              autoComplete="off"
-              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
-            />
-            {showCompanySuggestions ? (
-              <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="修改保险公司候选">
-                {editCompanySuggestionLoading ? (
-                  <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    正在加载保险公司
-                  </div>
-                ) : (
-                  visibleCompanySuggestions.map((suggestion) => (
-                    <button
-                      key={suggestion.company}
-                      type="button"
-                      className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                      role="option"
-                      aria-selected={false}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        setDraft((current) => ({ ...current, company: suggestion.company }));
-                        setCompanyFocused(false);
-                      }}
-                    >
-                      <span className="min-w-0 truncate">{renderHighlightedSuggestion(suggestion.company, companyQuery)}</span>
-                      <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            ) : null}
-          </label>
-          <label className="relative block">
-            <span className="mb-1.5 block text-sm font-bold text-slate-700">保险产品</span>
-            <input
-              value={draft.name}
-              onChange={(event) => updateDraft('name', event.target.value)}
-              onFocus={() => setProductFocused(true)}
-              onBlur={() => window.setTimeout(() => setProductFocused(false), 120)}
-              placeholder="输入保险产品，可模糊匹配"
-              autoComplete="off"
-              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
-            />
-            {showProductSuggestions ? (
-              <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="修改保险产品候选">
-                {editProductSuggestionLoading ? (
-                  <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    正在加载保险产品
-                  </div>
-                ) : (
-                  visibleProductSuggestions.map((suggestion) => (
-                    <button
-                      key={`${suggestion.company}-${suggestion.productName}`}
-                      type="button"
-                      className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                      role="option"
-                      aria-selected={false}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        setDraft((current) => ({
-                          ...current,
-                          company: suggestion.company,
-                          name: suggestion.productName,
-                        }));
-                        setProductFocused(false);
-                      }}
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate">{renderHighlightedSuggestion(suggestion.productName, productQuery)}</span>
-                        <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
-                      </span>
-                      <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            ) : null}
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label="投保人" value={draft.applicant} onChange={(value) => updateDraft('applicant', value)} placeholder="投保人姓名" />
-            <TextField label="被保人" value={draft.insured} onChange={(value) => updateDraft('insured', value)} placeholder="被保人姓名" />
-          </div>
-          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-            <label className="flex items-center justify-between gap-3">
-              <span className="text-sm font-bold text-slate-700">法定受益人</span>
-              <input
-                type="checkbox"
-                checked={draft.beneficiary === '法定'}
-                onChange={(event) => updateDraft('beneficiary', event.target.checked ? '法定' : '')}
-                className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-              />
-            </label>
-            {draft.beneficiary === '法定' ? (
-              <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-black text-blue-700">受益人：法定</div>
-            ) : (
-              <TextField label="受益人姓名" value={draft.beneficiary} onChange={(value) => updateDraft('beneficiary', value)} placeholder="请输入受益人姓名" />
-            )}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <SelectField label="投保人关系" value={draft.applicantRelation} onChange={(value) => updateDraft('applicantRelation', value)} options={POLICY_RELATION_OPTIONS} />
-            <SelectField label="被保人关系" value={draft.insuredRelation} onChange={(value) => updateDraft('insuredRelation', value)} options={POLICY_RELATION_OPTIONS} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label="身份证号" value={draft.insuredIdNumber || ''} onChange={(value) => updateDraft('insuredIdNumber', value)} placeholder="被保人证件号" />
-            <TextField label="被保人生日" type="date" value={draft.insuredBirthday || ''} onChange={(value) => updateDraft('insuredBirthday', value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label="生效日期" type="date" value={draft.date} onChange={(value) => updateDraft('date', value)} />
-            <TextField label="保障期间" value={draft.coveragePeriod} onChange={(value) => updateDraft('coveragePeriod', value)} placeholder="如 终身" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label="缴费期间" value={draft.paymentPeriod} onChange={(value) => updateDraft('paymentPeriod', value)} placeholder="如 10年交" />
-            <TextField label="首期保费 (元)" value={draft.firstPremium} onChange={(value) => updateDraft('firstPremium', value)} inputMode="decimal" placeholder="0.00" />
-          </div>
-          <TextField label="保障额度 (元)" value={draft.amount} onChange={(value) => updateDraft('amount', value)} inputMode="decimal" placeholder="0.00" />
-        </div>
-
-        <div className="mt-5 grid grid-cols-2 gap-3">
-          <button
-            className="flex h-12 items-center justify-center rounded-xl bg-slate-100 text-sm font-black text-slate-600 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onClose}
-          >
-            取消
-          </button>
-          <button
-            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-blue-500 text-sm font-black text-white shadow-lg shadow-blue-500/25 disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
-            type="button"
-            disabled={loading || !canSave}
-            onClick={() => void onSave(draft)}
-          >
-            {loading ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
-            保存
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function PolicyDeleteDialog({
-  policy,
-  loading,
-  onClose,
-  onConfirm,
-}: {
-  policy: Policy;
-  loading: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-[85] flex items-end bg-slate-950/35 px-4 pb-4 sm:items-center sm:justify-center">
-      <section className="w-full rounded-[24px] bg-white p-5 shadow-2xl sm:max-w-md">
-        <div className="flex items-start gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-red-50 text-red-600">
-            <Trash2 size={21} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-black text-slate-950">删除保单</h2>
-            <p className="mt-2 text-sm font-semibold leading-6 text-slate-500">{policy.name}</p>
-          </div>
-        </div>
-        <div className="mt-5 grid grid-cols-2 gap-3">
-          <button
-            className="flex h-12 items-center justify-center rounded-xl bg-slate-100 text-sm font-black text-slate-600 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onClose}
-          >
-            取消
-          </button>
-          <button
-            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-red-600 text-sm font-black text-white shadow-lg shadow-red-600/20 disabled:bg-red-200 disabled:shadow-none"
-            type="button"
-            disabled={loading}
-            onClick={onConfirm}
-          >
-            {loading ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
-            删除
-          </button>
-        </div>
       </section>
     </div>
   );
