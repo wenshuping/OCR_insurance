@@ -4729,7 +4729,6 @@ function CustomerApp() {
           mobile={mobile}
           onOpenAccount={() => setShowAccountSheet(true)}
           onOpenFamilies={() => setActiveTab('families')}
-          onOpenReport={() => setShowFamilyReport(true)}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
         />
@@ -4751,7 +4750,6 @@ function CustomerApp() {
           onCreateFamily={async (familyName) => {
             await createFamilyProfileByName(familyName);
           }}
-          onCreateFamilyMemberForFamily={createFamilyMemberForFamily}
           onSetCoreMember={setCoreMemberForCurrentFamily}
           onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
           onBackToEntry={() => {
@@ -4920,7 +4918,6 @@ function FamilyProfileManager({
   selectedFamilyId,
   onSelectFamily,
   onCreateFamily,
-  onCreateFamilyMemberForFamily,
   onSetCoreMember,
   onUpdateFamilyMemberRelation,
   onBackToEntry,
@@ -4930,7 +4927,6 @@ function FamilyProfileManager({
   selectedFamilyId: number | null;
   onSelectFamily: (familyId: number) => void;
   onCreateFamily: (familyName: string) => Promise<void>;
-  onCreateFamilyMemberForFamily: (family: FamilyProfile, input: { name: string; relationLabel: string; setAsCore?: boolean }) => Promise<FamilyMember | null>;
   onSetCoreMember: (family: FamilyProfile, member: FamilyMember) => Promise<FamilyProfile>;
   onUpdateFamilyMemberRelation: (family: FamilyProfile, member: FamilyMember, relationLabel: string) => Promise<FamilyProfile>;
   onBackToEntry: () => void;
@@ -4938,8 +4934,6 @@ function FamilyProfileManager({
 }) {
   const families = Array.isArray(familyProfiles) ? familyProfiles : [];
   const [editingFamilyId, setEditingFamilyId] = useState<number | null>(null);
-  const [memberDraftName, setMemberDraftName] = useState('');
-  const [memberDraftRelation, setMemberDraftRelation] = useState('待确认');
   const [editingMessage, setEditingMessage] = useState('');
   const [editingBusy, setEditingBusy] = useState(false);
 
@@ -4981,34 +4975,6 @@ function FamilyProfileManager({
     onSelectFamily(family.id);
     setEditingFamilyId(nextEditing);
     setEditingMessage('');
-    setMemberDraftName('');
-    setMemberDraftRelation('待确认');
-  }
-
-  async function handleAddFamilyMember(family: FamilyProfile) {
-    const name = memberDraftName.trim();
-    if (!name) {
-      setEditingMessage('请输入成员姓名');
-      return;
-    }
-    setEditingBusy(true);
-    setEditingMessage('');
-    try {
-      const member = await onCreateFamilyMemberForFamily(family, {
-        name,
-        relationLabel: memberDraftRelation || '待确认',
-        setAsCore: memberDraftRelation === '本人',
-      });
-      if (member) {
-        setMemberDraftName('');
-        setMemberDraftRelation('待确认');
-        setEditingMessage(`已添加成员：${member.name}`);
-      }
-    } catch (error) {
-      setEditingMessage(error instanceof Error ? error.message : '添加成员失败');
-    } finally {
-      setEditingBusy(false);
-    }
   }
 
   async function handleSetCoreMember(family: FamilyProfile, member: FamilyMember) {
@@ -5166,34 +5132,6 @@ function FamilyProfileManager({
                     )) : (
                       <p className="rounded-xl bg-white px-3 py-3 text-sm font-semibold text-slate-500">暂无成员</p>
                     )}
-                  </div>
-
-                  <div className="grid gap-2 sm:grid-cols-[1fr_140px_auto]">
-                    <input
-                      type="text"
-                      value={memberDraftName}
-                      onChange={(event) => setMemberDraftName(event.target.value)}
-                      placeholder="成员姓名"
-                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                    <select
-                      value={memberDraftRelation}
-                      onChange={(event) => setMemberDraftRelation(event.target.value)}
-                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    >
-                      {FAMILY_MEMBER_RELATION_OPTIONS.map((relation) => (
-                        <option key={relation} value={relation}>{relation}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
-                      disabled={editingBusy}
-                      onClick={() => void handleAddFamilyMember(family)}
-                    >
-                      <Plus size={16} />
-                      添加成员
-                    </button>
                   </div>
 
                   {editingMessage ? <p className="text-xs font-bold text-slate-500">{editingMessage}</p> : null}
@@ -7440,7 +7378,6 @@ function UploadPolicyPage(props: {
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
   onOpenFamilies: () => void;
-  onOpenReport: () => void;
   onScanClick: () => void;
   onSelectFamily: (familyId: number | null) => void;
   onSelectFormCompany: (company: string) => void;
@@ -7480,7 +7417,6 @@ function UploadPolicyPage(props: {
     onOcrTextChange,
     onOpenAccount,
     onOpenFamilies,
-    onOpenReport,
     onScanClick,
     onSelectFamily,
     onSelectFormCompany,
@@ -7706,27 +7642,17 @@ function UploadPolicyPage(props: {
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
       <header className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-slate-100 bg-white px-4 py-4">
-        <div className="flex justify-start">
-          <button
-            className="flex h-10 items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onOpenFamilies}
-          >
-            <Users size={18} />
-            <span>家庭档案</span>
-          </button>
-        </div>
+        <div />
         <h1 className="text-lg font-bold">录入保单</h1>
         <div className="flex justify-end">
           <div className="flex items-center gap-2">
             <button
-              className="flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-600 ring-1 ring-blue-100 transition-colors hover:bg-blue-100"
+              className="flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-sm font-black text-blue-600 ring-1 ring-blue-100 transition-colors hover:bg-blue-100"
               type="button"
-              onClick={onOpenReport}
-              aria-label="查看家庭保障分析报告"
+              onClick={onOpenFamilies}
             >
-              <LayoutDashboard size={18} />
-              <span className="hidden sm:inline">查看报告</span>
+              <Users size={18} />
+              <span className="hidden sm:inline">家庭档案</span>
             </button>
             <button
               className="flex h-10 max-w-[128px] items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"

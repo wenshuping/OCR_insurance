@@ -98,10 +98,16 @@ test('customer app exposes family profile management surface', () => {
   assert.match(pageSource, /onOpenFamilies/);
   assert.match(customerSource, /家庭档案列表/);
   assert.match(pageSource, /家庭档案/);
+  assert.match(pageSource, /<header[\s\S]*<h1 className="text-lg font-bold">录入保单<\/h1>[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
+  assert.match(pageSource, /bg-blue-50 px-3 text-sm font-black text-blue-600[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
+  assert.doesNotMatch(pageSource, /onOpenReport/);
+  assert.doesNotMatch(pageSource, /查看报告/);
   assert.match(customerSource, /成员数/);
   assert.match(customerSource, /查看报告/);
   assert.match(customerSource, /管理成员/);
-  assert.match(customerSource, /添加成员/);
+  assert.doesNotMatch(customerSource, /添加成员/);
+  assert.doesNotMatch(customerSource, /成员姓名/);
+  assert.doesNotMatch(customerSource, /handleAddFamilyMember/);
   assert.match(customerSource, /设为核心/);
   assert.match(customerSource, /onUpdateFamilyMemberRelation/);
   assert.match(customerSource, /设置\$\{member\.name\}家庭关系/);
