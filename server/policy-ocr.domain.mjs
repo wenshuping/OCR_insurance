@@ -191,6 +191,19 @@ export function normalizePolicyPlans(plans = [], company = '') {
     .filter(Boolean);
 }
 
+export function backfillMainPolicyPlanAmount(plans = [], policyAmount = 0) {
+  const amount = Number(policyAmount || 0);
+  if (!Number.isFinite(amount) || amount <= 0 || !Array.isArray(plans) || !plans.length) return plans;
+  const explicitMainIndex = plans.findIndex((plan) => String(plan?.role || '') === 'main');
+  const fallbackPlanIndex = plans.findIndex((plan) => String(plan?.role || '') !== 'linked_account');
+  const targetIndex = explicitMainIndex >= 0 ? explicitMainIndex : fallbackPlanIndex;
+  if (targetIndex < 0) return plans;
+  const mainPlan = plans[targetIndex];
+  const mainAmount = Number(mainPlan?.amount || 0);
+  if (Number.isFinite(mainAmount) && mainAmount > 0) return plans;
+  return plans.map((plan, index) => (index === targetIndex ? { ...plan, amount } : plan));
+}
+
 function normalizeLookupText(value) {
   return String(value || '')
     .normalize('NFKC')
@@ -814,7 +827,7 @@ export function normalizePolicySources(sources = []) {
 
 export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, analysis, familyBinding = null }) {
   const data = normalizePolicyScanData(scan?.data || {});
-  const plans = normalizePolicyPlans(scan?.data?.plans, data.company);
+  const plans = backfillMainPolicyPlanAmount(normalizePolicyPlans(scan?.data?.plans, data.company), data.amount);
   const mainPlan = plans.find((plan) => plan.role === 'main') || plans[0] || null;
   const canonicalProductId = data.canonicalProductId || mainPlan?.canonicalProductId || '';
   const now = new Date().toISOString();
