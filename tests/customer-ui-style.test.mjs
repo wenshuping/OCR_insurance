@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
-const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const appShellSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const customerAppSource = fs.readFileSync(new URL('../src/apps/customer/CustomerApp.tsx', import.meta.url), 'utf8');
+const adminAppSource = fs.readFileSync(new URL('../src/apps/admin/AdminApp.tsx', import.meta.url), 'utf8');
+const sharedReportUiSource = fs.readFileSync(new URL('../src/shared/policy-report-ui.tsx', import.meta.url), 'utf8');
+const normalizedCustomerAppSource = customerAppSource.replaceAll("from '../../", "from './");
+const normalizedAdminAppSource = adminAppSource.replaceAll("from '../../", "from './");
 const formatterSource = fs.readFileSync(new URL('../src/shared/formatters.ts', import.meta.url), 'utf8');
 const reportExportSource = fs.readFileSync(new URL('../src/features/report-export/report-export.ts', import.meta.url), 'utf8');
 
@@ -14,8 +19,17 @@ function functionSource(source, name, nextName) {
   return source.slice(start, end);
 }
 
-function componentSource(name, nextName) {
-  return functionSource(appSource, name, nextName);
+function owningSource(name) {
+  const marker = `function ${name}`;
+  if (normalizedCustomerAppSource.includes(marker)) return normalizedCustomerAppSource;
+  if (normalizedAdminAppSource.includes(marker)) return normalizedAdminAppSource;
+  if (sharedReportUiSource.includes(marker)) return sharedReportUiSource;
+  if (appShellSource.includes(marker)) return appShellSource;
+  return appShellSource;
+}
+
+function componentSource(name, nextName, source = owningSource(name)) {
+  return functionSource(source, name, nextName);
 }
 
 function escapeRegExp(value) {
@@ -126,11 +140,11 @@ test('customer app exposes family report share flow', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /createFamilyReportShare/);
   assert.match(apiSource, /getFamilyReportShare/);
-  assert.match(appSource, /getFamilyReportShare/);
-  assert.match(appSource, /family-share/);
-  assert.match(appSource, /SharedFamilyReportApp/);
-  assert.match(appSource, /sharedFamilyReport/);
-  assert.match(appSource, /readOnly/);
+  assert.match(appShellSource, /getFamilyReportShare/);
+  assert.match(appShellSource, /family-share/);
+  assert.match(appShellSource, /SharedFamilyReportApp/);
+  assert.match(appShellSource, /sharedFamilyReport/);
+  assert.match(appShellSource, /readOnly/);
   assert.match(customerSource, /handleShareFamilyReport/);
   assert.match(customerSource, /selectedFamilyId/);
   assert.match(customerSource, /navigator\.clipboard\.writeText/);
@@ -245,11 +259,11 @@ test('recognized plans assign first product as main and later products as riders
 });
 
 test('entry form preserves canonical product id and clears it when product name changes', () => {
-  assert.match(appSource, /canonicalProductId: String\(plan\?\.canonicalProductId \|\| ''\)\.trim\(\)/u);
-  assert.match(appSource, /matchedProductName: productChanged \? '' : plan\.matchedProductName/u);
-  assert.match(appSource, /canonicalProductId: productChanged \? '' : plan\.canonicalProductId/u);
-  assert.match(appSource, /canonicalProductId: String\(match\.canonicalProductId \|\| ''\)\.trim\(\)/u);
-  assert.match(appSource, /canonicalProductId: String\(suggestion\.canonicalProductId \|\| ''\)\.trim\(\)/u);
+  assert.match(normalizedCustomerAppSource, /canonicalProductId: String\(plan\?\.canonicalProductId \|\| ''\)\.trim\(\)/u);
+  assert.match(normalizedCustomerAppSource, /matchedProductName: productChanged \? '' : plan\.matchedProductName/u);
+  assert.match(normalizedCustomerAppSource, /canonicalProductId: productChanged \? '' : plan\.canonicalProductId/u);
+  assert.match(normalizedCustomerAppSource, /canonicalProductId: String\(match\.canonicalProductId \|\| ''\)\.trim\(\)/u);
+  assert.match(normalizedCustomerAppSource, /canonicalProductId: String\(suggestion\.canonicalProductId \|\| ''\)\.trim\(\)/u);
 });
 
 test('entry form captures insured birthday for age-based reports', () => {
@@ -278,9 +292,9 @@ test('entry form separates legal beneficiary from beneficiary name before saving
 
 test('family overview prefers local product indicators over raw OCR responsibility years', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
-  const overviewBuilderSource = appSource.slice(
-    appSource.indexOf('function parseAmountFromText'),
-    appSource.indexOf('type PolicyUploadSource'),
+  const overviewBuilderSource = normalizedCustomerAppSource.slice(
+    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
+    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
   );
   assert.match(apiSource, /coverageIndicators/);
   assert.match(overviewBuilderSource, /policy\.coverageIndicators/);
@@ -289,9 +303,9 @@ test('family overview prefers local product indicators over raw OCR responsibili
 });
 
 test('family overview treats annuity payouts as cashflow instead of cash value table prerequisites', () => {
-  const overviewBuilderSource = appSource.slice(
-    appSource.indexOf('function parseAmountFromText'),
-    appSource.indexOf('type PolicyUploadSource'),
+  const overviewBuilderSource = normalizedCustomerAppSource.slice(
+    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
+    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
   );
   assert.match(overviewBuilderSource, /isCashflowPayoutIndicator/);
   assert.match(overviewBuilderSource, /生存保险金/);
@@ -302,9 +316,9 @@ test('family overview treats annuity payouts as cashflow instead of cash value t
 });
 
 test('family overview substitutes policy amounts into indicator formulas', () => {
-  const overviewBuilderSource = appSource.slice(
-    appSource.indexOf('function parseAmountFromText'),
-    appSource.indexOf('type PolicyUploadSource'),
+  const overviewBuilderSource = normalizedCustomerAppSource.slice(
+    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
+    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
   );
   assert.match(overviewBuilderSource, /indicatorCoreText/);
   assert.match(overviewBuilderSource, /isNonPayoutCashflowIndicator/);
@@ -336,11 +350,11 @@ test('pdf export uses a dedicated A4 report layout instead of mobile card clonin
   assert.match(reportSource, /保单解析报告/);
   assert.match(reportExportSource, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(renderSource, /createPrintableReportNode\(target, title, policy\)/);
-  assert.doesNotMatch(appSource, /function applyPdfSafeStyle/);
+  assert.doesNotMatch(reportExportSource, /function applyPdfSafeStyle/);
 });
 
 test('admin policy detail exposes policy source links', () => {
-  const source = componentSource('AdminPolicyDetail', 'MetricBox');
+  const source = componentSource('AdminPolicyDetail', null);
   assert.match(source, /资料来源/);
   assert.match(source, /policy\.sources/);
   assert.match(source, /href=\{source\.url\}/);
@@ -405,12 +419,11 @@ test('customer policy detail moves coverage amount into plan details', () => {
 });
 
 test('customer policy cards derive validity status from coverage period', () => {
-  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const validitySource = fs.readFileSync(new URL('../src/policy-validity.mjs', import.meta.url), 'utf8');
   const listItemSource = componentSource('PolicyListItem', 'CustomerBottomTabs');
   const summarySource = componentSource('PolicyPlanSummary', 'SelectField');
 
-  assert.match(appSource, /from '\.\/policy-validity\.mjs'/);
+  assert.match(normalizedCustomerAppSource, /from '\.\/policy-validity\.mjs'/);
   assert.match(validitySource, /function resolvePolicyValidityStatus|export function resolvePolicyValidityStatus/);
   assert.match(validitySource, /parseCoveragePeriodEndDate/);
   assert.match(listItemSource, /const validityStatus = resolvePolicyValidityStatus\(policy\.coveragePeriod,\s*\{\s*effectiveDate: policy\.date,\s*insuredBirthday: policy\.insuredBirthday/);
@@ -422,15 +435,14 @@ test('customer policy cards derive validity status from coverage period', () => 
 
 test('customer policy detail displays responsibility official urls', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
-  const adminDetailSource = componentSource('AdminPolicyDetail', 'MetricBox');
-  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const adminDetailSource = componentSource('AdminPolicyDetail', null);
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /sourceUrl\?: string/);
   assert.match(apiSource, /sourceTitle\?: string/);
-  assert.match(appSource, /function getPolicyResponsibilitySourceLinks\(policy: Policy\)/);
-  assert.match(appSource, /policy\.sources/);
-  assert.match(appSource, /policy\.coverageIndicators/);
+  assert.match(sharedReportUiSource, /function getPolicyResponsibilitySourceLinks\(policy: Policy\)/);
+  assert.match(sharedReportUiSource, /policy\.sources/);
+  assert.match(sharedReportUiSource, /policy\.coverageIndicators/);
   assert.match(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
   assert.match(detailSource, /官网地址/);
   assert.match(detailSource, /href=\{source\.url\}/);
@@ -440,7 +452,6 @@ test('customer policy detail displays responsibility official urls', () => {
 });
 
 test('customer entry and policy detail expose optional responsibility selection controls', () => {
-  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   const entrySource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const analysisSource = componentSource('AnalysisReportPage', 'TextField');
@@ -459,25 +470,25 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(entrySource, /主险可选责任确认/);
   assert.match(entrySource, /已按主险匹配产品带出/);
   assert.match(entrySource, /onUpdateOptionalResponsibility/);
-  assert.match(appSource, /updateAnalysisOptionalResponsibility/);
-  assert.match(appSource, /handleUpdateOptionalResponsibility/);
-  assert.match(appSource, /selectedCoverageIndicators\(policy\.coverageIndicators\)/);
+  assert.match(normalizedCustomerAppSource, /updateAnalysisOptionalResponsibility/);
+  assert.match(normalizedCustomerAppSource, /handleUpdateOptionalResponsibility/);
+  assert.match(normalizedCustomerAppSource, /selectedCoverageIndicators\(policy\.coverageIndicators\)/);
   assert.match(analysisSource, /OptionalResponsibilityReview/);
   assert.match(analysisSource, /onUpdateOptionalResponsibility/);
   assert.match(detailSource, /policy\.optionalResponsibilities/);
   assert.match(detailSource, /onUpdateOptionalResponsibility/);
   assert.match(reviewSource, /可选责任确认/);
-  assert.match(appSource, /value: 'selected', label: '已投保'/);
-  assert.match(appSource, /value: 'not_selected', label: '未投保'/);
-  assert.match(appSource, /value: 'unknown', label: '不确定'/);
+  assert.match(normalizedCustomerAppSource, /value: 'selected', label: '已投保'/);
+  assert.match(normalizedCustomerAppSource, /value: 'not_selected', label: '未投保'/);
+  assert.match(normalizedCustomerAppSource, /value: 'unknown', label: '不确定'/);
 });
 
 test('ocr recognition stays on entry form while carrying matched responsibility draft', () => {
-  const start = appSource.indexOf('async function recognizePreparedUpload');
-  const end = appSource.indexOf('function handleScanClick', start);
+  const start = normalizedCustomerAppSource.indexOf('async function recognizePreparedUpload');
+  const end = normalizedCustomerAppSource.indexOf('function handleScanClick', start);
   assert.notEqual(start, -1, 'recognizePreparedUpload should exist');
   assert.notEqual(end, -1, 'handleScanClick should exist after recognizePreparedUpload');
-  const recognizeSource = appSource.slice(start, end);
+  const recognizeSource = normalizedCustomerAppSource.slice(start, end);
 
   assert.match(recognizeSource, /const recognizedAnalysis = payload\.analysis \|\| null/);
   assert.match(recognizeSource, /setAnalysisDraft\(recognizedAnalysis\);\s*setShowAnalysisReport\(false\);/);
@@ -531,7 +542,7 @@ test('family report keeps verbose protection notes readable on mobile', () => {
 });
 
 test('admin app exposes optional responsibility quantification governance list', () => {
-  const appText = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const appText = normalizedAdminAppSource;
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /OptionalResponsibilityGap/);
@@ -574,11 +585,10 @@ test('policy edit dialog offers insurer and product suggestions', () => {
 });
 
 test('customer app exposes family report after policy inventory and before section analysis', () => {
-  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
-  assert.match(appSource, /buildFamilyReport/);
-  assert.match(appSource, /FamilyReportPage/);
-  assert.match(appSource, /setShowFamilyReport\(true\)/);
+  assert.match(normalizedCustomerAppSource, /buildFamilyReport/);
+  assert.match(normalizedCustomerAppSource, /FamilyReportPage/);
+  assert.match(normalizedCustomerAppSource, /setShowFamilyReport\(true\)/);
   assert.match(familySource, /全家总统计/);
   assert.match(familySource, /家庭保单清单/);
   assert.match(familySource, /被保人保单明细/);
@@ -593,7 +603,7 @@ test('customer app exposes family report after policy inventory and before secti
 
 test('customer policy overview renders the family radar card instead of the summary table', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
-  const overviewSource = componentSource('FamilyCoverageOverview', 'AdminApp');
+  const overviewSource = componentSource('FamilyCoverageOverview', 'normalizeSuggestionQuery');
 
   assert.match(customerSource, /report=\{familyReport\}/);
   assert.match(overviewSource, /FamilyRadarSection/);
@@ -830,7 +840,6 @@ test('family report wealth section explains dividend and universal account stati
 
 test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
-  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const packageSource = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 
   assert.match(familySource, /\bRadarChart\b/);
@@ -864,8 +873,8 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /保额结构版/);
   assert.match(familySource, /家庭年支出/);
   assert.match(familySource, /onPlanningProfileChange/);
-  assert.match(appSource, /FAMILY_PLANNING_PROFILE_KEY/);
-  assert.match(appSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile,\s*\{\s*familyId:\s*selectedFamilyId\s*\}\)/);
+  assert.match(normalizedCustomerAppSource, /FAMILY_PLANNING_PROFILE_KEY/);
+  assert.match(normalizedCustomerAppSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile,\s*\{\s*familyId:\s*selectedFamilyId\s*\}\)/);
   assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
   assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);
   assert.match(familySource, /memberRadarGridStyle/);
@@ -963,13 +972,12 @@ test('family report wealth policies show cashflow table with cash value and keep
 });
 
 test('family report export downloads a page-styled image instead of paginated pdf', () => {
-  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
   assert.match(reportExportSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean; matchScreenStyle\?: boolean \}/);
   assert.match(reportExportSource, /rawTarget: true/);
   assert.match(reportExportSource, /matchScreenStyle: true/);
-  assert.match(appSource, /downloadReportImage\(target,\s*title/);
+  assert.match(normalizedCustomerAppSource, /downloadReportImage\(target,\s*title/);
   assert.match(reportExportSource, /captureReportImageCanvas\(imageTarget,\s*fileName/);
   assert.match(reportExportSource, /exportScreenStyledReportImageInCurrentPage\(imageTarget,\s*fileName/);
   assert.match(reportExportSource, /await import\('html-to-image'\)/);
@@ -1001,7 +1009,6 @@ test('family report export downloads a page-styled image instead of paginated pd
 });
 
 test('family report export keeps page styling and still supports safe pdf capture', () => {
-  const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
@@ -1068,7 +1075,7 @@ test('client API exposes family profile types and endpoints', () => {
 });
 
 test('deleting a rider does not force-refresh optional responsibilities when main product is unchanged', () => {
-  const source = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const source = normalizedCustomerAppSource;
 
   assert.match(source, /function mainProductIdentityKey\(/u);
   assert.match(source, /const beforeMainProductKey = mainProductIdentityKey\(formData\)/u);
