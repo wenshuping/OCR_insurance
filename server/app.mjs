@@ -5,6 +5,7 @@ import { createRouteContext } from './http/context.mjs';
 import { codeFromError, sendError } from './http/errors.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
+import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import {
   allocateId,
@@ -1645,6 +1646,16 @@ export function createPolicyOcrApp(options = {}) {
     attachPolicyFamilyDisplay,
     getBearerToken,
     deleteSession,
+    assistantAnalyzer,
+    normalizeResponsibilityQueryInput,
+    normalizePolicyScanData,
+    normalizePolicyPlans,
+    normalizeOptionalResponsibilities,
+    buildRecognizedPolicyAnalysisDraft,
+    buildEffectiveOfficialDomainProfiles,
+    buildResponsibilityCompanySuggestions,
+    buildResponsibilityProductSuggestions,
+    findKnowledgeProductCandidates,
   });
 
   const app = express();
@@ -1658,98 +1669,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/wechat', createWechatRoutes(routeContext));
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
-
-  app.post('/api/policy-responsibilities/query', async (req, res) => {
-    const routeStartedAt = nowMs();
-    try {
-      const input = normalizeResponsibilityQueryInput(req.body);
-      const scan = {
-        ocrText: `${input.company} ${input.name}`,
-        data: input,
-      };
-      const preferLocalKnowledgeAnswer = req.body?.preferLocalKnowledgeAnswer !== false;
-      const analysisStartedAt = nowMs();
-      const analysis = await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer });
-      logPerformance(performanceLogger, 'policy.responsibility.assistant.analysis', {
-        route: '/api/policy-responsibilities/query',
-        durationMs: elapsedMs(analysisStartedAt),
-        inputOcrChars: scan.ocrText.length,
-        outputOcrChars: scan.ocrText.length,
-        responsibilityCount: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable.length : 0,
-      });
-      logPerformance(performanceLogger, 'policy.responsibility.assistant.complete', {
-        route: '/api/policy-responsibilities/query',
-        durationMs: elapsedMs(routeStartedAt),
-        inputOcrChars: scan.ocrText.length,
-      });
-      res.json({ ok: true, analysis });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.post('/api/policy-responsibilities/local-draft', (req, res) => {
-    try {
-      const manualData = req.body?.manualData && typeof req.body.manualData === 'object' ? req.body.manualData : req.body;
-      const data = normalizePolicyScanData(manualData || {});
-      const scan = {
-        ocrText: trim(req.body?.ocrText) || `${data.company} ${data.name}`.trim(),
-        data: {
-          ...data,
-          plans: normalizePolicyPlans(manualData?.plans, data.company),
-          optionalResponsibilities: normalizeOptionalResponsibilities(manualData?.optionalResponsibilities),
-        },
-      };
-      const analysis = buildRecognizedPolicyAnalysisDraft({
-        state,
-        scan,
-        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
-      });
-      res.json({ ok: true, analysis });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.get('/api/policy-responsibilities/company-suggestions', async (req, res) => {
-    const q = trim(req.query?.q);
-    const limit = Number(req.query?.limit || 12);
-    res.json({
-      ok: true,
-      suggestions: buildResponsibilityCompanySuggestions(state, q, Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 12),
-    });
-  });
-
-  app.get('/api/policy-responsibilities/product-suggestions', async (req, res) => {
-    const company = trim(req.query?.company);
-    const q = trim(req.query?.q);
-    const limit = Number(req.query?.limit || 12);
-    res.json({
-      ok: true,
-      suggestions: buildResponsibilityProductSuggestions(state, {
-        company,
-        query: q,
-        maxResults: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 12,
-      }),
-    });
-  });
-
-  app.post('/api/policy-responsibilities/matches', async (req, res) => {
-    try {
-      const input = normalizeResponsibilityQueryInput(req.body);
-      const policy = { company: input.company, name: input.name };
-      const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
-      const matches = findKnowledgeProductCandidates({
-        policy,
-        records: state.knowledgeRecords || [],
-        officialDomainProfiles,
-        maxResults: 3,
-      });
-      res.json({ ok: true, matches });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
+  app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
 
   app.post('/api/admin/login', async (req, res) => {
     try {
