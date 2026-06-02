@@ -11,9 +11,16 @@ function makePolicy(overrides = {}) {
     id: overrides.id ?? 1,
     company: overrides.company ?? '新华保险',
     name: overrides.name ?? '健康无忧重大疾病保险',
+    familyId: overrides.familyId,
     applicant: overrides.applicant ?? '投保人',
+    applicantMemberId: overrides.applicantMemberId,
+    applicantMemberName: overrides.applicantMemberName,
+    applicantRelationLabel: overrides.applicantRelationLabel,
     beneficiary: overrides.beneficiary ?? '法定',
     applicantRelation: overrides.applicantRelation ?? '本人',
+    insuredMemberId: overrides.insuredMemberId,
+    insuredMemberName: overrides.insuredMemberName,
+    insuredRelationLabel: overrides.insuredRelationLabel,
     insured: overrides.insured ?? '妈妈',
     insuredRelation: overrides.insuredRelation ?? '本人',
     insuredBirthday: overrides.insuredBirthday ?? '1988-12-16',
@@ -38,6 +45,7 @@ function makePolicy(overrides = {}) {
     scenarioEntries: overrides.scenarioEntries ?? [],
     totalCashflow: overrides.totalCashflow ?? 0,
     cashValues: overrides.cashValues ?? [],
+    participantReviewStatus: overrides.participantReviewStatus,
   };
 }
 
@@ -238,11 +246,132 @@ test('buildPolicyInventory falls back to plan product type verbatim', () => {
   assert.equal(inventory.rows[0].typeLabel, '两全保险');
 });
 
+test('buildPolicyInventory exposes main and rider plans in report rows', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      id: 500699,
+      name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+      amount: 60000,
+      plans: [
+        {
+          role: 'main',
+          name: '畅行万里智赢版两全保险',
+          matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+          productType: '两全保险',
+          amount: 60000,
+        },
+        {
+          role: 'rider',
+          name: 'i他男性特定疾病保险',
+          matchedProductName: '新华人寿保险股份有限公司i他男性特定疾病保险',
+          productType: '重疾险',
+          amount: 50000,
+          premium: 140,
+          coveragePeriod: '至2025年09月29日',
+        },
+      ],
+    }),
+  ]);
+
+  assert.deepEqual(inventory.rows[0].planItems.map((item) => ({
+    roleLabel: item.roleLabel,
+    productName: item.productName,
+    typeLabel: item.typeLabel,
+    coverageText: item.coverageText,
+    premiumText: item.premiumText,
+    coveragePeriod: item.coveragePeriod,
+  })), [
+    {
+      roleLabel: '主险',
+      productName: '畅行万里智赢版两全保险',
+      typeLabel: '两全保险',
+      coverageText: '6万',
+      premiumText: '',
+      coveragePeriod: '',
+    },
+    {
+      roleLabel: '附加险',
+      productName: 'i他男性特定疾病保险',
+      typeLabel: '重疾险',
+      coverageText: '5万',
+      premiumText: '140',
+      coveragePeriod: '至2025年09月29日',
+    },
+  ]);
+});
+
 test('buildFamilyReport includes summary and inventory sections', () => {
   const report = buildFamilyReport([makePolicy({ id: 1, insured: '爸爸' })]);
   assert.equal(report.summary.memberCount, 1);
   assert.equal(report.policyInventory.rows.length, 1);
   assert.equal(report.policyInventory.insuredGroups[0].member, '爸爸');
+});
+
+test('buildFamilyReport groups by insuredMemberId and exposes member metadata', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 501,
+      insured: 'OCR妈妈',
+      insuredMemberId: 10,
+      insuredMemberName: '温舒萍',
+      insuredRelationLabel: '本人',
+      applicantMemberId: 20,
+      applicantMemberName: '冯力',
+      applicantRelationLabel: '配偶',
+      participantReviewStatus: 'name_mismatch',
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '重大疾病保险金', value: 100, unit: '%', basis: '基本保险金额', productName: '健康无忧重大疾病保险' },
+      ],
+    }),
+    makePolicy({
+      id: 502,
+      insured: 'OCR别名',
+      insuredMemberId: 10,
+      insuredMemberName: '温舒萍',
+      insuredRelationLabel: '本人',
+      applicantMemberId: 20,
+      applicantMemberName: '冯力',
+      applicantRelationLabel: '配偶',
+      coverageIndicators: [
+        { coverageType: '重大疾病保障', liability: '轻症疾病保险金', value: 30, unit: '%', basis: '基本保险金额', productName: '健康无忧重大疾病保险' },
+      ],
+    }),
+  ]);
+
+  assert.equal(report.summary.memberCount, 1);
+  assert.equal(report.policyInventory.insuredGroups.length, 1);
+  assert.equal(report.policyInventory.insuredGroups[0].memberKey, 'member:10');
+  assert.equal(report.policyInventory.insuredGroups[0].memberId, 10);
+  assert.equal(report.policyInventory.insuredGroups[0].member, '温舒萍');
+  assert.equal(report.policyInventory.insuredGroups[0].relationLabel, '本人');
+  assert.equal(report.policyInventory.insuredGroups[0].policies.length, 2);
+  assert.equal(report.policyInventory.rows[0].applicant, '冯力');
+  assert.equal(report.policyInventory.rows[0].applicantMemberId, 20);
+  assert.equal(report.policyInventory.rows[0].applicantRelationLabel, '配偶');
+  assert.equal(report.policyInventory.rows[0].participantReviewStatus, 'name_mismatch');
+  assert.equal(report.criticalIllness.members.length, 1);
+  assert.equal(report.criticalIllness.members[0].memberKey, 'member:10');
+  assert.equal(report.criticalIllness.members[0].memberId, 10);
+  assert.equal(report.criticalIllness.members[0].member, '温舒萍');
+  assert.equal(report.criticalIllness.members[0].relationLabel, '本人');
+  assert.equal(report.radar.members.length, 1);
+  assert.equal(report.radar.members[0].memberKey, 'member:10');
+  assert.equal(report.radar.members[0].name, '温舒萍');
+  assert.equal(report.radar.members[0].relationLabel, '本人');
+});
+
+test('buildFamilyReport filters by selected family id', () => {
+  const report = buildFamilyReport([
+    makePolicy({ id: 601, familyId: 10, insured: '爸爸', firstPremium: 1000 }),
+    makePolicy({ id: 602, familyId: 11, insured: '妈妈', firstPremium: 2000 }),
+    makePolicy({ id: 603, familyId: 10, insured: '孩子', firstPremium: 3000 }),
+  ], null, { familyId: 10 });
+
+  assert.equal(report.summary.policyCount, 2);
+  assert.equal(report.summary.annualPremium, 4000);
+  assert.deepEqual(report.policyInventory.rows.map((row) => row.policyId), [601, 603]);
+  assert.deepEqual(report.appendix.policies.map((policy) => policy.policyId), [601, 603]);
+  assert.equal(report.radar.members.some((member) => member.name === '妈妈'), false);
 });
 
 test('buildFamilyReport separates inactive policies from counted values and marks them inactive', () => {

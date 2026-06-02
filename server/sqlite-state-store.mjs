@@ -18,6 +18,9 @@ const DB_OWNED_KEYS = new Set([
   'insuranceIndicatorRecords',
   'optionalResponsibilityRecords',
   'officialDomainProfiles',
+  'familyProfiles',
+  'familyMembers',
+  'familyReportShares',
   'nextId',
 ]);
 
@@ -57,6 +60,9 @@ function resolveNextId(state) {
     maxNumericId(state.policies),
     maxNumericId(state.sourceRecords),
     maxNumericId(state.knowledgeRecords),
+    maxNumericId(state.familyProfiles),
+    maxNumericId(state.familyMembers),
+    maxNumericId(state.familyReportShares),
   );
   return Math.max(Number(state.nextId || 1), maxId + 1, 1);
 }
@@ -190,6 +196,49 @@ function createSchema(db) {
       id TEXT PRIMARY KEY,
       payload TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS family_profiles (
+      id INTEGER PRIMARY KEY,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      family_name TEXT,
+      core_member_id INTEGER,
+      status TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_profiles_owner_user_id ON family_profiles(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_family_profiles_owner_guest_id ON family_profiles(owner_guest_id);
+
+    CREATE TABLE IF NOT EXISTS family_members (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER,
+      name TEXT,
+      relation_to_core TEXT,
+      status TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_members_family_id ON family_members(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_members_name ON family_members(name);
+
+    CREATE TABLE IF NOT EXISTS family_report_shares (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      token TEXT,
+      status TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_report_shares_family_id ON family_report_shares(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_report_shares_owner_user_id ON family_report_shares(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_family_report_shares_owner_guest_id ON family_report_shares(owner_guest_id);
+    CREATE INDEX IF NOT EXISTS idx_family_report_shares_token ON family_report_shares(token);
 
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
@@ -349,6 +398,59 @@ function insertRows(db, state) {
     insertProfile.run(id, jsonPayload({ ...profile, id }));
   });
 
+  const insertFamilyProfile = db.prepare(`
+    INSERT INTO family_profiles (id, owner_user_id, owner_guest_id, family_name, core_member_id, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const profile of normalizeArray(state.familyProfiles)) {
+    insertFamilyProfile.run(
+      Number(profile.id),
+      Number(profile.ownerUserId || 0) || null,
+      String(profile.ownerGuestId || ''),
+      String(profile.familyName || ''),
+      Number(profile.coreMemberId || 0) || null,
+      String(profile.status || ''),
+      String(profile.createdAt || ''),
+      String(profile.updatedAt || ''),
+      jsonPayload(profile),
+    );
+  }
+
+  const insertFamilyMember = db.prepare(`
+    INSERT INTO family_members (id, family_id, name, relation_to_core, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const member of normalizeArray(state.familyMembers)) {
+    insertFamilyMember.run(
+      Number(member.id),
+      Number(member.familyId || 0) || null,
+      String(member.name || ''),
+      String(member.relationToCore || ''),
+      String(member.status || ''),
+      String(member.createdAt || ''),
+      String(member.updatedAt || ''),
+      jsonPayload(member),
+    );
+  }
+
+  const insertFamilyReportShare = db.prepare(`
+    INSERT INTO family_report_shares (id, family_id, owner_user_id, owner_guest_id, token, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const share of normalizeArray(state.familyReportShares)) {
+    insertFamilyReportShare.run(
+      Number(share.id),
+      Number(share.familyId || 0) || null,
+      Number(share.ownerUserId || 0) || null,
+      String(share.ownerGuestId || ''),
+      String(share.token || share.shareToken || ''),
+      String(share.status || ''),
+      String(share.createdAt || ''),
+      String(share.updatedAt || ''),
+      jsonPayload(share),
+    );
+  }
+
   const insertStateDocument = db.prepare(`
     INSERT INTO state_documents (key, payload)
     VALUES (?, ?)
@@ -361,8 +463,9 @@ function insertRows(db, state) {
 
 function clearDbOwnedTables(db) {
   db.exec(`
-    DELETE FROM policy_cash_values;
-    DELETE FROM policy_cashflows;
+    DELETE FROM family_report_shares;
+    DELETE FROM family_members;
+    DELETE FROM family_profiles;
     DELETE FROM users;
     DELETE FROM sessions;
     DELETE FROM admin_sessions;
@@ -376,47 +479,6 @@ function clearDbOwnedTables(db) {
     DELETE FROM official_domain_profiles;
     DELETE FROM state_documents;
   `);
-}
-
-function readCashValueRows(db) {
-  return db.prepare(`
-    SELECT policy_id, policy_year, age, cash_value, source
-      FROM policy_cash_values
-     ORDER BY policy_id ASC, policy_year ASC
-  `).all();
-}
-
-function restoreCashValueRows(db, rows, state) {
-  if (!Array.isArray(rows) || !rows.length) return;
-  const policyIds = new Set(
-    normalizeArray(state.policies)
-      .map((policy) => Number(policy?.id))
-      .filter((id) => Number.isFinite(id)),
-  );
-  if (!policyIds.size) return;
-
-  const insertCashValue = db.prepare(`
-    INSERT INTO policy_cash_values (policy_id, policy_year, age, cash_value, source)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  const seen = new Set();
-  for (const row of rows) {
-    const policyId = Number(row.policy_id);
-    const policyYear = Number(row.policy_year);
-    const cashValue = Number(row.cash_value);
-    if (!policyIds.has(policyId) || !Number.isFinite(policyYear) || !Number.isFinite(cashValue)) continue;
-
-    const key = `${policyId}\u001f${policyYear}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    insertCashValue.run(
-      policyId,
-      policyYear,
-      Number.isFinite(Number(row.age)) ? Number(row.age) : null,
-      cashValue,
-      String(row.source || 'ocr'),
-    );
-  }
 }
 
 function loadPayloadRows(db, table, orderBy) {
@@ -439,6 +501,9 @@ function loadDbOwnedState(db) {
     insuranceIndicatorRecords: loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC'),
     optionalResponsibilityRecords: loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC'),
     officialDomainProfiles: loadPayloadRows(db, 'official_domain_profiles', 'id ASC'),
+    familyProfiles: loadPayloadRows(db, 'family_profiles', 'id ASC'),
+    familyMembers: loadPayloadRows(db, 'family_members', 'id ASC'),
+    familyReportShares: loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
   };
   for (const row of db.prepare('SELECT key, payload FROM state_documents ORDER BY key ASC').all()) {
     state[row.key] = parseJson(row.payload, null);
@@ -468,10 +533,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const initializedAt = getMeta(db, 'state_initialized_at');
     db.exec('BEGIN IMMEDIATE');
     try {
-      const cashValueRows = readCashValueRows(db);
+      db.exec('PRAGMA defer_foreign_keys = ON');
       clearDbOwnedTables(db);
       insertRows(db, nextState);
-      restoreCashValueRows(db, cashValueRows, nextState);
       setMeta(db, 'next_id', String(nextState.nextId));
       setMeta(db, 'state_initialized_at', initializedAt || now);
       setMeta(db, 'updated_at', now);
