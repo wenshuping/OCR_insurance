@@ -142,8 +142,7 @@ test('entry form requires family profile and supports core setup after OCR', () 
 
 test('customer app exposes family profile management surface', () => {
   const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
-  const familySource = componentSource('FamilyProfileManager', 'FamilyPolicyManagerPanel');
-  const familyPolicyPanelSource = componentSource('FamilyPolicyManagerPanel', null);
+  const familySource = componentSource('FamilyProfileManager', null);
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /FamilyProfileManager/);
   assert.match(customerSource, /onOpenFamilies=\{\(\) => setActiveTab\('families'\)\}/);
@@ -158,13 +157,8 @@ test('customer app exposes family profile management surface', () => {
   assert.match(familySource, /成员数/);
   assert.match(familySource, /查看报告/);
   assert.match(familySource, /管理成员/);
-  assert.match(familySource, /保单管理/);
-  assert.match(familySource, /FamilyPolicyManagerPanel/);
-  assert.match(customerSource, /policies=\{policies\}/);
-  assert.match(customerSource, /onOpenPolicy=\{\(policy\) => void openPolicy\(policy\)\}/);
-  assert.match(familySource, /Number\(policy\.familyId\) === Number\(family\.id\)/);
-  assert.match(familyPolicyPanelSource, /groupPoliciesByInsured\(policies\)/);
-  assert.match(familyPolicyPanelSource, /<PolicyListItem[\s\S]*onOpen=\{\(\) => onOpenPolicy\(policy\)\}/);
+  assert.doesNotMatch(familySource, /保单管理/);
+  assert.doesNotMatch(familySource, /FamilyPolicyManagerPanel/);
   assert.doesNotMatch(familySource, /添加成员/);
   assert.doesNotMatch(familySource, /成员姓名/);
   assert.doesNotMatch(familySource, /handleAddFamilyMember/);
@@ -898,16 +892,6 @@ test('family report wealth section explains dividend and universal account stati
   assert.match(typeSource, /FamilyWealthUncertaintyItem/);
   assert.match(typeSource, /excludedPolicies: FamilyWealthExcludedPolicy\[\]/);
   assert.match(typeSource, /statisticsScopeNote: string/);
-});
-
-test('family report renders plan types separately instead of a merged policy type cell', () => {
-  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
-
-  assert.match(familySource, /function PolicyPlanTypeList/);
-  assert.match(familySource, /<PolicyPlanTypeList row=\{row\} \/>/);
-  assert.match(familySource, /item\.roleLabel/);
-  assert.match(familySource, /item\.typeLabel/);
-  assert.doesNotMatch(familySource, /<td className=\{tdClassName\}>\{emptyText\(row\.typeLabel\)\}<\/td>/);
 });
 
 test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {

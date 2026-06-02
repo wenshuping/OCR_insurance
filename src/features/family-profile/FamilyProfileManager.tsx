@@ -2,28 +2,17 @@ import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   ChevronLeft,
-  FileText,
   LayoutDashboard,
   Pencil,
   UploadCloud,
 } from 'lucide-react';
 import type { FamilyMember, FamilyProfile } from '../../api/contracts/family';
-import type { Policy } from '../../api/contracts/policy';
-import {
-  formatCoverageAmount,
-} from '../../shared/formatters';
 import {
   FAMILY_MEMBER_RELATION_OPTIONS,
 } from '../../shared/customer-policy-form';
-import {
-  PolicyListItem,
-  groupPoliciesByInsured,
-} from '../../shared/customer-policy-list';
-
 
 export function FamilyProfileManager({
   familyProfiles,
-  policies,
   selectedFamilyId,
   onSelectFamily,
   onCreateFamily,
@@ -31,10 +20,8 @@ export function FamilyProfileManager({
   onUpdateFamilyMemberRelation,
   onBackToEntry,
   onOpenReport,
-  onOpenPolicy,
 }: {
   familyProfiles: FamilyProfile[];
-  policies: Policy[];
   selectedFamilyId: number | null;
   onSelectFamily: (familyId: number) => void;
   onCreateFamily: (familyName: string) => Promise<void>;
@@ -42,12 +29,9 @@ export function FamilyProfileManager({
   onUpdateFamilyMemberRelation: (family: FamilyProfile, member: FamilyMember, relationLabel: string) => Promise<FamilyProfile>;
   onBackToEntry: () => void;
   onOpenReport: (familyId: number) => void;
-  onOpenPolicy: (policy: Policy) => void;
 }) {
   const families = Array.isArray(familyProfiles) ? familyProfiles : [];
-  const familyPolicies = Array.isArray(policies) ? policies : [];
   const [editingFamilyId, setEditingFamilyId] = useState<number | null>(null);
-  const [policyManagingFamilyId, setPolicyManagingFamilyId] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState('');
   const [editingBusy, setEditingBusy] = useState(false);
 
@@ -58,20 +42,9 @@ export function FamilyProfileManager({
     }
   }, [editingFamilyId, families]);
 
-  useEffect(() => {
-    if (!policyManagingFamilyId) return;
-    if (!families.some((family) => Number(family.id) === Number(policyManagingFamilyId))) {
-      setPolicyManagingFamilyId(null);
-    }
-  }, [policyManagingFamilyId, families]);
-
   function activeMembers(family: FamilyProfile) {
     const members = Array.isArray(family.members) ? family.members : [];
     return members.filter((member) => member.status === 'active');
-  }
-
-  function policiesForFamily(family: FamilyProfile) {
-    return familyPolicies.filter((policy) => Number(policy.familyId) === Number(family.id));
   }
 
   function corePersonLabel(family: FamilyProfile) {
@@ -99,15 +72,6 @@ export function FamilyProfileManager({
     const nextEditing = Number(editingFamilyId) === Number(family.id) ? null : family.id;
     onSelectFamily(family.id);
     setEditingFamilyId(nextEditing);
-    if (nextEditing) setPolicyManagingFamilyId(null);
-    setEditingMessage('');
-  }
-
-  function toggleFamilyPolicies(family: FamilyProfile) {
-    const nextManaging = Number(policyManagingFamilyId) === Number(family.id) ? null : family.id;
-    onSelectFamily(family.id);
-    setPolicyManagingFamilyId(nextManaging);
-    if (nextManaging) setEditingFamilyId(null);
     setEditingMessage('');
   }
 
@@ -161,8 +125,6 @@ export function FamilyProfileManager({
       <main className="mx-auto w-full max-w-3xl space-y-3 p-4">
         {families.length ? families.map((family) => {
           const members = activeMembers(family);
-          const currentFamilyPolicies = policiesForFamily(family);
-          const policyManaging = Number(family.id) === Number(policyManagingFamilyId);
           const selected = Number(family.id) === Number(selectedFamilyId);
           const editing = Number(family.id) === Number(editingFamilyId);
           return (
@@ -196,7 +158,7 @@ export function FamilyProfileManager({
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="mt-4 grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-500 text-xs font-black text-white shadow-lg shadow-blue-500/20"
@@ -215,14 +177,6 @@ export function FamilyProfileManager({
                 </button>
                 <button
                   type="button"
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-50 text-xs font-black text-blue-700 ring-1 ring-blue-100"
-                  onClick={() => toggleFamilyPolicies(family)}
-                >
-                  <FileText size={16} />
-                  {policyManaging ? '收起保单' : '保单管理'}
-                </button>
-                <button
-                  type="button"
                   className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-emerald-50 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
                   onClick={() => {
                     onSelectFamily(family.id);
@@ -233,14 +187,6 @@ export function FamilyProfileManager({
                   录入保单
                 </button>
               </div>
-
-              {policyManaging ? (
-                <FamilyPolicyManagerPanel
-                  family={family}
-                  policies={currentFamilyPolicies}
-                  onOpenPolicy={onOpenPolicy}
-                />
-              ) : null}
 
               {editing ? (
                 <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -308,63 +254,5 @@ export function FamilyProfileManager({
     </div>
   );
 }
-
-
-function FamilyPolicyManagerPanel({
-  family,
-  policies,
-  onOpenPolicy,
-}: {
-  family: FamilyProfile;
-  policies: Policy[];
-  onOpenPolicy: (policy: Policy) => void;
-}) {
-  const groups = groupPoliciesByInsured(policies);
-  const totalCoverage = policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0);
-
-  return (
-    <div className="mt-4 space-y-3 rounded-2xl border border-blue-100 bg-blue-50/45 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-sm font-black text-slate-950">保单管理</h3>
-          <p className="mt-1 text-xs font-semibold text-slate-500">{family.familyName || '当前家庭'} · {policies.length} 张保单 · 总保额 {formatCoverageAmount(totalCoverage)}</p>
-        </div>
-        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">家庭保单</span>
-      </div>
-
-      {groups.length ? (
-        <div className="space-y-3">
-          {groups.map((group) => (
-            <section key={group.insured} className="rounded-2xl border border-blue-100 bg-white p-3">
-              <div className="mb-2 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h4 className="truncate text-sm font-black text-slate-950">{group.insured}</h4>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">{group.policies.length} 张保单 · 总保额 {formatCoverageAmount(group.totalCoverage)}</p>
-                </div>
-                <span className="shrink-0 rounded-full bg-slate-50 px-2.5 py-1 text-xs font-black text-slate-600 ring-1 ring-slate-100">被保人</span>
-              </div>
-              <div className="space-y-2">
-                {group.policies.map((policy, index) => (
-                  <PolicyListItem
-                    key={policy.id}
-                    policy={policy}
-                    index={index}
-                    onOpen={() => onOpenPolicy(policy)}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-2xl border border-dashed border-blue-200 bg-white px-4 py-8 text-center">
-          <p className="text-sm font-black text-slate-950">暂无家庭保单</p>
-          <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">从这个家庭录入保单后，会按家庭成员统一放到这里。</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 
 export type FamilyProfileManagerProps = Parameters<typeof FamilyProfileManager>[0];

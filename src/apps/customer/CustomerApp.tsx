@@ -2341,7 +2341,6 @@ export function CustomerApp() {
       <>
         <FamilyProfileManager
           familyProfiles={familyProfiles}
-          policies={policies}
           selectedFamilyId={selectedFamilyId}
           onSelectFamily={(familyId) => handleSelectFamily(familyId)}
           onCreateFamily={async (familyName) => {
@@ -2354,23 +2353,8 @@ export function CustomerApp() {
             setMessage('可以继续录入保单');
           }}
           onOpenReport={openFamilyReport}
-          onOpenPolicy={(policy) => void openPolicy(policy)}
         />
         <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
-        {selectedPolicy ? (
-          <PolicyDetailSheet
-            policy={selectedPolicy}
-            onClose={() => setSelectedPolicy(null)}
-            onRetryReport={retryPolicyReport}
-            retrying={retryingPolicyId === selectedPolicy.id}
-            onUpdatePolicy={handleUpdatePolicy}
-            onUpdateOptionalResponsibility={handleUpdateOptionalResponsibility}
-            updating={savingPolicyId === selectedPolicy.id}
-            onDeletePolicy={handleDeletePolicy}
-            deleting={deletingPolicyId === selectedPolicy.id}
-            onEditCashValue={openManualCashValueEditor}
-          />
-        ) : null}
         {authDialog}
         {accountSheet}
         {cashValueDialog}
