@@ -463,8 +463,6 @@ function insertRows(db, state) {
 
 function clearDbOwnedTables(db) {
   db.exec(`
-    DELETE FROM policy_cash_values;
-    DELETE FROM policy_cashflows;
     DELETE FROM family_report_shares;
     DELETE FROM family_members;
     DELETE FROM family_profiles;
@@ -481,47 +479,6 @@ function clearDbOwnedTables(db) {
     DELETE FROM official_domain_profiles;
     DELETE FROM state_documents;
   `);
-}
-
-function readCashValueRows(db) {
-  return db.prepare(`
-    SELECT policy_id, policy_year, age, cash_value, source
-      FROM policy_cash_values
-     ORDER BY policy_id ASC, policy_year ASC
-  `).all();
-}
-
-function restoreCashValueRows(db, rows, state) {
-  if (!Array.isArray(rows) || !rows.length) return;
-  const policyIds = new Set(
-    normalizeArray(state.policies)
-      .map((policy) => Number(policy?.id))
-      .filter((id) => Number.isFinite(id)),
-  );
-  if (!policyIds.size) return;
-
-  const insertCashValue = db.prepare(`
-    INSERT INTO policy_cash_values (policy_id, policy_year, age, cash_value, source)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  const seen = new Set();
-  for (const row of rows) {
-    const policyId = Number(row.policy_id);
-    const policyYear = Number(row.policy_year);
-    const cashValue = Number(row.cash_value);
-    if (!policyIds.has(policyId) || !Number.isFinite(policyYear) || !Number.isFinite(cashValue)) continue;
-
-    const key = `${policyId}\u001f${policyYear}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    insertCashValue.run(
-      policyId,
-      policyYear,
-      Number.isFinite(Number(row.age)) ? Number(row.age) : null,
-      cashValue,
-      String(row.source || 'ocr'),
-    );
-  }
 }
 
 function loadPayloadRows(db, table, orderBy) {
@@ -576,10 +533,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const initializedAt = getMeta(db, 'state_initialized_at');
     db.exec('BEGIN IMMEDIATE');
     try {
-      const cashValueRows = readCashValueRows(db);
+      db.exec('PRAGMA defer_foreign_keys = ON');
       clearDbOwnedTables(db);
       insertRows(db, nextState);
-      restoreCashValueRows(db, cashValueRows, nextState);
       setMeta(db, 'next_id', String(nextState.nextId));
       setMeta(db, 'state_initialized_at', initializedAt || now);
       setMeta(db, 'updated_at', now);
