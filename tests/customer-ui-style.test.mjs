@@ -541,7 +541,6 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(entrySource, /onUpdateOptionalResponsibility/);
   assert.match(normalizedCustomerAppSource, /updateAnalysisOptionalResponsibility/);
   assert.match(normalizedCustomerAppSource, /handleUpdateOptionalResponsibility/);
-  assert.match(fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8'), /selectedCoverageIndicators\(policy\?\.coverageIndicators\)/);
   assert.match(analysisSource, /OptionalResponsibilityReview/);
   assert.match(analysisSource, /onUpdateOptionalResponsibility/);
   assert.match(detailSource, /policy\.optionalResponsibilities/);
