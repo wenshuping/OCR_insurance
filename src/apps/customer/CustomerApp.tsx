@@ -9,15 +9,10 @@ import {
   ChevronLeft,
   CircleUserRound,
   Copy,
-  FileText,
-  LayoutDashboard,
   Loader2,
-  LogOut,
   Plus,
   Shield,
   Sparkles,
-  UploadCloud,
-  Users,
   X,
 } from 'lucide-react';
 import {
@@ -121,6 +116,12 @@ import {
 import { AnalysisReportPage, UploadPolicyPage } from '../../features/policy-entry/UploadPolicyPage';
 import { PolicyDetailSheet } from '../../features/policy-detail/PolicyDetailSheet';
 import { ResponsibilityAssistant } from '../../features/responsibility-assistant/ResponsibilityAssistant';
+import { CustomerAccountSheet } from '../../features/customer-auth/CustomerAccountSheet';
+import { PhoneVerificationDialog } from '../../features/customer-auth/PhoneVerificationDialog';
+import {
+  CustomerBottomTabs,
+  type CustomerTab,
+} from '../../features/customer-navigation/CustomerBottomTabs';
 import {
   buildPolicyUpdateData,
   hasAnalysisResult,
@@ -214,8 +215,6 @@ function saveFamilyPlanningProfile(profile: FamilyPlanningProfile) {
   localStorage.setItem(FAMILY_PLANNING_PROFILE_KEY, JSON.stringify(normalized));
   return normalized;
 }
-
-type CustomerTab = 'entry' | 'policies' | 'families';
 
 function resolvePolicyMemberKey(policy: Policy) {
   return String(policy.insured || '').trim() || '未识别被保人';
@@ -2825,220 +2824,6 @@ function CashflowDetailPage({
         ) : null}
       </main>
       {cashValueDialog}
-    </div>
-  );
-}
-
-function CustomerBottomTabs({
-  activeTab,
-  onChange,
-  onOpenReport,
-  fixed = true,
-}: {
-  activeTab: CustomerTab;
-  onChange: (tab: CustomerTab) => void;
-  onOpenReport?: () => void;
-  fixed?: boolean;
-}) {
-  const tabs: Array<{ key: CustomerTab; label: string; icon: typeof UploadCloud }> = [
-    { key: 'entry', label: '录入保单', icon: UploadCloud },
-    { key: 'policies', label: '我的保单', icon: FileText },
-    { key: 'families', label: '家庭档案', icon: Users },
-  ];
-  return (
-    <nav className={fixed ? 'pb-safe fixed bottom-0 left-0 right-0 z-40 border-t border-slate-100 bg-white px-4 pt-2 shadow-[0_-10px_20px_-12px_rgba(15,23,42,0.12)]' : ''}>
-      <div className={`grid gap-2 ${onOpenReport ? 'grid-cols-4' : 'grid-cols-3'}`}>
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => onChange(tab.key)}
-              className={`flex h-12 items-center justify-center gap-1.5 rounded-2xl text-xs font-black transition sm:text-sm ${
-                active ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-50 text-slate-500'
-              }`}
-            >
-              <Icon size={18} />
-              {tab.label}
-            </button>
-          );
-        })}
-        {onOpenReport ? (
-          <button
-            type="button"
-            onClick={onOpenReport}
-            className="flex h-12 items-center justify-center gap-1.5 rounded-2xl bg-blue-50 text-xs font-black text-blue-600 ring-1 ring-blue-100 transition hover:bg-blue-100 active:bg-blue-100 sm:text-sm"
-            aria-label="查看家庭保障分析报告"
-          >
-            <LayoutDashboard size={18} />
-            查看报告
-          </button>
-        ) : null}
-      </div>
-    </nav>
-  );
-}
-
-function CustomerAccountSheet(props: {
-  insuredCount: number;
-  isLoggedIn: boolean;
-  mobile: string;
-  onClose: () => void;
-  onLogin: () => void;
-  onLogout: () => void;
-  onOpenPolicies: () => void;
-  policyCount: number;
-}) {
-  const { insuredCount, isLoggedIn, mobile, onClose, onLogin, onLogout, onOpenPolicies, policyCount } = props;
-  return (
-    <div className="fixed inset-0 z-[75] flex items-end bg-slate-950/35 px-4 pb-4 sm:items-center sm:justify-center">
-      <section className="w-full rounded-[24px] bg-white p-5 shadow-2xl sm:max-w-md">
-        <div className="mb-5 flex items-start justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-500 text-white shadow-lg shadow-blue-500/25">
-              <CircleUserRound size={24} />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-lg font-black text-slate-950">我的账号</h2>
-              <p className="mt-1 truncate text-sm font-semibold text-slate-500">{isLoggedIn ? mobile : '游客模式'}</p>
-            </div>
-          </div>
-          <button
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onClose}
-            aria-label="关闭账号"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-black text-slate-400">登录账号</p>
-          <p className="mt-2 break-all text-xl font-black text-slate-950">{isLoggedIn ? mobile : '未登录'}</p>
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <p className="text-xs font-black text-slate-400">我的保单</p>
-            <p className="mt-2 text-2xl font-black text-slate-950">{policyCount}</p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <p className="text-xs font-black text-slate-400">被保人</p>
-            <p className="mt-2 text-2xl font-black text-slate-950">{insuredCount}</p>
-          </div>
-        </div>
-
-        <div className="mt-5 grid gap-2">
-          <button
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-sm font-black text-slate-700 transition-colors hover:bg-slate-50"
-            type="button"
-            aria-current="page"
-          >
-            <CircleUserRound size={18} />
-            我的基本信息
-          </button>
-          <button
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-blue-100 bg-blue-50 text-sm font-black text-blue-700 transition-colors hover:bg-blue-100"
-            type="button"
-            onClick={onOpenPolicies}
-          >
-            <FileText size={18} />
-            我的保单
-          </button>
-        </div>
-
-        {isLoggedIn ? (
-          <button
-            className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-red-100 bg-red-50 text-sm font-black text-red-600 transition-colors hover:bg-red-100"
-            type="button"
-            onClick={onLogout}
-          >
-            <LogOut size={19} />
-            退出
-          </button>
-        ) : (
-          <button className="mt-2 flex h-12 w-full items-center justify-center rounded-xl bg-blue-500 text-sm font-black text-white shadow-lg shadow-blue-500/25" type="button" onClick={onLogin}>
-            验证手机号
-          </button>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function PhoneVerificationDialog(props: {
-  code: string;
-  devCode: string;
-  loading: boolean;
-  message: string;
-  mobile: string;
-  onChangeCode: (value: string) => void;
-  onChangeMobile: (value: string) => void;
-  onClose: () => void;
-  onSendCode: () => void;
-  onVerify: () => void;
-}) {
-  const { code, devCode, loading, message, mobile, onChangeCode, onChangeMobile, onClose, onSendCode, onVerify } = props;
-  return (
-    <div className="fixed inset-0 z-[80] flex items-end bg-slate-950/35 px-4 pb-4 sm:items-center sm:justify-center">
-      <section className="w-full rounded-[24px] bg-white p-5 shadow-2xl sm:max-w-md">
-        <div className="mb-4 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-black text-slate-950">手机验证码</h2>
-            <p className="mt-1 text-sm leading-6 text-slate-500">第一张保单可直接录入，第二张开始需要验证手机号。</p>
-          </div>
-          <button className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-500" type="button" onClick={onClose}>
-            稍后
-          </button>
-        </div>
-
-        <div className="space-y-3">
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-black text-slate-500">手机号</span>
-            <input
-              value={mobile}
-              onChange={(event) => onChangeMobile(event.target.value.replace(/[^\d]/g, '').slice(0, 11))}
-              inputMode="tel"
-              placeholder="请输入手机号"
-              className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-blue-500"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-black text-slate-500">验证码</span>
-            <div className="flex gap-2">
-              <input
-                value={code}
-                onChange={(event) => onChangeCode(event.target.value.replace(/[^\d]/g, '').slice(0, 6))}
-                inputMode="numeric"
-                placeholder="6 位验证码"
-                className="h-12 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-blue-500"
-              />
-              <button
-                className="h-12 rounded-xl bg-blue-500 px-4 text-sm font-black text-white shadow-lg shadow-blue-500/20 transition-colors hover:bg-blue-600 disabled:opacity-50"
-                type="button"
-                disabled={loading || mobile.trim().length !== 11}
-                onClick={onSendCode}
-              >
-                发验证码
-              </button>
-            </div>
-          </label>
-        </div>
-
-        <p className="mt-3 rounded-xl bg-blue-50 px-4 py-3 text-sm font-bold leading-6 text-blue-700">{devCode ? `本地验证码：${devCode}` : message}</p>
-
-        <button
-          className="mt-4 flex h-12 w-full items-center justify-center rounded-xl bg-blue-500 text-base font-black text-white shadow-lg shadow-blue-500/25 disabled:opacity-60"
-          type="button"
-          disabled={loading || mobile.trim().length !== 11 || code.trim().length !== 6}
-          onClick={onVerify}
-        >
-          {loading ? '处理中...' : '验证并继续录入'}
-        </button>
-      </section>
     </div>
   );
 }
