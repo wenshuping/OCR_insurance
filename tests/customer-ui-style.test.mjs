@@ -69,6 +69,14 @@ const normalizedAdminFeatureSource = [
   adminGovernanceSource,
   adminPolicyDetailSource,
 ].join('\n').replaceAll("from '../../", "from './");
+const extractedFeatureSourceByComponent = new Map([
+  ['CustomerAccountSheet', customerAuthAccountSource.replaceAll("from '../../", "from './")],
+  ['PhoneVerificationDialog', customerAuthPhoneSource.replaceAll("from '../../", "from './")],
+  ['CustomerBottomTabs', customerNavigationSource.replaceAll("from '../../", "from './")],
+  ['AdminOfficialDomainPanel', adminOfficialDomainSource.replaceAll("from '../../", "from './")],
+  ['AdminOcrModePanel', adminOcrConfigSource.replaceAll("from '../../", "from './")],
+  ['AdminPolicyDetail', adminPolicyDetailSource.replaceAll("from '../../", "from './")],
+]);
 const formatterSource = fs.readFileSync(new URL('../src/shared/formatters.ts', import.meta.url), 'utf8');
 const reportExportSource = fs.readFileSync(new URL('../src/features/report-export/report-export.ts', import.meta.url), 'utf8');
 
@@ -104,9 +112,16 @@ function componentSource(name, nextName, source = owningSource(name)) {
 }
 
 function extractedOrBoundedComponentSource(name, fallbackNextName) {
-  const source = owningSource(name);
-  const nextName = source === normalizedCustomerAppSource || source === normalizedAdminAppSource ? fallbackNextName : null;
-  return componentSource(name, nextName, source);
+  const marker = `function ${name}`;
+  const extractedSource = extractedFeatureSourceByComponent.get(name) || '';
+  if (extractedSource.includes(marker)) return componentSource(name, null, extractedSource);
+  if (normalizedCustomerAppSource.includes(marker)) {
+    return componentSource(name, fallbackNextName, normalizedCustomerAppSource);
+  }
+  if (normalizedAdminAppSource.includes(marker)) {
+    return componentSource(name, fallbackNextName, normalizedAdminAppSource);
+  }
+  return componentSource(name, null);
 }
 
 function escapeRegExp(value) {
