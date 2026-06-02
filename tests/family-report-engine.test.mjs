@@ -246,6 +246,60 @@ test('buildPolicyInventory falls back to plan product type verbatim', () => {
   assert.equal(inventory.rows[0].typeLabel, '两全保险');
 });
 
+test('buildPolicyInventory exposes main and rider plans in report rows', () => {
+  const inventory = buildPolicyInventory([
+    makePolicy({
+      id: 500699,
+      name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+      amount: 60000,
+      plans: [
+        {
+          role: 'main',
+          name: '畅行万里智赢版两全保险',
+          matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+          productType: '两全保险',
+          amount: 60000,
+        },
+        {
+          role: 'rider',
+          name: 'i他男性特定疾病保险',
+          matchedProductName: '新华人寿保险股份有限公司i他男性特定疾病保险',
+          productType: '重疾险',
+          amount: 50000,
+          premium: 140,
+          coveragePeriod: '至2025年09月29日',
+        },
+      ],
+    }),
+  ]);
+
+  assert.deepEqual(inventory.rows[0].planItems.map((item) => ({
+    roleLabel: item.roleLabel,
+    productName: item.productName,
+    typeLabel: item.typeLabel,
+    coverageText: item.coverageText,
+    premiumText: item.premiumText,
+    coveragePeriod: item.coveragePeriod,
+  })), [
+    {
+      roleLabel: '主险',
+      productName: '畅行万里智赢版两全保险',
+      typeLabel: '两全保险',
+      coverageText: '6万',
+      premiumText: '',
+      coveragePeriod: '',
+    },
+    {
+      roleLabel: '附加险',
+      productName: 'i他男性特定疾病保险',
+      typeLabel: '重疾险',
+      coverageText: '5万',
+      premiumText: '140',
+      coveragePeriod: '至2025年09月29日',
+    },
+  ]);
+});
+
 test('buildFamilyReport includes summary and inventory sections', () => {
   const report = buildFamilyReport([makePolicy({ id: 1, insured: '爸爸' })]);
   assert.equal(report.summary.memberCount, 1);

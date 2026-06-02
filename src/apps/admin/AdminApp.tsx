@@ -140,7 +140,6 @@ function TextField(props: {
     </div>
   );
 }
-
 export function AdminApp() {
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem(ADMIN_TOKEN_KEY) || '');
   const [password, setPassword] = useState('');

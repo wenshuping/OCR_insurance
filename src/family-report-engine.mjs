@@ -285,6 +285,97 @@ function coverageText(policy) {
   return '按条款';
 }
 
+function planDisplayName(plan) {
+  if (typeof plan === 'string') return plan.trim();
+  return String(plan?.name || plan?.productName || plan?.matchedProductName || '').trim();
+}
+
+function planMatchedProductName(plan) {
+  if (!plan || typeof plan === 'string') return '';
+  return String(plan?.matchedProductName || '').trim();
+}
+
+function planRoleLabel(plan, index) {
+  if (plan && typeof plan !== 'string') {
+    const role = String(plan?.role || '').trim();
+    if (role === 'main') return '主险';
+    if (role === 'rider') return '附加险';
+    if (role === 'linked_account') return '万能账户';
+  }
+  return index === 0 ? '主险' : '附加险';
+}
+
+function planTypeLabel(policy, plan) {
+  if (plan && typeof plan !== 'string') {
+    const directType = uniqueJoinedText([plan?.productType, plan?.type]);
+    if (directType) return directType;
+  }
+
+  const names = [planDisplayName(plan), planMatchedProductName(plan)].filter(Boolean);
+  const indicatorTypes = selectedCoverageIndicators(policy?.coverageIndicators)
+    .filter((indicator) => {
+      const matchedPlan = findPlanForIndicator(policy, indicator);
+      if (matchedPlan === plan) return true;
+      if (matchedPlan) return false;
+      return names.some((name) => productNameMatchesIndicator(name, indicator?.productName));
+    })
+    .map((indicator) => indicator?.productType);
+
+  return uniqueJoinedText(indicatorTypes);
+}
+
+function planCoverageText(plan) {
+  if (!plan || typeof plan === 'string') return '';
+  const amount = finiteNumber(plan?.amount);
+  if (amount !== null && amount > 0) return `${formatNumberText(amount / 10000)}万`;
+  return '';
+}
+
+function planPremiumText(plan) {
+  if (!plan || typeof plan === 'string') return '';
+  const premium = [plan?.premium, plan?.firstPremium, plan?.annualPremium]
+    .map(finiteNumber)
+    .find((value) => value !== null && value > 0);
+  return premium ? formatNumberText(premium) : '';
+}
+
+function buildFallbackPlanItem(policy) {
+  return {
+    roleLabel: '主险',
+    productName: String(policy?.name || '').trim(),
+    matchedProductName: '',
+    typeLabel: policyTypeLabel(policy),
+    coverageText: coverageText(policy),
+    premiumText: finiteNumber(policy?.firstPremium) !== null && asNumber(policy?.firstPremium) > 0 ? formatNumberText(policy?.firstPremium) : '',
+    paymentPeriod: String(policy?.paymentPeriod || ''),
+    coveragePeriod: String(policy?.coveragePeriod || ''),
+    statusLabel: policyIsInactive(policy) ? (policyStatusText(policy) || '已失效') : '',
+  };
+}
+
+function buildInventoryPlanItems(policy) {
+  const planItems = (Array.isArray(policy?.plans) ? policy.plans : [])
+    .map((plan, index) => ({
+      roleLabel: planRoleLabel(plan, index),
+      productName: planDisplayName(plan),
+      matchedProductName: planMatchedProductName(plan),
+      typeLabel: planTypeLabel(policy, plan),
+      coverageText: planCoverageText(plan),
+      premiumText: planPremiumText(plan),
+      paymentPeriod: plan && typeof plan !== 'string' ? String(plan?.paymentPeriod || plan?.paymentMode || '') : '',
+      coveragePeriod: plan && typeof plan !== 'string' ? String(plan?.coveragePeriod || '') : '',
+      statusLabel: planIsInactive(policy, plan) ? (planStatusText(plan) || '已失效') : '',
+    }))
+    .filter((item) => [item.productName, item.matchedProductName, item.typeLabel, item.coverageText, item.premiumText, item.coveragePeriod, item.statusLabel].some(Boolean));
+
+  const policyName = String(policy?.name || '').trim();
+  const includesPolicyProduct = planItems.some((item) => [item.productName, item.matchedProductName].some((name) => productNameMatchesIndicator(name, policyName)));
+  if (!planItems.length || (policyName && !includesPolicyProduct)) {
+    return [buildFallbackPlanItem(policy), ...planItems];
+  }
+  return planItems;
+}
+
 function dataStatus(policy) {
   if (policyIsInactive(policy)) return '失效';
   if (policy?.reportStatus === 'generating') return '责任生成中';
@@ -310,6 +401,7 @@ function buildInventoryRow(policy) {
     company: String(policy?.company || ''),
     policyNumber: String(policy?.policyNumber || policy?.policyNo || policy?.contractNumber || policy?.contractNo || policy?.number || '').trim(),
     productName: String(policy?.name || ''),
+    planItems: buildInventoryPlanItems(policy),
     typeLabel: policyTypeLabel(policy),
     isInactive: policyIsInactive(policy),
     policyStatusText: policyStatusText(policy),

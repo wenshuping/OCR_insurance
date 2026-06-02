@@ -10,6 +10,18 @@ export type FamilyReportSummary = {
   attentionItems: string[];
 };
 
+export type FamilyPolicyInventoryPlanItem = {
+  roleLabel: string;
+  productName: string;
+  matchedProductName: string;
+  typeLabel: string;
+  coverageText: string;
+  premiumText: string;
+  paymentPeriod: string;
+  coveragePeriod: string;
+  statusLabel: string;
+};
+
 export type FamilyPolicyInventoryRow = {
   policyId: number;
   memberKey: string;
@@ -23,6 +35,7 @@ export type FamilyPolicyInventoryRow = {
   company: string;
   policyNumber?: string;
   productName: string;
+  planItems: FamilyPolicyInventoryPlanItem[];
   typeLabel: string;
   isInactive: boolean;
   policyStatusText: string;

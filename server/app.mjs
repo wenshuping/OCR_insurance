@@ -426,8 +426,11 @@ function normalizeManualPolicyData(value) {
   if (insuredIdNumber) data.insuredIdNumber = insuredIdNumber;
   const insuredBirthday = normalizeDateOnly(value.insuredBirthday || value.insuredBirthDate) || birthdayFromIdNumber(insuredIdNumber);
   if (insuredBirthday) data.insuredBirthday = insuredBirthday;
-  for (const key of ['applicantRelation', 'insuredRelation']) {
-    const relation = normalizePolicyRelation(value[key]);
+  for (const { key, labelKey } of [
+    { key: 'applicantRelation', labelKey: 'applicantRelationLabel' },
+    { key: 'insuredRelation', labelKey: 'insuredRelationLabel' },
+  ]) {
+    const relation = normalizePolicyRelation(value[labelKey] || value[key]);
     if (relation) data[key] = relation;
   }
   for (const key of ['amount', 'firstPremium']) {
@@ -513,8 +516,11 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (hasOwn(input, 'insuredBirthday') || hasOwn(input, 'insuredBirthDate')) {
     data.insuredBirthday = normalizeDateOnly(input.insuredBirthday || input.insuredBirthDate);
   }
-  for (const key of ['applicantRelation', 'insuredRelation']) {
-    if (hasOwn(input, key)) data[key] = normalizePolicyRelation(input[key]);
+  for (const { key, labelKey } of [
+    { key: 'applicantRelation', labelKey: 'applicantRelationLabel' },
+    { key: 'insuredRelation', labelKey: 'insuredRelationLabel' },
+  ]) {
+    if (hasOwn(input, key) || hasOwn(input, labelKey)) data[key] = normalizePolicyRelation(input[labelKey] || input[key]);
   }
   for (const key of ['amount', 'firstPremium']) {
     if (!hasOwn(input, key)) continue;
@@ -566,6 +572,8 @@ function normalizeFamilyBindingInput(input = {}) {
     familyId: Number(input.familyId || 0) || null,
     applicantMemberId: Number(input.applicantMemberId || 0) || null,
     insuredMemberId: Number(input.insuredMemberId || 0) || null,
+    applicantRelationLabel: trim(input.applicantRelationLabel || input.applicantRelation),
+    insuredRelationLabel: trim(input.insuredRelationLabel || input.insuredRelation),
   };
 }
 
@@ -574,6 +582,8 @@ function familyBindingInputFromPolicyUpdate(updates = {}, policy = {}) {
     familyId: hasOwn(updates, 'familyId') ? updates.familyId : policy.familyId,
     applicantMemberId: hasOwn(updates, 'applicantMemberId') ? updates.applicantMemberId : policy.applicantMemberId,
     insuredMemberId: hasOwn(updates, 'insuredMemberId') ? updates.insuredMemberId : policy.insuredMemberId,
+    applicantRelation: hasOwn(updates, 'applicantRelation') ? updates.applicantRelation : (policy.applicantRelationLabel || policy.applicantRelation),
+    insuredRelation: hasOwn(updates, 'insuredRelation') ? updates.insuredRelation : (policy.insuredRelationLabel || policy.insuredRelation),
   });
 }
 
@@ -588,13 +598,32 @@ function shouldRebuildPolicyFamilyBinding(updates = {}, policy = {}) {
   );
 }
 
-function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}) {
+function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}, options = {}) {
   const normalizedInput = normalizeFamilyBindingInput(input);
   validatePolicyFamilyBinding(state, normalizedInput, owner);
   const family = (state.familyProfiles || []).find((row) => Number(row.id) === Number(normalizedInput.familyId));
   const members = listFamilyMembers(state, normalizedInput.familyId);
   const applicant = members.find((row) => Number(row.id) === Number(normalizedInput.applicantMemberId));
   const insured = members.find((row) => Number(row.id) === Number(normalizedInput.insuredMemberId));
+  for (const { member, relationLabel } of [
+    { member: applicant, relationLabel: normalizedInput.applicantRelationLabel },
+    { member: insured, relationLabel: normalizedInput.insuredRelationLabel },
+  ]) {
+    if (!member || !relationLabel) continue;
+    const relation = normalizeFamilyRelation(relationLabel);
+    if (relation.relationToCore === 'self') continue;
+    if (Number(member.id) === Number(family?.coreMemberId || 0)) {
+      if (relation.relationToCore === 'pending') continue;
+      const error = new Error('核心成员关系固定为本人');
+      error.code = 'FAMILY_CORE_RELATION_IMMUTABLE';
+      error.status = 400;
+      throw error;
+    }
+    if (member.relationLabel !== relation.relationLabel) {
+      updateFamilyMemberRelation(member, relation.relationLabel);
+      if (family) family.updatedAt = member.updatedAt;
+    }
+  }
   const applicantNameSnapshot = trim(personData.applicant);
   const insuredNameSnapshot = trim(personData.insured);
   const nameMismatch = (
@@ -602,6 +631,7 @@ function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}
     (insuredNameSnapshot && insured?.name && insuredNameSnapshot !== trim(insured.name))
   );
   return {
+    familyBindingSource: trim(options.familyBindingSource) || 'explicit',
     familyId: Number(family?.id || normalizedInput.familyId),
     applicantMemberId: Number(applicant?.id || normalizedInput.applicantMemberId),
     insuredMemberId: Number(insured?.id || normalizedInput.insuredMemberId),
@@ -718,6 +748,7 @@ function ensureDefaultPolicyFamilyBinding(state, owner = {}, personData = {}) {
     },
     owner,
     personData,
+    { familyBindingSource: 'default' },
   );
 }
 
@@ -725,13 +756,24 @@ function attachPolicyFamilyDisplay(policy, state) {
   const family = (state.familyProfiles || []).find((row) => Number(row.id) === Number(policy.familyId));
   const applicant = (state.familyMembers || []).find((row) => Number(row.id) === Number(policy.applicantMemberId));
   const insured = (state.familyMembers || []).find((row) => Number(row.id) === Number(policy.insuredMemberId));
+  const useFamilyRelationLabels = trim(policy.familyBindingSource) === 'explicit';
   return {
     ...policy,
     familyName: family?.familyName || '',
     applicantMemberName: applicant?.name || policy.applicantMemberName || '',
-    applicantRelationLabel: applicant?.relationLabel || policy.applicantRelationLabel || '',
+    applicantRelation: useFamilyRelationLabels
+      ? applicant?.relationLabel || policy.applicantRelationLabel || policy.applicantRelation || ''
+      : policy.applicantRelation || policy.applicantRelationLabel || applicant?.relationLabel || '',
+    applicantRelationLabel: useFamilyRelationLabels
+      ? applicant?.relationLabel || policy.applicantRelationLabel || ''
+      : policy.applicantRelationLabel || applicant?.relationLabel || '',
     insuredMemberName: insured?.name || policy.insuredMemberName || '',
-    insuredRelationLabel: insured?.relationLabel || policy.insuredRelationLabel || '',
+    insuredRelation: useFamilyRelationLabels
+      ? insured?.relationLabel || policy.insuredRelationLabel || policy.insuredRelation || ''
+      : policy.insuredRelation || policy.insuredRelationLabel || insured?.relationLabel || '',
+    insuredRelationLabel: useFamilyRelationLabels
+      ? insured?.relationLabel || policy.insuredRelationLabel || ''
+      : policy.insuredRelationLabel || insured?.relationLabel || '',
   };
 }
 
