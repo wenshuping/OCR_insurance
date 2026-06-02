@@ -5127,66 +5127,6 @@ test('registration migrates guest family ownership and lists family profiles for
   }
 });
 
-test('policy scan backfills main plan amount from policy amount when OCR plan misses amount', async () => {
-  const app = createPolicyOcrApp({
-    state: {
-      users: [],
-      sessions: [],
-      smsCodes: [],
-      policies: [],
-      knowledgeRecords: [
-        {
-          id: 1,
-          company: '新华保险',
-          productName: '新华人寿保险股份有限公司荣耀鑫享赢家版终身寿险',
-          title: '荣耀鑫享赢家版终身寿险条款',
-          url: 'https://static-cdn.newchinalife.com/ncl/pdf/demo.pdf',
-          official: true,
-        },
-      ],
-    },
-  });
-  const server = await listen(app);
-  try {
-    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
-      method: 'POST',
-      body: JSON.stringify({
-        guestId: 'guest-main-plan-amount-backfill',
-        scan: {
-          ocrText: '新华保险 荣耀鑫享赢家版 165020.00元 每年20000.00元 终身寿险',
-          data: {
-            company: '新华保险',
-            name: '新华人寿保险股份有限公司荣耀鑫享赢家版终身寿险',
-            applicant: '冯力',
-            insured: '冯力',
-            amount: '165020',
-            firstPremium: '20000',
-            plans: [
-              {
-                company: '新华保险',
-                role: 'main',
-                name: '新华人寿保险股份有限公司荣耀鑫享赢家版终身寿险',
-                productType: '增额终身寿险',
-                amount: '',
-                coveragePeriod: '终身',
-                paymentPeriod: '10年交',
-                premium: '20000',
-              },
-            ],
-          },
-        },
-        analysis: { report: 'ok', coverageTable: [] },
-      }),
-    });
-
-    assert.equal(saved.response.status, 201);
-    assert.equal(saved.payload.policy.amount, 165020);
-    assert.equal(saved.payload.policy.plans[0].amount, 165020);
-  } finally {
-    await server.close();
-  }
-});
-
 test('family owner routes hide and reject mutations from another guest owner', async () => {
   const state = createInitialState();
   const app = createPolicyOcrApp({

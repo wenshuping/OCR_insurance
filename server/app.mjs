@@ -16,7 +16,6 @@ import {
   assertValidMobile,
   attachPoliciesCoverageIndicators,
   attachPolicyCoverageIndicators,
-  backfillMainPolicyPlanAmount,
   buildOptionalResponsibilityReview,
   buildPolicyFromScan,
   birthdayFromIdNumber,
@@ -535,10 +534,7 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
     data[key] = amount;
   }
   if (hasOwn(input, 'plans')) {
-    data.plans = backfillMainPolicyPlanAmount(
-      normalizePolicyPlans(input.plans, data.company || existingPolicy.company || ''),
-      hasOwn(data, 'amount') ? data.amount : existingPolicy.amount,
-    );
+    data.plans = normalizePolicyPlans(input.plans, data.company || existingPolicy.company || '');
   }
   if (!hasCanonicalProductIdInput && Array.isArray(data.plans) && data.plans.length && !data.canonicalProductId) {
     const mainPlan = data.plans.find((plan) => plan.role === 'main') || data.plans[0];
@@ -761,10 +757,8 @@ function attachPolicyFamilyDisplay(policy, state) {
   const applicant = (state.familyMembers || []).find((row) => Number(row.id) === Number(policy.applicantMemberId));
   const insured = (state.familyMembers || []).find((row) => Number(row.id) === Number(policy.insuredMemberId));
   const useFamilyRelationLabels = trim(policy.familyBindingSource) === 'explicit';
-  const plans = backfillMainPolicyPlanAmount(policy.plans, policy.amount);
   return {
     ...policy,
-    plans,
     familyName: family?.familyName || '',
     applicantMemberName: applicant?.name || policy.applicantMemberName || '',
     applicantRelation: useFamilyRelationLabels
