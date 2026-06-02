@@ -14,6 +14,29 @@ const familyProfileSource = fs.readFileSync(new URL('../src/features/family-prof
 const policyEntrySource = fs.readFileSync(new URL('../src/features/policy-entry/UploadPolicyPage.tsx', import.meta.url), 'utf8');
 const policyDetailSource = fs.readFileSync(new URL('../src/features/policy-detail/PolicyDetailSheet.tsx', import.meta.url), 'utf8');
 const responsibilityAssistantSource = fs.readFileSync(new URL('../src/features/responsibility-assistant/ResponsibilityAssistant.tsx', import.meta.url), 'utf8');
+
+function readOptionalSource(relativePath) {
+  try {
+    return fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return '';
+    throw error;
+  }
+}
+
+const customerAuthAccountSource = readOptionalSource('../src/features/customer-auth/CustomerAccountSheet.tsx');
+const customerAuthPhoneSource = readOptionalSource('../src/features/customer-auth/PhoneVerificationDialog.tsx');
+const customerNavigationSource = readOptionalSource('../src/features/customer-navigation/CustomerBottomTabs.tsx');
+const customerCashflowFeatureSource = readOptionalSource('../src/features/cashflow/CashflowDetailPage.tsx');
+const customerFamilyReportFeatureSource = readOptionalSource('../src/features/family-report/FamilyCoverageOverview.tsx');
+const customerCashValueFeatureSource = readOptionalSource('../src/features/cash-value/CashValueDialog.tsx');
+const adminSharedSource = readOptionalSource('../src/features/admin-shared/AdminStatCard.tsx')
+  + '\n' + readOptionalSource('../src/features/admin-shared/TextField.tsx');
+const adminOfficialDomainSource = readOptionalSource('../src/features/admin-official-domain/AdminOfficialDomainPanel.tsx');
+const adminKnowledgeSource = readOptionalSource('../src/features/admin-knowledge/AdminKnowledgePanel.tsx');
+const adminOcrConfigSource = readOptionalSource('../src/features/admin-ocr-config/AdminOcrModePanel.tsx');
+const adminGovernanceSource = readOptionalSource('../src/features/admin-governance/AdminOptionalResponsibilityGapPanel.tsx');
+const adminPolicyDetailSource = readOptionalSource('../src/features/admin-policy-detail/AdminPolicyDetail.tsx');
 const normalizedCustomerAppSource = customerAppSource.replaceAll("from '../../", "from './");
 const normalizedAdminAppSource = adminAppSource.replaceAll("from '../../", "from './");
 const normalizedCustomerPolicyFormSource = customerPolicyFormSource.replaceAll("from '../", "from './");
@@ -30,6 +53,22 @@ const normalizedFamilyProfileSource = familyProfileSource.replaceAll("from '../.
 const normalizedPolicyEntrySource = policyEntrySource.replaceAll("from '../../", "from './");
 const normalizedPolicyDetailSource = policyDetailSource.replaceAll("from '../../", "from './");
 const normalizedResponsibilityAssistantSource = responsibilityAssistantSource.replaceAll("from '../../", "from './");
+const normalizedCustomerFeatureSource = [
+  customerAuthAccountSource,
+  customerAuthPhoneSource,
+  customerNavigationSource,
+  customerCashflowFeatureSource,
+  customerFamilyReportFeatureSource,
+  customerCashValueFeatureSource,
+].join('\n').replaceAll("from '../../", "from './");
+const normalizedAdminFeatureSource = [
+  adminSharedSource,
+  adminOfficialDomainSource,
+  adminKnowledgeSource,
+  adminOcrConfigSource,
+  adminGovernanceSource,
+  adminPolicyDetailSource,
+].join('\n').replaceAll("from '../../", "from './");
 const formatterSource = fs.readFileSync(new URL('../src/shared/formatters.ts', import.meta.url), 'utf8');
 const reportExportSource = fs.readFileSync(new URL('../src/features/report-export/report-export.ts', import.meta.url), 'utf8');
 
@@ -44,6 +83,7 @@ function functionSource(source, name, nextName) {
 function owningSource(name) {
   const marker = `function ${name}`;
   if (normalizedCustomerAppSource.includes(marker)) return normalizedCustomerAppSource;
+  if (normalizedCustomerFeatureSource.includes(marker)) return normalizedCustomerFeatureSource;
   if (normalizedFamilyProfileSource.includes(marker)) return normalizedFamilyProfileSource;
   if (normalizedPolicyEntrySource.includes(marker)) return normalizedPolicyEntrySource;
   if (normalizedPolicyDetailSource.includes(marker)) return normalizedPolicyDetailSource;
@@ -53,6 +93,7 @@ function owningSource(name) {
   if (normalizedCustomerPolicyFormSource.includes(marker)) return normalizedCustomerPolicyFormSource;
   if (normalizedCustomerCashValueSource.includes(marker)) return normalizedCustomerCashValueSource;
   if (normalizedAdminAppSource.includes(marker)) return normalizedAdminAppSource;
+  if (normalizedAdminFeatureSource.includes(marker)) return normalizedAdminFeatureSource;
   if (sharedReportUiSource.includes(marker)) return sharedReportUiSource;
   if (appShellSource.includes(marker)) return appShellSource;
   return appShellSource;
@@ -67,12 +108,12 @@ function escapeRegExp(value) {
 }
 
 test('customer account sheet uses a blue account logo', () => {
-  const source = componentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
+  const source = componentSource('CustomerAccountSheet', null);
   assert.match(source, /h-12 w-12[^"]*bg-blue-500/);
 });
 
 test('customer account sheet exposes account actions and policy navigation', () => {
-  const sheetSource = componentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
+  const sheetSource = componentSource('CustomerAccountSheet', null);
   const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
   assert.match(sheetSource, /onOpenPolicies/);
   assert.match(sheetSource, /我的基本信息/);
@@ -170,7 +211,7 @@ test('customer app exposes family profile management surface', () => {
 });
 
 test('customer bottom tabs expose entry policy family and report navigation', () => {
-  const source = componentSource('CustomerBottomTabs', 'CustomerAccountSheet');
+  const source = componentSource('CustomerBottomTabs', null);
 
   assert.match(source, /key: 'entry'/);
   assert.match(source, /key: 'policies'/);
@@ -432,8 +473,8 @@ test('admin policy detail exposes policy source links', () => {
 
 test('admin app includes official domain whitelist maintenance panel', () => {
   const adminSource = componentSource('AdminApp', 'AdminStatCard');
-  const panelSource = componentSource('AdminOfficialDomainPanel', 'AdminOcrModePanel');
-  const ocrPanelSource = componentSource('AdminOcrModePanel', 'AdminPolicyDetail');
+  const panelSource = componentSource('AdminOfficialDomainPanel', null);
+  const ocrPanelSource = componentSource('AdminOcrModePanel', null);
   assert.match(adminSource, /AdminOfficialDomainPanel/);
   assert.match(panelSource, /保险公司官方域名/);
   assert.match(panelSource, /保存白名单/);
