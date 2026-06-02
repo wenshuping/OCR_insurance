@@ -1548,19 +1548,9 @@ export function createPolicyOcrApp(options = {}) {
     (options.codeGenerator ? localSmsDeliveryPlanResolver(codeGenerator) : resolveSmsDeliveryPlan);
   const smsDeliverer = options.smsDeliverer || deliverSmsCode;
   const knowledgeFetchImpl = options.knowledgeFetchImpl || fetch;
-  const rawPersist = typeof options.persist === 'function' ? options.persist : async () => undefined;
+  const persist = typeof options.persist === 'function' ? options.persist : async () => undefined;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
-
-  // Wrapped persist: after every state save, recompute all cashflow entries
-  // because clearDbOwnedTables() wipes policy_cashflows on each persist.
-  const persist = async (s) => {
-    const result = await rawPersist(s);
-    if (typeof recomputeAllCashflow === 'function') {
-      try { recomputeAllCashflow(); } catch { /* non-fatal */ }
-    }
-    return result;
-  };
 
   // Initialize cashflow store: use the shared DB if provided, otherwise use an in-memory DB (for tests)
   let cashflowStore;
@@ -1616,8 +1606,8 @@ export function createPolicyOcrApp(options = {}) {
   }
 
   /**
-   * Recompute cashflow entries for ALL policies.
-   * Called after persist() to restore cashflow data that was wiped by clearDbOwnedTables.
+   * Recompute cashflow entries for all policies.
+   * Used on startup and by the admin recompute endpoint to rebuild derived rows.
    */
   function recomputeAllCashflow() {
     for (const policy of state.policies) {
