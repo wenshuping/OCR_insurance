@@ -38,11 +38,22 @@ This project remains a modular monolith with an OCR sidecar. Ownership is define
 | App shell | Top-level app selection and shared family share page bootstrapping | `src/App.tsx` |
 | Customer app | Customer auth state, guest state, policy list/dashboard, family report state, feature composition | `src/apps/customer/CustomerApp.tsx` |
 | Admin app | Admin login, overview, OCR config, official domain profiles, knowledge crawl, governance actions | `src/apps/admin/AdminApp.tsx` |
+| Customer auth | Customer account sheet and phone verification dialog UI | `src/features/customer-auth/CustomerAccountSheet.tsx`, `src/features/customer-auth/PhoneVerificationDialog.tsx` |
+| Customer navigation | Customer bottom tab navigation and customer tab type | `src/features/customer-navigation/CustomerBottomTabs.tsx` |
 | Policy entry | OCR upload, recognition, manual policy form, analysis preview, save flow | `src/features/policy-entry/UploadPolicyPage.tsx` |
 | Policy detail | Policy detail drawer, policy editing, report regeneration, cash value editing | `src/features/policy-detail/PolicyDetailSheet.tsx` |
 | Family profile | Family profile list, member creation/update, core member assignment | `src/features/family-profile/FamilyProfileManager.tsx` |
+| Family report overview | Policy-dashboard family radar overview and family planning profile storage | `src/features/family-report/FamilyCoverageOverview.tsx`, `src/features/family-report/family-planning-storage.ts` |
 | Responsibility assistant | Local and remote responsibility lookup UI | `src/features/responsibility-assistant/ResponsibilityAssistant.tsx` |
+| Customer cashflow | Customer cashflow detail page and annual/scenario/member cashflow tables | `src/features/cashflow/CashflowDetailPage.tsx` |
+| Customer cash value | Controlled cash value upload, recognition preview, and manual editor dialog UI | `src/features/cash-value/CashValueDialog.tsx` |
 | Report export | JPG export and canvas/page export utilities | `src/features/report-export/report-export.ts` |
+| Admin OCR config | Controlled OCR mode panel UI | `src/features/admin-ocr-config/AdminOcrModePanel.tsx` |
+| Admin official domains | Controlled official domain whitelist panel and form helpers | `src/features/admin-official-domain/AdminOfficialDomainPanel.tsx` |
+| Admin knowledge | Controlled local knowledge crawl panel and crawl form type | `src/features/admin-knowledge/AdminKnowledgePanel.tsx` |
+| Admin governance | Controlled optional responsibility governance panel | `src/features/admin-governance/AdminOptionalResponsibilityGapPanel.tsx` |
+| Admin policy detail | Controlled admin policy detail drawer and report export UI | `src/features/admin-policy-detail/AdminPolicyDetail.tsx` |
+| Admin shared UI | Small admin-only UI primitives | `src/features/admin-shared/AdminStatCard.tsx`, `src/features/admin-shared/TextField.tsx` |
 | Report UI helpers | Policy report status/source display and shared report widgets | `src/shared/policy-report-ui.tsx` |
 | Customer policy helpers | Policy form, cash value, list, and small customer UI helpers | `src/shared/customer-policy-form.ts`, `src/shared/customer-cash-value.ts`, `src/shared/customer-policy-list.tsx`, `src/shared/customer-policy-components.tsx` |
 | Shared utilities | Formatting, error normalization, image processing, browser environment helpers | `src/shared/formatters.ts`, `src/shared/errors.ts`, `src/shared/image-utils.ts`, `src/shared/browser-env.ts` |
