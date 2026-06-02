@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import express from 'express';
 import { createRouteContext } from './http/context.mjs';
-import { codeFromError, sendError } from './http/errors.mjs';
+import { codeFromError } from './http/errors.mjs';
+import { createAdminRoutes } from './routes/admin.routes.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
@@ -1619,10 +1620,12 @@ export function createPolicyOcrApp(options = {}) {
     scanner,
     analyzer,
     adminPassword,
+    adminSessionTtlMs: ADMIN_SESSION_TTL_MS,
     performanceLogger,
     cashflowStore,
     cashValueStore,
     requireAdmin,
+    createAdminSession,
     nowMs,
     elapsedMs,
     resolveOcrServiceUrl,
@@ -1692,6 +1695,17 @@ export function createPolicyOcrApp(options = {}) {
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
+    buildAdminOverview,
+    rebuildOptionalResponsibilityGovernance,
+    requestOcrServiceConfig,
+    buildAdminOfficialDomainProfiles,
+    getDefaultOfficialDomainProfiles,
+    normalizeAdminOfficialDomainProfileInput,
+    buildAdminKnowledgeRecords,
+    normalizeAdminKnowledgeCrawlInput,
+    crawlOfficialKnowledge,
+    knowledgeFetchImpl,
+    upsertKnowledgeRecords,
     createFamilyMember,
     createFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
@@ -1717,186 +1731,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api', createFamilyRoutes(routeContext));
   app.use('/api', createPolicyRoutes(routeContext));
   app.use('/api', createCashflowRoutes(routeContext));
-
-  app.post('/api/admin/login', async (req, res) => {
-    try {
-      if (!adminPassword) {
-        const error = new Error('后台密码未配置');
-        error.code = 'ADMIN_PASSWORD_NOT_CONFIGURED';
-        error.status = 503;
-        throw error;
-      }
-      if (String(req.body?.password || '') !== adminPassword) {
-        const error = new Error('后台密码不正确');
-        error.code = 'INVALID_ADMIN_PASSWORD';
-        error.status = 401;
-        throw error;
-      }
-      const token = createAdminSession(state);
-      await persist(state);
-      res.json({ ok: true, token, expiresInSeconds: Math.floor(ADMIN_SESSION_TTL_MS / 1000) });
-    } catch (error) {
-      sendError(res, error, 401);
-    }
-  });
-
-  app.get('/api/admin/overview', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    res.json({ ok: true, ...buildAdminOverview(state) });
-  });
-
-  app.post('/api/admin/optional-responsibilities/:id/not-quantifiable', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      const id = String(req.params.id || '').trim();
-      const record = (state.optionalResponsibilityRecords || []).find((row) => String(row.id || '') === id);
-      if (!record) {
-        return res.status(404).json({ ok: false, code: 'OPTIONAL_RESPONSIBILITY_NOT_FOUND', message: '可选责任不存在' });
-      }
-      record.quantificationStatus = 'not_quantifiable';
-      record.quantificationReason = String(req.body?.reason || '不进入量化计算').trim();
-      record.updatedAt = new Date().toISOString();
-      await persist(state);
-      res.json({ ok: true, record });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.post('/api/admin/optional-responsibilities/reextract', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      Object.assign(state, rebuildOptionalResponsibilityGovernance(state));
-      await persist(state);
-      res.json({
-        ok: true,
-        optionalResponsibilityCount: (state.optionalResponsibilityRecords || []).length,
-        optionalIndicatorCount: (state.insuranceIndicatorRecords || []).filter((row) => row.responsibilityScope === 'optional').length,
-      });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.get('/api/admin/ocr-config', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      res.json(await requestOcrServiceConfig());
-    } catch (error) {
-      sendError(res, error, 503);
-    }
-  });
-
-  app.post('/api/admin/ocr-config', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      res.json(
-        await requestOcrServiceConfig({
-          method: 'POST',
-          body: {
-            mode: req.body?.mode,
-          },
-        }),
-      );
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.get('/api/admin/official-domain-profiles', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    res.json({
-      ok: true,
-      profiles: buildAdminOfficialDomainProfiles(state),
-      defaultCount: getDefaultOfficialDomainProfiles().length,
-      customCount: (state.officialDomainProfiles || []).length,
-    });
-  });
-
-  app.post('/api/admin/official-domain-profiles', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      const profile = normalizeAdminOfficialDomainProfileInput(state, req.body);
-      state.officialDomainProfiles.push(profile);
-      await persist(state);
-      res.status(201).json({ ok: true, profile, profiles: buildAdminOfficialDomainProfiles(state) });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.post('/api/admin/official-domain-profiles/:id', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      const id = String(req.params.id || '').trim();
-      const existing = (state.officialDomainProfiles || []).find((profile) => String(profile.id || '') === id) || null;
-      const profile = normalizeAdminOfficialDomainProfileInput(state, { ...req.body, createdAt: existing?.createdAt }, id);
-      state.officialDomainProfiles = (state.officialDomainProfiles || []).filter((row) => String(row.id || '') !== id);
-      state.officialDomainProfiles.push(profile);
-      await persist(state);
-      res.json({ ok: true, profile, profiles: buildAdminOfficialDomainProfiles(state) });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.delete('/api/admin/official-domain-profiles/:id', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    const id = String(req.params.id || '').trim();
-    state.officialDomainProfiles = (state.officialDomainProfiles || []).filter((row) => String(row.id || '') !== id);
-    await persist(state);
-    res.json({ ok: true, profiles: buildAdminOfficialDomainProfiles(state) });
-  });
-
-  app.get('/api/admin/knowledge-records', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    const records = buildAdminKnowledgeRecords(state);
-    res.json({
-      ok: true,
-      records,
-      summary: {
-        count: records.length,
-        officialCount: records.filter((record) => record.official).length,
-      },
-    });
-  });
-
-  app.post('/api/admin/knowledge-crawl', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      const policy = normalizeAdminKnowledgeCrawlInput(req.body);
-      const discovered = await crawlOfficialKnowledge({
-        policy,
-        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
-        fetchImpl: knowledgeFetchImpl,
-      });
-      const saved = upsertKnowledgeRecords(state, discovered, {
-        allocateId,
-        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
-      });
-      await persist(state);
-      res.json({
-        ok: true,
-        policy,
-        savedCount: saved.length,
-        records: buildAdminKnowledgeRecords(state),
-        discovered,
-      });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
+  app.use('/api/admin', createAdminRoutes(routeContext));
 
   app.recomputeAllCashflow = recomputeAllCashflow;
   return app;
