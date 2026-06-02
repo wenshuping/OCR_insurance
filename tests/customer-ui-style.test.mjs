@@ -359,33 +359,46 @@ test('entry form separates legal beneficiary from beneficiary name before saving
   assert.match(formSource, /label="受益人姓名"/);
 });
 
-test('family report engine prefers local product indicators over raw OCR responsibility years', () => {
+test('family overview prefers local product indicators over raw OCR responsibility years', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
-  const overviewBuilderSource = fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8');
+  const overviewBuilderSource = normalizedCustomerAppSource.slice(
+    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
+    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
+  );
   assert.match(apiSource, /coverageIndicators/);
-  assert.match(overviewBuilderSource, /selectedCoverageIndicators\(policy\?\.coverageIndicators\)/);
-  assert.match(overviewBuilderSource, /policyTypeLabel/);
-  assert.match(overviewBuilderSource, /indicatorSourceProductName/);
+  assert.match(overviewBuilderSource, /indicator\.productName/);
+  assert.match(overviewBuilderSource, /formatCoverageIndicator/);
+  assert.doesNotMatch(overviewBuilderSource, /\\d\{4,\}/);
 });
 
-test('family report engine treats annuity payouts as cashflow instead of cash value table prerequisites', () => {
-  const overviewBuilderSource = fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8');
-  assert.match(overviewBuilderSource, /cashflowEntries/);
-  assert.match(overviewBuilderSource, /indicator\?\.scenario/);
-  assert.match(overviewBuilderSource, /futurePayoutTotal/);
-  assert.match(overviewBuilderSource, /cumulativePayout/);
+test('family overview treats annuity payouts as cashflow instead of cash value table prerequisites', () => {
+  const overviewBuilderSource = normalizedCustomerAppSource.slice(
+    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
+    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
+  );
+  assert.match(overviewBuilderSource, /isCashflowPayoutIndicator/);
+  assert.match(overviewBuilderSource, /生存保险金/);
+  assert.match(overviewBuilderSource, /养老年金/);
+  assert.match(overviewBuilderSource, /满期生存保险金/);
   assert.match(overviewBuilderSource, /resolveIndicatorAmount/);
-  assert.match(overviewBuilderSource, /indicatorAmountForPolicy/);
+  assert.doesNotMatch(overviewBuilderSource, /缺少现金价值表/);
 });
 
-test('family report engine substitutes policy amounts into indicator formulas', () => {
-  const overviewBuilderSource = fs.readFileSync(new URL('../src/family-report-engine.mjs', import.meta.url), 'utf8');
-  assert.match(overviewBuilderSource, /indicatorText/);
-  assert.match(overviewBuilderSource, /formulaNeedsManualAmount/);
+test('family overview substitutes policy amounts into indicator formulas', () => {
+  const overviewBuilderSource = normalizedCustomerAppSource.slice(
+    normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
+    normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
+  );
+  assert.match(overviewBuilderSource, /indicatorCoreText/);
+  assert.match(overviewBuilderSource, /isNonPayoutCashflowIndicator/);
   assert.match(overviewBuilderSource, /resolveIndicatorAmount/);
-  assert.match(overviewBuilderSource, /indicatorAmountCalculationText/);
-  assert.match(overviewBuilderSource, /基本保险金额/);
-  assert.match(overviewBuilderSource, /formatRadarMoney/);
+  assert.match(overviewBuilderSource, /formatIndicatorCalculation/);
+  assert.match(overviewBuilderSource, /基本保额 × 倍数/);
+  assert.match(overviewBuilderSource, /基本保额 × 比例/);
+  assert.match(overviewBuilderSource, /基本保额 = /);
+  assert.match(overviewBuilderSource, /年交保费 × 缴费年期/);
+  assert.match(overviewBuilderSource, /实际交纳保险费/);
+  assert.match(overviewBuilderSource, /领取起始年龄|开始领取年龄/);
 });
 
 test('responsibility assistant floats at the bottom right of the screen', () => {
