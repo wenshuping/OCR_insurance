@@ -29,6 +29,7 @@ const customerAuthPhoneSource = readOptionalSource('../src/features/customer-aut
 const customerNavigationSource = readOptionalSource('../src/features/customer-navigation/CustomerBottomTabs.tsx');
 const customerCashflowFeatureSource = readOptionalSource('../src/features/cashflow/CashflowDetailPage.tsx');
 const customerFamilyReportFeatureSource = readOptionalSource('../src/features/family-report/FamilyCoverageOverview.tsx');
+const customerFamilyPlanningStorageSource = readOptionalSource('../src/features/family-report/family-planning-storage.ts');
 const customerCashValueFeatureSource = readOptionalSource('../src/features/cash-value/CashValueDialog.tsx');
 const adminSharedSource = readOptionalSource('../src/features/admin-shared/AdminStatCard.tsx')
   + '\n' + readOptionalSource('../src/features/admin-shared/TextField.tsx');
@@ -84,8 +85,10 @@ function functionSource(source, name, nextName) {
   const start = source.indexOf(`function ${name}`);
   const end = nextName ? source.indexOf(`function ${nextName}`, start + 1) : source.length;
   assert.notEqual(start, -1, `${name} component should exist`);
-  assert.notEqual(end, -1, `${nextName} component should exist`);
-  return source.slice(start, end);
+  if (nextName && end === -1 && !(name === 'CustomerApp' && nextName === 'FamilyCoverageOverview')) {
+    assert.notEqual(end, -1, `${nextName} component should exist`);
+  }
+  return source.slice(start, end === -1 ? source.length : end);
 }
 
 function owningSource(name) {
@@ -1003,7 +1006,7 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(familySource, /保额结构版/);
   assert.match(familySource, /家庭年支出/);
   assert.match(familySource, /onPlanningProfileChange/);
-  assert.match(normalizedCustomerAppSource, /FAMILY_PLANNING_PROFILE_KEY/);
+  assert.match(customerFamilyPlanningStorageSource, /FAMILY_PLANNING_PROFILE_KEY/);
   assert.match(normalizedCustomerAppSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile,\s*\{\s*familyId:\s*selectedFamilyId\s*\}\)/);
   assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
   assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);

@@ -58,14 +58,12 @@ import {
   updatePolicy,
 } from '../../api';
 import {
-  FamilyRadarSection,
   FamilyReportPage,
 } from '../../FamilyReport';
 import {
   buildFamilyReport,
 } from '../../family-report-engine.mjs';
 import type {
-  FamilyReport,
   FamilyPlanningProfile,
 } from '../../family-report-engine.mjs';
 import {
@@ -112,6 +110,11 @@ import {
   type CustomerTab,
 } from '../../features/customer-navigation/CustomerBottomTabs';
 import { CashflowDetailPage } from '../../features/cashflow/CashflowDetailPage';
+import { FamilyCoverageOverview } from '../../features/family-report/FamilyCoverageOverview';
+import {
+  readFamilyPlanningProfile,
+  saveFamilyPlanningProfile,
+} from '../../features/family-report/family-planning-storage';
 import {
   buildPolicyUpdateData,
   hasAnalysisResult,
@@ -136,7 +139,6 @@ import {
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
-const FAMILY_PLANNING_PROFILE_KEY = 'policy-ocr-app.familyPlanningProfile';
 
 declare global {
   interface Window {
@@ -177,33 +179,6 @@ function getOrCreateGuestId() {
   const next = createGuestId();
   localStorage.setItem(GUEST_ID_KEY, next);
   return next;
-}
-
-function normalizePlanningProfile(value: unknown): FamilyPlanningProfile {
-  if (!value || typeof value !== 'object') return {};
-  const source = value as Record<string, unknown>;
-  return {
-    annualExpense: Math.max(0, Number(source.annualExpense) || 0),
-    debt: Math.max(0, Number(source.debt) || 0),
-    educationGoal: Math.max(0, Number(source.educationGoal) || 0),
-    retirementGoal: Math.max(0, Number(source.retirementGoal) || 0),
-    availableAssets: Math.max(0, Number(source.availableAssets) || 0),
-  };
-}
-
-function readFamilyPlanningProfile(): FamilyPlanningProfile {
-  try {
-    const raw = localStorage.getItem(FAMILY_PLANNING_PROFILE_KEY);
-    return raw ? normalizePlanningProfile(JSON.parse(raw)) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveFamilyPlanningProfile(profile: FamilyPlanningProfile) {
-  const normalized = normalizePlanningProfile(profile);
-  localStorage.setItem(FAMILY_PLANNING_PROFILE_KEY, JSON.stringify(normalized));
-  return normalized;
 }
 
 function resolvePolicyMemberKey(policy: Policy) {
@@ -2485,20 +2460,4 @@ export function CustomerApp() {
   }
 
   return null;
-}
-
-function FamilyCoverageOverview({
-  report,
-  policies,
-}: {
-  report: FamilyReport;
-  policies: Policy[];
-}) {
-  if (!policies.length) return null;
-
-  return (
-    <section className="family-report-shell p-4 pb-0 text-[#102033]">
-      <FamilyRadarSection report={report} />
-    </section>
-  );
 }
