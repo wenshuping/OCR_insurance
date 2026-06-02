@@ -675,16 +675,19 @@ test('family report keeps verbose protection notes readable on mobile', () => {
 });
 
 test('admin app exposes optional responsibility quantification governance list', () => {
-  const appText = `${normalizedAdminAppSource}\n${normalizedAdminFeatureSource}`;
+  const appSource = normalizedAdminAppSource;
+  const governanceSource = adminGovernanceSource.replaceAll("from '../../", "from './");
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /OptionalResponsibilityGap/);
   assert.match(apiSource, /markOptionalResponsibilityNotQuantifiable/);
   assert.match(apiSource, /reextractOptionalResponsibilities/);
-  assert.match(appText, /AdminOptionalResponsibilityGapPanel/);
-  assert.match(appText, /可选责任量化缺口/);
-  assert.match(appText, /标记不可量化/);
-  assert.match(appText, /重新拆解/);
+  assert.match(appSource, /<AdminOptionalResponsibilityGapPanel/);
+  assert.match(appSource, /onMarkNotQuantifiable=\{\(gap\) => void handleMarkOptionalNotQuantifiable\(gap\)\}/);
+  assert.match(appSource, /onReextract=\{\(\) => void handleReextractOptionalResponsibilities\(\)\}/);
+  assert.match(governanceSource, /可选责任量化缺口/);
+  assert.match(governanceSource, /标记不可量化/);
+  assert.match(governanceSource, /重新拆解/);
 });
 
 test('customer policy detail can open manual cash value entry', () => {
