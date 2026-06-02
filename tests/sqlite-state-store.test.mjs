@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
-import { createCashValueStore } from '../server/cashflow-store.mjs';
+import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
@@ -139,7 +139,7 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   reopened.close();
 });
 
-test('sqlite state store can persist after cash values have been saved', async () => {
+test('sqlite state store leaves cash stores untouched across persist and reload', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
   const state = {
@@ -152,19 +152,58 @@ test('sqlite state store can persist after cash values have been saved', async (
   await store.persist(state);
 
   const cashValueStore = createCashValueStore(store.db);
+  const cashflowStore = createCashflowStore(store.db);
   cashValueStore.replaceValues(3, [
     { policyYear: 1, age: 30, cashValue: 8500 },
     { policyYear: 2, age: 31, cashValue: 19200 },
   ]);
+  cashflowStore.replaceEntries(3, [
+    { year: 2026, age: 30, amount: 1000, cumulative: 1000, liability: '生存金', calcText: '第1年给付1000' },
+    { year: 2027, age: 31, amount: 2000, cumulative: 3000, liability: '生存金', calcText: '第2年给付2000' },
+  ]);
 
   state.policies[0].updatedAt = '2026-05-01T00:04:00.000Z';
-  await assert.doesNotReject(() => store.persist(state));
+  await store.persist(state);
+
   assert.deepEqual(cashValueStore.getValues(3), [
     { policyYear: 1, age: 30, cashValue: 8500, source: 'ocr' },
     { policyYear: 2, age: 31, cashValue: 19200, source: 'ocr' },
   ]);
+  assert.deepEqual(cashflowStore.getEntries(3).map((entry) => ({
+    year: entry.year,
+    age: entry.age,
+    amount: entry.amount,
+    cumulative: entry.cumulative,
+    liability: entry.liability,
+    calcText: entry.calcText,
+  })), [
+    { year: 2026, age: 30, amount: 1000, cumulative: 1000, liability: '生存金', calcText: '第1年给付1000' },
+    { year: 2027, age: 31, amount: 2000, cumulative: 3000, liability: '生存金', calcText: '第2年给付2000' },
+  ]);
 
   store.close();
+
+  const reopened = await createSqliteStateStore({ dbPath });
+  const reloadedCashValueStore = createCashValueStore(reopened.db);
+  const reloadedCashflowStore = createCashflowStore(reopened.db);
+
+  assert.deepEqual(reloadedCashValueStore.getValues(3), [
+    { policyYear: 1, age: 30, cashValue: 8500, source: 'ocr' },
+    { policyYear: 2, age: 31, cashValue: 19200, source: 'ocr' },
+  ]);
+  assert.deepEqual(reloadedCashflowStore.getEntries(3).map((entry) => ({
+    year: entry.year,
+    age: entry.age,
+    amount: entry.amount,
+    cumulative: entry.cumulative,
+    liability: entry.liability,
+    calcText: entry.calcText,
+  })), [
+    { year: 2026, age: 30, amount: 1000, cumulative: 1000, liability: '生存金', calcText: '第1年给付1000' },
+    { year: 2027, age: 31, amount: 2000, cumulative: 3000, liability: '生存金', calcText: '第2年给付2000' },
+  ]);
+
+  reopened.close();
 });
 
 test('sqlite state store persists product optional responsibility records', async () => {
