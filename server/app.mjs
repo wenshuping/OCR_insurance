@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import express from 'express';
+import { createRouteContext } from './http/context.mjs';
+import { codeFromError, sendError } from './http/errors.mjs';
 import {
   allocateId,
   assertValidMobile,
@@ -123,25 +125,6 @@ function logPerformance(logger, event, payload = {}) {
   } catch {
     // Performance logging must never affect the policy flow.
   }
-}
-
-function codeFromError(error) {
-  return String(error?.code || error?.message || 'INTERNAL_ERROR');
-}
-
-function statusFromError(error) {
-  return Number(error?.status || 500);
-}
-
-function sendError(res, error, fallbackStatus = 500) {
-  const code = codeFromError(error);
-  const payload = {
-    ok: false,
-    code,
-    message: error?.message && error.message !== code ? error.message : code,
-  };
-  if (error?.registrationRequiredNext) payload.registrationRequiredNext = true;
-  return res.status(statusFromError(error) || fallbackStatus).json(payload);
 }
 
 function resolveWechatConfig() {
@@ -1622,6 +1605,19 @@ export function createPolicyOcrApp(options = {}) {
   if (options.recomputeCashflowOnStartup !== false) {
     recomputeAllCashflow();
   }
+
+  const routeContext = createRouteContext({
+    state,
+    persist,
+    scanner,
+    analyzer,
+    adminPassword,
+    performanceLogger,
+    cashflowStore,
+    cashValueStore,
+    computeAndStoreCashflow,
+    recomputeAllCashflow,
+  });
 
   const app = express();
   app.locals.state = state;
