@@ -135,7 +135,7 @@ test('customer account sheet uses a blue account logo', () => {
 
 test('customer account sheet exposes account actions and policy navigation', () => {
   const sheetSource = extractedOrBoundedComponentSource('CustomerAccountSheet', 'PhoneVerificationDialog');
-  const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const appSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(sheetSource, /onOpenPolicies/);
   assert.match(sheetSource, /我的基本信息/);
   assert.match(sheetSource, /我的保单/);
@@ -166,7 +166,7 @@ test('entry form exposes local product candidates before responsibility generati
 });
 
 test('entry form requires family profile and supports core setup after OCR', () => {
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(pageSource, /家庭档案/);
   assert.match(pageSource, /新建家庭档案/);
@@ -203,7 +203,7 @@ test('entry form requires family profile and supports core setup after OCR', () 
 });
 
 test('customer app exposes family profile management surface', () => {
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const familySource = componentSource('FamilyProfileManager', null);
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /FamilyProfileManager/);
@@ -254,7 +254,7 @@ test('policy relation controls keep prior policy edit options', () => {
 });
 
 test('customer app exposes family report share flow', () => {
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /createFamilyReportShare/);
   assert.match(apiSource, /getFamilyReportShare/);
@@ -281,7 +281,7 @@ test('photo upload area shows an OCR recognition animation while loading', () =>
 
 test('entry form keeps bottom actions focused on saving workflow', () => {
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(pageSource, /max-w-3xl/);
   assert.match(pageSource, /生成责任/);
   assert.match(pageSource, /保存保单/);
@@ -292,7 +292,7 @@ test('entry form keeps bottom actions focused on saving workflow', () => {
 });
 
 test('cash value upload dialog shows a progress bar while scanning', () => {
-  const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const appSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(appSource, /role="progressbar"/);
   assert.match(appSource, /aria-valuetext="正在识别现金价值表"/);
   assert.match(appSource, /现金价值表识别中/);
@@ -300,7 +300,7 @@ test('cash value upload dialog shows a progress bar while scanning', () => {
 });
 
 test('cash value upload uses rear camera capture path', () => {
-  const appSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const appSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const inputRefIndex = appSource.indexOf('ref={cashValueInputRef}');
   assert.notEqual(inputRefIndex, -1, 'cash value upload input should exist');
   const inputSource = appSource.slice(inputRefIndex, appSource.indexOf('/>', inputRefIndex));
@@ -399,7 +399,7 @@ test('entry form preserves canonical product id and clears it when product name 
 
 test('entry form captures insured birthday for age-based reports', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(formSource, /被保险人生日/);
   assert.match(formSource, /insuredBirthday/);
   assert.match(customerSource, /selectedFamilyPolicies/);
@@ -507,7 +507,7 @@ test('admin app includes official domain whitelist maintenance panel', () => {
 
 test('customer policy detail exposes edit and delete actions through policy APIs', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const detailSource = componentSource('PolicyDetailSheet', null);
   assert.match(apiSource, /export function updatePolicy/);
   assert.match(apiSource, /method:\s*'PATCH'/);
@@ -685,7 +685,7 @@ test('admin app exposes optional responsibility quantification governance list',
 });
 
 test('customer policy detail can open manual cash value entry', () => {
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const detailSource = componentSource('PolicyDetailSheet', null);
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
@@ -734,7 +734,7 @@ test('customer app exposes family report from family cards and policy dashboard'
 });
 
 test('customer app renders global policy overview report shortcut', () => {
-  const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
 
   assert.match(customerSource, /FamilyCoverageOverview/);
   assert.match(customerSource, /家庭保障分析报告/);
