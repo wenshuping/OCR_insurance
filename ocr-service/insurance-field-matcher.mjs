@@ -52,7 +52,7 @@ function findFieldLabelIndex(lines, field) {
 
 function isProductSearchBoundary(line) {
   const text = compactText(line);
-  return /^(特别约定[:：]?|本栏空白|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|业务员[:：].*|第\d+页共\d+页|\*此码仅.*)$/.test(
+  return /^(特别约定[:：]?|本栏空白|合计(?:（大写）)?.*|服务人员(?:编号|姓名)[:：]?.*|区部组[:：]?.*|以下内容空白|保险业务|收据专用章|收据说明[:：]?|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|业务员[:：].*|第\d+页共\d+页|\*此码仅.*)$/.test(
     text,
   );
 }
@@ -180,6 +180,8 @@ function addDurationCandidates({ candidates, lines }) {
 }
 
 function addMoneyCandidatesFromBenefitTable({ candidates, lines, company }) {
+  const hasBenefitAmountHeader = lines.some((line) => /基本保险金额|保险金额\/?保险金额|保障计划\/份数/u.test(compactText(line)));
+  if (!hasBenefitAmountHeader) return;
   const stem = findBenefitTableProductStem(lines, company);
   if (!stem) return;
 
@@ -231,7 +233,7 @@ function isPlaceholderPlanValue(line) {
 
 function isBenefitTablePlanBoundary(line) {
   const text = compactText(line);
-  return /^(首期保险费合计[:：]?|首期保费合计[:：]?|保险费合计[:：]?|特别约定[:：]?|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|第\d+页共\d+页)/u.test(
+  return /^(首期保险费合计[:：]?|首期保费合计[:：]?|保险费合计[:：]?|合计(?:（大写）)?.*|服务人员(?:编号|姓名)[:：]?.*|区部组[:：]?.*|以下内容空白|保险业务|收据专用章|收据说明[:：]?|特别约定[:：]?|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|第\d+页共\d+页)/u.test(
     text,
   );
 }
@@ -321,6 +323,56 @@ function inferPlanProductType(name) {
 function normalizePlanName(parts = []) {
   const text = parts.map((part) => compactText(part)).filter(Boolean).join('');
   return normalizeProductNameText(text);
+}
+
+function extractReceiptProductName(line) {
+  const text = compactText(line);
+  const matched = text.match(/^产品名称[:：]?(.+)$/u);
+  if (!matched?.[1]) return '';
+  return normalizePlanName([matched[1]]);
+}
+
+function isReceiptProductPremiumLine(line) {
+  return /^金额[¥￥]?\d/u.test(compactText(line));
+}
+
+function extractReceiptPolicyPlans(lines, company = '') {
+  const productRows = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    let name = extractReceiptProductName(lines[index]);
+    if (!name) continue;
+    const nextLine = compactText(lines[index + 1] || '');
+    if (isProductDescriptorLine(nextLine) && !compactText(name).includes(nextLine)) {
+      name = normalizePlanName([name, nextLine]);
+    }
+    productRows.push({ name, index });
+  }
+  if (!productRows.length) return [];
+
+  const premiumLines = [];
+  for (let index = productRows[0].index + 1; index < lines.length; index += 1) {
+    const line = compactText(lines[index]);
+    if (!line) continue;
+    if (isBenefitTablePlanBoundary(line)) break;
+    if (!isReceiptProductPremiumLine(line)) continue;
+    premiumLines.push({ line, index });
+  }
+
+  return productRows.map((row, index) => {
+    const premiumLine = premiumLines[index]?.line || '';
+    return {
+      company,
+      role: '',
+      name: row.name,
+      productType: inferPlanProductType(row.name),
+      amount: '',
+      coveragePeriod: '',
+      paymentMode: '',
+      paymentPeriod: '',
+      premium: normalizeAmountText(premiumLine),
+      premiumText: premiumLine,
+    };
+  });
 }
 
 function readPlanName(source, startIndex, company) {
@@ -698,6 +750,13 @@ export function extractPolicyPlansFromLines(inputLines, options = {}) {
     .map((line) => cleanupFieldText(line))
     .filter(Boolean);
   const company = cleanupFieldText(options.company || '');
+  const receiptPlans = extractReceiptPolicyPlans(lines, company);
+  if (receiptPlans.length) {
+    return receiptPlans.map((plan, index) => ({
+      ...plan,
+      role: inferPlanRole(plan, index),
+    }));
+  }
   const labelIndex = findFieldLabelIndex(lines, 'name');
   if (labelIndex < 0) return [];
 

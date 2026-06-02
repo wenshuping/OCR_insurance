@@ -5,7 +5,7 @@ import {
   queryPolicyAndPlanResponsibilities,
   queryPolicyResponsibilities,
 } from '../server/policy-responsibility-query.mjs';
-import { findKnowledgeProductCandidates } from '../server/policy-knowledge.service.mjs';
+import { buildKnowledgeSearchArtifacts, findKnowledgeProductCandidates } from '../server/policy-knowledge.service.mjs';
 
 test('responsibility query retries once when the first model response is empty', async () => {
   const calls = [];
@@ -207,6 +207,57 @@ test('knowledge product candidates fuzzy match similar local official products',
   assert.ok(matches.some((match) => match.productName === '尊享人生年金保险（分红型）'));
   assert.ok(matches.some((match) => match.productName === '新华人寿保险股份有限公司尊尚人生两全保险（分红型）'));
   assert.equal(matches.some((match) => match.productName === '健康无忧重大疾病保险'), false);
+  for (const match of matches) {
+    assert.match(match.canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  }
+  const zunxiang = matches.find((match) => match.productName === '尊享人生年金保险（分红型）');
+  const zunshang = matches.find((match) => match.productName === '新华人寿保险股份有限公司尊尚人生两全保险（分红型）');
+  assert.notEqual(zunxiang.canonicalProductId, zunshang.canonicalProductId);
+});
+
+test('knowledge search keeps exact product version before similar New China variants', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
+  const artifacts = buildKnowledgeSearchArtifacts({
+    policy: { company: '新华保险', name: `${productName}保险` },
+    officialDomainProfiles: [
+      {
+        company: '新华保险',
+        aliases: ['新华保险', '新华人寿'],
+        siteDomains: ['static-cdn.newchinalife.com'],
+        officialDomains: ['static-cdn.newchinalife.com'],
+      },
+    ],
+    records: [
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）',
+        title: '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）',
+        url: 'https://static-cdn.newchinalife.com/ncl/pdf/ying.pdf',
+        pageText: '保险责任 智赢版责任文本。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+        updatedAt: '2026-05-31T00:00:00.000Z',
+      },
+      {
+        company: '新华保险',
+        productName,
+        title: productName,
+        url: 'https://static-cdn.newchinalife.com/ncl/pdf/xiang.pdf',
+        pageText: '保险责任 智享版责任文本。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+        updatedAt: '2026-05-01T00:00:00.000Z',
+      },
+    ],
+  });
+
+  assert.equal(artifacts.records.length, 1);
+  assert.equal(artifacts.records[0].productName, productName);
+  assert.equal(artifacts.sources[0].url, 'https://static-cdn.newchinalife.com/ncl/pdf/xiang.pdf');
+  assert.match(artifacts.context, /智享版责任文本/u);
+  assert.doesNotMatch(artifacts.context, /智赢版责任文本/u);
 });
 
 test('responsibility assistant returns local responsibility text as one raw row without model call', async () => {

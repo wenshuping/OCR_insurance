@@ -191,7 +191,7 @@ export function resolveRecordCompany(record = {}, fallbackCompany = '') {
 }
 
 export function withCanonicalProductId(record = {}, fallbackCompany = '') {
-  const existing = trim(record.canonicalProductId || record.productId);
+  const existing = trim(record.canonicalProductId);
   if (existing) return { ...record, canonicalProductId: existing };
   const company = resolveRecordCompany(record, fallbackCompany);
   const productName = resolveRecordProductName(record);
@@ -200,7 +200,7 @@ export function withCanonicalProductId(record = {}, fallbackCompany = '') {
 }
 
 export function canonicalProductIdForRecord(record = {}, fallbackCompany = '') {
-  return trim(record.canonicalProductId || record.productId)
+  return trim(record.canonicalProductId)
     || withCanonicalProductId(record, fallbackCompany).canonicalProductId
     || '';
 }

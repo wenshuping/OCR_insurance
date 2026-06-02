@@ -21,6 +21,7 @@ import {
   normalizeDateOnly,
   normalizeOptionalResponsibilities,
   normalizeIdNumber,
+  normalizePolicyScanData,
   normalizePolicyPlans,
   normalizeMobile,
   normalizePolicyRelation,
@@ -30,10 +31,15 @@ import {
 } from './policy-ocr.domain.mjs';
 import { scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
 import { enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
-import { queryPolicyAndPlanResponsibilities, queryPolicyResponsibilities } from './policy-responsibility-query.mjs';
+import {
+  buildLocalKnowledgeResponsibilityAnalysis,
+  queryPolicyAndPlanResponsibilities,
+  queryPolicyResponsibilities,
+} from './policy-responsibility-query.mjs';
 import { searchFeishuKnowledgeRecords } from './feishu-knowledge.service.mjs';
 import {
   crawlOfficialKnowledge,
+  buildKnowledgeSearchArtifacts,
   findKnowledgeProductCandidates,
   normalizeKnowledgeRecord,
   upsertKnowledgeRecords,
@@ -55,13 +61,18 @@ import {
 import {
   createFamilyMember,
   createFamilyProfile,
+  enrichFamilyMemberIdentity,
   ensureDefaultFamilyProfileForPrincipal,
   familyOwnerMatches,
   listFamilyMembers,
   listFamilyProfilesForOwner,
   matchFamilyMemberByPerson,
+  normalizeFamilyRelation,
+  setFamilyCoreMember,
+  updateFamilyMemberRelation,
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -434,35 +445,75 @@ function normalizeManualPolicyData(value) {
   }
   if (Array.isArray(value.plans)) {
     const plans = value.plans
-      .map((plan) => ({
-        company: trim(plan?.company),
-        role: trim(plan?.role),
-        name: trim(plan?.name || plan?.productName),
-        matchedProductName: trim(plan?.matchedProductName),
-        productType: trim(plan?.productType),
-        amount: Number(plan?.amount || 0) || 0,
-        coveragePeriod: trim(plan?.coveragePeriod),
-        paymentMode: trim(plan?.paymentMode),
-        paymentPeriod: trim(plan?.paymentPeriod),
-        premium: Number(plan?.premium || plan?.firstPremium || 0) || 0,
-        premiumText: trim(plan?.premiumText),
-        matchScore: Number(plan?.matchScore || 0) || 0,
-        matchReason: trim(plan?.matchReason),
-      }))
+      .map((plan) => {
+        const normalized = {
+          company: trim(plan?.company),
+          role: trim(plan?.role),
+          name: trim(plan?.name || plan?.productName),
+          matchedProductName: trim(plan?.matchedProductName),
+          productType: trim(plan?.productType),
+          amount: Number(plan?.amount || 0) || 0,
+          coveragePeriod: trim(plan?.coveragePeriod),
+          paymentMode: trim(plan?.paymentMode),
+          paymentPeriod: trim(plan?.paymentPeriod),
+          premium: Number(plan?.premium || plan?.firstPremium || 0) || 0,
+          premiumText: trim(plan?.premiumText),
+          matchScore: Number(plan?.matchScore || 0) || 0,
+          matchReason: trim(plan?.matchReason),
+        };
+        const canonicalProductId = trim(plan?.canonicalProductId);
+        if (canonicalProductId) normalized.canonicalProductId = canonicalProductId;
+        return normalized;
+      })
       .filter((plan) => plan.name || plan.matchedProductName);
     if (plans.length) data.plans = plans;
   }
+  const canonicalProductId = trim(value.canonicalProductId);
+  if (canonicalProductId) data.canonicalProductId = canonicalProductId;
   return data;
+}
+
+function normalizedPlanIdentity(plan = {}, fallbackCompany = '') {
+  return [
+    trim(plan?.company || fallbackCompany),
+    trim(plan?.role),
+    trim(plan?.matchedProductName || plan?.name || plan?.productName),
+  ].join('::');
+}
+
+function preserveMappedCanonicalIdsInManualData(manualData = {}, scanData = {}) {
+  const next = { ...manualData };
+  const manualProductName = trim(next.name);
+  const mappedProductName = trim(scanData.name);
+  if (!next.canonicalProductId && trim(scanData.canonicalProductId) && (!manualProductName || manualProductName === mappedProductName)) {
+    next.canonicalProductId = trim(scanData.canonicalProductId);
+  }
+  if (Array.isArray(next.plans) && Array.isArray(scanData.plans)) {
+    next.plans = next.plans.map((plan, index) => {
+      if (trim(plan?.canonicalProductId)) return plan;
+      const mappedPlan = scanData.plans[index] || null;
+      const mappedCanonicalProductId = trim(mappedPlan?.canonicalProductId);
+      if (!mappedCanonicalProductId) return plan;
+      const manualIdentity = normalizedPlanIdentity(plan, next.company || scanData.company);
+      const mappedIdentity = normalizedPlanIdentity(mappedPlan, scanData.company || next.company);
+      return manualIdentity === mappedIdentity
+        ? { ...plan, canonicalProductId: mappedCanonicalProductId }
+        : plan;
+    });
+  }
+  return next;
 }
 
 function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (!value || typeof value !== 'object') return {};
   const input = value.policy && typeof value.policy === 'object' ? value.policy : value;
   const data = {};
+  const hasCanonicalProductIdInput = hasOwn(input, 'canonicalProductId');
   const textFields = ['company', 'name', 'applicant', 'insured', 'paymentPeriod', 'coveragePeriod'];
   for (const key of textFields) {
     if (hasOwn(input, key)) data[key] = trim(input[key]);
   }
+  if (hasCanonicalProductIdInput) data.canonicalProductId = trim(input.canonicalProductId);
   if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
   if (hasOwn(input, 'date')) data.date = normalizeDateOnly(input.date) || trim(input.date);
   if (hasOwn(input, 'insuredIdNumber') || hasOwn(input, 'insuredIdentityNumber') || hasOwn(input, 'insuredIdCard')) {
@@ -487,6 +538,10 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   }
   if (hasOwn(input, 'plans')) {
     data.plans = normalizePolicyPlans(input.plans, data.company || existingPolicy.company || '');
+  }
+  if (!hasCanonicalProductIdInput && Array.isArray(data.plans) && data.plans.length && !data.canonicalProductId) {
+    const mainPlan = data.plans.find((plan) => plan.role === 'main') || data.plans[0];
+    data.canonicalProductId = trim(mainPlan?.canonicalProductId);
   }
   if (hasOwn(input, 'optionalResponsibilities')) {
     data.optionalResponsibilities = normalizeOptionalResponsibilities(input.optionalResponsibilities);
@@ -599,7 +654,10 @@ function ensureMemberForPolicyPerson(state, family, person = {}, relationLabel =
   if (!trim(person.name)) return null;
   const members = listFamilyMembers(state, family.id);
   const existing = matchFamilyMemberByPerson(members, person);
-  if (existing) return existing;
+  if (existing) {
+    enrichFamilyMemberIdentity(existing, person);
+    return existing;
+  }
   return createFamilyMember(state, family.id, {
     ...person,
     relationLabel,
@@ -973,7 +1031,7 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
   if (!normalizedCompany) return [];
   const normalizedQuery = normalizeSuggestionText(query);
   const stats = new Map();
-  const addProduct = (recordCompany, productName, weight = 1) => {
+  const addProduct = (recordCompany, productName, weight = 1, { official = false } = {}) => {
     const sourceCompany = trim(recordCompany);
     const name = trim(productName);
     if (!sourceCompany || !name) return;
@@ -984,12 +1042,18 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
       normalizedCompany.includes(sourceCompanyKey);
     if (!companyMatches) return;
     const key = `${sourceCompany}\u001f${name}`;
-    const current = stats.get(key) || { company: sourceCompany, productName: name, recordCount: 0 };
+    const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId: '', recordCount: 0 };
+    if (official && !current.canonicalProductId) {
+      current.canonicalProductId = canonicalProductIdFromOfficialProduct({
+        company: sourceCompany,
+        productName: name,
+      });
+    }
     current.recordCount += weight;
     stats.set(key, current);
   };
-  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName || record.title, 1);
-  for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1);
+  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName, 1, { official: record.official === true });
+  for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1, { official: false });
 
   return [...stats.values()]
     .map((item) => {
@@ -1012,7 +1076,12 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
         left.productName.localeCompare(right.productName, 'zh-CN'),
     )
     .slice(0, maxResults)
-    .map(({ company: itemCompany, productName, recordCount }) => ({ company: itemCompany, productName, recordCount }));
+    .map(({ company: itemCompany, productName, canonicalProductId, recordCount }) => ({
+      company: itemCompany,
+      productName,
+      canonicalProductId: canonicalProductId || undefined,
+      recordCount,
+    }));
 }
 
 function assertUploadItemSize(uploadItem) {
@@ -1083,20 +1152,25 @@ function clearGuestPendingScans(state, guestId) {
 
 function mergeManualPolicyDataIntoScan(scan, body) {
   const manualData = normalizeManualPolicyData(body?.manualData);
+  const mergedManualData = preserveMappedCanonicalIdsInManualData(manualData, scan?.data || {});
   return {
     ...scan,
     data: {
       ...(scan?.data || {}),
-      ...manualData,
+      ...mergedManualData,
     },
   };
+}
+
+function scanInputOcrText(body = {}) {
+  return body?.uploadItem ? '' : body?.ocrText || '';
 }
 
 async function recognizePolicyInput({ scanner, body, state, applyManualData = true }) {
   assertUploadItemSize(body?.uploadItem || null);
   const scan = await scanner({
     uploadItem: body?.uploadItem || null,
-    ocrText: body?.ocrText || '',
+    ocrText: scanInputOcrText(body),
   });
   const scanWithText = {
     ...scan,
@@ -1129,6 +1203,7 @@ async function resolvePolicyScanInput({ scanner, body, state }) {
 
 function normalizeProvidedAnalysis(value) {
   if (!value || typeof value !== 'object') return null;
+  const optionalResponsibilities = normalizeOptionalResponsibilities(value.optionalResponsibilities);
   const coverageTable = Array.isArray(value.coverageTable)
     ? value.coverageTable
         .map((row) => ({
@@ -1142,8 +1217,7 @@ function normalizeProvidedAnalysis(value) {
         .filter((row) => row.coverageType || row.scenario || row.payout || row.note)
     : [];
   const report = String(value.report || '').trim();
-  if (!report && !coverageTable.length) return null;
-  const optionalResponsibilities = normalizeOptionalResponsibilities(value.optionalResponsibilities);
+  if (!report && !coverageTable.length && !optionalResponsibilities.length) return null;
   return {
     ...value,
     report,
@@ -1267,6 +1341,69 @@ function applyAnalysisToPolicy(policy, analysis) {
   policy.reportError = '';
   policy.updatedAt = new Date().toISOString();
   return true;
+}
+
+function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfiles = [] } = {}) {
+  const data = normalizePolicyScanData(scan?.data || {});
+  const policyDraft = {
+    ...data,
+    plans: normalizePolicyPlans(scan?.data?.plans, data.company),
+    optionalResponsibilities: normalizeOptionalResponsibilities(scan?.data?.optionalResponsibilities),
+    ocrText: String(scan?.ocrText || '').trim(),
+  };
+  const primaryPlan = (Array.isArray(policyDraft.plans) ? policyDraft.plans : [])
+    .find((plan) => String(plan?.role || '') === 'main') || policyDraft.plans?.[0] || null;
+  const knowledgeArtifacts = buildKnowledgeSearchArtifacts({
+    policy: policyDraft,
+    records: state?.knowledgeRecords || [],
+    officialDomainProfiles,
+  });
+  const matchedProductName = trim(knowledgeArtifacts.records?.[0]?.productName);
+  const primaryProductName = matchedProductName
+    || trim(primaryPlan?.matchedProductName || primaryPlan?.productName || primaryPlan?.name)
+    || policyDraft.name;
+  const primaryCompany = trim(primaryPlan?.company) || policyDraft.company;
+  const primaryOptionalPolicyDraft = {
+    ...policyDraft,
+    company: primaryCompany,
+    name: primaryProductName,
+    plans: primaryProductName
+      ? normalizePolicyPlans(
+          [
+            {
+              ...(primaryPlan || {}),
+              company: primaryCompany,
+              role: 'main',
+              name: primaryPlan?.name || primaryProductName,
+              productName: primaryProductName,
+              matchedProductName: primaryProductName,
+            },
+          ],
+          primaryCompany,
+        )
+      : [],
+  };
+  const localAnalysis = buildLocalKnowledgeResponsibilityAnalysis(knowledgeArtifacts.records) || {
+    report: '',
+    coverageTable: [],
+    notes: [],
+    sources: knowledgeArtifacts.sources || [],
+  };
+  const coverageIndicators = findPolicyCoverageIndicators(primaryOptionalPolicyDraft, state?.insuranceIndicatorRecords || []);
+  const optionalResponsibilities = buildOptionalResponsibilityReview(
+    primaryOptionalPolicyDraft,
+    coverageIndicators,
+    state?.knowledgeRecords || [],
+    state?.optionalResponsibilityRecords || [],
+  );
+  if (!localAnalysis.coverageTable?.length && !optionalResponsibilities.length) return null;
+  return {
+    ...localAnalysis,
+    coverageTable: Array.isArray(localAnalysis.coverageTable) ? localAnalysis.coverageTable : [],
+    optionalResponsibilities,
+    notes: Array.isArray(localAnalysis.notes) ? localAnalysis.notes : [],
+    sources: Array.isArray(localAnalysis.sources) ? localAnalysis.sources : knowledgeArtifacts.sources || [],
+  };
 }
 
 function markPolicyReportFailed(policy, error) {
@@ -1541,6 +1678,29 @@ export function createPolicyOcrApp(options = {}) {
         route: '/api/policy-responsibilities/query',
         durationMs: elapsedMs(routeStartedAt),
         inputOcrChars: scan.ocrText.length,
+      });
+      res.json({ ok: true, analysis });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  app.post('/api/policy-responsibilities/local-draft', (req, res) => {
+    try {
+      const manualData = req.body?.manualData && typeof req.body.manualData === 'object' ? req.body.manualData : req.body;
+      const data = normalizePolicyScanData(manualData || {});
+      const scan = {
+        ocrText: trim(req.body?.ocrText) || `${data.company} ${data.name}`.trim(),
+        data: {
+          ...data,
+          plans: normalizePolicyPlans(manualData?.plans, data.company),
+          optionalResponsibilities: normalizeOptionalResponsibilities(manualData?.optionalResponsibilities),
+        },
+      };
+      const analysis = buildRecognizedPolicyAnalysisDraft({
+        state,
+        scan,
+        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       });
       res.json({ ok: true, analysis });
     } catch (error) {
@@ -2124,17 +2284,48 @@ export function createPolicyOcrApp(options = {}) {
       };
       const member = createFamilyMember(state, family.id, memberInput);
       if (shouldSetAsCore) {
-        if (existingCore && Number(existingCore.id) !== Number(member.id)) {
-          existingCore.relationToCore = 'pending';
-          existingCore.relationLabel = '待确认';
-          existingCore.role = 'adult';
-          existingCore.updatedAt = new Date().toISOString();
-        }
-        family.coreMemberId = member.id;
+        setFamilyCoreMember(state, family, member);
+      } else {
+        family.updatedAt = new Date().toISOString();
       }
-      family.updatedAt = new Date().toISOString();
       await persist(state);
       res.status(201).json({ ok: true, member, family, members: listFamilyMembers(state, family.id) });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  app.patch('/api/family-profiles/:id/members/:memberId', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res);
+    if (!owner) return;
+    const family = findOwnedFamily(req.params.id, owner);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    try {
+      const members = listFamilyMembers(state, family.id);
+      const member = members.find((row) => Number(row.id) === Number(req.params.memberId || 0) && String(row.status || 'active') === 'active');
+      if (!member) {
+        const error = new Error('家庭成员不存在');
+        error.code = 'FAMILY_MEMBER_NOT_FOUND';
+        error.status = 400;
+        throw error;
+      }
+      const relation = normalizeFamilyRelation(req.body?.relationLabel || req.body?.relationToCore || req.body?.relation);
+      if (relation.relationToCore === 'self') {
+        setFamilyCoreMember(state, family, member);
+      } else {
+        if (Number(member.id) === Number(family.coreMemberId || 0)) {
+          const error = new Error('核心成员关系固定为本人');
+          error.code = 'FAMILY_CORE_RELATION_IMMUTABLE';
+          error.status = 400;
+          throw error;
+        }
+        updateFamilyMemberRelation(member, relation.relationLabel);
+        family.updatedAt = new Date().toISOString();
+      }
+      await persist(state);
+      res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
     } catch (error) {
       sendError(res, error, 400);
     }
@@ -2156,20 +2347,7 @@ export function createPolicyOcrApp(options = {}) {
         error.status = 400;
         throw error;
       }
-      const existingCore = members.find((row) => Number(row.id) === Number(family.coreMemberId || 0));
-      const now = new Date().toISOString();
-      if (existingCore && Number(existingCore.id) !== Number(member.id)) {
-        existingCore.relationToCore = 'pending';
-        existingCore.relationLabel = '待确认';
-        existingCore.role = 'adult';
-        existingCore.updatedAt = now;
-      }
-      member.relationToCore = 'self';
-      member.relationLabel = '本人';
-      member.role = 'core';
-      member.updatedAt = now;
-      family.coreMemberId = member.id;
-      family.updatedAt = now;
+      setFamilyCoreMember(state, family, member);
       await persist(state);
       res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
     } catch (error) {
@@ -2229,8 +2407,13 @@ export function createPolicyOcrApp(options = {}) {
         ...policyInputMetrics(req.body),
         outputOcrChars: String(scan?.ocrText || '').length,
       });
+      const analysis = buildRecognizedPolicyAnalysisDraft({
+        state,
+        scan,
+        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+      });
       if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan, analysis: null });
+        storeGuestPendingScan(state, { guestId, scan, analysis });
         await persist(state);
       }
       logPerformance(performanceLogger, 'policy.recognize.complete', {
@@ -2238,11 +2421,13 @@ export function createPolicyOcrApp(options = {}) {
         durationMs: elapsedMs(routeStartedAt),
         ...policyInputMetrics(req.body),
       });
-      res.json({
+      const payload = {
         ok: true,
         scan,
         registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
-      });
+      };
+      if (analysis) payload.analysis = analysis;
+      res.json(payload);
     } catch (error) {
       sendError(res, error);
     }

@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+
 const NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
   'https://www.newchinalife.com/info/4596',
   'https://www.newchinalife.com/info/3279_23',
@@ -163,6 +165,32 @@ function normalizeProductMatchText(value = '', company = '') {
     .replace(/保险股份有限公司|保险有限责任公司|股份有限公司|有限责任公司|产品说明书|产品说明|保险条款|利益条款|条款/gu, '')
     .replace(/保险/gu, '')
     .trim();
+}
+
+function normalizeStrictProductMatchText(value = '', company = '') {
+  const normalizedCompany = trimString(company)
+    .normalize('NFKC')
+    .replace(/\s+/gu, '')
+    .replace(/[^\p{Script=Han}\p{Letter}\p{Number}]/gu, '');
+  let text = trimString(value)
+    .normalize('NFKC')
+    .replace(/\s+/gu, '')
+    .replace(/[《》<>「」『』【】\[\]（）().,，。；;:：、·-]/gu, '');
+  if (!text) return '';
+  if (normalizedCompany) text = text.replaceAll(normalizedCompany, '');
+  return text
+    .replace(/^[\p{Script=Han}]{2,14}(?:人寿|财产|养老|健康)?保险股份有限公司/gu, '')
+    .replace(/^[\p{Script=Han}]{2,14}(?:人寿|财产|养老|健康)?保险有限责任公司/gu, '')
+    .replace(/保险股份有限公司|保险有限责任公司|股份有限公司|有限责任公司|产品说明书|产品说明|保险条款|利益条款|条款/gu, '')
+    .replace(/保险$/u, '')
+    .trim();
+}
+
+function strictProductNameMatches(queryName = '', candidateName = '', company = '') {
+  const query = normalizeStrictProductMatchText(queryName, company);
+  const candidate = normalizeStrictProductMatchText(candidateName, company);
+  if (!query || !candidate) return false;
+  return query === candidate;
 }
 
 function toCharSet(value = '') {
@@ -808,7 +836,7 @@ export function findKnowledgeRecordsForPolicy({ policy = {}, records = [], offic
   const productName = trimString(policy.name || policy.productName);
   const company = trimString(policy.company);
   if (!company || !productName) return [];
-  return (Array.isArray(records) ? records : [])
+  const matched = (Array.isArray(records) ? records : [])
     .map((record) => normalizeKnowledgeRecord(record, { officialDomainProfiles }))
     .filter(Boolean)
     .filter(
@@ -822,10 +850,23 @@ export function findKnowledgeRecordsForPolicy({ policy = {}, records = [], offic
     .filter((record) => {
       const companyMatch = !record.company || company.includes(record.company) || record.company.includes(company);
       return companyMatch && productMatchesText(productName, record.productName || record.title || record.url);
-    })
+    });
+  const exactVersionMatches = matched.filter((record) =>
+    strictProductNameMatches(productName, record.productName, company)
+      || strictProductNameMatches(productName, record.title, company),
+  );
+  return (exactVersionMatches.length ? exactVersionMatches : matched)
     .sort((left, right) => {
-      const leftScore = Number(Boolean(left.pageText)) * 20 + Number(left.sourceType === 'pdf') * 10 + Number(left.materialType === 'terms') * 5;
-      const rightScore = Number(Boolean(right.pageText)) * 20 + Number(right.sourceType === 'pdf') * 10 + Number(right.materialType === 'terms') * 5;
+      const leftExact = Number(
+        strictProductNameMatches(productName, left.productName, company)
+          || strictProductNameMatches(productName, left.title, company),
+      );
+      const rightExact = Number(
+        strictProductNameMatches(productName, right.productName, company)
+          || strictProductNameMatches(productName, right.title, company),
+      );
+      const leftScore = leftExact * 100 + Number(Boolean(left.pageText)) * 20 + Number(left.sourceType === 'pdf') * 10 + Number(left.materialType === 'terms') * 5;
+      const rightScore = rightExact * 100 + Number(Boolean(right.pageText)) * 20 + Number(right.sourceType === 'pdf') * 10 + Number(right.materialType === 'terms') * 5;
       return rightScore - leftScore || String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''));
     })
     .slice(0, maxResults);
@@ -868,6 +909,10 @@ export function findKnowledgeProductCandidates({
       grouped.set(key, {
         company: record.company,
         productName: record.productName,
+        canonicalProductId: canonicalProductIdFromOfficialProduct({
+          company: record.company,
+          productName: record.productName,
+        }),
         title: record.title,
         score,
         matchReason: knowledgeMatchReason(score),

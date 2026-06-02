@@ -85,7 +85,7 @@ const COMPANY_ALIASES = [
 const LABELS = {
   company: ['投保公司', '保险公司', '承保公司', '公司名称', '承保机构', '保险机构', '承保单位', '保险公司全称'],
   name: ['产品名称', '险种名称', '保险名称', '合同名称', '产品计划', '主险名称', '保险产品名称', '险种计划', '险种/名称', '保险险种'],
-  applicant: ['投保人', '投保人姓名', '要保人', '要保人姓名'],
+  applicant: ['投保人名称', '投保人', '投保人姓名', '要保人', '要保人姓名'],
   insured: ['被保险人', '被保险人姓名', '受保人', '受保人姓名', '被保人'],
   beneficiary: ['身故保险金受益人', '身故受益人', '受益人'],
   date: ['投保日期', '合同成立日期', '合同成立日', '承保日期', '合同生效日期', '合同生效日', '生效日期', '生效时间', '保险起期', '起保日期', '起保日', '保险合同成立及生效日'],
@@ -434,7 +434,8 @@ function normalizePersonNameValue(value) {
   const text = compactLine(value);
   if (!text) return '';
   const cleaned = text
-    .replace(/^(投保人|投保人姓名|要保人|要保人姓名|被保险人|被保险人姓名|受保人|受保人姓名|被保人)[:：]?/, '')
+    .replace(/^(投保人名称|投保人|投保人姓名|要保人|要保人姓名|被保险人|被保险人姓名|受保人|受保人姓名|被保人)[:：]?/, '')
+    .replace(/^（[^）]*）[:：]?/, '')
     .replace(/(性别|生日|出生|生于|证件号码|证件号|受益顺序|受益份额|本栏以下空白|及保险主要事项).*$/, '')
     .trim();
   const matched = cleaned.match(/^[一-龥·]{2,8}/);
@@ -1820,6 +1821,9 @@ export function selectBestPolicyScanCandidate(texts) {
 export function extractPolicyFieldsFromText(rawText) {
   const lines = splitRecognizedLines(rawText);
   const isTableStyle = lines.some((line) => /保险利益表/.test(line)) && findLooseLabelIndex(lines, LABELS.name) >= 0;
+  const isReceiptStyle =
+    lines.some((line) => /保险业务收据/u.test(line)) ||
+    (lines.filter((line) => /^产品名称[:：]?/u.test(compactLine(line))).length >= 2 && lines.some((line) => /^金额\s*[¥￥]?\d/u.test(compactLine(line))));
   const headerCompany = extractHeaderCompany(lines, rawText);
   const company = normalizeCompanyName(
     headerCompany || extractByLabels(lines, LABELS.company) || cleanupFieldValue(fallbackCompany(lines)) || findCompanyAlias(rawText)
@@ -1861,7 +1865,8 @@ export function extractPolicyFieldsFromText(rawText) {
     )
     || normalizeNameValue(fallbackProductName(lines, company));
   const name =
-    inlineLabeledData.name
+    (isReceiptStyle ? mainPlan?.name || '' : '')
+    || inlineLabeledData.name
     ||
     compressedHorizontalTableData.name
     ||
@@ -1896,7 +1901,7 @@ export function extractPolicyFieldsFromText(rawText) {
         ...LABELS.amount,
       ])
     );
-  const insuredIdentity = extractInsuredIdentity(lines, insured);
+  const insuredIdentity = isReceiptStyle ? { insuredIdNumber: '', insuredBirthday: '' } : extractInsuredIdentity(lines, insured);
   const date = extractPreferredDate(lines) || inlineLabeledData.date;
   const mappedPaymentPeriod = combineMappedPaymentPeriod(matchedFields);
   const mainPlanPaymentPeriod = isTableStyle ? mainPlan?.paymentPeriod || '' : '';
@@ -1936,22 +1941,23 @@ export function extractPolicyFieldsFromText(rawText) {
     || normalizeCoveragePeriodValue(extractByLabels(lines, LABELS.coveragePeriod, LABELS.amount))
     || matchedFields.coveragePeriod
     || normalizeCoveragePeriodValue(fallbackCoveragePeriod(lines));
-  const amount =
-    mainPlanAmount
-    ||
-    inlineLabeledData.amount
-    ||
-    compressedHorizontalTableData.amount
-    ||
-    inlineHorizontalTableData.amount
-    ||
-    horizontalTableData.amount
-    || loosePolicyRowData.amount
-    || primaryPlanRowData.amount
-    || sequentialTableData.amount
-    || normalizeAmountValue(extractByLabels(lines, LABELS.amount, LABELS.firstPremium))
-    || matchedFields.amount
-    || fallbackAmount(lines);
+  const amount = isReceiptStyle
+    ? ''
+    : mainPlanAmount
+      ||
+      inlineLabeledData.amount
+      ||
+      compressedHorizontalTableData.amount
+      ||
+      inlineHorizontalTableData.amount
+      ||
+      horizontalTableData.amount
+      || loosePolicyRowData.amount
+      || primaryPlanRowData.amount
+      || sequentialTableData.amount
+      || normalizeAmountValue(extractByLabels(lines, LABELS.amount, LABELS.firstPremium))
+      || matchedFields.amount
+      || fallbackAmount(lines);
   const firstPremium =
     inlineLabeledData.firstPremium
     ||

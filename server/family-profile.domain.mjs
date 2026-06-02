@@ -36,6 +36,7 @@ const RELATION_MAP = new Map([
   ['other', { relationToCore: 'other', relationLabel: '其他', role: 'unknown' }],
   ['其他', { relationToCore: 'other', relationLabel: '其他', role: 'unknown' }],
   ['pending', { relationToCore: 'pending', relationLabel: '待确认', role: 'unknown' }],
+  ['待确认', { relationToCore: 'pending', relationLabel: '待确认', role: 'unknown' }],
 ]);
 
 function ensureFamilyState(state) {
@@ -118,12 +119,95 @@ function hasPersonIdentity(person) {
 
 function peopleAreCompatible(left, right) {
   if (normalizeName(left?.name) !== normalizeName(right?.name)) return false;
-  if (hasPersonIdentity(left) !== hasPersonIdentity(right)) return false;
   const leftIdentity = personIdentityParts(left);
   const rightIdentity = personIdentityParts(right);
   if (leftIdentity.birthday && rightIdentity.birthday && leftIdentity.birthday !== rightIdentity.birthday) return false;
   if (leftIdentity.idNumberTail && rightIdentity.idNumberTail && leftIdentity.idNumberTail !== rightIdentity.idNumberTail) return false;
   return true;
+}
+
+export function enrichFamilyMemberIdentity(member, person = {}) {
+  if (!member) return false;
+  const identity = personIdentityParts(person);
+  let changed = false;
+  if (!normalizeDateOnly(member.birthday) && identity.birthday) {
+    member.birthday = identity.birthday;
+    changed = true;
+  }
+  if (!normalizeIdNumberTail(member.idNumberTail) && identity.idNumberTail) {
+    member.idNumberTail = identity.idNumberTail;
+    changed = true;
+  }
+  if (changed) member.updatedAt = new Date().toISOString();
+  return changed;
+}
+
+function familyMemberIdentityScore(member) {
+  const identity = personIdentityParts(member);
+  return (identity.birthday ? 1 : 0) + (identity.idNumberTail ? 1 : 0);
+}
+
+function chooseMergedFamilyMember(family, members) {
+  return [...members].sort((left, right) => (
+    (Number(right.id) === Number(family.coreMemberId || 0) ? 1 : 0) -
+      (Number(left.id) === Number(family.coreMemberId || 0) ? 1 : 0) ||
+    familyMemberIdentityScore(right) - familyMemberIdentityScore(left) ||
+    Number(left.id || 0) - Number(right.id || 0)
+  ))[0] || null;
+}
+
+function repairDuplicateFamilyMembers(state, family) {
+  const activeMembers = listFamilyMembers(state, family.id);
+  const membersByName = new Map();
+  for (const member of activeMembers) {
+    const name = normalizeName(member?.name);
+    if (!name) continue;
+    membersByName.set(name, [...(membersByName.get(name) || []), member]);
+  }
+
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const members of membersByName.values()) {
+    if (members.length <= 1) continue;
+    const identityMembers = members.filter(hasPersonIdentity);
+    const emptyIdentityMembers = members.filter((member) => !hasPersonIdentity(member));
+    const groups = [];
+
+    for (const member of identityMembers) {
+      const group = groups.find((items) => items.every((item) => peopleAreCompatible(item, member)));
+      if (group) group.push(member);
+      else groups.push([member]);
+    }
+    if (!groups.length && emptyIdentityMembers.length > 1) groups.push([...emptyIdentityMembers]);
+    if (groups.length === 1 && emptyIdentityMembers.length) groups[0].push(...emptyIdentityMembers);
+
+    for (const group of groups) {
+      if (group.length <= 1) continue;
+      const keeper = chooseMergedFamilyMember(family, group);
+      if (!keeper) continue;
+      for (const member of group) {
+        enrichFamilyMemberIdentity(keeper, member);
+      }
+      for (const member of group) {
+        if (Number(member.id) === Number(keeper.id)) continue;
+        member.status = 'archived';
+        member.updatedAt = now;
+        for (const policy of state.policies || []) {
+          if (Number(policy?.familyId || 0) !== Number(family.id)) continue;
+          if (Number(policy.applicantMemberId || 0) === Number(member.id)) policy.applicantMemberId = keeper.id;
+          if (Number(policy.insuredMemberId || 0) === Number(member.id)) policy.insuredMemberId = keeper.id;
+        }
+        changed = true;
+      }
+      if (group.some((member) => Number(member.id) === Number(family.coreMemberId || 0))) {
+        family.coreMemberId = keeper.id;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) family.updatedAt = now;
+  return changed;
 }
 
 function personIdentityKey(person, index) {
@@ -160,6 +244,19 @@ export function normalizeFamilyMemberInput(input = {}) {
     role: relation.role,
     status: String(input.status || 'active').trim() || 'active',
   };
+}
+
+function applyFamilyMemberRelation(member, relationLabel, now = new Date().toISOString()) {
+  const relation = normalizeFamilyRelation(relationLabel);
+  member.relationToCore = relation.relationToCore;
+  member.relationLabel = relation.relationLabel;
+  member.role = relation.role;
+  member.updatedAt = now;
+  return member;
+}
+
+export function updateFamilyMemberRelation(member, relationLabel) {
+  return applyFamilyMemberRelation(member, relationLabel);
 }
 
 export function createFamilyProfile(state, input = {}, owner = {}) {
@@ -241,18 +338,17 @@ export function matchFamilyMemberByPerson(members = [], person = {}) {
   );
   const candidates = (Array.isArray(members) ? members : []).filter((member) => (
     String(member?.status || 'active') === 'active' &&
-    normalizeName(member?.name) === name
+    peopleAreCompatible(member, { name, birthday, idNumberTail })
   ));
   if (!candidates.length) return null;
 
   if (birthday) {
     const birthdayMatches = candidates.filter((member) => normalizeDateOnly(member?.birthday) === birthday);
-    if (!birthdayMatches.length) return null;
-    if (idNumberTail) {
+    if (birthdayMatches.length && idNumberTail) {
       const exact = birthdayMatches.find((member) => normalizeIdNumberTail(member?.idNumberTail) === idNumberTail);
-      return exact || null;
+      if (exact) return exact;
     }
-    return birthdayMatches[0] || null;
+    if (birthdayMatches.length) return birthdayMatches[0] || null;
   }
 
   if (idNumberTail) {
@@ -261,6 +357,38 @@ export function matchFamilyMemberByPerson(members = [], person = {}) {
   }
 
   return candidates[0] || null;
+}
+
+export function setFamilyCoreMember(state, family, nextCoreMember) {
+  ensureFamilyState(state);
+  const members = listFamilyMembers(state, family.id);
+  const member = members.find((row) => Number(row.id) === Number(nextCoreMember?.id || 0));
+  if (!member) {
+    throw familyBindingError('FAMILY_MEMBER_NOT_FOUND', '家庭成员不存在');
+  }
+
+  const previousCoreId = Number(family.coreMemberId || 0);
+  const previousCore = members.find((row) => Number(row.id) === previousCoreId);
+  const nextCorePreviousRelation = member.relationToCore;
+  const now = new Date().toISOString();
+
+  if (previousCoreId && previousCoreId !== Number(member.id)) {
+    for (const row of members) {
+      if (Number(row.id) === Number(member.id)) {
+        applyFamilyMemberRelation(row, '本人', now);
+      } else if (previousCore && Number(row.id) === Number(previousCore.id) && nextCorePreviousRelation === 'spouse') {
+        applyFamilyMemberRelation(row, '配偶', now);
+      } else {
+        applyFamilyMemberRelation(row, '待确认', now);
+      }
+    }
+  } else {
+    applyFamilyMemberRelation(member, '本人', now);
+  }
+
+  family.coreMemberId = member.id;
+  family.updatedAt = now;
+  return member;
 }
 
 export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
@@ -297,11 +425,13 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
     String(left.idNumberTail || '').localeCompare(String(right.idNumberTail || ''))
   ));
   let coreMember = members.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
-  const corePerson = people[0] || (coreMember ? {
-    name: coreMember.name,
-    birthday: coreMember.birthday,
-    idNumberTail: coreMember.idNumberTail,
-  } : { name: '本人', birthday: '', idNumberTail: '' });
+  const corePerson = coreMember
+    ? (people.find((person) => peopleAreCompatible(person, coreMember)) || {
+      name: coreMember.name,
+      birthday: coreMember.birthday,
+      idNumberTail: coreMember.idNumberTail,
+    })
+    : (people[0] || { name: '本人', birthday: '', idNumberTail: '' });
   if (!coreMember && corePerson.name) {
     coreMember = matchFamilyMemberByPerson(members, corePerson);
   }
@@ -317,19 +447,26 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
   coreMember.relationToCore = 'self';
   coreMember.relationLabel = '本人';
   coreMember.role = 'core';
+  enrichFamilyMemberIdentity(coreMember, corePerson);
   family.coreMemberId = coreMember.id;
   family.updatedAt = new Date().toISOString();
 
   for (const person of people) {
     if (peopleAreCompatible(person, corePerson)) continue;
-    if (matchFamilyMemberByPerson(members, person)) continue;
-    createFamilyMember(state, family.id, {
+    const existingMember = matchFamilyMemberByPerson(members, person);
+    if (existingMember) {
+      enrichFamilyMemberIdentity(existingMember, person);
+      continue;
+    }
+    const member = createFamilyMember(state, family.id, {
       ...person,
       relationToCore: 'pending',
       relationLabel: '待确认',
       role: 'unknown',
     });
+    members.push(member);
   }
+  repairDuplicateFamilyMembers(state, family);
 
   const updatedMembers = listFamilyMembers(state, family.id);
   for (const policy of policies) {
@@ -337,6 +474,8 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
     const insured = policyPerson(policy, 'insured');
     const applicantMember = matchFamilyMemberByPerson(updatedMembers, applicant) || coreMember;
     const insuredMember = matchFamilyMemberByPerson(updatedMembers, insured) || applicantMember || coreMember;
+    enrichFamilyMemberIdentity(applicantMember, applicant);
+    enrichFamilyMemberIdentity(insuredMember, insured);
     policy.familyId = family.id;
     policy.applicantMemberId = applicantMember?.id || null;
     policy.insuredMemberId = insuredMember?.id || null;
