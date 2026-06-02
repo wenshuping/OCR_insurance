@@ -5,6 +5,7 @@ import { createRouteContext } from './http/context.mjs';
 import { codeFromError, sendError } from './http/errors.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
+import { createFamilyRoutes } from './routes/families.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import {
@@ -1634,6 +1635,10 @@ export function createPolicyOcrApp(options = {}) {
     latestValidSmsCode,
     hasPendingSmsCode,
     normalizeGuestId,
+    normalizeFamilyRelation,
+    policyHasFamilyBinding,
+    requestOwner,
+    resolveAuthUser,
     guestPendingScans,
     normalizeProvidedAnalysis,
     ensureDefaultPolicyFamilyBinding,
@@ -1656,6 +1661,14 @@ export function createPolicyOcrApp(options = {}) {
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
+    createFamilyMember,
+    createFamilyProfile,
+    ensureDefaultFamilyProfileForPrincipal,
+    familyOwnerMatches,
+    listFamilyMembers,
+    listFamilyProfilesForOwner,
+    setFamilyCoreMember,
+    updateFamilyMemberRelation,
   });
 
   const app = express();
@@ -1670,6 +1683,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
+  app.use('/api', createFamilyRoutes(routeContext));
 
   app.post('/api/admin/login', async (req, res) => {
     try {
@@ -1884,285 +1898,6 @@ export function createPolicyOcrApp(options = {}) {
     } catch (error) {
       sendError(res, error);
     }
-  });
-
-  function resolveFamilyRequestOwner(req, res) {
-    const user = resolveAuthUser(req, state);
-    const owner = requestOwner(req, user);
-    if (!owner.userId && !owner.guestId) {
-      res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '缺少游客标识' });
-      return null;
-    }
-    return owner;
-  }
-
-  function findOwnedFamily(familyId, owner) {
-    return (state.familyProfiles || []).find((family) => (
-      Number(family.id) === Number(familyId) &&
-      String(family.status || 'active') === 'active' &&
-      familyOwnerMatches(family, owner)
-    )) || null;
-  }
-
-  function familyWithMembers(family) {
-    return {
-      ...family,
-      members: listFamilyMembers(state, family.id),
-    };
-  }
-
-  function cloneFamilySharePayload(payload) {
-    return JSON.parse(JSON.stringify(payload || {}));
-  }
-
-  const FAMILY_SHARE_PRIVATE_KEYS = new Set([
-    'adminSession',
-    'adminSessions',
-    'adminToken',
-    'authorization',
-    'guestId',
-    'idCard',
-    'idNumber',
-    'idNumberTail',
-    'identityNumber',
-    'mobile',
-    'ownerGuestId',
-    'ownerUserId',
-    'password',
-    'session',
-    'sessions',
-    'token',
-    'tokens',
-    'userId',
-    'userMobile',
-  ]);
-
-  function sanitizeFamilyShareValue(value) {
-    if (Array.isArray(value)) return value.map((item) => sanitizeFamilyShareValue(item));
-    if (!value || typeof value !== 'object') return value;
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([key]) => !FAMILY_SHARE_PRIVATE_KEYS.has(key))
-        .map(([key, item]) => [key, sanitizeFamilyShareValue(item)]),
-    );
-  }
-
-  function familySharePolicyMatchesOwner(policy, owner) {
-    if (owner.userId) return Number(policy?.userId || 0) === Number(owner.userId);
-    if (owner.guestId) return normalizeGuestId(policy?.guestId) === owner.guestId && !Number(policy?.userId || 0);
-    return false;
-  }
-
-  function buildFamilySharePayload(family, owner, snapshotAt) {
-    const members = listFamilyMembers(state, family.id).map((member) => sanitizeFamilyShareValue(member));
-    const policies = (state.policies || [])
-      .filter((policy) => (
-        Number(policy?.familyId || 0) === Number(family.id) &&
-        familySharePolicyMatchesOwner(policy, owner)
-      ))
-      .map((policy) => sanitizeFamilyShareValue(attachPolicyFamilyDisplay(policy, state)));
-    return {
-      family: sanitizeFamilyShareValue(family),
-      members,
-      policies,
-      snapshotAt,
-    };
-  }
-
-  app.get('/api/family-profiles', async (req, res) => {
-    const owner = resolveFamilyRequestOwner(req, res);
-    if (!owner) return;
-    const ownerPolicies = (state.policies || []).filter((policy) => familySharePolicyMatchesOwner(policy, owner));
-    let familiesForOwner = listFamilyProfilesForOwner(state, owner);
-    const needsDefaultMigration = (
-      ownerPolicies.length > 0 &&
-      (
-        !familiesForOwner.some((family) => String(family?.status || 'active') === 'active') ||
-        ownerPolicies.some((policy) => !policyHasFamilyBinding(policy))
-      )
-    );
-    if (needsDefaultMigration) {
-      const beforeMarker = JSON.stringify({
-        nextId: state.nextId,
-        familyProfiles: state.familyProfiles,
-        familyMembers: state.familyMembers,
-        policyBindings: ownerPolicies.map((policy) => ({
-          id: policy.id,
-          familyId: policy.familyId,
-          applicantMemberId: policy.applicantMemberId,
-          insuredMemberId: policy.insuredMemberId,
-          participantReviewStatus: policy.participantReviewStatus,
-        })),
-      });
-      ensureDefaultFamilyProfileForPrincipal(state, owner);
-      familiesForOwner = listFamilyProfilesForOwner(state, owner);
-      const migratedPolicies = (state.policies || []).filter((policy) => familySharePolicyMatchesOwner(policy, owner));
-      const afterMarker = JSON.stringify({
-        nextId: state.nextId,
-        familyProfiles: state.familyProfiles,
-        familyMembers: state.familyMembers,
-        policyBindings: migratedPolicies.map((policy) => ({
-          id: policy.id,
-          familyId: policy.familyId,
-          applicantMemberId: policy.applicantMemberId,
-          insuredMemberId: policy.insuredMemberId,
-          participantReviewStatus: policy.participantReviewStatus,
-        })),
-      });
-      if (afterMarker !== beforeMarker) await persist(state);
-    }
-    const families = familiesForOwner.map((family) => familyWithMembers(family));
-    res.json({ ok: true, families });
-  });
-
-  app.post('/api/family-profiles', async (req, res) => {
-    const owner = resolveFamilyRequestOwner(req, res);
-    if (!owner) return;
-    try {
-      const family = createFamilyProfile(state, req.body || {}, owner);
-      await persist(state);
-      res.status(201).json({ ok: true, family, members: [] });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.post('/api/family-profiles/default', async (req, res) => {
-    const owner = resolveFamilyRequestOwner(req, res);
-    if (!owner) return;
-    try {
-      const family = ensureDefaultFamilyProfileForPrincipal(state, owner);
-      await persist(state);
-      res.json({ ok: true, family, members: listFamilyMembers(state, family.id) });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.post('/api/family-profiles/:id/members', async (req, res) => {
-    const owner = resolveFamilyRequestOwner(req, res);
-    if (!owner) return;
-    const family = findOwnedFamily(req.params.id, owner);
-    if (!family) {
-      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
-    }
-    try {
-      const existingMembers = listFamilyMembers(state, family.id);
-      const existingCore = existingMembers.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
-      const shouldSetAsCore = Boolean(req.body?.setAsCore);
-      const memberInput = {
-        ...(req.body || {}),
-        ...(shouldSetAsCore ? { relationToCore: 'self', relationLabel: '本人', role: 'core' } : {}),
-      };
-      const member = createFamilyMember(state, family.id, memberInput);
-      if (shouldSetAsCore) {
-        setFamilyCoreMember(state, family, member);
-      } else {
-        family.updatedAt = new Date().toISOString();
-      }
-      await persist(state);
-      res.status(201).json({ ok: true, member, family, members: listFamilyMembers(state, family.id) });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.patch('/api/family-profiles/:id/members/:memberId', async (req, res) => {
-    const owner = resolveFamilyRequestOwner(req, res);
-    if (!owner) return;
-    const family = findOwnedFamily(req.params.id, owner);
-    if (!family) {
-      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
-    }
-    try {
-      const members = listFamilyMembers(state, family.id);
-      const member = members.find((row) => Number(row.id) === Number(req.params.memberId || 0) && String(row.status || 'active') === 'active');
-      if (!member) {
-        const error = new Error('家庭成员不存在');
-        error.code = 'FAMILY_MEMBER_NOT_FOUND';
-        error.status = 400;
-        throw error;
-      }
-      const relation = normalizeFamilyRelation(req.body?.relationLabel || req.body?.relationToCore || req.body?.relation);
-      if (relation.relationToCore === 'self') {
-        setFamilyCoreMember(state, family, member);
-      } else {
-        if (Number(member.id) === Number(family.coreMemberId || 0)) {
-          const error = new Error('核心成员关系固定为本人');
-          error.code = 'FAMILY_CORE_RELATION_IMMUTABLE';
-          error.status = 400;
-          throw error;
-        }
-        updateFamilyMemberRelation(member, relation.relationLabel);
-        family.updatedAt = new Date().toISOString();
-      }
-      await persist(state);
-      res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.patch('/api/family-profiles/:id/core', async (req, res) => {
-    const owner = resolveFamilyRequestOwner(req, res);
-    if (!owner) return;
-    const family = findOwnedFamily(req.params.id, owner);
-    if (!family) {
-      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
-    }
-    try {
-      const members = listFamilyMembers(state, family.id);
-      const member = members.find((row) => Number(row.id) === Number(req.body?.memberId || 0) && String(row.status || 'active') === 'active');
-      if (!member) {
-        const error = new Error('家庭成员不存在');
-        error.code = 'FAMILY_MEMBER_NOT_FOUND';
-        error.status = 400;
-        throw error;
-      }
-      setFamilyCoreMember(state, family, member);
-      await persist(state);
-      res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
-  app.post('/api/family-profiles/:id/share', async (req, res) => {
-    const owner = resolveFamilyRequestOwner(req, res);
-    if (!owner) return;
-    const family = findOwnedFamily(req.params.id, owner);
-    if (!family) {
-      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
-    }
-
-    const now = new Date().toISOString();
-    const share = {
-      id: allocateId(state),
-      token: crypto.randomUUID().replace(/-/g, ''),
-      familyId: Number(family.id),
-      createdAt: now,
-      payload: buildFamilySharePayload(family, owner, now),
-    };
-    state.familyReportShares.push(share);
-    await persist(state);
-    res.status(201).json({
-      ok: true,
-      share: {
-        id: share.id,
-        token: share.token,
-        familyId: share.familyId,
-        createdAt: share.createdAt,
-      },
-    });
-  });
-
-  app.get('/api/family-report-shares/:token', async (req, res) => {
-    const token = String(req.params.token || '').trim();
-    const share = (state.familyReportShares || []).find((row) => String(row?.token || '') === token);
-    if (!share) {
-      return res.status(404).json({ ok: false, code: 'SHARE_NOT_FOUND', message: '分享报告不存在' });
-    }
-    res.json({ ok: true, ...sanitizeFamilyShareValue(cloneFamilySharePayload(share.payload || {})) });
   });
 
   app.post('/api/policies/recognize', async (req, res) => {
