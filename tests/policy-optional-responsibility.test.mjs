@@ -62,6 +62,187 @@ test('optional responsibility review preserves manual selection and excludes uns
   assert.equal(reviewItems[0].selectionStatus, 'not_selected');
 });
 
+test('policy indicators preserve explicit optional scope and optional responsibility id', () => {
+  const policy = {
+    company: '新华保险',
+    name: '测试重疾',
+    optionalResponsibilities: [
+      {
+        id: 'opt_test_1',
+        company: '新华保险',
+        productName: '测试重疾',
+        coverageType: '可选责任',
+        liability: '可选责任一',
+        selectionStatus: 'selected',
+        selectionEvidence: 'manual',
+        quantificationStatus: 'quantified',
+        indicatorIds: ['ind_optional'],
+      },
+    ],
+  };
+  const indicatorRecords = [
+    {
+      id: 'ind_optional',
+      company: '新华保险',
+      productName: '测试重疾',
+      coverageType: '疾病保障',
+      liability: '轻度疾病保险金',
+      value: 20,
+      unit: '%',
+      basis: '基本保险金额',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_test_1',
+      quantificationStatus: 'quantified',
+      sourceExcerpt: '轻度疾病保险金按基本保险金额的20%给付。',
+    },
+  ];
+
+  const indicators = findPolicyCoverageIndicators(policy, indicatorRecords);
+
+  assert.equal(indicators.length, 1);
+  assert.equal(indicators[0].responsibilityScope, 'optional');
+  assert.equal(indicators[0].optionalResponsibilityId, 'opt_test_1');
+  assert.equal(indicators[0].selectionStatus, 'selected');
+  assert.equal(selectedCoverageIndicators(indicators).length, 1);
+});
+
+test('official terms wording does not mark unrecognized optional responsibility as not selected', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
+  const policy = {
+    company: '新华保险',
+    name: productName,
+    ocrText: 'NCI新华保险 保险单 险种名称 多倍保障重大疾病保险（智享版） 170000.00元 终身 20年交',
+    responsibilities: [
+      {
+        coverageType: '保险责任',
+        scenario: '本合同的保险责任分为基本责任和可选责任。'
+          + '如投保的保险责任不含可选责任一，本合同终止。'
+          + '如投保的保险责任含可选责任一，我们按条款承担保险责任。'
+          + '3.可选责任一 （1）轻度疾病保险金。',
+      },
+    ],
+  };
+  const optionalResponsibilityRecords = [
+    {
+      id: 'opt_test_1',
+      company: '新华保险',
+      productName,
+      liability: '可选责任一',
+      responsibilityScope: 'optional',
+      selectionStatus: 'unknown',
+      quantificationStatus: 'quantified',
+      indicatorIds: ['ind_optional', 'ind_optional_mid'],
+    },
+  ];
+  const indicatorRecords = [
+    {
+      id: 'ind_optional',
+      company: '新华保险',
+      productName,
+      coverageType: '疾病保障',
+      liability: '轻度疾病保险金',
+      value: 20,
+      unit: '%',
+      basis: '基本保险金额',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_test_1',
+      quantificationStatus: 'quantified',
+    },
+    {
+      id: 'ind_optional_mid',
+      company: '新华保险',
+      productName,
+      coverageType: '疾病保障',
+      liability: '中度疾病保险金',
+      value: 50,
+      unit: '%',
+      basis: '基本保险金额',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_test_1',
+      quantificationStatus: 'quantified',
+    },
+  ];
+
+  const attached = attachPolicyCoverageIndicators(policy, indicatorRecords, [], optionalResponsibilityRecords);
+  const optionalOne = attached.optionalResponsibilities.find((item) => item.liability === '可选责任一');
+  const optionalIndicator = attached.coverageIndicators.find((item) => item.id === 'ind_optional');
+
+  assert.equal(optionalOne.selectionStatus, 'unknown');
+  assert.equal(optionalOne.quantificationStatus, 'quantified');
+  assert.deepEqual(optionalOne.indicatorIds, ['ind_optional', 'ind_optional_mid']);
+  assert.equal(optionalIndicator.selectionStatus, 'unknown');
+  assert.equal(selectedCoverageIndicators(attached.coverageIndicators).some((item) => item.id === 'ind_optional'), false);
+});
+
+test('manual optional selection preserves quantified product indicators', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
+  const policy = {
+    company: '新华保险',
+    name: productName,
+    optionalResponsibilities: [
+      {
+        id: 'opt_test_1',
+        company: '新华保险',
+        productName,
+        coverageType: '可选责任',
+        liability: '可选责任一',
+        selectionStatus: 'selected',
+        selectionEvidence: 'manual',
+      },
+    ],
+  };
+  const optionalResponsibilityRecords = [
+    {
+      id: 'opt_test_1',
+      company: '新华保险',
+      productName,
+      liability: '可选责任一',
+      responsibilityScope: 'optional',
+      selectionStatus: 'unknown',
+      quantificationStatus: 'quantified',
+      indicatorIds: ['ind_optional', 'ind_optional_mid'],
+    },
+  ];
+  const indicatorRecords = [
+    {
+      id: 'ind_optional',
+      company: '新华保险',
+      productName,
+      coverageType: '疾病保障',
+      liability: '轻度疾病保险金',
+      value: 20,
+      unit: '%',
+      basis: '基本保险金额',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_test_1',
+      quantificationStatus: 'quantified',
+    },
+    {
+      id: 'ind_optional_mid',
+      company: '新华保险',
+      productName,
+      coverageType: '疾病保障',
+      liability: '中度疾病保险金',
+      value: 50,
+      unit: '%',
+      basis: '基本保险金额',
+      responsibilityScope: 'optional',
+      optionalResponsibilityId: 'opt_test_1',
+      quantificationStatus: 'quantified',
+    },
+  ];
+
+  const attached = attachPolicyCoverageIndicators(policy, indicatorRecords, [], optionalResponsibilityRecords);
+  const optionalOne = attached.optionalResponsibilities.find((item) => item.liability === '可选责任一');
+
+  assert.equal(optionalOne.selectionStatus, 'selected');
+  assert.equal(optionalOne.selectionEvidence, 'manual');
+  assert.equal(optionalOne.quantificationStatus, 'quantified');
+  assert.deepEqual(optionalOne.indicatorIds, ['ind_optional', 'ind_optional_mid']);
+  assert.equal(selectedCoverageIndicators(attached.coverageIndicators).some((item) => item.id === 'ind_optional'), true);
+  assert.equal(selectedCoverageIndicators(attached.coverageIndicators).some((item) => item.id === 'ind_optional_mid'), true);
+});
+
 test('optional responsibility review falls back to official terms when structured indicators omit optional sections', () => {
   const policy = {
     company: '新华保险',

@@ -339,11 +339,15 @@ function classifyCoverageType(liability) {
 
 function extractLiability(clause) {
   const text = String(clause || '').replace(/\s+/gu, ' ').trim();
+  const heading = text.match(
+    /^可选(?:保险)?责任\s*[一二三四五六七八九十\d]*\s*[:：]?\s*([一-龥A-Za-z0-9（）()]{2,48}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u,
+  );
+  if (heading?.[1]) return heading[1].trim();
   const directCandidates = [...text.matchAll(/[一-龥A-Za-z0-9（）()]{2,30}(?:保险金(?!额)|豁免保险费|豁免|年金|津贴)/gu)]
     .map((match) => match[0].trim()
       .replace(/^（\d+）/u, '')
       .replace(/^(?:给付|按|以|向|将按|本公司按|我们按)/u, ''))
-    .filter((value) => !/本合同可选责任|我们除按|按本合同|给付条件|保险金金额|领取人|基本保险金$/u.test(value));
+    .filter((value) => !/本合同可选责任|我们除按|按本合同|给付条件|保险金金额|领取人|基本保险金$|基本保险金额给付/u.test(value));
   if (directCandidates.length) return directCandidates.at(-1);
   const match = text.match(/(?:（\d+）)?\s*([一-龥A-Za-z0-9（）()]{2,30}?(?:保险金|豁免|年金|津贴|给付))/u);
   return match?.[1] || '';
@@ -492,16 +496,18 @@ export function rebuildOptionalResponsibilityGovernance(state = {}) {
     });
     for (const record of records) {
       const derivedIndicators = extractOptionalIndicatorsFromSection(record);
-      const retainedIndicators = derivedIndicators.length
-        ? []
-        : existingOptionalIndicators.filter((indicator) => {
-          const id = String(indicator?.id || '').trim();
-          return id
-            && (String(indicator?.optionalResponsibilityId || '').trim() === record.id
-              || (Array.isArray(record.indicatorIds) && record.indicatorIds.includes(id)))
-            && indicatorLinkedTo(record, indicator);
-        });
-      const nextIndicators = derivedIndicators.length ? derivedIndicators : retainedIndicators;
+      const retainedIndicators = existingOptionalIndicators.filter((indicator) => {
+        const id = String(indicator?.id || '').trim();
+        return id
+          && (String(indicator?.optionalResponsibilityId || '').trim() === record.id
+            || (Array.isArray(record.indicatorIds) && record.indicatorIds.includes(id)))
+          && indicatorLinkedTo(record, indicator);
+      });
+      const nextIndicators = record.quantificationStatus === 'not_quantifiable'
+        ? retainedIndicators
+        : retainedIndicators.length
+          ? retainedIndicators
+          : derivedIndicators;
       const indicatorIds = nextIndicators.map((indicator) => indicator.id);
       const quantificationStatus = indicatorIds.length
         ? 'quantified'
@@ -520,11 +526,25 @@ export function rebuildOptionalResponsibilityGovernance(state = {}) {
   }
   const existingNonOptionalIndicators = (Array.isArray(state.insuranceIndicatorRecords) ? state.insuranceIndicatorRecords : [])
     .filter((indicator) => String(indicator.responsibilityScope || 'basic') !== 'optional');
-  const uniqueOptionalRecords = [...new Map(optionalRecords.map((record) => [
-    `${record.id}\u001f${explicitCanonicalProductId(record)}`,
-    record,
-  ])).values()];
-  const uniqueIndicators = [...new Map([...existingNonOptionalIndicators, ...optionalIndicators]
+  const optionalRecordById = new Map();
+  for (const record of Array.isArray(state.optionalResponsibilityRecords) ? state.optionalResponsibilityRecords : []) {
+    const normalized = normalizeOptionalResponsibilityRecord(record);
+    optionalRecordById.set(`${normalized.id}\u001f${explicitCanonicalProductId(normalized)}`, normalized);
+  }
+  for (const record of optionalRecords) {
+    optionalRecordById.set(`${record.id}\u001f${explicitCanonicalProductId(record)}`, record);
+  }
+  const uniqueOptionalRecords = [...optionalRecordById.values()];
+  const retainedExistingOptionalIndicators = existingOptionalIndicators.filter((indicator) =>
+    uniqueOptionalRecords.some((record) => {
+      const id = String(indicator?.id || '').trim();
+      return id
+        && (String(indicator?.optionalResponsibilityId || '').trim() === record.id
+          || (Array.isArray(record.indicatorIds) && record.indicatorIds.includes(id)))
+        && indicatorLinkedTo(record, indicator);
+    })
+  );
+  const uniqueIndicators = [...new Map([...existingNonOptionalIndicators, ...retainedExistingOptionalIndicators, ...optionalIndicators]
     .map((indicator) => [String(indicator.id || ''), indicator]))
     .values()]
     .filter((indicator) => String(indicator.id || '').trim());

@@ -59,8 +59,21 @@ test('entry form requires family profile and supports core setup after OCR', () 
   assert.match(pageSource, /家庭档案/);
   assert.match(pageSource, /新建家庭档案/);
   assert.match(pageSource, /家庭关系中心/);
-  assert.match(pageSource, /以谁作为家庭关系基准/);
-  assert.match(pageSource, /新增为家庭成员/);
+  assert.match(pageSource, /保存前请选择家庭核心人员/);
+  assert.match(pageSource, /家庭核心人员/);
+  assert.match(pageSource, /与核心人员家庭关系/);
+  assert.match(pageSource, /participantsAreSamePerson/);
+  assert.match(pageSource, /areSameParticipantName\(formData\.applicant, formData\.insured\)/);
+  assert.match(pageSource, /samePersonRelationResetKeyRef/);
+  assert.doesNotMatch(pageSource, /if \(participantsAreSamePerson\(\)\) return '本人'/);
+  assert.doesNotMatch(pageSource, /disabled=\{samePerson\}/);
+  assert.doesNotMatch(pageSource, /applicantRelation \|\| '本人'/);
+  assert.doesNotMatch(customerSource, /participantNamesMatch \? '本人'/);
+  assert.doesNotMatch(pageSource, /和录入人的关系/);
+  assert.doesNotMatch(pageSource, /投保人家庭成员/);
+  assert.doesNotMatch(pageSource, /被保险人家庭成员/);
+  assert.doesNotMatch(pageSource, /选择家庭成员/);
+  assert.doesNotMatch(pageSource, /新增为家庭成员/);
   assert.match(customerSource, /familyProfiles/);
   assert.match(customerSource, /selectedFamilyId/);
   assert.match(customerSource, /createFamilyProfile/);
@@ -70,7 +83,9 @@ test('entry form requires family profile and supports core setup after OCR', () 
   assert.match(customerSource, /setFamilyCoreMember/);
   assert.match(customerSource, /setAsCoreOnCreate/);
   assert.match(pageSource, /updateParticipantName/);
-  assert.match(pageSource, /selectFamilyParticipantMember/);
+  assert.match(pageSource, /setParticipantAsCore/);
+  assert.match(pageSource, /updateParticipantRelation/);
+  assert.doesNotMatch(pageSource, /selectFamilyParticipantMember/);
   assert.doesNotMatch(customerSource, /input\.memberId && !input\.setAsCore/);
   assert.doesNotMatch(customerSource, /input\.setAsCore\s*\?\s*null/);
 });
@@ -85,7 +100,12 @@ test('customer app exposes family profile management surface', () => {
   assert.match(pageSource, /家庭档案/);
   assert.match(customerSource, /成员数/);
   assert.match(customerSource, /查看报告/);
-  assert.match(customerSource, /编辑家庭/);
+  assert.match(customerSource, /管理成员/);
+  assert.match(customerSource, /添加成员/);
+  assert.match(customerSource, /设为核心/);
+  assert.match(customerSource, /onUpdateFamilyMemberRelation/);
+  assert.match(customerSource, /设置\$\{member\.name\}家庭关系/);
+  assert.doesNotMatch(customerSource, /编辑家庭/);
   assert.match(customerSource, /录入保单/);
 });
 
@@ -167,11 +187,32 @@ test('plan type selector displays Chinese role labels instead of internal values
 test('manual rider drafts remain visible before a name is entered', () => {
   const normalizeSource = componentSource('normalizePolicyPlanList', 'primaryPlanFromPolicyForm');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
-  const keepDraftCalls = appSource.match(/normalizePolicyPlanList\(current\.plans,\s*current\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/g) || [];
+  const updatePlanSource = componentSource('updatePolicyPlan', 'addPolicyPlan');
+  const addPlanSource = componentSource('addPolicyPlan', 'removePolicyPlan');
+  const removePlanSource = componentSource('removePolicyPlan', 'selectFormProductMatch');
   assert.match(normalizeSource, /keepEmpty/);
   assert.match(normalizeSource, /!name && !matchedProductName && !keepEmpty/);
-  assert.ok(keepDraftCalls.length >= 3, 'add, update and remove should preserve unnamed draft plans');
+  assert.match(updatePlanSource, /normalizePolicyPlanList\(formData\.plans,\s*formData\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/);
+  assert.match(addPlanSource, /normalizePolicyPlanList\(current\.plans,\s*current\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/);
+  assert.match(removePlanSource, /normalizePolicyPlanList\(current\.plans,\s*current\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/);
   assert.match(pageSource, /plans=\{normalizePolicyPlanList\(formData\.plans,\s*formData\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)\}/);
+});
+
+test('rider edits do not clear matched optional responsibility draft', () => {
+  const updatePlanSource = componentSource('updatePolicyPlan', 'addPolicyPlan');
+  const addPlanSource = componentSource('addPolicyPlan', 'removePolicyPlan');
+  const removePlanSource = componentSource('removePolicyPlan', 'selectFormProductMatch');
+  const draftSource = componentSource('loadFormProductAnalysisDraft', 'updateForm');
+
+  assert.doesNotMatch(updatePlanSource, /setAnalysisDraft\(null\)/);
+  assert.doesNotMatch(addPlanSource, /setAnalysisDraft\(null\)/);
+  assert.doesNotMatch(removePlanSource, /setAnalysisDraft\(null\)/);
+  assert.match(updatePlanSource, /loadFormProductAnalysisDraft\(nextData,\s*'已更新险种明细'\)/);
+  assert.match(removePlanSource, /setMessage\('已删除附加险'\)/);
+  assert.doesNotMatch(removePlanSource, /loadFormProductAnalysisDraft\(nextData,\s*'已删除附加险/);
+  assert.match(removePlanSource, /loadFormProductAnalysisDraft\(nextData,\s*'已删除险种，已重新带出可选责任'\)/);
+  assert.match(draftSource, /existingOptionalResponsibilities/);
+  assert.match(draftSource, /optionalResponsibilities: existingOptionalResponsibilities/);
 });
 
 test('policy plan normalization keeps main plans before riders', () => {
@@ -389,12 +430,23 @@ test('customer policy detail displays responsibility official urls', () => {
 test('customer entry and policy detail expose optional responsibility selection controls', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const entrySource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const analysisSource = componentSource('AnalysisReportPage', 'TextField');
   const detailSource = componentSource('PolicyDetailSheet', null);
   const reviewSource = componentSource('OptionalResponsibilityReview', 'PolicyPlanEditor');
 
   assert.match(apiSource, /export type OptionalResponsibility/);
   assert.match(apiSource, /selectionStatus: ResponsibilitySelectionStatus/);
+  assert.match(entrySource, /optionalResponsibilities/);
+  assert.match(entrySource, /OptionalResponsibilityReview/);
+  assert.ok(
+    entrySource.indexOf('<OptionalResponsibilityReview') < entrySource.indexOf('<PolicyPlanEditor'),
+    'entry page should show main optional responsibilities before rider editor',
+  );
+  assert.match(entrySource, /compact/);
+  assert.match(entrySource, /主险可选责任确认/);
+  assert.match(entrySource, /已按主险匹配产品带出/);
+  assert.match(entrySource, /onUpdateOptionalResponsibility/);
   assert.match(appSource, /updateAnalysisOptionalResponsibility/);
   assert.match(appSource, /handleUpdateOptionalResponsibility/);
   assert.match(appSource, /selectedCoverageIndicators\(policy\.coverageIndicators\)/);
@@ -408,11 +460,27 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(appSource, /value: 'unknown', label: '不确定'/);
 });
 
+test('ocr recognition stays on entry form while carrying matched responsibility draft', () => {
+  const start = appSource.indexOf('async function recognizePreparedUpload');
+  const end = appSource.indexOf('function handleScanClick', start);
+  assert.notEqual(start, -1, 'recognizePreparedUpload should exist');
+  assert.notEqual(end, -1, 'handleScanClick should exist after recognizePreparedUpload');
+  const recognizeSource = appSource.slice(start, end);
+
+  assert.match(recognizeSource, /const recognizedAnalysis = payload\.analysis \|\| null/);
+  assert.match(recognizeSource, /setAnalysisDraft\(recognizedAnalysis\);\s*setShowAnalysisReport\(false\);/);
+  assert.doesNotMatch(recognizeSource, /setShowAnalysisReport\(true\)/);
+  assert.doesNotMatch(recognizeSource, /setShowAnalysisReport\(hasResponsibilityReportResult/);
+});
+
 test('optional responsibility review displays quantification status and selected gap warning', () => {
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   const reviewSource = componentSource('OptionalResponsibilityReview', 'PolicyPlanEditor');
 
   assert.match(apiSource, /quantificationStatus\?: QuantificationStatus/);
+  assert.match(reviewSource, /OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS\.filter\(\(option\) => option\.value !== 'unknown'\)/);
+  assert.match(reviewSource, /compact \? 'grid-cols-2' : 'grid-cols-3'/);
+  assert.match(reviewSource, /!compact && item\.sourceExcerpt/);
   assert.match(reviewSource, /量化状态/);
   assert.match(reviewSource, /该可选责任已确认投保，但尚未完成指标量化/);
   assert.match(reviewSource, /optionalResponsibilityQuantificationLabel/);
@@ -788,6 +856,16 @@ test('family report renders amount-based radar sections in the agreed order with
   assert.match(appSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile,\s*\{\s*familyId:\s*selectedFamilyId\s*\}\)/);
   assert.match(familySource, /<FamilyRadarSection report=\{report\} \/>/);
   assert.match(familySource, /<MemberRadarSection report=\{report\} \/>/);
+  assert.match(familySource, /memberRadarGridStyle/);
+  assert.match(familySource, /gridTemplateColumns: 'repeat\(auto-fit, minmax\(min\(100%, 540px\), 1fr\)\)'/);
+  assert.match(familySource, /style=\{memberRadarGridStyle\}/);
+  assert.match(familySource, /gridColumn: '1 \/ -1'/);
+  const memberRadarSectionStart = familySource.indexOf('function MemberRadarSection');
+  const memberRadarSectionEnd = familySource.indexOf('function InventorySection', memberRadarSectionStart + 1);
+  assert.notEqual(memberRadarSectionStart, -1, 'MemberRadarSection should exist');
+  assert.notEqual(memberRadarSectionEnd, -1, 'InventorySection should follow MemberRadarSection');
+  const memberRadarSectionSource = familySource.slice(memberRadarSectionStart, memberRadarSectionEnd);
+  assert.doesNotMatch(memberRadarSectionSource, /lg:grid-cols-2/);
   const familyRadarIndex = familySource.indexOf('<FamilyRadarSection report={report} />');
   const inventoryIndex = familySource.indexOf('<InventorySection rows={report.policyInventory.rows} />');
   const memberRadarIndex = familySource.indexOf('<MemberRadarSection report={report} />');
@@ -970,6 +1048,7 @@ test('client API exposes family profile types and endpoints', () => {
   assert.doesNotMatch(apiSource, /request<\{ ok: true; familyProfiles: FamilyProfile\[\] \}>/);
   assert.match(apiSource, /createFamilyProfile/);
   assert.match(apiSource, /createFamilyMember/);
+  assert.match(apiSource, /updateFamilyMemberRelation/);
   assert.match(apiSource, /ensureDefaultFamilyProfile/);
   assert.match(apiSource, /familyId\?: number/);
   assert.match(apiSource, /applicantMemberId\?: number/);

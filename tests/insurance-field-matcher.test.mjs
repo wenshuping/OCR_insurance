@@ -275,6 +275,29 @@ const NEW_CHINA_RIDER_VALUE_FIRST_LINES = [
   '服务电话:95567',
 ];
 
+const NEW_CHINA_RECEIPT_PRODUCT_LINES = [
+  '保险业务收据',
+  'NCI新华保险',
+  '开具日期:',
+  '2024年09月29日',
+  '收款单位:新华人寿保险股份有限公司浙江分公司',
+  '投保人名称（付款单位/个人）:冯力',
+  '交费日期:2024年09月29日',
+  '交费方式:详见各险种显示',
+  '保单合同号:990171228067',
+  '交费次数:首次',
+  '产品名称:畅行万里智赢版两全保险',
+  '产品名称:i他男性特定疾病保险',
+  '金额 ¥3156.00',
+  '金额 ¥140.00',
+  '合计（大写）人民币叁仟贰佰玖拾陆元整',
+  '服务人员编号:40364278',
+  '服务人员姓名:温舒萍',
+  '保险业务',
+  '收据专用章',
+  '收据说明:',
+];
+
 test('policy field schema defines canonical insurance fields', () => {
   assert.equal(POLICY_FIELD_SCHEMA.name.label, '产品名称');
   assert.equal(POLICY_FIELD_SCHEMA.paymentMode.label, '交费方式');
@@ -487,6 +510,35 @@ test('field matcher reconstructs value-first benefit-table riders from real imag
         paymentMode: '趸交',
         paymentPeriod: '趸交',
         premium: '140',
+      },
+    ],
+  );
+});
+
+test('field matcher pairs receipt product names with following amount rows', () => {
+  const plans = extractPolicyPlansFromLines(NEW_CHINA_RECEIPT_PRODUCT_LINES, {
+    company: '新华保险',
+  });
+
+  assert.deepEqual(
+    plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      premium: plan.premium,
+      premiumText: plan.premiumText,
+    })),
+    [
+      {
+        role: 'main',
+        name: '畅行万里智赢版两全保险',
+        premium: '3156',
+        premiumText: '金额¥3156.00',
+      },
+      {
+        role: 'rider',
+        name: 'i他男性特定疾病保险',
+        premium: '140',
+        premiumText: '金额¥140.00',
       },
     ],
   );

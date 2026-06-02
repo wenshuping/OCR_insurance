@@ -371,6 +371,30 @@ test('extractOptionalIndicatorsFromSection prefers the actual insurance benefit 
   assert.equal(indicators.some((row) => row.liability === '我们除按本合同的约定给付'), false);
 });
 
+test('extractOptionalIndicatorsFromSection reads optional heading benefit names without numbered clauses', () => {
+  const section = {
+    company: '新华保险',
+    productName,
+    liability: '可选责任二',
+    sourceExcerpt: [
+      '可选责任二重度恶性肿瘤多次给付保险金',
+      '被保险人于等待期后由本公司认可医院的专科医生确诊初次发生本合同所指的“恶性肿瘤——重度”后，',
+      '于85周岁保单周年日之前再次确诊发生本合同所指的“恶性肿瘤——重度”，',
+      '且满足间隔期条件，我们按基本保险金额给付重度恶性肿瘤多次给付保险金。',
+    ].join(''),
+  };
+
+  const indicators = extractOptionalIndicatorsFromSection(section);
+
+  assert.ok(indicators.some((row) =>
+    row.liability === '重度恶性肿瘤多次给付保险金'
+      && row.value === 100
+      && row.unit === '%'
+      && row.basis === '基本保险金额'
+  ));
+  assert.equal(indicators.some((row) => /基本保险金额给付/u.test(row.liability)), false);
+});
+
 test('rebuildOptionalResponsibilityGovernance produces records and indicators from knowledge records', () => {
   const state = {
     knowledgeRecords: [
@@ -426,6 +450,101 @@ test('rebuildOptionalResponsibilityGovernance keeps canonical products with coll
     optionalRecords.map((record) => record.canonicalProductId).sort(),
     ['product_a', 'product_b'],
   );
+});
+
+test('rebuildOptionalResponsibilityGovernance adds missing optional records without dropping repaired existing records', () => {
+  const optionalOneId = buildOptionalResponsibilityId({
+    company: '新华保险',
+    productName,
+    liability: '可选责任一',
+  });
+  const optionalTwoId = buildOptionalResponsibilityId({
+    company: '新华保险',
+    productName,
+    liability: '可选责任二',
+  });
+  const unrelatedExistingId = buildOptionalResponsibilityId({
+    company: '测试保险',
+    productName: '测试可选产品',
+    liability: '可选责任',
+  });
+  const state = {
+    knowledgeRecords: [
+      {
+        id: '902',
+        company: '新华保险',
+        productName,
+        url: 'https://example.com/xinhua-optional',
+        pageText: [
+          '保险责任 本合同分为基本责任和可选责任。',
+          '3.可选责任一 （1）轻度疾病保险金 按基本保险金额的20%给付。',
+          '4.可选责任二重度恶性肿瘤多次给付保险金 被保险人再次确诊恶性肿瘤重度，我们按基本保险金额给付重度恶性肿瘤多次给付保险金。',
+        ].join('\n'),
+      },
+    ],
+    insuranceIndicatorRecords: [
+      {
+        id: 'repaired_light',
+        company: '新华保险',
+        productName,
+        coverageType: '疾病保障',
+        liability: '轻度疾病保险金',
+        value: 20,
+        unit: '%',
+        basis: '基本保险金额',
+        formulaText: '基本保险金额 × 20%',
+        responsibilityScope: 'optional',
+        optionalResponsibilityId: optionalOneId,
+        quantificationStatus: 'quantified',
+      },
+      {
+        id: 'unrelated_repaired',
+        company: '测试保险',
+        productName: '测试可选产品',
+        coverageType: '疾病保障',
+        liability: '测试保险金',
+        value: 100,
+        unit: '%',
+        basis: '基本保险金额',
+        formulaText: '基本保险金额 × 100%',
+        responsibilityScope: 'optional',
+        optionalResponsibilityId: unrelatedExistingId,
+        quantificationStatus: 'quantified',
+      },
+    ],
+    optionalResponsibilityRecords: [
+      {
+        id: optionalOneId,
+        company: '新华保险',
+        productName,
+        liability: '可选责任一',
+        quantificationStatus: 'quantified',
+        indicatorIds: ['repaired_light'],
+      },
+      {
+        id: unrelatedExistingId,
+        company: '测试保险',
+        productName: '测试可选产品',
+        liability: '可选责任',
+        quantificationStatus: 'quantified',
+        indicatorIds: ['unrelated_repaired'],
+      },
+    ],
+  };
+
+  const next = rebuildOptionalResponsibilityGovernance(state);
+  const optionalOne = next.optionalResponsibilityRecords.find((row) => row.id === optionalOneId);
+  const optionalTwo = next.optionalResponsibilityRecords.find((row) => row.liability === '可选责任二');
+  const unrelated = next.optionalResponsibilityRecords.find((row) => row.id === unrelatedExistingId);
+
+  assert.deepEqual(optionalOne.indicatorIds, ['repaired_light']);
+  assert.equal(next.insuranceIndicatorRecords.some((row) => row.id === 'repaired_light'), true);
+  assert.equal(optionalTwo.quantificationStatus, 'quantified');
+  assert.equal(optionalTwo.indicatorIds.length, 1);
+  assert.equal(next.insuranceIndicatorRecords.some((row) => row.optionalResponsibilityId === optionalTwo.id), true);
+  assert.equal(unrelated.quantificationStatus, 'quantified');
+  assert.deepEqual(unrelated.indicatorIds, ['unrelated_repaired']);
+  assert.equal(next.insuranceIndicatorRecords.some((row) => row.id === 'unrelated_repaired'), true);
 });
 
 test('rebuildOptionalResponsibilityGovernance preserves same-product linked optional indicators only', () => {

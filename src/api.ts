@@ -507,6 +507,7 @@ export type PolicyFormData = {
   applicantRelationLabel?: string;
   insuredMemberName?: string;
   insuredRelationLabel?: string;
+  optionalResponsibilities?: OptionalResponsibility[];
 };
 
 export type PolicyUpdateInput = Partial<PolicyFormData> & {
@@ -581,6 +582,7 @@ export function recognizePolicy(input: {
   return request<{
     ok: true;
     scan: PolicyScanResult;
+    analysis?: PolicyAnalysisResult | null;
     registrationRequiredNext: boolean;
   }>('/api/policies/recognize', {
     token: input.token,
@@ -627,6 +629,18 @@ export function queryPolicyResponsibilities(input: { company: string; name: stri
       company: input.company,
       name: input.name,
       preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer,
+    },
+  });
+}
+
+export function getLocalPolicyAnalysisDraft(input: { manualData: Partial<PolicyFormData>; ocrText?: string }) {
+  return request<{
+    ok: true;
+    analysis: PolicyAnalysisResult | null;
+  }>('/api/policy-responsibilities/local-draft', {
+    body: {
+      manualData: input.manualData,
+      ocrText: input.ocrText,
     },
   });
 }
@@ -780,6 +794,17 @@ export function setFamilyCoreMember(input: { token?: string; guestId?: string; f
     method: 'PATCH',
     body: { memberId: input.memberId },
   });
+}
+
+export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel: string }) {
+  return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(
+    `/api/family-profiles/${input.familyId}/members/${input.memberId}${authQuery(input)}`,
+    {
+      token: input.token,
+      method: 'PATCH',
+      body: { relationLabel: input.relationLabel },
+    },
+  );
 }
 
 export function createFamilyReportShare(input: { token?: string; guestId?: string; familyId: number }) {

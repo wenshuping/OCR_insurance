@@ -754,6 +754,9 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
   if (!members.length) return null;
   const planningMode = report.radar.mode === 'planning';
   const [expandedCalculations, setExpandedCalculations] = useState<Record<string, boolean>>({});
+  const memberRadarGridStyle = {
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 540px), 1fr))',
+  };
 
   return (
     <Section title={planningMode ? '个人保障估算雷达' : '个人保额结构雷达'}>
@@ -761,7 +764,7 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
         <p className="mb-3 text-xs font-bold leading-5 text-[#64748B]">
           {planningMode ? '按家庭目标自动分摊到成员，仅供初步估算；未要求客户录入个人收入、负债或资产。' : '客户未录入家庭目标时，按有效金额压缩比例展示个人结构，非保障充足率。'}
         </p>
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-3" style={memberRadarGridStyle}>
           {members.map((member) => {
             const memberKey = reportMemberKey(member);
             return (
@@ -812,7 +815,7 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
             );
           })}
           {report.radar.hiddenMembers.length ? (
-            <div className="rounded-[16px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-4 text-[#9A4A16] lg:col-span-2">
+            <div className="rounded-[16px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] font-semibold leading-4 text-[#9A4A16]" style={{ gridColumn: '1 / -1' }}>
               未展示成员: {report.radar.hiddenMembers.map((member) => `${memberDisplayName(member)}(${formatMoneyWithUnit(member.totalAmount)})`).join('、')}
             </div>
           ) : null}

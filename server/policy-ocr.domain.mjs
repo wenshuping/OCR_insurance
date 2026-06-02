@@ -239,7 +239,8 @@ function optionalResponsibilityText(value = {}) {
 }
 
 function indicatorLooksOptional(indicator = {}) {
-  if (String(indicator?.responsibilityScope || '') === 'optional') return true;
+  if (String(indicator?.responsibilityScope || '').trim() === 'optional') return true;
+  if (normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId)) return true;
   const directText = [
     indicator?.liability,
     indicator?.coverageType,
@@ -293,10 +294,6 @@ function buildOptionalResponsibilitySelectionMap(items = []) {
 function policyOptionalSelectionEvidenceText(policy = {}) {
   return [
     policy?.ocrText,
-    policy?.report,
-    ...(Array.isArray(policy?.responsibilities)
-      ? policy.responsibilities.map((row) => [row?.coverageType, row?.scenario, row?.payout, row?.note].join(' '))
-      : []),
   ].join(' ');
 }
 
@@ -492,7 +489,9 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
     return;
   }
   const candidateStatus = normalizeResponsibilitySelectionStatus(normalized.selectionStatus);
-  const useCandidateSelection = existing.selectionEvidence !== 'manual' && candidateStatus !== 'unknown';
+  const useCandidateSelection = normalized.selectionEvidence === 'manual'
+    ? Boolean(candidateStatus)
+    : existing.selectionEvidence !== 'manual' && candidateStatus !== 'unknown';
   const existingQuantificationStatus = normalizeQuantificationStatus(existing.quantificationStatus);
   const candidateQuantificationStatus = normalizeQuantificationStatus(normalized.quantificationStatus);
   const nextQuantificationStatus = existingQuantificationStatus === 'not_quantifiable'
@@ -502,15 +501,24 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
       : existingQuantificationStatus === 'quantified'
         ? existingQuantificationStatus
         : candidateQuantificationStatus;
+  const keepExistingOptionalLabel = normalizeLookupText(existing.coverageType) === '可选责任'
+    && normalizeLookupText(normalized.coverageType) !== '可选责任';
+  const indicatorIds = [
+    ...(Array.isArray(existing.indicatorIds) ? existing.indicatorIds : []),
+    ...normalized.indicatorIds,
+  ].filter((item, index, list) => item && list.indexOf(item) === index);
   candidates.set(id, {
     ...existing,
     ...normalized,
+    coverageType: keepExistingOptionalLabel ? existing.coverageType : normalized.coverageType || existing.coverageType,
+    liability: keepExistingOptionalLabel ? existing.liability : normalized.liability || existing.liability,
+    title: keepExistingOptionalLabel ? existing.title : normalized.title || existing.title,
     sourceExcerpt: existing.sourceExcerpt || normalized.sourceExcerpt,
     selectionStatus: useCandidateSelection ? candidateStatus : existing.selectionStatus,
     selectionEvidence: useCandidateSelection ? normalized.selectionEvidence : existing.selectionEvidence,
     quantificationStatus: nextQuantificationStatus,
     quantificationReason: normalized.quantificationReason || existing.quantificationReason,
-    indicatorIds: normalized.indicatorIds.length ? normalized.indicatorIds : existing.indicatorIds,
+    indicatorIds,
   });
 }
 
@@ -667,10 +675,10 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
   }
 
   for (const persisted of normalizeOptionalResponsibilities(policy?.optionalResponsibilities)) {
+    if (!optionalResponsibilityRecordMatchesPolicy(policy, persisted)) continue;
     const existingByKey = [...candidates.values()].find((candidate) => optionalResponsibilityKey(candidate) === optionalResponsibilityKey(persisted));
     const id = existingByKey?.id || persisted.id;
-    const existing = candidates.get(id);
-    candidates.set(id, existing ? { ...existing, ...persisted, id } : { ...persisted, id });
+    mergeOptionalResponsibilityCandidate(candidates, { ...persisted, id });
   }
 
   return [...candidates.values()].sort(
@@ -809,7 +817,7 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
   const mainPlan = plans.find((plan) => plan.role === 'main') || plans[0] || null;
   const canonicalProductId = data.canonicalProductId || mainPlan?.canonicalProductId || '';
   const now = new Date().toISOString();
-  const hasAnalysis = Boolean(analysis?.report || analysis?.coverageTable?.length);
+  const hasAnalysis = Boolean(analysis?.report || analysis?.coverageTable?.length || analysis?.optionalResponsibilities?.length);
   const responsibilities = Array.isArray(analysis?.coverageTable)
     ? analysis.coverageTable.map((row) => ({
         coverageType: String(row.coverageType || '').trim() || '保险责任',

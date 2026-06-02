@@ -68,6 +68,7 @@ import {
   getAdminOcrConfig,
   getAdminOverview,
   getFamilyReportShare,
+  getLocalPolicyAnalysisDraft,
   getPolicy,
   listPolicies,
   listFamilyProfiles,
@@ -88,6 +89,7 @@ import {
   setFamilyCoreMember,
   updateAdminOfficialDomainProfile,
   updateAdminOcrConfig,
+  updateFamilyMemberRelation,
   updatePolicy,
 } from './api';
 import {
@@ -150,6 +152,16 @@ const emptyForm: PolicyFormData = {
 function createGuestId() {
   if (crypto.randomUUID) return `guest-${crypto.randomUUID()}`;
   return `guest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeParticipantName(value: string | null | undefined) {
+  return String(value || '').trim().replace(/\s+/g, '');
+}
+
+function areSameParticipantName(left: string | null | undefined, right: string | null | undefined) {
+  const normalizedLeft = normalizeParticipantName(left);
+  const normalizedRight = normalizeParticipantName(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
 function getOrCreateGuestId() {
@@ -570,8 +582,8 @@ function productLookupKey(company: string, name: string) {
   return `${company.trim()}::${name.trim()}`;
 }
 
-function hasAnalysisResult(analysis: PolicyAnalysisResult | null) {
-  return Boolean(analysis?.report?.trim() || analysis?.coverageTable?.length);
+function hasAnalysisResult(analysis: PolicyAnalysisResult | null | undefined) {
+  return Boolean(analysis?.report?.trim() || analysis?.coverageTable?.length || analysis?.optionalResponsibilities?.length);
 }
 
 const OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS: Array<{ value: OptionalResponsibility['selectionStatus']; label: string }> = [
@@ -2878,6 +2890,7 @@ function SharedFamilyReportApp({ shareToken }: { shareToken: string }) {
 
 function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const formProductDraftRequestRef = useRef(0);
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [mobile, setMobile] = useState(() => localStorage.getItem(USER_MOBILE_KEY) || '');
@@ -3189,10 +3202,48 @@ function CustomerApp() {
     };
   }, [activeTab, confirmedProductMatchKey, formData.company, formData.name]);
 
+  async function loadFormProductAnalysisDraft(nextData: PolicyFormData, fallbackMessage: string) {
+    const company = nextData.company.trim();
+    const name = nextData.name.trim();
+    if (!company || !name) return;
+    const requestId = formProductDraftRequestRef.current + 1;
+    formProductDraftRequestRef.current = requestId;
+    const existingOptionalResponsibilities = analysisDraft?.optionalResponsibilities?.length
+      ? analysisDraft.optionalResponsibilities
+      : nextData.optionalResponsibilities;
+    const manualData = existingOptionalResponsibilities?.length
+      ? { ...nextData, optionalResponsibilities: existingOptionalResponsibilities }
+      : nextData;
+    try {
+      const payload = await getLocalPolicyAnalysisDraft({
+        manualData,
+        ocrText: ocrText || `${company} ${name}`,
+      });
+      if (formProductDraftRequestRef.current !== requestId) return;
+      if (hasAnalysisResult(payload.analysis)) {
+        setAnalysisDraft(payload.analysis);
+        setShowAnalysisReport(false);
+        setMessage(payload.analysis?.optionalResponsibilities?.length
+          ? '已匹配本地保险责任，请确认可选责任后保存'
+          : '已匹配本地保险责任，请确认后保存');
+      } else {
+        setAnalysisDraft(null);
+        setShowAnalysisReport(false);
+        setMessage(fallbackMessage);
+      }
+    } catch {
+      if (formProductDraftRequestRef.current !== requestId) return;
+      setAnalysisDraft(null);
+      setShowAnalysisReport(false);
+      setMessage(fallbackMessage);
+    }
+  }
+
   function updateForm(key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) {
     setAnalysisDraft(null);
     setShowAnalysisReport(false);
     if (key === 'company' || key === 'name') {
+      formProductDraftRequestRef.current += 1;
       setConfirmedProductMatchKey('');
     }
     setFormData((current) => {
@@ -3218,37 +3269,38 @@ function CustomerApp() {
   }
 
   function updatePolicyPlan(index: number, key: string, value: string) {
-    setAnalysisDraft(null);
     setShowAnalysisReport(false);
-    setFormData((current) => {
-      const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
-      const existing = plans[index];
-      if (!existing) return current;
-      const nextPlans = plans.map((plan, planIndex) => {
-        if (planIndex !== index) return plan;
-        return {
-          ...plan,
-          [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
-          ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
-        };
-      });
-      const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
+    const plans = normalizePolicyPlanList(formData.plans, formData.company, { keepEmpty: true });
+    const existing = plans[index];
+    if (!existing) return;
+    const nextPlans = plans.map((plan, planIndex) => {
+      if (planIndex !== index) return plan;
       return {
-        ...current,
-        plans: nextPlans,
-        name: primary?.matchedProductName || primary?.name || current.name,
-        amount: primary?.amount ? String(primary.amount) : current.amount,
-        coveragePeriod: primary?.coveragePeriod || current.coveragePeriod,
-        paymentPeriod: primary?.paymentPeriod || current.paymentPeriod,
-        firstPremium: nextPlans.reduce((sum, plan) => sum + Number(plan.premium || 0), 0)
-          ? String(nextPlans.reduce((sum, plan) => sum + Number(plan.premium || 0), 0))
-          : current.firstPremium,
+        ...plan,
+        [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
+        ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
       };
     });
+    const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
+    const totalPremium = nextPlans.reduce((sum, plan) => sum + Number(plan.premium || 0), 0);
+    const nextData = {
+      ...formData,
+      plans: nextPlans,
+      name: primary?.matchedProductName || primary?.name || formData.name,
+      canonicalProductId: primary?.canonicalProductId || '',
+      amount: primary?.amount ? String(primary.amount) : formData.amount,
+      coveragePeriod: primary?.coveragePeriod || formData.coveragePeriod,
+      paymentPeriod: primary?.paymentPeriod || formData.paymentPeriod,
+      firstPremium: totalPremium ? String(totalPremium) : formData.firstPremium,
+    };
+    setFormData(nextData);
+    if (['role', 'name', 'productType'].includes(key)) {
+      setMessage('已更新险种明细，正在重新带出可选责任');
+      void loadFormProductAnalysisDraft(nextData, '已更新险种明细');
+    }
   }
 
   function addPolicyPlan() {
-    setAnalysisDraft(null);
     setShowAnalysisReport(false);
     setFormData((current) => ({
       ...current,
@@ -3271,47 +3323,6 @@ function CustomerApp() {
         },
       ],
     }));
-  }
-
-  async function loadFormProductAnalysisDraft(nextData: PolicyFormData, successMessage: string) {
-    const startedAt = clientPerfNow();
-    setAnalysisDraft(null);
-    setLoading(true);
-    try {
-      const payload = await analyzePolicy({
-        token,
-        guestId,
-        ocrText,
-        uploadItem: scanResult ? null : uploadItem,
-        manualData: nextData,
-        scan: scanResult,
-      });
-      reportClientPerformance('client.analyze.request', {
-        durationMs: clientElapsedMs(startedAt),
-        requestMs: clientElapsedMs(startedAt),
-        uploadBytes: uploadItem?.size || 0,
-        hasUpload: Boolean(uploadItem),
-        reusedScan: Boolean(scanResult),
-        outputOcrChars: String(payload.scan?.ocrText || '').length,
-        responsibilityCount: payload.analysis?.coverageTable?.length || 0,
-      });
-      setScanResult(payload.scan);
-      setOcrText(payload.scan.ocrText || '');
-      setAnalysisDraft(payload.analysis);
-      setShowAnalysisReport(true);
-      setMessage(successMessage);
-    } catch (error) {
-      reportClientPerformance('client.analyze.error', {
-        durationMs: clientElapsedMs(startedAt),
-        uploadBytes: uploadItem?.size || 0,
-        hasUpload: Boolean(uploadItem),
-        reusedScan: Boolean(scanResult),
-      });
-      if (handleRegistrationRequiredError(error)) return;
-      setMessage(error instanceof Error ? error.message : '保险责任生成失败，请稍后重试');
-    } finally {
-      setLoading(false);
-    }
   }
 
   function removePolicyPlan(index: number) {
@@ -3362,6 +3373,13 @@ function CustomerApp() {
     setConfirmedProductMatchKey(productLookupKey(company, name));
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    const nextData = {
+      ...formData,
+      company,
+      name,
+      canonicalProductId,
+      plans: setMainPolicyPlanProduct(formData.plans, company, name, canonicalProductId),
+    };
     setFormData((current) => ({
       ...current,
       company,
@@ -3382,7 +3400,8 @@ function CustomerApp() {
           }
         : current,
     );
-    setMessage(`已选择本地产品：${name}`);
+    setMessage(`已选择本地产品：${name}，正在带出可选责任`);
+    void loadFormProductAnalysisDraft(nextData, `已选择本地产品：${name}`);
   }
 
   function selectFormProductSuggestion(suggestion: PolicyProductSuggestion) {
@@ -3395,6 +3414,13 @@ function CustomerApp() {
     setConfirmedProductMatchKey(productLookupKey(company, name));
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    const nextData = {
+      ...formData,
+      company,
+      name,
+      canonicalProductId,
+      plans: setMainPolicyPlanProduct(formData.plans, company, name, canonicalProductId),
+    };
     setFormData((current) => ({
       ...current,
       company,
@@ -3415,7 +3441,8 @@ function CustomerApp() {
           }
         : current,
     );
-    setMessage(`已选择保险产品：${name}`);
+    setMessage(`已选择保险产品：${name}，正在带出可选责任`);
+    void loadFormProductAnalysisDraft(nextData, `已选择保险产品：${name}`);
   }
 
   function handleSelectFamily(familyId: number | null) {
@@ -3504,11 +3531,6 @@ function CustomerApp() {
     return payload.member;
   }
 
-  async function createMemberForCurrentFamily(input: { name: string; relationLabel: string; setAsCore?: boolean }) {
-    const family = await ensureFamilyBeforeSave();
-    return createFamilyMemberForFamily(family, input);
-  }
-
   function replaceFamilyProfile(family: FamilyProfile, members: FamilyMember[]) {
     const nextFamily = { ...family, members };
     setFamilyProfiles((current) => [nextFamily, ...current.filter((item) => Number(item.id) !== Number(nextFamily.id))]);
@@ -3523,6 +3545,17 @@ function CustomerApp() {
       guestId: token ? undefined : guestId,
       familyId: family.id,
       memberId: member.id,
+    });
+    return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function updateFamilyMemberRelationForFamily(family: FamilyProfile, member: FamilyMember, relationLabel: string) {
+    const payload = await updateFamilyMemberRelation({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      memberId: member.id,
+      relationLabel,
     });
     return replaceFamilyProfile(payload.family, payload.members);
   }
@@ -3590,6 +3623,16 @@ function CustomerApp() {
     setFormData((current) => mergeScanToForm(payload.scan, current));
     setOcrText(payload.scan.ocrText || '');
     setScanResult(payload.scan);
+    const recognizedAnalysis = payload.analysis || null;
+    if (hasAnalysisResult(recognizedAnalysis)) {
+      setAnalysisDraft(recognizedAnalysis);
+      setShowAnalysisReport(false);
+      setMessage(recognizedAnalysis?.optionalResponsibilities?.length
+        ? 'OCR 已完成，已匹配本地保险责任，请确认可选责任后保存'
+        : 'OCR 已完成，已匹配本地保险责任，请确认后保存');
+    } else {
+      setMessage('OCR 已完成，可生成保险责任或直接保存');
+    }
     reportClientPerformance('client.recognize.complete', {
       durationMs: clientElapsedMs(flowStartedAt),
       source,
@@ -3598,7 +3641,6 @@ function CustomerApp() {
       hasUpload: true,
       outputOcrChars: String(payload.scan?.ocrText || '').length,
     });
-    setMessage('OCR 已完成，可生成保险责任或直接保存');
   }
 
   function handleScanClick() {
@@ -3956,35 +3998,69 @@ function CustomerApp() {
 
       const applicantName = formData.applicant.trim();
       const insuredName = formData.insured.trim();
-      const shouldCreateApplicantAsCore = !submitFamily.coreMemberId;
-      const applicantMember = await resolveSubmitMember({
+      const participantNamesMatch = areSameParticipantName(applicantName, insuredName);
+      const applicantRelationForSubmit = formData.applicantRelationLabel || formData.applicantRelation || '待确认';
+      const insuredRelationForSubmit = formData.insuredRelationLabel || formData.insuredRelation || '待确认';
+      const applicantShouldBeCore = applicantRelationForSubmit === '本人';
+      const insuredShouldBeCore = insuredRelationForSubmit === '本人';
+      if (applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
+        setMessage('家庭核心人员只能选择一个');
+        return;
+      }
+      if (!submitFamily.coreMemberId && !applicantShouldBeCore && !insuredShouldBeCore) {
+        setMessage('请勾选家庭核心人员后再保存');
+        return;
+      }
+      let applicantMember = await resolveSubmitMember({
         name: applicantName,
         memberId: formData.applicantMemberId,
-        relationLabel: formData.applicantRelationLabel || '待确认',
-        setAsCoreOnCreate: shouldCreateApplicantAsCore,
+        relationLabel: applicantRelationForSubmit,
+        setAsCoreOnCreate: applicantShouldBeCore && !submitFamily.coreMemberId,
       });
       if (!applicantMember) {
         setMessage('请确认投保人的家庭成员身份后再保存');
         return;
       }
-      if (!submitFamily.coreMemberId) {
-        submitFamily = await setCoreMemberForCurrentFamily(submitFamily, applicantMember);
+      const refreshSubmitFamilyMembers = () => {
         submitFamilyMembers = Array.isArray(submitFamily.members) ? [...submitFamily.members] : submitFamilyMembers;
-      }
-      const insuredMember = await resolveSubmitMember({
+      };
+      const findSubmitMemberById = (id: number | null | undefined) =>
+        submitFamilyMembers.find((member) => member.status === 'active' && Number(member.id) === Number(id || 0)) || null;
+      const setSubmitCoreMember = async (member: FamilyMember) => {
+        if (Number(submitFamily.coreMemberId || 0) === Number(member.id)) return findSubmitMemberById(member.id) || member;
+        submitFamily = await setCoreMemberForCurrentFamily(submitFamily, member);
+        refreshSubmitFamilyMembers();
+        return findSubmitMemberById(member.id) || member;
+      };
+      const syncSubmitMemberRelation = async (member: FamilyMember, relationLabel: string) => {
+        if (!relationLabel || relationLabel === '本人' || member.relationLabel === relationLabel) return member;
+        submitFamily = await updateFamilyMemberRelationForFamily(submitFamily, member, relationLabel);
+        refreshSubmitFamilyMembers();
+        return findSubmitMemberById(member.id) || member;
+      };
+      let insuredMember = await resolveSubmitMember({
         name: insuredName,
         memberId: formData.insuredMemberId,
-        relationLabel: formData.insuredRelationLabel || '待确认',
+        relationLabel: insuredRelationForSubmit,
+        setAsCoreOnCreate: insuredShouldBeCore && !submitFamily.coreMemberId,
       });
       if (!insuredMember) {
         setMessage('请确认被保险人的家庭成员身份后再保存');
         return;
       }
+      if (applicantShouldBeCore) applicantMember = await setSubmitCoreMember(applicantMember);
+      if (insuredShouldBeCore) insuredMember = await setSubmitCoreMember(insuredMember);
+      if (!applicantShouldBeCore) applicantMember = await syncSubmitMemberRelation(applicantMember, applicantRelationForSubmit);
+      if (!insuredShouldBeCore) insuredMember = await syncSubmitMemberRelation(insuredMember, insuredRelationForSubmit);
       const submitData: PolicyFormData = {
         ...formData,
         familyId: submitFamily.id,
         applicantMemberId: applicantMember.id,
         insuredMemberId: insuredMember.id,
+        applicantRelation: applicantRelationForSubmit,
+        insuredRelation: insuredRelationForSubmit,
+        applicantRelationLabel: applicantRelationForSubmit,
+        insuredRelationLabel: insuredRelationForSubmit,
       };
       setFormData(submitData);
       const payload = await scanPolicy({
@@ -4631,11 +4707,11 @@ function CustomerApp() {
           productMatchLoading={formProductMatchLoading}
           productMatchMessage={formProductMatchMessage}
           productMatches={formProductMatches}
+          optionalResponsibilities={analysisDraft?.optionalResponsibilities || []}
           selectedFamilyId={selectedFamilyId}
           selectedFamilyMembers={selectedFamilyMembers}
           onFileChange={handleFileChange}
           onCreateFamily={() => void handleCreateFamilyProfile()}
-          onCreateFamilyMember={(input) => createMemberForCurrentFamily(input)}
           onGenerateAnalysis={() => void handleGenerateAnalysis()}
           onOcrTextChange={handleOcrTextChange}
           onScanClick={handleScanClick}
@@ -4648,6 +4724,7 @@ function CustomerApp() {
           onRemovePlan={removePolicyPlan}
           onUpdatePlan={updatePolicyPlan}
           onUpdateForm={updateForm}
+          onUpdateOptionalResponsibility={updateAnalysisOptionalResponsibility}
           isLoggedIn={isLoggedIn}
           mobile={mobile}
           onOpenAccount={() => setShowAccountSheet(true)}
@@ -4674,6 +4751,9 @@ function CustomerApp() {
           onCreateFamily={async (familyName) => {
             await createFamilyProfileByName(familyName);
           }}
+          onCreateFamilyMemberForFamily={createFamilyMemberForFamily}
+          onSetCoreMember={setCoreMemberForCurrentFamily}
+          onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
           onBackToEntry={() => {
             setActiveTab('entry');
             setMessage('可以继续录入保单');
@@ -4840,6 +4920,9 @@ function FamilyProfileManager({
   selectedFamilyId,
   onSelectFamily,
   onCreateFamily,
+  onCreateFamilyMemberForFamily,
+  onSetCoreMember,
+  onUpdateFamilyMemberRelation,
   onBackToEntry,
   onOpenReport,
 }: {
@@ -4847,10 +4930,25 @@ function FamilyProfileManager({
   selectedFamilyId: number | null;
   onSelectFamily: (familyId: number) => void;
   onCreateFamily: (familyName: string) => Promise<void>;
+  onCreateFamilyMemberForFamily: (family: FamilyProfile, input: { name: string; relationLabel: string; setAsCore?: boolean }) => Promise<FamilyMember | null>;
+  onSetCoreMember: (family: FamilyProfile, member: FamilyMember) => Promise<FamilyProfile>;
+  onUpdateFamilyMemberRelation: (family: FamilyProfile, member: FamilyMember, relationLabel: string) => Promise<FamilyProfile>;
   onBackToEntry: () => void;
   onOpenReport: (familyId: number) => void;
 }) {
   const families = Array.isArray(familyProfiles) ? familyProfiles : [];
+  const [editingFamilyId, setEditingFamilyId] = useState<number | null>(null);
+  const [memberDraftName, setMemberDraftName] = useState('');
+  const [memberDraftRelation, setMemberDraftRelation] = useState('待确认');
+  const [editingMessage, setEditingMessage] = useState('');
+  const [editingBusy, setEditingBusy] = useState(false);
+
+  useEffect(() => {
+    if (!editingFamilyId) return;
+    if (!families.some((family) => Number(family.id) === Number(editingFamilyId))) {
+      setEditingFamilyId(null);
+    }
+  }, [editingFamilyId, families]);
 
   function activeMembers(family: FamilyProfile) {
     const members = Array.isArray(family.members) ? family.members : [];
@@ -4863,10 +4961,80 @@ function FamilyProfileManager({
     return coreMember?.name || members[0]?.name || '待设置';
   }
 
+  function isCoreMember(family: FamilyProfile, member: FamilyMember) {
+    return Number(member.id) === Number(family.coreMemberId || 0);
+  }
+
+  function editableRelationOptions(value: string) {
+    const options = FAMILY_MEMBER_RELATION_OPTIONS.filter((relation) => relation !== '本人');
+    return value && !options.includes(value) ? [value, ...options] : options;
+  }
+
   async function handleCreateFamily() {
     const familyName = window.prompt('请输入家庭档案名称', '默认家庭')?.trim();
     if (!familyName) return;
     await onCreateFamily(familyName);
+  }
+
+  function toggleFamilyEditor(family: FamilyProfile) {
+    const nextEditing = Number(editingFamilyId) === Number(family.id) ? null : family.id;
+    onSelectFamily(family.id);
+    setEditingFamilyId(nextEditing);
+    setEditingMessage('');
+    setMemberDraftName('');
+    setMemberDraftRelation('待确认');
+  }
+
+  async function handleAddFamilyMember(family: FamilyProfile) {
+    const name = memberDraftName.trim();
+    if (!name) {
+      setEditingMessage('请输入成员姓名');
+      return;
+    }
+    setEditingBusy(true);
+    setEditingMessage('');
+    try {
+      const member = await onCreateFamilyMemberForFamily(family, {
+        name,
+        relationLabel: memberDraftRelation || '待确认',
+        setAsCore: memberDraftRelation === '本人',
+      });
+      if (member) {
+        setMemberDraftName('');
+        setMemberDraftRelation('待确认');
+        setEditingMessage(`已添加成员：${member.name}`);
+      }
+    } catch (error) {
+      setEditingMessage(error instanceof Error ? error.message : '添加成员失败');
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function handleSetCoreMember(family: FamilyProfile, member: FamilyMember) {
+    setEditingBusy(true);
+    setEditingMessage('');
+    try {
+      await onSetCoreMember(family, member);
+      setEditingMessage(`已设置核心成员：${member.name}`);
+    } catch (error) {
+      setEditingMessage(error instanceof Error ? error.message : '设置核心成员失败');
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function handleUpdateFamilyMemberRelation(family: FamilyProfile, member: FamilyMember, relationLabel: string) {
+    setEditingBusy(true);
+    setEditingMessage('');
+    try {
+      await onUpdateFamilyMemberRelation(family, member, relationLabel);
+      setEditingMessage(`已更新${member.name}的家庭关系`);
+    } catch (error) {
+      setEditingMessage(error instanceof Error ? error.message : '更新家庭关系失败');
+    } finally {
+      setEditingBusy(false);
+    }
   }
 
   return (
@@ -4894,6 +5062,7 @@ function FamilyProfileManager({
         {families.length ? families.map((family) => {
           const members = activeMembers(family);
           const selected = Number(family.id) === Number(selectedFamilyId);
+          const editing = Number(family.id) === Number(editingFamilyId);
           return (
             <section
               key={family.id}
@@ -4937,10 +5106,10 @@ function FamilyProfileManager({
                 <button
                   type="button"
                   className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-100 text-xs font-black text-slate-700"
-                  onClick={() => onSelectFamily(family.id)}
+                  onClick={() => toggleFamilyEditor(family)}
                 >
                   <Pencil size={16} />
-                  编辑家庭
+                  {editing ? '收起管理' : '管理成员'}
                 </button>
                 <button
                   type="button"
@@ -4954,6 +5123,82 @@ function FamilyProfileManager({
                   录入保单
                 </button>
               </div>
+
+              {editing ? (
+                <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="space-y-2">
+                    {members.length ? members.map((member) => (
+                      <div key={member.id} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-black text-slate-950">{member.name}</p>
+                          {isCoreMember(family, member) ? (
+                            <p className="mt-0.5 text-xs font-semibold text-slate-500">{member.relationLabel || '本人'}</p>
+                          ) : (
+                            <select
+                              aria-label={`设置${member.name}家庭关系`}
+                              value={member.relationLabel || '待确认'}
+                              disabled={editingBusy}
+                              onChange={(event) => void handleUpdateFamilyMemberRelation(family, member, event.target.value)}
+                              className="mt-1 h-8 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-bold text-slate-600 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
+                            >
+                              {editableRelationOptions(member.relationLabel || '待确认').map((relation) => (
+                                <option key={relation} value={relation}>{relation}</option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                        {isCoreMember(family, member) ? (
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">
+                            <CheckCircle2 size={14} />
+                            核心
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-black text-slate-700 ring-1 ring-slate-200 disabled:opacity-50"
+                            disabled={editingBusy}
+                            onClick={() => void handleSetCoreMember(family, member)}
+                          >
+                            设为核心
+                          </button>
+                        )}
+                      </div>
+                    )) : (
+                      <p className="rounded-xl bg-white px-3 py-3 text-sm font-semibold text-slate-500">暂无成员</p>
+                    )}
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-[1fr_140px_auto]">
+                    <input
+                      type="text"
+                      value={memberDraftName}
+                      onChange={(event) => setMemberDraftName(event.target.value)}
+                      placeholder="成员姓名"
+                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    />
+                    <select
+                      value={memberDraftRelation}
+                      onChange={(event) => setMemberDraftRelation(event.target.value)}
+                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    >
+                      {FAMILY_MEMBER_RELATION_OPTIONS.map((relation) => (
+                        <option key={relation} value={relation}>{relation}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
+                      disabled={editingBusy}
+                      onClick={() => void handleAddFamilyMember(family)}
+                    >
+                      <Plus size={16} />
+                      添加成员
+                    </button>
+                  </div>
+
+                  {editingMessage ? <p className="text-xs font-bold text-slate-500">{editingMessage}</p> : null}
+                </div>
+              ) : null}
             </section>
           );
         }) : (
@@ -7186,11 +7431,11 @@ function UploadPolicyPage(props: {
   productMatchLoading: boolean;
   productMatchMessage: string;
   productMatches: PolicyKnowledgeMatch[];
+  optionalResponsibilities?: OptionalResponsibility[];
   selectedFamilyId: number | null;
   selectedFamilyMembers: FamilyMember[];
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onCreateFamily: () => void;
-  onCreateFamilyMember: (input: { name: string; relationLabel: string; setAsCore?: boolean }) => Promise<FamilyMember | null>;
   onGenerateAnalysis: () => void;
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
@@ -7206,6 +7451,7 @@ function UploadPolicyPage(props: {
   onRemovePlan: (index: number) => void;
   onUpdatePlan: (index: number, key: string, value: string) => void;
   onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
+  onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
   uploadItem: UploadItem | null;
 }) {
   const {
@@ -7225,11 +7471,11 @@ function UploadPolicyPage(props: {
     productMatchLoading,
     productMatchMessage,
     productMatches,
+    optionalResponsibilities = [],
     selectedFamilyId,
     selectedFamilyMembers,
     onFileChange,
     onCreateFamily,
-    onCreateFamilyMember,
     onGenerateAnalysis,
     onOcrTextChange,
     onOpenAccount,
@@ -7245,13 +7491,13 @@ function UploadPolicyPage(props: {
     onRemovePlan,
     onUpdatePlan,
     onUpdateForm,
+    onUpdateOptionalResponsibility,
     uploadItem,
   } = props;
   const [ocrCopyMessage, setOcrCopyMessage] = useState('');
   const [companyFocused, setCompanyFocused] = useState(false);
   const [productFocused, setProductFocused] = useState(false);
-  const [applicantFamilyRelation, setApplicantFamilyRelation] = useState(formData.applicantRelationLabel || '本人');
-  const [insuredFamilyRelation, setInsuredFamilyRelation] = useState(formData.insuredRelationLabel || '待确认');
+  const samePersonRelationResetKeyRef = useRef('');
   const companyQuery = formData.company.trim();
   const productQuery = formData.name.trim();
   const selectedFamily = familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null;
@@ -7308,6 +7554,41 @@ function UploadPolicyPage(props: {
   const showCompanySuggestions = companyFocused && companyQuery && (formCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (formProductSuggestionLoading || visibleProductSuggestions.length);
 
+  useEffect(() => {
+    const applicantName = normalizeParticipantName(formData.applicant);
+    const insuredName = normalizeParticipantName(formData.insured);
+    if (!applicantName || applicantName !== insuredName) {
+      samePersonRelationResetKeyRef.current = '';
+      return;
+    }
+    const samePersonKey = `${applicantName}:${insuredName}`;
+    if (samePersonRelationResetKeyRef.current === samePersonKey) return;
+    samePersonRelationResetKeyRef.current = samePersonKey;
+    const applicantRelation = formData.applicantRelationLabel || formData.applicantRelation;
+    const insuredRelation = formData.insuredRelationLabel || formData.insuredRelation;
+    if (
+      applicantRelation === '本人' &&
+      insuredRelation === '本人' &&
+      !formData.applicantMemberId &&
+      !formData.insuredMemberId
+    ) {
+      onUpdateForm('applicantRelationLabel', '待确认');
+      onUpdateForm('applicantRelation', '待确认');
+      onUpdateForm('insuredRelationLabel', '待确认');
+      onUpdateForm('insuredRelation', '待确认');
+    }
+  }, [
+    formData.applicant,
+    formData.insured,
+    formData.applicantMemberId,
+    formData.insuredMemberId,
+    formData.applicantRelation,
+    formData.applicantRelationLabel,
+    formData.insuredRelation,
+    formData.insuredRelationLabel,
+    onUpdateForm,
+  ]);
+
   async function handleCopyOcrText() {
     const text = ocrText.trim();
     if (!text) return;
@@ -7316,31 +7597,6 @@ function UploadPolicyPage(props: {
       setOcrCopyMessage('已复制 OCR 原文');
     } catch {
       setOcrCopyMessage('复制失败，请手动选择文本');
-    }
-  }
-
-  async function handleAddFamilyMember(kind: 'applicant' | 'insured') {
-    const name = (kind === 'applicant' ? formData.applicant : formData.insured).trim();
-    const relationLabel = kind === 'applicant' ? applicantFamilyRelation : insuredFamilyRelation;
-    if (!name) return;
-    const existingMember = selectedFamilyMembers.find((member) => member.status === 'active' && member.name.trim() === name);
-    if (existingMember) {
-      selectFamilyParticipantMember(kind, existingMember, relationLabel);
-      return;
-    }
-    const member = await onCreateFamilyMember({ name, relationLabel, setAsCore: relationLabel === '本人' });
-    if (!member) return;
-    selectFamilyParticipantMember(kind, member, relationLabel);
-  }
-
-  function selectFamilyParticipantMember(kind: 'applicant' | 'insured', member: FamilyMember, fallbackRelationLabel: string) {
-    const relationLabel = member.relationLabel || fallbackRelationLabel;
-    onUpdateForm(kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId', member.id);
-    onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', relationLabel);
-    if (kind === 'applicant') {
-      setApplicantFamilyRelation(relationLabel);
-    } else {
-      setInsuredFamilyRelation(relationLabel);
     }
   }
 
@@ -7355,49 +7611,94 @@ function UploadPolicyPage(props: {
     }
   }
 
-  function renderFamilyMemberFields(kind: 'applicant' | 'insured', label: string) {
+  function participantRelation(kind: 'applicant' | 'insured') {
+    if (kind === 'applicant') return formData.applicantRelationLabel || formData.applicantRelation || '待确认';
+    return formData.insuredRelationLabel || formData.insuredRelation || '待确认';
+  }
+
+  function participantsAreSamePerson() {
+    return areSameParticipantName(formData.applicant, formData.insured);
+  }
+
+  function updateParticipantRelation(kind: 'applicant' | 'insured', value: string) {
+    const relation = value || '待确认';
+    const updateOne = (target: 'applicant' | 'insured') => {
+      if (target === 'applicant') {
+        onUpdateForm('applicantRelationLabel', relation);
+        onUpdateForm('applicantRelation', relation);
+      } else {
+        onUpdateForm('insuredRelationLabel', relation);
+        onUpdateForm('insuredRelation', relation);
+      }
+    };
+    if (participantsAreSamePerson()) {
+      updateOne('applicant');
+      updateOne('insured');
+      return;
+    }
+    if (kind === 'applicant') {
+      onUpdateForm('applicantRelationLabel', relation);
+      onUpdateForm('applicantRelation', relation);
+    } else {
+      onUpdateForm('insuredRelationLabel', relation);
+      onUpdateForm('insuredRelation', relation);
+    }
+  }
+
+  function setParticipantAsCore(kind: 'applicant' | 'insured', checked: boolean) {
+    if (participantsAreSamePerson()) {
+      updateParticipantRelation(kind, checked ? '本人' : '待确认');
+      return;
+    }
+    if (!checked) {
+      updateParticipantRelation(kind, '待确认');
+      return;
+    }
+    const otherKind = kind === 'applicant' ? 'insured' : 'applicant';
+    updateParticipantRelation(kind, '本人');
+    if (participantRelation(otherKind) === '本人') updateParticipantRelation(otherKind, '待确认');
+  }
+
+  function nonCoreRelationOptions(value: string) {
+    const options = FAMILY_MEMBER_RELATION_OPTIONS.filter((relation) => relation !== '本人');
+    return value && value !== '本人' && !options.includes(value) ? [value, ...options] : options;
+  }
+
+  function renderPolicyPersonFields(kind: 'applicant' | 'insured', label: string) {
     const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
-    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
-    const relation = kind === 'applicant' ? applicantFamilyRelation : insuredFamilyRelation;
-    const setRelation = kind === 'applicant' ? setApplicantFamilyRelation : setInsuredFamilyRelation;
+    const relation = participantRelation(kind);
+    const isCore = relation === '本人';
     return (
-      <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
-        <TextField label={label} value={String(formData[nameKey] || '')} onChange={(value) => updateParticipantName(kind, value)} placeholder="姓名" />
-        <SelectField
-          label={`${label}家庭成员`}
-          value={formData[memberIdKey] ? String(formData[memberIdKey]) : ''}
-          onChange={(value) => {
-            const member = selectedFamilyMembers.find((item) => Number(item.id) === Number(value));
-            onUpdateForm(memberIdKey, value ? Number(value) : null);
-            if (member) {
-              onUpdateForm(nameKey, member.name);
-              selectFamilyParticipantMember(kind, member, relation);
-              setRelation(member.relationLabel || relation);
-            }
-          }}
-          options={selectedFamilyMembers.map((member) => ({ value: String(member.id), label: `${member.name}（${member.relationLabel || '待确认'}）` }))}
-          placeholder="选择家庭成员"
-        />
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.5)]">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-black text-slate-900">{label}</h3>
+          <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${isCore ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-50 text-slate-600 ring-slate-200'}`}>
+            <input
+              type="checkbox"
+              checked={isCore}
+              onChange={(event) => setParticipantAsCore(kind, event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            家庭核心人员
+          </label>
+        </div>
+        <TextField label="姓名" value={String(formData[nameKey] || '')} onChange={(value) => updateParticipantName(kind, value)} placeholder="姓名" />
+        {isCore ? (
+          <div>
+            <span className="mb-1.5 block text-sm font-bold text-slate-700">与核心人员家庭关系</span>
+            <div className="flex h-11 items-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700">
+              本人
+            </div>
+          </div>
+        ) : (
           <SelectField
-            label="家庭关系"
+            label="与核心人员家庭关系"
             value={relation}
-            onChange={(value) => {
-              setRelation(value);
-              onUpdateForm(kind === 'applicant' ? 'applicantRelationLabel' : 'insuredRelationLabel', value);
-            }}
-            options={FAMILY_MEMBER_RELATION_OPTIONS}
+            onChange={(value) => updateParticipantRelation(kind, value)}
+            options={nonCoreRelationOptions(relation)}
             placeholder="请选择关系"
           />
-          <button
-            type="button"
-            disabled={!String(formData[nameKey] || '').trim()}
-            onClick={() => void handleAddFamilyMember(kind)}
-            className="mt-6 h-11 whitespace-nowrap rounded-xl bg-blue-50 px-3 text-xs font-black text-blue-700 ring-1 ring-blue-100 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            新增为家庭成员
-          </button>
-        </div>
+        )}
       </div>
     );
   }
@@ -7465,7 +7766,7 @@ function UploadPolicyPage(props: {
             />
             {selectedFamily && !selectedFamily.coreMemberId ? (
               <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-700 ring-1 ring-amber-100">
-                家庭关系中心尚未设置，请确认以谁作为家庭关系基准；保存时默认以投保人为本人。
+                家庭关系中心尚未设置，保存前请选择家庭核心人员。
               </p>
             ) : null}
           </section>
@@ -7631,8 +7932,8 @@ function UploadPolicyPage(props: {
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {renderFamilyMemberFields('applicant', '投保人')}
-            {renderFamilyMemberFields('insured', '被保险人')}
+            {renderPolicyPersonFields('applicant', '投保人')}
+            {renderPolicyPersonFields('insured', '被保险人')}
           </div>
 
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
@@ -7664,23 +7965,6 @@ function UploadPolicyPage(props: {
             type="date"
           />
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <SelectField
-              label="投保人和录入人的关系"
-              value={formData.applicantRelation}
-              onChange={(value) => onUpdateForm('applicantRelation', value)}
-              options={POLICY_RELATION_OPTIONS}
-              placeholder="请选择关系"
-            />
-            <SelectField
-              label="被保险人和录入人的关系"
-              value={formData.insuredRelation}
-              onChange={(value) => onUpdateForm('insuredRelation', value)}
-              options={POLICY_RELATION_OPTIONS}
-              placeholder="请选择关系"
-            />
-          </div>
-
           <TextField label="投保时间" value={formData.date} onChange={(value) => onUpdateForm('date', value)} type="date" />
 
           <div className="grid grid-cols-2 gap-4">
@@ -7698,6 +7982,15 @@ function UploadPolicyPage(props: {
               placeholder="0.00"
             />
           </div>
+
+          <OptionalResponsibilityReview
+            items={optionalResponsibilities}
+            disabled={loading}
+            compact
+            title="主险可选责任确认"
+            description="已按主险匹配产品带出，请按保单页面确认是否投保。"
+            onChange={onUpdateOptionalResponsibility}
+          />
 
           <PolicyPlanEditor
             company={formData.company}
@@ -7802,9 +8095,9 @@ function AnalysisReportPage(props: {
             <p><strong>产品名称：</strong>{formData.name || '-'}</p>
             <p><strong>投保人：</strong>{formData.applicant || '-'}</p>
             <p><strong>受益人：</strong>{formatBeneficiaryValue(formData.beneficiary)}</p>
-            <p><strong>投保人和录入人的关系：</strong>{formData.applicantRelation || '-'}</p>
+            <p><strong>投保人与核心人员家庭关系：</strong>{formData.applicantRelation || '-'}</p>
             <p><strong>被保人：</strong>{formData.insured || '-'}</p>
-            <p><strong>被保险人和录入人的关系：</strong>{formData.insuredRelation || '-'}</p>
+            <p><strong>被保险人与核心人员家庭关系：</strong>{formData.insuredRelation || '-'}</p>
             <p><strong>生效日期：</strong>{formData.date || '-'}</p>
             <p><strong>缴费期间：</strong>{formData.paymentPeriod || '-'}</p>
             <p><strong>保障期间：</strong>{formData.coveragePeriod || '-'}</p>
@@ -7922,6 +8215,7 @@ function OptionalResponsibilityReview({
   items = [],
   disabled = false,
   saving = false,
+  compact = false,
   title = '可选责任确认',
   description = '未投保或不确定的可选责任不会进入保障金额和现金流计算。',
   onChange,
@@ -7929,12 +8223,16 @@ function OptionalResponsibilityReview({
   items?: OptionalResponsibility[];
   disabled?: boolean;
   saving?: boolean;
+  compact?: boolean;
   title?: string;
   description?: string;
   onChange?: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
 }) {
   const visibleItems = (Array.isArray(items) ? items : []).filter((item) => item?.id);
   if (!visibleItems.length) return null;
+  const statusOptions = compact
+    ? OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS.filter((option) => option.value !== 'unknown')
+    : OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS;
 
   return (
     <section className="rounded-[24px] border border-amber-100 bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
@@ -7965,35 +8263,37 @@ function OptionalResponsibilityReview({
                     {[item.productName, item.coverageType].filter(Boolean).join(' · ') || '产品责任'}
                   </p>
                 </div>
-                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
-                    {optionalResponsibilityEvidenceLabel(item.selectionEvidence)}
-                  </span>
-                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${
-                    status === 'selected'
-                      ? 'bg-emerald-50 text-emerald-700'
-                      : status === 'not_selected'
-                        ? 'bg-slate-100 text-slate-600'
-                        : 'bg-amber-50 text-amber-700'
-                  }`}>
-                    {optionalResponsibilityStatusLabel(status)}
-                  </span>
-                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
-                    量化状态：{optionalResponsibilityQuantificationLabel(item.quantificationStatus)}
-                  </span>
-                </div>
+                {!compact ? (
+                  <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                    <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
+                      {optionalResponsibilityEvidenceLabel(item.selectionEvidence)}
+                    </span>
+                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${
+                      status === 'selected'
+                        ? 'bg-emerald-50 text-emerald-700'
+                        : status === 'not_selected'
+                          ? 'bg-slate-100 text-slate-600'
+                          : 'bg-amber-50 text-amber-700'
+                    }`}>
+                      {optionalResponsibilityStatusLabel(status)}
+                    </span>
+                    <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
+                      量化状态：{optionalResponsibilityQuantificationLabel(item.quantificationStatus)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
-              {item.sourceExcerpt ? (
+              {!compact && item.sourceExcerpt ? (
                 <p className="mt-2 line-clamp-2 text-xs font-medium leading-5 text-slate-500">{item.sourceExcerpt}</p>
               ) : null}
-              {optionalResponsibilityHasQuantificationGap(item) ? (
+              {!compact && optionalResponsibilityHasQuantificationGap(item) ? (
                 <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-black leading-5 text-amber-700 ring-1 ring-amber-100">
                   该可选责任已确认投保，但尚未完成指标量化，暂不进入家庭报告计算。
                 </p>
               ) : null}
               {onChange ? (
-                <div className="mt-3 grid grid-cols-3 gap-2" role="group" aria-label={`${item.liability || item.coverageType || '可选责任'}投保状态`}>
-                  {OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS.map((option) => {
+                <div className={`mt-3 grid ${compact ? 'grid-cols-2' : 'grid-cols-3'} gap-2`} role="group" aria-label={`${item.liability || item.coverageType || '可选责任'}投保状态`}>
+                  {statusOptions.map((option) => {
                     const active = status === option.value;
                     return (
                       <button
@@ -8387,9 +8687,9 @@ function PolicyDetailSheet({
             <p><strong>产品名称：</strong>{policy.name || '-'}</p>
             <p><strong>投保人：</strong>{policy.applicant || '-'}</p>
             <p><strong>受益人：</strong>{formatBeneficiaryValue(policy.beneficiary)}</p>
-            <p><strong>投保人和录入人的关系：</strong>{policy.applicantRelation || '-'}</p>
+            <p><strong>投保人与核心人员家庭关系：</strong>{policy.applicantRelation || '-'}</p>
             <p><strong>被保人：</strong>{policy.insured || '-'}</p>
-            <p><strong>被保险人和录入人的关系：</strong>{policy.insuredRelation || '-'}</p>
+            <p><strong>被保险人与核心人员家庭关系：</strong>{policy.insuredRelation || '-'}</p>
             <p><strong>被保险人生日：</strong>{policy.insuredBirthday || '-'}</p>
             <p><strong>生效日期：</strong>{policy.date || '-'}</p>
             <p><strong>缴费期间：</strong>{policy.paymentPeriod || '-'}</p>
