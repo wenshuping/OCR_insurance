@@ -3,6 +3,8 @@ import { DatabaseSync } from 'node:sqlite';
 import express from 'express';
 import { createRouteContext } from './http/context.mjs';
 import { codeFromError, sendError } from './http/errors.mjs';
+import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
+import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import {
   allocateId,
   assertValidMobile,
@@ -1617,6 +1619,9 @@ export function createPolicyOcrApp(options = {}) {
     cashValueStore,
     computeAndStoreCashflow,
     recomputeAllCashflow,
+    createWechatJsSdkSignature,
+    sanitizeClientPerformancePayload,
+    logPerformance,
   });
 
   const app = express();
@@ -1627,20 +1632,8 @@ export function createPolicyOcrApp(options = {}) {
     res.json({ ok: true, service: 'policy-ocr-app' });
   });
 
-  app.get('/api/wechat/js-sdk-signature', async (req, res) => {
-    try {
-      const payload = await createWechatJsSdkSignature(req.query?.url);
-      res.json({ ok: true, ...payload });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.post('/api/client-perf', (req, res) => {
-    const payload = sanitizeClientPerformancePayload(req.body);
-    logPerformance(performanceLogger, payload.event, payload);
-    res.json({ ok: true });
-  });
+  app.use('/api/wechat', createWechatRoutes(routeContext));
+  app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
 
   app.post('/api/policy-responsibilities/query', async (req, res) => {
     const routeStartedAt = nowMs();
