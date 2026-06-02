@@ -2154,7 +2154,7 @@ export function CustomerApp() {
           }}
           onOpenReport={openFamilyReport}
         />
-        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
+        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />
         {authDialog}
         {accountSheet}
         {cashValueDialog}

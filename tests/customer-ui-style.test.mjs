@@ -212,6 +212,10 @@ test('customer app exposes family profile management surface', () => {
   assert.match(customerSource, /FamilyProfileManager/);
   assert.match(customerSource, /onOpenFamilies=\{\(\) => setActiveTab\('families'\)\}/);
   assert.match(customerSource, /<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} onOpenReport=\{\(\) => setShowFamilyReport\(true\)\} \/>/);
+  assert.match(
+    customerSource,
+    /<FamilyProfileManager[\s\S]*onOpenReport=\{openFamilyReport\}[\s\S]*\/>\s*<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} \/>/,
+  );
   assert.match(pageSource, /onOpenFamilies/);
   assert.match(familySource, /家庭档案列表/);
   assert.match(pageSource, /家庭档案/);
