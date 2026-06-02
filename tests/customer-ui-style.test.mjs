@@ -295,19 +295,19 @@ test('entry form keeps bottom actions focused on saving workflow', () => {
 });
 
 test('cash value upload dialog shows a progress bar while scanning', () => {
-  const appSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
-  assert.match(appSource, /role="progressbar"/);
-  assert.match(appSource, /aria-valuetext="正在识别现金价值表"/);
-  assert.match(appSource, /现金价值表识别中/);
-  assert.match(appSource, /animate-\[cash-value-progress/);
+  const cashValueSource = customerCashValueFeatureSource || componentSource('CustomerApp', 'FamilyCoverageOverview');
+  assert.match(cashValueSource, /role="progressbar"/);
+  assert.match(cashValueSource, /aria-valuetext="正在识别现金价值表"/);
+  assert.match(cashValueSource, /现金价值表识别中/);
+  assert.match(cashValueSource, /animate-\[cash-value-progress/);
 });
 
 test('cash value upload uses rear camera capture path', () => {
-  const appSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
-  const inputRefIndex = appSource.indexOf('ref={cashValueInputRef}');
+  const cashValueSource = customerCashValueFeatureSource || componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const inputRefIndex = cashValueSource.indexOf('ref={cashValueInputRef}');
   assert.notEqual(inputRefIndex, -1, 'cash value upload input should exist');
-  const inputSource = appSource.slice(inputRefIndex, appSource.indexOf('/>', inputRefIndex));
-  assert.match(appSource, /拍照上传/);
+  const inputSource = cashValueSource.slice(inputRefIndex, cashValueSource.indexOf('/>', inputRefIndex));
+  assert.match(cashValueSource, /拍照上传/);
   assert.match(inputSource, /type="file"/);
   assert.match(inputSource, /accept="image\/\*"/);
   assert.match(inputSource, /capture="environment"/);
@@ -689,6 +689,7 @@ test('admin app exposes optional responsibility quantification governance list',
 
 test('customer policy detail can open manual cash value entry', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const cashValueSource = customerCashValueFeatureSource || customerSource;
   const detailSource = componentSource('PolicyDetailSheet', null);
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
@@ -699,8 +700,8 @@ test('customer policy detail can open manual cash value entry', () => {
   assert.match(customerSource, /handleRemoveCashValueRow/);
   assert.match(customerSource, /normalizeCashValueRowsForSaving/);
   assert.match(customerSource, /confirmCashValue/);
-  assert.match(customerSource, /手动录入/);
-  assert.match(customerSource, /添加年度/);
+  assert.match(cashValueSource, /手动录入/);
+  assert.match(cashValueSource, /添加年度/);
   assert.match(detailSource, /onEditCashValue/);
   assert.match(detailSource, /录入现金价值/);
   assert.match(detailSource, /修改现金价值/);
