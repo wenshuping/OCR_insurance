@@ -496,7 +496,7 @@ test('admin policy detail exposes policy source links', () => {
 });
 
 test('admin app includes official domain whitelist maintenance panel', () => {
-  const adminSource = componentSource('AdminApp', 'AdminStatCard');
+  const adminSource = componentSource('AdminApp', null);
   const panelSource = extractedOrBoundedComponentSource('AdminOfficialDomainPanel', 'AdminOcrModePanel');
   const ocrPanelSource = extractedOrBoundedComponentSource('AdminOcrModePanel', 'AdminPolicyDetail');
   assert.match(adminSource, /AdminOfficialDomainPanel/);
@@ -675,7 +675,7 @@ test('family report keeps verbose protection notes readable on mobile', () => {
 });
 
 test('admin app exposes optional responsibility quantification governance list', () => {
-  const appText = normalizedAdminAppSource;
+  const appText = `${normalizedAdminAppSource}\n${normalizedAdminFeatureSource}`;
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /OptionalResponsibilityGap/);
