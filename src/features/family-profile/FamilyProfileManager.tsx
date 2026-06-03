@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   ChevronLeft,
+  FileText,
   LayoutDashboard,
   Pencil,
   UploadCloud,
@@ -20,6 +21,7 @@ export function FamilyProfileManager({
   onUpdateFamilyMemberRelation,
   onBackToEntry,
   onOpenReport,
+  onViewFamilyPolicies,
 }: {
   familyProfiles: FamilyProfile[];
   selectedFamilyId: number | null;
@@ -29,6 +31,7 @@ export function FamilyProfileManager({
   onUpdateFamilyMemberRelation: (family: FamilyProfile, member: FamilyMember, relationLabel: string) => Promise<FamilyProfile>;
   onBackToEntry: () => void;
   onOpenReport: (familyId: number) => void;
+  onViewFamilyPolicies: (familyId: number) => void;
 }) {
   const families = Array.isArray(familyProfiles) ? familyProfiles : [];
   const [editingFamilyId, setEditingFamilyId] = useState<number | null>(null);
@@ -158,7 +161,7 @@ export function FamilyProfileManager({
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="mt-4 grid grid-cols-4 gap-2">
                 <button
                   type="button"
                   className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-500 text-xs font-black text-white shadow-lg shadow-blue-500/20"
@@ -166,6 +169,14 @@ export function FamilyProfileManager({
                 >
                   <LayoutDashboard size={16} />
                   查看报告
+                </button>
+                <button
+                  type="button"
+                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-sky-50 text-xs font-black text-sky-700 ring-1 ring-sky-100"
+                  onClick={() => onViewFamilyPolicies(family.id)}
+                >
+                  <FileText size={16} />
+                  家庭保单
                 </button>
                 <button
                   type="button"

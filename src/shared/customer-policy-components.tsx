@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { Shield } from 'lucide-react';
 import type { PolicyFormData } from '../api/contracts/policy';
-import type { OptionalResponsibility } from '../api/contracts/responsibility';
+import type { OptionalResponsibility, PolicyProductSuggestion } from '../api/contracts/responsibility';
 import {
   policyValidityClassName,
   resolvePolicyValidityStatus,
@@ -209,14 +210,50 @@ export function OptionalResponsibilityReview({
 export function PolicyPlanEditor(props: {
   company: string;
   plans: NonNullable<PolicyFormData['plans']>;
+  productSuggestionLoading?: boolean;
+  productSuggestions?: PolicyProductSuggestion[];
+  productSuggestionTargetIndex?: number | null;
   onAdd: () => void;
   onRemove: (index: number) => void;
+  onSelectProduct?: (index: number, suggestion: PolicyProductSuggestion) => void;
   onUpdate: (index: number, key: string, value: string) => void;
+  onUpdateProductQuery?: (index: number, company: string, q: string) => void;
 }) {
-  const { company, plans, onAdd, onRemove, onUpdate } = props;
+  const { company, plans, productSuggestionLoading = false, productSuggestions = [], productSuggestionTargetIndex = null, onAdd, onRemove, onSelectProduct, onUpdate, onUpdateProductQuery } = props;
+  const [focusedProductPlanIndex, setFocusedProductPlanIndex] = useState<number | null>(null);
   const editablePlans = plans
     .map((plan, originalIndex) => ({ ...plan, originalIndex }))
     .filter((plan) => String(plan.role || '') !== 'main');
+  function productSuggestionsForPlan(plan: NonNullable<PolicyFormData['plans']>[number]) {
+    const planCompany = String(plan.company || company || '').trim();
+    const productQuery = String(plan.name || '').trim();
+    const normalizedCompany = normalizeSuggestionQuery(planCompany);
+    const normalizedQuery = normalizeSuggestionQuery(productQuery);
+    if (!normalizedCompany) return [];
+    return (Array.isArray(productSuggestions) ? productSuggestions : [])
+      .map((suggestion) => {
+        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
+        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
+        return {
+          ...suggestion,
+          companyMatches:
+            normalizedSuggestionCompany === normalizedCompany ||
+            normalizedSuggestionCompany.includes(normalizedCompany) ||
+            normalizedCompany.includes(normalizedSuggestionCompany),
+          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
+          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
+        };
+      })
+      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
+      .sort(
+        (left, right) =>
+          Number(right.startsWith) - Number(left.startsWith) ||
+          left.matchIndex - right.matchIndex ||
+          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
+          left.productName.localeCompare(right.productName, 'zh-CN'),
+      )
+      .slice(0, 8);
+  }
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="mb-4 space-y-3">
@@ -260,7 +297,55 @@ export function PolicyPlanEditor(props: {
                   />
                   <TextField label="产品分类" value={String(plan.productType || '')} onChange={(value) => onUpdate(plan.originalIndex, 'productType', value)} placeholder="如 年金险" />
                 </div>
-                <TextField label="险种名称" value={String(plan.name || '')} onChange={(value) => onUpdate(plan.originalIndex, 'name', value)} placeholder="保单上的险种全称" />
+                <label className="relative block">
+                  <span className="mb-1.5 block text-sm font-bold text-slate-700">险种名称</span>
+                  <input
+                    value={String(plan.name || '')}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      onUpdate(plan.originalIndex, 'name', value);
+                      onUpdateProductQuery?.(plan.originalIndex, String(plan.company || company || ''), value);
+                    }}
+                    onFocus={() => {
+                      setFocusedProductPlanIndex(plan.originalIndex);
+                      onUpdateProductQuery?.(plan.originalIndex, String(plan.company || company || ''), String(plan.name || ''));
+                    }}
+                    onBlur={() => window.setTimeout(() => setFocusedProductPlanIndex((current) => current === plan.originalIndex ? null : current), 120)}
+                    placeholder="保单上的险种全称"
+                    autoComplete="off"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
+                  />
+                  {focusedProductPlanIndex === plan.originalIndex && productSuggestionTargetIndex === plan.originalIndex && (productSuggestionLoading || productSuggestionsForPlan(plan).length) ? (
+                    <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="附加险产品候选">
+                      {productSuggestionLoading ? (
+                        <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
+                          正在加载保险产品
+                        </div>
+                      ) : (
+                        productSuggestionsForPlan(plan).map((suggestion) => (
+                          <button
+                            key={`${suggestion.company}-${suggestion.productName}`}
+                            type="button"
+                            className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
+                            role="option"
+                            aria-selected={false}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              onSelectProduct?.(plan.originalIndex, suggestion);
+                              setFocusedProductPlanIndex(null);
+                            }}
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate">{renderHighlightedSuggestion(suggestion.productName, String(plan.name || ''))}</span>
+                              <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
+                            </span>
+                            <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </label>
                 {plan.matchedProductName ? (
                   <p className="rounded-xl bg-white px-3 py-2 text-xs font-bold leading-5 text-blue-700 ring-1 ring-blue-100">
                     已按 {plan.company || company || '保险公司'} 匹配：{plan.matchedProductName}

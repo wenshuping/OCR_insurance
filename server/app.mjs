@@ -536,9 +536,24 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (hasOwn(input, 'plans')) {
     data.plans = normalizePolicyPlans(input.plans, data.company || existingPolicy.company || '');
   }
-  if (!hasCanonicalProductIdInput && Array.isArray(data.plans) && data.plans.length && !data.canonicalProductId) {
-    const mainPlan = data.plans.find((plan) => plan.role === 'main') || data.plans[0];
-    data.canonicalProductId = trim(mainPlan?.canonicalProductId);
+  if (Array.isArray(data.plans) && data.plans.length) {
+    const amountToSync = data.amount || existingPolicy.amount || 0;
+    const premiumToSync = data.firstPremium || existingPolicy.firstPremium || 0;
+    if (amountToSync || premiumToSync) {
+      data.plans = data.plans.map((plan, index) => {
+        const isMain = plan.role === 'main' || index === 0;
+        if (!isMain) return plan;
+        return {
+          ...plan,
+          amount: plan.amount || amountToSync || 0,
+          premium: plan.premium || premiumToSync || 0,
+        };
+      });
+    }
+    if (!hasCanonicalProductIdInput && !data.canonicalProductId) {
+      const mainPlan = data.plans.find((plan) => plan.role === 'main') || data.plans[0];
+      data.canonicalProductId = trim(mainPlan?.canonicalProductId);
+    }
   }
   if (hasOwn(input, 'optionalResponsibilities')) {
     data.optionalResponsibilities = normalizeOptionalResponsibilities(input.optionalResponsibilities);

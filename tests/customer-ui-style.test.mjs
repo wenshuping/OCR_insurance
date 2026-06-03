@@ -144,7 +144,7 @@ test('customer account sheet exposes account actions and policy navigation', () 
   assert.match(sheetSource, /我的保单/);
   assert.match(sheetSource, /onClick=\{onOpenPolicies\}/);
   assert.match(sheetSource, /退出/);
-  assert.match(appSource, /setShowAccountSheet\(false\);\s*setActiveTab\('policies'\);/);
+  assert.match(appSource, /setShowAccountSheet\(false\);\s*setShowFamilyPolicies\(true\);/);
 });
 
 test('phone verification send-code button uses the blue primary style', () => {
@@ -211,7 +211,7 @@ test('customer app exposes family profile management surface', () => {
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /FamilyProfileManager/);
   assert.match(customerSource, /onOpenFamilies=\{\(\) => setActiveTab\('families'\)\}/);
-  assert.match(customerSource, /<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} onOpenReport=\{\(\) => setShowFamilyReport\(true\)\} \/>/);
+  assert.match(customerSource, /<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} \/>/);
   assert.match(
     customerSource,
     /<FamilyProfileManager[\s\S]*onOpenReport=\{openFamilyReport\}[\s\S]*\/>\s*<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} \/>/,
@@ -238,17 +238,17 @@ test('customer app exposes family profile management surface', () => {
   assert.match(familySource, /录入保单/);
 });
 
-test('customer bottom tabs expose entry policy family and report navigation', () => {
+test('customer bottom tabs expose entry and family navigation only', () => {
   const source = extractedOrBoundedComponentSource('CustomerBottomTabs', 'CustomerAccountSheet');
 
   assert.match(source, /key: 'entry'/);
-  assert.match(source, /key: 'policies'/);
+  assert.doesNotMatch(source, /key: 'policies'/);
+  assert.doesNotMatch(source, /key: 'familyPolicies'/);
   assert.match(source, /key: 'families'/);
-  assert.match(source, /我的保单/);
-  assert.match(source, /onOpenReport/);
-  assert.match(source, /查看报告/);
-  assert.match(source, /查看家庭保障分析报告/);
-  assert.match(source, /grid-cols-4/);
+  assert.doesNotMatch(source, /我的保单/);
+  assert.doesNotMatch(source, /家庭保单/);
+  assert.match(source, /家庭档案/);
+  assert.match(source, /grid-cols-2/);
 });
 
 test('policy relation controls keep prior policy edit options', () => {
@@ -337,6 +337,19 @@ test('entry plan editor shows only riders and linked accounts', () => {
   assert.doesNotMatch(source, /value: 'main', label: '主险'/);
 });
 
+test('entry rider names expose product suggestion selection', () => {
+  const editorSource = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
+  const entrySource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  assert.match(editorSource, /productSuggestionTargetIndex/);
+  assert.match(editorSource, /aria-label="附加险产品候选"/);
+  assert.match(editorSource, /onSelectProduct\?\.\(plan\.originalIndex, suggestion\)/);
+  assert.match(editorSource, /renderHighlightedSuggestion\(suggestion\.productName, String\(plan\.name \|\| ''\)\)/);
+  assert.match(entrySource, /formPlanProductSuggestionTargetIndex/);
+  assert.match(entrySource, /onUpdateProductQuery=\{onUpdatePlanProductQuery\}/);
+  assert.match(normalizedCustomerAppSource, /function selectPolicyPlanProduct/);
+  assert.match(normalizedCustomerAppSource, /matchedProductName: name/);
+});
+
 test('plan type selector displays Chinese role labels instead of internal values', () => {
   const editorSource = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
   const selectSource = componentSource('SelectField', null);
@@ -411,7 +424,7 @@ test('entry form captures insured birthday for age-based reports', () => {
   assert.match(formSource, /insuredBirthday/);
   assert.match(customerSource, /selectedFamilyPolicies/);
   assert.match(customerSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile,\s*\{\s*familyId:\s*selectedFamilyId\s*\}\)/);
-  assert.match(customerSource, /<FamilyCoverageOverview[\s\S]*report=\{familyReport\}[\s\S]*policies=\{policies\}/);
+  assert.match(customerSource, /<FamilyCoverageOverview[\s\S]*report=\{familyReport\}[\s\S]*policies=\{selectedFamilyPolicies\}/);
 });
 
 test('entry form separates legal beneficiary from beneficiary name before saving policy', () => {
@@ -749,7 +762,7 @@ test('customer app renders global policy overview report shortcut', () => {
 
   assert.match(customerSource, /FamilyCoverageOverview/);
   assert.match(customerSource, /家庭保障分析报告/);
-  assert.match(customerSource, /policyGroups\.map/);
+  assert.match(customerSource, /policyGroups\.length/);
   assert.match(customerSource, /if \(cashflowMember\)[\s\S]*<CashflowDetailPage/);
 });
 

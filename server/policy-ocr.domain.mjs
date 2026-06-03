@@ -814,9 +814,20 @@ export function normalizePolicySources(sources = []) {
 
 export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, analysis, familyBinding = null }) {
   const data = normalizePolicyScanData(scan?.data || {});
-  const plans = normalizePolicyPlans(scan?.data?.plans, data.company);
+  let plans = normalizePolicyPlans(scan?.data?.plans, data.company);
   const mainPlan = plans.find((plan) => plan.role === 'main') || plans[0] || null;
   const canonicalProductId = data.canonicalProductId || mainPlan?.canonicalProductId || '';
+  if (plans.length && (data.amount || data.firstPremium)) {
+    plans = plans.map((plan, index) => {
+      const isMain = plan.role === 'main' || index === 0;
+      if (!isMain) return plan;
+      return {
+        ...plan,
+        amount: plan.amount || data.amount || 0,
+        premium: plan.premium || data.firstPremium || 0,
+      };
+    });
+  }
   const now = new Date().toISOString();
   const hasAnalysis = Boolean(analysis?.report || analysis?.coverageTable?.length || analysis?.optionalResponsibilities?.length);
   const responsibilities = Array.isArray(analysis?.coverageTable)

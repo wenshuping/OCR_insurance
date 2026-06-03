@@ -133,6 +133,9 @@ export function UploadPolicyPage(props: {
   formCompanySuggestions: PolicyCompanySuggestion[];
   formProductSuggestionLoading: boolean;
   formProductSuggestions: PolicyProductSuggestion[];
+  formPlanProductSuggestionLoading: boolean;
+  formPlanProductSuggestions: PolicyProductSuggestion[];
+  formPlanProductSuggestionTargetIndex: number | null;
   isLoggedIn: boolean;
   loading: boolean;
   message: string;
@@ -154,11 +157,13 @@ export function UploadPolicyPage(props: {
   onSelectFamily: (familyId: number | null) => void;
   onSelectFormCompany: (company: string) => void;
   onSelectFormProduct: (suggestion: PolicyProductSuggestion) => void;
+  onSelectPlanProduct: (index: number, suggestion: PolicyProductSuggestion) => void;
   onSelectProductMatch: (match: PolicyKnowledgeMatch) => void;
   onSubmit: () => void;
   onAddPlan: () => void;
   onRemovePlan: (index: number) => void;
   onUpdatePlan: (index: number, key: string, value: string) => void;
+  onUpdatePlanProductQuery: (index: number, company: string, q: string) => void;
   onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
   onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
   uploadItem: UploadItem | null;
@@ -172,6 +177,9 @@ export function UploadPolicyPage(props: {
     formCompanySuggestions,
     formProductSuggestionLoading,
     formProductSuggestions,
+    formPlanProductSuggestionLoading,
+    formPlanProductSuggestions,
+    formPlanProductSuggestionTargetIndex,
     isLoggedIn,
     loading,
     message,
@@ -193,11 +201,13 @@ export function UploadPolicyPage(props: {
     onSelectFamily,
     onSelectFormCompany,
     onSelectFormProduct,
+    onSelectPlanProduct,
     onSelectProductMatch,
     onSubmit,
     onAddPlan,
     onRemovePlan,
     onUpdatePlan,
+    onUpdatePlanProductQuery,
     onUpdateForm,
     onUpdateOptionalResponsibility,
     uploadItem,
@@ -693,9 +703,14 @@ export function UploadPolicyPage(props: {
           <PolicyPlanEditor
             company={formData.company}
             plans={normalizePolicyPlanList(formData.plans, formData.company, { keepEmpty: true })}
+            productSuggestionLoading={formPlanProductSuggestionLoading}
+            productSuggestions={formPlanProductSuggestions}
+            productSuggestionTargetIndex={formPlanProductSuggestionTargetIndex}
             onAdd={onAddPlan}
             onRemove={onRemovePlan}
+            onSelectProduct={onSelectPlanProduct}
             onUpdate={onUpdatePlan}
+            onUpdateProductQuery={onUpdatePlanProductQuery}
           />
         </form>
       </main>

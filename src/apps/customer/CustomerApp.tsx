@@ -6,6 +6,7 @@ import {
   useState,
 } from 'react';
 import {
+  ArrowLeft,
   CircleUserRound,
   Copy,
   Shield,
@@ -466,6 +467,9 @@ export function CustomerApp() {
   const [formCompanySuggestionLoading, setFormCompanySuggestionLoading] = useState(false);
   const [formProductSuggestions, setFormProductSuggestions] = useState<PolicyProductSuggestion[]>([]);
   const [formProductSuggestionLoading, setFormProductSuggestionLoading] = useState(false);
+  const [formPlanProductQuery, setFormPlanProductQuery] = useState<{ index: number | null; company: string; q: string }>({ index: null, company: '', q: '' });
+  const [formPlanProductSuggestions, setFormPlanProductSuggestions] = useState<PolicyProductSuggestion[]>([]);
+  const [formPlanProductSuggestionLoading, setFormPlanProductSuggestionLoading] = useState(false);
   const [formProductMatches, setFormProductMatches] = useState<PolicyKnowledgeMatch[]>([]);
   const [formProductMatchLoading, setFormProductMatchLoading] = useState(false);
   const [formProductMatchMessage, setFormProductMatchMessage] = useState('');
@@ -481,6 +485,7 @@ export function CustomerApp() {
   const [cashValueEditRows, setCashValueEditRows] = useState<CashValueRow[]>([]);
   const [cashValueLoading, setCashValueLoading] = useState(false);
   const [cashValueMessage, setCashValueMessage] = useState('');
+  const [showFamilyPolicies, setShowFamilyPolicies] = useState(false);
 
   const canSubmit = Boolean(uploadItem || ocrText.trim() || formData.company.trim() || formData.name.trim());
   const totalCoverage = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [policies]);
@@ -489,6 +494,8 @@ export function CustomerApp() {
     () => selectedFamilyId ? policies.filter((policy) => Number(policy.familyId) === Number(selectedFamilyId)) : policies,
     [policies, selectedFamilyId],
   );
+  const familyTotalCoverage = useMemo(() => selectedFamilyPolicies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [selectedFamilyPolicies]);
+  const familyPolicyGroups = useMemo(() => groupPoliciesByInsured(selectedFamilyPolicies), [selectedFamilyPolicies]);
   const familyReport = useMemo(
     () => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile, { familyId: selectedFamilyId }),
     [selectedFamilyPolicies, familyPlanningProfile, selectedFamilyId],
@@ -698,6 +705,35 @@ export function CustomerApp() {
   }, [activeTab, formData.company, formData.name]);
 
   useEffect(() => {
+    const index = formPlanProductQuery.index;
+    const company = formPlanProductQuery.company.trim();
+    const q = formPlanProductQuery.q.trim();
+    if (activeTab !== 'entry' || index === null || !company) {
+      setFormPlanProductSuggestions([]);
+      setFormPlanProductSuggestionLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setFormPlanProductSuggestionLoading(true);
+      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
+        .then((payload) => {
+          if (!cancelled) setFormPlanProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
+        })
+        .catch(() => {
+          if (!cancelled) setFormPlanProductSuggestions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setFormPlanProductSuggestionLoading(false);
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeTab, formPlanProductQuery]);
+
+  useEffect(() => {
     const company = formData.company.trim();
     const name = formData.name.trim();
     const lookupKey = productLookupKey(company, name);
@@ -829,6 +865,48 @@ export function CustomerApp() {
       setMessage('已更新险种明细，正在重新带出可选责任');
       void loadFormProductAnalysisDraft(nextData, '已更新险种明细');
     }
+  }
+
+  function updatePolicyPlanProductQuery(index: number, company: string, q: string) {
+    setFormPlanProductQuery({ index, company: company || formData.company, q });
+  }
+
+  function selectPolicyPlanProduct(index: number, suggestion: PolicyProductSuggestion) {
+    const company = suggestion.company.trim();
+    const name = suggestion.productName.trim();
+    const canonicalProductId = String(suggestion.canonicalProductId || '').trim();
+    if (!company || !name) return;
+    setShowAnalysisReport(false);
+    setFormPlanProductQuery({ index: null, company: '', q: '' });
+    setFormPlanProductSuggestions([]);
+    const plans = normalizePolicyPlanList(formData.plans, formData.company, { keepEmpty: true });
+    const existing = plans[index];
+    if (!existing) return;
+    const nextPlans = plans.map((plan, planIndex) => {
+      if (planIndex !== index) return plan;
+      return {
+        ...plan,
+        company,
+        name,
+        matchedProductName: name,
+        canonicalProductId,
+      };
+    });
+    const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
+    const totalPremium = nextPlans.reduce((sum, plan) => sum + Number(plan.premium || 0), 0);
+    const nextData = {
+      ...formData,
+      plans: nextPlans,
+      name: primary?.matchedProductName || primary?.name || formData.name,
+      canonicalProductId: primary?.canonicalProductId || '',
+      amount: primary?.amount ? String(primary.amount) : formData.amount,
+      coveragePeriod: primary?.coveragePeriod || formData.coveragePeriod,
+      paymentPeriod: primary?.paymentPeriod || formData.paymentPeriod,
+      firstPremium: totalPremium ? String(totalPremium) : formData.firstPremium,
+    };
+    setFormData(nextData);
+    setMessage(`已选择附加险产品：${name}，正在重新带出可选责任`);
+    void loadFormProductAnalysisDraft(nextData, `已选择附加险产品：${name}`);
   }
 
   function addPolicyPlan() {
@@ -989,6 +1067,11 @@ export function CustomerApp() {
   function openFamilyReport(familyId: number) {
     handleSelectFamily(familyId);
     setShowFamilyReport(true);
+  }
+
+  function viewFamilyPolicies(familyId: number) {
+    handleSelectFamily(familyId);
+    setShowFamilyPolicies(true);
   }
 
   async function handleShareFamilyReport() {
@@ -1645,7 +1728,7 @@ export function CustomerApp() {
         setCashValuePolicyId(payload.policy.id);
         setCashValueDialogOpen(true);
       } else {
-        setActiveTab('policies');
+        setShowFamilyPolicies(true);
       }
       const suffix = payload.registrationRequiredNext ? '；第二次录入需要手机验证码' : '';
       setMessage(isPolicyReportGenerating(payload.policy) ? `保单已保存，报告正在后台生成${suffix}` : `保单已保存到我的保单${suffix}`);
@@ -1733,7 +1816,7 @@ export function CustomerApp() {
       setCashValuePolicyId(null);
       setCashValueMessage('');
       setCashflowMember(null);
-      setActiveTab('policies');
+      setShowFamilyPolicies(true);
       setMessage(`现金价值表已保存（${savedRows.length} 行）`);
     } catch (error) {
       setCashValueMessage(error instanceof Error ? error.message : '保存失败');
@@ -1772,7 +1855,7 @@ export function CustomerApp() {
     setCashValueEditRows([]);
     setCashValuePolicyId(null);
     setCashValueMessage('');
-    setActiveTab('policies');
+    setShowFamilyPolicies(true);
   }
 
   function openManualCashValueEditor(policy: Policy) {
@@ -1962,7 +2045,7 @@ export function CustomerApp() {
       onClose={() => setShowAccountSheet(false)}
       onOpenPolicies={() => {
         setShowAccountSheet(false);
-        setActiveTab('policies');
+        setShowFamilyPolicies(true);
       }}
       onLogin={() => {
         setShowAccountSheet(false);
@@ -2082,6 +2165,9 @@ export function CustomerApp() {
           formCompanySuggestions={formCompanySuggestions}
           formProductSuggestionLoading={formProductSuggestionLoading}
           formProductSuggestions={formProductSuggestions}
+          formPlanProductSuggestionLoading={formPlanProductSuggestionLoading}
+          formPlanProductSuggestions={formPlanProductSuggestions}
+          formPlanProductSuggestionTargetIndex={formPlanProductQuery.index}
           loading={loading}
           message={message}
           ocrText={ocrText}
@@ -2099,11 +2185,13 @@ export function CustomerApp() {
           onSelectFamily={handleSelectFamily}
           onSelectFormCompany={(company) => updateForm('company', company)}
           onSelectFormProduct={(suggestion) => selectFormProductSuggestion(suggestion)}
+          onSelectPlanProduct={selectPolicyPlanProduct}
           onSelectProductMatch={selectFormProductMatch}
           onSubmit={handleSubmit}
           onAddPlan={addPolicyPlan}
           onRemovePlan={removePolicyPlan}
           onUpdatePlan={updatePolicyPlan}
+          onUpdatePlanProductQuery={updatePolicyPlanProductQuery}
           onUpdateForm={updateForm}
           onUpdateOptionalResponsibility={updateAnalysisOptionalResponsibility}
           isLoggedIn={isLoggedIn}
@@ -2136,42 +2224,19 @@ export function CustomerApp() {
     );
   }
 
-  if (activeTab === 'families') {
-    return (
-      <>
-        <FamilyProfileManager
-          familyProfiles={familyProfiles}
-          selectedFamilyId={selectedFamilyId}
-          onSelectFamily={(familyId) => handleSelectFamily(familyId)}
-          onCreateFamily={async (familyName) => {
-            await createFamilyProfileByName(familyName);
-          }}
-          onSetCoreMember={setCoreMemberForCurrentFamily}
-          onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
-          onBackToEntry={() => {
-            setActiveTab('entry');
-            setMessage('可以继续录入保单');
-          }}
-          onOpenReport={openFamilyReport}
-        />
-        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />
-        {authDialog}
-        {accountSheet}
-        {cashValueDialog}
-      </>
-    );
-  }
-
-  if (activeTab === 'policies') {
+  if (showFamilyPolicies) {
     return (
       <div className="min-h-screen bg-slate-50 pb-28">
         <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/80 px-4 py-4 backdrop-blur-md">
           <div className="flex items-center gap-2">
-            <Shield className="text-blue-500" size={24} />
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">保障管理</h1>
-              <p className="text-[11px] font-medium text-slate-400">{maskMobile(mobile)}</p>
-            </div>
+            <button
+              type="button"
+              className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-200"
+              onClick={() => setShowFamilyPolicies(false)}
+            >
+              <ArrowLeft size={16} />
+              返回
+            </button>
           </div>
           <button
             className="flex max-w-[148px] items-center gap-2 rounded-full bg-slate-100 px-3 py-2 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
@@ -2190,7 +2255,7 @@ export function CustomerApp() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-xs font-semibold uppercase text-white/70">Policy OCR</p>
-                  <h2 className="mt-2 text-2xl font-black leading-tight">保单分析</h2>
+                  <h2 className="mt-2 text-2xl font-black leading-tight">家庭保单</h2>
                   <p className="mt-2 max-w-xl text-sm leading-6 text-white/85">{message}</p>
                 </div>
                 <div className="rounded-2xl bg-white/15 p-3">
@@ -2200,11 +2265,11 @@ export function CustomerApp() {
               <div className="mt-5 grid grid-cols-2 gap-3">
                 <div className="rounded-2xl bg-white/15 px-4 py-3">
                   <p className="text-xs text-white/70">已录入</p>
-                  <p className="mt-1 text-xl font-black">{policies.length} 张</p>
+                  <p className="mt-1 text-xl font-black">{selectedFamilyPolicies.length} 张</p>
                 </div>
                 <div className="rounded-2xl bg-white/15 px-4 py-3">
                   <p className="text-xs text-white/70">总保额</p>
-                  <p className="mt-1 text-xl font-black">{formatCoverageAmount(totalCoverage)}</p>
+                  <p className="mt-1 text-xl font-black">{formatCoverageAmount(familyTotalCoverage)}</p>
                 </div>
               </div>
             </div>
@@ -2212,10 +2277,10 @@ export function CustomerApp() {
 
           <FamilyCoverageOverview
             report={familyReport}
-            policies={policies}
+            policies={selectedFamilyPolicies}
           />
 
-          {policies.length ? (
+          {selectedFamilyPolicies.length ? (
             <section className="px-4 pt-3">
               <button
                 type="button"
@@ -2232,10 +2297,10 @@ export function CustomerApp() {
           ) : null}
 
           <section className="space-y-4 p-4">
-            {!policies.length ? (
+            {!selectedFamilyPolicies.length ? (
               <div className="rounded-[24px] border border-dashed border-[#D6E4F5] bg-white px-5 py-10 text-center shadow-[0_18px_34px_-30px_rgba(15,23,42,0.12)]">
-                <p className="text-base font-semibold text-[#0F172A]">还没有录入保单</p>
-                <p className="mt-2 text-sm leading-6 text-[#6C87A5]">录入后会在这里统一查看你的保单责任和保障明细。</p>
+                <p className="text-base font-semibold text-[#0F172A]">还没有家庭保单</p>
+                <p className="mt-2 text-sm leading-6 text-[#6C87A5]">录入保单并绑定家庭后，会在这里统一查看家庭保单责任和保障明细。</p>
                 <button
                   className="mt-5 rounded-2xl bg-blue-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-500/20"
                   type="button"
@@ -2245,7 +2310,7 @@ export function CustomerApp() {
                 </button>
               </div>
             ) : null}
-            {policyGroups.map((group) => (
+            {familyPolicyGroups.map((group) => (
               <section key={group.insured} className="rounded-[24px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div>
@@ -2271,9 +2336,6 @@ export function CustomerApp() {
           </section>
         </main>
 
-        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
-        {!selectedPolicy ? responsibilityAssistant : null}
-
         {selectedPolicy ? (
           <PolicyDetailSheet
             policy={selectedPolicy}
@@ -2292,6 +2354,33 @@ export function CustomerApp() {
         {accountSheet}
         {cashValueDialog}
       </div>
+    );
+  }
+
+  if (activeTab === 'families') {
+    return (
+      <>
+        <FamilyProfileManager
+          familyProfiles={familyProfiles}
+          selectedFamilyId={selectedFamilyId}
+          onSelectFamily={(familyId) => handleSelectFamily(familyId)}
+          onCreateFamily={async (familyName) => {
+            await createFamilyProfileByName(familyName);
+          }}
+          onSetCoreMember={setCoreMemberForCurrentFamily}
+          onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
+          onBackToEntry={() => {
+            setActiveTab('entry');
+            setMessage('可以继续录入保单');
+          }}
+          onOpenReport={openFamilyReport}
+          onViewFamilyPolicies={viewFamilyPolicies}
+        />
+        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />
+        {authDialog}
+        {accountSheet}
+        {cashValueDialog}
+      </>
     );
   }
 
