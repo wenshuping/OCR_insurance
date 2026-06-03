@@ -10,6 +10,7 @@ export const POLICY_OCR_MODE_PADDLEOCR_LOCAL = 'paddleocr_local';
 export const POLICY_OCR_MODE_QWEN25_VL_3B_INSTRUCT_MLX_VLM = 'qwen25_vl_3b_instruct_mlx_vlm';
 export const POLICY_OCR_MODE_PADDLEOCR_VL_1_5 = 'paddleocr_vl_1_5';
 export const POLICY_OCR_MODE_MINICPM_V_4X_LOCAL = 'minicpm_v_4x_local';
+export const POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
 
 export const OCR_PROVIDER_LOCAL = 'local';
 export const OCR_PROVIDER_BAIDU_PRIVATE = 'baidu_private';
@@ -17,6 +18,7 @@ export const OCR_PROVIDER_PADDLE_LOCAL = 'paddle_local';
 export const OCR_PROVIDER_PADDLEOCR_VL_LOCAL = 'paddleocr_vl_local';
 export const OCR_PROVIDER_OLLAMA_VISION_LOCAL = 'ollama_vision_local';
 export const OCR_PROVIDER_MLX_QWEN25_VL_LOCAL = 'mlx_qwen25_vl_local';
+export const OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,6 +61,12 @@ const MODE_META = [
     implemented: false,
     selectable: false,
     description: '待接入。',
+  },
+  {
+    value: POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL,
+    implemented: true,
+    selectable: true,
+    description: '使用 PDF-Extract-Kit / MinerU pipeline 本机完成保单版面解析与识别，支持 PDF 和图片输入。',
   },
 ];
 
@@ -112,6 +120,23 @@ export function runPythonReadinessProbe({ pythonCommand, projectDir = '', code, 
       .join('\n')
       .trim(),
   };
+}
+
+/**
+ * Check if Docker daemon is running and the given MinerU image exists.
+ * Used as a fallback when magic_pdf is not installed locally.
+ */
+export function isMineruDockerAvailable(dockerImage = 'mineru-ocr') {
+  try {
+    const info = spawnSync('docker', ['info'], { encoding: 'utf-8', timeout: 10000 });
+    if (info.status !== 0) return false;
+    const inspect = spawnSync('docker', ['image', 'inspect', dockerImage], {
+      encoding: 'utf-8', timeout: 10000,
+    });
+    return inspect.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 export function buildPolicyOcrPaddleReadinessProbeCode(importLine = 'from paddleocr import PaddleOCRVL') {
@@ -189,6 +214,19 @@ export function resolvePolicyOcrModeReadiness(mode, env = process.env) {
       ? { ready: true, notReadyReason: '' }
       : { ready: false, notReadyReason: '当前机器未安装 paddleocr[doc-parser] / PaddleOCRVL 运行环境。' };
   }
+  if (normalizedMode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
+    // Check if mineru CLI is on PATH
+    const which = spawnSync('sh', ['-c', 'command -v mineru'], { encoding: 'utf-8', timeout: 5000 });
+    if (which.status === 0 && String(which.stdout || '').trim()) {
+      return { ready: true, notReadyReason: '' };
+    }
+    // Fallback: check if Docker with mineru-ocr image is available
+    const dockerImage = String(env.POLICY_OCR_MINERU_DOCKER_IMAGE || 'mineru-ocr').trim() || 'mineru-ocr';
+    if (isMineruDockerAvailable(dockerImage)) {
+      return { ready: true, notReadyReason: '' };
+    }
+    return { ready: false, notReadyReason: '当前机器未安装 mineru CLI，也未找到 Docker 镜像。请运行 pip install "mineru[pipeline]" 或 docker build -t mineru-ocr -f ocr-service/Dockerfile.mineru . 构建镜像。' };
+  }
   return { ready: false, notReadyReason: '待接入。' };
 }
 
@@ -215,6 +253,9 @@ export function resolvePolicyOcrModeAdminReadiness(mode, env = process.env) {
           ready: false,
           notReadyReason: '当前机器未启用 PaddleOCR-VL-1.5。本地 CPU 模式耗时过长，默认关闭。',
         };
+  }
+  if (normalizedMode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
+    return { ready: true, notReadyReason: '' };
   }
   return { ready: false, notReadyReason: '待接入。' };
 }
@@ -255,6 +296,7 @@ export function policyOcrProviderLabel(provider) {
   if (normalized === OCR_PROVIDER_PADDLEOCR_VL_LOCAL) return 'PaddleOCR-VL-1.5';
   if (normalized === OCR_PROVIDER_OLLAMA_VISION_LOCAL) return 'Ollama 本地视觉识别';
   if (normalized === OCR_PROVIDER_MLX_QWEN25_VL_LOCAL) return 'Qwen2.5-VL-3B-Instruct + MLX-VLM';
+  if (normalized === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) return 'PDF-Extract-Kit / MinerU 本地识别';
   return '当前本地默认识别';
 }
 
@@ -287,6 +329,9 @@ export function resolveEffectivePolicyOcrProvider() {
   if (mode === POLICY_OCR_MODE_PADDLEOCR_VL_1_5) {
     return OCR_PROVIDER_PADDLEOCR_VL_LOCAL;
   }
+  if (mode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
+    return OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL;
+  }
   return getLegacyPolicyOcrProviderFromEnv();
 }
 
@@ -305,6 +350,9 @@ export function resolveEffectivePolicyOcrProviderFast(env = process.env) {
     return envFlag(env, 'POLICY_OCR_ENABLE_PADDLEOCR_VL', false)
       ? OCR_PROVIDER_PADDLEOCR_VL_LOCAL
       : getLegacyPolicyOcrProviderFromEnv(env);
+  }
+  if (mode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
+    return OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL;
   }
   return getLegacyPolicyOcrProviderFromEnv(env);
 }

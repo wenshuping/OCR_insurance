@@ -16,6 +16,7 @@ import {
   OCR_PROVIDER_OLLAMA_VISION_LOCAL,
   OCR_PROVIDER_PADDLE_LOCAL,
   OCR_PROVIDER_PADDLEOCR_VL_LOCAL,
+  OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL,
   resolveEffectivePolicyOcrProvider,
 } from './ocr-config.service.mjs';
 
@@ -26,6 +27,7 @@ const __dirname = path.dirname(__filename);
 const OCR_SCRIPTS_DIR = path.resolve(__dirname, 'scripts');
 const OCR_SWIFT_SCRIPT = path.join(OCR_SCRIPTS_DIR, 'policy_ocr_vision.swift');
 const OCR_PADDLE_SCRIPT = path.join(OCR_SCRIPTS_DIR, 'policy_ocr_paddle.py');
+const OCR_PDF_EXTRACT_KIT_SCRIPT = path.join(OCR_SCRIPTS_DIR, 'policy_ocr_pdf_extract_kit.py');
 const LOCAL_PADDLE_VENV_PYTHON = path.resolve(__dirname, '../.runtime/paddleocr-venv/bin/python');
 const DEFAULT_MAX_SCAN_BYTES = 12 * 1024 * 1024;
 const DEFAULT_MLX_MAX_IMAGE_DIMENSION = 1800;
@@ -37,6 +39,7 @@ export function resolveLocalOcrScriptPaths() {
   return {
     visionScriptPath: OCR_SWIFT_SCRIPT,
     paddleScriptPath: OCR_PADDLE_SCRIPT,
+    pdfExtractKitScriptPath: OCR_PDF_EXTRACT_KIT_SCRIPT,
   };
 }
 
@@ -2683,6 +2686,82 @@ async function recognizeTextWithPaddleLocal(uploadItem) {
   }
 }
 
+let pdfExtractKitWarmupPromise = null;
+
+function getConfiguredPdfExtractKitPython() {
+  const explicit = String(process.env.POLICY_OCR_PDF_EXTRACT_KIT_PYTHON || '').trim();
+  if (explicit) return explicit;
+  if (existsSync(LOCAL_PADDLE_VENV_PYTHON)) return LOCAL_PADDLE_VENV_PYTHON;
+  return 'python3';
+}
+
+function getConfiguredPdfExtractKitBackend() {
+  const explicit = String(process.env.POLICY_OCR_PDF_EXTRACT_KIT_BACKEND || '').trim().toLowerCase();
+  if (explicit === 'pipeline' || explicit === 'vlm') return explicit;
+  return 'pipeline';
+}
+
+async function warmupPdfExtractKitIfNeeded() {
+  const provider = getConfiguredOcrProvider();
+  if (provider !== OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) return;
+  if (pdfExtractKitWarmupPromise) return pdfExtractKitWarmupPromise;
+  assertOcrScriptExists(OCR_PDF_EXTRACT_KIT_SCRIPT);
+  const env = { ...process.env };
+  env.POLICY_OCR_PDF_EXTRACT_KIT_BACKEND = getConfiguredPdfExtractKitBackend();
+  const pythonCmd = getConfiguredPdfExtractKitPython();
+  pdfExtractKitWarmupPromise = execFileAsync(pythonCmd, [OCR_PDF_EXTRACT_KIT_SCRIPT, '--warmup'], {
+    env,
+    timeout: 120000,
+    maxBuffer: 10 * 1024 * 1024,
+  })
+    .catch(() => undefined)
+    .finally(() => {
+      pdfExtractKitWarmupPromise = Promise.resolve();
+    });
+  return pdfExtractKitWarmupPromise;
+}
+
+async function recognizeTextWithPdfExtractKit(uploadItem) {
+  await warmupPdfExtractKitIfNeeded();
+  assertOcrScriptExists(OCR_PDF_EXTRACT_KIT_SCRIPT);
+  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'policy-ocr-pdf-extract-kit-'));
+  const ext = inferFileExtension(uploadItem?.name, mimeType);
+  const absPath = path.join(tmpDir, `scan${ext}`);
+  try {
+    await writeFile(absPath, buffer);
+    const env = { ...process.env };
+    env.POLICY_OCR_PDF_EXTRACT_KIT_BACKEND = getConfiguredPdfExtractKitBackend();
+    const pythonCmd = getConfiguredPdfExtractKitPython();
+    const { stdout } = await execFileAsync(pythonCmd, [OCR_PDF_EXTRACT_KIT_SCRIPT, absPath], {
+      env,
+      timeout: 180000,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    let payload = null;
+    try {
+      payload = JSON.parse(stdout);
+    } catch {
+      throw new Error('POLICY_OCR_FAILED');
+    }
+    if (!payload?.ok) {
+      throw new Error('POLICY_OCR_FAILED');
+    }
+    const recognized = normalizeOcrText(payload.ocrText || '');
+    if (!recognized) throw new Error('POLICY_OCR_EMPTY');
+    return recognized;
+  } catch (err) {
+    const message = String(err?.stderr || err?.message || err || '');
+    if (message.includes('POLICY_OCR_EMPTY')) throw new Error('POLICY_OCR_EMPTY');
+    if (message.includes('POLICY_OCR_PDF_EXTRACT_KIT_IMPORT_FAILED') || message.includes('POLICY_OCR_PROVIDER_NOT_READY')) {
+      throw new Error('POLICY_OCR_PROVIDER_NOT_READY');
+    }
+    throw new Error('POLICY_OCR_FAILED');
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 function shouldFallbackToPaddleForImages(env = process.env) {
   return String(env.POLICY_OCR_FALLBACK_PADDLE || 'true').trim().toLowerCase() !== 'false';
 }
@@ -2748,6 +2827,9 @@ async function recognizeTextFromUpload(uploadItem) {
   if (provider === OCR_PROVIDER_PADDLE_LOCAL || provider === OCR_PROVIDER_PADDLEOCR_VL_LOCAL) {
     return recognizeTextWithPaddleLocal(uploadItem);
   }
+  if (provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) {
+    return recognizeTextWithPdfExtractKit(uploadItem);
+  }
   return recognizeTextWithVision(uploadItem);
 }
 
@@ -2776,6 +2858,9 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
       if (provider === OCR_PROVIDER_PADDLE_LOCAL || provider === OCR_PROVIDER_PADDLEOCR_VL_LOCAL) {
         const paddleText = await recognizeTextWithPaddleLocal(uploadItem);
         candidates.push(paddleText);
+      } else if (provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) {
+        const pdfExtractKitText = await recognizeTextWithPdfExtractKit(uploadItem);
+        candidates.push(pdfExtractKitText);
       } else {
         candidates.push(await recognizeTextWithImageFallback(uploadItem));
       }
@@ -2933,3 +3018,4 @@ export async function scanInsurancePolicy({ uploadItem, ocrText }) {
 }
 
 void warmupPaddleLocalIfNeeded();
+void warmupPdfExtractKitIfNeeded();

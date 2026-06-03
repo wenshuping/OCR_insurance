@@ -1,0 +1,20 @@
+# MinerU / PDF-Extract-Kit OCR backend for insurance policy parsing
+# Build:  docker build -t mineru-ocr -f ocr-service/Dockerfile.mineru .
+# Usage:  docker run --rm -v <host_dir>:/data mineru-ocr python3 /data/scripts/policy_ocr_pdf_extract_kit.py /data/input.pdf
+
+FROM python:3.12-slim
+
+# System deps for PaddleOCR / OpenCV inside MinerU pipeline backend
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 libgomp1 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MinerU with pipeline backend (CPU-friendly, no VLM/GPU deps)
+# six is needed by pytorch_paddle inside the pipeline OCR module
+RUN pip install --no-cache-dir --upgrade pip uv \
+    && uv pip install --system -U "mineru[pipeline]" six
+
+# Verify mineru CLI is available
+RUN mineru --help || true
+
+WORKDIR /data
