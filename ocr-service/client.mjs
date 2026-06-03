@@ -58,7 +58,7 @@ export async function scanInsurancePolicyOverHttp({ uploadItem, ocrText }, fetch
     throw new Error('POLICY_OCR_SERVICE_NOT_CONFIGURED');
   }
 
-  const timeoutMs = Math.max(1000, Number(process.env.POLICY_OCR_SERVICE_TIMEOUT_MS || 180000));
+  const timeoutMs = Math.max(1000, Number(process.env.POLICY_OCR_SERVICE_TIMEOUT_MS || 600000));
   let response;
   const requestBody = {};
   const normalizedOcrText = String(ocrText || '').trim();

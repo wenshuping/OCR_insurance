@@ -3,7 +3,7 @@ function trim(value) {
 }
 
 const DEFAULT_OCR_SERVICE_URL = 'http://127.0.0.1:4105';
-const DEFAULT_OCR_TIMEOUT_MS = 180000;
+const DEFAULT_OCR_TIMEOUT_MS = 600000;
 
 const COMPANY_ALIASES = [
   { value: '新华保险', patterns: [/NCI\s*新华保险/i, /新华(?:人寿)?保险(?:股份有限公司|有限责任公司)?/] },

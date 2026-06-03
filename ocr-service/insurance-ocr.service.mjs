@@ -2711,7 +2711,7 @@ async function warmupPdfExtractKitIfNeeded() {
   const pythonCmd = getConfiguredPdfExtractKitPython();
   pdfExtractKitWarmupPromise = execFileAsync(pythonCmd, [OCR_PDF_EXTRACT_KIT_SCRIPT, '--warmup'], {
     env,
-    timeout: 120000,
+    timeout: 300000,
     maxBuffer: 10 * 1024 * 1024,
   })
     .catch(() => undefined)
@@ -2735,7 +2735,7 @@ async function recognizeTextWithPdfExtractKit(uploadItem) {
     const pythonCmd = getConfiguredPdfExtractKitPython();
     const { stdout } = await execFileAsync(pythonCmd, [OCR_PDF_EXTRACT_KIT_SCRIPT, absPath], {
       env,
-      timeout: 180000,
+      timeout: 600000,
       maxBuffer: 50 * 1024 * 1024,
     });
     let payload = null;
