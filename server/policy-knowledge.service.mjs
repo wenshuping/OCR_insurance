@@ -101,6 +101,94 @@ function resolveOfficialProfile(policy = {}, officialDomainProfiles = []) {
   );
 }
 
+function normalizeComparableCompany(value = '') {
+  return normalizeComparableFact(value)
+    .replace(/(?:人寿|财产|养老|健康)?保险股份有限公司/gu, '')
+    .replace(/(?:人寿|财产|养老|健康)?保险有限责任公司/gu, '')
+    .replace(/(?:人寿|财产|养老|健康)?保险有限公司/gu, '')
+    .replace(/保险股份有限公司|保险有限责任公司|股份有限公司|有限责任公司|有限公司/gu, '')
+    .trim();
+}
+
+function companyAliasSet(company = '', officialDomainProfiles = []) {
+  const profile = resolveOfficialProfile({ company }, officialDomainProfiles);
+  const values = [company];
+  if (profile) values.push(...(Array.isArray(profile.companyAliases) ? profile.companyAliases : []));
+  return new Set(values.map(normalizeComparableCompany).filter(Boolean));
+}
+
+function companyProfileAliasSet(company = '', officialDomainProfiles = []) {
+  const profile = resolveOfficialProfile({ company }, officialDomainProfiles);
+  if (!profile) return new Set();
+  return new Set(
+    [profile.company, ...(Array.isArray(profile.aliases) ? profile.aliases : []), ...(Array.isArray(profile.companyAliases) ? profile.companyAliases : [])]
+      .map(normalizeComparableFact)
+      .filter(Boolean),
+  );
+}
+
+function normalizeCompanySuggestionText(value = '') {
+  return trimString(value).replace(/\s+/gu, '').toLowerCase();
+}
+
+export function scoreCompanySuggestionMatch(query = '', candidate = '', officialDomainProfiles = []) {
+  const rawQuery = trimString(query);
+  const rawCandidate = trimString(candidate);
+  if (!rawQuery || !rawCandidate) {
+    return { matched: false, score: 0, matchType: '' };
+  }
+
+  const exactQuery = normalizeComparableFact(rawQuery);
+  const exactCandidate = normalizeComparableFact(rawCandidate);
+  const queryProfileAliases = companyProfileAliasSet(rawQuery, officialDomainProfiles);
+  const candidateProfileAliases = companyProfileAliasSet(rawCandidate, officialDomainProfiles);
+  if (
+    exactQuery
+    && exactCandidate
+    && ((queryProfileAliases.has(exactCandidate) && queryProfileAliases.has(exactQuery))
+      || (candidateProfileAliases.has(exactQuery) && candidateProfileAliases.has(exactCandidate)))
+  ) {
+    return { matched: true, score: 400, matchType: 'alias' };
+  }
+
+  const normalizedQuery = normalizeCompanySuggestionText(rawQuery);
+  const normalizedCandidate = normalizeCompanySuggestionText(rawCandidate);
+  if (!normalizedQuery || !normalizedCandidate) {
+    return { matched: false, score: 0, matchType: '' };
+  }
+  if (normalizedCandidate === normalizedQuery) {
+    return { matched: true, score: 320, matchType: 'exact' };
+  }
+  if (normalizedCandidate.startsWith(normalizedQuery)) {
+    return { matched: true, score: 240, matchType: 'prefix' };
+  }
+  const containsIndex = normalizedCandidate.indexOf(normalizedQuery);
+  if (containsIndex >= 0) {
+    return { matched: true, score: 180 - Math.min(containsIndex, 40), matchType: 'contains' };
+  }
+
+  const comparableQuery = normalizeComparableCompany(rawQuery);
+  const comparableCandidate = normalizeComparableCompany(rawCandidate);
+  if (!comparableQuery || !comparableCandidate) {
+    return { matched: false, score: 0, matchType: '' };
+  }
+  if (comparableCandidate === comparableQuery) {
+    return { matched: true, score: 160, matchType: 'generic' };
+  }
+  if (comparableCandidate.startsWith(comparableQuery)) {
+    return { matched: true, score: 140, matchType: 'generic' };
+  }
+  const genericIndex = comparableCandidate.indexOf(comparableQuery);
+  if (genericIndex >= 0) {
+    return { matched: true, score: 120 - Math.min(genericIndex, 40), matchType: 'generic' };
+  }
+  return { matched: false, score: 0, matchType: '' };
+}
+
+export function companiesMatch(left = '', right = '', officialDomainProfiles = []) {
+  return scoreCompanySuggestionMatch(left, right, officialDomainProfiles).matched;
+}
+
 function isOfficialUrl(url = '', policy = {}, officialDomainProfiles = []) {
   const hostname = resolveUrlHostname(url);
   if (!hostname) return false;
@@ -243,7 +331,52 @@ function productTypeTerms(value = '') {
   );
 }
 
-function scoreProductNameMatch(queryName = '', candidateName = '', company = '') {
+const GENERIC_HEALTH_PRODUCT_TYPE_PATTERN = /^健康(?:险|保险)?$/u;
+const GENERIC_LIFE_PRODUCT_TYPE_PATTERN = /^(?:寿险|人寿险|人寿保险|年金|年金保险|两全及生存|医疗保险|护理保险|意外保险|疾病保险)?$/u;
+const INVALID_PRODUCT_TYPE_PATTERN = /^(?:-|全部|产品分类：|P[123])$/u;
+const CRITICAL_ILLNESS_PRODUCT_TEXT_PATTERN =
+  /重大疾病保险|重疾险|(重大疾病|轻症疾病|中症疾病|特定重大疾病|特定轻症疾病).{0,12}保险金/u;
+
+function normalizeProductTypeAlias(value = '') {
+  const raw = trimString(value);
+  if (!raw) return '';
+  if (INVALID_PRODUCT_TYPE_PATTERN.test(raw)) return '';
+  if (raw === '意外保险' || raw === '意外伤害保险') return '意外险';
+  if (raw === '医疗保险') return '医疗险';
+  if (raw === '护理保险') return '护理险';
+  if (raw === '年金保险' || raw === '年金') return '年金险';
+  if (raw === '两全及生存') return '两全保险';
+  if (raw === '人寿险' || raw === '人寿保险') return '寿险';
+  if (raw === '重大疾病') return '重疾险';
+  return raw;
+}
+
+function inferProductTypeFromText(record = {}) {
+  const text = [record.productName, record.title, record.pageText].map(trimString).filter(Boolean).join(' ');
+  if (!text) return '';
+  if (CRITICAL_ILLNESS_PRODUCT_TEXT_PATTERN.test(text)) return '重疾险';
+  if (/重大疾病|重疾/u.test(text)) return '重疾险';
+  if (/医疗/u.test(text)) return '医疗险';
+  if (/护理/u.test(text)) return '护理险';
+  if (/年金/u.test(text)) return '年金险';
+  if (/两全/u.test(text)) return '两全保险';
+  if (/终身寿险|定期寿险|寿险/u.test(text)) return '寿险';
+  if (/意外/u.test(text)) return '意外险';
+  if (/恶性肿瘤|防癌|特定疾病|疾病保险/u.test(text)) return '疾病保险';
+  return '';
+}
+
+export function normalizeKnowledgeProductType(record = {}) {
+  const rawType = normalizeProductTypeAlias(record.productType);
+  const inferredType = inferProductTypeFromText(record);
+  if (!rawType) return inferredType;
+  if (GENERIC_HEALTH_PRODUCT_TYPE_PATTERN.test(rawType) || GENERIC_LIFE_PRODUCT_TYPE_PATTERN.test(rawType)) {
+    return inferredType || rawType;
+  }
+  return rawType;
+}
+
+export function scoreProductNameMatch(queryName = '', candidateName = '', company = '') {
   const query = normalizeProductMatchText(queryName, company);
   const candidate = normalizeProductMatchText(candidateName, company);
   if (!query || !candidate) return 0;
@@ -769,7 +902,7 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     id: record.id,
     company,
     productName,
-    productType: trimString(record.productType),
+    productType: normalizeKnowledgeProductType(record),
     salesStatus: trimString(record.salesStatus),
     title: trimString(record.title) || url,
     url,
@@ -848,7 +981,7 @@ export function findKnowledgeRecordsForPolicy({ policy = {}, records = [], offic
           domainMatches(resolveUrlHostname(record.url), record.officialDomain)),
     )
     .filter((record) => {
-      const companyMatch = !record.company || company.includes(record.company) || record.company.includes(company);
+      const companyMatch = !record.company || companiesMatch(company, record.company, officialDomainProfiles);
       return companyMatch && productMatchesText(productName, record.productName || record.title || record.url);
     });
   const exactVersionMatches = matched.filter((record) =>
@@ -895,7 +1028,7 @@ export function findKnowledgeProductCandidates({
     ) {
       continue;
     }
-    const companyMatch = !record.company || company.includes(record.company) || record.company.includes(company);
+    const companyMatch = !record.company || companiesMatch(company, record.company, officialDomainProfiles);
     if (!companyMatch) continue;
     const productScore = scoreProductNameMatch(productName, record.productName, company);
     const titleScore = scoreProductNameMatch(productName, record.title, company) * 0.96;

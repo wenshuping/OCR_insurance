@@ -51,7 +51,10 @@ import {
   crawlOfficialKnowledge,
   buildKnowledgeSearchArtifacts,
   findKnowledgeProductCandidates,
+  companiesMatch,
   normalizeKnowledgeRecord,
+  scoreCompanySuggestionMatch,
+  scoreProductNameMatch,
   upsertKnowledgeRecords,
 } from './policy-knowledge.service.mjs';
 import {
@@ -475,6 +478,56 @@ function normalizedPlanIdentity(plan = {}, fallbackCompany = '') {
   ].join('::');
 }
 
+function compactText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/\s+/gu, '')
+    .trim()
+    .toLowerCase();
+}
+
+function shouldPreferScanPlanOverManualPlan(manualPlan = {}, scanPlan = {}) {
+  const manualRole = trim(manualPlan?.role);
+  const scanRole = trim(scanPlan?.role);
+  if (manualRole !== 'rider' || scanRole !== 'rider') return false;
+  const manualMatchedName = trim(manualPlan?.matchedProductName || manualPlan?.name || manualPlan?.productName);
+  const scanMatchedName = trim(scanPlan?.matchedProductName || scanPlan?.name || scanPlan?.productName);
+  if (!manualMatchedName || !scanMatchedName) return false;
+  const manualCanonicalProductId = trim(manualPlan?.canonicalProductId);
+  if (manualCanonicalProductId) return false;
+  const manualProductType = trim(manualPlan?.productType);
+  if (manualProductType) return false;
+  return compactText(manualMatchedName) !== compactText(scanMatchedName);
+}
+
+function mergeManualPlansIntoScan(scanPlans = [], manualPlans = [], fallbackCompany = '') {
+  const normalizedScanPlans = normalizePolicyPlans(scanPlans, fallbackCompany);
+  const normalizedManualPlans = normalizePolicyPlans(manualPlans, fallbackCompany);
+  if (!normalizedManualPlans.length) return normalizedScanPlans;
+  if (!normalizedScanPlans.length) return normalizedManualPlans;
+  const mergedPlans = normalizedManualPlans.map((manualPlan, index) => {
+    const scanPlan = normalizedScanPlans[index] || null;
+    if (!scanPlan) return manualPlan;
+    if (shouldPreferScanPlanOverManualPlan(manualPlan, scanPlan)) {
+      return {
+        ...scanPlan,
+        premium: manualPlan.premium || scanPlan.premium,
+        amount: manualPlan.amount || scanPlan.amount,
+        coveragePeriod: manualPlan.coveragePeriod || scanPlan.coveragePeriod,
+        paymentMode: manualPlan.paymentMode || scanPlan.paymentMode,
+        paymentPeriod: manualPlan.paymentPeriod || scanPlan.paymentPeriod,
+      };
+    }
+    return manualPlan;
+  });
+  return mergedPlans.length > normalizedScanPlans.length
+    ? mergedPlans
+    : [
+        ...mergedPlans,
+        ...normalizedScanPlans.slice(mergedPlans.length),
+      ];
+}
+
 function preserveMappedCanonicalIdsInManualData(manualData = {}, scanData = {}) {
   const next = { ...manualData };
   const manualProductName = trim(next.name);
@@ -496,6 +549,19 @@ function preserveMappedCanonicalIdsInManualData(manualData = {}, scanData = {}) 
     });
   }
   return next;
+}
+
+function keepMatchingParticipantBindingId({
+  manualName = '',
+  manualMemberId = null,
+  scanName = '',
+}) {
+  const normalizedManualName = trim(manualName);
+  const normalizedScanName = trim(scanName);
+  const normalizedMemberId = Number(manualMemberId || 0) || null;
+  if (!normalizedMemberId) return null;
+  if (!normalizedManualName || !normalizedScanName) return normalizedMemberId;
+  return normalizedManualName === normalizedScanName ? normalizedMemberId : null;
 }
 
 function normalizePolicyUpdateData(value, existingPolicy = {}) {
@@ -1038,6 +1104,7 @@ function normalizeSuggestionText(value) {
 
 function buildResponsibilityCompanySuggestions(state, query = '', maxResults = 12) {
   const normalizedQuery = normalizeSuggestionText(query);
+  const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
   const stats = new Map();
   const addCompany = (company, weight = 1) => {
     const name = trim(company);
@@ -1048,46 +1115,41 @@ function buildResponsibilityCompanySuggestions(state, query = '', maxResults = 1
   };
   for (const record of state.knowledgeRecords || []) addCompany(record.company, 1);
   for (const policy of state.policies || []) addCompany(policy.company, 1);
-  for (const profile of buildEffectiveOfficialDomainProfiles(state)) addCompany(profile.company, 0);
+  for (const profile of officialDomainProfiles) addCompany(profile.company, 0);
 
   return [...stats.values()]
     .map((item) => {
-      const normalizedCompany = normalizeSuggestionText(item.company);
-      const matchIndex = normalizedQuery ? normalizedCompany.indexOf(normalizedQuery) : 0;
+      const match = normalizedQuery
+        ? scoreCompanySuggestionMatch(query, item.company, officialDomainProfiles)
+        : { matched: true, score: 0, matchType: '' };
       return {
         ...item,
-        matchIndex,
-        exact: normalizedQuery && normalizedCompany === normalizedQuery,
-        startsWith: normalizedQuery && normalizedCompany.startsWith(normalizedQuery),
+        matched: match.matched,
+        score: match.score,
+        matchType: match.matchType,
       };
     })
-    .filter((item) => !normalizedQuery || item.matchIndex >= 0)
+    .filter((item) => !normalizedQuery || item.matched)
     .sort(
       (left, right) =>
-        Number(right.exact) - Number(left.exact) ||
-        Number(right.startsWith) - Number(left.startsWith) ||
-        left.matchIndex - right.matchIndex ||
+        right.score - left.score ||
         right.recordCount - left.recordCount ||
         left.company.localeCompare(right.company, 'zh-CN'),
     )
     .slice(0, maxResults)
-    .map(({ company, recordCount }) => ({ company, recordCount }));
+    .map(({ company, recordCount, matchType }) => ({ company, recordCount, matchType }));
 }
 
 function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults = 12 } = {}) {
-  const normalizedCompany = normalizeSuggestionText(company);
-  if (!normalizedCompany) return [];
+  if (!normalizeSuggestionText(company)) return [];
   const normalizedQuery = normalizeSuggestionText(query);
+  const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
   const stats = new Map();
   const addProduct = (recordCompany, productName, weight = 1, { official = false } = {}) => {
     const sourceCompany = trim(recordCompany);
     const name = trim(productName);
     if (!sourceCompany || !name) return;
-    const sourceCompanyKey = normalizeSuggestionText(sourceCompany);
-    const companyMatches =
-      sourceCompanyKey === normalizedCompany ||
-      sourceCompanyKey.includes(normalizedCompany) ||
-      normalizedCompany.includes(sourceCompanyKey);
+    const companyMatches = companiesMatch(company, sourceCompany, officialDomainProfiles);
     if (!companyMatches) return;
     const key = `${sourceCompany}\u001f${name}`;
     const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId: '', recordCount: 0 };
@@ -1107,19 +1169,23 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
     .map((item) => {
       const normalizedProduct = normalizeSuggestionText(item.productName);
       const matchIndex = normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0;
+      const fuzzyScore = normalizedQuery ? scoreProductNameMatch(query, item.productName, company) : 1;
       return {
         ...item,
+        fuzzyScore,
         matchIndex,
-        exact: normalizedQuery && normalizedProduct === normalizedQuery,
-        startsWith: normalizedQuery && normalizedProduct.startsWith(normalizedQuery),
+        exact: Boolean(normalizedQuery && normalizedProduct === normalizedQuery),
+        startsWith: Boolean(normalizedQuery && normalizedProduct.startsWith(normalizedQuery)),
       };
     })
-    .filter((item) => !normalizedQuery || item.matchIndex >= 0)
+    .filter((item) => !normalizedQuery || item.matchIndex >= 0 || item.fuzzyScore >= 0.1)
     .sort(
       (left, right) =>
         Number(right.exact) - Number(left.exact) ||
         Number(right.startsWith) - Number(left.startsWith) ||
+        Number(right.matchIndex >= 0) - Number(left.matchIndex >= 0) ||
         left.matchIndex - right.matchIndex ||
+        right.fuzzyScore - left.fuzzyScore ||
         right.recordCount - left.recordCount ||
         left.productName.localeCompare(right.productName, 'zh-CN'),
     )
@@ -1201,6 +1267,23 @@ function clearGuestPendingScans(state, guestId) {
 function mergeManualPolicyDataIntoScan(scan, body) {
   const manualData = normalizeManualPolicyData(body?.manualData);
   const mergedManualData = preserveMappedCanonicalIdsInManualData(manualData, scan?.data || {});
+  if (!hasOwn(scan?.data || {}, 'applicantMemberId') && hasOwn(mergedManualData, 'applicantMemberId')) {
+    mergedManualData.applicantMemberId = keepMatchingParticipantBindingId({
+      manualName: manualData.applicant,
+      manualMemberId: mergedManualData.applicantMemberId,
+      scanName: scan?.data?.applicant,
+    });
+  }
+  if (!hasOwn(scan?.data || {}, 'insuredMemberId') && hasOwn(mergedManualData, 'insuredMemberId')) {
+    mergedManualData.insuredMemberId = keepMatchingParticipantBindingId({
+      manualName: manualData.insured,
+      manualMemberId: mergedManualData.insuredMemberId,
+      scanName: scan?.data?.insured,
+    });
+  }
+  if (Array.isArray(manualData.plans) || Array.isArray(scan?.data?.plans)) {
+    mergedManualData.plans = mergeManualPlansIntoScan(scan?.data?.plans, mergedManualData.plans, mergedManualData.company || scan?.data?.company || '');
+  }
   return {
     ...scan,
     data: {
@@ -1546,6 +1629,10 @@ function findPolicyForReportRequest(req, state, adminPassword) {
 
 export function createPolicyOcrApp(options = {}) {
   const state = options.state || createInitialState();
+  const runtimeInfo = {
+    startedAt: String(options.runtimeStartedAt || new Date().toISOString()),
+    sessionId: String(options.runtimeSessionId || `runtime-${Date.now().toString(36)}`),
+  };
   if (!Array.isArray(state.users)) state.users = [];
   if (!Array.isArray(state.sessions)) state.sessions = [];
   if (!Array.isArray(state.adminSessions)) state.adminSessions = [];
@@ -1778,7 +1865,12 @@ export function createPolicyOcrApp(options = {}) {
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'policy-ocr-app' });
+    res.json({
+      ok: true,
+      service: 'policy-ocr-app',
+      startedAt: runtimeInfo.startedAt,
+      sessionId: runtimeInfo.sessionId,
+    });
   });
 
   app.use('/api/wechat', createWechatRoutes(routeContext));

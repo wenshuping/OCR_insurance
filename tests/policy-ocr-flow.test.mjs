@@ -7,7 +7,7 @@ import { createCashflowStore, createCashValueStore } from '../server/cashflow-st
 import { createInitialState, latestValidSmsCode } from '../server/policy-ocr.domain.mjs';
 import { rebuildOptionalResponsibilityGovernance } from '../server/optional-responsibility-governance.mjs';
 import { scanPolicyWithConfiguredRuntime } from '../server/ocr-runtime.mjs';
-import { extractPolicyFieldsFromText, normalizeExtractedPolicyFields } from '../ocr-service/insurance-ocr.service.mjs';
+import { extractPaddleOcrText, extractPolicyFieldsFromText, normalizeExtractedPolicyFields } from '../ocr-service/insurance-ocr.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 
 function listen(app) {
@@ -121,6 +121,42 @@ test('OCR extraction ignores insurer logo text and combines split product table 
   assert.equal(data.firstPremium, '3000');
 });
 
+test('PaddleOCR line output maps insurance basic fields through the existing matcher', () => {
+  const paddlePayload = {
+    ok: true,
+    pipeline: 'ocr',
+    lines: [
+      'NCI 新华保险',
+      '保险单',
+      '合同生效日期:2026年04月01日',
+      '投保人:张三',
+      '被保险人:张三',
+      '保险利益表',
+      '险种名称',
+      '盛世荣耀臻享版',
+      '终身寿险（分红型）',
+      '24441.00元',
+      '终身',
+      '年交',
+      '/10年',
+      '每年3000.00元',
+      '首期保险费合计:',
+      '￥3000.00',
+    ],
+  };
+
+  const recognizedText = extractPaddleOcrText(paddlePayload);
+  const data = extractPolicyFieldsFromText(recognizedText);
+
+  assert.equal(data.company, '新华保险');
+  assert.equal(data.name, '盛世荣耀臻享版终身寿险（分红型）');
+  assert.equal(data.date, '2026-04-01');
+  assert.equal(data.coveragePeriod, '终身');
+  assert.equal(data.paymentPeriod, '10年交');
+  assert.equal(data.amount, '24441');
+  assert.equal(data.firstPremium, '3000');
+});
+
 test('OCR extraction keeps rider single-pay period out of main policy fields', () => {
   const data = extractPolicyFieldsFromText(`
 NCI 新华保险
@@ -196,7 +232,9 @@ NCI新华保险
 
   assert.equal(data.company, '新华保险');
   assert.equal(data.applicant, '冯力');
+  assert.equal(data.date, '2024-09-29');
   assert.equal(data.name, '畅行万里智赢版两全保险');
+  assert.equal(data.policyNumber, '990171228067');
   assert.equal(data.firstPremium, '3296');
   assert.equal(data.amount, '');
   assert.equal(data.plans.length, 2);
@@ -351,6 +389,65 @@ test('OCR extraction does not treat policy document titles as insurer names', ()
   assert.notEqual(data.company, '合同');
 });
 
+test('OCR extraction keeps China Life single-plan OCR as one plan with annual payment period', () => {
+  const data = extractPolicyFieldsFromText(`
+MAWAWAVAVAV
+单证代码:9996
+中国日！
+/笛证
+保险单
+本公司根据保险条款和投保人的申请，签发本保险单
+保险资料
+（个人养老金）
+投保人姓名:翟卿
+合同成立日期:2024年12月05日
+产品首期保费（元）:12000.00
+币种:人民币
+主险明细
+险种名称:国寿鑫颐宝两全保险（2024版）
+保单号:2024330133SCW500032558
+保单生效日:2024年12月06日
+交费方式:年交
+每期交费日:每年的12月06日
+险种性质:主险
+被保险人姓名:翟卿
+保单期满日:2044年12月05日
+保险期间:至60周岁
+交费期满日:2034年12月05日
+交费期间:10年
+加费（元）
+子险种名称
+保险金额(元）
+标准保费（元）
+国寿鑫颐宝两全保险（2024版）
+159948.00
+12000.00
+身故保险金受益人列表
+证件号码
+被保险人受益顺序
+受益人
+性别
+出生日期
+与被保险人关系受益份额
+证件名称
+特别约定
+无
+  `);
+
+  assert.equal(data.company, '中国人寿保险');
+  assert.equal(data.name, '国寿鑫颐宝两全保险（2024版）');
+  assert.equal(data.date, '2024-12-05');
+  assert.equal(data.paymentPeriod, '10年交');
+  assert.equal(data.coveragePeriod, '至60岁');
+  assert.equal(data.amount, '159948');
+  assert.equal(data.firstPremium, '12000');
+  assert.equal(data.plans.length, 1);
+  assert.equal(data.plans[0].role, 'main');
+  assert.equal(data.plans[0].name, '国寿鑫颐宝两全保险（2024版）');
+  assert.equal(data.plans[0].amount, '159948');
+  assert.equal(data.plans[0].premium, '12000');
+});
+
 test('OCR extraction is not tied to Xinhua policy layouts', () => {
   const data = extractPolicyFieldsFromText(`
 PING AN 中国平安保险
@@ -394,6 +491,26 @@ PING AN 中国平安保险
   assert.equal(data.paymentPeriod, '20年交');
   assert.equal(data.amount, '500000');
   assert.equal(data.firstPremium, '12000');
+});
+
+test('health endpoint exposes runtime instance metadata for stale client detection', async () => {
+  const app = createPolicyOcrApp({
+    state: createInitialState(),
+    runtimeStartedAt: '2026-06-04T04:00:00.000Z',
+    runtimeSessionId: 'dev-runtime-test',
+  });
+  const server = await listen(app);
+
+  try {
+    const { response, payload } = await jsonFetch(server.baseUrl, '/api/health');
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.service, 'policy-ocr-app');
+    assert.equal(payload.startedAt, '2026-06-04T04:00:00.000Z');
+    assert.equal(payload.sessionId, 'dev-runtime-test');
+  } finally {
+    await server.close();
+  }
 });
 
 test('OCR extraction includes all benefit-table plans and matches each plan by insurer knowledge', async () => {
@@ -3069,6 +3186,86 @@ test('responsibility assistant returns company suggestions for partial input', a
   }
 });
 
+test('responsibility assistant company suggestions honor insurer aliases', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '新华保险',
+          productName: '新华人寿保险股份有限公司健康无忧A款重大疾病保险',
+          title: '新华人寿保险股份有限公司健康无忧A款重大疾病保险',
+          url: 'https://static-cdn.newchinalife.com/ncl/pdf/health-a.pdf',
+          pageText: '保险责任包括重大疾病保险金。',
+          official: true,
+        },
+      ],
+      policies: [],
+      nextId: 2,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const suggested = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/company-suggestions?q=新华人寿');
+    assert.equal(suggested.response.status, 200);
+    assert.equal(suggested.payload.ok, true);
+    assert.ok(suggested.payload.suggestions.some((item) => item.company === '新华保险' && item.matchType === 'alias'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('responsibility assistant company suggestions match legal-suffix variants without curated aliases', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '测试人寿保险股份有限公司',
+          productName: '测试人寿安心终身寿险',
+          title: '测试人寿安心终身寿险保险条款',
+          url: 'https://example.test/policy.pdf',
+          pageText: '保险责任包括身故保险金。',
+          official: true,
+        },
+      ],
+      policies: [],
+      nextId: 2,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const suggested = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/company-suggestions?q=测试人寿');
+    assert.equal(suggested.response.status, 200);
+    assert.equal(suggested.payload.ok, true);
+    assert.ok(
+      suggested.payload.suggestions.some(
+        (item) =>
+          item.company === '测试人寿保险股份有限公司'
+          && ['prefix', 'generic', 'contains', 'exact'].includes(item.matchType),
+      ),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test('responsibility assistant product suggestions are scoped to selected company', async () => {
   const app = createPolicyOcrApp({
     state: {
@@ -3120,6 +3317,50 @@ test('responsibility assistant product suggestions are scoped to selected compan
     assert.equal(suggested.payload.ok, true);
     assert.ok(suggested.payload.suggestions.some((item) => item.productName === '平安e生保医疗保险'));
     assert.equal(suggested.payload.suggestions.some((item) => item.company === '中国太平'), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('responsibility assistant product suggestions honor insurer aliases and fuzzy product names', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '新华保险',
+          productName: '新华人寿保险股份有限公司健康无忧A款重大疾病保险',
+          title: '新华人寿保险股份有限公司健康无忧A款重大疾病保险',
+          url: 'https://static-cdn.newchinalife.com/ncl/pdf/health-a.pdf',
+          pageText: '保险责任包括重大疾病保险金。',
+          official: true,
+        },
+      ],
+      policies: [],
+      nextId: 2,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const suggested = await jsonFetch(
+      server.baseUrl,
+      '/api/policy-responsibilities/product-suggestions?company=新华人寿&q=健康无忧重疾',
+    );
+    assert.equal(suggested.response.status, 200);
+    assert.equal(suggested.payload.ok, true);
+    assert.ok(
+      suggested.payload.suggestions.some(
+        (item) => item.productName === '新华人寿保险股份有限公司健康无忧A款重大疾病保险',
+      ),
+    );
   } finally {
     await server.close();
   }
@@ -3330,6 +3571,114 @@ test('responsibility assistant local matches are limited to three and do not que
     assert.equal(matched.response.status, 200);
     assert.equal(matched.payload.matches.length, 3);
     assert.equal(feishuCalled, false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('responsibility assistant local matches honor insurer aliases for New China inputs', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '新华保险',
+          productName: '新华人寿保险股份有限公司健康无忧重大疾病保险（专享版）',
+          title: '新华人寿保险股份有限公司健康无忧重大疾病保险（专享版）',
+          url: 'https://static-cdn.newchinalife.com/ncl/pdf/health.pdf',
+          pageText: '保险责任包括重大疾病保险金。',
+          official: true,
+          sourceType: 'pdf',
+          materialType: 'terms',
+        },
+      ],
+      policies: [],
+      nextId: 2,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '新华人寿',
+        name: '健康无忧',
+        limit: 20,
+        minScore: 0.1,
+      }),
+    });
+    assert.equal(matched.response.status, 200);
+    assert.equal(matched.payload.matches.length, 1);
+    assert.equal(matched.payload.matches[0].company, '新华保险');
+    assert.equal(matched.payload.matches[0].productName, '新华人寿保险股份有限公司健康无忧重大疾病保险（专享版）');
+  } finally {
+    await server.close();
+  }
+});
+
+test('responsibility assistant local matches can include more than three candidates above a custom score threshold', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [
+        {
+          id: 'example-life',
+          company: '测试保险',
+          aliases: ['测试保险'],
+          siteDomains: ['official.example-life.test'],
+          officialDomains: ['official.example-life.test'],
+        },
+      ],
+      knowledgeRecords: [
+        '尊享人生年金保险（分红型）',
+        '尊尚人生两全保险（分红型）',
+        '美利人生两全保险（分红型）',
+        '卓越人生两全保险',
+        '安享人生医疗保险',
+      ].map((productName, index) => ({
+        id: index + 1,
+        company: '测试保险',
+        productName,
+        title: `${productName}条款`,
+        url: `https://official.example-life.test/product-${index + 1}.pdf`,
+        pageText: '保险责任包括生存保险金、满期保险金、身故保险金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      })),
+      policies: [],
+      nextId: 6,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '尊享人生两全',
+        limit: 20,
+        minScore: 0.1,
+      }),
+    });
+    assert.equal(matched.response.status, 200);
+    assert.equal(matched.payload.matches.length, 5);
+    assert.ok(matched.payload.matches.some((item) => item.productName === '安享人生医疗保险'));
+    assert.ok(matched.payload.matches.every((item) => item.score >= 0.1));
   } finally {
     await server.close();
   }
@@ -4347,6 +4696,114 @@ test('recognize endpoint returns exact local responsibility draft for matched Ne
   }
 });
 
+test('analyze keeps OCR rider match when stale manual rider name matches the main plan', async () => {
+  const state = {
+    users: [],
+    sessions: [],
+    smsCodes: [],
+    adminSessions: [],
+    policies: [],
+    pendingScans: [],
+    sourceRecords: [],
+    knowledgeRecords: [
+      {
+        id: 1,
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+        title: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+        url: 'https://example.com/main.pdf',
+      },
+      {
+        id: 2,
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司i他男性特定疾病保险',
+        title: '新华人寿保险股份有限公司i他男性特定疾病保险',
+        url: 'https://example.com/rider.pdf',
+      },
+    ],
+    insuranceIndicatorRecords: [],
+    optionalResponsibilityRecords: [],
+    officialDomainProfiles: [],
+    familyProfiles: [],
+    familyMembers: [],
+    familyReportShares: [],
+    nextId: 1,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    scanner: async () => ({
+      ocrText: '新华保险 畅行万里智赢版两全保险 i他男性特定疾病保险',
+      data: {
+        company: '新华保险',
+        name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+        plans: [
+          {
+            company: '新华保险',
+            role: 'main',
+            name: '畅行万里智赢版两全保险',
+            matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+            premium: 3156,
+          },
+          {
+            company: '新华保险',
+            role: 'rider',
+            name: 'i他男性特定疾病保险',
+            matchedProductName: '新华人寿保险股份有限公司i他男性特定疾病保险',
+            premium: 140,
+          },
+        ],
+      },
+    }),
+    analyzer: async () => ({
+      report: '测试报告',
+      coverageTable: [],
+      optionalResponsibilities: [],
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const analyzed = await jsonFetch(server.baseUrl, '/api/policies/analyze', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-stale-rider-name',
+        uploadItem: {
+          name: 'policy.jpg',
+          type: 'image/jpeg',
+          size: 123,
+          dataUrl: 'data:image/jpeg;base64,QQ==',
+        },
+        manualData: {
+          company: '新华保险',
+          name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+          plans: [
+            {
+              company: '新华保险',
+              role: 'main',
+              name: '畅行万里智赢版两全保险',
+              matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+              premium: 3156,
+            },
+            {
+              company: '新华保险',
+              role: 'rider',
+              name: '畅行万里智赢版两全保险',
+              matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+              premium: 140,
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(analyzed.response.status, 200);
+    assert.equal(analyzed.payload.scan.data.plans[1].name, 'i他男性特定疾病保险');
+    assert.equal(analyzed.payload.scan.data.plans[1].matchedProductName, '新华人寿保险股份有限公司i他男性特定疾病保险');
+  } finally {
+    await server.close();
+  }
+});
+
 test('local responsibility draft endpoint returns optional responsibilities for entry form confirmation', async () => {
   const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
   const riderProductName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）';
@@ -4730,6 +5187,65 @@ test('family API sets existing member as core before saving policy', async () =>
   }
 });
 
+test('policy save keeps explicit family binding even when the family has no core member yet', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({
+      ocrText: '投保人:张三\n被保险人:李四',
+      data: { company: '新华保险', name: '待补核心保单', applicant: '张三', insured: '李四' },
+    }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family-no-core-save', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '未设核心家庭' }),
+    });
+    assert.equal(familyRes.response.status, 201);
+    const familyId = familyRes.payload.family.id;
+    assert.equal(familyRes.payload.family.coreMemberId, null);
+
+    const applicantRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family-no-core-save`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '张三', relationLabel: '待确认' }),
+    });
+    const insuredRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family-no-core-save`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '李四', relationLabel: '配偶' }),
+    });
+
+    const scanRes = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-family-no-core-save',
+        scan: { ocrText: '投保人:张三\n被保险人:李四', data: { company: '新华保险', name: '待补核心保单', applicant: '张三', insured: '李四' } },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId,
+          applicantMemberId: applicantRes.payload.member.id,
+          insuredMemberId: insuredRes.payload.member.id,
+          applicantRelationLabel: '待确认',
+          insuredRelationLabel: '配偶',
+        },
+      }),
+    });
+
+    assert.equal(scanRes.response.status, 201);
+    assert.equal(scanRes.payload.policy.familyId, familyId);
+    assert.equal(scanRes.payload.policy.applicantMemberId, applicantRes.payload.member.id);
+    assert.equal(scanRes.payload.policy.insuredMemberId, insuredRes.payload.member.id);
+    assert.equal(scanRes.payload.policy.applicantRelationLabel, '待确认');
+    assert.equal(scanRes.payload.policy.insuredRelationLabel, '配偶');
+    assert.equal(scanRes.payload.policy.participantReviewStatus, 'ok');
+    assert.equal(state.familyProfiles.find((family) => Number(family.id) === Number(familyId))?.coreMemberId, null);
+  } finally {
+    await server.close();
+  }
+});
+
 test('family API rebases relations on core switch and supports manual relation edits', async () => {
   const state = createInitialState();
   const app = createPolicyOcrApp({
@@ -5002,6 +5518,43 @@ test('registration saves pending recognized policy into a family profile', async
     assert.equal(state.familyProfiles[0].ownerUserId, registered.payload.user.id);
     assert.equal(state.familyMembers.some((member) => member.name === '张三'), true);
     assert.equal(state.familyMembers.some((member) => member.name === '李四'), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('recognize drops stale participant member ids when OCR participant names change', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({
+      ocrText: '投保人:温舒萍\n被保险人:温舒萍',
+      data: { company: '新华保险', name: '新保单', applicant: '温舒萍', insured: '温舒萍' },
+    }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-recognize-member-reset',
+        manualData: {
+          familyId: 500693,
+          applicant: '冯力',
+          insured: '冯力',
+          applicantMemberId: 500714,
+          insuredMemberId: 500714,
+        },
+      }),
+    });
+
+    assert.equal(recognized.response.status, 200);
+    assert.equal(recognized.payload.scan.data.applicant, '温舒萍');
+    assert.equal(recognized.payload.scan.data.insured, '温舒萍');
+    assert.equal('applicantMemberId' in recognized.payload.scan.data, false);
+    assert.equal('insuredMemberId' in recognized.payload.scan.data, false);
   } finally {
     await server.close();
   }
