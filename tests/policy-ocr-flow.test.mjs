@@ -3251,14 +3251,12 @@ test('responsibility assistant company suggestions match legal-suffix variants w
   const server = await listen(app);
 
   try {
-    const suggested = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/company-suggestions?q=测试人寿');
+    const suggested = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/company-suggestions?q=测试保险股份有限公司');
     assert.equal(suggested.response.status, 200);
     assert.equal(suggested.payload.ok, true);
     assert.ok(
       suggested.payload.suggestions.some(
-        (item) =>
-          item.company === '测试人寿保险股份有限公司'
-          && ['prefix', 'generic', 'contains', 'exact'].includes(item.matchType),
+        (item) => item.company === '测试人寿保险股份有限公司' && item.matchType === 'generic',
       ),
     );
   } finally {

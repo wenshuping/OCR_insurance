@@ -61,6 +61,7 @@ export type CoverageIndicator = {
 export type PolicyCompanySuggestion = {
   company: string;
   recordCount: number;
+  matchType: string;
 };
 
 export type PolicyProductSuggestion = {
@@ -68,6 +69,7 @@ export type PolicyProductSuggestion = {
   productName: string;
   canonicalProductId?: string;
   recordCount: number;
+  matchType: string;
 };
 
 export function queryPolicyResponsibilities(input: { company: string; name: string; preferLocalKnowledgeAnswer?: boolean }) {
@@ -95,7 +97,7 @@ export function getLocalPolicyAnalysisDraft(input: { manualData: Partial<PolicyF
   });
 }
 
-export function matchPolicyResponsibilities(input: { company: string; name: string }) {
+export function matchPolicyResponsibilities(input: { company: string; name: string; limit?: number; minScore?: number }) {
   return request<{
     ok: true;
     matches: PolicyKnowledgeMatch[];
@@ -103,6 +105,8 @@ export function matchPolicyResponsibilities(input: { company: string; name: stri
     body: {
       company: input.company,
       name: input.name,
+      limit: input.limit,
+      minScore: input.minScore,
     },
   });
 }

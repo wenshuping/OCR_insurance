@@ -113,7 +113,10 @@ function normalizeComparableCompany(value = '') {
 function companyAliasSet(company = '', officialDomainProfiles = []) {
   const profile = resolveOfficialProfile({ company }, officialDomainProfiles);
   const values = [company];
-  if (profile) values.push(...(Array.isArray(profile.companyAliases) ? profile.companyAliases : []));
+  if (profile) {
+    values.push(...(Array.isArray(profile.aliases) ? profile.aliases : []));
+    values.push(...(Array.isArray(profile.companyAliases) ? profile.companyAliases : []));
+  }
   return new Set(values.map(normalizeComparableCompany).filter(Boolean));
 }
 
@@ -186,7 +189,13 @@ export function scoreCompanySuggestionMatch(query = '', candidate = '', official
 }
 
 export function companiesMatch(left = '', right = '', officialDomainProfiles = []) {
-  return scoreCompanySuggestionMatch(left, right, officialDomainProfiles).matched;
+  const leftAliases = companyAliasSet(left, officialDomainProfiles);
+  const rightAliases = companyAliasSet(right, officialDomainProfiles);
+  if (!leftAliases.size || !rightAliases.size) return false;
+  for (const alias of leftAliases) {
+    if (rightAliases.has(alias)) return true;
+  }
+  return false;
 }
 
 function isOfficialUrl(url = '', policy = {}, officialDomainProfiles = []) {
