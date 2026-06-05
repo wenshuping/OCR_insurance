@@ -266,7 +266,14 @@ test('customer bottom tabs expose entry and family navigation only', () => {
 test('policy relation controls keep prior policy edit options', () => {
   const source = `${normalizedCustomerPolicySharedSource}\n${normalizedPolicyDetailSource}`;
 
-  assert.match(source, /const FAMILY_MEMBER_RELATION_OPTIONS = \['本人', '配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'\]/u);
+  assert.match(source, /'孙子'/u);
+  assert.match(source, /'孙女'/u);
+  assert.match(source, /'外孙'/u);
+  assert.match(source, /'外孙女'/u);
+  assert.match(source, /'外公'/u);
+  assert.match(source, /'外婆'/u);
+  assert.match(source, /'爷爷'/u);
+  assert.match(source, /'奶奶'/u);
   assert.match(source, /const POLICY_RELATION_OPTIONS = \['本人', '子女', '父母', '夫妻'\]/u);
   assert.match(source, /SelectField label="投保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
   assert.match(source, /SelectField label="被保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);

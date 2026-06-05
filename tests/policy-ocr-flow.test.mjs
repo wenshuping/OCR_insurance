@@ -5136,7 +5136,7 @@ test('policy save preserves every selectable family relation exactly', async () 
   });
   const server = await listen(app);
   try {
-    const relations = ['配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'];
+    const relations = ['配偶', '儿子', '女儿', '孙子', '孙女', '外孙', '外孙女', '父亲', '母亲', '外公', '外婆', '爷爷', '奶奶', '其他', '待确认'];
     for (const [index, relation] of relations.entries()) {
       const guestId = `guest-family-relations-${index}`;
       const familyRes = await jsonFetch(server.baseUrl, `/api/family-profiles?guestId=${guestId}`, {

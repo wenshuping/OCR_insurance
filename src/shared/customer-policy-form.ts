@@ -10,7 +10,24 @@ import {
   policyPlanRoleOrder,
 } from './formatters';
 
-export const FAMILY_MEMBER_RELATION_OPTIONS = ['本人', '配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'];
+export const FAMILY_MEMBER_RELATION_OPTIONS = [
+  '本人',
+  '配偶',
+  '儿子',
+  '女儿',
+  '孙子',
+  '孙女',
+  '外孙',
+  '外孙女',
+  '父亲',
+  '母亲',
+  '外公',
+  '外婆',
+  '爷爷',
+  '奶奶',
+  '其他',
+  '待确认',
+];
 export const POLICY_RELATION_OPTIONS = ['本人', '子女', '父母', '夫妻'];
 
 export function normalizePolicyPlanList(

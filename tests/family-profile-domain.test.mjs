@@ -204,6 +204,14 @@ test('normalizeFamilyRelation maps common labels to stable values', () => {
   assert.deepEqual(normalizeFamilyRelation('子女'), { relationToCore: 'child', relationLabel: '子女', role: 'child' });
   assert.deepEqual(normalizeFamilyRelation('孩子'), { relationToCore: 'child', relationLabel: '子女', role: 'child' });
   assert.deepEqual(normalizeFamilyRelation('小孩'), { relationToCore: 'child', relationLabel: '子女', role: 'child' });
+  assert.deepEqual(normalizeFamilyRelation('孙子'), { relationToCore: 'grandson', relationLabel: '孙子', role: 'child' });
+  assert.deepEqual(normalizeFamilyRelation('孙女'), { relationToCore: 'granddaughter', relationLabel: '孙女', role: 'child' });
+  assert.deepEqual(normalizeFamilyRelation('外孙'), { relationToCore: 'maternal_grandson', relationLabel: '外孙', role: 'child' });
+  assert.deepEqual(normalizeFamilyRelation('外孙女'), { relationToCore: 'maternal_granddaughter', relationLabel: '外孙女', role: 'child' });
+  assert.deepEqual(normalizeFamilyRelation('外公'), { relationToCore: 'maternal_grandfather', relationLabel: '外公', role: 'elder' });
+  assert.deepEqual(normalizeFamilyRelation('外婆'), { relationToCore: 'maternal_grandmother', relationLabel: '外婆', role: 'elder' });
+  assert.deepEqual(normalizeFamilyRelation('爷爷'), { relationToCore: 'paternal_grandfather', relationLabel: '爷爷', role: 'elder' });
+  assert.deepEqual(normalizeFamilyRelation('奶奶'), { relationToCore: 'paternal_grandmother', relationLabel: '奶奶', role: 'elder' });
   assert.deepEqual(normalizeFamilyRelation('待确认'), { relationToCore: 'pending', relationLabel: '待确认', role: 'unknown' });
   assert.deepEqual(normalizeFamilyRelation('核心人员'), { relationToCore: 'self', relationLabel: '本人', role: 'core' });
   assert.deepEqual(normalizeFamilyRelation(''), { relationToCore: 'pending', relationLabel: '待确认', role: 'unknown' });
