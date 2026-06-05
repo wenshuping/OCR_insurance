@@ -20,6 +20,28 @@ test('normalizeOcrBoxes keeps text, confidence, bounds, and original index', () 
   assert.deepEqual(boxBounds(boxes[0].box), { xMin: 100, yMin: 120, xMax: 160, yMax: 142 });
   assert.deepEqual(boxCenter(boxes[1].box), { x: 240, y: 132 });
   assert.equal(boxes[0].index, 0);
+  assert.equal(boxes[0].confidence, 0.98);
+  assert.deepEqual({
+    xMin: boxes[0].xMin,
+    yMin: boxes[0].yMin,
+    xMax: boxes[0].xMax,
+    yMax: boxes[0].yMax,
+    xMid: boxes[0].xMid,
+    yMid: boxes[0].yMid,
+    width: boxes[0].width,
+    height: boxes[0].height,
+  }, {
+    xMin: 100,
+    yMin: 120,
+    xMax: 160,
+    yMax: 142,
+    xMid: 130,
+    yMid: 131,
+    width: 60,
+    height: 22,
+  });
+  assert.equal(boxes[1].index, 1);
+  assert.equal(boxes[1].confidence, 0.97);
   assert.equal(boxes[1].text, '张三');
 });
 
