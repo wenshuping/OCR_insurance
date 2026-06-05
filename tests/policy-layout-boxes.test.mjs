@@ -6,6 +6,7 @@ import {
   boxCenter,
   clusterBoxesIntoRows,
   normalizeOcrBoxes,
+  rowText,
   sortBoxesReadingOrder,
 } from '../ocr-service/policy-layout-boxes.mjs';
 
@@ -73,6 +74,7 @@ test('clusterBoxesIntoRows groups nearby y centers and sorts left to right', () 
   ]);
 
   const rows = clusterBoxesIntoRows(boxes, { yThreshold: 12 });
+  assert.equal(rowText(rows[0]), '投保人张三');
   assert.deepEqual(rows.map((row) => row.items.map((item) => item.text)), [
     ['投保人', '张三'],
     ['被保险人', '李四'],
