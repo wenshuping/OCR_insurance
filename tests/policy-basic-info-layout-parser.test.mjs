@@ -109,3 +109,24 @@ test('parsePolicyBasicInfoFromLayoutBoxes bounds merged inline label values', ()
   assert.equal(result.fields.applicant, '张三');
   assert.equal(result.fields.insured, '李四');
 });
+
+test('parsePolicyBasicInfoFromLayoutBoxes extracts name-suffixed China Life labels before same-row dates', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('保险资料', 70, 100, 150, 125),
+    box('产品名称:国寿鑫颐宝两全保险（2024版）', 70, 140, 460, 165),
+    box('投保人姓名:翟卿', 70, 180, 210, 205),
+    box('合同成立日期:2024年12月05日', 480, 180, 730, 205),
+    box('主险明细', 70, 230, 150, 255),
+    box('险种名称:国寿鑫颐宝两全保险（2024版）', 70, 270, 460, 295),
+    box('保单号:2024330133SCW500032558', 70, 310, 360, 335),
+    box('保单生效日:2024年12月06日', 480, 310, 730, 335),
+    box('被保险人姓名:翟卿', 480, 350, 650, 375),
+  ]);
+
+  assert.equal(result.fields.applicant, '翟卿');
+  assert.equal(result.fields.insured, '翟卿');
+  assert.equal(result.fields.date, '2024-12-05');
+  assert.equal(result.fields.policyNumber, '2024330133SCW500032558');
+  assert.notEqual(result.fields.applicant, '合同成立日期');
+  assert.notEqual(result.fields.insured, '姓名');
+});

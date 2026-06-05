@@ -72,6 +72,7 @@ const GENERAL_LABEL_BOUNDARIES = [
   '保险费',
   '首期保险费',
   '证件类型',
+  '姓名',
   '职业',
   '电话',
   '手机',
@@ -98,10 +99,10 @@ function normalizeBeneficiary(value) {
 
 const FIELD_LABELS = [
   { field: 'policyNumber', labels: ['保险合同号', '保单号', '合同号'], labelPattern: /^(?:保险合同号|保单号|合同号)[:：]?/u, normalize: normalizePolicyNumber },
-  { field: 'applicant', labels: ['投保人'], labelPattern: /^投保人(?!豁免|的)[:：]?/u, normalize: normalizePerson },
-  { field: 'insured', labels: ['被保险人', '被保人', '受保人'], labelPattern: /^(?:被保险人(?!的)|被保人|受保人)[:：]?/u, normalize: normalizePerson },
+  { field: 'applicant', labels: ['投保人姓名', '投保人'], labelPattern: /^投保人(?:姓名)?(?!豁免|的)[:：]?/u, normalize: normalizePerson },
+  { field: 'insured', labels: ['被保险人姓名', '被保人姓名', '受保人姓名', '被保险人', '被保人', '受保人'], labelPattern: /^(?:被保险人(?:姓名)?(?!的)|被保人(?:姓名)?|受保人(?:姓名)?)[:：]?/u, normalize: normalizePerson },
   { field: 'insuredIdNumber', labels: ['证件号码', '证件号', '身份证号码', '身份证号'], labelPattern: /^(?:证件号码|证件号|身份证号码|身份证号)[:：]?/u, normalize: normalizeIdNumber },
-  { field: 'date', labels: ['合同生效日期', '生效日期', '保险起期'], labelPattern: /^(?:合同生效日期|生效日期|保险起期)[:：]?/u, normalize: normalizeDateOnly },
+  { field: 'date', labels: ['合同成立日期', '合同生效日期', '保单生效日期', '保单生效日', '生效日期', '生效日', '保险起期'], labelPattern: /^(?:合同成立日期|合同生效日期|保单生效日期|保单生效日|生效日期|生效日|保险起期)[:：]?/u, normalize: normalizeDateOnly },
   { field: 'beneficiary', labels: ['身故保险金受益人', '身故受益人', '受益人'], labelPattern: /^(?:身故保险金受益人|身故受益人|受益人)[:：]?/u, normalize: normalizeBeneficiary },
   { field: 'name', labels: ['产品名称', '险种名称', '保险名称', '合同名称', '主险名称'], labelPattern: /^(?:产品名称|险种名称|保险名称|合同名称|主险名称)[:：]?/u, normalize: compactText },
 ];
@@ -272,17 +273,18 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
       if (!label || fields[labelDef.field]) continue;
       const right = candidateRightOf(label, row);
       const inline = inlineValueAfter(labelDef, label, row);
-      const rawValue = right?.text || inline;
+      const rawValue = labelDef.normalize(inline) ? inline : right?.text;
       const value = labelDef.normalize(rawValue);
       if (!value) continue;
       fields[labelDef.field] = value;
-      fieldConfidence[labelDef.field] = confidenceFor(label, right || label);
+      const valueItem = rawValue === inline ? label.item : right;
+      fieldConfidence[labelDef.field] = confidenceFor(label, valueItem || label);
       evidence[labelDef.field] = {
         value,
         source: 'basic-info-layout',
-        confidence: Number(right?.confidence || label.item.confidence || 0) || 0,
+        confidence: Number(valueItem?.confidence || label.item.confidence || 0) || 0,
         labelBox: label.item.box,
-        valueBox: right?.box || label.item.box,
+        valueBox: valueItem?.box || label.item.box,
         region: 'basic-info',
       };
     }
