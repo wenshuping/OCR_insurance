@@ -58,9 +58,30 @@ function normalizeCompany(value) {
   return '';
 }
 
+const GENERAL_LABEL_BOUNDARIES = [
+  '性别',
+  '出生日期',
+  '出生年月',
+  '保险期间',
+  '交费期间',
+  '缴费期间',
+  '交费方式',
+  '缴费方式',
+  '基本保险金额',
+  '保险金额',
+  '保险费',
+  '首期保险费',
+  '证件类型',
+  '职业',
+  '电话',
+  '手机',
+  '地址',
+  '关系',
+];
+
 function normalizePerson(value) {
-  const matched = compactText(value).match(/^[一-龥·]{2,8}/u);
-  return matched?.[0] || '';
+  const matched = compactText(value).match(/^[一-龥·]{2,8}/u)?.[0] || '';
+  return isKnownLabelText(matched) ? '' : matched;
 }
 
 function normalizePolicyNumber(value) {
@@ -76,14 +97,24 @@ function normalizeBeneficiary(value) {
 }
 
 const FIELD_LABELS = [
-  { field: 'policyNumber', labelPattern: /^(?:保险合同号|保单号|合同号)[:：]?/u, normalize: normalizePolicyNumber },
-  { field: 'applicant', labelPattern: /^投保人(?!豁免|的)[:：]?/u, normalize: normalizePerson },
-  { field: 'insured', labelPattern: /^(?:被保险人(?!的)|被保人|受保人)[:：]?/u, normalize: normalizePerson },
-  { field: 'insuredIdNumber', labelPattern: /^(?:证件号码|证件号|身份证号码|身份证号)[:：]?/u, normalize: normalizeIdNumber },
-  { field: 'date', labelPattern: /^(?:合同生效日期|生效日期|保险起期)[:：]?/u, normalize: normalizeDateOnly },
-  { field: 'beneficiary', labelPattern: /^(?:身故保险金受益人|身故受益人|受益人)[:：]?/u, normalize: normalizeBeneficiary },
-  { field: 'name', labelPattern: /^(?:产品名称|险种名称|保险名称|合同名称|主险名称)[:：]?/u, normalize: compactText },
+  { field: 'policyNumber', labels: ['保险合同号', '保单号', '合同号'], labelPattern: /^(?:保险合同号|保单号|合同号)[:：]?/u, normalize: normalizePolicyNumber },
+  { field: 'applicant', labels: ['投保人'], labelPattern: /^投保人(?!豁免|的)[:：]?/u, normalize: normalizePerson },
+  { field: 'insured', labels: ['被保险人', '被保人', '受保人'], labelPattern: /^(?:被保险人(?!的)|被保人|受保人)[:：]?/u, normalize: normalizePerson },
+  { field: 'insuredIdNumber', labels: ['证件号码', '证件号', '身份证号码', '身份证号'], labelPattern: /^(?:证件号码|证件号|身份证号码|身份证号)[:：]?/u, normalize: normalizeIdNumber },
+  { field: 'date', labels: ['合同生效日期', '生效日期', '保险起期'], labelPattern: /^(?:合同生效日期|生效日期|保险起期)[:：]?/u, normalize: normalizeDateOnly },
+  { field: 'beneficiary', labels: ['身故保险金受益人', '身故受益人', '受益人'], labelPattern: /^(?:身故保险金受益人|身故受益人|受益人)[:：]?/u, normalize: normalizeBeneficiary },
+  { field: 'name', labels: ['产品名称', '险种名称', '保险名称', '合同名称', '主险名称'], labelPattern: /^(?:产品名称|险种名称|保险名称|合同名称|主险名称)[:：]?/u, normalize: compactText },
 ];
+
+const ALL_LABEL_BOUNDARIES = [
+  ...FIELD_LABELS.flatMap((labelDef) => labelDef.labels),
+  ...GENERAL_LABEL_BOUNDARIES,
+].sort((left, right) => right.length - left.length);
+
+function isKnownLabelText(value) {
+  const text = compactText(value).replace(/[:：]$/u, '');
+  return ALL_LABEL_BOUNDARIES.includes(text);
+}
 
 function confidenceFor(label, value) {
   if (!label || !value) return 'missing';
@@ -92,12 +123,45 @@ function confidenceFor(label, value) {
 
 function isLabelItem(item) {
   const text = compactText(item?.text);
-  return FIELD_LABELS.some((labelDef) => labelDef.labelPattern.test(text));
+  return FIELD_LABELS.some((labelDef) => labelDef.labelPattern.test(text))
+    || GENERAL_LABEL_BOUNDARIES.some((label) => text.startsWith(label));
+}
+
+function labelOccurrenceInText(labelDef, value) {
+  const text = compactText(value);
+  const matches = labelDef.labels
+    .map((label) => {
+      const index = text.indexOf(label);
+      if (index < 0 || !isAllowedLabelOccurrence(labelDef, text, index, label)) return null;
+      const colonLength = /[:：]/u.test(text[index + label.length] || '') ? 1 : 0;
+      return { index, length: label.length + colonLength };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.index - right.index || right.length - left.length);
+  return matches[0] || null;
+}
+
+function isAllowedLabelOccurrence(labelDef, text, index, label) {
+  const afterLabel = text.slice(index + label.length);
+  if (labelDef.field === 'applicant' && /^(?:豁免|的)/u.test(afterLabel)) return false;
+  if (labelDef.field === 'insured' && label === '被保险人' && afterLabel.startsWith('的')) return false;
+  return true;
+}
+
+function findLabelInRow(row, labelDef) {
+  const matches = row.items
+    .map((item) => {
+      const occurrence = labelOccurrenceInText(labelDef, item.text);
+      return occurrence ? { item, ...occurrence } : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.item.xMin - right.item.xMin || left.index - right.index);
+  return matches[0] || null;
 }
 
 function nextLabelRightOf(label, row) {
   return row.items
-    .filter((item) => item.xMin > label.xMax && item !== label && isLabelItem(item))
+    .filter((item) => item.xMin > label.item.xMax && item !== label.item && isLabelItem(item))
     .sort((left, right) => left.xMin - right.xMin)[0] || null;
 }
 
@@ -105,8 +169,8 @@ function candidateRightOf(label, row) {
   const nextLabel = nextLabelRightOf(label, row);
   const candidates = row.items
     .filter((item) => (
-      item.xMin > label.xMax
-      && item !== label
+      item.xMin > label.item.xMax
+      && item !== label.item
       && !isLabelItem(item)
       && (!nextLabel || item.xMin < nextLabel.xMin)
     ))
@@ -116,7 +180,7 @@ function candidateRightOf(label, row) {
 
 function inlineValueAfter(labelDef, label, row) {
   const rowItems = [...row.items].sort((left, right) => left.xMin - right.xMin);
-  const labelIndex = rowItems.indexOf(label);
+  const labelIndex = rowItems.indexOf(label.item);
   if (labelIndex < 0) return '';
 
   const parts = [];
@@ -125,7 +189,43 @@ function inlineValueAfter(labelDef, label, row) {
     if (index > labelIndex && isLabelItem(item)) break;
     parts.push(item.text || '');
   }
-  return compactText(parts.join('')).replace(labelDef.labelPattern, '');
+  return textAfterLabelBeforeNextLabel(labelDef, parts.join(''), label.index, label.length);
+}
+
+function textAfterLabelBeforeNextLabel(labelDef, value, labelIndex = 0, labelLength = null) {
+  const text = compactText(value);
+  const matched = labelLength === null ? text.match(labelDef.labelPattern) : null;
+  const start = labelLength === null ? matched?.[0]?.length : labelIndex + labelLength;
+  if (start === undefined) return '';
+
+  const remainder = text.slice(start);
+  const nextLabelIndex = nextKnownLabelIndex(remainder);
+  return nextLabelIndex === null ? remainder : remainder.slice(0, nextLabelIndex);
+}
+
+function nextKnownLabelIndex(value) {
+  const text = compactText(value);
+  const indexes = [];
+
+  for (const labelDef of FIELD_LABELS) {
+    for (const label of labelDef.labels) {
+      let index = text.indexOf(label);
+      while (index >= 0) {
+        if (isAllowedLabelOccurrence(labelDef, text, index, label)) {
+          indexes.push(index);
+          break;
+        }
+        index = text.indexOf(label, index + 1);
+      }
+    }
+  }
+
+  for (const label of GENERAL_LABEL_BOUNDARIES) {
+    const index = text.indexOf(label);
+    if (index >= 0) indexes.push(index);
+  }
+
+  return indexes.length ? Math.min(...indexes) : null;
 }
 
 function parseRowsFromAllowedRegions(regions) {
@@ -168,7 +268,7 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
 
   for (const row of rows) {
     for (const labelDef of FIELD_LABELS) {
-      const label = row.items.find((item) => labelDef.labelPattern.test(compactText(item.text)));
+      const label = findLabelInRow(row, labelDef);
       if (!label || fields[labelDef.field]) continue;
       const right = candidateRightOf(label, row);
       const inline = inlineValueAfter(labelDef, label, row);
@@ -180,9 +280,9 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
       evidence[labelDef.field] = {
         value,
         source: 'basic-info-layout',
-        confidence: Number(right?.confidence || label.confidence || 0) || 0,
-        labelBox: label.box,
-        valueBox: right?.box || label.box,
+        confidence: Number(right?.confidence || label.item.confidence || 0) || 0,
+        labelBox: label.item.box,
+        valueBox: right?.box || label.item.box,
         region: 'basic-info',
       };
     }

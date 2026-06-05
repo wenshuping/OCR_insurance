@@ -90,3 +90,22 @@ test('parsePolicyBasicInfoFromLayoutBoxes does not use the next same-row label a
   assert.equal(result.fields.applicant, '');
   assert.equal(result.fields.insured, '李四');
 });
+
+test('parsePolicyBasicInfoFromLayoutBoxes does not use adjacent general labels as person values', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('投保人', 70, 120, 140, 145),
+    box('性别', 180, 120, 230, 145),
+    box('男', 260, 120, 290, 145),
+  ]);
+
+  assert.equal(result.fields.applicant, '');
+});
+
+test('parsePolicyBasicInfoFromLayoutBoxes bounds merged inline label values', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('投保人张三被保险人李四', 70, 120, 360, 145),
+  ]);
+
+  assert.equal(result.fields.applicant, '张三');
+  assert.equal(result.fields.insured, '李四');
+});
