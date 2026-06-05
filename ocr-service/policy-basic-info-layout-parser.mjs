@@ -55,8 +55,6 @@ function birthdayFromIdNumber(value) {
 function normalizeCompany(value) {
   const text = compactText(value);
   if (/新华/u.test(text)) return '新华保险';
-  if (/平安|PING\s*AN|PINGAN/iu.test(text)) return '中国平安保险';
-  if (/中国人寿|国寿/u.test(text)) return '中国人寿保险';
   return '';
 }
 
@@ -78,13 +76,13 @@ function normalizeBeneficiary(value) {
 }
 
 const FIELD_LABELS = [
-  { field: 'policyNumber', pattern: /保险合同号|保单号|合同号/u, normalize: normalizePolicyNumber },
-  { field: 'applicant', pattern: /投保人(?!豁免)/u, normalize: normalizePerson },
-  { field: 'insured', pattern: /被保险人|被保人|受保人/u, normalize: normalizePerson },
-  { field: 'insuredIdNumber', pattern: /证件号码|证件号|身份证号码|身份证号/u, normalize: normalizeIdNumber },
-  { field: 'date', pattern: /合同生效日期|生效日期|保险起期/u, normalize: normalizeDateOnly },
-  { field: 'beneficiary', pattern: /身故保险金受益人|身故受益人|受益人/u, normalize: normalizeBeneficiary },
-  { field: 'name', pattern: /产品名称|险种名称|保险名称|合同名称|主险名称/u, normalize: compactText },
+  { field: 'policyNumber', labelPattern: /^(?:保险合同号|保单号|合同号)[:：]?/u, normalize: normalizePolicyNumber },
+  { field: 'applicant', labelPattern: /^投保人(?!豁免|的)[:：]?/u, normalize: normalizePerson },
+  { field: 'insured', labelPattern: /^(?:被保险人(?!的)|被保人|受保人)[:：]?/u, normalize: normalizePerson },
+  { field: 'insuredIdNumber', labelPattern: /^(?:证件号码|证件号|身份证号码|身份证号)[:：]?/u, normalize: normalizeIdNumber },
+  { field: 'date', labelPattern: /^(?:合同生效日期|生效日期|保险起期)[:：]?/u, normalize: normalizeDateOnly },
+  { field: 'beneficiary', labelPattern: /^(?:身故保险金受益人|身故受益人|受益人)[:：]?/u, normalize: normalizeBeneficiary },
+  { field: 'name', labelPattern: /^(?:产品名称|险种名称|保险名称|合同名称|主险名称)[:：]?/u, normalize: compactText },
 ];
 
 function confidenceFor(label, value) {
@@ -129,9 +127,9 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
   for (const row of rows) {
     const text = rowText(row);
     for (const labelDef of FIELD_LABELS) {
-      const label = row.items.find((item) => labelDef.pattern.test(compactText(item.text)));
+      const label = row.items.find((item) => labelDef.labelPattern.test(compactText(item.text)));
       if (!label || fields[labelDef.field]) continue;
-      const inline = compactText(text).replace(labelDef.pattern, '');
+      const inline = compactText(text).replace(labelDef.labelPattern, '');
       const right = candidateRightOf(label, row);
       const rawValue = right?.text || inline;
       const value = labelDef.normalize(rawValue);

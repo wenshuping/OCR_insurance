@@ -52,3 +52,16 @@ test('parsePolicyBasicInfoFromLayoutBoxes refuses to source core fields from rid
   assert.equal(result.fields.date, '');
   assert.ok(result.ocrWarnings.some((warning) => warning.includes('附加险')));
 });
+
+test('parsePolicyBasicInfoFromLayoutBoxes does not treat beneficiary value text as insured label', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('投保人', 70, 120, 140, 145),
+    box('张三', 240, 120, 290, 145),
+    box('身故保险金受益人', 70, 165, 210, 190),
+    box('被保险人的法定继承人', 240, 165, 420, 190),
+  ]);
+
+  assert.equal(result.fields.applicant, '张三');
+  assert.equal(result.fields.insured, '');
+  assert.equal(result.fields.beneficiary, '法定');
+});
