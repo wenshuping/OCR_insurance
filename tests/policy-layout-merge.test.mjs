@@ -26,7 +26,7 @@ test('mergePolicyLayoutScanResult lets high-confidence layout core fields overri
         insured: 'high',
         policyNumber: 'high',
         date: 'high',
-        name: 'review',
+        name: 'high',
       },
       ocrWarnings: ['检测到附加险区域，基础字段已限制为从基本信息区读取'],
     },
@@ -37,7 +37,9 @@ test('mergePolicyLayoutScanResult lets high-confidence layout core fields overri
   assert.equal(merged.data.date, '2025-12-23');
   assert.equal(merged.data.name, '附加住院医疗保险');
   assert.equal(merged.fieldConfidence.applicant, 'high');
+  assert.equal(merged.fieldConfidence.name, 'review');
   assert.ok(merged.ocrWarnings.some((warning) => warning.includes('附加险')));
+  assert.ok(merged.ocrWarnings.some((warning) => warning.includes('产品名称存在多个候选')));
 });
 
 test('mergePolicyLayoutScanResult preserves text fields when layout is missing', () => {
@@ -48,5 +50,19 @@ test('mergePolicyLayoutScanResult preserves text fields when layout is missing',
 
   assert.equal(merged.data.applicant, '张三');
   assert.equal(merged.data.name, '旧流程产品');
+  assert.deepEqual(merged.ocrWarnings, []);
+});
+
+test('mergePolicyLayoutScanResult fills missing text name as review-only from layout', () => {
+  const merged = mergePolicyLayoutScanResult({
+    textData: { applicant: '张三' },
+    layoutResult: {
+      fields: { name: '主险终身寿险' },
+      fieldConfidence: { name: 'high' },
+    },
+  });
+
+  assert.equal(merged.data.name, '主险终身寿险');
+  assert.equal(merged.fieldConfidence.name, 'review');
   assert.deepEqual(merged.ocrWarnings, []);
 });

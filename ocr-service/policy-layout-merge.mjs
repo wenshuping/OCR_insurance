@@ -31,6 +31,10 @@ export function mergePolicyLayoutScanResult({ textData = {}, layoutResult = null
   const fieldConfidence = { ...(layoutResult.fieldConfidence || {}) };
   const warnings = [...(layoutResult.ocrWarnings || [])];
 
+  for (const field of REVIEW_ONLY_FIELDS) {
+    delete fieldConfidence[field];
+  }
+
   for (const field of CORE_LAYOUT_FIELDS) {
     const value = trim(layoutResult.fields[field]);
     if (!value) continue;
@@ -47,6 +51,7 @@ export function mergePolicyLayoutScanResult({ textData = {}, layoutResult = null
     if (!value) continue;
     if (!trim(data[field])) {
       data[field] = value;
+      fieldConfidence[field] = 'review';
     } else if (trim(data[field]) !== value) {
       fieldConfidence[field] = 'review';
       warnings.push('产品名称存在多个候选，请确认是否为主险名称');
