@@ -900,6 +900,58 @@ test('recognize endpoint keeps OCR plan details when current form sends an empty
   }
 });
 
+test('policy recognize response preserves OCR review warnings from scanner', async () => {
+  const calls = [];
+  const app = createPolicyOcrApp({
+    scanner: async (input) => {
+      calls.push(input);
+      return {
+        ok: true,
+        ocrText: [
+          '投保人 张三',
+          '被保险人 李四',
+          '保险利益表',
+          '附加投保人豁免保险 至2026年12月23日',
+        ].join('\n'),
+        data: {
+          company: '新华保险',
+          name: '附加投保人豁免保险',
+          applicant: '附加投保人豁免保险',
+          insured: '李四',
+          date: '2026-12-23',
+        },
+        fieldConfidence: {
+          applicant: 'high',
+          insured: 'high',
+          date: 'high',
+        },
+        ocrWarnings: ['检测到附加险区域，基础字段已限制为从基本信息区读取'],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest_layout',
+        ocrText: '投保人 张三\n被保险人 李四',
+        uploadItem: null,
+        manualData: {},
+      }),
+    });
+
+    assert.equal(recognized.response.status, 200);
+    assert.equal(recognized.payload.scan.data.applicant, '附加投保人豁免保险');
+    assert.equal(recognized.payload.scan.fieldConfidence.applicant, 'high');
+    assert.ok(recognized.payload.scan.ocrWarnings.some((warning) => warning.includes('附加险')));
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test('recognize endpoint does not let stale manual form fields overwrite a new OCR result', async () => {
   const app = createPolicyOcrApp({
     state: {

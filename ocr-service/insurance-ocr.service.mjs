@@ -19,6 +19,8 @@ import {
   OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL,
   resolveEffectivePolicyOcrProvider,
 } from './ocr-config.service.mjs';
+import { parsePolicyBasicInfoFromLayoutBoxes } from './policy-basic-info-layout-parser.mjs';
+import { mergePolicyLayoutScanResult } from './policy-layout-merge.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -2646,7 +2648,7 @@ async function warmupPaddleLocalIfNeeded() {
   return paddleWarmupPromise;
 }
 
-async function recognizeTextWithPaddleLocal(uploadItem) {
+async function recognizePaddlePolicyUpload(uploadItem) {
   const provider = getConfiguredOcrProvider();
   await warmupPaddleLocalIfNeeded();
   assertOcrScriptExists(OCR_PADDLE_SCRIPT);
@@ -2673,7 +2675,11 @@ async function recognizeTextWithPaddleLocal(uploadItem) {
     }
     const recognized = extractPaddleOcrText(payload);
     if (!recognized) throw new Error('POLICY_OCR_EMPTY');
-    return recognized;
+    return {
+      ocrText: recognized,
+      boxes: Array.isArray(payload?.boxes) ? payload.boxes : [],
+      rawPayload: payload,
+    };
   } catch (err) {
     const message = String(err?.stderr || err?.message || err || '');
     if (message.includes('POLICY_OCR_EMPTY')) throw new Error('POLICY_OCR_EMPTY');
@@ -2684,6 +2690,11 @@ async function recognizeTextWithPaddleLocal(uploadItem) {
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function recognizeTextWithPaddleLocal(uploadItem) {
+  const result = await recognizePaddlePolicyUpload(uploadItem);
+  return result.ocrText;
 }
 
 let pdfExtractKitWarmupPromise = null;
@@ -2842,6 +2853,8 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
 
   let data = null;
   let bestOcrText = recognizedText;
+  let scanFieldConfidence = {};
+  let scanOcrWarnings = [];
   if (recognizedText) {
     data = extractPolicyFieldsFromText(recognizedText);
   } else {
@@ -2855,18 +2868,34 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
       bestOcrText = normalizeOcrText(mlxResult?.ocrText || '');
     } else {
       const candidates = [];
+      let handledPaddleLayout = false;
       if (provider === OCR_PROVIDER_PADDLE_LOCAL || provider === OCR_PROVIDER_PADDLEOCR_VL_LOCAL) {
-        const paddleText = await recognizeTextWithPaddleLocal(uploadItem);
-        candidates.push(paddleText);
+        const paddleResult = await recognizePaddlePolicyUpload(uploadItem);
+        candidates.push(paddleResult.ocrText);
+        const best = selectBestPolicyScanCandidate(candidates);
+        const layoutResult = paddleResult.boxes?.length
+          ? parsePolicyBasicInfoFromLayoutBoxes(paddleResult.boxes)
+          : null;
+        const merged = mergePolicyLayoutScanResult({
+          textData: best.data,
+          layoutResult,
+        });
+        data = merged.data;
+        scanFieldConfidence = merged.fieldConfidence;
+        scanOcrWarnings = merged.ocrWarnings;
+        bestOcrText = best.ocrText;
+        handledPaddleLayout = true;
       } else if (provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) {
         const pdfExtractKitText = await recognizeTextWithPdfExtractKit(uploadItem);
         candidates.push(pdfExtractKitText);
       } else {
         candidates.push(await recognizeTextWithImageFallback(uploadItem));
       }
-      const best = selectBestPolicyScanCandidate(candidates);
-      data = best.data;
-      bestOcrText = best.ocrText;
+      if (!handledPaddleLayout) {
+        const best = selectBestPolicyScanCandidate(candidates);
+        data = best.data;
+        bestOcrText = best.ocrText;
+      }
     }
   }
 
@@ -2898,10 +2927,17 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
   bestOcrText = normalizeOcrText(localVisionEnhanced.ocrText || bestOcrText);
 
   if (!Object.values(data).some(Boolean)) throw new Error('POLICY_OCR_EMPTY');
+  const fieldConfidence = Object.keys(scanFieldConfidence).length ? scanFieldConfidence : (data.fieldConfidence || {});
+  const dataOcrWarnings = Array.isArray(data.ocrWarnings) ? data.ocrWarnings : [];
+  const ocrWarnings = [...new Set([...scanOcrWarnings, ...dataOcrWarnings].map((item) => String(item || '').trim()).filter(Boolean))];
+  delete data.fieldConfidence;
+  delete data.ocrWarnings;
   return {
     ok: true,
     data,
     ocrText: bestOcrText,
+    ...(Object.keys(fieldConfidence).length ? { fieldConfidence } : {}),
+    ...(ocrWarnings.length ? { ocrWarnings } : {}),
   };
 }
 
