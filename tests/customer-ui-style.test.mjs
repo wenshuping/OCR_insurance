@@ -168,6 +168,18 @@ test('entry form exposes local product candidates before responsibility generati
   assert.match(matchPanelSource, /role="listbox"/);
 });
 
+test('entry form surfaces OCR layout review warnings', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const contractSource = fs.readFileSync(new URL('../src/api/contracts/policy.ts', import.meta.url), 'utf8');
+  assert.match(contractSource, /ocrWarnings\?: string\[\]/);
+  assert.match(contractSource, /fieldConfidence\?: Record<string,/);
+  assert.match(customerSource, /scanReviewMessageSuffix/);
+  assert.match(customerSource, /ocrWarnings=\{scanResult\?\.ocrWarnings \|\| \[\]\}/);
+  assert.match(pageSource, /部分 OCR 字段建议确认/);
+  assert.match(pageSource, /ocrWarnings\.map/);
+});
+
 test('entry form requires family profile and supports core setup after OCR', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');

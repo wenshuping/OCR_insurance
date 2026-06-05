@@ -141,6 +141,7 @@ export function UploadPolicyPage(props: {
   message: string;
   mobile: string;
   ocrText: string;
+  ocrWarnings?: string[];
   productMatchLoading: boolean;
   productMatchMessage: string;
   productMatches: PolicyKnowledgeMatch[];
@@ -185,6 +186,7 @@ export function UploadPolicyPage(props: {
     message,
     mobile,
     ocrText,
+    ocrWarnings = [],
     productMatchLoading,
     productMatchMessage,
     productMatches,
@@ -510,6 +512,17 @@ export function UploadPolicyPage(props: {
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
 
           <div className="mt-4 rounded-xl border border-blue-100 bg-white px-4 py-3 text-sm font-medium text-blue-700">{message}</div>
+
+          {ocrWarnings.length ? (
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold leading-5 text-amber-800">
+              <p>部分 OCR 字段建议确认</p>
+              <ul className="mt-2 space-y-1">
+                {ocrWarnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           <details className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
             <summary className="cursor-pointer text-sm font-semibold text-slate-700">查看或粘贴 OCR 文本</summary>

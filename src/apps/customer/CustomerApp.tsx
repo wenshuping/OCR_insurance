@@ -1202,6 +1202,10 @@ export function CustomerApp() {
     return false;
   }
 
+  function scanReviewMessageSuffix(scan: PolicyScanResult | null | undefined) {
+    return Array.isArray(scan?.ocrWarnings) && scan.ocrWarnings.length ? '，部分 OCR 字段建议确认' : '';
+  }
+
   async function recognizePreparedUpload(input: {
     item: UploadItem;
     originalBytes: number;
@@ -1241,11 +1245,12 @@ export function CustomerApp() {
     if (hasAnalysisResult(recognizedAnalysis)) {
       setAnalysisDraft(recognizedAnalysis);
       setShowAnalysisReport(false);
+      const reviewSuffix = scanReviewMessageSuffix(payload.scan);
       setMessage(recognizedAnalysis?.optionalResponsibilities?.length
-        ? 'OCR 已完成，已匹配本地保险责任，请确认可选责任后保存'
-        : 'OCR 已完成，已匹配本地保险责任，请确认后保存');
+        ? `OCR 已完成，已匹配本地保险责任${reviewSuffix}，请确认可选责任后保存`
+        : `OCR 已完成，已匹配本地保险责任${reviewSuffix}，请确认后保存`);
     } else {
-      setMessage('OCR 已完成，可生成保险责任或直接保存');
+      setMessage(`OCR 已完成${scanReviewMessageSuffix(payload.scan)}，可生成保险责任或直接保存`);
     }
     reportClientPerformance('client.recognize.complete', {
       durationMs: clientElapsedMs(flowStartedAt),
@@ -2171,6 +2176,7 @@ export function CustomerApp() {
           loading={loading}
           message={message}
           ocrText={ocrText}
+          ocrWarnings={scanResult?.ocrWarnings || []}
           productMatchLoading={formProductMatchLoading}
           productMatchMessage={formProductMatchMessage}
           productMatches={formProductMatches}

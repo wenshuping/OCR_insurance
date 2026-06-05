@@ -130,6 +130,8 @@ export type PolicyScanData = {
 export type PolicyScanResult = {
   ocrText: string;
   data: PolicyScanData;
+  fieldConfidence?: Record<string, 'high' | 'review' | 'missing' | string>;
+  ocrWarnings?: string[];
 };
 
 export type PolicyAnalysisResult = {
