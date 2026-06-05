@@ -21,6 +21,7 @@ test('normalizeOcrBoxes keeps text, confidence, bounds, and original index', () 
   assert.deepEqual(boxBounds(boxes[0].box), { xMin: 100, yMin: 120, xMax: 160, yMax: 142 });
   assert.deepEqual(boxCenter(boxes[1].box), { x: 240, y: 132 });
   assert.equal(boxes[0].index, 0);
+  assert.equal(boxes[0].text, '投保人');
   assert.equal(boxes[0].confidence, 0.98);
   assert.deepEqual({
     xMin: boxes[0].xMin,
