@@ -4,6 +4,13 @@ export const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 export const MAX_OCR_IMAGE_DIMENSION = 3600;
 export const OCR_IMAGE_JPEG_QUALITY = 0.96;
 export const OCR_IMAGE_DIRECT_UPLOAD_BYTES = 8 * 1024 * 1024;
+const OCR_IMAGE_COMPRESS_ATTEMPTS = [
+  { maxDimension: MAX_OCR_IMAGE_DIMENSION, quality: OCR_IMAGE_JPEG_QUALITY },
+  { maxDimension: 3200, quality: 0.9 },
+  { maxDimension: 2800, quality: 0.86 },
+  { maxDimension: 2400, quality: 0.82 },
+  { maxDimension: 2000, quality: 0.78 },
+];
 
 export type ClientPerformanceTimings = {
   fileReadMs?: number;
@@ -57,33 +64,42 @@ export async function compressImageForOcr(file: File, timings: ClientPerformance
       dataUrl: originalDataUrl,
     };
   }
-  const scale = Math.min(1, MAX_OCR_IMAGE_DIMENSION / maxDimension);
-  const targetWidth = Math.max(1, Math.round(width * scale));
-  const targetHeight = Math.max(1, Math.round(height * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
-  const context = canvas.getContext('2d');
-  if (!context) {
-    return {
-      name: file.name,
-      type: file.type || 'application/octet-stream',
-      size: file.size,
-      dataUrl: originalDataUrl,
-    };
-  }
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, targetWidth, targetHeight);
-  context.drawImage(image, 0, 0, targetWidth, targetHeight);
   const compressStartedAt = clientPerfNow();
-  const dataUrl = canvas.toDataURL('image/jpeg', OCR_IMAGE_JPEG_QUALITY);
+  let best: UploadItem | null = file.size <= MAX_POLICY_UPLOAD_BYTES
+    ? {
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        dataUrl: originalDataUrl,
+      }
+    : null;
+  for (const attempt of OCR_IMAGE_COMPRESS_ATTEMPTS) {
+    const scale = Math.min(1, attempt.maxDimension / maxDimension);
+    const targetWidth = Math.max(1, Math.round(width * scale));
+    const targetHeight = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const context = canvas.getContext('2d');
+    if (!context) break;
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, targetWidth, targetHeight);
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
+    const dataUrl = canvas.toDataURL('image/jpeg', attempt.quality);
+    const item = {
+      name: file.name.replace(/\.[^.]+$/, '') || file.name,
+      type: 'image/jpeg',
+      size: dataUrlByteSize(dataUrl),
+      dataUrl,
+    };
+    best = !best || item.size < best.size ? item : best;
+    if (item.size <= MAX_POLICY_UPLOAD_BYTES) {
+      timings.imageCompressMs = clientElapsedMs(compressStartedAt);
+      return item;
+    }
+  }
   timings.imageCompressMs = clientElapsedMs(compressStartedAt);
-  return {
-    name: file.name.replace(/\.[^.]+$/, '') || file.name,
-    type: 'image/jpeg',
-    size: dataUrlByteSize(dataUrl),
-    dataUrl,
-  };
+  return best;
 }
 
 export async function fileToUploadItem(file: File, timings: ClientPerformanceTimings = {}): Promise<UploadItem> {

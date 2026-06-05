@@ -1323,12 +1323,6 @@ export function CustomerApp() {
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
-    if (file.size > MAX_POLICY_UPLOAD_BYTES) {
-      setUploadItem(null);
-      setMessage('图片太大，请压缩到 12MB 以内后重新上传');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
     setLoading(true);
     setMessage('正在读取并压缩保单图片');
     try {
