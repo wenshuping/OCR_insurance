@@ -31,5 +31,31 @@ test('classifyPolicyLayoutRegions separates header, basic info, benefit table, r
   assert.ok(result.regions.basicInfo.some((item) => item.text === '投保人'));
   assert.ok(result.regions.benefitTable.some((item) => item.text === '畅行万里智赢版两全保险'));
   assert.ok(result.regions.riderTable.some((item) => item.text === '附加i他男性特定疾病保险'));
+  assert.ok(!result.regions.benefitTable.some((item) => item.text === '附加i他男性特定疾病保险'));
   assert.ok(result.regions.footer.some((item) => item.text === '特别约定'));
+});
+
+test('classifyPolicyLayoutRegions keeps ambiguous product labels in basic info until explicit benefit table', () => {
+  const result = classifyPolicyLayoutRegions([
+    box('NCI 新华保险', 60, 30, 220, 55),
+    box('保险单', 430, 65, 500, 90),
+    box('产品名称', 70, 120, 160, 145),
+    box('惠鑫宝年金保险', 240, 120, 390, 145),
+    box('保险合同号', 70, 165, 170, 190),
+    box('P990171228067', 240, 165, 410, 190),
+    box('投保人', 70, 205, 140, 230),
+    box('张三', 240, 205, 290, 230),
+    box('保险利益表', 70, 310, 180, 335),
+    box('险种名称', 70, 350, 160, 375),
+    box('基本保险金额', 260, 350, 390, 375),
+    box('惠鑫宝年金保险', 70, 390, 250, 415),
+    box('100000.00元', 260, 390, 390, 415),
+  ]);
+
+  for (const text of ['产品名称', '保险合同号', '投保人']) {
+    assert.ok(result.regions.basicInfo.some((item) => item.text === text));
+    assert.ok(!result.regions.benefitTable.some((item) => item.text === text));
+  }
+  assert.ok(result.regions.benefitTable.some((item) => item.text === '保险利益表'));
+  assert.ok(result.regions.benefitTable.some((item) => item.text === '100000.00元'));
 });

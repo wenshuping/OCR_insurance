@@ -5,7 +5,9 @@ function compactText(value) {
 }
 
 function isBenefitHeader(text) {
-  return /保险利益表|险种名称|产品名称|基本保险金额|保险金额|保险期间|交费方式|缴费方式|交费期间|缴费期间|保险费/u.test(text);
+  if (/保险利益表/u.test(text)) return true;
+  return /险种名称|产品名称/u.test(text)
+    && /基本保险金额|保险金额|保险期间|交费方式|缴费方式|交费期间|缴费期间|保险费/u.test(text);
 }
 
 function isFooter(text) {
@@ -50,7 +52,7 @@ export function classifyPolicyLayoutRegions(rawBoxes = [], options = {}) {
       pushMany(regions.riderTable, row);
       continue;
     }
-    if (/投保人|被保险人|保险合同号|保单号|合同号|合同生效日期|生效日期|证件号码|身份证|受益人/u.test(text)) {
+    if (/产品名称|投保人|被保险人|保险合同号|保单号|合同号|合同生效日期|生效日期|证件号码|身份证|受益人/u.test(text)) {
       seenBasicInfo = true;
       if (mode !== 'benefitTable' && mode !== 'footer') mode = 'basicInfo';
     }
