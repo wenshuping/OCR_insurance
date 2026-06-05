@@ -28,6 +28,19 @@ test('mergePolicyLayoutScanResult lets high-confidence layout core fields overri
         date: 'high',
         name: 'high',
       },
+      evidence: {
+        applicant: {
+          value: '张三',
+          labelText: '投保人',
+          rowText: '投保人 张三 被保险人 李四',
+          relation: 'right',
+        },
+        policyNumber: {
+          value: '990123456789',
+          labelText: '保单号',
+          relation: 'right',
+        },
+      },
       ocrWarnings: ['检测到附加险区域，基础字段已限制为从基本信息区读取'],
     },
   });
@@ -38,6 +51,8 @@ test('mergePolicyLayoutScanResult lets high-confidence layout core fields overri
   assert.equal(merged.data.name, '附加住院医疗保险');
   assert.equal(merged.fieldConfidence.applicant, 'high');
   assert.equal(merged.fieldConfidence.name, 'review');
+  assert.equal(merged.fieldEvidence.applicant.rowText, '投保人 张三 被保险人 李四');
+  assert.equal(merged.fieldEvidence.policyNumber.relation, 'right');
   assert.ok(merged.ocrWarnings.some((warning) => warning.includes('附加险')));
   assert.ok(merged.ocrWarnings.some((warning) => warning.includes('产品名称存在多个候选')));
 });
@@ -50,6 +65,7 @@ test('mergePolicyLayoutScanResult preserves text fields when layout is missing',
 
   assert.equal(merged.data.applicant, '张三');
   assert.equal(merged.data.name, '旧流程产品');
+  assert.deepEqual(merged.fieldEvidence, {});
   assert.deepEqual(merged.ocrWarnings, []);
 });
 
@@ -81,6 +97,11 @@ test('mergePolicyLayoutScanResult downgrades impossible high-confidence field va
         insured: 'high',
         policyNumber: 'high',
       },
+      evidence: {
+        applicant: { value: '合同成立日期', relation: 'right' },
+        insured: { value: '姓名', relation: 'right' },
+        policyNumber: { value: '20241206', relation: 'right' },
+      },
     },
   });
 
@@ -88,5 +109,8 @@ test('mergePolicyLayoutScanResult downgrades impossible high-confidence field va
   assert.equal(merged.data.insured, undefined);
   assert.equal(merged.data.policyNumber, undefined);
   assert.equal(merged.fieldConfidence.applicant, 'review');
+  assert.equal(merged.fieldEvidence.applicant, undefined);
+  assert.equal(merged.fieldEvidence.insured, undefined);
+  assert.equal(merged.fieldEvidence.policyNumber, undefined);
   assert.ok(merged.ocrWarnings.some((warning) => warning.includes('投保人识别结果')));
 });

@@ -925,6 +925,15 @@ test('policy recognize response preserves OCR review warnings from scanner', asy
           insured: 'high',
           date: 'high',
         },
+        fieldEvidence: {
+          applicant: {
+            value: '附加投保人豁免保险',
+            labelText: '投保人',
+            rowText: '保险利益表 附加投保人豁免保险 至2026年12月23日',
+            relation: 'right',
+            region: 'rider-table',
+          },
+        },
         ocrWarnings: ['检测到附加险区域，基础字段已限制为从基本信息区读取'],
       };
     },
@@ -945,6 +954,8 @@ test('policy recognize response preserves OCR review warnings from scanner', asy
     assert.equal(recognized.response.status, 200);
     assert.equal(recognized.payload.scan.data.applicant, '附加投保人豁免保险');
     assert.equal(recognized.payload.scan.fieldConfidence.applicant, 'high');
+    assert.equal(recognized.payload.scan.fieldEvidence.applicant.relation, 'right');
+    assert.match(recognized.payload.scan.fieldEvidence.applicant.rowText, /附加投保人豁免保险/u);
     assert.ok(recognized.payload.scan.ocrWarnings.some((warning) => warning.includes('附加险')));
     assert.equal(calls.length, 1);
   } finally {

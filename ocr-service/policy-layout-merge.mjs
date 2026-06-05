@@ -25,12 +25,14 @@ export function mergePolicyLayoutScanResult({ textData = {}, layoutResult = null
     return {
       data: { ...textData },
       fieldConfidence: {},
+      fieldEvidence: {},
       ocrWarnings: [],
     };
   }
 
   const data = { ...textData };
   const fieldConfidence = { ...(layoutResult.fieldConfidence || {}) };
+  const fieldEvidence = { ...(layoutResult.evidence || {}) };
   const warnings = [...(layoutResult.ocrWarnings || [])];
 
   for (const field of REVIEW_ONLY_FIELDS) {
@@ -60,11 +62,12 @@ export function mergePolicyLayoutScanResult({ textData = {}, layoutResult = null
     }
   }
 
-  const reviewed = reviewPolicyFieldValues({ data, fieldConfidence, warnings });
+  const reviewed = reviewPolicyFieldValues({ data, fieldConfidence, fieldEvidence, warnings });
 
   return {
     data: reviewed.data,
     fieldConfidence: reviewed.fieldConfidence,
+    fieldEvidence: reviewed.fieldEvidence,
     ocrWarnings: uniqueWarnings(reviewed.warnings),
   };
 }

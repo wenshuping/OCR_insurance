@@ -127,10 +127,24 @@ export type PolicyScanData = {
   plans?: PolicyPlan[];
 };
 
+export type PolicyFieldEvidence = {
+  value?: string;
+  rawValue?: string;
+  labelText?: string;
+  rowText?: string;
+  relation?: 'inline' | 'right' | 'row' | 'header' | string;
+  source?: string;
+  confidence?: number;
+  region?: string;
+  labelBox?: number[];
+  valueBox?: number[];
+};
+
 export type PolicyScanResult = {
   ocrText: string;
   data: PolicyScanData;
   fieldConfidence?: Record<string, 'high' | 'review' | 'missing' | string>;
+  fieldEvidence?: Record<string, PolicyFieldEvidence>;
   ocrWarnings?: string[];
 };
 

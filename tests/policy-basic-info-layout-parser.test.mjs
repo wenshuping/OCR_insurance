@@ -129,4 +129,9 @@ test('parsePolicyBasicInfoFromLayoutBoxes extracts name-suffixed China Life labe
   assert.equal(result.fields.policyNumber, '2024330133SCW500032558');
   assert.notEqual(result.fields.applicant, '合同成立日期');
   assert.notEqual(result.fields.insured, '姓名');
+  assert.equal(result.evidence.applicant.relation, 'inline');
+  assert.equal(result.evidence.applicant.labelText, '投保人姓名:翟卿');
+  assert.match(result.evidence.applicant.rowText, /合同成立日期/u);
+  assert.equal(result.evidence.policyNumber.relation, 'inline');
+  assert.equal(result.evidence.insured.rawValue, '翟卿');
 });

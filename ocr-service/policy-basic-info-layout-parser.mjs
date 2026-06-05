@@ -193,6 +193,10 @@ function inlineValueAfter(labelDef, label, row) {
   return textAfterLabelBeforeNextLabel(labelDef, parts.join(''), label.index, label.length);
 }
 
+function inlineValueInLabelItem(labelDef, label) {
+  return textAfterLabelBeforeNextLabel(labelDef, label.item?.text || '', label.index, label.length);
+}
+
 function textAfterLabelBeforeNextLabel(labelDef, value, labelIndex = 0, labelLength = null) {
   const text = compactText(value);
   const matched = labelLength === null ? text.match(labelDef.labelPattern) : null;
@@ -234,6 +238,14 @@ function parseRowsFromAllowedRegions(regions) {
   return clusterBoxesIntoRows(allowed, { yThreshold: 14 });
 }
 
+function rowText(row) {
+  return [...(row?.items || [])]
+    .sort((left, right) => left.xMin - right.xMin)
+    .map((item) => String(item.text || '').trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
 export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
   const layout = classifyPolicyLayoutRegions(rawBoxes);
   const rows = parseRowsFromAllowedRegions(layout.regions);
@@ -259,6 +271,10 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
     fieldConfidence.company = 'high';
     evidence.company = {
       value: company,
+      rawValue: item.text || '',
+      labelText: item.text || '',
+      rowText: item.text || '',
+      relation: 'header',
       source: 'basic-info-layout',
       confidence: Number(item.confidence || 0) || 0,
       labelBox: item.box,
@@ -272,15 +288,32 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
       const label = findLabelInRow(row, labelDef);
       if (!label || fields[labelDef.field]) continue;
       const right = candidateRightOf(label, row);
-      const inline = inlineValueAfter(labelDef, label, row);
-      const rawValue = labelDef.normalize(inline) ? inline : right?.text;
+      const sameItemInline = inlineValueInLabelItem(labelDef, label);
+      const rowInline = inlineValueAfter(labelDef, label, row);
+      const sameItemInlineValue = labelDef.normalize(sameItemInline);
+      const rightValue = labelDef.normalize(right?.text);
+      let rawValue = rowInline;
+      let relation = 'row';
+      let valueItem = right || label.item;
+      if (sameItemInlineValue) {
+        rawValue = sameItemInline;
+        relation = 'inline';
+        valueItem = label.item;
+      } else if (rightValue) {
+        rawValue = right.text;
+        relation = 'right';
+        valueItem = right;
+      }
       const value = labelDef.normalize(rawValue);
       if (!value) continue;
       fields[labelDef.field] = value;
-      const valueItem = rawValue === inline ? label.item : right;
       fieldConfidence[labelDef.field] = confidenceFor(label, valueItem || label);
       evidence[labelDef.field] = {
         value,
+        rawValue: rawValue || '',
+        labelText: label.item.text || '',
+        rowText: rowText(row),
+        relation,
         source: 'basic-info-layout',
         confidence: Number(valueItem?.confidence || label.item.confidence || 0) || 0,
         labelBox: label.item.box,

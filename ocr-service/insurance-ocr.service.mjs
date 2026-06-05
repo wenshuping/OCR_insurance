@@ -2854,6 +2854,7 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
   let data = null;
   let bestOcrText = recognizedText;
   let scanFieldConfidence = {};
+  let scanFieldEvidence = {};
   let scanOcrWarnings = [];
   if (recognizedText) {
     data = extractPolicyFieldsFromText(recognizedText);
@@ -2882,6 +2883,7 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
         });
         data = merged.data;
         scanFieldConfidence = merged.fieldConfidence;
+        scanFieldEvidence = merged.fieldEvidence;
         scanOcrWarnings = merged.ocrWarnings;
         bestOcrText = best.ocrText;
         handledPaddleLayout = true;
@@ -2928,15 +2930,18 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
 
   if (!Object.values(data).some(Boolean)) throw new Error('POLICY_OCR_EMPTY');
   const fieldConfidence = Object.keys(scanFieldConfidence).length ? scanFieldConfidence : (data.fieldConfidence || {});
+  const fieldEvidence = Object.keys(scanFieldEvidence).length ? scanFieldEvidence : (data.fieldEvidence || {});
   const dataOcrWarnings = Array.isArray(data.ocrWarnings) ? data.ocrWarnings : [];
   const ocrWarnings = [...new Set([...scanOcrWarnings, ...dataOcrWarnings].map((item) => String(item || '').trim()).filter(Boolean))];
   delete data.fieldConfidence;
+  delete data.fieldEvidence;
   delete data.ocrWarnings;
   return {
     ok: true,
     data,
     ocrText: bestOcrText,
     ...(Object.keys(fieldConfidence).length ? { fieldConfidence } : {}),
+    ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
     ...(ocrWarnings.length ? { ocrWarnings } : {}),
   };
 }

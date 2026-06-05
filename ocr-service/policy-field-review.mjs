@@ -72,15 +72,17 @@ function fieldLabel(field) {
   return field;
 }
 
-export function reviewPolicyFieldValues({ data = {}, fieldConfidence = {}, warnings = [] } = {}) {
+export function reviewPolicyFieldValues({ data = {}, fieldConfidence = {}, fieldEvidence = {}, warnings = [] } = {}) {
   const nextData = { ...data };
   const nextConfidence = { ...fieldConfidence };
+  const nextEvidence = { ...fieldEvidence };
   const nextWarnings = [...warnings];
 
   for (const field of ['applicant', 'insured', 'policyNumber', 'insuredIdNumber']) {
     const value = trim(nextData[field]);
     if (!rejectField(field, value)) continue;
     delete nextData[field];
+    delete nextEvidence[field];
     nextConfidence[field] = 'review';
     nextWarnings.push(`${fieldLabel(field)}识别结果“${value}”不符合字段类型，请确认`);
   }
@@ -88,6 +90,7 @@ export function reviewPolicyFieldValues({ data = {}, fieldConfidence = {}, warni
   return {
     data: nextData,
     fieldConfidence: nextConfidence,
+    fieldEvidence: nextEvidence,
     warnings: [...new Set(nextWarnings.map(trim).filter(Boolean))],
   };
 }
