@@ -66,3 +66,27 @@ test('mergePolicyLayoutScanResult fills missing text name as review-only from la
   assert.equal(merged.fieldConfidence.name, 'review');
   assert.deepEqual(merged.ocrWarnings, []);
 });
+
+test('mergePolicyLayoutScanResult downgrades impossible high-confidence field values', () => {
+  const merged = mergePolicyLayoutScanResult({
+    textData: {},
+    layoutResult: {
+      fields: {
+        applicant: '合同成立日期',
+        insured: '姓名',
+        policyNumber: '20241206',
+      },
+      fieldConfidence: {
+        applicant: 'high',
+        insured: 'high',
+        policyNumber: 'high',
+      },
+    },
+  });
+
+  assert.equal(merged.data.applicant, undefined);
+  assert.equal(merged.data.insured, undefined);
+  assert.equal(merged.data.policyNumber, undefined);
+  assert.equal(merged.fieldConfidence.applicant, 'review');
+  assert.ok(merged.ocrWarnings.some((warning) => warning.includes('投保人识别结果')));
+});

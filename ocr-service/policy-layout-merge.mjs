@@ -1,3 +1,5 @@
+import { reviewPolicyFieldValues } from './policy-field-review.mjs';
+
 const CORE_LAYOUT_FIELDS = [
   'company',
   'applicant',
@@ -58,9 +60,11 @@ export function mergePolicyLayoutScanResult({ textData = {}, layoutResult = null
     }
   }
 
+  const reviewed = reviewPolicyFieldValues({ data, fieldConfidence, warnings });
+
   return {
-    data,
-    fieldConfidence,
-    ocrWarnings: uniqueWarnings(warnings),
+    data: reviewed.data,
+    fieldConfidence: reviewed.fieldConfidence,
+    ocrWarnings: uniqueWarnings(reviewed.warnings),
   };
 }
