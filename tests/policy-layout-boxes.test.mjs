@@ -42,6 +42,25 @@ test('normalizeOcrBoxes keeps text, confidence, bounds, and original index', () 
   });
   assert.equal(boxes[1].index, 1);
   assert.equal(boxes[1].confidence, 0.97);
+  assert.deepEqual({
+    xMin: boxes[1].xMin,
+    yMin: boxes[1].yMin,
+    xMax: boxes[1].xMax,
+    yMax: boxes[1].yMax,
+    xMid: boxes[1].xMid,
+    yMid: boxes[1].yMid,
+    width: boxes[1].width,
+    height: boxes[1].height,
+  }, {
+    xMin: 220,
+    yMin: 121,
+    xMax: 260,
+    yMax: 143,
+    xMid: 240,
+    yMid: 132,
+    width: 40,
+    height: 22,
+  });
   assert.equal(boxes[1].text, '张三');
 });
 
