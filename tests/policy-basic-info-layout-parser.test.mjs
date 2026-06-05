@@ -30,7 +30,9 @@ test('parsePolicyBasicInfoFromLayoutBoxes extracts right-side basic information 
   assert.equal(result.fields.insuredBirthday, '1987-12-07');
   assert.equal(result.fields.date, '2024-09-30');
   assert.equal(result.fields.beneficiary, '法定');
+  assert.equal(result.fieldConfidence.company, 'high');
   assert.equal(result.fieldConfidence.applicant, 'high');
+  assert.equal(result.evidence.company.region, 'header');
 });
 
 test('parsePolicyBasicInfoFromLayoutBoxes refuses to source core fields from rider table', () => {
@@ -64,4 +66,27 @@ test('parsePolicyBasicInfoFromLayoutBoxes does not treat beneficiary value text 
   assert.equal(result.fields.applicant, '张三');
   assert.equal(result.fields.insured, '');
   assert.equal(result.fields.beneficiary, '法定');
+});
+
+test('parsePolicyBasicInfoFromLayoutBoxes extracts multiple label value pairs from the same row', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('投保人', 70, 120, 140, 145),
+    box('张三', 160, 120, 210, 145),
+    box('被保险人', 260, 120, 350, 145),
+    box('李四', 370, 120, 420, 145),
+  ]);
+
+  assert.equal(result.fields.applicant, '张三');
+  assert.equal(result.fields.insured, '李四');
+});
+
+test('parsePolicyBasicInfoFromLayoutBoxes does not use the next same-row label as a value', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('投保人', 70, 120, 140, 145),
+    box('被保险人', 260, 120, 350, 145),
+    box('李四', 370, 120, 420, 145),
+  ]);
+
+  assert.equal(result.fields.applicant, '');
+  assert.equal(result.fields.insured, '李四');
 });

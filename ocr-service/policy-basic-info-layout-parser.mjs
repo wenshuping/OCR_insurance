@@ -1,4 +1,4 @@
-import { clusterBoxesIntoRows, rowText } from './policy-layout-boxes.mjs';
+import { clusterBoxesIntoRows } from './policy-layout-boxes.mjs';
 import { classifyPolicyLayoutRegions } from './policy-layout-regions.mjs';
 
 function compactText(value) {
@@ -90,11 +90,42 @@ function confidenceFor(label, value) {
   return 'high';
 }
 
+function isLabelItem(item) {
+  const text = compactText(item?.text);
+  return FIELD_LABELS.some((labelDef) => labelDef.labelPattern.test(text));
+}
+
+function nextLabelRightOf(label, row) {
+  return row.items
+    .filter((item) => item.xMin > label.xMax && item !== label && isLabelItem(item))
+    .sort((left, right) => left.xMin - right.xMin)[0] || null;
+}
+
 function candidateRightOf(label, row) {
+  const nextLabel = nextLabelRightOf(label, row);
   const candidates = row.items
-    .filter((item) => item.xMin > label.xMax && item.text !== label.text)
+    .filter((item) => (
+      item.xMin > label.xMax
+      && item !== label
+      && !isLabelItem(item)
+      && (!nextLabel || item.xMin < nextLabel.xMin)
+    ))
     .sort((left, right) => left.xMin - right.xMin);
   return candidates[0] || null;
+}
+
+function inlineValueAfter(labelDef, label, row) {
+  const rowItems = [...row.items].sort((left, right) => left.xMin - right.xMin);
+  const labelIndex = rowItems.indexOf(label);
+  if (labelIndex < 0) return '';
+
+  const parts = [];
+  for (let index = labelIndex; index < rowItems.length; index += 1) {
+    const item = rowItems[index];
+    if (index > labelIndex && isLabelItem(item)) break;
+    parts.push(item.text || '');
+  }
+  return compactText(parts.join('')).replace(labelDef.labelPattern, '');
 }
 
 function parseRowsFromAllowedRegions(regions) {
@@ -121,16 +152,26 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
   const ocrWarnings = [...layout.regionWarnings];
 
   for (const item of layout.regions.header) {
-    fields.company ||= normalizeCompany(item.text);
+    const company = normalizeCompany(item.text);
+    if (!company || fields.company) continue;
+    fields.company = company;
+    fieldConfidence.company = 'high';
+    evidence.company = {
+      value: company,
+      source: 'basic-info-layout',
+      confidence: Number(item.confidence || 0) || 0,
+      labelBox: item.box,
+      valueBox: item.box,
+      region: 'header',
+    };
   }
 
   for (const row of rows) {
-    const text = rowText(row);
     for (const labelDef of FIELD_LABELS) {
       const label = row.items.find((item) => labelDef.labelPattern.test(compactText(item.text)));
       if (!label || fields[labelDef.field]) continue;
-      const inline = compactText(text).replace(labelDef.labelPattern, '');
       const right = candidateRightOf(label, row);
+      const inline = inlineValueAfter(labelDef, label, row);
       const rawValue = right?.text || inline;
       const value = labelDef.normalize(rawValue);
       if (!value) continue;
