@@ -12,7 +12,6 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 
 const DEFAULT_VERSION = '2026-05-27';
 const DEFAULT_WORKBOOK_PATH = path.join(
@@ -264,15 +263,8 @@ function buildStats(records) {
 
 function saveLocalIndicatorRecords({ records, stats, version, workbookPath }) {
   const dbPath = path.resolve(readArg('db-path', process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH));
-  const state = readJson(statePath, {});
   const generatedAt = new Date().toISOString();
-  const backupPath = path.join(runtimeDir, 'backups', `state-before-insurance-indicators-${generatedAt.replace(/[:.]/gu, '-')}.json`);
-  if (fs.existsSync(statePath)) {
-    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-    fs.copyFileSync(statePath, backupPath);
-  }
-
-  state.insuranceIndicatorRecords = records.map((record) => ({
+  const indicatorRecords = records.map((record) => ({
     id: record.indicatorId,
     version: record.version,
     rowNumber: record.rowNumber,
@@ -294,17 +286,15 @@ function saveLocalIndicatorRecords({ records, stats, version, workbookPath }) {
     sourceExcerpt: record.sourceExcerpt,
     updatedAt: generatedAt,
   }));
-  state.insuranceIndicatorSnapshot = {
+  const insuranceIndicatorSnapshot = {
     version,
     generatedAt,
     sourceWorkbook: workbookPath,
-    backupPath,
     count: records.length,
     formulaRows: stats.formulaRows,
     fields: FIELD_NAMES,
     note: '从保障量化长表抽取，产品分类使用当前本地知识库 productType 结果，公式写入 formulaText/公式文本 字段。',
   };
-  if (fs.existsSync(statePath)) writeJson(statePath, state);
 
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
@@ -342,7 +332,7 @@ function saveLocalIndicatorRecords({ records, stats, version, workbookPath }) {
     db.exec('BEGIN IMMEDIATE');
     try {
       db.exec('DELETE FROM insurance_indicator_records');
-      for (const record of state.insuranceIndicatorRecords) {
+      for (const record of indicatorRecords) {
         insert.run(
           record.id,
           record.company,
@@ -356,7 +346,7 @@ function saveLocalIndicatorRecords({ records, stats, version, workbookPath }) {
         INSERT INTO state_documents (key, payload)
         VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET payload = excluded.payload
-      `).run('insuranceIndicatorSnapshot', JSON.stringify(state.insuranceIndicatorSnapshot));
+      `).run('insuranceIndicatorSnapshot', JSON.stringify(insuranceIndicatorSnapshot));
       db.prepare(`
         INSERT INTO app_meta (key, value)
         VALUES (?, ?)
@@ -371,7 +361,7 @@ function saveLocalIndicatorRecords({ records, stats, version, workbookPath }) {
     db.close();
   }
 
-  return { backupPath: fs.existsSync(backupPath) ? backupPath : '', dbPath, generatedAt };
+  return { backupPath: '', dbPath, generatedAt };
 }
 
 function parseCliJson(stdout) {

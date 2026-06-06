@@ -22,6 +22,7 @@ export function createPolicyRoutes(context) {
     recognizePolicyInput,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    buildRawUploadSnapshot,
     storeGuestPendingScan,
     guestRegistrationRequiredNext,
     resolvePolicyScanInput,
@@ -62,6 +63,11 @@ export function createPolicyRoutes(context) {
       const user = resolveAuthUser(req, state);
       const guestId = normalizeGuestId(req.body?.guestId);
       assertGuestCanScan({ state, user, guestId });
+      const rawUpload = buildRawUploadSnapshot(req.body);
+      if (!user && guestId) {
+        storeGuestPendingScan(state, { guestId, scan: null, analysis: null, rawUpload });
+        await persist(state);
+      }
       const ocrStartedAt = nowMs();
       const scan = await recognizePolicyInput({ scanner, body: req.body, state, applyManualData: false });
       logPerformance(performanceLogger, 'policy.recognize.ocr', {
@@ -76,7 +82,7 @@ export function createPolicyRoutes(context) {
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       });
       if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan, analysis });
+        storeGuestPendingScan(state, { guestId, scan, analysis, rawUpload });
         await persist(state);
       }
       logPerformance(performanceLogger, 'policy.recognize.complete', {
@@ -102,6 +108,11 @@ export function createPolicyRoutes(context) {
       const user = resolveAuthUser(req, state);
       const guestId = normalizeGuestId(req.body?.guestId);
       assertGuestCanScan({ state, user, guestId });
+      const rawUpload = buildRawUploadSnapshot(req.body);
+      if (!user && guestId && !req.body?.scan) {
+        storeGuestPendingScan(state, { guestId, scan: null, analysis: null, rawUpload });
+        await persist(state);
+      }
       const scanStartedAt = nowMs();
       const normalizedScan = await resolvePolicyScanInput({ scanner, body: req.body, state });
       if (!req.body?.scan) {
@@ -137,7 +148,12 @@ export function createPolicyRoutes(context) {
         responsibilityCount: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable.length : 0,
       });
       if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan: normalizedScan, analysis: analysisWithOptionalResponsibilities });
+        storeGuestPendingScan(state, {
+          guestId,
+          scan: normalizedScan,
+          analysis: analysisWithOptionalResponsibilities,
+          rawUpload,
+        });
         await persist(state);
       }
       logPerformance(performanceLogger, 'policy.analyze.complete', {

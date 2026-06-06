@@ -174,6 +174,36 @@ test('official terms wording does not mark unrecognized optional responsibility 
   assert.equal(selectedCoverageIndicators(attached.coverageIndicators).some((item) => item.id === 'ind_optional'), false);
 });
 
+test('generic optional section displays concrete benefit names from clauses', () => {
+  const productName = '新华人寿保险股份有限公司附加学生平安A1款意外伤害医疗保险';
+  const policy = {
+    company: '新华保险',
+    name: productName,
+    ocrText: '险种名称 附加学生平安A1款意外伤害医疗保险',
+  };
+  const knowledgeRecords = [
+    {
+      id: '278',
+      company: '新华保险',
+      productName,
+      pageText: [
+        '保险责任 本合同保险责任分为必选责任和可选责任。',
+        '2.可选责任：',
+        '（1）狂犬病疫苗接种医疗费用保险金 被保险人发生意外伤害并因该意外伤害接受狂犬病疫苗接种，我们按约定给付狂犬病疫苗接种医疗费用保险金。',
+        '（2）微创美容缝合医疗费用保险金 被保险人发生意外伤害并接受微创美容缝合治疗，我们按约定给付微创美容缝合医疗费用保险金。',
+      ].join('\n'),
+    },
+  ];
+
+  const reviewItems = buildOptionalResponsibilityReview(policy, [], knowledgeRecords, []);
+
+  assert.deepEqual(
+    reviewItems.map((item) => item.liability),
+    ['狂犬病疫苗接种医疗费用保险金', '微创美容缝合医疗费用保险金'],
+  );
+  assert.equal(reviewItems.some((item) => item.liability === '可选责任'), false);
+});
+
 test('manual optional selection preserves quantified product indicators', () => {
   const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
   const policy = {
@@ -319,6 +349,113 @@ test('optional responsibility review dedupes governance records and official-ter
   assert.equal(reviewItems[0].company, '新华保险');
   assert.equal(reviewItems[0].liability, '可选责任一');
   assert.equal(reviewItems[0].selectionStatus, 'selected');
+});
+
+test('optional responsibility review dedupes same product liability across different ids', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
+  const reviewItems = buildOptionalResponsibilityReview({ company: '新华保险', name: productName }, [], [], [
+    {
+      id: 'legacy_optional_one',
+      company: '新华保险',
+      productName,
+      coverageType: '可选责任',
+      liability: '可选责任一',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+    },
+    {
+      id: 'rebuilt_optional_one',
+      company: '新华保险',
+      productName,
+      coverageType: '可选责任',
+      liability: '可选责任一',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+      indicatorIds: ['ind_optional_one'],
+    },
+    {
+      id: 'optional_two',
+      company: '新华保险',
+      productName,
+      coverageType: '可选责任',
+      liability: '可选责任二',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+    },
+  ]);
+
+  assert.equal(reviewItems.length, 2);
+  assert.deepEqual(reviewItems.map((item) => item.liability).sort(), ['可选责任一', '可选责任二']);
+  assert.equal(reviewItems.find((item) => item.liability === '可选责任一').quantificationStatus, 'quantified');
+  assert.deepEqual(reviewItems.find((item) => item.liability === '可选责任一').indicatorIds, ['ind_optional_one']);
+});
+
+test('optional responsibility review uses matched official product identity for short OCR names', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）';
+  const policy = {
+    company: '新华保险',
+    name: '多倍保障重大疾病保险（智赢版）',
+    plans: [
+      {
+        role: 'main',
+        company: '新华保险',
+        name: '多倍保障重大疾病保险（智赢版）',
+        matchedProductName: productName,
+      },
+    ],
+  };
+  const knowledgeRecords = [
+    {
+      id: '796',
+      company: '新华保险',
+      productName,
+      title: productName,
+      pageText: '保险责任。3.可选责任一 轻度疾病保险金。4.可选责任二 重度恶性肿瘤多次给付保险金。',
+    },
+  ];
+  const optionalResponsibilityRecords = [
+    {
+      id: 'opt_legacy_one',
+      company: '新华保险',
+      productName,
+      liability: '可选责任一',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+      indicatorIds: ['ind_one'],
+    },
+    {
+      id: 'opt_legacy_two',
+      company: '新华保险',
+      productName,
+      liability: '可选责任二',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+      indicatorIds: ['ind_two'],
+    },
+    {
+      id: 'opt_short_one',
+      company: '新华保险',
+      productName: policy.name,
+      liability: '可选责任一',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+    },
+    {
+      id: 'opt_short_two',
+      company: '新华保险',
+      productName: policy.name,
+      liability: '可选责任二',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+    },
+  ];
+
+  const reviewItems = buildOptionalResponsibilityReview(policy, [], knowledgeRecords, optionalResponsibilityRecords);
+
+  assert.equal(reviewItems.length, 2);
+  assert.deepEqual(reviewItems.map((item) => item.productName), [productName, productName]);
+  assert.deepEqual(reviewItems.map((item) => item.liability).sort(), ['可选责任一', '可选责任二']);
+  assert.equal(reviewItems.some((item) => item.productName === policy.name), false);
 });
 
 test('canonical product id prevents similar product editions from sharing optional indicators', () => {

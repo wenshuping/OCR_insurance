@@ -298,6 +298,50 @@ const NEW_CHINA_RECEIPT_PRODUCT_LINES = [
   '收据说明:',
 ];
 
+const CHINA_LIFE_SINGLE_PLAN_LINES = [
+  'MAWAWAVAVAV',
+  '单证代码:9996',
+  '中国日！',
+  '/笛证',
+  '保险单',
+  '本公司根据保险条款和投保人的申请，签发本保险单',
+  '保险资料',
+  '（个人养老金）',
+  '投保人姓名:翟卿',
+  '合同成立日期:2024年12月05日',
+  '产品首期保费（元）:12000.00',
+  '币种:人民币',
+  '主险明细',
+  '险种名称:国寿鑫颐宝两全保险（2024版）',
+  '保单号:2024330133SCW500032558',
+  '保单生效日:2024年12月06日',
+  '交费方式:年交',
+  '每期交费日:每年的12月06日',
+  '险种性质:主险',
+  '被保险人姓名:翟卿',
+  '保单期满日:2044年12月05日',
+  '保险期间:至60周岁',
+  '交费期满日:2034年12月05日',
+  '交费期间:10年',
+  '加费（元）',
+  '子险种名称',
+  '保险金额(元）',
+  '标准保费（元）',
+  '国寿鑫颐宝两全保险（2024版）',
+  '159948.00',
+  '12000.00',
+  '身故保险金受益人列表',
+  '证件号码',
+  '被保险人受益顺序',
+  '受益人',
+  '性别',
+  '出生日期',
+  '与被保险人关系受益份额',
+  '证件名称',
+  '特别约定',
+  '无',
+];
+
 test('policy field schema defines canonical insurance fields', () => {
   assert.equal(POLICY_FIELD_SCHEMA.name.label, '产品名称');
   assert.equal(POLICY_FIELD_SCHEMA.paymentMode.label, '交费方式');
@@ -542,4 +586,35 @@ test('field matcher pairs receipt product names with following amount rows', () 
       },
     ],
   );
+});
+
+test('field matcher ignores China Life metadata rows inside a single-plan section', () => {
+  const plans = extractPolicyPlansFromLines(CHINA_LIFE_SINGLE_PLAN_LINES, {
+    company: '中国人寿',
+  });
+
+  assert.deepEqual(
+    plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'main',
+        name: '国寿鑫颐宝两全保险（2024版）',
+        amount: '159948',
+        paymentPeriod: '10年交',
+        premium: '12000',
+      },
+    ],
+  );
+
+  const fields = matchPolicyFieldsFromLines(CHINA_LIFE_SINGLE_PLAN_LINES, {
+    company: '中国人寿',
+  });
+  assert.equal(fields.fields.name, '国寿鑫颐宝两全保险（2024版）');
+  assert.equal(fields.fields.coveragePeriod, '至60岁');
 });

@@ -44,12 +44,12 @@ import type {
   ResponsibilitySelectionStatus as ResponsibilitySelectionStatusContract,
 } from './api/contracts/responsibility';
 
-export { ApiError, getWechatJsSdkSignature, logClientPerformance, logoutCustomer, register, sendCode } from './api/client';
+export { ApiError, getHealthStatus, getWechatJsSdkSignature, logClientPerformance, logoutCustomer, register, sendCode } from './api/client';
 export {
   markOptionalResponsibilityNotQuantifiable,
   reextractOptionalResponsibilities,
 } from './api/contracts/admin';
-export type { User, WechatJsSdkSignature } from './api/client';
+export type { HealthStatus, User, WechatJsSdkSignature } from './api/client';
 export * from './api/contracts/policy';
 export * from './api/contracts/family';
 export * from './api/contracts/admin';

@@ -4,9 +4,11 @@ import type {
   PolicyFormData,
   PolicyScanResult,
 } from '../api/contracts/policy';
+import { shouldKeepPolicyPlan } from '../policy-plan-filter.mjs';
 import type { OptionalResponsibility } from '../api/contracts/responsibility';
 import {
   normalizeBeneficiaryValue,
+  normalizePolicyPlanRoleLabel,
   policyPlanRoleOrder,
 } from './formatters';
 
@@ -30,7 +32,7 @@ export const FAMILY_MEMBER_RELATION_OPTIONS = [
 ];
 export const POLICY_RELATION_OPTIONS = ['本人', '子女', '父母', '夫妻'];
 
-export function normalizePolicyPlanList(
+export function normalizePolicyPlanListWithIndex(
   plans: PolicyFormData['plans'] = [],
   company = '',
   options: { keepEmpty?: boolean; assignRolesByRecognizedOrder?: boolean } = {},
@@ -42,10 +44,11 @@ export function normalizePolicyPlanList(
     const name = String(plan?.name || plan?.matchedProductName || '').trim();
     const matchedProductName = String(plan?.matchedProductName || '').trim();
     if (!name && !matchedProductName && !keepEmpty) return;
+    if (!keepEmpty && !shouldKeepPolicyPlan(plan)) return;
     normalizedPlans.push({
       __originalIndex: index,
       company: String(plan?.company || company || '').trim(),
-      role: String(assignRolesByRecognizedOrder ? (index === 0 ? 'main' : 'rider') : plan?.role || (index === 0 ? 'main' : 'rider')),
+      role: String(assignRolesByRecognizedOrder ? (plan?.role || (index === 0 ? 'main' : 'rider')) : plan?.role || (index === 0 ? 'main' : 'rider')),
       name: name || matchedProductName,
       matchedProductName,
       canonicalProductId: String(plan?.canonicalProductId || '').trim(),
@@ -61,7 +64,15 @@ export function normalizePolicyPlanList(
     });
   });
   return normalizedPlans
-    .sort((left, right) => policyPlanRoleOrder(left.role) - policyPlanRoleOrder(right.role) || left.__originalIndex - right.__originalIndex)
+    .sort((left, right) => policyPlanRoleOrder(left.role) - policyPlanRoleOrder(right.role) || left.__originalIndex - right.__originalIndex);
+}
+
+export function normalizePolicyPlanList(
+  plans: PolicyFormData['plans'] = [],
+  company = '',
+  options: { keepEmpty?: boolean; assignRolesByRecognizedOrder?: boolean } = {},
+) {
+  return normalizePolicyPlanListWithIndex(plans, company, options)
     .map(({ __originalIndex, ...plan }) => plan) as NonNullable<PolicyFormData['plans']>;
 }
 
@@ -209,23 +220,110 @@ export function scanToForm(scan: PolicyScanResult): PolicyFormData {
   };
 }
 
+function canReuseParticipantValue(nextName: string, currentName: string) {
+  const normalizedNextName = String(nextName || '').trim();
+  const normalizedCurrentName = String(currentName || '').trim();
+  return Boolean(normalizedNextName && normalizedCurrentName && normalizedNextName === normalizedCurrentName);
+}
+
+function canReuseParticipantMemberId(
+  nextName: string,
+  currentName: string,
+  currentMemberId: number | null | undefined,
+  currentMemberName: string | undefined,
+) {
+  if (!currentMemberId) return false;
+  const normalizedCurrentMemberName = String(currentMemberName || '').trim();
+  if (!canReuseParticipantValue(nextName, currentName)) return false;
+  const normalizedCurrentName = String(currentName || '').trim();
+  if (normalizedCurrentMemberName && normalizedCurrentMemberName !== normalizedCurrentName) return false;
+  return true;
+}
+
 export function mergeScanToForm(scan: PolicyScanResult, current: PolicyFormData): PolicyFormData {
   const next = scanToForm(scan);
+  const reuseApplicantFields = canReuseParticipantValue(next.applicant, current.applicant);
+  const reuseInsuredFields = canReuseParticipantValue(next.insured, current.insured);
   return {
     ...next,
     beneficiary: next.beneficiary || current.beneficiary,
-    applicantRelation: next.applicantRelation || current.applicantRelation,
-    insuredRelation: next.insuredRelation || current.insuredRelation,
-    insuredIdNumber: next.insuredIdNumber || current.insuredIdNumber,
-    insuredBirthday: next.insuredBirthday || current.insuredBirthday,
+    applicantRelation: next.applicantRelation || (reuseApplicantFields ? current.applicantRelation : ''),
+    insuredRelation: next.insuredRelation || (reuseInsuredFields ? current.insuredRelation : ''),
+    insuredIdNumber: next.insuredIdNumber || (reuseInsuredFields ? current.insuredIdNumber : ''),
+    insuredBirthday: next.insuredBirthday || (reuseInsuredFields ? current.insuredBirthday : ''),
     familyId: next.familyId ?? current.familyId ?? null,
-    applicantMemberId: next.applicantMemberId ?? current.applicantMemberId ?? null,
-    insuredMemberId: next.insuredMemberId ?? current.insuredMemberId ?? null,
+    applicantMemberId: next.applicantMemberId ?? (
+      canReuseParticipantMemberId(
+        next.applicant,
+        current.applicant,
+        current.applicantMemberId,
+        current.applicantMemberName,
+      )
+        ? current.applicantMemberId ?? null
+        : null
+    ),
+    insuredMemberId: next.insuredMemberId ?? (
+      canReuseParticipantMemberId(
+        next.insured,
+        current.insured,
+        current.insuredMemberId,
+        current.insuredMemberName,
+      )
+        ? current.insuredMemberId ?? null
+        : null
+    ),
   };
 }
 
 export function sanitizeAmount(value: string) {
   return value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1');
+}
+
+function hasRequiredText(value: unknown) {
+  return Boolean(String(value || '').trim());
+}
+
+function hasPlanPremiumEvidence(plan: NonNullable<PolicyFormData['plans']>[number]) {
+  return hasRequiredText(plan.premium) || /整单合计保费|保单未列逐险种保费/.test(String(plan.premiumText || ''));
+}
+
+function hasConfirmedRelation(value: unknown) {
+  const relation = String(value || '').trim();
+  return Boolean(relation && relation !== '待确认');
+}
+
+export function validatePolicyEntryForm(data: PolicyFormData) {
+  const errors: string[] = [];
+  const applicantRelation = String(data.applicantRelationLabel || data.applicantRelation || '').trim();
+  const insuredRelation = String(data.insuredRelationLabel || data.insuredRelation || '').trim();
+
+  if (!data.familyId) errors.push('选择家庭档案');
+  if (!hasRequiredText(data.company)) errors.push('保险公司');
+  if (!hasRequiredText(data.name)) errors.push('保险名称');
+  if (!hasRequiredText(data.applicant)) errors.push('投保人姓名');
+  if (!hasConfirmedRelation(applicantRelation)) errors.push('投保人与核心人员家庭关系');
+  if (!hasRequiredText(data.insured)) errors.push('被保险人姓名');
+  if (!hasConfirmedRelation(insuredRelation)) errors.push('被保险人与核心人员家庭关系');
+  if (!hasRequiredText(data.beneficiary)) errors.push('受益人');
+  if (!hasRequiredText(data.insuredBirthday)) errors.push('被保险人生日');
+  if (!hasRequiredText(data.date)) errors.push('投保时间');
+  if (!hasRequiredText(data.paymentPeriod)) errors.push('缴费期间');
+  if (!hasRequiredText(data.coveragePeriod)) errors.push('保障期间');
+  if (!hasRequiredText(data.amount)) errors.push('保额');
+  if (!hasRequiredText(data.firstPremium)) errors.push('首期保费');
+
+  const riderPlans = normalizePolicyPlanListWithIndex(data.plans, data.company, { keepEmpty: true })
+    .filter((plan) => String(plan.role || '') !== 'main');
+  riderPlans.forEach((plan, index) => {
+    const prefix = `${normalizePolicyPlanRoleLabel(String(plan.role || ''))}${index + 1}`;
+    if (!hasRequiredText(plan.name)) errors.push(`${prefix}险种名称`);
+    if (!hasRequiredText(plan.amount)) errors.push(`${prefix}保额`);
+    if (!hasPlanPremiumEvidence(plan)) errors.push(`${prefix}保费`);
+    if (!hasRequiredText(plan.coveragePeriod)) errors.push(`${prefix}保障期间`);
+    if (!hasRequiredText(plan.paymentPeriod)) errors.push(`${prefix}缴费期间`);
+  });
+
+  return errors;
 }
 
 export function productLookupKey(company: string, name: string) {

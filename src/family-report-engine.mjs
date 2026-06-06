@@ -513,8 +513,30 @@ function findPlanForIndicator(policy, indicator) {
   }) || null;
 }
 
+function findPlanForResponsibility(policy, responsibility) {
+  if (!responsibility || typeof responsibility === 'string') return null;
+  const plans = Array.isArray(policy?.plans) ? policy.plans : [];
+  const candidates = [
+    responsibility?.productName,
+    responsibility?.matchedProductName,
+    responsibility?.sourceProductName,
+    responsibility?.planName,
+    responsibility?.note,
+  ].filter(Boolean);
+  if (!candidates.length) return null;
+
+  return plans.find((plan) => candidates.some((candidate) => (
+    [plan?.matchedProductName, plan?.name].some((value) => productNameMatchesIndicator(value, candidate))
+  ))) || null;
+}
+
 function indicatorPlanIsInactive(policy, indicator) {
   const plan = findPlanForIndicator(policy, indicator);
+  return Boolean(plan && planIsInactive(policy, plan));
+}
+
+function responsibilityPlanIsInactive(policy, responsibility) {
+  const plan = findPlanForResponsibility(policy, responsibility);
   return Boolean(plan && planIsInactive(policy, plan));
 }
 
@@ -704,15 +726,22 @@ function applyIndicatorToRow(row, indicator, policy) {
 }
 
 function criticalPolicyText(policy) {
+  return criticalPolicyTextWithOptions(policy);
+}
+
+function criticalPolicyTextWithOptions(policy, options = {}) {
+  const includeInactivePlans = options?.includeInactivePlans === true;
+  const plans = includeInactivePlans ? (Array.isArray(policy?.plans) ? policy.plans : []) : activePlans(policy);
   return [
     policy?.name,
     policy?.report,
     policy?.ocrText,
-    ...activePlans(policy).map((plan) => {
+    ...plans.map((plan) => {
       if (typeof plan === 'string') return plan;
       return [plan?.name, plan?.title, plan?.liability, plan?.type].filter(Boolean).join(' ');
     }),
     ...(Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).map((item) => {
+      if (!includeInactivePlans && responsibilityPlanIsInactive(policy, item)) return '';
       if (typeof item === 'string') return item;
       return [
         item?.name,
@@ -728,8 +757,8 @@ function criticalPolicyText(policy) {
   ].filter(Boolean).join(' ');
 }
 
-function policyImpliesCriticalIllness(policy) {
-  return /(重疾|重大疾病|轻症|中症|恶性肿瘤|癌)/u.test(criticalPolicyText(policy).normalize('NFKC'));
+function policyImpliesCriticalIllness(policy, options = {}) {
+  return /(重疾|重大疾病|轻症|中症|恶性肿瘤|癌)/u.test(criticalPolicyTextWithOptions(policy, options).normalize('NFKC'));
 }
 
 function applyFallbackPolicyToRow(row, policy) {
@@ -811,7 +840,7 @@ function markInactiveCriticalPolicies(rowMap, memberPolicies) {
         countText: indicatorCountText(indicator),
       });
     }
-    if (!matched && policyImpliesCriticalIllness(policy)) {
+    if (!matched && policyImpliesCriticalIllness(policy, { includeInactivePlans: true })) {
       markInactiveSourceOnRow(rowMap.get('critical_first'), policy, '重疾首次给付', {
         amount: asNumber(policy?.amount),
         countText: '基本保额',

@@ -80,51 +80,15 @@ export function ResponsibilityAssistant(props: {
     const normalizedQuery = normalizeSuggestionQuery(companyQuery);
     if (!normalizedQuery) return [];
     return (Array.isArray(companySuggestions) ? companySuggestions : [])
-      .map((suggestion) => {
-        const normalizedCompany = normalizeSuggestionQuery(suggestion.company);
-        return {
-          ...suggestion,
-          matchIndex: normalizedCompany.indexOf(normalizedQuery),
-          startsWith: normalizedCompany.startsWith(normalizedQuery),
-        };
-      })
-      .filter((suggestion) => suggestion.matchIndex >= 0 && suggestion.company !== companyQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.company.localeCompare(right.company, 'zh-CN'),
-      )
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.company) !== normalizedQuery)
       .slice(0, 8);
   }, [companyQuery, companySuggestions]);
   const showCompanySuggestions = companyFocused && companyQuery && (companySuggestionLoading || visibleCompanySuggestions.length);
   const visibleProductSuggestions = useMemo(() => {
-    const normalizedCompany = normalizeSuggestionQuery(companyQuery);
     const normalizedQuery = normalizeSuggestionQuery(productQuery);
-    if (!normalizedCompany) return [];
+    if (!normalizeSuggestionQuery(companyQuery)) return [];
     return (Array.isArray(productSuggestions) ? productSuggestions : [])
-      .map((suggestion) => {
-        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
-        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
-        return {
-          ...suggestion,
-          companyMatches:
-            normalizedSuggestionCompany === normalizedCompany ||
-            normalizedSuggestionCompany.includes(normalizedCompany) ||
-            normalizedCompany.includes(normalizedSuggestionCompany),
-          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
-          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
-        };
-      })
-      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.productName.localeCompare(right.productName, 'zh-CN'),
-      )
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
   }, [companyQuery, productQuery, productSuggestions]);
   const showProductSuggestions = productFocused && Boolean(companyQuery) && (productSuggestionLoading || visibleProductSuggestions.length);

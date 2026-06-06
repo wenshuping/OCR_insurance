@@ -51,10 +51,12 @@ test('OCR mapping infers insurer and matched products from recognized plan names
         {
           company: '新华保险',
           productName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+          productType: '两全保险',
         },
         {
           company: '新华保险',
           productName: '新华人寿保险股份有限公司i他男性特定疾病保险',
+          productType: '重疾险',
         },
       ],
     },
@@ -91,8 +93,10 @@ test('OCR mapping infers insurer and matched products from recognized plan names
   assert.equal(mapped.data.name, '新华人寿保险股份有限公司畅行万里智赢版两全保险');
   assert.equal(mapped.data.plans[0].company, '新华保险');
   assert.equal(mapped.data.plans[0].matchedProductName, '新华人寿保险股份有限公司畅行万里智赢版两全保险');
+  assert.equal(mapped.data.plans[0].productType, '两全保险');
   assert.equal(mapped.data.plans[1].company, '新华保险');
   assert.equal(mapped.data.plans[1].matchedProductName, '新华人寿保险股份有限公司i他男性特定疾病保险');
+  assert.equal(mapped.data.plans[1].productType, '重疾险');
   assert.match(mapped.data.canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.equal(mapped.data.canonicalProductId, mapped.data.plans[0].canonicalProductId);
   assert.match(mapped.data.plans[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
@@ -137,6 +141,112 @@ test('OCR mapping gives similar New China product editions different canonical i
   assert.match(xiang.data.canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.match(ying.data.canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.notEqual(xiang.data.canonicalProductId, ying.data.canonicalProductId);
+});
+
+test('OCR mapping does not match clause fragments as rider products from full page text', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state: {
+      policies: [],
+      knowledgeRecords: [
+        { company: '新华保险', productName },
+      ],
+    },
+    scan: {
+      ocrText: [
+        'NCI 新华保险',
+        '保险单',
+        `险种名称 ${productName}`,
+        '备注：《多倍保障重大疾病保险（智享版）》的保险责任包含基本责任和可选责任一。',
+        '可选责任一经确定，在本合同保险期间内不得变更。',
+      ].join('\n'),
+      data: {
+        company: '新华保险',
+        name: productName,
+        plans: [
+          { role: 'main', name: productName },
+          { role: 'rider', name: '确定，在本合同' },
+        ],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.plans.length, 1);
+  assert.equal(mapped.data.plans[0].matchedProductName, productName);
+  assert.equal(mapped.data.plans.some((plan) => plan.name === '确定，在本合同'), false);
+});
+
+test('OCR mapping recovers missing rider plans from official product names in OCR text', () => {
+  const mainProductName = '新华人寿保险股份有限公司学生平安意外伤害保险';
+  const riderProductName = '新华人寿保险股份有限公司附加学生平安A款疾病住院医疗保险';
+  const splitRiderProductName = '新华人寿保险股份有限公司附加学生平安A1款意外伤害医疗保险';
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state: {
+      policies: [],
+      knowledgeRecords: [
+        {
+          company: '新华保险',
+          productName: '保险责任名称（接第2页）',
+          productType: '寿险',
+        },
+        {
+          company: '新华保险',
+          productName: mainProductName,
+          productType: '意外险',
+        },
+        {
+          company: '新华保险',
+          productName: riderProductName,
+          productType: '医疗险',
+        },
+        {
+          company: '新华保险',
+          productName: splitRiderProductName,
+          productType: '医疗险',
+        },
+      ],
+    },
+    scan: {
+      ocrText: [
+        'NCI 新华保险',
+        '保险利益表',
+        `险种名称 ${mainProductName}`,
+        '意外伤害身故和残疾保险金 80000.00元',
+        `险种名称 ${riderProductName}`,
+        '疾病住院医疗保险金 800000.00元',
+        '保险责任名称（接第2页）',
+        '附加学生平安A1款意外伤害医疗保 意外伤害医疗费用保险金 20000.00元',
+        '险',
+        '保险费合计：￥298.00',
+      ].join('\n'),
+      data: {
+        company: '新华保险',
+        name: '学生平安意外伤害保险',
+        amount: '80000',
+        firstPremium: '298',
+        plans: [
+          {
+            company: '新华保险',
+            role: 'main',
+            name: '学生平安意外伤害保险',
+            amount: '80000',
+            premium: '298',
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.plans.length, 3);
+  assert.equal(mapped.data.plans[0].role, 'main');
+  assert.equal(mapped.data.plans[0].matchedProductName, mainProductName);
+  assert.equal(mapped.data.plans[1].role, 'rider');
+  assert.equal(mapped.data.plans[1].matchedProductName, riderProductName);
+  assert.equal(mapped.data.plans[1].productType, '医疗险');
+  assert.match(mapped.data.plans[1].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.equal(mapped.data.plans[2].role, 'rider');
+  assert.equal(mapped.data.plans[2].matchedProductName, splitRiderProductName);
+  assert.equal(mapped.data.plans.some((plan) => plan.name === '保险责任名称（接第2页）'), false);
 });
 
 test('OCR mapping preserves existing plan canonical product id when rematching product name', () => {

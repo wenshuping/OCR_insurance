@@ -6,6 +6,13 @@ export type ApiOptions = {
   method?: string;
 };
 
+export type HealthStatus = {
+  ok: true;
+  service: string;
+  startedAt?: string;
+  sessionId?: string;
+};
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -46,6 +53,10 @@ export async function requestJson<T>(input: RequestInfo | URL, init?: RequestIni
     throw new Error(message);
   }
   return payload as T;
+}
+
+export function getHealthStatus() {
+  return requestJson<HealthStatus>('/api/health');
 }
 
 export type User = {

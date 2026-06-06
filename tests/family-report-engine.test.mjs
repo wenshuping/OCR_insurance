@@ -1218,6 +1218,53 @@ test('buildFamilyReport excludes inactive rider plan indicators while keeping ac
   assert.equal(row.sourcePolicies[0].amount, 50000);
 });
 
+test('buildFamilyReport does not fall back to active main policy amount from inactive critical rider text', () => {
+  const riderName = '新华人寿保险股份有限公司i他男性特定疾病保险';
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 37,
+      insured: '冯力',
+      name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+      amount: 60000,
+      plans: [
+        {
+          role: 'main',
+          name: '畅行万里智赢版两全保险',
+          matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+          amount: 60000,
+          coveragePeriod: '至2068年9月30日零时',
+          status: '有效',
+        },
+        {
+          role: 'rider',
+          name: 'i他男性特定疾病保险',
+          matchedProductName: riderName,
+          amount: 50000,
+          coveragePeriod: '至2025年09月29日',
+          status: '失效',
+        },
+      ],
+      responsibilities: [
+        {
+          coverageType: '保险责任',
+          note: riderName,
+          scenario: '特定重大疾病保险金：本公司按基本保险金额给付特定重大疾病保险金，本合同终止。',
+          payout: '以正式条款为准',
+        },
+      ],
+    }),
+  ]);
+
+  const critical = radarScore(report.radar.family, 'critical');
+  assert.equal(critical.amount, 0);
+  assert.match(critical.note, /未识别到可落地金额/);
+
+  const member = report.criticalIllness.members.find((item) => item.member === '冯力');
+  const row = member.rows.find((item) => item.key === 'critical_first');
+  assert.equal(row.amount, 0);
+  assert.equal(row.status, 'missing');
+});
+
 test('buildFamilyReport classifies ordinal critical disease payouts as multiple', () => {
   const report = buildFamilyReport([
     makePolicy({

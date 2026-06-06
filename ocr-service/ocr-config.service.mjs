@@ -9,6 +9,7 @@ export const POLICY_OCR_MODE_MACOS_VISION_LOCAL = 'macos_vision_local';
 export const POLICY_OCR_MODE_PADDLEOCR_LOCAL = 'paddleocr_local';
 export const POLICY_OCR_MODE_QWEN25_VL_3B_INSTRUCT_MLX_VLM = 'qwen25_vl_3b_instruct_mlx_vlm';
 export const POLICY_OCR_MODE_PADDLEOCR_VL_1_5 = 'paddleocr_vl_1_5';
+export const POLICY_OCR_MODE_REMOTE_GPU_VISION = 'remote_gpu_vision';
 export const POLICY_OCR_MODE_MINICPM_V_4X_LOCAL = 'minicpm_v_4x_local';
 export const POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
 
@@ -18,7 +19,21 @@ export const OCR_PROVIDER_PADDLE_LOCAL = 'paddle_local';
 export const OCR_PROVIDER_PADDLEOCR_VL_LOCAL = 'paddleocr_vl_local';
 export const OCR_PROVIDER_OLLAMA_VISION_LOCAL = 'ollama_vision_local';
 export const OCR_PROVIDER_MLX_QWEN25_VL_LOCAL = 'mlx_qwen25_vl_local';
+export const OCR_PROVIDER_REMOTE_GPU_VISION = 'remote_gpu_vision';
 export const OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
+
+function isDeprecatedPdfExtractKitMode(mode) {
+  return mode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL;
+}
+
+function fallbackModeForDeprecatedMode(mode) {
+  if (isDeprecatedPdfExtractKitMode(mode)) return POLICY_OCR_MODE_PADDLEOCR_LOCAL;
+  return mode;
+}
+
+function fallbackProviderForDeprecatedProvider(provider) {
+  return provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL ? OCR_PROVIDER_PADDLE_LOCAL : provider;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,16 +72,16 @@ const MODE_META = [
     description: '使用 PaddleOCR-VL-1.5 在本机完成保单版面解析与识别。',
   },
   {
+    value: POLICY_OCR_MODE_REMOTE_GPU_VISION,
+    implemented: true,
+    selectable: true,
+    description: '使用 4080 远程视觉模型按页面版面直接解析保单。',
+  },
+  {
     value: POLICY_OCR_MODE_MINICPM_V_4X_LOCAL,
     implemented: false,
     selectable: false,
     description: '待接入。',
-  },
-  {
-    value: POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL,
-    implemented: true,
-    selectable: true,
-    description: '使用 PDF-Extract-Kit / MinerU pipeline 本机完成保单版面解析与识别，支持 PDF 和图片输入。',
   },
 ];
 
@@ -214,6 +229,11 @@ export function resolvePolicyOcrModeReadiness(mode, env = process.env) {
       ? { ready: true, notReadyReason: '' }
       : { ready: false, notReadyReason: '当前机器未安装 paddleocr[doc-parser] / PaddleOCRVL 运行环境。' };
   }
+  if (normalizedMode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
+    return String(env.POLICY_OCR_REMOTE_VISION_BASE_URL || '').trim()
+      ? { ready: true, notReadyReason: '' }
+      : { ready: false, notReadyReason: '请先配置 POLICY_OCR_REMOTE_VISION_BASE_URL 指向 4080 视觉识别服务。' };
+  }
   if (normalizedMode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
     // Check if mineru CLI is on PATH
     const which = spawnSync('sh', ['-c', 'command -v mineru'], { encoding: 'utf-8', timeout: 5000 });
@@ -254,6 +274,9 @@ export function resolvePolicyOcrModeAdminReadiness(mode, env = process.env) {
           notReadyReason: '当前机器未启用 PaddleOCR-VL-1.5。本地 CPU 模式耗时过长，默认关闭。',
         };
   }
+  if (normalizedMode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
+    return { ready: true, notReadyReason: '' };
+  }
   if (normalizedMode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
     return { ready: true, notReadyReason: '' };
   }
@@ -263,6 +286,7 @@ export function resolvePolicyOcrModeAdminReadiness(mode, env = process.env) {
 export function normalizePolicyOcrMode(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return POLICY_OCR_MODE_EXISTING_DEFAULT;
+  if (normalized === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) return POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL;
   if (MODE_META.some((item) => item.value === normalized)) return normalized;
   return '';
 }
@@ -286,7 +310,7 @@ export function getLegacyPolicyOcrProviderFromEnv(env = process.env) {
   const provider = String(env.POLICY_OCR_PROVIDER || OCR_PROVIDER_LOCAL)
     .trim()
     .toLowerCase();
-  return provider || OCR_PROVIDER_LOCAL;
+  return fallbackProviderForDeprecatedProvider(provider || OCR_PROVIDER_LOCAL);
 }
 
 export function policyOcrProviderLabel(provider) {
@@ -296,13 +320,15 @@ export function policyOcrProviderLabel(provider) {
   if (normalized === OCR_PROVIDER_PADDLEOCR_VL_LOCAL) return 'PaddleOCR-VL-1.5';
   if (normalized === OCR_PROVIDER_OLLAMA_VISION_LOCAL) return 'Ollama 本地视觉识别';
   if (normalized === OCR_PROVIDER_MLX_QWEN25_VL_LOCAL) return 'Qwen2.5-VL-3B-Instruct + MLX-VLM';
+  if (normalized === OCR_PROVIDER_REMOTE_GPU_VISION) return '4080 远程视觉识别';
   if (normalized === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) return 'PDF-Extract-Kit / MinerU 本地识别';
   return '当前本地默认识别';
 }
 
 export function resolveStoredPolicyOcrConfig() {
   const stored = readConfigFileSync();
-  const mode = normalizePolicyOcrMode(stored?.mode) || POLICY_OCR_MODE_EXISTING_DEFAULT;
+  const storedMode = normalizePolicyOcrMode(stored?.mode) || POLICY_OCR_MODE_EXISTING_DEFAULT;
+  const mode = fallbackModeForDeprecatedMode(storedMode);
   return {
     mode,
     updatedAt: stored?.updatedAt || null,
@@ -329,8 +355,8 @@ export function resolveEffectivePolicyOcrProvider() {
   if (mode === POLICY_OCR_MODE_PADDLEOCR_VL_1_5) {
     return OCR_PROVIDER_PADDLEOCR_VL_LOCAL;
   }
-  if (mode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
-    return OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL;
+  if (mode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
+    return OCR_PROVIDER_REMOTE_GPU_VISION;
   }
   return getLegacyPolicyOcrProviderFromEnv();
 }
@@ -351,8 +377,8 @@ export function resolveEffectivePolicyOcrProviderFast(env = process.env) {
       ? OCR_PROVIDER_PADDLEOCR_VL_LOCAL
       : getLegacyPolicyOcrProviderFromEnv(env);
   }
-  if (mode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
-    return OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL;
+  if (mode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
+    return OCR_PROVIDER_REMOTE_GPU_VISION;
   }
   return getLegacyPolicyOcrProviderFromEnv(env);
 }
@@ -403,12 +429,13 @@ export function resolvePolicyOcrRuntimePayload() {
 export async function savePolicyOcrConfig({ mode, updatedByActorId = null } = {}) {
   const normalizedMode = normalizePolicyOcrMode(mode);
   if (!normalizedMode) throw new Error('POLICY_OCR_MODE_INVALID');
-  const matched = listPolicyOcrModeOptions({ probeRuntime: false }).find((item) => item.value === normalizedMode);
+  const persistedMode = fallbackModeForDeprecatedMode(normalizedMode);
+  const matched = listPolicyOcrModeOptions({ probeRuntime: false }).find((item) => item.value === persistedMode);
   if (!matched?.implemented || matched?.selectable === false) {
     throw new Error('POLICY_OCR_MODE_NOT_READY');
   }
   const nextPayload = {
-    mode: normalizedMode,
+    mode: persistedMode,
     updatedAt: new Date().toISOString(),
     updatedByActorId: Number(updatedByActorId || 0) || null,
   };

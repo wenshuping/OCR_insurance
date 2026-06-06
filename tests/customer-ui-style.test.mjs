@@ -144,7 +144,7 @@ test('customer account sheet exposes account actions and policy navigation', () 
   assert.match(sheetSource, /我的保单/);
   assert.match(sheetSource, /onClick=\{onOpenPolicies\}/);
   assert.match(sheetSource, /退出/);
-  assert.match(appSource, /setShowAccountSheet\(false\);\s*setShowFamilyPolicies\(true\);/);
+  assert.match(appSource, /setShowAccountSheet\(false\);\s*setActiveTab\('families'\);/);
 });
 
 test('phone verification send-code button uses the blue primary style', () => {
@@ -156,8 +156,8 @@ test('entry form exposes local product candidates before responsibility generati
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const matchPanelSource = componentSource('ProductMatchSelectPanel', 'UploadPolicyPage');
   assert.match(pageSource, /ProductMatchSelectPanel/);
-  assert.match(pageSource, /onGenerateAnalysis/);
-  assert.match(pageSource, /生成责任/);
+  assert.match(pageSource, /onOpenFamilies/);
+  assert.match(pageSource, /家庭保单/);
   assert.match(pageSource, /复制原文/);
   assert.match(pageSource, /handleCopyOcrText/);
   assert.match(pageSource, /录入保险公司候选/);
@@ -183,18 +183,33 @@ test('entry form surfaces OCR layout review warnings', () => {
 test('entry form requires family profile and supports core setup after OCR', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const formSource = normalizedCustomerPolicyFormSource;
   assert.match(pageSource, /家庭档案/);
   assert.match(pageSource, /新建家庭档案/);
   assert.match(pageSource, /家庭关系中心/);
-  assert.match(pageSource, /保存前请选择家庭核心人员/);
+  assert.match(pageSource, /可先保存保单，稍后再补充核心成员/);
   assert.match(pageSource, /家庭核心人员/);
   assert.match(pageSource, /与核心人员家庭关系/);
+  assert.match(pageSource, /requiredFieldLabel\('保险公司'\)/);
+  assert.match(pageSource, /requiredFieldLabel\('保险名称'\)/);
+  assert.match(pageSource, /label="姓名"[\s\S]*required/u);
+  assert.match(pageSource, /label="投保时间"[\s\S]*required/u);
+  assert.match(pageSource, /label="被保险人生日"[\s\S]*required/u);
+  assert.match(pageSource, /label="选择家庭档案"[\s\S]*required/u);
+  assert.match(pageSource, /label="受益人姓名"[\s\S]*required/u);
+  assert.match(pageSource, /label="缴费期间"[\s\S]*required/u);
+  assert.match(pageSource, /label="保障期间"[\s\S]*required/u);
+  assert.match(pageSource, /label="保额 \(元\)"[\s\S]*required/u);
+  assert.match(pageSource, /label="首期保费 \(元\)"[\s\S]*required/u);
   assert.match(pageSource, /participantsAreSamePerson/);
   assert.match(pageSource, /areSameParticipantName\(formData\.applicant, formData\.insured\)/);
-  assert.match(pageSource, /samePersonRelationResetKeyRef/);
+  assert.match(pageSource, /resolveSamePersonRelation/);
+  assert.match(pageSource, /与投保人为同一人/);
+  assert.match(pageSource, /核心身份和家庭关系随上方同步/);
   assert.doesNotMatch(pageSource, /if \(participantsAreSamePerson\(\)\) return '本人'/);
   assert.doesNotMatch(pageSource, /disabled=\{samePerson\}/);
   assert.doesNotMatch(pageSource, /applicantRelation \|\| '本人'/);
+  assert.doesNotMatch(pageSource, /samePersonRelationResetKeyRef/);
   assert.doesNotMatch(customerSource, /participantNamesMatch \? '本人'/);
   assert.doesNotMatch(pageSource, /和录入人的关系/);
   assert.doesNotMatch(pageSource, /投保人家庭成员/);
@@ -209,12 +224,58 @@ test('entry form requires family profile and supports core setup after OCR', () 
   assert.match(customerSource, /insuredMemberId/);
   assert.match(customerSource, /setFamilyCoreMember/);
   assert.match(customerSource, /setAsCoreOnCreate/);
+  assert.match(customerSource, /validatePolicyEntryForm\(submitBaseData\)/);
+  assert.match(customerSource, /window\.alert\(message\)/);
+  assert.match(customerSource, /请先补全必录项后再保存/);
+  assert.match(formSource, /if \(!data\.familyId\) errors\.push\('选择家庭档案'\)/);
+  assert.doesNotMatch(formSource, /coreMemberId/);
   assert.match(pageSource, /updateParticipantName/);
   assert.match(pageSource, /setParticipantAsCore/);
   assert.match(pageSource, /updateParticipantRelation/);
+  assert.doesNotMatch(pageSource, /participantRelation\(otherKind\) === '本人'/);
   assert.doesNotMatch(pageSource, /selectFamilyParticipantMember/);
   assert.doesNotMatch(customerSource, /input\.memberId && !input\.setAsCore/);
   assert.doesNotMatch(customerSource, /input\.setAsCore\s*\?\s*null/);
+});
+
+test('family profile entry keeps the selected family but clears stale member bindings', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  assert.match(customerSource, /function startEntryForm\(options: \{ preserveSelectedFamily\?: boolean \} = \{\}\)/);
+  assert.match(customerSource, /const preserveSelectedFamily = options\.preserveSelectedFamily \?\? true/);
+  assert.match(customerSource, /const nextFamilyId = preserveSelectedFamily \? selectedFamilyId : null/);
+  assert.match(customerSource, /setFormData\(\{\s*\.\.\.emptyForm,\s*familyId: nextFamilyId,\s*\}\)/);
+  assert.match(customerSource, /onBackToEntry=\{\(\) => \{\s*startEntryForm\(\{ preserveSelectedFamily: true \}\);/);
+});
+
+test('entry form uses the effective family selection for both display and save', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  assert.match(customerSource, /const entryFamilyId = formData\.familyId \?\? selectedFamilyId \?\? null/);
+  assert.match(customerSource, /const entrySelectedFamilyMembers = useMemo/);
+  assert.match(customerSource, /const submitBaseData = Number\(entryFamilyId \|\| 0\) && Number\(formData\.familyId \|\| 0\) !== Number\(entryFamilyId\)/);
+  assert.match(customerSource, /familyId: entryFamilyId,/);
+  assert.match(customerSource, /selectedFamilyId=\{entryFamilyId\}/);
+  assert.match(customerSource, /if \(entrySelectedFamily\) return entrySelectedFamily/);
+});
+
+test('entry form shows a refresh prompt when the dev page is stale after restart', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  assert.match(customerSource, /getHealthStatus/);
+  assert.match(customerSource, /staleClientHealth/);
+  assert.match(customerSource, /serverStartedAt > clientStartedAt \+ 1000/);
+  assert.match(pageSource, /页面已更新/);
+  assert.match(pageSource, /你当前这个页面还是旧版本/);
+  assert.match(pageSource, /刷新页面/);
+  assert.match(pageSource, /staleClientDetected/);
+});
+
+test('cash value follow-up returns directly to the saved policy detail', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  assert.match(customerSource, /function finishCashValueFlow/);
+  assert.match(customerSource, /setShowFamilyPolicies\(false\)/);
+  assert.match(customerSource, /setSelectedPolicy\(policy\)/);
+  assert.match(customerSource, /finishCashValueFlow\(savedPolicy, `现金价值表已保存/);
+  assert.match(customerSource, /finishCashValueFlow\(currentPolicy, '已跳过现金价值录入'\)/);
 });
 
 test('customer app exposes family profile management surface', () => {
@@ -229,7 +290,7 @@ test('customer app exposes family profile management surface', () => {
     /<FamilyProfileManager[\s\S]*onOpenReport=\{openFamilyReport\}[\s\S]*\/>\s*<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} \/>/,
   );
   assert.match(pageSource, /onOpenFamilies/);
-  assert.match(familySource, /家庭档案列表/);
+  assert.match(familySource, /家庭列表/);
   assert.match(pageSource, /家庭档案/);
   assert.match(pageSource, /<header[\s\S]*<h1 className="text-lg font-bold">录入保单<\/h1>[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
   assert.match(pageSource, /bg-blue-50 px-3 text-sm font-black text-blue-600[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
@@ -237,7 +298,14 @@ test('customer app exposes family profile management surface', () => {
   assert.doesNotMatch(pageSource, /查看报告/);
   assert.match(familySource, /成员数/);
   assert.match(familySource, /查看报告/);
+  assert.match(familySource, /家庭保单/);
+  assert.match(familySource, /onViewFamilyPolicies/);
   assert.match(familySource, /管理成员/);
+  assert.match(familySource, /familyPolicyCounts/);
+  assert.match(familySource, /const policyCount = Number\(familyPolicyCounts\[Number\(family\.id\)\] \|\| 0\)/);
+  assert.match(familySource, /暂无家庭保单，录入后再展示成员和报告/);
+  assert.match(familySource, /coreMember\?\.name \|\| '待设置'/);
+  assert.doesNotMatch(familySource, /members\[0\]\?\.name \|\| '待设置'/);
   assert.doesNotMatch(familySource, /保单管理/);
   assert.doesNotMatch(familySource, /FamilyPolicyManagerPanel/);
   assert.doesNotMatch(familySource, /添加成员/);
@@ -258,8 +326,8 @@ test('customer bottom tabs expose entry and family navigation only', () => {
   assert.doesNotMatch(source, /key: 'familyPolicies'/);
   assert.match(source, /key: 'families'/);
   assert.doesNotMatch(source, /我的保单/);
-  assert.doesNotMatch(source, /家庭保单/);
-  assert.match(source, /家庭档案/);
+  assert.match(source, /家庭保单/);
+  assert.doesNotMatch(source, /家庭档案/);
   assert.match(source, /grid-cols-2/);
 });
 
@@ -277,6 +345,20 @@ test('policy relation controls keep prior policy edit options', () => {
   assert.match(source, /const POLICY_RELATION_OPTIONS = \['本人', '子女', '父母', '夫妻'\]/u);
   assert.match(source, /SelectField label="投保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
   assert.match(source, /SelectField label="被保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
+});
+
+test('policy period fields support common dropdown options plus manual entry', () => {
+  assert.match(customerPolicyComponentsSource, /const PAYMENT_PERIOD_OPTIONS = \['趸交', '1年交', '3年交', '5年交', '10年交', '15年交', '20年交', '30年交', '交至55岁', '交至60岁', '交至65岁', '交至70岁'\]/u);
+  assert.match(customerPolicyComponentsSource, /const COVERAGE_PERIOD_OPTIONS = \['1年', '20年', '30年', '至60岁', '至65岁', '至70岁', '至75岁', '至80岁', '终身'\]/u);
+  assert.match(customerPolicyComponentsSource, /function PeriodField/);
+  assert.match(customerPolicyComponentsSource, /list=\{listId\}/u);
+  assert.match(customerPolicyComponentsSource, /<datalist id=\{listId\}>/u);
+  assert.match(policyEntrySource, /<PaymentPeriodField label="缴费期间"/u);
+  assert.match(policyEntrySource, /<CoveragePeriodField label="保障期间"/u);
+  assert.match(policyDetailSource, /<CoveragePeriodField label="保障期间"/u);
+  assert.match(policyDetailSource, /<PaymentPeriodField label="缴费期间"/u);
+  assert.match(customerPolicyComponentsSource, /<CoveragePeriodField label="保障期间" value=\{String\(plan\.coveragePeriod \|\| ''\)\}/u);
+  assert.match(customerPolicyComponentsSource, /<PaymentPeriodField label="缴费期间" value=\{String\(plan\.paymentPeriod \|\| ''\)\}/u);
 });
 
 test('customer app exposes family report share flow', () => {
@@ -309,9 +391,11 @@ test('entry form keeps bottom actions focused on saving workflow', () => {
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(pageSource, /max-w-3xl/);
-  assert.match(pageSource, /生成责任/);
+  assert.match(pageSource, /家庭保单/);
   assert.match(pageSource, /保存保单/);
   assert.match(customerSource, /renderResponsibilityAssistant\('bottom-24'\)/);
+  assert.match(pageSource, /onClick=\{onSubmit\}/);
+  assert.match(pageSource, /disabled=\{loading\}/);
   assert.doesNotMatch(pageSource, /aria-label="进入我的保单"/);
   assert.doesNotMatch(pageSource, /CustomerBottomTabs/);
   assert.doesNotMatch(pageSource, /确认信息后保存保单/);
@@ -325,15 +409,26 @@ test('cash value upload dialog shows a progress bar while scanning', () => {
   assert.match(cashValueSource, /animate-\[cash-value-progress/);
 });
 
-test('cash value upload uses rear camera capture path', () => {
+test('cash value upload uses the system image picker without forcing direct camera capture', () => {
   const cashValueSource = customerCashValueFeatureSource || componentSource('CustomerApp', 'FamilyCoverageOverview');
   const inputRefIndex = cashValueSource.indexOf('ref={cashValueInputRef}');
   assert.notEqual(inputRefIndex, -1, 'cash value upload input should exist');
   const inputSource = cashValueSource.slice(inputRefIndex, cashValueSource.indexOf('/>', inputRefIndex));
-  assert.match(cashValueSource, /拍照上传/);
+  assert.match(cashValueSource, /本地照片上传/);
+  assert.match(cashValueSource, /从本地照片或拍照上传保单的现金价值页面/);
   assert.match(inputSource, /type="file"/);
   assert.match(inputSource, /accept="image\/\*"/);
-  assert.match(inputSource, /capture="environment"/);
+  assert.doesNotMatch(inputSource, /capture="environment"/);
+});
+
+test('policy entry upload uses the system image picker without forcing direct camera capture', () => {
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const inputRefIndex = pageSource.indexOf('ref={fileInputRef}');
+  assert.notEqual(inputRefIndex, -1, 'policy entry upload input should exist');
+  const inputSource = pageSource.slice(inputRefIndex, pageSource.indexOf('/>', inputRefIndex));
+  assert.match(inputSource, /type="file"/);
+  assert.match(inputSource, /accept="image\/\*"/);
+  assert.doesNotMatch(inputSource, /capture="environment"/);
 });
 
 test('entry form keeps the add rider action visible in plan details', () => {
@@ -342,6 +437,10 @@ test('entry form keeps the add rider action visible in plan details', () => {
   assert.match(source, /手动添加附加险/);
   assert.match(source, /w-full/);
   assert.match(source, /附加险或万能账户为可选项/);
+  assert.match(source, /label="保额 \(元\)"[\s\S]*required/u);
+  assert.match(source, /label="保费 \(元\)"[\s\S]*required/u);
+  assert.match(source, /label="保障期间"[\s\S]*required/u);
+  assert.match(source, /label="缴费期间"[\s\S]*required/u);
   assert.doesNotMatch(source, /OCR 未识别到附加险/);
 });
 
@@ -354,6 +453,25 @@ test('entry plan editor shows only riders and linked accounts', () => {
   assert.match(source, /onUpdate\(plan\.originalIndex,/);
   assert.doesNotMatch(source, /{plans\.map\(\(plan, index\) =>/);
   assert.doesNotMatch(source, /value: 'main', label: '主险'/);
+});
+
+test('entry optional responsibilities are rendered under their owning plan', () => {
+  const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const editorSource = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
+  const reviewSource = componentSource('OptionalResponsibilityReview', 'PolicyPlanEditor');
+  const mergeSource = componentSource('mergeOptionalResponsibilityDisplayItems', 'optionalResponsibilitiesForProduct');
+  const filterSource = componentSource('optionalResponsibilitiesForProduct', 'TextField');
+  assert.match(pageSource, /optionalResponsibilitiesForProduct\(optionalResponsibilities,\s*formData\.name\)/);
+  assert.match(pageSource, /optionalResponsibilities=\{optionalResponsibilities\}/);
+  assert.match(pageSource, /onUpdateOptionalResponsibility=\{onUpdateOptionalResponsibility\}/);
+  assert.match(editorSource, /optionalResponsibilitiesForProduct\(optionalResponsibilities,\s*String\(plan\.matchedProductName \|\| plan\.name \|\| ''\)\)/);
+  assert.match(editorSource, /title="附加险可选责任确认"/);
+  assert.match(editorSource, /onChange=\{onUpdateOptionalResponsibility\}/);
+  assert.match(mergeSource, /optionalResponsibilitySemanticKey/);
+  assert.match(filterSource, /mergeOptionalResponsibilityDisplayItems\(matches\)/);
+  assert.match(reviewSource, /const statusOptions = OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS/);
+  assert.match(reviewSource, /grid grid-cols-3 gap-2/);
+  assert.doesNotMatch(reviewSource, /option\.value !== 'unknown'/);
 });
 
 test('entry rider names expose product suggestion selection', () => {
@@ -369,28 +487,27 @@ test('entry rider names expose product suggestion selection', () => {
   assert.match(normalizedCustomerAppSource, /matchedProductName: name/);
 });
 
-test('plan type selector displays Chinese role labels instead of internal values', () => {
+test('manual rider editor hides role and product type fields from customers', () => {
   const editorSource = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
-  const selectSource = componentSource('SelectField', null);
-  assert.match(editorSource, /options=\{\[/);
-  assert.match(editorSource, /label: '附加险'/);
-  assert.match(editorSource, /label: '万能账户'/);
-  assert.match(editorSource, /label: '未分类'/);
-  assert.match(selectSource, /label: option/);
-  assert.match(selectSource, /normalizedOption\.label \|\| normalizedOption\.value/);
+  assert.doesNotMatch(editorSource, /label="类型"/u);
+  assert.doesNotMatch(editorSource, /label="产品分类"/u);
 });
 
 test('manual rider drafts remain visible before a name is entered', () => {
   const normalizeSource = componentSource('normalizePolicyPlanList', 'primaryPlanFromPolicyForm');
+  const normalizeWithIndexSource = componentSource('normalizePolicyPlanListWithIndex', 'normalizePolicyPlanList');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const updatePlanSource = componentSource('updatePolicyPlan', 'addPolicyPlan');
   const addPlanSource = componentSource('addPolicyPlan', 'removePolicyPlan');
   const removePlanSource = componentSource('removePolicyPlan', 'selectFormProductMatch');
   assert.match(normalizeSource, /keepEmpty/);
   assert.match(normalizeSource, /!name && !matchedProductName && !keepEmpty/);
+  assert.match(normalizeWithIndexSource, /__originalIndex: index/);
   assert.match(updatePlanSource, /normalizePolicyPlanList\(formData\.plans,\s*formData\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/);
   assert.match(addPlanSource, /normalizePolicyPlanList\(current\.plans,\s*current\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/);
-  assert.match(removePlanSource, /normalizePolicyPlanList\(current\.plans,\s*current\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/);
+  assert.match(removePlanSource, /normalizePolicyPlanListWithIndex\(current\.plans,\s*current\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)/);
+  assert.match(removePlanSource, /find\(\(plan\) => plan\.__originalIndex === index\)/);
+  assert.match(removePlanSource, /filter\(\(plan\) => plan\.__originalIndex !== index\)/);
   assert.match(pageSource, /plans=\{normalizePolicyPlanList\(formData\.plans,\s*formData\.company,\s*\{\s*keepEmpty:\s*true\s*\}\)\}/);
 });
 
@@ -420,11 +537,11 @@ test('policy plan normalization keeps main plans before riders', () => {
   assert.match(normalizeSource, /left\.__originalIndex - right\.__originalIndex/);
 });
 
-test('recognized plans assign first product as main and later products as riders', () => {
+test('recognized plans preserve explicit roles and only default missing roles by order', () => {
   const normalizeSource = componentSource('normalizePolicyPlanList', 'primaryPlanFromPolicyForm');
   const scanSource = componentSource('scanToForm', 'mergeScanToForm');
   assert.match(normalizeSource, /assignRolesByRecognizedOrder/);
-  assert.match(normalizeSource, /assignRolesByRecognizedOrder \? \(index === 0 \? 'main' : 'rider'\)/);
+  assert.match(normalizeSource, /assignRolesByRecognizedOrder \? \(plan\?\.role \|\| \(index === 0 \? 'main' : 'rider'\)\)/);
   assert.match(scanSource, /normalizePolicyPlanList\(data\.plans,\s*String\(data\.company \|\| ''\),\s*\{\s*assignRolesByRecognizedOrder:\s*true\s*\}\)/);
 });
 
@@ -598,9 +715,25 @@ test('customer policy cards derive validity status from coverage period', () => 
   assert.match(validitySource, /parseCoveragePeriodEndDate/);
   assert.match(listItemSource, /const validityStatus = resolvePolicyValidityStatus\(policy\.coveragePeriod,\s*\{\s*effectiveDate: policy\.date,\s*insuredBirthday: policy\.insuredBirthday/);
   assert.doesNotMatch(listItemSource, /<span className="rounded-full bg-\[#EBFBF1\][\s\S]*>有效<\/span>/);
-  assert.match(summarySource, /const validityStatus = resolvePolicyValidityStatus\(plan\.coveragePeriod,\s*\{\s*effectiveDate/);
+  assert.match(summarySource, /const planCoveragePeriod = plan\.coveragePeriod \|\| fallbackCoveragePeriod/);
+  assert.match(summarySource, /const validityStatus = resolvePolicyValidityStatus\(planCoveragePeriod,\s*\{\s*effectiveDate/);
   assert.match(summarySource, /状态：[\s\S]*\{validityStatus\.label\}/);
   assert.match(summarySource, /policyValidityClassName\(validityStatus\.tone\)/);
+});
+
+test('customer policy summary falls back to top-level periods for the main plan', () => {
+  const summarySource = componentSource('PolicyPlanSummary', 'SelectField');
+  const policyEntrySource = componentSource('AnalysisReportPage', null, normalizedPolicyEntrySource);
+  const detailSource = componentSource('PolicyDetailSheet', null);
+
+  assert.match(summarySource, /const fallbackCoveragePeriod = index === 0 \? coveragePeriod : ''/);
+  assert.match(summarySource, /const fallbackPaymentPeriod = index === 0 \? paymentPeriod : ''/);
+  assert.match(summarySource, /const planCoveragePeriod = plan\.coveragePeriod \|\| fallbackCoveragePeriod/);
+  assert.match(summarySource, /const planPaymentPeriod = plan\.paymentPeriod \|\| plan\.paymentMode \|\| fallbackPaymentPeriod/);
+  assert.match(policyEntrySource, /paymentPeriod=\{formData\.paymentPeriod\}/);
+  assert.match(policyEntrySource, /coveragePeriod=\{formData\.coveragePeriod\}/);
+  assert.match(detailSource, /paymentPeriod=\{policy\.paymentPeriod\}/);
+  assert.match(detailSource, /coveragePeriod=\{policy\.coveragePeriod\}/);
 });
 
 test('customer policy detail displays responsibility official urls', () => {
@@ -670,9 +803,11 @@ test('optional responsibility review displays quantification status and selected
   const reviewSource = componentSource('OptionalResponsibilityReview', 'PolicyPlanEditor');
 
   assert.match(apiSource, /quantificationStatus\?: QuantificationStatus/);
-  assert.match(reviewSource, /OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS\.filter\(\(option\) => option\.value !== 'unknown'\)/);
-  assert.match(reviewSource, /compact \? 'grid-cols-2' : 'grid-cols-3'/);
-  assert.match(reviewSource, /!compact && item\.sourceExcerpt/);
+  assert.match(reviewSource, /const statusOptions = OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS/);
+  assert.match(reviewSource, /grid grid-cols-3 gap-2/);
+  assert.doesNotMatch(reviewSource, /option\.value !== 'unknown'/);
+  assert.match(reviewSource, /const contentText = optionalResponsibilityContentText\(item\)/);
+  assert.match(reviewSource, /compact \? 'line-clamp-3' : 'line-clamp-2'/);
   assert.match(reviewSource, /量化状态/);
   assert.match(reviewSource, /该可选责任已确认投保，但尚未完成指标量化/);
   assert.match(reviewSource, /optionalResponsibilityQuantificationLabel/);
@@ -755,6 +890,18 @@ test('policy edit dialog offers insurer and product suggestions', () => {
   assert.match(detailSource, /aria-label="修改保险公司候选"/);
   assert.match(detailSource, /aria-label="修改保险产品候选"/);
   assert.match(detailSource, /renderHighlightedSuggestion/);
+});
+
+test('policy edit dialog includes rider editing controls and plan product suggestions', () => {
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  assert.match(detailSource, /PolicyPlanEditor/);
+  assert.match(detailSource, /editPlanProductSuggestions/);
+  assert.match(detailSource, /editPlanProductSuggestionLoading/);
+  assert.match(detailSource, /editPlanProductQuery/);
+  assert.match(detailSource, /addDraftPlan/);
+  assert.match(detailSource, /removeDraftPlan/);
+  assert.match(detailSource, /selectDraftPlanProduct/);
+  assert.match(detailSource, /onUpdateProductQuery=\{\(index, company, q\) => setEditPlanProductQuery\(\{ index, company, q \}\)\}/);
 });
 
 test('customer app exposes family report from family cards and policy dashboard', () => {

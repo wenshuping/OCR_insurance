@@ -520,12 +520,7 @@ function mergeManualPlansIntoScan(scanPlans = [], manualPlans = [], fallbackComp
     }
     return manualPlan;
   });
-  return mergedPlans.length > normalizedScanPlans.length
-    ? mergedPlans
-    : [
-        ...mergedPlans,
-        ...normalizedScanPlans.slice(mergedPlans.length),
-      ];
+  return mergedPlans;
 }
 
 function preserveMappedCanonicalIdsInManualData(manualData = {}, scanData = {}) {
@@ -1239,13 +1234,29 @@ function guestPendingScans(state, guestId) {
   return (state.pendingScans || []).filter((row) => String(row.guestId || '') === guestId);
 }
 
-function storeGuestPendingScan(state, { guestId, scan, analysis = null }) {
+function buildRawUploadSnapshot(body = {}) {
+  const uploadItem = body?.uploadItem && typeof body.uploadItem === 'object' ? body.uploadItem : null;
+  return {
+    ocrText: String(body?.ocrText || '').trim(),
+    uploadItem: uploadItem ? {
+      name: String(uploadItem.name || '').trim(),
+      type: String(uploadItem.type || '').trim(),
+      size: Number(uploadItem.size || 0) || 0,
+      hasDataUrl: Boolean(uploadItem.dataUrl),
+    } : null,
+    hasProvidedScan: Boolean(body?.scan && typeof body.scan === 'object'),
+    hasProvidedAnalysis: Boolean(body?.analysis && typeof body.analysis === 'object'),
+  };
+}
+
+function storeGuestPendingScan(state, { guestId, scan, analysis = null, rawUpload = null }) {
   if (!guestId) return;
   const now = new Date().toISOString();
   const existing = guestPendingScans(state, guestId)[0] || null;
   if (existing) {
     existing.scan = scan;
     existing.analysis = analysis;
+    existing.rawUpload = rawUpload;
     existing.updatedAt = now;
     return;
   }
@@ -1254,6 +1265,7 @@ function storeGuestPendingScan(state, { guestId, scan, analysis = null }) {
     guestId,
     scan,
     analysis,
+    rawUpload,
     createdAt: now,
     updatedAt: now,
   });
@@ -1520,13 +1532,14 @@ function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfile
     notes: [],
     sources: knowledgeArtifacts.sources || [],
   };
-  const coverageIndicators = findPolicyCoverageIndicators(primaryOptionalPolicyDraft, state?.insuranceIndicatorRecords || []);
-  const optionalResponsibilities = buildOptionalResponsibilityReview(
-    primaryOptionalPolicyDraft,
-    coverageIndicators,
-    state?.knowledgeRecords || [],
-    state?.optionalResponsibilityRecords || [],
-  );
+  const optionalResponsibilities = buildDraftOptionalResponsibilitiesByPlan({
+    basePolicy: policyDraft,
+    primaryPolicy: primaryOptionalPolicyDraft,
+    plans: policyDraft.plans,
+    indicatorRecords: state?.insuranceIndicatorRecords || [],
+    knowledgeRecords: state?.knowledgeRecords || [],
+    optionalResponsibilityRecords: state?.optionalResponsibilityRecords || [],
+  });
   if (!localAnalysis.coverageTable?.length && !optionalResponsibilities.length) return null;
   return {
     ...localAnalysis,
@@ -1535,6 +1548,57 @@ function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfile
     notes: Array.isArray(localAnalysis.notes) ? localAnalysis.notes : [],
     sources: Array.isArray(localAnalysis.sources) ? localAnalysis.sources : knowledgeArtifacts.sources || [],
   };
+}
+
+function buildDraftOptionalResponsibilitiesByPlan({
+  basePolicy,
+  primaryPolicy,
+  plans = [],
+  indicatorRecords = [],
+  knowledgeRecords = [],
+  optionalResponsibilityRecords = [],
+} = {}) {
+  const policies = [];
+  const pushPolicy = (policy) => {
+    const company = trim(policy?.company);
+    const name = trim(policy?.name);
+    if (!company || !name) return;
+    const key = `${company}\u001f${name}`;
+    if (policies.some((item) => item.key === key)) return;
+    policies.push({ key, policy });
+  };
+
+  pushPolicy(primaryPolicy);
+  for (const plan of Array.isArray(plans) ? plans : []) {
+    const productName = trim(plan?.matchedProductName || plan?.productName || plan?.name);
+    const company = trim(plan?.company) || trim(basePolicy?.company);
+    if (!company || !productName) continue;
+    pushPolicy({
+      ...basePolicy,
+      company,
+      name: productName,
+      canonicalProductId: trim(plan?.canonicalProductId) || '',
+      plans: normalizePolicyPlans([
+        {
+          ...plan,
+          company,
+          name: trim(plan?.name) || productName,
+          productName,
+          matchedProductName: productName,
+        },
+      ], company),
+    });
+  }
+
+  const byId = new Map();
+  for (const { policy } of policies) {
+    const indicators = findPolicyCoverageIndicators(policy, indicatorRecords);
+    for (const item of buildOptionalResponsibilityReview(policy, indicators, knowledgeRecords, optionalResponsibilityRecords)) {
+      if (!item?.id || byId.has(item.id)) continue;
+      byId.set(item.id, item);
+    }
+  }
+  return [...byId.values()];
 }
 
 function markPolicyReportFailed(policy, error) {
@@ -1683,7 +1747,11 @@ export function createPolicyOcrApp(options = {}) {
     (options.codeGenerator ? localSmsDeliveryPlanResolver(codeGenerator) : resolveSmsDeliveryPlan);
   const smsDeliverer = options.smsDeliverer || deliverSmsCode;
   const knowledgeFetchImpl = options.knowledgeFetchImpl || fetch;
-  const persist = typeof options.persist === 'function' ? options.persist : async () => undefined;
+  const rawPersist = typeof options.persist === 'function' ? options.persist : async () => undefined;
+  const persist = async (nextState = state) => {
+    Object.assign(nextState, rebuildOptionalResponsibilityGovernance(nextState));
+    await rawPersist(nextState);
+  };
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
 
@@ -1825,6 +1893,7 @@ export function createPolicyOcrApp(options = {}) {
     buildOptionalResponsibilityReview,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    buildRawUploadSnapshot,
     findPolicyForReportRequest,
     policyProductIdentity,
     normalizePolicyUpdateData,

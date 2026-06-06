@@ -83,6 +83,59 @@ test('buildOptionalResponsibilityRecords marks unlinked optional sections as pen
   assert.equal(records[0].quantificationReason, '缺少可计算结构化指标');
 });
 
+test('buildOptionalResponsibilityRecords repairs generic optional sections into concrete benefit records', () => {
+  const productName = '新华人寿保险股份有限公司附加学生平安A1款意外伤害医疗保险';
+  const records = buildOptionalResponsibilityRecords({
+    policy: { company: '新华保险', name: productName },
+    knowledgeRecords: [
+      {
+        id: '278',
+        company: '新华保险',
+        productName,
+        pageText: [
+          '保险责任 本合同保险责任分为必选责任和可选责任。',
+          '2.可选责任：',
+          '（1）狂犬病疫苗接种医疗费用保险金 被保险人发生意外伤害并接受狂犬病疫苗接种，我们按约定给付狂犬病疫苗接种医疗费用保险金。',
+          '（2）微创美容缝合医疗费用保险金 被保险人发生意外伤害并接受微创美容缝合治疗，我们按约定给付微创美容缝合医疗费用保险金。',
+        ].join('\n'),
+      },
+    ],
+    indicators: [
+      {
+        id: 'ind_rabies',
+        company: '新华保险',
+        productName,
+        coverageType: '医疗保障',
+        liability: '狂犬病疫苗接种医疗费用保险金',
+        responsibilityScope: 'optional',
+        optionalResponsibilityId: 'opt_old_generic',
+        quantificationStatus: 'quantified',
+        value: null,
+        unit: '公式',
+        basis: '合理医疗费用',
+        formulaText: '医疗费用 × 赔付比例',
+      },
+    ],
+    existingRecords: [
+      {
+        id: 'opt_old_generic',
+        company: '新华保险',
+        productName,
+        liability: '可选责任',
+        indicatorIds: ['ind_rabies'],
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    records.map((record) => record.liability),
+    ['狂犬病疫苗接种医疗费用保险金', '微创美容缝合医疗费用保险金'],
+  );
+  assert.deepEqual(records[0].indicatorIds, ['ind_rabies']);
+  assert.equal(records[0].quantificationStatus, 'quantified');
+  assert.equal(records.some((record) => record.liability === '可选责任'), false);
+});
+
 test('buildOptionalResponsibilityRecords keeps optional sections when terms include conditional not-selected wording', () => {
   const records = buildOptionalResponsibilityRecords({
     policy: { company: '新华保险', name: productName },

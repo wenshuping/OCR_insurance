@@ -56,7 +56,7 @@ export function CashValueDialog(props: {
               录入保单现金价值
             </h3>
             <p className="mb-5 text-sm text-slate-500">
-              拍照上传保单的现金价值页面，系统将自动识别并录入
+              从本地照片或拍照上传保单的现金价值页面，系统将自动识别并录入
             </p>
             {message && (
               <p className="mb-3 text-sm text-red-500">{message}</p>
@@ -85,7 +85,7 @@ export function CashValueDialog(props: {
                 disabled={loading}
                 onClick={() => cashValueInputRef.current?.click()}
               >
-                拍照上传
+                本地照片上传
               </button>
               <button
                 type="button"
@@ -203,7 +203,7 @@ export function CashValueDialog(props: {
                   cashValueInputRef.current?.click();
                 }}
               >
-                {scanResult.source === 'manual' ? '拍照识别' : '重新拍照'}
+                {scanResult.source === 'manual' ? '上传照片识别' : '重新上传照片'}
               </button>
               <button
                 type="button"
@@ -219,7 +219,6 @@ export function CashValueDialog(props: {
           ref={cashValueInputRef}
           type="file"
           accept="image/*"
-          capture="environment"
           className="hidden"
           onChange={onFileChange}
         />

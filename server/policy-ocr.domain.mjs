@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { shouldKeepPolicyPlan } from '../src/policy-plan-filter.mjs';
 import {
   canonicalProductIdForRecord,
   canonicalProductIdFromOfficialProduct,
@@ -169,6 +170,7 @@ export function normalizePolicyPlans(plans = [], company = '') {
       const matchedProductName = String(plan?.matchedProductName || '').trim();
       const effectiveName = matchedProductName || name;
       if (!effectiveName) return null;
+      if (!shouldKeepPolicyPlan(plan)) return null;
       const normalized = {
         company: String(plan?.company || company || '').trim(),
         role: normalizePolicyPlanRole(plan?.role, index, name || effectiveName),
@@ -217,6 +219,44 @@ function normalizeOptionalResponsibilityId(value) {
 
 function optionalResponsibilityKey({ productName = '', coverageType = '', liability = '' } = {}) {
   return [productName, coverageType, liability].map(normalizeLookupText).join('\u001f');
+}
+
+function optionalResponsibilitySelectionKey({ company = '', productName = '', coverageType = '', liability = '' } = {}) {
+  return [
+    normalizeLookupText(company),
+    normalizeOptionalResponsibilityProductKey(productName, company),
+    normalizeLookupText(coverageType),
+    normalizeLookupText(liability),
+  ].join('\u001f');
+}
+
+function normalizeOptionalResponsibilityProductKey(productName = '', company = '') {
+  const normalizedCompany = normalizeLookupText(company);
+  let text = normalizeLookupText(productName);
+  if (!text) return '';
+  if (normalizedCompany) text = text.replaceAll(normalizedCompany, '');
+  return text
+    .replace(/^[\p{Script=Han}]{2,14}(?:人寿|财产|养老|健康)?保险股份有限公司/gu, '')
+    .replace(/^[\p{Script=Han}]{2,14}(?:人寿|财产|养老|健康)?保险有限责任公司/gu, '')
+    .replace(/保险股份有限公司|保险有限责任公司|股份有限公司|有限责任公司|产品说明书|产品说明|保险条款|利益条款|条款/gu, '')
+    .trim();
+}
+
+function optionalResponsibilityMergeKey(value = {}) {
+  const {
+    company = '',
+    productName = '',
+    canonicalProductId = '',
+    liability = '',
+  } = value || {};
+  const hasMergeCanonicalProductId = Object.prototype.hasOwnProperty.call(value || {}, 'mergeCanonicalProductId');
+  const canonicalKey = normalizeLookupText(hasMergeCanonicalProductId ? value.mergeCanonicalProductId : canonicalProductId);
+  return [
+    canonicalKey,
+    normalizeLookupText(company),
+    canonicalKey ? '' : normalizeOptionalResponsibilityProductKey(productName, company),
+    normalizeLookupText(liability),
+  ].join('\u001f');
 }
 
 function buildOptionalResponsibilityId(value = {}) {
@@ -288,6 +328,7 @@ function buildOptionalResponsibilitySelectionMap(items = []) {
     };
     if (normalized.id) byId.set(normalized.id, normalized);
     byKey.set(optionalResponsibilityKey(normalized), normalized);
+    byKey.set(optionalResponsibilitySelectionKey({ ...normalized, company: item?.company }), normalized);
   }
   return { byId, byKey };
 }
@@ -326,6 +367,13 @@ function hasSpecificOptionalResponsibilityEvidence(evidenceText, suffix, pattern
 function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = '', hasExplicitOptionalResponsibilityId = false) {
   const existing = buildOptionalResponsibilitySelectionMap(policy?.optionalResponsibilities);
   const key = optionalResponsibilityKey({
+    company: indicator?.company,
+    productName: indicator?.productName,
+    coverageType: indicator?.coverageType,
+    liability: indicator?.liability,
+  });
+  const semanticKey = optionalResponsibilitySelectionKey({
+    company: indicator?.company || policy?.company,
     productName: indicator?.productName,
     coverageType: indicator?.coverageType,
     liability: indicator?.liability,
@@ -343,7 +391,7 @@ function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = 
     return { selectionStatus: 'unknown', selectionEvidence: 'official_terms' };
   }
 
-  const keyOverride = existing.byKey.get(key);
+  const keyOverride = existing.byKey.get(semanticKey) || existing.byKey.get(key);
   if (keyOverride?.selectionStatus) {
     return {
       ...(keyOverride.id ? { optionalResponsibilityId: keyOverride.id, selectedOptionalResponsibilityId: keyOverride.id } : {}),
@@ -456,7 +504,11 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
   const productName = String(candidate?.productName || '').trim();
   const coverageType = String(candidate?.coverageType || '').trim();
   const liability = String(candidate?.liability || '').trim();
-  const canonicalProductId = canonicalProductIdForRecord(candidate);
+  const hasMergeCanonicalProductId = Object.prototype.hasOwnProperty.call(candidate || {}, 'mergeCanonicalProductId');
+  const mergeCanonicalProductId = hasMergeCanonicalProductId
+    ? String(candidate?.mergeCanonicalProductId || '').trim()
+    : explicitCanonicalProductId(candidate);
+  const canonicalProductId = explicitCanonicalProductId(candidate) || canonicalProductIdForRecord(candidate);
   const id = normalizeOptionalResponsibilityId(candidate?.id) || buildOptionalResponsibilityId({
     company,
     productName,
@@ -483,8 +535,13 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
     quantificationReason: String(candidate?.quantificationReason || '').trim(),
     indicatorIds: (Array.isArray(candidate?.indicatorIds) ? candidate.indicatorIds : []).map((item) => String(item || '').trim()).filter(Boolean),
     sourceExcerpt: String(candidate?.sourceExcerpt || '').trim().slice(0, 500),
+    mergeCanonicalProductId,
   };
-  const existing = candidates.get(id);
+  const mergeKey = optionalResponsibilityMergeKey(normalized);
+  const existingKey = candidates.has(id)
+    ? id
+    : [...candidates.entries()].find(([, item]) => optionalResponsibilityMergeKey(item) === mergeKey)?.[0];
+  const existing = existingKey ? candidates.get(existingKey) : null;
   if (!existing) {
     candidates.set(id, normalized);
     return;
@@ -508,9 +565,10 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
     ...(Array.isArray(existing.indicatorIds) ? existing.indicatorIds : []),
     ...normalized.indicatorIds,
   ].filter((item, index, list) => item && list.indexOf(item) === index);
-  candidates.set(id, {
+  candidates.set(existingKey, {
     ...existing,
     ...normalized,
+    id: existing.id || normalized.id,
     coverageType: keepExistingOptionalLabel ? existing.coverageType : normalized.coverageType || existing.coverageType,
     liability: keepExistingOptionalLabel ? existing.liability : normalized.liability || existing.liability,
     title: keepExistingOptionalLabel ? existing.title : normalized.title || existing.title,
@@ -592,6 +650,42 @@ function findPolicyKnowledgeRecords(policy = {}, knowledgeRecords = []) {
   });
 }
 
+function matchedKnowledgeProductIdentity(policy = {}, record = {}) {
+  const recordNames = knowledgeRecordProductNames(record);
+  const recordCompany = String(record?.company || parseKnowledgeRecordPayload(record)?.company || policy.company || '').trim();
+  const explicitRecordCanonicalProductId = explicitCanonicalProductId(record);
+  const recordCanonicalProductId = explicitRecordCanonicalProductId
+    || canonicalProductIdForRecord(record, recordCompany || policy.company);
+  if (recordCanonicalProductId) {
+    const matchedPlan = (Array.isArray(policy.plans) ? policy.plans : []).find((plan) => {
+      const matchedProductName = String(plan?.matchedProductName || '').trim();
+      const planCanonicalProductId = explicitCanonicalProductId(plan)
+        || (matchedProductName
+          ? canonicalProductIdFromOfficialProduct({
+              company: plan?.company || policy.company,
+              productName: matchedProductName,
+            })
+          : '');
+      return planCanonicalProductId && planCanonicalProductId === recordCanonicalProductId;
+    });
+    return {
+      productName: String(matchedPlan?.matchedProductName || '').trim() || recordNames[0] || String(policy.name || '').trim(),
+      canonicalProductId: explicitRecordCanonicalProductId
+        || explicitCanonicalProductId(matchedPlan)
+        || explicitCanonicalProductId(policy),
+    };
+  }
+
+  const matchedPlan = (Array.isArray(policy.plans) ? policy.plans : []).find((plan) => {
+    const matchedProductName = String(plan?.matchedProductName || '').trim();
+    return matchedProductName && recordNames.some((name) => normalizeLookupText(name) === normalizeLookupText(matchedProductName));
+  });
+  return {
+    productName: String(matchedPlan?.matchedProductName || '').trim() || recordNames[0] || String(policy.name || '').trim(),
+    canonicalProductId: explicitCanonicalProductId(policy),
+  };
+}
+
 function buildOptionalResponsibilitiesFromKnowledge(policy = {}, knowledgeRecords = []) {
   const result = [];
   for (const record of findPolicyKnowledgeRecords(policy, knowledgeRecords)) {
@@ -605,12 +699,11 @@ function buildOptionalResponsibilitiesFromKnowledge(policy = {}, knowledgeRecord
     for (const match of selectedMatches) {
       const suffix = String(match[1] || '').trim();
       const liability = `可选责任${suffix}`;
-      const productName = String(policy.name || knowledgeRecordProductNames(record)[0] || '').trim();
-      const canonicalProductId = explicitCanonicalProductId(record) || explicitCanonicalProductId(policy);
+      const productIdentity = matchedKnowledgeProductIdentity(policy, record);
       const candidate = {
         company: String(policy.company || record?.company || parseKnowledgeRecordPayload(record)?.company || '').trim(),
-        productName,
-        ...(canonicalProductId ? { canonicalProductId } : {}),
+        productName: productIdentity.productName,
+        ...(productIdentity.canonicalProductId ? { canonicalProductId: productIdentity.canonicalProductId } : {}),
         coverageType: '可选责任',
         liability,
         sourceExcerpt: excerptAround(text, match.index),
@@ -638,17 +731,37 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
     indicators: annotated,
     existingRecords: optionalResponsibilityRecords,
   })) {
-    mergeOptionalResponsibilityCandidate(candidates, record);
+    mergeOptionalResponsibilityCandidate(candidates, {
+      ...record,
+      mergeCanonicalProductId: mergeCanonicalProductIdForPolicyCandidate(policy, record),
+    });
   }
   for (const record of Array.isArray(optionalResponsibilityRecords) ? optionalResponsibilityRecords : []) {
     if (!optionalResponsibilityRecordMatchesPolicy(policy, record)) continue;
-    mergeOptionalResponsibilityCandidate(candidates, normalizeGovernanceOptionalResponsibilityRecord(record));
+    const normalized = normalizeGovernanceOptionalResponsibilityRecord(record);
+    const hasConcreteCandidateForProduct = normalizeLookupText(normalized.liability) === '可选责任'
+      && [...candidates.values()].some((item) =>
+        normalizeLookupText(item.productName) === normalizeLookupText(normalized.productName)
+          && normalizeLookupText(item.liability) !== '可选责任'
+    );
+    if (hasConcreteCandidateForProduct) continue;
+    mergeOptionalResponsibilityCandidate(candidates, {
+      ...normalized,
+      mergeCanonicalProductId: mergeCanonicalProductIdForPolicyCandidate(policy, record),
+    });
   }
 
   for (const indicator of annotated) {
     if (indicator.responsibilityScope !== 'optional') continue;
-    const id = indicator.optionalResponsibilityId || buildOptionalResponsibilityId(indicator);
-    const existing = candidates.get(id);
+    const indicatorOptionalId = String(indicator.optionalResponsibilityId || '').trim();
+    const existingByIndicatorId = indicatorOptionalId ? candidates.get(indicatorOptionalId) : null;
+    const existingByConcreteLiability = [...candidates.values()].find((item) =>
+      normalizeLookupText(item.productName) === normalizeLookupText(indicator.productName || policy.name)
+        && normalizeLookupText(item.liability) === normalizeLookupText(indicator.liability)
+    );
+    const existing = existingByConcreteLiability
+      || (normalizeLookupText(existingByIndicatorId?.liability) === '可选责任' ? null : existingByIndicatorId);
+    const id = existing?.id || indicatorOptionalId || buildOptionalResponsibilityId(indicator);
     const quantificationStatus = indicatorQuantificationStatus(indicator);
     const candidate = {
       id,
@@ -667,11 +780,20 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
     };
     mergeOptionalResponsibilityCandidate(
       candidates,
-      existing ? { ...candidate, selectionStatus: existing.selectionStatus, selectionEvidence: existing.selectionEvidence } : candidate,
+      {
+        ...(existing ? { ...candidate, selectionStatus: existing.selectionStatus, selectionEvidence: existing.selectionEvidence } : candidate),
+        mergeCanonicalProductId: mergeCanonicalProductIdForPolicyCandidate(policy, indicator),
+      },
     );
   }
 
   for (const candidate of buildOptionalResponsibilitiesFromKnowledge(policy, knowledgeRecords)) {
+    const candidateIsGeneric = normalizeLookupText(candidate?.liability) === '可选责任';
+    const hasConcreteCandidateForProduct = [...candidates.values()].some((item) =>
+      normalizeLookupText(item.productName) === normalizeLookupText(candidate.productName)
+        && normalizeLookupText(item.liability) !== '可选责任'
+    );
+    if (candidateIsGeneric && hasConcreteCandidateForProduct) continue;
     mergeOptionalResponsibilityCandidate(candidates, candidate);
   }
 
@@ -679,10 +801,14 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
     if (!optionalResponsibilityRecordMatchesPolicy(policy, persisted)) continue;
     const existingByKey = [...candidates.values()].find((candidate) => optionalResponsibilityKey(candidate) === optionalResponsibilityKey(persisted));
     const id = existingByKey?.id || persisted.id;
-    mergeOptionalResponsibilityCandidate(candidates, { ...persisted, id });
+    mergeOptionalResponsibilityCandidate(candidates, {
+      ...persisted,
+      id,
+      mergeCanonicalProductId: mergeCanonicalProductIdForPolicyCandidate(policy, persisted),
+    });
   }
 
-  return [...candidates.values()].sort(
+  return [...candidates.values()].map(({ mergeCanonicalProductId, ...candidate }) => candidate).sort(
     (left, right) =>
       left.productName.localeCompare(right.productName, 'zh-CN') ||
       left.coverageType.localeCompare(right.coverageType, 'zh-CN') ||
@@ -747,6 +873,25 @@ export function policyCanonicalProductIds(policy = {}) {
   return ids;
 }
 
+function explicitPolicyCanonicalProductIds(policy = {}) {
+  const ids = [];
+  const add = (canonicalProductId) => {
+    const id = String(canonicalProductId || '').trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+  add(policy.canonicalProductId);
+  for (const plan of Array.isArray(policy.plans) ? policy.plans : []) {
+    add(plan?.canonicalProductId);
+  }
+  return ids;
+}
+
+function mergeCanonicalProductIdForPolicyCandidate(policy = {}, candidate = {}) {
+  const candidateCanonicalProductId = explicitCanonicalProductId(candidate);
+  if (!candidateCanonicalProductId) return '';
+  return explicitPolicyCanonicalProductIds(policy).includes(candidateCanonicalProductId) ? candidateCanonicalProductId : '';
+}
+
 export function policyProductIndicatorKeys(policy = {}) {
   const keys = [];
   const add = (company, productName) => {
@@ -781,11 +926,15 @@ export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = [])
 }
 
 export function attachPolicyCoverageIndicators(policy = {}, indicatorRecords = [], knowledgeRecords = [], optionalResponsibilityRecords = []) {
-  const coverageIndicators = findPolicyCoverageIndicators(policy, indicatorRecords);
-  return {
+  const normalizedPolicy = {
     ...policy,
+    plans: normalizePolicyPlans(policy?.plans, policy?.company || ''),
+  };
+  const coverageIndicators = findPolicyCoverageIndicators(normalizedPolicy, indicatorRecords);
+  return {
+    ...normalizedPolicy,
     coverageIndicators,
-    optionalResponsibilities: buildOptionalResponsibilityReview(policy, coverageIndicators, knowledgeRecords, optionalResponsibilityRecords),
+    optionalResponsibilities: buildOptionalResponsibilityReview(normalizedPolicy, coverageIndicators, knowledgeRecords, optionalResponsibilityRecords),
   };
 }
 

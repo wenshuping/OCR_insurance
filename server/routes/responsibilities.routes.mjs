@@ -5,6 +5,18 @@ function trim(value) {
   return String(value || '').trim();
 }
 
+function positiveIntegerOrFallback(value, fallback, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return fallback;
+  return Math.min(Math.round(number), max);
+}
+
+function scoreThresholdOrFallback(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(0, Math.min(1, number));
+}
+
 function nowMs() {
   return Date.now();
 }
@@ -111,11 +123,14 @@ export function createResponsibilityRoutes(context) {
       const input = normalizeResponsibilityQueryInput(req.body);
       const policy = { company: input.company, name: input.name };
       const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
+      const maxResults = positiveIntegerOrFallback(req.body?.limit, 3, 50);
+      const minScore = scoreThresholdOrFallback(req.body?.minScore, 0.32);
       const matches = findKnowledgeProductCandidates({
         policy,
         records: state.knowledgeRecords || [],
         officialDomainProfiles,
-        maxResults: 3,
+        maxResults,
+        minScore,
       });
       res.json({ ok: true, matches });
     } catch (error) {

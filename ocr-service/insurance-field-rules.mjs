@@ -111,6 +111,9 @@ export function isProductNameNoiseLine(line, company = '') {
   if (!text) return true;
   if (looksLikeCompanyLogoLine(text, company)) return true;
   if (isBenefitTableHeaderLine(text) || isStructuralNoiseLine(text)) return true;
+  if (/^(?:主险明细|附加险明细|险种性质|子险种名称|加费(?:（元）|\(元\))?|标准保费(?:（元）|\(元\))?|保单(?:号|生效日|期满日)|交费期满日|每期交费日|出生日期|证件名称|与被保险人关系受益份额)/u.test(text)) {
+    return true;
+  }
   if (/^(投保人|被保险人|客户号码|保险期限|缴费年期|缴费方式|保险金额|保险费)/.test(text)) return true;
   if (/客户号码|第一顺位|第二顺位|受益人|联系电话|邮政编码|保险合同号|合同号/.test(text)) return true;
   if (/^(每年\d{1,2}月\d{1,2}日|至20\d{2}年\d{1,2}月\d{1,2}日(?:零时)?|[¥￥]?\d+(?:\.\d+)?元?|\/\d+年|\/20\d{2}年)/.test(text)) {
@@ -160,7 +163,7 @@ export function isPremiumAmountLine(line) {
 }
 
 export function normalizePaymentModeText(value) {
-  const text = compactText(value);
+  const text = compactText(value).replace(/^(?:交费方式|缴费方式)[:：]?/u, '');
   if (/^(年交|年缴)$/.test(text)) return '年交';
   if (/^(月交|月缴)$/.test(text)) return '月交';
   if (/^(季交|季缴)$/.test(text)) return '季交';
@@ -170,7 +173,9 @@ export function normalizePaymentModeText(value) {
 }
 
 export function normalizePaymentPeriodText(value) {
-  const text = compactText(value).replace(/^\/+/, '');
+  const text = compactText(value)
+    .replace(/^(?:交费期间|缴费期间|交费年期|缴费年期|交费年限|缴费年限)[:：]?/u, '')
+    .replace(/^\/+/, '');
   const matched = text.match(/^(\d{1,2})年$/);
   if (matched?.[1]) return `${matched[1]}年`;
   if (/^至20\d{2}年\d{1,2}月\d{1,2}日/.test(text)) return text;

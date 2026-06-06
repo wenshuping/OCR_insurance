@@ -14,6 +14,7 @@ import {
 
 export function FamilyProfileManager({
   familyProfiles,
+  familyPolicyCounts,
   selectedFamilyId,
   onSelectFamily,
   onCreateFamily,
@@ -24,6 +25,7 @@ export function FamilyProfileManager({
   onViewFamilyPolicies,
 }: {
   familyProfiles: FamilyProfile[];
+  familyPolicyCounts: Record<number, number>;
   selectedFamilyId: number | null;
   onSelectFamily: (familyId: number) => void;
   onCreateFamily: (familyName: string) => Promise<void>;
@@ -53,7 +55,7 @@ export function FamilyProfileManager({
   function corePersonLabel(family: FamilyProfile) {
     const members = activeMembers(family);
     const coreMember = members.find((member) => Number(member.id) === Number(family.coreMemberId || 0));
-    return coreMember?.name || members[0]?.name || '待设置';
+    return coreMember?.name || '待设置';
   }
 
   function isCoreMember(family: FamilyProfile, member: FamilyMember) {
@@ -115,7 +117,7 @@ export function FamilyProfileManager({
         >
           <ChevronLeft size={20} />
         </button>
-        <h1 className="text-lg font-black text-slate-950">家庭档案列表</h1>
+        <h1 className="text-lg font-black text-slate-950">家庭列表</h1>
         <button
           type="button"
           className="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white shadow-lg shadow-blue-500/20"
@@ -128,6 +130,8 @@ export function FamilyProfileManager({
       <main className="mx-auto w-full max-w-3xl space-y-3 p-4">
         {families.length ? families.map((family) => {
           const members = activeMembers(family);
+          const policyCount = Number(familyPolicyCounts[Number(family.id)] || 0);
+          const hasPolicies = policyCount > 0;
           const selected = Number(family.id) === Number(selectedFamilyId);
           const editing = Number(family.id) === Number(editingFamilyId);
           return (
@@ -140,7 +144,9 @@ export function FamilyProfileManager({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h2 className="truncate text-lg font-black text-slate-950">{family.familyName || `家庭 ${family.id}`}</h2>
-                  <p className="mt-1 text-sm font-semibold text-slate-500">核心成员：{corePersonLabel(family)}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">
+                    {hasPolicies ? `核心成员：${corePersonLabel(family)}` : '暂无家庭保单，录入后再展示成员和报告'}
+                  </p>
                 </div>
                 {selected ? (
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">
@@ -150,42 +156,48 @@ export function FamilyProfileManager({
                 ) : null}
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-slate-50 px-3 py-2">
-                  <p className="text-xs font-black text-slate-400">成员数</p>
-                  <p className="mt-1 text-xl font-black text-slate-950">{members.length}</p>
+              {hasPolicies ? (
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <div className="rounded-xl bg-slate-50 px-3 py-2">
+                    <p className="text-xs font-black text-slate-400">成员数</p>
+                    <p className="mt-1 text-xl font-black text-slate-950">{members.length}</p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 px-3 py-2">
+                    <p className="text-xs font-black text-slate-400">核心成员</p>
+                    <p className="mt-1 truncate text-sm font-black text-slate-950">{corePersonLabel(family)}</p>
+                  </div>
                 </div>
-                <div className="rounded-xl bg-slate-50 px-3 py-2">
-                  <p className="text-xs font-black text-slate-400">核心成员</p>
-                  <p className="mt-1 truncate text-sm font-black text-slate-950">{corePersonLabel(family)}</p>
-                </div>
-              </div>
+              ) : null}
 
-              <div className="mt-4 grid grid-cols-4 gap-2">
-                <button
-                  type="button"
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-500 text-xs font-black text-white shadow-lg shadow-blue-500/20"
-                  onClick={() => onOpenReport(family.id)}
-                >
-                  <LayoutDashboard size={16} />
-                  查看报告
-                </button>
-                <button
-                  type="button"
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-sky-50 text-xs font-black text-sky-700 ring-1 ring-sky-100"
-                  onClick={() => onViewFamilyPolicies(family.id)}
-                >
-                  <FileText size={16} />
-                  家庭保单
-                </button>
-                <button
-                  type="button"
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-100 text-xs font-black text-slate-700"
-                  onClick={() => toggleFamilyEditor(family)}
-                >
-                  <Pencil size={16} />
-                  {editing ? '收起管理' : '管理成员'}
-                </button>
+              <div className={`mt-4 grid gap-2 ${hasPolicies ? 'grid-cols-4' : 'grid-cols-1'}`}>
+                {hasPolicies ? (
+                  <>
+                    <button
+                      type="button"
+                      className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-500 text-xs font-black text-white shadow-lg shadow-blue-500/20"
+                      onClick={() => onOpenReport(family.id)}
+                    >
+                      <LayoutDashboard size={16} />
+                      查看报告
+                    </button>
+                    <button
+                      type="button"
+                      className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-sky-50 text-xs font-black text-sky-700 ring-1 ring-sky-100"
+                      onClick={() => onViewFamilyPolicies(family.id)}
+                    >
+                      <FileText size={16} />
+                      家庭保单
+                    </button>
+                    <button
+                      type="button"
+                      className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-100 text-xs font-black text-slate-700"
+                      onClick={() => toggleFamilyEditor(family)}
+                    >
+                      <Pencil size={16} />
+                      {editing ? '收起管理' : '管理成员'}
+                    </button>
+                  </>
+                ) : null}
                 <button
                   type="button"
                   className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-emerald-50 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
@@ -195,11 +207,11 @@ export function FamilyProfileManager({
                   }}
                 >
                   <UploadCloud size={16} />
-                  录入保单
+                  {hasPolicies ? '录入保单' : '录入第一张保单'}
                 </button>
               </div>
 
-              {editing ? (
+              {editing && hasPolicies ? (
                 <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
                   <div className="space-y-2">
                     {members.length ? members.map((member) => (

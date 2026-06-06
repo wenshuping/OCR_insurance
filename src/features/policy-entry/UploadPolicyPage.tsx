@@ -40,7 +40,6 @@ import {
   formatCoverageAmount,
   formatCurrency,
   maskMobile,
-  normalizeParticipantName,
 } from '../../shared/formatters';
 import {
   ReportText,
@@ -52,6 +51,8 @@ import {
   sanitizeAmount,
 } from '../../shared/customer-policy-form';
 import {
+  CoveragePeriodField,
+  PaymentPeriodField,
   OptionalResponsibilityReview,
   PolicyPlanEditor,
   PolicyPlanSummary,
@@ -59,8 +60,10 @@ import {
   TextField,
   getWechatUploadLabel,
   normalizeSuggestionQuery,
+  optionalResponsibilitiesForProduct,
   renderHighlightedSuggestion,
 } from '../../shared/customer-policy-components';
+import { CustomerBottomTabs } from '../customer-navigation/CustomerBottomTabs';
 
 function ProductMatchSelectPanel(props: {
   loading: boolean;
@@ -123,6 +126,15 @@ function ProductMatchSelectPanel(props: {
   );
 }
 
+function requiredFieldLabel(label: string) {
+  return (
+    <span className="mb-1.5 block text-sm font-bold text-slate-700">
+      <span className="mr-1 text-red-500">*</span>
+      {label}
+    </span>
+  );
+}
+
 
 export function UploadPolicyPage(props: {
   canSubmit: boolean;
@@ -150,7 +162,6 @@ export function UploadPolicyPage(props: {
   selectedFamilyMembers: FamilyMember[];
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onCreateFamily: () => void;
-  onGenerateAnalysis: () => void;
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
   onOpenFamilies: () => void;
@@ -168,6 +179,8 @@ export function UploadPolicyPage(props: {
   onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
   onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
   uploadItem: UploadItem | null;
+  staleClientDetected?: boolean;
+  onReloadForLatestVersion?: () => void;
 }) {
   const {
     canSubmit,
@@ -195,7 +208,6 @@ export function UploadPolicyPage(props: {
     selectedFamilyMembers,
     onFileChange,
     onCreateFamily,
-    onGenerateAnalysis,
     onOcrTextChange,
     onOpenAccount,
     onOpenFamilies,
@@ -213,11 +225,12 @@ export function UploadPolicyPage(props: {
     onUpdateForm,
     onUpdateOptionalResponsibility,
     uploadItem,
+    staleClientDetected = false,
+    onReloadForLatestVersion,
   } = props;
   const [ocrCopyMessage, setOcrCopyMessage] = useState('');
   const [companyFocused, setCompanyFocused] = useState(false);
   const [productFocused, setProductFocused] = useState(false);
-  const samePersonRelationResetKeyRef = useRef('');
   const companyQuery = formData.company.trim();
   const productQuery = formData.name.trim();
   const selectedFamily = familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null;
@@ -225,83 +238,30 @@ export function UploadPolicyPage(props: {
     const normalizedQuery = normalizeSuggestionQuery(companyQuery);
     if (!normalizedQuery) return [];
     return (Array.isArray(formCompanySuggestions) ? formCompanySuggestions : [])
-      .map((suggestion) => {
-        const normalizedCompany = normalizeSuggestionQuery(suggestion.company);
-        return {
-          ...suggestion,
-          matchIndex: normalizedCompany.indexOf(normalizedQuery),
-          startsWith: normalizedCompany.startsWith(normalizedQuery),
-        };
-      })
-      .filter((suggestion) => suggestion.matchIndex >= 0 && suggestion.company !== companyQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.company.localeCompare(right.company, 'zh-CN'),
-      )
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.company) !== normalizedQuery)
       .slice(0, 8);
   }, [companyQuery, formCompanySuggestions]);
   const visibleProductSuggestions = useMemo(() => {
-    const normalizedCompany = normalizeSuggestionQuery(companyQuery);
     const normalizedQuery = normalizeSuggestionQuery(productQuery);
-    if (!normalizedCompany) return [];
+    if (!normalizeSuggestionQuery(companyQuery)) return [];
     return (Array.isArray(formProductSuggestions) ? formProductSuggestions : [])
-      .map((suggestion) => {
-        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
-        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
-        return {
-          ...suggestion,
-          companyMatches:
-            normalizedSuggestionCompany === normalizedCompany ||
-            normalizedSuggestionCompany.includes(normalizedCompany) ||
-            normalizedCompany.includes(normalizedSuggestionCompany),
-          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
-          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
-        };
-      })
-      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.productName.localeCompare(right.productName, 'zh-CN'),
-      )
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
   }, [companyQuery, formProductSuggestions, productQuery]);
   const showCompanySuggestions = companyFocused && companyQuery && (formCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (formProductSuggestionLoading || visibleProductSuggestions.length);
 
   useEffect(() => {
-    const applicantName = normalizeParticipantName(formData.applicant);
-    const insuredName = normalizeParticipantName(formData.insured);
-    if (!applicantName || applicantName !== insuredName) {
-      samePersonRelationResetKeyRef.current = '';
-      return;
-    }
-    const samePersonKey = `${applicantName}:${insuredName}`;
-    if (samePersonRelationResetKeyRef.current === samePersonKey) return;
-    samePersonRelationResetKeyRef.current = samePersonKey;
-    const applicantRelation = formData.applicantRelationLabel || formData.applicantRelation;
-    const insuredRelation = formData.insuredRelationLabel || formData.insuredRelation;
-    if (
-      applicantRelation === '本人' &&
-      insuredRelation === '本人' &&
-      !formData.applicantMemberId &&
-      !formData.insuredMemberId
-    ) {
-      onUpdateForm('applicantRelationLabel', '待确认');
-      onUpdateForm('applicantRelation', '待确认');
-      onUpdateForm('insuredRelationLabel', '待确认');
-      onUpdateForm('insuredRelation', '待确认');
-    }
+    if (!participantsAreSamePerson()) return;
+    const applicantRelation = participantRelation('applicant');
+    const insuredRelation = participantRelation('insured');
+    const nextRelation = resolveSamePersonRelation(applicantRelation, insuredRelation);
+    if (!nextRelation) return;
+    if (applicantRelation !== nextRelation) applyParticipantRelation('applicant', nextRelation);
+    if (insuredRelation !== nextRelation) applyParticipantRelation('insured', nextRelation);
   }, [
     formData.applicant,
     formData.insured,
-    formData.applicantMemberId,
-    formData.insuredMemberId,
     formData.applicantRelation,
     formData.applicantRelationLabel,
     formData.insuredRelation,
@@ -336,33 +296,39 @@ export function UploadPolicyPage(props: {
     return formData.insuredRelationLabel || formData.insuredRelation || '待确认';
   }
 
+  function applyParticipantRelation(kind: 'applicant' | 'insured', value: string) {
+    const relation = value || '待确认';
+    if (kind === 'applicant') {
+      if (formData.applicantRelationLabel !== relation) onUpdateForm('applicantRelationLabel', relation);
+      if (formData.applicantRelation !== relation) onUpdateForm('applicantRelation', relation);
+      return;
+    }
+    if (formData.insuredRelationLabel !== relation) onUpdateForm('insuredRelationLabel', relation);
+    if (formData.insuredRelation !== relation) onUpdateForm('insuredRelation', relation);
+  }
+
   function participantsAreSamePerson() {
     return areSameParticipantName(formData.applicant, formData.insured);
   }
 
+  function resolveSamePersonRelation(applicantRelation: string, insuredRelation: string) {
+    if (applicantRelation === insuredRelation) return applicantRelation;
+    if (applicantRelation === '本人' || insuredRelation === '本人') return '本人';
+    if (applicantRelation && applicantRelation !== '待确认' && (!insuredRelation || insuredRelation === '待确认')) return applicantRelation;
+    if (insuredRelation && insuredRelation !== '待确认' && (!applicantRelation || applicantRelation === '待确认')) return insuredRelation;
+    if (!applicantRelation && insuredRelation) return insuredRelation;
+    if (!insuredRelation && applicantRelation) return applicantRelation;
+    return applicantRelation || insuredRelation || '';
+  }
+
   function updateParticipantRelation(kind: 'applicant' | 'insured', value: string) {
     const relation = value || '待确认';
-    const updateOne = (target: 'applicant' | 'insured') => {
-      if (target === 'applicant') {
-        onUpdateForm('applicantRelationLabel', relation);
-        onUpdateForm('applicantRelation', relation);
-      } else {
-        onUpdateForm('insuredRelationLabel', relation);
-        onUpdateForm('insuredRelation', relation);
-      }
-    };
     if (participantsAreSamePerson()) {
-      updateOne('applicant');
-      updateOne('insured');
+      applyParticipantRelation('applicant', relation);
+      applyParticipantRelation('insured', relation);
       return;
     }
-    if (kind === 'applicant') {
-      onUpdateForm('applicantRelationLabel', relation);
-      onUpdateForm('applicantRelation', relation);
-    } else {
-      onUpdateForm('insuredRelationLabel', relation);
-      onUpdateForm('insuredRelation', relation);
-    }
+    applyParticipantRelation(kind, relation);
   }
 
   function setParticipantAsCore(kind: 'applicant' | 'insured', checked: boolean) {
@@ -374,9 +340,7 @@ export function UploadPolicyPage(props: {
       updateParticipantRelation(kind, '待确认');
       return;
     }
-    const otherKind = kind === 'applicant' ? 'insured' : 'applicant';
     updateParticipantRelation(kind, '本人');
-    if (participantRelation(otherKind) === '本人') updateParticipantRelation(otherKind, '待确认');
   }
 
   function nonCoreRelationOptions(value: string) {
@@ -386,26 +350,42 @@ export function UploadPolicyPage(props: {
 
   function renderPolicyPersonFields(kind: 'applicant' | 'insured', label: string) {
     const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
+    const samePerson = participantsAreSamePerson();
+    const sharesCoreControl = samePerson && kind === 'insured';
     const relation = participantRelation(kind);
     const isCore = relation === '本人';
     return (
       <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.5)]">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-black text-slate-900">{label}</h3>
-          <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${isCore ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-50 text-slate-600 ring-slate-200'}`}>
-            <input
-              type="checkbox"
-              checked={isCore}
-              onChange={(event) => setParticipantAsCore(kind, event.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-            />
-            家庭核心人员
-          </label>
+          {sharesCoreControl ? (
+            <div className="inline-flex h-9 shrink-0 items-center rounded-full bg-slate-50 px-3 text-xs font-black text-slate-500 ring-1 ring-slate-200">
+              与投保人为同一人
+            </div>
+          ) : (
+            <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${isCore ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-50 text-slate-600 ring-slate-200'}`}>
+              <input
+                type="checkbox"
+                checked={isCore}
+                onChange={(event) => setParticipantAsCore(kind, event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              家庭核心人员
+            </label>
+          )}
         </div>
-        <TextField label="姓名" value={String(formData[nameKey] || '')} onChange={(value) => updateParticipantName(kind, value)} placeholder="姓名" />
-        {isCore ? (
+        <TextField label="姓名" value={String(formData[nameKey] || '')} onChange={(value) => updateParticipantName(kind, value)} placeholder="姓名" required />
+        {sharesCoreControl ? (
           <div>
-            <span className="mb-1.5 block text-sm font-bold text-slate-700">与核心人员家庭关系</span>
+            {requiredFieldLabel('与核心人员家庭关系')}
+            <div className={`flex h-11 items-center rounded-xl border px-4 text-sm font-black ${isCore ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+              {relation}
+            </div>
+            <p className="mt-2 text-xs font-medium text-slate-500">与投保人为同一人，核心身份和家庭关系随上方同步。</p>
+          </div>
+        ) : isCore ? (
+          <div>
+            {requiredFieldLabel('与核心人员家庭关系')}
             <div className="flex h-11 items-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700">
               本人
             </div>
@@ -417,6 +397,7 @@ export function UploadPolicyPage(props: {
             onChange={(value) => updateParticipantRelation(kind, value)}
             options={nonCoreRelationOptions(relation)}
             placeholder="请选择关系"
+            required
           />
         )}
       </div>
@@ -453,6 +434,25 @@ export function UploadPolicyPage(props: {
 
       <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto pb-32">
         <section className="p-4">
+          {staleClientDetected ? (
+            <section className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-black text-amber-900">页面已更新</h2>
+                  <p className="mt-1 text-xs font-medium leading-5 text-amber-800">
+                    开发环境刚刚重启过，你当前这个页面还是旧版本。先刷新一次，再继续录入和保存。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={onReloadForLatestVersion}
+                  className="shrink-0 rounded-xl bg-amber-500 px-3 py-2 text-xs font-black text-white transition hover:bg-amber-600"
+                >
+                  刷新页面
+                </button>
+              </div>
+            </section>
+          ) : null}
           <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
@@ -472,17 +472,18 @@ export function UploadPolicyPage(props: {
               value={selectedFamilyId ? String(selectedFamilyId) : ''}
               onChange={(value) => onSelectFamily(value ? Number(value) : null)}
               options={familyProfiles.map((family) => ({ value: String(family.id), label: family.familyName || `家庭 ${family.id}` }))}
-              placeholder="保存时自动创建默认家庭"
+              placeholder="请选择家庭档案"
+              required
             />
             {selectedFamily && !selectedFamily.coreMemberId ? (
               <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-700 ring-1 ring-amber-100">
-                家庭关系中心尚未设置，保存前请选择家庭核心人员。
+                家庭关系中心尚未设置，可先保存保单，稍后再补充核心成员。
               </p>
             ) : null}
           </section>
           <div className="mb-3">
-            <h2 className="text-lg font-bold">拍照自动识别</h2>
-            <p className="mt-1 text-xs text-slate-500">先做 OCR 识别，再按保司和产品生成保险责任</p>
+            <h2 className="text-lg font-bold">拍照/相册自动识别</h2>
+            <p className="mt-1 text-xs text-slate-500">可拍照或从相册选择保单照片，先做 OCR 识别，再按保司和产品生成保险责任</p>
           </div>
           <button
             onClick={onScanClick}
@@ -503,7 +504,7 @@ export function UploadPolicyPage(props: {
               )}
             </div>
             <span className="max-w-[80%] truncate text-center text-base font-bold text-blue-600">{loading ? 'OCR 识别中' : uploadItem ? uploadItem.name : getWechatUploadLabel()}</span>
-            <p className="px-4 text-center text-xs text-blue-400" aria-live="polite">{loading ? '正在读取保单信息' : uploadItem ? 'OCR 已完成，可继续生成保险责任' : '上传保单基本信息页照片'}</p>
+            <p className="px-4 text-center text-xs text-blue-400" aria-live="polite">{loading ? '正在读取保单信息' : uploadItem ? 'OCR 已完成，可继续生成保险责任' : '上传保单基本信息页照片或相册图片'}</p>
             <div className="absolute left-3 top-3 h-4 w-4 rounded-tl border-l-2 border-t-2 border-blue-500"></div>
             <div className="absolute right-3 top-3 h-4 w-4 rounded-tr border-r-2 border-t-2 border-blue-500"></div>
             <div className="absolute bottom-3 left-3 h-4 w-4 rounded-bl border-b-2 border-l-2 border-blue-500"></div>
@@ -560,7 +561,7 @@ export function UploadPolicyPage(props: {
         <form className="space-y-4 p-4" onSubmit={(event) => event.preventDefault()}>
           <div className="space-y-4">
             <label className="relative block">
-              <span className="mb-1.5 block text-sm font-bold text-slate-700">保险公司</span>
+              {requiredFieldLabel('保险公司')}
               <input
                 value={formData.company}
                 onChange={(event) => onUpdateForm('company', event.target.value)}
@@ -601,7 +602,7 @@ export function UploadPolicyPage(props: {
             </label>
             <div>
               <label className="relative block">
-                <span className="mb-1.5 block text-sm font-bold text-slate-700">保险名称</span>
+                {requiredFieldLabel('保险名称')}
                 <input
                   value={formData.name}
                   onChange={(event) => onUpdateForm('name', event.target.value)}
@@ -659,7 +660,7 @@ export function UploadPolicyPage(props: {
 
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
             <label className="flex items-center justify-between gap-3">
-              <span className="text-sm font-bold text-slate-700">法定受益人</span>
+              {requiredFieldLabel('法定受益人')}
               <input
                 type="checkbox"
                 checked={formData.beneficiary === '法定'}
@@ -675,6 +676,7 @@ export function UploadPolicyPage(props: {
                 value={formData.beneficiary}
                 onChange={(value) => onUpdateForm('beneficiary', value)}
                 placeholder="请输入受益人姓名"
+                required
               />
             )}
           </div>
@@ -684,28 +686,30 @@ export function UploadPolicyPage(props: {
             value={formData.insuredBirthday}
             onChange={(value) => onUpdateForm('insuredBirthday', value)}
             type="date"
+            required
           />
 
-          <TextField label="投保时间" value={formData.date} onChange={(value) => onUpdateForm('date', value)} type="date" />
+          <TextField label="投保时间" value={formData.date} onChange={(value) => onUpdateForm('date', value)} type="date" required />
 
           <div className="grid grid-cols-2 gap-4">
-            <TextField label="缴费期间" value={formData.paymentPeriod} onChange={(value) => onUpdateForm('paymentPeriod', value)} placeholder="如 10年交 或 趸交" />
-            <TextField label="保障期间" value={formData.coveragePeriod} onChange={(value) => onUpdateForm('coveragePeriod', value)} placeholder="如 终身、30年、至70岁" />
+            <PaymentPeriodField label="缴费期间" value={formData.paymentPeriod} onChange={(value) => onUpdateForm('paymentPeriod', value)} placeholder="如 10年交 或 趸交" required />
+            <CoveragePeriodField label="保障期间" value={formData.coveragePeriod} onChange={(value) => onUpdateForm('coveragePeriod', value)} placeholder="如 终身、30年、至70岁" required />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <TextField label="保额 (元)" value={formData.amount} onChange={(value) => onUpdateForm('amount', sanitizeAmount(value))} inputMode="decimal" placeholder="0.00" />
+            <TextField label="保额 (元)" value={formData.amount} onChange={(value) => onUpdateForm('amount', sanitizeAmount(value))} inputMode="decimal" placeholder="0.00" required />
             <TextField
               label="首期保费 (元)"
               value={formData.firstPremium}
               onChange={(value) => onUpdateForm('firstPremium', sanitizeAmount(value))}
               inputMode="decimal"
               placeholder="0.00"
+              required
             />
           </div>
 
           <OptionalResponsibilityReview
-            items={optionalResponsibilities}
+            items={optionalResponsibilitiesForProduct(optionalResponsibilities, formData.name)}
             disabled={loading}
             compact
             title="主险可选责任确认"
@@ -716,6 +720,7 @@ export function UploadPolicyPage(props: {
           <PolicyPlanEditor
             company={formData.company}
             plans={normalizePolicyPlanList(formData.plans, formData.company, { keepEmpty: true })}
+            optionalResponsibilities={optionalResponsibilities}
             productSuggestionLoading={formPlanProductSuggestionLoading}
             productSuggestions={formPlanProductSuggestions}
             productSuggestionTargetIndex={formPlanProductSuggestionTargetIndex}
@@ -724,31 +729,23 @@ export function UploadPolicyPage(props: {
             onSelectProduct={onSelectPlanProduct}
             onUpdate={onUpdatePlan}
             onUpdateProductQuery={onUpdatePlanProductQuery}
+            onUpdateOptionalResponsibility={onUpdateOptionalResponsibility}
           />
-        </form>
-      </main>
 
-      <div className="pb-safe fixed bottom-0 left-0 right-0 z-50 border-t border-slate-100 bg-white/95 px-3 pt-3 shadow-[0_-18px_34px_-26px_rgba(15,23,42,0.45)] backdrop-blur">
-        <div className="mx-auto flex w-full max-w-3xl gap-2">
-          <button
-            onClick={onGenerateAnalysis}
-            disabled={loading || !canSubmit}
-            type="button"
-            className="flex h-12 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-2xl border border-blue-100 bg-blue-50 px-3 text-sm font-black text-blue-700 transition hover:bg-blue-100 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
-          >
-            {loading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
-            <span className="truncate">生成责任</span>
-          </button>
           <button
             onClick={onSubmit}
             disabled={loading || !canSubmit}
-            className="flex h-12 min-w-0 flex-[1.35] items-center justify-center gap-2 rounded-2xl bg-blue-500 px-4 text-sm font-black text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
+            type="button"
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-blue-500 px-4 text-sm font-black text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
           >
             <CheckCircle2 size={20} />
-            <span className="truncate">{loading ? '保存中...' : '保存保单'}</span>
+            <span>{loading ? '保存中...' : '保存保单'}</span>
           </button>
-        </div>
-      </div>
+        </form>
+      </main>
+      <CustomerBottomTabs activeTab="entry" onChange={(tab) => {
+        if (tab === 'families') onOpenFamilies();
+      }} />
     </div>
   );
 }
@@ -837,6 +834,8 @@ export function AnalysisReportPage(props: {
           plans={normalizePolicyPlanList(formData.plans, formData.company)}
           effectiveDate={formData.date}
           insuredBirthday={formData.insuredBirthday}
+          paymentPeriod={formData.paymentPeriod}
+          coveragePeriod={formData.coveragePeriod}
         />
 
         <OptionalResponsibilityReview

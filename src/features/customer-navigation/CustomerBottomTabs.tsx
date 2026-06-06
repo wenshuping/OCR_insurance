@@ -13,7 +13,7 @@ export function CustomerBottomTabs({
 }) {
   const tabs: Array<{ key: CustomerTab; label: string; icon: typeof UploadCloud }> = [
     { key: 'entry', label: '录入保单', icon: UploadCloud },
-    { key: 'families', label: '家庭档案', icon: Users },
+    { key: 'families', label: '家庭保单', icon: Users },
   ];
   return (
     <nav className={fixed ? 'pb-safe fixed bottom-0 left-0 right-0 z-40 border-t border-slate-100 bg-white px-4 pt-2 shadow-[0_-10px_20px_-12px_rgba(15,23,42,0.12)]' : ''}>

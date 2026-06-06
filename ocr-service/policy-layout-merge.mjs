@@ -11,6 +11,7 @@ const CORE_LAYOUT_FIELDS = [
   'insuredBirthday',
 ];
 const REVIEW_ONLY_FIELDS = ['name'];
+const VISUAL_TABLE_FIELDS = ['name', 'amount', 'coveragePeriod', 'paymentPeriod', 'firstPremium'];
 
 function trim(value) {
   return String(value || '').trim();
@@ -53,6 +54,7 @@ export function mergePolicyLayoutScanResult({ textData = {}, layoutResult = null
   for (const field of REVIEW_ONLY_FIELDS) {
     const value = trim(layoutResult.fields[field]);
     if (!value) continue;
+    if (String(layoutResult.fieldConfidence?.[field] || '') === 'visual-table') continue;
     if (!trim(data[field])) {
       data[field] = value;
       fieldConfidence[field] = 'review';
@@ -60,6 +62,19 @@ export function mergePolicyLayoutScanResult({ textData = {}, layoutResult = null
       fieldConfidence[field] = 'review';
       warnings.push('产品名称存在多个候选，请确认是否为主险名称');
     }
+  }
+
+  for (const field of VISUAL_TABLE_FIELDS) {
+    const value = trim(layoutResult.fields[field]);
+    if (!value) continue;
+    if (String(layoutResult.fieldConfidence?.[field] || '') !== 'visual-table') continue;
+    data[field] = value;
+    fieldConfidence[field] = 'visual-table';
+  }
+
+  if (String(layoutResult.fieldConfidence?.plans || '') === 'visual-table' && Array.isArray(layoutResult.fields.plans)) {
+    data.plans = layoutResult.fields.plans;
+    fieldConfidence.plans = 'visual-table';
   }
 
   const reviewed = reviewPolicyFieldValues({ data, fieldConfidence, fieldEvidence, warnings });

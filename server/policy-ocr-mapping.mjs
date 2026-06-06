@@ -1,4 +1,5 @@
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+import { shouldKeepPolicyPlan } from '../src/policy-plan-filter.mjs';
 
 const GENERIC_COMPANY_KEYWORDS = new Set(['保险', '保司', '人寿', '寿险', '公司', '集团', '中国', '股份', '有限责任公司', '股份有限公司']);
 
@@ -206,17 +207,24 @@ function buildKnownProductStats(state = {}, company = '') {
     const current = stats.get(key) || {
       company: sourceCompany,
       productName: name,
+      productType: '',
       canonicalProductId: '',
       recordCount: 0,
       official: false,
     };
     current.recordCount += weight;
     current.official = current.official || official;
+    if (!current.productType && trim(options.productType)) current.productType = trim(options.productType);
     if (!current.canonicalProductId && canonicalProductId) current.canonicalProductId = canonicalProductId;
     stats.set(key, current);
   };
 
-  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName || record.title, 1, { official: true });
+  for (const record of state.knowledgeRecords || []) {
+    addProduct(record.company, record.productName || record.title, 1, {
+      official: true,
+      productType: record.productType,
+    });
+  }
   for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1, { official: false });
   return [...stats.values()];
 }
@@ -238,6 +246,15 @@ function productKeywordCandidates(productName) {
   return [...keywords.entries()].map(([normalized, raw]) => ({ normalized, raw }));
 }
 
+function isRecoverableOfficialProductName(productName = '') {
+  const text = trim(productName);
+  const normalized = normalizeOcrMappingText(text);
+  if (!normalized) return false;
+  if (!/(保险|寿险|年金|万能|两全|重疾|疾病|医疗|意外|护理)/u.test(text)) return false;
+  if (/保险责任名称|责任名称|金额\/?份数|给付标准|免赔额|赔付比例|接第\d+页/u.test(text)) return false;
+  return true;
+}
+
 export function matchInsuranceProductFromOcr(ocrText, state = {}, company = '') {
   const normalizedOcr = normalizeOcrMappingText(ocrText);
   if (!normalizedOcr) return null;
@@ -249,6 +266,7 @@ export function matchInsuranceProductFromOcr(ocrText, state = {}, company = '') 
       matches.push({
         company: product.company,
         productName: product.productName,
+        ...(product.productType ? { productType: product.productType } : {}),
         ...(product.canonicalProductId ? { canonicalProductId: product.canonicalProductId } : {}),
         keyword: keyword.raw,
         score: keyword.normalized.length * 2 + Math.min(product.recordCount, 20) / 10,
@@ -340,14 +358,103 @@ function normalizePolicyPlan(plan = {}, index = 0, company = '') {
 function normalizePolicyPlans(plans = [], company = '') {
   return (Array.isArray(plans) ? plans : [])
     .map((plan, index) => normalizePolicyPlan(plan, index, company))
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((plan) => shouldKeepPolicyPlan(plan));
+}
+
+function planMatchesOfficialProduct(plan = {}, productName = '') {
+  const productKeywords = new Set(productKeywordCandidates(productName).map((keyword) => keyword.normalized));
+  return [plan.matchedProductName, plan.productName, plan.name].some((value) => {
+    const normalized = normalizeOcrMappingText(value);
+    return Boolean(normalized && productKeywords.has(normalized));
+  });
+}
+
+function findOfficialProductMentionsInOcrText(ocrText = '', state = {}, company = '') {
+  const normalizedOcr = normalizeOcrMappingText(ocrText);
+  if (!normalizedOcr) return [];
+
+  const candidates = [];
+  for (const product of buildKnownProductStats(state, company)) {
+    if (!product.official) continue;
+    if (!isRecoverableOfficialProductName(product.productName)) continue;
+    const matchedKeywords = productKeywordCandidates(product.productName)
+      .map((keyword) => ({
+        ...keyword,
+        matchIndex: findProductKeywordInOcrText(normalizedOcr, keyword.normalized),
+      }))
+      .filter((keyword) => keyword.matchIndex >= 0)
+      .sort((left, right) => right.normalized.length - left.normalized.length || left.matchIndex - right.matchIndex);
+    const bestKeyword = matchedKeywords[0] || null;
+    if (!bestKeyword) continue;
+    candidates.push({
+      ...product,
+      keyword: bestKeyword.raw,
+      keywordNormalized: bestKeyword.normalized,
+      matchIndex: bestKeyword.matchIndex,
+      score: bestKeyword.normalized.length * 2 + Math.min(product.recordCount, 20) / 10,
+    });
+  }
+
+  const accepted = [];
+  for (const candidate of [...candidates].sort((left, right) => (
+    right.keywordNormalized.length - left.keywordNormalized.length ||
+    left.matchIndex - right.matchIndex ||
+    left.productName.localeCompare(right.productName, 'zh-CN')
+  ))) {
+    const sameKeywordOtherProduct = candidates.some((item) =>
+      item.productName !== candidate.productName && item.keywordNormalized === candidate.keywordNormalized
+    );
+    if (sameKeywordOtherProduct) continue;
+    const shadowedBySpecificProduct = accepted.some((item) =>
+      item.productName !== candidate.productName && item.keywordNormalized.includes(candidate.keywordNormalized)
+    );
+    if (shadowedBySpecificProduct) continue;
+    accepted.push(candidate);
+  }
+
+  return accepted.sort((left, right) => left.matchIndex - right.matchIndex || right.score - left.score);
+}
+
+function findProductKeywordInOcrText(normalizedOcr = '', normalizedKeyword = '') {
+  const directIndex = normalizedOcr.indexOf(normalizedKeyword);
+  if (directIndex >= 0) return directIndex;
+  if (normalizedKeyword.endsWith('保险')) {
+    const missingFinalChar = normalizedKeyword.slice(0, -1);
+    if (missingFinalChar.length >= 8) return normalizedOcr.indexOf(missingFinalChar);
+  }
+  return -1;
+}
+
+function recoverMissingOfficialProductPlans({ plans = [], ocrText = '', state = {}, company = '' } = {}) {
+  const recovered = [...plans];
+  for (const mention of findOfficialProductMentionsInOcrText(ocrText, state, company)) {
+    if (recovered.some((plan) => planMatchesOfficialProduct(plan, mention.productName))) continue;
+    recovered.push({
+      company: mention.company || company,
+      role: normalizePolicyPlanRole('', recovered.length, mention.productName),
+      name: mention.productName,
+      matchedProductName: mention.productName,
+      productType: trim(mention.productType),
+      amount: '',
+      coveragePeriod: '',
+      paymentMode: '',
+      paymentPeriod: '',
+      premium: '',
+      premiumText: '',
+      matchScore: Number(mention.score || 0) || 0,
+      matchReason: 'OCR原文官方产品名匹配',
+      canonicalProductId: trim(mention.canonicalProductId),
+    });
+  }
+  return recovered;
 }
 
 function findBestProductMatchForName(ocrText, state = {}, company = '', name = '') {
   const product = trim(name);
   if (!product) return null;
   const directText = [company, product].map(trim).filter(Boolean).join(' ');
-  return matchInsuranceProductFromOcr(directText, state, company) || matchInsuranceProductFromOcr(`${directText} ${ocrText || ''}`, state, company);
+  return matchInsuranceProductFromOcr(directText, state, company);
 }
 
 function attachPlanProductMatches({ plans = [], ocrText = '', state = {}, company = '' }) {
@@ -356,10 +463,12 @@ function attachPlanProductMatches({ plans = [], ocrText = '', state = {}, compan
     const match = findBestProductMatchForName(ocrText, state, company, plan.name);
     if (!match?.productName) return plan;
     const canonicalProductId = plan.canonicalProductId || match.canonicalProductId || '';
+    const productType = plan.productType || trim(match.productType);
     return {
       ...plan,
       company: match.company || plan.company || company,
       matchedProductName: match.productName,
+      ...(productType ? { productType } : {}),
       matchScore: Number(match.score || 0) || plan.matchScore || 0,
       matchReason: '本地产品名称匹配',
       ...(canonicalProductId ? { canonicalProductId } : {}),
@@ -448,8 +557,13 @@ export function enhancePolicyScanWithOcrMapping({ scan, state }) {
   const inferredCompanyMatch =
     companyMatch || (trim(data.company) ? null : inferCompanyFromProductPlans({ plans: data.plans, ocrText, state }));
   const company = companyMatch?.company || trim(data.company) || inferredCompanyMatch?.company || '';
-  const plans = attachPlanProductMatches({
-    plans: data.plans,
+  const plans = recoverMissingOfficialProductPlans({
+    plans: attachPlanProductMatches({
+      plans: data.plans,
+      ocrText,
+      state,
+      company,
+    }),
     ocrText,
     state,
     company,

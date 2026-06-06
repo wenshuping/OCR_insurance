@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(projectRoot, '.runtime', 'state.json'));
-const reportDir = path.join(projectRoot, '.runtime', 'daily-refresh-reports');
+const runtimeDir = path.join(projectRoot, '.runtime');
+const reportDir = path.join(runtimeDir, 'daily-refresh-reports');
 
 const COMPANY_JOBS = {
   'china-life': {
@@ -49,37 +50,38 @@ function hasFlag(name) {
   return process.argv.includes(`--${name}`);
 }
 
-function readJson(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
-  }
-}
-
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function loadStateSummary() {
-  const state = readJson(statePath, {});
-  const rows = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [];
-  const ids = rows.map((row) => Number(row.id)).filter(Number.isFinite).sort((left, right) => left - right);
-  const byCompany = {};
-  for (const row of rows) {
-    const company = String(row.company || '未知').trim() || '未知';
-    const item = (byCompany[company] ||= { count: 0, maxId: 0 });
-    item.count += 1;
-    item.maxId = Math.max(item.maxId, Number(row.id) || 0);
+async function loadStateSummary() {
+  const knowledgeStore = await createKnowledgeStateStore({
+    dbPath: process.env.POLICY_OCR_APP_DB_PATH || path.join(runtimeDir, 'policy-ocr.sqlite'),
+    seedStatePath: process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'),
+  });
+  try {
+    const state = knowledgeStore.loadState();
+    const rows = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [];
+    const ids = rows.map((row) => Number(row.id)).filter(Number.isFinite).sort((left, right) => left - right);
+    const byCompany = {};
+    for (const row of rows) {
+      const company = String(row.company || '未知').trim() || '未知';
+      const item = (byCompany[company] ||= { count: 0, maxId: 0 });
+      item.count += 1;
+      item.maxId = Math.max(item.maxId, Number(row.id) || 0);
+    }
+    return {
+      rows,
+      total: rows.length,
+      maxId: ids.at(-1) || 0,
+      companyCount: Object.keys(byCompany).length,
+      byCompany,
+      dbPath: knowledgeStore.dbPath,
+    };
+  } finally {
+    knowledgeStore.close();
   }
-  return {
-    rows,
-    total: rows.length,
-    maxId: ids.at(-1) || 0,
-    companyCount: Object.keys(byCompany).length,
-    byCompany,
-  };
 }
 
 function runCommand(command, args, { allowFailure = false } = {}) {
@@ -139,20 +141,20 @@ function markdownReport(report) {
   ].join('\n');
 }
 
-function main() {
+async function main() {
   fs.mkdirSync(reportDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
   const companiesArg = readArg('companies', 'china-life,picc-life,cpic-life,taikang');
   const preflightOnly = hasFlag('preflight-only');
   const skipFeishu = hasFlag('skip-feishu');
   const jobKeys = companiesArg.split(',').map((item) => item.trim()).filter(Boolean);
-  const preflight = loadStateSummary();
+  const preflight = await loadStateSummary();
   const report = {
     createdAt: new Date().toISOString(),
     date: new Date().toISOString().slice(0, 10),
     status: preflightOnly ? 'preflight_only' : 'running',
     preflight: {
-      statePath,
+      dbPath: preflight.dbPath,
       knowledgeRecordsBefore: preflight.total,
       maxIdBefore: preflight.maxId,
       companyCount: preflight.companyCount,
@@ -164,7 +166,7 @@ function main() {
 
   writeJson(path.join(reportDir, `${stamp}-preflight.json`), report);
   if (preflightOnly) {
-    const final = loadStateSummary();
+    const final = await loadStateSummary();
     report.final = { knowledgeRecordsAfter: final.total, maxIdAfter: final.maxId };
     report.status = 'preflight_ok';
     writeJson(path.join(reportDir, `${stamp}-report.json`), report);
@@ -179,14 +181,14 @@ function main() {
       report.failures.push({ company: key, stage: 'config', message: 'unknown company key' });
       continue;
     }
-    const before = loadStateSummary();
+    const before = await loadStateSummary();
     const beforeCompanyMaxId = before.byCompany[job.company]?.maxId || 0;
     const item = { key, company: job.company, status: 'started', beforeMaxId: beforeCompanyMaxId };
     report.jobs.push(item);
     try {
       const crawl = runCommand('npm', ['run', job.script, '--', ...job.args]);
       item.crawlOutputTail = crawl.output.slice(-4000);
-      const after = loadStateSummary();
+      const after = await loadStateSummary();
       const newRows = after.rows.filter((row) => row.company === job.company && Number(row.id) > beforeCompanyMaxId);
       item.status = 'crawled';
       item.newRecordCount = newRows.length;
@@ -227,7 +229,7 @@ function main() {
     }
   }
 
-  const final = loadStateSummary();
+  const final = await loadStateSummary();
   report.final = { knowledgeRecordsAfter: final.total, maxIdAfter: final.maxId };
   report.status = report.failures.length ? 'completed_with_failures' : 'completed';
   writeJson(path.join(reportDir, `${stamp}-report.json`), report);
@@ -235,4 +237,7 @@ function main() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -527,11 +527,6 @@ export function validatePolicyFamilyBinding(state, input = {}, owner = null) {
   }
 
   const members = listFamilyMembers(state, family.id);
-  const coreMember = members.find((member) => Number(member?.id || 0) === Number(family.coreMemberId || 0));
-  if (!coreMember) {
-    throw familyBindingError('POLICY_FAMILY_CORE_REQUIRED');
-  }
-
   const applicantMemberId = Number(input.applicantMemberId || 0);
   const insuredMemberId = Number(input.insuredMemberId || 0);
   const hasApplicant = members.some((member) => Number(member?.id || 0) === applicantMemberId);

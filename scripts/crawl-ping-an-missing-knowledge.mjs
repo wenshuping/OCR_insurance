@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { allocateId, createInitialState } from '../server/policy-ocr.domain.mjs';
+import { allocateId } from '../server/policy-ocr.domain.mjs';
 import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 const catalogPath = path.resolve(process.env.PING_AN_CATALOG_PATH || path.join(runtimeDir, 'ping-an-product-catalog.json'));
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
@@ -117,87 +117,95 @@ function buildTasks({ catalog, state, saleType, statuses }) {
   return tasks;
 }
 
-function main() {
+async function main() {
   const saleType = trim(readArg('sale-type', process.env.PING_AN_MISSING_SALE_TYPE || ''));
   const statuses = readArg('status', process.env.PING_AN_MISSING_STATUS || 'missing,partial');
   const offset = readNumberArg('offset', Number(process.env.PING_AN_MISSING_OFFSET || 0));
   const limit = readNumberArg('limit', Number(process.env.PING_AN_MISSING_LIMIT || 50));
   const cdpUrl = readArg('cdp-url', process.env.PING_AN_CDP_URL || 'http://127.0.0.1:9223');
-  const taskState = readJson(statePath, createInitialState());
   const catalog = readJson(catalogPath, {});
-  const allTasks = buildTasks({ catalog, state: taskState, saleType, statuses });
-  const selectedTasks = limit ? allTasks.slice(offset, offset + limit) : allTasks.slice(offset);
-  if (!selectedTasks.length) {
+  const knowledgeStore = await createKnowledgeStateStore();
+  try {
+    const taskState = knowledgeStore.loadState();
+    const allTasks = buildTasks({ catalog, state: taskState, saleType, statuses });
+    const selectedTasks = limit ? allTasks.slice(offset, offset + limit) : allTasks.slice(offset);
+    if (!selectedTasks.length) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            company: '中国平安',
+            catalogPath,
+            dbPath: knowledgeStore.dbPath,
+            saleType,
+            statuses,
+            offset,
+            limit,
+            totalMissingMaterialTasks: allTasks.length,
+            selectedTaskCount: 0,
+            message: '没有需要补爬的缺失资料',
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    const result = runCrawler({
+      mode: 'ping_an_browser_catalog_materials',
+      company: '中国平安',
+      cdpUrl,
+      tasks: selectedTasks,
+    });
+    if (result.ok === false) {
+      console.log(JSON.stringify(result, null, 2));
+      process.exitCode = 2;
+      return;
+    }
+    const state = knowledgeStore.loadState();
+    if (!Number(state.nextId)) state.nextId = 1;
+    const before = knowledgeStore.countKnowledgeRecords();
+    const beforeUrls = new Set(knowledgeStore.allKnownUrls());
+    const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
+    knowledgeStore.saveState(state);
+    const after = knowledgeStore.countKnowledgeRecords();
+    const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(trim(record.url)));
+    const newSavedIds = newSaved.map((record) => Number(record.id)).filter(Number.isFinite).sort((left, right) => left - right);
+
     console.log(
       JSON.stringify(
         {
           ok: true,
           company: '中国平安',
           catalogPath,
-          statePath,
+          dbPath: knowledgeStore.dbPath,
           saleType,
           statuses,
           offset,
           limit,
           totalMissingMaterialTasks: allTasks.length,
-          selectedTaskCount: 0,
-          message: '没有需要补爬的缺失资料',
+          selectedTaskCount: selectedTasks.length,
+          crawledRecordCount: (result.records || []).length,
+          skippedCount: result.skippedCount || 0,
+          skippedSamples: (result.skipped || []).slice(0, 10),
+          savedRecordCount: saved.length,
+          newSavedRecordCount: newSaved.length,
+          newSavedMinId: newSavedIds[0] || null,
+          newSavedMaxId: newSavedIds.at(-1) || null,
+          localKnowledgeBefore: before,
+          localKnowledgeAfter: after,
         },
         null,
         2,
       ),
     );
-    return;
+  } finally {
+    knowledgeStore.close();
   }
-
-  const result = runCrawler({
-    mode: 'ping_an_browser_catalog_materials',
-    company: '中国平安',
-    cdpUrl,
-    tasks: selectedTasks,
-  });
-  if (result.ok === false) {
-    console.log(JSON.stringify(result, null, 2));
-    process.exitCode = 2;
-    return;
-  }
-  const state = readJson(statePath, createInitialState());
-  if (!Number(state.nextId)) state.nextId = 1;
-  const before = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const beforeUrls = new Set((state.knowledgeRecords || []).map((record) => trim(record.url)).filter(Boolean));
-  const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
-  const after = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(trim(record.url)));
-  const newSavedIds = newSaved.map((record) => Number(record.id)).filter(Number.isFinite).sort((left, right) => left - right);
-  writeJson(statePath, state);
-
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        company: '中国平安',
-        catalogPath,
-        statePath,
-        saleType,
-        statuses,
-        offset,
-        limit,
-        totalMissingMaterialTasks: allTasks.length,
-        selectedTaskCount: selectedTasks.length,
-        crawledRecordCount: (result.records || []).length,
-        skippedCount: result.skippedCount || 0,
-        skippedSamples: (result.skipped || []).slice(0, 10),
-        savedRecordCount: saved.length,
-        newSavedRecordCount: newSaved.length,
-        newSavedMinId: newSavedIds[0] || null,
-        newSavedMaxId: newSavedIds.at(-1) || null,
-        localKnowledgeBefore: before,
-        localKnowledgeAfter: after,
-      },
-      null,
-      2,
-    ),
-  );
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

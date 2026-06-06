@@ -16,6 +16,7 @@ import {
   ApiError,
   CashValueRow,
   CashValueScanResult,
+  HealthStatus,
   OptionalResponsibility,
   Policy,
   PolicyAnalysisResult,
@@ -35,6 +36,7 @@ import {
   createFamilyProfile,
   createFamilyReportShare,
   deletePolicy,
+  getHealthStatus,
   getLocalPolicyAnalysisDraft,
   getPolicy,
   listPolicies,
@@ -120,12 +122,14 @@ import {
   mainProductIdentityKey,
   mergeScanToForm,
   normalizePolicyPlanList,
+  normalizePolicyPlanListWithIndex,
   policyToForm,
   productLookupKey,
   sanitizeAmount,
   scanToForm,
   setMainPolicyPlanProduct,
   updateOptionalResponsibilityItems,
+  validatePolicyEntryForm,
 } from '../../shared/customer-policy-form';
 import {
   makeManualCashValueRow,
@@ -138,6 +142,8 @@ import {
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
+const CLIENT_BOOTED_AT = new Date().toISOString();
+const SHOULD_CHECK_STALE_DEV_CLIENT = window.location.port === '3014';
 
 declare global {
   interface Window {
@@ -425,6 +431,7 @@ function reportClientPerformance(event: string, payload: Record<string, unknown>
 export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
+  const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [mobile, setMobile] = useState(() => localStorage.getItem(USER_MOBILE_KEY) || '');
@@ -486,6 +493,7 @@ export function CustomerApp() {
   const [cashValueLoading, setCashValueLoading] = useState(false);
   const [cashValueMessage, setCashValueMessage] = useState('');
   const [showFamilyPolicies, setShowFamilyPolicies] = useState(false);
+  const [staleClientHealth, setStaleClientHealth] = useState<HealthStatus | null>(null);
 
   const canSubmit = Boolean(uploadItem || ocrText.trim() || formData.company.trim() || formData.name.trim());
   const totalCoverage = useMemo(() => policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [policies]);
@@ -504,11 +512,72 @@ export function CustomerApp() {
     () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
     [familyProfiles, selectedFamilyId],
   );
+  const entryFamilyId = formData.familyId ?? selectedFamilyId ?? null;
+  const entrySelectedFamily = useMemo(
+    () => familyProfiles.find((family) => Number(family.id) === Number(entryFamilyId)) || null,
+    [entryFamilyId, familyProfiles],
+  );
+  const familyPolicyCounts = useMemo(() => {
+    const counts: Record<number, number> = {};
+    for (const policy of policies) {
+      const familyId = Number(policy.familyId || 0);
+      if (!familyId) continue;
+      counts[familyId] = (counts[familyId] || 0) + 1;
+    }
+    return counts;
+  }, [policies]);
   const selectedFamilyMembers = useMemo(
     () => (Array.isArray(selectedFamily?.members) ? selectedFamily.members : []),
     [selectedFamily],
   );
+  const entrySelectedFamilyMembers = useMemo(
+    () => (Array.isArray(entrySelectedFamily?.members) ? entrySelectedFamily.members : []),
+    [entrySelectedFamily],
+  );
   const isLoggedIn = Boolean(token);
+
+  function clearOptionalResponsibilitySelections() {
+    optionalResponsibilitySelectionRef.current.clear();
+  }
+
+  function rememberOptionalResponsibilitySelections(items: OptionalResponsibility[] | undefined) {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+      const id = String(item?.id || '').trim();
+      if (!id || item.selectionEvidence !== 'manual') continue;
+      optionalResponsibilitySelectionRef.current.set(id, item.selectionStatus || 'unknown');
+    }
+  }
+
+  function applyRememberedOptionalResponsibilitySelections(items: OptionalResponsibility[] | undefined) {
+    const remembered = optionalResponsibilitySelectionRef.current;
+    if (!Array.isArray(items) || !items.length || !remembered.size) return items;
+    let changed = false;
+    const nextItems = items.map((item) => {
+      const id = String(item?.id || '').trim();
+      const selectionStatus = id ? remembered.get(id) : undefined;
+      if (!selectionStatus) return item;
+      if (item.selectionStatus === selectionStatus && item.selectionEvidence === 'manual') return item;
+      changed = true;
+      return {
+        ...item,
+        selectionStatus,
+        selectionEvidence: 'manual',
+      };
+    });
+    return changed ? nextItems : items;
+  }
+
+  function withRememberedOptionalResponsibilitySelections(analysis: PolicyAnalysisResult | null | undefined) {
+    if (!analysis) return null;
+    const optionalResponsibilities = applyRememberedOptionalResponsibilitySelections(analysis.optionalResponsibilities);
+    return optionalResponsibilities === analysis.optionalResponsibilities
+      ? analysis
+      : {
+          ...analysis,
+          optionalResponsibilities,
+        };
+  }
 
   function handleFamilyPlanningProfileChange(next: FamilyPlanningProfile) {
     setFamilyPlanningProfile(saveFamilyPlanningProfile(next));
@@ -611,23 +680,61 @@ export function CustomerApp() {
   }, [selectedPolicy?.id, selectedPolicy?.reportStatus, token, guestId]);
 
   useEffect(() => {
-    if (!assistantOpen || assistantCompanySuggestions.length) return;
+    if (!SHOULD_CHECK_STALE_DEV_CLIENT) return;
     let cancelled = false;
-    setAssistantCompanySuggestionLoading(true);
-    listPolicyResponsibilityCompanySuggestions({ limit: 50 })
-      .then((payload) => {
-        if (!cancelled) setAssistantCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
-      })
-      .catch(() => {
-        if (!cancelled) setAssistantCompanySuggestions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setAssistantCompanySuggestionLoading(false);
-      });
+    const checkClientFreshness = async () => {
+      try {
+        const health = await getHealthStatus();
+        if (cancelled) return;
+        const serverStartedAt = Date.parse(String(health.startedAt || ''));
+        const clientStartedAt = Date.parse(CLIENT_BOOTED_AT);
+        if (Number.isFinite(serverStartedAt) && Number.isFinite(clientStartedAt) && serverStartedAt > clientStartedAt + 1000) {
+          setStaleClientHealth(health);
+          return;
+        }
+        setStaleClientHealth(null);
+      } catch {
+        if (!cancelled) setStaleClientHealth(null);
+      }
+    };
+
+    void checkClientFreshness();
+    const timer = window.setInterval(() => {
+      void checkClientFreshness();
+    }, 5000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
-  }, [assistantOpen, assistantCompanySuggestions.length]);
+  }, []);
+
+  useEffect(() => {
+    const q = assistantCompany.trim();
+    if (!assistantOpen || !q) {
+      setAssistantCompanySuggestions([]);
+      setAssistantCompanySuggestionLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setAssistantCompanySuggestions([]);
+      setAssistantCompanySuggestionLoading(true);
+      listPolicyResponsibilityCompanySuggestions({ q, limit: 50 })
+        .then((payload) => {
+          if (!cancelled) setAssistantCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
+        })
+        .catch(() => {
+          if (!cancelled) setAssistantCompanySuggestions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setAssistantCompanySuggestionLoading(false);
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [assistantOpen, assistantCompany]);
 
   useEffect(() => {
     const company = assistantCompany.trim();
@@ -639,6 +746,7 @@ export function CustomerApp() {
     }
     let cancelled = false;
     const timer = window.setTimeout(() => {
+      setAssistantProductSuggestions([]);
       setAssistantProductSuggestionLoading(true);
       listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
         .then((payload) => {
@@ -658,23 +766,32 @@ export function CustomerApp() {
   }, [assistantOpen, assistantCompany, assistantName]);
 
   useEffect(() => {
-    if (activeTab !== 'entry' || formCompanySuggestions.length) return;
+    const q = formData.company.trim();
+    if (activeTab !== 'entry' || !q) {
+      setFormCompanySuggestions([]);
+      setFormCompanySuggestionLoading(false);
+      return;
+    }
     let cancelled = false;
-    setFormCompanySuggestionLoading(true);
-    listPolicyResponsibilityCompanySuggestions({ limit: 50 })
-      .then((payload) => {
-        if (!cancelled) setFormCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
-      })
-      .catch(() => {
-        if (!cancelled) setFormCompanySuggestions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setFormCompanySuggestionLoading(false);
-      });
+    const timer = window.setTimeout(() => {
+      setFormCompanySuggestions([]);
+      setFormCompanySuggestionLoading(true);
+      listPolicyResponsibilityCompanySuggestions({ q, limit: 50 })
+        .then((payload) => {
+          if (!cancelled) setFormCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
+        })
+        .catch(() => {
+          if (!cancelled) setFormCompanySuggestions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setFormCompanySuggestionLoading(false);
+        });
+    }, 220);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [activeTab, formCompanySuggestions.length]);
+  }, [activeTab, formData.company]);
 
   useEffect(() => {
     const company = formData.company.trim();
@@ -686,6 +803,7 @@ export function CustomerApp() {
     }
     let cancelled = false;
     const timer = window.setTimeout(() => {
+      setFormProductSuggestions([]);
       setFormProductSuggestionLoading(true);
       listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
         .then((payload) => {
@@ -715,6 +833,7 @@ export function CustomerApp() {
     }
     let cancelled = false;
     const timer = window.setTimeout(() => {
+      setFormPlanProductSuggestions([]);
       setFormPlanProductSuggestionLoading(true);
       listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
         .then((payload) => {
@@ -775,9 +894,11 @@ export function CustomerApp() {
     if (!company || !name) return;
     const requestId = formProductDraftRequestRef.current + 1;
     formProductDraftRequestRef.current = requestId;
-    const existingOptionalResponsibilities = analysisDraft?.optionalResponsibilities?.length
+    const existingOptionalResponsibilitySource = analysisDraft?.optionalResponsibilities?.length
       ? analysisDraft.optionalResponsibilities
       : nextData.optionalResponsibilities;
+    rememberOptionalResponsibilitySelections(existingOptionalResponsibilitySource);
+    const existingOptionalResponsibilities = applyRememberedOptionalResponsibilitySelections(existingOptionalResponsibilitySource);
     const manualData = existingOptionalResponsibilities?.length
       ? { ...nextData, optionalResponsibilities: existingOptionalResponsibilities }
       : nextData;
@@ -787,10 +908,11 @@ export function CustomerApp() {
         ocrText: ocrText || `${company} ${name}`,
       });
       if (formProductDraftRequestRef.current !== requestId) return;
-      if (hasAnalysisResult(payload.analysis)) {
-        setAnalysisDraft(payload.analysis);
+      const nextAnalysis = withRememberedOptionalResponsibilitySelections(payload.analysis);
+      if (hasAnalysisResult(nextAnalysis)) {
+        setAnalysisDraft(nextAnalysis);
         setShowAnalysisReport(false);
-        setMessage(payload.analysis?.optionalResponsibilities?.length
+        setMessage(nextAnalysis?.optionalResponsibilities?.length
           ? '已匹配本地保险责任，请确认可选责任后保存'
           : '已匹配本地保险责任，请确认后保存');
       } else {
@@ -807,9 +929,10 @@ export function CustomerApp() {
   }
 
   function updateForm(key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) {
-    setAnalysisDraft(null);
     setShowAnalysisReport(false);
     if (key === 'company' || key === 'name') {
+      clearOptionalResponsibilitySelections();
+      setAnalysisDraft(null);
       formProductDraftRequestRef.current += 1;
       setConfirmedProductMatchKey('');
     }
@@ -938,11 +1061,14 @@ export function CustomerApp() {
     setShowAnalysisReport(false);
     const current = formData;
     const beforeMainProductKey = mainProductIdentityKey(formData);
-    const normalizedPlans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
-    const removedPlan = normalizedPlans[index];
-    const mainPlanIndex = normalizedPlans.findIndex((plan) => plan.role === 'main');
-    const removingMainPlan = String(removedPlan?.role || '') === 'main' || index === mainPlanIndex;
-    const plans = normalizedPlans.filter((_plan, planIndex) => planIndex !== index);
+    const indexedPlans = normalizePolicyPlanListWithIndex(current.plans, current.company, { keepEmpty: true });
+    const removedPlan = indexedPlans.find((plan) => plan.__originalIndex === index);
+    if (!removedPlan) return;
+    const mainPlan = indexedPlans.find((plan) => plan.role === 'main') || indexedPlans[0] || null;
+    const removingMainPlan = Boolean(mainPlan && removedPlan.__originalIndex === mainPlan.__originalIndex);
+    const plans = indexedPlans
+      .filter((plan) => plan.__originalIndex !== index)
+      .map(({ __originalIndex, ...plan }) => plan);
     const primary = plans.find((plan) => plan.role === 'main') || plans[0] || null;
     const nextData = {
       ...formData,
@@ -977,6 +1103,7 @@ export function CustomerApp() {
     const name = match.productName.trim();
     const canonicalProductId = String(match.canonicalProductId || '').trim();
     if (!company || !name) return;
+    clearOptionalResponsibilitySelections();
     setAnalysisDraft(null);
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey(productLookupKey(company, name));
@@ -1018,6 +1145,7 @@ export function CustomerApp() {
     const name = suggestion.productName.trim();
     const canonicalProductId = String(suggestion.canonicalProductId || '').trim();
     if (!company || !name) return;
+    clearOptionalResponsibilitySelections();
     setAnalysisDraft(null);
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey(productLookupKey(company, name));
@@ -1117,12 +1245,12 @@ export function CustomerApp() {
   function findFamilyMemberByName(name: string) {
     const normalizedName = name.trim();
     if (!normalizedName) return null;
-    const matches = selectedFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
+    const matches = entrySelectedFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
     return matches.length === 1 ? matches[0] : null;
   }
 
   async function ensureFamilyBeforeSave() {
-    if (selectedFamily) return selectedFamily;
+    if (entrySelectedFamily) return entrySelectedFamily;
     const payload = await createFamilyProfile({ token: token || undefined, guestId: token ? undefined : guestId, familyName: '默认家庭' });
     const family = { ...payload.family, members: payload.members };
     setFamilyProfiles((current) => [family, ...current.filter((item) => Number(item.id) !== Number(family.id))]);
@@ -1177,6 +1305,7 @@ export function CustomerApp() {
   function handleOcrTextChange(value: string) {
     setOcrText(value);
     setScanResult((current) => (current ? { ...current, ocrText: value } : current));
+    clearOptionalResponsibilitySelections();
     setAnalysisDraft(null);
     setShowAnalysisReport(false);
   }
@@ -1213,6 +1342,7 @@ export function CustomerApp() {
     source: PolicyUploadSource;
   }) {
     const { item, originalBytes, flowStartedAt, source } = input;
+    clearOptionalResponsibilitySelections();
     setUploadItem(item);
     setScanResult(null);
     setAnalysisDraft(null);
@@ -1243,7 +1373,7 @@ export function CustomerApp() {
     setScanResult(payload.scan);
     const recognizedAnalysis = payload.analysis || null;
     if (hasAnalysisResult(recognizedAnalysis)) {
-      setAnalysisDraft(recognizedAnalysis);
+      setAnalysisDraft(withRememberedOptionalResponsibilitySelections(recognizedAnalysis));
       setShowAnalysisReport(false);
       const reviewSuffix = scanReviewMessageSuffix(payload.scan);
       setMessage(recognizedAnalysis?.optionalResponsibilities?.length
@@ -1390,7 +1520,7 @@ export function CustomerApp() {
       setScanResult(payload.scan);
       setFormData((current) => mergeScanToForm(payload.scan, current));
       setOcrText(payload.scan.ocrText || '');
-      setAnalysisDraft(payload.analysis);
+      setAnalysisDraft(withRememberedOptionalResponsibilitySelections(payload.analysis));
       setShowAnalysisReport(true);
       setMessage('保险责任已生成，保存时会直接使用');
     } catch (error) {
@@ -1408,6 +1538,7 @@ export function CustomerApp() {
   }
 
   function updateAnalysisOptionalResponsibility(id: string, selectionStatus: OptionalResponsibility['selectionStatus']) {
+    optionalResponsibilitySelectionRef.current.set(id, selectionStatus);
     setAnalysisDraft((current) => current
       ? {
           ...current,
@@ -1437,7 +1568,12 @@ export function CustomerApp() {
     setAssistantLocalSearched(false);
     setAssistantMessage('正在匹配本地产品');
     try {
-      const matched = await matchPolicyResponsibilities({ company, name });
+      const matched = await matchPolicyResponsibilities({
+        company,
+        name,
+        limit: 20,
+        minScore: 0.1,
+      });
       const matches = Array.isArray(matched.matches) ? matched.matches : [];
       setAssistantLocalSearched(true);
       if (matches.length) {
@@ -1560,16 +1696,34 @@ export function CustomerApp() {
   }
 
   async function handleSubmit() {
-    if (!canSubmit || loading) return;
+    if (loading) return;
     if (blockSecondGuestPolicyIfNeeded()) return;
-    const hasGeneratedAnalysis = hasAnalysisResult(analysisDraft);
+    const submitBaseData = Number(entryFamilyId || 0) && Number(formData.familyId || 0) !== Number(entryFamilyId)
+      ? {
+          ...formData,
+          familyId: entryFamilyId,
+          applicantMemberId: null,
+          insuredMemberId: null,
+        }
+      : formData;
+    if (submitBaseData !== formData) setFormData(submitBaseData);
+    const validationErrors = validatePolicyEntryForm(submitBaseData);
+    if (validationErrors.length) {
+      const message = `以下必录项未填写：\n${validationErrors.map((item) => `- ${item}`).join('\n')}`;
+      window.alert(message);
+      setMessage('请先补全必录项后再保存');
+      return;
+    }
+    rememberOptionalResponsibilitySelections(analysisDraft?.optionalResponsibilities);
+    const analysisForSubmit = withRememberedOptionalResponsibilitySelections(analysisDraft);
+    const hasGeneratedAnalysis = hasAnalysisResult(analysisForSubmit);
     const isNewPolicy = !policies.some((p) => Number(p.id) === Number((formData as any).id));
     const startedAt = clientPerfNow();
     setLoading(true);
     setMessage(hasGeneratedAnalysis ? '正在保存保单信息' : '正在保存保单信息，报告将在后台生成');
     try {
       let submitFamily = await ensureFamilyBeforeSave();
-      let submitFamilyMembers = Array.isArray(submitFamily.members) ? [...submitFamily.members] : [...selectedFamilyMembers];
+      let submitFamilyMembers = Array.isArray(submitFamily.members) ? [...submitFamily.members] : [...entrySelectedFamilyMembers];
       const findActiveMemberById = (id: number | null | undefined) =>
         submitFamilyMembers.find((member) => member.status === 'active' && Number(member.id) === Number(id || 0)) || null;
       const findActiveSingleMemberByName = (name: string) => {
@@ -1592,12 +1746,12 @@ export function CustomerApp() {
         relationLabel?: string;
         setAsCoreOnCreate?: boolean;
       }) => {
-        if (input.memberId) {
-          const selectedMember = findActiveMemberById(input.memberId);
-          if (selectedMember) return selectedMember;
-        }
         const normalizedName = input.name.trim();
         if (!normalizedName) return null;
+        if (input.memberId) {
+          const selectedMember = findActiveMemberById(input.memberId);
+          if (selectedMember && areSameParticipantName(selectedMember.name, normalizedName)) return selectedMember;
+        }
         const exactMember =
           findActiveSingleMemberByName(normalizedName) ||
           (Number(submitFamily.id) === Number(selectedFamilyId) ? findFamilyMemberByName(normalizedName) : null);
@@ -1609,29 +1763,26 @@ export function CustomerApp() {
         });
       };
 
-      const applicantName = formData.applicant.trim();
-      const insuredName = formData.insured.trim();
+      const applicantName = submitBaseData.applicant.trim();
+      const insuredName = submitBaseData.insured.trim();
       const participantNamesMatch = areSameParticipantName(applicantName, insuredName);
-      const applicantRelationForSubmit = formData.applicantRelationLabel || formData.applicantRelation || '待确认';
-      const insuredRelationForSubmit = formData.insuredRelationLabel || formData.insuredRelation || '待确认';
+      const applicantRelationForSubmit = submitBaseData.applicantRelationLabel || submitBaseData.applicantRelation || '待确认';
+      const insuredRelationForSubmit = submitBaseData.insuredRelationLabel || submitBaseData.insuredRelation || '待确认';
       const applicantShouldBeCore = applicantRelationForSubmit === '本人';
       const insuredShouldBeCore = insuredRelationForSubmit === '本人';
       if (!submitFamily.coreMemberId && applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
         setMessage('家庭核心人员只能选择一个');
         return;
       }
-      if (!submitFamily.coreMemberId && !applicantShouldBeCore && !insuredShouldBeCore) {
-        setMessage('请勾选家庭核心人员后再保存');
-        return;
-      }
       let applicantMember = await resolveSubmitMember({
         name: applicantName,
-        memberId: formData.applicantMemberId,
+        memberId: submitBaseData.applicantMemberId,
         relationLabel: applicantRelationForSubmit,
         setAsCoreOnCreate: applicantShouldBeCore && !submitFamily.coreMemberId,
       });
       if (!applicantMember) {
-        setMessage('请确认投保人的家庭成员身份后再保存');
+        window.alert('投保人姓名未找到可绑定的家庭成员，请先检查投保人姓名');
+        setMessage('请先补全必录项后再保存');
         return;
       }
       const refreshSubmitFamilyMembers = () => {
@@ -1653,12 +1804,13 @@ export function CustomerApp() {
       };
       let insuredMember = await resolveSubmitMember({
         name: insuredName,
-        memberId: formData.insuredMemberId,
+        memberId: submitBaseData.insuredMemberId,
         relationLabel: insuredRelationForSubmit,
         setAsCoreOnCreate: insuredShouldBeCore && !submitFamily.coreMemberId,
       });
       if (!insuredMember) {
-        setMessage('请确认被保险人的家庭成员身份后再保存');
+        window.alert('被保险人姓名未找到可绑定的家庭成员，请先检查被保险人姓名');
+        setMessage('请先补全必录项后再保存');
         return;
       }
       const shouldPersistAsCore = (member: FamilyMember, relationLabel: string) => (
@@ -1677,7 +1829,7 @@ export function CustomerApp() {
       if (applicantFinalRelation !== '本人') applicantMember = await syncSubmitMemberRelation(applicantMember, applicantFinalRelation);
       if (insuredFinalRelation !== '本人') insuredMember = await syncSubmitMemberRelation(insuredMember, insuredFinalRelation);
       const submitData: PolicyFormData = {
-        ...formData,
+        ...submitBaseData,
         familyId: submitFamily.id,
         applicantMemberId: applicantMember.id,
         insuredMemberId: insuredMember.id,
@@ -1694,7 +1846,7 @@ export function CustomerApp() {
         uploadItem: scanResult ? null : uploadItem,
         manualData: submitData,
         scan: scanResult,
-        analysis: hasGeneratedAnalysis ? analysisDraft : null,
+        analysis: hasGeneratedAnalysis ? analysisForSubmit : null,
       });
       reportClientPerformance('client.scan.request', {
         durationMs: clientElapsedMs(startedAt),
@@ -1708,9 +1860,15 @@ export function CustomerApp() {
         outputOcrChars: String(payload.policy?.ocrText || '').length,
         responsibilityCount: payload.policy?.responsibilities?.length || 0,
       });
-      setFormData(policyToForm(payload.policy));
+      setFormData({
+        ...emptyForm,
+        familyId: submitFamily.id,
+      });
+      setOcrText('');
+      setUploadItem(null);
       setScanResult(null);
       setAnalysisDraft(null);
+      clearOptionalResponsibilitySelections();
       setShowAnalysisReport(false);
       setConfirmedProductMatchKey('');
       setFormProductMatches([]);
@@ -1720,14 +1878,14 @@ export function CustomerApp() {
         return [payload.policy, ...withoutDuplicate];
       });
       setSelectedPolicy(payload.policy);
+      setActiveTab('families');
+      setShowFamilyPolicies(true);
 
       // Trigger cash value dialog for newly saved policies without cash values
       const hasExistingCashValues = (payload.policy.cashValues?.length ?? 0) > 0;
       if (!hasExistingCashValues && isNewPolicy) {
         setCashValuePolicyId(payload.policy.id);
         setCashValueDialogOpen(true);
-      } else {
-        setShowFamilyPolicies(true);
       }
       const suffix = payload.registrationRequiredNext ? '；第二次录入需要手机验证码' : '';
       setMessage(isPolicyReportGenerating(payload.policy) ? `保单已保存，报告正在后台生成${suffix}` : `保单已保存到我的保单${suffix}`);
@@ -1738,6 +1896,8 @@ export function CustomerApp() {
         hasUpload: Boolean(uploadItem),
         reusedScan: Boolean(scanResult),
         reusedAnalysis: hasGeneratedAnalysis,
+        errorCode: getErrorCode(error),
+        errorMessage: getErrorMessage(error),
       });
       if (handleRegistrationRequiredError(error)) return;
       setMessage(error instanceof Error ? error.message : '识别失败，请稍后重试');
@@ -1805,18 +1965,11 @@ export function CustomerApp() {
         p.id === savedPolicyId ? { ...p, cashValues: savedRows } : p
       );
       setPolicies(updated);
-      if (selectedPolicy?.id === savedPolicyId) {
-        setSelectedPolicy({ ...selectedPolicy, cashValues: savedRows });
+      const savedPolicy = updated.find((p) => Number(p.id) === Number(savedPolicyId))
+        || (selectedPolicy?.id === savedPolicyId ? { ...selectedPolicy, cashValues: savedRows } : null);
+      if (savedPolicy) {
+        finishCashValueFlow(savedPolicy, `现金价值表已保存（${savedRows.length} 行）`);
       }
-
-      setCashValueDialogOpen(false);
-      setCashValueScanResult(null);
-      setCashValueEditRows([]);
-      setCashValuePolicyId(null);
-      setCashValueMessage('');
-      setCashflowMember(null);
-      setShowFamilyPolicies(true);
-      setMessage(`现金价值表已保存（${savedRows.length} 行）`);
     } catch (error) {
       setCashValueMessage(error instanceof Error ? error.message : '保存失败');
     } finally {
@@ -1849,12 +2002,18 @@ export function CustomerApp() {
   }
 
   function closeCashValueDialog() {
+    const currentPolicy = cashValuePolicyId === null
+      ? null
+      : policies.find((row) => Number(row.id) === Number(cashValuePolicyId)) || null;
+    if (currentPolicy) {
+      finishCashValueFlow(currentPolicy, '已跳过现金价值录入');
+      return;
+    }
     setCashValueDialogOpen(false);
     setCashValueScanResult(null);
     setCashValueEditRows([]);
     setCashValuePolicyId(null);
     setCashValueMessage('');
-    setShowFamilyPolicies(true);
   }
 
   function openManualCashValueEditor(policy: Policy) {
@@ -1885,6 +2044,19 @@ export function CustomerApp() {
       rowCount: rows.length,
     });
     setCashValueMessage('');
+  }
+
+  function finishCashValueFlow(policy: Policy, nextMessage?: string) {
+    setCashValueDialogOpen(false);
+    setCashValueScanResult(null);
+    setCashValueEditRows([]);
+    setCashValuePolicyId(null);
+    setCashValueMessage('');
+    setCashflowMember(null);
+    setActiveTab('families');
+    setShowFamilyPolicies(true);
+    setSelectedPolicy(policy);
+    if (nextMessage) setMessage(nextMessage);
   }
 
   async function openPolicy(policy: Policy) {
@@ -1984,12 +2156,18 @@ export function CustomerApp() {
     }
   }
 
-  function startEntryForm() {
-    setFormData(emptyForm);
+  function startEntryForm(options: { preserveSelectedFamily?: boolean } = {}) {
+    const preserveSelectedFamily = options.preserveSelectedFamily ?? true;
+    const nextFamilyId = preserveSelectedFamily ? selectedFamilyId : null;
+    setFormData({
+      ...emptyForm,
+      familyId: nextFamilyId,
+    });
     setOcrText('');
     setUploadItem(null);
     setScanResult(null);
     setAnalysisDraft(null);
+    clearOptionalResponsibilitySelections();
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey('');
     setFormProductMatches([]);
@@ -2044,7 +2222,7 @@ export function CustomerApp() {
       onClose={() => setShowAccountSheet(false)}
       onOpenPolicies={() => {
         setShowAccountSheet(false);
-        setShowFamilyPolicies(true);
+        setActiveTab('families');
       }}
       onLogin={() => {
         setShowAccountSheet(false);
@@ -2137,7 +2315,7 @@ export function CustomerApp() {
       <>
         <AnalysisReportPage
           analysis={analysisDraft}
-          canSave={canSubmit}
+          canSave={true}
           formData={formData}
           loading={loading}
           message={message}
@@ -2175,11 +2353,10 @@ export function CustomerApp() {
           productMatchMessage={formProductMatchMessage}
           productMatches={formProductMatches}
           optionalResponsibilities={analysisDraft?.optionalResponsibilities || []}
-          selectedFamilyId={selectedFamilyId}
-          selectedFamilyMembers={selectedFamilyMembers}
+          selectedFamilyId={entryFamilyId}
+          selectedFamilyMembers={Array.isArray(entrySelectedFamily?.members) ? entrySelectedFamily.members : []}
           onFileChange={handleFileChange}
           onCreateFamily={() => void handleCreateFamilyProfile()}
-          onGenerateAnalysis={() => void handleGenerateAnalysis()}
           onOcrTextChange={handleOcrTextChange}
           onScanClick={handleScanClick}
           onSelectFamily={handleSelectFamily}
@@ -2200,6 +2377,8 @@ export function CustomerApp() {
           onOpenFamilies={() => setActiveTab('families')}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
+          staleClientDetected={Boolean(staleClientHealth)}
+          onReloadForLatestVersion={() => window.location.reload()}
         />
         {renderResponsibilityAssistant('bottom-24')}
         {authDialog}
@@ -2304,7 +2483,7 @@ export function CustomerApp() {
                 <button
                   className="mt-5 rounded-2xl bg-blue-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-500/20"
                   type="button"
-                  onClick={startEntryForm}
+                  onClick={() => startEntryForm()}
                 >
                   去录入第一张保单
                 </button>
@@ -2362,6 +2541,7 @@ export function CustomerApp() {
       <>
         <FamilyProfileManager
           familyProfiles={familyProfiles}
+          familyPolicyCounts={familyPolicyCounts}
           selectedFamilyId={selectedFamilyId}
           onSelectFamily={(familyId) => handleSelectFamily(familyId)}
           onCreateFamily={async (familyName) => {
@@ -2370,8 +2550,7 @@ export function CustomerApp() {
           onSetCoreMember={setCoreMemberForCurrentFamily}
           onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
           onBackToEntry={() => {
-            setActiveTab('entry');
-            setMessage('可以继续录入保单');
+            startEntryForm({ preserveSelectedFamily: true });
           }}
           onOpenReport={openFamilyReport}
           onViewFamilyPolicies={viewFamilyPolicies}

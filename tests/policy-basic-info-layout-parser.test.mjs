@@ -135,3 +135,112 @@ test('parsePolicyBasicInfoFromLayoutBoxes extracts name-suffixed China Life labe
   assert.equal(result.evidence.policyNumber.relation, 'inline');
   assert.equal(result.evidence.insured.rawValue, '翟卿');
 });
+
+test('parsePolicyBasicInfoFromLayoutBoxes reads Xinhua student policy by visual table structure', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('NCI新华保险', 705, 35, 1192, 134),
+    box('保险合同号：66240173400401', 760, 247, 1036, 279),
+    box('合同成立日期：2024年08月09日', 155, 316, 485, 347),
+    box('合同生效日期：2024年08月16日', 801, 315, 1133, 344),
+    box('投保人姓名：楼媛媛', 152, 347, 356, 376),
+    box('证件号码：330725198207272328', 801, 346, 1116, 373),
+    box('被保险人姓名：王後曦', 153, 377, 377, 404),
+    box('证件号码：330104200906083556', 802, 378, 1117, 401),
+    box('残疾保险金、意外医疗保险金受益人', 150, 433, 507, 467),
+    box('证件号码', 591, 435, 683, 463),
+    box('受益顺序', 796, 437, 889, 462),
+    box('受益份额', 943, 433, 1036, 464),
+    box('被保险人本人', 151, 467, 284, 495),
+    box('身故保险金受益人', 152, 498, 329, 522),
+    box('证件号码', 592, 495, 683, 523),
+    box('受益顺序', 797, 497, 890, 522),
+    box('受益份额', 945, 497, 1039, 522),
+    box('被保险人的法定继承人', 149, 525, 374, 555),
+    box('保险利益表', 582, 572, 749, 602),
+    box('险种名称', 149, 600, 242, 628),
+    box('保险责任名称', 474, 603, 609, 627),
+    box('金额/份数', 750, 604, 853, 629),
+    box('给付标准', 889, 603, 982, 628),
+    box('免赔额', 1025, 602, 1097, 627),
+    box('赔付比例', 1111, 600, 1205, 631),
+    box('学生平安意外伤害保险', 148, 633, 354, 660),
+    box('意外伤害身故和残疾保险金', 473, 634, 718, 661),
+    box('80000.00元', 740, 636, 860, 661),
+    box('附加学生平安A款定期寿险', 147, 663, 382, 689),
+    box('疾病身故或全残保险金', 471, 665, 678, 693),
+    box('80000.00元', 741, 669, 861, 693),
+    box('附加学生平安A款疾病住院医疗保险疾病住院医疗保险金', 142, 735, 657, 769),
+    box('800000.00元', 735, 739, 867, 768),
+    box('附加学生平安A1款意外伤害医疗保意外伤害医疗费用保险金', 142, 861, 697, 893),
+    box('20000.00元', 741, 866, 861, 891),
+    box('险', 142, 891, 166, 916),
+    box('附加学生平安A款住院津贴医疗保险住院津贴保险金', 126, 1163, 616, 1193),
+    box('6份', 783, 1166, 828, 1194),
+    box('保险期间：2024年08月16日零时起至2025年08月15日二十四时止，一年交费方式：一次交清', 122, 1194, 1105, 1228),
+    box('保险费合计：（大写）贰佰玖拾捌元整', 121, 1228, 522, 1256),
+    box('￥298.00', 890, 1232, 987, 1257),
+  ]);
+
+  assert.equal(result.fields.date, '2024-08-16');
+  assert.equal(result.fields.insuredIdNumber, '330104200906083556');
+  assert.equal(result.fields.insuredBirthday, '2009-06-08');
+  assert.equal(result.fields.beneficiary, '法定');
+  assert.equal(result.fields.name, '学生平安意外伤害保险');
+  assert.equal(result.fields.amount, '80000');
+  assert.equal(result.fields.coveragePeriod, '至2025年08月15日');
+  assert.equal(result.fields.paymentPeriod, '趸交');
+  assert.equal(result.fields.firstPremium, '298');
+  assert.deepEqual(
+    result.fields.plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      premium: plan.premium,
+      premiumText: plan.premiumText,
+    })),
+    [
+      { role: 'main', name: '学生平安意外伤害保险', amount: '80000', premium: '', premiumText: '整单合计保费：298；保单未列逐险种保费' },
+      { role: 'rider', name: '附加学生平安A款定期寿险', amount: '80000', premium: '', premiumText: '整单合计保费：298；保单未列逐险种保费' },
+      { role: 'rider', name: '附加学生平安A款疾病住院医疗保险', amount: '800000', premium: '', premiumText: '整单合计保费：298；保单未列逐险种保费' },
+      { role: 'rider', name: '附加学生平安A1款意外伤害医疗保险', amount: '20000', premium: '', premiumText: '整单合计保费：298；保单未列逐险种保费' },
+      { role: 'rider', name: '附加学生平安A款住院津贴医疗保险', amount: '6', premium: '', premiumText: '整单合计保费：298；保单未列逐险种保费' },
+    ],
+  );
+  assert.equal(result.fieldConfidence.name, 'visual-table');
+  assert.equal(result.evidence.name.source, 'benefit-table-layout');
+});
+
+test('parsePolicyBasicInfoFromLayoutBoxes classifies universal account table rows as linked accounts', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('NCI 新华保险', 1500, 80, 2100, 190),
+    box('保险合同号:990163781859', 1600, 430, 2050, 470),
+    box('合同成立日期：2024年06月06日', 180, 560, 610, 610),
+    box('合同生效日期：2024年06月07日', 1620, 650, 2050, 700),
+    box('投保人：冯力', 180, 650, 390, 700),
+    box('被保险人：冯力', 180, 720, 430, 770),
+    box('保险利益表', 1180, 980, 1400, 1030),
+    box('险种名称', 350, 1080, 520, 1130),
+    box('基本保险金额/保险金额/保障计划/份数', 780, 1080, 1160, 1160),
+    box('保险期间', 1350, 1080, 1520, 1130),
+    box('交费方式/交费期间', 1710, 1080, 1960, 1160),
+    box('保险费', 2380, 1080, 2520, 1130),
+    box('荣耀鑫享赢家版终身寿险', 330, 1260, 680, 1360),
+    box('165020.00元', 820, 1260, 1100, 1320),
+    box('终身', 1390, 1260, 1490, 1320),
+    box('年交/10年', 1740, 1260, 1880, 1360),
+    box('每年20000.00元', 2300, 1260, 2580, 1320),
+    box('金利瑞享终身寿险（万能型）', 330, 1440, 780, 1540),
+    box('--', 900, 1440, 960, 1490),
+    box('终身', 1390, 1440, 1490, 1490),
+    box('一次交清', 1700, 1440, 1880, 1490),
+    box('10.00元', 2370, 1440, 2520, 1490),
+    box('首期保险费合计：￥20010.00', 1200, 1840, 2050, 1900),
+  ]);
+
+  assert.equal(result.fields.plans.length, 2);
+  assert.equal(result.fields.plans[0].role, 'main');
+  assert.equal(result.fields.plans[0].name, '荣耀鑫享赢家版终身寿险');
+  assert.equal(result.fields.plans[1].role, 'linked_account');
+  assert.equal(result.fields.plans[1].name, '金利瑞享终身寿险（万能型）');
+  assert.equal(result.fields.plans[1].productType, '万能账户');
+});

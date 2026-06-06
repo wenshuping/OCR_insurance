@@ -17,6 +17,7 @@ import {
   OCR_PROVIDER_PADDLE_LOCAL,
   OCR_PROVIDER_PADDLEOCR_VL_LOCAL,
   OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL,
+  OCR_PROVIDER_REMOTE_GPU_VISION,
   resolveEffectivePolicyOcrProvider,
 } from './ocr-config.service.mjs';
 import { parsePolicyBasicInfoFromLayoutBoxes } from './policy-basic-info-layout-parser.mjs';
@@ -93,6 +94,7 @@ const LABELS = {
   applicant: ['投保人名称', '投保人', '投保人姓名', '要保人', '要保人姓名'],
   insured: ['被保险人', '被保险人姓名', '受保人', '受保人姓名', '被保人'],
   beneficiary: ['身故保险金受益人', '身故受益人', '受益人'],
+  policyNumber: ['保险合同号', '保单合同号', '保单号', '合同号'],
   date: ['投保日期', '合同成立日期', '合同成立日', '承保日期', '合同生效日期', '合同生效日', '生效日期', '生效时间', '保险起期', '起保日期', '起保日', '保险合同成立及生效日'],
   paymentPeriod: ['交费方式', '交费期间', '缴费期间', '交费年期', '缴费年期', '交费年限', '缴费年限', '交费期限', '缴费期限'],
   coveragePeriod: ['保险期间', '保障期间', '保险期限', '保障期限', '保险责任期间', '合同期限'],
@@ -229,6 +231,7 @@ function extractInsuredIdentity(lines, insuredName = '') {
     const line = compactLine(rawLine);
     const idNumber = normalizeIdNumber(line);
     if (!idNumber) continue;
+    if (/保单号|合同号|保险合同号|客户号码/u.test(line)) continue;
     let score = 0;
     if (labelPattern.test(line)) score += 5;
     const previousWindow = lines.slice(Math.max(0, index - 3), index).map(compactLine).join(' ');
@@ -305,6 +308,7 @@ function extractPreferredDate(lines) {
     ['合同生效日期', '合同生效日', '生效日期', '生效时间', '保险起期', '起保日期', '起保日', '保险合同成立及生效日'],
     ['投保日期', '合同成立日期', '合同成立日'],
     ['承保日期'],
+    ['交费日期', '缴费日期', '开具日期'],
   ];
 
   for (const group of dateGroups) {
@@ -443,6 +447,7 @@ function normalizePersonNameValue(value) {
     .replace(/^（[^）]*）[:：]?/, '')
     .replace(/(性别|生日|出生|生于|证件号码|证件号|受益顺序|受益份额|本栏以下空白|及保险主要事项).*$/, '')
     .trim();
+  if (!cleaned || /^(申请|的申请|列表|名单|详情|明细)$/u.test(cleaned)) return '';
   const matched = cleaned.match(/^[一-龥·]{2,8}/);
   return matched?.[0] || '';
 }
@@ -453,15 +458,19 @@ function normalizeBeneficiaryValue(value) {
     .replace(/(受益顺序|受益份额|联系电话|邮政编码|本栏以下空白).*$/, '')
     .trim();
   if (!text) return '';
+  if (/^(列表|名单|明细)$/u.test(text)) return '';
+  if (/(被保险人关系|受益顺序|受益份额|证件名称|证件号码|出生日期|性别)/u.test(text)) return '';
   if (/^(?:被保险人)?的?法定(?:继承人|继本人|维承人|受益人)?$/.test(text)) return '法定';
   if (/法定(?:继承人|继本人|维承人|受益人)/.test(text)) return '法定';
-  return normalizePersonNameValue(text) || text;
+  if (text.length <= 1) return '';
+  return normalizePersonNameValue(text);
 }
 
 function isBeneficiaryPlaceholderLine(value) {
   const text = compactLine(value);
   if (!text) return true;
-  return /^(?:[-—－一]+|证件号码|证件号|受益顺序|受益份额|身故保险金受益人|身故受益人|受益人)$/.test(text);
+  return /^(?:[-—－一]+|证件号码|证件号|受益顺序|受益份额|身故保险金受益人|身故受益人|受益人|受益人列表|证件名称|出生日期|性别)$/.test(text)
+    || /(被保险人受益顺序|与被保险人关系受益份额)/u.test(text);
 }
 
 function extractBeneficiaryFromLines(lines) {
@@ -583,6 +592,7 @@ function normalizeAmountValue(rawValue) {
   if (!raw) return '';
   if (/保险合同号|合同号|证件号码/.test(raw)) return '';
   if (/年|月|日/.test(raw)) return '';
+  if (/周岁|岁/u.test(raw)) return '';
   if (!/[¥￥元万亿]/.test(raw) && /^\d{9,}$/.test(raw)) return '';
   return parseAmountValue(raw);
 }
@@ -617,6 +627,7 @@ export function normalizeExtractedPolicyFields(candidate) {
     name: normalizeNameValue(payload.name || '') || mainPlan?.name || '',
     applicant: normalizePersonNameValue(payload.applicant || ''),
     beneficiary: normalizeBeneficiaryValue(payload.beneficiary || payload.deathBeneficiary || payload.deathBenefitBeneficiary || ''),
+    policyNumber: cleanupFieldValue(payload.policyNumber || payload.policyNo || payload.contractNumber || payload.contractNo || ''),
     insured: normalizePersonNameValue(payload.insured || ''),
     insuredIdNumber,
     insuredBirthday,
@@ -956,6 +967,12 @@ function fallbackPaymentPeriod(lines) {
   for (let index = 0; index < lines.length; index += 1) {
     const current = compactLine(lines[index]);
     if (!current) continue;
+    const labeledYears = current.match(/^(?:交费期间|缴费期间|交费年期|缴费年期|交费年限|缴费年限)[:：]?(\d{1,3})年$/u);
+    if (labeledYears?.[1]) {
+      const modeLine = lines.find((line) => /^(?:交费方式|缴费方式)[:：]?/u.test(compactLine(line)));
+      const modeValue = normalizePaymentModeValue(compactLine(modeLine || '').replace(/^(?:交费方式|缴费方式)[:：]?/u, ''));
+      return modeValue === '年交' ? `${labeledYears[1]}年交` : `${labeledYears[1]}年`;
+    }
     const matched = current.match(/((?:\d+年)?(?:趸交|月交|年交|季交|一次交清))/);
     if (matched?.[1]) {
       if (/^\d+年交$/.test(matched[1])) return matched[1];
@@ -978,7 +995,7 @@ function fallbackAmount(lines) {
     const line = compactLine(raw);
     if (!line) continue;
     if (/保险合同号|合同号|证件号码|客户号码|保单号|联系电话|邮政编码|营业部代码|业务员姓名及代码/.test(String(raw || ''))) continue;
-    if (/年\d{1,2}月\d{1,2}日|合同成立|合同生效|生效日|生效时间/.test(String(raw || ''))) continue;
+    if (/年\d{1,2}月\d{1,2}日|合同成立|合同生效|生效日|生效时间|保单期满日|交费期满日|保险期间|交费期间|周岁|岁/.test(String(raw || ''))) continue;
     if (/^(首期保险费|首年保费|保险费合计|首期保险费合计|总保费|总保险费|每年|[¥￥])/.test(line)) continue;
     if (/^(至20\d{2}年|年交|月交|季交|趸交|一次交清|\/\d+年|\/20\d{2}年)/.test(line)) continue;
     const amount = normalizeAmountValue(raw);
@@ -1470,7 +1487,11 @@ function extractInlineLabeledPolicyFields(lines) {
     for (const label of ordered) {
       const pattern = new RegExp(`^${buildLooseLabelPattern(label)}\\s*[:：]?\\s*(.+)$`, 'i');
       const matched = line.match(pattern);
-      if (matched?.[1]) return cleanupFieldValue(matched[1]);
+      if (!matched?.[1]) continue;
+      const extracted = cleanupFieldValue(matched[1]);
+      if (!extracted) continue;
+      if (/^(?:的申请|的申请，签发本保险单|列表|名单|明细)$/u.test(compactLine(extracted))) continue;
+      return extracted;
     }
     return '';
   };
@@ -1493,7 +1514,7 @@ function extractInlineLabeledPolicyFields(lines) {
       if (value) mapped.date = formatDateValue(value);
     }
     if (!paymentYears) {
-      paymentYears = extractInline(['缴费年期', '交费年期', '缴费年限', '交费年限'], line) || paymentYears;
+      paymentYears = extractInline(['缴费期间', '交费期间', '缴费年期', '交费年期', '缴费年限', '交费年限'], line) || paymentYears;
     }
     if (!paymentMode) {
       paymentMode = extractInline(['缴费方式', '交费方式'], line) || paymentMode;
@@ -1887,6 +1908,7 @@ export function extractPolicyFieldsFromText(rawText) {
     || tableName;
   const applicant = inlineLabeledData.applicant || normalizePersonNameValue(extractByLabels(lines, LABELS.applicant, LABELS.insured));
   const beneficiary = extractBeneficiaryFromLines(lines);
+  const policyNumber = cleanupFieldValue(extractByLabels(lines, LABELS.policyNumber, ['证件号码']));
   const insured =
     inlineLabeledData.insured
     ||
@@ -1986,6 +2008,7 @@ export function extractPolicyFieldsFromText(rawText) {
     name,
     applicant,
     beneficiary,
+    policyNumber,
     insured,
     insuredIdNumber: insuredIdentity.insuredIdNumber,
     insuredBirthday: insuredIdentity.insuredBirthday,
@@ -2146,6 +2169,19 @@ function getConfiguredOllamaVisionModel() {
   return String(process.env.POLICY_OCR_OLLAMA_VISION_MODEL || 'qwen2.5vl:3b').trim();
 }
 
+function getConfiguredRemoteVisionBaseUrl(env = process.env) {
+  return String(env.POLICY_OCR_REMOTE_VISION_BASE_URL || '').trim().replace(/\/+$/, '');
+}
+
+function getConfiguredRemoteVisionModel(env = process.env) {
+  return String(env.POLICY_OCR_REMOTE_VISION_MODEL || 'qwen2.5-vl-7b-instruct').trim();
+}
+
+function getConfiguredRemoteVisionTimeoutMs(env = process.env) {
+  const value = Number(env.POLICY_OCR_REMOTE_VISION_TIMEOUT_MS || 180000);
+  return Number.isFinite(value) && value > 1000 ? value : 180000;
+}
+
 function getConfiguredOllamaVisionNumCtx() {
   const value = Number(process.env.POLICY_OCR_OLLAMA_VISION_NUM_CTX || 512);
   return Number.isFinite(value) && value >= 128 ? Math.trunc(value) : 512;
@@ -2233,6 +2269,89 @@ export function parseVisionJsonObjectBlock(text) {
     return JSON.parse(jsonBlock);
   } catch {
     return JSON.parse(escapeJsonControlCharsInStrings(jsonBlock));
+  }
+}
+
+function buildPolicyVisionExtractionPrompt() {
+  return [
+    '你是保险保单视觉解析助手。请像人的眼睛一样阅读整张保单页面，优先理解版面、表格行列和字段标签。',
+    '只能根据图片中可见内容提取，不要臆造。只输出 JSON，不要解释。',
+    '请输出 JSON：',
+    '{"company":"","name":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[],"ocrText":""}',
+    'plans 每一行来自“保险利益表/险种名称”表格，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
+    'role 规则：主合同用 main；名称或说明含“万能型/万能账户/最低保证利率/账户价值”的账户类险种用 linked_account；只有名称明确含“附加”的才用 rider；不能把第二行默认当附加险。',
+    'productType 可填“增额终身寿险、年金险、万能账户、医疗险、意外险、重疾险、寿险”等。',
+    '扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取首期保险费合计，没有合计时取 plans 保费合计。',
+    'ocrText 输出忠实可读文本，按页面自然顺序换行。',
+  ].join('\n');
+}
+
+function extractRemoteVisionPayloadData(payload) {
+  if (payload?.data && typeof payload.data === 'object') {
+    return {
+      data: payload.data,
+      ocrText: normalizeOcrText(payload.ocrText || payload.text || payload.data.ocrText || ''),
+    };
+  }
+
+  const content = String(
+    payload?.choices?.[0]?.message?.content
+    || payload?.message?.content
+    || payload?.response
+    || payload?.content
+    || '',
+  ).trim();
+  const parsed = parseVisionJsonObjectBlock(content);
+  if (!parsed) return null;
+  return {
+    data: parsed,
+    ocrText: normalizeOcrText(parsed?.ocrText || parsed?.text || ''),
+  };
+}
+
+export async function extractPolicyFieldsFromImageWithRemoteVision(uploadItem, options = {}) {
+  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
+  const env = options.env || process.env;
+  const fetchImpl = options.fetchImpl || fetch;
+  const baseUrl = getConfiguredRemoteVisionBaseUrl(env);
+  if (!baseUrl) throw new Error('POLICY_OCR_PROVIDER_NOT_CONFIGURED');
+
+  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), getConfiguredRemoteVisionTimeoutMs(env));
+  try {
+    const response = await fetchImpl(`${baseUrl}/v1/policy-ocr`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: getConfiguredRemoteVisionModel(env),
+        prompt: buildPolicyVisionExtractionPrompt(),
+        uploadItem: {
+          name: String(uploadItem?.name || 'policy.jpg'),
+          type: mimeType,
+          dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`,
+        },
+      }),
+    });
+    if (!response.ok) throw new Error('POLICY_OCR_FAILED');
+    const payload = await response.json().catch(() => null);
+    const extracted = extractRemoteVisionPayloadData(payload);
+    if (!extracted?.data) throw new Error('POLICY_OCR_FAILED');
+    const normalized = normalizeExtractedPolicyFields(extracted.data);
+    if (!Object.values(normalized).some(Boolean)) throw new Error('POLICY_OCR_EMPTY');
+    return {
+      data: normalized,
+      ocrText: extracted.ocrText,
+    };
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (message.includes('AbortError')) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
+    if (message.includes('POLICY_OCR_PROVIDER_NOT_CONFIGURED')) throw error;
+    if (message.includes('POLICY_OCR_EMPTY')) throw error;
+    throw new Error('POLICY_OCR_FAILED');
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -2867,6 +2986,10 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
       const mlxResult = await extractPolicyFieldsFromImageWithMlxVlm(uploadItem);
       data = mlxResult?.data || null;
       bestOcrText = normalizeOcrText(mlxResult?.ocrText || '');
+    } else if (provider === OCR_PROVIDER_REMOTE_GPU_VISION) {
+      const remoteResult = await extractPolicyFieldsFromImageWithRemoteVision(uploadItem);
+      data = remoteResult?.data || null;
+      bestOcrText = normalizeOcrText(remoteResult?.ocrText || '');
     } else {
       const candidates = [];
       let handledPaddleLayout = false;

@@ -325,6 +325,113 @@ function normalizePlanName(parts = []) {
   return normalizeProductNameText(text);
 }
 
+function findInlineLabeledPlanName(lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lineHasFieldLabel(lines[index], 'name')) continue;
+    const name = normalizeProductNameText(lines[index]);
+    if (!name) continue;
+    return {
+      name,
+      lineIndex: index,
+    };
+  }
+  return null;
+}
+
+function hasInlineSinglePlanSummaryHeaders(lines, startIndex) {
+  const window = lines
+    .slice(startIndex + 1, startIndex + 24)
+    .map((line) => compactText(line))
+    .filter(Boolean);
+  const joined = window.join('');
+  return (/子险种名称/u.test(joined) || window.some((line) => /^子险种名称$/u.test(line)))
+    && (/标准保费/u.test(joined) || window.some((line) => /^标准保费/u.test(line)))
+    && (/保险金额/u.test(joined) || window.some((line) => /^保险金额/u.test(line)));
+}
+
+function extractInlineSinglePlanSummary(lines, company = '') {
+  const inlinePlan = findInlineLabeledPlanName(lines);
+  if (!inlinePlan?.name) return null;
+  if (!hasInlineSinglePlanSummaryHeaders(lines, inlinePlan.lineIndex)) return null;
+
+  const summaryNameIndex = lines.findIndex((line, index) => (
+    index > inlinePlan.lineIndex
+    && compactText(line) === compactText(inlinePlan.name)
+  ));
+  if (summaryNameIndex < 0) return null;
+
+  let coveragePeriod = '';
+  let coverageLineIndex = -1;
+  let paymentMode = '';
+  let paymentModeLineIndex = -1;
+  let rawPaymentPeriod = '';
+  let paymentPeriodLineIndex = -1;
+
+  for (let index = inlinePlan.lineIndex + 1; index < summaryNameIndex; index += 1) {
+    const line = compactText(lines[index]);
+    if (!line) continue;
+    if (!coveragePeriod) {
+      const matchedCoverage = normalizeCoveragePeriodText(line);
+      if (matchedCoverage) {
+        coveragePeriod = matchedCoverage;
+        coverageLineIndex = index;
+      }
+    }
+    if (!paymentMode) {
+      const matchedMode = normalizePaymentModeText(line);
+      if (matchedMode) {
+        paymentMode = matchedMode;
+        paymentModeLineIndex = index;
+      }
+    }
+    if (!rawPaymentPeriod) {
+      const matchedPeriod = normalizePaymentPeriodText(line);
+      if (matchedPeriod) {
+        rawPaymentPeriod = matchedPeriod;
+        paymentPeriodLineIndex = index;
+      }
+    }
+  }
+
+  const numericRows = [];
+  for (let index = summaryNameIndex + 1; index < Math.min(lines.length, summaryNameIndex + 8); index += 1) {
+    const line = compactText(lines[index]);
+    if (!line) continue;
+    if (isBenefitTablePlanBoundary(line)) break;
+    const amount = normalizeAmountText(line);
+    if (!amount) {
+      if (numericRows.length) break;
+      continue;
+    }
+    numericRows.push({
+      amount,
+      line,
+      lineIndex: index,
+    });
+  }
+  if (!numericRows.length) return null;
+
+  const premiumRow = numericRows[1] || null;
+  return {
+    company,
+    role: '',
+    name: inlinePlan.name,
+    productType: inferPlanProductType(inlinePlan.name),
+    amount: numericRows[0]?.amount || '',
+    amountLineIndex: numericRows[0]?.lineIndex ?? -1,
+    coveragePeriod,
+    coverageLineIndex,
+    paymentMode,
+    paymentModeLineIndex,
+    rawPaymentPeriod,
+    paymentPeriod: normalizePlanPaymentPeriod(rawPaymentPeriod, paymentMode),
+    paymentPeriodLineIndex,
+    premium: premiumRow?.amount || '',
+    premiumText: premiumRow?.line || '',
+    premiumLineIndex: premiumRow?.lineIndex ?? -1,
+  };
+}
+
 function extractReceiptProductName(line) {
   const text = compactText(line);
   const matched = text.match(/^产品名称[:：]?(.+)$/u);
@@ -373,6 +480,70 @@ function extractReceiptPolicyPlans(lines, company = '') {
       premiumText: premiumLine,
     };
   });
+}
+
+function addCandidatesFromInlineSinglePlanSummary({ candidates, lines, company }) {
+  const plan = extractInlineSinglePlanSummary(lines, company);
+  if (!plan) return;
+
+  addCandidate(candidates, createCandidate({
+    field: 'name',
+    value: plan.name,
+    score: scoreProductName(plan.name, { source: 'inline-single-plan-summary' }) + 30,
+    lineIndex: plan.amountLineIndex >= 0 ? plan.amountLineIndex : 0,
+    source: 'inline-single-plan-summary',
+    reason: 'inline plan name with a single-plan summary table',
+  }));
+
+  if (plan.coveragePeriod) {
+    addCandidate(candidates, createCandidate({
+      field: 'coveragePeriod',
+      value: plan.coveragePeriod,
+      score: 85,
+      lineIndex: plan.coverageLineIndex,
+      source: 'inline-single-plan-summary',
+    }));
+  }
+
+  if (plan.paymentMode) {
+    addCandidate(candidates, createCandidate({
+      field: 'paymentMode',
+      value: plan.paymentMode,
+      score: 85,
+      lineIndex: plan.paymentModeLineIndex,
+      source: 'inline-single-plan-summary',
+    }));
+  }
+
+  if (plan.rawPaymentPeriod) {
+    addCandidate(candidates, createCandidate({
+      field: 'paymentPeriod',
+      value: plan.rawPaymentPeriod,
+      score: 90,
+      lineIndex: plan.paymentPeriodLineIndex,
+      source: 'inline-single-plan-summary',
+    }));
+  }
+
+  if (plan.amount) {
+    addCandidate(candidates, createCandidate({
+      field: 'amount',
+      value: plan.amount,
+      score: 90,
+      lineIndex: plan.amountLineIndex,
+      source: 'inline-single-plan-summary',
+    }));
+  }
+
+  if (plan.premium) {
+    addCandidate(candidates, createCandidate({
+      field: 'firstPremium',
+      value: plan.premium,
+      score: 90,
+      lineIndex: plan.premiumLineIndex,
+      source: 'inline-single-plan-summary',
+    }));
+  }
 }
 
 function readPlanName(source, startIndex, company) {
@@ -757,6 +928,21 @@ export function extractPolicyPlansFromLines(inputLines, options = {}) {
       role: inferPlanRole(plan, index),
     }));
   }
+  const inlineSinglePlan = extractInlineSinglePlanSummary(lines, company);
+  if (inlineSinglePlan) {
+    return [{
+      company: inlineSinglePlan.company,
+      role: inferPlanRole(inlineSinglePlan, 0),
+      name: inlineSinglePlan.name,
+      productType: inlineSinglePlan.productType,
+      amount: inlineSinglePlan.amount,
+      coveragePeriod: inlineSinglePlan.coveragePeriod,
+      paymentMode: inlineSinglePlan.paymentMode,
+      paymentPeriod: inlineSinglePlan.paymentPeriod,
+      premium: inlineSinglePlan.premium,
+      premiumText: inlineSinglePlan.premiumText,
+    }];
+  }
   const labelIndex = findFieldLabelIndex(lines, 'name');
   if (labelIndex < 0) return [];
 
@@ -795,6 +981,7 @@ export function matchPolicyFieldsFromLines(inputLines, options = {}) {
   addProductNameCandidates({ candidates, lines, company });
   addDurationCandidates({ candidates, lines });
   addMoneyCandidatesFromBenefitTable({ candidates, lines, company });
+  addCandidatesFromInlineSinglePlanSummary({ candidates, lines, company });
 
   const fields = createEmptyPolicyFields();
   for (const field of POLICY_FIELD_KEYS) {

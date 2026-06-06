@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
 const backupDir = path.join(runtimeDir, 'backups');
+const dbPathDefault = path.join(runtimeDir, 'policy-ocr.sqlite');
 const statePathDefault = path.join(runtimeDir, 'state.json');
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
@@ -150,7 +152,8 @@ function taskFromRecord(record) {
   };
 }
 
-function main() {
+async function main() {
+  const dbPath = path.resolve(readArg('db-path', process.env.POLICY_OCR_APP_DB_PATH || dbPathDefault));
   const statePath = path.resolve(readArg('state-path', process.env.POLICY_OCR_APP_STATE_PATH || statePathDefault));
   const suspectsPath = path.resolve(readArg('suspects-path', path.join(runtimeDir, 'responsibility-quality-suspects-pingan.json')));
   const company = trim(readArg('company', '中国平安'));
@@ -176,229 +179,241 @@ function main() {
   );
   const now = new Date().toISOString();
   const stamp = timestampForFile();
-
-  const state = readJson(statePath, {});
-  if (!Array.isArray(state.knowledgeRecords)) {
-    throw new Error(`未找到 knowledgeRecords：${statePath}`);
-  }
-  const suspects = normalizeSuspects(readJson(suspectsPath, []));
-  const targetIds = new Set(
-    suspects
-      .filter((item) => severities.has(trim(item.severity)))
-      .filter((item) => !company || trim(item.company) === company || trim(item.feishuTableName) === company)
-      .map((item) => trim(item.id || item.localId))
-      .filter(Boolean),
-  );
-
-  const allTargets = state.knowledgeRecords
-    .filter((record) => targetIds.has(trim(record.id)))
-    .filter((record) => !company || trim(record.company) === company)
-    .filter((record) => currentStatuses.has(trim(record.qualityStatus)))
-    .filter((record) => !skipReextractFailed || !trim(record.qualityReason).startsWith('reextract_failed:'))
-    .filter((record) => trim(record.url) && trim(record.productName));
-  const selected = limit ? allTargets.slice(offset, offset + limit) : allTargets.slice(offset);
-  const tasks = selected.map(taskFromRecord);
-  const tasksPath = path.join(runtimeDir, `responsibility-refill-tasks-${stamp}.json`);
-  writeJson(tasksPath, {
-    statePath,
-    suspectsPath,
-    company,
-    severity: [...severities],
-    currentStatus: [...currentStatuses],
-    offset,
-    limit,
-    targetCount: allTargets.length,
-    selectedCount: selected.length,
-    crawlerMode,
-    tasks,
-  });
-
-  if (dryRun || !selected.length) {
-    console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          dryRun,
-          targetCount: allTargets.length,
-          selectedCount: selected.length,
-          tasksPath,
-        },
-        null,
-        2,
-      ),
+  const knowledgeStore = await createKnowledgeStateStore({ dbPath, seedStatePath: statePath });
+  try {
+    const state = knowledgeStore.loadState();
+    if (!Array.isArray(state.knowledgeRecords)) {
+      throw new Error(`未找到 knowledgeRecords：${dbPath}`);
+    }
+    const suspects = normalizeSuspects(readJson(suspectsPath, []));
+    const targetIds = new Set(
+      suspects
+        .filter((item) => severities.has(trim(item.severity)))
+        .filter((item) => !company || trim(item.company) === company || trim(item.feishuTableName) === company)
+        .map((item) => trim(item.id || item.localId))
+        .filter(Boolean),
     );
-    return;
-  }
 
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `state-before-responsibility-refill-${stamp}.json`);
-  fs.copyFileSync(statePath, backupPath);
-  const reportPath = path.join(runtimeDir, `responsibility-refill-report-${stamp}.json`);
-
-  const recordById = new Map(state.knowledgeRecords.map((record) => [trim(record.id), record]));
-  const recordByUrl = new Map(state.knowledgeRecords.map((record) => [trim(record.url), record]));
-  const refilled = [];
-  const failed = [];
-  for (let index = 0; index < tasks.length; index += batchSize) {
-    const batch = tasks.slice(index, index + batchSize);
-    const baseCrawlerOptions = {
-      crawlerMode,
+    const allTargets = state.knowledgeRecords
+      .filter((record) => targetIds.has(trim(record.id)))
+      .filter((record) => !company || trim(record.company) === company)
+      .filter((record) => currentStatuses.has(trim(record.qualityStatus)))
+      .filter((record) => !skipReextractFailed || !trim(record.qualityReason).startsWith('reextract_failed:'))
+      .filter((record) => trim(record.url) && trim(record.productName));
+    const selected = limit ? allTargets.slice(offset, offset + limit) : allTargets.slice(offset);
+    const tasks = selected.map(taskFromRecord);
+    const tasksPath = path.join(runtimeDir, `responsibility-refill-tasks-${stamp}.json`);
+    writeJson(tasksPath, {
+      dbPath,
+      suspectsPath,
       company,
-      maxWorkers,
-      cdpUrl,
-      delayMs,
-      pdfRetryCount,
-      pdfRetryDelayMs,
-      recordTimeoutMs,
-    };
-    let result;
-    if (recordTimeoutMs) {
-      result = batch.reduce(
-        (merged, task) => {
-          const itemResult = runCrawlerSingleSafe(task, baseCrawlerOptions);
-          merged.records.push(...(Array.isArray(itemResult.records) ? itemResult.records : []));
-          merged.skipped.push(...(Array.isArray(itemResult.skipped) ? itemResult.skipped : []));
-          return merged;
-        },
-        { ok: true, records: [], skipped: [] },
+      severity: [...severities],
+      currentStatus: [...currentStatuses],
+      offset,
+      limit,
+      targetCount: allTargets.length,
+      selectedCount: selected.length,
+      crawlerMode,
+      tasks,
+    });
+
+    if (dryRun || !selected.length) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            dryRun,
+            targetCount: allTargets.length,
+            selectedCount: selected.length,
+            tasksPath,
+          },
+          null,
+          2,
+        ),
       );
-    } else {
-      try {
-        result = runCrawler(batch, { ...baseCrawlerOptions, timeoutMs: batchTimeoutMs });
-      } catch (error) {
-        if (!fallbackSingleTimeoutMs) throw error;
-        console.warn(
-          `[refill] 批次 ${index + 1}-${index + batch.length} 失败，降级单条重试：${
-            error?.code === 'ETIMEDOUT' ? 'timeout' : trim(error?.message).split('\n')[0] || 'unknown'
-          }`,
-        );
+      return;
+    }
+
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupPath = path.join(backupDir, `knowledge-before-responsibility-refill-${stamp}.json`);
+    writeJson(backupPath, selected);
+    const reportPath = path.join(runtimeDir, `responsibility-refill-report-${stamp}.json`);
+
+    const recordById = new Map(state.knowledgeRecords.map((record) => [trim(record.id), record]));
+    const recordByUrl = new Map(state.knowledgeRecords.map((record) => [trim(record.url), record]));
+    const refilled = [];
+    const failed = [];
+    const changedRecords = new Map();
+    for (let index = 0; index < tasks.length; index += batchSize) {
+      const batch = tasks.slice(index, index + batchSize);
+      const baseCrawlerOptions = {
+        crawlerMode,
+        company,
+        maxWorkers,
+        cdpUrl,
+        delayMs,
+        pdfRetryCount,
+        pdfRetryDelayMs,
+        recordTimeoutMs,
+      };
+      let result;
+      if (recordTimeoutMs) {
         result = batch.reduce(
           (merged, task) => {
-            const itemResult = runCrawlerSingleSafe(task, {
-              ...baseCrawlerOptions,
-              recordTimeoutMs: fallbackSingleTimeoutMs,
-            });
+            const itemResult = runCrawlerSingleSafe(task, baseCrawlerOptions);
             merged.records.push(...(Array.isArray(itemResult.records) ? itemResult.records : []));
             merged.skipped.push(...(Array.isArray(itemResult.skipped) ? itemResult.skipped : []));
             return merged;
           },
           { ok: true, records: [], skipped: [] },
         );
+      } else {
+        try {
+          result = runCrawler(batch, { ...baseCrawlerOptions, timeoutMs: batchTimeoutMs });
+        } catch (error) {
+          if (!fallbackSingleTimeoutMs) throw error;
+          console.warn(
+            `[refill] 批次 ${index + 1}-${index + batch.length} 失败，降级单条重试：${
+              error?.code === 'ETIMEDOUT' ? 'timeout' : trim(error?.message).split('\n')[0] || 'unknown'
+            }`,
+          );
+          result = batch.reduce(
+            (merged, task) => {
+              const itemResult = runCrawlerSingleSafe(task, {
+                ...baseCrawlerOptions,
+                recordTimeoutMs: fallbackSingleTimeoutMs,
+              });
+              merged.records.push(...(Array.isArray(itemResult.records) ? itemResult.records : []));
+              merged.skipped.push(...(Array.isArray(itemResult.skipped) ? itemResult.skipped : []));
+              return merged;
+            },
+            { ok: true, records: [], skipped: [] },
+          );
+        }
       }
-    }
-    for (const item of Array.isArray(result.records) ? result.records : []) {
-      const record = recordById.get(trim(item.id)) || recordByUrl.get(trim(item.url));
-      if (!record || !trim(item.pageText)) continue;
-      record.pageText = trim(item.pageText);
-      record.snippet = trim(item.snippet) || '官网资料，已重新抽取保险责任正文段。';
-      record.parser = trim(item.parser) || 'scrapling_responsibility_refill';
-      record.materialType = trim(item.materialType) || trim(record.materialType);
-      record.officialDomain = trim(item.officialDomain) || trim(record.officialDomain);
-      record.qualityStatus = 'valid_responsibility_refilled';
-      record.qualityReason = '';
-      record.refilledAt = now;
-      record.lastFetchedAt = now;
-      record.updatedAt = now;
-      if (Number(item.pages)) record.pages = item.pages;
-      if (Number(item.bytes)) record.bytes = item.bytes;
-      refilled.push({
-        id: trim(record.id),
-        productName: trim(record.productName),
-        url: trim(record.url),
-        pageTextLength: trim(record.pageText).length,
-        preview: trim(record.pageText).slice(0, 220),
-      });
-    }
-    for (const item of Array.isArray(result.skipped) ? result.skipped : []) {
-      const record = recordById.get(trim(item.id)) || recordByUrl.get(trim(item.url));
-      if (record) {
-        record.qualityStatus = 'invalid_responsibility';
-        record.qualityReason = `reextract_failed:${trim(item.reason) || 'unknown'}`;
-        record.pageText = '';
+      for (const item of Array.isArray(result.records) ? result.records : []) {
+        const record = recordById.get(trim(item.id)) || recordByUrl.get(trim(item.url));
+        if (!record || !trim(item.pageText)) continue;
+        record.pageText = trim(item.pageText);
+        record.snippet = trim(item.snippet) || '官网资料，已重新抽取保险责任正文段。';
+        record.parser = trim(item.parser) || 'scrapling_responsibility_refill';
+        record.materialType = trim(item.materialType) || trim(record.materialType);
+        record.officialDomain = trim(item.officialDomain) || trim(record.officialDomain);
+        record.qualityStatus = 'valid_responsibility_refilled';
+        record.qualityReason = '';
+        record.refilledAt = now;
+        record.lastFetchedAt = now;
         record.updatedAt = now;
+        if (Number(item.pages)) record.pages = item.pages;
+        if (Number(item.bytes)) record.bytes = item.bytes;
+        changedRecords.set(String(record.id), record);
+        refilled.push({
+          id: trim(record.id),
+          productName: trim(record.productName),
+          url: trim(record.url),
+          pageTextLength: trim(record.pageText).length,
+          preview: trim(record.pageText).slice(0, 220),
+        });
       }
-      failed.push(item);
+      for (const item of Array.isArray(result.skipped) ? result.skipped : []) {
+        const record = recordById.get(trim(item.id)) || recordByUrl.get(trim(item.url));
+        if (record) {
+          record.qualityStatus = 'invalid_responsibility';
+          record.qualityReason = `reextract_failed:${trim(item.reason) || 'unknown'}`;
+          record.pageText = '';
+          record.updatedAt = now;
+          changedRecords.set(String(record.id), record);
+        }
+        failed.push(item);
+      }
+      console.log(`[refill] 进度 ${Math.min(index + batch.length, tasks.length)}/${tasks.length}，成功 ${refilled.length}，失败 ${failed.length}`);
+      if (flushEachBatch && changedRecords.size) {
+        knowledgeStore.upsertRows([...changedRecords.values()], { nextId: state.nextId });
+        writeJson(reportPath, {
+          ok: true,
+          partial: index + batch.length < tasks.length,
+          dbPath,
+          suspectsPath,
+          backupPath,
+          tasksPath,
+          company,
+          severity: [...severities],
+          currentStatus: [...currentStatuses],
+          offset,
+          limit,
+          batchSize,
+          maxWorkers,
+          batchTimeoutMs,
+          fallbackSingleTimeoutMs,
+          crawlerMode,
+          cdpUrl: crawlerMode === 'ping_an_browser_catalog_materials' ? cdpUrl : '',
+          delayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? delayMs : 0,
+          pdfRetryCount: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryCount : 0,
+          pdfRetryDelayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryDelayMs : 0,
+          targetCount: allTargets.length,
+          selectedCount: selected.length,
+          processedCount: Math.min(index + batch.length, tasks.length),
+          refilledCount: refilled.length,
+          failedCount: failed.length,
+          refilled,
+          failed,
+        });
+      }
     }
-    console.log(`[refill] 进度 ${Math.min(index + batch.length, tasks.length)}/${tasks.length}，成功 ${refilled.length}，失败 ${failed.length}`);
-    if (flushEachBatch) {
-      writeJson(statePath, state);
-      writeJson(reportPath, {
-        ok: true,
-        partial: index + batch.length < tasks.length,
-        statePath,
-        suspectsPath,
-        backupPath,
-        tasksPath,
-        company,
-        severity: [...severities],
-        currentStatus: [...currentStatuses],
-        offset,
-        limit,
-        batchSize,
-        maxWorkers,
-        batchTimeoutMs,
-        fallbackSingleTimeoutMs,
-        crawlerMode,
-        cdpUrl: crawlerMode === 'ping_an_browser_catalog_materials' ? cdpUrl : '',
-        delayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? delayMs : 0,
-        pdfRetryCount: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryCount : 0,
-        pdfRetryDelayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryDelayMs : 0,
-        targetCount: allTargets.length,
-        selectedCount: selected.length,
-        processedCount: Math.min(index + batch.length, tasks.length),
-        refilledCount: refilled.length,
-        failedCount: failed.length,
-        refilled,
-        failed,
-      });
-    }
-  }
 
-  writeJson(statePath, state);
-  const report = {
-    ok: true,
-    statePath,
-    suspectsPath,
-    backupPath,
-    tasksPath,
-    company,
-    severity: [...severities],
-    currentStatus: [...currentStatuses],
-    offset,
-    limit,
-    batchSize,
-    maxWorkers,
-    batchTimeoutMs,
-    fallbackSingleTimeoutMs,
-    crawlerMode,
-    cdpUrl: crawlerMode === 'ping_an_browser_catalog_materials' ? cdpUrl : '',
-    delayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? delayMs : 0,
-    pdfRetryCount: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryCount : 0,
-    pdfRetryDelayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryDelayMs : 0,
-    targetCount: allTargets.length,
-    selectedCount: selected.length,
-    refilledCount: refilled.length,
-    failedCount: failed.length,
-    refilled,
-    failed,
-  };
-  writeJson(reportPath, report);
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        targetCount: allTargets.length,
-        selectedCount: selected.length,
-        refilledCount: refilled.length,
-        failedCount: failed.length,
-        backupPath,
-        tasksPath,
-        reportPath,
-      },
-      null,
-      2,
-    ),
-  );
+    if (changedRecords.size) {
+      knowledgeStore.upsertRows([...changedRecords.values()], { nextId: state.nextId });
+    }
+    const report = {
+      ok: true,
+      dbPath,
+      suspectsPath,
+      backupPath,
+      tasksPath,
+      company,
+      severity: [...severities],
+      currentStatus: [...currentStatuses],
+      offset,
+      limit,
+      batchSize,
+      maxWorkers,
+      batchTimeoutMs,
+      fallbackSingleTimeoutMs,
+      crawlerMode,
+      cdpUrl: crawlerMode === 'ping_an_browser_catalog_materials' ? cdpUrl : '',
+      delayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? delayMs : 0,
+      pdfRetryCount: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryCount : 0,
+      pdfRetryDelayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryDelayMs : 0,
+      targetCount: allTargets.length,
+      selectedCount: selected.length,
+      refilledCount: refilled.length,
+      failedCount: failed.length,
+      refilled,
+      failed,
+    };
+    writeJson(reportPath, report);
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          targetCount: allTargets.length,
+          selectedCount: selected.length,
+          refilledCount: refilled.length,
+          failedCount: failed.length,
+          backupPath,
+          tasksPath,
+          reportPath,
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    knowledgeStore.close();
+  }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

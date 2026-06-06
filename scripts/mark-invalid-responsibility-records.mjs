@@ -1,9 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
+
 const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
-const statePath = path.join(projectRoot, '.runtime', 'state.json');
-const backupDir = path.join(projectRoot, '.runtime', 'backups');
+const runtimeDir = path.join(projectRoot, '.runtime');
+const backupDir = path.join(runtimeDir, 'backups');
+const defaultDbPath = path.join(runtimeDir, 'policy-ocr.sqlite');
+const defaultSeedStatePath = path.join(runtimeDir, 'state.json');
 
 function readJson(filePath, fallback) {
   try {
@@ -16,6 +20,10 @@ function readJson(filePath, fallback) {
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function trim(value) {
+  return String(value || '').trim();
 }
 
 function readArg(name, fallback = '') {
@@ -33,50 +41,66 @@ function selectedSeverities() {
   );
 }
 
-const state = readJson(statePath, {});
-const suspectsPath = path.resolve(readArg('suspects-path', path.join(projectRoot, '.runtime', 'responsibility-quality-suspects-no-pingan.json')));
-const suspects = readJson(suspectsPath, []);
-const severities = selectedSeverities();
-const companyFilter = String(readArg('company', '')).trim();
-const targetById = new Map(
-  suspects
-    .filter((item) => severities.has(item.severity))
-    .filter((item) => !companyFilter || item.company === companyFilter || item.feishuTableName === companyFilter)
-    .map((item) => [String(item.id), item]),
-);
+async function main() {
+  const dbPath = path.resolve(readArg('db-path', process.env.POLICY_OCR_APP_DB_PATH || defaultDbPath));
+  const seedStatePath = path.resolve(readArg('state-path', process.env.POLICY_OCR_APP_STATE_PATH || defaultSeedStatePath));
+  const suspectsPath = path.resolve(readArg('suspects-path', path.join(runtimeDir, 'responsibility-quality-suspects-no-pingan.json')));
+  const severities = selectedSeverities();
+  const companyFilter = String(readArg('company', '')).trim();
+  const knowledgeStore = await createKnowledgeStateStore({ dbPath, seedStatePath });
+  try {
+    const state = knowledgeStore.loadState();
+    if (!Array.isArray(state.knowledgeRecords)) {
+      throw new Error(`未找到 knowledgeRecords：${dbPath}`);
+    }
+    const suspects = readJson(suspectsPath, []);
+    const targetById = new Map(
+      suspects
+        .filter((item) => severities.has(item.severity))
+        .filter((item) => !companyFilter || item.company === companyFilter || item.feishuTableName === companyFilter)
+        .map((item) => [String(item.id), item]),
+    );
 
-if (!Array.isArray(state.knowledgeRecords)) {
-  throw new Error(`未找到 knowledgeRecords：${statePath}`);
+    fs.mkdirSync(backupDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = path.join(backupDir, `knowledge-before-responsibility-invalid-mark-${stamp}.json`);
+    writeJson(backupPath, state.knowledgeRecords);
+
+    const now = new Date().toISOString();
+    const changedRows = [];
+    const byCompany = {};
+    for (const record of state.knowledgeRecords) {
+      const suspect = targetById.get(String(record.id));
+      if (!suspect) continue;
+      record.qualityStatus = 'invalid_responsibility';
+      record.qualityReason = suspect.reasons || '疑似非保险责任正文';
+      record.invalidatedAt = now;
+      record.pageText = '';
+      record.updatedAt = now;
+      changedRows.push(record);
+      byCompany[record.company || '未知'] = (byCompany[record.company || '未知'] || 0) + 1;
+    }
+
+    if (changedRows.length) {
+      knowledgeStore.upsertRows(changedRows, { nextId: state.nextId });
+    }
+
+    const report = {
+      ok: true,
+      dbPath,
+      backupPath,
+      changed: changedRows.length,
+      severity: [...severities],
+      byCompany: Object.entries(byCompany).sort((a, b) => b[1] - a[1]),
+    };
+    writeJson(path.join(runtimeDir, 'responsibility-invalid-mark-report.json'), report);
+    console.log(JSON.stringify(report, null, 2));
+  } finally {
+    knowledgeStore.close();
+  }
 }
 
-fs.mkdirSync(backupDir, { recursive: true });
-const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const backupPath = path.join(backupDir, `state-before-responsibility-invalid-mark-${stamp}.json`);
-fs.copyFileSync(statePath, backupPath);
-
-const now = new Date().toISOString();
-let changed = 0;
-const byCompany = {};
-for (const record of state.knowledgeRecords) {
-  const suspect = targetById.get(String(record.id));
-  if (!suspect) continue;
-  record.qualityStatus = 'invalid_responsibility';
-  record.qualityReason = suspect.reasons || '疑似非保险责任正文';
-  record.invalidatedAt = now;
-  record.pageText = '';
-  record.updatedAt = now;
-  changed += 1;
-  byCompany[record.company || '未知'] = (byCompany[record.company || '未知'] || 0) + 1;
-}
-
-writeJson(statePath, state);
-const report = {
-  ok: true,
-  statePath,
-  backupPath,
-  changed,
-  severity: [...severities],
-  byCompany: Object.entries(byCompany).sort((a, b) => b[1] - a[1]),
-};
-writeJson(path.join(projectRoot, '.runtime', 'responsibility-invalid-mark-report.json'), report);
-console.log(JSON.stringify(report, null, 2));
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

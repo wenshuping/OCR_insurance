@@ -125,6 +125,46 @@ function policyCanonicalProductIds(policy = {}) {
   return ids;
 }
 
+function matchedPolicyProductIdentity(policy = {}, knowledgeRecord = {}) {
+  const recordNames = productNames(knowledgeRecord);
+  const explicitRecordCanonicalProductId = explicitCanonicalProductId(knowledgeRecord);
+  const recordCanonicalProductId = explicitRecordCanonicalProductId
+    || canonicalProductIdForRecord(knowledgeRecord, knowledgeRecord.company || policy.company);
+  if (recordCanonicalProductId) {
+    const matchedPlan = (Array.isArray(policy.plans) ? policy.plans : []).find((plan) => {
+      const planCanonicalProductId = explicitCanonicalProductId(plan)
+        || (plan?.matchedProductName
+          ? canonicalProductIdFromOfficialProduct({
+              company: plan?.company || policy.company,
+              productName: plan.matchedProductName,
+            })
+          : '');
+      return planCanonicalProductId && planCanonicalProductId === recordCanonicalProductId;
+    });
+    const matchedProductName = String(matchedPlan?.matchedProductName || '').trim()
+      || recordNames[0]
+      || String(policy.name || '').trim();
+    return {
+      productName: matchedProductName,
+      canonicalProductId: explicitRecordCanonicalProductId
+        || explicitCanonicalProductId(matchedPlan)
+        || explicitCanonicalProductId(policy),
+    };
+  }
+
+  const matchedPlan = (Array.isArray(policy.plans) ? policy.plans : []).find((plan) => {
+    const matchedProductName = String(plan?.matchedProductName || '').trim();
+    return matchedProductName && recordNames.some((name) => normalizeLookupText(name) === normalizeLookupText(matchedProductName));
+  });
+  const productName = String(matchedPlan?.matchedProductName || '').trim()
+    || recordNames[0]
+    || String(policy.name || '').trim();
+  return {
+    productName,
+    canonicalProductId: explicitCanonicalProductId(policy),
+  };
+}
+
 function recordMatchesPolicy(record = {}, policy = {}) {
   const canonicalIds = new Set(policyCanonicalProductIds(policy));
   const recordCanonicalProductId = explicitCanonicalProductId(record);
@@ -160,15 +200,31 @@ function extractOptionalSections(text = '') {
   const matches = [...source.matchAll(OPTIONAL_SECTION_PATTERN)]
     .map((match) => {
       const suffix = String(match[1] || '').trim();
+      const sourceExcerpt = sectionExcerpt(source, match);
       return {
         liability: `可选责任${suffix}`,
-        sourceExcerpt: sectionExcerpt(source, match),
+        sourceExcerpt,
       };
     })
     .filter((section, index, list) => list.findIndex((item) => item.liability === section.liability) === index);
   const specific = matches.filter((section) => section.liability !== '可选责任');
   if (!specific.length && OPTIONAL_NEGATIVE_PATTERN.test(source)) return [];
-  return specific.length ? specific : matches.slice(0, 1);
+  if (specific.length) return specific;
+  return matches.slice(0, 1).flatMap(expandGenericOptionalSection);
+}
+
+function expandGenericOptionalSection(section = {}) {
+  if (normalizeLookupText(section.liability) !== '可选责任') return [section];
+  const names = splitBenefitClauses(section.sourceExcerpt)
+    .map(extractLiability)
+    .map((name) => String(name || '').trim())
+    .filter(Boolean)
+    .filter((name, index, list) => list.indexOf(name) === index);
+  if (!names.length) return [section];
+  return names.map((liability) => ({
+    ...section,
+    liability,
+  }));
 }
 
 function responsibilityKey(record = {}) {
@@ -180,7 +236,7 @@ function responsibilityKey(record = {}) {
   ].map(normalizeLookupText).join('\u001f');
 }
 
-function indicatorLinkedTo(record, indicator = {}) {
+function indicatorLinkedTo(record, indicator = {}, options = {}) {
   const company = normalizeLookupText(record.company);
   const indicatorCompany = normalizeLookupText(indicator.company);
   if (company && indicatorCompany && company !== indicatorCompany) return false;
@@ -193,7 +249,13 @@ function indicatorLinkedTo(record, indicator = {}) {
   const indicatorProductName = normalizeLookupText(indicator.productName);
   if (productName && indicatorProductName && productName !== indicatorProductName) return false;
   const indicatorOptionalResponsibilityId = String(indicator?.optionalResponsibilityId || '').trim();
-  if (indicatorOptionalResponsibilityId) return indicatorOptionalResponsibilityId === String(record.id || '').trim();
+  if (indicatorOptionalResponsibilityId) {
+    if (indicatorOptionalResponsibilityId === String(record.id || '').trim()) return true;
+    if (!options.allowGenericIdRepair) return false;
+    const liability = normalizeLookupText(record.liability);
+    const text = normalizeLookupText([indicator.coverageType, indicator.liability, indicator.sourceExcerpt].join(' '));
+    return liability && liability !== '可选责任' && liability.length >= 2 && text.includes(liability);
+  }
   const text = normalizeLookupText([indicator.coverageType, indicator.liability, indicator.sourceExcerpt].join(' '));
   const liability = normalizeLookupText(record.liability);
   return liability.length >= 2 && text.includes(liability);
@@ -271,19 +333,31 @@ export function buildOptionalResponsibilityRecords({ policy = {}, knowledgeRecor
   for (const knowledgeRecord of Array.isArray(knowledgeRecords) ? knowledgeRecords : []) {
     if (!recordMatchesPolicy(knowledgeRecord, policy)) continue;
     for (const section of extractOptionalSections(knowledgeText(knowledgeRecord))) {
+      const productIdentity = matchedPolicyProductIdentity(policy, knowledgeRecord);
       const base = normalizeOptionalResponsibilityRecord({
         company: policy.company || knowledgeRecord.company,
-        productName: policy.name || productNames(knowledgeRecord)[0],
-        canonicalProductId: explicitCanonicalProductId(knowledgeRecord) || explicitCanonicalProductId(policy),
+        productName: productIdentity.productName,
+        canonicalProductId: productIdentity.canonicalProductId,
         liability: section.liability,
         sourceExcerpt: section.sourceExcerpt,
         ...knowledgeSourceFields(knowledgeRecord),
         selectionStatus: inferSelectionStatus(policy, section.liability),
         selectionEvidence: 'policy_ocr',
       });
-      const linkedIndicators = (Array.isArray(indicators) ? indicators : []).filter((indicator) => indicatorLinkedTo(base, indicator));
+      const hasGenericExistingForLinkedIndicator = (indicator) => {
+        const indicatorOptionalResponsibilityId = String(indicator?.optionalResponsibilityId || '').trim();
+        if (!indicatorOptionalResponsibilityId) return false;
+        return normalizeLookupText(existingById.get(indicatorOptionalResponsibilityId)?.liability) === '可选责任';
+      };
+      const linkedIndicators = (Array.isArray(indicators) ? indicators : []).filter((indicator) =>
+        indicatorLinkedTo(base, indicator, { allowGenericIdRepair: hasGenericExistingForLinkedIndicator(indicator) })
+      );
       const quantifiedIds = linkedIndicators.filter(indicatorIsQuantified).map((indicator) => String(indicator.id || '').trim()).filter(Boolean);
-      const existing = existingById.get(base.id) || existingByKey.get(responsibilityKey(base));
+      const existingBySameId = existingById.get(base.id);
+      const existingBySameKey = existingByKey.get(responsibilityKey(base));
+      const existing = normalizeLookupText(existingBySameId?.liability) === normalizeLookupText(base.liability)
+        ? existingBySameId
+        : existingBySameKey;
       const status = existing?.quantificationStatus === 'not_quantifiable'
         ? 'not_quantifiable'
         : quantifiedIds.length
@@ -324,8 +398,9 @@ function indicatorIdFor({ company = '', productName = '', liability = '', option
 function splitBenefitClauses(text = '') {
   return String(text || '')
     .replace(/\s+/gu, ' ')
-    .split(/(?=（\d+）|第[一二三四五六七八九十\d]+项|[。；;]\s*)/u)
+    .split(/(?=（\d+）|第[一二三四五六七八九十\d]+项|可选(?:保险)?责任\s*[一二三四五六七八九十\d]+|[。；;]\s*)/u)
     .map((item) => item.trim())
+    .filter((item) => /^(?:[（(]?\d+[）)]|第[一二三四五六七八九十\d]+项|可选(?:保险)?责任\s*[一二三四五六七八九十\d]*)/u.test(item))
     .filter((item) => /保险金|豁免|给付|领取/u.test(item));
 }
 
@@ -339,6 +414,10 @@ function classifyCoverageType(liability) {
 
 function extractLiability(clause) {
   const text = String(clause || '').replace(/\s+/gu, ' ').trim();
+  const numberedHeading = text.match(
+    /^[（(]?\d+[）)]\s*([一-龥A-Za-z0-9（）()]{2,48}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u,
+  );
+  if (numberedHeading?.[1]) return numberedHeading[1].trim();
   const heading = text.match(
     /^可选(?:保险)?责任\s*[一二三四五六七八九十\d]*\s*[:：]?\s*([一-龥A-Za-z0-9（）()]{2,48}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u,
   );
@@ -348,7 +427,7 @@ function extractLiability(clause) {
       .replace(/^（\d+）/u, '')
       .replace(/^(?:给付|按|以|向|将按|本公司按|我们按)/u, ''))
     .filter((value) => !/本合同可选责任|我们除按|按本合同|给付条件|保险金金额|领取人|基本保险金$|基本保险金额给付/u.test(value));
-  if (directCandidates.length) return directCandidates.at(-1);
+  if (directCandidates.length) return directCandidates[0];
   const match = text.match(/(?:（\d+）)?\s*([一-龥A-Za-z0-9（）()]{2,30}?(?:保险金|豁免|年金|津贴|给付))/u);
   return match?.[1] || '';
 }

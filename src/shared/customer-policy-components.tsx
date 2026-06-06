@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { Shield } from 'lucide-react';
 import type { PolicyFormData } from '../api/contracts/policy';
 import type { OptionalResponsibility, PolicyProductSuggestion } from '../api/contracts/responsibility';
@@ -17,6 +17,7 @@ import {
 } from './formatters';
 import {
   normalizePolicyPlanList,
+  normalizePolicyPlanListWithIndex,
   planProductDisplayName,
 } from './customer-policy-form';
 
@@ -25,6 +26,8 @@ const OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS: Array<{ value: OptionalResponsibil
   { value: 'not_selected', label: '未投保' },
   { value: 'unknown', label: '不确定' },
 ];
+const PAYMENT_PERIOD_OPTIONS = ['趸交', '1年交', '3年交', '5年交', '10年交', '15年交', '20年交', '30年交', '交至55岁', '交至60岁', '交至65岁', '交至70岁'];
+const COVERAGE_PERIOD_OPTIONS = ['1年', '20年', '30年', '至60岁', '至65岁', '至70岁', '至75岁', '至80岁', '终身'];
 
 function optionalResponsibilityStatusLabel(status?: string) {
   if (status === 'selected') return '已投保';
@@ -50,10 +53,27 @@ function optionalResponsibilityEvidenceLabel(evidence?: string) {
   return '待核对';
 }
 
+function optionalResponsibilityDisplayName(item: OptionalResponsibility) {
+  const liability = String(item.liability || item.coverageType || '').trim();
+  if (liability && liability !== '可选责任') return liability;
+  const excerpt = String(item.sourceExcerpt || '').replace(/\s+/g, ' ').trim();
+  const numberedHeading = excerpt.match(/[（(]\d+[）)]\s*([一-龥A-Za-z0-9（）()]{2,36}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u);
+  if (numberedHeading?.[1]) return numberedHeading[1].trim();
+  const inlineHeading = excerpt.match(/可选(?:保险)?责任\s*[一二三四五六七八九十\d]*\s*[:：]?\s*([一-龥A-Za-z0-9（）()]{2,36}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u);
+  if (inlineHeading?.[1]) return inlineHeading[1].trim();
+  return liability || '可选责任';
+}
+
+function optionalResponsibilityContentText(item: OptionalResponsibility) {
+  return String(item.sourceExcerpt || '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
 export function getWechatUploadLabel() {
   if (isWeChatMiniProgramWebView()) return '系统相册/拍照上传';
   if (isWeChatBrowser()) return '系统拍照/相册上传';
-  return '点击拍照上传';
+  return '拍照/相册上传';
 }
 
 export function normalizeSuggestionQuery(value: string) {
@@ -74,6 +94,76 @@ export function renderHighlightedSuggestion(value: string, query: string) {
   );
 }
 
+function renderFieldLabel(label: string, required = false) {
+  return (
+    <span className="mb-1.5 block text-sm font-bold text-slate-700">
+      {required ? <span className="mr-1 text-red-500">*</span> : null}
+      {label}
+    </span>
+  );
+}
+
+function isSharedPlanPremiumText(value?: string) {
+  return /整单合计保费|保单未列逐险种保费/.test(String(value || ''));
+}
+
+function planPremiumDisplayText(plan: NonNullable<PolicyFormData['plans']>[number]) {
+  if (plan.premium) return formatCurrency(Number(plan.premium || 0));
+  return isSharedPlanPremiumText(plan.premiumText) ? String(plan.premiumText || '') : formatCurrency(0);
+}
+
+function normalizeProductMatchText(value: unknown) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/(?:股份)?有限公司/gu, '')
+    .replace(/(?:新华人寿保险|新华保险|中国人寿保险|中国人寿|国寿)/gu, '')
+    .replace(/\s+/gu, '')
+    .trim();
+}
+
+function optionalResponsibilitySemanticKey(item: OptionalResponsibility) {
+  return [
+    normalizeProductMatchText(item.productName),
+    String(item.liability || item.coverageType || '').normalize('NFKC').replace(/\s+/gu, '').trim(),
+  ].join('\u001f');
+}
+
+function mergeOptionalResponsibilityDisplayItems(items: OptionalResponsibility[]) {
+  const byKey = new Map<string, OptionalResponsibility>();
+  for (const item of items) {
+    const key = optionalResponsibilitySemanticKey(item);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, item);
+      continue;
+    }
+    const indicatorIds = [
+      ...(Array.isArray(existing.indicatorIds) ? existing.indicatorIds : []),
+      ...(Array.isArray(item.indicatorIds) ? item.indicatorIds : []),
+    ].filter((id, index, list) => id && list.indexOf(id) === index);
+    byKey.set(key, {
+      ...existing,
+      ...item,
+      id: existing.id || item.id,
+      selectionStatus: existing.selectionEvidence === 'manual' ? existing.selectionStatus : item.selectionStatus || existing.selectionStatus,
+      selectionEvidence: existing.selectionEvidence === 'manual' ? existing.selectionEvidence : item.selectionEvidence || existing.selectionEvidence,
+      quantificationStatus: existing.quantificationStatus === 'quantified' ? existing.quantificationStatus : item.quantificationStatus || existing.quantificationStatus,
+      indicatorIds,
+    });
+  }
+  return [...byKey.values()];
+}
+
+export function optionalResponsibilitiesForProduct(items: OptionalResponsibility[] = [], productName = '') {
+  const target = normalizeProductMatchText(productName);
+  if (!target) return [];
+  const matches = (Array.isArray(items) ? items : []).filter((item) => {
+    const source = normalizeProductMatchText(item.productName);
+    return source === target || source.includes(target) || target.includes(source);
+  });
+  return mergeOptionalResponsibilityDisplayItems(matches);
+}
+
 export function TextField(props: {
   label: string;
   value: string;
@@ -81,10 +171,11 @@ export function TextField(props: {
   placeholder?: string;
   type?: string;
   inputMode?: 'text' | 'decimal' | 'numeric' | 'tel';
+  required?: boolean;
 }) {
   return (
     <div>
-      <label className="mb-1.5 block text-sm font-bold text-slate-700">{props.label}</label>
+      <label>{renderFieldLabel(props.label, props.required)}</label>
       <input
         type={props.type || 'text'}
         inputMode={props.inputMode}
@@ -95,6 +186,55 @@ export function TextField(props: {
       />
     </div>
   );
+}
+
+export function PeriodField(props: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  presets: string[];
+  required?: boolean;
+}) {
+  const listId = useId();
+  return (
+    <div>
+      <label>{renderFieldLabel(props.label, props.required)}</label>
+      <input
+        type="text"
+        list={listId}
+        value={props.value}
+        onChange={(event) => props.onChange(event.target.value)}
+        placeholder={props.placeholder}
+        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
+      />
+      <datalist id={listId}>
+        {props.presets.map((option) => (
+          <option key={option} value={option} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
+export function PaymentPeriodField(props: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  return <PeriodField {...props} presets={PAYMENT_PERIOD_OPTIONS} />;
+}
+
+export function CoveragePeriodField(props: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  return <PeriodField {...props} presets={COVERAGE_PERIOD_OPTIONS} />;
 }
 
 export function OptionalResponsibilityReview({
@@ -116,9 +256,7 @@ export function OptionalResponsibilityReview({
 }) {
   const visibleItems = (Array.isArray(items) ? items : []).filter((item) => item?.id);
   if (!visibleItems.length) return null;
-  const statusOptions = compact
-    ? OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS.filter((option) => option.value !== 'unknown')
-    : OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS;
+  const statusOptions = OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS;
 
   return (
     <section className="rounded-[24px] border border-amber-100 bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
@@ -138,12 +276,14 @@ export function OptionalResponsibilityReview({
       <div className="mt-3 space-y-3">
         {visibleItems.map((item) => {
           const status = item.selectionStatus || 'unknown';
+          const displayName = optionalResponsibilityDisplayName(item);
+          const contentText = optionalResponsibilityContentText(item);
           return (
             <article key={item.id} className="rounded-[18px] border border-slate-100 bg-slate-50 p-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-black leading-6 text-slate-900">
-                    {item.liability || item.coverageType || '可选责任'}
+                    {displayName}
                   </p>
                   <p className="mt-0.5 text-xs font-medium leading-5 text-slate-500">
                     {[item.productName, item.coverageType].filter(Boolean).join(' · ') || '产品责任'}
@@ -169,8 +309,10 @@ export function OptionalResponsibilityReview({
                   </div>
                 ) : null}
               </div>
-              {!compact && item.sourceExcerpt ? (
-                <p className="mt-2 line-clamp-2 text-xs font-medium leading-5 text-slate-500">{item.sourceExcerpt}</p>
+              {contentText ? (
+                <p className={`${compact ? 'line-clamp-3' : 'line-clamp-2'} mt-2 text-xs font-medium leading-5 text-slate-500`}>
+                  {contentText}
+                </p>
               ) : null}
               {!compact && optionalResponsibilityHasQuantificationGap(item) ? (
                 <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-black leading-5 text-amber-700 ring-1 ring-amber-100">
@@ -178,7 +320,7 @@ export function OptionalResponsibilityReview({
                 </p>
               ) : null}
               {onChange ? (
-                <div className={`mt-3 grid ${compact ? 'grid-cols-2' : 'grid-cols-3'} gap-2`} role="group" aria-label={`${item.liability || item.coverageType || '可选责任'}投保状态`}>
+                <div className="mt-3 grid grid-cols-3 gap-2" role="group" aria-label={`${displayName}投保状态`}>
                   {statusOptions.map((option) => {
                     const active = status === option.value;
                     return (
@@ -210,6 +352,7 @@ export function OptionalResponsibilityReview({
 export function PolicyPlanEditor(props: {
   company: string;
   plans: NonNullable<PolicyFormData['plans']>;
+  optionalResponsibilities?: OptionalResponsibility[];
   productSuggestionLoading?: boolean;
   productSuggestions?: PolicyProductSuggestion[];
   productSuggestionTargetIndex?: number | null;
@@ -218,40 +361,32 @@ export function PolicyPlanEditor(props: {
   onSelectProduct?: (index: number, suggestion: PolicyProductSuggestion) => void;
   onUpdate: (index: number, key: string, value: string) => void;
   onUpdateProductQuery?: (index: number, company: string, q: string) => void;
+  onUpdateOptionalResponsibility?: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
 }) {
-  const { company, plans, productSuggestionLoading = false, productSuggestions = [], productSuggestionTargetIndex = null, onAdd, onRemove, onSelectProduct, onUpdate, onUpdateProductQuery } = props;
+  const {
+    company,
+    plans,
+    optionalResponsibilities = [],
+    productSuggestionLoading = false,
+    productSuggestions = [],
+    productSuggestionTargetIndex = null,
+    onAdd,
+    onRemove,
+    onSelectProduct,
+    onUpdate,
+    onUpdateProductQuery,
+    onUpdateOptionalResponsibility,
+  } = props;
   const [focusedProductPlanIndex, setFocusedProductPlanIndex] = useState<number | null>(null);
-  const editablePlans = plans
-    .map((plan, originalIndex) => ({ ...plan, originalIndex }))
+  const editablePlans = normalizePolicyPlanListWithIndex(plans, company, { keepEmpty: true })
+    .map((plan) => ({ ...plan, originalIndex: plan.__originalIndex }))
     .filter((plan) => String(plan.role || '') !== 'main');
   function productSuggestionsForPlan(plan: NonNullable<PolicyFormData['plans']>[number]) {
-    const planCompany = String(plan.company || company || '').trim();
     const productQuery = String(plan.name || '').trim();
-    const normalizedCompany = normalizeSuggestionQuery(planCompany);
     const normalizedQuery = normalizeSuggestionQuery(productQuery);
-    if (!normalizedCompany) return [];
+    if (!String(plan.company || company || '').trim()) return [];
     return (Array.isArray(productSuggestions) ? productSuggestions : [])
-      .map((suggestion) => {
-        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
-        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
-        return {
-          ...suggestion,
-          companyMatches:
-            normalizedSuggestionCompany === normalizedCompany ||
-            normalizedSuggestionCompany.includes(normalizedCompany) ||
-            normalizedCompany.includes(normalizedSuggestionCompany),
-          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
-          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
-        };
-      })
-      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.productName.localeCompare(right.productName, 'zh-CN'),
-      )
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
   }
   return (
@@ -260,7 +395,7 @@ export function PolicyPlanEditor(props: {
         <h3 className="text-sm font-black text-slate-900">险种明细</h3>
         <p className="text-xs font-medium leading-5 text-slate-500">附加险或万能账户会按保险公司分别匹配产品。</p>
         <button
-          className="flex h-11 w-full items-center justify-center rounded-xl bg-blue-500 px-4 text-sm font-black text-white shadow-lg shadow-blue-500/20 active:bg-blue-600"
+          className="flex h-11 w-full items-center justify-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700 shadow-sm shadow-blue-100/40 active:bg-blue-100"
           type="button"
           onClick={onAdd}
         >
@@ -283,22 +418,8 @@ export function PolicyPlanEditor(props: {
                 ) : null}
               </div>
               <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <SelectField
-                    label="类型"
-                    value={String(plan.role || '')}
-                    onChange={(value) => onUpdate(plan.originalIndex, 'role', value)}
-                    options={[
-                      { value: 'rider', label: '附加险' },
-                      { value: 'linked_account', label: '万能账户' },
-                      { value: 'unknown', label: '未分类' },
-                    ]}
-                    placeholder="请选择"
-                  />
-                  <TextField label="产品分类" value={String(plan.productType || '')} onChange={(value) => onUpdate(plan.originalIndex, 'productType', value)} placeholder="如 年金险" />
-                </div>
                 <label className="relative block">
-                  <span className="mb-1.5 block text-sm font-bold text-slate-700">险种名称</span>
+                  {renderFieldLabel('险种名称', true)}
                   <input
                     value={String(plan.name || '')}
                     onChange={(event) => {
@@ -352,13 +473,26 @@ export function PolicyPlanEditor(props: {
                   </p>
                 ) : null}
                 <div className="grid grid-cols-2 gap-3">
-                  <TextField label="保额 (元)" value={String(plan.amount || '')} onChange={(value) => onUpdate(plan.originalIndex, 'amount', value)} inputMode="decimal" placeholder="0.00" />
-                  <TextField label="保费 (元)" value={String(plan.premium || '')} onChange={(value) => onUpdate(plan.originalIndex, 'premium', value)} inputMode="decimal" placeholder="0.00" />
+                  <TextField label="保额 (元)" value={String(plan.amount || '')} onChange={(value) => onUpdate(plan.originalIndex, 'amount', value)} inputMode="decimal" placeholder="0.00" required />
+                  <TextField label="保费 (元)" value={String(plan.premium || '')} onChange={(value) => onUpdate(plan.originalIndex, 'premium', value)} inputMode="decimal" placeholder="0.00" required={!isSharedPlanPremiumText(plan.premiumText)} />
                 </div>
+                {isSharedPlanPremiumText(plan.premiumText) && !plan.premium ? (
+                  <p className="rounded-xl bg-white px-3 py-2 text-xs font-bold leading-5 text-slate-500 ring-1 ring-slate-100">
+                    {plan.premiumText}
+                  </p>
+                ) : null}
                 <div className="grid grid-cols-2 gap-3">
-                  <TextField label="保障期间" value={String(plan.coveragePeriod || '')} onChange={(value) => onUpdate(plan.originalIndex, 'coveragePeriod', value)} placeholder="如 终身" />
-                  <TextField label="缴费期间" value={String(plan.paymentPeriod || '')} onChange={(value) => onUpdate(plan.originalIndex, 'paymentPeriod', value)} placeholder="如 10年交" />
+                  <CoveragePeriodField label="保障期间" value={String(plan.coveragePeriod || '')} onChange={(value) => onUpdate(plan.originalIndex, 'coveragePeriod', value)} placeholder="如 终身、30年、至70岁" required />
+                  <PaymentPeriodField label="缴费期间" value={String(plan.paymentPeriod || '')} onChange={(value) => onUpdate(plan.originalIndex, 'paymentPeriod', value)} placeholder="如 10年交 或 趸交" required />
                 </div>
+                <OptionalResponsibilityReview
+                  items={optionalResponsibilitiesForProduct(optionalResponsibilities, String(plan.matchedProductName || plan.name || ''))}
+                  disabled={!onUpdateOptionalResponsibility}
+                  compact
+                  title="附加险可选责任确认"
+                  description="已按该附加险匹配产品带出，请按保单页面确认是否投保。"
+                  onChange={onUpdateOptionalResponsibility}
+                />
               </div>
             </article>
           ))}
@@ -376,10 +510,14 @@ export function PolicyPlanSummary({
   plans,
   effectiveDate,
   insuredBirthday,
+  paymentPeriod = '',
+  coveragePeriod = '',
 }: {
   plans: NonNullable<PolicyFormData['plans']>;
   effectiveDate?: string;
   insuredBirthday?: string;
+  paymentPeriod?: string;
+  coveragePeriod?: string;
 }) {
   const visiblePlans = normalizePolicyPlanList(plans);
   if (!visiblePlans.length) return null;
@@ -391,7 +529,11 @@ export function PolicyPlanSummary({
       </div>
       <div className="space-y-3">
         {visiblePlans.map((plan, index) => {
-          const validityStatus = resolvePolicyValidityStatus(plan.coveragePeriod, {
+          const fallbackCoveragePeriod = index === 0 ? coveragePeriod : '';
+          const fallbackPaymentPeriod = index === 0 ? paymentPeriod : '';
+          const planCoveragePeriod = plan.coveragePeriod || fallbackCoveragePeriod;
+          const planPaymentPeriod = plan.paymentPeriod || plan.paymentMode || fallbackPaymentPeriod;
+          const validityStatus = resolvePolicyValidityStatus(planCoveragePeriod, {
             effectiveDate,
             insuredBirthday,
           });
@@ -407,9 +549,9 @@ export function PolicyPlanSummary({
               <div className="grid grid-cols-2 gap-2 text-xs font-bold leading-5 text-slate-500">
                 <p>分类：{plan.productType || '-'}</p>
                 <p>保额：{formatCoverageAmount(Number(plan.amount || 0))}</p>
-                <p>保费：{formatCurrency(Number(plan.premium || 0))}</p>
-                <p>期间：{plan.coveragePeriod || '-'}</p>
-                <p>缴费：{plan.paymentPeriod || plan.paymentMode || '-'}</p>
+                <p>保费：{planPremiumDisplayText(plan)}</p>
+                <p>期间：{planCoveragePeriod || '-'}</p>
+                <p>缴费：{planPaymentPeriod || '-'}</p>
                 <p>
                   状态：
                   <span className={`ml-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ring-1 ${validityStatusClassName}`}>
@@ -431,10 +573,11 @@ export function SelectField(props: {
   onChange: (value: string) => void;
   options: Array<string | { value: string; label: string }>;
   placeholder?: string;
+  required?: boolean;
 }) {
   return (
     <div>
-      <label className="mb-1.5 block text-sm font-bold text-slate-700">{props.label}</label>
+      <label>{renderFieldLabel(props.label, props.required)}</label>
       <select
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}

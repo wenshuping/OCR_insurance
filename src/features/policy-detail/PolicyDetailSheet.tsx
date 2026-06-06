@@ -54,7 +54,10 @@ import {
   summarizeCashValues,
 } from '../../shared/customer-cash-value';
 import {
+  CoveragePeriodField,
+  PaymentPeriodField,
   OptionalResponsibilityReview,
+  PolicyPlanEditor,
   PolicyPlanSummary,
   SelectField,
   TextField,
@@ -281,6 +284,8 @@ export function PolicyDetailSheet({
           plans={normalizePolicyPlanList(policy.plans, policy.company)}
           effectiveDate={policy.date}
           insuredBirthday={policy.insuredBirthday}
+          paymentPeriod={policy.paymentPeriod}
+          coveragePeriod={policy.coveragePeriod}
         />
 
         {optionalResponsibilities.length ? (
@@ -395,8 +400,84 @@ function PolicyEditDialog({
   const [editCompanySuggestionLoading, setEditCompanySuggestionLoading] = useState(false);
   const [editProductSuggestions, setEditProductSuggestions] = useState<PolicyProductSuggestion[]>([]);
   const [editProductSuggestionLoading, setEditProductSuggestionLoading] = useState(false);
+  const [editPlanProductSuggestions, setEditPlanProductSuggestions] = useState<PolicyProductSuggestion[]>([]);
+  const [editPlanProductSuggestionLoading, setEditPlanProductSuggestionLoading] = useState(false);
+  const [editPlanProductQuery, setEditPlanProductQuery] = useState<{ index: number | null; company: string; q: string }>({
+    index: null,
+    company: '',
+    q: '',
+  });
   const updateDraft = (key: keyof PolicyFormData, value: string) => {
     setDraft((current) => ({ ...current, [key]: key === 'amount' || key === 'firstPremium' ? sanitizeAmount(value) : value }));
+  };
+  const updateDraftPlan = (index: number, key: string, value: string) => {
+    setDraft((current) => {
+      const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
+      const existing = plans[index];
+      if (!existing) return current;
+      const nextPlans = plans.map((plan, planIndex) => (
+        planIndex === index
+          ? {
+              ...plan,
+              [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
+              ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
+            }
+          : plan
+      ));
+      return { ...current, plans: nextPlans };
+    });
+  };
+  const addDraftPlan = () => {
+    setDraft((current) => ({
+      ...current,
+      plans: [
+        ...normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true }),
+        {
+          company: current.company,
+          role: 'rider',
+          name: '',
+          matchedProductName: '',
+          productType: '',
+          amount: '',
+          coveragePeriod: '',
+          paymentMode: '',
+          paymentPeriod: '',
+          premium: '',
+          premiumText: '',
+          matchScore: 0,
+          matchReason: '',
+        },
+      ],
+    }));
+  };
+  const removeDraftPlan = (index: number) => {
+    setDraft((current) => {
+      const nextPlans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true })
+        .filter((_, planIndex) => planIndex !== index);
+      return { ...current, plans: nextPlans };
+    });
+    setEditPlanProductQuery((current) => (current.index === index ? { index: null, company: '', q: '' } : current));
+  };
+  const selectDraftPlanProduct = (index: number, suggestion: PolicyProductSuggestion) => {
+    setDraft((current) => {
+      const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
+      const existing = plans[index];
+      if (!existing) return current;
+      const nextPlans = plans.map((plan, planIndex) => (
+        planIndex === index
+          ? {
+              ...plan,
+              company: suggestion.company.trim(),
+              name: suggestion.productName.trim(),
+              matchedProductName: suggestion.productName.trim(),
+              canonicalProductId: String(suggestion.canonicalProductId || '').trim(),
+            }
+          : plan
+      ));
+      return { ...current, plans: nextPlans };
+    });
+    setEditPlanProductQuery({ index: null, company: '', q: '' });
+    setEditPlanProductSuggestions([]);
   };
   const canSave = Boolean(draft.company.trim() && draft.name.trim());
   const companyQuery = draft.company.trim();
@@ -405,72 +486,46 @@ function PolicyEditDialog({
     const normalizedQuery = normalizeSuggestionQuery(companyQuery);
     if (!normalizedQuery) return [];
     return editCompanySuggestions
-      .map((suggestion) => {
-        const normalizedCompany = normalizeSuggestionQuery(suggestion.company);
-        return {
-          ...suggestion,
-          matchIndex: normalizedCompany.indexOf(normalizedQuery),
-          startsWith: normalizedCompany.startsWith(normalizedQuery),
-        };
-      })
-      .filter((suggestion) => suggestion.matchIndex >= 0 && suggestion.company !== companyQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.company.localeCompare(right.company, 'zh-CN'),
-      )
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.company) !== normalizedQuery)
       .slice(0, 8);
   }, [companyQuery, editCompanySuggestions]);
   const visibleProductSuggestions = useMemo(() => {
-    const normalizedCompany = normalizeSuggestionQuery(companyQuery);
     const normalizedQuery = normalizeSuggestionQuery(productQuery);
-    if (!normalizedCompany) return [];
+    if (!normalizeSuggestionQuery(companyQuery)) return [];
     return editProductSuggestions
-      .map((suggestion) => {
-        const normalizedSuggestionCompany = normalizeSuggestionQuery(suggestion.company);
-        const normalizedProduct = normalizeSuggestionQuery(suggestion.productName);
-        return {
-          ...suggestion,
-          companyMatches:
-            normalizedSuggestionCompany === normalizedCompany ||
-            normalizedSuggestionCompany.includes(normalizedCompany) ||
-            normalizedCompany.includes(normalizedSuggestionCompany),
-          matchIndex: normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0,
-          startsWith: normalizedQuery ? normalizedProduct.startsWith(normalizedQuery) : true,
-        };
-      })
-      .filter((suggestion) => suggestion.companyMatches && (!normalizedQuery || suggestion.matchIndex >= 0) && suggestion.productName !== productQuery)
-      .sort(
-        (left, right) =>
-          Number(right.startsWith) - Number(left.startsWith) ||
-          left.matchIndex - right.matchIndex ||
-          Number(right.recordCount || 0) - Number(left.recordCount || 0) ||
-          left.productName.localeCompare(right.productName, 'zh-CN'),
-      )
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
   }, [companyQuery, editProductSuggestions, productQuery]);
   const showCompanySuggestions = companyFocused && companyQuery && (editCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (editProductSuggestionLoading || visibleProductSuggestions.length);
 
   useEffect(() => {
+    const q = draft.company.trim();
+    if (!q) {
+      setEditCompanySuggestions([]);
+      setEditCompanySuggestionLoading(false);
+      return;
+    }
     let cancelled = false;
-    setEditCompanySuggestionLoading(true);
-    listPolicyResponsibilityCompanySuggestions({ limit: 50 })
-      .then((payload) => {
-        if (!cancelled) setEditCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
-      })
-      .catch(() => {
-        if (!cancelled) setEditCompanySuggestions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setEditCompanySuggestionLoading(false);
-      });
+    const timer = window.setTimeout(() => {
+      setEditCompanySuggestions([]);
+      setEditCompanySuggestionLoading(true);
+      listPolicyResponsibilityCompanySuggestions({ q, limit: 50 })
+        .then((payload) => {
+          if (!cancelled) setEditCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
+        })
+        .catch(() => {
+          if (!cancelled) setEditCompanySuggestions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setEditCompanySuggestionLoading(false);
+        });
+    }, 220);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [draft.company]);
 
   useEffect(() => {
     const company = draft.company.trim();
@@ -482,6 +537,7 @@ function PolicyEditDialog({
     }
     let cancelled = false;
     const timer = window.setTimeout(() => {
+      setEditProductSuggestions([]);
       setEditProductSuggestionLoading(true);
       listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
         .then((payload) => {
@@ -499,6 +555,36 @@ function PolicyEditDialog({
       window.clearTimeout(timer);
     };
   }, [draft.company, draft.name]);
+
+  useEffect(() => {
+    const index = editPlanProductQuery.index;
+    const company = editPlanProductQuery.company.trim();
+    const q = editPlanProductQuery.q.trim();
+    if (index === null || !company) {
+      setEditPlanProductSuggestions([]);
+      setEditPlanProductSuggestionLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setEditPlanProductSuggestions([]);
+      setEditPlanProductSuggestionLoading(true);
+      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
+        .then((payload) => {
+          if (!cancelled) setEditPlanProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
+        })
+        .catch(() => {
+          if (!cancelled) setEditPlanProductSuggestions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setEditPlanProductSuggestionLoading(false);
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [editPlanProductQuery]);
 
   return (
     <div className="fixed inset-0 z-[80] flex items-end bg-slate-950/35 px-4 pb-4 sm:items-center sm:justify-center">
@@ -636,13 +722,26 @@ function PolicyEditDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <TextField label="生效日期" type="date" value={draft.date} onChange={(value) => updateDraft('date', value)} />
-            <TextField label="保障期间" value={draft.coveragePeriod} onChange={(value) => updateDraft('coveragePeriod', value)} placeholder="如 终身" />
+            <CoveragePeriodField label="保障期间" value={draft.coveragePeriod} onChange={(value) => updateDraft('coveragePeriod', value)} placeholder="如 终身、30年、至70岁" />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="缴费期间" value={draft.paymentPeriod} onChange={(value) => updateDraft('paymentPeriod', value)} placeholder="如 10年交" />
+            <PaymentPeriodField label="缴费期间" value={draft.paymentPeriod} onChange={(value) => updateDraft('paymentPeriod', value)} placeholder="如 10年交 或 趸交" />
             <TextField label="首期保费 (元)" value={draft.firstPremium} onChange={(value) => updateDraft('firstPremium', value)} inputMode="decimal" placeholder="0.00" />
           </div>
           <TextField label="保障额度 (元)" value={draft.amount} onChange={(value) => updateDraft('amount', value)} inputMode="decimal" placeholder="0.00" />
+          <PolicyPlanEditor
+            company={draft.company}
+            plans={normalizePolicyPlanList(draft.plans, draft.company, { keepEmpty: true })}
+            optionalResponsibilities={policy.optionalResponsibilities || []}
+            productSuggestionLoading={editPlanProductSuggestionLoading}
+            productSuggestions={editPlanProductSuggestions}
+            productSuggestionTargetIndex={editPlanProductQuery.index}
+            onAdd={addDraftPlan}
+            onRemove={removeDraftPlan}
+            onUpdate={updateDraftPlan}
+            onSelectProduct={selectDraftPlanProduct}
+            onUpdateProductQuery={(index, company, q) => setEditPlanProductQuery({ index, company, q })}
+          />
         </div>
 
         <div className="mt-5 grid grid-cols-2 gap-3">

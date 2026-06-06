@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
+import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 
 const SCHEMA_VERSION = '2';
 
@@ -505,6 +506,9 @@ function loadDbOwnedState(db) {
     familyMembers: loadPayloadRows(db, 'family_members', 'id ASC'),
     familyReportShares: loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
   };
+  state.knowledgeRecords = state.knowledgeRecords
+    .map((record) => normalizeKnowledgeRecord(record))
+    .filter(Boolean);
   for (const row of db.prepare('SELECT key, payload FROM state_documents ORDER BY key ASC').all()) {
     state[row.key] = parseJson(row.payload, null);
   }

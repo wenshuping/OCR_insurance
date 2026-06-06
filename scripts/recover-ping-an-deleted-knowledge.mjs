@@ -4,11 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { allocateId, createInitialState } from '../server/policy-ocr.domain.mjs';
 import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 const catalogPath = path.resolve(process.env.PING_AN_CATALOG_PATH || path.join(runtimeDir, 'ping-an-product-catalog.json'));
 const defaultAuditPath = path.join(runtimeDir, 'responsibility-toc-cleanup-20260522-014101.json');
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
@@ -228,7 +228,7 @@ function runCrawler(payload) {
   return JSON.parse(line.slice(line.indexOf(outputMarker) + outputMarker.length));
 }
 
-function main() {
+async function main() {
   const auditPath = path.resolve(readArg('audit-path', process.env.PING_AN_RECOVERY_AUDIT_PATH || defaultAuditPath));
   const cdpUrl = readArg('cdp-url', process.env.PING_AN_CDP_URL || 'http://127.0.0.1:9223');
   const offset = readNumberArg('offset', Number(process.env.PING_AN_RECOVERY_OFFSET || 0));
@@ -238,157 +238,164 @@ function main() {
   const pdfRetryDelayMs = readNumberArg('pdf-retry-delay-ms', Number(process.env.PING_AN_RECOVERY_PDF_RETRY_DELAY_MS || 5000));
   const dryRun = process.argv.includes('--dry-run');
   const ts = timestampForFile();
+  const knowledgeStore = await createKnowledgeStateStore();
+  try {
+    const state = knowledgeStore.loadState();
+    if (!Array.isArray(state.knowledgeRecords)) state.knowledgeRecords = [];
+    if (!Number(state.nextId)) state.nextId = 1;
+    const audit = readJson(auditPath, {});
+    const catalog = readJson(catalogPath, {});
+    const plan = buildRecoveryPlan({ audit, catalog, state, offset, limit });
 
-  const state = readJson(statePath, createInitialState());
-  if (!Array.isArray(state.knowledgeRecords)) state.knowledgeRecords = [];
-  if (!Number(state.nextId)) state.nextId = 1;
-  const audit = readJson(auditPath, {});
-  const catalog = readJson(catalogPath, {});
-  const plan = buildRecoveryPlan({ audit, catalog, state, offset, limit });
+    const tasksPath = path.join(runtimeDir, `ping-an-deleted-recovery-tasks-${ts}.json`);
+    writeJson(tasksPath, {
+      auditPath,
+      catalogPath,
+      dbPath: knowledgeStore.dbPath,
+      offset,
+      limit,
+      deletedCount: plan.deletedRows.length,
+      recoverableTaskCount: plan.selected.length,
+      selectedTaskCount: plan.tasks.length,
+      alreadyExistingCount: plan.alreadyExisting.length,
+      unmatchedCount: plan.unmatched.length,
+      ambiguousCount: plan.ambiguous.length,
+      tasks: plan.tasks,
+      alreadyExisting: plan.alreadyExisting,
+      unmatched: plan.unmatched,
+      ambiguous: plan.ambiguous,
+    });
 
-  const tasksPath = path.join(runtimeDir, `ping-an-deleted-recovery-tasks-${ts}.json`);
-  writeJson(tasksPath, {
-    auditPath,
-    catalogPath,
-    statePath,
-    offset,
-    limit,
-    deletedCount: plan.deletedRows.length,
-    recoverableTaskCount: plan.selected.length,
-    selectedTaskCount: plan.tasks.length,
-    alreadyExistingCount: plan.alreadyExisting.length,
-    unmatchedCount: plan.unmatched.length,
-    ambiguousCount: plan.ambiguous.length,
-    tasks: plan.tasks,
-    alreadyExisting: plan.alreadyExisting,
-    unmatched: plan.unmatched,
-    ambiguous: plan.ambiguous,
-  });
+    if (dryRun || !plan.tasks.length) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            dryRun,
+            deletedCount: plan.deletedRows.length,
+            recoverableTaskCount: plan.selected.length,
+            selectedTaskCount: plan.tasks.length,
+            alreadyExistingCount: plan.alreadyExisting.length,
+            unmatchedCount: plan.unmatched.length,
+            ambiguousCount: plan.ambiguous.length,
+            tasksPath,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
 
-  if (dryRun || !plan.tasks.length) {
+    const beforeCount = state.knowledgeRecords.length;
+    const beforePingAnCount = state.knowledgeRecords.filter((record) => trim(record.company) === '中国平安').length;
+    const backupPath = path.join(runtimeDir, `knowledge-before-ping-an-recovery-${ts}.json`);
+    writeJson(backupPath, state.knowledgeRecords);
+
+    const result = runCrawler({
+      mode: 'ping_an_browser_catalog_materials',
+      company: '中国平安',
+      cdpUrl,
+      tasks: plan.tasks,
+      delayMs,
+      pdfRetryCount,
+      pdfRetryDelayMs,
+    });
+    if (result.ok === false) {
+      console.log(JSON.stringify(result, null, 2));
+      process.exitCode = 2;
+      return;
+    }
+
+    const taskByUrl = new Map(plan.tasks.map((task) => [task.url, task]));
+    const restoredRecords = [];
+    for (const record of Array.isArray(result.records) ? result.records : []) {
+      const task = taskByUrl.get(trim(record.url));
+      if (!task) continue;
+      restoredRecords.push({
+        ...record,
+        id: task.restoreId,
+        productName: task.productName || record.productName,
+        productType: task.productType || record.productType,
+        salesStatus: task.salesStatus || record.salesStatus,
+        parser: 'scrapling_ping_an_deleted_recovery',
+      });
+    }
+
+    const saved = upsertKnowledgeRecords(state, restoredRecords, { allocateId });
+    knowledgeStore.upsertRows(saved, { nextId: state.nextId });
+
+    const savedIds = saved.map((record) => Number(record.id)).filter(Number.isFinite).sort((left, right) => left - right);
+    const syncStatePath = path.join(runtimeDir, `ping-an-deleted-recovery-sync-state-${ts}.json`);
+    writeJson(syncStatePath, { ...createInitialState(), knowledgeRecords: saved, nextId: 1 });
+
+    const reportPath = path.join(runtimeDir, `ping-an-deleted-recovery-${ts}.json`);
+    writeJson(reportPath, {
+      ok: true,
+      auditPath,
+      catalogPath,
+      dbPath: knowledgeStore.dbPath,
+      backupPath,
+      tasksPath,
+      syncStatePath,
+      cdpUrl,
+      delayMs,
+      pdfRetryCount,
+      pdfRetryDelayMs,
+      offset,
+      limit,
+      deletedCount: plan.deletedRows.length,
+      recoverableTaskCount: plan.selected.length,
+      selectedTaskCount: plan.tasks.length,
+      crawledRecordCount: restoredRecords.length,
+      skippedCount: result.skippedCount || 0,
+      skipped: result.skipped || [],
+      savedRecordCount: saved.length,
+      savedMinId: savedIds[0] || null,
+      savedMaxId: savedIds.at(-1) || null,
+      savedIds,
+      alreadyExistingCount: plan.alreadyExisting.length,
+      unmatchedCount: plan.unmatched.length,
+      ambiguousCount: plan.ambiguous.length,
+      localKnowledgeBefore: beforeCount,
+      localKnowledgeAfter: knowledgeStore.countKnowledgeRecords(),
+      localPingAnBefore: beforePingAnCount,
+      localPingAnAfter: knowledgeStore.loadState().knowledgeRecords.filter((record) => trim(record.company) === '中国平安').length,
+    });
+
     console.log(
       JSON.stringify(
         {
           ok: true,
-          dryRun,
           deletedCount: plan.deletedRows.length,
           recoverableTaskCount: plan.selected.length,
           selectedTaskCount: plan.tasks.length,
+          crawledRecordCount: restoredRecords.length,
+          skippedCount: result.skippedCount || 0,
+          savedRecordCount: saved.length,
+          savedMinId: savedIds[0] || null,
+          savedMaxId: savedIds.at(-1) || null,
           alreadyExistingCount: plan.alreadyExisting.length,
           unmatchedCount: plan.unmatched.length,
           ambiguousCount: plan.ambiguous.length,
+          localKnowledgeBefore: beforeCount,
+          localKnowledgeAfter: knowledgeStore.countKnowledgeRecords(),
+          localPingAnBefore: beforePingAnCount,
+          localPingAnAfter: knowledgeStore.loadState().knowledgeRecords.filter((record) => trim(record.company) === '中国平安').length,
           tasksPath,
+          reportPath,
+          syncStatePath,
         },
         null,
         2,
       ),
     );
-    return;
+  } finally {
+    knowledgeStore.close();
   }
-
-  const beforeCount = state.knowledgeRecords.length;
-  const beforePingAnCount = state.knowledgeRecords.filter((record) => trim(record.company) === '中国平安').length;
-  const backupPath = path.join(runtimeDir, `state-before-ping-an-recovery-${ts}.json`);
-  writeJson(backupPath, state);
-
-  const result = runCrawler({
-    mode: 'ping_an_browser_catalog_materials',
-    company: '中国平安',
-    cdpUrl,
-    tasks: plan.tasks,
-    delayMs,
-    pdfRetryCount,
-    pdfRetryDelayMs,
-  });
-  if (result.ok === false) {
-    console.log(JSON.stringify(result, null, 2));
-    process.exitCode = 2;
-    return;
-  }
-
-  const taskByUrl = new Map(plan.tasks.map((task) => [task.url, task]));
-  const restoredRecords = [];
-  for (const record of Array.isArray(result.records) ? result.records : []) {
-    const task = taskByUrl.get(trim(record.url));
-    if (!task) continue;
-    restoredRecords.push({
-      ...record,
-      id: task.restoreId,
-      productName: task.productName || record.productName,
-      productType: task.productType || record.productType,
-      salesStatus: task.salesStatus || record.salesStatus,
-      parser: 'scrapling_ping_an_deleted_recovery',
-    });
-  }
-
-  const saved = upsertKnowledgeRecords(state, restoredRecords, { allocateId });
-  writeJson(statePath, state);
-
-  const savedIds = saved.map((record) => Number(record.id)).filter(Number.isFinite).sort((left, right) => left - right);
-  const syncStatePath = path.join(runtimeDir, `ping-an-deleted-recovery-sync-state-${ts}.json`);
-  writeJson(syncStatePath, { ...createInitialState(), knowledgeRecords: saved, nextId: 1 });
-
-  const reportPath = path.join(runtimeDir, `ping-an-deleted-recovery-${ts}.json`);
-  writeJson(reportPath, {
-    ok: true,
-    auditPath,
-    catalogPath,
-    statePath,
-    backupPath,
-    tasksPath,
-    syncStatePath,
-    cdpUrl,
-    delayMs,
-    pdfRetryCount,
-    pdfRetryDelayMs,
-    offset,
-    limit,
-    deletedCount: plan.deletedRows.length,
-    recoverableTaskCount: plan.selected.length,
-    selectedTaskCount: plan.tasks.length,
-    crawledRecordCount: restoredRecords.length,
-    skippedCount: result.skippedCount || 0,
-    skipped: result.skipped || [],
-    savedRecordCount: saved.length,
-    savedMinId: savedIds[0] || null,
-    savedMaxId: savedIds.at(-1) || null,
-    savedIds,
-    alreadyExistingCount: plan.alreadyExisting.length,
-    unmatchedCount: plan.unmatched.length,
-    ambiguousCount: plan.ambiguous.length,
-    localKnowledgeBefore: beforeCount,
-    localKnowledgeAfter: state.knowledgeRecords.length,
-    localPingAnBefore: beforePingAnCount,
-    localPingAnAfter: state.knowledgeRecords.filter((record) => trim(record.company) === '中国平安').length,
-  });
-
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        deletedCount: plan.deletedRows.length,
-        recoverableTaskCount: plan.selected.length,
-        selectedTaskCount: plan.tasks.length,
-        crawledRecordCount: restoredRecords.length,
-        skippedCount: result.skippedCount || 0,
-        savedRecordCount: saved.length,
-        savedMinId: savedIds[0] || null,
-        savedMaxId: savedIds.at(-1) || null,
-        alreadyExistingCount: plan.alreadyExisting.length,
-        unmatchedCount: plan.unmatched.length,
-        ambiguousCount: plan.ambiguous.length,
-        localKnowledgeBefore: beforeCount,
-        localKnowledgeAfter: state.knowledgeRecords.length,
-        localPingAnBefore: beforePingAnCount,
-        localPingAnAfter: state.knowledgeRecords.filter((record) => trim(record.company) === '中国平安').length,
-        tasksPath,
-        reportPath,
-        syncStatePath,
-      },
-      null,
-      2,
-    ),
-  );
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

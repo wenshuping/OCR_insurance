@@ -4,6 +4,7 @@ const OCR_MODE_LABELS: Record<string, string> = {
   paddleocr_local: 'PaddleOCR 稳定识别',
   qwen25_vl_3b_instruct_mlx_vlm: 'Qwen2.5-VL',
   paddleocr_vl_1_5: 'PaddleOCR-VL',
+  remote_gpu_vision: '4080 视觉识别',
   minicpm_v_4x_local: 'MiniCPM-V',
 };
 

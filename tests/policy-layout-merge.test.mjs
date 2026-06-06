@@ -114,3 +114,50 @@ test('mergePolicyLayoutScanResult downgrades impossible high-confidence field va
   assert.equal(merged.fieldEvidence.policyNumber, undefined);
   assert.ok(merged.ocrWarnings.some((warning) => warning.includes('投保人识别结果')));
 });
+
+test('mergePolicyLayoutScanResult lets visual benefit-table fields override flattened text guesses', () => {
+  const merged = mergePolicyLayoutScanResult({
+    textData: {
+      company: '新华保险',
+      name: '保险责任名称',
+      amount: '80000',
+      coveragePeriod: '至2025年08月15日',
+      paymentPeriod: '趸交',
+      firstPremium: '298',
+      plans: [
+        { role: 'main', name: '保险责任名称' },
+        { role: 'rider', name: '金额/份数' },
+      ],
+    },
+    layoutResult: {
+      fields: {
+        name: '学生平安意外伤害保险',
+        amount: '80000',
+        coveragePeriod: '至2025年08月15日',
+        paymentPeriod: '趸交',
+        firstPremium: '298',
+        plans: [
+          { role: 'main', name: '学生平安意外伤害保险', amount: '80000' },
+          { role: 'rider', name: '附加学生平安A款定期寿险', amount: '80000' },
+        ],
+      },
+      fieldConfidence: {
+        name: 'visual-table',
+        amount: 'visual-table',
+        coveragePeriod: 'visual-table',
+        paymentPeriod: 'visual-table',
+        firstPremium: 'visual-table',
+        plans: 'visual-table',
+      },
+      evidence: {
+        name: { value: '学生平安意外伤害保险', source: 'benefit-table-layout' },
+      },
+    },
+  });
+
+  assert.equal(merged.data.name, '学生平安意外伤害保险');
+  assert.equal(merged.data.plans.length, 2);
+  assert.equal(merged.data.plans[0].name, '学生平安意外伤害保险');
+  assert.equal(merged.fieldConfidence.name, 'visual-table');
+  assert.equal(merged.fieldEvidence.name.source, 'benefit-table-layout');
+});
