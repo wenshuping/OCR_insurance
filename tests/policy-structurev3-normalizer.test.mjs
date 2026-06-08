@@ -200,6 +200,28 @@ test('normalizeStructureV3Inspection skips benefit labels before the real produc
   assert.equal(result.candidates.plans[0].role, 'main');
 });
 
+test('normalizeStructureV3Inspection skips benefit label variants before the real product row', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['身故保险金责任', '100000元', '终身', '20年交', '4334元'],
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.deepEqual(result.candidates.plans.map((plan) => plan.name), ['金瑞人生']);
+});
+
 test('normalizeStructureV3Inspection stops compact labeled values at the next label', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
@@ -295,6 +317,37 @@ test('normalizeStructureV3Inspection parses table_res_list pred_html as raw tabl
   assert.equal(result.normalized.tables[0].source, 'raw-table');
   assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
   assert.equal(result.candidates.policyFields.firstPremium.value, '4334');
+});
+
+test('normalizeStructureV3Inspection expands nested res arrays with table_res_list html', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      results: [
+        {
+          res: [
+            {
+              table_res_list: [
+                {
+                  pred_html: [
+                    '<table>',
+                    '<tr><th>险种名称</th><th>基本保险金额</th><th>保险期间</th><th>交费期间</th><th>保险费</th></tr>',
+                    '<tr><td>金瑞人生</td><td>100000元</td><td>终身</td><td>20年交</td><td>4334元</td></tr>',
+                    '<tr><td>首期保险费合计</td><td></td><td></td><td></td><td>4334元</td></tr>',
+                    '</table>',
+                  ].join(''),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.normalized.tables[0].source, 'raw-table');
+  assert.equal(result.candidates.plans[0].role, 'main');
+  assert.equal(result.candidates.plans[0].name, '金瑞人生');
 });
 
 test('normalizeStructureV3Inspection parses pred_html with a title row before headers', () => {

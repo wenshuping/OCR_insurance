@@ -60,6 +60,10 @@ function rawPayloads(raw) {
   while (stack.length) {
     const payload = stack.shift();
     if (!payload || typeof payload !== 'object' || seen.has(payload)) continue;
+    if (Array.isArray(payload)) {
+      stack.push(...payload);
+      continue;
+    }
     seen.add(payload);
     payloads.push(payload);
 
@@ -301,7 +305,7 @@ function looksLikePlanName(value) {
 }
 
 function isNonProductBenefitLabel(value) {
-  return /^(现金价值|身故保险金|满期保险金|保险责任|给付|责任说明)$/u.test(compact(value));
+  return /^(?:现金价值(?:表)?|身故保险金(?:责任)?|满期保险(?:金|责任)|保险责任(?:说明)?|给付(?:标准)?|赔付比例|免赔额|责任说明)$/u.test(compact(value));
 }
 
 function hasConcreteProductSuffix(value) {
