@@ -227,8 +227,10 @@ function normalizeRawTable(table = {}, index = 0) {
 
   const explicitHeaders = table.headers || table.header || table.columns;
   const headers = Array.isArray(explicitHeaders) ? explicitHeaders.map((cell) => text(cell)).filter(Boolean) : [];
-  const bodyRows = headers.length ? rows : rows.slice(1);
-  const inferredHeaders = headers.length ? headers : (rows[0] || []).map((cell) => text(cell)).filter(Boolean);
+  const headerRowIndex = headers.length ? -1 : rows.findIndex(looksLikePlanTableHeader);
+  const inferredHeaderIndex = headerRowIndex >= 0 ? headerRowIndex : 0;
+  const bodyRows = headers.length ? rows : rows.slice(inferredHeaderIndex + 1);
+  const inferredHeaders = headers.length ? headers : (rows[inferredHeaderIndex] || []).map((cell) => text(cell)).filter(Boolean);
 
   if (!inferredHeaders.length || !bodyRows.length) return null;
   return {
@@ -586,7 +588,12 @@ function recommendation(result) {
   const hasRawTable = result?.normalized?.tables?.some((table) => table.source === 'raw-table');
   const plans = result?.candidates?.plans || [];
   const missing = result?.candidates?.missingFields || [];
-  if (hasRawTable && plans.length && missing.length <= 2) return '建议接入正式流程';
+  const completePlans = plans.every((plan) => plan.role !== 'unknown'
+    && plan.amount
+    && plan.paymentPeriod
+    && plan.coveragePeriod
+    && plan.premium);
+  if (hasRawTable && plans.length && completePlans && missing.length <= 2) return '建议接入正式流程';
   if (plans.length) return '需要更多样本';
   return '暂不建议接入';
 }

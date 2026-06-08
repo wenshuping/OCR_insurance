@@ -289,6 +289,29 @@ test('normalizeStructureV3Inspection parses pred_html with a title row before he
   assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
 });
 
+test('normalizeStructureV3Inspection detects raw row headers after a title row', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          rows: [
+            ['保险利益表'],
+            ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(result.normalized.tables[0].headers, ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费']);
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.equal(result.candidates.plans[0].role, 'main');
+});
+
 test('normalizeStructureV3Inspection parses table_res_list table_ocr_pred markdown as raw table', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
@@ -394,4 +417,33 @@ test('buildStructureV3InspectionReport summarizes source quality and plan rows',
   assert.match(report, /附加险: 附加住院医疗保险/u);
   assert.match(report, /首期保费合计: 5000/u);
   assert.match(report, /## 结论: 建议接入正式流程/u);
+});
+
+test('buildStructureV3InspectionReport does not recommend formal connection for incomplete plan rows', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [
+        { type: 'title', text: '新华保险 保险单' },
+        { type: 'text', text: '投保人 张三 被保险人 李四 受益人 法定' },
+      ],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['金瑞人生', '100000元', '终身', '20年交', ''],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+  const report = buildStructureV3InspectionReport({
+    input: 'samples/policy.jpg',
+    result,
+    pythonStatus: { ok: true, device: 'gpu' },
+  });
+
+  assert.doesNotMatch(report, /## 结论: 建议接入正式流程/u);
+  assert.match(report, /## 结论: 需要更多样本/u);
 });
