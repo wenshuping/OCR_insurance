@@ -290,7 +290,7 @@ function isTotalPremiumText(value) {
 }
 
 function isExplanationText(value) {
-  return /保险责任说明|本保险合同|说明|条款|备注|提示|详见/u.test(compact(value));
+  return /保险责任说明|本保险合同|说明|条款|备注|提示|详见|责任免除/u.test(compact(value));
 }
 
 function isHeaderLikeRow(row = [], headers = []) {
@@ -308,7 +308,7 @@ function looksLikePlanName(value) {
 }
 
 function isNonProductBenefitLabel(value) {
-  return /^(?:现金价值(?:表)?|重大疾病保险金(?:责任)?|身故或身体全残保险金(?:责任)?|身故保险金(?:责任)?|满期保险(?:金|责任)|保险责任(?:说明)?|给付(?:标准)?|赔付比例|免赔额|责任说明)$/u.test(compact(value));
+  return /现金价值|重大疾病保险金|身故或身体全残保险金|身故保险金|满期保险(?:金|责任)|保险责任|给付(?:标准)?|赔付比例|免赔额|责任免除/u.test(compact(value));
 }
 
 function hasConcreteProductSuffix(value) {
@@ -342,8 +342,9 @@ function planNameFromRow(row, columns) {
 
 function isPlanCandidate(name, row, columns) {
   if (!name || isTotalPremiumText(name)) return false;
+  if (isExplanationText(name)) return false;
   if (isNonProductBenefitLabel(name) && !hasConcreteProductSuffix(name)) return false;
-  if (isExplanationText(`${name} ${row.join(' ')}`) && !hasConcretePlanDetail(row, columns)) return false;
+  if (isExplanationText(row.join(' ')) && !hasConcretePlanDetail(row, columns)) return false;
   if (!hasPlanDetail(row, columns)) return looksLikePlanName(name) && hasConcreteProductSuffix(name);
   if (hasPlanDetail(row, columns)) {
     return fieldFromRow(row, columns.name) === name || looksLikePlanName(name);

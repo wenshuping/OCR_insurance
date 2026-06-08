@@ -223,6 +223,31 @@ test('normalizeStructureV3Inspection skips benefit insurance-gold variants befor
   assert.deepEqual(result.candidates.plans.map((plan) => plan.name), ['金瑞人生']);
 });
 
+test('normalizeStructureV3Inspection skips responsibility labels with concrete detail cells', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['保险责任名称', '100000元', '终身', '20年交', '4334元'],
+            ['重大疾病保险金责任说明', '100000元', '终身', '20年交', '4334元'],
+            ['责任免除', '100000元', '终身', '20年交', '4334元'],
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.deepEqual(result.candidates.plans.map((plan) => plan.name), ['金瑞人生']);
+  assert.equal(result.candidates.plans[0].role, 'main');
+});
+
 test('normalizeStructureV3Inspection stops compact labeled values at the next label', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
