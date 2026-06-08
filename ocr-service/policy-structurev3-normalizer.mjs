@@ -165,8 +165,11 @@ function collectMarkdownTables(markdown = '', source = 'markdown-table') {
   function flush() {
     if (current.length >= 2) {
       const rows = current.map(splitMarkdownRow);
-      const headers = rows[0].map(text).filter(Boolean);
-      const bodyRows = rows.slice(isMarkdownDivider(rows[1]) ? 2 : 1);
+      const headerRowIndex = rows.findIndex(looksLikePlanTableHeader);
+      const inferredHeaderIndex = headerRowIndex >= 0 ? headerRowIndex : 0;
+      const headers = rows[inferredHeaderIndex].map(text).filter(Boolean);
+      let bodyRows = rows.slice(inferredHeaderIndex + 1);
+      if (isMarkdownDivider(bodyRows[0] || [])) bodyRows = bodyRows.slice(1);
       const normalizedRows = normalizeRows(bodyRows);
       if (headers.length && normalizedRows.length) {
         tables.push({
@@ -305,7 +308,7 @@ function looksLikePlanName(value) {
 }
 
 function isNonProductBenefitLabel(value) {
-  return /^(?:现金价值(?:表)?|身故保险金(?:责任)?|满期保险(?:金|责任)|保险责任(?:说明)?|给付(?:标准)?|赔付比例|免赔额|责任说明)$/u.test(compact(value));
+  return /^(?:现金价值(?:表)?|重大疾病保险金(?:责任)?|身故或身体全残保险金(?:责任)?|身故保险金(?:责任)?|满期保险(?:金|责任)|保险责任(?:说明)?|给付(?:标准)?|赔付比例|免赔额|责任说明)$/u.test(compact(value));
 }
 
 function hasConcreteProductSuffix(value) {

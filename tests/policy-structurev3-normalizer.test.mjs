@@ -200,7 +200,7 @@ test('normalizeStructureV3Inspection skips benefit labels before the real produc
   assert.equal(result.candidates.plans[0].role, 'main');
 });
 
-test('normalizeStructureV3Inspection skips benefit label variants before the real product row', () => {
+test('normalizeStructureV3Inspection skips benefit insurance-gold variants before the real product row', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
       blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
@@ -209,7 +209,8 @@ test('normalizeStructureV3Inspection skips benefit label variants before the rea
           title: '保险利益表',
           headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
           rows: [
-            ['身故保险金责任', '100000元', '终身', '20年交', '4334元'],
+            ['重大疾病保险金', '100000元', '终身', '20年交', '4334元'],
+            ['身故或身体全残保险金', '100000元', '终身', '20年交', '4334元'],
             ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
             ['首期保险费合计', '', '', '', '4334元'],
           ],
@@ -422,6 +423,33 @@ test('normalizeStructureV3Inspection parses table_res_list table_ocr_pred markdo
   assert.equal(result.normalized.tables[0].source, 'raw-table');
   assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
   assert.equal(result.candidates.plans[0].name, '金瑞人生');
+});
+
+test('normalizeStructureV3Inspection detects table_ocr_pred markdown headers after a title row', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      table_res_list: [
+        {
+          table_ocr_pred: [
+            '| 保险利益表 |',
+            '| 险种名称 | 基本保险金额 | 保险期间 | 交费期间 | 保险费 |',
+            '| 金瑞人生 | 100000元 | 终身 | 20年交 | 4334元 |',
+            '| 首期保险费合计 |  |  |  | 4334元 |',
+          ].join('\n'),
+        },
+      ],
+    },
+    markdown: [
+      '| 险种名称 | 基本保险金额 | 保险期间 | 交费期间 | 保险费 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 错误外部Markdown | 1元 | 1年 | 1年交 | 1元 |',
+    ].join('\n'),
+  });
+
+  assert.equal(result.normalized.tables[0].source, 'raw-table');
+  assert.deepEqual(result.normalized.tables[0].headers, ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费']);
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
 });
 
 test('normalizeStructureV3Inspection treats blocks and layout table markdown as raw table', () => {
