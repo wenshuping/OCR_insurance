@@ -100,6 +100,100 @@ test('normalizeStructureV3Inspection marks missing fields and does not borrow va
   assert.ok(result.normalized.warnings.some((warning) => warning.includes('缺少被保险人')));
 });
 
+test('normalizeStructureV3Inspection accepts product-column rows without insurance keywords', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.equal(result.candidates.plans[0].role, 'main');
+  assert.equal(result.candidates.plans[0].premium, '4334');
+});
+
+test('normalizeStructureV3Inspection stops compact labeled values at the next label', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险投保人张三被保险人李四受益人法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.candidates.policyFields.applicant.value, '张三');
+  assert.equal(result.candidates.policyFields.insured.value, '李四');
+  assert.equal(result.candidates.policyFields.beneficiary.value, '法定');
+});
+
+test('normalizeStructureV3Inspection treats parsing_res_list block_content markdown as raw table', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      parsing_res_list: [
+        {
+          block_label: 'table',
+          block_content: [
+            '| 险种名称 | 基本保险金额 | 保险期间 | 交费期间 | 保险费 |',
+            '| --- | --- | --- | --- | --- |',
+            '| 金瑞人生 | 100000元 | 终身 | 20年交 | 4334元 |',
+            '| 首期保险费合计 |  |  |  | 4334元 |',
+          ].join('\n'),
+        },
+      ],
+    },
+    markdown: [
+      '| 险种名称 | 基本保险金额 | 保险期间 | 交费期间 | 保险费 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 错误外部Markdown | 1元 | 1年 | 1年交 | 1元 |',
+    ].join('\n'),
+  });
+
+  assert.equal(result.normalized.tables[0].source, 'raw-table');
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+});
+
+test('normalizeStructureV3Inspection ignores malformed table rows without throwing', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            'malformed row',
+            { cells: ['malformed'] },
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.candidates.plans.length, 1);
+  assert.equal(result.candidates.plans[0].name, '金瑞人生');
+});
+
 test('buildStructureV3InspectionReport summarizes source quality and plan rows', () => {
   const result = normalizeStructureV3Inspection({ raw: rawStructureFixture });
   const report = buildStructureV3InspectionReport({

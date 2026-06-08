@@ -11,19 +11,24 @@ function compact(value) {
   return text(value).replace(/\s+/gu, '');
 }
 
-function formatNumber(value) {
-  return Number.isInteger(value) ? String(value) : String(value);
+function markdownText(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(markdownText).filter(Boolean).join('\n').trim();
+  if (typeof value === 'object') {
+    return markdownText(value.markdown ?? value.md ?? value.block_content ?? value.content ?? '');
+  }
+  return String(value).replace(/<br\s*\/?>/giu, '\n').trim();
 }
 
 function normalizeAmount(value) {
   const raw = text(value).replace(/[,，\s]/gu, '').replace(/[¥￥]/gu, '');
   if (!raw) return '';
   const wan = raw.match(/(\d+(?:\.\d+)?)万/u);
-  if (wan) return formatNumber(Math.round(Number(wan[1]) * 10000));
+  if (wan) return String(Math.round(Number(wan[1]) * 10000));
   const number = raw.match(/(\d+(?:\.\d+)?)/u);
   if (!number) return '';
   const parsed = Number(number[1]);
-  return Number.isFinite(parsed) ? formatNumber(parsed) : '';
+  return Number.isFinite(parsed) ? String(parsed) : '';
 }
 
 function normalizeBlock(block = {}) {
@@ -149,7 +154,7 @@ function collectMarkdownTables(markdown = '', source = 'markdown-table') {
 }
 
 function normalizeRawTable(table = {}, index = 0) {
-  const markdown = text(table.markdown || table.md);
+  const markdown = markdownText(table.markdown || table.md || table.block_content || table.content);
   if (markdown.includes('|')) {
     const markdownTables = collectMarkdownTables(markdown, 'raw-table');
     if (markdownTables[0]) {
@@ -225,6 +230,25 @@ function looksLikePlanName(value) {
   return /保险|险|寿|年金|医疗|意外|重疾|疾病|两全|万能|豁免/u.test(name);
 }
 
+function hasPlanDetail(row, columns) {
+  return [columns.amount, columns.coveragePeriod, columns.paymentPeriod, columns.premium]
+    .some((index) => Boolean(fieldFromRow(row, index)));
+}
+
+function planNameFromRow(row, columns) {
+  const namedColumnValue = fieldFromRow(row, columns.name);
+  if (namedColumnValue && !isTotalPremiumText(namedColumnValue) && hasPlanDetail(row, columns)) {
+    return namedColumnValue;
+  }
+  return row.find(looksLikePlanName) || '';
+}
+
+function isPlanCandidate(name, row, columns) {
+  if (!name || isTotalPremiumText(name)) return false;
+  if (looksLikePlanName(name)) return true;
+  return fieldFromRow(row, columns.name) === name && hasPlanDetail(row, columns);
+}
+
 function isRiderName(value) {
   return /附加|附加险|附加合同|附加医疗|附加意外/u.test(compact(value));
 }
@@ -270,8 +294,8 @@ function extractPlansAndPremium(tables = []) {
         continue;
       }
 
-      const name = fieldFromRow(row, columns.name) || row.find(looksLikePlanName) || '';
-      if (!looksLikePlanName(name)) continue;
+      const name = planNameFromRow(row, columns);
+      if (!isPlanCandidate(name, row, columns)) continue;
 
       const planIndex = plans.length;
       plans.push({
@@ -302,11 +326,26 @@ function findCompany(sourceText) {
   return patterns.map((pattern) => sourceText.match(pattern)?.[0]).find(Boolean) || '';
 }
 
-function findLabeledValue(sourceText, labels) {
+function findStopOffset(value, stopLabels) {
+  let offset = value.length;
+  const delimiter = value.search(/[\n|，,；;]/u);
+  if (delimiter >= 0) offset = Math.min(offset, delimiter);
+  for (const label of stopLabels) {
+    const found = value.indexOf(label);
+    if (found >= 0) offset = Math.min(offset, found);
+  }
+  return offset;
+}
+
+function findLabeledValue(sourceText, labels, stopLabels = []) {
   for (const label of labels) {
-    const pattern = new RegExp(`${label}(?:姓名)?[:：\\s]*([^\\n\\s|，,；;:：]{1,24})`, 'u');
+    const pattern = new RegExp(`${label}(?:姓名)?[:：\\s]*`, 'u');
     const matched = sourceText.match(pattern);
-    if (matched?.[1]) return matched[1];
+    if (!matched) continue;
+    const valueStart = matched.index + matched[0].length;
+    const rest = sourceText.slice(valueStart);
+    const value = rest.slice(0, findStopOffset(rest, stopLabels)).trim();
+    if (value) return value.replace(/^姓名[:：\s]*/u, '').trim();
   }
   return '';
 }
@@ -318,8 +357,21 @@ function fieldCandidate(value, source, evidence) {
 function buildPolicyFields({ sourceText, plans, totalPremium }) {
   const fields = {};
   const company = findCompany(sourceText);
-  const applicant = findLabeledValue(sourceText, ['投保人', '设保人']);
-  const insured = findLabeledValue(sourceText, ['被保险人', '被保人', '受保人']);
+  const applicant = findLabeledValue(sourceText, ['投保人', '设保人'], [
+    '被保险人',
+    '被保人',
+    '受保人',
+    '身故保险金受益人',
+    '身故受益人',
+    '受益人',
+  ]);
+  const insured = findLabeledValue(sourceText, ['被保险人', '被保人', '受保人'], [
+    '投保人',
+    '设保人',
+    '身故保险金受益人',
+    '身故受益人',
+    '受益人',
+  ]);
   const beneficiary = findLabeledValue(sourceText, ['身故保险金受益人', '身故受益人', '受益人']);
 
   fields.company = fieldCandidate(company, 'text', company) || undefined;
