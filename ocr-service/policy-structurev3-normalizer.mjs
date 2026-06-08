@@ -308,7 +308,7 @@ function looksLikePlanName(value) {
 }
 
 function isNonProductBenefitLabel(value) {
-  return /现金价值|重大疾病保险金|身故或身体全残保险金|身故保险金|满期保险(?:金|责任)|保险责任|给付(?:标准)?|赔付比例|免赔额|责任免除/u.test(compact(value));
+  return /责任名称|保障内容|保障项目|保障责任|保险责任|责任免除|给付(?:标准)?|赔付(?:比例)?|免赔额|现金价值|保险金|责任/u.test(compact(value));
 }
 
 function hasConcreteProductSuffix(value) {

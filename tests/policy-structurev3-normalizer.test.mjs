@@ -164,6 +164,30 @@ test('normalizeStructureV3Inspection keeps incomplete product-column rows withou
   assert.doesNotMatch(report, /## 结论: 建议接入正式流程/u);
 });
 
+test('normalizeStructureV3Inspection skips label-only rows before incomplete product rows', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['责任名称', '', '', '', ''],
+            ['保障内容', '', '', '', ''],
+            ['金瑞人生', '', '', '', ''],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.deepEqual(result.candidates.plans.map((plan) => plan.name), ['金瑞人生']);
+  assert.equal(result.candidates.plans[0].role, 'main');
+});
+
 test('normalizeStructureV3Inspection accepts product-column rows without insurance keywords', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
