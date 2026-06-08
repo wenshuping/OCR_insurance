@@ -122,7 +122,7 @@ test('normalizeStructureV3Inspection accepts product-column rows without insuran
   assert.equal(result.candidates.plans[0].premium, '4334');
 });
 
-test('normalizeStructureV3Inspection skips keyword-only note rows before the real product row', () => {
+test('normalizeStructureV3Inspection skips explanatory note rows before the real product row', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
       blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
@@ -131,7 +131,7 @@ test('normalizeStructureV3Inspection skips keyword-only note rows before the rea
           title: '保险利益表',
           headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
           rows: [
-            ['保险责任说明：本保险合同条款如下', '', '', '', ''],
+            ['保险责任说明：本保险合同条款如下', '', '详见条款', '', ''],
             ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
             ['首期保险费合计', '', '', '', '4334元'],
           ],

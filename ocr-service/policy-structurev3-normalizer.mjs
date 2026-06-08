@@ -272,6 +272,10 @@ function isTotalPremiumText(value) {
   return /首期保险费合计|首期保费合计|保险费合计|合计保费|应交保险费合计/u.test(compact(value));
 }
 
+function isExplanationText(value) {
+  return /保险责任说明|本保险合同|说明|条款|备注|提示|详见/u.test(compact(value));
+}
+
 function isHeaderLikeRow(row = [], headers = []) {
   const rowText = compact(row.join(''));
   if (!rowText) return true;
@@ -291,6 +295,18 @@ function hasPlanDetail(row, columns) {
     .some((index) => Boolean(fieldFromRow(row, index)));
 }
 
+function hasConcretePlanDetail(row, columns) {
+  const amountText = fieldFromRow(row, columns.amount);
+  const premiumText = fieldFromRow(row, columns.premium);
+  const amount = !isExplanationText(amountText) ? normalizeAmount(amountText) : '';
+  const premium = !isExplanationText(premiumText) ? normalizeAmount(premiumText) : '';
+  const paymentPeriod = compact(fieldFromRow(row, columns.paymentPeriod));
+  const coveragePeriod = compact(fieldFromRow(row, columns.coveragePeriod));
+  return Boolean(amount || premium)
+    || /(?:\d+|一|二|三|四|五|六|七|八|九|十|终身).*(?:年|岁|交|期|终身)|至\d{4}|终身/u.test(paymentPeriod)
+    || (/^(?!.*(?:详见|条款|说明|备注|提示)).*(?:\d+年|终身|至\d{4})/u.test(coveragePeriod));
+}
+
 function planNameFromRow(row, columns) {
   const namedColumnValue = fieldFromRow(row, columns.name);
   if (namedColumnValue && !isTotalPremiumText(namedColumnValue) && hasPlanDetail(row, columns)) {
@@ -301,6 +317,7 @@ function planNameFromRow(row, columns) {
 
 function isPlanCandidate(name, row, columns) {
   if (!name || isTotalPremiumText(name)) return false;
+  if (isExplanationText(`${name} ${row.join(' ')}`) && !hasConcretePlanDetail(row, columns)) return false;
   if (hasPlanDetail(row, columns)) {
     return fieldFromRow(row, columns.name) === name || looksLikePlanName(name);
   }
