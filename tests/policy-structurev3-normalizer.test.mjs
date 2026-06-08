@@ -100,6 +100,38 @@ test('normalizeStructureV3Inspection marks missing fields and does not borrow va
   assert.ok(result.normalized.warnings.some((warning) => warning.includes('缺少被保险人')));
 });
 
+test('normalizeStructureV3Inspection keeps incomplete concrete rider rows', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['附加住院医疗保险', '', '', '', ''],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+  const report = buildStructureV3InspectionReport({
+    input: 'samples/policy.jpg',
+    result,
+    pythonStatus: { ok: true, device: 'gpu' },
+  });
+
+  assert.deepEqual(result.candidates.plans.map((plan) => plan.name), ['金瑞人生', '附加住院医疗保险']);
+  assert.deepEqual(result.candidates.plans.map((plan) => plan.role), ['main', 'rider']);
+  assert.equal(result.candidates.plans[1].amount, '');
+  assert.equal(result.candidates.plans[1].paymentPeriod, '');
+  assert.equal(result.candidates.plans[1].coveragePeriod, '');
+  assert.equal(result.candidates.plans[1].premium, '');
+  assert.doesNotMatch(report, /## 结论: 建议接入正式流程/u);
+});
+
 test('normalizeStructureV3Inspection accepts product-column rows without insurance keywords', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
@@ -387,6 +419,24 @@ test('normalizeStructureV3Inspection ignores malformed table rows without throwi
 
   assert.equal(result.candidates.plans.length, 1);
   assert.equal(result.candidates.plans[0].name, '金瑞人生');
+});
+
+test('normalizeStructureV3Inspection ignores malformed null table cells without throwing', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      tables: [
+        {
+          cells: [
+            null,
+            { row: 0, col: 0, text: '保险利益表' },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.normalized.tables.length, 0);
+  assert.ok(result.normalized.warnings.includes('未识别到可用表格'));
 });
 
 test('normalizeStructureV3Inspection ignores unusable malformed raw table entries', () => {

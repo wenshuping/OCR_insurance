@@ -117,6 +117,7 @@ function decodeHtml(value) {
 function rowsFromCells(cells = []) {
   const grid = [];
   for (const cell of cells) {
+    if (!cell || typeof cell !== 'object') continue;
     const rowIndex = Number(cell.row ?? cell.row_index ?? cell.start_row ?? cell.rowspan_start ?? 0);
     const colIndex = Number(cell.col ?? cell.col_index ?? cell.start_col ?? cell.colspan_start ?? 0);
     if (!Number.isInteger(rowIndex) || !Number.isInteger(colIndex)) continue;
@@ -336,6 +337,7 @@ function isPlanCandidate(name, row, columns) {
   if (!name || isTotalPremiumText(name)) return false;
   if (isNonProductBenefitLabel(name) && !hasConcreteProductSuffix(name)) return false;
   if (isExplanationText(`${name} ${row.join(' ')}`) && !hasConcretePlanDetail(row, columns)) return false;
+  if (!hasPlanDetail(row, columns)) return looksLikePlanName(name) && hasConcreteProductSuffix(name);
   if (hasPlanDetail(row, columns)) {
     return fieldFromRow(row, columns.name) === name || looksLikePlanName(name);
   }
