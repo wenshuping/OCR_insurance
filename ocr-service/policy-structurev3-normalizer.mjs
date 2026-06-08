@@ -334,7 +334,7 @@ function hasConcretePlanDetail(row, columns) {
 
 function planNameFromRow(row, columns) {
   const namedColumnValue = fieldFromRow(row, columns.name);
-  if (namedColumnValue && !isTotalPremiumText(namedColumnValue) && hasPlanDetail(row, columns)) {
+  if (namedColumnValue && !isTotalPremiumText(namedColumnValue)) {
     return namedColumnValue;
   }
   return row.find(looksLikePlanName) || '';
@@ -345,9 +345,12 @@ function isPlanCandidate(name, row, columns) {
   if (isExplanationText(name)) return false;
   if (isNonProductBenefitLabel(name) && !hasConcreteProductSuffix(name)) return false;
   if (isExplanationText(row.join(' ')) && !hasConcretePlanDetail(row, columns)) return false;
-  if (!hasPlanDetail(row, columns)) return looksLikePlanName(name) && hasConcreteProductSuffix(name);
+  const isNameColumnValue = fieldFromRow(row, columns.name) === name;
+  if (!hasPlanDetail(row, columns)) {
+    return isNameColumnValue || (looksLikePlanName(name) && hasConcreteProductSuffix(name));
+  }
   if (hasPlanDetail(row, columns)) {
-    return fieldFromRow(row, columns.name) === name || looksLikePlanName(name);
+    return isNameColumnValue || looksLikePlanName(name);
   }
   return false;
 }

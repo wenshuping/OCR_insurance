@@ -132,6 +132,38 @@ test('normalizeStructureV3Inspection keeps incomplete concrete rider rows', () =
   assert.doesNotMatch(report, /## 结论: 建议接入正式流程/u);
 });
 
+test('normalizeStructureV3Inspection keeps incomplete product-column rows without keywords', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['金瑞人生', '', '', '', ''],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+  const report = buildStructureV3InspectionReport({
+    input: 'samples/policy.jpg',
+    result,
+    pythonStatus: { ok: true, device: 'gpu' },
+  });
+
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.equal(result.candidates.plans[0].role, 'main');
+  assert.equal(result.candidates.plans[0].name, '金瑞人生');
+  assert.equal(result.candidates.plans[0].amount, '');
+  assert.equal(result.candidates.plans[0].paymentPeriod, '');
+  assert.equal(result.candidates.plans[0].coveragePeriod, '');
+  assert.equal(result.candidates.plans[0].premium, '');
+  assert.doesNotMatch(report, /## 结论: 建议接入正式流程/u);
+});
+
 test('normalizeStructureV3Inspection accepts product-column rows without insurance keywords', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
