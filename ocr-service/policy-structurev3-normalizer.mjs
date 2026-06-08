@@ -203,7 +203,7 @@ function normalizeRawTable(table = {}, index = 0) {
     }
   }
 
-  const markdown = markdownText(table.markdown || table.md || table.block_content || table.content);
+  const markdown = markdownText(table.markdown || table.md || table.block_content || table.content || table.table_ocr_pred);
   if (markdown.includes('|')) {
     const markdownTables = collectMarkdownTables(markdown, 'raw-table');
     if (markdownTables[0]) {
