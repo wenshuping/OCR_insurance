@@ -186,13 +186,20 @@ function collectMarkdownTables(markdown = '', source = 'markdown-table') {
   return tables;
 }
 
+function looksLikePlanTableHeader(row = []) {
+  const compacted = compact(row.join(''));
+  return /险种名称|产品名称|保险名称|主险名称/u.test(compacted)
+    && /基本保险金额|保险金额|保额|保险期间|保障期间|交费期间|缴费期间|保险费|保费/u.test(compacted);
+}
+
 function normalizeRawTable(table = {}, index = 0) {
   if (!table || typeof table !== 'object') return null;
   const html = htmlText(table.pred_html || table.html || table.table_html || table.table_ocr_pred);
   if (/<(?:table|tr|td|th)\b/iu.test(html)) {
     const rows = normalizeRows(parseHtmlRows(html));
-    const headers = (rows[0] || []).map((cell) => text(cell)).filter(Boolean);
-    const bodyRows = rows.slice(1);
+    const headerRowIndex = rows.findIndex(looksLikePlanTableHeader);
+    const headers = (rows[headerRowIndex >= 0 ? headerRowIndex : 0] || []).map((cell) => text(cell)).filter(Boolean);
+    const bodyRows = rows.slice((headerRowIndex >= 0 ? headerRowIndex : 0) + 1);
     if (headers.length && bodyRows.length) {
       return {
         title: text(table.title || table.name || table.label || `原始表格${index + 1}`),
@@ -290,6 +297,14 @@ function looksLikePlanName(value) {
   return /保险|险|寿|年金|医疗|意外|重疾|疾病|两全|万能|豁免/u.test(name);
 }
 
+function isNonProductBenefitLabel(value) {
+  return /^(现金价值|身故保险金|满期保险金|保险责任|给付|责任说明)$/u.test(compact(value));
+}
+
+function hasConcreteProductSuffix(value) {
+  return /(?:保险|险|寿险|年金|医疗|意外|重疾|疾病|两全|万能|豁免)(?:（[^）]+）)?$/u.test(compact(value));
+}
+
 function hasPlanDetail(row, columns) {
   return [columns.amount, columns.coveragePeriod, columns.paymentPeriod, columns.premium]
     .some((index) => Boolean(fieldFromRow(row, index)));
@@ -317,6 +332,7 @@ function planNameFromRow(row, columns) {
 
 function isPlanCandidate(name, row, columns) {
   if (!name || isTotalPremiumText(name)) return false;
+  if (isNonProductBenefitLabel(name) && !hasConcreteProductSuffix(name)) return false;
   if (isExplanationText(`${name} ${row.join(' ')}`) && !hasConcretePlanDetail(row, columns)) return false;
   if (hasPlanDetail(row, columns)) {
     return fieldFromRow(row, columns.name) === name || looksLikePlanName(name);
