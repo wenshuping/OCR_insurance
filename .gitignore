@@ -24,6 +24,7 @@ crawled/
 
 # Outputs (generated reports/files)
 outputs/
+.structurev3-inspect/
 
 # Temp files
 tmp/
