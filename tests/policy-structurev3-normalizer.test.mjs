@@ -171,6 +171,33 @@ test('normalizeStructureV3Inspection treats parsing_res_list block_content markd
   assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
 });
 
+test('normalizeStructureV3Inspection treats blocks and layout table markdown as raw table', () => {
+  const tableBlock = {
+    type: 'table',
+    block_content: [
+      '| 险种名称 | 基本保险金额 | 保险期间 | 交费期间 | 保险费 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 金瑞人生 | 100000元 | 终身 | 20年交 | 4334元 |',
+      '| 首期保险费合计 |  |  |  | 4334元 |',
+    ].join('\n'),
+  };
+  const externalMarkdown = [
+    '| 险种名称 | 基本保险金额 | 保险期间 | 交费期间 | 保险费 |',
+    '| --- | --- | --- | --- | --- |',
+    '| 错误外部Markdown | 1元 | 1年 | 1年交 | 1元 |',
+  ].join('\n');
+
+  for (const raw of [
+    { blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }, tableBlock] },
+    { layout: [tableBlock], blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }] },
+  ]) {
+    const result = normalizeStructureV3Inspection({ raw, markdown: externalMarkdown });
+
+    assert.equal(result.normalized.tables[0].source, 'raw-table');
+    assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  }
+});
+
 test('normalizeStructureV3Inspection ignores malformed table rows without throwing', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
@@ -192,6 +219,20 @@ test('normalizeStructureV3Inspection ignores malformed table rows without throwi
 
   assert.equal(result.candidates.plans.length, 1);
   assert.equal(result.candidates.plans[0].name, '金瑞人生');
+});
+
+test('normalizeStructureV3Inspection ignores unusable malformed raw table entries', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      tables: [
+        null,
+        { headers: ['险种名称'], rows: 'bad' },
+      ],
+    },
+  });
+
+  assert.equal(result.normalized.tables.length, 0);
+  assert.ok(result.normalized.warnings.includes('未识别到可用表格'));
 });
 
 test('buildStructureV3InspectionReport summarizes source quality and plan rows', () => {

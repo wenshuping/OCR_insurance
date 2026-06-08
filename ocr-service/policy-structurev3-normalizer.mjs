@@ -88,6 +88,7 @@ function collectStandaloneTexts(raw) {
 }
 
 function normalizeRows(rows = []) {
+  if (!Array.isArray(rows)) return [];
   return rows
     .filter((row) => Array.isArray(row))
     .map((row) => row.map((cell) => text(cell)))
@@ -154,6 +155,7 @@ function collectMarkdownTables(markdown = '', source = 'markdown-table') {
 }
 
 function normalizeRawTable(table = {}, index = 0) {
+  if (!table || typeof table !== 'object') return null;
   const markdown = markdownText(table.markdown || table.md || table.block_content || table.content);
   if (markdown.includes('|')) {
     const markdownTables = collectMarkdownTables(markdown, 'raw-table');
@@ -183,6 +185,10 @@ function normalizeRawTable(table = {}, index = 0) {
   };
 }
 
+function isTableBlock(block) {
+  return /table|表格/u.test(compact(block?.type || block?.block_type || block?.block_label || block?.label));
+}
+
 function collectRawTables(raw) {
   const tables = [];
   for (const payload of rawPayloads(raw)) {
@@ -191,8 +197,10 @@ function collectRawTables(raw) {
     if (payload.table && typeof payload.table === 'object' && !Array.isArray(payload.table)) {
       tables.push(payload.table);
     }
-    if (Array.isArray(payload.parsing_res_list)) {
-      tables.push(...payload.parsing_res_list.filter((block) => /table|表格/u.test(compact(block.type || block.block_type || block.block_label || block.label))));
+    for (const key of ['blocks', 'layout', 'parsing_res_list']) {
+      if (Array.isArray(payload[key])) {
+        tables.push(...payload[key].filter(isTableBlock));
+      }
     }
   }
   return tables.map(normalizeRawTable).filter(Boolean);
