@@ -122,6 +122,29 @@ test('normalizeStructureV3Inspection accepts product-column rows without insuran
   assert.equal(result.candidates.plans[0].premium, '4334');
 });
 
+test('normalizeStructureV3Inspection skips keyword-only note rows before the real product row', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '基本保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['保险责任说明：本保险合同条款如下', '', '', '', ''],
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['首期保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.equal(result.candidates.plans.length, 1);
+  assert.equal(result.candidates.plans[0].role, 'main');
+});
+
 test('normalizeStructureV3Inspection stops compact labeled values at the next label', () => {
   const result = normalizeStructureV3Inspection({
     raw: {
@@ -141,6 +164,26 @@ test('normalizeStructureV3Inspection stops compact labeled values at the next la
 
   assert.equal(result.candidates.policyFields.applicant.value, '张三');
   assert.equal(result.candidates.policyFields.insured.value, '李四');
+  assert.equal(result.candidates.policyFields.beneficiary.value, '法定');
+});
+
+test('normalizeStructureV3Inspection stops beneficiary values at following labels', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险投保人张三被保险人李四受益人法定保单号12345' }],
+      tables: [
+        {
+          title: '保险利益表',
+          headers: ['险种名称', '保险金额', '保险期间', '交费期间', '保险费'],
+          rows: [
+            ['金瑞人生', '100000元', '终身', '20年交', '4334元'],
+            ['保险费合计', '', '', '', '4334元'],
+          ],
+        },
+      ],
+    },
+  });
+
   assert.equal(result.candidates.policyFields.beneficiary.value, '法定');
 });
 
@@ -169,6 +212,34 @@ test('normalizeStructureV3Inspection treats parsing_res_list block_content markd
 
   assert.equal(result.normalized.tables[0].source, 'raw-table');
   assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+});
+
+test('normalizeStructureV3Inspection parses table_res_list pred_html as raw table', () => {
+  const result = normalizeStructureV3Inspection({
+    raw: {
+      blocks: [{ type: 'text', text: '新华保险 投保人 张三 被保险人 李四 受益人 法定' }],
+      table_res_list: [
+        {
+          pred_html: [
+            '<table>',
+            '<tr><th>险种名称</th><th>基本保险金额</th><th>保险期间</th><th>交费期间</th><th>保险费</th></tr>',
+            '<tr><td>金瑞人生</td><td>100000元</td><td>终身</td><td>20年交</td><td>4334元</td></tr>',
+            '<tr><td>首期保险费合计</td><td></td><td></td><td></td><td>4334元</td></tr>',
+            '</table>',
+          ].join(''),
+        },
+      ],
+    },
+    markdown: [
+      '| 险种名称 | 基本保险金额 | 保险期间 | 交费期间 | 保险费 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 错误外部Markdown | 1元 | 1年 | 1年交 | 1元 |',
+    ].join('\n'),
+  });
+
+  assert.equal(result.normalized.tables[0].source, 'raw-table');
+  assert.equal(result.candidates.policyFields.productName.value, '金瑞人生');
+  assert.equal(result.candidates.policyFields.firstPremium.value, '4334');
 });
 
 test('normalizeStructureV3Inspection treats blocks and layout table markdown as raw table', () => {

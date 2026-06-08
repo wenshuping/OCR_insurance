@@ -15,9 +15,18 @@ function markdownText(value) {
   if (value == null) return '';
   if (Array.isArray(value)) return value.map(markdownText).filter(Boolean).join('\n').trim();
   if (typeof value === 'object') {
-    return markdownText(value.markdown ?? value.md ?? value.block_content ?? value.content ?? '');
+    return markdownText(value.markdown ?? value.md ?? value.block_content ?? value.content ?? value.table_ocr_pred ?? '');
   }
   return String(value).replace(/<br\s*\/?>/giu, '\n').trim();
+}
+
+function htmlText(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(htmlText).filter(Boolean).join('').trim();
+  if (typeof value === 'object') {
+    return htmlText(value.pred_html ?? value.html ?? value.table_html ?? value.table_ocr_pred ?? '');
+  }
+  return String(value).trim();
 }
 
 function normalizeAmount(value) {
@@ -95,6 +104,16 @@ function normalizeRows(rows = []) {
     .filter((row) => row.some(Boolean));
 }
 
+function decodeHtml(value) {
+  return String(value || '')
+    .replace(/&nbsp;/giu, ' ')
+    .replace(/&amp;/giu, '&')
+    .replace(/&lt;/giu, '<')
+    .replace(/&gt;/giu, '>')
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;/giu, "'");
+}
+
 function rowsFromCells(cells = []) {
   const grid = [];
   for (const cell of cells) {
@@ -105,6 +124,19 @@ function rowsFromCells(cells = []) {
     grid[rowIndex][colIndex] = text(cell);
   }
   return grid.map((row) => (row || []).map((cell) => text(cell)));
+}
+
+function parseHtmlRows(html = '') {
+  const rows = [];
+  for (const rowMatch of String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/giu)) {
+    const rowHtml = rowMatch[1];
+    const row = [];
+    for (const cellMatch of rowHtml.matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/giu)) {
+      row.push(text(decodeHtml(cellMatch[1]).replace(/<[^>]+>/gu, ' ')));
+    }
+    if (row.some(Boolean)) rows.push(row);
+  }
+  return rows;
 }
 
 function splitMarkdownRow(line) {
@@ -156,6 +188,21 @@ function collectMarkdownTables(markdown = '', source = 'markdown-table') {
 
 function normalizeRawTable(table = {}, index = 0) {
   if (!table || typeof table !== 'object') return null;
+  const html = htmlText(table.pred_html || table.html || table.table_html || table.table_ocr_pred);
+  if (/<(?:table|tr|td|th)\b/iu.test(html)) {
+    const rows = normalizeRows(parseHtmlRows(html));
+    const headers = (rows[0] || []).map((cell) => text(cell)).filter(Boolean);
+    const bodyRows = rows.slice(1);
+    if (headers.length && bodyRows.length) {
+      return {
+        title: text(table.title || table.name || table.label || `原始表格${index + 1}`),
+        source: 'raw-table',
+        headers,
+        rows: bodyRows,
+      };
+    }
+  }
+
   const markdown = markdownText(table.markdown || table.md || table.block_content || table.content);
   if (markdown.includes('|')) {
     const markdownTables = collectMarkdownTables(markdown, 'raw-table');
@@ -194,6 +241,7 @@ function collectRawTables(raw) {
   for (const payload of rawPayloads(raw)) {
     if (Array.isArray(payload.tables)) tables.push(...payload.tables);
     if (Array.isArray(payload.table)) tables.push(...payload.table);
+    if (Array.isArray(payload.table_res_list)) tables.push(...payload.table_res_list);
     if (payload.table && typeof payload.table === 'object' && !Array.isArray(payload.table)) {
       tables.push(payload.table);
     }
@@ -253,8 +301,10 @@ function planNameFromRow(row, columns) {
 
 function isPlanCandidate(name, row, columns) {
   if (!name || isTotalPremiumText(name)) return false;
-  if (looksLikePlanName(name)) return true;
-  return fieldFromRow(row, columns.name) === name && hasPlanDetail(row, columns);
+  if (hasPlanDetail(row, columns)) {
+    return fieldFromRow(row, columns.name) === name || looksLikePlanName(name);
+  }
+  return false;
 }
 
 function isRiderName(value) {
@@ -380,7 +430,16 @@ function buildPolicyFields({ sourceText, plans, totalPremium }) {
     '身故受益人',
     '受益人',
   ]);
-  const beneficiary = findLabeledValue(sourceText, ['身故保险金受益人', '身故受益人', '受益人']);
+  const beneficiary = findLabeledValue(sourceText, ['身故保险金受益人', '身故受益人', '受益人'], [
+    '保单号',
+    '保险合同号',
+    '合同号',
+    '投保人',
+    '设保人',
+    '被保险人',
+    '被保人',
+    '受保人',
+  ]);
 
   fields.company = fieldCandidate(company, 'text', company) || undefined;
   if (plans[0]?.name) {
