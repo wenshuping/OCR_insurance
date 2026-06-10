@@ -52,7 +52,7 @@ export function classifyPolicyLayoutRegions(rawBoxes = [], options = {}) {
       pushMany(regions.riderTable, row);
       continue;
     }
-    if (/产品名称|投保人|被保险人|保险合同号|保单号|合同号|合同生效日期|生效日期|证件号码|身份证|受益人/u.test(text)) {
+    if (/产品名称|投保人|设保人|被保险[人入]|披保险人|保险合同号|保单号|合同号|合同生效日期|生效日期|证件号码|身份证|受益人/u.test(text)) {
       seenBasicInfo = true;
       if (mode !== 'benefitTable' && mode !== 'footer') mode = 'basicInfo';
     }

@@ -79,6 +79,27 @@ export function createFamilyProfile(input: { token?: string; guestId?: string; f
   });
 }
 
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName: string }) {
+  return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles/${input.familyId}${authQuery(input)}`, {
+    token: input.token,
+    method: 'PATCH',
+    body: { familyName: input.familyName },
+  });
+}
+
+export function deleteFamilyProfile(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{
+    ok: true;
+    family: FamilyProfile;
+    archivedMemberCount: number;
+    archivedShareCount: number;
+    clearedPolicyCount: number;
+  }>(`/api/family-profiles/${input.familyId}${authQuery(input)}`, {
+    token: input.token,
+    method: 'DELETE',
+  });
+}
+
 export function ensureDefaultFamilyProfile(input: { token?: string; guestId?: string } = {}) {
   return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles/default${authQuery(input)}`, {
     token: input.token,

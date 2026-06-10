@@ -1,0 +1,149 @@
+[
+  {
+    "name": "harness-audit",
+    "patterns": [
+      "scripts/harness-audit.mjs",
+      "scripts/check.sh",
+      "scripts/test.sh",
+      "scripts/dev.sh",
+      "tests/harness-audit.test.mjs",
+      "docs/harness-test-map.json",
+      "docs/harness.md",
+      "package.json"
+    ],
+    "commands": [
+      "node --test tests/harness-audit.test.mjs"
+    ]
+  },
+  {
+    "name": "optional-responsibility",
+    "patterns": [
+      "server/optional-responsibility-governance.mjs",
+      "server/policy-ocr-mapping.mjs",
+      "server/policy-ocr.domain.mjs",
+      "server/sqlite-state-store.mjs",
+      "src/shared/customer-policy-components.tsx",
+      "src/shared/customer-policy-form.ts",
+      "tests/policy-optional-responsibility.test.mjs",
+      "tests/optional-responsibility-governance.test.mjs",
+      "tests/customer-policy-form.test.mjs",
+      "tests/customer-optional-responsibility-state.test.mjs",
+      "tests/policy-ocr-flow.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/policy-optional-responsibility.test.mjs",
+      "node --test tests/optional-responsibility-governance.test.mjs",
+      "node --test tests/customer-policy-form.test.mjs",
+      "node --test tests/customer-optional-responsibility-state.test.mjs"
+    ]
+  },
+  {
+    "name": "policy-ocr",
+    "patterns": [
+      "ocr-service/**",
+      "server/policy-ocr.domain.mjs",
+      "server/policy-ocr-mapping.mjs",
+      "tests/policy-ocr-mapping.test.mjs",
+      "tests/policy-layout-boxes.test.mjs",
+      "tests/policy-layout-regions.test.mjs",
+      "tests/policy-layout-merge.test.mjs",
+      "tests/policy-basic-info-layout-parser.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/policy-ocr-mapping.test.mjs",
+      "node --test tests/policy-layout-boxes.test.mjs",
+      "node --test tests/policy-layout-regions.test.mjs",
+      "node --test tests/policy-layout-merge.test.mjs",
+      "node --test tests/policy-basic-info-layout-parser.test.mjs"
+    ]
+  },
+  {
+    "name": "family-report",
+    "patterns": [
+      "src/family-report-engine.mjs",
+      "src/family-report-engine.d.mts",
+      "src/features/family-report/**",
+      "src/features/family-profile/**",
+      "src/api/contracts/family.ts",
+      "server/family-profile.domain.mjs",
+      "server/services/family-workflow.service.mjs",
+      "tests/family-report-engine.test.mjs",
+      "tests/family-profile-domain.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/family-report-engine.test.mjs",
+      "node --test tests/family-profile-domain.test.mjs"
+    ]
+  },
+  {
+    "name": "cashflow",
+    "patterns": [
+      "src/cashflow-engine.mjs",
+      "src/cashflow-engine.d.mts",
+      "src/features/cashflow/**",
+      "src/features/cash-value/**",
+      "src/shared/customer-cash-value.ts",
+      "src/api/contracts/cashflow.ts",
+      "server/cashflow-compute.mjs",
+      "server/cashflow-store.mjs",
+      "server/cashflow-template.mjs",
+      "server/routes/cashflow.routes.mjs",
+      "tests/cashflow-compute.test.mjs",
+      "tests/cashflow-engine.test.mjs",
+      "tests/cashflow-store.test.mjs",
+      "tests/cashflow-template.test.mjs",
+      "tests/cash-value-parser.test.mjs",
+      "tests/cash-value-store.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/cashflow-compute.test.mjs",
+      "node --test tests/cashflow-engine.test.mjs",
+      "node --test tests/cashflow-store.test.mjs",
+      "node --test tests/cashflow-template.test.mjs",
+      "node --test tests/cash-value-parser.test.mjs",
+      "node --test tests/cash-value-store.test.mjs"
+    ]
+  },
+  {
+    "name": "policy-validity",
+    "patterns": [
+      "src/policy-validity.mjs",
+      "src/policy-validity.d.mts",
+      "tests/policy-validity.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/policy-validity.test.mjs"
+    ]
+  },
+  {
+    "name": "sms-wechat",
+    "patterns": [
+      "server/sms-delivery.mjs",
+      "server/routes/wechat.routes.mjs",
+      "tests/sms-delivery-config.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/sms-delivery-config.test.mjs"
+    ]
+  },
+  {
+    "name": "sqlite-persistence",
+    "patterns": [
+      "server/sqlite-state-store.mjs",
+      "tests/sqlite-state-store.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/sqlite-state-store.test.mjs"
+    ]
+  },
+  {
+    "name": "local-stack",
+    "patterns": [
+      "scripts/local-stack.mjs",
+      "scripts/dev.sh"
+    ],
+    "commands": [
+      "node --check scripts/local-stack.mjs"
+    ]
+  }
+]

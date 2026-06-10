@@ -16,6 +16,7 @@ export function createFamilyRoutes(context) {
   const {
     state,
     persist,
+    archiveFamilyProfile,
     allocateId,
     attachPolicyFamilyDisplay,
     createFamilyMember,
@@ -26,16 +27,26 @@ export function createFamilyRoutes(context) {
     listFamilyProfilesForOwner,
     normalizeFamilyRelation,
     normalizeGuestId,
+    persistFamilyState,
     policyHasFamilyBinding,
     requestOwner,
     resolveAuthUser,
     setFamilyCoreMember,
+    updateFamilyProfileName,
     updateFamilyMemberRelation,
   } = context;
   const ownerResolverContext = { resolveAuthUser, requestOwner, state };
   const familyLookupContext = { familyOwnerMatches };
   const familyMembersContext = { listFamilyMembers };
   const familyShareContext = { attachPolicyFamilyDisplay, listFamilyMembers, normalizeGuestId };
+  const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
+  const saveFamilyState = async ({ includePolicies = false } = {}) => {
+    if (persistFamilyState) {
+      await persistFamilyState({ includePolicies });
+      return;
+    }
+    await persist(state, familyPersistOptions);
+  };
 
   router.get('/family-profiles', async (req, res) => {
     const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
@@ -77,7 +88,7 @@ export function createFamilyRoutes(context) {
           participantReviewStatus: policy.participantReviewStatus,
         })),
       });
-      if (afterMarker !== beforeMarker) await persist(state);
+      if (afterMarker !== beforeMarker) await saveFamilyState({ includePolicies: true });
     }
     const families = familiesForOwner.map((family) => familyWithMembers(state, family, familyMembersContext));
     return res.json({ ok: true, families });
@@ -88,7 +99,7 @@ export function createFamilyRoutes(context) {
     if (!owner) return undefined;
     try {
       const family = createFamilyProfile(state, req.body || {}, owner);
-      await persist(state);
+      await saveFamilyState();
       return res.status(201).json({ ok: true, family, members: [] });
     } catch (error) {
       return sendError(res, error, 400);
@@ -100,11 +111,39 @@ export function createFamilyRoutes(context) {
     if (!owner) return undefined;
     try {
       const family = ensureDefaultFamilyProfileForPrincipal(state, owner);
-      await persist(state);
+      await saveFamilyState({ includePolicies: true });
       return res.json({ ok: true, family, members: listFamilyMembers(state, family.id) });
     } catch (error) {
       return sendError(res, error, 400);
     }
+  });
+
+  router.patch('/family-profiles/:id', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    try {
+      updateFamilyProfileName(family, req.body || {});
+      await saveFamilyState();
+      return res.json({ ok: true, family, members: listFamilyMembers(state, family.id) });
+    } catch (error) {
+      return sendError(res, error, 400);
+    }
+  });
+
+  router.delete('/family-profiles/:id', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const result = archiveFamilyProfile(state, family, owner);
+    await saveFamilyState({ includePolicies: true });
+    return res.json({ ok: true, ...result });
   });
 
   router.post('/family-profiles/:id/members', async (req, res) => {
@@ -128,7 +167,7 @@ export function createFamilyRoutes(context) {
       } else {
         family.updatedAt = new Date().toISOString();
       }
-      await persist(state);
+      await saveFamilyState();
       return res.status(201).json({ ok: true, member, family, members: listFamilyMembers(state, family.id) });
     } catch (error) {
       return sendError(res, error, 400);
@@ -164,7 +203,7 @@ export function createFamilyRoutes(context) {
         updateFamilyMemberRelation(member, relation.relationLabel);
         family.updatedAt = new Date().toISOString();
       }
-      await persist(state);
+      await saveFamilyState();
       return res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
     } catch (error) {
       return sendError(res, error, 400);
@@ -188,7 +227,7 @@ export function createFamilyRoutes(context) {
         throw error;
       }
       setFamilyCoreMember(state, family, member);
-      await persist(state);
+      await saveFamilyState();
       return res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
     } catch (error) {
       return sendError(res, error, 400);
@@ -212,7 +251,7 @@ export function createFamilyRoutes(context) {
       payload: buildFamilySharePayload(state, family, owner, now, familyShareContext),
     };
     state.familyReportShares.push(share);
-    await persist(state);
+    await saveFamilyState();
     return res.status(201).json({
       ok: true,
       share: {
@@ -226,7 +265,10 @@ export function createFamilyRoutes(context) {
 
   router.get('/family-report-shares/:token', async (req, res) => {
     const token = String(req.params.token || '').trim();
-    const share = (state.familyReportShares || []).find((row) => String(row?.token || '') === token);
+    const share = (state.familyReportShares || []).find((row) => (
+      String(row?.token || '') === token &&
+      String(row?.status || 'active') === 'active'
+    ));
     if (!share) {
       return res.status(404).json({ ok: false, code: 'SHARE_NOT_FOUND', message: '分享报告不存在' });
     }

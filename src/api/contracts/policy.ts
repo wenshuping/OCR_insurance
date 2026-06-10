@@ -39,6 +39,7 @@ export type Policy = {
   reportStatus?: 'generating' | 'ready' | 'failed' | string;
   reportError?: string;
   familyId?: number | null;
+  familyBindingSource?: string;
   applicantMemberId?: number | null;
   insuredMemberId?: number | null;
   applicantNameSnapshot?: string;
@@ -74,6 +75,22 @@ export type PolicyPlan = {
   premiumText?: string;
   matchScore?: number;
   matchReason?: string;
+  benefitRows?: PolicyPlanBenefitRow[];
+};
+
+export type PolicyPlanBenefitRow = {
+  responsibilityName?: string;
+  amountText?: string;
+  amount?: number | string;
+  premium?: number | string;
+  coveragePeriod?: string;
+  paymentMode?: string;
+  paymentPeriod?: string;
+  paymentBasis?: string;
+  benefitStandard?: string;
+  deductible?: string;
+  ratio?: string;
+  evidence?: string;
 };
 
 export type SourceRecord = PolicySource & {
@@ -146,6 +163,23 @@ export type PolicyScanResult = {
   fieldConfidence?: Record<string, 'high' | 'review' | 'missing' | string>;
   fieldEvidence?: Record<string, PolicyFieldEvidence>;
   ocrWarnings?: string[];
+  visionDebug?: {
+    provider?: string;
+    model?: string;
+    passLabel?: string;
+    finishReason?: string;
+    rawContent?: string;
+    parsedData?: unknown;
+    normalizedData?: unknown;
+    dataBeforeOcrMerge?: unknown;
+    recoveredFromPartialJson?: boolean;
+    usage?: {
+      promptTokens?: number;
+      completionTokens?: number;
+    };
+    contentChars?: number;
+    planCount?: number;
+  };
 };
 
 export type PolicyAnalysisResult = {
@@ -196,6 +230,7 @@ export type PolicyFormData = {
   firstPremium: string;
   plans?: PolicyPlan[];
   familyId?: number | null;
+  familyBindingSource?: string;
   applicantMemberId?: number | null;
   insuredMemberId?: number | null;
   applicantNameSnapshot?: string;

@@ -57,6 +57,8 @@
     "crawl:ping-an-catalog": "node scripts/crawl-ping-an-product-catalog.mjs",
     "sync:feishu-knowledge": "node scripts/sync-feishu-knowledge.mjs",
     "sync:feishu-catalog": "node scripts/sync-feishu-product-catalog.mjs",
+    "harness:audit": "node scripts/harness-audit.mjs",
+    "audit:ocr-replay": "node scripts/audit-ocr-replay.mjs",
     "ocr:structurev3:inspect": "node scripts/inspect-pp-structurev3.mjs",
     "build": "vite build",
     "preview": "vite preview --port=3013 --host=0.0.0.0",

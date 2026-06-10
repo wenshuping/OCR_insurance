@@ -162,8 +162,8 @@ function inferPlanProductType(name) {
 
 const FIELD_LABELS = [
   { field: 'policyNumber', labels: ['保险合同号', '保单号', '合同号'], labelPattern: /^(?:保险合同号|保单号|合同号)[:：]?/u, normalize: normalizePolicyNumber },
-  { field: 'applicant', labels: ['投保人姓名', '投保人'], labelPattern: /^投保人(?:姓名)?(?!豁免|的)[:：]?/u, normalize: normalizePerson },
-  { field: 'insured', labels: ['被保险人姓名', '被保人姓名', '受保人姓名', '被保险人', '被保人', '受保人'], labelPattern: /^(?:被保险人(?:姓名)?(?!的)|被保人(?:姓名)?|受保人(?:姓名)?)[:：]?/u, normalize: normalizePerson },
+  { field: 'applicant', labels: ['投保人姓名', '投保人', '设保人姓名', '设保人'], labelPattern: /^(?:投保人(?:姓名)?|设保人(?:姓名)?)(?!豁免|的)[:：]?/u, normalize: normalizePerson },
+  { field: 'insured', labels: ['被保险人姓名', '被保险入姓名', '披保险人姓名', '被保人姓名', '受保人姓名', '被保险人', '被保险入', '披保险人', '被保人', '受保人'], labelPattern: /^(?:被保险[人入](?:姓名)?(?!的)|披保险人(?:姓名)?|被保人(?:姓名)?|受保人(?:姓名)?)[:：]?/u, normalize: normalizePerson },
   { field: 'insuredIdNumber', labels: ['证件号码', '证件号', '身份证号码', '身份证号'], labelPattern: /^(?:证件号码|证件号|身份证号码|身份证号)[:：]?/u, normalize: normalizeIdNumber },
   { field: 'date', labels: ['合同成立日期', '合同生效日期', '保单生效日期', '保单生效日', '生效日期', '生效日', '保险起期'], labelPattern: /^(?:合同成立日期|合同生效日期|保单生效日期|保单生效日|生效日期|生效日|保险起期)[:：]?/u, normalize: normalizeDateOnly },
   { field: 'beneficiary', labels: ['身故保险金受益人', '身故受益人', '受益人'], labelPattern: /^(?:身故保险金受益人|身故受益人|受益人)[:：]?/u, normalize: normalizeBeneficiary },
@@ -208,7 +208,7 @@ function labelOccurrenceInText(labelDef, value) {
 function isAllowedLabelOccurrence(labelDef, text, index, label) {
   const afterLabel = text.slice(index + label.length);
   if (labelDef.field === 'applicant' && /^(?:豁免|的)/u.test(afterLabel)) return false;
-  if (labelDef.field === 'insured' && label === '被保险人' && afterLabel.startsWith('的')) return false;
+  if (labelDef.field === 'insured' && /^(?:被保险[人入]|披保险人)$/u.test(label) && afterLabel.startsWith('的')) return false;
   return true;
 }
 

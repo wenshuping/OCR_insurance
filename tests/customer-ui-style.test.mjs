@@ -11,6 +11,7 @@ const customerCashValueSource = fs.readFileSync(new URL('../src/shared/customer-
 const customerPolicyComponentsSource = fs.readFileSync(new URL('../src/shared/customer-policy-components.tsx', import.meta.url), 'utf8');
 const customerPolicyListSource = fs.readFileSync(new URL('../src/shared/customer-policy-list.tsx', import.meta.url), 'utf8');
 const familyProfileSource = fs.readFileSync(new URL('../src/features/family-profile/FamilyProfileManager.tsx', import.meta.url), 'utf8');
+const familyCreateDialogSource = fs.readFileSync(new URL('../src/features/family-profile/CreateFamilyProfileDialog.tsx', import.meta.url), 'utf8');
 const policyEntrySource = fs.readFileSync(new URL('../src/features/policy-entry/UploadPolicyPage.tsx', import.meta.url), 'utf8');
 const policyDetailSource = fs.readFileSync(new URL('../src/features/policy-detail/PolicyDetailSheet.tsx', import.meta.url), 'utf8');
 const responsibilityAssistantSource = fs.readFileSync(new URL('../src/features/responsibility-assistant/ResponsibilityAssistant.tsx', import.meta.url), 'utf8');
@@ -51,6 +52,7 @@ const normalizedCustomerPolicySharedSource = [
   normalizedCustomerPolicyListSource,
 ].join('\n');
 const normalizedFamilyProfileSource = familyProfileSource.replaceAll("from '../../", "from './");
+const normalizedFamilyCreateDialogSource = familyCreateDialogSource.replaceAll("from '../../", "from './");
 const normalizedPolicyEntrySource = policyEntrySource.replaceAll("from '../../", "from './");
 const normalizedPolicyDetailSource = policyDetailSource.replaceAll("from '../../", "from './");
 const normalizedResponsibilityAssistantSource = responsibilityAssistantSource.replaceAll("from '../../", "from './");
@@ -281,8 +283,13 @@ test('cash value follow-up returns directly to the saved policy detail', () => {
 test('customer app exposes family profile management surface', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const familySource = componentSource('FamilyProfileManager', null);
+  const familyCreateSource = normalizedFamilyCreateDialogSource;
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /FamilyProfileManager/);
+  assert.match(customerSource, /CreateFamilyProfileDialog/);
+  assert.match(customerSource, /familyCreateDialogOpen/);
+  assert.match(customerSource, /updateFamilyProfile/);
+  assert.match(customerSource, /deleteFamilyProfile/);
   assert.match(customerSource, /onOpenFamilies=\{\(\) => setActiveTab\('families'\)\}/);
   assert.match(customerSource, /<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} \/>/);
   assert.match(
@@ -292,6 +299,11 @@ test('customer app exposes family profile management surface', () => {
   assert.match(pageSource, /onOpenFamilies/);
   assert.match(familySource, /家庭列表/);
   assert.match(pageSource, /家庭档案/);
+  assert.match(familyCreateSource, /role="dialog"/);
+  assert.match(familyCreateSource, /家庭名称/);
+  assert.match(familyCreateSource, /创建中/);
+  assert.doesNotMatch(customerSource, /window\.prompt/);
+  assert.doesNotMatch(familySource, /window\.prompt/);
   assert.match(pageSource, /<header[\s\S]*<h1 className="text-lg font-bold">录入保单<\/h1>[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
   assert.match(pageSource, /bg-blue-50 px-3 text-sm font-black text-blue-600[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
   assert.doesNotMatch(pageSource, /onOpenReport/);
@@ -301,6 +313,10 @@ test('customer app exposes family profile management surface', () => {
   assert.match(familySource, /家庭保单/);
   assert.match(familySource, /onViewFamilyPolicies/);
   assert.match(familySource, /管理成员/);
+  assert.match(familySource, /编辑家庭/);
+  assert.match(familySource, /保存名称/);
+  assert.match(familySource, /删除家庭/);
+  assert.match(familySource, /确认删除/);
   assert.match(familySource, /familyPolicyCounts/);
   assert.match(familySource, /const policyCount = Number\(familyPolicyCounts\[Number\(family\.id\)\] \|\| 0\)/);
   assert.match(familySource, /暂无家庭保单，录入后再展示成员和报告/);
@@ -313,8 +329,10 @@ test('customer app exposes family profile management surface', () => {
   assert.doesNotMatch(familySource, /handleAddFamilyMember/);
   assert.match(familySource, /设为核心/);
   assert.match(familySource, /onUpdateFamilyMemberRelation/);
+  assert.match(familySource, /onUpdateFamilyName/);
+  assert.match(familySource, /onDeleteFamily/);
   assert.match(familySource, /设置\$\{member\.name\}家庭关系/);
-  assert.doesNotMatch(familySource, /编辑家庭/);
+  assert.doesNotMatch(familySource, /window\.confirm/);
   assert.match(familySource, /录入保单/);
 });
 
@@ -808,6 +826,8 @@ test('optional responsibility review displays quantification status and selected
   assert.doesNotMatch(reviewSource, /option\.value !== 'unknown'/);
   assert.match(reviewSource, /const contentText = optionalResponsibilityContentText\(item\)/);
   assert.match(reviewSource, /compact \? 'line-clamp-3' : 'line-clamp-2'/);
+  assert.match(reviewSource, /group-hover:line-clamp-none/);
+  assert.match(reviewSource, /focus:line-clamp-none/);
   assert.match(reviewSource, /量化状态/);
   assert.match(reviewSource, /该可选责任已确认投保，但尚未完成指标量化/);
   assert.match(reviewSource, /optionalResponsibilityQuantificationLabel/);
@@ -1297,6 +1317,8 @@ test('family report export downloads a page-styled image instead of paginated pd
   assert.match(reportExportSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean; matchScreenStyle\?: boolean \}/);
   assert.match(reportExportSource, /rawTarget: true/);
   assert.match(reportExportSource, /matchScreenStyle: true/);
+  assert.match(reportExportSource, /preservePageStyle: true/);
+  assert.match(reportExportSource, /resolveImageCaptureOptions/);
   assert.match(normalizedCustomerAppSource, /downloadReportImage\(target,\s*title/);
   assert.match(reportExportSource, /captureReportImageCanvas\(imageTarget,\s*fileName/);
   assert.match(reportExportSource, /exportScreenStyledReportImageInCurrentPage\(imageTarget,\s*fileName/);
@@ -1307,6 +1329,10 @@ test('family report export downloads a page-styled image instead of paginated pd
   assert.match(reportExportSource, /MiniProgram\|miniProgram/);
   assert.match(reportExportSource, /triggerImageBlobDownload\(imageBlob,\s*fileName\)/);
   assert.match(reportExportSource, /link\.download = `\$\{fileName\}\.jpg`/);
+  assert.match(reportExportSource, /showBlobResult\(imageBlob: Blob\)/);
+  assert.match(reportExportSource, /download="\$\{safeFileName\}\.jpg"/);
+  assert.match(reportExportSource, /点击“下载长图”保存/);
+  assert.doesNotMatch(reportExportSource, /长按完整长图保存|长按这张长图|长按图片可保存/);
   const imageExportSource = functionSource(reportExportSource, 'downloadReportImage', null);
   const imageCaptureSource = functionSource(reportExportSource, 'captureReportImageCanvas', 'downloadReportPdf');
   assert.doesNotMatch(imageExportSource, /exportCurrentReportAsPdf/);
@@ -1317,7 +1343,9 @@ test('family report export downloads a page-styled image instead of paginated pd
   assert.doesNotMatch(imageCaptureSource, /html2canvas/);
   assert.match(imageCaptureSource, /pixelRatio:\s*getPdfRenderScale\(\)/);
   assert.match(imageCaptureSource, /skipFonts:\s*true/);
-  assert.match(imageCaptureSource, /createPdfRenderTarget\(target,\s*_title,\s*undefined,\s*\{ rawTarget: true,\s*matchScreenStyle: true \}\)/);
+  assert.match(imageCaptureSource, /renderOptions = resolveImageCaptureOptions\(_options\)/);
+  assert.match(imageCaptureSource, /createPdfRenderTarget\(target,\s*_title,\s*undefined,\s*renderOptions\)/);
+  assert.match(imageCaptureSource, /document\.body\.classList\.add\('pdf-page-style-export-mode'\)/);
   assert.match(imageCaptureSource, /margin:\s*'0'/);
   assert.match(imageCaptureSource, /renderTarget\?\.cleanup\(\)/);
   assert.match(reportExportSource, /max-width:min\(1180px,calc\(100vw - 28px\)\)/);

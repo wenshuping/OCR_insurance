@@ -45,6 +45,22 @@ export function normalizePolicyPlanListWithIndex(
     const matchedProductName = String(plan?.matchedProductName || '').trim();
     if (!name && !matchedProductName && !keepEmpty) return;
     if (!keepEmpty && !shouldKeepPolicyPlan(plan)) return;
+    const benefitRows = (Array.isArray(plan?.benefitRows) ? plan.benefitRows : [])
+      .map((row) => ({
+        responsibilityName: String(row?.responsibilityName || ''),
+        amountText: String(row?.amountText || ''),
+        amount: row?.amount === undefined || row?.amount === null || row?.amount === '' ? '' : String(row.amount),
+        premium: row?.premium === undefined || row?.premium === null || row?.premium === '' ? '' : String(row.premium),
+        coveragePeriod: String(row?.coveragePeriod || ''),
+        paymentMode: String(row?.paymentMode || ''),
+        paymentPeriod: String(row?.paymentPeriod || ''),
+        paymentBasis: String(row?.paymentBasis || ''),
+        benefitStandard: String(row?.benefitStandard || ''),
+        deductible: String(row?.deductible || ''),
+        ratio: String(row?.ratio || ''),
+        evidence: String(row?.evidence || ''),
+      }))
+      .filter((row) => Object.values(row).some(Boolean));
     normalizedPlans.push({
       __originalIndex: index,
       company: String(plan?.company || company || '').trim(),
@@ -61,6 +77,7 @@ export function normalizePolicyPlanListWithIndex(
       premiumText: String(plan?.premiumText || ''),
       matchScore: Number(plan?.matchScore || 0) || 0,
       matchReason: String(plan?.matchReason || ''),
+      ...(benefitRows.length ? { benefitRows } : {}),
     });
   });
   return normalizedPlans

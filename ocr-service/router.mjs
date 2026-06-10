@@ -27,9 +27,15 @@ export function createOcrServiceRouter() {
       const payload = await scanInsurancePolicyLocal({
         uploadItem: req.body.uploadItem,
         ocrText: req.body.ocrText,
+        ocrContext: req.body.ocrContext,
       });
       return res.json(payload);
     } catch (err) {
+      console.error('[ocr-policy-scan] failed', {
+        code: err?.code || err?.message,
+        message: err?.message,
+        status: err?.status,
+      });
       return respondInsurancePolicyScanError(res, err);
     }
   });

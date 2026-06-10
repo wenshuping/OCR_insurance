@@ -32,6 +32,13 @@ export function escapeRegExp(text) {
 
 export function cleanupFieldText(value) {
   return String(value || '')
+    .replace(/險/gu, '险')
+    .replace(/壽/gu, '寿')
+    .replace(/終/gu, '终')
+    .replace(/費/gu, '费')
+    .replace(/額/gu, '额')
+    .replace(/稱/gu, '称')
+    .replace(/繳/gu, '缴')
     .replace(/[：﹕]/g, ':')
     .replace(/[|｜]/g, ' ')
     .replace(/^[：:\-=\s]+/, '')
@@ -78,6 +85,15 @@ export function looksLikeCompanyLogoLine(line, company = '') {
   return /^(?:[a-z0-9]+|心|囗|口|图|标)+$/iu.test(remainder);
 }
 
+function isResponsibilityDetailNoiseLine(line) {
+  const text = compactText(line);
+  if (!text) return true;
+  if (/^(保险责任名称(?:（接第\d+页）|\(接第\d+页\))?|金额\/?份数|给付标准|免赔额(?:赔付比例)?|赔付比例|经社保赔付|未经社保赔付|泾社保赔付)$/u.test(text)) return true;
+  if (/^(?:意外伤害身故和残疾|疾病身故或全残|意外身故或全残|疾病住院医疗|疾病特定门诊|意外伤害医疗费用|狂犬病疫苗接种医疗费用|微创美容缝合医疗费用|创伤性牙齿修复医疗费用|特定牙齿缺损定额给付|住院津贴)(?:保险)?金$/u.test(text)) return true;
+  if (/^险金(?:微创美容缝合医疗费用保险|创伤性牙齿修复医疗费用保|特定牙齿缺损定额给付保险)/u.test(text)) return true;
+  return false;
+}
+
 export function isBenefitTableHeaderLine(line) {
   const text = compactText(line);
   if (
@@ -93,7 +109,8 @@ export function isBenefitTableHeaderLine(line) {
 export function isStructuralNoiseLine(line) {
   const text = compactText(line);
   if (!text) return true;
-  return /^(保险单|基本内容|保险利益表|特别约定[:：]?|本栏空白|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|保险合同专用章|业务员[:：].*|业务员编号[:：]?.*|保单签发地[:：].*|服务电话[:：]?.*|第\d+页共\d+页|\*此码仅.*|币值单位[:：]?.*|保险合同号[:：]?.*|证件号码|受益顺序|受益份额|身故保险金受益人)$/.test(
+  if (isResponsibilityDetailNoiseLine(text)) return true;
+  return /^(保险单|基本内容|保险利益表|备注[:：]?.*|特别约定[:：]?|本栏空白|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|保险合同专用章|业务员[:：].*|业务员编号[:：]?.*|保单签发地[:：].*|服务电话[:：]?.*|第\d+页共\d+页|\*此码仅.*|币值单位[:：]?.*|保险合同号[:：]?.*|证件号码|受益顺序|受益份额|身故保险金受益人|被保险[人入]的法定继承人)$/.test(
     text,
   );
 }
@@ -109,12 +126,14 @@ export function isProductDescriptorLine(line) {
 export function isProductNameNoiseLine(line, company = '') {
   const text = compactText(line);
   if (!text) return true;
+  if (isResponsibilityDetailNoiseLine(text)) return true;
   if (looksLikeCompanyLogoLine(text, company)) return true;
   if (isBenefitTableHeaderLine(text) || isStructuralNoiseLine(text)) return true;
-  if (/^(?:主险明细|附加险明细|险种性质|子险种名称|加费(?:（元）|\(元\))?|标准保费(?:（元）|\(元\))?|保单(?:号|生效日|期满日)|交费期满日|每期交费日|出生日期|证件名称|与被保险人关系受益份额)/u.test(text)) {
+  if (/^(?:主险明细|附加险明细|(?:险|玲|检)种性质|子险种名称|加费(?:（元）|\(元\))?|标准保费(?:（元）|\(元\))?|投保单号|保单(?:号|生效日|期满日)|[交文]费期满日|每期[交文]费日|出生日期|证件名称|与被保(?:险)?人关系|与被保险人关系受益份额|(?:投保人|被保险人|披保险人|技保险人)姓名|被保险人证件号码|产品.*保费|币种)/u.test(text)) {
     return true;
   }
-  if (/^(投保人|被保险人|客户号码|保险期限|缴费年期|缴费方式|保险金额|保险费)/.test(text)) return true;
+  if (/^(?:可选责任|基本责任)(?:的约定)?[:：]?/u.test(text)) return true;
+  if (/^(投保人|设保人|被保险[人入]|披保险人|客户号码|保险期限|缴费年期|缴费方式|[交文]费方式|[交文]费期间|保险金额|保险费)/.test(text)) return true;
   if (/客户号码|第一顺位|第二顺位|受益人|联系电话|邮政编码|保险合同号|合同号/.test(text)) return true;
   if (/^(每年\d{1,2}月\d{1,2}日|至20\d{2}年\d{1,2}月\d{1,2}日(?:零时)?|[¥￥]?\d+(?:\.\d+)?元?|\/\d+年|\/20\d{2}年)/.test(text)) {
     return true;
@@ -178,6 +197,8 @@ export function normalizePaymentPeriodText(value) {
     .replace(/^\/+/, '');
   const matched = text.match(/^(\d{1,2})年$/);
   if (matched?.[1]) return `${matched[1]}年`;
+  const prefixedYear = text.match(/^(\d{1,3})年(?:交|缴)?(?=$|续期|保险费|交费|缴费|\/)/u);
+  if (prefixedYear?.[1]) return `${prefixedYear[1]}年`;
   if (/^至20\d{2}年\d{1,2}月\d{1,2}日/.test(text)) return text;
   return '';
 }
@@ -185,9 +206,11 @@ export function normalizePaymentPeriodText(value) {
 export function normalizeCoveragePeriodText(value) {
   const text = compactText(value).replace(/^\/+/, '');
   if (text === '终身') return '终身';
+  if (/^(?:保险期间|保障期间|保险期限|保障期限)[:：]?.*终身$/u.test(text) || /被保险人终身/u.test(text)) return '终身';
   const ageMatched = text.match(/(?:保至|保障至|至)?(\d{2,3})周?岁/);
   if (ageMatched?.[1]) return `至${ageMatched[1]}岁`;
-  if (/^至20\d{2}年\d{1,2}月\d{1,2}日/.test(text)) return text;
+  const dateMatched = text.match(/至20\d{2}年\d{1,2}月\d{1,2}日(?:零时)?/u);
+  if (dateMatched?.[0]) return dateMatched[0];
   if (/^\d{1,2}年$/.test(text)) return text;
   return '';
 }

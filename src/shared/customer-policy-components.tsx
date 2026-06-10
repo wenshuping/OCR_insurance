@@ -112,6 +112,21 @@ function planPremiumDisplayText(plan: NonNullable<PolicyFormData['plans']>[numbe
   return isSharedPlanPremiumText(plan.premiumText) ? String(plan.premiumText || '') : formatCurrency(0);
 }
 
+function planBenefitRowLabel(row: NonNullable<NonNullable<PolicyFormData['plans']>[number]['benefitRows']>[number]) {
+  const parts = [];
+  if (row.responsibilityName) parts.push(String(row.responsibilityName));
+  if (row.amountText) parts.push(`金额/份数 ${row.amountText}`);
+  else if (row.amount) parts.push(`金额 ${formatCoverageAmount(Number(row.amount || 0))}`);
+  if (row.premium) parts.push(`保费 ${formatCurrency(Number(row.premium || 0))}`);
+  if (row.paymentBasis) parts.push(String(row.paymentBasis));
+  if (row.benefitStandard) parts.push(String(row.benefitStandard));
+  if (row.deductible) parts.push(`免赔 ${row.deductible}`);
+  if (row.ratio) parts.push(`赔付 ${row.ratio}`);
+  if (row.coveragePeriod) parts.push(String(row.coveragePeriod));
+  if (row.paymentPeriod || row.paymentMode) parts.push(String(row.paymentPeriod || row.paymentMode));
+  return parts.join(' / ');
+}
+
 function normalizeProductMatchText(value: unknown) {
   return String(value || '')
     .normalize('NFKC')
@@ -278,8 +293,9 @@ export function OptionalResponsibilityReview({
           const status = item.selectionStatus || 'unknown';
           const displayName = optionalResponsibilityDisplayName(item);
           const contentText = optionalResponsibilityContentText(item);
+          const contentClampClass = compact ? 'line-clamp-3' : 'line-clamp-2';
           return (
-            <article key={item.id} className="rounded-[18px] border border-slate-100 bg-slate-50 p-3">
+            <article key={item.id} className="group rounded-[18px] border border-slate-100 bg-slate-50 p-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-black leading-6 text-slate-900">
@@ -310,7 +326,11 @@ export function OptionalResponsibilityReview({
                 ) : null}
               </div>
               {contentText ? (
-                <p className={`${compact ? 'line-clamp-3' : 'line-clamp-2'} mt-2 text-xs font-medium leading-5 text-slate-500`}>
+                <p
+                  tabIndex={0}
+                  title={contentText}
+                  className={`${contentClampClass} mt-2 text-xs font-medium leading-5 text-slate-500 group-hover:line-clamp-none focus:line-clamp-none focus-visible:rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500`}
+                >
                   {contentText}
                 </p>
               ) : null}
@@ -559,6 +579,16 @@ export function PolicyPlanSummary({
                   </span>
                 </p>
               </div>
+              {Array.isArray(plan.benefitRows) && plan.benefitRows.length > 1 ? (
+                <div className="mt-2 rounded-lg bg-white px-3 py-2 text-xs font-bold leading-5 text-slate-500 ring-1 ring-slate-100">
+                  <p className="mb-1 text-[11px] font-black text-slate-700">责任金额明细</p>
+                  <ul className="space-y-1">
+                    {plan.benefitRows.map((row, rowIndex) => (
+                      <li key={`${planProductDisplayName(plan)}-benefit-${rowIndex}`}>{planBenefitRowLabel(row) || '-'}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </article>
           );
         })}

@@ -25,6 +25,8 @@ function createProfileConfigs() {
   const prodRuntimeDir = path.join(projectRoot, '.runtime');
   const devRuntimeDir = path.join(prodRuntimeDir, 'local');
   const prodDbPath = path.join(prodRuntimeDir, 'policy-ocr.sqlite');
+  const prodRuntimeEnv = readRuntimeEnvConfig(prodRuntimeDir);
+  const devRuntimeEnv = readRuntimeEnvConfig(devRuntimeDir);
   return {
     prod: createProfileConfig({
       name: 'prod',
@@ -38,6 +40,7 @@ function createProfileConfigs() {
       ocrHost: '127.0.0.1',
       nodeEnv: 'production',
       publicTunnel: true,
+      extraEnv: prodRuntimeEnv,
     }),
     dev: createProfileConfig({
       name: 'dev',
@@ -58,9 +61,60 @@ function createProfileConfigs() {
         POLICY_ADMIN_PASSWORD: 'admin123456',
         SMS_MODE: 'mock',
         SMS_MOCK_CODE: '123456',
+        ...devRuntimeEnv,
       },
     }),
   };
+}
+
+function readRuntimeEnvConfig(runtimeDir) {
+  const configPath = path.join(runtimeDir, 'policy-ocr-env.json');
+  let payload = null;
+  try {
+    payload = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch {
+    return {};
+  }
+  const allowedKeys = new Set([
+    'POLICY_OCR_PROVIDER',
+    'POLICY_OCR_POSTPROCESSOR',
+    'POLICY_OCR_OLLAMA_BASE_URL',
+    'POLICY_OCR_OLLAMA_MODEL',
+    'POLICY_OCR_OLLAMA_VISION_MODEL',
+    'POLICY_OCR_OLLAMA_TIMEOUT_MS',
+    'POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS',
+    'POLICY_OCR_OLLAMA_VISION_NUM_CTX',
+    'POLICY_OCR_OLLAMA_VISION_NUM_PREDICT',
+    'POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES',
+    'POLICY_OCR_OLLAMA_VISION_MAX_IMAGE_DIMENSION',
+    'POLICY_OCR_OLLAMA_VISION_JPEG_QUALITY',
+    'POLICY_OCR_REMOTE_VISION_BASE_URL',
+    'POLICY_OCR_REMOTE_VISION_MODEL',
+    'POLICY_OCR_REMOTE_VISION_TIMEOUT_MS',
+    'POLICY_OCR_REMOTE_VISION_MAX_IMAGE_DIMENSION',
+    'POLICY_OCR_REMOTE_VISION_JPEG_QUALITY',
+    'POLICY_OCR_REMOTE_VISION_MAX_TOKENS',
+    'POLICY_OCR_HUAWEI_PROJECT_ID',
+    'POLICY_OCR_HUAWEI_X_AUTH_TOKEN',
+    'POLICY_OCR_HUAWEI_AUTH_TOKEN',
+    'POLICY_OCR_HUAWEI_AK',
+    'POLICY_OCR_HUAWEI_SK',
+    'CLOUD_SDK_AK',
+    'CLOUD_SDK_SK',
+    'POLICY_OCR_HUAWEI_ENDPOINT',
+    'POLICY_OCR_HUAWEI_REGION',
+    'POLICY_OCR_HUAWEI_ENTERPRISE_PROJECT_ID',
+    'POLICY_OCR_HUAWEI_TIMEOUT_MS',
+    'POLICY_OCR_FALLBACK_PADDLE',
+    'POLICY_OCR_PADDLE_PYTHON',
+  ]);
+  const env = {};
+  for (const [key, value] of Object.entries(payload || {})) {
+    if (!allowedKeys.has(key)) continue;
+    const normalized = String(value || '').trim();
+    if (normalized) env[key] = normalized;
+  }
+  return env;
 }
 
 function createProfileConfig({
@@ -103,6 +157,7 @@ function createProfileConfig({
       OCR_SERVICE_HOST: ocrHost,
       OCR_SERVICE_PORT: String(ocrPort),
       POLICY_OCR_CONFIG_PATH: path.join(runtimeDir, 'policy-ocr-config.json'),
+      POLICY_OCR_PROVIDER: 'remote_gpu_vision',
       ...extraEnv,
     },
   };

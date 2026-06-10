@@ -6,10 +6,12 @@ import {
   createFamilyMember as createFamilyMemberContract,
   createFamilyProfile as createFamilyProfileContract,
   createFamilyReportShare as createFamilyReportShareContract,
+  deleteFamilyProfile as deleteFamilyProfileContract,
   ensureDefaultFamilyProfile as ensureDefaultFamilyProfileContract,
   getFamilyReportShare as getFamilyReportShareContract,
   listFamilyProfiles as listFamilyProfilesContract,
   setFamilyCoreMember as setFamilyCoreMemberContract,
+  updateFamilyProfile as updateFamilyProfileContract,
   updateFamilyMemberRelation as updateFamilyMemberRelationContract,
 } from './api/contracts/family';
 import {
@@ -140,6 +142,14 @@ export function listFamilyProfiles(input: { token?: string; guestId?: string } =
 
 export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string }) {
   return createFamilyProfileContract(input);
+}
+
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName: string }) {
+  return updateFamilyProfileContract(input);
+}
+
+export function deleteFamilyProfile(input: { token?: string; guestId?: string; familyId: number }) {
+  return deleteFamilyProfileContract(input);
 }
 
 export function ensureDefaultFamilyProfile(input: { token?: string; guestId?: string } = {}) {

@@ -21,6 +21,9 @@ export function respondInsurancePolicyScanError(res, err) {
   if (code === 'POLICY_OCR_PROVIDER_NOT_READY') {
     return res.status(503).json({ code, message: 'OCR 服务未就绪，请先完成当前识别引擎安装或切换到可用方式' });
   }
+  if (code === 'POLICY_OCR_PROVIDER_NOT_CONFIGURED') {
+    return res.status(503).json({ code, message: 'OCR 服务未配置，请检查当前识别引擎的环境变量' });
+  }
   if (code === 'POLICY_OCR_UPSTREAM_TIMEOUT') {
     return res.status(504).json({ code, message: 'OCR 服务响应超时，请稍后重试' });
   }

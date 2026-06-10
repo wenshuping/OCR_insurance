@@ -35,6 +35,7 @@ import {
   createFamilyMember,
   createFamilyProfile,
   createFamilyReportShare,
+  deleteFamilyProfile,
   deletePolicy,
   getHealthStatus,
   getLocalPolicyAnalysisDraft,
@@ -54,6 +55,7 @@ import {
   scanPolicy,
   sendCode,
   setFamilyCoreMember,
+  updateFamilyProfile,
   updateFamilyMemberRelation,
   updatePolicy,
 } from '../../api';
@@ -96,6 +98,9 @@ import {
 import {
   FamilyProfileManager,
 } from '../../features/family-profile/FamilyProfileManager';
+import {
+  CreateFamilyProfileDialog,
+} from '../../features/family-profile/CreateFamilyProfileDialog';
 import {
   PolicyListItem,
   groupPoliciesByInsured,
@@ -443,6 +448,9 @@ export function CustomerApp() {
   const [showAnalysisReport, setShowAnalysisReport] = useState(false);
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [familyProfiles, setFamilyProfiles] = useState<FamilyProfile[]>([]);
+  const [familyCreateDialogOpen, setFamilyCreateDialogOpen] = useState(false);
+  const [familyCreateLoading, setFamilyCreateLoading] = useState(false);
+  const [familyCreateMessage, setFamilyCreateMessage] = useState('');
   const [selectedFamilyId, setSelectedFamilyId] = useState<number | null>(null);
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [activeTab, setActiveTab] = useState<CustomerTab>('entry');
@@ -1236,10 +1244,28 @@ export function CustomerApp() {
     return family;
   }
 
-  async function handleCreateFamilyProfile() {
-    const familyName = window.prompt('请输入家庭档案名称', '默认家庭')?.trim();
-    if (!familyName) return null;
-    return createFamilyProfileByName(familyName);
+  function openFamilyCreateDialog() {
+    setFamilyCreateMessage('');
+    setFamilyCreateDialogOpen(true);
+  }
+
+  async function submitFamilyCreateDialog(familyName: string) {
+    setFamilyCreateLoading(true);
+    setFamilyCreateMessage('');
+    try {
+      const family = await createFamilyProfileByName(familyName);
+      if (!family) return;
+      setFamilyCreateDialogOpen(false);
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : '创建家庭档案失败';
+      setFamilyCreateMessage(nextMessage);
+      setMessage(nextMessage);
+      if (error instanceof ApiError && error.status === 401) {
+        clearCustomerSession('登录已失效，请重新验证手机号');
+      }
+    } finally {
+      setFamilyCreateLoading(false);
+    }
   }
 
   function findFamilyMemberByName(name: string) {
@@ -1300,6 +1326,60 @@ export function CustomerApp() {
       relationLabel,
     });
     return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function updateFamilyNameForFamily(family: FamilyProfile, familyName: string) {
+    const payload = await updateFamilyProfile({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      familyName,
+    });
+    setMessage(`已更新家庭名称：${payload.family.familyName}`);
+    return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  function clearFamilyPolicyBinding(policy: Policy, familyId: number): Policy {
+    if (Number(policy.familyId || 0) !== Number(familyId)) return policy;
+    return {
+      ...policy,
+      familyId: null,
+      familyName: '',
+      familyBindingSource: '',
+      applicantMemberId: null,
+      insuredMemberId: null,
+      applicantMemberName: '',
+      insuredMemberName: '',
+      applicantRelation: '',
+      insuredRelation: '',
+      applicantRelationLabel: '',
+      insuredRelationLabel: '',
+      applicantNameSnapshot: '',
+      insuredNameSnapshot: '',
+      applicantRelationSnapshot: '',
+      insuredRelationSnapshot: '',
+      participantReviewStatus: 'pending_review',
+    };
+  }
+
+  async function deleteFamilyForFamily(family: FamilyProfile) {
+    const payload = await deleteFamilyProfile({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+    });
+    setFamilyProfiles((current) => current.filter((item) => Number(item.id) !== Number(family.id)));
+    setPolicies((current) => current.map((policy) => clearFamilyPolicyBinding(policy, family.id)));
+    setSelectedPolicy((current) => (current ? clearFamilyPolicyBinding(current, family.id) : current));
+    if (Number(selectedFamilyId || 0) === Number(family.id)) {
+      setSelectedFamilyId(null);
+      setShowFamilyReport(false);
+      setShowFamilyPolicies(false);
+    }
+    setFormData((current) => Number(current.familyId || 0) === Number(family.id)
+      ? { ...current, familyId: null, applicantMemberId: null, insuredMemberId: null }
+      : current);
+    setMessage(`已删除家庭档案，清理${payload.clearedPolicyCount}张保单的家庭关系`);
   }
 
   function handleOcrTextChange(value: string) {
@@ -2199,6 +2279,19 @@ export function CustomerApp() {
     />
   );
 
+  const familyCreateDialog = (
+    <CreateFamilyProfileDialog
+      loading={familyCreateLoading}
+      message={familyCreateMessage}
+      open={familyCreateDialogOpen}
+      onClose={() => {
+        if (familyCreateLoading) return;
+        setFamilyCreateDialogOpen(false);
+      }}
+      onSubmit={submitFamilyCreateDialog}
+    />
+  );
+
   const authDialog = showAuthDialog ? (
     <PhoneVerificationDialog
       code={authCode}
@@ -2327,6 +2420,7 @@ export function CustomerApp() {
         {authDialog}
         {accountSheet}
         {cashValueDialog}
+        {familyCreateDialog}
       </>
     );
   }
@@ -2356,7 +2450,7 @@ export function CustomerApp() {
           selectedFamilyId={entryFamilyId}
           selectedFamilyMembers={Array.isArray(entrySelectedFamily?.members) ? entrySelectedFamily.members : []}
           onFileChange={handleFileChange}
-          onCreateFamily={() => void handleCreateFamilyProfile()}
+          onCreateFamily={openFamilyCreateDialog}
           onOcrTextChange={handleOcrTextChange}
           onScanClick={handleScanClick}
           onSelectFamily={handleSelectFamily}
@@ -2384,6 +2478,7 @@ export function CustomerApp() {
         {authDialog}
         {accountSheet}
         {cashValueDialog}
+        {familyCreateDialog}
       </>
     );
   }
@@ -2532,6 +2627,7 @@ export function CustomerApp() {
         {authDialog}
         {accountSheet}
         {cashValueDialog}
+        {familyCreateDialog}
       </div>
     );
   }
@@ -2544,9 +2640,9 @@ export function CustomerApp() {
           familyPolicyCounts={familyPolicyCounts}
           selectedFamilyId={selectedFamilyId}
           onSelectFamily={(familyId) => handleSelectFamily(familyId)}
-          onCreateFamily={async (familyName) => {
-            await createFamilyProfileByName(familyName);
-          }}
+          onCreateFamily={openFamilyCreateDialog}
+          onUpdateFamilyName={updateFamilyNameForFamily}
+          onDeleteFamily={deleteFamilyForFamily}
           onSetCoreMember={setCoreMemberForCurrentFamily}
           onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
           onBackToEntry={() => {
@@ -2559,6 +2655,7 @@ export function CustomerApp() {
         {authDialog}
         {accountSheet}
         {cashValueDialog}
+        {familyCreateDialog}
       </>
     );
   }

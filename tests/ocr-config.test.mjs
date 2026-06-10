@@ -6,6 +6,8 @@ import test from 'node:test';
 
 import {
   OCR_PROVIDER_PADDLE_LOCAL,
+  OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE,
+  POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE,
   POLICY_OCR_MODE_PADDLEOCR_LOCAL,
   POLICY_OCR_MODE_PADDLEOCR_VL_1_5,
   POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL,
@@ -61,6 +63,94 @@ test('remote GPU vision mode is available when a 4080 vision endpoint is configu
   const options = listPolicyOcrModeOptions({ probeRuntime: false });
   const remoteVision = options.find((option) => option.value === POLICY_OCR_MODE_REMOTE_GPU_VISION);
   assert.equal(remoteVision?.selectable, true);
+});
+
+test('Huawei Cloud insurance OCR mode requires project and credentials', () => {
+  const env = {
+    POLICY_OCR_HUAWEI_PROJECT_ID: 'cn-north-4-project',
+    POLICY_OCR_HUAWEI_X_AUTH_TOKEN: 'token',
+  };
+
+  assert.equal(resolvePolicyOcrModeReadiness(POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE, {}).ready, false);
+  assert.equal(resolvePolicyOcrModeReadiness(POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE, env).ready, true);
+  assert.equal(resolvePolicyOcrModeAdminReadiness(POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE, env).ready, true);
+  assert.equal(policyOcrProviderLabel(OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE), '华为云保险单识别');
+});
+
+test('default OCR runtime uses remote GPU vision instead of local OCR', async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'ocr-config-'));
+  const configPath = path.join(tmpDir, 'policy-ocr-config.json');
+  const previousPath = process.env.POLICY_OCR_CONFIG_PATH;
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousRemoteBaseUrl = process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+  try {
+    process.env.POLICY_OCR_CONFIG_PATH = configPath;
+    delete process.env.POLICY_OCR_PROVIDER;
+    delete process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+
+    const freshModule = await import(new URL(`../ocr-service/ocr-config.service.mjs?ts=${Date.now()}`, import.meta.url));
+    const stored = freshModule.resolveStoredPolicyOcrConfig();
+    const payload = freshModule.resolvePolicyOcrRuntimePayload();
+
+    assert.equal(stored.mode, POLICY_OCR_MODE_REMOTE_GPU_VISION);
+    assert.equal(freshModule.getLegacyPolicyOcrProviderFromEnv({}), OCR_PROVIDER_REMOTE_GPU_VISION);
+    assert.equal(freshModule.resolveEffectivePolicyOcrProvider(), OCR_PROVIDER_REMOTE_GPU_VISION);
+    assert.equal(payload.runtime.provider, OCR_PROVIDER_REMOTE_GPU_VISION);
+    assert.equal(payload.runtime.legacyProvider, OCR_PROVIDER_REMOTE_GPU_VISION);
+  } finally {
+    if (previousPath == null) {
+      delete process.env.POLICY_OCR_CONFIG_PATH;
+    } else {
+      process.env.POLICY_OCR_CONFIG_PATH = previousPath;
+    }
+    if (previousProvider == null) {
+      delete process.env.POLICY_OCR_PROVIDER;
+    } else {
+      process.env.POLICY_OCR_PROVIDER = previousProvider;
+    }
+    if (previousRemoteBaseUrl == null) {
+      delete process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+    } else {
+      process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = previousRemoteBaseUrl;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('explicit OCR provider overrides stored local OCR mode', async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'ocr-config-'));
+  const configPath = path.join(tmpDir, 'policy-ocr-config.json');
+  writeFileSync(configPath, JSON.stringify({
+    mode: 'macos_vision_local',
+    updatedAt: '2026-06-08T00:00:00.000Z',
+    updatedByActorId: null,
+  }), 'utf-8');
+
+  const previousPath = process.env.POLICY_OCR_CONFIG_PATH;
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  try {
+    process.env.POLICY_OCR_CONFIG_PATH = configPath;
+    process.env.POLICY_OCR_PROVIDER = OCR_PROVIDER_REMOTE_GPU_VISION;
+
+    const freshModule = await import(new URL(`../ocr-service/ocr-config.service.mjs?ts=${Date.now()}-override`, import.meta.url));
+    const payload = freshModule.resolvePolicyOcrRuntimePayload();
+
+    assert.equal(freshModule.resolveStoredPolicyOcrConfig().mode, 'macos_vision_local');
+    assert.equal(freshModule.resolveEffectivePolicyOcrProvider(), OCR_PROVIDER_REMOTE_GPU_VISION);
+    assert.equal(payload.runtime.provider, OCR_PROVIDER_REMOTE_GPU_VISION);
+  } finally {
+    if (previousPath == null) {
+      delete process.env.POLICY_OCR_CONFIG_PATH;
+    } else {
+      process.env.POLICY_OCR_CONFIG_PATH = previousPath;
+    }
+    if (previousProvider == null) {
+      delete process.env.POLICY_OCR_PROVIDER;
+    } else {
+      process.env.POLICY_OCR_PROVIDER = previousProvider;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('deprecated pdf extract kit config falls back to PaddleOCR runtime mode', async () => {

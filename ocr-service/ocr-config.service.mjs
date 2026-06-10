@@ -10,6 +10,7 @@ export const POLICY_OCR_MODE_PADDLEOCR_LOCAL = 'paddleocr_local';
 export const POLICY_OCR_MODE_QWEN25_VL_3B_INSTRUCT_MLX_VLM = 'qwen25_vl_3b_instruct_mlx_vlm';
 export const POLICY_OCR_MODE_PADDLEOCR_VL_1_5 = 'paddleocr_vl_1_5';
 export const POLICY_OCR_MODE_REMOTE_GPU_VISION = 'remote_gpu_vision';
+export const POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE = 'huawei_cloud_insurance';
 export const POLICY_OCR_MODE_MINICPM_V_4X_LOCAL = 'minicpm_v_4x_local';
 export const POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
 
@@ -20,6 +21,7 @@ export const OCR_PROVIDER_PADDLEOCR_VL_LOCAL = 'paddleocr_vl_local';
 export const OCR_PROVIDER_OLLAMA_VISION_LOCAL = 'ollama_vision_local';
 export const OCR_PROVIDER_MLX_QWEN25_VL_LOCAL = 'mlx_qwen25_vl_local';
 export const OCR_PROVIDER_REMOTE_GPU_VISION = 'remote_gpu_vision';
+export const OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE = 'huawei_cloud_insurance';
 export const OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
 
 function isDeprecatedPdfExtractKitMode(mode) {
@@ -78,6 +80,12 @@ const MODE_META = [
     description: '使用 4080 远程视觉模型按页面版面直接解析保单。',
   },
   {
+    value: POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE,
+    implemented: true,
+    selectable: true,
+    description: '使用华为云保险单识别 API 返回结构化保单字段。',
+  },
+  {
     value: POLICY_OCR_MODE_MINICPM_V_4X_LOCAL,
     implemented: false,
     selectable: false,
@@ -89,6 +97,14 @@ function envFlag(env, key, defaultValue = false) {
   const raw = env?.[key];
   if (raw == null) return defaultValue;
   return !['0', 'false', 'no', 'off', ''].includes(String(raw).trim().toLowerCase());
+}
+
+function hasHuaweiCloudInsuranceRuntimeConfig(env = process.env) {
+  const projectId = String(env.POLICY_OCR_HUAWEI_PROJECT_ID || '').trim();
+  const token = String(env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN || env.POLICY_OCR_HUAWEI_AUTH_TOKEN || '').trim();
+  const ak = String(env.POLICY_OCR_HUAWEI_AK || env.CLOUD_SDK_AK || '').trim();
+  const sk = String(env.POLICY_OCR_HUAWEI_SK || env.CLOUD_SDK_SK || '').trim();
+  return Boolean(projectId && (token || (ak && sk)));
 }
 
 export function resolveLocalVisionFallbackRuntime(env = process.env) {
@@ -234,6 +250,11 @@ export function resolvePolicyOcrModeReadiness(mode, env = process.env) {
       ? { ready: true, notReadyReason: '' }
       : { ready: false, notReadyReason: '请先配置 POLICY_OCR_REMOTE_VISION_BASE_URL 指向 4080 视觉识别服务。' };
   }
+  if (normalizedMode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
+    return hasHuaweiCloudInsuranceRuntimeConfig(env)
+      ? { ready: true, notReadyReason: '' }
+      : { ready: false, notReadyReason: '请先配置 POLICY_OCR_HUAWEI_PROJECT_ID 以及华为云 OCR Token 或 AK/SK。' };
+  }
   if (normalizedMode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
     // Check if mineru CLI is on PATH
     const which = spawnSync('sh', ['-c', 'command -v mineru'], { encoding: 'utf-8', timeout: 5000 });
@@ -277,6 +298,11 @@ export function resolvePolicyOcrModeAdminReadiness(mode, env = process.env) {
   if (normalizedMode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
     return { ready: true, notReadyReason: '' };
   }
+  if (normalizedMode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
+    return hasHuaweiCloudInsuranceRuntimeConfig(env)
+      ? { ready: true, notReadyReason: '' }
+      : { ready: false, notReadyReason: '请先配置 POLICY_OCR_HUAWEI_PROJECT_ID 以及华为云 OCR Token 或 AK/SK。' };
+  }
   if (normalizedMode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL) {
     return { ready: true, notReadyReason: '' };
   }
@@ -307,10 +333,15 @@ export function listPolicyOcrModeOptions({ probeRuntime = true } = {}) {
 }
 
 export function getLegacyPolicyOcrProviderFromEnv(env = process.env) {
-  const provider = String(env.POLICY_OCR_PROVIDER || OCR_PROVIDER_LOCAL)
+  const provider = String(env.POLICY_OCR_PROVIDER || OCR_PROVIDER_REMOTE_GPU_VISION)
     .trim()
     .toLowerCase();
-  return fallbackProviderForDeprecatedProvider(provider || OCR_PROVIDER_LOCAL);
+  return fallbackProviderForDeprecatedProvider(provider || OCR_PROVIDER_REMOTE_GPU_VISION);
+}
+
+function getExplicitPolicyOcrProviderFromEnv(env = process.env) {
+  const provider = String(env.POLICY_OCR_PROVIDER || '').trim().toLowerCase();
+  return provider ? fallbackProviderForDeprecatedProvider(provider) : '';
 }
 
 export function policyOcrProviderLabel(provider) {
@@ -321,13 +352,17 @@ export function policyOcrProviderLabel(provider) {
   if (normalized === OCR_PROVIDER_OLLAMA_VISION_LOCAL) return 'Ollama 本地视觉识别';
   if (normalized === OCR_PROVIDER_MLX_QWEN25_VL_LOCAL) return 'Qwen2.5-VL-3B-Instruct + MLX-VLM';
   if (normalized === OCR_PROVIDER_REMOTE_GPU_VISION) return '4080 远程视觉识别';
+  if (normalized === OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE) return '华为云保险单识别';
   if (normalized === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) return 'PDF-Extract-Kit / MinerU 本地识别';
   return '当前本地默认识别';
 }
 
 export function resolveStoredPolicyOcrConfig() {
   const stored = readConfigFileSync();
-  const storedMode = normalizePolicyOcrMode(stored?.mode) || POLICY_OCR_MODE_EXISTING_DEFAULT;
+  const rawStoredMode = String(stored?.mode || '').trim();
+  const storedMode = rawStoredMode
+    ? normalizePolicyOcrMode(rawStoredMode)
+    : POLICY_OCR_MODE_REMOTE_GPU_VISION;
   const mode = fallbackModeForDeprecatedMode(storedMode);
   return {
     mode,
@@ -338,6 +373,9 @@ export function resolveStoredPolicyOcrConfig() {
 }
 
 export function resolveEffectivePolicyOcrProvider() {
+  const explicitProvider = getExplicitPolicyOcrProviderFromEnv();
+  if (explicitProvider) return explicitProvider;
+
   const { mode } = resolveStoredPolicyOcrConfig();
   const readiness = resolvePolicyOcrModeReadiness(mode);
   if (!readiness.ready) {
@@ -358,10 +396,16 @@ export function resolveEffectivePolicyOcrProvider() {
   if (mode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
     return OCR_PROVIDER_REMOTE_GPU_VISION;
   }
+  if (mode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
+    return OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE;
+  }
   return getLegacyPolicyOcrProviderFromEnv();
 }
 
 export function resolveEffectivePolicyOcrProviderFast(env = process.env) {
+  const explicitProvider = getExplicitPolicyOcrProviderFromEnv(env);
+  if (explicitProvider) return explicitProvider;
+
   const { mode } = resolveStoredPolicyOcrConfig();
   if (mode === POLICY_OCR_MODE_MACOS_VISION_LOCAL) {
     return OCR_PROVIDER_LOCAL;
@@ -379,6 +423,9 @@ export function resolveEffectivePolicyOcrProviderFast(env = process.env) {
   }
   if (mode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
     return OCR_PROVIDER_REMOTE_GPU_VISION;
+  }
+  if (mode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
+    return OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE;
   }
   return getLegacyPolicyOcrProviderFromEnv(env);
 }

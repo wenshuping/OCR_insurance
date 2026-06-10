@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,9 +14,11 @@ import { rebuildOptionalResponsibilityGovernance } from '../server/optional-resp
 import { scanPolicyWithConfiguredRuntime } from '../server/ocr-runtime.mjs';
 import {
   extractPaddleOcrText,
+  extractPolicyFieldsFromImageWithOllamaVision,
   extractPolicyFieldsFromImageWithRemoteVision,
   extractPolicyFieldsFromText,
   normalizeExtractedPolicyFields,
+  scanInsurancePolicyLocal,
 } from '../ocr-service/insurance-ocr.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 
@@ -29,6 +32,51 @@ function listen(app) {
       });
     });
   });
+}
+
+function listenHttpServer(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      const address = server.address();
+      resolve({
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        close: () => new Promise((done) => server.close(done)),
+      });
+    });
+  });
+}
+
+async function startStructureV3MockServer(payload) {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    if (request.method !== 'POST' || request.url !== '/structurev3') {
+      response.writeHead(404).end();
+      return;
+    }
+
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      requests.push({
+        body: Buffer.concat(chunks),
+        filename: request.headers['x-filename'],
+      });
+      const body = JSON.stringify(typeof payload === 'function' ? payload(requests) : payload);
+      response.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(body),
+      });
+      response.end(body);
+    });
+  });
+  const running = await listenHttpServer(server);
+  return {
+    endpoint: `${running.baseUrl}/structurev3`,
+    requests,
+    close: running.close,
+  };
 }
 
 async function jsonFetch(baseUrl, path, options = {}) {
@@ -136,50 +184,61 @@ test('OCR extraction ignores insurer logo text and combines split product table 
 
 test('remote GPU vision extraction keeps universal account plans as linked accounts', async () => {
   const calls = [];
+  const sourceBuffer = Buffer.from('fake-image');
+  const resizedBuffer = Buffer.from('resized-image');
   const result = await extractPolicyFieldsFromImageWithRemoteVision(
     {
       name: '冯力荣耀.jpg',
       type: 'image/jpeg',
-      dataUrl: `data:image/jpeg;base64,${Buffer.from('fake-image').toString('base64')}`,
+      dataUrl: `data:image/jpeg;base64,${sourceBuffer.toString('base64')}`,
     },
     {
       env: {
         POLICY_OCR_REMOTE_VISION_BASE_URL: 'http://gpu4080.local:8000',
-        POLICY_OCR_REMOTE_VISION_MODEL: 'qwen2.5-vl-7b-instruct',
+      },
+      prepareImageForRemoteVision: async (buffer, mimeType) => {
+        assert.equal(buffer.toString('utf8'), sourceBuffer.toString('utf8'));
+        assert.equal(mimeType, 'image/jpeg');
+        return { buffer: resizedBuffer, mimeType: 'image/jpeg' };
       },
       fetchImpl: async (url, options) => {
         calls.push({ url, options });
         return {
           ok: true,
           json: async () => ({
-            data: {
-              company: '新华保险',
-              name: '荣耀鑫享赢家版终身寿险',
-              applicant: '冯力',
-              insured: '冯力',
-              plans: [
-                {
-                  role: 'main',
-                  name: '荣耀鑫享赢家版终身寿险',
-                  productType: '增额终身寿险',
-                  amount: '165020.00元',
-                  coveragePeriod: '终身',
-                  paymentMode: '年交',
-                  paymentPeriod: '10年',
-                  premium: '每年20000.00元',
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    company: '新华保险',
+                    name: '荣耀鑫享赢家版终身寿险',
+                    applicant: '冯力',
+                    insured: '冯力',
+                    plans: [
+                      {
+                        role: 'main',
+                        name: '荣耀鑫享赢家版终身寿险',
+                        productType: '增额终身寿险',
+                        amount: '165020.00元',
+                        coveragePeriod: '终身',
+                        paymentMode: '年交',
+                        paymentPeriod: '10年',
+                        premium: '每年20000.00元',
+                      },
+                      {
+                        role: 'linked_account',
+                        name: '金利瑞享终身寿险（万能型）',
+                        productType: '万能账户',
+                        coveragePeriod: '终身',
+                        paymentMode: '一次交清',
+                        paymentPeriod: '一次交清',
+                        premium: '10.00元',
+                      },
+                    ],
+                  }),
                 },
-                {
-                  role: 'linked_account',
-                  name: '金利瑞享终身寿险（万能型）',
-                  productType: '万能账户',
-                  coveragePeriod: '终身',
-                  paymentMode: '一次交清',
-                  paymentPeriod: '一次交清',
-                  premium: '10.00元',
-                },
-              ],
-            },
-            ocrText: '保险利益表\n荣耀鑫享赢家版终身寿险\n金利瑞享终身寿险（万能型）',
+              },
+            ],
           }),
         };
       },
@@ -187,11 +246,2577 @@ test('remote GPU vision extraction keeps universal account plans as linked accou
   );
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'http://gpu4080.local:8000/v1/policy-ocr');
+  assert.equal(calls[0].url, 'http://gpu4080.local:8000/v1/chat/completions');
+  const remoteRequestBody = JSON.parse(String(calls[0].options.body || '{}'));
+  assert.equal(remoteRequestBody.model, 'qwen3-vl:8b-instruct');
+  assert.equal(remoteRequestBody.temperature, 0);
+  assert.equal(remoteRequestBody.max_tokens, 1536);
+  assert.match(remoteRequestBody.messages[0].content[0].text, /只输出一个 JSON 对象/u);
+  assert.match(remoteRequestBody.messages[0].content[0].text, /请逐行转录 tableRows/u);
+  assert.match(remoteRequestBody.messages[0].content[0].text, /不要把 tableRows 责任明细直接合并为 plans/u);
+  assert.match(remoteRequestBody.messages[0].content[0].text, /经社保赔付\/未经社保赔付.*不是交费方式/u);
+  assert.equal(remoteRequestBody.messages[0].content[1].image_url.url, `data:image/jpeg;base64,${resizedBuffer.toString('base64')}`);
   assert.equal(result.data.plans.length, 2);
   assert.equal(result.data.plans[1].role, 'linked_account');
   assert.equal(result.data.plans[1].productType, '万能账户');
-  assert.equal(result.ocrText, '保险利益表\n荣耀鑫享赢家版终身寿险\n金利瑞享终身寿险（万能型）');
+  assert.equal(result.ocrText, '');
+});
+
+test('remote GPU vision maps aborted vLLM requests to upstream timeout', async () => {
+  const sourceBuffer = Buffer.from('fake-image');
+  await assert.rejects(
+    () => extractPolicyFieldsFromImageWithRemoteVision(
+      {
+        name: 'timeout.jpg',
+        type: 'image/jpeg',
+        dataUrl: `data:image/jpeg;base64,${sourceBuffer.toString('base64')}`,
+      },
+      {
+        env: {
+          POLICY_OCR_REMOTE_VISION_BASE_URL: 'http://gpu4080.local:8000',
+        },
+        prepareImageForRemoteVision: async (buffer, mimeType) => ({ buffer, mimeType }),
+        fetchImpl: async () => {
+          const error = new Error('This operation was aborted');
+          error.name = 'AbortError';
+          throw error;
+        },
+      },
+    ),
+    /POLICY_OCR_UPSTREAM_TIMEOUT/u,
+  );
+});
+
+test('remote GPU vision recovers fields from length-truncated JSON', async () => {
+  const sourceBuffer = Buffer.from('fake-image');
+  const result = await extractPolicyFieldsFromImageWithRemoteVision(
+    {
+      name: 'truncated.jpg',
+      type: 'image/jpeg',
+      dataUrl: `data:image/jpeg;base64,${sourceBuffer.toString('base64')}`,
+    },
+    {
+      env: {
+        POLICY_OCR_REMOTE_VISION_BASE_URL: 'http://gpu4080.local:8000',
+      },
+      prepareImageForRemoteVision: async (buffer, mimeType) => ({ buffer, mimeType }),
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [
+            {
+              finish_reason: 'length',
+              message: {
+                content: `{
+  "company": "新华保险",
+  "name": "盛世荣耀臻享版终身寿险（分红型）",
+  "applicant": "温舒萍",
+  "insured": "温舒萍",
+  "policyNumber": "990204352040",
+  "date": "2026年03月31日",
+  "paymentPeriod": "10年",
+  "coveragePeriod": "终身",
+  "amount": "24441.00元",
+  "firstPremium": "3000.00",
+  "plans": [
+    {
+      "role": "main",
+      "name": "盛世荣耀臻享版终身寿险（分红型）",
+      "amount": "24441.00元",
+      "coveragePeriod": "终身",
+      "paymentMode": "年交",
+      "paymentPeriod": "10年",
+      "premium": "3000.00",
+      "productType": `,
+              },
+            },
+          ],
+          usage: { prompt_tokens: 907, completion_tokens: 512 },
+        }),
+      }),
+    },
+  );
+
+  assert.equal(result.data.company, '新华保险');
+  assert.equal(result.data.name, '盛世荣耀臻享版终身寿险（分红型）');
+  assert.equal(result.data.applicant, '温舒萍');
+  assert.equal(result.data.policyNumber, '990204352040');
+  assert.equal(result.data.firstPremium, '3000');
+  assert.equal(result.data.plans.length, 1);
+  assert.equal(result.data.plans[0].name, '盛世荣耀臻享版终身寿险（分红型）');
+  assert.equal(result.data.plans[0].premium, '3000');
+});
+
+test('remote GPU vision recovers completed table rows from length-truncated JSON', async () => {
+  const sourceBuffer = Buffer.from('fake-image');
+  const result = await extractPolicyFieldsFromImageWithRemoteVision(
+    {
+      name: 'truncated-table.jpg',
+      type: 'image/jpeg',
+      dataUrl: `data:image/jpeg;base64,${sourceBuffer.toString('base64')}`,
+    },
+    {
+      env: {
+        POLICY_OCR_REMOTE_VISION_BASE_URL: 'http://gpu4080.local:8000',
+        POLICY_OCR_REMOTE_VISION_MAX_TOKENS: '512',
+      },
+      prepareImageForRemoteVision: async (buffer, mimeType) => ({ buffer, mimeType }),
+      fetchImpl: async (url, options) => {
+        const requestBody = JSON.parse(String(options.body || '{}'));
+        assert.equal(requestBody.max_tokens, 1536);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [
+              {
+                finish_reason: 'length',
+                message: {
+                  content: `{
+  "company": "新华保险",
+  "name": "学生平安意外伤害保险",
+  "policyNumber": "66248173100401",
+  "insured": "王俊曦",
+  "date": "2024年08月09日",
+  "coveragePeriod": "2024年08月16日零时起至2025年08月15日二十四时止",
+  "amount": "80000.00元",
+  "firstPremium": "298.00",
+  "plans": [],
+  "tableRows": [
+    {"planName":"学生平安意外伤害保险","responsibilityName":"意外伤害身故和残疾保险金","amountOrUnits":"80000.00元","benefitStandard":"","deductible":"","ratio":""},
+    {"planName":"附加学生平安A1款意外伤害医疗保险","responsibilityName":"意外伤害医疗费用保险金","amountOrUnits":"20000.00元","benefitStandard":"未经社保赔付","deductible":"50元","ratio":"80%"},
+    {"planName":"附加学生平安A款住院津贴医疗保险","responsibility`,
+                },
+              },
+            ],
+            usage: { prompt_tokens: 1074, completion_tokens: 512 },
+          }),
+        };
+      },
+    },
+  );
+
+  assert.equal(result.visionDebug.recoveredFromPartialJson, true);
+  assert.equal(result.visionDebug.parsedData.tableRows.length, 2);
+  assert.deepEqual(result.data.plans.map((plan) => plan.name), [
+    '学生平安意外伤害保险',
+    '附加学生平安A1款意外伤害医疗保险',
+  ]);
+  assert.equal(result.data.plans[0].amount, '80000');
+  assert.equal(result.data.plans[1].amount, '20000');
+  assert.deepEqual(result.data.plans[1].benefitRows.map((row) => ({
+    responsibilityName: row.responsibilityName,
+    amountText: row.amountText,
+    benefitStandard: row.benefitStandard,
+    deductible: row.deductible,
+    ratio: row.ratio,
+  })), [
+    {
+      responsibilityName: '意外伤害医疗费用保险金',
+      amountText: '20000.00元',
+      benefitStandard: '未经社保赔付',
+      deductible: '50元',
+      ratio: '80%',
+    },
+  ]);
+});
+
+test('remote GPU vision does not retry focused passes when whole response is empty', async () => {
+  const calls = [];
+  const sourceBuffer = Buffer.from('fake-image');
+  await assert.rejects(
+    () => extractPolicyFieldsFromImageWithRemoteVision(
+      {
+        name: 'focused.jpg',
+        type: 'image/jpeg',
+        dataUrl: `data:image/jpeg;base64,${sourceBuffer.toString('base64')}`,
+      },
+      {
+        env: {
+          POLICY_OCR_REMOTE_VISION_BASE_URL: 'http://gpu4080.local:8000',
+        },
+        prepareImageForRemoteVision: async (buffer, mimeType) => ({ buffer, mimeType }),
+        fetchImpl: async (url, options) => {
+          const body = JSON.parse(String(options.body || '{}'));
+          const prompt = String(body.messages?.[0]?.content?.[0]?.text || '');
+          calls.push({ url, prompt });
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              choices: [{ finish_reason: 'stop', message: { content: '{}' } }],
+            }),
+          };
+        },
+      },
+    ),
+    /POLICY_OCR_EMPTY/u,
+  );
+
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].prompt, /页眉和基本内容区|保险利益表和险种明细区|受益人、特别约定/u);
+});
+
+test('normalizer rejects amount-like identity numbers and repairs truncated main plan amount', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '中国人寿保险',
+    name: '国寿鑫颐宝两全保险（2024版）',
+    applicant: '翟卿',
+    insured: '翟卿',
+    insuredIdNumber: '159948001200000',
+    amount: '159948.00',
+    firstPremium: '12000.00',
+    plans: [
+      {
+        role: 'main',
+        name: '国寿鑫颐宝两全保险（2024版）',
+        amount: '12',
+        premium: '12000.00',
+        coveragePeriod: '至60周岁',
+        paymentMode: '年交',
+        paymentPeriod: '10年交',
+      },
+    ],
+  });
+
+  assert.equal(data.insuredIdNumber, '');
+  assert.equal(data.insuredBirthday, '');
+  assert.equal(data.amount, '159948');
+  assert.equal(data.plans[0].amount, '159948');
+  assert.equal(data.firstPremium, '12000');
+});
+
+test('normalizer drops sparse duplicate rider and hydrates single main plan premium', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '中国人寿保险',
+    name: '国寿鑫颐宝两全保险（2024版）（个人养老金）',
+    amount: '159948.00',
+    coveragePeriod: '至60周岁',
+    paymentPeriod: '10年交',
+    firstPremium: '12000.00',
+    plans: [
+      {
+        role: 'main',
+        name: '国寿鑫颐宝两全保险（2024版）',
+        amount: '159948.00',
+        coveragePeriod: '至60周岁',
+        paymentPeriod: '10年交',
+      },
+      {
+        role: 'rider',
+        name: '国寿鑫颐宝两全保险（2024版）',
+        paymentPeriod: '10年交',
+      },
+    ],
+  });
+
+  assert.equal(data.plans.length, 1);
+  assert.equal(data.plans[0].role, 'main');
+  assert.equal(data.plans[0].premium, '12000');
+});
+
+test('normalizer merges repeated plan rows that are responsibility details', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    amount: '80000.00元',
+    firstPremium: '298.00元',
+    plans: [
+      {
+        role: 'main',
+        name: '学生平安意外伤害保险',
+        amount: '80000.00元',
+        premium: '100元',
+        productType: '意外险',
+      },
+      {
+        role: 'rider',
+        name: '附加学生平安意外伤害住院医疗险',
+        amount: '60000.00元',
+        paymentMode: '经社保赔付',
+        premium: '100元',
+        productType: '医疗险',
+        evidence: '险种名称 附加学生平安意外伤害住院医疗险 保险金额 60000 保险费 100',
+      },
+      {
+        role: 'rider',
+        name: '附加学生平安意外伤害住院医疗险',
+        amount: '20000.00元',
+        paymentMode: '未经社保赔付',
+        premium: '0元',
+        productType: '医疗险',
+      },
+      {
+        role: 'rider',
+        name: '附加学生平安意外伤害住院医疗险',
+        amount: '9000.00元',
+        paymentMode: '未经社保赔付',
+        premium: '50元',
+        productType: '医疗险',
+      },
+    ],
+  });
+
+  const repeatedPlans = data.plans.filter((plan) => plan.name === '附加学生平安意外伤害住院医疗险');
+  assert.equal(repeatedPlans.length, 1);
+  assert.equal(repeatedPlans[0].role, 'rider');
+  assert.equal(repeatedPlans[0].amount, '60000');
+  assert.equal(repeatedPlans[0].premium, '100');
+  assert.equal(repeatedPlans[0].paymentMode, '');
+  assert.deepEqual(
+    repeatedPlans[0].benefitRows.map((row) => ({
+      amount: row.amount,
+      premium: row.premium,
+      paymentBasis: row.paymentBasis,
+    })),
+    [
+      { amount: '60000', premium: '100', paymentBasis: '经社保赔付' },
+      { amount: '20000', premium: '0', paymentBasis: '未经社保赔付' },
+      { amount: '9000', premium: '50', paymentBasis: '未经社保赔付' },
+    ],
+  );
+  assert.equal(data.plans.length, 2);
+  assert.equal(data.firstPremium, '298');
+});
+
+test('normalizer prefers vision table rows over malformed direct plans', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    amount: '80000.00元',
+    firstPremium: '298.00元',
+    plans: [
+      {
+        role: 'rider',
+        name: '附加学生平安意外伤害医疗保险',
+        amount: '9000.00元',
+        premium: '9000.00元',
+      },
+    ],
+    tableRows: [
+      {
+        planName: '学生平安意外伤害保险',
+        responsibilityName: '意外伤害身故和残疾保险金',
+        amountOrUnits: '80000.00元',
+      },
+      {
+        planName: '附加学生平安A1款意外伤害医疗保险',
+        responsibilityName: '意外伤害医疗费用保险金',
+        amountOrUnits: '20000.00元',
+        benefitStandard: '未经社保赔付',
+        deductible: '50元',
+        ratio: '80%',
+      },
+      {
+        planName: '',
+        responsibilityName: '特定牙齿缺损定额给付保险金',
+        amountOrUnits: '9000.00元',
+      },
+      {
+        planName: '附加学生平安A款住院津贴医疗保险',
+        responsibilityName: '住院津贴保险金',
+        amountOrUnits: '6份',
+      },
+    ],
+  });
+
+  assert.deepEqual(data.plans.map((plan) => plan.name), [
+    '学生平安意外伤害保险',
+    '附加学生平安A1款意外伤害医疗保险',
+    '附加学生平安A款住院津贴医疗保险',
+  ]);
+  const medicalPlan = data.plans[1];
+  assert.equal(medicalPlan.amount, '20000');
+  assert.equal(medicalPlan.premium, '');
+  assert.deepEqual(
+    medicalPlan.benefitRows.map((row) => ({
+      responsibilityName: row.responsibilityName,
+      amountText: row.amountText,
+      benefitStandard: row.benefitStandard,
+      deductible: row.deductible,
+      ratio: row.ratio,
+    })),
+    [
+      {
+        responsibilityName: '意外伤害医疗费用保险金',
+        amountText: '20000.00元',
+        benefitStandard: '未经社保赔付',
+        deductible: '50元',
+        ratio: '80%',
+      },
+      {
+        responsibilityName: '特定牙齿缺损定额给付保险金',
+        amountText: '9000.00元',
+        benefitStandard: undefined,
+        deductible: undefined,
+        ratio: undefined,
+      },
+    ],
+  );
+  assert.equal(data.plans[2].amount, '');
+  assert.equal(data.plans[2].benefitRows[0].amountText, '6份');
+  assert.equal(data.firstPremium, '298');
+});
+
+test('normalizer clears applicant identity when it conflicts with insured birthday and parses dotted amounts', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '中國平安保險股份有限公司',
+    name: '平安康泰(738)',
+    applicant: '吴连英',
+    insured: '翟卿',
+    insuredIdNumber: '330106610131152',
+    insuredBirthday: '1984年11月10日',
+    amount: '20.000元',
+    firstPremium: 'RMB3053.00',
+    plans: [
+      {
+        role: 'main',
+        name: '平安康泰(738)',
+        amount: '20.000元',
+        premium: '862.00元',
+      },
+      {
+        role: 'rider',
+        name: '附加万寿(739)',
+        amount: '50.000元',
+        premium: '2.165.00元',
+      },
+    ],
+  });
+
+  assert.equal(data.company, '中国平安保险');
+  assert.equal(data.insuredIdNumber, '');
+  assert.equal(data.insuredBirthday, '1984-11-10');
+  assert.equal(data.amount, '20000');
+  assert.equal(data.firstPremium, '3053');
+  assert.equal(data.plans[0].amount, '20000');
+  assert.equal(data.plans[1].amount, '50000');
+  assert.equal(data.plans[1].premium, '2165');
+});
+
+test('normalizer does not keep product names as company and repairs generic main plan from top fields', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '保险利益表中对应行数据',
+    name: '畅行万里智赢版两全保险',
+    beneficiary: '被保险人的法定继承人',
+    amount: '60000.00元',
+    coveragePeriod: '至2068年9月30日零时',
+    paymentPeriod: '10年交',
+    firstPremium: '3296.00元',
+    plans: [
+      {
+        role: 'main',
+        name: '两全保险',
+        amount: '3296.00元',
+        coveragePeriod: '至2025年09月29日',
+        premium: '3296.00元',
+      },
+      {
+        role: 'main',
+        name: 'i他男性特定疾病保险',
+        amount: '50000.00元',
+        coveragePeriod: '至2025年09月29日',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '140.00元',
+      },
+    ],
+  });
+
+  assert.equal(data.company, '');
+  assert.equal(data.beneficiary, '法定');
+  assert.equal(data.name, '畅行万里智赢版两全保险');
+  assert.equal(data.amount, '60000');
+  assert.equal(data.paymentPeriod, '10年交');
+  assert.equal(data.coveragePeriod, '至2068年9月30日零时');
+  assert.equal(data.plans[0].name, '畅行万里智赢版两全保险');
+  assert.equal(data.plans[0].amount, '60000');
+  assert.equal(data.plans[0].coveragePeriod, '至2068年9月30日零时');
+  assert.equal(data.plans[0].paymentMode, '年交');
+  assert.equal(data.plans[0].paymentPeriod, '10年交');
+  assert.equal(data.plans[1].role, 'rider');
+});
+
+test('normalizer reads payment mode and years as one payment period', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '多倍保障重大疾病保险（智赢版）',
+    amount: '170000.00元',
+    coveragePeriod: '终身',
+    paymentPeriod: '年交/20年',
+    firstPremium: '7667.00元',
+    plans: [
+      {
+        role: 'main',
+        name: '多倍保障重大疾病保险（智赢版）',
+        sourceColumn: '险种名称',
+        amount: '170000.00元',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '年交/20年',
+        premium: '7667.00元',
+      },
+    ],
+  });
+
+  assert.equal(data.paymentPeriod, '20年交');
+  assert.equal(data.plans[0].paymentPeriod, '20年交');
+});
+
+test('normalizer excludes plan candidates sourced from responsibility columns', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    amount: '80000.00元',
+    firstPremium: '298.00元',
+    plans: [
+      {
+        role: 'main',
+        name: '学生平安意外伤害保险',
+        sourceColumn: '险种名称',
+        amount: '80000.00元',
+      },
+      {
+        role: 'rider',
+        name: '特定牙齿缺损额给付保险金',
+        sourceColumn: '保险责任名称',
+        amount: '9000.00元',
+      },
+      {
+        role: 'rider',
+        name: '疾病住院医疗费用保险金',
+        sourceColumn: '保险责任名称',
+        amount: '800000.00元',
+      },
+      {
+        role: 'rider',
+        name: '身故或全残保险金',
+        sourceColumn: '保险责任名称',
+        amount: '80000.00元',
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    data.plans.map((plan) => plan.name),
+    ['学生平安意外伤害保险'],
+  );
+});
+
+test('normalizer strips pasted responsibility tail back to plan name', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    amount: '80000.00元',
+    firstPremium: '298.00元',
+    plans: [
+      {
+        role: 'rider',
+        name: '附加学生平安A1款意外伤害医疗保意外伤害医疗费用保险金',
+        sourceColumn: '险种名称',
+        amount: '20000.00元',
+      },
+      {
+        role: 'rider',
+        name: '附加学生平安A款疾病住院医疗保险',
+        sourceColumn: '险种名称',
+        amount: '800000.00元',
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    data.plans.map((plan) => plan.name),
+    ['附加学生平安A1款意外伤害医疗保险', '附加学生平安A款疾病住院医疗保险'],
+  );
+});
+
+test('normalizer uses main plan when top-level name concatenates riders', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '学生平安意外伤害保险附加学生平安A款定期寿险附加学生平安A款疾病住院医疗保险',
+    amount: '80000.00元',
+    firstPremium: '298.00元',
+    plans: [
+      {
+        role: 'main',
+        name: '学生平安意外伤害保险',
+        amount: '80000.00元',
+      },
+      {
+        role: 'rider',
+        name: '附加学生平安A款定期寿险',
+        amount: '80000.00元',
+      },
+    ],
+  });
+
+  assert.equal(data.name, '学生平安意外伤害保险');
+});
+
+test('text extractor maps legal heir beneficiary text to statutory beneficiary', () => {
+  const data = extractPolicyFieldsFromText([
+    '保险单',
+    '基本内容',
+    '身故保险金受益人',
+    '被保险人的法定继承人',
+    '保险利益表',
+  ].join('\n'));
+
+  assert.equal(data.beneficiary, '法定');
+});
+
+test('Ollama vision scan reports empty OCR instead of throwing on null extracted data', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b-instruct';
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      message: {
+        content: '{"company":"","name":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[]}',
+      },
+    }),
+  });
+
+  try {
+    await assert.rejects(
+      () => scanInsurancePolicyLocal({
+        uploadItem: {
+          name: 'empty.png',
+          type: 'image/png',
+          size: 12,
+          dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+        },
+        ocrText: '',
+        paddleLayoutScanner: async () => {
+          throw new Error('POLICY_OCR_EMPTY');
+        },
+      }),
+      /POLICY_OCR_EMPTY/u,
+    );
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Ollama vision scan reads policy JSON from thinking when content is empty', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b-instruct';
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      message: {
+        content: '',
+        thinking: [
+          '我先看图片。用户给的结构是 {"company":"","name":"","applicant":""}。',
+          '最终只输出：',
+          '{"company":"新华保险","name":"盛世荣耀臻享版终身寿险","applicant":"温舒萍","beneficiary":"法定","insured":"温舒萍","insuredIdNumber":"","insuredBirthday":"","date":"2026-04-01","paymentPeriod":"10年交","coveragePeriod":"终身","amount":"24441","firstPremium":"3000","plans":[]}',
+        ].join('\n'),
+      },
+    }),
+  });
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'thinking.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => ({
+        ocrText: 'Paddle OCR 原文 新华保险 盛世荣耀臻享版终身寿险',
+        data: {},
+      }),
+    });
+    assert.equal(scan.data.company, '新华保险');
+    assert.equal(scan.data.name, '盛世荣耀臻享版终身寿险');
+    assert.equal(scan.data.applicant, '温舒萍');
+    assert.equal(scan.data.firstPremium, '3000');
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Ollama vision scan recovers field hints when thinking has no final JSON', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      message: {
+        content: '',
+        thinking: [
+          '<think>',
+          'company：页眉有“NCI 新华保险”，所以company填"新华保险"。',
+          'applicant：基本内容区有“投保人：温舒萍”，所以applicant填"温舒萍"。',
+          'beneficiary：写了“被保险人的法定继承人”，所以beneficiary输出"法定"。',
+          'insured：基本内容区有“被保险人：温舒萍”，所以insured填"温舒萍"。',
+          'insuredIdNumber：证件号码是360502198812160922，所以insuredIdNumber填"360502198812160922"。',
+        ].join('\n'),
+      },
+    }),
+  });
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'thinking-hints.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => ({
+        ocrText: '保险利益表 盛世荣耀臻享版终身寿险 24441 10年交 终身 首期保险费合计 ￥3000',
+        data: {
+          name: '盛世荣耀臻享版终身寿险',
+          date: '2026-04-01',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '24441',
+          firstPremium: '3000',
+        },
+      }),
+    });
+
+    assert.equal(scan.data.company, '新华保险');
+    assert.equal(scan.data.applicant, '温舒萍');
+    assert.equal(scan.data.beneficiary, '法定');
+    assert.equal(scan.data.insured, '温舒萍');
+    assert.equal(scan.data.insuredBirthday, '1988-12-16');
+    assert.ok(scan.ocrWarnings.some((warning) => warning.includes('Ollama 视觉仅补充 OCR 缺失字段')));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Ollama vision scan recovers unquoted field hints from thinking when content is empty', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      message: {
+        content: '',
+        thinking: [
+          '<think>',
+          'company是新华保险。',
+          'name是荣耀鑫享赢家版终身寿险。',
+          'applicant是冯力。',
+          'beneficiary是法定。',
+          'insured是冯力。',
+          'insuredIdNumber是330106198712072413。',
+          'date是2024-06-06。',
+          'paymentPeriod应该是10年交。',
+          'coveragePeriod是终身。',
+          'amount是165020。',
+          'firstPremium是20010。',
+        ].join('\n'),
+      },
+    }),
+  });
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'thinking-unquoted.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => ({
+        ocrText: 'Paddle OCR 原文 新华保险 荣耀鑫享赢家版终身寿险',
+        data: {},
+      }),
+    });
+
+    assert.equal(scan.data.company, '新华保险');
+    assert.equal(scan.data.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(scan.data.applicant, '冯力');
+    assert.equal(scan.data.insured, '冯力');
+    assert.equal(scan.data.insuredIdNumber, '330106198712072413');
+    assert.equal(scan.data.insuredBirthday, '1987-12-07');
+    assert.equal(scan.data.firstPremium, '20010');
+    assert.ok(!(scan.ocrWarnings || []).some((warning) => warning.includes('Ollama 视觉未返回可解析结果')));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Ollama vision scan parses OCR-like thinking text with the OCR field rules', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      message: {
+        content: '',
+        thinking: [
+          '<think>',
+          '我看到基本内容区有“NCI 新华保险”。',
+          '字段原文包括“投保人：张三”、“被保险人：李四”、“证件号码：110101199001012345”。',
+          '基本内容区还写着“身故保险金受益人：被保险人的法定继承人”。',
+          '页面里能看到“合同生效日期：2026年04月01日”和“首期保险费合计：￥3000”。',
+        ].join('\n'),
+      },
+    }),
+  });
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'thinking-ocr-like.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => ({
+        ocrText: '保险利益表 盛世荣耀臻享版终身寿险 24441 10年交 终身',
+        data: {
+          name: '盛世荣耀臻享版终身寿险',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '24441',
+        },
+      }),
+    });
+
+    assert.equal(scan.data.company, '新华保险');
+    assert.equal(scan.data.applicant, '张三');
+    assert.equal(scan.data.insured, '李四');
+    assert.equal(scan.data.beneficiary, '法定');
+    assert.equal(scan.data.insuredBirthday, '1990-01-01');
+    assert.equal(scan.data.date, '2026-04-01');
+    assert.equal(scan.data.firstPremium, '3000');
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Ollama vision scan backfills missing fields from returned OCR text', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      message: {
+        content: JSON.stringify({
+          company: '新华保险',
+          name: '盛世荣耀臻享版终身寿险（分红型）',
+          applicant: '',
+          beneficiary: '',
+          insured: '',
+          insuredIdNumber: '',
+          insuredBirthday: '',
+          date: '',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '24441',
+          firstPremium: '',
+          plans: [],
+          ocrText: [
+            'NCI 新华保险',
+            '保险单',
+            '基本内容',
+            '合同成立日期:2026年03月31日',
+            '投保人:温舒萍',
+            '被保险人:温舒萍',
+            '合同生效日期:2026年04月01日',
+            '证件号码:360502198812160922',
+            '证件号码:360502198812160922',
+            '身故保险金受益人',
+            '被保险人的法定继承人',
+            '保险利益表',
+            '险种名称',
+            '盛世荣耀臻享版',
+            '终身寿险（分红型）',
+            '24441.00元',
+            '终身',
+            '年交',
+            '/10年',
+            '每年3000.00元',
+            '首期保险费合计:',
+            '￥3000.00',
+          ].join('\n'),
+        }),
+      },
+    }),
+  });
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'ollama-ocr-text.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+    });
+    assert.equal(scan.data.applicant, '温舒萍');
+    assert.equal(scan.data.insured, '温舒萍');
+    assert.equal(scan.data.beneficiary, '法定');
+    assert.equal(scan.data.insuredBirthday, '1988-12-16');
+    assert.equal(scan.data.date, '2026-04-01');
+    assert.equal(scan.data.amount, '24441');
+    assert.equal(scan.data.firstPremium, '3000');
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Ollama vision request uses structured JSON output constraints', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousNumPredict = process.env.POLICY_OCR_OLLAMA_VISION_NUM_PREDICT;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b-instruct';
+  process.env.POLICY_OCR_OLLAMA_VISION_NUM_PREDICT = '2048';
+  let requestBody = null;
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: 'schema-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async (_url, init) => {
+        requestBody = JSON.parse(String(init.body || '{}'));
+        return {
+          ok: true,
+          json: async () => ({
+            message: {
+              content: JSON.stringify({
+                company: '新华保险',
+                name: '盛世荣耀臻享版终身寿险',
+                applicant: '温舒萍',
+                beneficiary: '法定',
+                insured: '温舒萍',
+                insuredIdNumber: '',
+                insuredBirthday: '1988-12-16',
+                date: '2026-04-01',
+                paymentPeriod: '年交/20年',
+                coveragePeriod: '终身',
+                amount: '24441',
+                firstPremium: '3000',
+                plans: [
+                  {
+                    role: 'main',
+                    name: '盛世荣耀臻享版终身寿险',
+                    amount: '24441',
+                    coveragePeriod: '终身',
+                    paymentMode: '年交',
+                    paymentPeriod: '年交/20年',
+                    premium: '3000',
+                    productType: '增额终身寿险',
+                    sourceColumn: '险种名称',
+                    evidence: '险种名称 盛世荣耀臻享版终身寿险 24441.00元 终身 年交/20年 3000.00元',
+                  },
+                ],
+                fieldEvidence: {
+                  company: 'NCI 新华保险',
+                  name: '盛世荣耀臻享版终身寿险',
+                },
+              }),
+            },
+            done_reason: 'stop',
+            eval_count: 128,
+          }),
+        };
+      },
+      {
+        companyHints: ['新华保险'],
+        productCandidates: [
+          {
+            company: '新华保险',
+            productName: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+            productType: '增额终身寿险',
+          },
+        ],
+      },
+    );
+
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.paymentPeriod, '20年交');
+    assert.equal(result.plans[0].paymentPeriod, '20年交');
+    assert.equal(requestBody.model, 'qwen3-vl:8b-instruct');
+    assert.equal(requestBody.think, false);
+    assert.equal(requestBody.stream, false);
+    assert.equal(requestBody.format.type, 'object');
+    assert.equal(requestBody.format.properties.policyNumber.type, 'string');
+    assert.equal(requestBody.format.properties.plans.type, 'array');
+    assert.equal(requestBody.format.properties.fieldEvidence.type, 'object');
+    assert.equal(Object.hasOwn(requestBody.format.properties, 'ocrText'), false);
+    assert.equal(requestBody.options.num_predict, 2048);
+    assert.match(requestBody.messages[1].content, /保险字段词典/u);
+    assert.match(requestBody.messages[1].content, /保障期间:终身.*不是产品名/u);
+    assert.match(requestBody.messages[1].content, /字段为空、空白、横线、未填写或未标注时输出空字符串/u);
+    assert.match(requestBody.messages[1].content, /证件号码\/身份证号\/客户号\/保单号\/电话不能作为 amount 或 premium/u);
+    assert.match(requestBody.messages[1].content, /营销服务部、销售人员、网址、客服电话(?:、险种名称)?都不能作为 company/u);
+    assert.match(requestBody.messages[1].content, /保险金额、保费、保单号、日期、客户号都不能作为证件号/u);
+    assert.match(requestBody.messages[1].content, /保险金额是 159948\.00，标准保费是 12000\.00/u);
+    assert.match(requestBody.messages[1].content, /像人脑理解表格一样把同一视觉行的单元格对齐/u);
+    assert.match(requestBody.messages[1].content, /交费方式=年交、交费期间=20年.*20年交/u);
+    assert.match(requestBody.messages[1].content, /不要输出 ocrText 或整页 OCR 原文/u);
+    assert.match(requestBody.messages[1].content, /fieldEvidence 只输出字段附近短证据/u);
+    assert.match(requestBody.messages[1].content, /本地产品候选/u);
+    assert.match(requestBody.messages[1].content, /盛世荣耀臻享版终身寿险/u);
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    if (previousNumPredict === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_NUM_PREDICT;
+    else process.env.POLICY_OCR_OLLAMA_VISION_NUM_PREDICT = previousNumPredict;
+  }
+});
+
+test('Ollama vision retries focused complex passes when the whole image is not parseable', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  const requestBodies = [];
+
+  const responses = [
+    { content: '图片内容较复杂，需要分区读取。' },
+    {
+      content: JSON.stringify({
+        company: '新华保险',
+        name: '',
+        applicant: '冯力',
+        beneficiary: '法定',
+        insured: '冯力',
+        insuredIdNumber: '330106198712072413',
+        insuredBirthday: '1987-12-07',
+        date: '2024-06-07',
+        paymentPeriod: '',
+        coveragePeriod: '',
+        amount: '',
+        firstPremium: '',
+        plans: [],
+        fieldEvidence: {
+          company: 'NCI 新华保险',
+          applicant: '投保人:冯力',
+          insured: '被保险人:冯力',
+          insuredIdNumber: '证件号码:330106198712072413',
+        },
+      }),
+    },
+    {
+      content: JSON.stringify({
+        company: '',
+        name: '荣耀鑫享赢家版终身寿险',
+        applicant: '',
+        beneficiary: '',
+        insured: '',
+        insuredIdNumber: '',
+        insuredBirthday: '',
+        date: '',
+        paymentPeriod: '10年交',
+        coveragePeriod: '终身',
+        amount: '165020',
+        firstPremium: '',
+        plans: [
+          {
+            role: 'main',
+            name: '荣耀鑫享赢家版终身寿险',
+            amount: '165020',
+            coveragePeriod: '终身',
+            paymentMode: '年交',
+            paymentPeriod: '10年交',
+            premium: '20000',
+            productType: '增额终身寿险',
+            evidence: '保险利益表 荣耀鑫享赢家版终身寿险 165020.00元 年交/10年',
+          },
+          {
+            role: 'linked_account',
+            name: '金利瑞享终身寿险（万能型）',
+            amount: '',
+            coveragePeriod: '终身',
+            paymentMode: '趸交',
+            paymentPeriod: '趸交',
+            premium: '10',
+            productType: '万能账户',
+            evidence: '金利瑞享终身寿险（万能型） 10.00元 趸交',
+          },
+        ],
+        fieldEvidence: {
+          name: '保险利益表 荣耀鑫享赢家版终身寿险',
+          amount: '165020.00元',
+        },
+      }),
+    },
+    {
+      content: JSON.stringify({
+        company: '',
+        name: '',
+        applicant: '',
+        beneficiary: '',
+        insured: '',
+        insuredIdNumber: '',
+        insuredBirthday: '',
+        date: '',
+        paymentPeriod: '',
+        coveragePeriod: '',
+        amount: '',
+        firstPremium: '20010',
+        plans: [],
+        fieldEvidence: {
+          firstPremium: '首期保险费合计:￥20010.00',
+        },
+      }),
+    },
+  ];
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: 'complex-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init.body || '{}')));
+        const response = responses[Math.min(requestBodies.length - 1, responses.length - 1)];
+        return {
+          ok: true,
+          json: async () => ({
+            message: { content: response.content },
+            done_reason: 'stop',
+          }),
+        };
+      },
+    );
+
+    assert.equal(requestBodies.length, 4);
+    assert.match(requestBodies[1].messages[1].content, /分区视觉识别/u);
+    assert.match(requestBodies[1].messages[1].content, /只输出下面这个小 JSON/u);
+    assert.deepEqual(Object.keys(requestBodies[1].format.properties), [
+      'company',
+      'policyNumber',
+      'applicant',
+      'beneficiary',
+      'insured',
+      'insuredIdNumber',
+      'insuredBirthday',
+      'date',
+      'fieldEvidence',
+    ]);
+    assert.match(requestBodies[2].messages[1].content, /保险利益表和险种明细区/u);
+    assert.deepEqual(Object.keys(requestBodies[2].format.properties), [
+      'name',
+      'paymentPeriod',
+      'coveragePeriod',
+      'amount',
+      'firstPremium',
+      'plans',
+      'fieldEvidence',
+    ]);
+    assert.equal(requestBodies[2].format.properties.plans.type, 'array');
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(result.applicant, '冯力');
+    assert.equal(result.insured, '冯力');
+    assert.equal(result.insuredBirthday, '1987-12-07');
+    assert.equal(result.amount, '165020');
+    assert.equal(result.firstPremium, '20010');
+    assert.equal(result.plans.length, 2);
+    assert.equal(result.plans[1].role, 'linked_account');
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+  }
+});
+
+test('Ollama vision supplements partial whole image fields with focused complex passes', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  const requestBodies = [];
+
+  const responses = [
+    {
+      content: JSON.stringify({
+        company: '',
+        name: '附加学生平安A款意外伤害医疗保险',
+        applicant: '',
+        beneficiary: '',
+        insured: '',
+        insuredIdNumber: '',
+        insuredBirthday: '',
+        date: '',
+        paymentPeriod: '趸交',
+        coveragePeriod: '至2025年08月15日',
+        amount: '20000',
+        firstPremium: '',
+        plans: [],
+        ocrText: '学平险.jpg',
+      }),
+    },
+    {
+      content: JSON.stringify({
+        company: '新华保险',
+        policyNumber: '86000001',
+        applicant: '张三',
+        beneficiary: '法定',
+        insured: '李四',
+        insuredIdNumber: '330106201001012345',
+        insuredBirthday: '',
+        date: '2024-08-15',
+        fieldEvidence: {
+          applicant: '投保人:张三',
+          insured: '被保险人:李四',
+        },
+      }),
+    },
+    {
+      content: JSON.stringify({
+        name: '学生平安意外伤害保险',
+        paymentPeriod: '趸交',
+        coveragePeriod: '至2025年08月15日',
+        amount: '80000',
+        firstPremium: '',
+        plans: [
+          {
+            role: 'main',
+            name: '学生平安意外伤害保险',
+            amount: '80000',
+            coveragePeriod: '至2025年08月15日',
+            paymentMode: '趸交',
+            paymentPeriod: '趸交',
+            premium: '298',
+            productType: '意外险',
+          },
+          {
+            role: 'rider',
+            name: '附加学生平安A款意外伤害医疗保险',
+            amount: '20000',
+            coveragePeriod: '至2025年08月15日',
+            paymentMode: '趸交',
+            paymentPeriod: '趸交',
+            premium: '',
+            productType: '医疗险',
+          },
+        ],
+      }),
+    },
+    {
+      content: JSON.stringify({
+        beneficiary: '',
+        firstPremium: '298',
+        plans: [],
+        fieldEvidence: {
+          firstPremium: '保险费合计:298元',
+        },
+      }),
+    },
+  ];
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: '学平险.jpg',
+        type: 'image/jpeg',
+        size: 12,
+        dataUrl: `data:image/jpeg;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init.body || '{}')));
+        const response = responses[Math.min(requestBodies.length - 1, responses.length - 1)];
+        return {
+          ok: true,
+          json: async () => ({
+            message: { content: response.content },
+            done_reason: 'stop',
+          }),
+        };
+      },
+    );
+
+    assert.equal(requestBodies.length, 4);
+    assert.match(requestBodies[1].messages[1].content, /分区视觉识别/u);
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.applicant, '张三');
+    assert.equal(result.insured, '李四');
+    assert.equal(result.insuredBirthday, '2010-01-01');
+    assert.equal(result.date, '2024-08-15');
+    assert.equal(result.firstPremium, '298');
+    assert.equal(result.plans.length, 2);
+    assert.equal(result.ocrText, undefined);
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+  }
+});
+
+test('Ollama vision skips focused complex passes when the speed mode disables them', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousComplexPasses = process.env.POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  process.env.POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES = 'false';
+  const requestBodies = [];
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: '学平险.jpg',
+        type: 'image/jpeg',
+        size: 12,
+        dataUrl: `data:image/jpeg;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init.body || '{}')));
+        return {
+          ok: true,
+          json: async () => ({
+            message: {
+              content: JSON.stringify({
+                company: '新华保险',
+                name: '附加学生平安A款意外伤害医疗保险',
+                applicant: '',
+                beneficiary: '',
+                insured: '',
+                insuredIdNumber: '',
+                insuredBirthday: '',
+                date: '',
+                paymentPeriod: '趸交',
+                coveragePeriod: '至2025年08月15日',
+                amount: '20000',
+                firstPremium: '',
+                plans: [],
+                ocrText: '学平险.jpg',
+              }),
+            },
+            done_reason: 'stop',
+          }),
+        };
+      },
+    );
+
+    assert.equal(requestBodies.length, 1);
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.name, '附加学生平安A款意外伤害医疗保险');
+    assert.equal(result.beneficiary, '');
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    if (previousComplexPasses === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES;
+    else process.env.POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES = previousComplexPasses;
+  }
+});
+
+test('Ollama vision supplements missing fields with line-by-line OCR when JSON passes stay partial', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  const requestBodies = [];
+
+  const responses = [
+    {
+      content: JSON.stringify({
+        company: '',
+        name: '附加学生平安A款意外伤害医疗保险',
+        applicant: '',
+        beneficiary: '',
+        insured: '',
+        insuredIdNumber: '',
+        insuredBirthday: '',
+        date: '',
+        paymentPeriod: '趸交',
+        coveragePeriod: '至2025年08月15日',
+        amount: '20000',
+        firstPremium: '',
+        plans: [],
+      }),
+    },
+    {
+      content: JSON.stringify({
+        company: '',
+        policyNumber: '',
+        applicant: '',
+        beneficiary: '',
+        insured: '',
+        insuredIdNumber: '',
+        insuredBirthday: '',
+        date: '',
+        fieldEvidence: {},
+      }),
+    },
+    {
+      content: JSON.stringify({
+        name: '',
+        paymentPeriod: '',
+        coveragePeriod: '',
+        amount: '',
+        firstPremium: '',
+        plans: [],
+        fieldEvidence: {},
+      }),
+    },
+    {
+      content: JSON.stringify({
+        beneficiary: '',
+        firstPremium: '',
+        plans: [],
+        fieldEvidence: {},
+      }),
+    },
+    {
+      content: JSON.stringify({
+        lines: [
+          '新华保险',
+          '保险单',
+          '投保人: 张三',
+          '被保险人: 李四',
+          '被保险人证件号码: 330106201001012345',
+          '身故保险金受益人: 法定',
+          '合同生效日期: 2024年08月15日',
+        ],
+        text: '',
+      }),
+    },
+    {
+      content: JSON.stringify({
+        lines: [
+          '保险利益表',
+          '险种名称 保险金额 保险期间 交费期间 保险费',
+          '学生平安意外伤害保险 80000 至2025年08月15日 趸交 298',
+          '附加学生平安A款意外伤害医疗保险 20000 至2025年08月15日 趸交',
+        ],
+        text: '',
+      }),
+    },
+    {
+      content: JSON.stringify({
+        lines: ['首期保险费合计: 298元'],
+        text: '',
+      }),
+    },
+  ];
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: '学平险.jpg',
+        type: 'image/jpeg',
+        size: 12,
+        dataUrl: `data:image/jpeg;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init.body || '{}')));
+        const response = responses[Math.min(requestBodies.length - 1, responses.length - 1)];
+        return {
+          ok: true,
+          json: async () => ({
+            message: { content: response.content },
+            done_reason: 'stop',
+          }),
+        };
+      },
+    );
+
+    assert.equal(requestBodies.length, 7);
+    assert.match(requestBodies[4].messages[1].content, /一行一行抄写/u);
+    assert.ok(requestBodies[4].format?.properties?.lines);
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.applicant, '张三');
+    assert.equal(result.insured, '李四');
+    assert.equal(result.insuredBirthday, '2010-01-01');
+    assert.equal(result.date, '2024-08-15');
+    assert.equal(result.beneficiary, '法定');
+    assert.equal(result.firstPremium, '298');
+    assert.match(result.ocrText, /投保人: 张三/u);
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+  }
+});
+
+test('Ollama vision recovers field hints when thinking contains malformed JSON', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: 'thinking-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async () => ({
+        ok: true,
+        json: async () => ({
+          message: {
+            content: '',
+            thinking: [
+              '{"company":"新华保险",}',
+              'company应该是“新华保险”。',
+              'name应该是“荣耀鑫享赢家版终身寿险”。',
+              'applicant是“冯力”。',
+              'insured是“冯力”。',
+              'insuredIdNumber应该是“330106198712072413”。',
+              'date应该是“2024-06-06”。',
+              'paymentPeriod应该是“10年交”。',
+              'coveragePeriod是“终身”。',
+              'amount应该是“165020元”。',
+              'firstPremium应该是“20010元”。',
+            ].join('\n'),
+          },
+          done_reason: 'length',
+        }),
+      }),
+    );
+
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(result.applicant, '冯力');
+    assert.equal(result.insured, '冯力');
+    assert.equal(result.insuredIdNumber, '330106198712072413');
+    assert.equal(result.insuredBirthday, '1987-12-07');
+    assert.equal(result.date, '2024-06-06');
+    assert.equal(result.paymentPeriod, '10年交');
+    assert.equal(result.coveragePeriod, '终身');
+    assert.equal(result.amount, '165020');
+    assert.equal(result.firstPremium, '20010');
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+  }
+});
+
+test('Ollama vision recovers narrative thinking without creating metadata plans', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  const thinking = [
+    '<think>',
+    '先看公司名称，图片顶部有“NCI 新华保险”，所以company应该是新华保险。',
+    'name是保险产品/主险名称。在保险利益表里，第一个险种是“荣耀鑫享赢家版 终身寿险”，第二个是“金利瑞享终身寿险（万能型）”。通常主险是第一个，所以name可能是“荣耀鑫享赢家版终身寿险”。',
+    'applicant是投保人，图片里“投保人：冯力”，所以applicant是冯力。',
+    'beneficiary是身故保险金受益人，图片里有“被保险人的法定继承人”，所以beneficiary应该是“法定”。',
+    'insured是被保险人，图片里“被保险人：冯力”，所以insured是冯力。',
+    'insuredIdNumber是被保险人证件号码，图片里“证件号码：330106198712072413”，所以insuredIdNumber是这个号码。',
+    'date应该是合同成立日期，图片里“合同成立日期：2024年06月06日”，格式要YYYY-MM-DD，所以是2024-06-06。',
+    'paymentPeriod是交费期间，看保险利益表，“交费方式”列有“年交/10年”。',
+  ].join('\n');
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: 'narrative-thinking-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async () => ({
+        ok: true,
+        json: async () => ({
+          message: { content: '', thinking },
+          done_reason: 'length',
+        }),
+      }),
+    );
+
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(result.applicant, '冯力');
+    assert.equal(result.beneficiary, '法定');
+    assert.equal(result.insured, '冯力');
+    assert.equal(result.insuredIdNumber, '330106198712072413');
+    assert.equal(result.insuredBirthday, '1987-12-07');
+    assert.equal(result.date, '2024-06-06');
+    assert.equal(result.paymentPeriod, '10年交');
+    assert.ok(!(result.plans || []).some((plan) => /证件号码|合同成立日期/u.test(plan.name || '')));
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+  }
+});
+
+test('Ollama vision complex pass continues after one focused pass fails', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  const requestBodies = [];
+
+  try {
+    const result = await extractPolicyFieldsFromImageWithOllamaVision(
+      {
+        name: 'complex-pass-failure-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init.body || '{}')));
+        if (requestBodies.length === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              message: { content: '整图太复杂，无法输出JSON。' },
+              done_reason: 'stop',
+            }),
+          };
+        }
+        if (requestBodies.length === 2) {
+          return { ok: false, json: async () => ({}) };
+        }
+        if (requestBodies.length === 3) {
+          return {
+            ok: true,
+            json: async () => ({
+              message: {
+                content: JSON.stringify({
+                  company: '新华保险',
+                  name: '荣耀鑫享赢家版终身寿险',
+                  applicant: '冯力',
+                  beneficiary: '法定',
+                  insured: '冯力',
+                  insuredIdNumber: '330106198712072413',
+                  insuredBirthday: '1987-12-07',
+                  date: '2024-06-06',
+                  paymentPeriod: '10年交',
+                  coveragePeriod: '终身',
+                  amount: '165020',
+                  firstPremium: '20010',
+                  plans: [],
+                  ocrText: '保险利益表\n荣耀鑫享赢家版终身寿险\n165020.00元\n首期保险费合计:20010.00元',
+                }),
+              },
+              done_reason: 'stop',
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            message: { content: '当前区域没有可用字段。' },
+            done_reason: 'stop',
+          }),
+        };
+      },
+    );
+
+    assert.equal(requestBodies.length, 4);
+    assert.match(requestBodies[2].messages[1].content, /保险利益表和险种明细区/u);
+    assert.equal(result.company, '新华保险');
+    assert.equal(result.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(result.amount, '165020');
+    assert.equal(result.firstPremium, '20010');
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+  }
+});
+
+test('Ollama vision request aborts with a separate hard timeout', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousVisionTimeout = process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS;
+  const previousOllamaTimeout = process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS = '25';
+  process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS = '180000';
+  let signalSeen = false;
+
+  try {
+    await assert.rejects(
+      extractPolicyFieldsFromImageWithOllamaVision(
+        {
+          name: 'slow-policy.png',
+          type: 'image/png',
+          size: 12,
+          dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+        },
+        async (_url, init) => {
+          signalSeen = Boolean(init.signal);
+          return new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new Error('AbortError')));
+          });
+        },
+      ),
+      /POLICY_OCR_VISION_TIMEOUT/u,
+    );
+    assert.equal(signalSeen, true);
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    if (previousVisionTimeout === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS;
+    else process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS = previousVisionTimeout;
+    if (previousOllamaTimeout === undefined) delete process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS;
+    else process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS = previousOllamaTimeout;
+  }
+});
+
+test('Ollama vision timeout inherits the generic Ollama timeout when unset', async () => {
+  const previousBaseUrl = process.env.POLICY_OCR_OLLAMA_BASE_URL;
+  const previousModel = process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+  const previousVisionTimeout = process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS;
+  const previousOllamaTimeout = process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS;
+  process.env.POLICY_OCR_OLLAMA_BASE_URL = 'http://ollama.test';
+  process.env.POLICY_OCR_OLLAMA_VISION_MODEL = 'qwen3-vl:8b';
+  delete process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS;
+  process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS = '25';
+  let signalSeen = false;
+
+  try {
+    await assert.rejects(
+      extractPolicyFieldsFromImageWithOllamaVision(
+        {
+          name: 'slow-policy-generic-timeout.png',
+          type: 'image/png',
+          size: 12,
+          dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+        },
+        async (_url, init) => {
+          signalSeen = Boolean(init.signal);
+          return new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new Error('AbortError')));
+          });
+        },
+      ),
+      /POLICY_OCR_VISION_TIMEOUT/u,
+    );
+    assert.equal(signalSeen, true);
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.POLICY_OCR_OLLAMA_BASE_URL;
+    else process.env.POLICY_OCR_OLLAMA_BASE_URL = previousBaseUrl;
+    if (previousModel === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_MODEL;
+    else process.env.POLICY_OCR_OLLAMA_VISION_MODEL = previousModel;
+    if (previousVisionTimeout === undefined) delete process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS;
+    else process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS = previousVisionTimeout;
+    if (previousOllamaTimeout === undefined) delete process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS;
+    else process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS = previousOllamaTimeout;
+  }
+});
+
+test('Ollama provider supplements incomplete OCR fields with vision scan', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  let visionCalls = 0;
+  let paddleCalls = 0;
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'complete-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        paddleCalls += 1;
+        return {
+          ocrText: 'Paddle OCR 完整原文\n新华保险\n盛世荣耀臻享版终身寿险',
+          data: {
+            company: '新华保险',
+            name: '盛世荣耀臻享版终身寿险',
+          },
+          fieldEvidence: {
+            name: {
+              value: '盛世荣耀臻享版终身寿险',
+              rowText: 'Paddle OCR 完整原文 新华保险 盛世荣耀臻享版终身寿险',
+              relation: 'layout',
+            },
+          },
+        };
+      },
+      ollamaVisionExtractor: async () => {
+        visionCalls += 1;
+        return {
+          company: '新华保险',
+          name: '盛世荣耀臻享版终身寿险',
+          applicant: '温舒萍',
+          beneficiary: '法定',
+          insured: '温舒萍',
+          insuredBirthday: '1988-12-16',
+          date: '2026-04-01',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '24441',
+          firstPremium: '3000',
+        };
+      },
+    });
+
+    assert.equal(visionCalls, 1);
+    assert.equal(paddleCalls, 1);
+    assert.equal(scan.data.applicant, '温舒萍');
+    assert.equal(scan.data.beneficiary, '法定');
+    assert.equal(scan.ocrText, 'PaddleOCR完整原文\n新华保险\n盛世荣耀臻享版终身寿险');
+    assert.equal(scan.fieldEvidence.name.relation, 'layout');
+    assert.ok(scan.ocrWarnings.some((warning) => warning.includes('Ollama 视觉仅补充 OCR 缺失字段')));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+  }
+});
+
+test('Ollama provider skips vision scan when OCR fills more than 60 percent of scalar fields', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  const calls = [];
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'incomplete-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        calls.push('paddle');
+        return {
+          ocrText: '新华保险 基本内容 被保险人 温舒萍 保险利益表',
+          data: {
+            company: '新华保险',
+            name: '盛世荣耀臻享版终身寿险',
+            applicant: '温舒萍',
+            beneficiary: '法定',
+            insured: '温舒萍',
+            insuredBirthday: '1988-12-16',
+            date: '2026-04-01',
+            paymentPeriod: '10年交',
+            coveragePeriod: '终身',
+            amount: '24441',
+            firstPremium: '3000',
+          },
+        };
+      },
+      ollamaVisionExtractor: async () => {
+        calls.push('vision');
+        throw new Error('VISION_SHOULD_NOT_RUN');
+      },
+    });
+
+    assert.deepEqual(calls, ['paddle']);
+    assert.equal(scan.data.applicant, '温舒萍');
+    assert.equal(scan.data.beneficiary, '法定');
+    assert.equal(scan.data.insuredBirthday, '1988-12-16');
+    assert.equal(scan.data.firstPremium, '3000');
+    assert.equal(scan.ocrWarnings, undefined);
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+  }
+});
+
+test('Ollama provider falls back to Paddle when vision times out', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  const calls = [];
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'vision-timeout-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        calls.push('paddle');
+        return {
+          ocrText: '新华保险\n投保人:冯力\n被保险人:冯力\n险种名称:荣耀鑫享赢家版终身寿险\n基本保险金额:165020元\n首期保险费合计:20010元',
+          data: {
+            company: '新华保险',
+            name: '荣耀鑫享赢家版终身寿险',
+            applicant: '冯力',
+            insured: '冯力',
+            amount: '165020',
+            firstPremium: '20010',
+          },
+        };
+      },
+      ollamaVisionExtractor: async () => {
+        calls.push('vision');
+        throw new Error('POLICY_OCR_VISION_TIMEOUT');
+      },
+    });
+
+    assert.deepEqual(calls, ['paddle', 'vision']);
+    assert.equal(scan.data.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(scan.data.amount, '165020');
+    assert.ok(scan.ocrWarnings.some((warning) => warning.includes('Ollama 视觉识别超时')));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+  }
+});
+
+test('remote GPU vision provider falls back to Paddle when parsed fields are unavailable', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousRemoteBaseUrl = process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+  const previousFallback = process.env.POLICY_OCR_FALLBACK_PADDLE;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'remote_gpu_vision';
+  process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = 'http://gpu4080.test';
+  process.env.POLICY_OCR_FALLBACK_PADDLE = 'true';
+  const calls = [];
+
+  globalThis.fetch = async () => {
+    calls.push('remote');
+    return {
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    };
+  };
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'remote-vision-failed-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        calls.push('paddle');
+        return {
+          ocrText: '新华保险\n投保人:冯力\n被保险人:冯力\n险种名称:荣耀鑫享赢家版终身寿险\n基本保险金额:165020元\n首期保险费合计:20010元',
+          data: {
+            company: '新华保险',
+            name: '荣耀鑫享赢家版终身寿险',
+            applicant: '冯力',
+            insured: '冯力',
+            amount: '165020',
+            firstPremium: '20010',
+          },
+        };
+      },
+    });
+
+    assert.equal(calls.filter((call) => call === 'remote').length, 1);
+    assert.equal(calls.filter((call) => call === 'paddle').length, 1);
+    assert.equal(scan.data.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(scan.data.firstPremium, '20010');
+    assert.match(scan.ocrText, /投保人:冯力/u);
+    assert.ok(scan.ocrWarnings.some((warning) => warning.includes('4080 视觉未返回可解析结果')));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousRemoteBaseUrl === undefined) delete process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+    else process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = previousRemoteBaseUrl;
+    if (previousFallback === undefined) delete process.env.POLICY_OCR_FALLBACK_PADDLE;
+    else process.env.POLICY_OCR_FALLBACK_PADDLE = previousFallback;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('remote GPU vision skips vLLM request when OCR fills more than 60 percent of scalar fields', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousRemoteBaseUrl = process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+  const previousFallback = process.env.POLICY_OCR_FALLBACK_PADDLE;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'remote_gpu_vision';
+  process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = 'http://gpu4080.test';
+  process.env.POLICY_OCR_FALLBACK_PADDLE = 'true';
+
+  globalThis.fetch = async () => {
+    throw new Error('REMOTE_SHOULD_NOT_RUN');
+  };
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'remote-parallel-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        return {
+          ocrText: '新华保险\n投保人:冯力\n被保险人:冯力\n险种名称:OCR识别主险\n基本保险金额:165020元\n首期保险费合计:20010元',
+          data: {
+            company: '新华保险',
+            name: 'OCR识别主险',
+            applicant: '冯力',
+            beneficiary: '法定',
+            policyNumber: '990163781859',
+            insured: '冯力',
+            insuredBirthday: '1987-12-07',
+            date: '2024-06-07',
+            paymentPeriod: '10年交',
+            coveragePeriod: '终身',
+            amount: '165020',
+            firstPremium: '20010',
+          },
+        };
+      },
+    });
+
+    assert.equal(scan.data.name, 'OCR识别主险');
+    assert.equal(scan.data.applicant, '冯力');
+    assert.equal(scan.data.insured, '冯力');
+    assert.match(scan.ocrText, /投保人:冯力/u);
+    assert.equal(scan.visionDebug, undefined);
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousRemoteBaseUrl === undefined) delete process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+    else process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = previousRemoteBaseUrl;
+    if (previousFallback === undefined) delete process.env.POLICY_OCR_FALLBACK_PADDLE;
+    else process.env.POLICY_OCR_FALLBACK_PADDLE = previousFallback;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('remote GPU vision supplements only empty OCR fields', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousRemoteBaseUrl = process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+  const previousFallback = process.env.POLICY_OCR_FALLBACK_PADDLE;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'remote_gpu_vision';
+  process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = 'http://gpu4080.test';
+  process.env.POLICY_OCR_FALLBACK_PADDLE = 'true';
+  const calls = [];
+
+  globalThis.fetch = async () => {
+    calls.push('remote');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                company: '新华保险',
+                name: '视觉识别主险',
+                applicant: '视觉投保人',
+                beneficiary: '法定',
+                amount: '165020',
+                firstPremium: '20010',
+              }),
+            },
+          },
+        ],
+      }),
+    };
+  };
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'remote-supplement-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        calls.push('paddle');
+        return {
+          ocrText: '新华保险\n投保人:冯力\n被保险人:冯力\n险种名称:OCR识别主险',
+          data: {
+            company: '新华保险',
+            name: 'OCR识别主险',
+            applicant: '冯力',
+            insured: '冯力',
+          },
+        };
+      },
+    });
+
+    assert.deepEqual(calls, ['paddle', 'remote']);
+    assert.equal(scan.data.name, 'OCR识别主险');
+    assert.equal(scan.data.applicant, '冯力');
+    assert.equal(scan.data.beneficiary, '法定');
+    assert.equal(scan.data.amount, '165020');
+    assert.equal(scan.data.firstPremium, '20010');
+    assert.ok(scan.ocrWarnings.some((warning) => warning.includes('4080 视觉仅补充 OCR 缺失字段')));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousRemoteBaseUrl === undefined) delete process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
+    else process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = previousRemoteBaseUrl;
+    if (previousFallback === undefined) delete process.env.POLICY_OCR_FALLBACK_PADDLE;
+    else process.env.POLICY_OCR_FALLBACK_PADDLE = previousFallback;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Huawei Cloud insurance OCR provider maps structured response into policy scan fields', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousProjectId = process.env.POLICY_OCR_HUAWEI_PROJECT_ID;
+  const previousToken = process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN;
+  const previousEndpoint = process.env.POLICY_OCR_HUAWEI_ENDPOINT;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'huawei_cloud_insurance';
+  process.env.POLICY_OCR_HUAWEI_PROJECT_ID = 'test-project-id';
+  process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN = 'test-token';
+  process.env.POLICY_OCR_HUAWEI_ENDPOINT = 'https://ocr.cn-north-4.myhuaweicloud.com';
+  const requestBodies = [];
+
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, 'https://ocr.cn-north-4.myhuaweicloud.com/v2/test-project-id/ocr/insurance-policy');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers['X-Auth-Token'], 'test-token');
+    const body = JSON.parse(options.body);
+    requestBodies.push(body);
+    assert.equal(body.image, Buffer.from('fake-image').toString('base64'));
+    assert.equal(body.detect_direction, true);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          company: { words: '华夏人寿保险股份有限公司' },
+          bill_number: { words: 'P1234567890' },
+          effective_date: { words: '2024年01月02日' },
+          applicant_list: [
+            { name: { words: '张三' } },
+          ],
+          insurant_list: [
+            { name: { words: '李四' }, id_number: { words: '110105199001010010' } },
+          ],
+          beneficiary_list: [
+            { beneficiary_type: { words: '身故保险金受益人' }, beneficiary_name: { words: '法定继承人' } },
+          ],
+          insurance_list: [
+            {
+              insurance_name: { words: '华夏黄金甲终身寿险' },
+              insurance_amount: { words: 'RMB50000.00' },
+              insurance_period: { words: '终身' },
+              payment_frequency: { words: '年交' },
+              payment_period: { words: '10年交' },
+              payment_amount: { words: '4100.00' },
+            },
+            {
+              insurance_name: { words: '附加投保人豁免保险' },
+              payment_frequency: { words: '年交' },
+              payment_period: { words: '10年交' },
+              payment_amount: { words: '100.00' },
+            },
+          ],
+        },
+      }),
+    };
+  };
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'huawei-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+    });
+
+    assert.equal(requestBodies.length, 1);
+    assert.equal(scan.data.company, '华夏保险');
+    assert.equal(scan.data.name, '华夏黄金甲终身寿险');
+    assert.equal(scan.data.policyNumber, 'P1234567890');
+    assert.equal(scan.data.applicant, '张三');
+    assert.equal(scan.data.insured, '李四');
+    assert.equal(scan.data.insuredIdNumber, '110105199001010010');
+    assert.equal(scan.data.insuredBirthday, '1990-01-01');
+    assert.equal(scan.data.beneficiary, '法定');
+    assert.equal(scan.data.date, '2024-01-02');
+    assert.equal(scan.data.paymentPeriod, '10年交');
+    assert.equal(scan.data.coveragePeriod, '终身');
+    assert.equal(scan.data.amount, '50000');
+    assert.equal(scan.data.firstPremium, '4200');
+    assert.equal(scan.data.plans.length, 2);
+    assert.equal(scan.data.plans[1].role, 'rider');
+    assert.match(scan.ocrText, /保险公司:华夏保险/u);
+    assert.equal(scan.fieldConfidence.company, 'huawei-cloud');
+    assert.equal(scan.fieldEvidence.policyNumber.source, 'huawei-cloud-ocr');
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousProjectId === undefined) delete process.env.POLICY_OCR_HUAWEI_PROJECT_ID;
+    else process.env.POLICY_OCR_HUAWEI_PROJECT_ID = previousProjectId;
+    if (previousToken === undefined) delete process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN;
+    else process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN = previousToken;
+    if (previousEndpoint === undefined) delete process.env.POLICY_OCR_HUAWEI_ENDPOINT;
+    else process.env.POLICY_OCR_HUAWEI_ENDPOINT = previousEndpoint;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Huawei Cloud insurance OCR provider signs requests with AK/SK when token is absent', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousProjectId = process.env.POLICY_OCR_HUAWEI_PROJECT_ID;
+  const previousToken = process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN;
+  const previousAuthToken = process.env.POLICY_OCR_HUAWEI_AUTH_TOKEN;
+  const previousAk = process.env.POLICY_OCR_HUAWEI_AK;
+  const previousSk = process.env.POLICY_OCR_HUAWEI_SK;
+  const previousEndpoint = process.env.POLICY_OCR_HUAWEI_ENDPOINT;
+  const previousFetch = globalThis.fetch;
+  process.env.POLICY_OCR_PROVIDER = 'huawei_cloud_insurance';
+  process.env.POLICY_OCR_HUAWEI_PROJECT_ID = 'test-project-id';
+  delete process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN;
+  delete process.env.POLICY_OCR_HUAWEI_AUTH_TOKEN;
+  process.env.POLICY_OCR_HUAWEI_AK = 'test-ak';
+  process.env.POLICY_OCR_HUAWEI_SK = 'test-sk';
+  process.env.POLICY_OCR_HUAWEI_ENDPOINT = 'https://ocr.cn-north-4.myhuaweicloud.com';
+
+  globalThis.fetch = async (_url, options) => {
+    assert.match(options.headers.Authorization, /^SDK-HMAC-SHA256 Access=test-ak,/u);
+    assert.equal(options.headers['x-sdk-date'].length, 16);
+    assert.equal(options.headers['content-type'], 'application/json');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          company: { words: '新华保险' },
+          insurance_list: [
+            {
+              insurance_name: { words: '测试终身寿险' },
+              insurance_amount: { words: '10万元' },
+              payment_amount: { words: '1000元' },
+            },
+          ],
+        },
+      }),
+    };
+  };
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'huawei-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+    });
+
+    assert.equal(scan.data.company, '新华保险');
+    assert.equal(scan.data.name, '测试终身寿险');
+    assert.equal(scan.data.amount, '100000');
+    assert.equal(scan.data.firstPremium, '1000');
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousProjectId === undefined) delete process.env.POLICY_OCR_HUAWEI_PROJECT_ID;
+    else process.env.POLICY_OCR_HUAWEI_PROJECT_ID = previousProjectId;
+    if (previousToken === undefined) delete process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN;
+    else process.env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN = previousToken;
+    if (previousAuthToken === undefined) delete process.env.POLICY_OCR_HUAWEI_AUTH_TOKEN;
+    else process.env.POLICY_OCR_HUAWEI_AUTH_TOKEN = previousAuthToken;
+    if (previousAk === undefined) delete process.env.POLICY_OCR_HUAWEI_AK;
+    else process.env.POLICY_OCR_HUAWEI_AK = previousAk;
+    if (previousSk === undefined) delete process.env.POLICY_OCR_HUAWEI_SK;
+    else process.env.POLICY_OCR_HUAWEI_SK = previousSk;
+    if (previousEndpoint === undefined) delete process.env.POLICY_OCR_HUAWEI_ENDPOINT;
+    else process.env.POLICY_OCR_HUAWEI_ENDPOINT = previousEndpoint;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Ollama provider skips Paddle repair when Paddle fallback is disabled', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousFallback = process.env.POLICY_OCR_FALLBACK_PADDLE;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_FALLBACK_PADDLE = 'false';
+  const calls = [];
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'vision-only-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        calls.push('paddle');
+        return {
+          ocrText: 'Paddle OCR should not be used',
+          data: { applicant: 'Paddle投保人' },
+        };
+      },
+      ollamaVisionExtractor: async () => {
+        calls.push('vision');
+        return {
+          company: '新华保险',
+          name: '盛世荣耀臻享版终身寿险',
+          applicant: '温舒萍',
+          beneficiary: '法定',
+          insured: '温舒萍',
+          insuredBirthday: '1988-12-16',
+          date: '2026-04-01',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '24441',
+          firstPremium: '3000',
+        };
+      },
+    });
+
+    assert.deepEqual(calls, ['vision']);
+    assert.equal(scan.data.applicant, '温舒萍');
+    assert.equal(scan.ocrText, '');
+    assert.equal(scan.ocrWarnings, undefined);
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousFallback === undefined) delete process.env.POLICY_OCR_FALLBACK_PADDLE;
+    else process.env.POLICY_OCR_FALLBACK_PADDLE = previousFallback;
+  }
+});
+
+test('Ollama provider keeps OCR plan-table structure when OCR fills enough scalar fields', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  const calls = [];
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'pingan-plan-table.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        calls.push('paddle');
+        return {
+          ocrText: '中国平安保险\n保险利益表\n险种名称\n平安福重大疾病保险\n附加长期意外伤害保险',
+          data: {
+            company: '中国平安保险',
+            name: '平安福重大疾病保险',
+            applicant: '李四',
+            beneficiary: '法定',
+            insured: '李四',
+            insuredBirthday: '1990-01-01',
+            date: '2026-01-01',
+            paymentPeriod: '20年交',
+            coveragePeriod: '终身',
+            amount: '300000',
+            firstPremium: '6800',
+            plans: [
+              {
+                role: 'main',
+                name: '平安福重大疾病保险',
+                amount: '300000',
+                coveragePeriod: '终身',
+                paymentPeriod: '20年交',
+                premium: '6000',
+              },
+              {
+                role: 'rider',
+                name: '附加长期意外伤害保险',
+                amount: '100000',
+                coveragePeriod: '30年',
+                paymentPeriod: '20年交',
+                premium: '800',
+              },
+            ],
+          },
+        };
+      },
+      ollamaVisionExtractor: async () => {
+        calls.push('vision');
+        return {
+          company: '中国平安保险',
+          name: '平安福重大疾病保险',
+          applicant: '李四',
+          beneficiary: '法定',
+          insured: '李四',
+          insuredBirthday: '1990-01-01',
+          date: '2026-01-01',
+          paymentPeriod: '20年交',
+          coveragePeriod: '终身',
+          amount: '300000',
+          firstPremium: '6800',
+          ocrText: '中国平安保险\n保险利益表\n险种名称\n平安福重大疾病保险\n附加长期意外伤害保险',
+        };
+      },
+    });
+
+    assert.deepEqual(calls, ['paddle']);
+    assert.equal(scan.data.company, '中国平安保险');
+    assert.equal(scan.data.plans.length, 2);
+    assert.equal(scan.data.plans[1].role, 'rider');
+    assert.equal(scan.data.plans[1].name, '附加长期意外伤害保险');
+    assert.equal(scan.ocrWarnings, undefined);
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+  }
+});
+
+test('Ollama provider ignores identity-number amount and metadata rider rows during Paddle repair', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'id-amount.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => ({
+        ocrText: '保险利益表\n盛世荣耀臻享版\n终身寿险（分红型）\n24441.00元\n终身\n年交\n/10年\n每年3000.00元',
+        data: {
+          company: '新华保险',
+          name: '盛世荣耀臻享版终身寿险（分红型）',
+          applicant: '温舒萍',
+          beneficiary: '法定',
+          insured: '温舒萍',
+          insuredIdNumber: '360502198812160922',
+          date: '2026-04-01',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '24441',
+          firstPremium: '3000',
+        },
+      }),
+      ollamaVisionExtractor: async () => ({
+        company: '新华保险',
+        name: '保障期间:终身',
+        applicant: '温舒萍',
+        beneficiary: '法定',
+        insured: '温舒萍',
+        insuredIdNumber: '360502198812160922',
+        insuredBirthday: '1988-12-16',
+        date: '2026-04-01',
+        paymentPeriod: '趸交',
+        coveragePeriod: '终身',
+        amount: '360502198812160900',
+        firstPremium: '3000',
+        plans: [
+          {
+            role: 'rider',
+            name: '保障期间:终身',
+            amount: '',
+            premium: '',
+            coveragePeriod: '',
+            paymentPeriod: '趸交',
+          },
+        ],
+      }),
+    });
+
+    assert.equal(scan.data.name, '盛世荣耀臻享版终身寿险（分红型）');
+    assert.equal(scan.data.amount, '24441');
+    assert.equal(scan.data.paymentPeriod, '10年交');
+    assert.ok(!scan.data.plans?.some((plan) => plan.name === '保障期间:终身'));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+  }
 });
 
 test('PaddleOCR line output maps insurance basic fields through the existing matcher', () => {
@@ -228,6 +2853,274 @@ test('PaddleOCR line output maps insurance basic fields through the existing mat
   assert.equal(data.paymentPeriod, '10年交');
   assert.equal(data.amount, '24441');
   assert.equal(data.firstPremium, '3000');
+});
+
+test('OCR extraction tolerates common OCR mistakes in applicant and insured labels', () => {
+  const data = extractPolicyFieldsFromText(`
+关爱人生每一天
+保险单
+保险合同号:990171228067
+基本内容
+合同成立日期:2024年09月29日
+合同生效日期:2024年09月30日
+设保人:冯力
+证件号码:330106198712072413
+披保险人:冯力
+证件号码:330106198712072413
+身故保险金受益人
+被保险人的法定继承人
+保险利益表
+险种名称
+基本保险金额/保险金额
+保险期间
+交费方式
+保险费
+畅行万里智赢版
+60000.00元
+至2068年9月30日零时
+年交
+两全保险
+/10年
+每年3156.00元
+首期保险费合计:
+￥3296.00
+  `);
+
+  assert.equal(data.applicant, '冯力');
+  assert.equal(data.insured, '冯力');
+  assert.equal(data.insuredIdNumber, '330106198712072413');
+  assert.equal(data.insuredBirthday, '1987-12-07');
+  assert.equal(data.beneficiary, '法定');
+  assert.equal(data.date, '2024-09-30');
+});
+
+test('OCR extraction hydrates single main plan details from shuffled benefit-table sections', () => {
+  const data = extractPolicyFieldsFromText(`
+No. 422400000032674998
+NCI新华保险
+关爱人生每一天
+币值单位:人民币元
+合同成立日期:2024年09月28日
+投保人:温舒萍
+被保险人:温舒萍
+身故保险金受益人
+被保险人的法定继承人
+险种名称
+基本保险金额/保险金额
+/保障计划/份数
+畅行万里智赢版
+两全保险
+100000.00元
+特别约定:
+本栏空白
+保险单
+基本内容
+保险合同号:990171130249
+合同生效日期:2024年09月29日
+证件号码:
+360502198812160922
+证件号码:360502198812160922
+受益顺序
+受益份额
+证件号码
+保险利益表
+保险期间
+交费方式
+保险费约定支付日
+/交费期间（续期保险费交费日期）
+/交费期满日
+至2069年9月29日零时年交
+每年09月29日
+/20年
+/2043年09月29日
+首期保险费合计:（大写）叁仟壹佰贰拾元整
+保险费
+每年3120.00元
+¥3120.00
+  `);
+
+  assert.equal(data.name, '畅行万里智赢版两全保险');
+  assert.equal(data.paymentPeriod, '20年交');
+  assert.equal(data.coveragePeriod, '至2069年9月29日零时');
+  assert.equal(data.amount, '100000');
+  assert.equal(data.firstPremium, '3120');
+  assert.deepEqual(
+    data.plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      coveragePeriod: plan.coveragePeriod,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'main',
+        name: '畅行万里智赢版两全保险',
+        amount: '100000',
+        coveragePeriod: '至2069年9月29日零时',
+        paymentMode: '年交',
+        paymentPeriod: '20年交',
+        premium: '3120',
+      },
+    ],
+  );
+});
+
+test('OCR extraction keeps rider when rider payment values appear before rider name', () => {
+  const data = extractPolicyFieldsFromText(`
+关爱人生每一天
+保险单
+值单位:人民币元
+保险合同号:990171228067
+基本内容
+合同成立日期:2024年09月29日
+合同生效日期:2024年09月30日
+设保人:冯力
+证件号码:330106198712072413
+披保险人:冯力
+证件号码:330106198712072413
+身故保险金受益人
+被保险人的法定继承人
+保险利益表
+险种名称
+基本保险金额/保险金额
+保险期间
+交费方式
+保险费约定支付日
+保险费
+/保障计划/份数
+/交费期间（续期保险费交费日期）
+/交费期满日
+每年09月30日
+每年3156.00元
+畅行万里智赢版
+60000.00元
+至2068年9月30日零时
+年交
+两全保险
+/10年
+/2033年09月30日
+一次交清
+140.00元
+i他男性特定疾病
+50000.00元
+至2025年09月29日
+保险
+（大写）叁仟贰佰玖拾陆元整
+￥3296.00
+首期保险费合计:
+特别约定:
+本栏空白
+  `);
+
+  assert.equal(data.firstPremium, '3296');
+  assert.deepEqual(
+    data.plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'main',
+        name: '畅行万里智赢版两全保险',
+        amount: '60000',
+        paymentMode: '年交',
+        paymentPeriod: '10年交',
+        premium: '3156',
+      },
+      {
+        role: 'rider',
+        name: 'i他男性特定疾病保险',
+        amount: '50000',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '140',
+      },
+    ],
+  );
+});
+
+test('OCR extraction keeps consent text and linked-account descriptor out of main fields', () => {
+  const data = extractPolicyFieldsFromText(`
+NCI新华保险
+保险单
+保险合同号:990163781859
+合同成立日期:2024年06月06日
+投保人:冯力
+合同生效日期:2024年06月07日
+被保险入:冯力
+证件号码:330106198712072413
+身故保险金受益人
+证件号码:330106198712072413
+被保险入的法定继承人
+保险利益表
+险种名称
+基本保险金额/保险金额
+保险期间
+交费方式
+保险费约定支付日
+/交费期间
+/交费期满日
+保险费
+荣耀鑫享赢家版
+165020.00元
+终身
+年交
+每年06月07日
+每年20000.00元
+终身寿险
+/10年
+/2033年06月07日
+金利瑞享终身寿险
+终身
+一次交清
+10.00元
+（万能型）
+首期保险费合计:（大写）贰万零壹拾元整
+￥20010.00
+特别约定:
+经投保人和被保险人同意，在保单990163781859项下设置万能账户。
+  `);
+
+  assert.equal(data.name, '荣耀鑫享赢家版终身寿险');
+  assert.equal(data.applicant, '冯力');
+  assert.equal(data.insured, '冯力');
+  assert.equal(data.beneficiary, '法定');
+  assert.equal(data.insuredIdNumber, '330106198712072413');
+  assert.equal(data.insuredBirthday, '1987-12-07');
+  assert.equal(data.amount, '165020');
+  assert.equal(data.firstPremium, '20010');
+  assert.equal(data.plans.length, 2);
+  assert.equal(data.plans[0].role, 'main');
+  assert.equal(data.plans[0].name, '荣耀鑫享赢家版终身寿险');
+  assert.equal(data.plans[0].amount, '165020');
+  assert.equal(data.plans[0].premium, '20000');
+  assert.equal(data.plans[1].role, 'linked_account');
+  assert.equal(data.plans[1].name, '金利瑞享终身寿险（万能型）');
+  assert.equal(data.plans[1].premium, '10');
+});
+
+test('OCR extraction repairs noisy policy number from repeated policy references', () => {
+  const data = extractPolicyFieldsFromText(`
+NCI新华保险
+保险单
+保险合同号:090163181859
+合同成立日期:2024年06月06日
+投保人:冯力
+被保险人:冯力
+特别约定:
+经投保人和被保险人同意，在保单990163781859下《金利瑞享终身寿险（万能型）》合同有效的情况下，保
+单990163781859下《金利瑞享终身寿险（万能型）》合同部分领取保单账户价值用于交纳保单990163781859下《
+荣耀鑫享赢家版终身寿险》及所附附加险的续期或者续保保险费。
+  `);
+
+  assert.equal(data.policyNumber, '990163781859');
 });
 
 test('OCR extraction keeps rider single-pay period out of main policy fields', () => {
@@ -269,6 +3162,182 @@ i他男性特定疾病
   assert.equal(data.plans[1].paymentPeriod, '趸交');
   assert.equal(data.plans[0].premium, '3156');
   assert.equal(data.plans[1].premium, '140');
+});
+
+test('OCR extraction keeps inline main/rider order and excludes optional responsibility clauses', () => {
+  const data = extractPolicyFieldsFromText(`
+公票使用。
+伪说明
+保险单
+No. 021400000044079758
+NCI新华保险
+币值单位:人民币元
+投保人:吴连英
+保险合同号:886659772967
+被保险人:吴连英
+身份证:330106196012261521
+身份证:330106196012261521
+受益人
+证件号码
+翟米深
+身份证:330106195508141510
+受益顺序
+合同成立日期:2014年01月28日
+性别:女
+性别:女
+受益份额
+100.00%
+首期保险费交费日期:2014年01月27日
+合同生效日期:2014年01月29日
+险种名称:福如东海A款终身寿险（分红型）
+保险费:每年5220.00元
+保险期间:2014年01月29日零时起至被保险人终身
+险种名称:附加安康提前给付重大疾病保险
+交费方式:年交交费期间:10年续期保险费交费日期:每年01月29日
+保险金额:60000.00元
+可选责任的约定:癌症特别关爱金
+保险费:每年1620.00元
+保险期间:2014年01月29日零时起至被保险人终身
+交费方式:年交交费期间:10年
+续期保险费交费日期:每年01月29日
+保险费合计:（大写）陆仟捌佰肆拾元整
+¥6840.00
+特别约定:
+本栏以下空白
+  `);
+
+  assert.equal(data.name, '福如东海A款终身寿险（分红型）');
+  assert.equal(data.firstPremium, '6840');
+  assert.equal(data.plans.length, 2);
+  assert.deepEqual(
+    data.plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      coveragePeriod: plan.coveragePeriod,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'main',
+        name: '福如东海A款终身寿险（分红型）',
+        amount: '',
+        coveragePeriod: '终身',
+        paymentMode: '',
+        paymentPeriod: '',
+        premium: '5220',
+      },
+      {
+        role: 'rider',
+        name: '附加安康提前给付重大疾病保险',
+        amount: '60000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '10年交',
+        premium: '1620',
+      },
+    ],
+  );
+  assert.ok(!data.plans.some((plan) => /可选责任|基本责任/u.test(plan.name || '')));
+});
+
+test('OCR extraction keeps top-level name on main plan when later riders repeat plan labels', () => {
+  const data = extractPolicyFieldsFromText(`
+保险单
+NCI新华保险
+投保人:翟卿
+被保险人:顾晨妍
+保险合同号:886622461458
+证件号码
+受益人
+身份证:
+翟宸彬
+330106201311261218
+受益顺序
+身份证:
+330106198411101516
+翟卿
+受益份额
+50.00%
+50.00%
+合同生效日期:2014年01月01日
+酸种名称:福如东海A救终具寿险（分红提）
+基本保险金额:100000.00元
+保险期间:2014年01月01日零时起至被保险人终身
+保险费:每年3000.00元
+交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日
+险种名称:
+住院费用医疗保险（2007）
+保险金额:
+10000.00元
+保险费:234.00元
+保险期间:2014年01月01日零时起至2014年12月31日二十四时止
+交费方式:一次交清
+险种名称:附加安康提前给付重大疾病保险
+保险金额:100000.00元
+保险费:每年1100.00元
+保险费合计:（大写）肆仟叁佰叁拾肆元整
+可选责任的约定:癌症特别关爱金
+保险期间:2014年01月01日零时起至被保险人终身
+交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日
+￥4334.00
+特别约定:
+本保险单的险种《福如东海A款终身寿险（分红型）》的效力因发生保险责任、责任免除、合同解除等事项终止时，险种《住院费用医疗保险（2007）》的效力终止。
+本保险单的附加险种《附加安康提前给付重大疾病保险》仅为险种《福如东海A款终身寿险（分红型）》的附加险。
+  `);
+
+  assert.equal(data.name, '福如东海A救终具寿险（分红提）');
+  assert.equal(data.beneficiary, '翟宸彬');
+  assert.equal(data.paymentPeriod, '20年交');
+  assert.equal(data.coveragePeriod, '终身');
+  assert.equal(data.firstPremium, '4334');
+  assert.equal(data.fieldEvidence.beneficiary.value, '翟宸彬');
+  assert.equal(data.fieldEvidence.paymentPeriod.value, '20年交');
+  assert.match(data.fieldEvidence.paymentPeriod.rowText, /交费期间:20年续期/u);
+  assert.equal(data.fieldEvidence.coveragePeriod.value, '终身');
+  assert.match(data.fieldEvidence.coveragePeriod.rowText, /被保险人终身/u);
+  assert.deepEqual(
+    data.plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      coveragePeriod: plan.coveragePeriod,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'main',
+        name: '福如东海A救终具寿险（分红提）',
+        amount: '100000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '20年交',
+        premium: '3000',
+      },
+      {
+        role: 'rider',
+        name: '住院费用医疗保险（2007）',
+        amount: '10000',
+        coveragePeriod: '至2014年12月31日',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '234',
+      },
+      {
+        role: 'rider',
+        name: '附加安康提前给付重大疾病保险',
+        amount: '100000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '20年交',
+        premium: '1100',
+      },
+    ],
+  );
 });
 
 test('OCR extraction keeps receipt product rows as main policy plus rider plans', () => {
@@ -317,6 +3386,72 @@ NCI新华保险
   assert.equal(data.plans[1].role, 'rider');
   assert.equal(data.plans[1].name, 'i他男性特定疾病保险');
   assert.equal(data.plans[1].premium, '140');
+});
+
+test('OCR extraction keeps student responsibility-table amounts out of first premium', () => {
+  const data = extractPolicyFieldsFromText(`
+NCI新华保险
+关爱人生每一天
+保险单
+保险合同号:66240173100401
+基本内容
+合同成立日期:2024年08月09日
+投保人姓名:楼媛媛
+被保险人姓名:王俊曦
+残疾保险金、意外医疗保险金受益人
+被保险人本人
+身故保险金受益人
+被保险人的法定继承人
+合同生效日期:2024年08月16日
+保险利益表
+险种名称
+学生平安意外伤害保险
+附加学生平安A款定期寿险
+保险责任名称
+意外伤害身故和残疾保险金
+疾病身故或全残保险金
+金额/份数
+80000.00元
+80000.00元
+给付标准
+免赔额赔付比例
+经社保赔付
+未经社保赔付
+疾病特定门诊医疗保险金
+附加学生平安A1款意外伤害医疗保意外伤害医疗费用保险金
+20000.00元
+险
+保险期间:2024年08月16日零时起至2025年08月15日二十四时止，一年交费方式:一次交清
+保险费合计:（大写）贰佰玖拾捌元整
+¥298.00
+  `);
+
+  assert.equal(data.beneficiary, '法定');
+  assert.equal(data.firstPremium, '298');
+  assert.equal(data.amount, '80000');
+  assert.equal(data.fieldConfidence.beneficiary, 'text-high');
+  assert.equal(data.fieldConfidence.firstPremium, 'text-high');
+  assert.match(data.fieldEvidence.beneficiary.rowText, /身故保险金.*受益人/u);
+  assert.match(data.fieldEvidence.firstPremium.rowText, /保险费合计/u);
+  assert.ok(!data.plans.some((plan) => /保险责任名称|金额\/份数|给付标准|免赔额|赔付比例|社保赔付/u.test(plan.name || '')));
+  assert.ok(!data.plans.some((plan) => ['80000', '100'].includes(String(plan.premium || ''))));
+});
+
+test('OCR normalization keeps explicit first premium ahead of noisy plan premium totals', () => {
+  const normalized = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    firstPremium: '298',
+    plans: [
+      { role: 'main', name: '学生平安意外伤害保险', amount: '80000', premium: '80000' },
+      { role: 'rider', name: '金额/份数', amount: '80000', premium: '80000' },
+      { role: 'rider', name: '免赔额赔付比例', premium: '100' },
+    ],
+  });
+
+  assert.equal(normalized.firstPremium, '298');
+  assert.equal(normalized.plans.length, 1);
+  assert.equal(normalized.plans[0].name, '学生平安意外伤害保险');
 });
 
 test('OCR extraction derives insured birthday from the insured identity number', () => {
@@ -519,6 +3654,89 @@ MAWAWAVAVAV
   assert.equal(data.plans[0].name, '国寿鑫颐宝两全保险（2024版）');
   assert.equal(data.plans[0].amount, '159948');
   assert.equal(data.plans[0].premium, '12000');
+});
+
+test('OCR extraction keeps China Life multi-section table values after label splitting', () => {
+  const data = extractPolicyFieldsFromText(`
+保险资料
+投保人姓名:陈家明
+合同成立日期:2015年12月31日
+产品期文保费:100000.00元/年
+■主险明细
+险种名称:国寿鑫福年年养老年金保险
+保单号:201534240053301511974
+披保险人姓名:陈家明
+保险期间:4年
+文费方式:年交
+文费期间:5年
+子险种名称
+保险金额（元）
+标准保费（元）
+加费（元）
+国寿鑫福年年并老年金保险
+00192.13
+29491.41
+险种名称:国寿鑫福年年年金保险
+保单号:2015342400534015115980
+保险期间:24年
+文费方式:年交
+文费期间:5年
+子险种名称
+保险金额（元）
+标准保费（元)
+加费（元）
+国寿鑫招年年年金保险
+56621.88
+70505.56
+险种名称:国寿鑫账户两全保险（万能型）（钻石版）
+保单号:2015342423272000380206
+保险期问:终身
+文费方式:不定期文
+文费期间:
+子险种名称
+保险金额（元）
+标准保费（元）
+加费（元）
+寿鑫账户两全保险（万能型）（钻石版）
+10000.00
+  `);
+
+  assert.equal(data.company, '中国人寿保险');
+  assert.equal(data.name, '国寿鑫福年年养老年金保险');
+  assert.equal(data.amount, '192');
+  assert.equal(data.firstPremium, '99997');
+  assert.deepEqual(
+    data.plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      premium: plan.premium,
+      paymentPeriod: plan.paymentPeriod,
+    })),
+    [
+      {
+        role: 'main',
+        name: '国寿鑫福年年养老年金保险',
+        amount: '192',
+        premium: '29491',
+        paymentPeriod: '5年交',
+      },
+      {
+        role: 'rider',
+        name: '国寿鑫福年年年金保险',
+        amount: '56622',
+        premium: '70506',
+        paymentPeriod: '5年交',
+      },
+      {
+        role: 'linked_account',
+        name: '国寿鑫账户两全保险（万能型）（钻石版）',
+        amount: '10000',
+        premium: '',
+        paymentPeriod: '不定期交',
+      },
+    ],
+  );
 });
 
 test('OCR extraction is not tied to Xinhua policy layouts', () => {
@@ -771,6 +3989,53 @@ test('visual OCR normalization repairs single fields from benefit-table plans', 
   assert.equal(data.firstPremium, '11010');
   assert.equal(data.plans.length, 2);
   assert.equal(data.plans[1].role, 'linked_account');
+});
+
+test('visual OCR normalization rejects field labels as plan names and identity numbers as amounts', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '保障期间:终身',
+    applicant: '温舒萍',
+    insured: '温舒萍',
+    insuredIdNumber: '360502198812160922',
+    insuredBirthday: '1988-12-16',
+    date: '2026-04-01',
+    paymentPeriod: '趸交',
+    coveragePeriod: '终身',
+    amount: '360502198812160900',
+    firstPremium: '3000',
+    plans: [
+      {
+        role: 'rider',
+        name: '保障期间:终身',
+        amount: '360502198812160900',
+        paymentPeriod: '趸交',
+        premium: '',
+      },
+    ],
+  });
+
+  assert.equal(data.name, '');
+  assert.equal(data.amount, '');
+  assert.equal(data.firstPremium, '3000');
+  assert.equal(data.plans, undefined);
+});
+
+test('visual OCR normalization strips model explanations from person and empty fields', () => {
+  const data = normalizeExtractedPolicyFields({
+    company: '新华保险',
+    name: '荣耀鑫享赢家版终身寿险',
+    applicant: '字段明确标注冯力',
+    insured: '被保险人字段明确标注为冯力',
+    beneficiary: '栏为空',
+    insuredIdNumber: '330106198712072413',
+    date: '2024-09-29',
+  });
+
+  assert.equal(data.applicant, '冯力');
+  assert.equal(data.insured, '冯力');
+  assert.equal(data.beneficiary, '');
+  assert.equal(data.insuredBirthday, '1987-12-07');
 });
 
 test('recognize endpoint repairs single-policy fields from visual OCR plans when raw OCR text is empty', async () => {
@@ -2074,6 +5339,180 @@ test('recognize stores raw upload metadata for later OCR failure diagnosis', asy
   }
 });
 
+test('recognize stores authenticated scan diagnostics without saving a policy', async () => {
+  const state = createInitialState();
+  state.users.push({ id: 1, mobile: '13800000000', createdAt: '2026-05-01T00:00:00.000Z' });
+  state.sessions.push({ token: 'user-token', userId: 1, createdAt: '2026-05-01T00:01:00.000Z' });
+  let persistCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {
+      persistCalls += 1;
+    },
+    scanner: async ({ uploadItem, ocrText }) => ({
+      ocrText: ocrText || '新华保险 登录用户识别文本',
+      data: {
+        company: '新华保险',
+        name: uploadItem?.name || '待识别保单',
+        applicant: '张三',
+        insured: '李四',
+      },
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
+      method: 'POST',
+      headers: { authorization: 'Bearer user-token' },
+      body: JSON.stringify({
+        uploadItem: {
+          name: 'auth-policy.jpg',
+          type: 'image/jpeg',
+          size: 4096,
+          dataUrl: 'data:image/jpeg;base64,QQ==',
+        },
+      }),
+    });
+
+    assert.equal(recognized.response.status, 200);
+    assert.equal(state.policies.length, 0);
+    assert.equal(state.pendingScans.length, 1);
+    assert.equal(state.pendingScans[0].guestId, 'user:1:recognize');
+    assert.equal(state.pendingScans[0].scan.data.name, 'auth-policy.jpg');
+    assert.deepEqual(state.pendingScans[0].rawUpload, {
+      ocrText: '',
+      uploadItem: {
+        name: 'auth-policy.jpg',
+        type: 'image/jpeg',
+        size: 4096,
+        hasDataUrl: true,
+      },
+      hasProvidedScan: false,
+      hasProvidedAnalysis: false,
+    });
+    assert.equal(persistCalls, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test('recognize stores pending scan diagnostics through incremental persistence when available', async () => {
+  const state = createInitialState();
+  let fullPersistCalls = 0;
+  const pendingPersistKeys = [];
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {
+      fullPersistCalls += 1;
+    },
+    persistPendingScan: async ({ guestId }) => {
+      pendingPersistKeys.push(guestId);
+    },
+    scanner: async ({ uploadItem, ocrText }) => ({
+      ocrText: ocrText || '新华保险 增量识别文本',
+      data: {
+        company: '新华保险',
+        name: uploadItem?.name || '待识别保单',
+        applicant: '张三',
+        insured: '李四',
+      },
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-fast-recognize',
+        uploadItem: {
+          name: 'fast-policy.jpg',
+          type: 'image/jpeg',
+          size: 4096,
+          dataUrl: 'data:image/jpeg;base64,QQ==',
+        },
+      }),
+    });
+
+    assert.equal(recognized.response.status, 200);
+    assert.equal(fullPersistCalls, 0);
+    assert.deepEqual(pendingPersistKeys, ['guest-fast-recognize', 'guest-fast-recognize']);
+    assert.equal(state.pendingScans.length, 1);
+    assert.equal(state.pendingScans[0].scan.data.name, 'fast-policy.jpg');
+  } finally {
+    await server.close();
+  }
+});
+
+test('recognize passes local insurance terminology context into the scanner', async () => {
+  const state = createInitialState();
+  state.knowledgeRecords.push(
+    {
+      id: 1,
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+      productType: '增额终身寿险',
+    },
+    {
+      id: 2,
+      company: '中国平安保险',
+      productName: '平安福重大疾病保险',
+      productType: '重疾险',
+    },
+    {
+      id: 3,
+      company: '中国人寿',
+      productName: '国寿鑫享宝专属商业养老保险',
+      productType: '养老年金保险',
+    },
+  );
+  let scannerInput = null;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async (input) => {
+      scannerInput = input;
+      return {
+        ocrText: '',
+        data: {
+          company: '中国平安保险',
+          name: '平安福重大疾病保险',
+        },
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-vision-context',
+        uploadItem: {
+          name: 'policy.jpg',
+          type: 'image/jpeg',
+          size: 1024,
+          dataUrl: 'data:image/jpeg;base64,QQ==',
+        },
+        manualData: {
+          company: '中国平安保险',
+          name: '平安福',
+        },
+      }),
+    });
+
+    assert.equal(recognized.response.status, 200);
+    assert.equal(scannerInput.ocrText, '');
+    assert.deepEqual(scannerInput.ocrContext.companyHints, ['中国平安保险']);
+    assert.ok(scannerInput.ocrContext.productCandidates.some((item) => item.productName === '平安福重大疾病保险'));
+    assert.equal(scannerInput.ocrContext.productCandidates.some((item) => item.company === '新华保险'), false);
+    assert.equal(scannerInput.ocrContext.productCandidates.some((item) => item.company === '中国人寿'), false);
+  } finally {
+    await server.close();
+  }
+});
+
 test('recognize keeps raw upload metadata when OCR fails before parsing', async () => {
   const state = createInitialState();
   let persistCalls = 0;
@@ -2639,6 +6078,73 @@ test('scan saves immediately and generates policy report asynchronously when no 
       assert.equal(policy.report, '后台生成的高质量报告。');
       assert.equal(policy.responsibilities[0].note, '后台生成');
     });
+  } finally {
+    await server.close();
+  }
+});
+
+test('scan save uses incremental persistence when the sqlite store provides it', async () => {
+  let fullPersistCalls = 0;
+  const incrementalCalls = [];
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      smsCodes: [],
+      policies: [],
+      pendingScans: [
+        { guestId: 'guest-fast-save', createdAt: '2026-06-08T00:00:00.000Z', scan: { data: { name: '待保存保单' } } },
+      ],
+      nextId: 1,
+    },
+    persist: async () => {
+      fullPersistCalls += 1;
+    },
+    persistPolicyScanSave: async (input) => {
+      incrementalCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-fast-save',
+        scan: {
+          ocrText: '新华保险 多倍保障重大疾病保险',
+          data: {
+            company: '新华保险',
+            name: '多倍保障重大疾病保险',
+            applicant: '温舒萍',
+            insured: '温舒萍',
+            date: '2026-06-08',
+            paymentPeriod: '20年交',
+            coveragePeriod: '终身',
+            amount: '170000',
+            firstPremium: '7667',
+          },
+        },
+        analysis: {
+          report: '已提供报告',
+          coverageTable: [
+            {
+              coverageType: '重大疾病保险金',
+              scenario: '确诊重大疾病',
+              payout: '按合同约定给付',
+              note: '已复用分析',
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(saved.response.status, 201);
+    assert.equal(fullPersistCalls, 0);
+    assert.equal(incrementalCalls.length, 1);
+    assert.equal(incrementalCalls[0].policy.name, '多倍保障重大疾病保险');
+    assert.equal(incrementalCalls[0].clearPendingGuestId, 'guest-fast-save');
+    assert.equal(app.locals.state.pendingScans.length, 0);
   } finally {
     await server.close();
   }
@@ -4678,6 +8184,29 @@ test('policy app recomputes cashflow cache on startup for persisted policies', a
         },
       ],
     );
+
+    const detail = await jsonFetch(server.baseUrl, '/api/policies/500700', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.policy.cashflowEntries.length, 1);
+    assert.equal(detail.payload.policy.totalCashflow, 1465);
+    assert.deepEqual(
+      detail.payload.policy.cashflowEntries.map((entry) => ({
+        year: entry.year,
+        age: entry.age,
+        amount: entry.amount,
+        cumulative: entry.cumulative,
+        liability: entry.liability,
+      })),
+      list.payload.policies[0].cashflowEntries.map((entry) => ({
+        year: entry.year,
+        age: entry.age,
+        amount: entry.amount,
+        cumulative: entry.cumulative,
+        liability: entry.liability,
+      })),
+    );
   } finally {
     await server.close();
     db.close();
@@ -5514,6 +9043,169 @@ test('family APIs create family, set core member, and save policy with participa
     assert.equal(scanRes.payload.policy.applicantMemberId, coreRes.payload.member.id);
     assert.equal(scanRes.payload.policy.insuredMemberName, '李四');
     assert.equal(scanRes.payload.policy.insuredRelationLabel, '配偶');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family profile creation uses family-only persistence and skips optional responsibility governance rebuild', async () => {
+  const state = createInitialState();
+  let persistCount = 0;
+  const familyPersistCalls = [];
+  let governanceRebuildCount = 0;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {
+      persistCount += 1;
+    },
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+    optionalResponsibilityGovernanceRebuilder: () => {
+      governanceRebuildCount += 1;
+      return {};
+    },
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family-fast-create', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '快速家庭' }),
+    });
+
+    assert.equal(familyRes.response.status, 201);
+    assert.equal(persistCount, 0);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+    assert.equal(governanceRebuildCount, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family APIs rename and archive a family while clearing policy family bindings', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-admin',
+    familyName: '旧家庭名',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-08T00:00:00.000Z',
+    updatedAt: '2026-06-08T00:00:00.000Z',
+  });
+  state.familyMembers.push(
+    {
+      id: 9,
+      familyId: 8,
+      name: '张三',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+      status: 'active',
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    },
+    {
+      id: 10,
+      familyId: 8,
+      name: '李四',
+      relationToCore: 'spouse',
+      relationLabel: '配偶',
+      role: 'adult',
+      status: 'active',
+      createdAt: '2026-06-08T00:01:00.000Z',
+      updatedAt: '2026-06-08T00:01:00.000Z',
+    },
+  );
+  state.familyReportShares.push({
+    id: 11,
+    familyId: 8,
+    ownerGuestId: 'guest-family-admin',
+    token: 'share-token-family-admin',
+    status: 'active',
+    createdAt: '2026-06-08T00:02:00.000Z',
+    updatedAt: '2026-06-08T00:02:00.000Z',
+  });
+  state.policies.push(
+    {
+      id: 12,
+      userId: null,
+      guestId: 'guest-family-admin',
+      company: '新华保险',
+      name: '家庭保单A',
+      applicant: '张三',
+      insured: '李四',
+      familyId: 8,
+      familyBindingSource: 'explicit',
+      applicantMemberId: 9,
+      insuredMemberId: 10,
+      applicantMemberName: '张三',
+      insuredMemberName: '李四',
+      applicantRelation: '本人',
+      insuredRelation: '配偶',
+      applicantRelationLabel: '本人',
+      insuredRelationLabel: '配偶',
+      participantReviewStatus: 'auto_matched',
+      createdAt: '2026-06-08T00:03:00.000Z',
+      updatedAt: '2026-06-08T00:03:00.000Z',
+    },
+    {
+      id: 13,
+      userId: null,
+      guestId: 'guest-family-admin',
+      company: '新华保险',
+      name: '其他家庭保单',
+      familyId: 99,
+      applicantMemberId: 100,
+      insuredMemberId: 101,
+      createdAt: '2026-06-08T00:04:00.000Z',
+      updatedAt: '2026-06-08T00:04:00.000Z',
+    },
+  );
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const renamed = await jsonFetch(server.baseUrl, '/api/family-profiles/8?guestId=guest-family-admin', {
+      method: 'PATCH',
+      body: JSON.stringify({ familyName: '新家庭名' }),
+    });
+    assert.equal(renamed.response.status, 200);
+    assert.equal(renamed.payload.family.familyName, '新家庭名');
+    assert.equal(renamed.payload.members.length, 2);
+
+    const deleted = await jsonFetch(server.baseUrl, '/api/family-profiles/8?guestId=guest-family-admin', {
+      method: 'DELETE',
+    });
+    assert.equal(deleted.response.status, 200);
+    assert.equal(deleted.payload.family.status, 'archived');
+    assert.equal(deleted.payload.archivedMemberCount, 2);
+    assert.equal(deleted.payload.clearedPolicyCount, 1);
+    assert.equal(state.familyMembers.every((member) => member.status === 'archived'), true);
+    assert.equal(state.familyReportShares[0].status, 'archived');
+    assert.equal(state.policies[0].familyId, null);
+    assert.equal(state.policies[0].familyBindingSource, '');
+    assert.equal(state.policies[0].applicantMemberId, null);
+    assert.equal(state.policies[0].insuredMemberId, null);
+    assert.equal(state.policies[0].applicantMemberName, '');
+    assert.equal(state.policies[0].insuredMemberName, '');
+    assert.equal(state.policies[0].applicantRelation, '');
+    assert.equal(state.policies[0].insuredRelation, '');
+    assert.equal(state.policies[0].applicantRelationLabel, '');
+    assert.equal(state.policies[0].insuredRelationLabel, '');
+    assert.equal(state.policies[0].participantReviewStatus, 'pending_review');
+    assert.equal(state.policies[1].familyId, 99);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false, true]);
+
+    const listed = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family-admin');
+    assert.equal(listed.response.status, 200);
+    assert.equal(listed.payload.families.some((family) => Number(family.id) === 8), false);
   } finally {
     await server.close();
   }

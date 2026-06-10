@@ -354,6 +354,143 @@ test('computeScenarioEntries: nursing care with max pattern', () => {
   assert.equal(entries[2].amount, 60312);   // max(28800, 60312)
 });
 
+test('computeScenarioEntries: uses the matched plan amount for rider indicators', () => {
+  const policy = {
+    id: 10,
+    name: '主险',
+    amount: 50000,
+    plans: [
+      { name: '主险', matchedProductName: '主险', amount: 50000, canonicalProductId: 'main_1' },
+      { name: '附加重疾', matchedProductName: '附加重疾', amount: 120000, canonicalProductId: 'rider_1' },
+    ],
+  };
+  const entries = computeScenarioEntries([
+    {
+      coverageType: '疾病保障',
+      liability: '重大疾病保险金',
+      value: 50,
+      unit: '%',
+      basis: '基本保额',
+      productName: '附加重疾',
+      canonicalProductId: 'rider_1',
+    },
+  ], policy);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 60000);
+  assert.equal(entries[0].productName, '附加重疾');
+  assert.equal(entries[0].formula, '120,000 × 50%');
+});
+
+test('computeScenarioEntries: skips account-value indicators that are not fixed amounts', () => {
+  const policy = {
+    id: 11,
+    name: '国寿鑫福年年养老年金保险',
+    amount: 60193,
+    plans: [
+      { name: '国寿鑫福年年养老年金保险', matchedProductName: '国寿鑫福年年养老年金保险', amount: 60193, canonicalProductId: 'main_2' },
+      { name: '国寿鑫账户两全保险（万能型）（钻石版）', matchedProductName: '国寿鑫账户两全保险（万能型）（钻石版）', amount: 10000, canonicalProductId: 'account_1' },
+    ],
+  };
+  const entries = computeScenarioEntries([
+    {
+      coverageType: '意外保障',
+      liability: '意外身故',
+      value: 50,
+      unit: '%',
+      basis: '保单账户价值',
+      productName: '国寿鑫账户两全保险（万能型）（钻石版）',
+      canonicalProductId: 'account_1',
+      sourceExcerpt: '按被保险人身故时本合同个人账户价值的50%给付意外伤害身故保险金。',
+    },
+  ], policy);
+
+  assert.deepEqual(entries, []);
+});
+
+test('computeScenarioEntries: skips medical ratio indicators that are not fixed amounts', () => {
+  const policy = {
+    id: 12,
+    name: '主险',
+    amount: 50000,
+    plans: [
+      { name: '主险', matchedProductName: '主险', amount: 50000, canonicalProductId: 'main_3' },
+      { name: '特药医疗', matchedProductName: '特药医疗', amount: 3000000, canonicalProductId: 'medical_1' },
+    ],
+  };
+  const entries = computeScenarioEntries([
+    {
+      coverageType: '医疗保障',
+      liability: '医保结算赔付比例',
+      value: 100,
+      unit: '%',
+      basis: '实际医疗费用',
+      productName: '特药医疗',
+      canonicalProductId: 'medical_1',
+      sourceExcerpt: '按实际发生的合理医疗费用扣除补偿后乘以赔付比例计算。',
+    },
+  ], policy);
+
+  assert.deepEqual(entries, []);
+});
+
+test('computeScenarioEntries: uses source text when basic amount multipliers are encoded as ratio names', () => {
+  const policy = { id: 13, name: '两全保险', amount: 50000 };
+  const entries = computeScenarioEntries([
+    {
+      coverageType: '意外保障',
+      liability: '交通/航空等给付倍数',
+      value: 20,
+      unit: '倍',
+      basis: '特定意外额外给付倍数',
+      sourceExcerpt: '按基本保险金额的20倍给付驾乘意外伤害身故或身体全残保险金。',
+    },
+  ], policy);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 1000000);
+  assert.equal(entries[0].formula, '50,000 × 20倍');
+});
+
+test('computePolicyCashflow: skips parameter and account-value cashflow indicators', () => {
+  const policy = {
+    id: 14,
+    name: '终身寿险',
+    amount: 100000,
+    date: '2020-01-01',
+    insuredBirthday: '1980-01-01',
+    coveragePeriod: '终身',
+    plans: [
+      { name: '终身寿险', matchedProductName: '终身寿险', amount: 100000, canonicalProductId: 'life_1' },
+      { name: '万能账户', matchedProductName: '万能账户', amount: 10000, canonicalProductId: 'account_2' },
+    ],
+  };
+  const entries = computePolicyCashflow(policy, null, [
+    {
+      coverageType: '现金流',
+      liability: '领取起始年龄',
+      value: 18,
+      unit: '周岁',
+      basis: '年金/养老金领取年龄',
+      productName: '万能账户',
+      canonicalProductId: 'account_2',
+      sourceExcerpt: '若身故时被保险人处于18周岁保单周年日之前，按保单账户价值给付。',
+    },
+    {
+      coverageType: '现金流',
+      liability: '满期返还',
+      value: null,
+      unit: '公式',
+      basis: '保单账户价值',
+      formulaText: '满期返还 = 保单账户价值',
+      productName: '万能账户',
+      canonicalProductId: 'account_2',
+    },
+  ]);
+
+  assert.deepEqual(entries, []);
+});
+
 test('computePolicyCashflow: skips optional cashflow indicators unless selected', () => {
   const optionalMaturity = {
     coverageType: '现金流',
@@ -590,4 +727,154 @@ test('computePolicyCashflow: responsibility text path cumulative is correct', ()
   assert.equal(entries[0].cumulative, 10000);
   assert.equal(entries[1].cumulative, 20000);
   assert.equal(entries[entries.length - 1].cumulative, entries.length * 10000);
+});
+
+test('computePolicyCashflow: indicator source replaces policy-level duplicate responsibility amount', () => {
+  const policy = {
+    id: 15,
+    company: '测试保险',
+    name: '测试两全',
+    amount: 50000,
+    firstPremium: 3291,
+    date: '2020-01-01',
+    insuredBirthday: '1989-01-01',
+    paymentPeriod: '10年交',
+    coveragePeriod: '40年',
+    plans: [
+      {
+        company: '测试保险',
+        role: 'main',
+        name: '测试两全',
+        matchedProductName: '测试两全',
+        amount: 50000,
+        premium: 3105,
+        paymentPeriod: '10年交',
+        coveragePeriod: '40年',
+        canonicalProductId: 'main_4',
+      },
+      {
+        company: '测试保险',
+        role: 'rider',
+        name: '测试医疗',
+        matchedProductName: '测试医疗',
+        amount: 3000000,
+        premium: 186,
+        canonicalProductId: 'medical_2',
+      },
+    ],
+    responsibilities: [
+      { scenario: '（1）满期生存保险金\n被保险人生存至保险期间届满，我们按本合同实际交纳的保险费给付满期生存保险金。' },
+    ],
+  };
+  const entries = computePolicyCashflow(policy, null, [
+    {
+      coverageType: '现金流',
+      liability: '满期生存保险金',
+      value: null,
+      unit: '公式',
+      basis: '已交保费',
+      formulaText: '满期生存保险金 = 实际交纳保险费',
+      productName: '测试两全',
+      canonicalProductId: 'main_4',
+      sourceExcerpt: '满期生存保险金被保险人生存至保险期间届满，我们按本合同实际交纳的保险费给付满期生存保险金。',
+    },
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 31050);
+  assert.equal(entries[0].cumulative, 31050);
+  assert.equal(entries[0].calcText, '实际交纳保险费 = 31,050元');
+});
+
+test('computePolicyCashflow: expands China Life multi-plan annuity source excerpts with plan amounts', () => {
+  const policy = {
+    id: 500747,
+    company: '中国人寿',
+    name: '国寿鑫福年年养老年金保险',
+    amount: 60193,
+    firstPremium: 100007,
+    date: '2015-12-31',
+    insuredBirthday: '1978-12-20',
+    paymentPeriod: '5年交',
+    coveragePeriod: '44年',
+    plans: [
+      {
+        company: '中国人寿',
+        role: 'main',
+        name: '国寿鑫福年年养老年金保险',
+        matchedProductName: '国寿鑫福年年养老年金保险',
+        amount: 60193,
+        coveragePeriod: '44年',
+        paymentPeriod: '5年交',
+        premium: 29491,
+        canonicalProductId: 'product_d02553971f2be98b',
+      },
+      {
+        company: '中国人寿',
+        role: 'rider',
+        name: '国寿鑫福年年年金保险',
+        matchedProductName: '国寿鑫福年年年金保险',
+        amount: 56622,
+        coveragePeriod: '24年',
+        paymentPeriod: '5年交',
+        premium: 70506,
+        canonicalProductId: 'product_8e7d078e82a21134',
+      },
+      {
+        company: '中国人寿',
+        role: 'linked_account',
+        name: '国寿鑫账户两全保险（万能型）（钻石版）',
+        matchedProductName: '国寿鑫账户两全保险（万能型）（钻石版）',
+        amount: 10000,
+        coveragePeriod: '终身',
+        paymentPeriod: '不定期交',
+        premium: 10,
+        canonicalProductId: 'product_b5a9a593e3d42135',
+      },
+    ],
+  };
+  const indicators = [
+    {
+      coverageType: '现金流',
+      liability: '教育/养老金/两全等返还',
+      value: 15,
+      unit: '%',
+      basis: '基本保额',
+      productName: '国寿鑫福年年养老年金保险',
+      canonicalProductId: 'product_d02553971f2be98b',
+      sourceExcerpt: '第五条保险责任在本合同保险期间内，本公司承担以下保险责任：一、养老年金自本合同约定的养老年金开始领取日起至被保险人年满八十周岁的年生效对应日前，若被保险人生存至本合同的年生效对应日，本公司每年按本合同基本保险金额的15%给付养老年金',
+    },
+    {
+      coverageType: '现金流',
+      liability: '满期返还',
+      value: 100,
+      unit: '%',
+      basis: '基本保额',
+      productName: '国寿鑫福年年养老年金保险',
+      canonicalProductId: 'product_d02553971f2be98b',
+      sourceExcerpt: '三、满期保险金被保险人生存至年满八十周岁的年生效对应日，本合同终止，本公司按本合同基本保险金额给付满期保险金',
+    },
+    {
+      coverageType: '现金流',
+      liability: '教育/养老金/两全等返还',
+      value: 12,
+      unit: '%',
+      basis: '基本保额',
+      productName: '国寿鑫福年年年金保险',
+      canonicalProductId: 'product_8e7d078e82a21134',
+      sourceExcerpt: '第五条保险责任在本合同保险期间内，本公司承担以下保险责任：一、年金自本合同生效之日起至本合同保险期间届满的年生效对应日前，若被保险人生存至本合同的年生效对应日，本公司每年按下列约定给付年金：首次给付的年金为本合同及国寿鑫福年年养老年金保险合同首次交纳的保险费的12%，以后每年按本合同基本保险金额的15%给付年金',
+    },
+  ];
+
+  const entries = computePolicyCashflow(policy, null, indicators);
+  const riderFirst = entries.find((entry) => entry.productName === '国寿鑫福年年年金保险' && entry.year === 2015);
+  const riderLater = entries.find((entry) => entry.productName === '国寿鑫福年年年金保险' && entry.year === 2038);
+  const pensionFirst = entries.find((entry) => entry.productName === '国寿鑫福年年养老年金保险' && entry.year === 2039);
+  const maturity = entries.find((entry) => entry.productName === '国寿鑫福年年养老年金保险' && entry.year === 2059);
+
+  assert.equal(entries.length, 45);
+  assert.equal(riderFirst.amount, 12000);
+  assert.equal(riderLater.amount, 8493);
+  assert.equal(pensionFirst.amount, 9029);
+  assert.equal(maturity.amount, 60193);
 });

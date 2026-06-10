@@ -43,6 +43,24 @@ export const updatePolicyBodySchema = createPolicyBodySchema;
 export const scanPolicyBodySchema = z
   .object({
     ocrText: z.string().trim().optional(),
+    ocrContext: z
+      .object({
+        companyHints: z.array(z.string().trim().min(1)).max(8).optional(),
+        productCandidates: z
+          .array(
+            z.object({
+              company: z.string().trim().optional(),
+              productName: z.string().trim().min(1),
+              productType: z.string().trim().optional(),
+              role: z.string().trim().optional(),
+              canonicalProductId: z.string().trim().optional(),
+            }).passthrough(),
+          )
+          .max(30)
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
     uploadItem: z
       .object({
         name: z.string().trim().min(1, '文件名不能为空'),

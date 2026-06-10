@@ -1,11 +1,19 @@
 import express from 'express';
 import { sendError } from '../http/errors.mjs';
 
+function recognizePendingScanKey({ user, guestId }) {
+  const userId = String(user?.id || '').trim();
+  if (userId) return `user:${userId}:recognize`;
+  return guestId;
+}
+
 export function createPolicyRoutes(context) {
   const router = express.Router();
   const {
     state,
     persist,
+    persistPolicyScanSave,
+    persistPendingScan,
     scanner,
     analyzer,
     adminPassword,
@@ -57,6 +65,26 @@ export function createPolicyRoutes(context) {
     buildPolicyReportScan,
   } = context;
 
+  function attachPolicyCashflowData(policy) {
+    const entries = cashflowStore.getEntries(policy.id);
+    const cashValues = cashValueStore.getValues(policy.id);
+    const totalCashflow = entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+    let scenarioEntries = [];
+    try {
+      const policyIndicators = findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
+      scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), policy);
+    } catch (_err) {
+      // non-fatal: scenarioEntries stays empty
+    }
+    return {
+      ...policy,
+      cashflowEntries: entries.length ? entries : undefined,
+      cashValues,
+      scenarioEntries: scenarioEntries.length ? scenarioEntries : undefined,
+      totalCashflow: entries.length ? totalCashflow : undefined,
+    };
+  }
+
   router.post('/policies/recognize', async (req, res) => {
     const routeStartedAt = nowMs();
     try {
@@ -64,9 +92,11 @@ export function createPolicyRoutes(context) {
       const guestId = normalizeGuestId(req.body?.guestId);
       assertGuestCanScan({ state, user, guestId });
       const rawUpload = buildRawUploadSnapshot(req.body);
-      if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan: null, analysis: null, rawUpload });
-        await persist(state);
+      const pendingScanKey = recognizePendingScanKey({ user, guestId });
+      if (pendingScanKey) {
+        storeGuestPendingScan(state, { guestId: pendingScanKey, scan: null, analysis: null, rawUpload });
+        if (persistPendingScan) await persistPendingScan({ guestId: pendingScanKey });
+        else await persist(state);
       }
       const ocrStartedAt = nowMs();
       const scan = await recognizePolicyInput({ scanner, body: req.body, state, applyManualData: false });
@@ -81,9 +111,10 @@ export function createPolicyRoutes(context) {
         scan,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       });
-      if (!user && guestId) {
-        storeGuestPendingScan(state, { guestId, scan, analysis, rawUpload });
-        await persist(state);
+      if (pendingScanKey) {
+        storeGuestPendingScan(state, { guestId: pendingScanKey, scan, analysis, rawUpload });
+        if (persistPendingScan) await persistPendingScan({ guestId: pendingScanKey });
+        else await persist(state);
       }
       logPerformance(performanceLogger, 'policy.recognize.complete', {
         route: '/api/policies/recognize',
@@ -98,6 +129,11 @@ export function createPolicyRoutes(context) {
       if (analysis) payload.analysis = analysis;
       res.json(payload);
     } catch (error) {
+      console.error('[policy-recognize] failed', {
+        code: error?.code || error?.message,
+        message: error?.message,
+        status: error?.status,
+      });
       sendError(res, error);
     }
   });
@@ -230,8 +266,13 @@ export function createPolicyRoutes(context) {
       });
       state.policies.push(policy);
       if (providedAnalysis) recordPolicySourceRecords(state, policy, providedAnalysis);
-      if (!user && guestId) clearGuestPendingScans(state, guestId);
-      await persist(state);
+      const clearPendingGuestId = !user && guestId ? guestId : '';
+      if (clearPendingGuestId) clearGuestPendingScans(state, clearPendingGuestId);
+      if (persistPolicyScanSave) {
+        await persistPolicyScanSave({ policy, clearPendingGuestId });
+      } else {
+        await persist(state);
+      }
 
       let cashflowEntries = [];
       let scenarioEntries = [];
@@ -301,26 +342,7 @@ export function createPolicyRoutes(context) {
       state.knowledgeRecords,
       state.optionalResponsibilityRecords,
     );
-    const policiesWithCashflow = policiesWithIndicators.map((p) => {
-      const entries = cashflowStore.getEntries(p.id);
-      const cashValues = cashValueStore.getValues(p.id);
-      const totalCashflow = entries.reduce((sum, e) => sum + e.amount, 0);
-      let scenarioEntries = [];
-      try {
-        const policyIndicators = findPolicyCoverageIndicators(p, state.insuranceIndicatorRecords);
-        scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), p);
-      } catch (_err) {
-        // non-fatal: scenarioEntries stays empty
-      }
-      return {
-        ...p,
-        cashflowEntries: entries.length ? entries : undefined,
-        cashValues: cashValues.length ? cashValues : undefined,
-        scenarioEntries: scenarioEntries.length ? scenarioEntries : undefined,
-        totalCashflow: entries.length ? totalCashflow : undefined,
-        cashValues: cashValueStore.getValues(p.id),
-      };
-    });
+    const policiesWithCashflow = policiesWithIndicators.map((policy) => attachPolicyCashflowData(policy));
     res.json({ ok: true, policies: policiesWithCashflow });
   });
 
@@ -357,14 +379,8 @@ export function createPolicyRoutes(context) {
       policy.updatedAt = new Date().toISOString();
       await persist(state);
 
-      let cashflowEntries = [];
-      let scenarioEntries = [];
-      let totalCashflow = 0;
       try {
-        const result = computeAndStoreCashflow(policy);
-        cashflowEntries = result.cashflowEntries;
-        scenarioEntries = result.scenarioEntries;
-        totalCashflow = result.totalCashflow;
+        computeAndStoreCashflow(policy);
       } catch (cfError) {
         console.error('[cashflow] compute failed for policy', policy.id, cfError.message);
       }
@@ -382,17 +398,12 @@ export function createPolicyRoutes(context) {
       }
       res.status(identityChanged ? 202 : 200).json({
         ok: true,
-        policy: {
-          ...attachPolicyCoverageIndicators(
-            attachPolicyFamilyDisplay(policy, state),
-            state.insuranceIndicatorRecords,
-            state.knowledgeRecords,
-            state.optionalResponsibilityRecords,
-          ),
-          cashflowEntries,
-          scenarioEntries,
-          totalCashflow,
-        },
+        policy: attachPolicyCashflowData(attachPolicyCoverageIndicators(
+          attachPolicyFamilyDisplay(policy, state),
+          state.insuranceIndicatorRecords,
+          state.knowledgeRecords,
+          state.optionalResponsibilityRecords,
+        )),
         reportRegenerating: identityChanged,
       });
     } catch (error) {
@@ -428,12 +439,12 @@ export function createPolicyRoutes(context) {
       if (policy.reportStatus === 'ready') {
         return res.json({
           ok: true,
-          policy: attachPolicyCoverageIndicators(
+          policy: attachPolicyCashflowData(attachPolicyCoverageIndicators(
             attachPolicyFamilyDisplay(policy, state),
             state.insuranceIndicatorRecords,
             state.knowledgeRecords,
             state.optionalResponsibilityRecords,
-          ),
+          )),
           skipped: true,
         });
       }
@@ -457,12 +468,12 @@ export function createPolicyRoutes(context) {
       }
       res.status(202).json({
         ok: true,
-        policy: attachPolicyCoverageIndicators(
+        policy: attachPolicyCashflowData(attachPolicyCoverageIndicators(
           attachPolicyFamilyDisplay(policy, state),
           state.insuranceIndicatorRecords,
           state.knowledgeRecords,
           state.optionalResponsibilityRecords,
-        ),
+        )),
       });
     } catch (error) {
       sendError(res, error);
@@ -488,8 +499,7 @@ export function createPolicyRoutes(context) {
       state.knowledgeRecords,
       state.optionalResponsibilityRecords,
     );
-    const cashValues = cashValueStore.getValues(policyId);
-    res.json({ ok: true, policy: { ...policyWithIndicators, cashValues } });
+    res.json({ ok: true, policy: attachPolicyCashflowData(policyWithIndicators) });
   });
 
   return router;

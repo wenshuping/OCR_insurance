@@ -40,7 +40,7 @@ import {
   publicUser,
 } from './policy-ocr.domain.mjs';
 import { scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
-import { enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
+import { buildPolicyOcrVisionContext, enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
 import {
   buildLocalKnowledgeResponsibilityAnalysis,
   queryPolicyAndPlanResponsibilities,
@@ -74,6 +74,7 @@ import {
 import {
   createFamilyMember,
   createFamilyProfile,
+  archiveFamilyProfile,
   enrichFamilyMemberIdentity,
   ensureDefaultFamilyProfileForPrincipal,
   familyOwnerMatches,
@@ -82,6 +83,7 @@ import {
   matchFamilyMemberByPerson,
   normalizeFamilyRelation,
   setFamilyCoreMember,
+  updateFamilyProfileName,
   updateFamilyMemberRelation,
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
@@ -1311,9 +1313,11 @@ function scanInputOcrText(body = {}) {
 
 async function recognizePolicyInput({ scanner, body, state, applyManualData = true }) {
   assertUploadItemSize(body?.uploadItem || null);
+  const ocrContext = buildPolicyOcrVisionContext({ state, body });
   const scan = await scanner({
     uploadItem: body?.uploadItem || null,
     ocrText: scanInputOcrText(body),
+    ocrContext,
   });
   const scanWithText = {
     ...scan,
@@ -1748,10 +1752,22 @@ export function createPolicyOcrApp(options = {}) {
   const smsDeliverer = options.smsDeliverer || deliverSmsCode;
   const knowledgeFetchImpl = options.knowledgeFetchImpl || fetch;
   const rawPersist = typeof options.persist === 'function' ? options.persist : async () => undefined;
-  const persist = async (nextState = state) => {
-    Object.assign(nextState, rebuildOptionalResponsibilityGovernance(nextState));
+  const optionalResponsibilityGovernanceRebuilder = options.optionalResponsibilityGovernanceRebuilder || rebuildOptionalResponsibilityGovernance;
+  const persist = async (nextState = state, persistOptions = {}) => {
+    if (persistOptions.refreshOptionalResponsibilityGovernance !== false) {
+      Object.assign(nextState, optionalResponsibilityGovernanceRebuilder(nextState));
+    }
     await rawPersist(nextState);
   };
+  const persistPolicyScanSave = typeof options.persistPolicyScanSave === 'function'
+    ? (input = {}) => options.persistPolicyScanSave({ state, ...input })
+    : null;
+  const persistPendingScan = typeof options.persistPendingScan === 'function'
+    ? (input = {}) => options.persistPendingScan({ state, ...input })
+    : null;
+  const persistFamilyState = typeof options.persistFamilyState === 'function'
+    ? (input = {}) => options.persistFamilyState({ state, ...input })
+    : null;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
 
@@ -1829,6 +1845,9 @@ export function createPolicyOcrApp(options = {}) {
   const routeContext = createRouteContext({
     state,
     persist,
+    persistPolicyScanSave,
+    persistPendingScan,
+    persistFamilyState,
     scanner,
     analyzer,
     adminPassword,
@@ -1921,11 +1940,13 @@ export function createPolicyOcrApp(options = {}) {
     upsertKnowledgeRecords,
     createFamilyMember,
     createFamilyProfile,
+    archiveFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
     familyOwnerMatches,
     listFamilyMembers,
     listFamilyProfilesForOwner,
     setFamilyCoreMember,
+    updateFamilyProfileName,
     updateFamilyMemberRelation,
   });
 

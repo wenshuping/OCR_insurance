@@ -35,6 +35,23 @@ test('parsePolicyBasicInfoFromLayoutBoxes extracts right-side basic information 
   assert.equal(result.evidence.company.region, 'header');
 });
 
+test('parsePolicyBasicInfoFromLayoutBoxes tolerates common OCR mistakes in person labels', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('NCI 新华保险', 60, 30, 220, 55),
+    box('设保人', 70, 165, 140, 190),
+    box('冯力', 240, 165, 290, 190),
+    box('披保险人', 70, 205, 160, 230),
+    box('冯力', 240, 205, 290, 230),
+    box('证件号码', 70, 245, 160, 270),
+    box('330106198712072413', 240, 245, 430, 270),
+  ]);
+
+  assert.equal(result.fields.company, '新华保险');
+  assert.equal(result.fields.applicant, '冯力');
+  assert.equal(result.fields.insured, '冯力');
+  assert.equal(result.fields.insuredBirthday, '1987-12-07');
+});
+
 test('parsePolicyBasicInfoFromLayoutBoxes refuses to source core fields from rider table', () => {
   const result = parsePolicyBasicInfoFromLayoutBoxes([
     box('投保人', 70, 120, 140, 145),

@@ -83,6 +83,24 @@ test('buildOptionalResponsibilityRecords marks unlinked optional sections as pen
   assert.equal(records[0].quantificationReason, '缺少可计算结构化指标');
 });
 
+test('buildOptionalResponsibilityRecords handles optional liability names with regexp characters', () => {
+  assert.doesNotThrow(() => buildOptionalResponsibilityRecords({
+    policy: {
+      company: '测试保险',
+      name: '测试医疗保险',
+      ocrText: '保险单载明不含可选保险责任非医院收取的医疗费用(先进治疗医疗保险金',
+    },
+    knowledgeRecords: [
+      {
+        company: '测试保险',
+        productName: '测试医疗保险',
+        pageText: '保险责任。3.可选保险责任 非医院收取的医疗费用(先进治疗医疗保险金 按合同约定给付。',
+      },
+    ],
+    indicators: [],
+  }));
+});
+
 test('buildOptionalResponsibilityRecords repairs generic optional sections into concrete benefit records', () => {
   const productName = '新华人寿保险股份有限公司附加学生平安A1款意外伤害医疗保险';
   const records = buildOptionalResponsibilityRecords({

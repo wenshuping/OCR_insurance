@@ -2,6 +2,8 @@
 import { execFile } from 'node:child_process';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +12,10 @@ import {
   buildStructureV3InspectionReport,
   normalizeStructureV3Inspection,
 } from '../ocr-service/policy-structurev3-normalizer.mjs';
+import {
+  buildStructureV3LlmReport,
+  extractStructureV3WithLocalModel,
+} from '../ocr-service/policy-structurev3-llm-extractor.mjs';
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -17,7 +23,7 @@ const PROJECT_ROOT = path.resolve(SCRIPT_DIR, '..');
 const PYTHON_SCRIPT = path.join(PROJECT_ROOT, 'ocr-service', 'scripts', 'policy_ocr_structurev3.py');
 const OUTPUT_ROOT = path.join(PROJECT_ROOT, '.structurev3-inspect');
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff']);
-const USAGE = 'Usage: npm run ocr:structurev3:inspect -- <image-or-directory>';
+const USAGE = 'Usage: npm run ocr:structurev3:inspect -- <image-or-directory> [--llm]';
 
 function text(value) {
   return String(value ?? '').trim();
@@ -25,7 +31,11 @@ function text(value) {
 
 function parseArgs(args) {
   const parsed = {
+    endpoint: '',
     input: '',
+    llm: false,
+    llmBaseUrl: '',
+    llmModel: '',
     python: '',
     positionals: [],
   };
@@ -41,6 +51,37 @@ function parseArgs(args) {
       parsed.input = text(arg.slice('--input='.length));
       continue;
     }
+    if (arg === '--endpoint') {
+      parsed.endpoint = text(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--endpoint=')) {
+      parsed.endpoint = text(arg.slice('--endpoint='.length));
+      continue;
+    }
+    if (arg === '--llm') {
+      parsed.llm = true;
+      continue;
+    }
+    if (arg === '--llm-base-url') {
+      parsed.llmBaseUrl = text(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--llm-base-url=')) {
+      parsed.llmBaseUrl = text(arg.slice('--llm-base-url='.length));
+      continue;
+    }
+    if (arg === '--llm-model') {
+      parsed.llmModel = text(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--llm-model=')) {
+      parsed.llmModel = text(arg.slice('--llm-model='.length));
+      continue;
+    }
     if (arg === '--python') {
       parsed.python = text(args[index + 1]);
       index += 1;
@@ -54,6 +95,14 @@ function parseArgs(args) {
   }
 
   return parsed;
+}
+
+function shouldRunLlm(parsedArgs) {
+  return Boolean(parsedArgs.llm || envFlag('POLICY_OCR_STRUCTUREV3_LLM', false));
+}
+
+function configuredEndpoint(parsedArgs) {
+  return text(parsedArgs.endpoint) || text(process.env.POLICY_OCR_STRUCTUREV3_ENDPOINT);
 }
 
 function configuredPython(parsedArgs) {
@@ -131,10 +180,14 @@ function timestampForPath(date = new Date()) {
 
 function slugForFile(filePath) {
   const relative = path.relative(PROJECT_ROOT, filePath) || path.basename(filePath);
-  const extension = path.extname(relative);
-  const withoutExtension = extension ? relative.slice(0, -extension.length) : relative;
+  const safeSource = relative.startsWith('..') || path.isAbsolute(relative)
+    ? path.basename(filePath)
+    : relative;
+  const extension = path.extname(safeSource);
+  const withoutExtension = extension ? safeSource.slice(0, -extension.length) : safeSource;
   return withoutExtension
     .replace(/[^a-zA-Z0-9._-]+/gu, '-')
+    .replace(/^\.+$/u, '')
     .replace(/^-+|-+$/gu, '')
     || 'policy';
 }
@@ -194,6 +247,122 @@ function pythonErrorText(error) {
   ].filter(Boolean).join('\n').trim();
 }
 
+function remoteTimeoutMs() {
+  const raw = Number.parseInt(envValue('POLICY_OCR_STRUCTUREV3_REMOTE_TIMEOUT_MS', '600000'), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 600000;
+}
+
+function remoteErrorText(error) {
+  return [
+    text(error?.responseText),
+    text(error?.message || error),
+  ].filter(Boolean).join('\n').trim();
+}
+
+function parseRemoteJson(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return { rawText: value };
+  }
+}
+
+function remoteRawJson(payload) {
+  const raw = payload?.rawJson ?? payload?.raw ?? payload?.rawPayload;
+  const parsed = parseRemoteJson(raw);
+  if (parsed && typeof parsed === 'object') return parsed;
+  return {
+    ok: payload?.ok === true,
+    pipeline: payload?.pipeline || 'pp_structurev3',
+    device: payload?.device || '',
+    results: [],
+  };
+}
+
+function remoteMarkdown(payload) {
+  return text(payload?.markdown ?? payload?.rawMarkdown ?? payload?.rawMarkdownText);
+}
+
+async function postRemoteStructureV3(endpoint, inputFile) {
+  const target = new URL(endpoint);
+  const client = target.protocol === 'https:' ? https : http;
+  const body = await fs.readFile(inputFile);
+  const headers = {
+    'content-type': 'application/octet-stream',
+    'content-length': body.length,
+    'x-filename': encodeURIComponent(path.basename(inputFile)),
+  };
+
+  return new Promise((resolve, reject) => {
+    const request = client.request(target, {
+      method: 'POST',
+      headers,
+      timeout: remoteTimeoutMs(),
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const responseText = Buffer.concat(chunks).toString('utf-8');
+        let payload = {};
+        try {
+          payload = responseText ? JSON.parse(responseText) : {};
+        } catch (error) {
+          reject(Object.assign(error, { responseText }));
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(Object.assign(new Error(payload.error || `HTTP ${response.statusCode}`), {
+            responseText,
+          }));
+          return;
+        }
+        resolve(payload);
+      });
+    });
+
+    request.on('timeout', () => {
+      request.destroy(new Error(`Remote PP-StructureV3 timed out after ${remoteTimeoutMs()}ms`));
+    });
+    request.on('error', reject);
+    request.end(body);
+  });
+}
+
+async function runRemote({ endpoint, inputFile, outputDir, meta }) {
+  try {
+    const payload = await postRemoteStructureV3(endpoint, inputFile);
+    await writeJson(path.join(outputDir, 'raw.structurev3.json'), remoteRawJson(payload));
+    await fs.writeFile(path.join(outputDir, 'raw.structurev3.md'), remoteMarkdown(payload), 'utf-8');
+
+    if (payload.ok === true) {
+      return {
+        ok: true,
+        pipeline: payload.pipeline || 'pp_structurev3',
+        device: payload.device || meta.device,
+        mode: 'remote',
+        endpoint,
+      };
+    }
+    return {
+      ok: false,
+      error: payload.error || 'Remote PP-StructureV3 did not return ok:true',
+      device: payload.device || meta.device,
+      mode: 'remote',
+      endpoint,
+      ...payload,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: remoteErrorText(error) || 'Remote PP-StructureV3 failed',
+      device: meta.device,
+      mode: 'remote',
+      endpoint,
+    };
+  }
+}
+
 async function runPython({ python, inputFile, outputDir, meta }) {
   try {
     const { stdout } = await execFileAsync(
@@ -224,23 +393,28 @@ async function runPython({ python, inputFile, outputDir, meta }) {
 }
 
 async function inspectOne(inputFile, parsedArgs) {
-  const python = configuredPython(parsedArgs);
+  const endpoint = configuredEndpoint(parsedArgs);
+  const python = endpoint ? '' : configuredPython(parsedArgs);
   const relativeInput = path.relative(PROJECT_ROOT, inputFile);
   const outputDir = path.join(OUTPUT_ROOT, `${timestampForPath()}-${slugForFile(inputFile)}`);
   await fs.mkdir(outputDir, { recursive: true });
 
   const meta = {
+    mode: endpoint ? 'remote' : 'local-python',
     input: relativeInput,
     inputPath: inputFile,
     ranAt: new Date().toISOString(),
-    python,
+    ...(endpoint ? { endpoint } : { python }),
     device: structureDevice(),
     useFormulaRecognition: envFlag('POLICY_OCR_STRUCTUREV3_USE_FORMULA_RECOGNITION', false),
     useChartRecognition: envFlag('POLICY_OCR_STRUCTUREV3_USE_CHART_RECOGNITION', false),
+    useLlm: shouldRunLlm(parsedArgs),
   };
   await writeJson(path.join(outputDir, 'input.meta.json'), meta);
 
-  const pythonStatus = await runPython({ python, inputFile, outputDir, meta });
+  const pythonStatus = endpoint
+    ? await runRemote({ endpoint, inputFile, outputDir, meta })
+    : await runPython({ python, inputFile, outputDir, meta });
   if (pythonStatus.ok !== true) {
     await writeJson(path.join(outputDir, 'error.json'), pythonStatus);
   }
@@ -255,6 +429,22 @@ async function inspectOne(inputFile, parsedArgs) {
 
   await writeJson(path.join(outputDir, 'normalized.json'), result.normalized);
   await writeJson(path.join(outputDir, 'candidates.json'), result.candidates);
+
+  if (shouldRunLlm(parsedArgs) && pythonStatus.ok === true) {
+    const llmResult = await extractStructureV3WithLocalModel({
+      normalized: result.normalized,
+      candidates: result.candidates,
+      markdown,
+      baseUrl: parsedArgs.llmBaseUrl,
+      model: parsedArgs.llmModel,
+    });
+    await writeJson(path.join(outputDir, 'llm.candidates.json'), llmResult);
+    if (llmResult.rawContent) {
+      await fs.writeFile(path.join(outputDir, 'llm.raw-response.txt'), llmResult.rawContent, 'utf-8');
+    }
+    await fs.writeFile(path.join(outputDir, 'llm.report.md'), buildStructureV3LlmReport(llmResult), 'utf-8');
+  }
+
   await fs.writeFile(
     path.join(outputDir, 'report.md'),
     buildStructureV3InspectionReport({
@@ -281,17 +471,20 @@ async function main(args = process.argv.slice(2)) {
     return;
   }
 
-  if (!fsSync.existsSync(PYTHON_SCRIPT)) {
-    console.error(`Missing Python runner: ${PYTHON_SCRIPT}`);
-    process.exitCode = 1;
-    return;
-  }
+  const endpoint = configuredEndpoint(parsedArgs);
+  if (!endpoint) {
+    if (!fsSync.existsSync(PYTHON_SCRIPT)) {
+      console.error(`Missing Python runner: ${PYTHON_SCRIPT}`);
+      process.exitCode = 1;
+      return;
+    }
 
-  const python = configuredPython(parsedArgs);
-  if (!commandExists(python)) {
-    console.error(`Missing Python runner: ${python}`);
-    process.exitCode = 1;
-    return;
+    const python = configuredPython(parsedArgs);
+    if (!commandExists(python)) {
+      console.error(`Missing Python runner: ${python}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   let files = [];

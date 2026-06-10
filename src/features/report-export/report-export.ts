@@ -732,6 +732,7 @@ function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
     cell.style.wordBreak = 'break-word';
     cell.style.verticalAlign = 'top';
   });
+  normalizeCanvasColorValues(reportNode);
 }
 
 function escapeHtml(value: string) {
@@ -1168,27 +1169,35 @@ export function createInPageReportExportPanel(fileName: string) {
         </main>
       `);
     },
-    showResult(reportImage: string) {
+    showResult(reportImage: string, downloadHref = reportImage) {
       const safeFileName = escapeHtml(fileName);
+      const safeReportImage = escapeHtml(reportImage);
+      const safeDownloadHref = escapeHtml(downloadHref);
       setHtml(`
         <main style="box-sizing:border-box;padding:16px 14px 32px">
           <section style="position:sticky;top:0;z-index:1;margin:0 auto 14px;max-width:520px;border:1px solid #e2e8f0;border-radius:18px;background:#fff;padding:18px;box-shadow:0 12px 30px rgba(15,23,42,.08);box-sizing:border-box">
             <h1 style="margin:0;font-size:20px;line-height:1.35">完整报告长图已生成</h1>
             <p style="margin:6px 0 0;color:#64748b;font-size:13px;line-height:1.7">${safeFileName}</p>
             <div style="display:flex;gap:10px;margin-top:14px">
-              <button type="button" style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800">长按完整长图保存</button>
+              <a href="${safeDownloadHref}" download="${safeFileName}.jpg" style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800;text-decoration:none">下载长图</a>
               <button data-action="close" type="button" style="flex:1;border:0;border-radius:12px;background:#eef2ff;color:#1d4ed8;padding:12px;text-align:center;font-size:15px;font-weight:800">返回报告</button>
             </div>
-            <p style="margin:10px 0 0;color:#64748b;font-size:12px;line-height:1.7">下面只有一张图，包含整份报告。微信内长按这张长图，选择保存到手机。</p>
+            <p style="margin:10px 0 0;color:#64748b;font-size:12px;line-height:1.7">下面是一张包含整份报告的长图，点击“下载长图”保存。</p>
           </section>
           <section style="margin:0 auto;max-width:min(1180px,calc(100vw - 28px))">
             <figure style="margin:14px 0 0">
-              <img src="${reportImage}" alt="完整报告长图" style="display:block;width:100%;border:1px solid #dbe4ef;border-radius:12px;background:#fff;box-sizing:border-box" />
-              <figcaption style="margin-top:6px;color:#64748b;font-size:12px;text-align:center">完整报告长图，长按图片可保存整份报告</figcaption>
+              <img src="${safeReportImage}" alt="完整报告长图" style="display:block;width:100%;border:1px solid #dbe4ef;border-radius:12px;background:#fff;box-sizing:border-box" />
+              <figcaption style="margin-top:6px;color:#64748b;font-size:12px;text-align:center">完整报告长图预览</figcaption>
             </figure>
           </section>
         </main>
       `);
+    },
+    showBlobResult(imageBlob: Blob) {
+      const imageUrl = URL.createObjectURL(imageBlob);
+      objectUrls.push(imageUrl);
+      this.showResult(imageUrl, imageUrl);
+      return imageUrl;
     },
     showError(message = '报告生成失败') {
       setHtml(`
@@ -1229,8 +1238,8 @@ async function exportScreenStyledReportImageInCurrentPage(target: HTMLElement, f
     await new Promise((resolve) => requestAnimationFrame(resolve));
     panel.update('正在生成完整报告长图', '生成完成后会在本页显示一张与当前报告样式一致的长图。');
     const canvas = await captureReportImageCanvas(target, fileName, options);
-    reportImage = canvas.toDataURL('image/jpeg', 0.92);
-    panel.showResult(reportImage);
+    const imageBlob = await canvasToBlob(canvas);
+    reportImage = panel.showBlobResult(imageBlob);
   } catch (error) {
     console.error('[policy-ocr-app] in-page styled report image export failed', error);
     if (reportImage) {
@@ -1385,19 +1394,28 @@ export function writePdfPreviewError(previewWindow: Window, fileName: string) {
   previewWindow.document.close();
 }
 
+function resolveImageCaptureOptions(options?: ReportExportOptions): ReportExportOptions {
+  if (options?.matchScreenStyle) return { rawTarget: true, ...options };
+  if (options?.preservePageStyle) return { rawTarget: true, preservePageStyle: true };
+  return { rawTarget: true, matchScreenStyle: true };
+}
+
 async function captureReportImageCanvas(target: HTMLElement, _title: string, _options?: ReportExportOptions) {
   const { toCanvas } = await import('html-to-image');
-  const backgroundColor = getScreenStyleReportBackground(target);
+  const renderOptions = resolveImageCaptureOptions(_options);
+  const backgroundColor = renderOptions.preservePageStyle ? '#F4F8FC' : getScreenStyleReportBackground(target);
   const previousScrollX = window.scrollX;
   const previousScrollY = window.scrollY;
+  const usePageStyleExportMode = Boolean(renderOptions.preservePageStyle);
   let renderTarget: ReturnType<typeof createPdfRenderTarget> | null = null;
 
   window.scrollTo(0, 0);
+  if (usePageStyleExportMode) document.body.classList.add('pdf-page-style-export-mode');
   await new Promise((resolve) => requestAnimationFrame(resolve));
   try {
-    renderTarget = createPdfRenderTarget(target, _title, undefined, { rawTarget: true, matchScreenStyle: true });
+    renderTarget = createPdfRenderTarget(target, _title, undefined, renderOptions);
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    const renderWidth = renderTarget.captureWidth || getScreenStyleReportWidth(target);
+    const renderWidth = renderTarget.captureWidth || (renderOptions.matchScreenStyle ? getScreenStyleReportWidth(target) : renderTarget.width);
     const renderHeight = Math.ceil(renderTarget.node.scrollHeight || renderTarget.node.offsetHeight || renderTarget.node.getBoundingClientRect().height || 1);
     return await toCanvas(renderTarget.node, {
       backgroundColor,
@@ -1425,6 +1443,7 @@ async function captureReportImageCanvas(target: HTMLElement, _title: string, _op
     });
   } finally {
     renderTarget?.cleanup();
+    if (usePageStyleExportMode) document.body.classList.remove('pdf-page-style-export-mode');
     window.scrollTo(previousScrollX, previousScrollY);
   }
 }
@@ -1509,7 +1528,7 @@ export async function downloadReportImage(target: HTMLElement | null, title: str
   }
   const fileName = normalizePdfFileName(title);
   if (shouldUseInPageReportExport()) {
-    await exportScreenStyledReportImageInCurrentPage(imageTarget, fileName, { rawTarget: true, matchScreenStyle: true, ...options });
+    await exportScreenStyledReportImageInCurrentPage(imageTarget, fileName, { rawTarget: true, ...options });
     return;
   }
 
@@ -1518,7 +1537,7 @@ export async function downloadReportImage(target: HTMLElement | null, title: str
   try {
     document.title = fileName;
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    const canvas = await captureReportImageCanvas(imageTarget, fileName, { rawTarget: true, matchScreenStyle: true, ...options });
+    const canvas = await captureReportImageCanvas(imageTarget, fileName, { rawTarget: true, ...options });
     const imageBlob = await canvasToBlob(canvas);
     triggerImageBlobDownload(imageBlob, fileName);
     feedback.update('图片已生成', '已下载为 JPG 长图。');

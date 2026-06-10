@@ -293,6 +293,13 @@ export function createFamilyProfile(state, input = {}, owner = {}) {
   return family;
 }
 
+export function updateFamilyProfileName(family, input = {}) {
+  if (!family) throw familyBindingError('FAMILY_NOT_FOUND', '家庭档案不存在');
+  family.familyName = normalizeFamilyName(input.familyName || input.name);
+  family.updatedAt = new Date().toISOString();
+  return family;
+}
+
 export function createFamilyMember(state, familyId, input = {}) {
   ensureFamilyState(state);
   const memberInput = normalizeFamilyMemberInput(input);
@@ -333,7 +340,10 @@ export function familyOwnerMatches(family, owner = {}) {
 
 export function listFamilyProfilesForOwner(state, owner = {}) {
   ensureFamilyState(state);
-  return state.familyProfiles.filter((family) => familyOwnerMatches(family, owner));
+  return state.familyProfiles.filter((family) => (
+    familyOwnerMatches(family, owner) &&
+    String(family?.status || 'active') === 'active'
+  ));
 }
 
 export function listFamilyMembers(state, familyId, options = {}) {
@@ -405,6 +415,64 @@ export function setFamilyCoreMember(state, family, nextCoreMember) {
   family.coreMemberId = member.id;
   family.updatedAt = now;
   return member;
+}
+
+function clearPolicyFamilyBinding(policy, now) {
+  policy.familyId = null;
+  policy.familyBindingSource = '';
+  policy.applicantMemberId = null;
+  policy.insuredMemberId = null;
+  policy.applicantSnapshot = null;
+  policy.insuredSnapshot = null;
+  policy.applicantNameSnapshot = '';
+  policy.insuredNameSnapshot = '';
+  policy.applicantRelationSnapshot = '';
+  policy.insuredRelationSnapshot = '';
+  policy.applicantMemberName = '';
+  policy.insuredMemberName = '';
+  policy.applicantRelation = '';
+  policy.insuredRelation = '';
+  policy.applicantRelationLabel = '';
+  policy.insuredRelationLabel = '';
+  policy.participantReviewStatus = 'pending_review';
+  policy.updatedAt = now;
+}
+
+export function archiveFamilyProfile(state, family, owner = {}) {
+  ensureFamilyState(state);
+  if (!family) throw familyBindingError('FAMILY_NOT_FOUND', '家庭档案不存在');
+  const now = new Date().toISOString();
+  family.status = 'archived';
+  family.coreMemberId = null;
+  family.updatedAt = now;
+
+  let archivedMemberCount = 0;
+  for (const member of state.familyMembers || []) {
+    if (Number(member?.familyId || 0) !== Number(family.id)) continue;
+    if (String(member.status || 'active') === 'archived') continue;
+    member.status = 'archived';
+    member.updatedAt = now;
+    archivedMemberCount += 1;
+  }
+
+  let archivedShareCount = 0;
+  for (const share of state.familyReportShares || []) {
+    if (Number(share?.familyId || 0) !== Number(family.id)) continue;
+    if (String(share.status || 'active') === 'archived') continue;
+    share.status = 'archived';
+    share.updatedAt = now;
+    archivedShareCount += 1;
+  }
+
+  let clearedPolicyCount = 0;
+  for (const policy of state.policies || []) {
+    if (Number(policy?.familyId || 0) !== Number(family.id)) continue;
+    if (!policyOwnerMatches(policy, owner)) continue;
+    clearPolicyFamilyBinding(policy, now);
+    clearedPolicyCount += 1;
+  }
+
+  return { family, archivedMemberCount, archivedShareCount, clearedPolicyCount };
 }
 
 export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {

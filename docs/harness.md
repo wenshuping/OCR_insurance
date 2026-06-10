@@ -61,6 +61,14 @@ Run the full quality gate with:
 ./scripts/check.sh
 ```
 
+The full gate now starts with a non-mutating harness audit:
+
+```bash
+npm run harness:audit
+```
+
+The audit checks production-sensitive changed paths, required harness execution points, focused test mappings in `docs/harness-test-map.json`, read-only optional responsibility data quality in the development SQLite database, and scripts that default to the production SQLite path.
+
 Run all tests with:
 
 ```bash
@@ -86,6 +94,8 @@ When changing any of these areas, look for the closest focused test and run it w
 - WeChat behavior
 - SQLite persistence
 - local stack scripts or ports
+
+For mapped high-risk files, `npm run harness:audit` runs the focused tests automatically before the broader quality gate. Add new mappings to `docs/harness-test-map.json` when a new domain file or test area becomes part of a high-risk workflow.
 
 ## OCR Optional Responsibility Guardrails
 

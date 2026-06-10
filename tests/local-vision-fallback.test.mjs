@@ -117,3 +117,65 @@ test('local vision fallback repairs low-confidence benefit-table plans only for 
   );
   assert.equal(skippedPdf.data, lowConfidenceData);
 });
+
+test('local vision merge keeps explicit first premium when model plan premiums are noisy', async () => {
+  const baseData = {
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    paymentPeriod: '趸交',
+    coveragePeriod: '至2025年08月15日',
+    amount: '80000',
+    firstPremium: '298',
+    fieldEvidence: {
+      firstPremium: {
+        rawValue: '保险费合计:（大写）贰佰玖拾捌元整 ¥298.00',
+      },
+    },
+    plans: [
+      {
+        role: 'main',
+        name: '学生平安意外伤害保险',
+        amount: '80000',
+      },
+    ],
+  };
+  const ocrText = [
+    '保险利益表',
+    '险种名称',
+    '学生平安意外伤害保险',
+    '附加学生平安A款定期寿险',
+    '保险责任名称',
+    '金额/份数',
+    '80000.00元',
+    '保险费合计:￥298.00',
+  ].join('\n');
+
+  const enhanced = await maybeEnhancePolicyScanWithLocalVision(
+    {
+      uploadItem: IMAGE_UPLOAD,
+      data: baseData,
+      ocrText,
+    },
+    async () => ({
+      data: {
+        company: '新华保险',
+        name: '学生平安意外伤害保险',
+        paymentPeriod: '趸交',
+        coveragePeriod: '至2025年08月15日',
+        amount: '80000',
+        firstPremium: '80100',
+        plans: [
+          { role: 'main', name: '学生平安意外伤害保险', amount: '80000', premium: '80000' },
+          { role: 'rider', name: '金额/份数', amount: '80000', premium: '80000' },
+          { role: 'rider', name: '免赔额赔付比例', premium: '100' },
+        ],
+      },
+      ocrText: '',
+    }),
+    { POLICY_OCR_LOCAL_VISION_FALLBACK: 'true' },
+  );
+
+  assert.equal(enhanced.data.firstPremium, '298');
+  assert.equal(enhanced.data.plans.length, 1);
+  assert.equal(enhanced.data.plans[0].name, '学生平安意外伤害保险');
+});

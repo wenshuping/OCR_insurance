@@ -77,8 +77,8 @@ function extractInsuredIdentityFromOcrText(ocrText = '', insuredName = '') {
     if (/^(?:证件号码|证件号|身份证号码|身份证号|居民身份证号码|居民身份证号)[:：]?/u.test(line)) score += 5;
     const previousWindow = lines.slice(Math.max(0, index - 3), index).map(compactText).join(' ');
     const nextWindow = lines.slice(index + 1, index + 4).map(compactText).join(' ');
-    if (/被保险人|被保人|受保人/u.test(previousWindow) || /被保险人|被保人|受保人/u.test(line)) score += 6;
-    if (/投保人|要保人/u.test(previousWindow) || /投保人|要保人/u.test(line)) score -= 3;
+    if (/被保险[人入]|披保险人|被保人|受保人/u.test(previousWindow) || /被保险[人入]|披保险人|被保人|受保人/u.test(line)) score += 6;
+    if (/投保人|设保人|要保人/u.test(previousWindow) || /投保人|设保人|要保人/u.test(line)) score -= 3;
     if (normalizedInsured && (previousWindow.includes(normalizedInsured) || line.includes(normalizedInsured) || nextWindow.includes(normalizedInsured))) {
       score += 4;
     }
@@ -98,6 +98,7 @@ export function normalizeOcrMappingText(value) {
     .normalize('NFKC')
     .replace(/險/gu, '险')
     .replace(/壽/gu, '寿')
+    .replace(/終/gu, '终')
     .replace(/費/gu, '费')
     .replace(/額/gu, '额')
     .replace(/稱/gu, '称')
@@ -229,13 +230,90 @@ function buildKnownProductStats(state = {}, company = '') {
   return [...stats.values()];
 }
 
+function isNonEmptyObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function manualPolicyContextText(body = {}) {
+  const manualData = isNonEmptyObject(body.manualData) ? body.manualData : {};
+  const planNames = (Array.isArray(manualData.plans) ? manualData.plans : [])
+    .map((plan) => [plan?.matchedProductName, plan?.name, plan?.productName].map(trim).filter(Boolean).join(' '))
+    .filter(Boolean);
+  return [
+    body.ocrText,
+    body.uploadItem?.name,
+    manualData.company,
+    manualData.name,
+    ...planNames,
+  ].map(trim).filter(Boolean).join(' ');
+}
+
+function rankVisionProductContextCandidates({ state = {}, company = '', hintText = '', limit = 12 } = {}) {
+  const normalizedHint = normalizeOcrMappingText(hintText);
+  const products = buildKnownProductStats(state, company);
+  const candidates = [];
+
+  for (const product of products) {
+    if (!isRecoverableOfficialProductName(product.productName)) continue;
+    let bestKeyword = '';
+    let score = (product.official ? 3 : 0) + Math.min(product.recordCount || 0, 10) / 10;
+    if (normalizedHint) {
+      const matchedKeyword = productKeywordCandidates(product.productName)
+        .filter((keyword) => normalizedHint.includes(keyword.normalized))
+        .sort((left, right) => right.normalized.length - left.normalized.length)[0] || null;
+      if (matchedKeyword) {
+        bestKeyword = matchedKeyword.raw;
+        score += matchedKeyword.normalized.length * 2;
+      } else if (!company) {
+        continue;
+      }
+    } else if (!company) {
+      continue;
+    }
+    candidates.push({
+      company: product.company,
+      productName: product.productName,
+      ...(product.productType ? { productType: product.productType } : {}),
+      ...(product.canonicalProductId ? { canonicalProductId: product.canonicalProductId } : {}),
+      ...(bestKeyword ? { keyword: bestKeyword } : {}),
+      score,
+    });
+  }
+
+  return candidates
+    .sort((left, right) => right.score - left.score || right.productName.length - left.productName.length)
+    .slice(0, limit)
+    .map(({ score: _score, ...candidate }) => candidate);
+}
+
+export function buildPolicyOcrVisionContext({ state = {}, body = {} } = {}) {
+  const manualData = isNonEmptyObject(body.manualData) ? body.manualData : {};
+  const hintText = manualPolicyContextText(body);
+  const explicitCompany = trim(manualData.company || body.company);
+  const inferredCompany = explicitCompany || matchInsuranceCompanyFromOcr(hintText, state)?.company || '';
+  const companyHints = [...new Set([explicitCompany, inferredCompany].map(trim).filter(Boolean))];
+  const productCandidates = rankVisionProductContextCandidates({
+    state,
+    company: inferredCompany,
+    hintText,
+    limit: 12,
+  });
+
+  const context = {};
+  if (companyHints.length) context.companyHints = companyHints;
+  if (productCandidates.length) context.productCandidates = productCandidates;
+  return Object.keys(context).length ? context : undefined;
+}
+
+function stripLegalInsurerPrefix(value) {
+  return trim(value).replace(/^[\p{Script=Han}]{2,24}(?:人寿|财产|养老|健康)?保险(?:股份有限公司|有限责任公司|有限公司)/u, '');
+}
+
 function productKeywordCandidates(productName) {
   const keywords = new Map();
   const name = trim(productName);
   const withoutParen = name.replace(/（[^）]*）|\([^)]*\)/gu, '');
   const beforeClause = withoutParen.replace(/(?:产品条款|保险条款|条款|说明书)$/u, '');
-  const stripLegalInsurerPrefix = (value) =>
-    trim(value).replace(/^[\p{Script=Han}]{2,24}(?:人寿|财产|养老|健康)?保险(?:股份有限公司|有限责任公司|有限公司)/u, '');
   for (const value of [name, withoutParen, beforeClause]) {
     const normalized = normalizeOcrMappingText(value);
     if (normalized.length >= 3) keywords.set(normalized, trim(value));
@@ -314,6 +392,17 @@ function normalizePaymentPeriod(value) {
   return '';
 }
 
+function paymentModeFromPaymentPeriod(value) {
+  const text = normalizePaymentPeriod(value) || trim(value).replace(/\s+/gu, '');
+  if (!text) return '';
+  if (text === '趸交') return '趸交';
+  if (/年交$/u.test(text)) return '年交';
+  if (/月交$/u.test(text)) return '月交';
+  if (/季交$/u.test(text)) return '季交';
+  if (/半年交$/u.test(text)) return '半年交';
+  return '';
+}
+
 function normalizePolicyPlanRole(value, index, name) {
   const text = normalizeOcrMappingText(`${value || ''}${name || ''}`);
   if (/万能型|万能账户|万能险|最低保证利率|账户价值/u.test(text)) return 'linked_account';
@@ -333,11 +422,30 @@ function normalizePlanAmount(value) {
   return String(Math.round(base * multiplier));
 }
 
+function normalizePlanBenefitRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      responsibilityName: trim(row?.responsibilityName),
+      amountText: trim(row?.amountText),
+      amount: normalizePlanAmount(row?.amount),
+      premium: normalizePlanAmount(row?.premium),
+      coveragePeriod: normalizeCoveragePeriod(row?.coveragePeriod),
+      paymentMode: trim(row?.paymentMode),
+      paymentPeriod: normalizePaymentPeriod(row?.paymentPeriod) || trim(row?.paymentPeriod),
+      paymentBasis: trim(row?.paymentBasis),
+      benefitStandard: trim(row?.benefitStandard),
+      deductible: trim(row?.deductible),
+      ratio: trim(row?.ratio),
+      evidence: trim(row?.evidence),
+    }))
+    .filter((row) => Object.values(row).some(Boolean));
+}
+
 function normalizePolicyPlan(plan = {}, index = 0, company = '') {
   const name = trim(plan.matchedProductName || plan.name || plan.productName);
   const rawName = trim(plan.name || plan.productName || name);
   if (!name && !rawName) return null;
-  return {
+  const normalized = {
     company: trim(plan.company) || company,
     role: normalizePolicyPlanRole(plan.role, index, rawName || name),
     name: rawName || name,
@@ -353,6 +461,9 @@ function normalizePolicyPlan(plan = {}, index = 0, company = '') {
     matchReason: trim(plan.matchReason),
     canonicalProductId: trim(plan.canonicalProductId),
   };
+  const benefitRows = normalizePlanBenefitRows(plan.benefitRows);
+  if (benefitRows.length) normalized.benefitRows = benefitRows;
+  return normalized;
 }
 
 function normalizePolicyPlans(plans = [], company = '') {
@@ -362,12 +473,144 @@ function normalizePolicyPlans(plans = [], company = '') {
     .filter((plan) => shouldKeepPolicyPlan(plan));
 }
 
+function chooseMatchedProductType(planType, matchedType) {
+  const current = trim(planType);
+  const matched = trim(matchedType);
+  if (!matched) return current;
+  if (!current) return matched;
+  if (current === '增额终身寿险' && /^(?:寿险|终身寿险)$/u.test(matched)) return matched;
+  return current;
+}
+
+function hasMainPolicyPlan(plans = []) {
+  return (Array.isArray(plans) ? plans : []).some((plan) => normalizePolicyPlanRole(plan?.role, 0, plan?.name) === 'main');
+}
+
+function inferRecoveredProductRole(productName = '', plans = []) {
+  const text = normalizeOcrMappingText(productName);
+  if (/万能型|万能账户|万能险|最低保证利率|账户价值/u.test(text)) return 'linked_account';
+  if (/附加/u.test(text)) return 'rider';
+  return hasMainPolicyPlan(plans) ? 'rider' : 'main';
+}
+
+function inferIntrinsicOfficialProductRole(productName = '') {
+  const text = normalizeOcrMappingText(productName);
+  if (/万能型|万能账户|万能险|最低保证利率|账户价值/u.test(text)) return 'linked_account';
+  if (/附加/u.test(text)) return 'rider';
+  return '';
+}
+
+function orderPolicyPlans(plans = []) {
+  const rankPlan = (plan) => {
+    const role = normalizePolicyPlanRole(plan?.role, 0, plan?.name);
+    if (role === 'main') return 0;
+    if (role === 'rider') return 1;
+    if (role === 'linked_account') return 2;
+    return 3;
+  };
+  return (Array.isArray(plans) ? plans : [])
+    .map((plan, index) => ({ plan, index }))
+    .sort((left, right) => rankPlan(left.plan) - rankPlan(right.plan) || left.index - right.index)
+    .map(({ plan }) => plan);
+}
+
+function hydrateMappedMainPlanFields(plans = [], data = {}, durations = {}) {
+  const hydrated = (Array.isArray(plans) ? plans : []).map((plan) => ({ ...plan }));
+  if (!hydrated.length) return hydrated;
+
+  const mainIndex = hydrated.findIndex((plan) => normalizePolicyPlanRole(plan?.role, 0, plan?.name) === 'main');
+  const target = hydrated[mainIndex >= 0 ? mainIndex : 0];
+  if (!target) return hydrated;
+
+  const amount = normalizePlanAmount(data.amount);
+  const coveragePeriod = normalizeCoveragePeriod(data.coveragePeriod) || normalizeCoveragePeriod(durations.coveragePeriod);
+  const paymentPeriod = normalizePaymentPeriod(data.paymentPeriod) || normalizePaymentPeriod(durations.paymentPeriod) || trim(data.paymentPeriod);
+  const paymentMode = trim(data.paymentMode) || paymentModeFromPaymentPeriod(paymentPeriod);
+
+  if (!target.amount && amount) target.amount = amount;
+  if (!target.coveragePeriod && coveragePeriod) target.coveragePeriod = coveragePeriod;
+  if (!target.paymentPeriod && paymentPeriod) target.paymentPeriod = paymentPeriod;
+  if (!target.paymentMode && paymentMode) target.paymentMode = paymentMode;
+  return hydrated;
+}
+
 function planMatchesOfficialProduct(plan = {}, productName = '') {
   const productKeywords = new Set(productKeywordCandidates(productName).map((keyword) => keyword.normalized));
   return [plan.matchedProductName, plan.productName, plan.name].some((value) => {
     const normalized = normalizeOcrMappingText(value);
     return Boolean(normalized && productKeywords.has(normalized));
   });
+}
+
+function charSimilarity(left = '', right = '') {
+  const a = Array.from(normalizeOcrMappingText(left));
+  const b = Array.from(normalizeOcrMappingText(right));
+  if (!a.length || !b.length) return 0;
+  const counts = new Map();
+  for (const char of a) counts.set(char, (counts.get(char) || 0) + 1);
+  let overlap = 0;
+  for (const char of b) {
+    const count = counts.get(char) || 0;
+    if (!count) continue;
+    overlap += 1;
+    counts.set(char, count - 1);
+  }
+  return (overlap * 2) / (a.length + b.length);
+}
+
+function officialProductSimilarity(planName = '', productName = '') {
+  const normalizedPlan = normalizeOcrMappingText(planName);
+  if (!normalizedPlan) return 0;
+  let best = 0;
+  for (const keyword of productKeywordCandidates(productName)) {
+    const normalizedKeyword = keyword.normalized;
+    if (!normalizedKeyword) continue;
+    if (normalizedPlan === normalizedKeyword) return 1;
+    if (normalizedPlan.includes(normalizedKeyword) || normalizedKeyword.includes(normalizedPlan)) {
+      best = Math.max(best, Math.min(normalizedPlan.length, normalizedKeyword.length) / Math.max(normalizedPlan.length, normalizedKeyword.length));
+      continue;
+    }
+    best = Math.max(best, charSimilarity(normalizedPlan, normalizedKeyword));
+  }
+  return best;
+}
+
+function findOfficialProductRepairTarget(plans = [], mention = {}) {
+  const intrinsicRole = inferIntrinsicOfficialProductRole(mention.productName);
+  const candidates = [];
+  (Array.isArray(plans) ? plans : []).forEach((plan, index) => {
+    if (!plan?.name) return;
+    if (plan.matchedProductName || plan.canonicalProductId) return;
+    const role = normalizePolicyPlanRole(plan.role, index, plan.name);
+    if (intrinsicRole === 'linked_account' && role !== 'linked_account') return;
+    if (intrinsicRole === 'rider' && role === 'main') return;
+    if (!intrinsicRole && /附加/u.test(plan.name)) return;
+    const similarity = officialProductSimilarity(plan.name, mention.productName);
+    if (similarity < 0.58) return;
+    candidates.push({
+      plan,
+      role,
+      similarity,
+      rank: role === 'main' ? 0 : role === 'rider' ? 1 : 2,
+      index,
+    });
+  });
+  candidates.sort((left, right) => right.similarity - left.similarity || left.rank - right.rank || left.index - right.index);
+  return candidates[0] || null;
+}
+
+function applyOfficialProductMentionToPlan(plan = {}, mention = {}, role = '') {
+  const displayName = stripLegalInsurerPrefix(mention.keyword || mention.productName);
+  const productType = chooseMatchedProductType(plan.productType, mention.productType);
+  plan.company = mention.company || plan.company || '';
+  plan.role = role || plan.role || '';
+  plan.name = displayName || trim(mention.productName) || plan.name;
+  plan.matchedProductName = trim(mention.productName);
+  if (productType) plan.productType = productType;
+  plan.matchScore = Math.max(Number(plan.matchScore || 0) || 0, Number(mention.score || 0) || 0);
+  plan.matchReason = plan.matchReason || 'OCR原文官方产品名纠错';
+  if (!plan.canonicalProductId && trim(mention.canonicalProductId)) plan.canonicalProductId = trim(mention.canonicalProductId);
+  return plan;
 }
 
 function findOfficialProductMentionsInOcrText(ocrText = '', state = {}, company = '') {
@@ -429,11 +672,30 @@ function findProductKeywordInOcrText(normalizedOcr = '', normalizedKeyword = '')
 function recoverMissingOfficialProductPlans({ plans = [], ocrText = '', state = {}, company = '' } = {}) {
   const recovered = [...plans];
   for (const mention of findOfficialProductMentionsInOcrText(ocrText, state, company)) {
-    if (recovered.some((plan) => planMatchesOfficialProduct(plan, mention.productName))) continue;
+    const existing = recovered.find((plan) => planMatchesOfficialProduct(plan, mention.productName));
+    if (existing) {
+      const intrinsicRole = inferIntrinsicOfficialProductRole(mention.productName);
+      const role = normalizePolicyPlanRole(existing.role, 0, existing.name);
+      if (intrinsicRole) {
+        existing.role = intrinsicRole;
+      } else if (!hasMainPolicyPlan(recovered)) {
+        existing.role = 'main';
+      } else if (role === 'main') {
+        existing.role = 'main';
+      }
+      applyOfficialProductMentionToPlan(existing, mention, existing.role || role);
+      continue;
+    }
+    const repairTarget = findOfficialProductRepairTarget(recovered, mention);
+    if (repairTarget?.plan) {
+      applyOfficialProductMentionToPlan(repairTarget.plan, mention, repairTarget.role);
+      continue;
+    }
+    const role = inferRecoveredProductRole(mention.productName, recovered);
     recovered.push({
       company: mention.company || company,
-      role: normalizePolicyPlanRole('', recovered.length, mention.productName),
-      name: mention.productName,
+      role,
+      name: stripLegalInsurerPrefix(mention.keyword || mention.productName),
       matchedProductName: mention.productName,
       productType: trim(mention.productType),
       amount: '',
@@ -463,7 +725,7 @@ function attachPlanProductMatches({ plans = [], ocrText = '', state = {}, compan
     const match = findBestProductMatchForName(ocrText, state, company, plan.name);
     if (!match?.productName) return plan;
     const canonicalProductId = plan.canonicalProductId || match.canonicalProductId || '';
-    const productType = plan.productType || trim(match.productType);
+    const productType = chooseMatchedProductType(plan.productType, match.productType);
     return {
       ...plan,
       company: match.company || plan.company || company,
@@ -474,6 +736,60 @@ function attachPlanProductMatches({ plans = [], ocrText = '', state = {}, compan
       ...(canonicalProductId ? { canonicalProductId } : {}),
     };
   });
+}
+
+const EVIDENCE_VALUE_FIELDS = new Set([
+  'company',
+  'name',
+  'applicant',
+  'beneficiary',
+  'policyNumber',
+  'insured',
+  'insuredIdNumber',
+  'insuredBirthday',
+  'date',
+  'paymentPeriod',
+  'coveragePeriod',
+  'amount',
+  'firstPremium',
+]);
+
+function compactEvidenceValue(value) {
+  return trim(value).replace(/\s+/gu, '');
+}
+
+function fieldEvidenceMatchesMappedValue(item, value) {
+  const expected = compactEvidenceValue(value);
+  if (!expected) return false;
+  const evidenceValue = compactEvidenceValue(item?.value);
+  if (evidenceValue && evidenceValue === expected) return true;
+  const rowText = compactEvidenceValue(item?.rowText);
+  return Boolean(rowText && rowText.includes(expected));
+}
+
+function filterFieldEvidenceForMappedData(sourceScan = {}, mappedData = {}) {
+  const sourceEvidence = sourceScan.fieldEvidence && typeof sourceScan.fieldEvidence === 'object'
+    ? sourceScan.fieldEvidence
+    : null;
+  if (!sourceEvidence) return {};
+
+  const fieldEvidence = {};
+  const fieldConfidence = {};
+  const sourceConfidence = sourceScan.fieldConfidence && typeof sourceScan.fieldConfidence === 'object'
+    ? sourceScan.fieldConfidence
+    : {};
+
+  for (const [field, item] of Object.entries(sourceEvidence)) {
+    if (!EVIDENCE_VALUE_FIELDS.has(field) || fieldEvidenceMatchesMappedValue(item, mappedData[field])) {
+      fieldEvidence[field] = item;
+      if (sourceConfidence[field]) fieldConfidence[field] = sourceConfidence[field];
+    }
+  }
+
+  return {
+    ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
+    ...(Object.keys(fieldConfidence).length ? { fieldConfidence } : {}),
+  };
 }
 
 function formatNumericAmount(value) {
@@ -503,7 +819,7 @@ function chooseFirstPremium(dataPremium, planPremiumTotal) {
 }
 
 function chooseMappedPolicyName(dataName, mainPlan, productMatch) {
-  const matchedName = trim(productMatch?.productName || mainPlan?.matchedProductName);
+  const matchedName = trim(mainPlan?.matchedProductName || productMatch?.productName);
   if (matchedName) return matchedName;
 
   const rawDataName = trim(dataName);
@@ -511,7 +827,33 @@ function chooseMappedPolicyName(dataName, mainPlan, productMatch) {
   const normalizedDataName = normalizeOcrMappingText(rawDataName);
   const normalizedPlanName = normalizeOcrMappingText(planName);
   if (rawDataName && normalizedPlanName && normalizedDataName.includes(normalizedPlanName)) return rawDataName;
-  return planName || rawDataName || '';
+  return planName || rawDataName || trim(productMatch?.productName) || '';
+}
+
+const OCR_REPAIR_WARNING_LABEL_FIELDS = [
+  ['保险公司', 'company'],
+  ['投保人', 'applicant'],
+  ['受益人', 'beneficiary'],
+  ['被保险人', 'insured'],
+  ['被保险人生日', 'insuredBirthday'],
+  ['投保/生效日期', 'date'],
+  ['首期保费', 'firstPremium'],
+];
+
+function filterSatisfiedOcrWarnings(warnings = [], data = {}) {
+  return (Array.isArray(warnings) ? warnings : [])
+    .map((warning) => {
+      const text = trim(warning);
+      if (!text.includes('仍需确认：')) return text;
+      const [prefix, labelsText] = text.split('仍需确认：');
+      const labels = labelsText.split('、').map(trim).filter(Boolean);
+      const remaining = labels.filter((label) => {
+        const field = OCR_REPAIR_WARNING_LABEL_FIELDS.find(([itemLabel]) => itemLabel === label)?.[1] || '';
+        return !field || !trim(data[field]);
+      });
+      return remaining.length ? `${prefix}仍需确认：${remaining.join('、')}` : '';
+    })
+    .filter(Boolean);
 }
 
 function normalizeCoveragePeriod(value) {
@@ -568,13 +910,14 @@ export function enhancePolicyScanWithOcrMapping({ scan, state }) {
     state,
     company,
   });
-  const mainPlan = plans.find((plan) => plan.role === 'main') || plans[0] || null;
+  const durations = extractDurationFieldsFromOcrText(ocrText);
+  const orderedPlans = hydrateMappedMainPlanFields(orderPolicyPlans(plans), data, durations);
+  const mainPlan = orderedPlans.find((plan) => plan.role === 'main') || orderedPlans[0] || null;
   const productMatch = company
     ? findBestProductMatchForName(ocrText, state, company, mainPlan?.name || data.name) || matchInsuranceProductFromOcr(ocrText, state, company)
     : null;
   const canonicalProductId = mainPlan?.canonicalProductId || productMatch?.canonicalProductId || '';
-  const durations = extractDurationFieldsFromOcrText(ocrText);
-  const planPremiumTotal = sumPlanPremiums(plans);
+  const planPremiumTotal = sumPlanPremiums(orderedPlans);
   const insuredIdentity = data.insuredIdNumber
     ? {
         insuredIdNumber: normalizeIdNumber(data.insuredIdNumber),
@@ -582,20 +925,25 @@ export function enhancePolicyScanWithOcrMapping({ scan, state }) {
       }
     : extractInsuredIdentityFromOcrText(ocrText, data.insured);
 
+  const mappedData = {
+    ...data,
+    company: company || data.company || '',
+    name: chooseMappedPolicyName(data.name, mainPlan, productMatch),
+    insuredIdNumber: insuredIdentity.insuredIdNumber || data.insuredIdNumber || '',
+    insuredBirthday: data.insuredBirthday || insuredIdentity.insuredBirthday || '',
+    paymentPeriod: mainPlan?.paymentPeriod || durations.paymentPeriod || data.paymentPeriod || '',
+    coveragePeriod: mainPlan?.coveragePeriod || durations.coveragePeriod || data.coveragePeriod || '',
+    amount: mainPlan?.amount || data.amount || '',
+    firstPremium: chooseFirstPremium(data.firstPremium, planPremiumTotal),
+    ...(canonicalProductId ? { canonicalProductId } : {}),
+    ...(orderedPlans.length ? { plans: orderedPlans } : {}),
+  };
+  const mappedEvidence = filterFieldEvidenceForMappedData(sourceScan, mappedData);
+
   return {
     ...sourceScan,
-    data: {
-      ...data,
-      company: company || data.company || '',
-      name: chooseMappedPolicyName(data.name, mainPlan, productMatch),
-      insuredIdNumber: insuredIdentity.insuredIdNumber || data.insuredIdNumber || '',
-      insuredBirthday: data.insuredBirthday || insuredIdentity.insuredBirthday || '',
-      paymentPeriod: mainPlan?.paymentPeriod || durations.paymentPeriod || data.paymentPeriod || '',
-      coveragePeriod: mainPlan?.coveragePeriod || durations.coveragePeriod || data.coveragePeriod || '',
-      amount: mainPlan?.amount || data.amount || '',
-      firstPremium: chooseFirstPremium(data.firstPremium, planPremiumTotal),
-      ...(canonicalProductId ? { canonicalProductId } : {}),
-      ...(plans.length ? { plans } : {}),
-    },
+    data: mappedData,
+    ...mappedEvidence,
+    ...(sourceScan.ocrWarnings ? { ocrWarnings: filterSatisfiedOcrWarnings(sourceScan.ocrWarnings, mappedData) } : {}),
   };
 }

@@ -163,6 +163,25 @@ function normalizePolicyPlanRole(value, index, name) {
   return index === 0 ? 'main' : 'rider';
 }
 
+function normalizePolicyPlanBenefitRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      responsibilityName: String(row?.responsibilityName || '').trim(),
+      amountText: String(row?.amountText || '').trim(),
+      amount: Number(row?.amount || 0) || 0,
+      premium: Number(row?.premium || 0) || 0,
+      coveragePeriod: String(row?.coveragePeriod || '').trim(),
+      paymentMode: String(row?.paymentMode || '').trim(),
+      paymentPeriod: String(row?.paymentPeriod || '').trim(),
+      paymentBasis: String(row?.paymentBasis || '').trim(),
+      benefitStandard: String(row?.benefitStandard || '').trim(),
+      deductible: String(row?.deductible || '').trim(),
+      ratio: String(row?.ratio || '').trim(),
+      evidence: String(row?.evidence || '').trim(),
+    }))
+    .filter((row) => Object.values(row).some(Boolean));
+}
+
 export function normalizePolicyPlans(plans = [], company = '') {
   return (Array.isArray(plans) ? plans : [])
     .map((plan, index) => {
@@ -187,7 +206,9 @@ export function normalizePolicyPlans(plans = [], company = '') {
         matchReason: String(plan?.matchReason || '').trim(),
       };
       const canonicalProductId = String(plan?.canonicalProductId || '').trim();
+      const benefitRows = normalizePolicyPlanBenefitRows(plan?.benefitRows);
       if (canonicalProductId) normalized.canonicalProductId = canonicalProductId;
+      if (benefitRows.length) normalized.benefitRows = benefitRows;
       return normalized;
     })
     .filter(Boolean);

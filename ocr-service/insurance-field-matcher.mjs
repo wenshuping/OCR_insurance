@@ -52,7 +52,7 @@ function findFieldLabelIndex(lines, field) {
 
 function isProductSearchBoundary(line) {
   const text = compactText(line);
-  return /^(特别约定[:：]?|本栏空白|合计(?:（大写）)?.*|服务人员(?:编号|姓名)[:：]?.*|区部组[:：]?.*|以下内容空白|保险业务|收据专用章|收据说明[:：]?|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|业务员[:：].*|第\d+页共\d+页|\*此码仅.*)$/.test(
+  return /^(备注[:：]?.*|特别约定[:：]?|本栏空白|合计(?:（大写）)?.*|服务人员(?:编号|姓名)[:：]?.*|区部组[:：]?.*|以下内容空白|保险业务|收据专用章|收据说明[:：]?|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|业务员[:：].*|第\d+页共\d+页|\*此码仅.*)$/.test(
     text,
   );
 }
@@ -233,9 +233,14 @@ function isPlaceholderPlanValue(line) {
 
 function isBenefitTablePlanBoundary(line) {
   const text = compactText(line);
-  return /^(首期保险费合计[:：]?|首期保费合计[:：]?|保险费合计[:：]?|合计(?:（大写）)?.*|服务人员(?:编号|姓名)[:：]?.*|区部组[:：]?.*|以下内容空白|保险业务|收据专用章|收据说明[:：]?|特别约定[:：]?|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|第\d+页共\d+页)/u.test(
+  return /^(保险责任名称(?:（接第\d+页）|\(接第\d+页\))?|金额\/?份数|给付标准|免赔额(?:赔付比例)?|赔付比例|首期保险费合计[:：]?|首期保费合计[:：]?|保险费合计[:：]?|(?:（大写）|大写).*|合计(?:（大写）)?.*|备注[:：]?.*|服务人员(?:编号|姓名)[:：]?.*|区部组[:：]?.*|以下内容空白|保险业务|收据专用章|收据说明[:：]?|特别约定[:：]?|保险单说明[:：]?|保单制作日期[:：]?.*|保险公司签章|第\d+页共\d+页)/u.test(
     text,
   );
+}
+
+function isPlanDetailSkippableLine(line) {
+  const text = compactText(line);
+  return /^(?:首期保险费合计|首期保费合计|保险费合计|合计(?:（大写）)?|(?:（大写）|大写)|可选责任的约定|可选责任)/u.test(text);
 }
 
 function isDateLikePlanValue(line) {
@@ -291,6 +296,20 @@ function normalizePlanPaymentPeriod(paymentPeriod, paymentMode) {
 
 function isStandaloneParentheticalDescriptor(line) {
   return /^（[^）]+）$|^\([^)]*\)$/u.test(compactText(line));
+}
+
+function isPlanTailDescriptor(line) {
+  const text = compactText(line);
+  return isStandaloneParentheticalDescriptor(text) || /^保险(?:（[^）]+）|\([^)]*\))$/u.test(text);
+}
+
+function normalizePlanNameWithTailDescriptor(name, descriptor) {
+  const descriptorText = compactText(descriptor);
+  if (!descriptorText) return normalizePlanName([name]);
+  if (/^保险(?:（[^）]+）|\([^)]*\))$/u.test(descriptorText) && /险|保险|寿险/u.test(compactText(name))) {
+    return normalizePlanName([name, descriptorText.replace(/^保险/u, '')]);
+  }
+  return normalizePlanName([name, descriptorText]);
 }
 
 function isOcrRemarkLine(line) {
@@ -482,6 +501,113 @@ function extractReceiptPolicyPlans(lines, company = '') {
   });
 }
 
+function labeledPlanValue(line, labelPattern) {
+  const text = compactText(line);
+  const matched = text.match(new RegExp(`^(?:${labelPattern})[:：]?(.+)$`, 'u'));
+  return compactText(matched?.[1] || '');
+}
+
+function normalizeChinaLifeCoveragePeriod(line) {
+  const value = labeledPlanValue(line, '保险期[间问]|保障期[间问]');
+  return normalizeCoveragePeriodText(value || line);
+}
+
+function normalizeChinaLifePaymentMode(line) {
+  const value = labeledPlanValue(line, '[交文缴]费方式');
+  const normalized = normalizePaymentModeText(value || line);
+  if (normalized) return normalized;
+  if (/不定期/u.test(value)) return '不定期交';
+  return '';
+}
+
+function normalizeChinaLifePaymentPeriod(line, paymentMode = '') {
+  const value = labeledPlanValue(line, '[交文缴]费期间');
+  const period = normalizePaymentPeriodText(value || line);
+  if (period) return normalizePlanPaymentPeriod(period, paymentMode || '年交');
+  if (/不定期/u.test(value || line)) return '不定期交';
+  return '';
+}
+
+function findChinaLifeSectionTableValues(sectionLines) {
+  let searchStart = 0;
+  for (let index = 0; index < sectionLines.length; index += 1) {
+    const line = compactText(sectionLines[index]);
+    if (/^子险种名称$/u.test(line)) {
+      searchStart = index + 1;
+      break;
+    }
+    if (line === '子' && compactText(sectionLines[index + 1]) === '险种名称') {
+      searchStart = index + 2;
+      break;
+    }
+  }
+  const valueLines = sectionLines.slice(searchStart).map((line) => compactText(line)).filter(Boolean);
+  const productIndex = valueLines.findIndex((line) => (
+    normalizeProductNameText(line)
+    && /险|保险|年金|两全|寿|账户/u.test(line)
+    && !isBenefitTableHeaderLine(line)
+    && !/^(?:保险金额|标准保费|加费)/u.test(line)
+  ));
+  if (productIndex < 0) return { amount: '', premium: '' };
+  const amounts = [];
+  for (const line of valueLines.slice(productIndex + 1)) {
+    const amount = normalizeAmountText(line);
+    if (amount) {
+      amounts.push(amount);
+      continue;
+    }
+    if (isBenefitTablePlanBoundary(line) || isProductNameNoiseLine(line)) break;
+    if (amounts.length) break;
+  }
+  return {
+    amount: amounts[0] || '',
+    premium: amounts[1] || '',
+  };
+}
+
+function extractChinaLifeDetailPlans(lines, company = '') {
+  const hasMainDetailSection = lines.some((line) => /主险明细/u.test(compactText(line)));
+  if (!hasMainDetailSection) return [];
+
+  const sectionStarts = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const name = labeledPlanValue(lines[index], '险种名称');
+    if (normalizeProductNameText(name)) sectionStarts.push(index);
+  }
+  if (!sectionStarts.length) return [];
+
+  return sectionStarts
+    .map((startIndex, sectionIndex) => {
+      const nextStart = sectionStarts.find((index) => index > startIndex) ?? lines.length;
+      const sectionLines = lines.slice(startIndex, nextStart);
+      const name = normalizeProductNameText(labeledPlanValue(sectionLines[0], '险种名称'));
+      if (!name) return null;
+
+      let coveragePeriod = '';
+      let paymentMode = '';
+      let paymentPeriod = '';
+      for (const line of sectionLines) {
+        if (!coveragePeriod) coveragePeriod = normalizeChinaLifeCoveragePeriod(line);
+        if (!paymentMode) paymentMode = normalizeChinaLifePaymentMode(line);
+        if (!paymentPeriod) paymentPeriod = normalizeChinaLifePaymentPeriod(line, paymentMode);
+      }
+      const values = findChinaLifeSectionTableValues(sectionLines);
+      return {
+        company,
+        role: inferPlanRole({ name }, sectionIndex),
+        name,
+        productType: inferPlanProductType(name),
+        amount: values.amount,
+        coveragePeriod,
+        paymentMode,
+        paymentPeriod,
+        premium: values.premium,
+        premiumText: values.premium,
+      };
+    })
+    .filter(Boolean);
+}
+
 function addCandidatesFromInlineSinglePlanSummary({ candidates, lines, company }) {
   const plan = extractInlineSinglePlanSummary(lines, company);
   if (!plan) return;
@@ -566,6 +692,16 @@ function readPlanName(source, startIndex, company) {
 
 function pickLastAmountBefore(source, endIndex, predicate) {
   for (let index = endIndex; index >= 0; index -= 1) {
+    const line = compactText(source[index]);
+    if (predicate && !predicate(line, index)) continue;
+    const amount = normalizeAmountText(line);
+    if (amount) return { amount, line, index };
+  }
+  return null;
+}
+
+function pickFirstAmountBetween(source, startIndex, endIndex, predicate) {
+  for (let index = Math.max(0, startIndex); index < Math.min(source.length, endIndex); index += 1) {
     const line = compactText(source[index]);
     if (predicate && !predicate(line, index)) continue;
     const amount = normalizeAmountText(line);
@@ -698,7 +834,9 @@ function reconstructColumnOrderedBenefitTablePlans(source, company) {
 function fillValueFirstBenefitTablePlans(plans, source) {
   const repaired = (Array.isArray(plans) ? plans : []).map((plan) => ({ ...plan }));
   if (repaired.length < 2) return repaired;
-  if (scorePlanCompleteness(repaired) > repaired.length * 2) return repaired;
+  if (repaired.every((plan) => plan.name && plan.amount && plan.coveragePeriod && plan.paymentMode && plan.paymentPeriod && plan.premium)) {
+    return repaired;
+  }
 
   const targetFirstName = compactText(repaired[0]?.name || '');
   const firstNameIndex = source.findIndex((_line, index) => compactText(readPlanName(source, index, '').name) === targetFirstName);
@@ -710,7 +848,7 @@ function fillValueFirstBenefitTablePlans(plans, source) {
     .filter(isBasicAmountColumnValue)
     .slice(-repaired.length);
   amountLines.forEach((line, index) => {
-    if (!repaired[index]?.amount) repaired[index].amount = normalizeAmountText(line);
+    if (repaired[index]) repaired[index].amount = normalizeAmountText(line) || repaired[index].amount;
   });
 
   const boundaryIndex = source.findIndex((line, index) => index > firstNameIndex && isBenefitTablePlanBoundary(line));
@@ -775,33 +913,117 @@ function repairUnorderedBenefitTablePlans(plans, source) {
   const repaired = plans
     .map((plan) => ({ ...plan }))
     .filter((plan) => plan.name && !isStandaloneParentheticalDescriptor(plan.name) && !isOcrRemarkLine(plan.name));
-  const mainPlan = repaired[0] || null;
 
-  if (mainPlan) {
-    const descriptorIndex = source.findIndex((line) => isStandaloneParentheticalDescriptor(line));
-    if (descriptorIndex >= 0 && !compactText(mainPlan.name).includes(compactText(source[descriptorIndex]))) {
-      const combined = normalizePlanName([mainPlan.name, source[descriptorIndex]]);
-      if (combined) mainPlan.name = combined;
+  const findPlanSourceIndex = (plan, afterIndex = -1) => {
+    const fullName = compactText(plan?.name || '');
+    const baseName = fullName.replace(/（[^）]+）|\([^)]*\)/gu, '');
+    if (!baseName) return -1;
+    return source.findIndex((line, index) => {
+      if (index <= afterIndex) return false;
+      const text = compactText(line);
+      if (!text || isBenefitTableHeaderLine(text) || isBenefitTablePlanBoundary(text) || isPlanTailDescriptor(text)) return false;
+      return text === baseName || baseName.startsWith(text);
+    });
+  };
+
+  const sourceIndexes = [];
+  for (const plan of repaired) {
+    const previousIndex = sourceIndexes.length ? sourceIndexes[sourceIndexes.length - 1] : -1;
+    sourceIndexes.push(findPlanSourceIndex(plan, previousIndex));
+  }
+
+  const findDescriptorIndexAfterPlan = (planIndex) => {
+    const startIndex = sourceIndexes[planIndex];
+    if (startIndex < 0) return -1;
+    const nextPlanIndex = sourceIndexes.find((index, cursor) => cursor > planIndex && index > startIndex) ?? source.length;
+    for (let index = startIndex + 1; index < Math.min(source.length, nextPlanIndex); index += 1) {
+      const line = compactText(source[index]);
+      if (!line) continue;
+      if (isBenefitTablePlanBoundary(line)) break;
+      if (isPlanTailDescriptor(line)) return index;
+    }
+    return -1;
+  };
+
+  repaired.forEach((plan, index) => {
+    const descriptorIndex = findDescriptorIndexAfterPlan(index);
+    const descriptor = descriptorIndex >= 0 ? source[descriptorIndex] : '';
+    if (!descriptor || compactText(plan.name).includes(compactText(descriptor))) return;
+    const combined = normalizePlanNameWithTailDescriptor(plan.name, descriptor);
+    if (combined) {
+      plan.name = combined;
+      plan.productType = inferPlanProductType(combined);
+    }
+  });
+
+  const firstPlanIndex = sourceIndexes[0] ?? -1;
+  if (repaired[0] && !repaired[0].premium && firstPlanIndex > 0) {
+    const premium = pickLastAmountBefore(source, firstPlanIndex - 1, (line) => /^每年/u.test(line));
+    if (premium) {
+      repaired[0].premium = premium.amount;
+      repaired[0].premiumText = premium.line;
+    }
+  }
+  if (repaired[0] && !repaired[0].amount && firstPlanIndex > 0) {
+    const amount = pickLastAmountBefore(source, firstPlanIndex - 1, isBasicAmountColumnValue);
+    if (amount) repaired[0].amount = amount.amount;
+  }
+
+  for (let planIndex = 1; planIndex < repaired.length; planIndex += 1) {
+    const plan = repaired[planIndex];
+    const currentSourceIndex = sourceIndexes[planIndex];
+    const previousSourceIndex = sourceIndexes[planIndex - 1];
+    if (!plan || currentSourceIndex <= 0 || previousSourceIndex < 0 || previousSourceIndex >= currentSourceIndex) continue;
+
+    const paymentModeLineIndex = source.findLastIndex((line, index) => (
+      index > previousSourceIndex
+      && index < currentSourceIndex
+      && Boolean(normalizePaymentModeText(line))
+    ));
+    if (paymentModeLineIndex < 0) continue;
+
+    const paymentMode = normalizePaymentModeText(source[paymentModeLineIndex]);
+    if (paymentMode && !plan.paymentMode) plan.paymentMode = paymentMode;
+    if (paymentMode === '趸交' && !plan.paymentPeriod) plan.paymentPeriod = '趸交';
+
+    if (!plan.premium) {
+      const premium = pickLastAmountBefore(source, currentSourceIndex - 1, (line, index) => (
+        index > paymentModeLineIndex
+        && isPremiumAmountLine(line)
+        && !/^每年/u.test(line)
+      ));
+      if (premium) {
+        plan.premium = premium.amount;
+        plan.premiumText = premium.line;
+      }
     }
   }
 
-  const mainNameIndex = mainPlan ? source.findIndex((line) => compactText(line) === compactText(mainPlan.name.replace(/（[^）]+）|\([^)]*\)/gu, ''))) : -1;
-  const linkedPlan = repaired.find((plan) => inferPlanRole(plan, 1) === 'linked_account') || null;
-  const linkedNameIndex = linkedPlan ? source.findIndex((line) => compactText(line).startsWith(compactText(linkedPlan.name).slice(0, 8))) : -1;
-  const linkedDescriptorIndex = linkedNameIndex >= 0
-    ? source.findIndex((line, index) => index > linkedNameIndex && /^保险(?:（[^）]+）|\([^)]*\))$/u.test(compactText(line)))
-    : -1;
-
-  if (linkedPlan && linkedDescriptorIndex > linkedNameIndex && !/保险/u.test(compactText(linkedPlan.name))) {
-    const combined = normalizePlanName([linkedPlan.name, source[linkedDescriptorIndex]]);
-    if (combined) linkedPlan.name = combined;
-  }
+  const mainPlan = repaired[0] || null;
+  const linkedPlanIndex = repaired.findIndex((plan) => inferPlanRole(plan, 1) === 'linked_account');
+  const linkedPlan = linkedPlanIndex >= 0 ? repaired[linkedPlanIndex] : null;
+  const linkedNameIndex = linkedPlanIndex >= 0 ? sourceIndexes[linkedPlanIndex] : -1;
+  const linkedDescriptorIndex = linkedPlanIndex >= 0 ? findDescriptorIndexAfterPlan(linkedPlanIndex) : -1;
 
   if (mainPlan && linkedNameIndex > 0) {
     const mainValueEndIndex = linkedDescriptorIndex > linkedNameIndex ? linkedDescriptorIndex : linkedNameIndex;
+    const mainAmount = pickFirstAmountBetween(source, firstPlanIndex + 1, mainValueEndIndex, isBasicAmountColumnValue);
+    if (mainAmount && !mainPlan.amount) mainPlan.amount = mainAmount.amount;
     if (!mainPlan.paymentMode && source.some((line, index) => index < mainValueEndIndex && normalizePaymentModeText(line) === '年交')) {
       mainPlan.paymentMode = '年交';
     }
+    const linkedSinglePayIndex = source.findIndex((line, index) => (
+      index > linkedNameIndex
+      && index < linkedNameIndex + 12
+      && normalizePaymentModeText(line) === '趸交'
+    ));
+    const linkedPaymentStartIndex = linkedSinglePayIndex >= 0 ? linkedSinglePayIndex : Math.max(linkedDescriptorIndex, linkedNameIndex);
+    const trailingMainModeIndex = source.findIndex((line, index) => (
+      index > linkedNameIndex
+      && index < linkedPaymentStartIndex
+      && normalizePaymentModeText(line) === '年交'
+    ));
+    if (trailingMainModeIndex >= 0 && !mainPlan.paymentMode) mainPlan.paymentMode = '年交';
     if (!mainPlan.paymentPeriod) {
       const paymentPeriodLine = source.find((line, index) => {
         const compact = compactText(line).replace(/^\/+/, '');
@@ -809,19 +1031,29 @@ function repairUnorderedBenefitTablePlans(plans, source) {
       });
       if (paymentPeriodLine) mainPlan.paymentPeriod = normalizePlanPaymentPeriod(paymentPeriodLine, mainPlan.paymentMode || '年交');
     }
-    if (!mainPlan.premium) {
-      const premium = pickLastAmountBefore(source, mainValueEndIndex - 1, (line) => /^每年/u.test(line));
-      if (premium) {
-        mainPlan.premium = premium.amount;
-        mainPlan.premiumText = premium.line;
-      }
+    if (!mainPlan.paymentPeriod && trailingMainModeIndex >= 0) {
+      const paymentPeriodLine = source.find((line, index) => {
+        const compact = compactText(line).replace(/^\/+/, '');
+        return index > trailingMainModeIndex && index < linkedPaymentStartIndex && /^\d{1,3}年$/u.test(compact);
+      });
+      if (paymentPeriodLine) mainPlan.paymentPeriod = normalizePlanPaymentPeriod(paymentPeriodLine, mainPlan.paymentMode || '年交');
+    }
+    const premium = pickLastAmountBefore(source, mainValueEndIndex - 1, (line) => /^每年/u.test(line));
+    if (premium && (!mainPlan.premium || mainPlan.premium === mainPlan.amount || !/^每年/u.test(compactText(mainPlan.premiumText)))) {
+      mainPlan.premium = premium.amount;
+      mainPlan.premiumText = premium.line;
     }
   }
 
   if (linkedPlan) {
     linkedPlan.amount = '';
     if (!linkedPlan.coveragePeriod) linkedPlan.coveragePeriod = '终身';
-    if (source.some((line, index) => index > linkedNameIndex && index < Math.max(linkedDescriptorIndex, linkedNameIndex + 12) && normalizePaymentModeText(line) === '趸交')) {
+    const linkedPaymentModeIndex = source.findIndex((line, index) => (
+      index > linkedNameIndex
+      && index < Math.max(linkedDescriptorIndex, linkedNameIndex + 12)
+      && normalizePaymentModeText(line) === '趸交'
+    ));
+    if (linkedPaymentModeIndex >= 0) {
       linkedPlan.paymentMode = '趸交';
     }
     if (linkedPlan.paymentMode === '趸交') linkedPlan.paymentPeriod = '趸交';
@@ -831,6 +1063,16 @@ function repairUnorderedBenefitTablePlans(plans, source) {
     if (linkedPremium) {
       linkedPlan.premium = linkedPremium.amount;
       linkedPlan.premiumText = linkedPremium.line;
+    }
+    if (!linkedPlan.premium && linkedPaymentModeIndex >= 0) {
+      const premium = pickFirstAmountBetween(source, linkedPaymentModeIndex + 1, linkedNameIndex + 12, (line) => (
+        !/^每年/u.test(line)
+        && Boolean(normalizeAmountText(line))
+      ));
+      if (premium) {
+        linkedPlan.premium = premium.amount;
+        linkedPlan.premiumText = premium.line;
+      }
     }
   }
 
@@ -855,12 +1097,16 @@ function parsePlanDetails(source, startIndex, company) {
   if (!plan.name) return null;
 
   let cursor = nameInfo.endIndex + 1;
+  let sawTotalPremiumLine = false;
   for (; cursor < source.length; cursor += 1) {
     const line = compactText(source[cursor]);
     if (!line) continue;
+    if (isPlanDetailSkippableLine(line)) {
+      if (/合计|大写/u.test(line)) sawTotalPremiumLine = true;
+      continue;
+    }
     if (isBenefitTablePlanBoundary(line)) break;
     if (isPotentialPlanNameLine(line, company)) break;
-    if (isBenefitTableHeaderLine(line) || isDateLikePlanValue(line) || isPlaceholderPlanValue(line)) continue;
 
     if (isProductDescriptorLine(line)) {
       const combined = normalizePlanName([plan.name, line]);
@@ -868,8 +1114,44 @@ function parsePlanDetails(source, startIndex, company) {
       continue;
     }
 
+    const labeledAmount = normalizeAmountText(line);
+    if (labeledAmount && /(?:保险费|保费|总保费|首期|首年|合计)/u.test(line)) {
+      if (!plan.premium) {
+        plan.premium = labeledAmount;
+        plan.premiumText = line;
+      }
+      continue;
+    }
+    if (labeledAmount && /(?:保险金额|基本保险金额|保额)/u.test(line)) {
+      if (!plan.amount) plan.amount = labeledAmount;
+      continue;
+    }
+
+    const labeledCoverage = normalizeCoveragePeriodText(line);
+    if (labeledCoverage && /(?:保险期间|保障期间|保险期限|保障期限)/u.test(line)) {
+      if (!plan.coveragePeriod) plan.coveragePeriod = labeledCoverage;
+      continue;
+    }
+
+    const inlinePaymentMode = normalizePaymentModeText(line.match(/(?:交费方式|缴费方式)[:：]?(年交|年缴|月交|月缴|季交|季缴|半年交|半年缴|趸交|一次交清|一次性交清|一次性交费|一次性缴清)/u)?.[1] || '');
+    if (inlinePaymentMode) {
+      plan.paymentMode = inlinePaymentMode;
+      const inlinePaymentPeriod = normalizePaymentPeriodText(line.match(/(?:交费期间|缴费期间|交费年期|缴费年期|交费年限|缴费年限)[:：]?\/?(\d{1,3}年)/u)?.[1] || '');
+      if (inlinePaymentPeriod) plan.paymentPeriod = normalizePlanPaymentPeriod(inlinePaymentPeriod, inlinePaymentMode);
+      continue;
+    }
+
+    const labeledPaymentPeriod = normalizePaymentPeriodText(line);
+    if (labeledPaymentPeriod && /(?:交费期间|缴费期间|交费年期|缴费年期|交费年限|缴费年限)/u.test(line)) {
+      plan.paymentPeriod = normalizePlanPaymentPeriod(labeledPaymentPeriod, plan.paymentMode);
+      continue;
+    }
+
+    if (isBenefitTableHeaderLine(line) || isDateLikePlanValue(line) || isPlaceholderPlanValue(line)) continue;
+
     const paymentMode = normalizePaymentModeText(line);
     if (paymentMode) {
+      if (plan.paymentMode && plan.paymentMode !== paymentMode && (plan.amount || plan.coveragePeriod || plan.paymentPeriod)) break;
       plan.paymentMode = paymentMode;
       continue;
     }
@@ -888,11 +1170,16 @@ function parsePlanDetails(source, startIndex, company) {
 
     const amount = normalizeAmountText(line);
     if (amount) {
-      if (/^(每年|首期|首年|合计|¥|￥)/u.test(line)) {
+      if (sawTotalPremiumLine && /^[¥￥]/u.test(line)) continue;
+      if (/(?:保险费|保费|总保费|首期|首年|合计)/u.test(line) || /^(每年|首期|首年|合计|¥|￥)/u.test(line)) {
         if (!plan.premium) {
           plan.premium = amount;
           plan.premiumText = line;
         }
+        continue;
+      }
+      if (/(?:保险金额|基本保险金额|保额)/u.test(line)) {
+        if (!plan.amount) plan.amount = amount;
         continue;
       }
       if (!plan.amount && !plan.coveragePeriod && !plan.paymentMode && !plan.paymentPeriod) {
@@ -916,11 +1203,80 @@ function parsePlanDetails(source, startIndex, company) {
   return { plan, nextIndex: cursor };
 }
 
+function findPlanDetailStartIndex(source, plan, afterIndex = -1) {
+  const fullName = compactText(plan?.name || '');
+  const baseName = fullName.replace(/（[^）]+）|\([^)]*\)/gu, '');
+  if (!baseName) return -1;
+  return source.findIndex((line, index) => {
+    if (index <= afterIndex) return false;
+    const text = compactText(line);
+    if (!text || text.length < 3 || isBenefitTableHeaderLine(text) || isBenefitTablePlanBoundary(text)) return false;
+    return text.includes(fullName) || fullName.includes(text) || text.includes(baseName) || baseName.includes(text);
+  });
+}
+
+function hydrateMissingSequentialPlanDetails(plans, source) {
+  const hydrated = (Array.isArray(plans) ? plans : []).map((plan) => ({ ...plan }));
+  const indexes = [];
+  for (const plan of hydrated) {
+    const previousIndex = indexes.length ? indexes[indexes.length - 1] : -1;
+    indexes.push(findPlanDetailStartIndex(source, plan, previousIndex));
+  }
+
+  hydrated.forEach((plan, planIndex) => {
+    const startIndex = indexes[planIndex];
+    if (startIndex < 0) return;
+    const nextIndex = indexes.find((index, indexCursor) => indexCursor > planIndex && index > startIndex) ?? source.length;
+    let sawTotalPremiumLine = false;
+    for (let index = startIndex + 1; index < nextIndex; index += 1) {
+      const line = compactText(source[index]);
+      if (!line) continue;
+      if (isPlanDetailSkippableLine(line)) {
+        if (/合计|大写/u.test(line)) sawTotalPremiumLine = true;
+        continue;
+      }
+      if (isBenefitTablePlanBoundary(line)) break;
+
+      const coverage = normalizeCoveragePeriodText(line);
+      if (coverage && /(?:保险期间|保障期间|保险期限|保障期限)/u.test(line) && !plan.coveragePeriod) {
+        plan.coveragePeriod = coverage;
+        continue;
+      }
+
+      const paymentMode = normalizePaymentModeText(line.match(/(?:交费方式|缴费方式)[:：]?(年交|年缴|月交|月缴|季交|季缴|半年交|半年缴|趸交|一次交清|一次性交清|一次性交费|一次性缴清)/u)?.[1] || line);
+      if (paymentMode && !plan.paymentMode) plan.paymentMode = paymentMode;
+
+      const paymentPeriod = normalizePaymentPeriodText(line.match(/(?:交费期间|缴费期间|交费年期|缴费年期|交费年限|缴费年限)[:：]?\/?(\d{1,3}年)/u)?.[1] || line);
+      if (paymentPeriod && !plan.paymentPeriod) {
+        plan.paymentPeriod = normalizePlanPaymentPeriod(paymentPeriod, plan.paymentMode);
+        continue;
+      }
+
+      const amount = normalizeAmountText(line);
+      if (!amount) continue;
+      if (sawTotalPremiumLine && /^[¥￥]/u.test(line)) continue;
+      if (/(?:保险金额|基本保险金额|保额)/u.test(line) && !plan.amount) {
+        plan.amount = amount;
+        continue;
+      }
+      if (/(?:保险费|保费|总保费|首期|首年)/u.test(line) && !plan.premium) {
+        plan.premium = amount;
+        plan.premiumText = line;
+      }
+    }
+    if (!plan.paymentPeriod) plan.paymentPeriod = normalizePlanPaymentPeriod('', plan.paymentMode);
+  });
+
+  return hydrated;
+}
+
 export function extractPolicyPlansFromLines(inputLines, options = {}) {
   const lines = (Array.isArray(inputLines) ? inputLines : [])
     .map((line) => cleanupFieldText(line))
     .filter(Boolean);
   const company = cleanupFieldText(options.company || '');
+  const chinaLifePlans = extractChinaLifeDetailPlans(lines, company);
+  if (chinaLifePlans.length) return chinaLifePlans;
   const receiptPlans = extractReceiptPolicyPlans(lines, company);
   if (receiptPlans.length) {
     return receiptPlans.map((plan, index) => ({
@@ -946,7 +1302,7 @@ export function extractPolicyPlansFromLines(inputLines, options = {}) {
   const labelIndex = findFieldLabelIndex(lines, 'name');
   if (labelIndex < 0) return [];
 
-  const source = lines.slice(labelIndex + 1, labelIndex + 120).map((line) => compactText(line)).filter(Boolean);
+  const source = lines.slice(labelIndex, labelIndex + 120).map((line) => compactText(line)).filter(Boolean);
   const plans = [];
   for (let index = 0; index < source.length; index += 1) {
     const line = source[index];
@@ -965,7 +1321,7 @@ export function extractPolicyPlansFromLines(inputLines, options = {}) {
     ? columnOrderedPlans
     : repairedPlans;
 
-  return bestPlans.map((plan, index) => ({
+  return hydrateMissingSequentialPlanDetails(bestPlans, source).map((plan, index) => ({
     ...plan,
     role: inferPlanRole(plan, index),
   }));

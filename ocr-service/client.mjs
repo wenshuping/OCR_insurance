@@ -52,7 +52,7 @@ async function parseJson(response) {
   }
 }
 
-export async function scanInsurancePolicyOverHttp({ uploadItem, ocrText }, fetchImpl = fetch) {
+export async function scanInsurancePolicyOverHttp({ uploadItem, ocrText, ocrContext }, fetchImpl = fetch) {
   const baseUrl = resolveOcrServiceBaseUrl();
   if (!baseUrl) {
     throw new Error('POLICY_OCR_SERVICE_NOT_CONFIGURED');
@@ -64,6 +64,7 @@ export async function scanInsurancePolicyOverHttp({ uploadItem, ocrText }, fetch
   const normalizedOcrText = String(ocrText || '').trim();
   if (uploadItem) requestBody.uploadItem = uploadItem;
   if (normalizedOcrText) requestBody.ocrText = normalizedOcrText;
+  if (ocrContext && typeof ocrContext === 'object') requestBody.ocrContext = ocrContext;
 
   try {
     response = await fetchWithTimeout(

@@ -462,6 +462,130 @@ function insertRows(db, state) {
   }
 }
 
+function upsertPolicy(db, policy = {}) {
+  db.prepare(`
+    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      user_id = excluded.user_id,
+      guest_id = excluded.guest_id,
+      company = excluded.company,
+      name = excluded.name,
+      insured = excluded.insured,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    Number(policy.id),
+    Number(policy.userId || 0) || null,
+    String(policy.guestId || ''),
+    String(policy.company || ''),
+    String(policy.name || ''),
+    String(policy.insured || ''),
+    String(policy.createdAt || ''),
+    String(policy.updatedAt || ''),
+    jsonPayload(policy),
+  );
+}
+
+function replaceSourceRecordsForPolicy(db, state, policyId) {
+  const id = Number(policyId);
+  if (!Number.isFinite(id)) return;
+  db.prepare('DELETE FROM source_records WHERE policy_id = ?').run(id);
+  const insertSourceRecord = db.prepare(`
+    INSERT INTO source_records (id, policy_id, company, product_name, url, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const source of normalizeArray(state.sourceRecords).filter((row) => Number(row?.policyId || 0) === id)) {
+    insertSourceRecord.run(
+      Number(source.id),
+      Number(source.policyId || 0) || null,
+      String(source.company || ''),
+      String(source.productName || ''),
+      String(source.url || ''),
+      jsonPayload(source),
+    );
+  }
+}
+
+function replaceFamilyProfiles(db, state) {
+  db.exec('DELETE FROM family_members; DELETE FROM family_profiles;');
+  const insertFamilyProfile = db.prepare(`
+    INSERT INTO family_profiles (id, owner_user_id, owner_guest_id, family_name, core_member_id, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const profile of normalizeArray(state.familyProfiles)) {
+    insertFamilyProfile.run(
+      Number(profile.id),
+      Number(profile.ownerUserId || 0) || null,
+      String(profile.ownerGuestId || ''),
+      String(profile.familyName || ''),
+      Number(profile.coreMemberId || 0) || null,
+      String(profile.status || ''),
+      String(profile.createdAt || ''),
+      String(profile.updatedAt || ''),
+      jsonPayload(profile),
+    );
+  }
+
+  const insertFamilyMember = db.prepare(`
+    INSERT INTO family_members (id, family_id, name, relation_to_core, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const member of normalizeArray(state.familyMembers)) {
+    insertFamilyMember.run(
+      Number(member.id),
+      Number(member.familyId || 0) || null,
+      String(member.name || ''),
+      String(member.relationToCore || ''),
+      String(member.status || ''),
+      String(member.createdAt || ''),
+      String(member.updatedAt || ''),
+      jsonPayload(member),
+    );
+  }
+}
+
+function replaceFamilyReportShares(db, state) {
+  db.prepare('DELETE FROM family_report_shares').run();
+  const insertFamilyReportShare = db.prepare(`
+    INSERT INTO family_report_shares (id, family_id, owner_user_id, owner_guest_id, token, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const share of normalizeArray(state.familyReportShares)) {
+    insertFamilyReportShare.run(
+      Number(share.id),
+      Number(share.familyId || 0) || null,
+      Number(share.ownerUserId || 0) || null,
+      String(share.ownerGuestId || ''),
+      String(share.token || share.shareToken || ''),
+      String(share.status || ''),
+      String(share.createdAt || ''),
+      String(share.updatedAt || ''),
+      jsonPayload(share),
+    );
+  }
+}
+
+function replacePendingScan(db, state, guestId) {
+  const id = String(guestId || '').trim();
+  if (!id) return;
+  db.prepare('DELETE FROM pending_scans WHERE guest_id = ?').run(id);
+  const pending = normalizeArray(state.pendingScans).find((row) => String(row?.guestId || '') === id);
+  if (!pending) return;
+  db.prepare(`
+    INSERT INTO pending_scans (guest_id, created_at, payload)
+    VALUES (?, ?, ?)
+  `).run(id, String(pending.createdAt || ''), jsonPayload(pending));
+}
+
+function updateStateMeta(db, state, now) {
+  const initializedAt = getMeta(db, 'state_initialized_at');
+  setMeta(db, 'next_id', String(resolveNextId(state)));
+  setMeta(db, 'state_initialized_at', initializedAt || now);
+  setMeta(db, 'updated_at', now);
+}
+
 function clearDbOwnedTables(db) {
   db.exec(`
     DELETE FROM family_report_shares;
@@ -540,12 +664,78 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       db.exec('PRAGMA defer_foreign_keys = ON');
       clearDbOwnedTables(db);
       insertRows(db, nextState);
-      setMeta(db, 'next_id', String(nextState.nextId));
-      setMeta(db, 'state_initialized_at', initializedAt || now);
-      setMeta(db, 'updated_at', now);
+      updateStateMeta(db, nextState, now);
       if (seedStatePath && !initializedAt && !getMeta(db, 'imported_from_json_state_path')) {
         setMeta(db, 'imported_from_json_state_path', seedStatePath);
       }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistPolicyScanSave({ state, policy, clearPendingGuestId = '' } = {}) {
+    if (!policy?.id) {
+      await persist(state);
+      return;
+    }
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec('PRAGMA defer_foreign_keys = ON');
+      upsertPolicy(db, policy);
+      replaceSourceRecordsForPolicy(db, nextState, policy.id);
+      replaceFamilyProfiles(db, nextState);
+      const pendingGuestId = String(clearPendingGuestId || '').trim();
+      if (pendingGuestId) {
+        db.prepare('DELETE FROM pending_scans WHERE guest_id = ?').run(pendingGuestId);
+      }
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistPendingScan({ state, guestId = '' } = {}) {
+    const pendingGuestId = String(guestId || '').trim();
+    if (!pendingGuestId) {
+      await persist(state);
+      return;
+    }
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      replacePendingScan(db, nextState, pendingGuestId);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistFamilyState({ state, includePolicies = false } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec('PRAGMA defer_foreign_keys = ON');
+      replaceFamilyProfiles(db, nextState);
+      replaceFamilyReportShares(db, nextState);
+      if (includePolicies) {
+        for (const policy of normalizeArray(nextState.policies)) {
+          upsertPolicy(db, policy);
+        }
+      }
+      updateStateMeta(db, nextState, now);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -575,6 +765,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     seedStatePath,
     load,
     persist,
+    persistPolicyScanSave,
+    persistPendingScan,
+    persistFamilyState,
     close,
   };
 }

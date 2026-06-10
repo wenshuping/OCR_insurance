@@ -1,12 +1,14 @@
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { hasConfiguredOcrServiceBaseUrl, scanInsurancePolicyOverHttp } from './client.mjs';
 import { parseCashValueTable, parseCashValueText } from './cash-value-parser.mjs';
+import { getPolicyFieldAliases } from './insurance-field-schema.mjs';
 import { findBestFuzzyMatch, matchesFuzzyPhrase } from './fuzzy-matching.mjs';
 import { extractPolicyPlansFromLines, matchPolicyFieldsFromLines } from './insurance-field-matcher.mjs';
 import {
@@ -14,6 +16,7 @@ import {
   OCR_PROVIDER_LOCAL,
   OCR_PROVIDER_MLX_QWEN25_VL_LOCAL,
   OCR_PROVIDER_OLLAMA_VISION_LOCAL,
+  OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE,
   OCR_PROVIDER_PADDLE_LOCAL,
   OCR_PROVIDER_PADDLEOCR_VL_LOCAL,
   OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL,
@@ -21,6 +24,7 @@ import {
   resolveEffectivePolicyOcrProvider,
 } from './ocr-config.service.mjs';
 import { parsePolicyBasicInfoFromLayoutBoxes } from './policy-basic-info-layout-parser.mjs';
+import { reviewPolicyFieldValues } from './policy-field-review.mjs';
 import { mergePolicyLayoutScanResult } from './policy-layout-merge.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -34,9 +38,160 @@ const OCR_PDF_EXTRACT_KIT_SCRIPT = path.join(OCR_SCRIPTS_DIR, 'policy_ocr_pdf_ex
 const LOCAL_PADDLE_VENV_PYTHON = path.resolve(__dirname, '../.runtime/paddleocr-venv/bin/python');
 const DEFAULT_MAX_SCAN_BYTES = 12 * 1024 * 1024;
 const DEFAULT_MLX_MAX_IMAGE_DIMENSION = 1800;
+const DEFAULT_OLLAMA_VISION_MAX_IMAGE_DIMENSION = 1800;
+const DEFAULT_OLLAMA_VISION_JPEG_QUALITY = 85;
+const DEFAULT_REMOTE_VISION_MAX_IMAGE_DIMENSION = 768;
+const DEFAULT_REMOTE_VISION_JPEG_QUALITY = 85;
+const DEFAULT_REMOTE_VISION_MAX_TOKENS = 1536;
+const DEFAULT_HUAWEI_CLOUD_OCR_TIMEOUT_MS = 60000;
+const MAX_HUAWEI_CLOUD_OCR_IMAGE_BASE64_BYTES = 10 * 1024 * 1024;
+const MIN_REMOTE_VISION_MAX_IMAGE_DIMENSION = 512;
+const MIN_REMOTE_VISION_MAX_TOKENS = 1024;
+const OLLAMA_VISION_COMPLEX_FOCUS_SECTIONS = [
+  {
+    label: '页眉和基本内容区',
+    schemaKey: 'basic',
+    instruction: '只提取保险公司、保单号、投保人、被保险人、被保险人证件号、合同日期和身故受益人；如果“身故保险金受益人”栏写“被保险人的法定继承人”，beneficiary 输出“法定”；看不到的字段留空。',
+  },
+  {
+    label: '保险利益表和险种明细区',
+    schemaKey: 'plans',
+    instruction: '重点提取险种名称、主险、附加险、万能账户、保额、保险期间、交费方式、交费期间、每项保费和首期保险费合计。',
+  },
+  {
+    label: '受益人、特别约定和页面下半区',
+    schemaKey: 'footer',
+    instruction: '核对受益人、万能账户、首期保险费合计和下半区险种；如果看到“被保险人的法定继承人/法定继承人”，beneficiary 输出“法定”；不要把“被保险人同意”等特别约定正文当成姓名。',
+  },
+];
 const OCR_POSTPROCESSOR_NONE = 'none';
 const OCR_POSTPROCESSOR_OLLAMA_QWEN = 'ollama_qwen_local';
 let paddleWarmupPromise = null;
+
+const OLLAMA_FIELD_EVIDENCE_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: { type: 'string' },
+  description: '字段证据短片段，每个值只保留图片中字段附近可见文字，不输出整页OCR原文。',
+};
+
+const OLLAMA_POLICY_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    company: { type: 'string', description: '保险公司名称，例如新华保险、中国平安保险' },
+    name: { type: 'string', description: '主险/险种/保险产品名称，不是投保人姓名或被保险人姓名' },
+    applicant: { type: 'string' },
+    beneficiary: { type: 'string' },
+    policyNumber: { type: 'string' },
+    insured: { type: 'string' },
+    insuredIdNumber: { type: 'string' },
+    insuredBirthday: { type: 'string' },
+    date: { type: 'string' },
+    paymentPeriod: { type: 'string' },
+    coveragePeriod: { type: 'string' },
+    amount: { type: 'string' },
+    firstPremium: { type: 'string' },
+    plans: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          role: { type: 'string' },
+          name: { type: 'string', description: '该行险种/产品名称' },
+          amount: { type: 'string' },
+          coveragePeriod: { type: 'string' },
+          paymentMode: { type: 'string' },
+          paymentPeriod: { type: 'string' },
+          premium: { type: 'string' },
+          productType: { type: 'string' },
+          sourceColumn: { type: 'string', description: 'name 这个值在图片表格中对应的可见列头，例如“险种名称”或“保险项目”。不能填写“保险责任名称”。' },
+          evidence: { type: 'string', description: '该险种行的短证据，不超过120字' },
+        },
+        required: ['role', 'name', 'amount', 'coveragePeriod', 'paymentMode', 'paymentPeriod', 'premium', 'productType', 'sourceColumn', 'evidence'],
+      },
+    },
+    fieldEvidence: OLLAMA_FIELD_EVIDENCE_JSON_SCHEMA,
+  },
+  required: [
+    'company',
+    'name',
+    'applicant',
+    'beneficiary',
+    'policyNumber',
+    'insured',
+    'insuredIdNumber',
+    'insuredBirthday',
+    'date',
+    'paymentPeriod',
+    'coveragePeriod',
+    'amount',
+    'firstPremium',
+    'plans',
+    'fieldEvidence',
+  ],
+};
+
+function pickOllamaPolicyJsonSchema(keys) {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: Object.fromEntries(keys.map((key) => [key, OLLAMA_POLICY_JSON_SCHEMA.properties[key]])),
+    required: keys,
+  };
+}
+
+const OLLAMA_POLICY_BASIC_JSON_SCHEMA = pickOllamaPolicyJsonSchema([
+  'company',
+  'policyNumber',
+  'applicant',
+  'beneficiary',
+  'insured',
+  'insuredIdNumber',
+  'insuredBirthday',
+  'date',
+  'fieldEvidence',
+]);
+
+const OLLAMA_POLICY_PLANS_JSON_SCHEMA = pickOllamaPolicyJsonSchema([
+  'name',
+  'paymentPeriod',
+  'coveragePeriod',
+  'amount',
+  'firstPremium',
+  'plans',
+  'fieldEvidence',
+]);
+
+const OLLAMA_POLICY_FOOTER_JSON_SCHEMA = pickOllamaPolicyJsonSchema([
+  'beneficiary',
+  'firstPremium',
+  'plans',
+  'fieldEvidence',
+]);
+
+const OLLAMA_POLICY_FOCUS_JSON_SCHEMAS = {
+  basic: OLLAMA_POLICY_BASIC_JSON_SCHEMA,
+  plans: OLLAMA_POLICY_PLANS_JSON_SCHEMA,
+  footer: OLLAMA_POLICY_FOOTER_JSON_SCHEMA,
+};
+
+const OLLAMA_POLICY_LINE_OCR_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    lines: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '按图片从上到下、从左到右逐行抄写的可见保单文字。',
+    },
+    text: {
+      type: 'string',
+      description: '同一批逐行文字用换行连接后的文本。',
+    },
+  },
+  required: ['lines', 'text'],
+};
 
 export function resolveLocalOcrScriptPaths() {
   return {
@@ -58,6 +213,7 @@ const COMPANY_ALIASES = [
     value: '中国平安保险',
     patterns: [
       /中国平安(?:人寿|健康|养老)?(?:保险)?(?:股份有限公司|有限责任公司)?/,
+      /中國平安(?:人壽|健康|養老)?(?:保險)?(?:股份有限公司|有限責任公司)?/,
       /平安人寿(?:保险)?(?:股份有限公司)?/,
       /平安保险/,
       /PING\s*AN(?:\s+INSURANCE\s+COMPANY\s+OF\s+CHINA(?:,?\s*LTD\.?)?)?/i,
@@ -88,33 +244,26 @@ const COMPANY_ALIASES = [
   { value: '陆家嘴国泰人寿', patterns: [/陆家嘴国泰人寿保险(?:有限责任公司|股份有限公司)?/, /国泰人寿/, /陆家嘴国泰人寿/] },
 ];
 
+function policySchemaAliases(field, extraAliases = []) {
+  return getPolicyFieldAliases(field === 'date' ? 'effectiveDate' : field, extraAliases);
+}
+
+function policySchemaAliasesWithKey(key, field = key, extraAliases = []) {
+  return Array.from(new Set([key, ...policySchemaAliases(field, extraAliases)]));
+}
+
 const LABELS = {
-  company: ['投保公司', '保险公司', '承保公司', '公司名称', '承保机构', '保险机构', '承保单位', '保险公司全称'],
-  name: ['产品名称', '险种名称', '保险名称', '合同名称', '产品计划', '主险名称', '保险产品名称', '险种计划', '险种/名称', '保险险种'],
-  applicant: ['投保人名称', '投保人', '投保人姓名', '要保人', '要保人姓名'],
-  insured: ['被保险人', '被保险人姓名', '受保人', '受保人姓名', '被保人'],
-  beneficiary: ['身故保险金受益人', '身故受益人', '受益人'],
-  policyNumber: ['保险合同号', '保单合同号', '保单号', '合同号'],
-  date: ['投保日期', '合同成立日期', '合同成立日', '承保日期', '合同生效日期', '合同生效日', '生效日期', '生效时间', '保险起期', '起保日期', '起保日', '保险合同成立及生效日'],
-  paymentPeriod: ['交费方式', '交费期间', '缴费期间', '交费年期', '缴费年期', '交费年限', '缴费年限', '交费期限', '缴费期限'],
-  coveragePeriod: ['保险期间', '保障期间', '保险期限', '保障期限', '保险责任期间', '合同期限'],
-  amount: ['基本保险金额', '保额', '保险金额', '基本保额'],
-  firstPremium: [
-    '首期保险费',
-    '首期保费',
-    '首年保费',
-    '标准保险费',
-    '保险费',
-    '首期应交保险费',
-    '首期应交保费',
-    '首次保费',
-    '首次保险费',
-    '首年应交保费',
-    '首年应交保险费',
-    '总保费',
-    '总保费(人民币)',
-    '总保险费',
-  ],
+  company: policySchemaAliases('company'),
+  name: policySchemaAliases('name'),
+  applicant: policySchemaAliases('applicant'),
+  insured: policySchemaAliases('insured'),
+  beneficiary: policySchemaAliases('beneficiary'),
+  policyNumber: policySchemaAliases('policyNumber'),
+  date: policySchemaAliases('date'),
+  paymentPeriod: policySchemaAliases('paymentPeriod'),
+  coveragePeriod: policySchemaAliases('coveragePeriod'),
+  amount: policySchemaAliases('amount'),
+  firstPremium: policySchemaAliases('firstPremium'),
 };
 
 const AUXILIARY_SPLIT_LABELS = ['客户号码', '保险险种', '保险期限', '缴费年期', '缴费方式', '保险金额(元)', '保险费(元)'];
@@ -190,9 +339,67 @@ function normalizeIdNumber(value) {
     .replace(/[^\dXx]/g, '')
     .toUpperCase();
   const matched18 = text.match(/\d{17}[\dX]/);
-  if (matched18) return matched18[0];
+  if (matched18) return hasValidIdNumberBirthday(matched18[0]) ? matched18[0] : '';
   const matched15 = text.match(/\d{15}/);
-  return matched15?.[0] || '';
+  return matched15 && hasValidIdNumberBirthday(matched15[0]) ? matched15[0] : '';
+}
+
+function reconcileIdNumberWithBirthday(idNumber, birthday) {
+  const normalizedIdNumber = normalizeIdNumber(idNumber);
+  if (!normalizedIdNumber) return '';
+  const explicitBirthday = formatDateValue(birthday || '');
+  if (!explicitBirthday) return normalizedIdNumber;
+  const idBirthday = birthdayFromIdNumber(normalizedIdNumber);
+  return idBirthday && idBirthday !== explicitBirthday ? '' : normalizedIdNumber;
+}
+
+function normalizePolicyNumberValue(value) {
+  const text = compactLine(value).replace(/[^\dA-Za-z]/gu, '');
+  if (text.length < 8) return '';
+  if (normalizeIdNumber(text) === text) return '';
+  if (/^\d{8}$/u.test(text) && isValidDateParts(text.slice(0, 4), text.slice(4, 6), text.slice(6, 8))) return '';
+  return text;
+}
+
+function policyNumberDistance(left, right) {
+  const leftText = String(left || '');
+  const rightText = String(right || '');
+  if (!leftText || leftText.length !== rightText.length) return Number.POSITIVE_INFINITY;
+  let distance = 0;
+  for (let index = 0; index < leftText.length; index += 1) {
+    if (leftText[index] !== rightText[index]) distance += 1;
+  }
+  return distance;
+}
+
+function extractPolicyNumberFromLines(lines, labeledValue = '') {
+  const labeledPolicyNumber = normalizePolicyNumberValue(labeledValue);
+  const candidates = new Map();
+  const contextPattern = /(?:保险合同号|保单合同号|保单号|合同号|保单)[:：]?([A-Za-z0-9]{8,24})/gu;
+  for (const rawLine of lines) {
+    const line = compactLine(rawLine);
+    if (!line || /证件号码|证件号|身份证|客户号码|联系电话|服务电话|业务员/u.test(line)) continue;
+    for (const matched of line.matchAll(contextPattern)) {
+      const value = normalizePolicyNumberValue(matched[1]);
+      if (!value) continue;
+      const existing = candidates.get(value) || { value, count: 0 };
+      existing.count += 1;
+      candidates.set(value, existing);
+    }
+  }
+
+  if (!candidates.size) return labeledPolicyNumber;
+  if (!labeledPolicyNumber) {
+    return [...candidates.values()]
+      .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))[0]?.value || '';
+  }
+
+  const correction = [...candidates.values()]
+    .filter((item) => item.value !== labeledPolicyNumber)
+    .map((item) => ({ ...item, distance: policyNumberDistance(labeledPolicyNumber, item.value) }))
+    .filter((item) => item.count >= 2 && item.distance <= 2)
+    .sort((left, right) => right.count - left.count || left.distance - right.distance)[0];
+  return correction?.value || labeledPolicyNumber;
 }
 
 function isValidDateParts(year, month, day) {
@@ -202,6 +409,19 @@ function isValidDateParts(year, month, day) {
     date.getUTCMonth() + 1 === Number(month) &&
     date.getUTCDate() === Number(day)
   );
+}
+
+function hasValidIdNumberBirthday(value) {
+  const idNumber = String(value || '').replace(/[^\dXx]/g, '').toUpperCase();
+  if (idNumber.length === 18) {
+    return isValidDateParts(idNumber.slice(6, 10), idNumber.slice(10, 12), idNumber.slice(12, 14));
+  }
+  if (idNumber.length === 15) {
+    const shortYear = Number(idNumber.slice(6, 8));
+    const year = String(shortYear >= 30 ? 1900 + shortYear : 2000 + shortYear);
+    return isValidDateParts(year, idNumber.slice(8, 10), idNumber.slice(10, 12));
+  }
+  return false;
 }
 
 function birthdayFromIdNumber(value) {
@@ -231,13 +451,13 @@ function extractInsuredIdentity(lines, insuredName = '') {
     const line = compactLine(rawLine);
     const idNumber = normalizeIdNumber(line);
     if (!idNumber) continue;
-    if (/保单号|合同号|保险合同号|客户号码/u.test(line)) continue;
+    if (/保单|保单号|合同号|保险合同号|客户号码/u.test(line) && !/证件号码|证件号|身份证/u.test(line)) continue;
     let score = 0;
     if (labelPattern.test(line)) score += 5;
     const previousWindow = lines.slice(Math.max(0, index - 3), index).map(compactLine).join(' ');
     const nextWindow = lines.slice(index + 1, index + 4).map(compactLine).join(' ');
-    if (/被保险人|被保人|受保人/u.test(previousWindow) || /被保险人|被保人|受保人/u.test(line)) score += 6;
-    if (/投保人|要保人/u.test(previousWindow) || /投保人|要保人/u.test(line)) score -= 3;
+    if (/被保险[人入]|披保险人|被保人|受保人/u.test(previousWindow) || /被保险[人入]|披保险人|被保人|受保人/u.test(line)) score += 6;
+    if (/投保人|设保人|要保人/u.test(previousWindow) || /投保人|设保人|要保人/u.test(line)) score -= 3;
     if (normalizedInsured && (previousWindow.includes(normalizedInsured) || line.includes(normalizedInsured) || nextWindow.includes(normalizedInsured))) {
       score += 4;
     }
@@ -295,7 +515,7 @@ function extractByLabels(lines, labels, stopLabels = []) {
 }
 
 function formatDateValue(value) {
-  const matched = String(value || '').match(/(20\d{2})[年./-](\d{1,2})[月./-](\d{1,2})/);
+  const matched = String(value || '').match(/((?:19|20)\d{2})[年./-](\d{1,2})[月./-](\d{1,2})/);
   if (!matched) return '';
   const year = matched[1];
   const month = matched[2].padStart(2, '0');
@@ -327,16 +547,18 @@ function matchCompanyAlias(value) {
 }
 
 function parseAmountValue(value) {
-  const text = String(value || '')
+  const raw = String(value || '')
     .replace(/[,，\s]/g, '')
-    .replace(/[¥￥元圆]/g, '')
+    .replace(/(\d)\.(?=\d{3}(?:\D|$))/g, '$1')
     .trim();
-  if (!text) return '';
-  const matched = text.match(/(\d+(?:\.\d+)?)(万|亿)?/);
+  const marked = raw.match(/[¥￥](\d+(?:\.\d+)?)(万|亿)?|(\d+(?:\.\d+)?)(万|亿)?(?:元|圆)/);
+  const text = marked ? '' : raw.replace(/[¥￥元圆]/g, '').trim();
+  if (!marked && !text) return '';
+  const matched = marked || text.match(/(\d+(?:\.\d+)?)(万|亿)?/);
   if (!matched) return '';
-  const base = Number(matched[1]);
+  const base = Number(marked ? (matched[1] || matched[3]) : matched[1]);
   if (!Number.isFinite(base)) return '';
-  const unit = matched[2] || '';
+  const unit = marked ? (matched[2] || matched[4] || '') : (matched[2] || '');
   const multiplier = unit === '亿' ? 100000000 : unit === '万' ? 10000 : 1;
   return String(Math.round(base * multiplier));
 }
@@ -346,13 +568,17 @@ function findCompanyAlias(text) {
 }
 
 function isNonCompanyPlaceholder(value) {
-  return /^(保险单|保险合同|合同|保险利益表|基本内容|保险单说明|特别约定|投保单|批单)$/.test(compactLine(value));
+  return /^(保险单|保险合同|合同|保险利益表|基本内容|保险单说明|特别约定|投保单|批单|保险利益表中对应行数据)$/.test(compactLine(value));
 }
 
 function normalizeCompanyName(value) {
   const text = cleanupFieldValue(value);
   if (isNonCompanyPlaceholder(text)) return '';
-  return matchCompanyAlias(text) || text;
+  const alias = matchCompanyAlias(text);
+  if (alias) return alias;
+  const compact = compactLine(text);
+  if (!/(?:股份有限公司|有限责任公司|保险集团|保险公司|人寿|财险|健康保险|养老保险)/u.test(compact)) return '';
+  return text;
 }
 
 function looksLikeCompanyName(value) {
@@ -378,7 +604,7 @@ function looksLikeCompanyLogoLine(value) {
 function isGenericPolicyLine(text) {
   const line = compactLine(text);
   if (!line) return true;
-  return /^(保险单|基本内容|保险利益表|特别约定|本栏空白|身故保险金受益人|被保险人的法定继承人|证件号码|受益顺序|受益份额|币值单位[:：]?.*|保险合同号[:：]?.*|关爱人生每一天|基本保险金额\/保险金额|\/保障计划\/份数|保险期间|交费方式|保险费约定支付日|\/交费期间.*|\/交费期满日|保险费|基本保险金额|保险金额)$/.test(
+  return /^(保险单|基本内容|保险利益表|特别约定|本栏空白|身故保险金受益人|被保险[人入]的法定继承人|证件号码|受益顺序|受益份额|币值单位[:：]?.*|保险合同号[:：]?.*|关爱人生每一天|基本保险金额\/保险金额|\/保障计划\/份数|保险期间|交费方式|保险费约定支付日|\/交费期间.*|\/交费期满日|保险费|基本保险金额|保险金额)$/.test(
     line
   );
 }
@@ -397,6 +623,44 @@ function isPolicyProductDescriptor(text) {
   return /^(?:终身|定期|两全|养老年金|年金|医疗|长期医疗|短期医疗|意外|意外伤害|疾病|重大疾病|重疾|护理|失能|豁免|增额终身)?(?:寿险|保险|年金保险|两全保险|医疗保险|意外伤害保险|疾病保险|重大疾病保险|重疾保险|护理保险)(?:（[^）]+）|\([^)]*\))?$/.test(
     line
   );
+}
+
+function isResponsibilityTableHeaderNoise(text) {
+  return /^(保险责任名称(?:（接第\d+页）|\(接第\d+页\))?|金额\/?份数|给付标准|免赔额(?:赔付比例)?|赔付比例|经社保赔付|未经社保赔付|泾社保赔付)$/u.test(compactLine(text));
+}
+
+function isStandaloneResponsibilityBenefitName(text) {
+  const line = compactLine(text);
+  if (!line || isPolicyProductDescriptor(line)) return false;
+  if (/^险金/u.test(line)) return true;
+  return /(?:保险金|给付金|赔偿金)$/u.test(line);
+}
+
+function isResponsibilityTableNoise(value) {
+  const text = compactLine(value);
+  if (!text) return true;
+  return isResponsibilityTableHeaderNoise(text) || isStandaloneResponsibilityBenefitName(text);
+}
+
+function stripResponsibilityBenefitTail(value) {
+  let text = compactLine(value);
+  if (!text) return '';
+  const responsibilityNamePattern = '(?:意外|疾病|身故|全残|伤残|残疾|医疗|住院|门诊|特定|重疾|重大疾病|恶性肿瘤|轻度疾病|中度疾病|护理|豁免|津贴|疫苗|牙齿|创伤|费用|赔付|给付|满期|生存)';
+  const benefitSuffixPattern = '(?:保险金|费用保险金|医疗费用保险金|定额给付保险金|给付保险金|津贴保险金|给付金|赔偿金)';
+  const splitBeforeResponsibility = text.match(new RegExp(`^(.+?保险)(?=${responsibilityNamePattern}[一-龥]{0,40}${benefitSuffixPattern}$)`, 'u'));
+  if (splitBeforeResponsibility?.[1]) return splitBeforeResponsibility[1];
+  const splitAfterOcrBrokenInsurance = text.match(new RegExp(`^(.+?保)(?=${responsibilityNamePattern}[一-龥]{0,40}${benefitSuffixPattern}$)`, 'u'));
+  if (splitAfterOcrBrokenInsurance?.[1]) return `${splitAfterOcrBrokenInsurance[1]}险`;
+  if (isStandaloneResponsibilityBenefitName(text)) return '';
+  return text;
+}
+
+function normalizePlanCandidateName(value) {
+  const compact = compactLine(value);
+  if (!compact || isResponsibilityTableHeaderNoise(compact)) return '';
+  const stripped = stripResponsibilityBenefitTail(compact);
+  if (!stripped || isResponsibilityTableNoise(stripped)) return '';
+  return normalizeNameValue(stripped);
 }
 
 function normalizeNameValue(value) {
@@ -425,10 +689,13 @@ function normalizeNameValue(value) {
     }
   }
   if (!text) return '';
+  if (isResponsibilityTableNoise(text)) return '';
   if (text.length <= 2) return '';
+  if (/^(?:可选责任|基本责任)(?:的约定)?[:：]?/u.test(text)) return '';
+  if (/^(保障期间|保险期间|缴费期间|交费期间|缴费方式|交费方式|保险金额|基本保险金额|保额|保险费|保费|首期保险费|首期保费|证件号码|证件号|身份证号|合同成立日期|合同生效日期|生效日期|投保日期|公司名称|保险公司|投保人|设保人|被保险[人入]|披保险人|受益人|身故保险金受益人)[:：]/.test(text)) return '';
   if (isGenericPolicyLine(text)) return '';
   if (isPolicyNameStructuralBoundary(text)) return '';
-  if (/^(投保人|被保险人|客户号码|保险期限|缴费年期|缴费方式|保险金额|保险费)/.test(text)) return '';
+  if (/^(投保人|设保人|被保险[人入]|披保险人|客户号码|保险期限|缴费年期|缴费方式|保险金额|保险费)/.test(text)) return '';
   if (/保险单$/.test(text)) return '';
   if (looksLikeCompanyName(text) || looksLikeCompanyLogoLine(text)) return '';
   if (/客户号码|第一顺位|第二顺位|身故受益人|受益人|100%|联系电话|邮政编码/.test(text)) return '';
@@ -439,15 +706,39 @@ function normalizeNameValue(value) {
   return text;
 }
 
+function isExplicitEmptyFieldValue(value) {
+  const text = compactLine(value).replace(/^["'“”‘’]+|["'“”‘’]+$/gu, '');
+  if (!text) return true;
+  return /^(?:无|没有|空|空白|为空|栏为空|本栏空白|本栏以下空白|未填|未填写|没有填写|未标注|未显示|不确定|未知|null|undefined|横线|[-—－一]+)$/iu.test(text)
+    || /(?:字段|栏|栏目|栏位)(?:为空|空白|未填|未填写|没有填写|未标注|未显示)$/u.test(text);
+}
+
+function extractPersonNameFromModelExplanation(value) {
+  const text = compactLine(value).replace(/^["'“”‘’]+|["'“”‘’]+$/gu, '');
+  if (!text) return '';
+  const matched = text.match(
+    /(?:投保人名称|投保人姓名|投保人|要保人姓名|要保人|被保险人姓名|被保险入姓名|被保险人|被保险入|受保人姓名|受保人|被保人|姓名)?(?:字段|栏目|栏位)?(?:明确)?(?:标注|显示|写着|可见|识别为|提取为|输出|填|为|是)(?:为|是)?[:：]?([一-龥·]{2,8})$/u,
+  );
+  const name = matched?.[1] || '';
+  if (!name || isExplicitEmptyFieldValue(name)) return '';
+  if (/(字段|栏目|栏位|明确|标注|显示|写着|识别|提取|输出|为空|未填|未标注)/u.test(name)) return '';
+  return name;
+}
+
 function normalizePersonNameValue(value) {
   const text = compactLine(value);
   if (!text) return '';
   const cleaned = text
-    .replace(/^(投保人名称|投保人|投保人姓名|要保人|要保人姓名|被保险人|被保险人姓名|受保人|受保人姓名|被保人)[:：]?/, '')
+    .replace(/^(投保人名称|投保人|投保人姓名|要保人|要保人姓名|设保人|设保人姓名|被保险人|被保险人姓名|被保险入|被保险入姓名|披保险人|披保险人姓名|受保人|受保人姓名|被保人)[:：]?/, '')
     .replace(/^（[^）]*）[:：]?/, '')
     .replace(/(性别|生日|出生|生于|证件号码|证件号|受益顺序|受益份额|本栏以下空白|及保险主要事项).*$/, '')
     .trim();
-  if (!cleaned || /^(申请|的申请|列表|名单|详情|明细)$/u.test(cleaned)) return '';
+  if (isExplicitEmptyFieldValue(cleaned)) return '';
+  const explainedName = extractPersonNameFromModelExplanation(cleaned);
+  if (explainedName) return explainedName;
+  if (/(字段|栏目|栏位|明确|标注|显示|写着|识别为|提取为|输出|应该|可能|图片|为空|未填|未标注|未显示)/u.test(cleaned)) return '';
+  if (!cleaned || /^(申请|的申请|列表|名单|详情|明细|同意|法定|法定继承人|的法定继承人|被保险人的法定继承人|被保险入的法定继承人)$/u.test(cleaned)) return '';
+  if (/^(同意|经投保人|经被保险人|特别约定)/u.test(cleaned)) return '';
   const matched = cleaned.match(/^[一-龥·]{2,8}/);
   return matched?.[0] || '';
 }
@@ -458,10 +749,13 @@ function normalizeBeneficiaryValue(value) {
     .replace(/(受益顺序|受益份额|联系电话|邮政编码|本栏以下空白).*$/, '')
     .trim();
   if (!text) return '';
+  if (/法定(?:继承人|继本人|维承人|受益人)/u.test(text)) return '法定';
+  if (isExplicitEmptyFieldValue(text)) return '';
+  if (/(?:字段|栏|栏目|栏位)(?:为空|空白|未填|未填写|没有填写|未标注|未显示)/u.test(text) && !/法定/u.test(text)) return '';
   if (/^(列表|名单|明细)$/u.test(text)) return '';
+  if (/^(?:身份证|居民身份证|证件号码|证件号)[:：]?(?:\d{6,}[\dXx]?)?$/.test(text)) return '';
   if (/(被保险人关系|受益顺序|受益份额|证件名称|证件号码|出生日期|性别)/u.test(text)) return '';
-  if (/^(?:被保险人)?的?法定(?:继承人|继本人|维承人|受益人)?$/.test(text)) return '法定';
-  if (/法定(?:继承人|继本人|维承人|受益人)/.test(text)) return '法定';
+  if (/^(?:被保险[人入])?的?法定(?:继承人|继本人|维承人|受益人)?$/.test(text)) return '法定';
   if (text.length <= 1) return '';
   return normalizePersonNameValue(text);
 }
@@ -469,36 +763,83 @@ function normalizeBeneficiaryValue(value) {
 function isBeneficiaryPlaceholderLine(value) {
   const text = compactLine(value);
   if (!text) return true;
-  return /^(?:[-—－一]+|证件号码|证件号|受益顺序|受益份额|身故保险金受益人|身故受益人|受益人|受益人列表|证件名称|出生日期|性别)$/.test(text)
-    || /(被保险人受益顺序|与被保险人关系受益份额)/u.test(text);
+  return /^(?:[-—－一]+|保单号|被保险人|保单号被保险人|身份证|居民身份证|证件号码|证件号|受益顺序|受益份额|身故保险金受益人|身故受益人|受益人|受益人列表|证件名称|出生日期|性别|与被保人关系|与被保险人关系)$/.test(text)
+    || /(被保险人受益顺序|与被保人关系|与被保险人关系受益份额|受益人份额证件名称)/u.test(text);
 }
 
-function extractBeneficiaryFromLines(lines) {
-  const inline = normalizeBeneficiaryValue(extractByLabels(lines, LABELS.beneficiary, ['证件号码', '证件号', '受益顺序', '受益份额']));
-  if (inline) return inline;
-
-  const labelIndex = findLooseLabelIndex(lines, LABELS.beneficiary);
-  if (labelIndex < 0) return '';
+function scanBeneficiaryValueAfterLabel(lines, labelIndex) {
   const headerWindow = lines.slice(labelIndex, Math.min(lines.length, labelIndex + 5)).map(compactLine).join(' ');
-  const looksLikeBeneficiaryTable = /证件号码|证件号|受益顺序|受益份额/.test(headerWindow);
+  const looksLikeBeneficiaryTable = /保单号|被保险人|证件号码|证件号|受益顺序|受益份额|证件名称|与被保人关系|与被保险人关系/.test(headerWindow);
+  const inlineValue = normalizeBeneficiaryValue(lines[labelIndex]);
+  if (inlineValue && !isBeneficiaryPlaceholderLine(inlineValue)) return inlineValue;
 
   for (let index = labelIndex + 1; index < Math.min(lines.length, labelIndex + 12); index += 1) {
     const line = compactLine(lines[index]);
     if (!line) continue;
-    if (/保险利益表|特别约定|保险单说明|保单制作日期|保险公司签章|合同生效日期|合同成立日期|投保人/.test(line)) break;
-    if (/^(被保险人|被保人|受保人)[:：]/.test(line)) break;
+    if (/保险利益表|特别约定|保险单说明|保单制作日期|保险公司签章|合同生效日期|生效日期|合同成立日期|成立日期|投保人|设保人/.test(line)) break;
+    if (/^(被保险[人入]|被保人|受保人)[:：]/.test(line)) break;
     if (isBeneficiaryPlaceholderLine(line)) continue;
     const value = normalizeBeneficiaryValue(line);
     if (!value) continue;
-    if (looksLikeBeneficiaryTable || /法定继承人|继承人|受益人|[一-龥·]{2,8}/.test(value)) return value;
+    if (looksLikeBeneficiaryTable || /法定继承人|继承人|受益人|本人|[一-龥·]{2,8}/.test(value)) return value;
   }
 
+  return '';
+}
+
+function normalizeBeneficiaryLabelText(value) {
+  return compactLine(value)
+    .replace(/險/g, '险')
+    .replace(/繼/g, '继');
+}
+
+function findDeathBeneficiaryLabelIndex(lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const current = normalizeBeneficiaryLabelText(lines[index]);
+    const next = normalizeBeneficiaryLabelText(lines[index + 1] || '');
+    const joined = `${current}${next}`;
+    if (/身故保险金受益人|身故受益人/u.test(current) && !/^(?:意外|疾病|残疾|医疗)/u.test(current)) return index;
+    if (/身故保险金受益人|身故受益人/u.test(joined) && !/^(?:意外|疾病|残疾|医疗)/u.test(joined)) {
+      return next ? index + 1 : index;
+    }
+  }
+  return -1;
+}
+
+function extractBeneficiaryFromLines(lines) {
+  const deathLabels = ['身故保险金受益人', '身故受益人'];
+  const deathLabelIndex = findDeathBeneficiaryLabelIndex(lines);
+  if (deathLabelIndex >= 0) {
+    const deathValue = scanBeneficiaryValueAfterLabel(lines, deathLabelIndex);
+    if (deathValue) return deathValue;
+  }
+
+  const deathInline = normalizeBeneficiaryValue(extractByLabels(lines, deathLabels, ['证件号码', '证件号', '受益顺序', '受益份额']));
+  if (deathInline) return deathInline;
+
+  const inline = normalizeBeneficiaryValue(extractByLabels(lines, LABELS.beneficiary, ['证件号码', '证件号', '受益顺序', '受益份额']));
+  if (inline) return inline;
+
+  const inherited = inferLegalBeneficiaryFromText(lines.join('\n'));
+  if (inherited) return inherited;
+
+  const labelIndex = findLooseLabelIndex(lines, LABELS.beneficiary);
+  if (labelIndex < 0) return '';
+  return scanBeneficiaryValueAfterLabel(lines, labelIndex);
+}
+
+function inferLegalBeneficiaryFromText(rawText) {
+  const text = normalizeOcrText(rawText);
+  if (!text) return '';
+  if (/被保险[人入]的?法定(?:继承人|继本人|维承人|受益人)/u.test(text)) return '法定';
+  if (/(?:身故保险金受益人|身故受益人|受益人)[\s\S]{0,80}法定(?:继承人|继本人|维承人|受益人)/u.test(text)) return '法定';
   return '';
 }
 
 function normalizePaymentPeriodValue(value) {
   const text = compactLine(value);
   if (!text) return '';
+  if (/^不定期(?:交|缴|文)?$/u.test(text)) return '不定期交';
   if (/续期保险费交费日期|交费期满日|保险费约定支付日|缴费.*日期|交费.*日期/.test(text)) return '';
   if (/^(趸交|一次交清|一次性交清|一次性交费|一次性缴清)$/.test(text)) return '趸交';
   if (/^\d+年交$/.test(text)) return text;
@@ -518,9 +859,14 @@ function normalizePaymentPeriodValue(value) {
   return '';
 }
 
+function normalizePaymentPeriodCandidate(value) {
+  return canonicalPaymentPeriodValue(value || '') || normalizePaymentPeriodValue(value || '');
+}
+
 function normalizePaymentModeValue(value) {
   const text = compactLine(value);
   if (!text) return '';
+  if (/^不定期(?:交|缴|文)?$/u.test(text)) return '不定期交';
   if (/^(年缴|年交)$/.test(text)) return '年交';
   if (/^(月缴|月交)$/.test(text)) return '月交';
   if (/^(季缴|季交)$/.test(text)) return '季交';
@@ -547,6 +893,7 @@ function combinePaymentPeriod(paymentYears, paymentMode) {
 function canonicalPaymentPeriodValue(value) {
   const text = compactLine(value);
   if (!text) return '';
+  if (/^不定期(?:交|缴|文)?$/u.test(text)) return '不定期交';
   if (/^(趸交|一次交清|一次性交清|一次性交费|一次性缴清)$/.test(text)) return '趸交';
   const split = text.match(/^(年交|月交|季交|半年交)\/?(\d{1,3})年$/);
   if (split?.[1] && split?.[2]) {
@@ -590,10 +937,11 @@ function isStandaloneAmountLine(text) {
 function normalizeAmountValue(rawValue) {
   const raw = compactLine(rawValue);
   if (!raw) return '';
+  const hasCurrencyMark = /[¥￥元万亿]/.test(raw);
   if (/保险合同号|合同号|证件号码/.test(raw)) return '';
-  if (/年|月|日/.test(raw)) return '';
+  if (/年|月|日/.test(raw) && !hasCurrencyMark) return '';
   if (/周岁|岁/u.test(raw)) return '';
-  if (!/[¥￥元万亿]/.test(raw) && /^\d{9,}$/.test(raw)) return '';
+  if (!hasCurrencyMark && /^\d{9,}$/.test(raw)) return '';
   return parseAmountValue(raw);
 }
 
@@ -611,20 +959,274 @@ function sumNormalizedPlanPremiums(plans) {
   return formatPositiveAmount(premiums.reduce((total, amount) => total + amount, 0));
 }
 
+function countNormalizedPlanPremiums(plans) {
+  return (Array.isArray(plans) ? plans : [])
+    .map((plan) => Number(plan?.premium || ''))
+    .filter((amount) => Number.isFinite(amount) && amount > 0)
+    .length;
+}
+
+function pickNormalizedFirstPremium(payloadFirstPremium, planPremiumTotal, plans) {
+  const explicit = normalizeAmountValue(payloadFirstPremium || '');
+  if (!explicit) return planPremiumTotal || '';
+  const explicitAmount = Number(explicit);
+  const planAmount = Number(planPremiumTotal || 0);
+  if (
+    Number.isFinite(explicitAmount)
+    && Number.isFinite(planAmount)
+    && explicitAmount > 0
+    && explicitAmount <= 10
+    && planAmount > 100
+    && countNormalizedPlanPremiums(plans) >= 2
+  ) {
+    return planPremiumTotal;
+  }
+  return explicit;
+}
+
+function normalizeEvidenceText(value, maxLength = 120) {
+  const text = normalizeOcrText(String(value ?? '')).replace(/\s+/gu, ' ').trim();
+  if (!text) return '';
+  const limit = Number(maxLength) > 0 ? Number(maxLength) : 120;
+  return text.length > limit ? text.slice(0, limit) : text;
+}
+
+function normalizeOllamaFieldEvidencePayload(payload, maxLength = 80) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+  const normalized = {};
+  for (const [rawKey, rawValue] of Object.entries(payload)) {
+    const key = String(rawKey || '').trim();
+    if (!key) continue;
+    const value = normalizeEvidenceText(rawValue, maxLength);
+    if (value) normalized[key] = value;
+  }
+  return normalized;
+}
+
+function mergeFieldEvidencePayloads(payloads = []) {
+  const merged = {};
+  for (const payload of payloads) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    for (const [rawKey, rawValue] of Object.entries(payload)) {
+      const key = String(rawKey || '').trim();
+      if (!key || rawValue == null || merged[key]) continue;
+      if (typeof rawValue === 'string') {
+        const text = normalizeEvidenceText(rawValue, 120);
+        if (text) merged[key] = text;
+      } else if (typeof rawValue === 'object') {
+        merged[key] = rawValue;
+      }
+    }
+  }
+  return merged;
+}
+
+const TEXT_EVIDENCE_FIELDS = [
+  'company',
+  'name',
+  'applicant',
+  'beneficiary',
+  'policyNumber',
+  'insured',
+  'insuredIdNumber',
+  'insuredBirthday',
+  'date',
+  'paymentPeriod',
+  'coveragePeriod',
+  'amount',
+  'firstPremium',
+];
+
+function textEvidenceLabels(field) {
+  if (field === 'insuredIdNumber') return ['证件号码', '证件号', '身份证号码', '身份证号', '居民身份证号码'];
+  if (field === 'insuredBirthday') return ['出生日期', '生日', '被保险人生日'];
+  if (field === 'firstPremium') return ['首期保险费合计', '首期保费合计', '保险费合计', '首期保险费', '首期保费', '首年保费', '保险费'];
+  if (field === 'amount') return ['基本保险金额', '基本保额', '保险金额', '保额', '金额/份数'];
+  return LABELS[field] || [];
+}
+
+function lineHasTextEvidenceLabel(line, labels) {
+  const text = compactLine(line);
+  if (!text) return false;
+  return labels.some((label) => new RegExp(buildLooseLabelPattern(label), 'iu').test(text));
+}
+
+function lineMatchesTextEvidenceValue(field, value, line) {
+  const rawLine = String(line || '');
+  const text = compactLine(rawLine);
+  const compactValue = compactLine(value);
+  if (!text || !compactValue) return false;
+  if (field === 'date' || field === 'insuredBirthday') {
+    return formatDateValue(rawLine) === value || text.includes(compactValue.replace(/-/gu, ''));
+  }
+  if (field === 'amount' || field === 'firstPremium') {
+    const normalizedLineAmount = normalizeAmountValue(rawLine);
+    const normalizedValue = normalizeAmountValue(value);
+    return Boolean(normalizedValue && normalizedLineAmount === normalizedValue) || text.includes(compactValue);
+  }
+  if (field === 'paymentPeriod') {
+    const inlinePeriod = normalizePaymentPeriodValue(
+      rawLine.match(/(?:交费期间|缴费期间|交费年期|缴费年期|交费年限|缴费年限)[:：]?\/?(\d{1,3}年)/u)?.[1] || '',
+    );
+    return normalizePaymentPeriodValue(rawLine) === value || inlinePeriod === value || text.includes(compactValue);
+  }
+  if (field === 'beneficiary' && compactValue === '法定') return /法定/u.test(text);
+  return text.includes(compactValue);
+}
+
+function textEvidenceRow(lines, valueIndex, labelIndex) {
+  const indexes = [valueIndex, labelIndex].filter((index) => index >= 0);
+  const start = Math.max(0, Math.min(...indexes) - 1);
+  const end = Math.min(lines.length, Math.max(...indexes) + 2);
+  return lines.slice(start, end).map(cleanupFieldValue).filter(Boolean).join(' ');
+}
+
+function makeTextEvidence(lines, field, value, valueIndex, labelIndex, relation = 'text') {
+  if (valueIndex < 0) return null;
+  return {
+    value: String(value || '').trim(),
+    rawValue: cleanupFieldValue(lines[valueIndex] || ''),
+    labelText: labelIndex >= 0 ? cleanupFieldValue(lines[labelIndex] || '') : '',
+    rowText: textEvidenceRow(lines, valueIndex, labelIndex >= 0 ? labelIndex : valueIndex),
+    relation,
+    source: 'ocr-text',
+    region: field === 'name' || field === 'amount' || field === 'firstPremium' ? 'benefit-table' : 'text',
+  };
+}
+
+function findNearbyTextEvidenceLabel(lines, labels, valueIndex, before = 4, after = 2) {
+  const start = Math.max(0, valueIndex - before);
+  const end = Math.min(lines.length - 1, valueIndex + after);
+  for (let index = valueIndex; index >= start; index -= 1) {
+    if (lineHasTextEvidenceLabel(lines[index], labels)) return index;
+  }
+  for (let index = valueIndex + 1; index <= end; index += 1) {
+    if (lineHasTextEvidenceLabel(lines[index], labels)) return index;
+  }
+  return -1;
+}
+
+function findTextEvidenceForField(lines, field, value) {
+  if (!String(value || '').trim()) return null;
+  const labels = textEvidenceLabels(field);
+
+  if (field === 'beneficiary') {
+    const deathLabelIndex = findDeathBeneficiaryLabelIndex(lines);
+    if (deathLabelIndex >= 0) {
+      for (let index = deathLabelIndex; index < Math.min(lines.length, deathLabelIndex + 12); index += 1) {
+        if (!lineMatchesTextEvidenceValue(field, value, lines[index])) continue;
+        return makeTextEvidence(lines, field, value, index, deathLabelIndex, 'death-beneficiary-label');
+      }
+    }
+  }
+
+  if (field === 'firstPremium') {
+    for (let labelIndex = lines.length - 1; labelIndex >= 0; labelIndex -= 1) {
+      if (!lineHasTextEvidenceLabel(lines[labelIndex], labels)) continue;
+      for (let index = labelIndex; index < Math.min(lines.length, labelIndex + 5); index += 1) {
+        if (!lineMatchesTextEvidenceValue(field, value, lines[index])) continue;
+        return makeTextEvidence(lines, field, value, index, labelIndex, 'premium-label');
+      }
+    }
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lineMatchesTextEvidenceValue(field, value, lines[index])) continue;
+    if (lineHasTextEvidenceLabel(lines[index], labels)) {
+      return makeTextEvidence(lines, field, value, index, index, 'inline-label');
+    }
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lineMatchesTextEvidenceValue(field, value, lines[index])) continue;
+    const labelIndex = findNearbyTextEvidenceLabel(lines, labels, index);
+    return makeTextEvidence(lines, field, value, index, labelIndex, labelIndex >= 0 ? 'nearby-label' : 'value-line');
+  }
+
+  return null;
+}
+
+function buildTextFieldEvidence(lines, data) {
+  const evidence = {};
+  const confidence = {};
+  for (const field of TEXT_EVIDENCE_FIELDS) {
+    const item = findTextEvidenceForField(lines, field, data?.[field]);
+    if (!item) continue;
+    evidence[field] = item;
+    confidence[field] = ['death-beneficiary-label', 'premium-label', 'inline-label'].includes(item.relation) ? 'text-high' : 'text';
+  }
+  return { fieldEvidence: evidence, fieldConfidence: confidence };
+}
+
+function buildOllamaVisionEvidenceText(parsed) {
+  if (!parsed || typeof parsed !== 'object') return '';
+  const fieldEvidence = normalizeOllamaFieldEvidencePayload(parsed.fieldEvidence || parsed.evidence || {}, 120);
+  const planEvidence = (Array.isArray(parsed.plans) ? parsed.plans : [])
+    .map((plan) => normalizeEvidenceText(plan?.evidence || '', 120))
+    .filter(Boolean);
+  return normalizeOcrText([...Object.values(fieldEvidence), ...planEvidence].join('\n'));
+}
+
+function fillMissingPolicyDataFields(data, fallback) {
+  if (!data || !fallback) return data || fallback || null;
+  const merged = { ...data };
+  for (const key of [
+    'company',
+    'name',
+    'applicant',
+    'beneficiary',
+    'policyNumber',
+    'insured',
+    'insuredIdNumber',
+    'insuredBirthday',
+    'date',
+    'paymentPeriod',
+    'coveragePeriod',
+    'amount',
+    'firstPremium',
+  ]) {
+    if (!merged[key] && fallback[key]) merged[key] = fallback[key];
+  }
+  if (!Array.isArray(merged.plans) || !merged.plans.length) {
+    if (Array.isArray(fallback.plans) && fallback.plans.length) merged.plans = fallback.plans;
+  }
+  return merged;
+}
+
 export function normalizeExtractedPolicyFields(candidate) {
   const payload = candidate || {};
   const normalizedCompany = normalizeCompanyName(payload.company || '');
-  const rawPaymentPeriod = normalizePaymentPeriodValue(payload.paymentPeriod || '')
+  const rawPaymentPeriod = normalizePaymentPeriodCandidate(payload.paymentPeriod || '')
     || combinePaymentPeriod(payload.paymentYears || '', payload.paymentMode || '')
     || '';
-  const plans = normalizePolicyPlans(payload.plans || [], normalizedCompany);
+  const tablePlans = normalizePolicyTableRowsAsPlans(payload.tableRows || payload.benefitTableRows || [], normalizedCompany);
+  const plans = tablePlans.length ? tablePlans : normalizePolicyPlans(payload.plans || [], normalizedCompany);
   const mainPlan = plans.find((plan) => plan.role === 'main') || plans[0] || null;
   const planPremiumTotal = sumNormalizedPlanPremiums(plans);
-  const insuredIdNumber = normalizeIdNumber(payload.insuredIdNumber || payload.insuredIdentityNumber || payload.insuredIdCard || '');
-  const insuredBirthday = formatDateValue(payload.insuredBirthday || payload.insuredBirthDate || '') || birthdayFromIdNumber(insuredIdNumber);
+  const explicitInsuredBirthday = formatDateValue(payload.insuredBirthday || payload.insuredBirthDate || '');
+  const insuredIdNumber = reconcileIdNumberWithBirthday(
+    payload.insuredIdNumber || payload.insuredIdentityNumber || payload.insuredIdCard || '',
+    explicitInsuredBirthday,
+  );
+  const insuredBirthday = explicitInsuredBirthday || birthdayFromIdNumber(insuredIdNumber);
+  const fieldEvidence = normalizeOllamaFieldEvidencePayload(payload.fieldEvidence || payload.evidence || {});
+  const firstPremium = pickNormalizedFirstPremium(payload.firstPremium, planPremiumTotal, plans);
+  const amount = pickLargestAmount([mainPlan?.amount || '', payload.amount || '']);
+  const policyName = normalizeNameValue(payload.name || '') || mainPlan?.name || '';
+  const policyCoveragePeriod = normalizeCoveragePeriodValue(payload.coveragePeriod || '');
+  const repairedPlans = finalizePolicyPlans(
+    repairMainPlanAmounts(plans, amount, firstPremium, {
+      name: policyName,
+      coveragePeriod: policyCoveragePeriod,
+      paymentPeriod: rawPaymentPeriod,
+    }),
+    firstPremium,
+  );
+  const repairedMainPlan = repairedPlans.find((plan) => plan.role === 'main') || repairedPlans[0] || null;
+  const displayPolicyName = pickDisplayPolicyName(policyName, repairedPlans);
   return {
     company: normalizedCompany,
-    name: normalizeNameValue(payload.name || '') || mainPlan?.name || '',
+    name: displayPolicyName || repairedMainPlan?.name || '',
     applicant: normalizePersonNameValue(payload.applicant || ''),
     beneficiary: normalizeBeneficiaryValue(payload.beneficiary || payload.deathBeneficiary || payload.deathBenefitBeneficiary || ''),
     policyNumber: cleanupFieldValue(payload.policyNumber || payload.policyNo || payload.contractNumber || payload.contractNo || ''),
@@ -632,11 +1234,12 @@ export function normalizeExtractedPolicyFields(candidate) {
     insuredIdNumber,
     insuredBirthday,
     date: formatDateValue(payload.date || ''),
-    paymentPeriod: mainPlan?.paymentPeriod || rawPaymentPeriod,
-    coveragePeriod: mainPlan?.coveragePeriod || normalizeCoveragePeriodValue(payload.coveragePeriod || ''),
-    amount: mainPlan?.amount || normalizeAmountValue(payload.amount || '') || parseAmountValue(payload.amount || ''),
-    firstPremium: planPremiumTotal || normalizeAmountValue(payload.firstPremium || '') || parseAmountValue(payload.firstPremium || ''),
-    ...(plans.length ? { plans } : {}),
+    paymentPeriod: repairedMainPlan?.paymentPeriod || rawPaymentPeriod,
+    coveragePeriod: repairedMainPlan?.coveragePeriod || policyCoveragePeriod,
+    amount: repairedMainPlan?.amount || amount,
+    firstPremium,
+    ...(repairedPlans.length ? { plans: repairedPlans } : {}),
+    ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
   };
 }
 
@@ -662,23 +1265,38 @@ function normalizePolicyPlanRole(value, index, name) {
   return index === 0 ? 'main' : 'rider';
 }
 
+function isPlanNameSourceColumn(value) {
+  const text = compactLine(value);
+  if (!text) return true;
+  if (/保险责任|责任名称|给付标准|免赔额|赔付比例|赔偿比例|受益人/u.test(text)) return false;
+  return /险种|保险项目|保险险种|产品名称|主险名称|附加险/u.test(text);
+}
+
 function normalizePolicyPlans(plans, company = '') {
   const normalizedCompany = normalizeCompanyName(company);
   return (Array.isArray(plans) ? plans : [])
     .map((plan, index) => {
-      const name = normalizeNameValue(plan?.matchedProductName || plan?.name || plan?.productName || '');
-      const rawName = normalizeNameValue(plan?.name || plan?.productName || name);
+      if (!isPlanNameSourceColumn(plan?.sourceColumn || plan?.nameColumn || '')) return null;
+      const name = normalizePlanCandidateName(plan?.matchedProductName || plan?.name || plan?.productName || '');
+      const rawName = normalizePlanCandidateName(plan?.name || plan?.productName || name);
       if (!name && !rawName) return null;
-      const paymentMode = normalizePaymentModeValue(plan?.paymentMode || '');
-      const rawPaymentPeriod = normalizePaymentPeriodValue(plan?.paymentPeriod || '') || (paymentMode === '趸交' ? '趸交' : '');
-      const premium = normalizeAmountValue(plan?.premium || plan?.firstPremium || '') || parseAmountValue(plan?.premium || plan?.firstPremium || '');
+      const rawPaymentMode = cleanupFieldValue(plan?.paymentMode || '');
+      const paymentMode = normalizePaymentModeValue(rawPaymentMode);
+      const rawPaymentPeriod = normalizePaymentPeriodCandidate(plan?.paymentPeriod || '') || (paymentMode === '趸交' ? '趸交' : '');
+      const premium = normalizeAmountValue(plan?.premium || plan?.firstPremium || '');
+      const evidence = normalizeEvidenceText(plan?.evidence || '', 120);
+      const paymentBasis = rawPaymentMode && !paymentMode ? rawPaymentMode : '';
+      const benefitRows = normalizePolicyPlanBenefitRows(
+        plan?.benefitRows || plan?.responsibilityRows || plan?.coverageRows || [],
+        { amount: plan?.amount || '', premium, coveragePeriod: plan?.coveragePeriod || '', paymentPeriod: rawPaymentPeriod, paymentBasis, evidence },
+      );
       return {
         company: normalizeCompanyName(plan?.company || normalizedCompany),
         role: normalizePolicyPlanRole(plan?.role || '', index, rawName || name),
         name: rawName || name,
         matchedProductName: name && name !== rawName ? name : String(plan?.matchedProductName || '').trim(),
         productType: String(plan?.productType || inferNormalizedPlanProductType(rawName || name)).trim(),
-        amount: normalizeAmountValue(plan?.amount || '') || parseAmountValue(plan?.amount || ''),
+        amount: normalizeAmountValue(plan?.amount || ''),
         coveragePeriod: normalizeCoveragePeriodValue(plan?.coveragePeriod || ''),
         paymentMode,
         paymentPeriod: rawPaymentPeriod,
@@ -686,9 +1304,354 @@ function normalizePolicyPlans(plans, company = '') {
         premiumText: String(plan?.premiumText || '').trim(),
         matchScore: Number(plan?.matchScore || 0) || 0,
         matchReason: String(plan?.matchReason || '').trim(),
+        ...(benefitRows.length ? { benefitRows } : {}),
+        ...(evidence ? { evidence } : {}),
       };
     })
     .filter(Boolean);
+}
+
+function normalizePolicyTableRows(rows = []) {
+  const normalizedRows = [];
+  let currentPlanName = '';
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const explicitPlanName = normalizePlanCandidateName(
+      row?.planName || row?.productName || row?.policyPlanName || row?.name || row?.['险种名称'] || '',
+    );
+    if (explicitPlanName) currentPlanName = explicitPlanName;
+    const planName = explicitPlanName || currentPlanName;
+    if (!planName) continue;
+    const responsibilityName = cleanupFieldValue(
+      row?.responsibilityName || row?.liabilityName || row?.coverageName || row?.benefitName || row?.['保险责任名称'] || '',
+    );
+    const amountText = cleanupFieldValue(row?.amountOrUnits || row?.amountText || row?.amount || row?.units || row?.['金额/份数'] || '');
+    const benefitStandard = cleanupFieldValue(row?.benefitStandard || row?.['给付标准'] || '');
+    const paymentBasis = cleanupFieldValue(row?.paymentBasis || row?.basis || '');
+    const deductible = cleanupFieldValue(row?.deductible || row?.['免赔额'] || '');
+    const ratio = cleanupFieldValue(row?.ratio || row?.payoutRatio || row?.['赔付比例'] || '');
+    const evidence = normalizeEvidenceText(row?.evidence || '', 120);
+    if (!responsibilityName && !amountText && !benefitStandard && !paymentBasis && !deductible && !ratio && !evidence) continue;
+    normalizedRows.push({
+      planName,
+      responsibilityName,
+      amountText,
+      amount: normalizeAmountValue(amountText),
+      benefitStandard,
+      paymentBasis,
+      deductible,
+      ratio,
+      evidence,
+    });
+  }
+  return normalizedRows;
+}
+
+function tableAmountForPlan(row = {}) {
+  const amountText = compactLine(row.amountText || '');
+  if (!amountText || /份/u.test(amountText)) return '';
+  return row.amount || normalizeAmountValue(amountText);
+}
+
+function normalizePolicyTableRowsAsPlans(rows = [], company = '') {
+  const tableRows = normalizePolicyTableRows(rows);
+  const grouped = [];
+  const indexByKey = new Map();
+  for (const row of tableRows) {
+    const key = compactLine(row.planName);
+    if (!key) continue;
+    let group = grouped[indexByKey.get(key)];
+    if (!group) {
+      group = {
+        company: normalizeCompanyName(company),
+        role: normalizePolicyPlanRole('', grouped.length, row.planName),
+        name: row.planName,
+        matchedProductName: '',
+        productType: inferNormalizedPlanProductType(row.planName),
+        amount: '',
+        coveragePeriod: '',
+        paymentMode: '',
+        paymentPeriod: '',
+        premium: '',
+        premiumText: '',
+        matchScore: 0,
+        matchReason: '',
+        benefitRows: [],
+      };
+      indexByKey.set(key, grouped.length);
+      grouped.push(group);
+    }
+    const benefitRow = normalizePolicyPlanBenefitRow({
+      responsibilityName: row.responsibilityName,
+      amount: row.amount,
+      amountText: row.amountText,
+      benefitStandard: row.benefitStandard,
+      paymentBasis: row.paymentBasis,
+      deductible: row.deductible,
+      ratio: row.ratio,
+      evidence: row.evidence,
+    });
+    if (benefitRow) group.benefitRows.push(benefitRow);
+    group.amount = pickLargestAmount([group.amount || '', tableAmountForPlan(row)]);
+  }
+  return grouped.map((plan) => ({
+    ...plan,
+    benefitRows: mergePolicyPlanBenefitRows(plan.benefitRows || []),
+  }));
+}
+
+function shouldUsePolicyAmountForPlan(planAmount, policyAmount, premium) {
+  const normalizedPolicyAmount = normalizeAmountValue(policyAmount || '');
+  if (!normalizedPolicyAmount) return false;
+  const normalizedPlanAmount = normalizeAmountValue(planAmount || '');
+  if (!normalizedPlanAmount) return true;
+  if (normalizedPlanAmount === normalizedPolicyAmount) return false;
+  const planNumber = Number(normalizedPlanAmount);
+  const policyNumber = Number(normalizedPolicyAmount);
+  if (!Number.isFinite(planNumber) || !Number.isFinite(policyNumber) || policyNumber <= 0) return false;
+  const normalizedPremium = normalizeAmountValue(premium || '');
+  if (normalizedPremium && normalizedPremium === normalizedPlanAmount && policyNumber > planNumber) {
+    return true;
+  }
+  if (normalizedPremium && normalizedPremium.startsWith(normalizedPlanAmount) && planNumber < Number(normalizedPremium)) {
+    return true;
+  }
+  return planNumber < 1000 && policyNumber >= 10000;
+}
+
+function repairMainPlanAmounts(plans = [], policyAmount = '', firstPremium = '', policyFields = {}) {
+  const normalizedPolicyAmount = normalizeAmountValue(policyAmount || '');
+  if (!Array.isArray(plans) || !plans.length || !normalizedPolicyAmount) return plans;
+  const policyName = normalizeNameValue(policyFields.name || '');
+  const policyCoveragePeriod = normalizeCoveragePeriodValue(policyFields.coveragePeriod || '');
+  const policyPaymentPeriod = canonicalPaymentPeriodValue(policyFields.paymentPeriod || '')
+    || normalizePaymentPeriodValue(policyFields.paymentPeriod || '');
+  const policyPaymentMode = paymentModeFromPaymentPeriod(policyPaymentPeriod);
+  const mainIndexes = plans
+    .map((plan, index) => (plan?.role === 'main' ? index : -1))
+    .filter((index) => index >= 0);
+  const preferredMainIndex = policyName
+    ? mainIndexes.find((index) => {
+      const planName = normalizeNameValue(plans[index]?.name || '');
+      return planName && (planName === policyName || policyName.endsWith(planName));
+    })
+    : -1;
+  const keepMainIndex = preferredMainIndex >= 0 ? preferredMainIndex : mainIndexes[0];
+  return plans.map((plan, index) => {
+    if (plan?.role !== 'main') return plan;
+    let next = mainIndexes.length > 1 && index !== keepMainIndex ? { ...plan, role: 'rider' } : plan;
+    if (next.role !== 'main') return next;
+    const premium = plan?.premium || firstPremium;
+    const shouldRepairAmount = shouldUsePolicyAmountForPlan(plan?.amount || '', normalizedPolicyAmount, premium);
+    next = shouldRepairAmount ? { ...next, amount: normalizedPolicyAmount } : next;
+    if (policyName && policyName !== next.name && (isPolicyProductDescriptor(next.name) || policyName.endsWith(next.name))) {
+      next = { ...next, name: policyName, productType: next.productType || inferNormalizedPlanProductType(policyName) };
+    }
+    if (shouldRepairAmount && policyCoveragePeriod && (!next.coveragePeriod || policyCoveragePeriod.length >= next.coveragePeriod.length)) {
+      next = { ...next, coveragePeriod: policyCoveragePeriod };
+    }
+    if (policyPaymentPeriod && !next.paymentPeriod) next = { ...next, paymentPeriod: policyPaymentPeriod };
+    if (policyPaymentMode && !next.paymentMode) next = { ...next, paymentMode: policyPaymentMode };
+    return next;
+  });
+}
+
+function isEmptyDuplicateRiderPlan(plan, mainNames = new Set()) {
+  if (plan?.role !== 'rider') return false;
+  if (!mainNames.has(compactLine(plan?.name || ''))) return false;
+  return !plan?.amount && !plan?.coveragePeriod && !plan?.premium && !plan?.evidence;
+}
+
+function policyPlanIdentityKey(plan = {}) {
+  return compactLine(plan?.matchedProductName || plan?.name || '');
+}
+
+function normalizePolicyPlanBenefitRow(row = {}) {
+  const amount = normalizeAmountValue(row?.amount || '');
+  const premium = normalizeAmountValue(row?.premium || row?.firstPremium || '');
+  const coveragePeriod = normalizeCoveragePeriodValue(row?.coveragePeriod || '');
+  const paymentMode = normalizePaymentModeValue(row?.paymentMode || '');
+  const paymentPeriod = normalizePaymentPeriodCandidate(row?.paymentPeriod || '') || (paymentMode === '趸交' ? '趸交' : '');
+  const responsibilityName = cleanupFieldValue(row?.responsibilityName || row?.liabilityName || row?.coverageName || '');
+  const amountText = cleanupFieldValue(row?.amountText || row?.amountOrUnits || '');
+  const paymentBasis = cleanupFieldValue(row?.paymentBasis || row?.basis || row?.paymentModeText || '');
+  const benefitStandard = cleanupFieldValue(row?.benefitStandard || '');
+  const deductible = cleanupFieldValue(row?.deductible || '');
+  const ratio = cleanupFieldValue(row?.ratio || row?.payoutRatio || '');
+  const evidence = normalizeEvidenceText(row?.evidence || '', 120);
+  if (
+    !responsibilityName
+    && !amount
+    && !amountText
+    && !premium
+    && !coveragePeriod
+    && !paymentMode
+    && !paymentPeriod
+    && !paymentBasis
+    && !benefitStandard
+    && !deductible
+    && !ratio
+    && !evidence
+  ) return null;
+  return {
+    ...(responsibilityName ? { responsibilityName } : {}),
+    ...(amountText ? { amountText } : {}),
+    ...(amount ? { amount } : {}),
+    ...(premium ? { premium } : {}),
+    ...(coveragePeriod ? { coveragePeriod } : {}),
+    ...(paymentMode ? { paymentMode } : {}),
+    ...(paymentPeriod ? { paymentPeriod } : {}),
+    ...(paymentBasis ? { paymentBasis } : {}),
+    ...(benefitStandard ? { benefitStandard } : {}),
+    ...(deductible ? { deductible } : {}),
+    ...(ratio ? { ratio } : {}),
+    ...(evidence ? { evidence } : {}),
+  };
+}
+
+function normalizePolicyPlanBenefitRows(rows = [], fallbackRow = null) {
+  const normalizedRows = (Array.isArray(rows) ? rows : [])
+    .map((row) => normalizePolicyPlanBenefitRow(row))
+    .filter(Boolean);
+  if (normalizedRows.length) return normalizedRows;
+  if (!fallbackRow?.paymentBasis) return [];
+  const normalizedFallback = normalizePolicyPlanBenefitRow(fallbackRow);
+  return normalizedFallback ? [normalizedFallback] : [];
+}
+
+function planBenefitRowsForMerge(plan = {}) {
+  const rows = normalizePolicyPlanBenefitRows(plan?.benefitRows || plan?.responsibilityRows || plan?.coverageRows || []);
+  if (rows.length) return rows;
+  const row = normalizePolicyPlanBenefitRow(plan);
+  return row ? [row] : [];
+}
+
+function mergePolicyPlanBenefitRows(currentRows = [], incomingRows = []) {
+  const result = [];
+  const seen = new Set();
+  for (const row of [...currentRows, ...incomingRows]) {
+    const normalized = normalizePolicyPlanBenefitRow(row);
+    if (!normalized) continue;
+    const key = [
+      normalized.responsibilityName || '',
+      normalized.amountText || '',
+      normalized.amount || '',
+      normalized.premium || '',
+      normalized.coveragePeriod || '',
+      normalized.paymentMode || '',
+      normalized.paymentPeriod || '',
+      normalized.paymentBasis || '',
+      normalized.benefitStandard || '',
+      normalized.deductible || '',
+      normalized.ratio || '',
+    ].join('\u001f');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function pickBestPolicyPlanRole(currentRole = '', incomingRole = '', name = '') {
+  const roles = [currentRole, incomingRole].filter(Boolean);
+  if (roles.includes('main')) return 'main';
+  if (roles.includes('linked_account')) return 'linked_account';
+  if (roles.includes('rider')) return 'rider';
+  return normalizePolicyPlanRole(currentRole || incomingRole || '', 0, name);
+}
+
+function mergeDuplicatePolicyPlan(current = {}, incoming = {}) {
+  const name = pickLongest([current.name || '', incoming.name || '']);
+  const bestMatch = Number(incoming.matchScore || 0) > Number(current.matchScore || 0) ? incoming : current;
+  const matchedProductName = bestMatch.matchedProductName
+    || pickLongest([current.matchedProductName || '', incoming.matchedProductName || '']);
+  const benefitRows = mergePolicyPlanBenefitRows(
+    planBenefitRowsForMerge(current),
+    planBenefitRowsForMerge(incoming),
+  );
+  return {
+    ...current,
+    company: pickFirstNonEmpty([current.company || '', incoming.company || '']),
+    role: pickBestPolicyPlanRole(current.role || '', incoming.role || '', name),
+    name,
+    matchedProductName,
+    productType: pickFirstNonEmpty([
+      current.productType || '',
+      incoming.productType || '',
+      inferNormalizedPlanProductType(name),
+    ]),
+    amount: pickLargestAmount([current.amount || '', incoming.amount || ''])
+      || pickFirstNonEmpty([current.amount || '', incoming.amount || '']),
+    coveragePeriod: pickLongest([current.coveragePeriod || '', incoming.coveragePeriod || '']),
+    paymentMode: pickFirstNonEmpty([current.paymentMode || '', incoming.paymentMode || '']),
+    paymentPeriod: pickBestPaymentPeriod([current.paymentPeriod || '', incoming.paymentPeriod || ''])
+      || pickFirstNonEmpty([current.paymentPeriod || '', incoming.paymentPeriod || '']),
+    premium: pickLargestAmount([current.premium || '', incoming.premium || ''])
+      || pickFirstNonEmpty([current.premium || '', incoming.premium || '']),
+    premiumText: pickFirstNonEmpty([current.premiumText || '', incoming.premiumText || '']),
+    matchScore: Math.max(Number(current.matchScore || 0) || 0, Number(incoming.matchScore || 0) || 0),
+    matchReason: pickLongest([current.matchReason || '', incoming.matchReason || '']),
+    ...(benefitRows.length ? { benefitRows } : {}),
+    ...(pickLongest([current.evidence || '', incoming.evidence || ''])
+      ? { evidence: pickLongest([current.evidence || '', incoming.evidence || '']) }
+      : {}),
+  };
+}
+
+function mergeDuplicatePolicyPlans(plans = []) {
+  const result = [];
+  const indexByKey = new Map();
+  for (const plan of Array.isArray(plans) ? plans : []) {
+    const key = policyPlanIdentityKey(plan);
+    if (!key) {
+      result.push(plan);
+      continue;
+    }
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, result.length);
+      result.push(plan);
+      continue;
+    }
+    result[existingIndex] = mergeDuplicatePolicyPlan(result[existingIndex], plan);
+  }
+  return result;
+}
+
+function finalizePolicyPlans(plans = [], firstPremium = '') {
+  const normalizedFirstPremium = normalizeAmountValue(firstPremium || '');
+  const mainNames = new Set((Array.isArray(plans) ? plans : [])
+    .filter((plan) => plan?.role === 'main')
+    .map((plan) => compactLine(plan?.name || ''))
+    .filter(Boolean));
+  const prunedPlans = (Array.isArray(plans) ? plans : [])
+    .filter((plan) => !isEmptyDuplicateRiderPlan(plan, mainNames));
+  const mergedPlans = mergeDuplicatePolicyPlans(prunedPlans);
+  const mainIndexes = mergedPlans
+    .map((plan, index) => (plan?.role === 'main' ? index : -1))
+    .filter((index) => index >= 0);
+  if (mainIndexes.length !== 1 || mergedPlans.length !== 1 || !normalizedFirstPremium) return mergedPlans;
+  const mainIndex = mainIndexes[0];
+  const mainPlan = mergedPlans[mainIndex];
+  if (mainPlan?.premium) return mergedPlans;
+  return mergedPlans.map((plan, index) => (index === mainIndex ? { ...plan, premium: normalizedFirstPremium } : plan));
+}
+
+function pickDisplayPolicyName(policyName = '', plans = []) {
+  const normalizedPolicyName = normalizeNameValue(policyName || '');
+  const normalizedPlans = Array.isArray(plans) ? plans : [];
+  const mainPlan = normalizedPlans.find((plan) => plan?.role === 'main') || normalizedPlans[0] || null;
+  const mainName = normalizeNameValue(mainPlan?.name || '');
+  if (!normalizedPolicyName) return mainName;
+  if (!mainName || normalizedPolicyName === mainName) return normalizedPolicyName;
+
+  const compactPolicyName = compactLine(normalizedPolicyName);
+  const compactMainName = compactLine(mainName);
+  const otherPlanNames = normalizedPlans
+    .map((plan) => normalizeNameValue(plan?.name || ''))
+    .filter((name) => name && name !== mainName);
+  const containsOtherPlan = otherPlanNames.some((name) => compactPolicyName.includes(compactLine(name)));
+  if (compactPolicyName.startsWith(compactMainName) && containsOtherPlan) return mainName;
+  return normalizedPolicyName;
 }
 
 function fallbackFirstPremium(lines) {
@@ -806,7 +1769,7 @@ function fallbackLooseProductName(lines, company) {
     if (!line) continue;
     if (isPolicyNameStructuralBoundary(line)) break;
     if (isGenericPolicyLine(line)) continue;
-    if (/^(投保人|被保险人|合同成立日期|合同生效日期|保险合同号|特别约定|首期保险费合计|证件号码|受益顺序|受益份额)/.test(line)) continue;
+    if (/^(投保人|被保险[人入]|合同成立日期|合同生效日期|保险合同号|特别约定|首期保险费合计|证件号码|受益顺序|受益份额)/.test(line)) continue;
     if (/^(每年\d{1,2}月\d{1,2}日|至20\d{2}年\d{1,2}月\d{1,2}日|[¥￥]?\d+(?:\.\d+)?元?|\/\d+年|\/20\d{2}年|3份|年交|月交|季交|趸交|一次交清)$/.test(line)) continue;
     if (normalizeCompanyName(line) === company || findCompanyAlias(line) === company) continue;
     if (!/[一-龥A-Za-z]/.test(line)) continue;
@@ -831,10 +1794,12 @@ function fallbackLooseProductName(lines, company) {
 
 function isPolicyProductNoise(line, company) {
   if (!line) return true;
+  if (isResponsibilityTableNoise(line)) return true;
+  if (/^(?:可选责任|基本责任)(?:的约定)?[:：]?/u.test(line)) return true;
   if (isPolicyNameStructuralBoundary(line)) return true;
   if (isGenericPolicyLine(line)) return true;
   if (
-    /^(投保人|被保险人|合同成立日期|合同生效日期|保险合同号|特别约定|首期保险费合计|证件号码|受益顺序|受益份额)/.test(
+    /^(投保人|被保险[人入]|合同成立日期|合同生效日期|保险合同号|特别约定|首期保险费合计|证件号码|受益顺序|受益份额)/.test(
       line
     )
   ) {
@@ -1748,6 +2713,45 @@ function sumPlanPremiumsForFields(plans = []) {
   return Number.isInteger(total) ? String(total) : String(total).replace(/\.?0+$/u, '');
 }
 
+function paymentModeFromPaymentPeriod(paymentPeriod = '') {
+  const text = compactLine(paymentPeriod);
+  if (!text) return '';
+  if (text === '趸交') return '趸交';
+  if (/年交$/u.test(text)) return '年交';
+  if (/月交$/u.test(text)) return '月交';
+  if (/季交$/u.test(text)) return '季交';
+  if (/半年交$/u.test(text)) return '半年交';
+  return '';
+}
+
+function hydratePlanFieldsFromTopLevel(plans = [], fields = {}) {
+  const normalizedPlans = (Array.isArray(plans) ? plans : []).map((plan) => ({ ...plan }));
+  if (!normalizedPlans.length) return normalizedPlans;
+
+  const mainPlanIndex = normalizedPlans.findIndex((plan) => plan.role === 'main');
+  const targetIndex = mainPlanIndex >= 0 ? mainPlanIndex : 0;
+  const target = normalizedPlans[targetIndex];
+  if (!target) return normalizedPlans;
+
+  const amount = normalizeAmountValue(fields.amount || '');
+  const coveragePeriod = normalizeCoveragePeriodValue(fields.coveragePeriod || '');
+  const paymentPeriod = canonicalPaymentPeriodValue(fields.paymentPeriod || '') || normalizePaymentPeriodValue(fields.paymentPeriod || '');
+  const paymentMode = paymentModeFromPaymentPeriod(paymentPeriod);
+  const firstPremium = normalizeAmountValue(fields.firstPremium || '');
+  const canHydrateSinglePlan = normalizedPlans.length === 1;
+
+  if (canHydrateSinglePlan && !target.amount && amount) target.amount = amount;
+  if (canHydrateSinglePlan && !target.coveragePeriod && coveragePeriod) target.coveragePeriod = coveragePeriod;
+  if (canHydrateSinglePlan && !target.paymentPeriod && paymentPeriod) target.paymentPeriod = paymentPeriod;
+  if (canHydrateSinglePlan && !target.paymentMode && paymentMode) target.paymentMode = paymentMode;
+  if (normalizedPlans.length === 1 && !target.premium && firstPremium) {
+    target.premium = firstPremium;
+    target.premiumText = fields.firstPremiumText || target.premiumText || '';
+  }
+
+  return normalizedPlans;
+}
+
 function pickFirstNonEmpty(values) {
   return values.find(Boolean) || '';
 }
@@ -1760,20 +2764,60 @@ function pickLongest(values) {
 
 function pickBestPaymentPeriod(values) {
   return values
+    .map((value) => normalizePaymentPeriodCandidate(value))
     .filter(Boolean)
     .sort((a, b) => {
-      const scoreA = (String(a).includes('/') ? 2 : 0) + String(a).length;
-      const scoreB = (String(b).includes('/') ? 2 : 0) + String(b).length;
+      const score = (value) => {
+        const text = String(value || '');
+        return (/^\d{1,3}年/u.test(text) || /^(趸交|不定期交)$/u.test(text) ? 8 : 0)
+          + (/交$/u.test(text) ? 2 : 0)
+          + text.length;
+      };
+      const scoreA = score(a);
+      const scoreB = score(b);
       return scoreB - scoreA;
     })[0] || '';
 }
 
-function pickLargestNumeric(values) {
+function pickLargestAmount(values) {
   return values
+    .filter(Boolean)
+    .map((value) => normalizeAmountValue(value))
     .filter(Boolean)
     .map((value) => ({ raw: String(value), num: Number(value) }))
     .filter((item) => Number.isFinite(item.num) && item.num > 0)
     .sort((a, b) => b.num - a.num)[0]?.raw || '';
+}
+
+function fieldEvidenceText(item, field) {
+  const evidence = item?.fieldEvidence?.[field] || item?.evidence?.[field] || '';
+  if (!evidence) return '';
+  if (typeof evidence === 'string') return evidence;
+  if (typeof evidence === 'object') {
+    return normalizeOcrText([
+      evidence.value,
+      evidence.rawValue,
+      evidence.labelText,
+      evidence.rowText,
+      evidence.evidence,
+    ].filter(Boolean).join('\n'));
+  }
+  return '';
+}
+
+function hasExplicitPremiumEvidence(item) {
+  const text = compactLine(fieldEvidenceText(item, 'firstPremium'));
+  return /首期|首年|首次|保费|保险费合计|保险费|总保费|总保险费/u.test(text);
+}
+
+function pickBestFirstPremium(dataList = []) {
+  const candidates = dataList
+    .map((item) => ({
+      value: normalizeAmountValue(item?.firstPremium || ''),
+      explicit: hasExplicitPremiumEvidence(item),
+    }))
+    .filter((item) => item.value);
+  return candidates.find((item) => item.explicit)?.value || candidates[0]?.value || '';
 }
 
 function scorePolicyPlans(plans = []) {
@@ -1787,25 +2831,317 @@ function scorePolicyPlans(plans = []) {
   }, 0);
 }
 
+function hasPolicyDataValue(data) {
+  if (!data || typeof data !== 'object') return false;
+  const valueKeys = [
+    'company',
+    'name',
+    'applicant',
+    'beneficiary',
+    'policyNumber',
+    'insured',
+    'insuredIdNumber',
+    'insuredBirthday',
+    'date',
+    'paymentPeriod',
+    'coveragePeriod',
+    'amount',
+    'firstPremium',
+  ];
+  if (valueKeys.some((key) => String(data?.[key] || '').trim())) return true;
+  return scorePolicyPlans(data.plans || []) > 0;
+}
+
 function mergePolicyDataCandidates(dataList) {
   const plans = dataList
     .map((item) => (Array.isArray(item?.plans) ? item.plans : []))
     .sort((a, b) => scorePolicyPlans(b) - scorePolicyPlans(a) || b.length - a.length)[0] || [];
-  const insuredIdNumber = pickFirstNonEmpty(dataList.map((item) => item?.insuredIdNumber || ''));
+  const rawInsuredBirthday = pickFirstNonEmpty(dataList.map((item) => item?.insuredBirthday || ''));
+  const insuredIdNumber = reconcileIdNumberWithBirthday(
+    pickFirstNonEmpty(dataList.map((item) => item?.insuredIdNumber || '')),
+    rawInsuredBirthday,
+  );
+  const fieldEvidence = mergeFieldEvidencePayloads(dataList.map((item) => item?.fieldEvidence));
+  const firstPremium = pickBestFirstPremium(dataList);
+  const name = pickLongest(dataList.map((item) => item?.name || ''));
+  const coveragePeriod = pickLongest(dataList.map((item) => item?.coveragePeriod || ''));
+  const paymentPeriod = pickBestPaymentPeriod(dataList.map((item) => item?.paymentPeriod || ''));
+  const amount = pickLargestAmount(dataList.map((item) => item?.amount || ''));
+  const repairedPlans = finalizePolicyPlans(
+    repairMainPlanAmounts(plans, amount, firstPremium, { name, coveragePeriod, paymentPeriod }),
+    firstPremium,
+  );
+  const repairedMainPlan = repairedPlans.find((plan) => plan?.role === 'main') || repairedPlans[0] || null;
+  const displayName = pickDisplayPolicyName(name, repairedPlans);
+  const mergedAmount = amount || repairedMainPlan?.amount || pickLargestAmount(repairedPlans.map((plan) => plan?.amount || ''));
   return {
     company: pickFirstNonEmpty(dataList.map((item) => item?.company || '')),
-    name: pickLongest(dataList.map((item) => item?.name || '')),
+    name: displayName,
     applicant: pickFirstNonEmpty(dataList.map((item) => item?.applicant || '')),
+    beneficiary: pickFirstNonEmpty(dataList.map((item) => item?.beneficiary || '')),
+    policyNumber: pickFirstNonEmpty(dataList.map((item) => item?.policyNumber || '')),
     insured: pickFirstNonEmpty(dataList.map((item) => item?.insured || '')),
     insuredIdNumber,
-    insuredBirthday: pickFirstNonEmpty(dataList.map((item) => item?.insuredBirthday || '')) || birthdayFromIdNumber(insuredIdNumber),
+    insuredBirthday: rawInsuredBirthday || birthdayFromIdNumber(insuredIdNumber),
     date: pickFirstNonEmpty(dataList.map((item) => item?.date || '')),
-    paymentPeriod: pickBestPaymentPeriod(dataList.map((item) => item?.paymentPeriod || '')),
-    coveragePeriod: pickLongest(dataList.map((item) => item?.coveragePeriod || '')),
-    amount: pickLargestNumeric(dataList.map((item) => item?.amount || '')),
-    firstPremium: pickLargestNumeric(dataList.map((item) => item?.firstPremium || '')),
-    ...(plans.length ? { plans } : {}),
+    paymentPeriod: repairedMainPlan?.paymentPeriod || paymentPeriod,
+    coveragePeriod: repairedMainPlan?.coveragePeriod || coveragePeriod,
+    amount: mergedAmount,
+    firstPremium,
+    ...(repairedPlans.length ? { plans: repairedPlans } : {}),
+    ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
   };
+}
+
+const OLLAMA_VISION_CORE_FIELDS = [
+  ['company', '保险公司'],
+  ['name', '险种名称'],
+  ['applicant', '投保人'],
+  ['beneficiary', '受益人'],
+  ['insured', '被保险人'],
+  ['insuredBirthday', '被保险人生日'],
+  ['date', '投保/生效日期'],
+  ['paymentPeriod', '缴费期间'],
+  ['coveragePeriod', '保障期间'],
+  ['amount', '保额'],
+  ['firstPremium', '首期保费'],
+];
+
+const OCR_FIRST_COMPLETENESS_THRESHOLD = 0.6;
+const OCR_FIRST_SCALAR_FIELDS = [
+  'company',
+  'name',
+  'applicant',
+  'beneficiary',
+  'policyNumber',
+  'insured',
+  'insuredIdNumber',
+  'insuredBirthday',
+  'date',
+  'paymentPeriod',
+  'coveragePeriod',
+  'amount',
+  'firstPremium',
+];
+
+function hasPolicyFieldValue(value) {
+  return String(value ?? '').trim() !== '';
+}
+
+function missingOllamaVisionCoreFieldLabels(data = {}) {
+  return OLLAMA_VISION_CORE_FIELDS
+    .filter(([field]) => !hasPolicyFieldValue(data?.[field]))
+    .map(([, label]) => label);
+}
+
+function policyScalarFieldFillRatio(data = {}, fields = OCR_FIRST_SCALAR_FIELDS) {
+  const total = fields.length || 1;
+  const filled = fields.reduce((count, field) => count + (hasPolicyFieldValue(data?.[field]) ? 1 : 0), 0);
+  return filled / total;
+}
+
+function shouldSkipVisionAfterOcrScan(scan = {}) {
+  return policyScalarFieldFillRatio(scan?.data || {}) >= OCR_FIRST_COMPLETENESS_THRESHOLD;
+}
+
+function mergePolicyDataWithMissingFieldSupplement(baseData = {}, supplementData = {}) {
+  if (!hasPolicyDataValue(baseData)) return supplementData || {};
+  if (!hasPolicyDataValue(supplementData)) return baseData || {};
+
+  const merged = { ...baseData };
+  for (const field of OCR_FIRST_SCALAR_FIELDS) {
+    if (!hasPolicyFieldValue(merged[field]) && hasPolicyFieldValue(supplementData[field])) {
+      merged[field] = supplementData[field];
+    }
+  }
+
+  if ((!Array.isArray(merged.plans) || !merged.plans.length) && Array.isArray(supplementData.plans) && supplementData.plans.length) {
+    merged.plans = supplementData.plans;
+  }
+
+  const fieldEvidence = mergeFieldEvidencePayloads([baseData.fieldEvidence, supplementData.fieldEvidence]);
+  return Object.keys(fieldEvidence).length ? { ...merged, fieldEvidence } : merged;
+}
+
+function buildOllamaVisionPaddleRepairWarning(beforeLabels, afterLabels, visionWarningLabel = 'Ollama 视觉') {
+  const beforeText = beforeLabels.length ? beforeLabels.join('、') : '核心字段';
+  if (afterLabels.length) {
+    return `${visionWarningLabel}结果缺少：${beforeText}；已使用 Paddle OCR 补强，仍需确认：${afterLabels.join('、')}`;
+  }
+  return `${visionWarningLabel}结果缺少：${beforeText}；已使用 Paddle OCR 补强`;
+}
+
+function buildOllamaVisionNoResultWarning(error = null, visionWarningLabel = 'Ollama 视觉') {
+  const message = String(error?.message || error || '');
+  if (message.includes('POLICY_OCR_VISION_TIMEOUT')) {
+    return `${visionWarningLabel}识别超时，已使用 Paddle OCR 文本；请核对识别字段`;
+  }
+  return `${visionWarningLabel}未返回可解析结果，已使用 Paddle OCR 文本；请核对识别字段`;
+}
+
+async function scanPolicyWithPaddleOcrLayout(uploadItem) {
+  const paddleResult = await recognizePaddlePolicyUpload(uploadItem);
+  const best = selectBestPolicyScanCandidate([paddleResult.ocrText]);
+  const layoutResult = paddleResult.boxes?.length
+    ? parsePolicyBasicInfoFromLayoutBoxes(paddleResult.boxes)
+    : null;
+  return {
+    ...mergePolicyLayoutScanResult({
+      textData: best.data,
+      layoutResult,
+    }),
+    ocrText: best.ocrText,
+  };
+}
+
+async function scanPolicyWithPaddleLayout(uploadItem) {
+  return scanPolicyWithPaddleOcrLayout(uploadItem);
+}
+
+async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
+  paddleLayoutScanner = scanPolicyWithPaddleLayout,
+  ollamaVisionExtractor = null,
+  ocrContext = {},
+  visionWarningLabel = 'Ollama 视觉',
+} = {}) {
+  const shouldRunPaddleFirst = Boolean(uploadItem && shouldFallbackToPaddleForImages());
+  let paddleScan = null;
+  let paddleError = null;
+  if (shouldRunPaddleFirst) {
+    try {
+      paddleScan = await paddleLayoutScanner(uploadItem);
+    } catch (error) {
+      paddleError = error;
+    }
+  }
+
+  if (paddleScan && shouldSkipVisionAfterOcrScan(paddleScan)) {
+    return {
+      data: paddleScan.data,
+      bestOcrText: normalizeOcrText(paddleScan.ocrText || ''),
+      scanFieldConfidence: paddleScan.fieldConfidence || {},
+      scanFieldEvidence: mergeFieldEvidencePayloads([paddleScan.fieldEvidence, paddleScan.data?.fieldEvidence]),
+      scanOcrWarnings: Array.isArray(paddleScan.ocrWarnings) ? paddleScan.ocrWarnings : [],
+      visionDebug: null,
+    };
+  }
+
+  let visionData = null;
+  let visionOcrText = '';
+  let visionError = null;
+  let visionDebug = null;
+  try {
+    const extractedVisionResult = ollamaVisionExtractor
+      ? await ollamaVisionExtractor(uploadItem, ocrContext)
+      : await extractPolicyFieldsFromImageWithOllamaVision(uploadItem, fetch, ocrContext);
+    const extractedVisionData = extractedVisionResult?.data && typeof extractedVisionResult.data === 'object'
+      ? extractedVisionResult.data
+      : extractedVisionResult;
+    visionOcrText = normalizeOcrText(
+      extractedVisionResult?.ocrText
+      || extractedVisionResult?.text
+      || extractedVisionData?.ocrText
+      || extractedVisionData?.text
+      || ''
+    );
+    visionData = extractedVisionData ? normalizeExtractedPolicyFields(extractedVisionData) : null;
+    visionDebug = extractedVisionResult?.visionDebug && typeof extractedVisionResult.visionDebug === 'object'
+      ? { ...extractedVisionResult.visionDebug, dataBeforeOcrMerge: visionData }
+      : null;
+  } catch (error) {
+    visionError = error;
+  }
+
+  let data = visionData || null;
+  let bestOcrText = visionOcrText;
+  let scanFieldConfidence = {};
+  let scanFieldEvidence = {};
+  const scanOcrWarnings = [];
+  if (paddleScan) {
+    const missingAfterOcr = missingOllamaVisionCoreFieldLabels(paddleScan.data || {});
+    data = visionData
+      ? mergePolicyDataWithMissingFieldSupplement(paddleScan.data || {}, visionData)
+      : paddleScan.data;
+    bestOcrText = normalizeOcrText(paddleScan.ocrText || bestOcrText || '');
+    scanFieldConfidence = paddleScan.fieldConfidence || {};
+    scanFieldEvidence = mergeFieldEvidencePayloads([
+      paddleScan.fieldEvidence,
+      paddleScan.data?.fieldEvidence,
+      visionData?.fieldEvidence,
+      data?.fieldEvidence,
+    ]);
+    scanOcrWarnings.push(...(Array.isArray(paddleScan.ocrWarnings) ? paddleScan.ocrWarnings : []));
+    if (visionData && missingAfterOcr.length) {
+      scanOcrWarnings.push(`${visionWarningLabel}仅补充 OCR 缺失字段：${missingAfterOcr.join('、')}`);
+    } else if (!visionData) {
+      scanOcrWarnings.push(buildOllamaVisionNoResultWarning(visionError, visionWarningLabel));
+    }
+    return { data, bestOcrText, scanFieldConfidence, scanFieldEvidence, scanOcrWarnings, visionDebug };
+  }
+
+  const missingAfterVision = missingOllamaVisionCoreFieldLabels(data);
+  const needsLayoutEvidenceRepair = Boolean(visionData && needsLocalVisionFallback(data, bestOcrText));
+  const needsPaddleTextCapture = Boolean(visionData && uploadItem && !bestOcrText);
+  const needsPaddleRepair = !visionData
+    || missingAfterVision.length > 0
+    || needsLayoutEvidenceRepair
+    || needsPaddleTextCapture;
+
+  if (!needsPaddleRepair) {
+    return { data, bestOcrText, scanFieldConfidence, scanFieldEvidence, scanOcrWarnings, visionDebug };
+  }
+
+  if (!shouldFallbackToPaddleForImages()) {
+    if (visionData) {
+      if (missingAfterVision.length) {
+        scanOcrWarnings.push(`${visionWarningLabel}结果缺少：${missingAfterVision.join('、')}；Paddle OCR 已关闭，请确认`);
+      }
+      return { data, bestOcrText, scanFieldConfidence, scanFieldEvidence, scanOcrWarnings, visionDebug };
+    }
+    if (visionError) throw visionError;
+    throw new Error('POLICY_OCR_EMPTY');
+  }
+
+  if (!paddleError) {
+    try {
+      paddleScan = await paddleLayoutScanner(uploadItem);
+    } catch (error) {
+      paddleError = error;
+    }
+  }
+
+  if (paddleScan) {
+    data = visionData
+      ? mergePolicyDataWithMissingFieldSupplement(paddleScan.data || {}, data || {})
+      : mergePolicyDataCandidates([data || {}, paddleScan.data || {}]);
+    bestOcrText = normalizeOcrText(paddleScan.ocrText || bestOcrText || '');
+    scanFieldConfidence = paddleScan.fieldConfidence || {};
+    scanFieldEvidence = mergeFieldEvidencePayloads([paddleScan.fieldEvidence, paddleScan.data?.fieldEvidence, data?.fieldEvidence]);
+    scanOcrWarnings.push(...(Array.isArray(paddleScan.ocrWarnings) ? paddleScan.ocrWarnings : []));
+    if (visionData && missingAfterVision.length) {
+      scanOcrWarnings.push(buildOllamaVisionPaddleRepairWarning(
+        missingAfterVision,
+        missingOllamaVisionCoreFieldLabels(data),
+        visionWarningLabel,
+      ));
+    } else if (visionData && needsLayoutEvidenceRepair) {
+      scanOcrWarnings.push(`${visionWarningLabel}结果需要保险利益表版面校验；已使用 Paddle OCR 补强`);
+    } else if (!visionData) {
+      scanOcrWarnings.push(buildOllamaVisionNoResultWarning(visionError, visionWarningLabel));
+    }
+    return { data, bestOcrText, scanFieldConfidence, scanFieldEvidence, scanOcrWarnings, visionDebug };
+  }
+
+  if (visionData) {
+    if (missingAfterVision.length) {
+      scanOcrWarnings.push(`${visionWarningLabel}结果缺少：${missingAfterVision.join('、')}；Paddle OCR 未返回可用结果，请确认`);
+    }
+    return { data, bestOcrText, scanFieldConfidence, scanFieldEvidence, scanOcrWarnings, visionDebug };
+  }
+
+  if (paddleError) throw paddleError;
+  if (visionError) throw visionError;
+  throw new Error('POLICY_OCR_EMPTY');
 }
 
 export function selectBestPolicyScanCandidate(texts) {
@@ -1892,6 +3228,8 @@ export function extractPolicyFieldsFromText(rawText) {
     || normalizeNameValue(fallbackProductName(lines, company));
   const name =
     (isReceiptStyle ? mainPlan?.name || '' : '')
+    || mainPlan?.name
+    || (isTableStyle ? tableName : '')
     || inlineLabeledData.name
     ||
     compressedHorizontalTableData.name
@@ -1900,7 +3238,6 @@ export function extractPolicyFieldsFromText(rawText) {
     ||
     horizontalTableData.name
     || loosePolicyRowData.name
-    || (isTableStyle ? mainPlan?.name || tableName : '')
     || primaryPlanRowData.name
     || sequentialTableData.name
     || genericName
@@ -1908,7 +3245,10 @@ export function extractPolicyFieldsFromText(rawText) {
     || tableName;
   const applicant = inlineLabeledData.applicant || normalizePersonNameValue(extractByLabels(lines, LABELS.applicant, LABELS.insured));
   const beneficiary = extractBeneficiaryFromLines(lines);
-  const policyNumber = cleanupFieldValue(extractByLabels(lines, LABELS.policyNumber, ['证件号码']));
+  const policyNumber = extractPolicyNumberFromLines(
+    lines,
+    extractByLabels(lines, LABELS.policyNumber, ['证件号码']),
+  );
   const insured =
     inlineLabeledData.insured
     ||
@@ -1931,9 +3271,9 @@ export function extractPolicyFieldsFromText(rawText) {
   const insuredIdentity = isReceiptStyle ? { insuredIdNumber: '', insuredBirthday: '' } : extractInsuredIdentity(lines, insured);
   const date = extractPreferredDate(lines) || inlineLabeledData.date;
   const mappedPaymentPeriod = combineMappedPaymentPeriod(matchedFields);
-  const mainPlanPaymentPeriod = isTableStyle ? mainPlan?.paymentPeriod || '' : '';
-  const mainPlanCoveragePeriod = isTableStyle ? mainPlan?.coveragePeriod || '' : '';
-  const mainPlanAmount = isTableStyle ? mainPlan?.amount || '' : '';
+  const mainPlanPaymentPeriod = mainPlan?.paymentPeriod || '';
+  const mainPlanCoveragePeriod = mainPlan?.coveragePeriod || '';
+  const mainPlanAmount = mainPlan?.amount || '';
   const rawPaymentPeriod =
     mainPlanPaymentPeriod
     ||
@@ -2002,8 +3342,15 @@ export function extractPolicyFieldsFromText(rawText) {
     || matchedFields.firstPremium
     || fallbackFirstPremium(lines);
   const planPremiumTotal = sumPlanPremiumsForFields(plans);
-
-  return {
+  const finalFirstPremium = fallbackFirstPremium(lines) || planPremiumTotal || firstPremium;
+  const hydratedPlans = hydratePlanFieldsFromTopLevel(plans, {
+    amount,
+    coveragePeriod,
+    paymentPeriod,
+    firstPremium: finalFirstPremium,
+    firstPremiumText: finalFirstPremium,
+  });
+  const data = {
     company,
     name,
     applicant,
@@ -2016,8 +3363,15 @@ export function extractPolicyFieldsFromText(rawText) {
     paymentPeriod,
     coveragePeriod,
     amount,
-    firstPremium: fallbackFirstPremium(lines) || planPremiumTotal || firstPremium,
-    ...(plans.length ? { plans } : {}),
+    firstPremium: finalFirstPremium,
+    ...(hydratedPlans.length ? { plans: hydratedPlans } : {}),
+  };
+  const { fieldEvidence, fieldConfidence } = buildTextFieldEvidence(lines, data);
+
+  return {
+    ...data,
+    ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
+    ...(Object.keys(fieldConfidence).length ? { fieldConfidence } : {}),
   };
 }
 
@@ -2141,6 +3495,55 @@ export function getConfiguredMlxMaxImageDimension() {
   return Number.isFinite(value) && value >= 1024 ? Math.trunc(value) : DEFAULT_MLX_MAX_IMAGE_DIMENSION;
 }
 
+function getConfiguredOllamaVisionMaxImageDimension() {
+  const value = Number(process.env.POLICY_OCR_OLLAMA_VISION_MAX_IMAGE_DIMENSION || DEFAULT_OLLAMA_VISION_MAX_IMAGE_DIMENSION);
+  return Number.isFinite(value) && value >= 1024 ? Math.trunc(value) : DEFAULT_OLLAMA_VISION_MAX_IMAGE_DIMENSION;
+}
+
+function getConfiguredOllamaVisionJpegQuality() {
+  const value = Number(process.env.POLICY_OCR_OLLAMA_VISION_JPEG_QUALITY || DEFAULT_OLLAMA_VISION_JPEG_QUALITY);
+  return Number.isFinite(value) && value >= 40 && value <= 95 ? Math.trunc(value) : DEFAULT_OLLAMA_VISION_JPEG_QUALITY;
+}
+
+async function prepareImageBufferForVision(buffer, mimeType, {
+  maxDimension,
+  jpegQuality,
+  tmpPrefix,
+  logLabel,
+}) {
+  if (!maxDimension || maxDimension <= 0) return { buffer, mimeType };
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), tmpPrefix));
+  try {
+    const inputPath = path.join(tmpDir, `input${inferImageExtension(mimeType)}`);
+    const outputPath = path.join(tmpDir, 'output.jpg');
+    await writeFile(inputPath, buffer);
+    await execFileAsync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', String(jpegQuality), '-Z', String(maxDimension), inputPath, '--out', outputPath], {
+      timeout: 15000,
+      maxBuffer: 512 * 1024,
+      env: {
+        ...process.env,
+        LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
+      },
+    });
+    if (!existsSync(outputPath)) return { buffer, mimeType };
+    const resized = await readFile(outputPath);
+    if (resized.length > 0 && resized.length < buffer.length) {
+      console.info(`${logLabel} resized image for vision`, {
+        originalBytes: buffer.length,
+        resizedBytes: resized.length,
+        maxDimension,
+        jpegQuality,
+      });
+      return { buffer: resized, mimeType: 'image/jpeg' };
+    }
+    return { buffer, mimeType };
+  } catch {
+    return { buffer, mimeType };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function prepareImageForMlxInference(absPath, tmpDir) {
   const maxDimension = getConfiguredMlxMaxImageDimension();
   if (!maxDimension || maxDimension <= 0) return absPath;
@@ -2165,6 +3568,18 @@ async function prepareImageForMlxInference(absPath, tmpDir) {
   }
 }
 
+async function prepareImageBufferForOllamaVision(buffer, mimeType) {
+  const maxDimension = getConfiguredOllamaVisionMaxImageDimension();
+  const jpegQuality = getConfiguredOllamaVisionJpegQuality();
+  const prepared = await prepareImageBufferForVision(buffer, mimeType, {
+    maxDimension,
+    jpegQuality,
+    tmpPrefix: 'policy-ocr-ollama-resize-',
+    logLabel: '[ollama-vision]',
+  });
+  return prepared.buffer;
+}
+
 function getConfiguredOllamaVisionModel() {
   return String(process.env.POLICY_OCR_OLLAMA_VISION_MODEL || 'qwen2.5vl:3b').trim();
 }
@@ -2174,7 +3589,7 @@ function getConfiguredRemoteVisionBaseUrl(env = process.env) {
 }
 
 function getConfiguredRemoteVisionModel(env = process.env) {
-  return String(env.POLICY_OCR_REMOTE_VISION_MODEL || 'qwen2.5-vl-7b-instruct').trim();
+  return String(env.POLICY_OCR_REMOTE_VISION_MODEL || 'qwen3-vl:8b-instruct').trim();
 }
 
 function getConfiguredRemoteVisionTimeoutMs(env = process.env) {
@@ -2182,9 +3597,49 @@ function getConfiguredRemoteVisionTimeoutMs(env = process.env) {
   return Number.isFinite(value) && value > 1000 ? value : 180000;
 }
 
+function getConfiguredRemoteVisionMaxImageDimension(env = process.env) {
+  const value = Number(env.POLICY_OCR_REMOTE_VISION_MAX_IMAGE_DIMENSION || DEFAULT_REMOTE_VISION_MAX_IMAGE_DIMENSION);
+  return Number.isFinite(value) && value >= MIN_REMOTE_VISION_MAX_IMAGE_DIMENSION
+    ? Math.trunc(value)
+    : DEFAULT_REMOTE_VISION_MAX_IMAGE_DIMENSION;
+}
+
+function getConfiguredRemoteVisionJpegQuality(env = process.env) {
+  const value = Number(env.POLICY_OCR_REMOTE_VISION_JPEG_QUALITY || DEFAULT_REMOTE_VISION_JPEG_QUALITY);
+  return Number.isFinite(value) && value >= 40 && value <= 95 ? Math.trunc(value) : DEFAULT_REMOTE_VISION_JPEG_QUALITY;
+}
+
+function getConfiguredRemoteVisionMaxTokens(env = process.env) {
+  const value = Number(env.POLICY_OCR_REMOTE_VISION_MAX_TOKENS || DEFAULT_REMOTE_VISION_MAX_TOKENS);
+  return Number.isFinite(value) && value >= MIN_REMOTE_VISION_MAX_TOKENS ? Math.trunc(value) : DEFAULT_REMOTE_VISION_MAX_TOKENS;
+}
+
+async function prepareImageForRemoteVision(buffer, mimeType, env = process.env) {
+  return prepareImageBufferForVision(buffer, mimeType, {
+    maxDimension: getConfiguredRemoteVisionMaxImageDimension(env),
+    jpegQuality: getConfiguredRemoteVisionJpegQuality(env),
+    tmpPrefix: 'policy-ocr-remote-resize-',
+    logLabel: '[remote-vision]',
+  });
+}
+
 function getConfiguredOllamaVisionNumCtx() {
   const value = Number(process.env.POLICY_OCR_OLLAMA_VISION_NUM_CTX || 512);
   return Number.isFinite(value) && value >= 128 ? Math.trunc(value) : 512;
+}
+
+function getConfiguredOllamaVisionNumPredict() {
+  const value = Number(process.env.POLICY_OCR_OLLAMA_VISION_NUM_PREDICT || 8192);
+  return Number.isFinite(value) && value >= 512 ? Math.trunc(value) : 8192;
+}
+
+function getConfiguredOllamaVisionTimeoutMs() {
+  const value = Number(process.env.POLICY_OCR_OLLAMA_VISION_TIMEOUT_MS || process.env.POLICY_OCR_OLLAMA_TIMEOUT_MS || 30000);
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 30000;
+}
+
+function shouldRunOllamaVisionComplexPasses(env = process.env) {
+  return envFlag(env, 'POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES', true);
 }
 
 function getConfiguredOllamaTimeoutMs() {
@@ -2207,10 +3662,41 @@ function extractJsonObjectBlock(text) {
   if (!raw) return null;
   const fenceMatched = raw.match(/```json\s*([\s\S]+?)```/i) || raw.match(/```\s*([\s\S]+?)```/i);
   const candidate = fenceMatched?.[1] || raw;
-  const firstBrace = candidate.indexOf('{');
-  const lastBrace = candidate.lastIndexOf('}');
-  if (firstBrace < 0 || lastBrace < 0 || lastBrace <= firstBrace) return null;
-  return candidate.slice(firstBrace, lastBrace + 1);
+  const blocks = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < candidate.length; index += 1) {
+    const char = candidate[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === '{') {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+    if (char === '}') {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        blocks.push(candidate.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+  return blocks.length ? blocks[blocks.length - 1] : null;
 }
 
 function escapeJsonControlCharsInStrings(text) {
@@ -2272,18 +3758,629 @@ export function parseVisionJsonObjectBlock(text) {
   }
 }
 
-function buildPolicyVisionExtractionPrompt() {
+function tryParseVisionJsonObjectBlock(text) {
+  try {
+    return parseVisionJsonObjectBlock(text);
+  } catch {
+    return null;
+  }
+}
+
+const OLLAMA_VISION_HINT_FIELDS = [
+  { key: 'company', aliases: policySchemaAliasesWithKey('company', 'company', ['保司']) },
+  { key: 'name', aliases: policySchemaAliasesWithKey('name'), productName: true },
+  { key: 'applicant', aliases: policySchemaAliasesWithKey('applicant') },
+  { key: 'beneficiary', aliases: policySchemaAliasesWithKey('beneficiary') },
+  { key: 'policyNumber', aliases: policySchemaAliasesWithKey('policyNumber') },
+  { key: 'insured', aliases: policySchemaAliasesWithKey('insured') },
+  { key: 'insuredIdNumber', aliases: ['insuredIdNumber', '被保险人身份证', '被保险人证件号码', '证件号码'] },
+  { key: 'insuredBirthday', aliases: ['insuredBirthday', '被保险人生日', '出生日期'] },
+  { key: 'date', aliases: policySchemaAliasesWithKey('date', 'date') },
+  { key: 'paymentPeriod', aliases: policySchemaAliasesWithKey('paymentPeriod') },
+  { key: 'coveragePeriod', aliases: policySchemaAliasesWithKey('coveragePeriod') },
+  { key: 'amount', aliases: policySchemaAliasesWithKey('amount') },
+  { key: 'firstPremium', aliases: policySchemaAliasesWithKey('firstPremium') },
+];
+
+const OLLAMA_VISION_HINT_OCR_LABELS = {
+  company: '保险公司',
+  name: '险种名称',
+  applicant: '投保人',
+  beneficiary: '身故保险金受益人',
+  policyNumber: '保险合同号',
+  insured: '被保险人',
+  insuredIdNumber: '证件号码',
+  insuredBirthday: '被保险人生日',
+  date: '合同生效日期',
+  paymentPeriod: '缴费期间',
+  coveragePeriod: '保障期间',
+  amount: '基本保险金额',
+  firstPremium: '首期保险费合计',
+};
+
+function normalizeOllamaVisionHintValue(value, field = null) {
+  const normalized = cleanupFieldValue(value)
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/gu, '')
+    .trim();
+  if (!normalized) return '';
+  if (/^(空字符串|不确定|未知|没有|无|null|undefined)$/iu.test(normalized)) return '';
+  if (field?.productName) {
+    const text = compactLine(normalized);
+    if (/^(保险产品|产品名称|险种名称|主险名称|主合同名称|保险名称|保单名称)$/u.test(text)) return '';
+    const productName = normalizeNameValue(normalized);
+    if (isGenericProductNameHint(productName)) return '';
+    return productName && isLikelyPolicyProductName(productName) ? productName : '';
+  }
+  if (field?.key === 'applicant' || field?.key === 'insured') {
+    return normalizePersonNameValue(normalized);
+  }
+  if (field?.key === 'beneficiary') {
+    return normalizeBeneficiaryValue(normalized);
+  }
+  if (field?.key === 'insuredIdNumber') {
+    return normalizeIdNumber(normalized);
+  }
+  if (field?.key === 'insuredBirthday' || field?.key === 'date') {
+    return formatDateValue(normalized);
+  }
+  if (field?.key === 'paymentPeriod') {
+    return canonicalPaymentPeriodValue(normalizePaymentPeriodValue(normalized) || normalized);
+  }
+  if (field?.key === 'coveragePeriod') {
+    return normalizeCoveragePeriodValue(normalized);
+  }
+  if (field?.key === 'amount' || field?.key === 'firstPremium') {
+    return normalizeAmountValue(normalized);
+  }
+  return normalized;
+}
+
+function isLikelyPolicyProductName(value) {
+  return /保险|险|寿|年金|医疗|意外|重疾|万能|两全|分红|护理/u.test(String(value || ''));
+}
+
+function isGenericProductNameHint(value) {
+  return /^(保险产品|产品名称|险种名称|主险名称|主合同名称|保险名称|保单名称)(?:\s*\/\s*(保险产品|产品名称|险种名称|主险名称|主合同名称|保险名称|保单名称))*$/u.test(compactLine(value));
+}
+
+function findOllamaVisionHintValue(text, field) {
+  for (const alias of field.aliases) {
+    const pattern = new RegExp(
+      `${escapeRegExp(alias)}\\s*[：:]?[\\s\\S]{0,220}?(?:填|输出|识别为|提取为|应该是|为|是)\\s*["“'‘]?([^"”'’。，；;\\n]+)`,
+      'gu',
+    );
+    for (const match of String(text || '').matchAll(pattern)) {
+      const value = normalizeOllamaVisionHintValue(match[1], field);
+      if (!value) continue;
+      if (field.productName && !isLikelyPolicyProductName(value)) continue;
+      return value;
+    }
+  }
+  return '';
+}
+
+function firstFormattedDateInText(text) {
+  for (const match of String(text || '').matchAll(/((?:19|20)\d{2})[年./-](\d{1,2})[月./-](\d{1,2})/gu)) {
+    const date = formatDateValue(match[0]);
+    if (date) return date;
+  }
+  return '';
+}
+
+function firstIdNumberInText(text) {
+  for (const match of String(text || '').matchAll(/\b\d{17}[\dXx]\b/gu)) {
+    const value = normalizeIdNumber(match[0]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function firstPaymentPeriodInText(text) {
+  const source = String(text || '');
+  const annual = source.match(/年交\s*\/\s*(\d{1,2})年/u);
+  if (annual) return `${annual[1]}年交`;
+  const matched = source.match(/\b\d{1,2}年交\b|趸交|一次交清/u);
+  return matched ? canonicalPaymentPeriodValue(normalizePaymentPeriodValue(matched[0]) || matched[0]) : '';
+}
+
+function firstCoveragePeriodInText(text) {
+  const source = String(text || '');
+  if (/保险期间|保障期间|coveragePeriod/u.test(source)) {
+    const value = normalizeCoveragePeriodValue(source);
+    if (value) return value;
+  }
+  return /终身/u.test(source) ? '终身' : '';
+}
+
+function firstProductNameInNarrative(text) {
+  const candidates = [];
+  for (const match of String(text || '').matchAll(/[“"]([^”"\n]{3,80})[”"]/gu)) {
+    const value = normalizeNameValue(match[1]);
+    if (value && isLikelyPolicyProductName(value)) candidates.push(value);
+  }
+  candidates.sort((a, b) => {
+    const accountDiff = Number(/万能|账户/u.test(a)) - Number(/万能|账户/u.test(b));
+    return accountDiff || b.length - a.length;
+  });
+  return candidates[0] || '';
+}
+
+function firstPersonNameInNarrative(text, labels) {
+  const source = String(text || '');
+  const labelPattern = labels.map(escapeRegExp).join('|');
+  const quoted = new RegExp(`[“"](?:${labelPattern})\\s*[：:]\\s*([一-龥·]{2,8})[”"]`, 'u');
+  const quotedMatched = source.match(quoted);
+  if (quotedMatched) {
+    const value = normalizePersonNameValue(quotedMatched[1]);
+    if (value) return value;
+  }
+
+  const assigned = new RegExp(
+    `(?:${labelPattern})(?:应该|可能)?(?:填|输出|识别为|提取为|是|为)\\s*[：:]?\\s*["“]?([一-龥·]{2,8})`,
+    'u',
+  );
+  const assignedMatched = source.match(assigned);
+  if (!assignedMatched) return '';
+  return normalizePersonNameValue(assignedMatched[1]);
+}
+
+function firstBeneficiaryInNarrative(text) {
+  const source = String(text || '');
+  const inherited = source.match(/[“"]([^”"\n]*法定继承人[^”"\n]*)[”"]/u);
+  if (inherited) {
+    const value = normalizeBeneficiaryValue(inherited[1]);
+    if (value) return value;
+  }
+  const assigned = source.match(/(?:beneficiary|身故保险金受益人|受益人)(?:应该|可能)?(?:填|输出|识别为|提取为|是|为)\s*[：:]?\s*["“]?([一-龥·]{2,12})/u);
+  if (!assigned) return '';
+  return normalizeBeneficiaryValue(assigned[1]);
+}
+
+function parseOllamaVisionNarrativeHints(text) {
+  const result = {};
+  const source = String(text || '');
+  for (const line of splitRecognizedLines(source)) {
+    const compact = compactLine(line);
+    if (!compact) continue;
+    if (!result.company && /company|公司名称|保险公司|保司/u.test(compact)) {
+      const company = normalizeCompanyName(compact);
+      if (company) result.company = company;
+    }
+    if (!result.name && /name|险种名称|产品名称|主险名称|保险利益表/u.test(compact)) {
+      const name = firstProductNameInNarrative(line);
+      if (name) result.name = name;
+    }
+    if (!result.applicant && /applicant|投保人|要保人/u.test(compact)) {
+      const value = firstPersonNameInNarrative(line, ['applicant', '投保人', '要保人']);
+      if (value) result.applicant = value;
+    }
+    if (!result.beneficiary && /beneficiary|受益人|法定继承人/u.test(compact)) {
+      const value = firstBeneficiaryInNarrative(line);
+      if (value) result.beneficiary = value;
+    }
+    if (!result.insured && /insured|被保险[人入]|被保人|受保人/u.test(compact)) {
+      const value = firstPersonNameInNarrative(line, ['insured', '被保险人', '被保险入', '被保人', '受保人']);
+      if (value) result.insured = value;
+    }
+    if (!result.insuredIdNumber && /insuredIdNumber|证件号码|身份证/u.test(compact)) {
+      const value = firstIdNumberInText(compact);
+      if (value) result.insuredIdNumber = value;
+    }
+    if (!result.date && /date|合同成立|生效日期|投保日期/u.test(compact)) {
+      const value = firstFormattedDateInText(compact);
+      if (value) result.date = value;
+    }
+    if (!result.paymentPeriod && /paymentPeriod|交费期间|缴费期间|交费方式|缴费方式/u.test(compact)) {
+      const value = firstPaymentPeriodInText(compact);
+      if (value) result.paymentPeriod = value;
+    }
+    if (!result.coveragePeriod && /coveragePeriod|保险期间|保障期间|终身/u.test(compact)) {
+      const value = firstCoveragePeriodInText(compact);
+      if (value) result.coveragePeriod = value;
+    }
+  }
+  if (!result.name) {
+    const name = firstProductNameInNarrative(source);
+    if (name) result.name = name;
+  }
+  if (!result.insuredIdNumber) {
+    const idNumber = firstIdNumberInText(source);
+    if (idNumber) result.insuredIdNumber = idNumber;
+  }
+  if (!result.date) {
+    const date = firstFormattedDateInText(source);
+    if (date) result.date = date;
+  }
+  if (!result.paymentPeriod) {
+    const paymentPeriod = firstPaymentPeriodInText(source);
+    if (paymentPeriod) result.paymentPeriod = paymentPeriod;
+  }
+  if (!result.coveragePeriod) {
+    const coveragePeriod = firstCoveragePeriodInText(source);
+    if (coveragePeriod) result.coveragePeriod = coveragePeriod;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function parseOllamaVisionFieldHints(text) {
+  const result = {};
+  for (const field of OLLAMA_VISION_HINT_FIELDS) {
+    const value = findOllamaVisionHintValue(text, field);
+    if (value) result[field.key] = value;
+  }
+  const narrative = parseOllamaVisionNarrativeHints(text) || {};
+  for (const [key, value] of Object.entries(narrative)) {
+    if (!result[key] && value) result[key] = value;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function isOllamaVisionOcrLikeLine(line) {
+  const text = compactLine(line);
+  if (!text || /[{}[\]]/u.test(text)) return false;
+  if (text.length > 80 && /所以|应该|可能|根据|用户|规则|这里|需要|字段|提取|输出/u.test(text)) return false;
+  if (!/[:：]/u.test(text) && /[。，；;]/u.test(text)) return false;
+  return [
+    ...ALL_LABELS,
+    'NCI',
+    'PINGAN',
+    '中国人寿',
+    '新华保险',
+    '平安保险',
+    '保险利益表',
+    '保险单',
+    '证件号码',
+    '法定继承人',
+  ].some((label) => text.includes(compactLine(label)));
+}
+
+function extractOllamaVisionQuotedOcrLines(text) {
+  const source = String(text || '');
+  const lines = [];
+  for (const match of source.matchAll(/[“"]([^”"\n]{2,180})[”"]/gu)) {
+    const line = cleanupFieldValue(match[1]);
+    if (isOllamaVisionOcrLikeLine(line)) lines.push(line);
+  }
+  for (const rawLine of splitRecognizedLines(source)) {
+    const cleaned = cleanupFieldValue(rawLine.replace(/^[-*•\d.、\s]+/u, ''));
+    if (isOllamaVisionOcrLikeLine(cleaned)) lines.push(cleaned);
+  }
+  return lines;
+}
+
+function buildOllamaVisionOcrTextFromHints(hinted) {
+  return Object.entries(hinted || {})
+    .map(([key, value]) => {
+      const label = OLLAMA_VISION_HINT_OCR_LABELS[key];
+      const normalized = normalizeOllamaVisionHintValue(value);
+      return label && normalized ? `${label}: ${normalized}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildOllamaVisionOcrTextFromOutput(text, hinted = null) {
+  return mergeRecognizedTextCandidates(
+    buildOllamaVisionOcrTextFromHints(hinted),
+    extractOllamaVisionQuotedOcrLines(text).join('\n'),
+  );
+}
+
+function normalizeVisionContextText(value) {
+  return cleanupFieldValue(value).replace(/\s+/gu, '').slice(0, 80);
+}
+
+function buildPolicyVisionContextPromptLines(ocrContext = {}) {
+  const lines = [];
+  const companyHints = Array.isArray(ocrContext?.companyHints)
+    ? [...new Set(ocrContext.companyHints.map(normalizeVisionContextText).filter(Boolean))].slice(0, 8)
+    : [];
+  const productCandidates = Array.isArray(ocrContext?.productCandidates)
+    ? ocrContext.productCandidates
+        .map((candidate) => ({
+          company: normalizeVisionContextText(candidate?.company || ''),
+          productName: normalizeVisionContextText(candidate?.productName || ''),
+          productType: normalizeVisionContextText(candidate?.productType || ''),
+          role: normalizeVisionContextText(candidate?.role || ''),
+        }))
+        .filter((candidate) => candidate.productName)
+        .slice(0, 12)
+    : [];
+
+  if (companyHints.length) {
+    lines.push(`已知可能保险公司：${companyHints.join('、')}。若图片证据不一致，以图片为准。`);
+  }
+  if (productCandidates.length) {
+    lines.push('本地产品候选（只用于识别相似产品名，不能在图片没有对应文字时强行选择）：');
+    productCandidates.forEach((candidate, index) => {
+      const company = candidate.company ? `${candidate.company} ` : '';
+      const type = candidate.productType ? `，类型:${candidate.productType}` : '';
+      const role = candidate.role ? `，角色:${candidate.role}` : '';
+      lines.push(`${index + 1}. ${company}${candidate.productName}${type}${role}`);
+    });
+  }
+  return lines;
+}
+
+const POLICY_VISION_FIELD_ALIGNMENT_RULES = [
+  '字段对齐铁律：',
+  '1. company 只能是承保保险公司/页眉 logo/保险资料里的保险公司；营业单位名称、营销服务部、销售人员、网址、客服电话、险种名称都不能作为 company。若只看到中国人寿 logo/官网提示，company 输出“中国人寿保险”；若看到 NCI/新华保险 logo，company 输出“新华保险”。',
+  '2. applicant 只取“投保人姓名/投保人/要保人”后的姓名；冒号后看不清或没有值就输出空字符串，不要输出“姓名”“产品”等标签词。',
+  '3. insured 只取“被保险人姓名/被保险人/被保人”后的姓名。',
+  '4. insuredIdNumber 只有图片里明确出现“被保险人证件号码/身份证号码/证件号码”对应号码时才填；保险金额、保费、保单号、日期、客户号都不能作为证件号。',
+  '5. amount 和 plans[].amount 必须取“保险金额/基本保险金额/保额”列或同义标签；不得取产品首期保费、标准保费、首期保费。若同一行是“159948.00 12000.00”，保险金额是 159948.00，标准保费是 12000.00。',
+  '6. firstPremium 和 plans[].premium 取首期保费/标准保费/保险费；不要把保险金额当保费。',
+  '7. beneficiary 只取身故保险金受益人列表中的实际受益人；看到“被保险人的法定继承人/法定继承人”时输出“法定”；列表空白时输出空字符串。',
+  '8. 保险利益表里的险种名称可能被换行拆开，例如上一行“畅行万里智赢版”下一行“两全保险”，必须合并为“畅行万里智赢版两全保险”；不得只输出“两全保险”。',
+  '9. 保险利益表每个险种行都必须输出一个 plans 项；每个 plans[].premium 只能取该险种本行保险费，firstPremium 才能取首期保险费合计。',
+  '10. 必须像人眼看表一样先定位列头和列边界：plans[].name 只能来自“险种名称/保险项目/保险险种/产品名称”这一列；“保险责任名称/责任名称/给付标准”列里的文字不是险种，不能输出为 plans。',
+  '11. 每个 plans 项必须填写 sourceColumn，sourceColumn 是 name 所在的真实可见列头；如果 name 来自“保险责任名称”列，不要输出这个 plans 项。',
+  '12. 必须像人脑理解表格一样把同一视觉行的单元格对齐：主险行的保险期间、交费方式、交费期间、保险费、保险金额要汇总到顶层 name/paymentPeriod/coveragePeriod/amount/firstPremium；例如“交费方式=年交、交费期间=20年”输出 paymentPeriod 为“20年交”。',
+];
+
+function buildPolicyVisionExtractionPrompt(ocrContext = {}) {
   return [
     '你是保险保单视觉解析助手。请像人的眼睛一样阅读整张保单页面，优先理解版面、表格行列和字段标签。',
     '只能根据图片中可见内容提取，不要臆造。只输出 JSON，不要解释。',
+    '字段为空、空白、横线、未填写或未标注时输出空字符串，不要输出“栏为空”“未填写”等说明。',
+    '保险字段词典：险种名称/产品名称/主险名称 -> name 或 plans[].name；保险公司/承保公司 -> company；投保人/要保人 -> applicant；被保险人/受保人 -> insured；身故保险金受益人/受益人 -> beneficiary。',
+    '保险字段词典：基本保险金额/保险金额/保额 -> amount；保险费/首期保险费/首期保险费合计/首期保费 -> firstPremium 或 plans[].premium；保险期间/保障期间 -> coveragePeriod；交费期间/缴费期间 -> paymentPeriod；交费方式/缴费方式 -> paymentMode。',
+    ...POLICY_VISION_FIELD_ALIGNMENT_RULES,
+    '保险产品名通常包含“终身寿险、年金保险、两全保险、重大疾病保险、医疗保险、意外伤害保险、护理保险、万能型、分红型、附加”等词；字段标签值如“保障期间:终身”“缴费期间:趸交”不是产品名。',
+    '禁止映射：证件号码/身份证号/客户号/保单号/电话不能作为 amount 或 premium；日期、年龄、每期交费日不能作为金额；字段标签和字段值不能作为险种名称。',
     '请输出 JSON：',
-    '{"company":"","name":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[],"ocrText":""}',
-    'plans 每一行来自“保险利益表/险种名称”表格，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
+    '{"company":"","name":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[],"fieldEvidence":{}}',
+    'plans 每一行来自“保险利益表/险种名称”表格，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":"","sourceColumn":"","evidence":""}。',
+    '保险利益表列顺序通常是：险种名称、基本保险金额/保险金额/保障计划/份数、保险期间、交费方式/交费期间、保险费约定支付日/交费期满日、保险费；必须按同一视觉行或连续换行行对齐。',
+    '如果同一表格还出现“保险责任名称、给付标准、免赔额、赔付比例”等列，这些列描述责任，不是险种；不要把这些列的单元格输出为 plans。',
     'role 规则：主合同用 main；名称或说明含“万能型/万能账户/最低保证利率/账户价值”的账户类险种用 linked_account；只有名称明确含“附加”的才用 rider；不能把第二行默认当附加险。',
     'productType 可填“增额终身寿险、年金险、万能账户、医疗险、意外险、重疾险、寿险”等。',
     '扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取首期保险费合计，没有合计时取 plans 保费合计。',
-    'ocrText 输出忠实可读文本，按页面自然顺序换行。',
+    '不要输出 ocrText 或整页 OCR 原文；完整 OCR 原文由 Paddle OCR 保存。',
+    'fieldEvidence 只输出字段附近短证据，每个字段不超过80字；plans[].evidence 不超过120字。',
+    ...buildPolicyVisionContextPromptLines(ocrContext),
   ].join('\n');
+}
+
+function buildRemotePolicyVisionExtractionPrompt(ocrContext = {}) {
+  return [
+    '你是保险保单视觉解析助手。只根据图片可见内容提取，只输出一个 JSON 对象，不要解释、不要 markdown。',
+    '看不到、空白、横线、未填写或不确定的字段输出空字符串；没有险种明细时 plans 和 tableRows 输出空数组。',
+    '字段含义：company=承保保险公司；name=主险/险种名称；applicant=投保人；insured=被保险人；beneficiary=身故保险金受益人；policyNumber=保险合同号/保单号；date=合同生效日/签发日。',
+    '金额规则：amount 只取主险保险金额/基本保险金额/保额；firstPremium 只取首期保费/标准保费/保险费合计。不要把证件号、保单号、日期、客户号当金额。',
+    '复杂保险利益表规则：如果表头包含“保险责任名称、金额/份数、给付标准、免赔额、赔付比例”，不要直接生成最终 plans；请逐行转录 tableRows。',
+    'tableRows 每行必须按真实列头填写：planName=险种名称列；responsibilityName=保险责任名称列；amountOrUnits=金额/份数列；benefitStandard=给付标准列；deductible=免赔额列；ratio=赔付比例列。',
+    '如果险种名称单元格向下合并或下方责任行没有重复险种名，后续 tableRows.planName 继续填写上一条可见险种名称。',
+    'plans 只用于没有责任明细列的简单险种表；不要把 tableRows 责任明细直接合并为 plans。',
+    'paymentMode 只允许年交、月交、季交、半年交、趸交、一次交清、不定期交；“经社保赔付/未经社保赔付”是医疗责任口径，不是交费方式。',
+    '名称换行要合并，例如上一行“畅行万里智赢版”下一行“两全保险”，输出“畅行万里智赢版两全保险”。',
+    'role 规则：主合同用 main；名称含“万能型/万能账户/账户价值/最低保证利率”的账户类用 linked_account；名称明确含“附加”的用 rider。',
+    '扁平字段 name/paymentPeriod/coveragePeriod/amount 以主险为准；firstPremium 优先取首期保险费合计。',
+    '为了速度，输出尽量短，不要输出 ocrText、fieldEvidence、sourceColumn、evidence 或长句证据。',
+    '输出 JSON 模板：{"company":"","name":"","applicant":"","beneficiary":"","policyNumber":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[],"tableRows":[]}',
+    'plans 项格式：{"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
+    'tableRows 项格式：{"planName":"","responsibilityName":"","amountOrUnits":"","benefitStandard":"","deductible":"","ratio":""}。',
+    ...buildPolicyVisionContextPromptLines(ocrContext),
+  ].join('\n');
+}
+
+function buildRemoteFocusedPolicyVisionExtractionPrompt(ocrContext = {}, focus = {}) {
+  const jsonExamples = {
+    basic: '{"company":"","policyNumber":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":""}',
+    plans: '{"name":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[]}',
+    footer: '{"beneficiary":"","firstPremium":"","plans":[]}',
+  };
+  const example = jsonExamples[focus.schemaKey] || jsonExamples.basic;
+  const planRules = focus.schemaKey === 'plans' || focus.schemaKey === 'footer'
+    ? [
+        'plans 只来自“险种名称/保险项目/产品名称”列；不要把“保险责任名称/责任名称/给付标准”列当成险种。',
+        'plans 项格式：{"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
+        '扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取首期保险费合计，没有合计时取 plans 保费合计。',
+      ]
+    : [];
+
+  return [
+    '你是保险保单视觉解析助手。只根据当前图片区域可见内容提取，只输出一个小 JSON 对象，不要解释、不要 markdown。',
+    `分区视觉识别：当前图片区域是「${focus.label || '保单分区'}」。`,
+    focus.instruction || '',
+    '当前区域看不到的字段填空字符串，数组填空数组；不要输出 ocrText、fieldEvidence、sourceColumn、evidence 或长句证据。',
+    '字段含义：company=承保保险公司；policyNumber=保险合同号/保单号；applicant=投保人；insured=被保险人；beneficiary=身故保险金受益人；date=合同生效日/签发日。',
+    '金额规则：amount/plans[].amount 只取保险金额/基本保险金额/保额；firstPremium/plans[].premium 只取首期保费/标准保费/保险费。',
+    ...planRules,
+    `输出 JSON 模板：${example}`,
+    ...buildPolicyVisionContextPromptLines(ocrContext),
+  ].filter(Boolean).join('\n');
+}
+
+function buildFocusedPolicyVisionExtractionPrompt(ocrContext = {}, focus = {}) {
+  const jsonExamples = {
+    basic: '{"company":"","policyNumber":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","fieldEvidence":{}}',
+    plans: '{"name":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[],"fieldEvidence":{}}',
+    footer: '{"beneficiary":"","firstPremium":"","plans":[],"fieldEvidence":{}}',
+  };
+  const example = jsonExamples[focus.schemaKey] || jsonExamples.basic;
+	  const planRules = focus.schemaKey === 'plans' || focus.schemaKey === 'footer'
+	    ? [
+	        'plans 每一行来自“保险利益表/险种名称”表格，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":"","sourceColumn":"","evidence":""}。',
+	        '保险利益表列顺序通常是：险种名称、基本保险金额/保险金额/保障计划/份数、保险期间、交费方式/交费期间、保险费约定支付日/交费期满日、保险费；必须按同一视觉行或连续换行行对齐。',
+	        '如果同一表格还出现“保险责任名称、给付标准、免赔额、赔付比例”等列，这些列描述责任，不是险种；不要把这些列的单元格输出为 plans。',
+	        'role 规则：主合同用 main；名称或说明含“万能型/万能账户/最低保证利率/账户价值”的账户类险种用 linked_account；只有名称明确含“附加”的才用 rider；不能把第二行默认当附加险。',
+        '扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取首期保险费合计，没有合计时取 plans 保费合计。',
+      ]
+    : [];
+  return [
+    '你是保险保单视觉解析助手。请像人的眼睛一样阅读当前图片区域，优先理解版面、表格行列和字段标签。',
+    `分区视觉识别：当前图片区域是「${focus.label || '保单分区'}」。`,
+    focus.instruction || '',
+    '只能根据当前图片区域可见内容提取，不要臆造。当前区域看不到的字段填空字符串，数组填空数组。',
+    '字段为空、空白、横线、未填写或未标注时输出空字符串，不要输出“栏为空”“未填写”等说明。',
+    '只输出下面这个小 JSON，不要输出其它字段、解释、markdown 或思考过程：',
+    example,
+    '保险字段词典：险种名称/产品名称/主险名称 -> name 或 plans[].name；保险公司/承保公司 -> company；投保人/要保人 -> applicant；被保险人/受保人 -> insured；身故保险金受益人/受益人 -> beneficiary。',
+    '保险字段词典：基本保险金额/保险金额/保额 -> amount；保险费/首期保险费/首期保险费合计/首期保费 -> firstPremium 或 plans[].premium；保险期间/保障期间 -> coveragePeriod；交费期间/缴费期间 -> paymentPeriod；交费方式/缴费方式 -> paymentMode。',
+    ...POLICY_VISION_FIELD_ALIGNMENT_RULES,
+    '禁止映射：证件号码/身份证号/客户号/保单号/电话不能作为 amount 或 premium；日期、年龄、每期交费日不能作为金额；字段标签和字段值不能作为险种名称。',
+    ...planRules,
+    '不要输出 ocrText 或整页 OCR 原文；完整 OCR 原文由 Paddle OCR 保存。',
+    'fieldEvidence 只输出当前区域字段附近短证据，每个字段不超过80字；plans[].evidence 不超过120字。',
+    ...buildPolicyVisionContextPromptLines(ocrContext),
+  ].filter(Boolean).join('\n');
+}
+
+function buildFocusedPolicyVisionLineOcrPrompt(ocrContext = {}, focus = {}) {
+  return [
+    '你是保险保单逐行视觉 OCR 助手。请只做逐行抄写，不要抽字段、不要解释、不要总结。',
+    `当前图片区域是「${focus.label || '保单分区'}」。`,
+    focus.instruction || '',
+    '阅读方式：从页面上方到下方，从左到右，一行一行抄写可见文字。',
+    '表格也要逐行读；同一视觉行里的多列内容请保留在同一行，用空格或 | 分隔。',
+    '小字、姓名、证件号码、日期、保费、保额、险种名称、受益人字段要优先抄写。',
+    '看不清的字符不要猜；整行看不清就跳过。不要把文件名、说明文字或你的判断写进去。',
+    '只输出 JSON，不要 markdown：{"lines":[],"text":""}',
+    'lines 是逐行数组；text 是 lines 用换行连接后的同一内容。',
+    ...buildPolicyVisionContextPromptLines(ocrContext),
+  ].filter(Boolean).join('\n');
+}
+
+function extractRemoteVisionPayloadContent(payload) {
+  return String(
+    payload?.choices?.[0]?.message?.content
+    || payload?.message?.content
+    || payload?.response
+    || payload?.content
+    || '',
+  ).trim();
+}
+
+function parseJsonStringLiteral(value) {
+  try {
+    return JSON.parse(`"${String(value || '')}"`);
+  } catch {
+    return String(value || '').replace(/\\(["\\/bfnrt])/gu, '$1').replace(/\\u([0-9a-fA-F]{4})/gu, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+  }
+}
+
+function extractJsonLikeStringField(source, key) {
+  const pattern = new RegExp(`"${escapeRegExp(key)}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, 'u');
+  const matched = String(source || '').match(pattern);
+  return matched ? cleanupFieldValue(parseJsonStringLiteral(matched[1])) : '';
+}
+
+function extractJsonLikeObjectSegments(source) {
+  const text = String(source || '');
+  const segments = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === '{') {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+    if (char === '}') {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        segments.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+
+  if (start >= 0 && depth > 0) segments.push(text.slice(start));
+  return segments;
+}
+
+function extractRemoteVisionPartialObjectArray(source, arrayKey, keys, { limit = 16, completeOnly = false } = {}) {
+  const start = String(source || '').search(new RegExp(`"${escapeRegExp(arrayKey)}"\\s*:\\s*\\[`, 'u'));
+  if (start < 0) return [];
+
+  const items = [];
+  for (const segment of extractJsonLikeObjectSegments(String(source || '').slice(start)).slice(0, limit)) {
+    if (completeOnly && !segment.trim().endsWith('}')) continue;
+    const item = {};
+    for (const key of keys) {
+      const value = extractJsonLikeStringField(segment, key);
+      if (value) item[key] = value;
+    }
+    if (Object.values(item).some((value) => String(value || '').trim())) items.push(item);
+  }
+  return items;
+}
+
+function extractRemoteVisionPartialJsonData(content) {
+  const source = String(content || '');
+  if (!source.includes('"') || !source.includes(':')) return null;
+
+  const data = {};
+  for (const key of [
+    'company',
+    'name',
+    'applicant',
+    'beneficiary',
+    'policyNumber',
+    'insured',
+    'insuredIdNumber',
+    'insuredBirthday',
+    'date',
+    'paymentPeriod',
+    'coveragePeriod',
+    'amount',
+    'firstPremium',
+  ]) {
+    const value = extractJsonLikeStringField(source, key);
+    if (value) data[key] = value;
+  }
+
+  const plans = extractRemoteVisionPartialObjectArray(
+    source,
+    'plans',
+    ['role', 'name', 'amount', 'coveragePeriod', 'paymentMode', 'paymentPeriod', 'premium', 'productType'],
+    { limit: 12 },
+  ).filter((plan) => hasPolicyDataValue(plan));
+  if (plans.length) data.plans = plans;
+
+  const tableRows = [
+    ...extractRemoteVisionPartialObjectArray(
+      source,
+      'tableRows',
+      ['planName', 'responsibilityName', 'amountOrUnits', 'benefitStandard', 'deductible', 'ratio'],
+      { limit: 32, completeOnly: true },
+    ),
+    ...extractRemoteVisionPartialObjectArray(
+      source,
+      'benefitTableRows',
+      ['planName', 'responsibilityName', 'amountOrUnits', 'benefitStandard', 'deductible', 'ratio'],
+      { limit: 32, completeOnly: true },
+    ),
+  ].filter((row) => (
+    row.planName
+    || row.responsibilityName
+    || row.amountOrUnits
+    || row.benefitStandard
+    || row.deductible
+    || row.ratio
+  ));
+  if (tableRows.length) data.tableRows = tableRows;
+
+  return hasPolicyDataValue(data) || tableRows.length ? data : null;
 }
 
 function extractRemoteVisionPayloadData(payload) {
@@ -2294,65 +4391,185 @@ function extractRemoteVisionPayloadData(payload) {
     };
   }
 
-  const content = String(
-    payload?.choices?.[0]?.message?.content
-    || payload?.message?.content
-    || payload?.response
-    || payload?.content
-    || '',
-  ).trim();
+  const content = extractRemoteVisionPayloadContent(payload);
   const parsed = parseVisionJsonObjectBlock(content);
-  if (!parsed) return null;
+  if (!parsed) {
+    const partial = extractRemoteVisionPartialJsonData(content);
+    if (!partial) return null;
+    return {
+      data: partial,
+      ocrText: '',
+      recoveredFromPartialJson: true,
+    };
+  }
   return {
     data: parsed,
     ocrText: normalizeOcrText(parsed?.ocrText || parsed?.text || ''),
   };
 }
 
-export async function extractPolicyFieldsFromImageWithRemoteVision(uploadItem, options = {}) {
-  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
-  const env = options.env || process.env;
-  const fetchImpl = options.fetchImpl || fetch;
+function buildRemoteVisionChatPrompt(ocrContext = {}, focus = null) {
+  return focus?.label
+    ? buildRemoteFocusedPolicyVisionExtractionPrompt(ocrContext, focus)
+    : buildRemotePolicyVisionExtractionPrompt(ocrContext);
+}
+
+async function requestRemoteVisionImage({
+  buffer,
+  mimeType,
+  env,
+  fetchImpl,
+  ocrContext = {},
+  focus = null,
+  passLabel = 'whole',
+  prepareImageForRemoteVisionImpl = null,
+}) {
   const baseUrl = getConfiguredRemoteVisionBaseUrl(env);
   if (!baseUrl) throw new Error('POLICY_OCR_PROVIDER_NOT_CONFIGURED');
 
-  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const preparedImage = prepareImageForRemoteVisionImpl
+    ? await prepareImageForRemoteVisionImpl(buffer, mimeType, env)
+    : await prepareImageForRemoteVision(buffer, mimeType, env);
+  const visionBuffer = preparedImage?.buffer || buffer;
+  const visionMimeType = preparedImage?.mimeType || mimeType;
+  const visionDataUrl = `data:${visionMimeType};base64,${visionBuffer.toString('base64')}`;
+  const model = getConfiguredRemoteVisionModel(env);
+  const timeoutMs = getConfiguredRemoteVisionTimeoutMs(env);
+  const maxTokens = getConfiguredRemoteVisionMaxTokens(env);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), getConfiguredRemoteVisionTimeoutMs(env));
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  console.info('[remote-vision] request started', {
+    baseUrl,
+    model,
+    imageBytes: visionBuffer.length,
+    mimeType: visionMimeType,
+    maxTokens,
+    timeoutMs,
+    passLabel,
+  });
   try {
-    const response = await fetchImpl(`${baseUrl}/v1/policy-ocr`, {
+    const response = await fetchImpl(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: getConfiguredRemoteVisionModel(env),
-        prompt: buildPolicyVisionExtractionPrompt(),
-        uploadItem: {
-          name: String(uploadItem?.name || 'policy.jpg'),
-          type: mimeType,
-          dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`,
-        },
+        model,
+        temperature: 0,
+        max_tokens: maxTokens,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: buildRemoteVisionChatPrompt(ocrContext, focus) },
+              { type: 'image_url', image_url: { url: visionDataUrl } },
+            ],
+          },
+        ],
       }),
     });
-    if (!response.ok) throw new Error('POLICY_OCR_FAILED');
+    if (!response.ok) {
+      const errorPreview = await response.text().catch(() => '');
+      console.error('[remote-vision] request failed', {
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        errorPreview: errorPreview.slice(0, 500),
+      });
+      throw new Error('POLICY_OCR_FAILED');
+    }
     const payload = await response.json().catch(() => null);
+    const content = extractRemoteVisionPayloadContent(payload);
+    console.info('[remote-vision] request completed', {
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      finishReason: String(payload?.choices?.[0]?.finish_reason || ''),
+      contentChars: content.length,
+      promptTokens: payload?.usage?.prompt_tokens,
+      completionTokens: payload?.usage?.completion_tokens,
+      passLabel,
+    });
     const extracted = extractRemoteVisionPayloadData(payload);
-    if (!extracted?.data) throw new Error('POLICY_OCR_FAILED');
+    if (!extracted?.data) {
+      console.error('[remote-vision] no JSON parsed from response', {
+        contentPreview: content.slice(0, 500),
+      });
+      throw new Error('POLICY_OCR_FAILED');
+    }
+    const finishReason = String(payload?.choices?.[0]?.finish_reason || '');
     const normalized = normalizeExtractedPolicyFields(extracted.data);
-    if (!Object.values(normalized).some(Boolean)) throw new Error('POLICY_OCR_EMPTY');
+    if (!hasPolicyDataValue(normalized)) {
+      console.error('[remote-vision] parsed empty policy fields', {
+        contentPreview: content.slice(0, 500),
+      });
+      throw new Error('POLICY_OCR_EMPTY');
+    }
+    if (extracted.recoveredFromPartialJson) {
+      console.info('[remote-vision] recovered fields from partial JSON', {
+        fields: Object.entries(normalized)
+          .filter(([, value]) => (Array.isArray(value) ? value.length : Boolean(value)))
+          .map(([key]) => key),
+        planCount: Array.isArray(normalized.plans) ? normalized.plans.length : 0,
+      });
+    }
     return {
       data: normalized,
       ocrText: extracted.ocrText,
+      recoveredFromPartialJson: Boolean(extracted.recoveredFromPartialJson),
+      finishReason,
+      visionDebug: {
+        provider: OCR_PROVIDER_REMOTE_GPU_VISION,
+        model,
+        passLabel,
+        finishReason,
+        rawContent: content,
+        parsedData: extracted.data,
+        normalizedData: normalized,
+        recoveredFromPartialJson: Boolean(extracted.recoveredFromPartialJson),
+        usage: {
+          promptTokens: payload?.usage?.prompt_tokens,
+          completionTokens: payload?.usage?.completion_tokens,
+        },
+        contentChars: content.length,
+        planCount: Array.isArray(normalized.plans) ? normalized.plans.length : 0,
+      },
     };
   } catch (error) {
     const message = String(error?.message || error || '');
-    if (message.includes('AbortError')) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
+    if (isAbortLikeError(error, controller.signal)) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
     if (message.includes('POLICY_OCR_PROVIDER_NOT_CONFIGURED')) throw error;
     if (message.includes('POLICY_OCR_EMPTY')) throw error;
+    if (!message.includes('POLICY_OCR_FAILED')) {
+      console.error('[remote-vision] request exception', {
+        durationMs: Date.now() - startedAt,
+        errorName: String(error?.name || ''),
+        errorMessage: message.slice(0, 500),
+      });
+    }
     throw new Error('POLICY_OCR_FAILED');
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function extractPolicyFieldsFromImageWithRemoteVision(uploadItem, options = {}) {
+  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
+  const env = options.env || process.env;
+  const fetchImpl = options.fetchImpl || fetch;
+  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const wholeResult = await requestRemoteVisionImage({
+    buffer,
+    mimeType,
+    env,
+    fetchImpl,
+    ocrContext: options.ocrContext,
+    passLabel: 'whole',
+    prepareImageForRemoteVisionImpl: options.prepareImageForRemoteVision,
+  });
+  return {
+    data: wholeResult.data,
+    ocrText: wholeResult.ocrText,
+    visionDebug: wholeResult.visionDebug,
+  };
 }
 
 async function postprocessPolicyFieldsWithOllama(ocrText, baseData, fetchImpl = fetch) {
@@ -2411,7 +4628,7 @@ async function postprocessPolicyFieldsWithOllama(ocrText, baseData, fetchImpl = 
     const parsed = parseVisionJsonObjectBlock(content);
     if (!parsed) return null;
     const normalized = normalizeExtractedPolicyFields(parsed);
-    return Object.values(normalized).some(Boolean) ? normalized : null;
+    return hasPolicyDataValue(normalized) ? normalized : null;
   } catch (error) {
     const message = String(error?.message || error || '');
     if (message.includes('AbortError')) {
@@ -2423,66 +4640,626 @@ async function postprocessPolicyFieldsWithOllama(ocrText, baseData, fetchImpl = 
   }
 }
 
-export async function extractPolicyFieldsFromImageWithOllamaVision(uploadItem, fetchImpl = fetch) {
-  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
-  const { buffer } = parseDataUrl(uploadItem);
+function buildOllamaVisionChatContent(ocrContext = {}, focus = null) {
+  if (focus?.label) return buildFocusedPolicyVisionExtractionPrompt(ocrContext, focus);
+  return buildPolicyVisionExtractionPrompt(ocrContext);
+}
+
+function parseOllamaVisionPayload(payload, {
+  model,
+  numCtx,
+  numPredict,
+  timeoutMs,
+  imageBytes,
+  passLabel = 'whole',
+}) {
+  const content = String(payload?.message?.content || payload?.response || '').trim();
+  const thinking = String(payload?.message?.thinking || payload?.thinking || '').trim();
+  const parsedFromContent = tryParseVisionJsonObjectBlock(content);
+  const parsedFromThinking = parsedFromContent ? null : tryParseVisionJsonObjectBlock(thinking);
+  const parsed = parsedFromContent || parsedFromThinking;
+  const modelText = [
+    parsedFromContent ? '' : content,
+    parsedFromThinking ? '' : thinking,
+  ].filter(Boolean).join('\n');
+  const hinted = parseOllamaVisionFieldHints(modelText);
+  const modelOcrText = buildOllamaVisionOcrTextFromOutput(modelText, hinted);
+  const modelTextData = modelOcrText ? extractPolicyFieldsFromText(modelOcrText) : null;
+
+  if (!parsed && !hinted && !modelTextData) {
+    console.error('[ollama-vision] no JSON parsed from response', {
+      model,
+      passLabel,
+      numCtx,
+      numPredict,
+      timeoutMs,
+      imageBytes,
+      doneReason: payload?.done_reason || '',
+      evalCount: payload?.eval_count || 0,
+      contentLength: content.length,
+      thinkingLength: thinking.length,
+      contentPreview: content.slice(0, 800),
+      thinkingPreview: thinking.slice(0, 800),
+    });
+    return null;
+  }
+  if (!parsed && (hinted || modelTextData)) {
+    console.warn('[ollama-vision] recovered fields from non-json model text', {
+      model,
+      passLabel,
+      hintFields: Object.keys(hinted || {}),
+      ocrRuleFields: Object.entries(modelTextData || {}).filter(([, value]) => Boolean(value)).map(([key]) => key),
+      contentLength: content.length,
+      thinkingLength: thinking.length,
+    });
+  }
+
+  const parsedOcrText = normalizeOcrText(parsed?.ocrText || parsed?.text || '');
+  const parsedEvidenceText = parsed ? buildOllamaVisionEvidenceText(parsed) : '';
+  const parsedTextData = parsedOcrText ? extractPolicyFieldsFromText(parsedOcrText) : null;
+  const evidenceTextData = !parsedOcrText && parsedEvidenceText ? extractPolicyFieldsFromText(parsedEvidenceText) : null;
+  const parsedData = fillMissingPolicyDataFields(
+    parsed ? normalizeExtractedPolicyFields(parsed) : null,
+    evidenceTextData,
+  );
+  const candidates = [
+    parsedData,
+    hinted ? normalizeExtractedPolicyFields(hinted) : null,
+    modelTextData,
+    parsedTextData,
+  ].filter(Boolean);
+  const merged = mergePolicyDataCandidates(candidates);
+  if (!hasPolicyDataValue(merged)) {
+    console.error('[ollama-vision] parsed empty policy fields', {
+      model,
+      passLabel,
+      numCtx,
+      numPredict,
+      timeoutMs,
+      imageBytes,
+      doneReason: payload?.done_reason || '',
+      evalCount: payload?.eval_count || 0,
+      contentLength: content.length,
+      thinkingLength: thinking.length,
+      contentPreview: content.slice(0, 800),
+      thinkingPreview: thinking.slice(0, 800),
+    });
+    return null;
+  }
+  const mergedOcrText = normalizeOcrText(parsedOcrText);
+  return mergedOcrText ? { ...merged, ocrText: mergedOcrText } : merged;
+}
+
+function getOllamaVisionResponseFormat(focus = null) {
+  return OLLAMA_POLICY_FOCUS_JSON_SCHEMAS[focus?.schemaKey] || OLLAMA_POLICY_JSON_SCHEMA;
+}
+
+function isAbortLikeError(error, signal = null) {
+  const message = String(error?.message || error || '');
+  return Boolean(signal?.aborted || error?.name === 'AbortError' || /AbortError|aborted|operation was aborted|This operation was aborted/i.test(message));
+}
+
+async function requestOllamaVisionImage({
+  buffer,
+  fetchImpl,
+  ocrContext = {},
+  focus = null,
+  passLabel = 'whole',
+}) {
+  const model = getConfiguredOllamaVisionModel();
+  const numCtx = getConfiguredOllamaVisionNumCtx();
+  const numPredict = getConfiguredOllamaVisionNumPredict();
+  const timeoutMs = getConfiguredOllamaVisionTimeoutMs();
+  const responseFormat = getOllamaVisionResponseFormat(focus);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), getConfiguredOllamaTimeoutMs());
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(`${getConfiguredOllamaBaseUrl()}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: getConfiguredOllamaVisionModel(),
+        model,
         stream: false,
-        options: { temperature: 0, num_ctx: getConfiguredOllamaVisionNumCtx() },
+        format: responseFormat,
+        think: false,
+        options: { temperature: 0, num_ctx: numCtx, num_predict: numPredict },
         messages: [
           {
             role: 'system',
             content:
-              '你是保险保单视觉识别助手。只能根据图片提取字段，不能臆造。只输出JSON，不要解释。若字段不确定就返回空字符串。',
+              '你是保险保单视觉识别助手。只能根据图片提取字段，不能臆造。不要逐步分析，直接输出JSON。若字段不确定就返回空字符串。',
           },
           {
             role: 'user',
-            content: [
-              '请直接阅读这张保单图片，并输出 JSON：',
-              '{"company":"","name":"","applicant":"","beneficiary":"","insured":"","insuredIdNumber":"","insuredBirthday":"","date":"","paymentPeriod":"","coveragePeriod":"","amount":"","firstPremium":"","plans":[]}',
-              '要求：',
-              '1. 保险公司优先识别页眉保司名称或英文品牌，例如 PING AN -> 中国平安保险。',
-              '2. 表格里上面是标题、下面或右侧是对应值时，必须按标题和值一一匹配。',
-              '3. date 使用 YYYY-MM-DD。',
-              '4. paymentPeriod 用如 25年交、10年交、趸交。',
-              '5. amount 和 firstPremium 只保留数字，不要逗号和单位。',
-              '6. 如果被保险人身份证/证件号码清晰可见，insuredIdNumber 输出该号码，insuredBirthday 从身份证出生日期推导为 YYYY-MM-DD；不要输出投保人的证件号码。',
-              '7. beneficiary 提取身故保险金受益人；如果表头下方写“被保险人的法定继承人”或“法定继承人”，beneficiary 输出“法定”。',
-              '8. 不要把 保单号/客户号码/联系电话/证件号码 当作保额或保费。',
-              '9. 如果图片里有“保险利益表/险种名称”表格，plans 必须输出每一条险种，格式为 {"role":"","name":"","amount":"","coveragePeriod":"","paymentMode":"","paymentPeriod":"","premium":"","productType":""}。',
-              '10. plans 第一条有效主险 role 用 main；名称含“万能型/万能账户/最低保证利率/账户价值”的账户类险种 role 用 linked_account；其他附加险 role 用 rider。',
-              '11. 扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取“首期保险费合计”，没有合计时取 plans 保费合计。',
-            ].join('\n'),
+            content: buildOllamaVisionChatContent(ocrContext, focus),
             images: [buffer.toString('base64')],
           },
         ],
       }),
     });
 
-    if (!response.ok) throw new Error('POLICY_OCR_VISION_FAILED');
+    if (!response.ok) {
+      const errorText = typeof response.text === 'function' ? await response.text().catch(() => '') : '';
+      console.error('[ollama-vision] request failed', {
+        model,
+        passLabel,
+        status: response.status,
+        statusText: response.statusText,
+        schemaKeys: Object.keys(responseFormat?.properties || {}),
+        errorPreview: String(errorText || '').slice(0, 500),
+      });
+      throw new Error('POLICY_OCR_VISION_FAILED');
+    }
     const payload = await response.json().catch(() => null);
-    const content = String(payload?.message?.content || payload?.response || '').trim();
-    const parsed = parseVisionJsonObjectBlock(content);
-    if (!parsed) return null;
-    const normalized = normalizeExtractedPolicyFields(parsed);
-    return Object.values(normalized).some(Boolean) ? normalized : null;
+    return parseOllamaVisionPayload(payload, {
+      model,
+      numCtx,
+      numPredict,
+      timeoutMs,
+      imageBytes: buffer.length,
+      passLabel,
+    });
   } catch (error) {
-    const message = String(error?.message || error || '');
-    if (message.includes('AbortError')) {
+    if (isAbortLikeError(error, controller.signal)) {
       throw new Error('POLICY_OCR_VISION_TIMEOUT');
     }
+    if (String(error?.message || error || '').includes('POLICY_OCR_VISION_FAILED')) {
+      throw error;
+    }
+    console.error('[ollama-vision] request exception', {
+      model,
+      passLabel,
+      schemaKeys: Object.keys(responseFormat?.properties || {}),
+      errorName: String(error?.name || ''),
+      errorMessage: String(error?.message || error || '').slice(0, 500),
+    });
     throw new Error('POLICY_OCR_VISION_FAILED');
   } finally {
     clearTimeout(timer);
   }
+}
+
+function extractOllamaVisionLineOcrTextFromPayload(payload) {
+  const content = String(payload?.message?.content || payload?.response || '').trim();
+  const thinking = String(payload?.message?.thinking || payload?.thinking || '').trim();
+  const parsed = tryParseVisionJsonObjectBlock(content) || tryParseVisionJsonObjectBlock(thinking);
+  const texts = [];
+
+  if (!parsed || typeof parsed !== 'object') return '';
+  if (Array.isArray(parsed.lines)) {
+    texts.push(parsed.lines.map((line) => cleanupFieldValue(line)).filter(Boolean).join('\n'));
+  } else if (typeof parsed.lines === 'string') {
+    texts.push(parsed.lines);
+  }
+  texts.push(parsed.text || parsed.ocrText || '');
+
+  return mergeRecognizedTextCandidates(...texts);
+}
+
+async function requestOllamaVisionLineOcrImage({
+  buffer,
+  fetchImpl,
+  ocrContext = {},
+  focus = null,
+  passLabel = 'line-ocr',
+}) {
+  const model = getConfiguredOllamaVisionModel();
+  const numCtx = getConfiguredOllamaVisionNumCtx();
+  const numPredict = getConfiguredOllamaVisionNumPredict();
+  const timeoutMs = getConfiguredOllamaVisionTimeoutMs();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(`${getConfiguredOllamaBaseUrl()}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        stream: false,
+        format: OLLAMA_POLICY_LINE_OCR_JSON_SCHEMA,
+        think: false,
+        options: { temperature: 0, num_ctx: numCtx, num_predict: numPredict },
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是保险保单逐行视觉 OCR 助手。只能逐行抄写图片中可见文字，不能臆造，不能抽象总结。',
+          },
+          {
+            role: 'user',
+            content: buildFocusedPolicyVisionLineOcrPrompt(ocrContext, focus),
+            images: [buffer.toString('base64')],
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = typeof response.text === 'function' ? await response.text().catch(() => '') : '';
+      console.error('[ollama-vision] line OCR request failed', {
+        model,
+        passLabel,
+        status: response.status,
+        statusText: response.statusText,
+        errorPreview: String(errorText || '').slice(0, 500),
+      });
+      throw new Error('POLICY_OCR_VISION_FAILED');
+    }
+    const payload = await response.json().catch(() => null);
+    const ocrText = extractOllamaVisionLineOcrTextFromPayload(payload);
+    if (!ocrText) {
+      console.warn('[ollama-vision] line OCR returned no readable lines', {
+        model,
+        passLabel,
+        imageBytes: buffer.length,
+      });
+      return '';
+    }
+    return ocrText;
+  } catch (error) {
+    if (isAbortLikeError(error, controller.signal)) {
+      throw new Error('POLICY_OCR_VISION_TIMEOUT');
+    }
+    if (String(error?.message || error || '').includes('POLICY_OCR_VISION_FAILED')) {
+      throw error;
+    }
+    console.error('[ollama-vision] line OCR request exception', {
+      model,
+      passLabel,
+      errorName: String(error?.name || ''),
+      errorMessage: String(error?.message || error || '').slice(0, 500),
+    });
+    throw new Error('POLICY_OCR_VISION_FAILED');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function inferImageExtension(mimeType) {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('png')) return '.png';
+  if (mime.includes('webp')) return '.webp';
+  return '.jpg';
+}
+
+function parseSipsImageDimensions(stdout) {
+  const width = Number(String(stdout || '').match(/pixelWidth:\s*(\d+)/u)?.[1] || 0);
+  const height = Number(String(stdout || '').match(/pixelHeight:\s*(\d+)/u)?.[1] || 0);
+  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
+    ? { width, height }
+    : null;
+}
+
+async function createOllamaVisionImageBands(buffer, mimeType) {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'policy-ocr-ollama-bands-'));
+  try {
+    const inputPath = path.join(tmpDir, `input${inferImageExtension(mimeType)}`);
+    await writeFile(inputPath, buffer);
+    const { stdout } = await execFileAsync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', inputPath], {
+      timeout: 10000,
+      maxBuffer: 512 * 1024,
+    });
+    const dimensions = parseSipsImageDimensions(stdout);
+    if (!dimensions || dimensions.height < 1200) return [];
+
+    const specs = [
+      { label: '页眉和基本内容区', startRatio: 0, heightRatio: 0.45, section: OLLAMA_VISION_COMPLEX_FOCUS_SECTIONS[0] },
+      { label: '保险利益表和险种明细区', startRatio: 0.30, heightRatio: 0.50, section: OLLAMA_VISION_COMPLEX_FOCUS_SECTIONS[1] },
+      { label: '受益人、特别约定和页面下半区', startRatio: 0.60, heightRatio: 0.40, section: OLLAMA_VISION_COMPLEX_FOCUS_SECTIONS[2] },
+    ];
+    const bands = [];
+    for (let index = 0; index < specs.length; index += 1) {
+      const spec = specs[index];
+      const cropHeight = Math.max(600, Math.min(dimensions.height, Math.round(dimensions.height * spec.heightRatio)));
+      const offsetY = Math.max(0, Math.min(dimensions.height - cropHeight, Math.round(dimensions.height * spec.startRatio)));
+      const outputPath = path.join(tmpDir, `band-${index}${inferImageExtension(mimeType)}`);
+      await execFileAsync(
+        'sips',
+        ['-c', String(cropHeight), String(dimensions.width), '--cropOffset', String(offsetY), '0', inputPath, '--out', outputPath],
+        { timeout: 15000, maxBuffer: 512 * 1024 },
+      );
+      if (!existsSync(outputPath)) continue;
+      bands.push({
+        label: spec.label,
+        schemaKey: spec.section.schemaKey,
+        instruction: spec.section.instruction,
+        buffer: await readFile(outputPath),
+      });
+    }
+    return bands;
+  } catch {
+    return [];
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function buildOllamaVisionComplexInputs(buffer, mimeType) {
+  const imageBands = await createOllamaVisionImageBands(buffer, mimeType);
+  if (imageBands.length) return imageBands;
+  return OLLAMA_VISION_COMPLEX_FOCUS_SECTIONS.map((section) => ({
+    ...section,
+    buffer,
+  }));
+}
+
+async function extractPolicyFieldsFromComplexImageWithOllamaVision({ buffer, mimeType, fetchImpl, ocrContext }) {
+  const inputs = await buildOllamaVisionComplexInputs(buffer, mimeType);
+  const results = [];
+  const ocrTexts = [];
+  let skippedTimeoutCount = 0;
+  let skippedFailureCount = 0;
+  for (const [index, input] of inputs.entries()) {
+    const passLabel = `complex:${index + 1}:${input.label}`;
+    try {
+      const result = await requestOllamaVisionImage({
+        buffer: input.buffer,
+        fetchImpl,
+        ocrContext,
+        focus: { label: input.label, schemaKey: input.schemaKey, instruction: input.instruction },
+        passLabel,
+      });
+      if (!result) continue;
+      results.push(result);
+      if (result.ocrText) ocrTexts.push(result.ocrText);
+    } catch (error) {
+      const message = String(error?.message || error || '');
+      if (message.includes('POLICY_OCR_VISION_TIMEOUT')) {
+        skippedTimeoutCount += 1;
+        console.warn('[ollama-vision] complex pass skipped', { passLabel, reason: message });
+        continue;
+      }
+      if (message.includes('POLICY_OCR_VISION_FAILED')) {
+        skippedFailureCount += 1;
+        console.warn('[ollama-vision] complex pass skipped', { passLabel, reason: message });
+        continue;
+      }
+      throw error;
+    }
+  }
+  if (!results.length) {
+    console.warn('[ollama-vision] complex image passes returned no usable fields', {
+      inputCount: inputs.length,
+      skippedTimeoutCount,
+      skippedFailureCount,
+    });
+    if (skippedTimeoutCount && skippedTimeoutCount >= inputs.length) throw new Error('POLICY_OCR_VISION_TIMEOUT');
+    if (skippedFailureCount && skippedFailureCount >= inputs.length) throw new Error('POLICY_OCR_VISION_FAILED');
+    return null;
+  }
+  const merged = mergePolicyDataCandidates(results);
+  if (!hasPolicyDataValue(merged)) return null;
+  const ocrText = mergeRecognizedTextCandidates(...ocrTexts);
+  return ocrText ? { ...merged, ocrText } : merged;
+}
+
+async function extractPolicyFieldsFromLineOcrWithOllamaVision({ buffer, mimeType, fetchImpl, ocrContext }) {
+  const inputs = await buildOllamaVisionComplexInputs(buffer, mimeType);
+  const ocrTexts = [];
+  let skippedTimeoutCount = 0;
+  let skippedFailureCount = 0;
+  for (const [index, input] of inputs.entries()) {
+    const passLabel = `line-ocr:${index + 1}:${input.label}`;
+    try {
+      const ocrText = await requestOllamaVisionLineOcrImage({
+        buffer: input.buffer,
+        fetchImpl,
+        ocrContext,
+        focus: { label: input.label, schemaKey: input.schemaKey, instruction: input.instruction },
+        passLabel,
+      });
+      if (ocrText) ocrTexts.push(ocrText);
+    } catch (error) {
+      const message = String(error?.message || error || '');
+      if (message.includes('POLICY_OCR_VISION_TIMEOUT')) {
+        skippedTimeoutCount += 1;
+        console.warn('[ollama-vision] line OCR pass skipped', { passLabel, reason: message });
+        continue;
+      }
+      if (message.includes('POLICY_OCR_VISION_FAILED')) {
+        skippedFailureCount += 1;
+        console.warn('[ollama-vision] line OCR pass skipped', { passLabel, reason: message });
+        continue;
+      }
+      throw error;
+    }
+  }
+  const ocrText = mergeRecognizedTextCandidates(...ocrTexts);
+  if (!ocrText) {
+    console.warn('[ollama-vision] line OCR passes returned no readable text', {
+      inputCount: inputs.length,
+      skippedTimeoutCount,
+      skippedFailureCount,
+    });
+    if (skippedTimeoutCount && skippedTimeoutCount >= inputs.length) throw new Error('POLICY_OCR_VISION_TIMEOUT');
+    if (skippedFailureCount && skippedFailureCount >= inputs.length) throw new Error('POLICY_OCR_VISION_FAILED');
+    return null;
+  }
+  const data = extractPolicyFieldsFromText(ocrText);
+  if (!hasPolicyDataValue(data)) {
+    console.warn('[ollama-vision] line OCR text did not map to policy fields', {
+      inputCount: inputs.length,
+      ocrTextLength: ocrText.length,
+    });
+    return null;
+  }
+  return { ...data, ocrText };
+}
+
+function removeFilenameOnlyVisionOcrText(result, uploadName = '') {
+  if (!result?.ocrText || !uploadName) return result;
+  const normalizedText = compactLine(result.ocrText);
+  const normalizedName = compactLine(uploadName);
+  const normalizedStem = compactLine(uploadName.replace(/\.[^.]+$/u, ''));
+  if (![normalizedName, normalizedStem].filter(Boolean).includes(normalizedText)) return result;
+  const { ocrText, ...rest } = result;
+  return rest;
+}
+
+async function supplementPolicyFieldsWithLineOcr(baseResult, {
+  buffer,
+  mimeType,
+  fetchImpl,
+  ocrContext,
+  uploadName,
+  missingBefore = [],
+}) {
+  let lineResult = null;
+  try {
+    lineResult = removeFilenameOnlyVisionOcrText(await extractPolicyFieldsFromLineOcrWithOllamaVision({
+      buffer,
+      mimeType,
+      fetchImpl,
+      ocrContext,
+    }), uploadName);
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (!message.includes('POLICY_OCR_VISION_TIMEOUT') && !message.includes('POLICY_OCR_VISION_FAILED')) {
+      throw error;
+    }
+    console.warn('[ollama-vision] line OCR supplement skipped', {
+      reason: message,
+      missingBefore,
+    });
+    return baseResult || null;
+  }
+  if (!lineResult) return baseResult || null;
+  const merged = baseResult ? mergePolicyDataCandidates([baseResult, lineResult]) : lineResult;
+  const ocrText = mergeRecognizedTextCandidates(baseResult?.ocrText, lineResult.ocrText);
+  const legalBeneficiary = !merged.beneficiary ? inferLegalBeneficiaryFromText(ocrText) : '';
+  const supplemented = legalBeneficiary ? { ...merged, beneficiary: legalBeneficiary } : merged;
+  console.warn('[ollama-vision] supplemented visual result with line OCR', {
+    missingBefore,
+    missingAfter: missingOllamaVisionCoreFieldLabels(supplemented),
+  });
+  return ocrText ? { ...supplemented, ocrText } : supplemented;
+}
+
+export async function extractPolicyFieldsFromImageWithOllamaVision(uploadItem, fetchImpl = fetch, ocrContext = {}) {
+  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
+  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const visionBuffer = await prepareImageBufferForOllamaVision(buffer, mimeType);
+  const useComplexPasses = shouldRunOllamaVisionComplexPasses();
+  let firstError = null;
+  try {
+    const result = removeFilenameOnlyVisionOcrText(await requestOllamaVisionImage({
+      buffer: visionBuffer,
+      fetchImpl,
+      ocrContext,
+      passLabel: 'whole',
+    }), uploadItem.name);
+    if (result) {
+      const missingCoreFields = missingOllamaVisionCoreFieldLabels(result);
+      if (!missingCoreFields.length) return result;
+      if (!useComplexPasses) return result;
+      let complexResult = null;
+      try {
+        complexResult = removeFilenameOnlyVisionOcrText(await extractPolicyFieldsFromComplexImageWithOllamaVision({
+          buffer: visionBuffer,
+          mimeType,
+          fetchImpl,
+          ocrContext,
+        }), uploadItem.name);
+      } catch (error) {
+        const message = String(error?.message || error || '');
+        if (!message.includes('POLICY_OCR_VISION_TIMEOUT') && !message.includes('POLICY_OCR_VISION_FAILED')) {
+          throw error;
+        }
+        console.warn('[ollama-vision] complex pass after partial whole image skipped', {
+          reason: message,
+          missingBefore: missingCoreFields,
+        });
+      }
+      if (complexResult) {
+        const merged = mergePolicyDataCandidates([result, complexResult]);
+        const ocrText = mergeRecognizedTextCandidates(result.ocrText, complexResult.ocrText);
+        console.warn('[ollama-vision] supplemented partial whole image result with complex passes', {
+          missingBefore: missingCoreFields,
+          missingAfter: missingOllamaVisionCoreFieldLabels(merged),
+        });
+        const current = ocrText ? { ...merged, ocrText } : merged;
+        if (!missingOllamaVisionCoreFieldLabels(current).length) return current;
+        return await supplementPolicyFieldsWithLineOcr(current, {
+          buffer: visionBuffer,
+          mimeType,
+          fetchImpl,
+          ocrContext,
+          uploadName: uploadItem.name,
+          missingBefore: missingOllamaVisionCoreFieldLabels(current),
+        }) || current;
+      }
+      return await supplementPolicyFieldsWithLineOcr(result, {
+        buffer: visionBuffer,
+        mimeType,
+        fetchImpl,
+        ocrContext,
+        uploadName: uploadItem.name,
+        missingBefore: missingCoreFields,
+      }) || result;
+    }
+    if (!useComplexPasses) return null;
+    console.warn('[ollama-vision] whole image pass returned no usable fields; trying complex passes');
+  } catch (error) {
+    firstError = error;
+    const message = String(error?.message || error || '');
+    if (!message.includes('POLICY_OCR_VISION_TIMEOUT') && !message.includes('POLICY_OCR_VISION_FAILED')) {
+      throw error;
+    }
+  }
+
+  if (!useComplexPasses) {
+    if (firstError) throw firstError;
+    return null;
+  }
+
+  let complexResult = null;
+  try {
+    complexResult = removeFilenameOnlyVisionOcrText(await extractPolicyFieldsFromComplexImageWithOllamaVision({
+      buffer: visionBuffer,
+      mimeType,
+      fetchImpl,
+      ocrContext,
+    }), uploadItem.name);
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (!message.includes('POLICY_OCR_VISION_TIMEOUT') && !message.includes('POLICY_OCR_VISION_FAILED')) {
+      throw error;
+    }
+    if (!firstError) firstError = error;
+    console.warn('[ollama-vision] complex pass before line OCR skipped', { reason: message });
+  }
+  if (complexResult) {
+    console.warn('[ollama-vision] recovered policy fields with complex image passes', {
+      hadFirstError: Boolean(firstError),
+    });
+    if (!missingOllamaVisionCoreFieldLabels(complexResult).length) return complexResult;
+    return await supplementPolicyFieldsWithLineOcr(complexResult, {
+      buffer: visionBuffer,
+      mimeType,
+      fetchImpl,
+      ocrContext,
+      uploadName: uploadItem.name,
+      missingBefore: missingOllamaVisionCoreFieldLabels(complexResult),
+    }) || complexResult;
+  }
+  const lineResult = await supplementPolicyFieldsWithLineOcr(null, {
+    buffer: visionBuffer,
+    mimeType,
+    fetchImpl,
+    ocrContext,
+    uploadName: uploadItem.name,
+    missingBefore: missingOllamaVisionCoreFieldLabels({}),
+  });
+  if (lineResult) {
+    console.warn('[ollama-vision] recovered policy fields with line OCR', {
+      hadFirstError: Boolean(firstError),
+    });
+    return lineResult;
+  }
+  if (firstError) throw firstError;
+  return null;
 }
 
 function countMissingPlanFields(plan = {}) {
@@ -2594,7 +5371,7 @@ export async function extractPolicyFieldsFromImageWithMlxVlm(uploadItem) {
     const parsed = parseVisionJsonObjectBlock(stdout);
     if (!parsed) throw new Error('POLICY_OCR_FAILED');
     const normalized = normalizeExtractedPolicyFields(parsed);
-    if (!Object.values(normalized).some(Boolean)) throw new Error('POLICY_OCR_EMPTY');
+    if (!hasPolicyDataValue(normalized)) throw new Error('POLICY_OCR_EMPTY');
     return {
       data: normalized,
       ocrText: normalizeOcrText(parsed?.ocrText || parsed?.text || ''),
@@ -2667,6 +5444,335 @@ export function extractPaddleOcrText(payload) {
   }
 
   return normalizeOcrText(payload?.ocrText || payload?.text || payload?.data?.ocrText || payload?.result?.ocrText || '');
+}
+
+function huaweiDetailWords(value) {
+  if (Array.isArray(value)) {
+    return cleanupFieldValue(value.map(huaweiDetailWords).filter(Boolean).join(' '));
+  }
+  if (value && typeof value === 'object') {
+    return cleanupFieldValue(value.words || value.text || value.value || value.content || '');
+  }
+  return cleanupFieldValue(value || '');
+}
+
+function huaweiFirstDetail(source, keys = []) {
+  if (!source || typeof source !== 'object') return '';
+  for (const key of keys) {
+    const value = huaweiDetailWords(source[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function huaweiPolicyResult(payload) {
+  return payload?.result && typeof payload.result === 'object'
+    ? payload.result
+    : payload?.data?.result && typeof payload.data.result === 'object'
+      ? payload.data.result
+      : {};
+}
+
+function huaweiFirstListItem(source, keys = []) {
+  for (const key of keys) {
+    const list = Array.isArray(source?.[key]) ? source[key] : [];
+    const item = list.find((row) => row && typeof row === 'object');
+    if (item) return item;
+  }
+  return null;
+}
+
+function normalizeHuaweiPlanRole(plan, index) {
+  const name = huaweiFirstDetail(plan, ['insurance_name', 'name', 'product_name']);
+  const text = compactLine(`${huaweiFirstDetail(plan, ['insurance_type', 'type', 'role'])}${name}`);
+  if (/万能型|万能账户|万能险|最低保证利率|账户价值/u.test(text)) return 'linked_account';
+  if (/附加/u.test(text)) return 'rider';
+  return index === 0 ? 'main' : 'rider';
+}
+
+function mapHuaweiInsurancePlans(result) {
+  const list = Array.isArray(result?.insurance_list) ? result.insurance_list : [];
+  return list
+    .map((plan, index) => {
+      const name = huaweiFirstDetail(plan, ['insurance_name', 'name', 'product_name']);
+      const amount = huaweiFirstDetail(plan, ['insurance_amount', 'amount', 'insured_amount']);
+      const coveragePeriod = huaweiFirstDetail(plan, ['insurance_period', 'coverage_period', 'period']);
+      const paymentMode = huaweiFirstDetail(plan, ['payment_frequency', 'payment_mode']);
+      const paymentPeriod = huaweiFirstDetail(plan, ['payment_period', 'payment_years']);
+      const premium = huaweiFirstDetail(plan, ['payment_amount', 'premium', 'insurance_premium']);
+      const evidence = [
+        name,
+        amount && `保额 ${amount}`,
+        coveragePeriod && `保障期 ${coveragePeriod}`,
+        paymentMode && `缴费方式 ${paymentMode}`,
+        paymentPeriod && `缴费期 ${paymentPeriod}`,
+        premium && `保费 ${premium}`,
+      ].filter(Boolean).join(' ');
+      if (!name && !amount && !coveragePeriod && !paymentMode && !paymentPeriod && !premium) return null;
+      return {
+        role: normalizeHuaweiPlanRole(plan, index),
+        name,
+        amount,
+        coveragePeriod,
+        paymentMode,
+        paymentPeriod,
+        premium,
+        productType: huaweiFirstDetail(plan, ['insurance_type', 'product_type']),
+        evidence,
+      };
+    })
+    .filter(Boolean);
+}
+
+function huaweiBeneficiaryValue(result) {
+  const list = Array.isArray(result?.beneficiary_list) ? result.beneficiary_list : [];
+  const death = list.find((item) => /身故|死亡|法定/u.test(compactLine(huaweiFirstDetail(item, ['beneficiary_type', 'type', 'benefit_type']))))
+    || list.find((item) => huaweiFirstDetail(item, ['beneficiary_name', 'name']));
+  return huaweiFirstDetail(death, ['beneficiary_name', 'name']);
+}
+
+function huaweiEvidence(value, label) {
+  const text = cleanupFieldValue(value || '');
+  if (!text) return null;
+  return {
+    value: text,
+    rawValue: text,
+    labelText: label,
+    rowText: `${label}:${text}`,
+    relation: 'huawei-cloud',
+    source: 'huawei-cloud-ocr',
+    region: 'structured',
+  };
+}
+
+function buildHuaweiFieldEvidence(data) {
+  const labels = {
+    company: '保险公司',
+    name: '险种名称',
+    applicant: '投保人',
+    beneficiary: '身故保险金受益人',
+    policyNumber: '保单号',
+    insured: '被保险人',
+    insuredIdNumber: '被保险人证件号码',
+    insuredBirthday: '被保险人出生日期',
+    date: '生效日期',
+    paymentPeriod: '缴费期间',
+    coveragePeriod: '保障期间',
+    amount: '保险金额',
+    firstPremium: '首期保险费',
+  };
+  const evidence = {};
+  const confidence = {};
+  for (const [field, label] of Object.entries(labels)) {
+    const item = huaweiEvidence(data?.[field], label);
+    if (!item) continue;
+    evidence[field] = item;
+    confidence[field] = 'huawei-cloud';
+  }
+  return { fieldEvidence: evidence, fieldConfidence: confidence };
+}
+
+function buildHuaweiStructuredOcrText(data) {
+  const lines = [
+    ['保险公司', data.company],
+    ['保单号', data.policyNumber],
+    ['生效日期', data.date],
+    ['投保人', data.applicant],
+    ['被保险人', data.insured],
+    ['被保险人证件号码', data.insuredIdNumber],
+    ['被保险人出生日期', data.insuredBirthday],
+    ['身故保险金受益人', data.beneficiary],
+    ['险种名称', data.name],
+    ['保险金额', data.amount],
+    ['保障期间', data.coveragePeriod],
+    ['缴费期间', data.paymentPeriod],
+    ['首期保险费', data.firstPremium],
+  ]
+    .filter(([, value]) => String(value || '').trim())
+    .map(([label, value]) => `${label}:${value}`);
+
+  for (const plan of data.plans || []) {
+    lines.push([
+      '险种明细',
+      plan.name,
+      plan.amount && `保额:${plan.amount}`,
+      plan.coveragePeriod && `保障期:${plan.coveragePeriod}`,
+      plan.paymentMode && `缴费方式:${plan.paymentMode}`,
+      plan.paymentPeriod && `缴费期:${plan.paymentPeriod}`,
+      plan.premium && `保费:${plan.premium}`,
+    ].filter(Boolean).join(' '));
+  }
+
+  return normalizeOcrText(lines.join('\n'));
+}
+
+function mapHuaweiInsurancePolicyPayload(payload) {
+  const result = huaweiPolicyResult(payload);
+  const applicant = huaweiFirstListItem(result, ['applicant_list', 'policy_holder_list', 'holder_list']);
+  const insured = huaweiFirstListItem(result, ['insurant_list', 'insured_list']);
+  const plans = mapHuaweiInsurancePlans(result);
+  const firstPlan = plans[0] || {};
+  const rawData = {
+    company: huaweiFirstDetail(result, ['company', 'company_name', 'insurer_name']),
+    name: firstPlan.name || huaweiFirstDetail(result, ['product_name', 'insurance_name', 'name']),
+    applicant: huaweiFirstDetail(applicant, ['name', 'applicant_name', 'policy_holder_name']),
+    beneficiary: huaweiBeneficiaryValue(result),
+    policyNumber: huaweiFirstDetail(result, ['policy_number', 'policy_no', 'policy_code', 'contract_number', 'contract_no', 'bill_number']),
+    insured: huaweiFirstDetail(insured, ['name', 'insured_name', 'insurant_name']),
+    insuredIdNumber: huaweiFirstDetail(insured, ['id_number', 'identity_number', 'certificate_number', 'cert_number']),
+    insuredBirthday: huaweiFirstDetail(insured, ['birthday', 'birth_date']),
+    date: huaweiFirstDetail(result, ['effective_date', 'date', 'issue_date']),
+    paymentPeriod: firstPlan.paymentPeriod,
+    coveragePeriod: firstPlan.coveragePeriod,
+    amount: firstPlan.amount,
+    firstPremium: huaweiFirstDetail(result, ['first_premium', 'total_premium', 'payment_amount', 'premium']),
+    plans,
+  };
+  const data = normalizeExtractedPolicyFields(rawData);
+  const { fieldEvidence, fieldConfidence } = buildHuaweiFieldEvidence(data);
+  const ocrText = buildHuaweiStructuredOcrText(data);
+  return {
+    data,
+    ocrText,
+    fieldEvidence,
+    fieldConfidence,
+  };
+}
+
+function normalizeHuaweiEndpoint(rawEndpoint, region = 'cn-north-4') {
+  const endpoint = String(rawEndpoint || '').trim();
+  const resolved = endpoint || `https://ocr.${String(region || 'cn-north-4').trim() || 'cn-north-4'}.myhuaweicloud.com`;
+  return /^https?:\/\//iu.test(resolved) ? resolved.replace(/\/+$/u, '') : `https://${resolved.replace(/\/+$/u, '')}`;
+}
+
+function huaweiCloudOcrTimeoutMs(env = process.env) {
+  const value = Number(env.POLICY_OCR_HUAWEI_TIMEOUT_MS || DEFAULT_HUAWEI_CLOUD_OCR_TIMEOUT_MS);
+  return Number.isFinite(value) && value >= 1000 ? value : DEFAULT_HUAWEI_CLOUD_OCR_TIMEOUT_MS;
+}
+
+function getHuaweiCloudAuthToken(env = process.env) {
+  return String(env.POLICY_OCR_HUAWEI_X_AUTH_TOKEN || env.POLICY_OCR_HUAWEI_AUTH_TOKEN || '').trim();
+}
+
+function getHuaweiCloudAkSk(env = process.env) {
+  return {
+    ak: String(env.POLICY_OCR_HUAWEI_AK || env.CLOUD_SDK_AK || '').trim(),
+    sk: String(env.POLICY_OCR_HUAWEI_SK || env.CLOUD_SDK_SK || '').trim(),
+  };
+}
+
+function huaweiSdkDate(date = new Date()) {
+  return date.toISOString().replace(/[:-]|\.\d{3}/gu, '');
+}
+
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function hmacSha256Hex(key, value) {
+  return crypto.createHmac('sha256', key).update(value).digest('hex');
+}
+
+function canonicalHuaweiUri(pathname) {
+  const pathText = pathname || '/';
+  return pathText.endsWith('/') ? pathText : `${pathText}/`;
+}
+
+function canonicalHuaweiHeaders(headers) {
+  const names = Object.keys(headers).map((name) => name.toLowerCase()).sort();
+  return {
+    canonical: names.map((name) => `${name}:${String(headers[name] || headers[Object.keys(headers).find((key) => key.toLowerCase() === name)] || '').trim()}\n`).join(''),
+    signedHeaders: names.join(';'),
+  };
+}
+
+function signHuaweiCloudRequest({ method, url, headers, body, ak, sk }) {
+  const parsed = new URL(url);
+  const normalizedHeaders = {};
+  for (const [name, value] of Object.entries(headers)) normalizedHeaders[name.toLowerCase()] = value;
+  normalizedHeaders.host = parsed.host;
+  if (!normalizedHeaders['x-sdk-date']) normalizedHeaders['x-sdk-date'] = huaweiSdkDate();
+  const { canonical, signedHeaders } = canonicalHuaweiHeaders(normalizedHeaders);
+  const canonicalRequest = [
+    method.toUpperCase(),
+    canonicalHuaweiUri(parsed.pathname),
+    parsed.searchParams.toString(),
+    canonical,
+    signedHeaders,
+    sha256Hex(body),
+  ].join('\n');
+  const stringToSign = [
+    'SDK-HMAC-SHA256',
+    normalizedHeaders['x-sdk-date'],
+    sha256Hex(canonicalRequest),
+  ].join('\n');
+  return {
+    ...normalizedHeaders,
+    Authorization: `SDK-HMAC-SHA256 Access=${ak}, SignedHeaders=${signedHeaders}, Signature=${hmacSha256Hex(sk, stringToSign)}`,
+  };
+}
+
+function buildHuaweiCloudInsuranceRequest(uploadItem, env = process.env) {
+  const { buffer } = parseDataUrl(uploadItem);
+  const image = buffer.toString('base64');
+  if (Buffer.byteLength(image, 'utf-8') > MAX_HUAWEI_CLOUD_OCR_IMAGE_BASE64_BYTES) {
+    throw new Error('FILE_TOO_LARGE');
+  }
+  const projectId = String(env.POLICY_OCR_HUAWEI_PROJECT_ID || '').trim();
+  if (!projectId) throw new Error('POLICY_OCR_PROVIDER_NOT_CONFIGURED');
+  const endpoint = normalizeHuaweiEndpoint(env.POLICY_OCR_HUAWEI_ENDPOINT, env.POLICY_OCR_HUAWEI_REGION);
+  const url = `${endpoint}/v2/${encodeURIComponent(projectId)}/ocr/insurance-policy`;
+  const body = JSON.stringify({ image, detect_direction: true });
+  const headers = { 'content-type': 'application/json' };
+  const enterpriseProjectId = String(env.POLICY_OCR_HUAWEI_ENTERPRISE_PROJECT_ID || '').trim();
+  if (enterpriseProjectId) headers['enterprise-project-id'] = enterpriseProjectId;
+  const token = getHuaweiCloudAuthToken(env);
+  if (token) {
+    return {
+      url,
+      headers: { ...headers, 'X-Auth-Token': token },
+      body,
+      timeoutMs: huaweiCloudOcrTimeoutMs(env),
+    };
+  }
+  const { ak, sk } = getHuaweiCloudAkSk(env);
+  if (!ak || !sk) throw new Error('POLICY_OCR_PROVIDER_NOT_CONFIGURED');
+  return {
+    url,
+    headers: signHuaweiCloudRequest({ method: 'POST', url, headers, body, ak, sk }),
+    body,
+    timeoutMs: huaweiCloudOcrTimeoutMs(env),
+  };
+}
+
+export async function scanPolicyWithHuaweiCloudInsurance(uploadItem, options = {}) {
+  const env = options.env || process.env;
+  const fetchImpl = options.fetchImpl || fetch;
+  const request = buildHuaweiCloudInsuranceRequest(uploadItem, env);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), request.timeoutMs);
+  let response;
+  try {
+    response = await fetchImpl(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: request.body,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (isAbortLikeError(error, controller.signal)) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
+    throw new Error('POLICY_OCR_FAILED');
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) throw new Error('OCR_SERVICE_UNAUTHORIZED');
+    throw new Error('POLICY_OCR_FAILED');
+  }
+  const payload = await response.json().catch(() => null);
+  const scan = mapHuaweiInsurancePolicyPayload(payload);
+  if (!hasPolicyDataValue(scan.data)) throw new Error('POLICY_OCR_EMPTY');
+  return scan;
 }
 
 function buildBaiduPrivateRequest(uploadItem) {
@@ -2960,10 +6066,20 @@ async function recognizeTextFromUpload(uploadItem) {
   if (provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) {
     return recognizeTextWithPdfExtractKit(uploadItem);
   }
+  if (provider === OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE) {
+    const scan = await scanPolicyWithHuaweiCloudInsurance(uploadItem);
+    return scan.ocrText;
+  }
   return recognizeTextWithVision(uploadItem);
 }
 
-export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
+export async function scanInsurancePolicyLocal({
+  uploadItem,
+  ocrText,
+  ocrContext,
+  paddleLayoutScanner,
+  ollamaVisionExtractor,
+}) {
   let recognizedText = normalizeOcrText(ocrText);
   if (!recognizedText && !uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
   if (!recognizedText && isPdfUpload(uploadItem)) {
@@ -2975,40 +6091,56 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
   let scanFieldConfidence = {};
   let scanFieldEvidence = {};
   let scanOcrWarnings = [];
+  let scanVisionDebug = null;
   if (recognizedText) {
     data = extractPolicyFieldsFromText(recognizedText);
   } else {
     const provider = getConfiguredOcrProvider();
     if (provider === OCR_PROVIDER_OLLAMA_VISION_LOCAL) {
-      data = await extractPolicyFieldsFromImageWithOllamaVision(uploadItem);
-      bestOcrText = '';
+      const scan = await scanPolicyWithOllamaVisionPipeline(uploadItem, {
+        paddleLayoutScanner,
+        ollamaVisionExtractor,
+        ocrContext,
+      });
+      data = scan.data;
+      bestOcrText = scan.bestOcrText;
+      scanFieldConfidence = scan.scanFieldConfidence;
+      scanFieldEvidence = scan.scanFieldEvidence;
+      scanOcrWarnings = scan.scanOcrWarnings;
+      scanVisionDebug = scan.visionDebug || null;
     } else if (provider === OCR_PROVIDER_MLX_QWEN25_VL_LOCAL) {
       const mlxResult = await extractPolicyFieldsFromImageWithMlxVlm(uploadItem);
       data = mlxResult?.data || null;
       bestOcrText = normalizeOcrText(mlxResult?.ocrText || '');
     } else if (provider === OCR_PROVIDER_REMOTE_GPU_VISION) {
-      const remoteResult = await extractPolicyFieldsFromImageWithRemoteVision(uploadItem);
-      data = remoteResult?.data || null;
-      bestOcrText = normalizeOcrText(remoteResult?.ocrText || '');
+      const scan = await scanPolicyWithOllamaVisionPipeline(uploadItem, {
+        paddleLayoutScanner,
+        ocrContext,
+        visionWarningLabel: '4080 视觉',
+        ollamaVisionExtractor: (item, context) => extractPolicyFieldsFromImageWithRemoteVision(item, { ocrContext: context }),
+      });
+      data = scan.data;
+      bestOcrText = scan.bestOcrText;
+      scanFieldConfidence = scan.scanFieldConfidence;
+      scanFieldEvidence = scan.scanFieldEvidence;
+      scanOcrWarnings = scan.scanOcrWarnings;
+      scanVisionDebug = scan.visionDebug || null;
+    } else if (provider === OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE) {
+      const scan = await scanPolicyWithHuaweiCloudInsurance(uploadItem);
+      data = scan.data;
+      bestOcrText = scan.ocrText;
+      scanFieldConfidence = scan.fieldConfidence || {};
+      scanFieldEvidence = scan.fieldEvidence || {};
     } else {
       const candidates = [];
       let handledPaddleLayout = false;
       if (provider === OCR_PROVIDER_PADDLE_LOCAL || provider === OCR_PROVIDER_PADDLEOCR_VL_LOCAL) {
-        const paddleResult = await recognizePaddlePolicyUpload(uploadItem);
-        candidates.push(paddleResult.ocrText);
-        const best = selectBestPolicyScanCandidate(candidates);
-        const layoutResult = paddleResult.boxes?.length
-          ? parsePolicyBasicInfoFromLayoutBoxes(paddleResult.boxes)
-          : null;
-        const merged = mergePolicyLayoutScanResult({
-          textData: best.data,
-          layoutResult,
-        });
+        const merged = await scanPolicyWithPaddleLayout(uploadItem);
         data = merged.data;
-        scanFieldConfidence = merged.fieldConfidence;
-        scanFieldEvidence = merged.fieldEvidence;
-        scanOcrWarnings = merged.ocrWarnings;
-        bestOcrText = best.ocrText;
+        scanFieldConfidence = merged.fieldConfidence || {};
+        scanFieldEvidence = merged.fieldEvidence || {};
+        scanOcrWarnings = merged.ocrWarnings || [];
+        bestOcrText = merged.ocrText;
         handledPaddleLayout = true;
       } else if (provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) {
         const pdfExtractKitText = await recognizeTextWithPdfExtractKit(uploadItem);
@@ -3033,7 +6165,7 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
     try {
       const llmData = await postprocessPolicyFieldsWithOllama(bestOcrText, data);
       if (llmData) {
-        const merged = mergePolicyDataCandidates([data, llmData]);
+        const merged = mergePolicyDataWithMissingFieldSupplement(data || {}, llmData);
         if (scorePolicyData(merged) >= scorePolicyData(data)) {
           data = merged;
         }
@@ -3051,11 +6183,16 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
   data = localVisionEnhanced.data;
   bestOcrText = normalizeOcrText(localVisionEnhanced.ocrText || bestOcrText);
 
-  if (!Object.values(data).some(Boolean)) throw new Error('POLICY_OCR_EMPTY');
-  const fieldConfidence = Object.keys(scanFieldConfidence).length ? scanFieldConfidence : (data.fieldConfidence || {});
-  const fieldEvidence = Object.keys(scanFieldEvidence).length ? scanFieldEvidence : (data.fieldEvidence || {});
+  if (!hasPolicyDataValue(data)) throw new Error('POLICY_OCR_EMPTY');
+  let fieldConfidence = Object.keys(scanFieldConfidence).length ? scanFieldConfidence : (data.fieldConfidence || {});
+  let fieldEvidence = Object.keys(scanFieldEvidence).length ? scanFieldEvidence : (data.fieldEvidence || {});
   const dataOcrWarnings = Array.isArray(data.ocrWarnings) ? data.ocrWarnings : [];
-  const ocrWarnings = [...new Set([...scanOcrWarnings, ...dataOcrWarnings].map((item) => String(item || '').trim()).filter(Boolean))];
+  let ocrWarnings = [...new Set([...scanOcrWarnings, ...dataOcrWarnings].map((item) => String(item || '').trim()).filter(Boolean))];
+  const reviewed = reviewPolicyFieldValues({ data, fieldConfidence, fieldEvidence, warnings: ocrWarnings });
+  data = reviewed.data;
+  fieldConfidence = reviewed.fieldConfidence;
+  fieldEvidence = reviewed.fieldEvidence;
+  ocrWarnings = reviewed.warnings;
   delete data.fieldConfidence;
   delete data.fieldEvidence;
   delete data.ocrWarnings;
@@ -3066,6 +6203,7 @@ export async function scanInsurancePolicyLocal({ uploadItem, ocrText }) {
     ...(Object.keys(fieldConfidence).length ? { fieldConfidence } : {}),
     ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
     ...(ocrWarnings.length ? { ocrWarnings } : {}),
+    ...(scanVisionDebug ? { visionDebug: scanVisionDebug } : {}),
   };
 }
 
@@ -3174,11 +6312,11 @@ function shouldForceLocalOcr(env = process.env) {
   return String(env.POLICY_OCR_FORCE_LOCAL || '').trim().toLowerCase() === 'true';
 }
 
-export async function scanInsurancePolicy({ uploadItem, ocrText }) {
+export async function scanInsurancePolicy({ uploadItem, ocrText, ocrContext }) {
   if (!shouldForceLocalOcr() && hasConfiguredOcrServiceBaseUrl()) {
-    return scanInsurancePolicyOverHttp({ uploadItem, ocrText });
+    return scanInsurancePolicyOverHttp({ uploadItem, ocrText, ocrContext });
   }
-  return scanInsurancePolicyLocal({ uploadItem, ocrText });
+  return scanInsurancePolicyLocal({ uploadItem, ocrText, ocrContext });
 }
 
 void warmupPaddleLocalIfNeeded();
