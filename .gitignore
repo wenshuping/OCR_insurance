@@ -25,9 +25,12 @@ crawled/
 # Outputs (generated reports/files)
 outputs/
 .structurev3-inspect/
+graphify-out/
 
 # Temp files
 tmp/
+.tmp/
+.tmp-*
 
 # Test results
 test-results/
