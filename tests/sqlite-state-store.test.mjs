@@ -482,3 +482,95 @@ test('sqlite state store persists product optional responsibility records', asyn
   assert.equal(reloaded.optionalResponsibilityRecords[0].quantificationStatus, 'pending_review');
   store.close();
 });
+
+test('sqlite state store persists membership orders, memberships, wechat identities, and oauth states', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const seedStatePath = path.join(dir, 'state.json');
+  await writeJson(seedStatePath, {
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    membershipConfig: { enabled: true, annualPriceCents: 30000, annualDurationDays: 365, registeredFreePolicyQuota: 2, updatedAt: '2026-06-11T08:00:00.000Z' },
+    membershipOrders: [{
+      id: 20,
+      outTradeNo: 'mem_1_1790000000000_abcdef',
+      userId: 1,
+      productCode: 'annual_membership',
+      amountCents: 30000,
+      currency: 'CNY',
+      status: 'paid',
+      prepayId: 'wx-prepay',
+      transactionId: '4200001',
+      paidAt: '2026-06-11T08:01:00.000Z',
+      expiresAt: '2026-06-11T08:30:00.000Z',
+      createdAt: '2026-06-11T08:00:00.000Z',
+      updatedAt: '2026-06-11T08:01:00.000Z',
+      payload: { notify: { trade_state: 'SUCCESS' } },
+    }],
+    memberships: [{ userId: 1, plan: 'annual', status: 'active', startedAt: '2026-06-11T08:01:00.000Z', expiresAt: '2027-06-11T08:01:00.000Z', lastOrderId: 20, updatedAt: '2026-06-11T08:01:00.000Z' }],
+    userWechatIdentities: [{ userId: 1, appId: 'wx123', openid: 'openid-1', scope: 'snsapi_base', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    wechatOAuthStates: [{ state: 'oauth-state-1', userId: 1, appId: 'wx123', redirectUrl: '/#/member', usedAt: '', expiresAt: '2026-06-11T08:10:00.000Z', createdAt: '2026-06-11T08:00:00.000Z' }],
+    nextId: 21,
+  });
+
+  const store = await createSqliteStateStore({ dbPath, seedStatePath });
+  const imported = await store.load();
+  assert.equal(imported.membershipConfig.registeredFreePolicyQuota, 2);
+  assert.equal(imported.membershipOrders[0].outTradeNo, 'mem_1_1790000000000_abcdef');
+  assert.equal(imported.memberships[0].expiresAt, '2027-06-11T08:01:00.000Z');
+  assert.equal(imported.userWechatIdentities[0].openid, 'openid-1');
+  assert.equal(imported.wechatOAuthStates[0].state, 'oauth-state-1');
+  assert.equal(imported.nextId, 21);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM membership_orders').get().count, 1);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM memberships').get().count, 1);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM user_wechat_identities').get().count, 1);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM wechat_oauth_states').get().count, 1);
+  assert.equal(
+    store.db.prepare(`
+      SELECT count(*) AS count
+      FROM state_documents
+      WHERE key IN ('membershipConfig', 'membershipOrders', 'memberships', 'userWechatIdentities', 'wechatOAuthStates')
+    `).get().count,
+    0,
+  );
+
+  imported.membershipConfig = { ...imported.membershipConfig, registeredFreePolicyQuota: 4, updatedAt: '2026-06-11T09:00:00.000Z' };
+  imported.membershipOrders.push({
+    id: 21,
+    outTradeNo: 'mem_1_1790000000001_bcdefa',
+    userId: 1,
+    productCode: 'annual_membership',
+    amountCents: 30000,
+    currency: 'CNY',
+    status: 'prepay_created',
+    prepayId: 'wx-prepay-2',
+    transactionId: '',
+    paidAt: '',
+    expiresAt: '2026-06-11T09:30:00.000Z',
+    createdAt: '2026-06-11T09:00:00.000Z',
+    updatedAt: '2026-06-11T09:00:00.000Z',
+    payload: {},
+  });
+  imported.nextId = 22;
+  await store.persist(imported);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM membership_orders').get().count, 2);
+  assert.equal(
+    store.db.prepare(`
+      SELECT count(*) AS count
+      FROM state_documents
+      WHERE key IN ('membershipConfig', 'membershipOrders', 'memberships', 'userWechatIdentities', 'wechatOAuthStates')
+    `).get().count,
+    0,
+  );
+  store.close();
+
+  const reopened = await createSqliteStateStore({ dbPath, seedStatePath });
+  const reloaded = await reopened.load();
+  assert.equal(reloaded.membershipConfig.registeredFreePolicyQuota, 4);
+  assert.equal(reloaded.membershipOrders.length, 2);
+  assert.equal(reloaded.membershipOrders[1].prepayId, 'wx-prepay-2');
+  assert.equal(reloaded.memberships.length, 1);
+  assert.equal(reloaded.userWechatIdentities.length, 1);
+  assert.equal(reloaded.wechatOAuthStates.length, 1);
+  assert.equal(reloaded.nextId, 22);
+  reopened.close();
+});

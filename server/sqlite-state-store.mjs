@@ -22,6 +22,11 @@ const DB_OWNED_KEYS = new Set([
   'familyProfiles',
   'familyMembers',
   'familyReportShares',
+  'membershipConfig',
+  'membershipOrders',
+  'memberships',
+  'userWechatIdentities',
+  'wechatOAuthStates',
   'nextId',
 ]);
 
@@ -64,6 +69,7 @@ function resolveNextId(state) {
     maxNumericId(state.familyProfiles),
     maxNumericId(state.familyMembers),
     maxNumericId(state.familyReportShares),
+    maxNumericId(state.membershipOrders),
   );
   return Math.max(Number(state.nextId || 1), maxId + 1, 1);
 }
@@ -240,6 +246,51 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_report_shares_owner_user_id ON family_report_shares(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_family_report_shares_owner_guest_id ON family_report_shares(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_report_shares_token ON family_report_shares(token);
+
+    CREATE TABLE IF NOT EXISTS membership_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS membership_orders (
+      id INTEGER PRIMARY KEY,
+      out_trade_no TEXT NOT NULL,
+      user_id INTEGER,
+      status TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_membership_orders_out_trade_no ON membership_orders(out_trade_no);
+    CREATE INDEX IF NOT EXISTS idx_membership_orders_user_id ON membership_orders(user_id);
+
+    CREATE TABLE IF NOT EXISTS memberships (
+      user_id INTEGER PRIMARY KEY,
+      status TEXT,
+      expires_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_wechat_identities (
+      user_id INTEGER,
+      app_id TEXT,
+      openid TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (user_id, app_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS wechat_oauth_states (
+      state TEXT PRIMARY KEY,
+      user_id INTEGER,
+      app_id TEXT,
+      expires_at TEXT,
+      used_at TEXT,
+      created_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wechat_oauth_states_user_id ON wechat_oauth_states(user_id);
 
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
@@ -452,6 +503,75 @@ function insertRows(db, state) {
     );
   }
 
+  if (state.membershipConfig) {
+    db.prepare(`
+      INSERT INTO membership_config (id, payload)
+      VALUES (1, ?)
+    `).run(jsonPayload(state.membershipConfig));
+  }
+
+  const insertMembershipOrder = db.prepare(`
+    INSERT INTO membership_orders (id, out_trade_no, user_id, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const order of normalizeArray(state.membershipOrders)) {
+    insertMembershipOrder.run(
+      Number(order.id),
+      String(order.outTradeNo || ''),
+      Number(order.userId || 0) || null,
+      String(order.status || ''),
+      String(order.createdAt || ''),
+      String(order.updatedAt || ''),
+      jsonPayload(order),
+    );
+  }
+
+  const insertMembership = db.prepare(`
+    INSERT INTO memberships (user_id, status, expires_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const membership of normalizeArray(state.memberships)) {
+    insertMembership.run(
+      Number(membership.userId || 0),
+      String(membership.status || ''),
+      String(membership.expiresAt || ''),
+      String(membership.updatedAt || ''),
+      jsonPayload(membership),
+    );
+  }
+
+  const insertUserWechatIdentity = db.prepare(`
+    INSERT INTO user_wechat_identities (user_id, app_id, openid, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const identity of normalizeArray(state.userWechatIdentities)) {
+    insertUserWechatIdentity.run(
+      Number(identity.userId || 0),
+      String(identity.appId || ''),
+      String(identity.openid || ''),
+      String(identity.updatedAt || ''),
+      jsonPayload(identity),
+    );
+  }
+
+  const insertWechatOAuthState = db.prepare(`
+    INSERT INTO wechat_oauth_states (state, user_id, app_id, expires_at, used_at, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const oauthState of normalizeArray(state.wechatOAuthStates)) {
+    const stateToken = String(oauthState?.state || '').trim();
+    if (!stateToken) continue;
+    insertWechatOAuthState.run(
+      stateToken,
+      Number(oauthState.userId || 0) || null,
+      String(oauthState.appId || ''),
+      String(oauthState.expiresAt || ''),
+      String(oauthState.usedAt || ''),
+      String(oauthState.createdAt || ''),
+      jsonPayload(oauthState),
+    );
+  }
+
   const insertStateDocument = db.prepare(`
     INSERT INTO state_documents (key, payload)
     VALUES (?, ?)
@@ -602,6 +722,11 @@ function clearDbOwnedTables(db) {
     DELETE FROM insurance_indicator_records;
     DELETE FROM optional_responsibility_records;
     DELETE FROM official_domain_profiles;
+    DELETE FROM membership_config;
+    DELETE FROM membership_orders;
+    DELETE FROM memberships;
+    DELETE FROM user_wechat_identities;
+    DELETE FROM wechat_oauth_states;
     DELETE FROM state_documents;
   `);
 }
@@ -629,6 +754,11 @@ function loadDbOwnedState(db) {
     familyProfiles: loadPayloadRows(db, 'family_profiles', 'id ASC'),
     familyMembers: loadPayloadRows(db, 'family_members', 'id ASC'),
     familyReportShares: loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
+    membershipConfig: parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null),
+    membershipOrders: loadPayloadRows(db, 'membership_orders', 'id ASC'),
+    memberships: loadPayloadRows(db, 'memberships', 'user_id ASC'),
+    userWechatIdentities: loadPayloadRows(db, 'user_wechat_identities', 'user_id ASC, app_id ASC'),
+    wechatOAuthStates: loadPayloadRows(db, 'wechat_oauth_states', 'created_at ASC, state ASC'),
   };
   state.knowledgeRecords = state.knowledgeRecords
     .map((record) => normalizeKnowledgeRecord(record))
