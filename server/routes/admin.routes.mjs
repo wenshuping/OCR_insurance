@@ -22,6 +22,8 @@ export function createAdminRoutes(context) {
     buildEffectiveOfficialDomainProfiles,
     knowledgeFetchImpl,
     upsertKnowledgeRecords,
+    getMembershipConfig,
+    updateMembershipConfig,
     allocateId,
   } = context;
 
@@ -200,6 +202,27 @@ export function createAdminRoutes(context) {
         records: buildAdminKnowledgeRecords(state),
         discovered,
       });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  router.get('/membership-config', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    res.json({ ok: true, config: getMembershipConfig(state) });
+  });
+
+  router.patch('/membership-config', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      const config = updateMembershipConfig(state, {
+        enabled: req.body?.enabled,
+        registeredFreePolicyQuota: req.body?.registeredFreePolicyQuota,
+      });
+      await persist(state);
+      res.json({ ok: true, config });
     } catch (error) {
       sendError(res, error, 400);
     }

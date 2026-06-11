@@ -117,3 +117,41 @@ test('membership order creation requires login', async () => {
     await server.close();
   }
 });
+
+test('admin can update membership purchase flag and free quota only', async () => {
+  const state = { ...createInitialState(), membershipConfig: defaultMembershipConfig('2026-06-11T08:00:00.000Z') };
+  const app = createPolicyOcrApp({
+    state,
+    adminPassword: 'admin123456',
+    wechatPayMode: 'mock',
+    now: () => '2026-06-11T09:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const login = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin123456' }),
+    });
+    const auth = { authorization: `Bearer ${login.payload.token}` };
+    const updated = await jsonFetch(server.baseUrl, '/api/admin/membership-config', {
+      headers: auth,
+      method: 'PATCH',
+      body: JSON.stringify({
+        enabled: false,
+        registeredFreePolicyQuota: 6,
+        annualPriceCents: 1,
+        annualDurationDays: 1,
+      }),
+    });
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.payload.config.enabled, false);
+    assert.equal(updated.payload.config.registeredFreePolicyQuota, 6);
+    assert.equal(updated.payload.config.annualPriceCents, 30000);
+    assert.equal(updated.payload.config.annualDurationDays, 365);
+
+    const fetched = await jsonFetch(server.baseUrl, '/api/admin/membership-config', { headers: auth });
+    assert.deepEqual(fetched.payload.config, updated.payload.config);
+  } finally {
+    await server.close();
+  }
+});

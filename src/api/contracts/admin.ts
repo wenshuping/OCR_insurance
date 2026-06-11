@@ -109,6 +109,14 @@ export type AdminKnowledgeRecordsResponse = {
   };
 };
 
+export type AdminMembershipConfig = {
+  enabled: boolean;
+  annualPriceCents: 30000;
+  annualDurationDays: 365;
+  registeredFreePolicyQuota: number;
+  updatedAt: string;
+};
+
 export function adminLogin(password: string) {
   return request<{ ok: true; token: string; expiresInSeconds: number }>('/api/admin/login', {
     body: { password },
@@ -177,6 +185,18 @@ export function getAdminKnowledgeRecords(token: string) {
 export function crawlAdminKnowledge(token: string, input: { company: string; name: string }) {
   return request<AdminKnowledgeRecordsResponse & { savedCount: number }>('/api/admin/knowledge-crawl', {
     token,
+    body: input,
+  });
+}
+
+export function getAdminMembershipConfig(token: string) {
+  return request<{ ok: true; config: AdminMembershipConfig }>('/api/admin/membership-config', { token });
+}
+
+export function updateAdminMembershipConfig(token: string, input: { enabled: boolean; registeredFreePolicyQuota: number }) {
+  return request<{ ok: true; config: AdminMembershipConfig }>('/api/admin/membership-config', {
+    token,
+    method: 'PATCH',
     body: input,
   });
 }

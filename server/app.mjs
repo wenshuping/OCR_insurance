@@ -92,8 +92,10 @@ import {
   assertUserCanSavePolicy,
   buildMembershipSnapshot,
   createMembershipOrder,
+  getMembershipConfig,
   markMembershipOrderPrepayCreated,
   processMembershipPaymentSuccess,
+  updateMembershipConfig,
 } from './membership.domain.mjs';
 import { createMockJsapiPayParams } from './wechat-pay.service.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
@@ -1941,8 +1943,10 @@ export function createPolicyOcrApp(options = {}) {
     assertUserCanSavePolicy,
     buildMembershipSnapshot,
     createMembershipOrder,
+    getMembershipConfig,
     markMembershipOrderPrepayCreated,
     processMembershipPaymentSuccess,
+    updateMembershipConfig,
     createMockJsapiPayParams,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
     wechatPayMode: options.wechatPayMode || 'live',
