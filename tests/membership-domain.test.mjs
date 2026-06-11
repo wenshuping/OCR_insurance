@@ -99,6 +99,18 @@ test('processMembershipPaymentSuccess activates new membership and is idempotent
   assert.equal(state.memberships[0].expiresAt, '2027-06-11T08:00:00.000Z');
 });
 
+test('createMembershipOrder uses a compact WeChat Pay-safe outTradeNo', () => {
+  const state = { ...createInitialState(), nextId: 123456789 };
+  const order = createMembershipOrder(state, {
+    userId: 987654321,
+    now: NOW,
+    randomBytes: Buffer.from('0011223344556677', 'hex'),
+  });
+
+  assert.ok(order.outTradeNo.length <= 32);
+  assert.match(order.outTradeNo, /^[A-Za-z0-9_-]+$/);
+});
+
 test('processMembershipPaymentSuccess extends from current expiry when membership is active', () => {
   const state = {
     ...createInitialState(),
@@ -117,6 +129,63 @@ test('processMembershipPaymentSuccess extends from current expiry when membershi
   assert.equal(state.memberships[0].expiresAt, '2027-12-01T00:00:00.000Z');
 });
 
+test('processMembershipPaymentSuccess renews expired membership in place', () => {
+  const state = {
+    ...createInitialState(),
+    memberships: [{
+      userId: 8,
+      plan: 'annual',
+      status: 'active',
+      startedAt: '2025-01-01T00:00:00.000Z',
+      expiresAt: '2026-01-01T00:00:00.000Z',
+      lastOrderId: 1,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }],
+  };
+  const order = createMembershipOrder(state, { userId: 8, now: NOW, randomBytes: Buffer.from('0123456789abcdef', 'hex') });
+  markMembershipOrderPrepayCreated(state, order.outTradeNo, { prepayId: 'wx-prepay', now: NOW });
+
+  processMembershipPaymentSuccess(state, {
+    outTradeNo: order.outTradeNo,
+    transactionId: '4200003',
+    amountCents: 30000,
+    paidAt: NOW,
+  });
+
+  assert.equal(state.memberships.length, 1);
+  assert.equal(state.memberships[0].startedAt, NOW);
+  assert.equal(state.memberships[0].expiresAt, '2027-06-11T08:00:00.000Z');
+  assert.equal(state.memberships[0].lastOrderId, order.id);
+});
+
+test('markMembershipOrderPrepayCreated does not downgrade paid orders', () => {
+  const state = { ...createInitialState() };
+  const order = createMembershipOrder(state, { userId: 8, now: NOW, randomBytes: Buffer.from('fedcba9876543210', 'hex') });
+  markMembershipOrderPrepayCreated(state, order.outTradeNo, { prepayId: 'wx-prepay', now: NOW });
+  processMembershipPaymentSuccess(state, {
+    outTradeNo: order.outTradeNo,
+    transactionId: '4200004',
+    amountCents: 30000,
+    paidAt: NOW,
+  });
+
+  markMembershipOrderPrepayCreated(state, order.outTradeNo, {
+    prepayId: 'wx-prepay-new',
+    now: '2026-06-11T08:10:00.000Z',
+  });
+  const duplicate = processMembershipPaymentSuccess(state, {
+    outTradeNo: order.outTradeNo,
+    transactionId: '4200004',
+    amountCents: 30000,
+    paidAt: '2026-06-11T08:11:00.000Z',
+  });
+
+  assert.equal(order.status, 'paid');
+  assert.equal(order.prepayId, 'wx-prepay');
+  assert.equal(order.transactionId, '4200004');
+  assert.equal(duplicate.applied, false);
+});
+
 test('wechat identity and OAuth state bind openid without putting bearer token in URL', () => {
   const state = { ...createInitialState() };
   const oauth = createWechatOAuthState(state, {
@@ -132,4 +201,26 @@ test('wechat identity and OAuth state bind openid without putting bearer token i
   assert.equal(findUserWechatOpenid(state, { userId: 8, appId: 'wx123' }), 'openid-8');
   assert.ok(state.wechatOAuthStates[0].usedAt);
   assert.throws(() => consumeWechatOAuthState(state, oauth.state, { now: '2026-06-11T08:02:00.000Z' }), /WECHAT_OAUTH_STATE_USED/);
+});
+
+test('createWechatOAuthState rejects off-site redirect URLs', () => {
+  const state = { ...createInitialState() };
+
+  for (const redirectUrl of ['https://evil.test', '//evil.test']) {
+    assert.throws(
+      () => createWechatOAuthState(state, {
+        userId: 8,
+        appId: 'wx123',
+        redirectUrl,
+        now: NOW,
+        randomBytes: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      }),
+      (error) => {
+        assert.equal(error.code, 'WECHAT_OAUTH_REDIRECT_URL_INVALID');
+        assert.equal(error.status, 400);
+        return true;
+      },
+    );
+  }
+  assert.equal(state.wechatOAuthStates.length, 0);
 });

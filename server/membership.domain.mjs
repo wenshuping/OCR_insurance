@@ -24,6 +24,26 @@ function randomHex(bytes = 8) {
   return crypto.randomBytes(bytes).toString('hex');
 }
 
+function toBase36(value) {
+  const number = Math.max(0, Math.floor(Number(value) || 0));
+  return number.toString(36);
+}
+
+function buildOutTradeNo({ userId, orderId, now, random }) {
+  return `m${toBase36(userId)}${toBase36(orderId)}${toBase36(Date.parse(now))}${random}`.slice(0, 32);
+}
+
+function assertSameSiteRedirectUrl(value) {
+  const redirectUrl = trim(value || '/');
+  if (!redirectUrl.startsWith('/') || redirectUrl.startsWith('//')) {
+    const error = new Error('WECHAT_OAUTH_REDIRECT_URL_INVALID');
+    error.code = 'WECHAT_OAUTH_REDIRECT_URL_INVALID';
+    error.status = 400;
+    throw error;
+  }
+  return redirectUrl;
+}
+
 function ensureMembershipArrays(state) {
   if (!state.membershipConfig) state.membershipConfig = defaultMembershipConfig(nowIso());
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
@@ -71,14 +91,26 @@ export function countSavedPoliciesForUser(state, userId) {
   return (state.policies || []).filter((policy) => Number(policy.userId || 0) === id).length;
 }
 
-export function activeMembershipForUser(state, userId, { now = nowIso() } = {}) {
+function membershipsForUser(state, userId) {
   const id = Number(userId || 0);
+  return (state.memberships || []).filter((membership) => Number(membership.userId || 0) === id);
+}
+
+function membershipForUser(state, userId) {
+  return membershipsForUser(state, userId)[0] || null;
+}
+
+function membershipIsActive(membership, now) {
+  if (!membership) return false;
   const nowTime = new Date(now).getTime();
-  return (state.memberships || []).find((membership) => (
-    Number(membership.userId || 0) === id &&
+  return (
     membership.status === 'active' &&
     new Date(membership.expiresAt || 0).getTime() > nowTime
-  )) || null;
+  );
+}
+
+export function activeMembershipForUser(state, userId, { now = nowIso() } = {}) {
+  return membershipsForUser(state, userId).find((membership) => membershipIsActive(membership, now)) || null;
 }
 
 export function findUserWechatOpenid(state, { userId, appId }) {
@@ -132,9 +164,9 @@ export function assertUserCanSavePolicy(state, user, { now = nowIso() } = {}) {
 export function createMembershipOrder(state, { userId, now = nowIso(), randomBytes } = {}) {
   ensureMembershipArrays(state);
   const bytes = randomBytes || crypto.randomBytes(8);
-  const random = Buffer.isBuffer(bytes) ? bytes.toString('hex') : randomHex(8);
+  const random = (Buffer.isBuffer(bytes) ? bytes.toString('hex') : randomHex(8)).slice(0, 8);
   const id = allocateId(state);
-  const outTradeNo = `mem_${Number(userId)}_${Date.parse(now)}_${random}`.slice(0, 64);
+  const outTradeNo = buildOutTradeNo({ userId, orderId: id, now, random });
   const order = {
     id,
     outTradeNo,
@@ -167,6 +199,7 @@ export function markMembershipOrderPrepayCreated(state, outTradeNo, { prepayId, 
     error.status = 404;
     throw error;
   }
+  if (order.status === 'paid') return order;
   order.status = 'prepay_created';
   order.prepayId = trim(prepayId);
   order.updatedAt = now;
@@ -192,10 +225,12 @@ export function processMembershipPaymentSuccess(state, { outTradeNo, transaction
   order.payload = { ...(order.payload || {}), notify: notifyPayload };
   if (order.status === 'paid') {
     order.updatedAt = paidAt;
-    return { applied: false, order, membership: activeMembershipForUser(state, order.userId, { now: paidAt }) };
+    return { applied: false, order, membership: activeMembershipForUser(state, order.userId, { now: paidAt }) || membershipForUser(state, order.userId) };
   }
-  const current = activeMembershipForUser(state, order.userId, { now: paidAt });
-  const base = current?.expiresAt || paidAt;
+  const active = activeMembershipForUser(state, order.userId, { now: paidAt });
+  const current = active || membershipForUser(state, order.userId);
+  const currentActive = membershipIsActive(current, paidAt);
+  const base = currentActive ? current.expiresAt : paidAt;
   const expiresAt = addDaysIso(base, ANNUAL_MEMBERSHIP_DURATION_DAYS);
   const membership = current || {
     userId: order.userId,
@@ -206,11 +241,17 @@ export function processMembershipPaymentSuccess(state, { outTradeNo, transaction
     lastOrderId: order.id,
     updatedAt: paidAt,
   };
+  membership.userId = order.userId;
+  membership.plan = 'annual';
   membership.status = 'active';
+  if (!currentActive) membership.startedAt = paidAt;
   membership.expiresAt = expiresAt;
   membership.lastOrderId = order.id;
   membership.updatedAt = paidAt;
   if (!current) state.memberships.push(membership);
+  state.memberships = state.memberships.filter((item) => (
+    item === membership || Number(item.userId || 0) !== Number(order.userId || 0)
+  ));
   order.status = 'paid';
   order.transactionId = trim(transactionId);
   order.paidAt = paidAt;
@@ -219,6 +260,7 @@ export function processMembershipPaymentSuccess(state, { outTradeNo, transaction
 }
 
 export function createWechatOAuthState(state, { userId, appId, redirectUrl, now = nowIso(), randomBytes } = {}) {
+  const safeRedirectUrl = assertSameSiteRedirectUrl(redirectUrl);
   ensureMembershipArrays(state);
   const bytes = randomBytes || crypto.randomBytes(16);
   const stateToken = Buffer.isBuffer(bytes) ? bytes.toString('hex') : randomHex(16);
@@ -226,7 +268,7 @@ export function createWechatOAuthState(state, { userId, appId, redirectUrl, now 
     state: stateToken,
     userId: Number(userId),
     appId: trim(appId),
-    redirectUrl: trim(redirectUrl || '/'),
+    redirectUrl: safeRedirectUrl,
     usedAt: '',
     expiresAt: addDaysIso(now, 10 / (24 * 60)),
     createdAt: now,
