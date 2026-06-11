@@ -217,10 +217,12 @@ export function createAdminRoutes(context) {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return;
     try {
-      const config = updateMembershipConfig(state, {
-        enabled: req.body?.enabled,
-        registeredFreePolicyQuota: req.body?.registeredFreePolicyQuota,
-      });
+      const patch = {};
+      if (Object.hasOwn(req.body || {}, 'enabled')) patch.enabled = req.body.enabled;
+      if (Object.hasOwn(req.body || {}, 'registeredFreePolicyQuota')) {
+        patch.registeredFreePolicyQuota = req.body.registeredFreePolicyQuota;
+      }
+      const config = updateMembershipConfig(state, patch);
       await persist(state);
       res.json({ ok: true, config });
     } catch (error) {

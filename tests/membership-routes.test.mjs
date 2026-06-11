@@ -151,6 +151,24 @@ test('admin can update membership purchase flag and free quota only', async () =
 
     const fetched = await jsonFetch(server.baseUrl, '/api/admin/membership-config', { headers: auth });
     assert.deepEqual(fetched.payload.config, updated.payload.config);
+
+    const quotaOnly = await jsonFetch(server.baseUrl, '/api/admin/membership-config', {
+      headers: auth,
+      method: 'PATCH',
+      body: JSON.stringify({ registeredFreePolicyQuota: 7 }),
+    });
+    assert.equal(quotaOnly.response.status, 200);
+    assert.equal(quotaOnly.payload.config.enabled, false);
+    assert.equal(quotaOnly.payload.config.registeredFreePolicyQuota, 7);
+
+    const enabledOnly = await jsonFetch(server.baseUrl, '/api/admin/membership-config', {
+      headers: auth,
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: true }),
+    });
+    assert.equal(enabledOnly.response.status, 200);
+    assert.equal(enabledOnly.payload.config.enabled, true);
+    assert.equal(enabledOnly.payload.config.registeredFreePolicyQuota, 7);
   } finally {
     await server.close();
   }
