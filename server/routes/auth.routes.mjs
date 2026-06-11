@@ -1,6 +1,21 @@
 import express from 'express';
 import { sendError } from '../http/errors.mjs';
 
+function guestPoliciesToMigrate(state, guestId) {
+  if (!guestId) return [];
+  return (state.policies || []).filter((policy) => String(policy.guestId || '') === guestId && !policy.userId);
+}
+
+function assertCanMigrateGuestPolicies({ state, user, incomingPolicyCount, assertUserCanSavePolicy, now }) {
+  if (!incomingPolicyCount || typeof assertUserCanSavePolicy !== 'function') return;
+  const quotaUser = user?.id ? user : { id: -1 };
+  const projectedState = { ...state, policies: [...(state.policies || [])] };
+  for (let index = 0; index < incomingPolicyCount; index += 1) {
+    assertUserCanSavePolicy(projectedState, quotaUser, { now });
+    projectedState.policies.push({ id: `membership-migration-projection-${index}`, userId: quotaUser.id, guestId: '' });
+  }
+}
+
 export function createAuthRoutes(context) {
   const router = express.Router();
   const {
@@ -29,6 +44,8 @@ export function createAuthRoutes(context) {
     attachPolicyFamilyDisplay,
     getBearerToken,
     deleteSession,
+    assertUserCanSavePolicy,
+    nowIso,
   } = context;
 
   router.post('/send-code', async (req, res) => {
@@ -91,8 +108,17 @@ export function createAuthRoutes(context) {
       }
       let user = state.users.find((row) => String(row.mobile || '') === mobile) || null;
       const guestId = normalizeGuestId(req.body?.guestId);
+      const guestPolicies = guestPoliciesToMigrate(state, guestId);
+      const pendingScans = guestPendingScans(state, guestId);
+      assertCanMigrateGuestPolicies({
+        state,
+        user,
+        incomingPolicyCount: guestPolicies.length + pendingScans.length,
+        assertUserCanSavePolicy,
+        now: typeof nowIso === 'function' ? nowIso() : undefined,
+      });
       const pendingAnalyses = [];
-      for (const pending of guestPendingScans(state, guestId)) {
+      for (const pending of pendingScans) {
         pendingAnalyses.push({
           pending,
           analysis: normalizeProvidedAnalysis(pending.analysis) || (await analyzer({ scan: pending.scan })),
@@ -121,8 +147,7 @@ export function createAuthRoutes(context) {
           family.ownerGuestId = '';
           family.updatedAt = new Date().toISOString();
         }
-        for (const policy of state.policies) {
-          if (String(policy.guestId || '') !== guestId || policy.userId) continue;
+        for (const policy of guestPolicies) {
           policy.userId = Number(user.id);
           policy.guestId = '';
           policy.updatedAt = new Date().toISOString();

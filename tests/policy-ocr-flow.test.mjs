@@ -10152,3 +10152,56 @@ test('active member can save over configured free quota', async () => {
     await server.close();
   }
 });
+
+test('registration migration respects membership free quota before consuming pending guest scan', async () => {
+  let analyzerCalls = 0;
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    smsCodes: [{
+      id: 2,
+      mobile: '18616135811',
+      code: '123456',
+      used: false,
+      createdAt: '2026-06-11T08:00:00.000Z',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }],
+    membershipConfig: { enabled: true, annualPriceCents: 30000, annualDurationDays: 365, registeredFreePolicyQuota: 1, updatedAt: '2026-06-11T08:00:00.000Z' },
+    policies: [{ id: 10, userId: 1, guestId: '', company: '新华保险', name: '已有保单', insured: '张三', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    pendingScans: [{
+      guestId: 'guest-pending-over-quota',
+      createdAt: '2026-06-11T08:00:00.000Z',
+      scan: { ocrText: '待迁移保单', data: { company: '新华保险', name: '待迁移保单', insured: '张三', applicant: '张三' } },
+    }],
+    nextId: 20,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    analyzer: async () => {
+      analyzerCalls += 1;
+      return { coverageTable: [] };
+    },
+    now: () => '2026-06-11T08:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const registered = await jsonFetch(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        mobile: '18616135811',
+        code: '123456',
+        guestId: 'guest-pending-over-quota',
+      }),
+    });
+
+    assert.equal(registered.response.status, 402);
+    assert.equal(registered.payload.code, 'MEMBERSHIP_REQUIRED');
+    assert.deepEqual(registered.payload.membership, { savedPolicyCount: 1, freeQuota: 1, annualPriceCents: 30000 });
+    assert.equal(state.smsCodes[0].used, false);
+    assert.equal(state.pendingScans.length, 1);
+    assert.equal(state.policies.length, 1);
+    assert.equal(analyzerCalls, 0);
+  } finally {
+    await server.close();
+  }
+});
