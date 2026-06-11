@@ -31,6 +31,11 @@ export function createInitialState() {
     familyProfiles: [],
     familyMembers: [],
     familyReportShares: [],
+    membershipConfig: null,
+    membershipOrders: [],
+    memberships: [],
+    userWechatIdentities: [],
+    wechatOAuthStates: [],
     nextId: 1,
   };
 }
