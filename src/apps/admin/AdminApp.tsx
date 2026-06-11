@@ -87,6 +87,21 @@ export function AdminApp() {
   const [knowledgeCrawling, setKnowledgeCrawling] = useState(false);
   const [retryingPolicyId, setRetryingPolicyId] = useState<number | null>(null);
 
+  function clearAdminAuthState() {
+    localStorage.removeItem(ADMIN_TOKEN_KEY);
+    setAdminToken('');
+    setOverview(null);
+    setOcrConfig(null);
+    setMembershipConfig(null);
+    setMembershipQuotaInput('3');
+    setOfficialDomainProfiles([]);
+    setOfficialDomainForm(emptyOfficialDomainForm);
+    setKnowledgeRecords([]);
+    setKnowledgeCrawlForm(emptyKnowledgeCrawlForm);
+    setSelectedPolicy(null);
+    setSelectedAdminUserId(null);
+  }
+
   async function loadOverview(token = adminToken) {
     if (!token) return;
     setLoading(true);
@@ -100,8 +115,7 @@ export function AdminApp() {
       setMessage('平台数据已加载');
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        localStorage.removeItem(ADMIN_TOKEN_KEY);
-        setAdminToken('');
+        clearAdminAuthState();
       }
       setMessage(error instanceof Error ? error.message : '后台数据加载失败');
     } finally {
@@ -117,8 +131,7 @@ export function AdminApp() {
       setOcrConfig(payload);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        localStorage.removeItem(ADMIN_TOKEN_KEY);
-        setAdminToken('');
+        clearAdminAuthState();
       }
       setMessage(error instanceof Error ? error.message : 'OCR 方式读取失败');
     } finally {
@@ -134,8 +147,7 @@ export function AdminApp() {
       setMembershipQuotaInput(String(payload.config.registeredFreePolicyQuota));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        localStorage.removeItem(ADMIN_TOKEN_KEY);
-        setAdminToken('');
+        clearAdminAuthState();
       }
       setMessage(error instanceof Error ? error.message : '会员设置读取失败');
     }
@@ -149,8 +161,7 @@ export function AdminApp() {
       setOfficialDomainProfiles(payload.profiles);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        localStorage.removeItem(ADMIN_TOKEN_KEY);
-        setAdminToken('');
+        clearAdminAuthState();
       }
       setMessage(error instanceof Error ? error.message : '官方域名白名单读取失败');
     } finally {
@@ -166,8 +177,7 @@ export function AdminApp() {
       setKnowledgeRecords(payload.records);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        localStorage.removeItem(ADMIN_TOKEN_KEY);
-        setAdminToken('');
+        clearAdminAuthState();
       }
       setMessage(error instanceof Error ? error.message : '本地知识库读取失败');
     } finally {
@@ -210,18 +220,7 @@ export function AdminApp() {
   }
 
   function logoutAdmin() {
-    localStorage.removeItem(ADMIN_TOKEN_KEY);
-    setAdminToken('');
-    setOverview(null);
-    setOcrConfig(null);
-    setMembershipConfig(null);
-    setMembershipQuotaInput('3');
-    setOfficialDomainProfiles([]);
-    setOfficialDomainForm(emptyOfficialDomainForm);
-    setKnowledgeRecords([]);
-    setKnowledgeCrawlForm(emptyKnowledgeCrawlForm);
-    setSelectedPolicy(null);
-    setSelectedAdminUserId(null);
+    clearAdminAuthState();
     setMessage('已退出管理后台');
   }
 
@@ -242,18 +241,26 @@ export function AdminApp() {
 
   async function handleSaveMembershipConfig() {
     if (!adminToken || !membershipConfig || membershipSaving) return;
-    const quota = Math.max(0, Math.floor(Number(membershipQuotaInput || 0)));
+    const normalizedQuotaInput = membershipQuotaInput.trim();
+    if (!/^\d+$/.test(normalizedQuotaInput)) {
+      setMessage('免费保存保单数请输入非负整数');
+      return;
+    }
+    const quota = Number(normalizedQuotaInput);
     setMembershipSaving(true);
     setMessage('正在保存会员设置');
     try {
       const payload = await updateAdminMembershipConfig(adminToken, {
         enabled: membershipConfig.enabled,
-        registeredFreePolicyQuota: Number.isFinite(quota) ? quota : 0,
+        registeredFreePolicyQuota: quota,
       });
       setMembershipConfig(payload.config);
       setMembershipQuotaInput(String(payload.config.registeredFreePolicyQuota));
       setMessage('会员设置已保存');
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        clearAdminAuthState();
+      }
       setMessage(error instanceof Error ? error.message : '会员设置保存失败');
     } finally {
       setMembershipSaving(false);

@@ -47,4 +47,6 @@ test('admin app exposes membership settings controls', () => {
   assert.match(source, /updateAdminMembershipConfig/);
   assert.match(source, /会员设置/);
   assert.match(source, /注册用户免费保存保单数/);
+  assert.match(source, /免费保存保单数请输入非负整数/);
+  assert.match(source, /clearAdminAuthState/);
 });
