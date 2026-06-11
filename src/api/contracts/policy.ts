@@ -157,11 +157,21 @@ export type PolicyFieldEvidence = {
   valueBox?: number[];
 };
 
+export type PolicyFieldAttribution = {
+  field: string;
+  value: string;
+  label?: string;
+  source: string;
+  parser: string;
+  confidence?: string | number;
+};
+
 export type PolicyScanResult = {
   ocrText: string;
   data: PolicyScanData;
   fieldConfidence?: Record<string, 'high' | 'review' | 'missing' | string>;
   fieldEvidence?: Record<string, PolicyFieldEvidence>;
+  fieldAttribution?: Record<string, PolicyFieldAttribution>;
   ocrWarnings?: string[];
   visionDebug?: {
     provider?: string;

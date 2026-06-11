@@ -1323,7 +1323,7 @@ test('Ollama vision request uses structured JSON output constraints', async () =
     assert.equal(requestBody.options.num_predict, 2048);
     assert.match(requestBody.messages[1].content, /保险字段词典/u);
     assert.match(requestBody.messages[1].content, /保障期间:终身.*不是产品名/u);
-    assert.match(requestBody.messages[1].content, /字段为空、空白、横线、未填写或未标注时输出空字符串/u);
+    assert.match(requestBody.messages[1].content, /字段为空、空白、横线、未填写、未标注或不确定时输出空字符串/u);
     assert.match(requestBody.messages[1].content, /证件号码\/身份证号\/客户号\/保单号\/电话不能作为 amount 或 premium/u);
     assert.match(requestBody.messages[1].content, /营销服务部、销售人员、网址、客服电话(?:、险种名称)?都不能作为 company/u);
     assert.match(requestBody.messages[1].content, /保险金额、保费、保单号、日期、客户号都不能作为证件号/u);
@@ -2205,6 +2205,80 @@ test('Ollama provider skips vision scan when OCR fills more than 60 percent of s
   }
 });
 
+test('Ollama provider sends low Excel-read OCR result to vision and leaves uncertain table fields empty', async () => {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  const previousFallback = process.env.POLICY_OCR_FALLBACK_PADDLE;
+  const previousThreshold = process.env.POLICY_OCR_EXCEL_SKILL_MIN_RECOGNITION_RATE;
+  process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
+  process.env.POLICY_OCR_FALLBACK_PADDLE = 'true';
+  process.env.POLICY_OCR_EXCEL_SKILL_MIN_RECOGNITION_RATE = '0.6';
+  const calls = [];
+
+  try {
+    const scan = await scanInsurancePolicyLocal({
+      uploadItem: {
+        name: 'low-excel-recognition-policy.png',
+        type: 'image/png',
+        size: 12,
+        dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+      },
+      ocrText: '',
+      paddleLayoutScanner: async () => {
+        calls.push('paddle');
+        return {
+          ocrText: '新华保险',
+          data: { company: '新华保险' },
+        };
+      },
+      ollamaVisionExtractor: async () => {
+        calls.push('vision');
+        return {
+          company: '新华保险',
+          policyNumber: 'A001',
+          applicant: '张三',
+          insured: '温舒萍',
+          insuredBirthday: '1988-12-16',
+          date: '2026-04-01',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '100000',
+          firstPremium: '3000',
+          plans: [
+            {
+              role: 'main',
+              name: '荣耀鑫享赢家版终身寿险',
+              amount: '100000',
+              coveragePeriod: '终身',
+              paymentPeriod: '10年交',
+              premium: '3000',
+            },
+          ],
+          fieldConfidence: { applicant: 'review' },
+        };
+      },
+    });
+
+    assert.deepEqual(calls, ['paddle', 'vision']);
+    assert.equal(scan.data.company, '新华保险');
+    assert.equal(scan.data.name, '荣耀鑫享赢家版终身寿险');
+    assert.equal(scan.data.applicant || '', '');
+    assert.equal(scan.data.firstPremium, '3000');
+    assert.equal(scan.fieldAttribution.company.source, 'ocr');
+    assert.equal(scan.fieldAttribution.name.source, 'vision');
+    assert.equal(scan.fieldAttribution.name.parser, 'analyzer/csv-parser');
+    assert.equal(scan.fieldAttribution.applicant, undefined);
+    assert.equal(scan.ocrText, '新华保险');
+    assert.ok(scan.ocrWarnings.some((warning) => warning.includes('Ollama 视觉仅补充 OCR 缺失字段')));
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+    if (previousFallback === undefined) delete process.env.POLICY_OCR_FALLBACK_PADDLE;
+    else process.env.POLICY_OCR_FALLBACK_PADDLE = previousFallback;
+    if (previousThreshold === undefined) delete process.env.POLICY_OCR_EXCEL_SKILL_MIN_RECOGNITION_RATE;
+    else process.env.POLICY_OCR_EXCEL_SKILL_MIN_RECOGNITION_RATE = previousThreshold;
+  }
+});
+
 test('Ollama provider falls back to Paddle when vision times out', async () => {
   const previousProvider = process.env.POLICY_OCR_PROVIDER;
   process.env.POLICY_OCR_PROVIDER = 'ollama_vision_local';
@@ -2433,6 +2507,9 @@ test('remote GPU vision supplements only empty OCR fields', async () => {
     assert.equal(scan.data.beneficiary, '法定');
     assert.equal(scan.data.amount, '165020');
     assert.equal(scan.data.firstPremium, '20010');
+    assert.equal(scan.fieldAttribution.name.source, 'ocr');
+    assert.equal(scan.fieldAttribution.beneficiary.source, 'vision');
+    assert.equal(scan.fieldAttribution.firstPremium.source, 'vision');
     assert.ok(scan.ocrWarnings.some((warning) => warning.includes('4080 视觉仅补充 OCR 缺失字段')));
   } finally {
     if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;

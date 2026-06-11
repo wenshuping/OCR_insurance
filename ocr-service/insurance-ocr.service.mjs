@@ -10,6 +10,11 @@ import { hasConfiguredOcrServiceBaseUrl, scanInsurancePolicyOverHttp } from './c
 import { parseCashValueTable, parseCashValueText } from './cash-value-parser.mjs';
 import { getPolicyFieldAliases } from './insurance-field-schema.mjs';
 import { findBestFuzzyMatch, matchesFuzzyPhrase } from './fuzzy-matching.mjs';
+import {
+  POLICY_CSV_FIELD_LABELS,
+  getPolicyCsvRecognitionThreshold,
+  mapPolicyWorkbookToScan,
+} from './analyzer/csv-parser.mjs';
 import { extractPolicyPlansFromLines, matchPolicyFieldsFromLines } from './insurance-field-matcher.mjs';
 import {
   OCR_PROVIDER_BAIDU_PRIVATE,
@@ -1014,6 +1019,21 @@ function mergeFieldEvidencePayloads(payloads = []) {
         const text = normalizeEvidenceText(rawValue, 120);
         if (text) merged[key] = text;
       } else if (typeof rawValue === 'object') {
+        merged[key] = rawValue;
+      }
+    }
+  }
+  return merged;
+}
+
+function mergeFieldAttributionPayloads(payloads = []) {
+  const merged = {};
+  for (const payload of payloads) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    for (const [rawKey, rawValue] of Object.entries(payload)) {
+      const key = String(rawKey || '').trim();
+      if (!key || rawValue == null || merged[key]) continue;
+      if (typeof rawValue === 'object' && !Array.isArray(rawValue)) {
         merged[key] = rawValue;
       }
     }
@@ -2862,6 +2882,7 @@ function mergePolicyDataCandidates(dataList) {
     rawInsuredBirthday,
   );
   const fieldEvidence = mergeFieldEvidencePayloads(dataList.map((item) => item?.fieldEvidence));
+  const fieldAttribution = mergeFieldAttributionPayloads(dataList.map((item) => item?.fieldAttribution));
   const firstPremium = pickBestFirstPremium(dataList);
   const name = pickLongest(dataList.map((item) => item?.name || ''));
   const coveragePeriod = pickLongest(dataList.map((item) => item?.coveragePeriod || ''));
@@ -2890,6 +2911,7 @@ function mergePolicyDataCandidates(dataList) {
     firstPremium,
     ...(repairedPlans.length ? { plans: repairedPlans } : {}),
     ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
+    ...(Object.keys(fieldAttribution).length ? { fieldAttribution } : {}),
   };
 }
 
@@ -2907,7 +2929,6 @@ const OLLAMA_VISION_CORE_FIELDS = [
   ['firstPremium', '首期保费'],
 ];
 
-const OCR_FIRST_COMPLETENESS_THRESHOLD = 0.6;
 const OCR_FIRST_SCALAR_FIELDS = [
   'company',
   'name',
@@ -2940,8 +2961,97 @@ function policyScalarFieldFillRatio(data = {}, fields = OCR_FIRST_SCALAR_FIELDS)
   return filled / total;
 }
 
-function shouldSkipVisionAfterOcrScan(scan = {}) {
-  return policyScalarFieldFillRatio(scan?.data || {}) >= OCR_FIRST_COMPLETENESS_THRESHOLD;
+function buildPolicyExcelWorkbookRows(scan = {}, source = 'ocr') {
+  const data = normalizeExtractedPolicyFields(scan?.data || {});
+  const fieldConfidence = scan?.fieldConfidence || scan?.data?.fieldConfidence || data.fieldConfidence || {};
+  const fieldEvidence = mergeFieldEvidencePayloads([scan?.fieldEvidence, data.fieldEvidence]);
+  const fieldRows = OCR_FIRST_SCALAR_FIELDS.map((field) => ({
+    field,
+    label: POLICY_CSV_FIELD_LABELS[field] || field,
+    value: data[field] || '',
+    confidence: fieldConfidence[field] || '',
+    evidence: fieldEvidence[field] || null,
+    source,
+  }));
+  const planRows = (Array.isArray(data.plans) ? data.plans : []).map((plan, index) => ({
+    index: index + 1,
+    role: plan?.role || '',
+    company: plan?.company || data.company || '',
+    name: plan?.name || '',
+    productType: plan?.productType || '',
+    amount: plan?.amount || '',
+    coveragePeriod: plan?.coveragePeriod || '',
+    paymentMode: plan?.paymentMode || '',
+    paymentPeriod: plan?.paymentPeriod || '',
+    premium: plan?.premium || '',
+    premiumText: plan?.premiumText || '',
+    source,
+    confidence: plan?.confidence || '',
+    evidence: plan?.evidence || null,
+  }));
+  const ocrRows = splitRecognizedLines(scan?.ocrText || '').map((text, index) => ({
+    index: index + 1,
+    text,
+    source,
+  }));
+  const warningRows = (Array.isArray(scan?.ocrWarnings) ? scan.ocrWarnings : []).map((warning, index) => ({
+    index: index + 1,
+    warning: String(warning || '').trim(),
+    source,
+  })).filter((row) => row.warning);
+  return {
+    source,
+    sheets: {
+      fields: fieldRows,
+      plans: planRows,
+      ocrLines: ocrRows,
+      warnings: warningRows,
+    },
+  };
+}
+
+function readPolicyExcelWorkbookRows(workbook = {}, env = process.env) {
+  const mapped = mapPolicyWorkbookToScan(workbook, { source: workbook?.source || 'csv', env });
+  const data = normalizeExtractedPolicyFields(mapped.data || {});
+  const fieldAttribution = {};
+  for (const [field, attribution] of Object.entries(mapped.fieldAttribution || {})) {
+    if (hasPolicyFieldValue(data[field])) fieldAttribution[field] = attribution;
+  }
+  if (Object.keys(mapped.fieldEvidence || {}).length) data.fieldEvidence = mapped.fieldEvidence;
+  if (Object.keys(fieldAttribution).length) data.fieldAttribution = fieldAttribution;
+  return {
+    data,
+    ocrText: normalizeOcrText(mapped.ocrText || ''),
+    ocrWarnings: mapped.ocrWarnings || [],
+    fieldConfidence: mapped.fieldConfidence || {},
+    fieldEvidence: mapped.fieldEvidence || {},
+    fieldAttribution,
+    recognitionRate: mapped.quality?.recognitionRate ?? policyScalarFieldFillRatio(data),
+    parser: mapped.parser,
+  };
+}
+
+function readPolicyScanWithExcelSkill(scan = {}, source = 'ocr', env = process.env) {
+  const workbook = buildPolicyExcelWorkbookRows(scan, source);
+  const read = readPolicyExcelWorkbookRows(workbook, env);
+  const data = read.data;
+  const ocrText = normalizeOcrText(read.ocrText || scan?.ocrText || '');
+  const recognitionRate = read.recognitionRate ?? policyScalarFieldFillRatio(data);
+  return {
+    data,
+    ocrText,
+    recognitionRate,
+    fieldConfidence: read.fieldConfidence || {},
+    fieldEvidence: read.fieldEvidence || {},
+    fieldAttribution: read.fieldAttribution || {},
+    ocrWarnings: [...new Set([...(read.ocrWarnings || []), ...(Array.isArray(scan?.ocrWarnings) ? scan.ocrWarnings : [])])],
+    workbook,
+    parser: read.parser,
+  };
+}
+
+function shouldSkipVisionAfterExcelSkill(result = {}, env = process.env) {
+  return Number(result?.recognitionRate || 0) >= getPolicyCsvRecognitionThreshold(env);
 }
 
 function mergePolicyDataWithMissingFieldSupplement(baseData = {}, supplementData = {}) {
@@ -2960,7 +3070,12 @@ function mergePolicyDataWithMissingFieldSupplement(baseData = {}, supplementData
   }
 
   const fieldEvidence = mergeFieldEvidencePayloads([baseData.fieldEvidence, supplementData.fieldEvidence]);
-  return Object.keys(fieldEvidence).length ? { ...merged, fieldEvidence } : merged;
+  const fieldAttribution = mergeFieldAttributionPayloads([baseData.fieldAttribution, supplementData.fieldAttribution]);
+  return {
+    ...merged,
+    ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
+    ...(Object.keys(fieldAttribution).length ? { fieldAttribution } : {}),
+  };
 }
 
 function buildOllamaVisionPaddleRepairWarning(beforeLabels, afterLabels, visionWarningLabel = 'Ollama 视觉') {
@@ -3006,22 +3121,24 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
 } = {}) {
   const shouldRunPaddleFirst = Boolean(uploadItem && shouldFallbackToPaddleForImages());
   let paddleScan = null;
+  let paddleExcelRead = null;
   let paddleError = null;
   if (shouldRunPaddleFirst) {
     try {
       paddleScan = await paddleLayoutScanner(uploadItem);
+      paddleExcelRead = readPolicyScanWithExcelSkill(paddleScan, 'ocr');
     } catch (error) {
       paddleError = error;
     }
   }
 
-  if (paddleScan && shouldSkipVisionAfterOcrScan(paddleScan)) {
+  if (paddleExcelRead && shouldSkipVisionAfterExcelSkill(paddleExcelRead)) {
     return {
-      data: paddleScan.data,
-      bestOcrText: normalizeOcrText(paddleScan.ocrText || ''),
-      scanFieldConfidence: paddleScan.fieldConfidence || {},
-      scanFieldEvidence: mergeFieldEvidencePayloads([paddleScan.fieldEvidence, paddleScan.data?.fieldEvidence]),
-      scanOcrWarnings: Array.isArray(paddleScan.ocrWarnings) ? paddleScan.ocrWarnings : [],
+      data: paddleExcelRead.data,
+      bestOcrText: normalizeOcrText(paddleExcelRead.ocrText || paddleScan.ocrText || ''),
+      scanFieldConfidence: paddleExcelRead.fieldConfidence || {},
+      scanFieldEvidence: mergeFieldEvidencePayloads([paddleExcelRead.fieldEvidence, paddleScan.fieldEvidence, paddleScan.data?.fieldEvidence]),
+      scanOcrWarnings: paddleExcelRead.ocrWarnings || [],
       visionDebug: null,
     };
   }
@@ -3044,7 +3161,14 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
       || extractedVisionData?.text
       || ''
     );
-    visionData = extractedVisionData ? normalizeExtractedPolicyFields(extractedVisionData) : null;
+    const visionScan = extractedVisionData
+      ? readPolicyScanWithExcelSkill({
+          data: extractedVisionData,
+          ocrText: visionOcrText,
+        }, 'vision')
+      : null;
+    visionData = visionScan?.data || null;
+    visionOcrText = normalizeOcrText(visionScan?.ocrText || visionOcrText || '');
     visionDebug = extractedVisionResult?.visionDebug && typeof extractedVisionResult.visionDebug === 'object'
       ? { ...extractedVisionResult.visionDebug, dataBeforeOcrMerge: visionData }
       : null;
@@ -3057,20 +3181,21 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
   let scanFieldConfidence = {};
   let scanFieldEvidence = {};
   const scanOcrWarnings = [];
-  if (paddleScan) {
-    const missingAfterOcr = missingOllamaVisionCoreFieldLabels(paddleScan.data || {});
+  if (paddleExcelRead) {
+    const missingAfterOcr = missingOllamaVisionCoreFieldLabels(paddleExcelRead.data || {});
     data = visionData
-      ? mergePolicyDataWithMissingFieldSupplement(paddleScan.data || {}, visionData)
-      : paddleScan.data;
-    bestOcrText = normalizeOcrText(paddleScan.ocrText || bestOcrText || '');
-    scanFieldConfidence = paddleScan.fieldConfidence || {};
+      ? mergePolicyDataWithMissingFieldSupplement(paddleExcelRead.data || {}, visionData)
+      : paddleExcelRead.data;
+    bestOcrText = normalizeOcrText(paddleExcelRead.ocrText || bestOcrText || '');
+    scanFieldConfidence = paddleExcelRead.fieldConfidence || {};
     scanFieldEvidence = mergeFieldEvidencePayloads([
-      paddleScan.fieldEvidence,
-      paddleScan.data?.fieldEvidence,
+      paddleExcelRead.fieldEvidence,
+      paddleScan?.fieldEvidence,
+      paddleScan?.data?.fieldEvidence,
       visionData?.fieldEvidence,
       data?.fieldEvidence,
     ]);
-    scanOcrWarnings.push(...(Array.isArray(paddleScan.ocrWarnings) ? paddleScan.ocrWarnings : []));
+    scanOcrWarnings.push(...(Array.isArray(paddleExcelRead.ocrWarnings) ? paddleExcelRead.ocrWarnings : []));
     if (visionData && missingAfterOcr.length) {
       scanOcrWarnings.push(`${visionWarningLabel}仅补充 OCR 缺失字段：${missingAfterOcr.join('、')}`);
     } else if (!visionData) {
@@ -3105,19 +3230,20 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
   if (!paddleError) {
     try {
       paddleScan = await paddleLayoutScanner(uploadItem);
+      paddleExcelRead = readPolicyScanWithExcelSkill(paddleScan, 'ocr');
     } catch (error) {
       paddleError = error;
     }
   }
 
-  if (paddleScan) {
+  if (paddleExcelRead) {
     data = visionData
-      ? mergePolicyDataWithMissingFieldSupplement(paddleScan.data || {}, data || {})
-      : mergePolicyDataCandidates([data || {}, paddleScan.data || {}]);
-    bestOcrText = normalizeOcrText(paddleScan.ocrText || bestOcrText || '');
-    scanFieldConfidence = paddleScan.fieldConfidence || {};
-    scanFieldEvidence = mergeFieldEvidencePayloads([paddleScan.fieldEvidence, paddleScan.data?.fieldEvidence, data?.fieldEvidence]);
-    scanOcrWarnings.push(...(Array.isArray(paddleScan.ocrWarnings) ? paddleScan.ocrWarnings : []));
+      ? mergePolicyDataWithMissingFieldSupplement(paddleExcelRead.data || {}, data || {})
+      : mergePolicyDataCandidates([data || {}, paddleExcelRead.data || {}]);
+    bestOcrText = normalizeOcrText(paddleExcelRead.ocrText || bestOcrText || '');
+    scanFieldConfidence = paddleExcelRead.fieldConfidence || {};
+    scanFieldEvidence = mergeFieldEvidencePayloads([paddleExcelRead.fieldEvidence, paddleScan?.fieldEvidence, paddleScan?.data?.fieldEvidence, data?.fieldEvidence]);
+    scanOcrWarnings.push(...(Array.isArray(paddleExcelRead.ocrWarnings) ? paddleExcelRead.ocrWarnings : []));
     if (visionData && missingAfterVision.length) {
       scanOcrWarnings.push(buildOllamaVisionPaddleRepairWarning(
         missingAfterVision,
@@ -4122,7 +4248,7 @@ function buildPolicyVisionExtractionPrompt(ocrContext = {}) {
   return [
     '你是保险保单视觉解析助手。请像人的眼睛一样阅读整张保单页面，优先理解版面、表格行列和字段标签。',
     '只能根据图片中可见内容提取，不要臆造。只输出 JSON，不要解释。',
-    '字段为空、空白、横线、未填写或未标注时输出空字符串，不要输出“栏为空”“未填写”等说明。',
+    '字段为空、空白、横线、未填写、未标注或不确定时输出空字符串，不要输出“栏为空”“未填写”“不确定”等说明。',
     '保险字段词典：险种名称/产品名称/主险名称 -> name 或 plans[].name；保险公司/承保公司 -> company；投保人/要保人 -> applicant；被保险人/受保人 -> insured；身故保险金受益人/受益人 -> beneficiary。',
     '保险字段词典：基本保险金额/保险金额/保额 -> amount；保险费/首期保险费/首期保险费合计/首期保费 -> firstPremium 或 plans[].premium；保险期间/保障期间 -> coveragePeriod；交费期间/缴费期间 -> paymentPeriod；交费方式/缴费方式 -> paymentMode。',
     ...POLICY_VISION_FIELD_ALIGNMENT_RULES,
@@ -6090,6 +6216,7 @@ export async function scanInsurancePolicyLocal({
   let bestOcrText = recognizedText;
   let scanFieldConfidence = {};
   let scanFieldEvidence = {};
+  let scanFieldAttribution = {};
   let scanOcrWarnings = [];
   let scanVisionDebug = null;
   if (recognizedText) {
@@ -6106,6 +6233,7 @@ export async function scanInsurancePolicyLocal({
       bestOcrText = scan.bestOcrText;
       scanFieldConfidence = scan.scanFieldConfidence;
       scanFieldEvidence = scan.scanFieldEvidence;
+      scanFieldAttribution = scan.scanFieldAttribution || scan.data?.fieldAttribution || {};
       scanOcrWarnings = scan.scanOcrWarnings;
       scanVisionDebug = scan.visionDebug || null;
     } else if (provider === OCR_PROVIDER_MLX_QWEN25_VL_LOCAL) {
@@ -6123,6 +6251,7 @@ export async function scanInsurancePolicyLocal({
       bestOcrText = scan.bestOcrText;
       scanFieldConfidence = scan.scanFieldConfidence;
       scanFieldEvidence = scan.scanFieldEvidence;
+      scanFieldAttribution = scan.scanFieldAttribution || scan.data?.fieldAttribution || {};
       scanOcrWarnings = scan.scanOcrWarnings;
       scanVisionDebug = scan.visionDebug || null;
     } else if (provider === OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE) {
@@ -6139,6 +6268,7 @@ export async function scanInsurancePolicyLocal({
         data = merged.data;
         scanFieldConfidence = merged.fieldConfidence || {};
         scanFieldEvidence = merged.fieldEvidence || {};
+        scanFieldAttribution = merged.data?.fieldAttribution || {};
         scanOcrWarnings = merged.ocrWarnings || [];
         bestOcrText = merged.ocrText;
         handledPaddleLayout = true;
@@ -6186,6 +6316,7 @@ export async function scanInsurancePolicyLocal({
   if (!hasPolicyDataValue(data)) throw new Error('POLICY_OCR_EMPTY');
   let fieldConfidence = Object.keys(scanFieldConfidence).length ? scanFieldConfidence : (data.fieldConfidence || {});
   let fieldEvidence = Object.keys(scanFieldEvidence).length ? scanFieldEvidence : (data.fieldEvidence || {});
+  let fieldAttribution = Object.keys(scanFieldAttribution).length ? scanFieldAttribution : (data.fieldAttribution || {});
   const dataOcrWarnings = Array.isArray(data.ocrWarnings) ? data.ocrWarnings : [];
   let ocrWarnings = [...new Set([...scanOcrWarnings, ...dataOcrWarnings].map((item) => String(item || '').trim()).filter(Boolean))];
   const reviewed = reviewPolicyFieldValues({ data, fieldConfidence, fieldEvidence, warnings: ocrWarnings });
@@ -6193,8 +6324,12 @@ export async function scanInsurancePolicyLocal({
   fieldConfidence = reviewed.fieldConfidence;
   fieldEvidence = reviewed.fieldEvidence;
   ocrWarnings = reviewed.warnings;
+  fieldAttribution = Object.fromEntries(
+    Object.entries(fieldAttribution || {}).filter(([field]) => hasPolicyFieldValue(data[field])),
+  );
   delete data.fieldConfidence;
   delete data.fieldEvidence;
+  delete data.fieldAttribution;
   delete data.ocrWarnings;
   return {
     ok: true,
@@ -6202,6 +6337,7 @@ export async function scanInsurancePolicyLocal({
     ocrText: bestOcrText,
     ...(Object.keys(fieldConfidence).length ? { fieldConfidence } : {}),
     ...(Object.keys(fieldEvidence).length ? { fieldEvidence } : {}),
+    ...(Object.keys(fieldAttribution).length ? { fieldAttribution } : {}),
     ...(ocrWarnings.length ? { ocrWarnings } : {}),
     ...(scanVisionDebug ? { visionDebug: scanVisionDebug } : {}),
   };
