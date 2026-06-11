@@ -14,5 +14,6 @@ export function sendError(res, error, fallbackStatus = 500) {
     message: error?.message && error.message !== code ? error.message : code,
   };
   if (error?.registrationRequiredNext) payload.registrationRequiredNext = true;
+  if (error?.membership) payload.membership = error.membership;
   return res.status(statusFromError(error) || fallbackStatus).json(payload);
 }

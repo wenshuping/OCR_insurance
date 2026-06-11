@@ -8,6 +8,7 @@ import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
 import { createFamilyRoutes } from './routes/families.routes.mjs';
+import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
@@ -87,6 +88,13 @@ import {
   updateFamilyMemberRelation,
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
+import {
+  buildMembershipSnapshot,
+  createMembershipOrder,
+  markMembershipOrderPrepayCreated,
+  processMembershipPaymentSuccess,
+} from './membership.domain.mjs';
+import { createMockJsapiPayParams } from './wechat-pay.service.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -1713,6 +1721,11 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.optionalResponsibilityRecords)) state.optionalResponsibilityRecords = [];
   if (!Array.isArray(state.officialDomainProfiles)) state.officialDomainProfiles = [];
   if (!Array.isArray(state.familyReportShares)) state.familyReportShares = [];
+  if (!state.membershipConfig) state.membershipConfig = null;
+  if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
+  if (!Array.isArray(state.memberships)) state.memberships = [];
+  if (!Array.isArray(state.userWechatIdentities)) state.userWechatIdentities = [];
+  if (!Array.isArray(state.wechatOAuthStates)) state.wechatOAuthStates = [];
   if (!Number(state.nextId)) state.nextId = 1;
 
   const scanner = options.scanner || ((input) => scanPolicyWithConfiguredRuntime(input));
@@ -1924,6 +1937,12 @@ export function createPolicyOcrApp(options = {}) {
     clearPolicyReportForRegeneration,
     startPolicyReportGeneration,
     buildPolicyReportScan,
+    buildMembershipSnapshot,
+    createMembershipOrder,
+    markMembershipOrderPrepayCreated,
+    processMembershipPaymentSuccess,
+    createMockJsapiPayParams,
+    nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
@@ -1968,6 +1987,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/auth', createAuthRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
   app.use('/api', createFamilyRoutes(routeContext));
+  app.use('/api/membership', createMembershipRoutes(routeContext));
   app.use('/api', createPolicyRoutes(routeContext));
   app.use('/api', createCashflowRoutes(routeContext));
   app.use('/api/admin', createAdminRoutes(routeContext));
