@@ -62,10 +62,45 @@ test('membership routes expose status, create mock order, and confirm mock payme
     const confirmed = await jsonFetch(server.baseUrl, `/api/membership/orders/${created.payload.order.id}/mock-confirm`, { headers: auth, method: 'POST', body: '{}' });
     assert.equal(confirmed.response.status, 200);
     assert.equal(confirmed.payload.membership.active, true);
+    assert.equal(Object.hasOwn(confirmed.payload.order, 'payload'), false);
+    assert.equal(Object.hasOwn(confirmed.payload.order, 'prepayId'), false);
+    assert.equal(Object.hasOwn(confirmed.payload.order, 'userId'), false);
+
+    const orderDetail = await jsonFetch(server.baseUrl, `/api/membership/orders/${created.payload.order.id}`, { headers: auth });
+    assert.equal(orderDetail.response.status, 200);
+    assert.equal(Object.hasOwn(orderDetail.payload.order, 'payload'), false);
+    assert.equal(Object.hasOwn(orderDetail.payload.order, 'prepayId'), false);
+    assert.equal(Object.hasOwn(orderDetail.payload.order, 'userId'), false);
 
     const refreshed = await jsonFetch(server.baseUrl, '/api/membership/me', { headers: auth });
     assert.equal(refreshed.payload.membership.active, true);
     assert.equal(persisted.length >= 2, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('mock payment actions are unavailable outside mock mode', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    sessions: [{ token: 'token-1', userId: 1, createdAt: '2026-06-11T08:00:00.000Z' }],
+    membershipOrders: [{ id: 9, outTradeNo: 'order-9', userId: 1, amountCents: 30000, status: 'prepay_created' }],
+    nextId: 10,
+  };
+  const app = createPolicyOcrApp({ state, now: () => '2026-06-11T08:00:00.000Z' });
+  const server = await listen(app);
+  try {
+    const auth = { authorization: 'Bearer token-1' };
+    const created = await jsonFetch(server.baseUrl, '/api/membership/orders', { headers: auth, method: 'POST', body: '{}' });
+    assert.equal(created.response.status, 503);
+    assert.equal(created.payload.code, 'WECHAT_PAY_NOT_CONFIGURED');
+    assert.equal(state.memberships.length, 0);
+
+    const confirmed = await jsonFetch(server.baseUrl, '/api/membership/orders/9/mock-confirm', { headers: auth, method: 'POST', body: '{}' });
+    assert.equal(confirmed.response.status, 404);
+    assert.equal(confirmed.payload.code, 'ORDER_NOT_FOUND');
+    assert.equal(state.memberships.length, 0);
   } finally {
     await server.close();
   }

@@ -1943,6 +1943,7 @@ export function createPolicyOcrApp(options = {}) {
     processMembershipPaymentSuccess,
     createMockJsapiPayParams,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
+    wechatPayMode: options.wechatPayMode || 'live',
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,

@@ -25,6 +25,17 @@ function orderSummary(order) {
   };
 }
 
+function routeError(code, status, message = code) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
+}
+
+function isMockPayMode(wechatPayMode) {
+  return String(wechatPayMode || '').trim() === 'mock';
+}
+
 function requireOrder(state, user, rawId) {
   const order = findUserOrder(state, user, rawId);
   if (order) return order;
@@ -46,6 +57,7 @@ export function createMembershipRoutes(context) {
     processMembershipPaymentSuccess,
     createMockJsapiPayParams,
     nowIso,
+    wechatPayMode = 'live',
   } = context;
 
   router.get('/me', async (req, res) => {
@@ -60,6 +72,7 @@ export function createMembershipRoutes(context) {
   router.post('/orders', async (req, res) => {
     try {
       const user = requireUser(req, state, resolveAuthUser);
+      if (!isMockPayMode(wechatPayMode)) throw routeError('WECHAT_PAY_NOT_CONFIGURED', 503);
       const order = createMembershipOrder(state, { userId: user.id, now: nowIso() });
       const payParams = createMockJsapiPayParams(order);
       markMembershipOrderPrepayCreated(state, order.outTradeNo, {
@@ -78,7 +91,7 @@ export function createMembershipRoutes(context) {
     try {
       const user = requireUser(req, state, resolveAuthUser);
       const order = requireOrder(state, user, req.params.id);
-      res.json({ ok: true, order });
+      res.json({ ok: true, order: orderSummary(order) });
     } catch (error) {
       sendError(res, error, 404);
     }
@@ -86,6 +99,7 @@ export function createMembershipRoutes(context) {
 
   router.post('/orders/:id/mock-confirm', async (req, res) => {
     try {
+      if (!isMockPayMode(wechatPayMode)) throw routeError('ORDER_NOT_FOUND', 404);
       const user = requireUser(req, state, resolveAuthUser);
       const order = requireOrder(state, user, req.params.id);
       processMembershipPaymentSuccess(state, {
@@ -96,7 +110,7 @@ export function createMembershipRoutes(context) {
         notifyPayload: { mode: 'mock' },
       });
       await persist(state);
-      res.json({ ok: true, order, ...buildMembershipSnapshot(state, user, { now: nowIso() }) });
+      res.json({ ok: true, order: orderSummary(order), ...buildMembershipSnapshot(state, user, { now: nowIso() }) });
     } catch (error) {
       sendError(res, error, 400);
     }
