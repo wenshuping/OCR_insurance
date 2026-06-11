@@ -11,6 +11,7 @@ import {
 import {
   AdminOcrConfig,
   AdminOfficialDomainProfile,
+  AdminMembershipConfig,
   AdminOverview,
   ApiError,
   KnowledgeRecord,
@@ -22,11 +23,13 @@ import {
   deleteAdminOfficialDomainProfile,
   getAdminOfficialDomainProfiles,
   getAdminKnowledgeRecords,
+  getAdminMembershipConfig,
   getAdminOcrConfig,
   getAdminOverview,
   markOptionalResponsibilityNotQuantifiable,
   regeneratePolicyReport,
   reextractOptionalResponsibilities,
+  updateAdminMembershipConfig,
   updateAdminOfficialDomainProfile,
   updateAdminOcrConfig,
 } from '../../api';
@@ -75,6 +78,9 @@ export function AdminApp() {
   const [message, setMessage] = useState('输入后台密码进入平台只读管理台');
   const [loading, setLoading] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [membershipConfig, setMembershipConfig] = useState<AdminMembershipConfig | null>(null);
+  const [membershipQuotaInput, setMembershipQuotaInput] = useState('3');
+  const [membershipSaving, setMembershipSaving] = useState(false);
   const [officialDomainLoading, setOfficialDomainLoading] = useState(false);
   const [officialDomainSaving, setOfficialDomainSaving] = useState(false);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -120,6 +126,21 @@ export function AdminApp() {
     }
   }
 
+  async function loadMembershipConfig(token = adminToken) {
+    if (!token) return;
+    try {
+      const payload = await getAdminMembershipConfig(token);
+      setMembershipConfig(payload.config);
+      setMembershipQuotaInput(String(payload.config.registeredFreePolicyQuota));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        localStorage.removeItem(ADMIN_TOKEN_KEY);
+        setAdminToken('');
+      }
+      setMessage(error instanceof Error ? error.message : '会员设置读取失败');
+    }
+  }
+
   async function loadOfficialDomainProfiles(token = adminToken) {
     if (!token) return;
     setOfficialDomainLoading(true);
@@ -158,6 +179,7 @@ export function AdminApp() {
     if (!adminToken) return;
     void loadOverview(adminToken);
     void loadOcrConfig(adminToken);
+    void loadMembershipConfig(adminToken);
     void loadOfficialDomainProfiles(adminToken);
     void loadKnowledgeRecords(adminToken);
   }, [adminToken]);
@@ -192,6 +214,8 @@ export function AdminApp() {
     setAdminToken('');
     setOverview(null);
     setOcrConfig(null);
+    setMembershipConfig(null);
+    setMembershipQuotaInput('3');
     setOfficialDomainProfiles([]);
     setOfficialDomainForm(emptyOfficialDomainForm);
     setKnowledgeRecords([]);
@@ -213,6 +237,26 @@ export function AdminApp() {
       setMessage(error instanceof Error ? error.message : 'OCR 方式切换失败');
     } finally {
       setOcrLoading(false);
+    }
+  }
+
+  async function handleSaveMembershipConfig() {
+    if (!adminToken || !membershipConfig || membershipSaving) return;
+    const quota = Math.max(0, Math.floor(Number(membershipQuotaInput || 0)));
+    setMembershipSaving(true);
+    setMessage('正在保存会员设置');
+    try {
+      const payload = await updateAdminMembershipConfig(adminToken, {
+        enabled: membershipConfig.enabled,
+        registeredFreePolicyQuota: Number.isFinite(quota) ? quota : 0,
+      });
+      setMembershipConfig(payload.config);
+      setMembershipQuotaInput(String(payload.config.registeredFreePolicyQuota));
+      setMessage('会员设置已保存');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '会员设置保存失败');
+    } finally {
+      setMembershipSaving(false);
     }
   }
 
@@ -441,6 +485,7 @@ export function AdminApp() {
               onClick={() => {
                 void loadOverview();
                 void loadOcrConfig();
+                void loadMembershipConfig();
                 void loadOfficialDomainProfiles();
                 void loadKnowledgeRecords();
               }}
@@ -543,6 +588,43 @@ export function AdminApp() {
               onRefresh={() => void loadOcrConfig()}
               onChange={(mode) => void handleOcrModeChange(mode)}
             />
+
+            <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_-42px_rgba(15,23,42,0.45)]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-black text-slate-950">会员设置</h2>
+                  <p className="mt-1 text-xs font-medium text-slate-400">控制年度会员购买和免费保单额度</p>
+                </div>
+                <span className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-400">300 元/年</span>
+              </div>
+              <label className="mt-4 flex items-center justify-between gap-3 rounded-[16px] border border-slate-200 bg-slate-50 px-3 py-2.5">
+                <span className="text-sm font-bold text-slate-700">开放会员购买</span>
+                <input
+                  type="checkbox"
+                  checked={membershipConfig?.enabled ?? true}
+                  onChange={(event) => setMembershipConfig((current) => (current ? { ...current, enabled: event.target.checked } : current))}
+                />
+              </label>
+              <label className="mt-3 block">
+                <span className="text-xs font-black text-slate-400">注册用户免费保存保单数</span>
+                <input
+                  className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 outline-none transition focus:border-slate-400"
+                  type="number"
+                  min="0"
+                  value={membershipQuotaInput}
+                  onChange={(event) => setMembershipQuotaInput(event.target.value)}
+                />
+              </label>
+              <p className="mt-3 text-xs font-semibold leading-5 text-slate-500">年费价格 300 元，有效期 365 天。免费额度只按已成功保存保单数计算。</p>
+              <button
+                className="mt-4 h-11 w-full rounded-xl bg-slate-950 px-4 text-sm font-black text-white shadow-[0_14px_36px_-24px_rgba(15,23,42,0.9)] disabled:opacity-60"
+                type="button"
+                disabled={!membershipConfig || membershipSaving}
+                onClick={() => void handleSaveMembershipConfig()}
+              >
+                {membershipSaving ? '保存中...' : '保存会员设置'}
+              </button>
+            </section>
 
             <AdminOfficialDomainPanel
               profiles={officialDomainProfiles}

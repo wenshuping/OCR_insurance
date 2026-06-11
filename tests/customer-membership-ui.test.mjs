@@ -40,3 +40,11 @@ test('membership purchase dialog disables unavailable purchase states', () => {
   assert.match(source, /会员购买暂未开放/);
   assert.match(source, /purchaseDisabled/);
 });
+
+test('admin app exposes membership settings controls', () => {
+  const source = read('src/apps/admin/AdminApp.tsx');
+  assert.match(source, /getAdminMembershipConfig/);
+  assert.match(source, /updateAdminMembershipConfig/);
+  assert.match(source, /会员设置/);
+  assert.match(source, /注册用户免费保存保单数/);
+});
