@@ -27,6 +27,7 @@ export function createPolicyRoutes(context) {
     resolveAuthUser,
     normalizeGuestId,
     assertGuestCanScan,
+    assertUserCanSavePolicy,
     recognizePolicyInput,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
@@ -63,6 +64,7 @@ export function createPolicyRoutes(context) {
     policyOwner,
     clearPolicyReportForRegeneration,
     buildPolicyReportScan,
+    nowIso,
   } = context;
 
   function attachPolicyCashflowData(policy) {
@@ -214,6 +216,9 @@ export function createPolicyRoutes(context) {
       const user = resolveAuthUser(req, state);
       const guestId = normalizeGuestId(req.body?.guestId);
       assertGuestCanScan({ state, user, guestId });
+      if (typeof assertUserCanSavePolicy === 'function') {
+        assertUserCanSavePolicy(state, user, { now: typeof nowIso === 'function' ? nowIso() : undefined });
+      }
       const scanStartedAt = nowMs();
       const normalizedScan = await resolvePolicyScanInput({ scanner, body: req.body, state });
       if (!req.body?.scan) {

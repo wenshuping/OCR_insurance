@@ -89,6 +89,7 @@ import {
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
 import {
+  assertUserCanSavePolicy,
   buildMembershipSnapshot,
   createMembershipOrder,
   markMembershipOrderPrepayCreated,
@@ -1937,6 +1938,7 @@ export function createPolicyOcrApp(options = {}) {
     clearPolicyReportForRegeneration,
     startPolicyReportGeneration,
     buildPolicyReportScan,
+    assertUserCanSavePolicy,
     buildMembershipSnapshot,
     createMembershipOrder,
     markMembershipOrderPrepayCreated,

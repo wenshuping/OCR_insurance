@@ -10080,3 +10080,75 @@ test('share snapshots only selected family members and policies', async () => {
     await server.close();
   }
 });
+
+test('registered user over free quota must buy membership before saving another policy', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    sessions: [{ token: 'token-1', userId: 1, createdAt: '2026-06-11T08:00:00.000Z' }],
+    membershipConfig: { enabled: true, annualPriceCents: 30000, annualDurationDays: 365, registeredFreePolicyQuota: 1, updatedAt: '2026-06-11T08:00:00.000Z' },
+    policies: [{ id: 10, userId: 1, guestId: '', company: '新华保险', name: '已有保单', insured: '张三', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    nextId: 20,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    scanner: async () => ({ ocrText: '保单文本', data: { company: '新华保险', name: '新保单', insured: '张三', applicant: '张三' } }),
+    analyzer: async () => ({ coverageTable: [] }),
+    now: () => '2026-06-11T08:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      headers: { authorization: 'Bearer token-1' },
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: '',
+        ocrText: '保单文本',
+        uploadItem: null,
+        manualData: { company: '新华保险', name: '新保单', insured: '张三', applicant: '张三' },
+      }),
+    });
+    assert.equal(result.response.status, 402);
+    assert.equal(result.payload.code, 'MEMBERSHIP_REQUIRED');
+    assert.deepEqual(result.payload.membership, { savedPolicyCount: 1, freeQuota: 1, annualPriceCents: 30000 });
+    assert.equal(state.policies.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('active member can save over configured free quota', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    sessions: [{ token: 'token-1', userId: 1, createdAt: '2026-06-11T08:00:00.000Z' }],
+    membershipConfig: { enabled: true, annualPriceCents: 30000, annualDurationDays: 365, registeredFreePolicyQuota: 1, updatedAt: '2026-06-11T08:00:00.000Z' },
+    memberships: [{ userId: 1, plan: 'annual', status: 'active', startedAt: '2026-06-11T08:00:00.000Z', expiresAt: '2027-06-11T08:00:00.000Z', lastOrderId: 9, updatedAt: '2026-06-11T08:00:00.000Z' }],
+    policies: [{ id: 10, userId: 1, guestId: '', company: '新华保险', name: '已有保单', insured: '张三', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    nextId: 20,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    scanner: async () => ({ ocrText: '保单文本', data: { company: '新华保险', name: '新保单', insured: '张三', applicant: '张三' } }),
+    analyzer: async () => ({ coverageTable: [] }),
+    now: () => '2026-06-11T08:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      headers: { authorization: 'Bearer token-1' },
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: '',
+        ocrText: '保单文本',
+        uploadItem: null,
+        manualData: { company: '新华保险', name: '新保单', insured: '张三', applicant: '张三' },
+      }),
+    });
+    assert.equal(result.response.status, 201);
+    assert.equal(result.payload.policy.userId, 1);
+    assert.equal(state.policies.length, 2);
+  } finally {
+    await server.close();
+  }
+});
