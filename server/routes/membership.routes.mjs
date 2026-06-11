@@ -37,7 +37,29 @@ function trim(value) {
 }
 
 function isMockPayMode(config) {
-  return trim(config?.mode) === 'mock';
+  return (
+    trim(config?.mode) === 'mock' &&
+    (trim(config?.nodeEnv) !== 'production' || config?.allowMockInProduction === true)
+  );
+}
+
+function mockPayDisabled(config) {
+  return trim(config?.mode) === 'mock' && !isMockPayMode(config);
+}
+
+function requireWechatBrowser(req) {
+  if (/MicroMessenger/i.test(trim(req.get('user-agent')))) return;
+  throw routeError('WECHAT_BROWSER_REQUIRED', 400);
+}
+
+function requirePurchaseEnabled(state, getMembershipConfig) {
+  const config = getMembershipConfig ? getMembershipConfig(state) : { enabled: true };
+  if (config.enabled !== false) return;
+  throw routeError('MEMBERSHIP_PURCHASE_DISABLED', 403);
+}
+
+function removeOrder(state, order) {
+  state.membershipOrders = (state.membershipOrders || []).filter((row) => row !== order);
 }
 
 function requestOrigin(req) {
@@ -94,6 +116,7 @@ export function createMembershipRoutes(context) {
     persist,
     resolveAuthUser,
     buildMembershipSnapshot,
+    getMembershipConfig,
     createMembershipOrder,
     markMembershipOrderPrepayCreated,
     processMembershipPaymentSuccess,
@@ -125,12 +148,20 @@ export function createMembershipRoutes(context) {
     try {
       const user = requireUser(req, state, resolveAuthUser);
       const config = resolveWechatPayConfig();
-      if (!isMockPayMode(config) && !config.ready) throw routeError('WECHAT_PAY_NOT_CONFIGURED', 503);
+      if (!config.ready || mockPayDisabled(config)) throw routeError('WECHAT_PAY_NOT_CONFIGURED', 503);
+      requirePurchaseEnabled(state, getMembershipConfig);
       if (!isMockPayMode(config)) {
         const openid = findUserWechatOpenid(state, { userId: user.id, appId: config.appId });
         if (!openid) throw routeError('WECHAT_OPENID_REQUIRED', 400);
+        requireWechatBrowser(req);
         const order = createMembershipOrder(state, { userId: user.id, now: nowIso() });
-        const prepay = await createWechatPayJsapiPrepay({ config, order, openid });
+        let prepay;
+        try {
+          prepay = await createWechatPayJsapiPrepay({ config, order, openid });
+        } catch (error) {
+          removeOrder(state, order);
+          throw error;
+        }
         markMembershipOrderPrepayCreated(state, order.outTradeNo, {
           prepayId: prepay.prepayId,
           now: nowIso(),
@@ -207,15 +238,22 @@ export function createMembershipRoutes(context) {
       const code = trim(req.query?.code);
       if (!code) throw routeError('WECHAT_OAUTH_CODE_REQUIRED', 400);
       const oauth = consumeWechatOAuthState(state, req.query?.state, { now: nowIso() });
-      const openid = await fetchWechatOAuthOpenid(code);
-      upsertUserWechatIdentity(state, {
-        userId: oauth.userId,
-        appId: oauth.appId,
-        openid,
-        now: nowIso(),
-      });
-      await persist(state);
-      res.redirect(oauth.redirectUrl || '/');
+      const identitiesBefore = (state.userWechatIdentities || []).map((identity) => ({ ...identity }));
+      try {
+        const openid = await fetchWechatOAuthOpenid(code);
+        upsertUserWechatIdentity(state, {
+          userId: oauth.userId,
+          appId: oauth.appId,
+          openid,
+          now: nowIso(),
+        });
+        await persist(state);
+        res.redirect(oauth.redirectUrl || '/');
+      } catch (error) {
+        oauth.usedAt = '';
+        state.userWechatIdentities = identitiesBefore;
+        throw error;
+      }
     } catch (error) {
       sendError(res, error, 400);
     }
@@ -226,12 +264,16 @@ export function createMembershipRoutes(context) {
       const config = resolveWechatPayConfig();
       if (config.mode !== 'live' || !config.ready) throw routeError('WECHAT_PAY_NOT_CONFIGURED', 503);
       const rawBody = rawBodyFromRequest(req);
+      if (trim(req.get('wechatpay-serial')) !== trim(config.platformPublicKeyId)) {
+        throw routeError('WECHAT_NOTIFY_SERIAL_MISMATCH', 401);
+      }
       const verified = verifyWechatPaySignature({
         timestamp: req.get('wechatpay-timestamp'),
         nonce: req.get('wechatpay-nonce'),
         body: rawBody,
         signature: req.get('wechatpay-signature'),
         publicKey: config.platformPublicKey,
+        maxAgeSeconds: 300,
       });
       if (!verified) throw routeError('WECHAT_NOTIFY_SIGNATURE_INVALID', 401);
       const resource = req.body?.resource || {};

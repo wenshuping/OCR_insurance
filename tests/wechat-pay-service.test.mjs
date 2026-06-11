@@ -14,6 +14,12 @@ const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLen
 
 test('resolveWechatPayConfig reports mock and live readiness', () => {
   assert.equal(resolveWechatPayConfig({ WECHAT_PAY_MODE: 'mock' }).mode, 'mock');
+  assert.equal(resolveWechatPayConfig({ WECHAT_PAY_MODE: 'mock', NODE_ENV: 'production' }).ready, false);
+  assert.equal(resolveWechatPayConfig({
+    WECHAT_PAY_MODE: 'mock',
+    NODE_ENV: 'production',
+    WECHAT_PAY_ALLOW_MOCK_IN_PRODUCTION: 'true',
+  }).ready, true);
   const live = resolveWechatPayConfig({
     WECHAT_PAY_MODE: 'live',
     WECHAT_H5_APP_ID: 'wx123',
@@ -34,6 +40,15 @@ test('signWechatPayMessage and verifyWechatPaySignature round trip', () => {
   const nonce = 'nonce-1';
   const signature = signWechatPayMessage(`${timestamp}\n${nonce}\n${body}\n`, privateKey.export({ type: 'pkcs8', format: 'pem' }));
   assert.equal(verifyWechatPaySignature({ timestamp, nonce, body, signature, publicKey: publicKey.export({ type: 'spki', format: 'pem' }) }), true);
+  assert.equal(verifyWechatPaySignature({
+    timestamp,
+    nonce,
+    body,
+    signature,
+    publicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    maxAgeSeconds: 300,
+    nowMs: (Number(timestamp) + 301) * 1000,
+  }), false);
   assert.equal(verifyWechatPaySignature({ timestamp, nonce, body: '{}', signature, publicKey: publicKey.export({ type: 'spki', format: 'pem' }) }), false);
 });
 
@@ -60,6 +75,7 @@ test('createWechatPayJsapiPrepay signs request and returns signed jsapi pay para
     WECHAT_PAY_SERIAL_NO: 'serial123',
     WECHAT_PAY_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }),
     WECHAT_PAY_PLATFORM_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'pem' }),
+    WECHAT_PAY_PLATFORM_PUBLIC_KEY_ID: 'PUB_KEY_ID_1',
     WECHAT_PAY_NOTIFY_URL: 'https://app.example.com/api/membership/wechatpay/notify',
   });
   const result = await createWechatPayJsapiPrepay({

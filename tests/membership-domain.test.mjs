@@ -99,6 +99,27 @@ test('processMembershipPaymentSuccess activates new membership and is idempotent
   assert.equal(state.memberships[0].expiresAt, '2027-06-11T08:00:00.000Z');
 });
 
+test('processMembershipPaymentSuccess rejects orders before prepay is created', () => {
+  const state = { ...createInitialState() };
+  const order = createMembershipOrder(state, { userId: 8, now: NOW, randomBytes: Buffer.from('0011223344556677', 'hex') });
+
+  assert.throws(
+    () => processMembershipPaymentSuccess(state, {
+      outTradeNo: order.outTradeNo,
+      transactionId: '4200001',
+      amountCents: 30000,
+      paidAt: NOW,
+    }),
+    (error) => {
+      assert.equal(error.code, 'ORDER_NOT_PAYABLE');
+      assert.equal(error.status, 400);
+      return true;
+    },
+  );
+  assert.equal(order.status, 'created');
+  assert.equal(state.memberships.length, 0);
+});
+
 test('createMembershipOrder uses a compact WeChat Pay-safe outTradeNo', () => {
   const state = { ...createInitialState(), nextId: 123456789 };
   const order = createMembershipOrder(state, {

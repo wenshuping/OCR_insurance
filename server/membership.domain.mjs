@@ -222,6 +222,12 @@ export function processMembershipPaymentSuccess(state, { outTradeNo, transaction
     error.status = 400;
     throw error;
   }
+  if (!['prepay_created', 'paid'].includes(order.status)) {
+    const error = new Error('ORDER_NOT_PAYABLE');
+    error.code = 'ORDER_NOT_PAYABLE';
+    error.status = 400;
+    throw error;
+  }
   order.payload = { ...(order.payload || {}), notify: notifyPayload };
   if (order.status === 'paid') {
     order.updatedAt = paidAt;
