@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import test from 'node:test';
 
 import { createPolicyOcrApp } from '../server/app.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { defaultMembershipConfig } from '../server/membership.domain.mjs';
+import { signWechatPayMessage } from '../server/wechat-pay.service.mjs';
 
 function listen(app) {
   return new Promise((resolve) => {
@@ -27,6 +29,13 @@ async function jsonFetch(baseUrl, path, options = {}) {
   });
   const payload = await response.json();
   return { response, payload };
+}
+
+function encryptWechatPayResource({ apiV3Key, nonce, associatedData, payload }) {
+  const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(apiV3Key), Buffer.from(nonce));
+  cipher.setAAD(Buffer.from(associatedData));
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(payload), 'utf8'), cipher.final()]);
+  return Buffer.concat([encrypted, cipher.getAuthTag()]).toString('base64');
 }
 
 test('membership routes expose status, create mock order, and confirm mock payment', async () => {
@@ -101,6 +110,217 @@ test('mock payment actions are unavailable outside mock mode', async () => {
     assert.equal(confirmed.response.status, 404);
     assert.equal(confirmed.payload.code, 'ORDER_NOT_FOUND');
     assert.equal(state.memberships.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('live membership order requires openid before creating prepay', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    sessions: [{ token: 'token-1', userId: 1, createdAt: '2026-06-11T08:00:00.000Z' }],
+    nextId: 10,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    resolveWechatPayConfig: () => ({ mode: 'live', ready: true, appId: 'wx123', mchId: 'mch123' }),
+    now: () => '2026-06-11T08:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const created = await jsonFetch(server.baseUrl, '/api/membership/orders', {
+      headers: { authorization: 'Bearer token-1' },
+      method: 'POST',
+      body: '{}',
+    });
+    assert.equal(created.response.status, 400);
+    assert.equal(created.payload.code, 'WECHAT_OPENID_REQUIRED');
+    assert.equal(state.membershipOrders.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('live membership order creates jsapi prepay with bound openid', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    sessions: [{ token: 'token-1', userId: 1, createdAt: '2026-06-11T08:00:00.000Z' }],
+    userWechatIdentities: [{ userId: 1, appId: 'wx123', openid: 'openid-1', scope: 'snsapi_base', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    nextId: 10,
+  };
+  const prepayCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    resolveWechatPayConfig: () => ({ mode: 'live', ready: true, appId: 'wx123', mchId: 'mch123' }),
+    createWechatPayJsapiPrepay: async (input) => {
+      prepayCalls.push(input);
+      return {
+        prepayId: 'wx-prepay-live',
+        payParams: {
+          appId: 'wx123',
+          timeStamp: '1790000000',
+          nonceStr: 'nonce-1',
+          package: 'prepay_id=wx-prepay-live',
+          signType: 'RSA',
+          paySign: 'signed',
+        },
+      };
+    },
+    now: () => '2026-06-11T08:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const created = await jsonFetch(server.baseUrl, '/api/membership/orders', {
+      headers: { authorization: 'Bearer token-1' },
+      method: 'POST',
+      body: '{}',
+    });
+    assert.equal(created.response.status, 200);
+    assert.equal(created.payload.order.status, 'prepay_created');
+    assert.equal(created.payload.payParams.appId, 'wx123');
+    assert.equal(created.payload.payParams.package, 'prepay_id=wx-prepay-live');
+    assert.equal(prepayCalls.length, 1);
+    assert.equal(prepayCalls[0].openid, 'openid-1');
+    assert.equal(prepayCalls[0].order.outTradeNo, created.payload.order.outTradeNo);
+    assert.equal(state.membershipOrders[0].prepayId, 'wx-prepay-live');
+  } finally {
+    await server.close();
+  }
+});
+
+test('wechat oauth start rejects off-site redirects and callback binds openid', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    sessions: [{ token: 'token-1', userId: 1, createdAt: '2026-06-11T08:00:00.000Z' }],
+    nextId: 10,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    resolveWechatPayConfig: () => ({ mode: 'live', ready: true, appId: 'wx123', mchId: 'mch123' }),
+    fetchWechatOAuthOpenid: async (code) => {
+      assert.equal(code, 'code-1');
+      return 'openid-1';
+    },
+    now: () => '2026-06-11T08:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const auth = { authorization: 'Bearer token-1' };
+    const rejected = await jsonFetch(server.baseUrl, '/api/membership/wechat-oauth/start', {
+      headers: auth,
+      method: 'POST',
+      body: JSON.stringify({ redirectUrl: 'https://evil.example/#/member' }),
+    });
+    assert.equal(rejected.response.status, 400);
+    assert.equal(rejected.payload.code, 'WECHAT_OAUTH_REDIRECT_URL_INVALID');
+
+    const started = await jsonFetch(server.baseUrl, '/api/membership/wechat-oauth/start', {
+      headers: auth,
+      method: 'POST',
+      body: JSON.stringify({ redirectUrl: '/#/member' }),
+    });
+    assert.equal(started.response.status, 200);
+    assert.match(started.payload.authorizeUrl, /^https:\/\/open\.weixin\.qq\.com\/connect\/oauth2\/authorize\?/);
+    assert.match(started.payload.authorizeUrl, /appid=wx123/);
+    assert.match(started.payload.authorizeUrl, /response_type=code/);
+    assert.equal(started.payload.authorizeUrl.includes('token-1'), false);
+    assert.equal(state.wechatOAuthStates.length, 1);
+
+    const stateToken = state.wechatOAuthStates[0].state;
+    const callbackResponse = await fetch(`${server.baseUrl}/api/membership/wechat-oauth/callback?code=code-1&state=${stateToken}`, {
+      redirect: 'manual',
+    });
+    assert.equal(callbackResponse.status, 302);
+    assert.equal(callbackResponse.headers.get('location'), '/#/member');
+    assert.equal(state.wechatOAuthStates[0].usedAt, '2026-06-11T08:00:00.000Z');
+    assert.equal(state.userWechatIdentities[0].openid, 'openid-1');
+  } finally {
+    await server.close();
+  }
+});
+
+test('wechat pay notify verifies signature, decrypts resource, and activates membership', async () => {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const apiV3Key = '12345678901234567890123456789012';
+  const state = {
+    ...createInitialState(),
+    membershipOrders: [{
+      id: 9,
+      outTradeNo: 'order-9',
+      userId: 1,
+      productCode: 'annual_membership',
+      amountCents: 30000,
+      currency: 'CNY',
+      status: 'prepay_created',
+      prepayId: 'wx-prepay',
+      transactionId: '',
+      paidAt: '',
+      expiresAt: '2026-06-11T08:30:00.000Z',
+      createdAt: '2026-06-11T08:00:00.000Z',
+      updatedAt: '2026-06-11T08:00:00.000Z',
+      payload: {},
+    }],
+    nextId: 10,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    resolveWechatPayConfig: () => ({
+      mode: 'live',
+      ready: true,
+      appId: 'wx123',
+      mchId: 'mch123',
+      apiV3Key,
+      platformPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    }),
+    now: () => '2026-06-11T08:00:00.000Z',
+  });
+  const server = await listen(app);
+  try {
+    const resourcePayload = {
+      appid: 'wx123',
+      mchid: 'mch123',
+      out_trade_no: 'order-9',
+      transaction_id: '4200001',
+      trade_state: 'SUCCESS',
+      success_time: '2026-06-11T08:01:00+08:00',
+      amount: { total: 30000 },
+    };
+    const body = JSON.stringify({
+      id: 'notify-1',
+      resource: {
+        nonce: '0123456789ab',
+        associated_data: 'transaction',
+        ciphertext: encryptWechatPayResource({
+          apiV3Key,
+          nonce: '0123456789ab',
+          associatedData: 'transaction',
+          payload: resourcePayload,
+        }),
+      },
+    });
+    const timestamp = '1790000000';
+    const nonce = 'notify-nonce';
+    const signature = signWechatPayMessage(`${timestamp}\n${nonce}\n${body}\n`, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    const notified = await fetch(`${server.baseUrl}/api/membership/wechatpay/notify`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'wechatpay-timestamp': timestamp,
+        'wechatpay-nonce': nonce,
+        'wechatpay-signature': signature,
+      },
+      body,
+    });
+    const payload = await notified.json();
+    assert.equal(notified.status, 200);
+    assert.deepEqual(payload, { code: 'SUCCESS', message: '成功' });
+    assert.equal(state.membershipOrders[0].status, 'paid');
+    assert.equal(state.membershipOrders[0].transactionId, '4200001');
+    assert.equal(state.memberships[0].userId, 1);
+    assert.equal(state.memberships[0].expiresAt, '2027-06-11T00:01:00.000Z');
   } finally {
     await server.close();
   }

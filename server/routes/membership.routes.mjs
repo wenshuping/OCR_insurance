@@ -32,8 +32,50 @@ function routeError(code, status, message = code) {
   return error;
 }
 
-function isMockPayMode(wechatPayMode) {
-  return String(wechatPayMode || '').trim() === 'mock';
+function trim(value) {
+  return String(value || '').trim();
+}
+
+function isMockPayMode(config) {
+  return trim(config?.mode) === 'mock';
+}
+
+function requestOrigin(req) {
+  const forwardedProto = trim(req.get('x-forwarded-proto')).split(',')[0].trim();
+  const forwardedHost = trim(req.get('x-forwarded-host')).split(',')[0].trim();
+  const proto = forwardedProto || req.protocol || 'http';
+  const host = forwardedHost || trim(req.get('host'));
+  if (!host) throw routeError('WECHAT_OAUTH_HOST_REQUIRED', 400);
+  return `${proto}://${host}`;
+}
+
+function buildWechatOAuthAuthorizeUrl(req, appId, stateToken) {
+  const callbackUrl = new URL('/api/membership/wechat-oauth/callback', requestOrigin(req)).toString();
+  const url = new URL('https://open.weixin.qq.com/connect/oauth2/authorize');
+  url.searchParams.set('appid', appId);
+  url.searchParams.set('redirect_uri', callbackUrl);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', 'snsapi_base');
+  url.searchParams.set('state', stateToken);
+  return `${url.toString()}#wechat_redirect`;
+}
+
+function rawBodyFromRequest(req) {
+  return typeof req.rawBody === 'string' ? req.rawBody : JSON.stringify(req.body || {});
+}
+
+function normalizedPaidAt(value, fallback) {
+  const time = new Date(value || '').getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : fallback;
+}
+
+function validateWechatNotifyTransaction(transaction, config) {
+  if (trim(transaction?.trade_state) !== 'SUCCESS') {
+    throw routeError('WECHAT_NOTIFY_TRADE_STATE_UNSUPPORTED', 400);
+  }
+  if (trim(transaction?.appid) !== trim(config.appId) || trim(transaction?.mchid) !== trim(config.mchId)) {
+    throw routeError('WECHAT_NOTIFY_MERCHANT_MISMATCH', 400);
+  }
 }
 
 function requireOrder(state, user, rawId) {
@@ -58,12 +100,22 @@ export function createMembershipRoutes(context) {
     createMockJsapiPayParams,
     nowIso,
     wechatPayMode = 'live',
+    createWechatPayJsapiPrepay,
+    createWechatOAuthState,
+    consumeWechatOAuthState,
+    upsertUserWechatIdentity,
+    findUserWechatOpenid,
+    resolveWechatPayConfig = () => ({ mode: wechatPayMode, ready: wechatPayMode === 'mock', appId: '' }),
+    decryptWechatPayResource,
+    verifyWechatPaySignature,
+    fetchWechatOAuthOpenid,
   } = context;
 
   router.get('/me', async (req, res) => {
     try {
       const user = requireUser(req, state, resolveAuthUser);
-      res.json({ ok: true, ...buildMembershipSnapshot(state, user, { now: nowIso() }) });
+      const config = resolveWechatPayConfig();
+      res.json({ ok: true, ...buildMembershipSnapshot(state, user, { now: nowIso(), appId: config.appId }) });
     } catch (error) {
       sendError(res, error, 401);
     }
@@ -72,7 +124,22 @@ export function createMembershipRoutes(context) {
   router.post('/orders', async (req, res) => {
     try {
       const user = requireUser(req, state, resolveAuthUser);
-      if (!isMockPayMode(wechatPayMode)) throw routeError('WECHAT_PAY_NOT_CONFIGURED', 503);
+      const config = resolveWechatPayConfig();
+      if (!isMockPayMode(config) && !config.ready) throw routeError('WECHAT_PAY_NOT_CONFIGURED', 503);
+      if (!isMockPayMode(config)) {
+        const openid = findUserWechatOpenid(state, { userId: user.id, appId: config.appId });
+        if (!openid) throw routeError('WECHAT_OPENID_REQUIRED', 400);
+        const order = createMembershipOrder(state, { userId: user.id, now: nowIso() });
+        const prepay = await createWechatPayJsapiPrepay({ config, order, openid });
+        markMembershipOrderPrepayCreated(state, order.outTradeNo, {
+          prepayId: prepay.prepayId,
+          now: nowIso(),
+          payload: { mode: 'live' },
+        });
+        await persist(state);
+        res.json({ ok: true, order: orderSummary(order), payParams: prepay.payParams });
+        return;
+      }
       const order = createMembershipOrder(state, { userId: user.id, now: nowIso() });
       const payParams = createMockJsapiPayParams(order);
       markMembershipOrderPrepayCreated(state, order.outTradeNo, {
@@ -99,7 +166,7 @@ export function createMembershipRoutes(context) {
 
   router.post('/orders/:id/mock-confirm', async (req, res) => {
     try {
-      if (!isMockPayMode(wechatPayMode)) throw routeError('ORDER_NOT_FOUND', 404);
+      if (!isMockPayMode(resolveWechatPayConfig())) throw routeError('ORDER_NOT_FOUND', 404);
       const user = requireUser(req, state, resolveAuthUser);
       const order = requireOrder(state, user, req.params.id);
       processMembershipPaymentSuccess(state, {
@@ -111,6 +178,79 @@ export function createMembershipRoutes(context) {
       });
       await persist(state);
       res.json({ ok: true, order: orderSummary(order), ...buildMembershipSnapshot(state, user, { now: nowIso() }) });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  router.post('/wechat-oauth/start', async (req, res) => {
+    try {
+      const user = requireUser(req, state, resolveAuthUser);
+      const config = resolveWechatPayConfig();
+      const appId = trim(config.appId);
+      if (!appId) throw routeError('WECHAT_OAUTH_NOT_CONFIGURED', 503);
+      const oauth = createWechatOAuthState(state, {
+        userId: user.id,
+        appId,
+        redirectUrl: req.body?.redirectUrl || '/',
+        now: nowIso(),
+      });
+      await persist(state);
+      res.json({ ok: true, authorizeUrl: buildWechatOAuthAuthorizeUrl(req, appId, oauth.state) });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  router.get('/wechat-oauth/callback', async (req, res) => {
+    try {
+      const code = trim(req.query?.code);
+      if (!code) throw routeError('WECHAT_OAUTH_CODE_REQUIRED', 400);
+      const oauth = consumeWechatOAuthState(state, req.query?.state, { now: nowIso() });
+      const openid = await fetchWechatOAuthOpenid(code);
+      upsertUserWechatIdentity(state, {
+        userId: oauth.userId,
+        appId: oauth.appId,
+        openid,
+        now: nowIso(),
+      });
+      await persist(state);
+      res.redirect(oauth.redirectUrl || '/');
+    } catch (error) {
+      sendError(res, error, 400);
+    }
+  });
+
+  router.post('/wechatpay/notify', async (req, res) => {
+    try {
+      const config = resolveWechatPayConfig();
+      if (config.mode !== 'live' || !config.ready) throw routeError('WECHAT_PAY_NOT_CONFIGURED', 503);
+      const rawBody = rawBodyFromRequest(req);
+      const verified = verifyWechatPaySignature({
+        timestamp: req.get('wechatpay-timestamp'),
+        nonce: req.get('wechatpay-nonce'),
+        body: rawBody,
+        signature: req.get('wechatpay-signature'),
+        publicKey: config.platformPublicKey,
+      });
+      if (!verified) throw routeError('WECHAT_NOTIFY_SIGNATURE_INVALID', 401);
+      const resource = req.body?.resource || {};
+      const transaction = decryptWechatPayResource({
+        apiV3Key: config.apiV3Key,
+        nonce: resource.nonce,
+        associatedData: resource.associated_data,
+        ciphertext: resource.ciphertext,
+      });
+      validateWechatNotifyTransaction(transaction, config);
+      processMembershipPaymentSuccess(state, {
+        outTradeNo: transaction.out_trade_no,
+        transactionId: transaction.transaction_id,
+        amountCents: transaction.amount?.total,
+        paidAt: normalizedPaidAt(transaction.success_time, nowIso()),
+        notifyPayload: transaction,
+      });
+      await persist(state);
+      res.json({ code: 'SUCCESS', message: '成功' });
     } catch (error) {
       sendError(res, error, 400);
     }

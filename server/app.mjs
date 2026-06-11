@@ -91,13 +91,23 @@ import {
 import {
   assertUserCanSavePolicy,
   buildMembershipSnapshot,
+  consumeWechatOAuthState,
   createMembershipOrder,
+  createWechatOAuthState,
+  findUserWechatOpenid,
   getMembershipConfig,
   markMembershipOrderPrepayCreated,
   processMembershipPaymentSuccess,
   updateMembershipConfig,
+  upsertUserWechatIdentity,
 } from './membership.domain.mjs';
-import { createMockJsapiPayParams } from './wechat-pay.service.mjs';
+import {
+  createMockJsapiPayParams,
+  createWechatPayJsapiPrepay,
+  decryptWechatPayResource,
+  resolveWechatPayConfig,
+  verifyWechatPaySignature,
+} from './wechat-pay.service.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -257,6 +267,25 @@ async function createWechatJsSdkSignature(rawUrl) {
     signature,
     jsApiList: ['chooseImage', 'getLocalImgData'],
   };
+}
+
+async function fetchWechatOAuthOpenid(code) {
+  const config = resolveWechatConfig();
+  assertWechatConfigReady(config);
+  const url = new URL('https://api.weixin.qq.com/sns/oauth2/access_token');
+  url.searchParams.set('appid', config.appId);
+  url.searchParams.set('secret', config.appSecret);
+  url.searchParams.set('code', trim(code));
+  url.searchParams.set('grant_type', 'authorization_code');
+  const payload = await fetchWechatJson(url);
+  const openid = trim(payload?.openid);
+  if (!openid) {
+    const error = new Error('WECHAT_OPENID_NOT_FOUND');
+    error.code = 'WECHAT_OPENID_NOT_FOUND';
+    error.status = 502;
+    throw error;
+  }
+  return openid;
 }
 
 function resolveAuthUser(req, state) {
@@ -1948,6 +1977,18 @@ export function createPolicyOcrApp(options = {}) {
     processMembershipPaymentSuccess,
     updateMembershipConfig,
     createMockJsapiPayParams,
+    consumeWechatOAuthState,
+    createWechatOAuthState,
+    findUserWechatOpenid,
+    upsertUserWechatIdentity,
+    resolveWechatPayConfig: options.resolveWechatPayConfig || (() => resolveWechatPayConfig({
+      ...process.env,
+      WECHAT_PAY_MODE: process.env.WECHAT_PAY_MODE || options.wechatPayMode || 'live',
+    })),
+    createWechatPayJsapiPrepay: options.createWechatPayJsapiPrepay || createWechatPayJsapiPrepay,
+    decryptWechatPayResource,
+    verifyWechatPaySignature,
+    fetchWechatOAuthOpenid: options.fetchWechatOAuthOpenid || fetchWechatOAuthOpenid,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
     wechatPayMode: options.wechatPayMode || 'live',
     buildResponsibilityCompanySuggestions,
@@ -1978,7 +2019,12 @@ export function createPolicyOcrApp(options = {}) {
 
   const app = express();
   app.locals.state = state;
-  app.use(express.json({ limit: JSON_BODY_LIMIT }));
+  app.use(express.json({
+    limit: JSON_BODY_LIMIT,
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  }));
 
   app.get('/api/health', (_req, res) => {
     res.json({
