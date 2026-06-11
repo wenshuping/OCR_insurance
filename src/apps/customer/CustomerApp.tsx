@@ -111,6 +111,15 @@ import { ResponsibilityAssistant } from '../../features/responsibility-assistant
 import { CustomerAccountSheet } from '../../features/customer-auth/CustomerAccountSheet';
 import { PhoneVerificationDialog } from '../../features/customer-auth/PhoneVerificationDialog';
 import {
+  confirmMockMembershipOrder,
+  createMembershipOrder,
+  getMembershipStatus,
+  startMembershipWechatOAuth,
+  type MembershipStatus,
+  type WechatPayParams,
+} from '../../api/contracts/membership';
+import { MembershipPurchaseDialog } from '../../features/customer-membership/MembershipPurchaseDialog';
+import {
   CustomerBottomTabs,
   type CustomerTab,
 } from '../../features/customer-navigation/CustomerBottomTabs';
@@ -466,6 +475,10 @@ export function CustomerApp() {
   const [authMessage, setAuthMessage] = useState('第二次录入需要先完成手机验证码');
   const [authLoading, setAuthLoading] = useState(false);
   const [authDevCode, setAuthDevCode] = useState('');
+  const [membershipStatus, setMembershipStatus] = useState<MembershipStatus | null>(null);
+  const [showMembershipDialog, setShowMembershipDialog] = useState(false);
+  const [membershipLoading, setMembershipLoading] = useState(false);
+  const [membershipMessage, setMembershipMessage] = useState('');
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantCompany, setAssistantCompany] = useState('');
   const [assistantName, setAssistantName] = useState('');
@@ -613,6 +626,64 @@ export function CustomerApp() {
     });
   }
 
+  async function refreshMembershipStatus(nextToken = token) {
+    if (!nextToken) {
+      setMembershipStatus(null);
+      return null;
+    }
+    const payload = await getMembershipStatus(nextToken);
+    setMembershipStatus(payload);
+    return payload;
+  }
+
+  function invokeWechatPay(payParams: WechatPayParams) {
+    return new Promise<'ok' | 'cancel' | 'fail'>((resolve) => {
+      const bridge = (window as Window & {
+        WeixinJSBridge?: {
+          invoke: (name: string, params: WechatPayParams, cb: (res: { err_msg?: string }) => void) => void;
+        };
+      }).WeixinJSBridge;
+      if (!bridge) {
+        resolve('fail');
+        return;
+      }
+      bridge.invoke('getBrandWCPayRequest', payParams, (res) => {
+        const bridgeMessage = String(res?.err_msg || '');
+        if (bridgeMessage.includes(':ok')) resolve('ok');
+        else if (bridgeMessage.includes(':cancel')) resolve('cancel');
+        else resolve('fail');
+      });
+    });
+  }
+
+  async function handleMembershipPurchase() {
+    if (!token || membershipLoading) return;
+    setMembershipLoading(true);
+    setMembershipMessage('正在创建会员订单');
+    try {
+      const created = await createMembershipOrder(token);
+      if (created.payParams.appId === 'mock-wechat-appid') {
+        await confirmMockMembershipOrder(token, created.order.id);
+        await refreshMembershipStatus(token);
+        setMembershipMessage('会员已开通');
+        return;
+      }
+      setMembershipMessage('请在微信中确认支付');
+      const result = await invokeWechatPay(created.payParams);
+      setMembershipMessage(result === 'ok' ? '支付确认中，请稍候刷新' : result === 'cancel' ? '已取消支付' : '支付未完成，请重试');
+      await refreshMembershipStatus(token);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'WECHAT_OPENID_REQUIRED') {
+        const started = await startMembershipWechatOAuth(token, `${window.location.pathname}${window.location.hash}`);
+        window.location.href = started.authorizeUrl;
+        return;
+      }
+      setMembershipMessage(error instanceof Error ? error.message : '会员购买失败');
+    } finally {
+      setMembershipLoading(false);
+    }
+  }
+
   function clearCustomerSession(nextMessage = '已退出登录，当前为游客模式') {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_MOBILE_KEY);
@@ -623,6 +694,9 @@ export function CustomerApp() {
     setAuthDevCode('');
     setShowAuthDialog(false);
     setShowAccountSheet(false);
+    setMembershipStatus(null);
+    setShowMembershipDialog(false);
+    setMembershipMessage('');
     setSelectedPolicy(null);
     setPolicies([]);
     setFamilyProfiles([]);
@@ -642,7 +716,7 @@ export function CustomerApp() {
   }
 
   useEffect(() => {
-    Promise.all([refreshPolicies(), refreshFamilyProfiles()]).catch((error) => {
+    Promise.all([refreshPolicies(), refreshFamilyProfiles(), refreshMembershipStatus()]).catch((error) => {
       if (error instanceof ApiError && error.status === 401) {
         clearCustomerSession('登录已失效，请重新验证手机号');
       }
@@ -1514,6 +1588,7 @@ export function CustomerApp() {
       setToken(payload.token);
       setMobile(payload.user.mobile);
       setPolicies([...payload.policies].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))));
+      void refreshMembershipStatus(payload.token).catch(() => undefined);
       setAuthCode('');
       setAuthDevCode('');
       setShowAuthDialog(false);
@@ -1980,6 +2055,12 @@ export function CustomerApp() {
         errorMessage: getErrorMessage(error),
       });
       if (handleRegistrationRequiredError(error)) return;
+      if (error instanceof ApiError && error.code === 'MEMBERSHIP_REQUIRED') {
+        setShowMembershipDialog(true);
+        void refreshMembershipStatus().catch(() => undefined);
+        setMessage(error.message || '免费额度已用完，请开通会员继续录入');
+        return;
+      }
       setMessage(error instanceof Error ? error.message : '识别失败，请稍后重试');
     } finally {
       setLoading(false);
@@ -2310,9 +2391,15 @@ export function CustomerApp() {
     <CustomerAccountSheet
       insuredCount={policyGroups.length}
       isLoggedIn={isLoggedIn}
+      membershipStatus={membershipStatus}
       mobile={mobile}
       policyCount={policies.length}
       onClose={() => setShowAccountSheet(false)}
+      onOpenMembership={() => {
+        setShowAccountSheet(false);
+        setShowMembershipDialog(true);
+        if (token) void refreshMembershipStatus(token).catch(() => undefined);
+      }}
       onOpenPolicies={() => {
         setShowAccountSheet(false);
         setActiveTab('families');
@@ -2322,6 +2409,21 @@ export function CustomerApp() {
         openPhoneVerificationDialog('验证手机号后可查看账号名下所有保单');
       }}
       onLogout={() => void handleCustomerLogout()}
+    />
+  ) : null;
+  const membershipDialog = showMembershipDialog ? (
+    <MembershipPurchaseDialog
+      loading={membershipLoading}
+      message={membershipMessage}
+      membershipStatus={membershipStatus}
+      onClose={() => setShowMembershipDialog(false)}
+      onPurchase={handleMembershipPurchase}
+      onRefresh={() => {
+        setMembershipMessage('正在刷新会员状态');
+        void refreshMembershipStatus()
+          .then(() => setMembershipMessage('会员状态已刷新'))
+          .catch((error) => setMembershipMessage(error instanceof Error ? error.message : '刷新失败'));
+      }}
     />
   ) : null;
   function renderResponsibilityAssistant(anchorClassName?: string) {
@@ -2419,6 +2521,7 @@ export function CustomerApp() {
         {renderResponsibilityAssistant('bottom-24')}
         {authDialog}
         {accountSheet}
+        {membershipDialog}
         {cashValueDialog}
         {familyCreateDialog}
       </>
@@ -2477,6 +2580,7 @@ export function CustomerApp() {
         {renderResponsibilityAssistant('bottom-24')}
         {authDialog}
         {accountSheet}
+        {membershipDialog}
         {cashValueDialog}
         {familyCreateDialog}
       </>
@@ -2626,6 +2730,7 @@ export function CustomerApp() {
         ) : null}
         {authDialog}
         {accountSheet}
+        {membershipDialog}
         {cashValueDialog}
         {familyCreateDialog}
       </div>
@@ -2654,6 +2759,7 @@ export function CustomerApp() {
         <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />
         {authDialog}
         {accountSheet}
+        {membershipDialog}
         {cashValueDialog}
         {familyCreateDialog}
       </>
