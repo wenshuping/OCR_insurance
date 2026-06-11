@@ -19,13 +19,24 @@ test('customer account sheet displays membership status and purchase action', ()
   assert.match(source, /会员有效至/);
   assert.match(source, /已保存/);
   assert.match(source, /onOpenMembership/);
+  assert.match(source, /读取会员状态/);
 });
 
 test('customer app handles membership required errors and invokes WeixinJSBridge only through purchase flow', () => {
   const source = read('src/apps/customer/CustomerApp.tsx');
   assert.match(source, /MEMBERSHIP_REQUIRED/);
   assert.match(source, /setShowMembershipDialog\(true\)/);
+  assert.match(source, /membershipStatusRequestRef/);
   assert.match(source, /createMembershipOrder/);
   assert.match(source, /getBrandWCPayRequest/);
   assert.match(source, /confirmMockMembershipOrder/);
+  assert.match(source, /showFamilyReport[\s\S]*membershipDialog/);
+  assert.match(source, /cashflowMember[\s\S]*membershipDialog/);
+});
+
+test('membership purchase dialog disables unavailable purchase states', () => {
+  const source = read('src/features/customer-membership/MembershipPurchaseDialog.tsx');
+  assert.match(source, /purchase\.enabled/);
+  assert.match(source, /会员购买暂未开放/);
+  assert.match(source, /purchaseDisabled/);
 });

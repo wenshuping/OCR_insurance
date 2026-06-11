@@ -21,6 +21,7 @@ export function CustomerAccountSheet(props: {
   policyCount: number;
 }) {
   const { insuredCount, isLoggedIn, membershipStatus, mobile, onClose, onLogin, onLogout, onOpenMembership, onOpenPolicies, policyCount } = props;
+  const canOpenMembership = Boolean(membershipStatus?.purchase.enabled);
   return (
     <div className="fixed inset-0 z-[75] flex items-end bg-slate-950/35 px-4 pb-4 sm:items-center sm:justify-center">
       <section className="w-full rounded-[24px] bg-white p-5 shadow-2xl sm:max-w-md">
@@ -58,14 +59,17 @@ export function CustomerAccountSheet(props: {
             <p className="mt-2 text-sm font-black text-slate-950">
               {membershipStatus?.membership.active && membershipStatus.membership.expiresAt
                 ? `会员有效至 ${membershipStatus.membership.expiresAt.slice(0, 10)}`
-                : `已保存 ${membershipStatus?.quota.savedPolicyCount ?? policyCount}/${membershipStatus?.quota.freeQuota ?? 0} 张免费保单`}
+                : membershipStatus
+                  ? `已保存 ${membershipStatus.quota.savedPolicyCount}/${membershipStatus.quota.freeQuota} 张免费保单`
+                  : `正在读取会员状态，已保存 ${policyCount} 张保单`}
             </p>
             <button
-              className="mt-3 flex h-10 w-full items-center justify-center rounded-xl bg-amber-500 text-sm font-black text-white shadow-lg shadow-amber-500/20 transition-colors hover:bg-amber-600"
+              className="mt-3 flex h-10 w-full items-center justify-center rounded-xl bg-amber-500 text-sm font-black text-white shadow-lg shadow-amber-500/20 transition-colors hover:bg-amber-600 disabled:bg-slate-300 disabled:shadow-none"
               type="button"
               onClick={onOpenMembership}
+              disabled={!canOpenMembership}
             >
-              开通年费会员
+              {membershipStatus ? '开通年费会员' : '读取会员状态'}
             </button>
           </div>
         ) : null}

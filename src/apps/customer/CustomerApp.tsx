@@ -445,6 +445,7 @@ function reportClientPerformance(event: string, payload: Record<string, unknown>
 export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
+  const membershipStatusRequestRef = useRef(0);
   const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
@@ -627,12 +628,16 @@ export function CustomerApp() {
   }
 
   async function refreshMembershipStatus(nextToken = token) {
+    const requestId = membershipStatusRequestRef.current + 1;
+    membershipStatusRequestRef.current = requestId;
     if (!nextToken) {
       setMembershipStatus(null);
       return null;
     }
     const payload = await getMembershipStatus(nextToken);
-    setMembershipStatus(payload);
+    if (membershipStatusRequestRef.current === requestId && localStorage.getItem(TOKEN_KEY) === nextToken) {
+      setMembershipStatus(payload);
+    }
     return payload;
   }
 
@@ -694,6 +699,7 @@ export function CustomerApp() {
     setAuthDevCode('');
     setShowAuthDialog(false);
     setShowAccountSheet(false);
+    membershipStatusRequestRef.current += 1;
     setMembershipStatus(null);
     setShowMembershipDialog(false);
     setMembershipMessage('');
@@ -2501,6 +2507,11 @@ export function CustomerApp() {
           <Copy size={18} />
           <span>分享</span>
         </button>
+        {authDialog}
+        {accountSheet}
+        {membershipDialog}
+        {cashValueDialog}
+        {familyCreateDialog}
       </>
     );
   }
@@ -2589,16 +2600,22 @@ export function CustomerApp() {
 
   if (cashflowMember) {
     return (
-      <CashflowDetailPage
-        member={cashflowMember}
-        policies={policies}
-        cashValueDialog={cashValueDialog}
-        onBack={() => setCashflowMember(null)}
-        onUploadCashValue={(policyId) => {
-          setCashValuePolicyId(policyId);
-          setCashValueDialogOpen(true);
-        }}
-      />
+      <>
+        <CashflowDetailPage
+          member={cashflowMember}
+          policies={policies}
+          cashValueDialog={cashValueDialog}
+          onBack={() => setCashflowMember(null)}
+          onUploadCashValue={(policyId) => {
+            setCashValuePolicyId(policyId);
+            setCashValueDialogOpen(true);
+          }}
+        />
+        {authDialog}
+        {accountSheet}
+        {membershipDialog}
+        {familyCreateDialog}
+      </>
     );
   }
 

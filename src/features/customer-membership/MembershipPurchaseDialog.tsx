@@ -18,6 +18,8 @@ export function MembershipPurchaseDialog(props: {
   const price = membershipStatus?.purchase.annualPriceCents ?? 30000;
   const saved = membershipStatus?.quota.savedPolicyCount ?? 0;
   const quota = membershipStatus?.quota.freeQuota ?? 0;
+  const purchaseEnabled = Boolean(membershipStatus?.purchase.enabled);
+  const purchaseDisabled = loading || !purchaseEnabled;
   return (
     <div className="fixed inset-0 z-[90] flex items-end bg-slate-950/40 px-4 pb-4 sm:items-center sm:justify-center">
       <section className="w-full rounded-[24px] bg-white p-5 shadow-2xl sm:max-w-md">
@@ -48,14 +50,15 @@ export function MembershipPurchaseDialog(props: {
         <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <p className="text-sm font-bold text-slate-600">已保存 {saved}/{quota} 张免费保单</p>
         </div>
+        {!purchaseEnabled ? <p className="mt-3 text-sm font-bold text-amber-700">{membershipStatus ? '会员购买暂未开放' : '正在读取会员状态'}</p> : null}
         {message ? <p className="mt-3 text-sm font-semibold text-slate-600">{message}</p> : null}
         <button
           className="mt-4 flex h-12 w-full items-center justify-center rounded-xl bg-amber-500 text-sm font-black text-white shadow-lg shadow-amber-500/25 transition-colors hover:bg-amber-600 disabled:opacity-60"
           type="button"
           onClick={onPurchase}
-          disabled={loading}
+          disabled={purchaseDisabled}
         >
-          {loading ? '处理中...' : `微信支付 ${priceText(price)}`}
+          {loading ? '处理中...' : purchaseEnabled ? `微信支付 ${priceText(price)}` : '会员购买暂未开放'}
         </button>
         <button
           className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-sm font-black text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
