@@ -166,6 +166,28 @@ function normalizeRows(sheet) {
   return sheet.filter((row) => row && typeof row === 'object' && !Array.isArray(row));
 }
 
+function splitTextLines(raw) {
+  return String(raw || '')
+    .replace(/\r/gu, '\n')
+    .split('\n')
+    .map((line) => trim(line))
+    .filter(Boolean);
+}
+
+function mergeEvidencePayloads(payloads = []) {
+  const merged = {};
+  for (const payload of payloads) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    for (const [rawKey, value] of Object.entries(payload)) {
+      const key = trim(rawKey);
+      if (!key || value == null || merged[key]) continue;
+      if (typeof value === 'string' && !trim(value)) continue;
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 function policyFieldForLabel(label) {
   const text = trim(label);
   if (!text) return '';
@@ -274,14 +296,12 @@ function collectPlans(rows = [], source, env) {
     .filter(Boolean);
 }
 
-export function mapPolicyWorkbookToScan(workbook = {}, { source = '', env = process.env } = {}) {
-  const sheets = workbook?.sheets || {};
-  const parserSource = source || workbook?.source || 'csv';
-  const fieldRows = normalizeRows(sheets.fields || sheets.Fields || sheets['字段'] || sheets['字段映射']);
-  const planRows = normalizeRows(sheets.plans || sheets.Plans || sheets['险种'] || sheets['计划']);
-  const ocrRows = normalizeRows(sheets.ocrLines || sheets.ocr || sheets['OCR原文']);
-  const warningRows = normalizeRows(sheets.warnings || sheets['警告']);
-
+export function mapPolicyRowsToScan({ fields, plans: sourcePlans, ocrLines, warnings } = {}, { source = 'csv', env = process.env } = {}) {
+  const parserSource = source || 'csv';
+  const fieldRows = normalizeRows(fields);
+  const planRows = normalizeRows(sourcePlans);
+  const ocrRows = normalizeRows(ocrLines);
+  const warningRows = normalizeRows(warnings);
   const mapped = collectFieldRows(fieldRows, parserSource, env);
   const plans = collectPlans(planRows, parserSource, env);
   if (plans.length) mapped.data.plans = plans;
@@ -305,4 +325,72 @@ export function mapPolicyWorkbookToScan(workbook = {}, { source = '', env = proc
     },
     parser: POLICY_CSV_PARSER_ID,
   };
+}
+
+export function readPolicyScanRows(scan = {}, {
+  source = 'ocr',
+  env = process.env,
+  fields = POLICY_CSV_FIELD_KEYS,
+  fieldEvidence = null,
+  splitOcrText = splitTextLines,
+} = {}) {
+  const data = scan?.data && typeof scan.data === 'object' ? scan.data : {};
+  const fieldConfidence = scan?.fieldConfidence || scan?.data?.fieldConfidence || data.fieldConfidence || {};
+  const mergedFieldEvidence = fieldEvidence || mergeEvidencePayloads([scan?.fieldEvidence, data.fieldEvidence]);
+  const fieldRows = fields.map((field) => ({
+    field,
+    label: POLICY_CSV_FIELD_LABELS[field] || field,
+    value: data[field] || '',
+    confidence: fieldConfidence[field] || '',
+    evidence: mergedFieldEvidence[field] || null,
+    source,
+  }));
+  const planRows = (Array.isArray(data.plans) ? data.plans : []).map((plan, index) => ({
+    index: index + 1,
+    role: plan?.role || '',
+    company: plan?.company || data.company || '',
+    name: plan?.name || '',
+    productType: plan?.productType || '',
+    amount: plan?.amount || '',
+    coveragePeriod: plan?.coveragePeriod || '',
+    paymentMode: plan?.paymentMode || '',
+    paymentPeriod: plan?.paymentPeriod || '',
+    premium: plan?.premium || '',
+    premiumText: plan?.premiumText || '',
+    source,
+    confidence: plan?.confidence || '',
+    evidence: plan?.evidence || null,
+  }));
+  const ocrRows = splitOcrText(scan?.ocrText || '').map((text, index) => ({
+    index: index + 1,
+    text,
+    source,
+  }));
+  const warningRows = (Array.isArray(scan?.ocrWarnings) ? scan.ocrWarnings : [])
+    .map((warning, index) => ({
+      index: index + 1,
+      warning: trim(warning),
+      source,
+    }))
+    .filter((row) => row.warning);
+
+  return mapPolicyRowsToScan({
+    fields: fieldRows,
+    plans: planRows,
+    ocrLines: ocrRows,
+    warnings: warningRows,
+  }, { source, env });
+}
+
+export function mapPolicyWorkbookToScan(workbook = {}, { source = '', env = process.env } = {}) {
+  const sheets = workbook?.sheets || {};
+  return mapPolicyRowsToScan({
+    fields: sheets.fields || sheets.Fields || sheets['字段'] || sheets['字段映射'],
+    plans: sheets.plans || sheets.Plans || sheets['险种'] || sheets['计划'],
+    ocrLines: sheets.ocrLines || sheets.ocr || sheets['OCR原文'],
+    warnings: sheets.warnings || sheets['警告'],
+  }, {
+    source: source || workbook?.source || 'csv',
+    env,
+  });
 }

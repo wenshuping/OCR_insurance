@@ -62,6 +62,7 @@ function createProfileConfigs() {
         SMS_MODE: 'mock',
         SMS_MOCK_CODE: '123456',
         ...devRuntimeEnv,
+        POLICY_OCR_POSTPROCESSOR: 'none',
       },
     }),
   };

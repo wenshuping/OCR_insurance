@@ -11,9 +11,8 @@ import { parseCashValueTable, parseCashValueText } from './cash-value-parser.mjs
 import { getPolicyFieldAliases } from './insurance-field-schema.mjs';
 import { findBestFuzzyMatch, matchesFuzzyPhrase } from './fuzzy-matching.mjs';
 import {
-  POLICY_CSV_FIELD_LABELS,
   getPolicyCsvRecognitionThreshold,
-  mapPolicyWorkbookToScan,
+  readPolicyScanRows,
 } from './analyzer/csv-parser.mjs';
 import { extractPolicyPlansFromLines, matchPolicyFieldsFromLines } from './insurance-field-matcher.mjs';
 import {
@@ -2961,96 +2960,42 @@ function policyScalarFieldFillRatio(data = {}, fields = OCR_FIRST_SCALAR_FIELDS)
   return filled / total;
 }
 
-function buildPolicyExcelWorkbookRows(scan = {}, source = 'ocr') {
+function readPolicyScanWithCsvParser(scan = {}, source = 'ocr', env = process.env) {
   const data = normalizeExtractedPolicyFields(scan?.data || {});
   const fieldConfidence = scan?.fieldConfidence || scan?.data?.fieldConfidence || data.fieldConfidence || {};
   const fieldEvidence = mergeFieldEvidencePayloads([scan?.fieldEvidence, data.fieldEvidence]);
-  const fieldRows = OCR_FIRST_SCALAR_FIELDS.map((field) => ({
-    field,
-    label: POLICY_CSV_FIELD_LABELS[field] || field,
-    value: data[field] || '',
-    confidence: fieldConfidence[field] || '',
-    evidence: fieldEvidence[field] || null,
+  const mapped = readPolicyScanRows({
+    ...scan,
+    data,
+    fieldConfidence,
+    fieldEvidence,
+  }, {
     source,
-  }));
-  const planRows = (Array.isArray(data.plans) ? data.plans : []).map((plan, index) => ({
-    index: index + 1,
-    role: plan?.role || '',
-    company: plan?.company || data.company || '',
-    name: plan?.name || '',
-    productType: plan?.productType || '',
-    amount: plan?.amount || '',
-    coveragePeriod: plan?.coveragePeriod || '',
-    paymentMode: plan?.paymentMode || '',
-    paymentPeriod: plan?.paymentPeriod || '',
-    premium: plan?.premium || '',
-    premiumText: plan?.premiumText || '',
-    source,
-    confidence: plan?.confidence || '',
-    evidence: plan?.evidence || null,
-  }));
-  const ocrRows = splitRecognizedLines(scan?.ocrText || '').map((text, index) => ({
-    index: index + 1,
-    text,
-    source,
-  }));
-  const warningRows = (Array.isArray(scan?.ocrWarnings) ? scan.ocrWarnings : []).map((warning, index) => ({
-    index: index + 1,
-    warning: String(warning || '').trim(),
-    source,
-  })).filter((row) => row.warning);
-  return {
-    source,
-    sheets: {
-      fields: fieldRows,
-      plans: planRows,
-      ocrLines: ocrRows,
-      warnings: warningRows,
-    },
-  };
-}
-
-function readPolicyExcelWorkbookRows(workbook = {}, env = process.env) {
-  const mapped = mapPolicyWorkbookToScan(workbook, { source: workbook?.source || 'csv', env });
-  const data = normalizeExtractedPolicyFields(mapped.data || {});
+    env,
+    fields: OCR_FIRST_SCALAR_FIELDS,
+    fieldEvidence,
+    splitOcrText: splitRecognizedLines,
+  });
+  const parsedData = normalizeExtractedPolicyFields(mapped.data || {});
   const fieldAttribution = {};
   for (const [field, attribution] of Object.entries(mapped.fieldAttribution || {})) {
-    if (hasPolicyFieldValue(data[field])) fieldAttribution[field] = attribution;
+    if (hasPolicyFieldValue(parsedData[field])) fieldAttribution[field] = attribution;
   }
-  if (Object.keys(mapped.fieldEvidence || {}).length) data.fieldEvidence = mapped.fieldEvidence;
-  if (Object.keys(fieldAttribution).length) data.fieldAttribution = fieldAttribution;
+  if (Object.keys(mapped.fieldEvidence || {}).length) parsedData.fieldEvidence = mapped.fieldEvidence;
+  if (Object.keys(fieldAttribution).length) parsedData.fieldAttribution = fieldAttribution;
   return {
-    data,
-    ocrText: normalizeOcrText(mapped.ocrText || ''),
-    ocrWarnings: mapped.ocrWarnings || [],
+    data: parsedData,
+    ocrText: normalizeOcrText(mapped.ocrText || scan?.ocrText || ''),
+    recognitionRate: mapped.quality?.recognitionRate ?? policyScalarFieldFillRatio(parsedData),
     fieldConfidence: mapped.fieldConfidence || {},
     fieldEvidence: mapped.fieldEvidence || {},
     fieldAttribution,
-    recognitionRate: mapped.quality?.recognitionRate ?? policyScalarFieldFillRatio(data),
+    ocrWarnings: [...new Set([...(mapped.ocrWarnings || []), ...(Array.isArray(scan?.ocrWarnings) ? scan.ocrWarnings : [])])],
     parser: mapped.parser,
   };
 }
 
-function readPolicyScanWithExcelSkill(scan = {}, source = 'ocr', env = process.env) {
-  const workbook = buildPolicyExcelWorkbookRows(scan, source);
-  const read = readPolicyExcelWorkbookRows(workbook, env);
-  const data = read.data;
-  const ocrText = normalizeOcrText(read.ocrText || scan?.ocrText || '');
-  const recognitionRate = read.recognitionRate ?? policyScalarFieldFillRatio(data);
-  return {
-    data,
-    ocrText,
-    recognitionRate,
-    fieldConfidence: read.fieldConfidence || {},
-    fieldEvidence: read.fieldEvidence || {},
-    fieldAttribution: read.fieldAttribution || {},
-    ocrWarnings: [...new Set([...(read.ocrWarnings || []), ...(Array.isArray(scan?.ocrWarnings) ? scan.ocrWarnings : [])])],
-    workbook,
-    parser: read.parser,
-  };
-}
-
-function shouldSkipVisionAfterExcelSkill(result = {}, env = process.env) {
+function shouldSkipVisionAfterCsvParser(result = {}, env = process.env) {
   return Number(result?.recognitionRate || 0) >= getPolicyCsvRecognitionThreshold(env);
 }
 
@@ -3121,24 +3066,24 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
 } = {}) {
   const shouldRunPaddleFirst = Boolean(uploadItem && shouldFallbackToPaddleForImages());
   let paddleScan = null;
-  let paddleExcelRead = null;
+  let paddleCsvRead = null;
   let paddleError = null;
   if (shouldRunPaddleFirst) {
     try {
       paddleScan = await paddleLayoutScanner(uploadItem);
-      paddleExcelRead = readPolicyScanWithExcelSkill(paddleScan, 'ocr');
+      paddleCsvRead = readPolicyScanWithCsvParser(paddleScan, 'ocr');
     } catch (error) {
       paddleError = error;
     }
   }
 
-  if (paddleExcelRead && shouldSkipVisionAfterExcelSkill(paddleExcelRead)) {
+  if (paddleCsvRead && shouldSkipVisionAfterCsvParser(paddleCsvRead)) {
     return {
-      data: paddleExcelRead.data,
-      bestOcrText: normalizeOcrText(paddleExcelRead.ocrText || paddleScan.ocrText || ''),
-      scanFieldConfidence: paddleExcelRead.fieldConfidence || {},
-      scanFieldEvidence: mergeFieldEvidencePayloads([paddleExcelRead.fieldEvidence, paddleScan.fieldEvidence, paddleScan.data?.fieldEvidence]),
-      scanOcrWarnings: paddleExcelRead.ocrWarnings || [],
+      data: paddleCsvRead.data,
+      bestOcrText: normalizeOcrText(paddleCsvRead.ocrText || paddleScan.ocrText || ''),
+      scanFieldConfidence: paddleCsvRead.fieldConfidence || {},
+      scanFieldEvidence: mergeFieldEvidencePayloads([paddleCsvRead.fieldEvidence, paddleScan.fieldEvidence, paddleScan.data?.fieldEvidence]),
+      scanOcrWarnings: paddleCsvRead.ocrWarnings || [],
       visionDebug: null,
     };
   }
@@ -3162,7 +3107,7 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
       || ''
     );
     const visionScan = extractedVisionData
-      ? readPolicyScanWithExcelSkill({
+      ? readPolicyScanWithCsvParser({
           data: extractedVisionData,
           ocrText: visionOcrText,
         }, 'vision')
@@ -3181,21 +3126,21 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
   let scanFieldConfidence = {};
   let scanFieldEvidence = {};
   const scanOcrWarnings = [];
-  if (paddleExcelRead) {
-    const missingAfterOcr = missingOllamaVisionCoreFieldLabels(paddleExcelRead.data || {});
+  if (paddleCsvRead) {
+    const missingAfterOcr = missingOllamaVisionCoreFieldLabels(paddleCsvRead.data || {});
     data = visionData
-      ? mergePolicyDataWithMissingFieldSupplement(paddleExcelRead.data || {}, visionData)
-      : paddleExcelRead.data;
-    bestOcrText = normalizeOcrText(paddleExcelRead.ocrText || bestOcrText || '');
-    scanFieldConfidence = paddleExcelRead.fieldConfidence || {};
+      ? mergePolicyDataWithMissingFieldSupplement(paddleCsvRead.data || {}, visionData)
+      : paddleCsvRead.data;
+    bestOcrText = normalizeOcrText(paddleCsvRead.ocrText || bestOcrText || '');
+    scanFieldConfidence = paddleCsvRead.fieldConfidence || {};
     scanFieldEvidence = mergeFieldEvidencePayloads([
-      paddleExcelRead.fieldEvidence,
+      paddleCsvRead.fieldEvidence,
       paddleScan?.fieldEvidence,
       paddleScan?.data?.fieldEvidence,
       visionData?.fieldEvidence,
       data?.fieldEvidence,
     ]);
-    scanOcrWarnings.push(...(Array.isArray(paddleExcelRead.ocrWarnings) ? paddleExcelRead.ocrWarnings : []));
+    scanOcrWarnings.push(...(Array.isArray(paddleCsvRead.ocrWarnings) ? paddleCsvRead.ocrWarnings : []));
     if (visionData && missingAfterOcr.length) {
       scanOcrWarnings.push(`${visionWarningLabel}仅补充 OCR 缺失字段：${missingAfterOcr.join('、')}`);
     } else if (!visionData) {
@@ -3230,20 +3175,20 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
   if (!paddleError) {
     try {
       paddleScan = await paddleLayoutScanner(uploadItem);
-      paddleExcelRead = readPolicyScanWithExcelSkill(paddleScan, 'ocr');
+      paddleCsvRead = readPolicyScanWithCsvParser(paddleScan, 'ocr');
     } catch (error) {
       paddleError = error;
     }
   }
 
-  if (paddleExcelRead) {
+  if (paddleCsvRead) {
     data = visionData
-      ? mergePolicyDataWithMissingFieldSupplement(paddleExcelRead.data || {}, data || {})
-      : mergePolicyDataCandidates([data || {}, paddleExcelRead.data || {}]);
-    bestOcrText = normalizeOcrText(paddleExcelRead.ocrText || bestOcrText || '');
-    scanFieldConfidence = paddleExcelRead.fieldConfidence || {};
-    scanFieldEvidence = mergeFieldEvidencePayloads([paddleExcelRead.fieldEvidence, paddleScan?.fieldEvidence, paddleScan?.data?.fieldEvidence, data?.fieldEvidence]);
-    scanOcrWarnings.push(...(Array.isArray(paddleExcelRead.ocrWarnings) ? paddleExcelRead.ocrWarnings : []));
+      ? mergePolicyDataWithMissingFieldSupplement(paddleCsvRead.data || {}, data || {})
+      : mergePolicyDataCandidates([data || {}, paddleCsvRead.data || {}]);
+    bestOcrText = normalizeOcrText(paddleCsvRead.ocrText || bestOcrText || '');
+    scanFieldConfidence = paddleCsvRead.fieldConfidence || {};
+    scanFieldEvidence = mergeFieldEvidencePayloads([paddleCsvRead.fieldEvidence, paddleScan?.fieldEvidence, paddleScan?.data?.fieldEvidence, data?.fieldEvidence]);
+    scanOcrWarnings.push(...(Array.isArray(paddleCsvRead.ocrWarnings) ? paddleCsvRead.ocrWarnings : []));
     if (visionData && missingAfterVision.length) {
       scanOcrWarnings.push(buildOllamaVisionPaddleRepairWarning(
         missingAfterVision,
@@ -3268,6 +3213,39 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
   if (paddleError) throw paddleError;
   if (visionError) throw visionError;
   throw new Error('POLICY_OCR_EMPTY');
+}
+
+async function scanPolicyWithRemoteGpuVision(uploadItem, { ocrContext = {} } = {}) {
+  const extractedVisionResult = await extractPolicyFieldsFromImageWithRemoteVision(uploadItem, { ocrContext });
+  const extractedVisionData = extractedVisionResult?.data && typeof extractedVisionResult.data === 'object'
+    ? extractedVisionResult.data
+    : extractedVisionResult;
+  const visionOcrText = normalizeOcrText(
+    extractedVisionResult?.ocrText
+    || extractedVisionResult?.text
+    || extractedVisionData?.ocrText
+    || extractedVisionData?.text
+    || ''
+  );
+  const visionScan = extractedVisionData
+    ? readPolicyScanWithCsvParser({
+        data: extractedVisionData,
+        ocrText: visionOcrText,
+      }, 'vision')
+    : null;
+  const data = visionScan?.data || null;
+  if (!hasPolicyDataValue(data)) throw new Error('POLICY_OCR_EMPTY');
+  return {
+    data,
+    bestOcrText: normalizeOcrText(visionScan?.ocrText || visionOcrText || ''),
+    scanFieldConfidence: visionScan?.fieldConfidence || {},
+    scanFieldEvidence: visionScan?.fieldEvidence || {},
+    scanFieldAttribution: visionScan?.fieldAttribution || data?.fieldAttribution || {},
+    scanOcrWarnings: visionScan?.ocrWarnings || [],
+    visionDebug: extractedVisionResult?.visionDebug && typeof extractedVisionResult.visionDebug === 'object'
+      ? { ...extractedVisionResult.visionDebug, dataBeforeOcrMerge: data }
+      : null,
+  };
 }
 
 export function selectBestPolicyScanCandidate(texts) {
@@ -6241,11 +6219,8 @@ export async function scanInsurancePolicyLocal({
       data = mlxResult?.data || null;
       bestOcrText = normalizeOcrText(mlxResult?.ocrText || '');
     } else if (provider === OCR_PROVIDER_REMOTE_GPU_VISION) {
-      const scan = await scanPolicyWithOllamaVisionPipeline(uploadItem, {
-        paddleLayoutScanner,
+      const scan = await scanPolicyWithRemoteGpuVision(uploadItem, {
         ocrContext,
-        visionWarningLabel: '4080 视觉',
-        ollamaVisionExtractor: (item, context) => extractPolicyFieldsFromImageWithRemoteVision(item, { ocrContext: context }),
       });
       data = scan.data;
       bestOcrText = scan.bestOcrText;

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   mapPolicyWorkbookToScan,
   parseCsvText,
+  readPolicyScanRows,
 } from '../ocr-service/analyzer/csv-parser.mjs';
 
 test('policy csv parser maps long CSV rows into policy fields with attribution', () => {
@@ -76,3 +77,34 @@ test('policy csv parser leaves uncertain fields empty', () => {
   assert.equal(mapped.fieldAttribution.company.source, 'vision');
 });
 
+test('policy csv parser reads scan rows without building a workbook', () => {
+  const mapped = readPolicyScanRows({
+    ocrText: '新华保险\n荣耀鑫享赢家版终身寿险',
+    data: {
+      company: '新华保险',
+      name: '荣耀鑫享赢家版终身寿险',
+      applicant: '温舒萍',
+      firstPremium: '3000',
+      plans: [
+        {
+          role: 'main',
+          name: '荣耀鑫享赢家版终身寿险',
+          amount: '100000',
+          premium: '3000',
+        },
+      ],
+    },
+    fieldConfidence: { applicant: '0.95' },
+    fieldEvidence: { applicant: '投保人 温舒萍' },
+    ocrWarnings: ['请确认保费'],
+  }, { source: 'ocr' });
+
+  assert.equal(mapped.data.company, '新华保险');
+  assert.equal(mapped.data.applicant, '温舒萍');
+  assert.equal(mapped.data.plans[0].name, '荣耀鑫享赢家版终身寿险');
+  assert.equal(mapped.ocrText, '新华保险\n荣耀鑫享赢家版终身寿险');
+  assert.deepEqual(mapped.ocrWarnings, ['请确认保费']);
+  assert.equal(mapped.fieldConfidence.applicant, '0.95');
+  assert.equal(mapped.fieldEvidence.applicant.relation, 'csv-parser');
+  assert.equal(mapped.fieldAttribution.applicant.parser, 'analyzer/csv-parser');
+});

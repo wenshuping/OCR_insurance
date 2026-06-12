@@ -41,7 +41,7 @@ import {
   publicUser,
 } from './policy-ocr.domain.mjs';
 import { scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
-import { buildPolicyOcrVisionContext, enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
+import { buildPolicyOcrVisionContext } from './policy-ocr-mapping.mjs';
 import {
   buildLocalKnowledgeResponsibilityAnalysis,
   queryPolicyAndPlanResponsibilities,
@@ -1363,18 +1363,18 @@ async function recognizePolicyInput({ scanner, body, state, applyManualData = tr
     ...scan,
     ocrText: String(scan?.ocrText || body?.ocrText || '').trim(),
   };
-  const mappedScan = enhancePolicyScanWithOcrMapping({ scan: scanWithText, state });
+  const mappedScan = scanWithText;
   return applyManualData ? mergeManualPolicyDataIntoScan(mappedScan, body) : mappedScan;
 }
 
-function normalizeProvidedScan(body, state) {
+function normalizeProvidedScan(body) {
   const scan = body?.scan && typeof body.scan === 'object' ? body.scan : null;
   if (!scan) return null;
   const scanWithText = {
     ...scan,
     ocrText: String(scan.ocrText || body?.ocrText || '').trim(),
   };
-  const mappedScan = enhancePolicyScanWithOcrMapping({ scan: scanWithText, state });
+  const mappedScan = scanWithText;
   return mergeManualPolicyDataIntoScan({
     ...mappedScan,
     ocrText: String(mappedScan.ocrText || '').trim(),
@@ -1383,7 +1383,7 @@ function normalizeProvidedScan(body, state) {
 
 async function resolvePolicyScanInput({ scanner, body, state }) {
   assertUploadItemSize(body?.uploadItem || null);
-  const providedScan = normalizeProvidedScan(body, state);
+  const providedScan = normalizeProvidedScan(body);
   if (providedScan) return providedScan;
   return recognizePolicyInput({ scanner, body, state });
 }
