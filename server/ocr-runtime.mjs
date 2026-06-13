@@ -165,7 +165,8 @@ export async function scanPolicyWithConfiguredRuntime(input, fetchImpl = fetch, 
     error.status = response.status;
     throw error;
   }
-  return enrichScanWithLocalHints(payload, input);
+  const scanPayload = payload?.scan && typeof payload.scan === 'object' ? payload.scan : payload;
+  return enrichScanWithLocalHints(scanPayload, input);
 }
 
 export async function analyzePolicyLocally({ scan }) {

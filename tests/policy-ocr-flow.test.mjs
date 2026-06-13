@@ -5147,6 +5147,35 @@ test('recognize endpoint scans without saving and default runtime calls local OC
   assert.equal(scan.data.amount, 300000);
 });
 
+test('configured OCR runtime unwraps nested scan payloads from remote service', async () => {
+  const scan = await scanPolicyWithConfiguredRuntime(
+    {
+      uploadItem: { name: 'policy.png', type: 'image/png', size: 100, dataUrl: 'data:image/png;base64,AA==' },
+      ocrText: '',
+    },
+    async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        scan: {
+          ocrText: '新华保险 多倍保障重大疾病保险 基本保险金额30万',
+          data: {
+            company: '新华保险',
+            name: '多倍保障重大疾病保险',
+            amount: '',
+          },
+        },
+      }),
+    }),
+    {},
+  );
+
+  assert.equal(scan.data.company, '新华保险');
+  assert.equal(scan.data.name, '多倍保障重大疾病保险');
+  assert.equal(scan.data.amount, 300000);
+  assert.match(scan.ocrText, /新华保险/u);
+});
+
 test('recognize endpoint maps OCR text through known insurer and product keywords', async () => {
   const app = createPolicyOcrApp({
     state: {
