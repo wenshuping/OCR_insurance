@@ -15,6 +15,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server ./server
 COPY ocr-service ./ocr-service
+COPY src/policy-plan-filter.mjs ./src/policy-plan-filter.mjs
 RUN mkdir -p /data
 EXPOSE 4206 4105
 CMD ["node", "server/index.mjs"]

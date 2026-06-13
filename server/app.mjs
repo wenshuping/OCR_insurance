@@ -41,7 +41,7 @@ import {
   publicUser,
 } from './policy-ocr.domain.mjs';
 import { scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
-import { buildPolicyOcrVisionContext } from './policy-ocr-mapping.mjs';
+import { buildPolicyOcrVisionContext, enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
 import {
   buildLocalKnowledgeResponsibilityAnalysis,
   queryPolicyAndPlanResponsibilities,
@@ -1351,6 +1351,18 @@ function scanInputOcrText(body = {}) {
   return body?.uploadItem ? '' : body?.ocrText || '';
 }
 
+function safelyEnhancePolicyScanWithOcrMapping(scan, state) {
+  try {
+    return enhancePolicyScanWithOcrMapping({ scan, state });
+  } catch (error) {
+    console.error('[policy-ocr-mapping] failed', {
+      code: error?.code || '',
+      message: error?.message || String(error),
+    });
+    return scan;
+  }
+}
+
 async function recognizePolicyInput({ scanner, body, state, applyManualData = true }) {
   assertUploadItemSize(body?.uploadItem || null);
   const ocrContext = buildPolicyOcrVisionContext({ state, body });
@@ -1363,18 +1375,18 @@ async function recognizePolicyInput({ scanner, body, state, applyManualData = tr
     ...scan,
     ocrText: String(scan?.ocrText || body?.ocrText || '').trim(),
   };
-  const mappedScan = scanWithText;
+  const mappedScan = safelyEnhancePolicyScanWithOcrMapping(scanWithText, state);
   return applyManualData ? mergeManualPolicyDataIntoScan(mappedScan, body) : mappedScan;
 }
 
-function normalizeProvidedScan(body) {
+function normalizeProvidedScan(body, state) {
   const scan = body?.scan && typeof body.scan === 'object' ? body.scan : null;
   if (!scan) return null;
   const scanWithText = {
     ...scan,
     ocrText: String(scan.ocrText || body?.ocrText || '').trim(),
   };
-  const mappedScan = scanWithText;
+  const mappedScan = safelyEnhancePolicyScanWithOcrMapping(scanWithText, state);
   return mergeManualPolicyDataIntoScan({
     ...mappedScan,
     ocrText: String(mappedScan.ocrText || '').trim(),
@@ -1383,7 +1395,7 @@ function normalizeProvidedScan(body) {
 
 async function resolvePolicyScanInput({ scanner, body, state }) {
   assertUploadItemSize(body?.uploadItem || null);
-  const providedScan = normalizeProvidedScan(body);
+  const providedScan = normalizeProvidedScan(body, state);
   if (providedScan) return providedScan;
   return recognizePolicyInput({ scanner, body, state });
 }

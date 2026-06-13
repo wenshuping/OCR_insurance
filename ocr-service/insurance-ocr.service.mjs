@@ -3215,37 +3215,16 @@ async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
   throw new Error('POLICY_OCR_EMPTY');
 }
 
-async function scanPolicyWithRemoteGpuVision(uploadItem, { ocrContext = {} } = {}) {
-  const extractedVisionResult = await extractPolicyFieldsFromImageWithRemoteVision(uploadItem, { ocrContext });
-  const extractedVisionData = extractedVisionResult?.data && typeof extractedVisionResult.data === 'object'
-    ? extractedVisionResult.data
-    : extractedVisionResult;
-  const visionOcrText = normalizeOcrText(
-    extractedVisionResult?.ocrText
-    || extractedVisionResult?.text
-    || extractedVisionData?.ocrText
-    || extractedVisionData?.text
-    || ''
-  );
-  const visionScan = extractedVisionData
-    ? readPolicyScanWithCsvParser({
-        data: extractedVisionData,
-        ocrText: visionOcrText,
-      }, 'vision')
-    : null;
-  const data = visionScan?.data || null;
-  if (!hasPolicyDataValue(data)) throw new Error('POLICY_OCR_EMPTY');
-  return {
-    data,
-    bestOcrText: normalizeOcrText(visionScan?.ocrText || visionOcrText || ''),
-    scanFieldConfidence: visionScan?.fieldConfidence || {},
-    scanFieldEvidence: visionScan?.fieldEvidence || {},
-    scanFieldAttribution: visionScan?.fieldAttribution || data?.fieldAttribution || {},
-    scanOcrWarnings: visionScan?.ocrWarnings || [],
-    visionDebug: extractedVisionResult?.visionDebug && typeof extractedVisionResult.visionDebug === 'object'
-      ? { ...extractedVisionResult.visionDebug, dataBeforeOcrMerge: data }
-      : null,
-  };
+async function scanPolicyWithRemoteGpuVision(uploadItem, {
+  paddleLayoutScanner = scanPolicyWithPaddleLayout,
+  ocrContext = {},
+} = {}) {
+  return scanPolicyWithOllamaVisionPipeline(uploadItem, {
+    paddleLayoutScanner,
+    ocrContext,
+    visionWarningLabel: '4080 视觉',
+    ollamaVisionExtractor: async (item, context) => extractPolicyFieldsFromImageWithRemoteVision(item, { ocrContext: context }),
+  });
 }
 
 export function selectBestPolicyScanCandidate(texts) {
@@ -6220,6 +6199,7 @@ export async function scanInsurancePolicyLocal({
       bestOcrText = normalizeOcrText(mlxResult?.ocrText || '');
     } else if (provider === OCR_PROVIDER_REMOTE_GPU_VISION) {
       const scan = await scanPolicyWithRemoteGpuVision(uploadItem, {
+        paddleLayoutScanner,
         ocrContext,
       });
       data = scan.data;
