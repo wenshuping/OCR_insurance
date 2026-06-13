@@ -24,8 +24,7 @@ services:
     restart: unless-stopped
     command: ["node", "server/index.mjs"]
     env_file:
-      - path: ./deploy/poptonic.env
-        required: false
+      - ./deploy/poptonic.env
     environment:
       NODE_ENV: production
       POLICY_OCR_APP_HOST: 0.0.0.0
