@@ -6,6 +6,8 @@ This project is deployed as an independent OCR insurance app for:
 - `https://www.poptonic.cn`
 - `https://app.poptonic.cn`
 
+For the current ECS + AutoDL production release runbook, see `docs/production-release-wiki.md`.
+
 It must not reuse the existing `joyhive.cn` C/P/B containers or nginx server names.
 
 ## Target layout

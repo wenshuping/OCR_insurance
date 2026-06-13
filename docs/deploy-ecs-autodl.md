@@ -2,6 +2,8 @@
 
 This deployment keeps the business app on Alibaba Cloud ECS and runs OCR / GPU vision on AutoDL.
 
+For the full production release runbook, see `docs/production-release-wiki.md`.
+
 ## Topology
 
 ```text
