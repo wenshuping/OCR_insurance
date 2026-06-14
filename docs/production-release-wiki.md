@@ -146,18 +146,18 @@ docker-compose -f docker-compose.poptonic.yml exec api sh -lc \
 
 If the host has the line but the container does not, the image is stale. Re-run the `build --no-cache` release commands above.
 
-## Production SQLite Data Release
+## Production Knowledge Data Release
 
-Use this when production must receive the full data asset set from the local production SQLite database: policies, family data, knowledge records, source records, insurance indicators, optional responsibility records, official-domain profiles, cash values, cashflows, and state documents.
+Use this when production must receive local knowledge-base updates: knowledge records, insurance indicators, optional responsibility records, official-domain profiles, indicator definitions, and the indicator snapshot document.
 
-This is separate from code release. Rebuilding Docker images must not create or overwrite production data.
+This is separate from code release. Rebuilding Docker images must not create or overwrite production data. Knowledge data release must not replace production users, policies, pending scans, memberships, family data, policy source records, cash values, or cashflows.
 
 On the local machine, generate a consistent SQLite bundle with `VACUUM INTO`:
 
 ```bash
 cd /Users/wenshuping/Documents/OCR_insurance
 node scripts/production-data-bundle.mjs export \
-  --db-path .runtime/policy-ocr.sqlite \
+  --db-path .runtime/local/policy-ocr.sqlite \
   --out-dir .runtime/production-data-bundles
 ```
 
@@ -168,7 +168,7 @@ The command prints `bundlePath` and `manifestPath`. Upload both files to ECS, fo
 ~/OCR_insurance/production-data/<name>.manifest.json
 ```
 
-Install on ECS through a disposable Node container so the host does not need Node installed:
+Install only the knowledge tables on ECS through a disposable Node container so the host does not need Node installed:
 
 ```bash
 cd ~/OCR_insurance
@@ -181,15 +181,18 @@ docker run --rm \
   -v "$PWD":/workspace \
   -w /workspace \
   node:22-alpine \
-  node scripts/production-data-bundle.mjs install \
+  node scripts/production-data-bundle.mjs install-knowledge \
     --bundle /workspace/production-data/<name>.sqlite.gz \
     --manifest /workspace/production-data/<name>.manifest.json \
     --target-db /data/policy-ocr.sqlite
 
 docker-compose -f docker-compose.poptonic.yml up -d api web
+curl -fsS http://127.0.0.1/api/health
 ```
 
-If `/data/policy-ocr.sqlite` already contains real production rows, the installer refuses to replace it by default. Only use `--replace-non-empty` after confirming the overwrite is intentional and the installer has written a backup under `/data/backups/`.
+The knowledge installer writes a backup under `/data/backups/`, then replaces only the knowledge/indicator tables. It preserves real production users, policies, pending scans, memberships, family data, policy source records, cash values, and cashflows.
+
+Full SQLite replacement is a disaster-recovery operation, not a normal release path. The full installer refuses to replace a non-empty target by default. Even with `--replace-non-empty`, it now refuses if the incoming bundle would remove protected production rows such as `users`, `policies`, `pending_scans`, memberships, family rows, source records, cash values, or cashflows. Use `--allow-user-data-loss` only after a separate written confirmation that deleting those rows is intentional.
 
 Inspect production data counts without changing anything:
 
