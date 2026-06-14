@@ -89,6 +89,38 @@ test('membership routes expose status, create mock order, and confirm mock payme
   }
 });
 
+test('development default membership payment uses mock mode when pay mode is unset', async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousPayMode = process.env.WECHAT_PAY_MODE;
+  process.env.NODE_ENV = 'development';
+  delete process.env.WECHAT_PAY_MODE;
+
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
+    sessions: [{ token: 'token-1', userId: 1, createdAt: '2026-06-11T08:00:00.000Z' }],
+    nextId: 10,
+  };
+  const app = createPolicyOcrApp({ state, now: () => '2026-06-11T08:00:00.000Z' });
+  const server = await listen(app);
+  try {
+    const created = await jsonFetch(server.baseUrl, '/api/membership/orders', {
+      headers: { authorization: 'Bearer token-1' },
+      method: 'POST',
+      body: '{}',
+    });
+    assert.equal(created.response.status, 200);
+    assert.equal(created.payload.order.status, 'prepay_created');
+    assert.equal(created.payload.payParams.appId, 'mock-wechat-appid');
+  } finally {
+    await server.close();
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousPayMode === undefined) delete process.env.WECHAT_PAY_MODE;
+    else process.env.WECHAT_PAY_MODE = previousPayMode;
+  }
+});
+
 test('mock payment actions are unavailable outside mock mode', async () => {
   const state = {
     ...createInitialState(),
@@ -97,7 +129,7 @@ test('mock payment actions are unavailable outside mock mode', async () => {
     membershipOrders: [{ id: 9, outTradeNo: 'order-9', userId: 1, amountCents: 30000, status: 'prepay_created' }],
     nextId: 10,
   };
-  const app = createPolicyOcrApp({ state, now: () => '2026-06-11T08:00:00.000Z' });
+  const app = createPolicyOcrApp({ state, wechatPayMode: 'live', now: () => '2026-06-11T08:00:00.000Z' });
   const server = await listen(app);
   try {
     const auth = { authorization: 'Bearer token-1' };

@@ -157,12 +157,45 @@ const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
 const CLIENT_BOOTED_AT = new Date().toISOString();
-const SHOULD_CHECK_STALE_DEV_CLIENT = window.location.port === '3014';
+const CURRENT_CLIENT_ASSET_PATH = currentClientAssetPath();
+const SHOULD_CHECK_STALE_CLIENT = Boolean(CURRENT_CLIENT_ASSET_PATH) || window.location.port === '3014';
 
 declare global {
   interface Window {
     __wxjs_environment?: string;
   }
+}
+
+function currentClientAssetPath() {
+  const script = document.querySelector('script[src*="/assets/index-"]');
+  return script?.getAttribute('src')?.split('?')[0] || '';
+}
+
+function clientAssetPathFromHtml(html: string) {
+  return html.match(/\/assets\/index-[^"']+\.js/u)?.[0] || '';
+}
+
+function productSuggestionToKnowledgeMatch(
+  suggestion: PolicyProductSuggestion,
+  queryName: string,
+  index: number,
+): PolicyKnowledgeMatch {
+  const productName = suggestion.productName.trim();
+  const recordCount = Number(suggestion.recordCount || 0);
+  const exactNameMatch = productName === queryName.trim();
+  return {
+    company: suggestion.company.trim(),
+    productName,
+    canonicalProductId: suggestion.canonicalProductId,
+    title: productName,
+    score: exactNameMatch ? 1 : Math.max(0.5, 0.72 - index * 0.04),
+    matchReason: exactNameMatch ? '产品名称高度匹配' : '本地产品候选',
+    evidenceLabel: '本地产品库',
+    sourceCount: recordCount > 0 ? recordCount : 1,
+    bestSource: {
+      title: '本地产品资料',
+    },
+  };
 }
 
 const emptyForm: PolicyFormData = {
@@ -661,6 +694,15 @@ export function CustomerApp() {
     });
   }
 
+  function membershipPurchaseErrorMessage(error: unknown) {
+    if (error instanceof ApiError) {
+      if (error.code === 'WECHAT_PAY_NOT_CONFIGURED') return '会员支付暂未开放';
+      if (error.code === 'MEMBERSHIP_PURCHASE_DISABLED') return '会员购买暂未开放';
+      if (error.code === 'WECHAT_BROWSER_REQUIRED') return '请在微信内打开公众号页面完成支付';
+    }
+    return error instanceof Error ? error.message : '会员购买失败';
+  }
+
   async function handleMembershipPurchase() {
     if (!token || membershipLoading) return;
     setMembershipLoading(true);
@@ -683,7 +725,7 @@ export function CustomerApp() {
         window.location.href = started.authorizeUrl;
         return;
       }
-      setMembershipMessage(error instanceof Error ? error.message : '会员购买失败');
+      setMembershipMessage(membershipPurchaseErrorMessage(error));
     } finally {
       setMembershipLoading(false);
     }
@@ -768,28 +810,45 @@ export function CustomerApp() {
   }, [selectedPolicy?.id, selectedPolicy?.reportStatus, token, guestId]);
 
   useEffect(() => {
-    if (!SHOULD_CHECK_STALE_DEV_CLIENT) return;
+    if (!SHOULD_CHECK_STALE_CLIENT) return;
     let cancelled = false;
     const checkClientFreshness = async () => {
       try {
-        const health = await getHealthStatus();
+        if (CURRENT_CLIENT_ASSET_PATH) {
+          const response = await fetch(`/?clientFreshness=${Date.now()}`, { cache: 'no-store' });
+          const latestAssetPath = clientAssetPathFromHtml(await response.text());
+          if (cancelled) return;
+          if (latestAssetPath && latestAssetPath !== CURRENT_CLIENT_ASSET_PATH) {
+            setStaleClientHealth({ ok: true, service: 'policy-ocr-app', startedAt: CLIENT_BOOTED_AT });
+            return;
+          }
+        }
+        if (window.location.port === '3014') {
+          const health = await getHealthStatus();
+          if (cancelled) return;
+          const serverStartedAt = Date.parse(String(health.startedAt || ''));
+          const clientStartedAt = Date.parse(CLIENT_BOOTED_AT);
+          if (Number.isFinite(serverStartedAt) && Number.isFinite(clientStartedAt) && serverStartedAt > clientStartedAt + 1000) {
+            setStaleClientHealth(health);
+            return;
+          }
+        }
+        if (!cancelled) {
+          setStaleClientHealth(null);
+        }
+      } catch {
         if (cancelled) return;
-        const serverStartedAt = Date.parse(String(health.startedAt || ''));
-        const clientStartedAt = Date.parse(CLIENT_BOOTED_AT);
-        if (Number.isFinite(serverStartedAt) && Number.isFinite(clientStartedAt) && serverStartedAt > clientStartedAt + 1000) {
-          setStaleClientHealth(health);
+        if (window.location.port === '3014') {
+          setStaleClientHealth(null);
           return;
         }
-        setStaleClientHealth(null);
-      } catch {
-        if (!cancelled) setStaleClientHealth(null);
       }
     };
 
     void checkClientFreshness();
     const timer = window.setInterval(() => {
       void checkClientFreshness();
-    }, 5000);
+    }, window.location.port === '3014' ? 5000 : 30000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -958,7 +1017,14 @@ export function CustomerApp() {
       try {
         const payload = await matchPolicyResponsibilities({ company, name });
         if (cancelled) return;
-        const matches = Array.isArray(payload.matches) ? payload.matches : [];
+        let matches = Array.isArray(payload.matches) ? payload.matches : [];
+        if (!matches.length) {
+          const suggestionPayload = await listPolicyResponsibilityProductSuggestions({ company, q: name, limit: 3 });
+          if (cancelled) return;
+          matches = (Array.isArray(suggestionPayload.suggestions) ? suggestionPayload.suggestions : [])
+            .slice(0, 3)
+            .map((suggestion, index) => productSuggestionToKnowledgeMatch(suggestion, name, index));
+        }
         setFormProductMatches(matches);
         setFormProductMatchMessage(matches.length ? '' : '本地暂无匹配候选，生成时将继续查找官方资料');
       } catch (error) {

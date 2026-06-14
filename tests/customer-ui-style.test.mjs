@@ -15,6 +15,8 @@ const familyCreateDialogSource = fs.readFileSync(new URL('../src/features/family
 const policyEntrySource = fs.readFileSync(new URL('../src/features/policy-entry/UploadPolicyPage.tsx', import.meta.url), 'utf8');
 const policyDetailSource = fs.readFileSync(new URL('../src/features/policy-detail/PolicyDetailSheet.tsx', import.meta.url), 'utf8');
 const responsibilityAssistantSource = fs.readFileSync(new URL('../src/features/responsibility-assistant/ResponsibilityAssistant.tsx', import.meta.url), 'utf8');
+const responsibilityApiSource = fs.readFileSync(new URL('../src/api/contracts/responsibility.ts', import.meta.url), 'utf8');
+const poptonicComposeSource = fs.readFileSync(new URL('../docker-compose.poptonic.yml', import.meta.url), 'utf8');
 
 function readOptionalSource(relativePath) {
   try {
@@ -36,7 +38,6 @@ const adminSharedSource = readOptionalSource('../src/features/admin-shared/Admin
   + '\n' + readOptionalSource('../src/features/admin-shared/TextField.tsx');
 const adminOfficialDomainSource = readOptionalSource('../src/features/admin-official-domain/AdminOfficialDomainPanel.tsx');
 const adminKnowledgeSource = readOptionalSource('../src/features/admin-knowledge/AdminKnowledgePanel.tsx');
-const adminOcrConfigSource = readOptionalSource('../src/features/admin-ocr-config/AdminOcrModePanel.tsx');
 const adminGovernanceSource = readOptionalSource('../src/features/admin-governance/AdminOptionalResponsibilityGapPanel.tsx');
 const adminPolicyDetailSource = readOptionalSource('../src/features/admin-policy-detail/AdminPolicyDetail.tsx');
 const normalizedCustomerAppSource = customerAppSource.replaceAll("from '../../", "from './");
@@ -68,7 +69,6 @@ const normalizedAdminFeatureSource = [
   adminSharedSource,
   adminOfficialDomainSource,
   adminKnowledgeSource,
-  adminOcrConfigSource,
   adminGovernanceSource,
   adminPolicyDetailSource,
 ].join('\n').replaceAll("from '../../", "from './");
@@ -77,7 +77,6 @@ const extractedFeatureSourceByComponent = new Map([
   ['PhoneVerificationDialog', customerAuthPhoneSource.replaceAll("from '../../", "from './")],
   ['CustomerBottomTabs', customerNavigationSource.replaceAll("from '../../", "from './")],
   ['AdminOfficialDomainPanel', adminOfficialDomainSource.replaceAll("from '../../", "from './")],
-  ['AdminOcrModePanel', adminOcrConfigSource.replaceAll("from '../../", "from './")],
   ['AdminPolicyDetail', adminPolicyDetailSource.replaceAll("from '../../", "from './")],
 ]);
 const formatterSource = fs.readFileSync(new URL('../src/shared/formatters.ts', import.meta.url), 'utf8');
@@ -155,19 +154,39 @@ test('phone verification send-code button uses the blue primary style', () => {
 });
 
 test('entry form exposes local product candidates before responsibility generation', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const assistantSource = componentSource('ResponsibilityAssistant', null);
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const sharedSource = fs.readFileSync(new URL('../src/shared/customer-policy-components.tsx', import.meta.url), 'utf8');
   const matchPanelSource = componentSource('ProductMatchSelectPanel', 'UploadPolicyPage');
+  const productSuggestionSources = [pageSource, assistantSource, detailSource, sharedSource].join('\n');
   assert.match(pageSource, /ProductMatchSelectPanel/);
   assert.match(pageSource, /onOpenFamilies/);
-  assert.match(pageSource, /家庭保单/);
+  assert.match(pageSource, /CustomerBottomTabs/);
+  assert.match(pageSource, /activeTab="entry"/);
   assert.match(pageSource, /复制原文/);
   assert.match(pageSource, /handleCopyOcrText/);
   assert.match(pageSource, /录入保险公司候选/);
   assert.match(pageSource, /录入保险产品候选/);
   assert.match(pageSource, /formProductSuggestions/);
   assert.match(pageSource, /onSelectFormProduct/);
+  assert.doesNotMatch(productSuggestionSources, /normalizeSuggestionQuery\(suggestion\.productName\) !== normalizedQuery/);
+  assert.match(responsibilityApiSource, /RESPONSIBILITY_TRANSIENT_STATUSES = new Set\(\[[^\]]*530/);
+  assert.match(responsibilityApiSource, /function waitForRetry/);
+  assert.match(responsibilityApiSource, /function requestResponsibility/);
+  assert.match(responsibilityApiSource, /matchPolicyResponsibilities[\s\S]*requestResponsibility/);
+  assert.match(responsibilityApiSource, /listPolicyResponsibilityProductSuggestions[\s\S]*requestResponsibility/);
+  assert.match(customerSource, /productSuggestionToKnowledgeMatch/);
+  assert.match(customerSource, /listPolicyResponsibilityProductSuggestions\(\{ company, q: name, limit: 3 \}\)/);
   assert.match(matchPanelSource, /相似产品/);
   assert.match(matchPanelSource, /role="listbox"/);
+});
+
+test('poptonic compose persists the production SQLite database in the data volume', () => {
+  assert.match(poptonicComposeSource, /POLICY_OCR_APP_DB_PATH:\s*\/data\/policy-ocr\.sqlite/);
+  assert.match(poptonicComposeSource, /POLICY_OCR_APP_STATE_PATH:\s*\/data\/state\.json/);
+  assert.match(poptonicComposeSource, /-\s*poptonic_policy_data:\/data/);
 });
 
 test('entry form surfaces OCR layout review warnings', () => {
@@ -259,14 +278,18 @@ test('entry form uses the effective family selection for both display and save',
   assert.match(customerSource, /if \(entrySelectedFamily\) return entrySelectedFamily/);
 });
 
-test('entry form shows a refresh prompt when the dev page is stale after restart', () => {
+test('entry form shows a refresh prompt when the loaded client is stale', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /getHealthStatus/);
   assert.match(customerSource, /staleClientHealth/);
+  assert.match(customerSource, /CURRENT_CLIENT_ASSET_PATH/);
+  assert.match(customerSource, /clientAssetPathFromHtml/);
+  assert.match(customerSource, /clientFreshness/);
   assert.match(customerSource, /serverStartedAt > clientStartedAt \+ 1000/);
   assert.match(pageSource, /页面已更新/);
   assert.match(pageSource, /你当前这个页面还是旧版本/);
+  assert.doesNotMatch(pageSource, /开发环境刚刚重启过/);
   assert.match(pageSource, /刷新页面/);
   assert.match(pageSource, /staleClientDetected/);
 });
@@ -354,6 +377,8 @@ test('policy relation controls keep prior policy edit options', () => {
 
   assert.match(source, /'孙子'/u);
   assert.match(source, /'孙女'/u);
+  assert.match(source, /'儿媳'/u);
+  assert.match(source, /'女婿'/u);
   assert.match(source, /'外孙'/u);
   assert.match(source, /'外孙女'/u);
   assert.match(source, /'外公'/u);
@@ -409,13 +434,13 @@ test('entry form keeps bottom actions focused on saving workflow', () => {
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(pageSource, /max-w-3xl/);
-  assert.match(pageSource, /家庭保单/);
   assert.match(pageSource, /保存保单/);
+  assert.match(pageSource, /CustomerBottomTabs/);
+  assert.match(pageSource, /if \(tab === 'families'\) onOpenFamilies\(\);/);
   assert.match(customerSource, /renderResponsibilityAssistant\('bottom-24'\)/);
   assert.match(pageSource, /onClick=\{onSubmit\}/);
   assert.match(pageSource, /disabled=\{loading\}/);
   assert.doesNotMatch(pageSource, /aria-label="进入我的保单"/);
-  assert.doesNotMatch(pageSource, /CustomerBottomTabs/);
   assert.doesNotMatch(pageSource, /确认信息后保存保单/);
 });
 
@@ -668,15 +693,22 @@ test('admin policy detail exposes policy source links', () => {
 
 test('admin app includes official domain whitelist maintenance panel', () => {
   const adminSource = componentSource('AdminApp', null);
-  const panelSource = extractedOrBoundedComponentSource('AdminOfficialDomainPanel', 'AdminOcrModePanel');
-  const ocrPanelSource = extractedOrBoundedComponentSource('AdminOcrModePanel', 'AdminPolicyDetail');
+  const panelSource = extractedOrBoundedComponentSource('AdminOfficialDomainPanel', 'AdminOptionalResponsibilityGapPanel');
   assert.match(adminSource, /AdminOfficialDomainPanel/);
+  assert.doesNotMatch(adminSource, /AdminOcrModePanel/);
   assert.match(panelSource, /保险公司官方域名/);
   assert.match(panelSource, /保存白名单/);
   assert.match(panelSource, /删除/);
-  assert.match(ocrPanelSource, /本地视觉兜底/);
-  assert.match(ocrPanelSource, /仅图片/);
-  assert.match(ocrPanelSource, /不处理 PDF/);
+});
+
+test('admin app does not preload full knowledge records after login', () => {
+  const adminSource = componentSource('AdminApp', null);
+  const adminTokenEffect = adminSource.match(/useEffect\(\(\) => \{[\s\S]*?\n  \}, \[adminToken\]\);/)?.[0] || '';
+  assert.match(adminTokenEffect, /loadMembershipConfig\(adminToken\)[\s\S]*loadOfficialDomainProfiles\(adminToken\)[\s\S]*setTimeout/);
+  assert.match(adminTokenEffect, /loadOverview\(adminToken\)/);
+  assert.doesNotMatch(adminTokenEffect, /loadKnowledgeRecords\(adminToken\)/);
+  assert.match(adminSource, /登录成功，正在加载会员设置/);
+  assert.match(adminSource, /onRefresh=\{\(\) => void loadKnowledgeRecords\(\)\}/);
 });
 
 test('customer policy detail exposes edit and delete actions through policy APIs', () => {
@@ -811,7 +843,7 @@ test('ocr recognition stays on entry form while carrying matched responsibility 
   const recognizeSource = normalizedCustomerAppSource.slice(start, end);
 
   assert.match(recognizeSource, /const recognizedAnalysis = payload\.analysis \|\| null/);
-  assert.match(recognizeSource, /setAnalysisDraft\(recognizedAnalysis\);\s*setShowAnalysisReport\(false\);/);
+  assert.match(recognizeSource, /setAnalysisDraft\(withRememberedOptionalResponsibilitySelections\(recognizedAnalysis\)\);\s*setShowAnalysisReport\(false\);/);
   assert.doesNotMatch(recognizeSource, /setShowAnalysisReport\(true\)/);
   assert.doesNotMatch(recognizeSource, /setShowAnalysisReport\(hasResponsibilityReportResult/);
 });

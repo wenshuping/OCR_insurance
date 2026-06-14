@@ -1,8 +1,4 @@
-import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 export const POLICY_OCR_MODE_EXISTING_DEFAULT = 'existing_default';
 export const POLICY_OCR_MODE_MACOS_VISION_LOCAL = 'macos_vision_local';
@@ -24,23 +20,9 @@ export const OCR_PROVIDER_REMOTE_GPU_VISION = 'remote_gpu_vision';
 export const OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE = 'huawei_cloud_insurance';
 export const OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
 
-function isDeprecatedPdfExtractKitMode(mode) {
-  return mode === POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL;
-}
-
-function fallbackModeForDeprecatedMode(mode) {
-  if (isDeprecatedPdfExtractKitMode(mode)) return POLICY_OCR_MODE_PADDLEOCR_LOCAL;
-  return mode;
-}
-
 function fallbackProviderForDeprecatedProvider(provider) {
   return provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL ? OCR_PROVIDER_PADDLE_LOCAL : provider;
 }
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const defaultConfigPath = path.resolve(__dirname, '../.runtime/policy-ocr-config.json');
-const configPath = String(process.env.POLICY_OCR_CONFIG_PATH || defaultConfigPath).trim() || defaultConfigPath;
 
 const MODE_META = [
   {
@@ -114,16 +96,6 @@ export function resolveLocalVisionFallbackRuntime(env = process.env) {
       || OCR_PROVIDER_MLX_QWEN25_VL_LOCAL,
     scope: 'image_only',
   };
-}
-
-function readConfigFileSync() {
-  try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function getAssumedReadyModesFromEnv(env = process.env) {
@@ -339,11 +311,6 @@ export function getLegacyPolicyOcrProviderFromEnv(env = process.env) {
   return fallbackProviderForDeprecatedProvider(provider || OCR_PROVIDER_REMOTE_GPU_VISION);
 }
 
-function getExplicitPolicyOcrProviderFromEnv(env = process.env) {
-  const provider = String(env.POLICY_OCR_PROVIDER || '').trim().toLowerCase();
-  return provider ? fallbackProviderForDeprecatedProvider(provider) : '';
-}
-
 export function policyOcrProviderLabel(provider) {
   const normalized = String(provider || '').trim().toLowerCase();
   if (normalized === OCR_PROVIDER_BAIDU_PRIVATE) return '百度私有 OCR';
@@ -357,111 +324,23 @@ export function policyOcrProviderLabel(provider) {
   return '当前本地默认识别';
 }
 
-export function resolveStoredPolicyOcrConfig() {
-  const stored = readConfigFileSync();
-  const rawStoredMode = String(stored?.mode || '').trim();
-  const storedMode = rawStoredMode
-    ? normalizePolicyOcrMode(rawStoredMode)
-    : POLICY_OCR_MODE_REMOTE_GPU_VISION;
-  const mode = fallbackModeForDeprecatedMode(storedMode);
-  return {
-    mode,
-    updatedAt: stored?.updatedAt || null,
-    updatedByActorId: Number(stored?.updatedByActorId || 0) || null,
-    configPath,
-  };
-}
-
 export function resolveEffectivePolicyOcrProvider() {
-  const explicitProvider = getExplicitPolicyOcrProviderFromEnv();
-  if (explicitProvider) return explicitProvider;
-
-  const { mode } = resolveStoredPolicyOcrConfig();
-  const readiness = resolvePolicyOcrModeReadiness(mode);
-  if (!readiness.ready) {
-    return getLegacyPolicyOcrProviderFromEnv();
-  }
-  if (mode === POLICY_OCR_MODE_MACOS_VISION_LOCAL) {
-    return OCR_PROVIDER_LOCAL;
-  }
-  if (mode === POLICY_OCR_MODE_PADDLEOCR_LOCAL) {
-    return OCR_PROVIDER_PADDLE_LOCAL;
-  }
-  if (mode === POLICY_OCR_MODE_QWEN25_VL_3B_INSTRUCT_MLX_VLM) {
-    return OCR_PROVIDER_MLX_QWEN25_VL_LOCAL;
-  }
-  if (mode === POLICY_OCR_MODE_PADDLEOCR_VL_1_5) {
-    return OCR_PROVIDER_PADDLEOCR_VL_LOCAL;
-  }
-  if (mode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
-    return OCR_PROVIDER_REMOTE_GPU_VISION;
-  }
-  if (mode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
-    return OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE;
-  }
   return getLegacyPolicyOcrProviderFromEnv();
 }
 
 export function resolveEffectivePolicyOcrProviderFast(env = process.env) {
-  const explicitProvider = getExplicitPolicyOcrProviderFromEnv(env);
-  if (explicitProvider) return explicitProvider;
-
-  const { mode } = resolveStoredPolicyOcrConfig();
-  if (mode === POLICY_OCR_MODE_MACOS_VISION_LOCAL) {
-    return OCR_PROVIDER_LOCAL;
-  }
-  if (mode === POLICY_OCR_MODE_PADDLEOCR_LOCAL) {
-    return OCR_PROVIDER_PADDLE_LOCAL;
-  }
-  if (mode === POLICY_OCR_MODE_QWEN25_VL_3B_INSTRUCT_MLX_VLM) {
-    return OCR_PROVIDER_MLX_QWEN25_VL_LOCAL;
-  }
-  if (mode === POLICY_OCR_MODE_PADDLEOCR_VL_1_5) {
-    return envFlag(env, 'POLICY_OCR_ENABLE_PADDLEOCR_VL', false)
-      ? OCR_PROVIDER_PADDLEOCR_VL_LOCAL
-      : getLegacyPolicyOcrProviderFromEnv(env);
-  }
-  if (mode === POLICY_OCR_MODE_REMOTE_GPU_VISION) {
-    return OCR_PROVIDER_REMOTE_GPU_VISION;
-  }
-  if (mode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
-    return OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE;
-  }
   return getLegacyPolicyOcrProviderFromEnv(env);
 }
 
-export function resolvePolicyOcrAdminPayload() {
-  const config = resolveStoredPolicyOcrConfig();
-  const legacyProvider = getLegacyPolicyOcrProviderFromEnv();
-  const provider = resolveEffectivePolicyOcrProviderFast();
-  return {
-    ok: true,
-    config: {
-      mode: config.mode,
-      updatedAt: config.updatedAt,
-      updatedByActorId: config.updatedByActorId,
-    },
-    runtime: {
-      provider,
-      providerLabel: policyOcrProviderLabel(provider),
-      legacyProvider,
-      legacyProviderLabel: policyOcrProviderLabel(legacyProvider),
-      localVisionFallback: resolveLocalVisionFallbackRuntime(),
-    },
-    options: listPolicyOcrModeOptions({ probeRuntime: false }),
-  };
-}
-
 export function resolvePolicyOcrRuntimePayload() {
-  const config = resolveStoredPolicyOcrConfig();
   const legacyProvider = getLegacyPolicyOcrProviderFromEnv();
   const provider = resolveEffectivePolicyOcrProviderFast();
   return {
     ok: true,
     config: {
-      mode: config.mode,
-      updatedAt: config.updatedAt,
-      updatedByActorId: config.updatedByActorId,
+      mode: POLICY_OCR_MODE_EXISTING_DEFAULT,
+      updatedAt: null,
+      updatedByActorId: null,
     },
     runtime: {
       provider,
@@ -471,24 +350,4 @@ export function resolvePolicyOcrRuntimePayload() {
       localVisionFallback: resolveLocalVisionFallbackRuntime(),
     },
   };
-}
-
-export async function savePolicyOcrConfig({ mode, updatedByActorId = null } = {}) {
-  const normalizedMode = normalizePolicyOcrMode(mode);
-  if (!normalizedMode) throw new Error('POLICY_OCR_MODE_INVALID');
-  const persistedMode = fallbackModeForDeprecatedMode(normalizedMode);
-  const matched = listPolicyOcrModeOptions({ probeRuntime: false }).find((item) => item.value === persistedMode);
-  if (!matched?.implemented || matched?.selectable === false) {
-    throw new Error('POLICY_OCR_MODE_NOT_READY');
-  }
-  const nextPayload = {
-    mode: persistedMode,
-    updatedAt: new Date().toISOString(),
-    updatedByActorId: Number(updatedByActorId || 0) || null,
-  };
-  await mkdir(path.dirname(configPath), { recursive: true });
-  const tmpPath = `${configPath}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(nextPayload, null, 2), 'utf-8');
-  await rename(tmpPath, configPath);
-  return resolvePolicyOcrAdminPayload();
 }

@@ -77,6 +77,48 @@ curl -fsS http://127.0.0.1/api/health
 curl -fsS https://ocr.joyhive.cn/api/health
 ```
 
+Verify that the API is using the persistent SQLite path:
+
+```bash
+docker-compose -f docker-compose.poptonic.yml logs --tail=40 api | grep "db=/data/policy-ocr.sqlite"
+```
+
+Verify admin and annual membership payment configuration without printing secrets:
+
+```bash
+docker-compose -f docker-compose.poptonic.yml exec -T api node --input-type=module <<'NODE'
+import { resolveWechatPayConfig } from './server/wechat-pay.service.mjs';
+
+const pay = resolveWechatPayConfig();
+console.log(JSON.stringify({
+  adminPasswordConfigured: Boolean(process.env.POLICY_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD),
+  wechatPay: {
+    mode: pay.mode,
+    ready: pay.ready,
+    appId: Boolean(pay.appId),
+    mchId: Boolean(pay.mchId),
+    apiV3Key: Boolean(pay.apiV3Key),
+    serialNo: Boolean(pay.serialNo),
+    privateKey: Boolean(pay.privateKey),
+    platformPublicKey: Boolean(pay.platformPublicKey),
+    platformPublicKeyId: Boolean(pay.platformPublicKeyId),
+    notifyUrl: pay.notifyUrl,
+  },
+}, null, 2));
+NODE
+```
+
+Expected production values:
+
+- `adminPasswordConfigured: true`
+- `wechatPay.mode: "live"`
+- `wechatPay.ready: true`
+- `wechatPay.notifyUrl: "https://ocr.joyhive.cn/api/membership/wechatpay/notify"`
+
+The admin login page is `https://ocr.joyhive.cn/admin`. If the login API returns
+`ADMIN_PASSWORD_NOT_CONFIGURED`, update `~/OCR_insurance/deploy/poptonic.env` on
+ECS with `POLICY_ADMIN_PASSWORD=...`, then restart `api`.
+
 If a recent code line must be present in the container, verify it directly. Example:
 
 ```bash
@@ -86,6 +128,71 @@ docker-compose -f docker-compose.poptonic.yml exec api sh -lc \
 ```
 
 If the host has the line but the container does not, the image is stale. Re-run the `build --no-cache` release commands above.
+
+## Production SQLite Data Release
+
+Use this when production must receive the full data asset set from the local production SQLite database: policies, family data, knowledge records, source records, insurance indicators, optional responsibility records, official-domain profiles, cash values, cashflows, and state documents.
+
+This is separate from code release. Rebuilding Docker images must not create or overwrite production data.
+
+On the local machine, generate a consistent SQLite bundle with `VACUUM INTO`:
+
+```bash
+cd /Users/wenshuping/Documents/OCR_insurance
+node scripts/production-data-bundle.mjs export \
+  --db-path .runtime/policy-ocr.sqlite \
+  --out-dir .runtime/production-data-bundles
+```
+
+The command prints `bundlePath` and `manifestPath`. Upload both files to ECS, for example:
+
+```text
+~/OCR_insurance/production-data/<name>.sqlite.gz
+~/OCR_insurance/production-data/<name>.manifest.json
+```
+
+Install on ECS through a disposable Node container so the host does not need Node installed:
+
+```bash
+cd ~/OCR_insurance
+mkdir -p production-data
+
+docker-compose -f docker-compose.poptonic.yml stop api
+
+docker run --rm \
+  -v ocr_insurance_poptonic_policy_data:/data \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  node:22-alpine \
+  node scripts/production-data-bundle.mjs install \
+    --bundle /workspace/production-data/<name>.sqlite.gz \
+    --manifest /workspace/production-data/<name>.manifest.json \
+    --target-db /data/policy-ocr.sqlite
+
+docker-compose -f docker-compose.poptonic.yml up -d api web
+```
+
+If `/data/policy-ocr.sqlite` already contains real production rows, the installer refuses to replace it by default. Only use `--replace-non-empty` after confirming the overwrite is intentional and the installer has written a backup under `/data/backups/`.
+
+Inspect production data counts without changing anything:
+
+```bash
+docker run --rm \
+  -v ocr_insurance_poptonic_policy_data:/data \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  node:22-alpine \
+  node scripts/production-data-bundle.mjs inspect --db-path /data/policy-ocr.sqlite
+```
+
+After installation, verify the product-suggestion path:
+
+```bash
+curl -fsS -G 'https://ocr.joyhive.cn/api/policy-responsibilities/product-suggestions' \
+  --data-urlencode 'company=新华保险' \
+  --data-urlencode 'q=福如东海A款终身寿险（分红型）' \
+  --data-urlencode 'limit=8'
+```
 
 ## AutoDL OCR Release
 

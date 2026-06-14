@@ -1,5 +1,5 @@
 import type { PolicyAnalysisResult, PolicyFormData, PolicyKnowledgeMatch } from './policy';
-import { request } from '../client';
+import { ApiError, request } from '../client';
 
 export type Responsibility = {
   coverageType: string;
@@ -72,6 +72,29 @@ export type PolicyProductSuggestion = {
   matchType: string;
 };
 
+const RESPONSIBILITY_TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524, 530]);
+
+function waitForRetry(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function requestResponsibility<T>(path: string, options: Parameters<typeof request>[1] = {}): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await request<T>(path, options);
+    } catch (error) {
+      lastError = error;
+      const shouldRetry = error instanceof ApiError && RESPONSIBILITY_TRANSIENT_STATUSES.has(error.status);
+      if (!shouldRetry || attempt === 2) throw error;
+      await waitForRetry(250 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 export function queryPolicyResponsibilities(input: { company: string; name: string; preferLocalKnowledgeAnswer?: boolean }) {
   return request<{
     ok: true;
@@ -98,7 +121,7 @@ export function getLocalPolicyAnalysisDraft(input: { manualData: Partial<PolicyF
 }
 
 export function matchPolicyResponsibilities(input: { company: string; name: string; limit?: number; minScore?: number }) {
-  return request<{
+  return requestResponsibility<{
     ok: true;
     matches: PolicyKnowledgeMatch[];
   }>('/api/policy-responsibilities/matches', {
@@ -116,7 +139,7 @@ export function listPolicyResponsibilityCompanySuggestions(input: { q?: string; 
   if (input.q) params.set('q', input.q);
   if (input.limit) params.set('limit', String(input.limit));
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return request<{
+  return requestResponsibility<{
     ok: true;
     suggestions: PolicyCompanySuggestion[];
   }>(`/api/policy-responsibilities/company-suggestions${suffix}`);
@@ -127,7 +150,7 @@ export function listPolicyResponsibilityProductSuggestions(input: { company: str
   params.set('company', input.company);
   if (input.q) params.set('q', input.q);
   if (input.limit) params.set('limit', String(input.limit));
-  return request<{
+  return requestResponsibility<{
     ok: true;
     suggestions: PolicyProductSuggestion[];
   }>(`/api/policy-responsibilities/product-suggestions?${params.toString()}`);

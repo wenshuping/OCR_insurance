@@ -9,7 +9,6 @@ import {
   Users,
 } from 'lucide-react';
 import {
-  AdminOcrConfig,
   AdminOfficialDomainProfile,
   AdminMembershipConfig,
   AdminOverview,
@@ -24,14 +23,12 @@ import {
   getAdminOfficialDomainProfiles,
   getAdminKnowledgeRecords,
   getAdminMembershipConfig,
-  getAdminOcrConfig,
   getAdminOverview,
   markOptionalResponsibilityNotQuantifiable,
   regeneratePolicyReport,
   reextractOptionalResponsibilities,
   updateAdminMembershipConfig,
   updateAdminOfficialDomainProfile,
-  updateAdminOcrConfig,
 } from '../../api';
 
 import {
@@ -51,7 +48,6 @@ import {
   emptyKnowledgeCrawlForm,
   type KnowledgeCrawlForm,
 } from '../../features/admin-knowledge/AdminKnowledgePanel';
-import { AdminOcrModePanel } from '../../features/admin-ocr-config/AdminOcrModePanel';
 import { AdminOptionalResponsibilityGapPanel } from '../../features/admin-governance/AdminOptionalResponsibilityGapPanel';
 import { AdminPolicyDetail } from '../../features/admin-policy-detail/AdminPolicyDetail';
 import { AdminStatCard } from '../../features/admin-shared/AdminStatCard';
@@ -67,7 +63,6 @@ export function AdminApp() {
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem(ADMIN_TOKEN_KEY) || '');
   const [password, setPassword] = useState('');
   const [overview, setOverview] = useState<AdminOverview | null>(null);
-  const [ocrConfig, setOcrConfig] = useState<AdminOcrConfig | null>(null);
   const [officialDomainProfiles, setOfficialDomainProfiles] = useState<AdminOfficialDomainProfile[]>([]);
   const [officialDomainForm, setOfficialDomainForm] = useState<OfficialDomainForm>(emptyOfficialDomainForm);
   const [knowledgeRecords, setKnowledgeRecords] = useState<KnowledgeRecord[]>([]);
@@ -77,7 +72,6 @@ export function AdminApp() {
   const [selectedAdminUserId, setSelectedAdminUserId] = useState<number | null>(null);
   const [message, setMessage] = useState('输入后台密码进入平台只读管理台');
   const [loading, setLoading] = useState(false);
-  const [ocrLoading, setOcrLoading] = useState(false);
   const [membershipConfig, setMembershipConfig] = useState<AdminMembershipConfig | null>(null);
   const [membershipQuotaInput, setMembershipQuotaInput] = useState('3');
   const [membershipSaving, setMembershipSaving] = useState(false);
@@ -91,7 +85,6 @@ export function AdminApp() {
     localStorage.removeItem(ADMIN_TOKEN_KEY);
     setAdminToken('');
     setOverview(null);
-    setOcrConfig(null);
     setMembershipConfig(null);
     setMembershipQuotaInput('3');
     setOfficialDomainProfiles([]);
@@ -120,22 +113,6 @@ export function AdminApp() {
       setMessage(error instanceof Error ? error.message : '后台数据加载失败');
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function loadOcrConfig(token = adminToken) {
-    if (!token) return;
-    setOcrLoading(true);
-    try {
-      const payload = await getAdminOcrConfig(token);
-      setOcrConfig(payload);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearAdminAuthState();
-      }
-      setMessage(error instanceof Error ? error.message : 'OCR 方式读取失败');
-    } finally {
-      setOcrLoading(false);
     }
   }
 
@@ -187,11 +164,12 @@ export function AdminApp() {
 
   useEffect(() => {
     if (!adminToken) return;
-    void loadOverview(adminToken);
-    void loadOcrConfig(adminToken);
     void loadMembershipConfig(adminToken);
     void loadOfficialDomainProfiles(adminToken);
-    void loadKnowledgeRecords(adminToken);
+    const overviewTimer = window.setTimeout(() => {
+      void loadOverview(adminToken);
+    }, 300);
+    return () => window.clearTimeout(overviewTimer);
   }, [adminToken]);
 
   useEffect(() => {
@@ -211,7 +189,7 @@ export function AdminApp() {
       localStorage.setItem(ADMIN_TOKEN_KEY, payload.token);
       setAdminToken(payload.token);
       setPassword('');
-      setMessage('登录成功');
+      setMessage('登录成功，正在加载会员设置');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '后台登录失败');
     } finally {
@@ -222,21 +200,6 @@ export function AdminApp() {
   function logoutAdmin() {
     clearAdminAuthState();
     setMessage('已退出管理后台');
-  }
-
-  async function handleOcrModeChange(mode: string) {
-    if (!adminToken || ocrLoading || !mode || mode === ocrConfig?.config.mode) return;
-    setOcrLoading(true);
-    setMessage('正在切换 OCR 识别方式');
-    try {
-      const payload = await updateAdminOcrConfig(adminToken, mode);
-      setOcrConfig(payload);
-      setMessage(`OCR 已切换为 ${payload.runtime.providerLabel}`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'OCR 方式切换失败');
-    } finally {
-      setOcrLoading(false);
-    }
   }
 
   async function handleSaveMembershipConfig() {
@@ -491,10 +454,8 @@ export function AdminApp() {
               type="button"
               onClick={() => {
                 void loadOverview();
-                void loadOcrConfig();
                 void loadMembershipConfig();
                 void loadOfficialDomainProfiles();
-                void loadKnowledgeRecords();
               }}
             >
               刷新
@@ -588,13 +549,6 @@ export function AdminApp() {
                 {!filteredInsureds.length ? <p className="rounded-[16px] bg-slate-50 px-3 py-4 text-sm font-bold text-slate-400">没有匹配的被保人</p> : null}
               </div>
             </section>
-
-            <AdminOcrModePanel
-              config={ocrConfig}
-              loading={ocrLoading}
-              onRefresh={() => void loadOcrConfig()}
-              onChange={(mode) => void handleOcrModeChange(mode)}
-            />
 
             <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_-42px_rgba(15,23,42,0.45)]">
               <div className="flex items-start justify-between gap-3">

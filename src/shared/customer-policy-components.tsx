@@ -402,11 +402,8 @@ export function PolicyPlanEditor(props: {
     .map((plan) => ({ ...plan, originalIndex: plan.__originalIndex }))
     .filter((plan) => String(plan.role || '') !== 'main');
   function productSuggestionsForPlan(plan: NonNullable<PolicyFormData['plans']>[number]) {
-    const productQuery = String(plan.name || '').trim();
-    const normalizedQuery = normalizeSuggestionQuery(productQuery);
     if (!String(plan.company || company || '').trim()) return [];
     return (Array.isArray(productSuggestions) ? productSuggestions : [])
-      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
   }
   return (

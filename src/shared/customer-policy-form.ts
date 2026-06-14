@@ -17,6 +17,8 @@ export const FAMILY_MEMBER_RELATION_OPTIONS = [
   '配偶',
   '儿子',
   '女儿',
+  '儿媳',
+  '女婿',
   '孙子',
   '孙女',
   '外孙',

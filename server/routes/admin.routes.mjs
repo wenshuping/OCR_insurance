@@ -6,13 +6,15 @@ export function createAdminRoutes(context) {
   const {
     state,
     persist,
+    persistAdminSession,
+    persistMembershipConfig,
+    persistOfficialDomainProfiles,
     adminPassword,
     adminSessionTtlMs,
     requireAdmin,
     createAdminSession,
     buildAdminOverview,
     rebuildOptionalResponsibilityGovernance,
-    requestOcrServiceConfig,
     buildAdminOfficialDomainProfiles,
     getDefaultOfficialDomainProfiles,
     normalizeAdminOfficialDomainProfileInput,
@@ -42,7 +44,9 @@ export function createAdminRoutes(context) {
         throw error;
       }
       const token = createAdminSession(state);
-      await persist(state);
+      const session = (state.adminSessions || []).find((row) => String(row?.token || '') === token) || null;
+      if (persistAdminSession) await persistAdminSession({ session });
+      else await persist(state, { refreshOptionalResponsibilityGovernance: false });
       res.json({ ok: true, token, expiresInSeconds: Math.floor(adminSessionTtlMs / 1000) });
     } catch (error) {
       sendError(res, error, 401);
@@ -67,7 +71,7 @@ export function createAdminRoutes(context) {
       record.quantificationStatus = 'not_quantifiable';
       record.quantificationReason = String(req.body?.reason || '不进入量化计算').trim();
       record.updatedAt = new Date().toISOString();
-      await persist(state);
+      await persist(state, { refreshOptionalResponsibilityGovernance: false });
       res.json({ ok: true, record });
     } catch (error) {
       sendError(res, error);
@@ -90,33 +94,6 @@ export function createAdminRoutes(context) {
     }
   });
 
-  router.get('/ocr-config', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      res.json(await requestOcrServiceConfig());
-    } catch (error) {
-      sendError(res, error, 503);
-    }
-  });
-
-  router.post('/ocr-config', async (req, res) => {
-    const session = requireAdmin(req, res, state, adminPassword);
-    if (!session) return;
-    try {
-      res.json(
-        await requestOcrServiceConfig({
-          method: 'POST',
-          body: {
-            mode: req.body?.mode,
-          },
-        }),
-      );
-    } catch (error) {
-      sendError(res, error, 400);
-    }
-  });
-
   router.get('/official-domain-profiles', async (req, res) => {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return;
@@ -134,7 +111,8 @@ export function createAdminRoutes(context) {
     try {
       const profile = normalizeAdminOfficialDomainProfileInput(state, req.body);
       state.officialDomainProfiles.push(profile);
-      await persist(state);
+      if (persistOfficialDomainProfiles) await persistOfficialDomainProfiles();
+      else await persist(state, { refreshOptionalResponsibilityGovernance: false });
       res.status(201).json({ ok: true, profile, profiles: buildAdminOfficialDomainProfiles(state) });
     } catch (error) {
       sendError(res, error, 400);
@@ -150,7 +128,8 @@ export function createAdminRoutes(context) {
       const profile = normalizeAdminOfficialDomainProfileInput(state, { ...req.body, createdAt: existing?.createdAt }, id);
       state.officialDomainProfiles = (state.officialDomainProfiles || []).filter((row) => String(row.id || '') !== id);
       state.officialDomainProfiles.push(profile);
-      await persist(state);
+      if (persistOfficialDomainProfiles) await persistOfficialDomainProfiles();
+      else await persist(state, { refreshOptionalResponsibilityGovernance: false });
       res.json({ ok: true, profile, profiles: buildAdminOfficialDomainProfiles(state) });
     } catch (error) {
       sendError(res, error, 400);
@@ -162,7 +141,8 @@ export function createAdminRoutes(context) {
     if (!session) return;
     const id = String(req.params.id || '').trim();
     state.officialDomainProfiles = (state.officialDomainProfiles || []).filter((row) => String(row.id || '') !== id);
-    await persist(state);
+    if (persistOfficialDomainProfiles) await persistOfficialDomainProfiles();
+    else await persist(state, { refreshOptionalResponsibilityGovernance: false });
     res.json({ ok: true, profiles: buildAdminOfficialDomainProfiles(state) });
   });
 
@@ -223,7 +203,8 @@ export function createAdminRoutes(context) {
         patch.registeredFreePolicyQuota = req.body.registeredFreePolicyQuota;
       }
       const config = updateMembershipConfig(state, patch);
-      await persist(state);
+      if (persistMembershipConfig) await persistMembershipConfig({ config });
+      else await persist(state, { refreshOptionalResponsibilityGovernance: false });
       res.json({ ok: true, config });
     } catch (error) {
       sendError(res, error, 400);

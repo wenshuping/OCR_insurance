@@ -22,10 +22,12 @@
       "server/policy-ocr-mapping.mjs",
       "server/policy-ocr.domain.mjs",
       "server/sqlite-state-store.mjs",
+      "scripts/quantify-new-optional-responsibility-indicators.mjs",
       "src/shared/customer-policy-components.tsx",
       "src/shared/customer-policy-form.ts",
       "tests/policy-optional-responsibility.test.mjs",
       "tests/optional-responsibility-governance.test.mjs",
+      "tests/quantify-new-optional-responsibility-indicators.test.mjs",
       "tests/customer-policy-form.test.mjs",
       "tests/customer-optional-responsibility-state.test.mjs",
       "tests/policy-ocr-flow.test.mjs"
@@ -33,8 +35,22 @@
     "commands": [
       "node --test tests/policy-optional-responsibility.test.mjs",
       "node --test tests/optional-responsibility-governance.test.mjs",
+      "node --test tests/quantify-new-optional-responsibility-indicators.test.mjs",
       "node --test tests/customer-policy-form.test.mjs",
       "node --test tests/customer-optional-responsibility-state.test.mjs"
+    ]
+  },
+  {
+    "name": "knowledge-responsibility-indicators",
+    "patterns": [
+      "scripts/backfill-knowledge-responsibility-indicators.mjs",
+      "scripts/sync-state-knowledge-indicators-to-sqlite.mjs",
+      "tests/backfill-knowledge-responsibility-indicators.test.mjs",
+      "tests/sync-state-knowledge-indicators-to-sqlite.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/backfill-knowledge-responsibility-indicators.test.mjs",
+      "node --test tests/sync-state-knowledge-indicators-to-sqlite.test.mjs"
     ]
   },
   {

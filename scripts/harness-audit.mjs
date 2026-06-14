@@ -29,6 +29,16 @@ const FEATURE_PATH_PREFIXES = ['server/', 'ocr-service/', 'src/', 'scripts/', 't
 const DOCUMENTATION_PREFIXES = ['docs/'];
 const GENERATED_PREFIXES = ['node_modules/', 'dist/', 'build/', 'coverage/', 'graphify-out/', '.agents/'];
 const GENERATED_EXACT_PATHS = new Set(['package-lock.json', 'skills-lock.json']);
+const DURABLE_DATA_SCRIPT_RE = /^(?:crawl|backfill|repair|refill|recover|quantify|refresh)-/u;
+const DURABLE_DATA_KEYWORD_RE = /(?:policy|polic|ocr|scan|knowledge|responsibil|indicator|cashflow|family|insurance|保险|保单|责任|指标|知识库)/iu;
+const SQL_CONNECTION_RE = /(?:\bDatabaseSync\b|node:sqlite|better-sqlite3|createKnowledgeStateStore\s*\(|createSqliteStateStore\s*\(|POLICY_OCR_APP_DB_PATH|sqlite-state-store)/u;
+const SQL_WRITE_RE = /(?:\bpersist[A-Za-z]*\s*\(|\.saveState\s*\(|\.upsertRows\s*\(|\bdb\.prepare\s*\(\s*`?\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b|\b(?:INSERT|UPDATE|DELETE|REPLACE)\s+(?:INTO\s+)?[A-Za-z_][A-Za-z0-9_]*|\bVACUUM\s+INTO\b)/iu;
+const TEMP_SOURCE_WRITE_RE = /\b(?:writeJson|writeJsonFile|fs\.writeFileSync|writeFile|writeFileSync)\s*\(\s*(?:statePath|seedStatePath|defaultSeedStatePath|DEFAULT_STATE_PATH|localStatePath|outputStatePath)\b/u;
+const DURABLE_TEMP_FILE_RE = /(?:\.runtime\/(?:tmp|local)?|\.runtime['"`]\s*,\s*['"`](?:tmp|local|state\.json)|\/tmp\b|os\.tmpdir\s*\(|\brun\/|\btmp\/)[\s\S]{0,260}\.(?:json|jsonl|ndjson|csv)\b|\.(?:json|jsonl|ndjson|csv)\b[\s\S]{0,260}(?:\.runtime\/(?:tmp|local)?|\/tmp\b|os\.tmpdir\s*\(|\brun\/|\btmp\/)/iu;
+const TEMP_WRITE_RE = /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream)\s*\(/u;
+const ALLOWED_TEMP_ARTIFACT_RE = /(?:reportPath|backupPath|manifestPath|configPath|logPath|pidPath|cachePath|uploadPath|scratchPath|reportDir|backupDir|bundlePath|snapshotPath|tmpPath|临时|report|backup|manifest|config|log|pid|cache|upload|scratch|bundle|snapshot)/iu;
+const ROUTE_MODULE_RE = /^server\/routes\/[^/]+\.routes\.mjs$/u;
+const FULL_STATE_PERSIST_RE = /\bpersist\s*\(\s*state(?:\s*,[^)]*)?\)/u;
 
 function makeReport() {
   return {
@@ -224,6 +234,96 @@ function requiresFeatureMap(filePath) {
     || filePath === 'package.json';
 }
 
+function isChangedDurableDataScript(filePath, content = '') {
+  const normalizedPath = normalizeProjectPath(filePath);
+  if (!normalizedPath.startsWith('scripts/') || !normalizedPath.endsWith('.mjs')) return false;
+  const basename = path.posix.basename(normalizedPath);
+  if (!DURABLE_DATA_SCRIPT_RE.test(basename)) return false;
+  return DURABLE_DATA_KEYWORD_RE.test(`${normalizedPath}\n${content}`);
+}
+
+function hasSqlPersistenceEvidence(content = '') {
+  return SQL_CONNECTION_RE.test(content) && SQL_WRITE_RE.test(content);
+}
+
+function writesTemporaryDurableData(content = '') {
+  if (TEMP_SOURCE_WRITE_RE.test(content)) return true;
+  if (!TEMP_WRITE_RE.test(content) || !DURABLE_TEMP_FILE_RE.test(content)) return false;
+
+  const matches = content.matchAll(TEMP_WRITE_RE);
+  for (const match of matches) {
+    const index = match.index || 0;
+    const window = content.slice(Math.max(0, index - 500), Math.min(content.length, index + 800));
+    if (!DURABLE_TEMP_FILE_RE.test(window)) continue;
+    if (ALLOWED_TEMP_ARTIFACT_RE.test(window)) continue;
+    if (DURABLE_DATA_KEYWORD_RE.test(window) || /\b(?:records|policies|state|knowledgeRecords|pendingScans|indicators|cashflows)\b/u.test(window)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isRouteModulePath(filePath = '') {
+  return ROUTE_MODULE_RE.test(normalizeProjectPath(filePath));
+}
+
+function routeModuleEntries(projectRoot = DEFAULT_PROJECT_ROOT) {
+  const routesDir = path.join(projectRoot, 'server/routes');
+  if (!fs.existsSync(routesDir)) return [];
+  return fs.readdirSync(routesDir)
+    .filter((fileName) => fileName.endsWith('.routes.mjs'))
+    .map((fileName) => ({ path: `server/routes/${fileName}`, status: '' }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function findFullStatePersistLines(lines = []) {
+  const violations = [];
+  lines.forEach((line, index) => {
+    if (!FULL_STATE_PERSIST_RE.test(line)) return;
+    violations.push({ lineNumber: index + 1, line: String(line || '').trim() });
+  });
+  return violations;
+}
+
+export function auditRouteSqlPersistence({
+  changedEntries = [],
+  changedFiles = [],
+  projectRoot = DEFAULT_PROJECT_ROOT,
+} = {}) {
+  const report = makeReport();
+  const explicitEntries = changedEntries.length
+    ? changedEntries
+    : changedFiles.map((filePath) => ({ path: filePath, status: '' }));
+  const routeEntries = (explicitEntries.length ? explicitEntries : routeModuleEntries(projectRoot))
+    .map((entry) => ({ ...entry, path: normalizeProjectPath(entry.path) }))
+    .filter((entry) => isRouteModulePath(entry.path));
+  const failures = [];
+
+  for (const entry of routeEntries) {
+    const absolutePath = path.join(projectRoot, entry.path);
+    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
+    const lines = fs.readFileSync(absolutePath, 'utf8').split(/\r?\n/);
+    for (const violation of findFullStatePersistLines(lines)) {
+      failures.push(`${entry.path}:${violation.lineNumber}: ${violation.line}`);
+    }
+  }
+
+  if (failures.length) {
+    add(
+      report,
+      'failed',
+      'route-sql-persistence',
+      'route handlers must use granular SQL persistence instead of full persist(state)',
+      failures.join('\n'),
+    );
+  } else if (routeEntries.length) {
+    add(report, 'passed', 'route-sql-persistence', 'route handlers avoid full-state persist(state) calls', routeEntries.map((entry) => entry.path).join('\n'));
+  } else {
+    add(report, 'skipped', 'route-sql-persistence', 'no route modules detected');
+  }
+  return report;
+}
+
 function defaultExecuteCommand(command, projectRoot) {
   const result = spawnSync(command, {
     cwd: projectRoot,
@@ -313,6 +413,45 @@ export function auditFeatureTestGate({
         summarizeCommandOutput(result.stdout, result.stderr),
       );
     }
+  }
+  return report;
+}
+
+export function auditDurableDataPersistence({
+  changedFiles = [],
+  projectRoot = DEFAULT_PROJECT_ROOT,
+} = {}) {
+  const report = makeReport();
+  const failures = [];
+  const checked = [];
+
+  for (const changedFile of changedFiles.map(normalizeProjectPath)) {
+    const absolutePath = path.join(projectRoot, changedFile);
+    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
+    const content = fs.readFileSync(absolutePath, 'utf8');
+    if (!isChangedDurableDataScript(changedFile, content)) continue;
+
+    checked.push(changedFile);
+    if (!hasSqlPersistenceEvidence(content)) {
+      failures.push(`${changedFile}: durable data workflow has no SQLite write evidence`);
+    }
+    if (writesTemporaryDurableData(content)) {
+      failures.push(`${changedFile}: durable data workflow writes source data to temporary JSON/CSV/NDJSON/state files`);
+    }
+  }
+
+  if (failures.length) {
+    add(
+      report,
+      'failed',
+      'durable-data-persistence',
+      'durable data workflows must persist to SQL, not temporary files',
+      failures.join('\n'),
+    );
+  } else if (checked.length) {
+    add(report, 'passed', 'durable-data-persistence', 'changed durable data workflows include SQL persistence evidence', checked.join('\n'));
+  } else {
+    add(report, 'skipped', 'durable-data-persistence', 'no changed durable data workflows detected');
   }
   return report;
 }
@@ -529,6 +668,16 @@ export function runHarnessAudit({
     }));
   }
 
+  if (status.skipped) {
+    add(report, 'skipped', 'durable-data-persistence', 'git status unavailable');
+  } else {
+    mergeReport(report, auditDurableDataPersistence({
+      changedFiles: status.entries.map((entry) => entry.path),
+      projectRoot,
+    }));
+  }
+
+  mergeReport(report, auditRouteSqlPersistence({ projectRoot }));
   mergeReport(report, auditOptionalResponsibilityDatabase({ dbPath }));
   mergeReport(report, auditHighRiskScriptDefaults({ projectRoot }));
   return report;

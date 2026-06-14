@@ -242,12 +242,10 @@ export function UploadPolicyPage(props: {
       .slice(0, 8);
   }, [companyQuery, formCompanySuggestions]);
   const visibleProductSuggestions = useMemo(() => {
-    const normalizedQuery = normalizeSuggestionQuery(productQuery);
     if (!normalizeSuggestionQuery(companyQuery)) return [];
     return (Array.isArray(formProductSuggestions) ? formProductSuggestions : [])
-      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
-  }, [companyQuery, formProductSuggestions, productQuery]);
+  }, [companyQuery, formProductSuggestions]);
   const showCompanySuggestions = companyFocused && companyQuery && (formCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (formProductSuggestionLoading || visibleProductSuggestions.length);
 
@@ -440,7 +438,7 @@ export function UploadPolicyPage(props: {
                 <div>
                   <h2 className="text-sm font-black text-amber-900">页面已更新</h2>
                   <p className="mt-1 text-xs font-medium leading-5 text-amber-800">
-                    开发环境刚刚重启过，你当前这个页面还是旧版本。先刷新一次，再继续录入和保存。
+                    你当前这个页面还是旧版本。先刷新一次，再继续录入和保存。
                   </p>
                 </div>
                 <button

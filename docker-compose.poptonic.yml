@@ -29,6 +29,7 @@ services:
       NODE_ENV: production
       POLICY_OCR_APP_HOST: 0.0.0.0
       POLICY_OCR_APP_API_PORT: 4206
+      POLICY_OCR_APP_DB_PATH: /data/policy-ocr.sqlite
       POLICY_OCR_APP_STATE_PATH: /data/state.json
     volumes:
       - poptonic_policy_data:/data

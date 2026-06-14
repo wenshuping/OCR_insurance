@@ -30,6 +30,9 @@ test('customer app handles membership required errors and invokes WeixinJSBridge
   assert.match(source, /createMembershipOrder/);
   assert.match(source, /getBrandWCPayRequest/);
   assert.match(source, /confirmMockMembershipOrder/);
+  assert.match(source, /membershipPurchaseErrorMessage/);
+  assert.match(source, /WECHAT_PAY_NOT_CONFIGURED[\s\S]*会员支付暂未开放/);
+  assert.match(source, /setMembershipMessage\(membershipPurchaseErrorMessage\(error\)\)/);
   assert.match(source, /showFamilyReport[\s\S]*membershipDialog/);
   assert.match(source, /cashflowMember[\s\S]*membershipDialog/);
 });

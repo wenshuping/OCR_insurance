@@ -360,44 +360,6 @@ function resolveOcrServiceUrl(env = process.env) {
   return trim(env.POLICY_OCR_SERVICE_URL || env.POLICY_OCR_LOCAL_SERVICE_URL || DEFAULT_OCR_SERVICE_URL).replace(/\/+$/, '');
 }
 
-function buildOcrServiceHeaders(env = process.env) {
-  const headers = { 'content-type': 'application/json', 'x-internal-service': 'policy-ocr-app' };
-  const token = trim(env.POLICY_OCR_SERVICE_TOKEN);
-  if (token) headers['x-ocr-service-token'] = token;
-  return headers;
-}
-
-async function requestOcrServiceConfig({ method = 'GET', body } = {}) {
-  const baseUrl = resolveOcrServiceUrl();
-  if (!baseUrl) {
-    const error = new Error('OCR 服务地址未配置');
-    error.code = 'POLICY_OCR_SERVICE_NOT_CONFIGURED';
-    error.status = 503;
-    throw error;
-  }
-  let response;
-  try {
-    response = await fetch(`${baseUrl}/internal/ocr-service/config`, {
-      method,
-      headers: buildOcrServiceHeaders(),
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    const error = new Error('OCR 服务未连接，无法读取识别方式配置');
-    error.code = 'POLICY_OCR_SERVICE_UNAVAILABLE';
-    error.status = 503;
-    throw error;
-  }
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const error = new Error(payload?.message || payload?.code || 'OCR 识别方式配置失败');
-    error.code = payload?.code || 'POLICY_OCR_CONFIG_FAILED';
-    error.status = response.status;
-    throw error;
-  }
-  return payload;
-}
-
 function defaultCodeGenerator() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
@@ -1747,8 +1709,15 @@ function findPolicyForReportRequest(req, state, adminPassword) {
   return { policy };
 }
 
+function resolveDefaultWechatPayMode(options = {}) {
+  const explicitMode = trim(process.env.WECHAT_PAY_MODE || options.wechatPayMode);
+  if (explicitMode) return explicitMode;
+  return process.env.NODE_ENV === 'production' ? 'live' : 'mock';
+}
+
 export function createPolicyOcrApp(options = {}) {
   const state = options.state || createInitialState();
+  const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
     startedAt: String(options.runtimeStartedAt || new Date().toISOString()),
     sessionId: String(options.runtimeSessionId || `runtime-${Date.now().toString(36)}`),
@@ -1824,6 +1793,21 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistFamilyState = typeof options.persistFamilyState === 'function'
     ? (input = {}) => options.persistFamilyState({ state, ...input })
+    : null;
+  const persistAdminSession = typeof options.persistAdminSession === 'function'
+    ? (input = {}) => options.persistAdminSession({ state, ...input })
+    : null;
+  const persistAuthSmsCode = typeof options.persistAuthSmsCode === 'function'
+    ? (input = {}) => options.persistAuthSmsCode({ state, ...input })
+    : null;
+  const persistAuthRegistration = typeof options.persistAuthRegistration === 'function'
+    ? (input = {}) => options.persistAuthRegistration({ state, ...input })
+    : null;
+  const persistMembershipConfig = typeof options.persistMembershipConfig === 'function'
+    ? (input = {}) => options.persistMembershipConfig({ state, ...input })
+    : null;
+  const persistOfficialDomainProfiles = typeof options.persistOfficialDomainProfiles === 'function'
+    ? (input = {}) => options.persistOfficialDomainProfiles({ state, ...input })
     : null;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
@@ -1905,6 +1889,11 @@ export function createPolicyOcrApp(options = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistAdminSession,
+    persistAuthSmsCode,
+    persistAuthRegistration,
+    persistMembershipConfig,
+    persistOfficialDomainProfiles,
     scanner,
     analyzer,
     adminPassword,
@@ -1995,20 +1984,19 @@ export function createPolicyOcrApp(options = {}) {
     upsertUserWechatIdentity,
     resolveWechatPayConfig: options.resolveWechatPayConfig || (() => resolveWechatPayConfig({
       ...process.env,
-      WECHAT_PAY_MODE: process.env.WECHAT_PAY_MODE || options.wechatPayMode || 'live',
+      WECHAT_PAY_MODE: defaultWechatPayMode,
     })),
     createWechatPayJsapiPrepay: options.createWechatPayJsapiPrepay || createWechatPayJsapiPrepay,
     decryptWechatPayResource,
     verifyWechatPaySignature,
     fetchWechatOAuthOpenid: options.fetchWechatOAuthOpenid || fetchWechatOAuthOpenid,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
-    wechatPayMode: options.wechatPayMode || 'live',
+    wechatPayMode: defaultWechatPayMode,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
     buildAdminOverview,
     rebuildOptionalResponsibilityGovernance,
-    requestOcrServiceConfig,
     buildAdminOfficialDomainProfiles,
     getDefaultOfficialDomainProfiles,
     normalizeAdminOfficialDomainProfileInput,

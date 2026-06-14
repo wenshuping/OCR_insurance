@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const cloudflaredConfig = path.join(process.env.HOME || '', '.cloudflared/config.yml');
+const cloudflaredWatchdogPidPath = path.join(process.env.HOME || '', 'Library/Application Support/OCRInsurance/cloudflared.pid');
 const command = process.argv[2] || 'start';
 const parsedCommand = parseCommand(command);
 const profileConfigs = createProfileConfigs();
@@ -157,7 +158,6 @@ function createProfileConfig({
       POLICY_OCR_SERVICE_URL: `http://127.0.0.1:${ocrPort}`,
       OCR_SERVICE_HOST: ocrHost,
       OCR_SERVICE_PORT: String(ocrPort),
-      POLICY_OCR_CONFIG_PATH: path.join(runtimeDir, 'policy-ocr-config.json'),
       POLICY_OCR_PROVIDER: 'remote_gpu_vision',
       ...extraEnv,
     },
@@ -214,6 +214,8 @@ function createServices(profile) {
       args: ['tunnel', '--config', cloudflaredConfig, 'run'],
       optional: true,
       skip: !profile.publicTunnel || !fs.existsSync(cloudflaredConfig),
+      externalPidPath: cloudflaredWatchdogPidPath,
+      externalCommandPattern: `cloudflared tunnel --config ${cloudflaredConfig} run`,
     },
   ];
 }
@@ -245,6 +247,27 @@ function readPid(profile, name) {
   } catch {
     return 0;
   }
+}
+
+function readExternalPid(service) {
+  if (!service.externalPidPath) return 0;
+  try {
+    const pid = Number(fs.readFileSync(service.externalPidPath, 'utf8').trim());
+    return Number.isFinite(pid) && pid > 0 ? pid : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function findExternalPidByCommand(service) {
+  if (!service.externalCommandPattern) return 0;
+  const result = spawnSync('pgrep', ['-f', service.externalCommandPattern], { encoding: 'utf8' });
+  if (result.status !== 0) return 0;
+  for (const line of String(result.stdout || '').split('\n')) {
+    const pid = Number(line.trim());
+    if (Number.isFinite(pid) && pid > 0 && pid !== process.pid && isPidRunning(pid)) return pid;
+  }
+  return 0;
 }
 
 function isPidRunning(pid) {
@@ -409,9 +432,13 @@ async function status(profile) {
   for (const service of createServices(profile)) {
     const pid = readPid(profile, service.name);
     const running = isPidRunning(pid);
+    let externalPid = running ? 0 : readExternalPid(service);
+    if (externalPid && !isPidRunning(externalPid)) externalPid = 0;
+    if (!running && !externalPid) externalPid = findExternalPidByCommand(service);
+    const externalRunning = !running && isPidRunning(externalPid);
     const portOpen = service.port ? await isPortOpen(service.port) : false;
-    const externalHealthy = !running && service.healthUrl && portOpen ? await waitForHttp(service.healthUrl, 2000).catch(() => false) : false;
-    const state = running ? `running pid=${pid}` : externalHealthy ? 'running external' : 'stopped';
+    const externalHealthy = !running && !externalRunning && service.healthUrl && portOpen ? await waitForHttp(service.healthUrl, 2000).catch(() => false) : false;
+    const state = running ? `running pid=${pid}` : externalRunning ? `running external pid=${externalPid}` : externalHealthy ? 'running external' : 'stopped';
     console.log(`${service.label}: ${state}${service.port ? ` port=${service.port} ${portOpen ? 'open' : 'closed'}` : ''}`);
   }
 }

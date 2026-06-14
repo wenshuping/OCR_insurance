@@ -6,6 +6,8 @@ export type FamilyRelationToCore =
   | 'spouse'
   | 'son'
   | 'daughter'
+  | 'daughter_in_law'
+  | 'son_in_law'
   | 'child'
   | 'father'
   | 'mother'

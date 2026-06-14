@@ -28,7 +28,6 @@ export function createFamilyRoutes(context) {
     normalizeFamilyRelation,
     normalizeGuestId,
     persistFamilyState,
-    policyHasFamilyBinding,
     requestOwner,
     resolveAuthUser,
     setFamilyCoreMember,
@@ -53,12 +52,10 @@ export function createFamilyRoutes(context) {
     if (!owner) return undefined;
     const ownerPolicies = (state.policies || []).filter((policy) => familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId }));
     let familiesForOwner = listFamilyProfilesForOwner(state, owner);
+    const hasActiveFamily = familiesForOwner.some((family) => String(family?.status || 'active') === 'active');
     const needsDefaultMigration = (
       ownerPolicies.length > 0 &&
-      (
-        !familiesForOwner.some((family) => String(family?.status || 'active') === 'active') ||
-        ownerPolicies.some((policy) => !policyHasFamilyBinding(policy))
-      )
+      !hasActiveFamily
     );
     if (needsDefaultMigration) {
       const beforeMarker = JSON.stringify({

@@ -490,12 +490,10 @@ function PolicyEditDialog({
       .slice(0, 8);
   }, [companyQuery, editCompanySuggestions]);
   const visibleProductSuggestions = useMemo(() => {
-    const normalizedQuery = normalizeSuggestionQuery(productQuery);
     if (!normalizeSuggestionQuery(companyQuery)) return [];
     return editProductSuggestions
-      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
-  }, [companyQuery, editProductSuggestions, productQuery]);
+  }, [companyQuery, editProductSuggestions]);
   const showCompanySuggestions = companyFocused && companyQuery && (editCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (editProductSuggestionLoading || visibleProductSuggestions.length);
 

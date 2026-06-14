@@ -43,6 +43,16 @@ Persist application, user, OCR, policy, responsibility, family report, cashflow,
 
 Temporary files are allowed only for disposable process artifacts such as pids, logs, upload scratch space, caches, or transient OCR inputs. When a workflow produces durable data, write it directly into the database through the existing persistence layer; do not park it in a run file first and import it later.
 
+This is a hard harness rule. `npm run harness:audit` fails changed durable data workflows such as crawlers, backfills, repairs, refills, recoveries, quantifiers, and refreshers when they do not show SQLite write evidence. It also fails workflows that write source data to temporary JSON/CSV/NDJSON/state files instead of the SQL persistence layer.
+
+Route handlers for user operations must not call naked `persist(state)`. Use the narrow SQLite persistence method for the mutation, such as `persistPendingScan`, `persistPolicyScanSave`, or another focused store method. This is a hard gate: compatibility fallbacks to full-state persistence are not allowed in route modules.
+
+For newly crawled or extracted insurance data, completion requires:
+
+- write through the existing SQLite-backed store or service;
+- include persistence evidence such as `dbPath`, `savedRecordCount`, and row ids/counts when practical;
+- verify the result with a SQL read, not just a crawler response, console output, Feishu sync, or temporary file.
+
 ## Verification Matrix
 
 | Change area | Required checks |

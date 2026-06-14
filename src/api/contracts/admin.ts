@@ -51,36 +51,6 @@ export type AdminOverview = {
   optionalResponsibilityGaps: OptionalResponsibilityGap[];
 };
 
-export type AdminOcrModeOption = {
-  value: string;
-  implemented: boolean;
-  selectable: boolean;
-  ready: boolean;
-  description: string;
-  notReadyReason?: string;
-};
-
-export type AdminOcrConfig = {
-  ok: true;
-  config: {
-    mode: string;
-    updatedAt: string | null;
-    updatedByActorId: number | null;
-  };
-  runtime: {
-    provider: string;
-    providerLabel: string;
-    legacyProvider: string;
-    legacyProviderLabel: string;
-    localVisionFallback?: {
-      enabled: boolean;
-      provider: string;
-      scope: string;
-    };
-  };
-  options: AdminOcrModeOption[];
-};
-
 export type AdminOfficialDomainProfile = {
   id: string;
   company: string;
@@ -139,17 +109,6 @@ export function reextractOptionalResponsibilities(token: string) {
   return request<{ ok: true; optionalResponsibilityCount: number; optionalIndicatorCount: number }>('/api/admin/optional-responsibilities/reextract', {
     token,
     method: 'POST',
-  });
-}
-
-export function getAdminOcrConfig(token: string) {
-  return request<AdminOcrConfig>('/api/admin/ocr-config', { token });
-}
-
-export function updateAdminOcrConfig(token: string, mode: string) {
-  return request<AdminOcrConfig>('/api/admin/ocr-config', {
-    token,
-    body: { mode },
   });
 }
 

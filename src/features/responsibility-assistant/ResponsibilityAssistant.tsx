@@ -85,12 +85,10 @@ export function ResponsibilityAssistant(props: {
   }, [companyQuery, companySuggestions]);
   const showCompanySuggestions = companyFocused && companyQuery && (companySuggestionLoading || visibleCompanySuggestions.length);
   const visibleProductSuggestions = useMemo(() => {
-    const normalizedQuery = normalizeSuggestionQuery(productQuery);
     if (!normalizeSuggestionQuery(companyQuery)) return [];
     return (Array.isArray(productSuggestions) ? productSuggestions : [])
-      .filter((suggestion) => normalizeSuggestionQuery(suggestion.productName) !== normalizedQuery)
       .slice(0, 8);
-  }, [companyQuery, productQuery, productSuggestions]);
+  }, [companyQuery, productSuggestions]);
   const showProductSuggestions = productFocused && Boolean(companyQuery) && (productSuggestionLoading || visibleProductSuggestions.length);
   const rootClassName = anchorClassName
     ? `no-print fixed ${anchorClassName} right-4 z-[70] flex flex-col-reverse items-end sm:right-6`

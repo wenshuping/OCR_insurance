@@ -37,7 +37,7 @@ This project remains a modular monolith with an OCR sidecar. Ownership is define
 | --- | --- | --- |
 | App shell | Top-level app selection and shared family share page bootstrapping | `src/App.tsx` |
 | Customer app | Customer auth state, guest state, policy list/dashboard, family report state, feature composition | `src/apps/customer/CustomerApp.tsx` |
-| Admin app | Admin login, overview, OCR config, official domain profiles, knowledge crawl, governance actions | `src/apps/admin/AdminApp.tsx` |
+| Admin app | Admin login, overview, official domain profiles, knowledge crawl, governance actions | `src/apps/admin/AdminApp.tsx` |
 | Customer auth | Customer account sheet and phone verification dialog UI | `src/features/customer-auth/CustomerAccountSheet.tsx`, `src/features/customer-auth/PhoneVerificationDialog.tsx` |
 | Customer navigation | Customer bottom tab navigation and customer tab type | `src/features/customer-navigation/CustomerBottomTabs.tsx` |
 | Policy entry | OCR upload, recognition, manual policy form, analysis preview, save flow | `src/features/policy-entry/UploadPolicyPage.tsx` |
@@ -48,7 +48,6 @@ This project remains a modular monolith with an OCR sidecar. Ownership is define
 | Customer cashflow | Customer cashflow detail page and annual/scenario/member cashflow tables | `src/features/cashflow/CashflowDetailPage.tsx` |
 | Customer cash value | Controlled cash value upload, recognition preview, and manual editor dialog UI | `src/features/cash-value/CashValueDialog.tsx` |
 | Report export | JPG export and canvas/page export utilities | `src/features/report-export/report-export.ts` |
-| Admin OCR config | Controlled OCR mode panel UI | `src/features/admin-ocr-config/AdminOcrModePanel.tsx` |
 | Admin official domains | Controlled official domain whitelist panel and form helpers | `src/features/admin-official-domain/AdminOfficialDomainPanel.tsx` |
 | Admin knowledge | Controlled local knowledge crawl panel and crawl form type | `src/features/admin-knowledge/AdminKnowledgePanel.tsx` |
 | Admin governance | Controlled optional responsibility governance panel | `src/features/admin-governance/AdminOptionalResponsibilityGapPanel.tsx` |

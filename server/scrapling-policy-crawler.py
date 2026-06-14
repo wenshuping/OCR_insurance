@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import asyncio
+import hmac
 import hashlib
 import html as html_lib
 import io
@@ -11,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -83,6 +85,14 @@ LIAN_LIFE_MATERIAL_TYPES = {
     "tk": {"label": "产品条款", "materialType": "terms"},
     "sms": {"label": "产品说明书", "materialType": "product_manual"},
 }
+GUOLIAN_LIFE_OFFICIAL_BASE_URL = "https://www.guolian-life.com/"
+GUOLIAN_LIFE_WEB_BASE_URL = "https://www.guolian-life.com/web/"
+GUOLIAN_LIFE_PRODUCT_PAGE_URL = "https://www.guolian-life.com/web/#/relatedTransaction.html"
+GUOLIAN_LIFE_OFFICIAL_DOMAINS = {"guolian-life.com", "www.guolian-life.com", "eservice.guolian-life.com"}
+GUOLIAN_LIFE_PRODUCT_MENUS = {
+    "in_sale": {"menuCode": "1875", "grade": "4", "salesStatus": "在售", "label": "在售产品目录"},
+    "stopped": {"menuCode": "1874", "grade": "4", "salesStatus": "停售", "label": "停售产品目录"},
+}
 PING_AN_PRODUCT_LIST_ENDPOINT = "https://life.pingan.com/ilife-home/product/getProductList"
 PING_AN_PLAN_PDF_ENDPOINT = "https://life.pingan.com/ilife-home/product/getPlanClausePdf"
 CHINA_TAIPING_WCP_BASE_URL = "https://tpwx.life.cntaiping.com/tpwcp/wcp/wcpalpha/"
@@ -113,6 +123,24 @@ TAIKANG_LIFE_TABLES = {
 SUNSHINE_LIFE_PRODUCT_INFO_URL = "https://www.sinosig.com/v/pilu?type=sx&tabIndex=10001_26"
 SUNSHINE_LIFE_OFFICIAL_DOMAIN = "www.sinosig.com"
 SUNSHINE_LIFE_PDF_DOMAIN = "static.sinosig.com"
+ZHONGAN_PRODUCT_INFO_URL = "https://www.zhongan.com/channel/public/publicInfo_cpjbxx2018.html"
+ZHONGAN_OFFICIAL_DOMAIN = "www.zhongan.com"
+ZHONGAN_STATIC_DOMAIN = "static.zhongan.com"
+HONGKANG_LIFE_OFFICIAL_BASE_URL = "https://www.hongkang-life.com/"
+HONGKANG_LIFE_PRODUCT_INFO_URL = "https://www.hongkang-life.com/hongkang/productBasicInformation.html"
+HONGKANG_LIFE_PRODUCT_CLAUSE_ENDPOINT = "https://www.hongkang-life.com/seerkey-iif-web-portal-1.0.0/disclosure/productClause/queryByStatus"
+HONGKANG_LIFE_OFFICIAL_DOMAIN = "www.hongkang-life.com"
+HONGKANG_LIFE_SALE_STATUSES = {"1": "在售", "0": "停售"}
+ZHONGAN_PRODUCT_PAGES = [
+    {"label": "健康险", "path": "/channel/public/cpjbxx2021_jkx.html", "productType": "医疗险"},
+    {"label": "意外险", "path": "/channel/public/cpjbxx2021_ywx.html", "productType": "意外险"},
+    {"label": "家庭/企业财产险", "path": "/channel/public/cpjbxx2021_jtqyccx.html", "productType": "其他"},
+    {"label": "责任险", "path": "/channel/public/cpjbxx2021_zrx.html", "productType": "其他"},
+    {"label": "信用保证险", "path": "/channel/public/cpjbxx2021_xybzx.html", "productType": "其他"},
+    {"label": "货运险", "path": "/channel/public/cpjbxx2021_hyx.html", "productType": "其他"},
+    {"label": "机动车辆保险", "path": "/channel/public/cpjbxx2021_jdclbx.html", "productType": "其他"},
+    {"label": "其他险", "path": "/channel/public/cpjbxx2021_qt.html", "productType": "其他"},
+]
 GUOHUA_LIFE_PRODUCT_INFO_URL = "https://www.95549.cn/pages/intro/xxpl_detail03_1.shtml"
 GUOHUA_LIFE_OFFICIAL_DOMAIN = "www.95549.cn"
 HAPPY_LIFE_OFFICIAL_BASE_URL = "https://www.happyinsurance.com.cn/"
@@ -127,6 +155,9 @@ HAPPY_LIFE_PRODUCT_PAGES = {
         "salesStatus": "停售",
     },
 }
+XIAOKANG_LIFE_OFFICIAL_BASE_URL = "https://www.livit-life.com/"
+XIAOKANG_LIFE_PRODUCT_INFO_URL = "https://www.livit-life.com/1/37/index.html"
+XIAOKANG_LIFE_OFFICIAL_DOMAINS = {"livit-life.com", "www.livit-life.com"}
 CAIXIN_LIFE_OFFICIAL_BASE_URL = "https://life.hnchasing.com/"
 CAIXIN_LIFE_OFFICIAL_DOMAIN = "life.hnchasing.com"
 CAIXIN_LIFE_PRODUCT_PAGES = {
@@ -139,6 +170,9 @@ CAIXIN_LIFE_PRODUCT_PAGES = {
         "salesStatus": "停售",
     },
 }
+GUOBAO_LIFE_OFFICIAL_BASE_URL = "https://www.panda-assets.com/"
+GUOBAO_LIFE_PRODUCT_INFO_URL = "https://www.panda-assets.com/PublicInfo/Index/114"
+GUOBAO_LIFE_OFFICIAL_DOMAIN = "www.panda-assets.com"
 CPIC_LIFE_OFFICIAL_BASE_URL = "https://life.cpic.com.cn/"
 CPIC_LIFE_PRODUCT_CATEGORIES = [
     {"path": "/xrsbx/gkxxpl/jbxx/gsgk/jydbxcpmljtk/zbcp/sx/index.shtml", "salesStatus": "在售", "productType": "寿险"},
@@ -190,6 +224,34 @@ METLIFE_DMTM_PAGE = {
     "url": "https://www.metlife.com.cn/information-disclosure/dmtm",
     "salesStatus": "电销披露",
 }
+YINGDA_LIFE_OFFICIAL_BASE_URL = "https://www.ydthlife.com/"
+YINGDA_LIFE_OFFICIAL_DOMAIN = "www.ydthlife.com"
+YINGDA_LIFE_PRODUCT_PAGES = [
+    {
+        "url": "https://www.ydthlife.com/gkxxpl/jbxx/cpjbxx/jbtk/zsjkbx/grbxcp/index.shtml",
+        "salesStatus": "在售",
+        "sourceGroup": "personal",
+        "pageLabel": "在售个人保险产品",
+    },
+    {
+        "url": "https://www.ydthlife.com/gkxxpl/jbxx/cpjbxx/jbtk/zsjkbx/tsbxcp/index.shtml",
+        "salesStatus": "在售",
+        "sourceGroup": "group",
+        "pageLabel": "在售团体保险产品",
+    },
+    {
+        "url": "https://www.ydthlife.com/gkxxpl/jbxx/cpjbxx/jbtk/tsbxnp/grbxcp/index.shtml",
+        "salesStatus": "停售",
+        "sourceGroup": "personal",
+        "pageLabel": "停售个人保险产品",
+    },
+    {
+        "url": "https://www.ydthlife.com/gkxxpl/jbxx/cpjbxx/jbtk/tsbxnp/ttbxcp/index.shtml",
+        "salesStatus": "停售",
+        "sourceGroup": "group",
+        "pageLabel": "停售团体保险产品",
+    },
+]
 AIA_LIFE_PRODUCT_LIST_ENDPOINT = "https://cws.aia.com.cn/mypage/productpublish/list"
 AIA_LIFE_OFFICIAL_BASE_URL = "https://www.aia.com.cn/"
 AIA_LIFE_PUBLIC_DISCLOSURE_DOC_BASE_URL = "https://www.aia.com.cn/content/dam/cn/zh-cn/docs/public-disclosure/"
@@ -208,6 +270,33 @@ AIA_LIFE_PRODUCT_PAGES = {
 CCB_LIFE_PRODUCT_INFO_URL = "https://www.ccb-life.com.cn/html/6182/3131/index.html"
 CCB_LIFE_OFFICIAL_BASE_URL = "https://www.ccb-life.com.cn/"
 CCB_LIFE_OFFICIAL_DOMAIN = "www.ccb-life.com.cn"
+HAIBAO_LIFE_OFFICIAL_BASE_URL = "https://www.haibao-life.com/"
+HAIBAO_LIFE_OFFICIAL_DOMAIN = "www.haibao-life.com"
+HAIBAO_LIFE_PRODUCT_PAGES = [
+    {
+        "key": "in_sale",
+        "baseUrl": "https://www.haibao-life.com/gkxxpl/cpjbxx/zscp/",
+        "pageCount": 4,
+        "salesStatus": "在售",
+    },
+    {
+        "key": "stopped",
+        "baseUrl": "https://www.haibao-life.com/gkxxpl/cpjbxx/tscp/",
+        "pageCount": 9,
+        "salesStatus": "停售",
+    },
+]
+HSBC_LIFE_PRODUCT_INFO_URL = "https://www.hsbcinsurance.com.cn/about-us/information-disclosure/basic-information/"
+HSBC_LIFE_OFFICIAL_BASE_URL = "https://www.hsbcinsurance.com.cn/"
+HSBC_LIFE_OFFICIAL_DOMAIN = "www.hsbcinsurance.com.cn"
+HUAGUI_LIFE_PRODUCT_INFO_URL = "https://www.huaguilife.cn/index/hgpcgw/generate/web/gkxxpl/jbxx/chanpinjibenxinxi/index.html?secondTypeId=1610578396749713410"
+HUAGUI_LIFE_OFFICIAL_BASE_URL = "https://www.huaguilife.cn/"
+HUAGUI_LIFE_OFFICIAL_DOMAIN = "www.huaguilife.cn"
+HUAHUI_LIFE_OFFICIAL_BASE_URL = "https://www.sciclife.com/"
+HUAHUI_LIFE_PRODUCT_TERMS_URL = "https://www.sciclife.com/base_survey/_content/13_05/02/1367479651970_1.html"
+HUAHUI_LIFE_PRODUCT_MANUAL_URL = "https://www.sciclife.com/base_product/_content/18_07/03/1530602814577_3.html"
+HUAHUI_LIFE_OFFICIAL_DOMAIN = "www.sciclife.com"
+HUAHUI_LIFE_OFFICIAL_DOMAINS = {"www.sciclife.com", "sciclife.com"}
 MINSHENG_LIFE_OFFICIAL_BASE_URL = "https://www.minshenglife.com/"
 MINSHENG_LIFE_OFFICIAL_DOMAIN = "www.minshenglife.com"
 MINSHENG_LIFE_PRODUCT_LIST_ENDPOINT = "https://www.minshenglife.com/api/publicinfo/productByName"
@@ -306,6 +395,35 @@ BOCOMM_LIFE_DIRECT_TABLE_PAGES = [
 ]
 BOCOMM_LIFE_LEGACY_STOPPED_URL = "https://www.bocommlife.com/110032/detail111436.html"
 BOCOMM_LIFE_TELESALES_URL = "https://www.bocommlife.com/101875/index.html"
+BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL = "https://www.boc-samsunglife.cn/"
+BOC_SAMSUNG_LIFE_OFFICIAL_DOMAIN = "www.boc-samsunglife.cn"
+BOC_SAMSUNG_LIFE_PRODUCT_LIST_ENDPOINT = "https://www.boc-samsunglife.cn/api/v1/bocsamsung/pc/component/goods/goodsInfoListPage"
+BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT = "https://www.boc-samsunglife.cn/api/v1/bocsamsung/pc/component/products/productInfoListPage"
+BOC_SAMSUNG_LIFE_GOODS_DETAIL_ENDPOINT = "https://www.boc-samsunglife.cn/api/v1/bocsamsung/pc/component/goods"
+BOC_SAMSUNG_LIFE_SM4_KEY_HEX = "dde468e48994f709ff89f985467733ab"
+BOC_SAMSUNG_LIFE_HMAC_KEY = "cc8d41d6099085a54eb9606db15a8e3ae792496c3a1575775a79ed469e324856"
+BOC_SAMSUNG_LIFE_EXCLUDED_MATERIAL_RE = re.compile(
+    r"费率|费率表|现金价值|利益演示|产品分类|声明书|总精算师|法律责任人|投保须知|职业分类|理赔服务|特别说明|健康告知|客户告知|清单",
+    re.I,
+)
+SINOKOREA_LIFE_OFFICIAL_BASE_URL = "https://www.sinokorealife.com.cn/"
+SINOKOREA_LIFE_PRODUCT_INFO_URL = "https://www.sinokorealife.com.cn/gkxxpl.jhtml"
+SINOKOREA_LIFE_OFFICIAL_DOMAIN = "www.sinokorealife.com.cn"
+SINOKOREA_LIFE_OFFICIAL_DOMAINS = {"sinokorealife.com.cn", "www.sinokorealife.com.cn"}
+CHANGSHENG_LIFE_OFFICIAL_BASE_URL = "https://www.gwcslife.com/"
+CHANGSHENG_LIFE_PRODUCT_INFO_URL = "https://www.gwcslife.com/main/index/gkxxplzl/jbxx/index.html"
+CHANGSHENG_LIFE_OFFICIAL_DOMAIN = "www.gwcslife.com"
+CHANGSHENG_LIFE_OFFICIAL_DOMAINS = {"gwcslife.com", "www.gwcslife.com"}
+CHANGSHENG_LIFE_PRODUCT_PAGES = [
+    {
+        "url": "https://www.gwcslife.com/main/index/gkxxplzl/jbxx/cpjbxx/4806/index.html",
+        "salesStatus": "在售",
+    },
+    {
+        "url": "https://www.gwcslife.com/main/index/gkxxplzl/jbxx/cpjbxx/4976/index.html",
+        "salesStatus": "停售",
+    },
+]
 BOCOMM_LIFE_EXCLUDED_MATERIAL_RE = re.compile(
     r"费率|费率表|现金价值|领取转换表|转换表|利益演示|账户价值|基本保险金额|投保规则|投保须知|清单|告知书",
     re.I,
@@ -397,6 +515,17 @@ GUOFU_LIFE_PRODUCT_CATEGORIES = [
     {"key": "available", "categoryId": "118", "salesStatus": "在售", "referer": "https://www.e-guofu.com/inSaleProInfo/index.html"},
     {"key": "discontinued", "categoryId": "119", "salesStatus": "停售", "referer": "https://www.e-guofu.com/noSaleProInfo/index.html"},
 ]
+BEIJING_LIFE_OFFICIAL_BASE_URL = "https://www.beijinglife.com.cn/"
+BEIJING_LIFE_PRODUCT_INFO_URL = "https://www.beijinglife.com.cn/publicInfo/basicInfo/productBasicInfo/"
+BEIJING_LIFE_OFFICIAL_DOMAINS = {"beijinglife.com.cn", "www.beijinglife.com.cn", "blife.com.cn", "www.blife.com.cn"}
+RUITAI_LIFE_OFFICIAL_BASE_URL = "https://www.oldmutual-chnenergy.com/"
+RUITAI_LIFE_PRODUCT_TERMS_URL = "https://www.oldmutual-chnenergy.com/onlineService/customerService/prosuctClause/"
+RUITAI_LIFE_OFFICIAL_DOMAINS = {
+    "oldmutual-chnenergy.com",
+    "www.oldmutual-chnenergy.com",
+    "oldmutual-guodian.com",
+    "www.oldmutual-guodian.com",
+}
 XINTAI_LIFE_PRODUCT_INFO_URL = "https://www.xintai.com/web/info/baseInfo/productInfo/index.jsp"
 XINTAI_LIFE_PRODUCT_LIST_ENDPOINT = "https://www.xintai.com/organization/findProducts.do"
 XINTAI_LIFE_INTERNET_PRODUCT_INFO_URL = "https://sinatay.com/web/info/internetInsurance/productInformation/index.jsp"
@@ -425,6 +554,51 @@ AEGON_THTF_PRODUCT_LISTS = {
     "listArr4": {"salesStatus": "停售", "segment": "团体保险", "label": "停售产品目录：团体保险"},
     "listArr6": {"salesStatus": "已报备未销售", "segment": "未销售", "label": "已报备未销售产品目录"},
 }
+FOSUN_PRUDENTIAL_OFFICIAL_BASE_URL = "https://www.pflife.com.cn/"
+FOSUN_PRUDENTIAL_PRODUCT_INFO_URL = "https://www.pflife.com.cn/fbofficialweb/basic?childmenu=ProductCatalog"
+FOSUN_PRUDENTIAL_DOWNLOAD_BASE_URL = "https://www.pflife.com.cn/FBGWServer"
+FOSUN_PRUDENTIAL_OFFICIAL_DOMAIN = "www.pflife.com.cn"
+FOSUN_PRUDENTIAL_OFFICIAL_DOMAINS = {"pflife.com.cn", "www.pflife.com.cn"}
+FOSUN_PRUDENTIAL_STATUS_PROFILES = {
+    "ZS": {"salesStatus": "在售", "label": "在售产品"},
+    "TS": {"salesStatus": "停售", "label": "停售产品"},
+    "WKS": {"salesStatus": "已报备未销售", "label": "已报备未销售产品"},
+}
+FOSUN_UHI_PRODUCT_INFO_URL = "https://www.fosun-uhi.com/PublicInformation/BasicInformation/ProductInformation/"
+FOSUN_UHI_PRODUCT_IFRAME_URL = "https://www.fosun-uhi.com/PublicInformation/BasicInformation/ProductInformation/iframe.html?v=20240712"
+FOSUN_UHI_PRODUCT_ENDPOINT = "https://www.fosun-uhi.com/wj/shop/complaints_proposal_new!getProductInfor.action"
+FOSUN_UHI_OFFICIAL_DOMAIN = "www.fosun-uhi.com"
+FOSUN_UHI_OFFICIAL_DOMAINS = {"fosun-uhi.com", "www.fosun-uhi.com", "fosunuhi.com.cn", "www.fosunuhi.com.cn"}
+FOSUN_UHI_STATUS_PROFILES = {
+    "S:Y": {"salesStatus": "在售", "segment": "个人保险", "label": "在售个险"},
+    "G:Y": {"salesStatus": "在售", "segment": "团体保险", "label": "在售团险"},
+    "S:N": {"salesStatus": "停售", "segment": "个人保险", "label": "停售个险"},
+    "G:N": {"salesStatus": "停售", "segment": "团体保险", "label": "停售团险"},
+}
+CITIC_PRUDENTIAL_PRODUCT_INFO_URL = "https://www.citic-prudential.com.cn/internetproductinformation/list.html"
+CITIC_PRUDENTIAL_OFFICIAL_DOMAIN = "www.citic-prudential.com.cn"
+CITIC_PRUDENTIAL_OFFICIAL_DOMAINS = {
+    "citic-prudential.com.cn",
+    "www.citic-prudential.com.cn",
+    "gwoss.citic-prudential.citic",
+    "ofcwbs-prd-bucket.oss-cn-beijing.aliyuncs.com",
+}
+BOB_CARDIF_PRODUCT_INFO_URL = "http://www.bob-cardif.com/xinxipilu/jibenxinxi/chanpinjibenxinxi/baoxianchanpinjibenxinxi/index.html"
+BOB_CARDIF_OFFICIAL_BASE_URL = "http://www.bob-cardif.com/"
+BOB_CARDIF_OFFICIAL_DOMAIN = "www.bob-cardif.com"
+BOB_CARDIF_OFFICIAL_DOMAINS = {"bob-cardif.com", "www.bob-cardif.com"}
+BOB_CARDIF_PRODUCT_PAGES = [
+    {
+        "url": "http://www.bob-cardif.com/xinxipilu/jibenxinxi/chanpinjibenxinxi/baoxianchanpinjibenxinxi/100002158385.html",
+        "label": "在售产品",
+        "salesStatus": "在售",
+    },
+    {
+        "url": "http://www.bob-cardif.com/xinxipilu/jibenxinxi/chanpinjibenxinxi/baoxianchanpinjibenxinxi/100002158374.html",
+        "label": "停售产品",
+        "salesStatus": "停售",
+    },
+]
 SUNLIFE_EVERBRIGHT_OFFICIAL_BASE_URL = "https://www.sunlife-everbright.com/"
 SUNLIFE_EVERBRIGHT_OFFICIAL_DOMAIN = "www.sunlife-everbright.com"
 SUNLIFE_EVERBRIGHT_PRODUCT_INFO_URL = "https://www.sunlife-everbright.com/sleb/info/jbxx/cpjbxx/jydbxcpmljtk/609782/index.html"
@@ -432,6 +606,15 @@ SUNLIFE_EVERBRIGHT_ARCHIVE_EXCLUDED_RE = re.compile(
     r"费率|保险费率|现金价值|现价|利益演示|账户价值|材料清单|清单|报送材料|备案报送|编码信息|精算师|声明书|法律责任人|责任人|批复|批单|变更原因|对比说明|投保规则|投保须知",
     re.I,
 )
+HENGQIN_LIFE_OFFICIAL_BASE_URL = "https://www.hqins.cn/"
+HENGQIN_LIFE_PRODUCT_INFO_URL = "https://www.hqins.cn/OpenInfo/base_info/product_info"
+HENGQIN_LIFE_API_BASE_URL = "https://www.hqins.cn/face"
+HENGQIN_LIFE_OFFICIAL_DOMAIN = "www.hqins.cn"
+HENGQIN_LIFE_OFFICIAL_DOMAINS = {"www.hqins.cn", "hqins.cn", "static.e-hqins.com", "oss-cn-szfinance.aliyuncs.com"}
+HENGQIN_LIFE_PRODUCT_ARTICLES = {
+    "in_sale": {"code": "3b581555eab3", "path": "product_up", "salesStatus": "在售", "label": "在售产品"},
+    "stopped": {"code": "0a4b3b75db55", "path": "product_down", "salesStatus": "停售", "label": "停售产品"},
+}
 GENERALI_CHINA_LIFE_OFFICIAL_BASE_URL = "https://www.generalichina.com/"
 GENERALI_CHINA_LIFE_OFFICIAL_DOMAIN = "www.generalichina.com"
 GENERALI_CHINA_LIFE_PRODUCT_PAGES = [
@@ -492,6 +675,65 @@ BOHAI_LIFE_PRODUCT_PAGES = [
         "defaultSalesStatus": "停售",
     },
 ]
+DINGCHENG_LIFE_OFFICIAL_BASE_URL = "https://www.dingchenglife.com.cn/"
+DINGCHENG_LIFE_OFFICIAL_DOMAINS = {
+    "dingchenglife.com.cn",
+    "www.dingchenglife.com.cn",
+    "dc-life.com.cn",
+    "www.dc-life.com.cn",
+}
+DINGCHENG_LIFE_PRODUCT_PAGES = [
+    {
+        "key": "in_sale",
+        "url": "https://www.dingchenglife.com.cn/gkxxpl/jbxx/zscpxx/",
+        "label": "在售产品信息",
+        "defaultSalesStatus": "在售",
+    },
+    {
+        "key": "stopped",
+        "url": "https://www.dingchenglife.com.cn/gkxxpl/jbxx/tscpxx/",
+        "label": "停售产品信息",
+        "defaultSalesStatus": "停售",
+    },
+    {
+        "key": "internet",
+        "url": "https://www.dingchenglife.com.cn/zxxx/hlwbx/",
+        "label": "互联网保险信息披露",
+        "defaultSalesStatus": "互联网保险披露",
+    },
+]
+PKU_FOUNDER_LIFE_OFFICIAL_BASE_URL = "https://www.pkufi.com/"
+PKU_FOUNDER_LIFE_OFFICIAL_DOMAIN = "wechat.pkufi.com"
+PKU_FOUNDER_LIFE_ASSET_DOMAIN = "web-package.oss-cn-shanghai.aliyuncs.com"
+PKU_FOUNDER_LIFE_OFFICIAL_DOMAINS = {
+    "www.pkufi.com",
+    "pkufi.com",
+    PKU_FOUNDER_LIFE_OFFICIAL_DOMAIN,
+    PKU_FOUNDER_LIFE_ASSET_DOMAIN,
+}
+PKU_FOUNDER_LIFE_PRODUCT_INFO_URL = "https://www.pkufi.com/api/information/InformationProduct/list"
+PKU_FOUNDER_LIFE_INTERNET_PRODUCT_URL = "https://www.pkufi.com/api/information/InformationProductInternet/page?page=1&limit=200"
+PKU_FOUNDER_LIFE_TERMS = [
+    {
+        "productName": "北大方正人寿安行意外伤害保险",
+        "productType": "意外险",
+        "salesStatus": "公开披露",
+        "title": "北大方正人寿保险有限公司安行意外伤害保险条款（2020年4月）",
+        "url": "https://wechat.pkufi.com/pkufi/wechat/microservice/insuranceDonation/pdf/%E5%AE%89%E8%A1%8C%E6%84%8F%E5%A4%96%E4%BC%A4%E5%AE%B3%E4%BF%9D%E9%99%A9%E6%9D%A1%E6%AC%BE.pdf",
+        "sourcePage": "https://www.pkufi.com/",
+    },
+    {
+        "productName": "北大方正人寿银发康健老年恶性肿瘤疾病保险",
+        "productType": "健康险",
+        "salesStatus": "公开披露",
+        "title": "北大方正人寿保险有限公司银发康健老年恶性肿瘤疾病保险条款",
+        "url": "https://wechat.pkufi.com/pkufi/wechat/resources/js/vshop/rate/AEC--insuranceClause.pdf",
+        "sourcePage": "https://www.pkufi.com/",
+    },
+]
+SOOCHOW_LIFE_PRODUCT_INFO_URL = "https://www.soochowlife.net/eportal/ui?pageId=363297"
+SOOCHOW_LIFE_OFFICIAL_DOMAIN = "www.soochowlife.net"
+SOOCHOW_LIFE_OFFICIAL_DOMAINS = {"soochowlife.net", "www.soochowlife.net", "wx.e-soochowlife.com"}
 RESPONSIBILITY_MATERIAL_LABELS = {"条款", "产品说明", "产品说明书"}
 EXCLUDED_MATERIAL_RE = re.compile(r"近三年|通知|费率表|现金价值表|账户价值|利益演示", re.I)
 RESPONSIBILITY_END_RE = re.compile(
@@ -541,7 +783,7 @@ RESPONSIBILITY_TOC_RE = re.compile(
     r"|(?:责任免除|其他免责条款|受益人|基本保险金额|保险金额|如何申请|如何领取|保险事故通知)"
     r")"
 )
-RESPONSIBILITY_TOC_MARKER_RE = re.compile(r"目\s*录|条款目录|阅读指引|阅\s*读\s*指\s*引|\.{3,}|…{2,}|……")
+RESPONSIBILITY_TOC_MARKER_RE = re.compile(r"(?<![\u4e00-\u9fff])目\s*录(?![\u4e00-\u9fff])|条款目录|阅读指引|阅\s*读\s*指\s*引|\.{3,}|…{2,}|……")
 RESPONSIBILITY_SECTION_HEADING_RE = re.compile(
     r"保险期间|犹豫期|宽限期|合同效力|责任免除|不保什么|其他免责条款|如何申请|如何领取|保险金申请|受益人|释义|保单红利|现金价值|保险费|退保"
 )
@@ -760,6 +1002,32 @@ except Exception as error:
         return json.loads(proc.stdout.decode("utf-8", "ignore"))
     except Exception:
         return {"pages": 0, "text": "", "error": proc.stderr.decode("utf-8", "ignore")[:300]}
+
+
+def extract_pdf_text_with_local_vision(data: bytes, max_pages: int = 0) -> dict[str, Any]:
+    if not data:
+        return {"pages": 0, "text": "", "error": "empty_pdf"}
+    script_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "ocr-service", "scripts", "pdf_responsibility_vision.swift")
+    )
+    if not os.path.exists(script_path):
+        return {"pages": 0, "text": "", "error": "vision_script_missing"}
+    with tempfile.NamedTemporaryFile(prefix="policy-vision-", suffix=".pdf") as pdf_file:
+        pdf_file.write(data)
+        pdf_file.flush()
+        proc = subprocess.run(
+            ["swift", script_path, pdf_file.name, str(max_pages or 0)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=90,
+        )
+    if proc.returncode != 0:
+        return {"pages": 0, "text": "", "error": proc.stderr.decode("utf-8", "ignore")[:300]}
+    try:
+        return json.loads(proc.stdout.decode("utf-8", "ignore"))
+    except Exception:
+        return {"pages": 0, "text": "", "error": "vision_json_parse_failed"}
 
 
 def clean_text(value: str) -> str:
@@ -2530,6 +2798,387 @@ def crawl_sunshine_life_browser_pages(payload: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def zhongan_product_type(title: str, fallback: str) -> str:
+    text = trim(title)
+    labels: list[str] = []
+    if "医疗" in text or "住院" in text or "门急诊" in text or "齿科" in text:
+        labels.append("医疗险")
+    if "重大疾病" in text or "特定疾病" in text or "疾病" in text or "防癌" in text or "恶性肿瘤" in text:
+        labels.append("重疾险")
+    if "意外" in text or "伤害" in text:
+        labels.append("意外险")
+    if not labels and fallback:
+        labels.append(fallback)
+    return "、".join(dict.fromkeys(label for label in labels if label)) or "其他"
+
+
+def zhongan_product_name_from_title(title: str) -> str:
+    text = trim(title)
+    text = re.sub(r"^众安在线财产保险股份有限公司", "", text)
+    text = re.sub(r"(?:条款|保险条款)(?:（[^）]*）)?$", "", text)
+    return trim(text) or trim(title)
+
+
+def zhongan_material_tasks(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    page_limit = max(0, int(payload.get("maxPages") or 0))
+    product_offset = max(0, int(payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    pages = ZHONGAN_PRODUCT_PAGES[:page_limit] if page_limit else ZHONGAN_PRODUCT_PAGES
+    tasks: list[dict[str, Any]] = []
+    page_results: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for page_info in pages:
+        page_url = urljoin(ZHONGAN_PRODUCT_INFO_URL, page_info["path"])
+        status, html = fetch_html_direct(page_url, referer=ZHONGAN_PRODUCT_INFO_URL)
+        page_results.append({"url": page_url, "label": page_info["label"], "status": status})
+        if status < 200 or status >= 300 or not html:
+            continue
+        soup = BeautifulSoup(html, "html.parser")
+        for link in soup.find_all("a", href=True):
+            title = clean_text(link.get_text(" "))
+            material_url = urljoin(page_url, trim(link.get("href")))
+            if not title or material_url in seen_urls:
+                continue
+            if ".pdf" not in material_url.lower():
+                continue
+            if "条款" not in title or EXCLUDED_MATERIAL_RE.search(title):
+                continue
+            host = urlsplit(material_url).hostname or ""
+            if host not in {ZHONGAN_STATIC_DOMAIN, ZHONGAN_OFFICIAL_DOMAIN}:
+                continue
+            seen_urls.add(material_url)
+            product_name = zhongan_product_name_from_title(title)
+            tasks.append(
+                {
+                    "company": "众安保险",
+                    "productName": product_name,
+                    "productType": zhongan_product_type(title, page_info["productType"]),
+                    "salesStatus": "公开披露",
+                    "category": page_info["label"],
+                    "label": "条款",
+                    "materialType": "terms",
+                    "title": title,
+                    "url": material_url,
+                    "sourcePage": page_url,
+                }
+            )
+    selected_tasks = tasks[product_offset:]
+    if max_products:
+        selected_tasks = selected_tasks[:max_products]
+    return selected_tasks, page_results
+
+
+def crawl_zhongan_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    pdf_status, content_type, data = fetch_binary_direct(material_url, referer=trim(task.get("sourcePage")) or ZHONGAN_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text:
+        return None
+    return {
+        "company": trim(task.get("company")) or "众安保险",
+        "productName": trim(task.get("productName")),
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")) or "公开披露",
+        "title": trim(task.get("title")),
+        "url": material_url,
+        "snippet": "众安保险官网产品条款，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": "terms",
+        "official": True,
+        "officialDomain": urlsplit(material_url).hostname or ZHONGAN_STATIC_DOMAIN,
+        "parser": "scrapling_zhongan_product_disclosure",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "category": trim(task.get("category")),
+    }
+
+
+def crawl_zhongan_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_zhongan_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_zhongan_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_zhongan_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    tasks, pages = zhongan_material_tasks(payload)
+    records = crawl_zhongan_material_records(tasks, max_workers=max_workers)
+    return {
+        "ok": True,
+        "company": "众安保险",
+        "source": ZHONGAN_PRODUCT_INFO_URL,
+        "officialDomain": ZHONGAN_OFFICIAL_DOMAIN,
+        "pdfDomain": ZHONGAN_STATIC_DOMAIN,
+        "productOffset": max(0, int(payload.get("productOffset") or 0)),
+        "maxProducts": max(0, int(payload.get("maxProducts") or 0)),
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": [
+            {
+                "company": task["company"],
+                "productName": task["productName"],
+                "productType": task["productType"],
+                "salesStatus": task["salesStatus"],
+                "category": task["category"],
+                "sourcePage": task["sourcePage"],
+            }
+            for task in tasks
+        ],
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def hongkang_life_status_filter(value: str) -> list[str]:
+    text = trim(value)
+    if text in {"", "all", "全部"}:
+        return ["1", "0"]
+    result: list[str] = []
+    for token in re.split(r"[,，\s]+", text):
+        lower = token.lower()
+        if token in HONGKANG_LIFE_SALE_STATUSES:
+            result.append(token)
+        elif "在售" in token or lower in {"on", "onsale", "in_sale", "available"}:
+            result.append("1")
+        elif "停售" in token or lower in {"off", "stopped", "sale_end", "discontinued"}:
+            result.append("0")
+    return list(dict.fromkeys(result)) or ["1", "0"]
+
+
+def hongkang_life_product_type(product_name: str) -> str:
+    if "医疗" in product_name:
+        return "医疗险"
+    if "疾病" in product_name or "重疾" in product_name or "防癌" in product_name:
+        return "健康险"
+    if "意外" in product_name:
+        return "意外险"
+    if "年金" in product_name or "养老" in product_name:
+        return "年金险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "寿险" in product_name:
+        return "寿险"
+    return ""
+
+
+def hongkang_life_pdf_url(value: str) -> str:
+    url = trim(value).replace("http://www.hongkang-life.com/", HONGKANG_LIFE_OFFICIAL_BASE_URL)
+    return url if url.startswith(HONGKANG_LIFE_OFFICIAL_BASE_URL) else ""
+
+
+def hongkang_life_responsibility_excerpt(text: str) -> str:
+    normalized = normalize_responsibility_source_text(text)
+    if not normalized:
+        return ""
+    heading_re = re.compile(
+        r"(?:\d+\s*[.．]\s*)?(?:我们提供的保障\s*)?"
+        r"(?:\d+\s*[.．]\s*\d+\s*)?保险责任"
+        r"|保险责任\s*在本(?:合同|附加合同)(?:的)?(?:保险期间内|有效期间内|有效期内)"
+    )
+    end_re = re.compile(
+        r"(?:\d+\s*[.．]\s*\d+\s*)?(?:责任免除|其他免责条款|保险金的申请|保险金申请|受益人)"
+        r"|(?:\d+\s*[.．]\s*)?(?:保险金的申请|保险金申请|释义|合同解除和变更|明确说明与如实告知)"
+    )
+    candidates: list[tuple[int, int]] = []
+    for match in heading_re.finditer(normalized):
+        start = match.start()
+        before = normalized[max(0, start - 300) : start]
+        near = normalized[start : start + 1200]
+        score = responsibility_match_score(normalized, start)
+        if re.search(r"(?:2|3)\s*[.．]\s*\d+\s*保险责任", normalized[max(0, start - 30) : start + 30]):
+            score += 4
+        if re.search(r"在本(?:合同|附加合同).{0,80}(?:我们|本公司).{0,80}(?:承担|给付|赔付|报销)", near):
+            score += 6
+        if re.search(r"(?:身故|全残|疾病|医疗|住院|意外|满期|生存|年金|豁免).{0,40}保险金", near):
+            score += 4
+        if re.search(r"阅读指引|条款目录|目\s*录", before + near[:260]):
+            score -= 8
+        if has_actual_responsibility_text(near[:1000]):
+            candidates.append((score, start))
+    for _, start in sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True):
+        tail = normalized[start:]
+        end_match = end_re.search(tail[160:])
+        candidate = tail[: 160 + end_match.start()] if end_match else tail[:MAX_EXCERPT_CHARS]
+        candidate = candidate[:MAX_EXCERPT_CHARS].strip()
+        if has_actual_responsibility_text(candidate):
+            return candidate
+    return focused_responsibility_excerpt(text)
+
+
+def hongkang_life_quality(page_text: str) -> tuple[str, str]:
+    if not trim(page_text):
+        return "invalid_empty", "no_responsibility_excerpt"
+    if not has_actual_responsibility_text(page_text):
+        return "invalid_non_responsibility", "missing_actual_responsibility"
+    if re.search(r"^(上述|该保险金|本项责任|前述|同时|此外)", trim(page_text)):
+        return "valid_partial", "excerpt_starts_mid_clause"
+    return "valid_complete", ""
+
+
+def hongkang_life_products(statuses: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    products: list[dict[str, Any]] = []
+    pages: list[dict[str, Any]] = []
+    for status_code in statuses:
+        status, data = post_json_direct(
+            HONGKANG_LIFE_PRODUCT_CLAUSE_ENDPOINT,
+            {"status": status_code},
+            referer=HONGKANG_LIFE_PRODUCT_INFO_URL,
+            origin=HONGKANG_LIFE_OFFICIAL_BASE_URL.rstrip("/"),
+        )
+        items = data.get("list") if isinstance(data.get("list"), list) else []
+        pages.append(
+            {
+                "url": HONGKANG_LIFE_PRODUCT_CLAUSE_ENDPOINT,
+                "status": status,
+                "saleStatus": HONGKANG_LIFE_SALE_STATUSES.get(status_code, status_code),
+                "productCount": len(items),
+            }
+        )
+        if status < 200 or status >= 300 or data.get("code") != 0:
+            continue
+        for item in items:
+            product_name = trim(item.get("name") or item.get("riskName"))
+            if not product_name:
+                continue
+            products.append(
+                {
+                    "productName": product_name,
+                    "riskCode": trim(item.get("riskCode")),
+                    "productType": hongkang_life_product_type(product_name),
+                    "salesStatus": HONGKANG_LIFE_SALE_STATUSES.get(status_code, status_code),
+                    "haltDate": trim(item.get("haltDate")),
+                    "files": item.get("files") if isinstance(item.get("files"), list) else [],
+                }
+            )
+    return products, pages
+
+
+def hongkang_life_material_tasks(products: list[dict[str, Any]], max_products: int) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    selected_products = products[:max_products] if max_products > 0 else products
+    for product in selected_products:
+        for material in product.get("files", []):
+            if trim(material.get("typeCode")) not in {"", "clause"}:
+                continue
+            material_url = hongkang_life_pdf_url(material.get("filePath"))
+            if not material_url or material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            tasks.append(
+                {
+                    "company": "弘康人寿",
+                    "productName": product["productName"],
+                    "productType": product["productType"],
+                    "salesStatus": product["salesStatus"],
+                    "riskCode": product["riskCode"],
+                    "haltDate": product["haltDate"],
+                    "label": trim(material.get("fileName")) or f"{product['productName']}条款",
+                    "url": material_url,
+                    "fileId": trim(material.get("fileId")),
+                    "sourcePage": HONGKANG_LIFE_PRODUCT_INFO_URL,
+                }
+            )
+    return tasks
+
+
+def crawl_hongkang_life_material_record(task: dict[str, Any]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    pdf_status, data = fetch_bytes_direct(material_url, referer=HONGKANG_LIFE_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = hongkang_life_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = hongkang_life_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": "弘康人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": label if product_name in label else f"{product_name}{label}",
+        "url": material_url,
+        "sourcePage": HONGKANG_LIFE_PRODUCT_INFO_URL,
+        "snippet": f"弘康人寿官网公开披露{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": "terms",
+        "official": True,
+        "officialDomain": HONGKANG_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_hongkang_life_product_clause",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "qualityStatus": quality_status,
+        "qualityReason": quality_issue,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+    }
+
+
+def crawl_hongkang_life_material_records(tasks: list[dict[str, Any]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_hongkang_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_hongkang_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_hongkang_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    statuses = hongkang_life_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    products, pages = hongkang_life_products(statuses)
+    tasks = hongkang_life_material_tasks(products, max_products=max_products)
+    records = crawl_hongkang_life_material_records(tasks, max_workers=max_workers)
+    quality_split: dict[str, int] = {}
+    for record in records:
+        quality = trim(record.get("responsibilityQualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+    return {
+        "ok": True,
+        "company": "弘康人寿",
+        "source": HONGKANG_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": HONGKANG_LIFE_OFFICIAL_DOMAIN,
+        "saleStatuses": [HONGKANG_LIFE_SALE_STATUSES.get(status, status) for status in statuses],
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "productCount": len(products),
+        "materialTaskCount": len(tasks),
+        "qualitySplit": quality_split,
+        "records": records,
+    }
+
+
 def guohua_life_sale_status_filter(value: str) -> str:
     normalized = trim(value).lower()
     if normalized in {"y", "in_sale", "sale", "active", "在售"}:
@@ -3075,6 +3724,222 @@ def crawl_happy_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def xiaokang_life_official_url(url: str) -> bool:
+    try:
+        host = urlsplit(url).hostname or ""
+    except Exception:
+        return False
+    return host in XIAOKANG_LIFE_OFFICIAL_DOMAINS
+
+
+def xiaokang_life_product_type(product_name: str) -> str:
+    return happy_life_product_type(product_name) or "其他"
+
+
+def xiaokang_life_material_type(label: str) -> str:
+    text = trim(label)
+    if "说明" in text:
+        return "product_manual"
+    if "条款" in text:
+        return "terms"
+    return ""
+
+
+def xiaokang_life_keep_material(label: str, url: str) -> bool:
+    text = trim(label)
+    if not text or ".pdf" not in trim(url).lower() or not xiaokang_life_official_url(url):
+        return False
+    if "费率" in text or "现金价值" in text:
+        return False
+    return "条款" in text or "产品说明" in text
+
+
+def xiaokang_life_responsibility_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_responsibility", "empty_responsibility_excerpt"
+    if re.match(r"^保险责任\s*[，,但]", text):
+        return "invalid_responsibility", "definition_or_non_responsibility_clause"
+    if "现金价值指" in text[:260] and "保单贷款" in text[:520]:
+        return "invalid_responsibility", "cash_value_definition_excerpt"
+    return "valid_responsibility", ""
+
+
+def xiaokang_life_sale_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"available", "in_sale", "sale", "active", "在售"}:
+        return {"在售"}
+    if text in {"discontinued", "stopped", "stop", "停售"}:
+        return {"停售"}
+    return {"在售", "停售"}
+
+
+def xiaokang_life_product_rows(
+    company: str,
+    html: str,
+    max_products: int = 0,
+    offset: int = 0,
+    sale_status: set[str] | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    products: list[dict[str, str]] = []
+    tasks: list[dict[str, str]] = []
+    selected_status = sale_status or {"在售", "停售"}
+    seen_products: set[str] = set()
+    seen_tasks: set[str] = set()
+    row_index = 0
+
+    for anchor in soup.select('a[href*="/1/44/detail-"]'):
+        name_node = anchor.select_one(".name")
+        product_name = clean_text(name_node.get_text(" ", strip=True) if name_node else anchor.get_text(" ", strip=True))
+        detail_url = urljoin(XIAOKANG_LIFE_OFFICIAL_BASE_URL, trim(anchor.get("href")))
+        sales_status = trim(anchor.get("data-type"))
+        if not product_name or not detail_url or sales_status not in selected_status:
+            continue
+        row_index += 1
+        if offset and row_index <= offset:
+            continue
+        if max_products and len(products) >= max_products:
+            break
+
+        product_type = xiaokang_life_product_type(product_name)
+        product_key = f"{product_name}|{sales_status}"
+        if product_key not in seen_products:
+            seen_products.add(product_key)
+            products.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                    "sourcePage": detail_url,
+                }
+            )
+
+        detail_status, detail_html = fetch_html_direct(detail_url, referer=XIAOKANG_LIFE_PRODUCT_INFO_URL)
+        if detail_status < 200 or detail_status >= 300 or not detail_html:
+            continue
+        detail_soup = BeautifulSoup(detail_html, "html.parser")
+        for link in detail_soup.select('a[href$=".pdf"], a[href*=".pdf"]'):
+            label = clean_text(link.get_text(" ", strip=True)) or clean_text(link.get("title") or "")
+            material_url = urljoin(detail_url, trim(link.get("href")))
+            material_type_value = xiaokang_life_material_type(label)
+            if not material_type_value or not xiaokang_life_keep_material(label, material_url):
+                continue
+            task_key = f"{product_name}|{material_url}|{material_type_value}"
+            if task_key in seen_tasks:
+                continue
+            seen_tasks.add(task_key)
+            tasks.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                    "label": label,
+                    "materialType": material_type_value,
+                    "url": material_url,
+                    "sourcePage": detail_url,
+                }
+            )
+    return products, tasks
+
+
+def crawl_xiaokang_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not xiaokang_life_official_url(material_url):
+        return None
+    status, content_type, data = fetch_binary_direct(material_url, referer=trim(task.get("sourcePage")) or XIAOKANG_LIFE_PRODUCT_INFO_URL)
+    if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or "保险责任" not in page_text:
+        return None
+    quality_status, quality_reason = xiaokang_life_responsibility_quality(page_text)
+    if quality_status == "invalid_responsibility":
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "小康人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or xiaokang_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"小康人寿官网{label or '产品资料'}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or xiaokang_life_material_type(label),
+        "official": True,
+        "officialDomain": urlsplit(material_url).hostname or "www.livit-life.com",
+        "parser": "scrapling_xiaokang_life_product_info",
+        "qualityStatus": quality_status,
+        "qualityReason": quality_reason,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+    }
+
+
+def crawl_xiaokang_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_xiaokang_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_xiaokang_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_xiaokang_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "小康人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    sale_status = xiaokang_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    skip_urls = {trim(item) for item in payload.get("skipUrls", []) if trim(item)}
+    status, html = fetch_html_direct(XIAOKANG_LIFE_PRODUCT_INFO_URL, referer=XIAOKANG_LIFE_OFFICIAL_BASE_URL)
+    products, tasks = xiaokang_life_product_rows(company, html, max_products=max_products, offset=offset, sale_status=sale_status)
+    if skip_urls:
+        tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
+    records = crawl_xiaokang_life_material_records(tasks, max_workers=max_workers)
+    status_split: dict[str, int] = {}
+    for record in records:
+        sales_status = trim(record.get("salesStatus")) or "unknown"
+        status_split[sales_status] = status_split.get(sales_status, 0) + 1
+    return {
+        "ok": True,
+        "company": company,
+        "source": XIAOKANG_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": ",".join(sorted(XIAOKANG_LIFE_OFFICIAL_DOMAINS)),
+        "httpStatus": status,
+        "saleStatus": sorted(sale_status),
+        "maxProducts": max_products,
+        "offset": offset,
+        "maxWorkers": max_workers,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+        "statusSplit": status_split,
+        "pages": [
+            {
+                "url": XIAOKANG_LIFE_PRODUCT_INFO_URL,
+                "status": status,
+                "productCount": len(products),
+                "materialTaskCount": len(tasks),
+                "recordCount": len(records),
+            }
+        ],
+    }
+
+
 def caixin_life_sale_status_keys(value: str) -> set[str]:
     normalized = trim(value).lower()
     if normalized in {"y", "in_sale", "sale", "active", "在售"}:
@@ -3303,6 +4168,233 @@ def crawl_caixin_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "maxProducts": max_products,
         "maxWorkers": max_workers,
         "pages": pages,
+        "products": [{key: value for key, value in product.items() if key != "materials"} for product in products],
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def guobao_life_sale_status_filter(value: str) -> str:
+    normalized = trim(value).lower()
+    if normalized in {"y", "in_sale", "sale", "active", "在售"}:
+        return "在售"
+    if normalized in {"n", "stopped", "stop", "discontinued", "停售"}:
+        return "停售"
+    return "all"
+
+
+def guobao_life_product_type(category: str, product_name: str) -> str:
+    category = trim(category)
+    if category == "年金险" or "年金" in product_name or "养老" in product_name:
+        return "年金险"
+    if "医疗" in product_name:
+        return "医疗险"
+    if category == "健康险" or "重大疾病" in product_name or "疾病" in product_name or "护理" in product_name:
+        return "健康险"
+    if category in {"意外险", "意外伤害险"} or "意外" in product_name:
+        return "意外险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "万能" in product_name:
+        return "万能账户"
+    if "终身寿险" in product_name or "定期寿险" in product_name or product_name.endswith("寿险"):
+        return "寿险"
+    return category
+
+
+def guobao_life_is_official_url(url: str) -> bool:
+    host = urlsplit(trim(url)).hostname or ""
+    return host == GUOBAO_LIFE_OFFICIAL_DOMAIN
+
+
+def guobao_life_materials_from_cell(cell: Any, label: str, material_type: str, page_url: str) -> list[dict[str, str]]:
+    materials: list[dict[str, str]] = []
+    for anchor in cell.find_all("a", href=True):
+        material_url = urljoin(page_url, html_lib.unescape(trim(anchor.get("href"))))
+        if ".pdf" not in material_url.lower() or not guobao_life_is_official_url(material_url):
+            continue
+        materials.append({"label": label, "type": material_type, "url": material_url})
+    return materials
+
+
+def guobao_life_product_rows(company: str, html: str, sale_status_filter: str, max_products: int) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(html, "html.parser")
+    products: list[dict[str, Any]] = []
+    seen_products: set[str] = set()
+    for index, row in enumerate(soup.find_all("tr"), start=0):
+        cells = row.find_all(["td", "th"])
+        if len(cells) < 8:
+            continue
+        product_name = trim(cells[2].get_text(" ", strip=True)).replace("\xa0", " ")
+        if not product_name or product_name == "产品名称":
+            continue
+        sales_status = trim(cells[7].get_text(" ", strip=True))
+        if sale_status_filter != "all" and sales_status != sale_status_filter:
+            continue
+        category = trim(cells[1].get_text(" ", strip=True)).replace("\xa0", " ")
+        stop_date = trim(cells[8].get_text(" ", strip=True)) if len(cells) > 8 else ""
+        risk_level = trim(cells[9].get_text(" ", strip=True)) if len(cells) > 9 else ""
+        materials: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for material in (
+            *guobao_life_materials_from_cell(cells[3], "产品条款", "terms", GUOBAO_LIFE_PRODUCT_INFO_URL),
+            *guobao_life_materials_from_cell(cells[5], "产品说明书", "product_manual", GUOBAO_LIFE_PRODUCT_INFO_URL),
+        ):
+            material_url = trim(material.get("url"))
+            if material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            materials.append(material)
+        if not materials:
+            continue
+        product_key = f"{sales_status}|{product_name}"
+        if product_key in seen_products:
+            continue
+        seen_products.add(product_key)
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": guobao_life_product_type(category, product_name),
+                "salesStatus": sales_status,
+                "sourcePage": GUOBAO_LIFE_PRODUCT_INFO_URL,
+                "sourceIndex": index,
+                "sourceCategory": category,
+                "stopDate": stop_date,
+                "riskLevel": risk_level,
+                "materials": materials,
+            }
+        )
+        if max_products and len(products) >= max_products:
+            break
+    return products
+
+
+def crawl_guobao_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not guobao_life_is_official_url(material_url):
+        return None
+    pdf_status, data = fetch_bytes_direct(material_url, referer=trim(task.get("sourcePage")) or GUOBAO_LIFE_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or "保险责任" not in page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "国宝人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"国宝人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": GUOBAO_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_guobao_life_product_info",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def crawl_guobao_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_guobao_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_guobao_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+        if record:
+            records.append(record)
+    return records
+
+
+def guobao_life_products_and_tasks(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, str]], dict[str, Any]]:
+    company = trim(payload.get("company")) or "国宝人寿"
+    sale_status_filter = guobao_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    status, html = fetch_html_direct(GUOBAO_LIFE_PRODUCT_INFO_URL)
+    page_meta = {
+        "url": GUOBAO_LIFE_PRODUCT_INFO_URL,
+        "status": status,
+        "saleStatus": sale_status_filter,
+        "productCount": 0,
+        "materialTaskCount": 0,
+        "recordCount": 0,
+    }
+    if status < 200 or status >= 300:
+        return [], [], page_meta
+    products = guobao_life_product_rows(company, html, sale_status_filter, max_products)
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for product in products:
+        for material in product.get("materials", []):
+            material_url = trim(material.get("url"))
+            if not material_url or material_url in seen_urls or material_url in skip_urls:
+                continue
+            seen_urls.add(material_url)
+            tasks.append(
+                {
+                    "company": trim(product.get("company")),
+                    "productName": trim(product.get("productName")),
+                    "productType": trim(product.get("productType")),
+                    "salesStatus": trim(product.get("salesStatus")),
+                    "label": trim(material.get("label")),
+                    "materialType": trim(material.get("type")),
+                    "url": material_url,
+                    "sourcePage": trim(product.get("sourcePage")),
+                }
+            )
+    page_meta["productCount"] = len(products)
+    page_meta["materialTaskCount"] = len(tasks)
+    return products, tasks, page_meta
+
+
+def crawl_guobao_life_material_tasks(payload: dict[str, Any]) -> dict[str, Any]:
+    products, tasks, page_meta = guobao_life_products_and_tasks(payload)
+    return {
+        "ok": page_meta.get("status", 0) >= 200 and page_meta.get("status", 0) < 300,
+        "company": trim(payload.get("company")) or "国宝人寿",
+        "source": GUOBAO_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": GUOBAO_LIFE_OFFICIAL_DOMAIN,
+        "pages": [page_meta],
+        "products": [{key: value for key, value in product.items() if key != "materials"} for product in products],
+        "tasks": tasks,
+    }
+
+
+def crawl_guobao_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "国宝人寿"
+    sale_status_filter = guobao_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    products, tasks, page_meta = guobao_life_products_and_tasks(payload)
+    if page_meta.get("status", 0) < 200 or page_meta.get("status", 0) >= 300:
+        return {"ok": False, "company": company, "pages": [page_meta], "products": [], "records": []}
+    records = crawl_guobao_life_material_records(tasks, max_workers=max_workers)
+    page_meta["recordCount"] = len(records)
+    return {
+        "ok": True,
+        "company": company,
+        "source": GUOBAO_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": GUOBAO_LIFE_OFFICIAL_DOMAIN,
+        "saleStatus": sale_status_filter,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": [page_meta],
         "products": [{key: value for key, value in product.items() if key != "materials"} for product in products],
         "materialTaskCount": len(tasks),
         "records": records,
@@ -4297,6 +5389,992 @@ def crawl_ccb_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def haibao_life_page_url(base_url: str, page_index: int) -> str:
+    return urljoin(base_url, "index.shtml" if page_index <= 1 else f"index_{page_index}.shtml")
+
+
+def haibao_life_material_type(label: str) -> str:
+    return "product_manual" if "说明书" in label else "terms"
+
+
+def haibao_life_keep_status(profile: dict[str, Any], status_filter: set[str]) -> bool:
+    return "all" in status_filter or profile["key"] in status_filter or profile["salesStatus"] in status_filter
+
+
+def fetch_haibao_life_html(url: str) -> tuple[int, str]:
+    status, content_type, data = fetch_binary_direct(url, referer=HAIBAO_LIFE_OFFICIAL_BASE_URL, max_bytes=2_000_000)
+    html = data.decode("utf-8", "ignore")
+    if status == 200 and ("X-WAF-UUID" in html or "403 Forbidden" in html or "<title>403" in html):
+        return 403, html
+    return status, html
+
+
+def fetch_haibao_life_pdf(url: str, referer: str) -> tuple[int, str, bytes]:
+    status, content_type, data = fetch_binary_direct(url, referer=referer or HAIBAO_LIFE_OFFICIAL_BASE_URL)
+    if status == 200 and not data.startswith(b"%PDF") and (b"403 Forbidden" in data[:1000] or b"X-WAF-UUID" in data[:3000]):
+        return 403, content_type, data
+    return status, content_type, data
+
+
+def parse_haibao_life_product_page(company: str, profile: dict[str, Any], page_index: int) -> dict[str, Any]:
+    page_url = haibao_life_page_url(profile["baseUrl"], page_index)
+    status, html = fetch_haibao_life_html(page_url)
+    page_meta = {
+        "sourcePage": page_url,
+        "status": status,
+        "salesStatus": profile["salesStatus"],
+        "pageIndex": page_index,
+        "productCount": 0,
+        "materialTaskCount": 0,
+    }
+    if status < 200 or status >= 300 or not html:
+        return {"page": page_meta, "products": [], "tasks": []}
+
+    soup = BeautifulSoup(html, "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    for row in soup.select("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 4:
+            continue
+        values = [clean_text(cell.get_text(" ", strip=True)) for cell in cells]
+        if len(cells) >= 6:
+            product_type = values[1]
+            product_name = values[2]
+            material_cells = [("条款", cells[3]), ("说明书", cells[4])]
+        else:
+            product_name = values[1]
+            product_type = taikang_life_product_type(product_name) or "其他"
+            material_cells = [("条款", cells[2]), ("说明书", cells[3])]
+        if not product_name or "海保人寿" not in product_name:
+            continue
+
+        product_tasks: list[dict[str, str]] = []
+        for label, cell in material_cells:
+            link = cell.find("a")
+            href = trim(link.get("href")) if link else ""
+            if not href:
+                id_match = re.search(r"\b(\d{5,})\b", cell.get_text(" ", strip=True))
+                href = f"/hb/Services/AttachDownLoad.jsp?id={id_match.group(1)}" if id_match else ""
+            material_url = urljoin(page_url, href)
+            if not href or "AttachDownLoad.jsp" not in material_url:
+                continue
+            product_tasks.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": profile["salesStatus"],
+                    "label": label,
+                    "materialType": haibao_life_material_type(label),
+                    "url": material_url,
+                    "sourcePage": page_url,
+                }
+            )
+        if not product_tasks:
+            continue
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product_type,
+                "salesStatus": profile["salesStatus"],
+                "sourcePage": page_url,
+            }
+        )
+        tasks.extend(product_tasks)
+
+    page_meta["productCount"] = len(products)
+    page_meta["materialTaskCount"] = len(tasks)
+    return {"page": page_meta, "products": products, "tasks": tasks}
+
+
+def crawl_haibao_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url:
+        return None
+    status, content_type, data = fetch_haibao_life_pdf(
+        material_url,
+        referer=trim(task.get("sourcePage")) or HAIBAO_LIFE_OFFICIAL_BASE_URL,
+    )
+    if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or "保险责任" not in page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "海保人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or taikang_life_product_type(product_name) or "其他",
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"海保人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or haibao_life_material_type(label),
+        "official": True,
+        "officialDomain": HAIBAO_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_haibao_life_product_info",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+    }
+
+
+def crawl_haibao_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_haibao_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_haibao_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_haibao_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "海保人寿"
+    status_value = trim(payload.get("saleStatus") or payload.get("status") or "all")
+    status_filter = {item.strip() for item in re.split(r"[,，\s]+", status_value) if item.strip()} or {"all"}
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for profile in HAIBAO_LIFE_PRODUCT_PAGES:
+        if not haibao_life_keep_status(profile, status_filter):
+            continue
+        for page_index in range(1, int(profile["pageCount"]) + 1):
+            page_result = parse_haibao_life_product_page(company, profile, page_index)
+            pages.append(page_result["page"])
+            for product in page_result["products"]:
+                if max_products and len(products) >= max_products:
+                    break
+                products.append(product)
+                product_name = trim(product.get("productName"))
+                for task in page_result["tasks"]:
+                    material_url = trim(task.get("url"))
+                    if trim(task.get("productName")) != product_name or not material_url or material_url in seen_urls:
+                        continue
+                    seen_urls.add(material_url)
+                    tasks.append(task)
+            if max_products and len(products) >= max_products:
+                break
+        if max_products and len(products) >= max_products:
+            break
+
+    records = crawl_haibao_life_material_records(tasks, max_workers=max_workers)
+    task_page_by_url = {trim(task.get("url")): trim(task.get("sourcePage")) for task in tasks}
+    record_counts_by_page: dict[str, int] = {}
+    for record in records:
+        page_url = task_page_by_url.get(trim(record.get("url")))
+        if page_url:
+            record_counts_by_page[page_url] = record_counts_by_page.get(page_url, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_page.get(trim(page.get("sourcePage")), 0)
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": HAIBAO_LIFE_PRODUCT_PAGES[0]["baseUrl"],
+        "officialDomain": HAIBAO_LIFE_OFFICIAL_DOMAIN,
+        "saleStatus": sorted(status_filter),
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def hsbc_life_sale_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {"在售", "停售"}
+    output: set[str] = set()
+    if text in {"sale", "on_sale", "available", "in_sale", "y", "在售"} or "在售" in text:
+        output.add("在售")
+    if text in {"stop", "stopped", "off_sale", "discontinued", "n", "停售"} or "停售" in text:
+        output.add("停售")
+    return output or {"在售", "停售"}
+
+
+def hsbc_life_product_type(product_name: str) -> str:
+    if "重大疾病" in product_name or "恶性肿瘤" in product_name or "疾病" in product_name:
+        return "重疾险"
+    if "医疗" in product_name or "护理" in product_name or "津贴" in product_name:
+        return "医疗险"
+    if "意外" in product_name:
+        return "意外险"
+    if "年金" in product_name or "养老金" in product_name or "养老" in product_name or "教育金" in product_name:
+        return "年金险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "万能" in product_name:
+        return "万能账户"
+    if "投资连结" in product_name or "投连" in product_name:
+        return "投连险"
+    if "增额" in product_name and "终身寿险" in product_name:
+        return "增额终身寿险"
+    if "定期寿险" in product_name:
+        return "定期寿险"
+    return "其他"
+
+
+def hsbc_life_material_type(label: str, header: str, url: str) -> str:
+    text = f"{label} {header} {url}"
+    if "说明" in text:
+        return "product_manual"
+    if "条款" in text or "tnc" in url.lower() or "terms" in url.lower():
+        return "terms"
+    return ""
+
+
+def hsbc_life_material_label(label: str, material_kind: str) -> str:
+    text = trim(label)
+    if material_kind == "product_manual":
+        return "产品说明书" if "说明" not in text else text
+    if material_kind == "terms":
+        return "产品条款" if "条款" not in text else text
+    return text
+
+
+def hsbc_life_product_rows(company: str, panel: Any, sales_status: str, max_products: int) -> list[dict[str, Any]]:
+    products: list[dict[str, Any]] = []
+    seen_products: set[str] = set()
+    if not panel:
+        return products
+    for table in panel.select("table.desktop"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+        headers = [trim(cell.get_text(" ", strip=True)) for cell in rows[0].find_all(["th", "td"], recursive=False)]
+        for row in rows[1:]:
+            cells = row.find_all(["td", "th"], recursive=False)
+            if not cells:
+                continue
+            product_name = trim(cells[0].get_text(" ", strip=True))
+            if not product_name or product_name in {"产品全称", "产品名称"}:
+                continue
+            product_key = f"{sales_status}|{product_name}"
+            if product_key in seen_products:
+                continue
+            materials: list[dict[str, str]] = []
+            for index, cell in enumerate(cells[1:], start=1):
+                header = headers[index] if index < len(headers) else ""
+                for anchor in cell.find_all("a"):
+                    label = trim(anchor.get_text(" ", strip=True))
+                    href = trim(anchor.get("href"))
+                    if not href:
+                        continue
+                    material_url = urljoin(HSBC_LIFE_OFFICIAL_BASE_URL, href)
+                    hostname = urlsplit(material_url).netloc.lower()
+                    material_kind = hsbc_life_material_type(label, header, material_url)
+                    if hostname != HSBC_LIFE_OFFICIAL_DOMAIN or material_kind not in {"terms", "product_manual"}:
+                        continue
+                    if EXCLUDED_MATERIAL_RE.search(f"{label} {header} {material_url}"):
+                        continue
+                    materials.append(
+                        {
+                            "label": hsbc_life_material_label(label, material_kind),
+                            "type": material_kind,
+                            "url": material_url,
+                        }
+                    )
+            if not materials:
+                continue
+            seen_products.add(product_key)
+            products.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": hsbc_life_product_type(product_name),
+                    "salesStatus": sales_status,
+                    "sourcePage": HSBC_LIFE_PRODUCT_INFO_URL,
+                    "materials": materials,
+                }
+            )
+            if max_products and len(products) >= max_products:
+                return products
+    return products
+
+
+def crawl_hsbc_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    pdf_status, data = fetch_bytes_direct(material_url, referer=trim(task.get("sourcePage")) or HSBC_LIFE_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "汇丰人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"汇丰人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or hsbc_life_material_type(label, label, material_url),
+        "official": True,
+        "officialDomain": HSBC_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_hsbc_life_product_info",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def crawl_hsbc_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_hsbc_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_hsbc_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_hsbc_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "汇丰人寿"
+    status_filter = hsbc_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    status, html = fetch_html_direct(HSBC_LIFE_PRODUCT_INFO_URL)
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_task_urls: set[str] = set()
+    if status < 200 or status >= 300:
+        return {
+            "ok": True,
+            "company": company,
+            "source": HSBC_LIFE_PRODUCT_INFO_URL,
+            "saleStatus": sorted(status_filter),
+            "maxProducts": max_products,
+            "maxWorkers": max_workers,
+            "pages": [{"url": HSBC_LIFE_PRODUCT_INFO_URL, "status": status, "recordCount": 0}],
+            "products": [],
+            "materialTaskCount": 0,
+            "records": [],
+        }
+    soup = BeautifulSoup(html, "html.parser")
+    panel_by_status = {"在售": soup.find(id="03"), "停售": soup.find(id="04")}
+    for sales_status in ("在售", "停售"):
+        if sales_status not in status_filter:
+            continue
+        remaining = max_products - len(products) if max_products else 0
+        page_products = hsbc_life_product_rows(company, panel_by_status.get(sales_status), sales_status, remaining)
+        page_meta = {
+            "url": HSBC_LIFE_PRODUCT_INFO_URL,
+            "status": status,
+            "salesStatus": sales_status,
+            "productCount": len(page_products),
+            "materialTaskCount": 0,
+            "recordCount": 0,
+        }
+        for product in page_products:
+            if max_products and len(products) >= max_products:
+                break
+            products.append({key: value for key, value in product.items() if key != "materials"})
+            for material in product.get("materials", []):
+                material_url = trim(material.get("url"))
+                if not material_url or material_url in seen_task_urls:
+                    continue
+                seen_task_urls.add(material_url)
+                tasks.append(
+                    {
+                        "company": company,
+                        "productName": product["productName"],
+                        "productType": product["productType"],
+                        "salesStatus": product["salesStatus"],
+                        "label": material["label"],
+                        "materialType": material["type"],
+                        "url": material_url,
+                        "sourcePage": product["sourcePage"],
+                    }
+                )
+        page_meta["materialTaskCount"] = len([task for task in tasks if task.get("salesStatus") == sales_status])
+        pages.append(page_meta)
+        if max_products and len(products) >= max_products:
+            break
+
+    records = crawl_hsbc_life_material_records(tasks, max_workers=max_workers)
+    record_counts_by_status: dict[str, int] = {}
+    task_status_by_url = {trim(task.get("url")): trim(task.get("salesStatus")) for task in tasks}
+    for record in records:
+        sales_status = task_status_by_url.get(trim(record.get("url")))
+        if sales_status:
+            record_counts_by_status[sales_status] = record_counts_by_status.get(sales_status, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_status.get(page["salesStatus"], 0)
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": HSBC_LIFE_PRODUCT_INFO_URL,
+        "saleStatus": sorted(status_filter),
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def huagui_life_sale_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {"在售", "停售"}
+    output: set[str] = set()
+    if text in {"sale", "on_sale", "available", "in_sale", "y", "在售", "在销"} or "在售" in text or "在销" in text:
+        output.add("在售")
+    if text in {"stop", "stopped", "off_sale", "discontinued", "n", "停售"} or "停售" in text:
+        output.add("停售")
+    return output or {"在售", "停售"}
+
+
+def huahui_life_product_type(product_name: str) -> str:
+    return taikang_life_product_type(product_name) or "其他"
+
+
+def huahui_life_sales_status(product_name: str, fallback: str = "") -> str:
+    if "停售" in product_name or "停办" in product_name:
+        return "停售"
+    return trim(fallback) or "在售"
+
+
+def huahui_life_normalize_product_name(value: str) -> str:
+    text = clean_text(value)
+    text = text.replace("（", "(").replace("）", ")")
+    text = re.sub(r"[（(]\s*已停售\s*[）)]", "", text)
+    text = re.sub(r"[（(]\s*停办\s*[）)]", "", text)
+    return clean_text(text)
+
+
+def huahui_life_material_type(label: str) -> str:
+    text = trim(label)
+    if "说明书" in text or "产品说明" in text:
+        return "product_manual"
+    if "条款" in text:
+        return "terms"
+    return ""
+
+
+def huahui_life_official_url(href: str, source_page: str) -> str:
+    url = urljoin(source_page or HUAHUI_LIFE_OFFICIAL_BASE_URL, trim(href))
+    parts = urlsplit(url)
+    if parts.scheme == "http":
+        url = urlunsplit(("https", parts.netloc, parts.path, parts.query, parts.fragment))
+    return url
+
+
+def huahui_life_is_official_url(url: str) -> bool:
+    hostname = urlsplit(url).netloc.lower()
+    return hostname in HUAHUI_LIFE_OFFICIAL_DOMAINS
+
+
+def huahui_life_terms_page_tasks(company: str, html: str, max_products: int) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    soup = BeautifulSoup(html, "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) < 3:
+            continue
+        product_label = clean_text(cells[0].get_text(" ", strip=True))
+        product_name = huahui_life_normalize_product_name(product_label)
+        if not product_name or "华汇人寿" not in product_name:
+            continue
+        sales_status = huahui_life_sales_status(product_label)
+        product_type = huahui_life_product_type(product_name)
+        product_tasks: list[dict[str, str]] = []
+        for anchor in row.find_all("a"):
+            label = clean_text(anchor.get_text(" ", strip=True))
+            material_type_value = huahui_life_material_type(label)
+            if material_type_value != "terms":
+                continue
+            material_url = huahui_life_official_url(trim(anchor.get("href")), HUAHUI_LIFE_PRODUCT_TERMS_URL)
+            if not huahui_life_is_official_url(material_url) or ".pdf" not in material_url.lower():
+                continue
+            if material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            product_tasks.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                    "label": label,
+                    "materialType": material_type_value,
+                    "url": material_url,
+                    "sourcePage": HUAHUI_LIFE_PRODUCT_TERMS_URL,
+                }
+            )
+        if not product_tasks:
+            continue
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product_type,
+                "salesStatus": sales_status,
+                "sourcePage": HUAHUI_LIFE_PRODUCT_TERMS_URL,
+            }
+        )
+        tasks.extend(product_tasks)
+        if max_products and len(products) >= max_products:
+            break
+    return products, tasks
+
+
+def huahui_life_manual_page_tasks(company: str, html: str, max_products: int, existing_products: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    soup = BeautifulSoup(html, "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for anchor in soup.find_all("a"):
+        label = clean_text(anchor.get_text(" ", strip=True))
+        href = trim(anchor.get("href"))
+        if not label or "华汇人寿" not in label or not href:
+            continue
+        material_type_value = huahui_life_material_type("产品说明书")
+        product_name = huahui_life_normalize_product_name(label)
+        if not product_name:
+            continue
+        material_url = huahui_life_official_url(href, HUAHUI_LIFE_PRODUCT_MANUAL_URL)
+        if not huahui_life_is_official_url(material_url) or ".pdf" not in material_url.lower():
+            continue
+        if material_url in seen_urls:
+            continue
+        seen_urls.add(material_url)
+        sales_status = huahui_life_sales_status(label, "停售")
+        product_type = huahui_life_product_type(product_name)
+        if product_name not in existing_products:
+            products.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                    "sourcePage": HUAHUI_LIFE_PRODUCT_MANUAL_URL,
+                }
+            )
+            existing_products.add(product_name)
+        tasks.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product_type,
+                "salesStatus": sales_status,
+                "label": "产品说明书",
+                "materialType": material_type_value,
+                "url": material_url,
+                "sourcePage": HUAHUI_LIFE_PRODUCT_MANUAL_URL,
+            }
+        )
+        if max_products and len(existing_products) >= max_products:
+            break
+    return products, tasks
+
+
+def huahui_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_unextractable"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_actual_responsibility_text"
+    if re.match(r"^(?:上述|该保险金|本项责任|前述|同时|此外|保险责任继续有效)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def huahui_life_responsibility_excerpt(text: str) -> str:
+    page_text = focused_responsibility_excerpt(text)
+    if len(clean_text(page_text)) >= 120:
+        return page_text
+    normalized = normalize_responsibility_source_text(text)
+    matches = list(
+        re.finditer(
+            r"(?:保险责任\s*)?(?:在本合同有效期内|在本合同保险期间内|在本合同有效期间内).{0,260}?承担保险责任",
+            normalized,
+        )
+    )
+    for match in matches:
+        start = max(0, match.start() - 80)
+        heading = normalized.rfind("保险责任", start, match.start())
+        if heading >= 0:
+            start = heading
+        tail = normalized[start:]
+        end_match = re.search(r"(?:责任免除|因下列情形之一.{0,80}不承担|保险金的申请|受益人|其他需要关注的事项|释义)", tail[120:])
+        candidate = tail[: 120 + end_match.start()] if end_match else tail[:MAX_EXCERPT_CHARS]
+        candidate = candidate[:MAX_EXCERPT_CHARS].strip()
+        if len(clean_text(candidate)) >= 120 and has_actual_responsibility_text(candidate):
+            return candidate
+    return page_text
+
+
+def crawl_huahui_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not huahui_life_is_official_url(material_url):
+        return None
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or HUAHUI_LIFE_PRODUCT_TERMS_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    extracted_text = extracted.get("text", "")
+    extraction_method = "pypdf"
+    if len(clean_text(extracted_text)) < 200 or "保险责任" not in extracted_text:
+        vision_extracted = extract_pdf_text_with_local_vision(data)
+        if len(clean_text(vision_extracted.get("text", ""))) > len(clean_text(extracted_text)):
+            extracted = vision_extracted
+            extracted_text = extracted.get("text", "")
+            extraction_method = "macos_vision"
+    page_text = huahui_life_responsibility_excerpt(extracted_text)
+    quality_status, quality_issue = huahui_life_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "华汇人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or huahui_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"华汇人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or huahui_life_material_type(label),
+        "official": True,
+        "officialDomain": HUAHUI_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_huahui_life_product_info",
+        "qualityStatus": quality_status,
+        "qualityReason": quality_issue,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "extractionMethod": extraction_method,
+        "bytes": len(data),
+        "contentType": content_type,
+    }
+
+
+def crawl_huahui_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_huahui_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_huahui_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def huahui_life_sale_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {"在售", "停售"}
+    if text in {"in_sale", "onsale", "on_sale", "sale", "在售"}:
+        return {"在售"}
+    if text in {"stopped", "stop", "停售"}:
+        return {"停售"}
+    return {trim(value)}
+
+
+def crawl_huahui_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "华汇人寿"
+    status_filter = huahui_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = set(str(item) for item in payload.get("skipUrls", []) if item)
+
+    terms_status, terms_html = fetch_html_direct(HUAHUI_LIFE_PRODUCT_TERMS_URL, referer=HUAHUI_LIFE_OFFICIAL_BASE_URL)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    if 200 <= terms_status < 300:
+        term_products, term_tasks = huahui_life_terms_page_tasks(company, terms_html, max_products)
+        products.extend(term_products)
+        tasks.extend(term_tasks)
+    pages.append(
+        {
+            "url": HUAHUI_LIFE_PRODUCT_TERMS_URL,
+            "status": terms_status,
+            "source": "terms",
+            "productCount": len(products),
+            "materialTaskCount": len(tasks),
+        }
+    )
+
+    manual_status, manual_html = fetch_html_direct(HUAHUI_LIFE_PRODUCT_MANUAL_URL, referer=HUAHUI_LIFE_OFFICIAL_BASE_URL)
+    if 200 <= manual_status < 300 and (not max_products or len(products) < max_products):
+        existing_products = {product["productName"] for product in products}
+        manual_products, manual_tasks = huahui_life_manual_page_tasks(company, manual_html, max_products, existing_products)
+        products.extend(manual_products)
+        tasks.extend(manual_tasks)
+    pages.append(
+        {
+            "url": HUAHUI_LIFE_PRODUCT_MANUAL_URL,
+            "status": manual_status,
+            "source": "product_manual",
+            "productCount": len(products),
+            "materialTaskCount": len(tasks),
+        }
+    )
+
+    products = [product for product in products if product["salesStatus"] in status_filter]
+    product_names = {product["productName"] for product in products}
+    tasks = [
+        task
+        for task in tasks
+        if task["salesStatus"] in status_filter and task["productName"] in product_names and trim(task.get("url")) not in skip_urls
+    ]
+    records = crawl_huahui_life_material_records(tasks, max_workers=max_workers)
+    quality_split: dict[str, int] = {}
+    for record in records:
+        quality = trim(record.get("responsibilityQualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+    for page in pages:
+        page["filteredProductCount"] = len(products)
+        page["filteredMaterialTaskCount"] = len(tasks)
+        page["recordCount"] = len(records)
+    return {
+        "ok": True,
+        "company": company,
+        "source": HUAHUI_LIFE_PRODUCT_TERMS_URL,
+        "officialDomain": HUAHUI_LIFE_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(HUAHUI_LIFE_OFFICIAL_DOMAINS),
+        "saleStatus": sorted(status_filter),
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "totalCandidateProductCount": len(products),
+        "materialTaskCount": len(tasks),
+        "records": records,
+        "qualitySplit": quality_split,
+    }
+
+
+def huagui_life_sales_status(value: str) -> str:
+    text = trim(value)
+    if text in {"在销", "在售"}:
+        return "在售"
+    if "停售" in text:
+        return "停售"
+    return text
+
+
+def huagui_life_product_type(product_name: str) -> str:
+    if "重大疾病" in product_name or "恶性肿瘤" in product_name or "疾病" in product_name:
+        return "重疾险"
+    if "医疗" in product_name or "护理" in product_name or "津贴" in product_name:
+        return "医疗险"
+    if "意外" in product_name:
+        return "意外险"
+    if "年金" in product_name or "养老" in product_name or "教育金" in product_name:
+        return "年金险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "万能" in product_name:
+        return "万能账户"
+    if "投资连结" in product_name or "投连" in product_name:
+        return "投连险"
+    if "增额" in product_name and "终身寿险" in product_name:
+        return "增额终身寿险"
+    if "定期寿险" in product_name:
+        return "定期寿险"
+    return "其他"
+
+
+def huagui_life_material_type(label: str) -> str:
+    text = trim(label)
+    if "说明" in text:
+        return "product_manual"
+    if "条款" in text:
+        return "terms"
+    return ""
+
+
+def huagui_life_product_rows(company: str, html: str, max_products: int) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+    if not table:
+        return products, tasks
+    for row in table.find_all("tr")[1:]:
+        cells = row.find_all(["td", "th"], recursive=False)
+        if len(cells) < 5:
+            continue
+        product_name = trim(cells[1].get_text(" ", strip=True))
+        sales_status = huagui_life_sales_status(cells[4].get_text(" ", strip=True))
+        if not product_name or product_name in seen_products:
+            continue
+        product = {
+            "company": company,
+            "productName": product_name,
+            "productType": huagui_life_product_type(product_name),
+            "salesStatus": sales_status,
+            "sourcePage": HUAGUI_LIFE_PRODUCT_INFO_URL,
+        }
+        product_tasks: list[dict[str, str]] = []
+        for cell in cells[2:4]:
+            for anchor in cell.find_all("a"):
+                label = trim(anchor.get_text(" ", strip=True))
+                href = trim(anchor.get("href"))
+                material_type = huagui_life_material_type(label)
+                if not href or material_type not in {"terms", "product_manual"}:
+                    continue
+                material_url = urljoin(HUAGUI_LIFE_OFFICIAL_BASE_URL, href)
+                hostname = urlsplit(material_url).netloc.lower()
+                if hostname != HUAGUI_LIFE_OFFICIAL_DOMAIN or ".pdf" not in material_url.lower():
+                    continue
+                if material_url in seen_urls:
+                    continue
+                seen_urls.add(material_url)
+                product_tasks.append(
+                    {
+                        "company": company,
+                        "productName": product_name,
+                        "productType": product["productType"],
+                        "salesStatus": sales_status,
+                        "label": label,
+                        "materialType": material_type,
+                        "url": material_url,
+                        "sourcePage": HUAGUI_LIFE_PRODUCT_INFO_URL,
+                    }
+                )
+        if not product_tasks:
+            continue
+        seen_products.add(product_name)
+        products.append(product)
+        tasks.extend(product_tasks)
+        if max_products and len(products) >= max_products:
+            break
+    return products, tasks
+
+
+def crawl_huagui_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    pdf_status, data = fetch_bytes_direct(material_url, referer=trim(task.get("sourcePage")) or HUAGUI_LIFE_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "华贵人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"华贵人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": HUAGUI_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_huagui_life_product_info",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def crawl_huagui_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_huagui_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_huagui_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_huagui_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "华贵人寿"
+    status_filter = huagui_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    status, html = fetch_html_direct(HUAGUI_LIFE_PRODUCT_INFO_URL, referer=HUAGUI_LIFE_OFFICIAL_BASE_URL)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    if 200 <= status < 300:
+        products, tasks = huagui_life_product_rows(company, html, max_products)
+        products = [product for product in products if product["salesStatus"] in status_filter]
+        product_names = {product["productName"] for product in products}
+        tasks = [task for task in tasks if task["salesStatus"] in status_filter and task["productName"] in product_names]
+    records = crawl_huagui_life_material_records(tasks, max_workers=max_workers)
+    return {
+        "ok": True,
+        "company": company,
+        "source": HUAGUI_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": HUAGUI_LIFE_OFFICIAL_DOMAIN,
+        "saleStatus": sorted(status_filter),
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": [
+            {
+                "url": HUAGUI_LIFE_PRODUCT_INFO_URL,
+                "status": status,
+                "productCount": len(products),
+                "materialTaskCount": len(tasks),
+                "recordCount": len(records),
+            }
+        ],
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
 def minsheng_life_status_pages(value: str) -> list[dict[str, Any]]:
     text = trim(value).lower()
     if text in {"", "all", "全部"}:
@@ -4714,7 +6792,7 @@ async def cathay_life_extract_page(playwright: Any, page_info: dict[str, str], *
                 "cookieHeader": "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in cookies),
             }
         rows = await page.evaluate(
-            """() => Array.from(document.querySelectorAll('table')).flatMap((table, tableIndex) => {
+            r"""() => Array.from(document.querySelectorAll('table')).flatMap((table, tableIndex) => {
               const tableHeader = Array.from(table.querySelectorAll('tr:first-child th, tr:first-child td')).map((cell) => (cell.innerText || '').replace(/\s+/g, ' ').trim()).join(' ');
               return Array.from(table.querySelectorAll('tr')).slice(1).map((row) => {
                 const cells = Array.from(row.querySelectorAll('td'));
@@ -6540,6 +8618,368 @@ def crawl_bocomm_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def boc_samsung_life_sm4_crypt(value: bytes, decrypt: bool = False) -> bytes:
+    command = [
+        "openssl",
+        "enc",
+        "-d" if decrypt else "-e",
+        "-sm4-ecb",
+        "-K",
+        BOC_SAMSUNG_LIFE_SM4_KEY_HEX,
+        "-nosalt",
+    ]
+    proc = subprocess.run(
+        command,
+        input=value,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=20,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode("utf-8", "ignore")[:300])
+    return proc.stdout
+
+
+def boc_samsung_life_sm4_encrypt_text(value: str) -> str:
+    return boc_samsung_life_sm4_crypt(value.encode("utf-8")).hex()
+
+
+def boc_samsung_life_sm4_decrypt_text(value: str) -> str:
+    return boc_samsung_life_sm4_crypt(bytes.fromhex(value), decrypt=True).decode("utf-8", "ignore")
+
+
+def boc_samsung_life_signed_post(url: str, payload: dict[str, Any], referer: str = "") -> tuple[int, dict[str, Any]]:
+    body = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
+    encrypted_body = boc_samsung_life_sm4_encrypt_text(body)
+    timestamp = str(int(time.time() * 1000))
+    request_uuid = str(uuid.uuid4())
+    replay_sign = boc_samsung_life_sm4_encrypt_text(f"{timestamp}{request_uuid}")
+    api_sign = hmac.new(
+        BOC_SAMSUNG_LIFE_HMAC_KEY.encode("utf-8"),
+        encrypted_body.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    curl_body = json.dumps({"en": encrypted_body}, ensure_ascii=False, separators=(",", ":"))
+    proc = subprocess.run(
+        [
+            "curl",
+            "--http1.1",
+            "-L",
+            "-sS",
+            "-X",
+            "POST",
+            "--max-time",
+            "45",
+            "--user-agent",
+            "Mozilla/5.0",
+            "-H",
+            "Content-Type: application/json;charset=UTF-8",
+            "-H",
+            f"Referer: {referer or BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL}",
+            "-H",
+            "Origin: https://www.boc-samsunglife.cn",
+            "-H",
+            f"REQUESTCHECKKEY: REQUEST_CHECK_VALUE_{timestamp}",
+            "-H",
+            f"X-Timestamp: {timestamp}",
+            "-H",
+            f"X-Uuid: {request_uuid}",
+            "-H",
+            f"X-Sign: {replay_sign}",
+            "-H",
+            f"X-Api-Sign: {api_sign}",
+            "--data",
+            curl_body,
+            url,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return 0, {}
+    try:
+        response = json.loads(proc.stdout.decode("utf-8", "ignore"))
+    except Exception:
+        return 200, {}
+    encrypted_data = response.get("data")
+    if isinstance(encrypted_data, str) and re.fullmatch(r"[0-9a-fA-F]+", encrypted_data or ""):
+        try:
+            response["data"] = json.loads(boc_samsung_life_sm4_decrypt_text(encrypted_data))
+        except Exception:
+            response["data"] = {}
+    return int(response.get("status") or 200), response
+
+
+def fetch_boc_samsung_life_product_page(page_number: int, page_size: int) -> tuple[int, dict[str, Any]]:
+    status, response = boc_samsung_life_signed_post(
+        BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT,
+        {"pageNum": page_number, "pageSize": page_size, "queryBean": {}},
+        referer="https://www.boc-samsunglife.cn/Information",
+    )
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    return status, data
+
+
+def boc_samsung_life_product_type(product_name: str) -> str:
+    if "重大疾病" in product_name or "疾病" in product_name or "防癌" in product_name or "癌" in product_name:
+        return "重疾险"
+    if "医疗" in product_name or "住院" in product_name or "津贴" in product_name:
+        return "医疗险"
+    if "意外" in product_name or "交通" in product_name:
+        return "意外险"
+    if "年金" in product_name or "养老" in product_name or "教育金" in product_name:
+        return "年金险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "定期寿险" in product_name:
+        return "定期寿险"
+    if "万能" in product_name:
+        return "万能账户"
+    if "投连" in product_name or "投资连结" in product_name:
+        return "投连险"
+    if "终身寿险" in product_name:
+        return "增额终身寿险"
+    if "护理" in product_name:
+        return "护理险"
+    return "其他"
+
+
+def boc_samsung_life_sales_status(item: dict[str, Any]) -> str:
+    state = trim(item.get("state"))
+    if state in {"1", "在售", "sale", "Y"}:
+        return "在售"
+    if state in {"0", "3", "停售", "stop", "N"}:
+        return "停售"
+    return "公开披露"
+
+
+def boc_samsung_life_material_type(label: str) -> str:
+    if BOC_SAMSUNG_LIFE_EXCLUDED_MATERIAL_RE.search(label):
+        return ""
+    if "产品说明" in label or "说明书" in label:
+        return "product_manual"
+    if "条款" in label:
+        return "terms"
+    return ""
+
+
+def boc_samsung_life_material_url(value: str) -> str:
+    material_url = urljoin(BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL, trim(value))
+    host = (urlsplit(material_url).hostname or "").lower()
+    if host != BOC_SAMSUNG_LIFE_OFFICIAL_DOMAIN:
+        return ""
+    if ".pdf" not in material_url.lower():
+        return ""
+    return material_url
+
+
+def boc_samsung_life_tasks_from_item(company: str, item: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    product_name = trim(item.get("productName"))
+    if not product_name:
+        return None, []
+    product = {
+        "company": company,
+        "productName": product_name,
+        "productType": boc_samsung_life_product_type(product_name),
+        "salesStatus": boc_samsung_life_sales_status(item),
+        "sourcePage": "https://www.boc-samsunglife.cn/Information",
+        "productCode": trim(item.get("productCode")),
+        "sourceId": trim(item.get("id")),
+        "publishedAt": trim(item.get("gmtCreated")),
+    }
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    primary_label = trim(item.get("newFileName")) or f"{product_name}条款"
+    primary_url = boc_samsung_life_material_url(trim(item.get("newFileUrl")))
+    primary_type = boc_samsung_life_material_type(primary_label)
+    if primary_url and primary_type:
+        tasks.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product["productType"],
+                "salesStatus": product["salesStatus"],
+                "label": primary_label,
+                "materialType": primary_type,
+                "url": primary_url,
+                "sourcePage": product["sourcePage"],
+            }
+        )
+        seen_urls.add(primary_url)
+
+    for file_item in item.get("productFileList") or []:
+        label = trim(file_item.get("displayName")) or trim(file_item.get("fileName"))
+        material_type = boc_samsung_life_material_type(label)
+        material_url = boc_samsung_life_material_url(trim(file_item.get("url")))
+        if not material_type or not material_url or material_url in seen_urls:
+            continue
+        seen_urls.add(material_url)
+        tasks.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product["productType"],
+                "salesStatus": product["salesStatus"],
+                "label": label,
+                "materialType": material_type,
+                "url": material_url,
+                "sourcePage": product["sourcePage"],
+            }
+        )
+    return product, tasks
+
+
+def boc_samsung_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "保险责任正文为空"
+    if re.match(r"^(?:保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外|其中)", text):
+        return "valid_partial", "疑似从条款中段开始"
+    if not has_actual_responsibility_text(text):
+        return "suspect_needs_source_check", "缺少明确保险责任触发条件或给付规则"
+    return "valid_complete", ""
+
+
+def crawl_boc_samsung_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    pdf_status, data = fetch_bytes_direct(material_url, referer=trim(task.get("sourcePage")) or BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text:
+        return None
+    quality_status, quality_issue = boc_samsung_life_quality(page_text)
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "中银三星人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": label or f"{product_name}产品资料",
+        "url": material_url,
+        "snippet": f"中银三星人寿官网{label or '产品资料'}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": BOC_SAMSUNG_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_boc_samsung_life_product_info",
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def crawl_boc_samsung_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_boc_samsung_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_boc_samsung_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_boc_samsung_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "中银三星人寿"
+    page_size = max(1, int(payload.get("pageSize") or 20))
+    start_page = max(1, int(payload.get("startPage") or 1))
+    max_pages = max(0, int(payload.get("maxPages") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_product_keys: set[str] = set()
+    seen_task_urls: set[str] = set()
+    page_number = start_page
+    fetched_pages = 0
+
+    while True:
+        status, data = fetch_boc_samsung_life_product_page(page_number, page_size)
+        rows = data.get("list") if isinstance(data.get("list"), list) else []
+        page_meta = {
+            "url": BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT,
+            "status": status,
+            "pageNumber": page_number,
+            "pageSize": page_size,
+            "totalCount": int(data.get("total") or 0),
+            "totalPages": int(data.get("pages") or 0),
+            "productCount": 0,
+            "materialTaskCount": 0,
+            "recordCount": 0,
+        }
+        if status < 200 or status >= 300:
+            pages.append(page_meta)
+            break
+        for item in rows:
+            product, product_tasks = boc_samsung_life_tasks_from_item(company, item)
+            if not product:
+                continue
+            product_key = f"{product.get('productCode')}|{product.get('productName')}|{product.get('publishedAt')}"
+            if product_key not in seen_product_keys:
+                if max_products and len(seen_product_keys) >= max_products:
+                    continue
+                seen_product_keys.add(product_key)
+                products.append(product)
+                page_meta["productCount"] += 1
+            if product_key not in seen_product_keys:
+                continue
+            for task in product_tasks:
+                material_url = trim(task.get("url"))
+                if not material_url or material_url in skip_urls or material_url in seen_task_urls:
+                    continue
+                seen_task_urls.add(material_url)
+                tasks.append(task)
+                page_meta["materialTaskCount"] += 1
+        pages.append(page_meta)
+        fetched_pages += 1
+        if max_products and len(seen_product_keys) >= max_products:
+            break
+        if max_pages and fetched_pages >= max_pages:
+            break
+        if not data.get("hasNextPage"):
+            break
+        page_number += 1
+
+    records = crawl_boc_samsung_life_material_records(tasks, max_workers=max_workers)
+    task_page_by_url = {trim(task.get("url")): BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT for task in tasks}
+    record_count = len([record for record in records if trim(record.get("url")) in task_page_by_url])
+    for page in pages:
+        if page["status"] >= 200 and page["status"] < 300:
+            page["recordCount"] = record_count
+            break
+
+    return {
+        "ok": all(int(page.get("status") or 0) >= 200 and int(page.get("status") or 0) < 300 for page in pages),
+        "company": company,
+        "source": BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL,
+        "endpoint": BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT,
+        "startPage": start_page,
+        "pageSize": page_size,
+        "maxPages": max_pages,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
 def xintai_life_sale_status_filter(value: str) -> set[str]:
     text = trim(value).lower()
     if text in {"", "all", "全部"}:
@@ -6963,7 +9403,7 @@ async def crawl_cathay_life_filing_pages_async(payload: dict[str, Any]) -> dict[
                     "records": [],
                 }
             rows = await page.evaluate(
-                """() => Array.from(document.querySelectorAll('table')).flatMap((table, tableIndex) => {
+                r"""() => Array.from(document.querySelectorAll('table')).flatMap((table, tableIndex) => {
                   const tableHeader = Array.from(table.querySelectorAll('tr:first-child th, tr:first-child td')).map((cell) => (cell.innerText || '').replace(/\s+/g, ' ').trim()).join(' ');
                   return Array.from(table.querySelectorAll('tr')).slice(1).map((row) => {
                     const cells = Array.from(row.querySelectorAll('td'));
@@ -7681,6 +10121,353 @@ def parse_abc_life_direct_page(
 
 def abc_life_responsibility_excerpt(text: str) -> str:
     return icbc_axa_responsibility_excerpt(text)
+
+
+def yingda_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    if "重大疾病" in name or "重疾" in name or "恶性肿瘤" in name:
+        return "重疾险"
+    if "医疗" in name or "住院" in name or "津贴" in name:
+        return "医疗险"
+    if "意外" in name:
+        return "意外险"
+    if "年金" in name or "养老" in name or "教育" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "定期寿险" in name:
+        return "定期寿险"
+    if "增额" in name and "终身寿险" in name:
+        return "增额终身寿险"
+    if "万能" in name:
+        return "万能账户"
+    return "其他"
+
+
+def yingda_life_material_type(label: str) -> str:
+    if "产品说明" in label or "说明书" in label:
+        return "product_manual"
+    return "terms"
+
+
+def yingda_life_keep_material(label: str, material_url: str) -> bool:
+    text = clean_text(f"{label} {material_url}")
+    if not material_url or not material_url.lower().endswith(".pdf"):
+        return False
+    if re.search(r"费率|现金价值|利益演示|停售说明|公告|提示书", text):
+        return False
+    return "条款" in text or "产品说明书" in text or "说明书" in text
+
+
+def yingda_life_fetch_html(url: str, referer: str = "") -> tuple[int, str]:
+    proc = subprocess.run(
+        [
+            "curl",
+            "--http1.1",
+            "-k",
+            "-L",
+            "-sS",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "Mozilla/5.0",
+            "-H",
+            f"Referer: {referer or YINGDA_LIFE_OFFICIAL_BASE_URL}",
+            "-w",
+            "\n__HTTP_STATUS__:%{http_code}",
+            quote_url(url),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=40,
+    )
+    if proc.returncode != 0:
+        return 0, ""
+    output = proc.stdout.decode("utf-8", "ignore")
+    marker = "\n__HTTP_STATUS__:"
+    if marker not in output:
+        return 0, output
+    body, status_text = output.rsplit(marker, 1)
+    try:
+        status = int(status_text.strip() or "0")
+    except ValueError:
+        status = 0
+    return status, body
+
+
+def yingda_life_fetch_pdf(url: str, referer: str = "") -> tuple[int, bytes]:
+    proc = subprocess.run(
+        [
+            "curl",
+            "--http1.1",
+            "-k",
+            "-L",
+            "-sS",
+            "--max-time",
+            "35",
+            "--user-agent",
+            "Mozilla/5.0",
+            "-H",
+            f"Referer: {referer or YINGDA_LIFE_OFFICIAL_BASE_URL}",
+            "-w",
+            "\n__HTTP_STATUS__:%{http_code}",
+            quote_url(url),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=45,
+    )
+    if proc.returncode != 0:
+        return 0, b""
+    marker = b"\n__HTTP_STATUS__:"
+    output = proc.stdout
+    if marker not in output:
+        return 0, output[: MAX_PDF_BYTES + 1]
+    body, status_bytes = output.rsplit(marker, 1)
+    try:
+        status = int(status_bytes.strip() or b"0")
+    except ValueError:
+        status = 0
+    return status, body[: MAX_PDF_BYTES + 1]
+
+
+def yingda_life_page_urls(base_url: str, html: str) -> list[str]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add_url(href: str) -> None:
+        page_url = urljoin(base_url, trim(href))
+        if page_url and page_url not in seen:
+            seen.add(page_url)
+            urls.append(page_url)
+
+    add_url(base_url)
+    for anchor in soup.select(".page a"):
+        href = trim(anchor.get("href"))
+        if href and "index" in href and href.endswith(".shtml"):
+            add_url(href)
+    return urls
+
+
+def yingda_life_parse_list_page(
+    page: dict[str, str], page_url: str, html: str, max_products: int
+) -> list[dict[str, str]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    products: list[dict[str, str]] = []
+    for item in soup.select(".publce_list li"):
+        anchor = item.find("a", href=True)
+        if not anchor:
+            continue
+        product_name = html_text(str(anchor))
+        detail_url = urljoin(page_url, trim(anchor.get("href")))
+        if not product_name or "/gkxxpl/jbxx/cpjbxx/jbtk/" not in detail_url or not detail_url.endswith(".shtml"):
+            continue
+        products.append(
+            {
+                "company": "英大人寿",
+                "productName": product_name,
+                "productType": yingda_life_product_type(product_name),
+                "salesStatus": page["salesStatus"],
+                "sourcePage": page_url,
+                "detailUrl": detail_url,
+                "sourceGroup": page["sourceGroup"],
+                "pageLabel": page["pageLabel"],
+                "publicationDate": trim(item.find("span").get_text(" ", strip=True)) if item.find("span") else "",
+            }
+        )
+        if max_products and len(products) >= max_products:
+            break
+    return products
+
+
+def yingda_life_material_tasks(product: dict[str, str], html: str) -> list[dict[str, str]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for anchor in soup.select(".content_conp a[href]"):
+        label = html_text(str(anchor))
+        material_url = urljoin(product["detailUrl"], trim(anchor.get("href")))
+        host = (urlsplit(material_url).hostname or "").lower()
+        if host != YINGDA_LIFE_OFFICIAL_DOMAIN or material_url in seen_urls:
+            continue
+        if not yingda_life_keep_material(label, material_url):
+            continue
+        seen_urls.add(material_url)
+        tasks.append(
+            {
+                "company": product["company"],
+                "productName": product["productName"],
+                "productType": product["productType"],
+                "salesStatus": product["salesStatus"],
+                "label": label,
+                "materialType": yingda_life_material_type(label),
+                "url": material_url,
+                "sourcePage": product["detailUrl"],
+                "sourceGroup": product["sourceGroup"],
+                "pageLabel": product["pageLabel"],
+                "publicationDate": product["publicationDate"],
+            }
+        )
+    return tasks
+
+
+def crawl_yingda_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or (urlsplit(material_url).hostname or "").lower() != YINGDA_LIFE_OFFICIAL_DOMAIN:
+        return None
+    pdf_status, data = yingda_life_fetch_pdf(material_url, referer=trim(task.get("sourcePage")))
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "产品条款"
+    return {
+        "company": trim(task.get("company")) or "英大人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or yingda_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": label,
+        "url": material_url,
+        "snippet": f"英大人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or yingda_life_material_type(label),
+        "official": True,
+        "officialDomain": YINGDA_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_yingda_life_product_info",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def crawl_yingda_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_yingda_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_yingda_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_yingda_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "英大人寿"
+    status_filter = {trim(item) for item in re.split(r"[,，\s]+", trim(payload.get("saleStatus") or payload.get("status") or "all")) if trim(item)}
+    source_filter = {trim(item).lower() for item in re.split(r"[,，\s]+", trim(payload.get("source") or "all")) if trim(item)}
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    product_offset = max(0, int(payload.get("productOffset") or 0))
+    start_page = max(1, int(payload.get("startPage") or 1))
+    max_pages = max(0, int(payload.get("maxPages") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_detail_urls: set[str] = set()
+    seen_task_urls: set[str] = set()
+    discovered_product_count = 0
+
+    for profile in YINGDA_LIFE_PRODUCT_PAGES:
+        if status_filter and "all" not in status_filter and "全部" not in status_filter and profile["salesStatus"] not in status_filter:
+            continue
+        if source_filter and "all" not in source_filter and profile["sourceGroup"] not in source_filter and profile["pageLabel"] not in source_filter:
+            continue
+        if max_products and len(products) >= max_products:
+            break
+        first_status, first_html = yingda_life_fetch_html(profile["url"])
+        page_urls = yingda_life_page_urls(profile["url"], first_html) if 200 <= first_status < 300 and first_html else [profile["url"]]
+        for page_index, page_url in enumerate(page_urls, start=1):
+            if page_index < start_page:
+                continue
+            if max_pages and page_index >= start_page + max_pages:
+                break
+            if max_products and len(products) >= max_products:
+                break
+            status, html = (first_status, first_html) if page_url == profile["url"] else yingda_life_fetch_html(page_url, referer=profile["url"])
+            page_meta = {
+                "url": page_url,
+                "status": status,
+                "pageNumber": page_index,
+                "sourceGroup": profile["sourceGroup"],
+                "pageLabel": profile["pageLabel"],
+                "salesStatus": profile["salesStatus"],
+                "productCount": 0,
+                "materialTaskCount": 0,
+                "recordCount": 0,
+            }
+            if status < 200 or status >= 300 or not html:
+                pages.append(page_meta)
+                continue
+            page_products = yingda_life_parse_list_page(profile, page_url, html, 0)
+            page_task_count = 0
+            for product in page_products:
+                discovered_product_count += 1
+                if discovered_product_count <= product_offset:
+                    continue
+                detail_url = trim(product.get("detailUrl"))
+                if not detail_url or detail_url in seen_detail_urls:
+                    continue
+                seen_detail_urls.add(detail_url)
+                detail_status, detail_html = yingda_life_fetch_html(detail_url, referer=page_url)
+                products.append({key: value for key, value in product.items() if key != "detailUrl"})
+                if detail_status < 200 or detail_status >= 300 or not detail_html:
+                    continue
+                for task in yingda_life_material_tasks(product, detail_html):
+                    material_url = trim(task.get("url"))
+                    if not material_url or material_url in seen_task_urls:
+                        continue
+                    seen_task_urls.add(material_url)
+                    tasks.append(task)
+                    page_task_count += 1
+                if max_products and len(products) >= max_products:
+                    break
+            page_meta["productCount"] = len(page_products)
+            page_meta["materialTaskCount"] = page_task_count
+            pages.append(page_meta)
+
+    records = crawl_yingda_life_material_records(tasks, max_workers=max_workers)
+    record_counts_by_page: dict[str, int] = {}
+    task_page_by_url = {trim(task.get("url")): trim(task.get("sourcePage")) for task in tasks}
+    detail_page_by_product = {trim(product.get("sourcePage")): trim(product.get("sourcePage")) for product in products}
+    for record in records:
+        detail_url = task_page_by_url.get(trim(record.get("url")))
+        list_url = detail_page_by_product.get(detail_url) or detail_url
+        if list_url:
+            record_counts_by_page[list_url] = record_counts_by_page.get(list_url, 0) + 1
+    for page in pages:
+        page["recordCount"] = sum(1 for task in tasks if trim(task.get("pageLabel")) == trim(page.get("pageLabel")))
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": "https://www.ydthlife.com/gkxxpl/jbxx/cpjbxx/jbtk/index.shtml",
+        "officialDomain": YINGDA_LIFE_OFFICIAL_DOMAIN,
+        "saleStatus": sorted(status_filter) if status_filter else ["all"],
+        "sourceFilter": sorted(source_filter) if source_filter else ["all"],
+        "maxProducts": max_products,
+        "productOffset": product_offset,
+        "startPage": start_page,
+        "maxPages": max_pages,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
 
 
 def crawl_abc_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
@@ -8753,6 +11540,403 @@ def crawl_guofu_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "products": products,
         "materialTaskCount": len(tasks),
         "records": records,
+    }
+
+
+def beijing_life_official_url(url: str) -> bool:
+    try:
+        host = urlsplit(url).hostname or ""
+    except Exception:
+        return False
+    return host in BEIJING_LIFE_OFFICIAL_DOMAINS
+
+
+def beijing_life_product_type(product_name: str) -> str:
+    return taikang_life_product_type(product_name) or "其他"
+
+
+def beijing_life_material_type(label: str) -> str:
+    text = trim(label)
+    if "条款" in text or "查看" in text:
+        return "terms"
+    if "产品说明书" in text or "产品说明" in text:
+        return "product_manual"
+    return ""
+
+
+def beijing_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "no_responsibility_excerpt"
+    if re.match(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause_or_continuation"
+    if not re.search(r"保险金|给付|赔付|赔偿|报销|豁免|年金|生存|满期|身故|全残|医疗|住院|津贴|护理", text):
+        return "invalid_non_responsibility", "no_benefit_trigger_or_payment"
+    return "valid_complete", ""
+
+
+def beijing_life_product_rows(
+    company: str, html: str, max_products: int = 0, offset: int = 0
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    products: list[dict[str, str]] = []
+    tasks: list[dict[str, str]] = []
+    seen_products: set[str] = set()
+    seen_tasks: set[str] = set()
+    row_index = 0
+    for row in soup.select("tr"):
+        cells = row.find_all(["td", "th"])
+        if len(cells) < 6:
+            continue
+        first_cell = clean_text(cells[0].get_text(" ", strip=True))
+        if not re.fullmatch(r"\d+", first_cell):
+            continue
+        row_index += 1
+        if offset and row_index <= offset:
+            continue
+        if max_products and len(products) >= max_products:
+            break
+        product_name = clean_text(cells[1].get_text(" ", strip=True))
+        if not product_name or product_name == "产品名称":
+            continue
+        row_text = clean_text(row.get_text(" ", strip=True))
+        sales_status = "停售" if "停售" in row_text else "在售" if "在售" in row_text else ""
+        product_type = beijing_life_product_type(product_name)
+        product_key = f"{product_name}|{sales_status}"
+        if product_key not in seen_products:
+            seen_products.add(product_key)
+            products.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                }
+            )
+        for cell, fallback_label in [(cells[2], "条款"), (cells[5], "产品说明书")]:
+            for anchor in cell.find_all("a", href=True):
+                material_url = urljoin(BEIJING_LIFE_OFFICIAL_BASE_URL, trim(anchor.get("href")))
+                label = clean_text(anchor.get_text(" ", strip=True)) or clean_text(anchor.get("title") or "") or fallback_label
+                material_type_value = beijing_life_material_type(label or fallback_label)
+                if not material_type_value or not beijing_life_official_url(material_url):
+                    continue
+                task_key = f"{product_name}|{material_url}|{material_type_value}"
+                if task_key in seen_tasks:
+                    continue
+                seen_tasks.add(task_key)
+                tasks.append(
+                    {
+                        "company": company,
+                        "productName": product_name,
+                        "productType": product_type,
+                        "salesStatus": sales_status,
+                        "label": label,
+                        "materialType": material_type_value,
+                        "url": material_url,
+                    }
+                )
+    return products, tasks
+
+
+def crawl_beijing_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not beijing_life_official_url(material_url):
+        return None
+    status, content_type, data = fetch_binary_direct(material_url, referer=BEIJING_LIFE_PRODUCT_INFO_URL)
+    if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = beijing_life_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    title = f"{product_name}{label if label and label not in product_name else '产品条款'}"
+    return {
+        "company": trim(task.get("company")) or "北京人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or beijing_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": title,
+        "url": material_url,
+        "snippet": f"北京人寿官网{label or '产品条款'}，已截取保险责任正文。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or beijing_life_material_type(label),
+        "official": True,
+        "officialDomain": urlsplit(material_url).hostname or "www.beijinglife.com.cn",
+        "parser": "scrapling_beijing_life_product_info",
+        "qualityStatus": quality_status,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pdfPages": extracted.get("pages", 0),
+        "contentType": content_type,
+    }
+
+
+def crawl_beijing_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_beijing_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_beijing_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_beijing_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "北京人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    offset = max(0, int(payload.get("offset") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in payload.get("skipUrls", []) if trim(item)}
+    status, html = fetch_html(BEIJING_LIFE_PRODUCT_INFO_URL)
+    products, tasks = beijing_life_product_rows(company, html, max_products=max_products, offset=offset)
+    if skip_urls:
+        tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
+    records = crawl_beijing_life_material_records(tasks, max_workers=max_workers)
+    quality_split: dict[str, int] = {}
+    status_split: dict[str, int] = {}
+    for record in records:
+        quality = trim(record.get("responsibilityQualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+        sales_status = trim(record.get("salesStatus")) or "unknown"
+        status_split[sales_status] = status_split.get(sales_status, 0) + 1
+    return {
+        "ok": True,
+        "company": company,
+        "source": BEIJING_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": ",".join(sorted(BEIJING_LIFE_OFFICIAL_DOMAINS)),
+        "httpStatus": status,
+        "maxProducts": max_products,
+        "offset": offset,
+        "maxWorkers": max_workers,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+        "qualitySplit": quality_split,
+        "statusSplit": status_split,
+        "pages": [
+            {
+                "url": BEIJING_LIFE_PRODUCT_INFO_URL,
+                "status": status,
+                "productCount": len(products),
+                "materialTaskCount": len(tasks),
+                "recordCount": len(records),
+            }
+        ],
+    }
+
+
+def ruitai_life_official_url(url: str) -> bool:
+    try:
+        host = urlsplit(url).hostname or ""
+    except Exception:
+        return False
+    return host in RUITAI_LIFE_OFFICIAL_DOMAINS
+
+
+def ruitai_life_product_type(product_name: str) -> str:
+    return taikang_life_product_type(product_name) or "其他"
+
+
+def ruitai_life_clean_product_name(title: str) -> str:
+    value = clean_text(title)
+    value = re.sub(r"^[\d\s.\-—_]+", "", value)
+    value = re.sub(r"(?:合同)?(?:产品)?条款.*$", "", value)
+    value = re.sub(r"[（(](?:适用|已停售|停售|20\d{2}).*$", "", value)
+    value = re.sub(r"[-—_]+$", "", value)
+    return clean_text(value) or clean_text(title)
+
+
+def ruitai_life_terms_tasks(company: str, html: str, max_products: int = 0, offset: int = 0) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    products: list[dict[str, str]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    seen_products: set[str] = set()
+    row_index = 0
+    for anchor in soup.select("#toc_total a[href]"):
+        href = trim(anchor.get("href"))
+        if not href.lower().endswith(".pdf"):
+            continue
+        row_index += 1
+        if offset and row_index <= offset:
+            continue
+        if max_products and len(products) >= max_products:
+            break
+        title = clean_text(anchor.get_text(" ", strip=True))
+        if not title:
+            continue
+        material_url = urljoin(RUITAI_LIFE_PRODUCT_TERMS_URL, href)
+        if not ruitai_life_official_url(material_url) or material_url in seen_urls:
+            continue
+        seen_urls.add(material_url)
+        product_name = ruitai_life_clean_product_name(title)
+        sales_status = "停售" if "停售" in title else "官网披露"
+        product_type = ruitai_life_product_type(product_name)
+        product_key = f"{product_name}|{sales_status}"
+        if product_key not in seen_products:
+            seen_products.add(product_key)
+            products.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                }
+            )
+        tasks.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product_type,
+                "salesStatus": sales_status,
+                "title": title,
+                "materialType": "terms",
+                "url": material_url,
+            }
+        )
+    return products, tasks
+
+
+def ruitai_life_responsibility_score(normalized: str, start: int) -> int:
+    before = normalized[max(0, start - 80) : start]
+    near = normalized[start : start + 900]
+    early = near[:320]
+    score = responsibility_match_score(normalized, start)
+    if re.search(r"(?:\d+[.、]|第[一二三四五六七八九十百]+条)\s*$", before):
+        score += 3
+    if re.match(r"保险责任\s*(?:在本|本(?:合同|附加合同)|我们|分为|包括|[：:])", near):
+        score += 5
+    if re.search(r"(?:身故|全残|重大疾病|医疗|住院|意外|护理|年金|生存|满期).{0,60}(?:保险金|给付|报销|赔偿)", near):
+        score += 4
+    if re.search(r"给付.{0,60}保险金|保险金.{0,60}给付", near):
+        score += 3
+    if re.search(r"自始不承担|宽限期|解除合同|不再承担保险责任|退还至.*账户", early):
+        score -= 10
+    if re.match(r"保险责任[。；;，,]", near):
+        score -= 8
+    return score
+
+
+def ruitai_life_focused_responsibility_excerpt(text: str) -> str:
+    normalized = normalize_responsibility_source_text(text)
+    if not normalized:
+        return ""
+    candidates: list[tuple[int, int]] = []
+    for match in re.finditer(r"保险责任", normalized):
+        score = ruitai_life_responsibility_score(normalized, match.start())
+        if score > 0:
+            candidates.append((score, match.start()))
+    for _, start in sorted(candidates, key=lambda item: (item[0], -item[1]), reverse=True):
+        tail = normalized[start:]
+        end_match = RESPONSIBILITY_END_RE.search(tail[60:])
+        excerpt = tail[: 60 + end_match.start()] if end_match else tail[:MAX_EXCERPT_CHARS]
+        candidate = excerpt[:MAX_EXCERPT_CHARS].strip()
+        if has_actual_responsibility_text(candidate):
+            return candidate
+    return focused_responsibility_excerpt(text)
+
+
+def crawl_ruitai_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not ruitai_life_official_url(material_url):
+        return None
+    status, content_type, data = fetch_binary_direct(material_url, referer=RUITAI_LIFE_PRODUCT_TERMS_URL)
+    if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = ruitai_life_focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = beijing_life_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    title = trim(task.get("title")) or f"{product_name}条款"
+    return {
+        "company": trim(task.get("company")) or "瑞泰人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or ruitai_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": title,
+        "url": material_url,
+        "snippet": "瑞泰人寿官网产品条款，已截取保险责任正文。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": "terms",
+        "official": True,
+        "officialDomain": urlsplit(material_url).hostname or "www.oldmutual-chnenergy.com",
+        "parser": "scrapling_ruitai_life_product_terms",
+        "qualityStatus": quality_status,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pdfPages": extracted.get("pages", 0),
+        "contentType": content_type,
+    }
+
+
+def crawl_ruitai_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_ruitai_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_ruitai_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_ruitai_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "瑞泰人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    offset = max(0, int(payload.get("offset") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in payload.get("skipUrls", []) if trim(item)}
+    status, html = fetch_html(RUITAI_LIFE_PRODUCT_TERMS_URL)
+    products, tasks = ruitai_life_terms_tasks(company, html, max_products=max_products, offset=offset)
+    if skip_urls:
+        tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
+    records = crawl_ruitai_life_material_records(tasks, max_workers=max_workers)
+    quality_split: dict[str, int] = {}
+    status_split: dict[str, int] = {}
+    for record in records:
+        quality = trim(record.get("qualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+        sales_status = trim(record.get("salesStatus")) or "unknown"
+        status_split[sales_status] = status_split.get(sales_status, 0) + 1
+    return {
+        "ok": True,
+        "company": company,
+        "source": RUITAI_LIFE_PRODUCT_TERMS_URL,
+        "officialDomain": ",".join(sorted(RUITAI_LIFE_OFFICIAL_DOMAINS)),
+        "httpStatus": status,
+        "maxProducts": max_products,
+        "offset": offset,
+        "maxWorkers": max_workers,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+        "qualitySplit": quality_split,
+        "statusSplit": status_split,
+        "pages": [
+            {
+                "url": RUITAI_LIFE_PRODUCT_TERMS_URL,
+                "status": status,
+                "productCount": len(products),
+                "materialTaskCount": len(tasks),
+                "recordCount": len(records),
+            }
+        ],
     }
 
 
@@ -10226,6 +13410,10 @@ def sunlife_everbright_record_from_pdf(
         "official": True,
         "officialDomain": SUNLIFE_EVERBRIGHT_OFFICIAL_DOMAIN,
         "parser": "scrapling_sunlife_everbright_product_info",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
         "pages": extracted.get("pages", 0),
         "bytes": len(data),
         "archiveEntry": entry_name,
@@ -10820,6 +14008,1202 @@ def crawl_aegon_thtf_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def bob_cardif_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {"在售", "停售"}
+    if text in {"in_sale", "sale", "available", "在售", "y", "1"}:
+        return {"在售"}
+    if text in {"stopped", "stop", "discontinued", "停售", "n", "0"}:
+        return {"停售"}
+    return {"在售", "停售"}
+
+
+def bob_cardif_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    labels: list[str] = []
+    if "医疗" in name or "住院" in name:
+        labels.append("医疗险")
+    if "护理" in name:
+        labels.append("护理险")
+    if "重大疾病" in name or "重疾" in name or "恶性肿瘤" in name or "疾病" in name:
+        labels.append("重疾险")
+    if "意外" in name:
+        labels.append("意外险")
+    if "养老" in name or "年金" in name or "教育" in name:
+        labels.append("年金险")
+    if "两全" in name:
+        labels.append("两全保险")
+    if "定期寿险" in name:
+        labels.append("定期寿险")
+    if "投连" in name or "投资连结" in name:
+        labels.append("投连险")
+    if "万能" in name:
+        labels.append("万能账户")
+    if not labels and "终身寿险" in name:
+        labels.append("增额终身寿险")
+    if not labels and name.endswith("寿险"):
+        labels.append("定期寿险")
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def bob_cardif_keep_pdf_url(url: str) -> bool:
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").lower()
+    return parts.scheme in {"http", "https"} and hostname in BOB_CARDIF_OFFICIAL_DOMAINS and parts.path.lower().endswith(".pdf")
+
+
+def bob_cardif_material_tasks_from_page(page: dict[str, str], html: str) -> tuple[list[dict[str, str]], int]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    tasks: list[dict[str, str]] = []
+    product_count = 0
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 6:
+            continue
+        product_name = clean_text(cells[0].get_text(" ", strip=True))
+        if not product_name or product_name == "产品名称":
+            continue
+        product_code = clean_text(cells[1].get_text(" ", strip=True))
+        product_count += 1
+        for column_index, label, material_type in ((2, "保险条款", "terms"), (5, "产品说明书", "product_manual")):
+            if column_index >= len(cells):
+                continue
+            anchor = cells[column_index].find("a", href=True)
+            if not anchor:
+                continue
+            material_url = urljoin(trim(page.get("url")) or BOB_CARDIF_PRODUCT_INFO_URL, trim(anchor.get("href")))
+            if not bob_cardif_keep_pdf_url(material_url):
+                continue
+            title = f"{product_name}{label}"
+            tasks.append(
+                {
+                    "company": "中荷人寿",
+                    "productName": product_name,
+                    "productCode": product_code,
+                    "productType": bob_cardif_product_type(product_name),
+                    "salesStatus": trim(page.get("salesStatus")),
+                    "title": title,
+                    "label": label,
+                    "materialType": material_type,
+                    "url": material_url,
+                    "sourcePage": trim(page.get("url")),
+                    "sourceLabel": trim(page.get("label")),
+                }
+            )
+    return tasks, product_count
+
+
+def crawl_bob_cardif_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    pdf_status, content_type, data = fetch_binary_direct(material_url, referer=trim(task.get("sourcePage")) or BOB_CARDIF_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or "保险责任" not in page_text:
+        return None
+    material_type = trim(task.get("materialType")) or "terms"
+    label = "产品说明书" if material_type == "product_manual" else "保险条款"
+    return {
+        "company": trim(task.get("company")) or "中荷人寿",
+        "productName": trim(task.get("productName")),
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": trim(task.get("title")),
+        "url": material_url,
+        "snippet": f"中荷人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": material_type,
+        "official": True,
+        "officialDomain": urlsplit(material_url).hostname or BOB_CARDIF_OFFICIAL_DOMAIN,
+        "parser": "scrapling_bob_cardif_product_info",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "productCode": trim(task.get("productCode")),
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceLabel": trim(task.get("sourceLabel")),
+    }
+
+
+def crawl_bob_cardif_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_bob_cardif_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_bob_cardif_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_bob_cardif_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "中荷人寿"
+    status_filter = bob_cardif_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    product_offset = max(0, int(payload.get("productOffset") or payload.get("offset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    tasks: list[dict[str, str]] = []
+    products: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    total_candidate_products = 0
+    for page in BOB_CARDIF_PRODUCT_PAGES:
+        if page["salesStatus"] not in status_filter:
+            continue
+        status, html = fetch_html_direct(page["url"], referer=BOB_CARDIF_PRODUCT_INFO_URL)
+        page_tasks, product_count = bob_cardif_material_tasks_from_page(page, html)
+        total_candidate_products += product_count
+        pages.append(
+            {
+                "url": page["url"],
+                "status": status,
+                "label": page["label"],
+                "salesStatus": page["salesStatus"],
+                "productCount": product_count,
+                "materialTaskCount": len(page_tasks),
+                "recordCount": 0,
+            }
+        )
+        tasks.extend(page_tasks)
+
+    seen_keys: set[str] = set()
+    unique_tasks: list[dict[str, str]] = []
+    for task in tasks:
+        task["company"] = company
+        key = f"{trim(task.get('productName'))}|{trim(task.get('materialType'))}|{trim(task.get('url'))}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_tasks.append(task)
+    selected_tasks = unique_tasks[product_offset:]
+    if max_products:
+        selected_tasks = selected_tasks[:max_products]
+    for task in selected_tasks:
+        products.append(
+            {
+                "company": company,
+                "productName": trim(task.get("productName")),
+                "productCode": trim(task.get("productCode")),
+                "productType": trim(task.get("productType")),
+                "salesStatus": trim(task.get("salesStatus")),
+                "sourcePage": trim(task.get("sourcePage")),
+            }
+        )
+
+    records = crawl_bob_cardif_material_records(selected_tasks, max_workers=max_workers)
+    record_count_by_source: dict[str, int] = {}
+    for record in records:
+        source_page = trim(record.get("sourcePage"))
+        record_count_by_source[source_page] = record_count_by_source.get(source_page, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_count_by_source.get(trim(page.get("url")), 0)
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": BOB_CARDIF_PRODUCT_INFO_URL,
+        "officialDomain": BOB_CARDIF_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(BOB_CARDIF_OFFICIAL_DOMAINS),
+        "saleStatus": sorted(status_filter),
+        "productOffset": product_offset,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(selected_tasks),
+        "records": records,
+    }
+
+
+def fosun_prudential_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return set(FOSUN_PRUDENTIAL_STATUS_PROFILES.keys())
+    output: set[str] = set()
+    if text in {"zs", "in_sale", "sale", "available", "在售", "y", "1"}:
+        output.add("ZS")
+    if text in {"ts", "stopped", "stop", "discontinued", "停售", "n", "0"}:
+        output.add("TS")
+    if text in {"wks", "reported", "not_sold", "unsold", "已报备未销售", "未销售"}:
+        output.add("WKS")
+    return output or set(FOSUN_PRUDENTIAL_STATUS_PROFILES.keys())
+
+
+def fosun_prudential_product_type(product_name: str, category: str = "") -> str:
+    name = trim(product_name)
+    if "医疗" in name or "住院" in name:
+        return "医疗险"
+    if "意外" in name:
+        return "意外险"
+    if "护理" in name or "重大疾病" in name or "疾病" in name or "恶性肿瘤" in name:
+        return "重疾险"
+    if "年金" in name or "养老" in name or "教育" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "终身寿险" in name:
+        return "增额终身寿险"
+    if "定期寿险" in name:
+        return "定期寿险"
+    if "万能" in name:
+        return "万能账户"
+    if "投连" in name or "投资连结" in name:
+        return "投连险"
+    return trim(category) or "其他"
+
+
+def fosun_prudential_material_url(value: str) -> str:
+    path = trim(value)
+    if not path:
+        return ""
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return urljoin(FOSUN_PRUDENTIAL_DOWNLOAD_BASE_URL + "/", path.lstrip("/"))
+
+
+def fosun_prudential_keep_material_url(url: str) -> bool:
+    parts = urlsplit(url)
+    hostname = parts.netloc.lower()
+    return parts.scheme in {"http", "https"} and any(
+        hostname == domain or hostname.endswith("." + domain) for domain in FOSUN_PRUDENTIAL_OFFICIAL_DOMAINS
+    )
+
+
+def fosun_prudential_archive_material_from_filename(filename: str) -> dict[str, str] | None:
+    basename = re.split(r"[/\\]+", trim(filename))[-1]
+    lower = basename.lower()
+    if not lower.endswith(".pdf"):
+        return None
+    excluded = r"费率|保险费率|现金价值|现价|账户价值|利益演示|投保规则|投保须知|告知书|职业分类|材料清单|清单|批复|备案|回执|声明"
+    if re.search(excluded, basename, re.I):
+        return None
+    if "产品说明书" in basename or "产品说明" in basename:
+        return {"label": "产品说明书", "materialType": "product_manual", "basename": basename}
+    if "保险条款" in basename or "利益条款" in basename or "条款" in basename:
+        return {"label": "保险条款", "materialType": "terms", "basename": basename}
+    return None
+
+
+def fosun_prudential_query_products_sync(product_type: str, page_number: int, page_size: int, product_name: str = "") -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            page = await browser.new_page(user_agent="Mozilla/5.0")
+            try:
+                await page.goto(FOSUN_PRUDENTIAL_PRODUCT_INFO_URL, wait_until="networkidle", timeout=60000)
+                return await page.evaluate(
+                    """async ({productType, pageNum, pageSize, productName}) => {
+                      const response = await window.utils.http.postJson('/columnArticle/queryProductDataList', {
+                        menuCode: 'productData',
+                        productType,
+                        pageNum,
+                        pageSize,
+                        productName
+                      });
+                      return response.data;
+                    }""",
+                    {
+                        "productType": product_type,
+                        "pageNum": page_number,
+                        "pageSize": page_size,
+                        "productName": product_name,
+                    },
+                )
+            finally:
+                await browser.close()
+
+    return asyncio.run(run())
+
+
+def fosun_prudential_extract_page_data(response: dict[str, Any]) -> dict[str, Any]:
+    if response.get("state") == "success":
+        response = response.get("data") or {}
+    if response.get("code") == "200":
+        response = response.get("data") or {}
+    if isinstance(response.get("data"), dict):
+        response = response.get("data") or {}
+    return response if isinstance(response, dict) else {}
+
+
+def fosun_prudential_product_rows(
+    company: str,
+    status_key: str,
+    response_data: dict[str, Any],
+    skipped_products: int,
+    max_products: int,
+    selected_count: int,
+    include_archives: bool,
+) -> tuple[list[dict[str, Any]], int, int]:
+    profile = FOSUN_PRUDENTIAL_STATUS_PROFILES[status_key]
+    products: list[dict[str, Any]] = []
+    for item in response_data.get("list") or []:
+        product_name = trim(item.get("productName"))
+        if not product_name:
+            continue
+        if skipped_products > 0:
+            skipped_products -= 1
+            continue
+        if max_products and selected_count + len(products) >= max_products:
+            break
+        product = {
+            "company": company,
+            "productName": product_name,
+            "productType": fosun_prudential_product_type(product_name, trim(item.get("productCategory"))),
+            "salesStatus": profile["salesStatus"],
+            "sourcePage": FOSUN_PRUDENTIAL_PRODUCT_INFO_URL,
+            "sourceList": status_key,
+            "sourceLabel": profile["label"],
+            "productId": trim(item.get("id")),
+            "productCategory": trim(item.get("productCategory")),
+            "stopTime": trim(item.get("stopTime")),
+            "createTime": trim(item.get("createTime")),
+            "hisNum": int(item.get("hisNum") or 0),
+            "materials": [],
+        }
+        terms_url = fosun_prudential_material_url(item.get("productTerms"))
+        if terms_url and fosun_prudential_keep_material_url(terms_url):
+            product["materials"].append(
+                {
+                    "label": "产品条款",
+                    "materialType": "terms",
+                    "url": terms_url,
+                    "sourceField": "productTerms",
+                }
+            )
+        other_url = fosun_prudential_material_url(item.get("otherMaterials"))
+        if include_archives and other_url and fosun_prudential_keep_material_url(other_url):
+            product["materials"].append(
+                {
+                    "label": "其他产品信息",
+                    "materialType": "archive",
+                    "url": other_url,
+                    "sourceField": "otherMaterials",
+                }
+            )
+        products.append(product)
+    return products, skipped_products, selected_count + len(products)
+
+
+def crawl_fosun_prudential_material_record(task: dict[str, str]) -> list[dict[str, Any]]:
+    material_url = trim(task.get("url"))
+    if not fosun_prudential_keep_material_url(material_url):
+        return []
+    material_type = trim(task.get("materialType"))
+    if material_type in {"terms", "product_manual"}:
+        status, data = fetch_bytes_direct(material_url, referer=FOSUN_PRUDENTIAL_PRODUCT_INFO_URL)
+        if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+            return []
+        extracted = extract_pdf_text_with_system_python(data)
+        page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+        if not page_text or "保险责任" not in page_text:
+            return []
+        product_name = trim(task.get("productName"))
+        label = trim(task.get("label")) or "产品条款"
+        return [
+            {
+                "company": trim(task.get("company")) or "复星保德信人寿",
+                "productName": product_name,
+                "productType": trim(task.get("productType")),
+                "salesStatus": trim(task.get("salesStatus")),
+                "title": f"{product_name}{label}",
+                "url": material_url,
+                "snippet": f"复星保德信官网{label}，已截取保险责任正文段。",
+                "pageText": page_text,
+                "sourceType": "pdf",
+                "materialType": material_type,
+                "official": True,
+                "officialDomain": FOSUN_PRUDENTIAL_OFFICIAL_DOMAIN,
+                "parser": "scrapling_fosun_prudential_product_info",
+                "qualityStatus": "valid_complete",
+                "responsibilityQualityStatus": "valid_complete",
+                "responsibilityQualityIssue": "",
+                "pages": extracted.get("pages", 0),
+                "bytes": len(data),
+                "sourcePage": trim(task.get("sourcePage")),
+                "sourceList": trim(task.get("sourceList")),
+                "productCategory": trim(task.get("productCategory")),
+            }
+        ]
+    if material_type != "archive":
+        return []
+    status, data = fetch_bytes_direct_limited(
+        material_url,
+        referer=FOSUN_PRUDENTIAL_PRODUCT_INFO_URL,
+        max_bytes=MAX_ZIP_BYTES,
+        max_time=90,
+    )
+    if status < 200 or status >= 300 or len(data) > MAX_ZIP_BYTES:
+        return []
+    suffix = ".zip" if data.startswith(b"PK") or urlsplit(material_url).path.lower().endswith(".zip") else ".rar" if data.startswith(b"Rar!") or urlsplit(material_url).path.lower().endswith(".rar") else ""
+    if suffix not in {".zip", ".rar"}:
+        return []
+    records: list[dict[str, Any]] = []
+    bsdtar = os.environ.get("BSDTAR_BIN") or "/usr/bin/bsdtar"
+    with tempfile.TemporaryDirectory(prefix="fosun-prudential-") as temp_dir:
+        archive_path = os.path.join(temp_dir, f"material{suffix}")
+        extract_dir = os.path.join(temp_dir, "extract")
+        os.makedirs(extract_dir, exist_ok=True)
+        with open(archive_path, "wb") as handle:
+            handle.write(data)
+        try:
+            proc = subprocess.run(
+                [bsdtar, "-xf", archive_path, "-C", extract_dir],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=45,
+            )
+        except Exception:
+            return []
+        if proc.returncode != 0:
+            return []
+        extract_root = os.path.abspath(extract_dir)
+        for root, _, files in os.walk(extract_dir):
+            for filename in files:
+                file_path = os.path.abspath(os.path.join(root, filename))
+                if not file_path.startswith(extract_root + os.sep):
+                    continue
+                rel_path = os.path.relpath(file_path, extract_dir)
+                material = fosun_prudential_archive_material_from_filename(rel_path)
+                if not material:
+                    continue
+                try:
+                    size = os.path.getsize(file_path)
+                except Exception:
+                    continue
+                if size <= 0 or size > MAX_PDF_BYTES:
+                    continue
+                try:
+                    with open(file_path, "rb") as pdf_file:
+                        pdf_bytes = pdf_file.read(MAX_PDF_BYTES + 1)
+                except Exception:
+                    continue
+                if len(pdf_bytes) > MAX_PDF_BYTES or not pdf_bytes.startswith(b"%PDF"):
+                    continue
+                extracted = extract_pdf_text_with_system_python(pdf_bytes)
+                page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+                if not page_text or "保险责任" not in page_text:
+                    continue
+                product_name = trim(task.get("productName"))
+                label = material["label"]
+                records.append(
+                    {
+                        "company": trim(task.get("company")) or "复星保德信人寿",
+                        "productName": product_name,
+                        "productType": trim(task.get("productType")),
+                        "salesStatus": trim(task.get("salesStatus")),
+                        "title": re.sub(r"\.pdf$", "", material["basename"], flags=re.I),
+                        "url": f"{material_url}#entry={quote(rel_path, safe='')}",
+                        "snippet": f"复星保德信官网产品资料包内{label}，已截取保险责任正文段。",
+                        "pageText": page_text,
+                        "sourceType": "archive_pdf",
+                        "materialType": material["materialType"],
+                        "official": True,
+                        "officialDomain": FOSUN_PRUDENTIAL_OFFICIAL_DOMAIN,
+                        "parser": "scrapling_fosun_prudential_product_info",
+                        "qualityStatus": "valid_complete",
+                        "responsibilityQualityStatus": "valid_complete",
+                        "responsibilityQualityIssue": "",
+                        "pages": extracted.get("pages", 0),
+                        "bytes": len(pdf_bytes),
+                        "archiveUrl": material_url,
+                        "sourcePage": trim(task.get("sourcePage")),
+                        "sourceList": trim(task.get("sourceList")),
+                        "productCategory": trim(task.get("productCategory")),
+                    }
+                )
+    return records
+
+
+def crawl_fosun_prudential_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        records: list[dict[str, Any]] = []
+        for task in tasks:
+            records.extend(crawl_fosun_prudential_material_record(task))
+        return sorted(records, key=lambda record: trim(record.get("url")))
+    records = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_fosun_prudential_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            records.extend(future.result())
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_fosun_prudential_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "复星保德信人寿"
+    status_filter = fosun_prudential_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    include_archives = bool(payload.get("includeArchives"))
+    page_size = max(1, int(payload.get("pageSize") or payload.get("page_size") or 50))
+    offset = max(0, int(payload.get("offset") or payload.get("startOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    product_name_filter = trim(payload.get("productName"))
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    skipped_products = offset
+    total_candidate_products = 0
+    selected_count = 0
+
+    for status_key, profile in FOSUN_PRUDENTIAL_STATUS_PROFILES.items():
+        if status_key not in status_filter:
+            continue
+        page_number = 1
+        total_pages = 1
+        while page_number <= total_pages:
+            response = fosun_prudential_query_products_sync(status_key, page_number, page_size, product_name_filter)
+            data = fosun_prudential_extract_page_data(response)
+            total_pages = int(data.get("pages") or total_pages or 1)
+            page_rows = data.get("list") or []
+            total_candidate_products += len([row for row in page_rows if trim(row.get("productName"))])
+            page_products, skipped_products, selected_count = fosun_prudential_product_rows(
+                company,
+                status_key,
+                data,
+                skipped_products,
+                max_products,
+                selected_count,
+                include_archives,
+            )
+            products.extend([{key: value for key, value in product.items() if key != "materials"} for product in page_products])
+            for product in page_products:
+                for material in product["materials"]:
+                    tasks.append(
+                        {
+                            "company": company,
+                            "productName": product["productName"],
+                            "productType": product["productType"],
+                            "salesStatus": product["salesStatus"],
+                            "label": material["label"],
+                            "materialType": material["materialType"],
+                            "url": material["url"],
+                            "sourcePage": product["sourcePage"],
+                            "sourceList": product["sourceList"],
+                            "productCategory": product["productCategory"],
+                        }
+                    )
+            pages.append(
+                {
+                    "url": FOSUN_PRUDENTIAL_PRODUCT_INFO_URL,
+                    "status": 200 if data else 0,
+                    "sourceList": status_key,
+                    "label": profile["label"],
+                    "salesStatus": profile["salesStatus"],
+                    "pageNumber": page_number,
+                    "totalPages": total_pages,
+                    "total": int(data.get("total") or 0),
+                    "productCount": len(page_products),
+                    "materialTaskCount": sum(len(product["materials"]) for product in page_products),
+                    "recordCount": 0,
+                }
+            )
+            if max_products and selected_count >= max_products:
+                break
+            if not data.get("hasNextPage") and page_number >= total_pages:
+                break
+            page_number += 1
+        if max_products and selected_count >= max_products:
+            break
+
+    records = crawl_fosun_prudential_material_records(tasks, max_workers=max_workers)
+    counts_by_list: dict[str, int] = {}
+    task_list_by_url = {trim(task.get("url")): trim(task.get("sourceList")) for task in tasks}
+    for record in records:
+        source_url = trim(record.get("archiveUrl")) or trim(record.get("url")).split("#", 1)[0]
+        source_list = task_list_by_url.get(source_url)
+        if source_list:
+            counts_by_list[source_list] = counts_by_list.get(source_list, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = counts_by_list.get(trim(page_meta.get("sourceList")), 0)
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": FOSUN_PRUDENTIAL_PRODUCT_INFO_URL,
+        "officialDomain": FOSUN_PRUDENTIAL_OFFICIAL_DOMAIN,
+        "saleStatus": sorted(status_filter),
+        "offset": offset,
+        "maxProducts": max_products,
+        "pageSize": page_size,
+        "includeArchives": include_archives,
+        "totalCandidateProductCount": total_candidate_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def fosun_uhi_sale_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return set(FOSUN_UHI_STATUS_PROFILES.keys())
+    if text in {"in_sale", "sale", "available", "在售", "y", "1"}:
+        return {key for key, profile in FOSUN_UHI_STATUS_PROFILES.items() if profile["salesStatus"] == "在售"}
+    if text in {"stopped", "stop", "discontinued", "停售", "n", "0"}:
+        return {key for key, profile in FOSUN_UHI_STATUS_PROFILES.items() if profile["salesStatus"] == "停售"}
+    return set(FOSUN_UHI_STATUS_PROFILES.keys())
+
+
+def fosun_uhi_segment_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {"个人保险", "团体保险"}
+    if text in {"personal", "individual", "个人", "个险", "s"}:
+        return {"个人保险"}
+    if text in {"group", "团体", "团险", "g"}:
+        return {"团体保险"}
+    return {"个人保险", "团体保险"}
+
+
+def fosun_uhi_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    labels = []
+    if "重大疾病" in name or "特定疾病" in name or "疾病保险" in name:
+        labels.append("重疾险")
+    if "医疗" in name or "住院" in name or "高端" in name:
+        labels.append("医疗险")
+    if "意外" in name:
+        labels.append("意外险")
+    if "护理" in name:
+        labels.append("护理险")
+    if "寿险" in name or "定期寿险" in name:
+        labels.append("定期寿险")
+    if "年金" in name:
+        labels.append("年金险")
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def fosun_uhi_material_url(value: Any) -> str:
+    path = trim(value)
+    if not path:
+        return ""
+    return urljoin(FOSUN_UHI_PRODUCT_INFO_URL, path)
+
+
+def fosun_uhi_is_official_url(url: str) -> bool:
+    hostname = urlsplit(trim(url)).hostname or ""
+    return any(hostname == domain or hostname.endswith("." + domain) for domain in FOSUN_UHI_OFFICIAL_DOMAINS)
+
+
+def post_fosun_uhi_product_page(current_page: int, single_or_group: str, is_show: str, product_name: str = "") -> tuple[int, dict[str, Any]]:
+    form = {
+        "currentPage": str(current_page),
+        "singleOrGroup": single_or_group,
+        "isShow": is_show,
+    }
+    if product_name:
+        form["productName"] = product_name
+    proc = subprocess.run(
+        [
+            "curl",
+            "--http1.1",
+            "-L",
+            "-sS",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "Mozilla/5.0",
+            "-H",
+            "Accept: application/json, text/plain, */*",
+            "-H",
+            "Content-Type: application/x-www-form-urlencoded; charset=UTF-8",
+            "-H",
+            f"Referer: {FOSUN_UHI_PRODUCT_IFRAME_URL}",
+            "-w",
+            "\n%{http_code}",
+            "--data-binary",
+            urlencode(form),
+            FOSUN_UHI_PRODUCT_ENDPOINT,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=45,
+    )
+    if proc.returncode != 0:
+        return 0, {}
+    output = proc.stdout.decode("utf-8", "ignore")
+    body, _, status_text = output.rpartition("\n")
+    status = int(status_text) if status_text.isdigit() else 200
+    try:
+        return status, json.loads(body)
+    except Exception:
+        return status, {}
+
+
+def fosun_uhi_product_rows(
+    company: str,
+    profile_key: str,
+    response_data: dict[str, Any],
+    skipped_products: int,
+    max_products: int,
+    selected_count: int,
+) -> tuple[list[dict[str, Any]], int, int]:
+    profile = FOSUN_UHI_STATUS_PROFILES[profile_key]
+    products: list[dict[str, Any]] = []
+    for item in response_data.get("priductLsit") or []:
+        product_name = trim(item.get("productName"))
+        if not product_name:
+            continue
+        if skipped_products > 0:
+            skipped_products -= 1
+            continue
+        if max_products and selected_count + len(products) >= max_products:
+            break
+        product = {
+            "company": company,
+            "productName": product_name,
+            "productType": fosun_uhi_product_type(product_name),
+            "salesStatus": profile["salesStatus"],
+            "segment": profile["segment"],
+            "sourcePage": FOSUN_UHI_PRODUCT_INFO_URL,
+            "sourceList": profile_key,
+            "sourceLabel": profile["label"],
+            "productId": trim(item.get("id")),
+            "productCode": trim(item.get("productCode")),
+            "startOfSaleDate": trim(item.get("startOfSaleDate")),
+            "endOfSaleDate": trim(item.get("endOfSaleDate")),
+            "materials": [],
+        }
+        terms_url = fosun_uhi_material_url(item.get("url"))
+        if terms_url and fosun_uhi_is_official_url(terms_url):
+            product["materials"].append({"label": "产品条款", "materialType": "terms", "url": terms_url})
+        manual_url = fosun_uhi_material_url(item.get("productIns"))
+        if manual_url and fosun_uhi_is_official_url(manual_url):
+            product["materials"].append({"label": "产品说明书", "materialType": "product_manual", "url": manual_url})
+        products.append(product)
+    return products, skipped_products, selected_count + len(products)
+
+
+def crawl_fosun_uhi_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not fosun_uhi_is_official_url(material_url):
+        return None
+    status, data = fetch_bytes_direct(material_url, referer=FOSUN_UHI_PRODUCT_IFRAME_URL)
+    if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = fosun_uhi_responsibility_excerpt(extracted.get("text", "")) or focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or "保险责任" not in page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "产品条款"
+    return {
+        "company": trim(task.get("company")) or "复星联合健康保险",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"复星联合健康保险官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": FOSUN_UHI_OFFICIAL_DOMAIN,
+        "parser": "scrapling_fosun_uhi_product_info",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "segment": trim(task.get("segment")),
+        "productCode": trim(task.get("productCode")),
+        "startOfSaleDate": trim(task.get("startOfSaleDate")),
+        "endOfSaleDate": trim(task.get("endOfSaleDate")),
+    }
+
+
+def fosun_uhi_responsibility_excerpt(text: str) -> str:
+    normalized = normalize_responsibility_source_text(text)
+    if not normalized:
+        return ""
+    candidates: list[tuple[int, int, str]] = []
+    for match in re.finditer(r"(?:\d+(?:[．.]\d+)+|第[一二三四五六七八九十百]+条)\s*保险责任", normalized):
+        start = match.start()
+        if is_responsibility_toc_context(normalized, start):
+            continue
+        tail = normalized[start:]
+        end_match = re.search(
+            r"(?:\s\d+(?:[．.]\d+)+\s*(?:责任免除|未成年人限制|保险金申领|受益人|保险费|现金价值|合同效力|释义)|责任免除)",
+            tail[900:],
+        )
+        raw_candidate = tail[: 900 + end_match.start()] if end_match else tail[: MAX_EXCERPT_CHARS * 2]
+        candidate = raw_candidate[:MAX_EXCERPT_CHARS].strip()
+        if not has_actual_responsibility_text(candidate):
+            continue
+        score = responsibility_match_score(normalized, start)
+        if re.search(r"(?:\d+(?:[．.]\d+)+|第[一二三四五六七八九十百]+条)\s*保险责任", candidate[:40]):
+            score += 6
+        if "目 录" in normalized[max(0, start - 200) : start] or "条款目录" in normalized[max(0, start - 200) : start]:
+            score -= 8
+        candidates.append((score, -start, candidate))
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def crawl_fosun_uhi_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        records = [crawl_fosun_uhi_material_record(task) for task in tasks]
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            records = list(executor.map(crawl_fosun_uhi_material_record, tasks))
+    return sorted([record for record in records if record], key=lambda record: trim(record.get("url")))
+
+
+def crawl_fosun_uhi_health_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "复星联合健康保险"
+    status_filter = fosun_uhi_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    segment_filter = fosun_uhi_segment_filter(trim(payload.get("segment")))
+    offset = max(0, int(payload.get("offset") or payload.get("startOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    product_name_filter = trim(payload.get("productName"))
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    skipped_products = offset
+    total_candidate_products = 0
+    selected_count = 0
+
+    for profile_key, profile in FOSUN_UHI_STATUS_PROFILES.items():
+        if profile_key not in status_filter or profile["segment"] not in segment_filter:
+            continue
+        single_or_group, is_show = profile_key.split(":", 1)
+        page_number = 1
+        total_pages = 1
+        while page_number <= total_pages:
+            status, data = post_fosun_uhi_product_page(page_number, single_or_group, is_show, product_name_filter)
+            total_pages = max(1, int(data.get("pageSize") or total_pages or 1))
+            page_rows = data.get("priductLsit") or []
+            total_candidate_products += len([row for row in page_rows if trim(row.get("productName"))])
+            page_products, skipped_products, selected_count = fosun_uhi_product_rows(
+                company,
+                profile_key,
+                data,
+                skipped_products,
+                max_products,
+                selected_count,
+            )
+            products.extend([{key: value for key, value in product.items() if key != "materials"} for product in page_products])
+            for product in page_products:
+                for material in product["materials"]:
+                    tasks.append(
+                        {
+                            "company": company,
+                            "productName": product["productName"],
+                            "productType": product["productType"],
+                            "salesStatus": product["salesStatus"],
+                            "label": material["label"],
+                            "materialType": material["materialType"],
+                            "url": material["url"],
+                            "sourcePage": product["sourcePage"],
+                            "sourceList": product["sourceList"],
+                            "segment": product["segment"],
+                            "productCode": product["productCode"],
+                            "startOfSaleDate": product["startOfSaleDate"],
+                            "endOfSaleDate": product["endOfSaleDate"],
+                        }
+                    )
+            pages.append(
+                {
+                    "url": FOSUN_UHI_PRODUCT_ENDPOINT,
+                    "status": status,
+                    "sourceList": profile_key,
+                    "label": profile["label"],
+                    "salesStatus": profile["salesStatus"],
+                    "segment": profile["segment"],
+                    "pageNumber": page_number,
+                    "totalPages": total_pages,
+                    "productCount": len(page_products),
+                    "materialTaskCount": sum(len(product["materials"]) for product in page_products),
+                    "recordCount": 0,
+                }
+            )
+            if max_products and selected_count >= max_products:
+                break
+            page_number += 1
+        if max_products and selected_count >= max_products:
+            break
+
+    records = crawl_fosun_uhi_material_records(tasks, max_workers=max_workers)
+    record_counts_by_list: dict[str, int] = {}
+    task_list_by_url = {trim(task.get("url")): trim(task.get("sourceList")) for task in tasks}
+    for record in records:
+        source_list = task_list_by_url.get(trim(record.get("url")))
+        if source_list:
+            record_counts_by_list[source_list] = record_counts_by_list.get(source_list, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = record_counts_by_list.get(trim(page_meta.get("sourceList")), 0)
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": FOSUN_UHI_PRODUCT_INFO_URL,
+        "officialDomain": FOSUN_UHI_OFFICIAL_DOMAIN,
+        "saleStatus": sorted(status_filter),
+        "segment": sorted(segment_filter),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def citic_prudential_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {"在售", "停售"}
+    output: set[str] = set()
+    if text in {"sale", "available", "in_sale", "在售", "y", "1"}:
+        output.add("在售")
+    if text in {"stopped", "stop", "discontinued", "停售", "n", "0"}:
+        output.add("停售")
+    return output or {"在售", "停售"}
+
+
+def citic_prudential_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    labels: list[str] = []
+    if "医疗" in name or "住院" in name:
+        labels.append("医疗险")
+    if "护理" in name:
+        labels.append("护理险")
+    if "重大疾病" in name or "重疾" in name or "恶性肿瘤" in name or "疾病" in name:
+        labels.append("重疾险")
+    if "意外" in name:
+        labels.append("意外险")
+    if "养老" in name or "年金" in name or "教育" in name:
+        labels.append("年金险")
+    if "两全" in name:
+        labels.append("两全保险")
+    if "定期寿险" in name:
+        labels.append("定期寿险")
+    if "终身寿险" in name:
+        labels.append("增额终身寿险" if "增额" in name else "定期寿险")
+    if "万能" in name:
+        labels.append("万能账户")
+    if "投连" in name or "投资连结" in name:
+        labels.append("投连险")
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def citic_prudential_keep_material_url(url: str) -> bool:
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").lower()
+    return parts.scheme in {"http", "https"} and hostname in CITIC_PRUDENTIAL_OFFICIAL_DOMAINS
+
+
+def citic_prudential_material_tasks_from_page(company: str, html: str, status_filter: set[str]) -> tuple[list[dict[str, str]], int]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    tasks: list[dict[str, str]] = []
+    product_count = 0
+    seen_urls: set[str] = set()
+    for row in soup.find_all("tr"):
+        cells = row.find_all(["td", "th"])
+        if len(cells) < 3:
+            continue
+        sales_status = clean_text(cells[0].get_text(" ", strip=True))
+        if sales_status not in {"在售", "停售"}:
+            continue
+        product_name = clean_text(cells[1].get_text(" ", strip=True))
+        if not product_name:
+            continue
+        product_count += 1
+        if sales_status not in status_filter:
+            continue
+        anchor = cells[2].find("a", href=True)
+        if not anchor:
+            continue
+        label = clean_text(anchor.get_text(" ", strip=True)) or "条款PDF文档"
+        if "条款" not in label:
+            continue
+        material_url = urljoin(CITIC_PRUDENTIAL_PRODUCT_INFO_URL, trim(anchor.get("href")))
+        if not citic_prudential_keep_material_url(material_url) or material_url in seen_urls:
+            continue
+        seen_urls.add(material_url)
+        tasks.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": citic_prudential_product_type(product_name),
+                "salesStatus": sales_status,
+                "title": f"{product_name}产品条款",
+                "label": "产品条款",
+                "materialType": "terms",
+                "url": material_url,
+                "sourcePage": CITIC_PRUDENTIAL_PRODUCT_INFO_URL,
+                "filingNature": clean_text(cells[3].get_text(" ", strip=True)) if len(cells) > 3 else "",
+                "filingNumber": clean_text(cells[4].get_text(" ", strip=True)) if len(cells) > 4 else "",
+                "clauseCode": clean_text(cells[5].get_text(" ", strip=True)) if len(cells) > 5 else "",
+            }
+        )
+    return tasks, product_count
+
+
+def citic_prudential_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_placeholder"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_actual_responsibility_text"
+    if re.search(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def citic_prudential_responsibility_excerpt(text: str) -> str:
+    page_text = focused_responsibility_excerpt(text)
+    if page_text:
+        return page_text
+    normalized = normalize_responsibility_source_text(text)
+    match = re.search(r"(?:\d+\.\d+\s*)?保险责任", normalized)
+    if not match:
+        return ""
+    tail = normalized[match.start() :]
+    end_match = re.search(r"(?:\d+\.\d+\s*)?(?:除外责任|责任免除|受益人|保险金的申请|保险金的给付|诉讼时效|名词释义)", tail[180:])
+    excerpt = tail[: 180 + end_match.start()] if end_match else tail[:MAX_EXCERPT_CHARS]
+    if has_actual_responsibility_text(excerpt):
+        return excerpt[:MAX_EXCERPT_CHARS]
+    return ""
+
+
+def crawl_citic_prudential_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not citic_prudential_keep_material_url(material_url):
+        return None
+    pdf_status, content_type, data = fetch_binary_direct(material_url, referer=CITIC_PRUDENTIAL_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = citic_prudential_responsibility_excerpt(extracted.get("text", ""))
+    status, issue = citic_prudential_quality(page_text)
+    if status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    return {
+        "company": trim(task.get("company")) or "中信保诚人寿",
+        "productName": trim(task.get("productName")),
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": trim(task.get("title")),
+        "url": material_url,
+        "snippet": "中信保诚官网产品条款，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": "terms",
+        "official": True,
+        "officialDomain": urlsplit(material_url).hostname or CITIC_PRUDENTIAL_OFFICIAL_DOMAIN,
+        "parser": "scrapling_citic_prudential_product_info",
+        "qualityStatus": status,
+        "qualityReason": issue,
+        "responsibilityQualityStatus": status,
+        "responsibilityQualityIssue": issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "filingNature": trim(task.get("filingNature")),
+        "filingNumber": trim(task.get("filingNumber")),
+        "clauseCode": trim(task.get("clauseCode")),
+    }
+
+
+def crawl_citic_prudential_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_citic_prudential_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_citic_prudential_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_citic_prudential_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "中信保诚人寿"
+    status_filter = citic_prudential_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    page_meta = {
+        "url": CITIC_PRUDENTIAL_PRODUCT_INFO_URL,
+        "status": 0,
+        "label": "互联网产品信息",
+        "salesStatus": "、".join(sorted(status_filter)),
+        "productCount": 0,
+        "materialTaskCount": 0,
+        "recordCount": 0,
+    }
+    status, html = fetch_html_direct(CITIC_PRUDENTIAL_PRODUCT_INFO_URL, referer="https://www.citic-prudential.com.cn/")
+    page_meta["status"] = status
+    if status < 200 or status >= 300 or "互联网产品信息" not in html:
+        return {"ok": False, "company": company, "pages": [page_meta], "products": [], "records": []}
+    tasks, total_candidate_products = citic_prudential_material_tasks_from_page(company, html, status_filter)
+    page_meta["productCount"] = total_candidate_products
+    page_meta["materialTaskCount"] = len(tasks)
+    selected_tasks = tasks[offset:]
+    if max_products:
+        selected_tasks = selected_tasks[:max_products]
+    products = [
+        {
+            "company": company,
+            "productName": trim(task.get("productName")),
+            "productType": trim(task.get("productType")),
+            "salesStatus": trim(task.get("salesStatus")),
+            "sourcePage": trim(task.get("sourcePage")),
+            "clauseCode": trim(task.get("clauseCode")),
+        }
+        for task in selected_tasks
+    ]
+    records = crawl_citic_prudential_material_records(selected_tasks, max_workers=max_workers)
+    page_meta["recordCount"] = len(records)
+    return {
+        "ok": True,
+        "company": company,
+        "source": CITIC_PRUDENTIAL_PRODUCT_INFO_URL,
+        "officialDomain": CITIC_PRUDENTIAL_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(CITIC_PRUDENTIAL_OFFICIAL_DOMAINS),
+        "saleStatus": sorted(status_filter),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": [page_meta],
+        "products": products,
+        "materialTaskCount": len(selected_tasks),
+        "records": records,
+    }
+
+
 def generali_china_life_sale_status_filter(value: str) -> set[str]:
     text = trim(value).lower()
     if text in {"", "all", "全部"}:
@@ -11174,6 +15558,1919 @@ def crawl_generali_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "failedDetailCount": len([item for item in detail_results if int(item.get("status") or 0) < 200 or int(item.get("status") or 0) >= 300]),
         "materialTaskCount": len(tasks),
         "records": records,
+    }
+
+
+def dingcheng_life_source_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {page["key"] for page in DINGCHENG_LIFE_PRODUCT_PAGES}
+    selected: set[str] = set()
+    for part in re.split(r"[,，\s]+", text):
+        if part in {"in_sale", "sale", "active", "在售", "zscp"}:
+            selected.add("in_sale")
+        elif part in {"stopped", "stop", "停售", "tscp"}:
+            selected.add("stopped")
+        elif part in {"internet", "online", "互联网", "互联网保险", "互联网披露"}:
+            selected.add("internet")
+    return selected or {page["key"] for page in DINGCHENG_LIFE_PRODUCT_PAGES}
+
+
+def dingcheng_life_sale_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return set()
+    if text in {"in_sale", "sale", "active", "在售", "y"}:
+        return {"在售"}
+    if text in {"stopped", "stop", "停售", "n"}:
+        return {"停售", "停止互联网销售产品"}
+    if text in {"internet", "online", "互联网", "互联网保险", "互联网披露"}:
+        return {"互联网保险披露", "停止互联网销售产品"}
+    return {trim(value)}
+
+
+def dingcheng_life_official_url(url: str) -> bool:
+    try:
+        hostname = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    return hostname in DINGCHENG_LIFE_OFFICIAL_DOMAINS
+
+
+def dingcheng_life_normalize_url(href: str, page_url: str) -> str:
+    raw = trim(href)
+    if not raw:
+        return ""
+    candidate = urljoin(page_url, raw)
+    if not dingcheng_life_official_url(candidate):
+        return ""
+    return candidate
+
+
+def dingcheng_life_product_type(product_name: str, fallback: str = "") -> str:
+    name = trim(product_name)
+    labels: list[str] = []
+    if "投连" in name or "投资连结" in name:
+        labels.append("投连险")
+    if "万能" in name:
+        labels.append("万能账户")
+    if "护理" in name:
+        labels.append("护理险")
+    if "医疗" in name or "住院" in name or "费用补偿" in name:
+        labels.append("医疗险")
+    if "重大疾病" in name or "疾病" in name or "防癌" in name or "恶性肿瘤" in name:
+        labels.append("重疾险")
+    if "意外" in name:
+        labels.append("意外险")
+    if "年金" in name or "养老" in name:
+        labels.append("年金险")
+    if "两全" in name:
+        labels.append("两全保险")
+    if "定期寿险" in name:
+        labels.append("定期寿险")
+    if "增额" in name and "终身寿险" in name:
+        labels.append("增额终身寿险")
+    if not labels and trim(fallback) and trim(fallback) not in {"P1", "P2", "P3"}:
+        labels.append(trim(fallback))
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def dingcheng_life_material_type(header: str, label: str = "") -> str:
+    text = clean_text(f"{header} {label}")
+    if "说明书" in text or "产品说明" in text:
+        return "product_manual"
+    return "terms"
+
+
+def dingcheng_life_table_status(page: dict[str, str], table: Any) -> str:
+    if trim(page.get("key")) != "internet":
+        return trim(page.get("defaultSalesStatus")) or "未标明"
+    previous_texts: list[str] = []
+    node = table
+    for _ in range(10):
+        node = node.find_previous()
+        if not node:
+            break
+        text = html_text(str(node))
+        if text and len(text) < 160:
+            previous_texts.append(text)
+    context = " ".join(previous_texts)
+    if "停止互联网销售产品" in context or "停售" in context:
+        return "停止互联网销售产品"
+    if "产品信息" in context:
+        return "互联网保险披露"
+    return trim(page.get("defaultSalesStatus")) or "互联网保险披露"
+
+
+def dingcheng_life_parse_page(
+    company: str,
+    page: dict[str, str],
+    html: str,
+    *,
+    seen_urls: set[str],
+    skip_urls: set[str],
+    product_offset: int,
+    max_products: int,
+    accepted_product_count: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], int, dict[str, Any]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    page_product_count = 0
+    skipped_by_offset = 0
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if len(rows) < 2:
+            continue
+        headers = [html_text(str(cell)) for cell in rows[0].find_all(["td", "th"])]
+        product_index = next(
+            (index for index, header in enumerate(headers) if header in {"产品名称", "保险产品名称"}),
+            -1,
+        )
+        material_indices = {
+            index: header
+            for index, header in enumerate(headers)
+            if header in {"产品条款", "条款", "产品说明书"}
+        }
+        if product_index < 0 or not material_indices:
+            continue
+        table_status = dingcheng_life_table_status(page, table)
+        for row in rows[1:]:
+            cells = row.find_all(["td", "th"])
+            if len(cells) <= product_index:
+                continue
+            product_name = html_text(str(cells[product_index])).replace("\ufeff", "")
+            if not product_name or product_name in {"产品名称", "保险产品名称"}:
+                continue
+            row_materials: list[dict[str, str]] = []
+            for index, header in material_indices.items():
+                if len(cells) <= index:
+                    continue
+                for anchor in cells[index].find_all("a"):
+                    label = html_text(str(anchor))
+                    material_url = dingcheng_life_normalize_url(trim(anchor.get("href")), page["url"])
+                    if not label or not material_url:
+                        continue
+                    if EXCLUDED_MATERIAL_RE.search(f"{header} {label} {material_url}"):
+                        continue
+                    row_materials.append(
+                        {
+                            "label": "产品说明书" if "说明" in header else "保险条款",
+                            "title": label,
+                            "type": dingcheng_life_material_type(header, label),
+                            "url": material_url,
+                        }
+                    )
+            if not row_materials:
+                continue
+            page_product_count += 1
+            if skipped_by_offset < product_offset:
+                skipped_by_offset += 1
+                continue
+            if max_products and accepted_product_count >= max_products:
+                break
+            accepted_product_count += 1
+            product_type_hint = html_text(str(cells[headers.index("产品分类")])) if "产品分类" in headers and len(cells) > headers.index("产品分类") else ""
+            product = {
+                "company": company,
+                "productName": product_name,
+                "productType": dingcheng_life_product_type(product_name, product_type_hint),
+                "salesStatus": table_status,
+                "sourcePage": page["url"],
+                "sourceStatus": trim(page.get("key")),
+                "pageLabel": trim(page.get("label")),
+            }
+            products.append(product)
+            for material in row_materials:
+                material_url = material["url"]
+                if material_url in seen_urls or material_url in skip_urls:
+                    continue
+                seen_urls.add(material_url)
+                tasks.append(
+                    {
+                        **product,
+                        "label": material["label"],
+                        "materialType": material["type"],
+                        "title": material["title"],
+                        "url": material_url,
+                    }
+                )
+        if max_products and accepted_product_count >= max_products:
+            break
+    page_meta = {
+        "url": page["url"],
+        "status": 200 if html else 0,
+        "label": trim(page.get("label")),
+        "sourceStatus": trim(page.get("key")),
+        "productCount": page_product_count,
+        "materialTaskCount": len(tasks),
+    }
+    return products, tasks, accepted_product_count, page_meta
+
+
+def dingcheng_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_placeholder"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_actual_responsibility_text"
+    if re.search(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def crawl_dingcheng_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not dingcheng_life_official_url(material_url):
+        return None
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or DINGCHENG_LIFE_OFFICIAL_BASE_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    status, issue = dingcheng_life_quality(page_text)
+    if status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    title = trim(task.get("title")) or f"{product_name}{label}"
+    host = (urlsplit(material_url).hostname or "").lower()
+    return {
+        "company": trim(task.get("company")) or "鼎诚人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or dingcheng_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": title,
+        "url": material_url,
+        "snippet": f"鼎诚人寿官网{trim(task.get('pageLabel'))}{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or dingcheng_life_material_type(label, title),
+        "official": True,
+        "officialDomain": host,
+        "parser": "scrapling_dingcheng_life_product_info",
+        "qualityStatus": status,
+        "qualityReason": issue,
+        "responsibilityQualityStatus": status,
+        "responsibilityQualityIssue": issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceStatus": trim(task.get("sourceStatus")),
+    }
+
+
+def crawl_dingcheng_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "鼎诚人寿"
+    source_filter = dingcheng_life_source_filter(trim(payload.get("sourceScope") or payload.get("source")))
+    status_filter = dingcheng_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("salesStatus")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    product_offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    seen_urls: set[str] = set()
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    accepted_product_count = 0
+    for page in DINGCHENG_LIFE_PRODUCT_PAGES:
+        if page["key"] not in source_filter:
+            continue
+        page_status, html = fetch_html_direct(page["url"], referer=DINGCHENG_LIFE_OFFICIAL_BASE_URL)
+        page_products, page_tasks, accepted_product_count, page_meta = dingcheng_life_parse_page(
+            company,
+            page,
+            html if page_status >= 200 and page_status < 300 else "",
+            seen_urls=seen_urls,
+            skip_urls=skip_urls,
+            product_offset=product_offset,
+            max_products=max_products,
+            accepted_product_count=accepted_product_count,
+        )
+        if status_filter:
+            page_products = [product for product in page_products if trim(product.get("salesStatus")) in status_filter]
+            page_tasks = [task for task in page_tasks if trim(task.get("salesStatus")) in status_filter]
+            page_meta["materialTaskCount"] = len(page_tasks)
+        products.extend(page_products)
+        tasks.extend(page_tasks)
+        page_meta["status"] = page_status
+        pages.append(page_meta)
+        if max_products and accepted_product_count >= max_products:
+            break
+    records: list[dict[str, Any]] = []
+    if max_workers <= 1:
+        for task in tasks:
+            record = crawl_dingcheng_life_material_record(task)
+            if record:
+                records.append(record)
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(crawl_dingcheng_life_material_record, task) for task in tasks]
+            for future in as_completed(futures):
+                record = future.result()
+                if record:
+                    records.append(record)
+    counts_by_page: dict[str, int] = {}
+    for record in records:
+        source_page = trim(record.get("sourcePage"))
+        counts_by_page[source_page] = counts_by_page.get(source_page, 0) + 1
+    for page in pages:
+        page["recordCount"] = counts_by_page.get(trim(page.get("url")), 0)
+    return {
+        "ok": True,
+        "company": company,
+        "source": DINGCHENG_LIFE_OFFICIAL_BASE_URL,
+        "officialDomain": ",".join(sorted(DINGCHENG_LIFE_OFFICIAL_DOMAINS)),
+        "sourceScope": sorted(source_filter),
+        "saleStatus": sorted(status_filter) if status_filter else ["all"],
+        "maxProducts": max_products,
+        "productOffset": product_offset,
+        "maxWorkers": max_workers,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+        "pages": pages,
+    }
+
+
+def pku_founder_life_seed_terms(payload: dict[str, Any]) -> list[dict[str, str]]:
+    terms = PKU_FOUNDER_LIFE_TERMS
+    return [
+        {
+            "company": trim(payload.get("company")) or "北大方正人寿",
+            "productName": item["productName"],
+            "productType": item["productType"],
+            "salesStatus": item["salesStatus"],
+            "title": item["title"],
+            "url": item["url"],
+            "sourcePage": item["sourcePage"],
+            "label": "条款",
+            "materialType": "terms",
+        }
+        for item in terms
+    ]
+
+
+def pku_founder_life_official_url(url: str) -> bool:
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in PKU_FOUNDER_LIFE_OFFICIAL_DOMAINS
+
+
+def pku_founder_life_normalize_material_url(url: str) -> str:
+    value = trim(url)
+    if not value:
+        return ""
+    full_url = urljoin(PKU_FOUNDER_LIFE_OFFICIAL_BASE_URL, value)
+    parts = urlsplit(full_url)
+    host = (parts.hostname or "").lower()
+    if host == PKU_FOUNDER_LIFE_ASSET_DOMAIN:
+        return urlunsplit(("https", parts.netloc, parts.path, parts.query, parts.fragment))
+    return full_url
+
+
+def pku_founder_life_fetch_json(url: str) -> dict[str, Any]:
+    status, text = fetch_html_direct(url, referer=PKU_FOUNDER_LIFE_OFFICIAL_BASE_URL)
+    if status < 200 or status >= 300 or not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+def pku_founder_life_sale_status_filter(value: str) -> set[str]:
+    normalized = trim(value).lower()
+    if normalized in {"", "all", "全部"}:
+        return {"在售", "停售", "互联网保险披露", "公开披露"}
+    if normalized in {"in_sale", "sale", "active", "在售", "y", "1"}:
+        return {"在售"}
+    if normalized in {"stopped", "stop", "停售", "n", "0"}:
+        return {"停售"}
+    if normalized in {"internet", "internet_disclosure", "互联网", "互联网保险披露"}:
+        return {"互联网保险披露"}
+    if normalized in {"seed", "公开披露"}:
+        return {"公开披露"}
+    return {value}
+
+
+def pku_founder_life_source_filter(value: str) -> set[str]:
+    normalized = trim(value).lower()
+    if normalized in {"", "all", "全部"}:
+        return {"regular", "internet", "seed"}
+    selected: set[str] = set()
+    for part in re.split(r"[,，\s]+", normalized):
+        if part in {"regular", "product", "products", "产品", "披露产品"}:
+            selected.add("regular")
+        elif part in {"internet", "互联网", "internet_disclosure"}:
+            selected.add("internet")
+        elif part in {"seed", "manual", "known", "已知"}:
+            selected.add("seed")
+    return selected or {"regular", "internet", "seed"}
+
+
+def pku_founder_life_archive_material_from_filename(filename: str, fallback_type: str = "") -> dict[str, str] | None:
+    value = trim(filename)
+    try:
+        decoded = value.encode("cp437").decode("gbk")
+    except Exception:
+        decoded = value
+    basename = re.split(r"[/\\]+", decoded)[-1]
+    lower = basename.lower()
+    if not lower.endswith(".pdf"):
+        return None
+    excluded = r"费率|保险费率|现金价值|现价|利益演示|账户价值|投保单|投保须知|投保提示|告知书|健康告知|声明|授权|申请书|批复|报送材料|材料清单|编码信息|备案表|变更说明"
+    if re.search(excluded, basename, re.I):
+        return None
+    title = re.sub(r"\.pdf$", "", basename, flags=re.I)
+    if "产品说明书" in basename or "产品说明" in basename:
+        return {"label": "产品说明书", "materialType": "product_manual", "title": title}
+    if "保险条款" in basename or "利益条款" in basename or "条款" in basename:
+        return {"label": "保险条款", "materialType": "terms", "title": title}
+    if fallback_type in {"terms", "product_manual"}:
+        label = "产品说明书" if fallback_type == "product_manual" else "保险条款"
+        return {"label": label, "materialType": fallback_type, "title": title}
+    return None
+
+
+def pku_founder_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_placeholder"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_actual_responsibility_text"
+    if re.search(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def pku_founder_life_record_from_pdf(
+    task: dict[str, str],
+    material_url: str,
+    data: bytes,
+    content_type: str = "",
+    source_type: str = "pdf",
+    entry_name: str = "",
+    archive_material: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    if len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    status, issue = pku_founder_life_quality(page_text)
+    if status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim((archive_material or {}).get("label")) or trim(task.get("label")) or "保险条款"
+    material_type_value = trim((archive_material or {}).get("materialType")) or trim(task.get("materialType")) or "terms"
+    title = trim((archive_material or {}).get("title")) or trim(task.get("title")) or f"{product_name}{label}"
+    host = (urlsplit(material_url.split("#", 1)[0]).hostname or "").lower()
+    return {
+        "company": trim(task.get("company")) or "北大方正人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or taikang_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")) or "公开披露",
+        "title": title,
+        "url": material_url,
+        "snippet": f"北大方正人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": source_type,
+        "materialType": material_type_value,
+        "official": True,
+        "officialDomain": host,
+        "parser": "scrapling_pku_founder_life_product_info",
+        "qualityStatus": status,
+        "qualityReason": issue,
+        "responsibilityQualityStatus": status,
+        "responsibilityQualityIssue": issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "archiveEntry": entry_name,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "sourceProductId": trim(task.get("sourceProductId")),
+    }
+
+
+def pku_founder_life_records_from_zip(task: dict[str, str], data: bytes, content_type: str = "") -> list[dict[str, Any]]:
+    if not data or len(data) > MAX_ZIP_BYTES or not data.startswith(b"PK"):
+        return []
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data), metadata_encoding="gbk")
+    except TypeError:
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(data))
+        except Exception:
+            return []
+    except Exception:
+        return []
+    records: list[dict[str, Any]] = []
+    archive_url = trim(task.get("url"))
+    for info in archive.infolist():
+        material = pku_founder_life_archive_material_from_filename(info.filename, trim(task.get("fallbackMaterialType")))
+        if not material or info.file_size <= 0 or info.file_size > MAX_PDF_BYTES:
+            continue
+        try:
+            pdf_bytes = archive.read(info)
+        except Exception:
+            continue
+        if len(pdf_bytes) > MAX_PDF_BYTES or not pdf_bytes.startswith(b"%PDF"):
+            continue
+        entry_name = trim(material.get("title")) or trim(info.filename)
+        material_url = f"{archive_url}#entry={quote(entry_name, safe='')}"
+        record = pku_founder_life_record_from_pdf(task, material_url, pdf_bytes, content_type, "archive_pdf", entry_name, material)
+        if record:
+            records.append(record)
+    return records
+
+
+def pku_founder_life_product_entries(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[dict[str, Any]]]:
+    company = trim(payload.get("company")) or "北大方正人寿"
+    source_filter = pku_founder_life_source_filter(trim(payload.get("sourceScope") or payload.get("source")))
+    status_filter = pku_founder_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("salesStatus")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    product_offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+
+    def add_material_task(product: dict[str, Any], label: str, material_type_value: str, url: str, source_kind: str = "pdf") -> None:
+        material_url = pku_founder_life_normalize_material_url(url)
+        if not material_url or not pku_founder_life_official_url(material_url):
+            return
+        lower_path = urlsplit(material_url).path.lower()
+        if source_kind == "archive":
+            if not lower_path.endswith(".zip"):
+                return
+        elif not lower_path.endswith(".pdf"):
+            return
+        tasks.append(
+            {
+                "company": company,
+                "productName": trim(product.get("productName")),
+                "productType": trim(product.get("productType")),
+                "salesStatus": trim(product.get("salesStatus")),
+                "title": trim(product.get("title")) or f"{trim(product.get('productName'))}{label}",
+                "label": label,
+                "materialType": material_type_value,
+                "url": material_url,
+                "sourcePage": trim(product.get("sourcePage")),
+                "sourceList": trim(product.get("sourceList")),
+                "sourceProductId": str(product.get("sourceProductId") or ""),
+                "sourceKind": source_kind,
+            }
+        )
+
+    regular_rows: list[dict[str, Any]] = []
+    if "regular" in source_filter:
+        for sell_flag, sales_status in (("1", "在售"), ("0", "停售")):
+            data = pku_founder_life_fetch_json(f"{PKU_FOUNDER_LIFE_PRODUCT_INFO_URL}?sellFlag={sell_flag}")
+            rows = data.get("data") if isinstance(data.get("data"), list) else []
+            regular_rows.extend({**row, "salesStatus": sales_status, "sourceList": "regular"} for row in rows)
+            pages.append(
+                {
+                    "url": f"{PKU_FOUNDER_LIFE_PRODUCT_INFO_URL}?sellFlag={sell_flag}",
+                    "status": 200 if rows else 0,
+                    "salesStatus": sales_status,
+                    "productCount": len(rows),
+                }
+            )
+    internet_rows: list[dict[str, Any]] = []
+    if "internet" in source_filter:
+        data = pku_founder_life_fetch_json(PKU_FOUNDER_LIFE_INTERNET_PRODUCT_URL)
+        page_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+        rows = page_data.get("records") if isinstance(page_data.get("records"), list) else []
+        internet_rows = [{**row, "salesStatus": "互联网保险披露", "sourceList": "internet"} for row in rows]
+        pages.append(
+            {
+                "url": PKU_FOUNDER_LIFE_INTERNET_PRODUCT_URL,
+                "status": 200 if rows else 0,
+                "salesStatus": "互联网保险披露",
+                "productCount": len(rows),
+                "total": page_data.get("total", len(rows)),
+                "pages": page_data.get("pages", 1),
+            }
+        )
+
+    source_rows = [row for row in [*regular_rows, *internet_rows] if trim(row.get("salesStatus")) in status_filter]
+    if product_offset:
+        source_rows = source_rows[product_offset:]
+    if max_products:
+        source_rows = source_rows[:max_products]
+    for row in source_rows:
+        product_name = trim(row.get("name"))
+        if not product_name:
+            continue
+        product = {
+            "company": company,
+            "productName": product_name,
+            "productType": taikang_life_product_type(product_name),
+            "salesStatus": trim(row.get("salesStatus")),
+            "sourcePage": PKU_FOUNDER_LIFE_OFFICIAL_BASE_URL,
+            "sourceList": trim(row.get("sourceList")),
+            "sourceProductId": row.get("id"),
+        }
+        products.append(product)
+        term_url = trim(row.get("termUrl"))
+        filings_url = trim(row.get("filingsUrl"))
+        product_instruction_url = trim(row.get("productInstructionUrl"))
+        product_desc_url = trim(row.get("productDescUrl"))
+        if term_url:
+            add_material_task(product, "保险条款", "terms", term_url, "pdf")
+        if filings_url:
+            add_material_task(product, "备案资料包", "archive", filings_url, "archive")
+        if product_instruction_url and not term_url and not filings_url:
+            add_material_task(product, "产品说明书", "product_manual", trim(row.get("productInstructionUrl")), "pdf")
+        if product_desc_url and not term_url and not filings_url:
+            add_material_task(product, "产品说明书", "product_manual", trim(row.get("productDescUrl")), "pdf")
+
+    if "seed" in source_filter and "公开披露" in status_filter:
+        seed_tasks = pku_founder_life_seed_terms({**payload, "company": company})
+        tasks.extend(seed_tasks)
+        products.extend(
+            {
+                "company": company,
+                "productName": task["productName"],
+                "productType": task["productType"],
+                "salesStatus": task["salesStatus"],
+                "sourcePage": task["sourcePage"],
+                "sourceList": "seed",
+                "sourceProductId": "",
+            }
+            for task in seed_tasks
+        )
+        pages.append(
+            {
+                "url": PKU_FOUNDER_LIFE_OFFICIAL_BASE_URL,
+                "status": 200,
+                "salesStatus": "公开披露",
+                "productCount": len(seed_tasks),
+            }
+        )
+
+    for page in pages:
+        page["materialTaskCount"] = len([task for task in tasks if trim(task.get("salesStatus")) == trim(page.get("salesStatus"))])
+    return products, tasks, pages
+
+
+def crawl_pku_founder_life_material_record(task: dict[str, str]) -> list[dict[str, Any]]:
+    material_url = trim(task.get("url"))
+    if not material_url or not pku_founder_life_official_url(material_url):
+        return []
+    referer = trim(task.get("sourcePage")) or PKU_FOUNDER_LIFE_OFFICIAL_BASE_URL
+    if trim(task.get("sourceKind")) == "archive" or urlsplit(material_url).path.lower().endswith(".zip"):
+        status, content_type, data = fetch_binary_direct(material_url, referer=referer, max_bytes=MAX_ZIP_BYTES)
+        if status < 200 or status >= 300 or len(data) > MAX_ZIP_BYTES:
+            return []
+        return pku_founder_life_records_from_zip(task, data, content_type)
+    pdf_status, content_type, data = fetch_binary_direct(material_url, referer=referer)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return []
+    record = pku_founder_life_record_from_pdf(task, material_url, data, content_type, "pdf")
+    return [record] if record else []
+
+
+def crawl_pku_founder_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "北大方正人寿"
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 2))
+    products, tasks, pages = pku_founder_life_product_entries({**payload, "company": company})
+    records: list[dict[str, Any]] = []
+    if max_workers <= 1:
+        for task in tasks:
+            records.extend(crawl_pku_founder_life_material_record(task))
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(crawl_pku_founder_life_material_record, task) for task in tasks]
+            for future in as_completed(futures):
+                records.extend(future.result())
+    record_counts_by_status: dict[str, int] = {}
+    for record in records:
+        status = trim(record.get("salesStatus"))
+        record_counts_by_status[status] = record_counts_by_status.get(status, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_status.get(trim(page.get("salesStatus")), 0)
+    return {
+        "ok": True,
+        "company": company,
+        "source": PKU_FOUNDER_LIFE_OFFICIAL_BASE_URL,
+        "officialDomain": ",".join(sorted(PKU_FOUNDER_LIFE_OFFICIAL_DOMAINS)),
+        "maxWorkers": max_workers,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+        "pages": pages,
+    }
+
+
+def boc_samsung_life_sm4_cipher():
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+        return Cipher(algorithms.SM4(bytes.fromhex(BOC_SAMSUNG_LIFE_SM4_KEY_HEX)), modes.ECB())
+    except Exception as error:
+        raise RuntimeError(f"cryptography SM4 unavailable: {error}") from error
+
+
+def boc_samsung_life_pkcs7_pad(data: bytes) -> bytes:
+    size = 16 - (len(data) % 16)
+    return data + bytes([size]) * size
+
+
+def boc_samsung_life_pkcs7_unpad(data: bytes) -> bytes:
+    if not data:
+        return data
+    size = data[-1]
+    if 1 <= size <= 16 and data.endswith(bytes([size]) * size):
+        return data[:-size]
+    return data
+
+
+def boc_samsung_life_encrypt(value: str) -> str:
+    encryptor = boc_samsung_life_sm4_cipher().encryptor()
+    data = boc_samsung_life_pkcs7_pad(value.encode("utf-8"))
+    return (encryptor.update(data) + encryptor.finalize()).hex()
+
+
+def boc_samsung_life_decrypt(value: str) -> str:
+    decryptor = boc_samsung_life_sm4_cipher().decryptor()
+    data = bytes.fromhex(value)
+    output = decryptor.update(data) + decryptor.finalize()
+    return boc_samsung_life_pkcs7_unpad(output).decode("utf-8", "ignore")
+
+
+def boc_samsung_life_api_headers(referer: str, encrypted_body: str = "") -> list[str]:
+    timestamp = str(int(time.time() * 1000))
+    request_uuid = str(uuid.uuid4())
+    headers = [
+        "-H",
+        "Content-Type: application/json;charset=UTF-8",
+        "-H",
+        f"Referer: {referer}",
+        "-H",
+        f"REQUESTCHECKKEY: REQUEST_CHECK_VALUE_{timestamp}",
+        "-H",
+        f"X-Timestamp: {timestamp}",
+        "-H",
+        f"X-Uuid: {request_uuid}",
+        "-H",
+        f"X-Sign: {boc_samsung_life_encrypt(timestamp + request_uuid)}",
+    ]
+    if encrypted_body:
+        signature = hmac.new(BOC_SAMSUNG_LIFE_HMAC_KEY.encode("utf-8"), encrypted_body.encode("utf-8"), hashlib.sha256).hexdigest()
+        headers.extend(["-H", f"X-Api-Sign: {signature}"])
+    return headers
+
+
+def boc_samsung_life_post_api(url: str, payload: dict[str, Any], referer: str) -> tuple[int, dict[str, Any]]:
+    encrypted = boc_samsung_life_encrypt(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    proc = subprocess.run(
+        [
+            "curl",
+            "-L",
+            "-sS",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "Mozilla/5.0",
+            *boc_samsung_life_api_headers(referer, encrypted),
+            "-d",
+            json.dumps({"en": encrypted}, separators=(",", ":")),
+            url,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=40,
+    )
+    if proc.returncode != 0:
+        return 0, {}
+    try:
+        response = json.loads(proc.stdout.decode("utf-8", "ignore"))
+        if isinstance(response.get("data"), str):
+            response["data"] = json.loads(boc_samsung_life_decrypt(response["data"]))
+        return int(response.get("status") or 200), response
+    except Exception:
+        return 0, {}
+
+
+def boc_samsung_life_get_api(url: str, referer: str) -> tuple[int, dict[str, Any]]:
+    empty_query = boc_samsung_life_encrypt("")
+    separator = "&" if "?" in url else "?"
+    proc = subprocess.run(
+        [
+            "curl",
+            "-L",
+            "-sS",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "Mozilla/5.0",
+            *boc_samsung_life_api_headers(referer),
+            f"{url}{separator}en={empty_query}",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=40,
+    )
+    if proc.returncode != 0:
+        return 0, {}
+    try:
+        response = json.loads(proc.stdout.decode("utf-8", "ignore"))
+        if isinstance(response.get("data"), str):
+            response["data"] = json.loads(boc_samsung_life_decrypt(response["data"]))
+        return int(response.get("status") or 200), response
+    except Exception:
+        return 0, {}
+
+
+def boc_samsung_life_official_url(url: str) -> bool:
+    try:
+        host = urlsplit(url).hostname or ""
+    except Exception:
+        return False
+    return host == "boc-samsunglife.cn" or host.endswith(".boc-samsunglife.cn")
+
+
+def boc_samsung_life_product_type(product_name: str, goods_type: str = "") -> str:
+    product_type = taikang_life_product_type(product_name)
+    if product_type:
+        return product_type
+    if goods_type == "2":
+        return "医疗险"
+    if goods_type == "3":
+        return "意外险"
+    return "其他"
+
+
+def boc_samsung_life_material_type(label: str) -> str:
+    text = trim(label)
+    if "条款" in text:
+        return "terms"
+    if "产品说明书" in text or "产品说明" in text:
+        return "product_manual"
+    return ""
+
+
+def boc_samsung_life_products(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    page_size = int(payload.get("pageSize") or 20)
+    status, response = boc_samsung_life_post_api(
+        BOC_SAMSUNG_LIFE_PRODUCT_LIST_ENDPOINT,
+        {"pageNum": 1, "pageSize": page_size, "queryBean": {"moudleCode": "BOC_BX", "goodsType": "", "salesGroup": ""}},
+        "https://www.boc-samsunglife.cn/products",
+    )
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    products = data.get("list") or []
+    return products, {
+        "url": BOC_SAMSUNG_LIFE_PRODUCT_LIST_ENDPOINT,
+        "status": status,
+        "productCount": len(products),
+        "total": data.get("total") or len(products),
+        "pageSize": data.get("pageSize") or page_size,
+    }
+
+
+def boc_samsung_life_product_detail(goods_id: int) -> tuple[int, dict[str, Any]]:
+    status, response = boc_samsung_life_get_api(
+        f"{BOC_SAMSUNG_LIFE_GOODS_DETAIL_ENDPOINT}/{goods_id}",
+        f"https://www.boc-samsunglife.cn/ProductDetail/{goods_id}",
+    )
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    return status, data
+
+
+def boc_samsung_life_ocr_image_bytes(data: bytes) -> str:
+    if not data:
+        return ""
+    swift_code = r'''
+import AppKit
+import Foundation
+import Vision
+
+let imagePath = CommandLine.arguments[1]
+guard let image = NSImage(contentsOfFile: imagePath),
+      let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+  exit(1)
+}
+let width = cgImage.width
+let height = cgImage.height
+let sliceHeight = 2200
+var output: [String] = []
+for y in stride(from: 0, to: height, by: sliceHeight) {
+  let h = min(sliceHeight, height - y)
+  guard let crop = cgImage.cropping(to: CGRect(x: 0, y: y, width: width, height: h)) else { continue }
+  var lines: [String] = []
+  let request = VNRecognizeTextRequest { request, error in
+    let observations = request.results as? [VNRecognizedTextObservation] ?? []
+    lines = observations.compactMap {
+      $0.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines)
+    }.filter { !$0.isEmpty }
+  }
+  request.recognitionLevel = .accurate
+  request.usesLanguageCorrection = true
+  request.recognitionLanguages = ["zh-Hans", "en-US"]
+  let handler = VNImageRequestHandler(cgImage: crop, options: [:])
+  try? handler.perform([request])
+  output.append(contentsOf: lines)
+}
+print(output.joined(separator: "\n"))
+'''
+    with tempfile.NamedTemporaryFile(prefix="boc-samsung-terms-", suffix=".png") as image_file:
+        image_file.write(data)
+        image_file.flush()
+        proc = subprocess.run(
+            ["swift", "-", image_file.name],
+            input=swift_code,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=120,
+        )
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def boc_samsung_life_terms_text(material_url: str) -> tuple[str, dict[str, Any]]:
+    status, content_type, data = fetch_binary_direct(material_url, referer=BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL, max_bytes=MAX_PDF_BYTES)
+    meta = {"status": status, "contentType": content_type, "bytes": len(data), "sourceType": "html"}
+    if status < 200 or status >= 300 or not data:
+        return "", meta
+    if data.startswith(b"%PDF"):
+        extracted = extract_pdf_text_with_system_python(data)
+        meta.update({"sourceType": "pdf", "pages": extracted.get("pages", 0)})
+        return extracted.get("text", ""), meta
+    html = data.decode("utf-8", "ignore")
+    text = html_text(html)
+    soup = BeautifulSoup(html, "html.parser")
+    image_texts: list[str] = []
+    for image in soup.find_all("img"):
+        image_url = urljoin(material_url, trim(image.get("src")))
+        if not boc_samsung_life_official_url(image_url):
+            continue
+        if urlsplit(image_url).scheme == "http":
+            image_url = urlunsplit(("https", urlsplit(image_url).netloc, urlsplit(image_url).path, urlsplit(image_url).query, urlsplit(image_url).fragment))
+        image_status, image_content_type, image_data = fetch_binary_direct(image_url, referer=material_url, max_bytes=MAX_PDF_BYTES)
+        if image_status >= 200 and image_status < 300 and image_data:
+            image_text = boc_samsung_life_ocr_image_bytes(image_data)
+            if image_text:
+                image_texts.append(image_text)
+            meta.update({"imageUrl": image_url, "imageContentType": image_content_type, "imageBytes": len(image_data)})
+    return "\n".join([text, *image_texts]).strip(), meta
+
+
+def boc_samsung_life_material_tasks(company: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
+    product_name = trim(detail.get("goodsName"))
+    goods_id = int(detail.get("id") or 0)
+    product_type = boc_samsung_life_product_type(product_name, trim(detail.get("goodsType")))
+    tasks: list[dict[str, Any]] = []
+    for item in detail.get("productFileDTOList") or []:
+        label = trim(item.get("fileName"))
+        material_type_value = boc_samsung_life_material_type(label)
+        if material_type_value != "terms":
+            continue
+        material_url = urljoin(BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL, trim(item.get("url")))
+        if not boc_samsung_life_official_url(material_url):
+            continue
+        tasks.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product_type,
+                "salesStatus": "在售",
+                "title": f"{product_name}{label}",
+                "label": label,
+                "materialType": material_type_value,
+                "url": material_url,
+                "sourcePage": f"https://www.boc-samsunglife.cn/ProductDetail/{goods_id}",
+                "goodsId": goods_id,
+            }
+        )
+    return tasks
+
+
+def crawl_boc_samsung_life_material_record(task: dict[str, Any]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not boc_samsung_life_official_url(material_url):
+        return None
+    raw_text, meta = boc_samsung_life_terms_text(material_url)
+    page_text = focused_responsibility_excerpt(raw_text)
+    if not page_text or "保险责任" not in page_text:
+        return None
+    return {
+        "company": trim(task.get("company")) or "中银三星人寿",
+        "productName": trim(task.get("productName")),
+        "productType": trim(task.get("productType")) or boc_samsung_life_product_type(trim(task.get("productName"))),
+        "salesStatus": trim(task.get("salesStatus")) or "在售",
+        "title": trim(task.get("title")),
+        "url": material_url,
+        "snippet": "中银三星人寿官网保险条款，HTML 长图经本机 OCR 后截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": meta.get("sourceType") or "html",
+        "materialType": trim(task.get("materialType")) or "terms",
+        "official": True,
+        "officialDomain": urlsplit(material_url).hostname or BOC_SAMSUNG_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_boc_samsung_life_product_info",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "sourcePage": trim(task.get("sourcePage")),
+        "bytes": meta.get("bytes", 0),
+        "contentType": meta.get("contentType", ""),
+        "imageUrl": meta.get("imageUrl", ""),
+        "imageBytes": meta.get("imageBytes", 0),
+    }
+
+
+def crawl_boc_samsung_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "中银三星人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    products, page_meta = boc_samsung_life_products(payload)
+    if max_products:
+        products = products[:max_products]
+    normalized_products: list[dict[str, Any]] = []
+    tasks: list[dict[str, Any]] = []
+    detail_pages: list[dict[str, Any]] = []
+    for product in products:
+        goods_id = int(product.get("id") or product.get("goodsListViewDTO", {}).get("goodsId") or 0)
+        if not goods_id:
+            continue
+        status, detail = boc_samsung_life_product_detail(goods_id)
+        product_name = trim(detail.get("goodsName"))
+        detail_tasks = boc_samsung_life_material_tasks(company, detail) if product_name else []
+        normalized_products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": boc_samsung_life_product_type(product_name, trim(detail.get("goodsType"))),
+                "salesStatus": "在售",
+                "sourcePage": f"https://www.boc-samsunglife.cn/ProductDetail/{goods_id}",
+                "goodsId": goods_id,
+            }
+        )
+        tasks.extend(detail_tasks)
+        detail_pages.append(
+            {
+                "url": f"{BOC_SAMSUNG_LIFE_GOODS_DETAIL_ENDPOINT}/{goods_id}",
+                "status": status,
+                "productName": product_name,
+                "materialTaskCount": len(detail_tasks),
+            }
+        )
+    records = [record for record in (crawl_boc_samsung_life_material_record(task) for task in tasks) if record]
+    return {
+        "ok": True,
+        "company": company,
+        "source": BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL,
+        "officialDomain": BOC_SAMSUNG_LIFE_OFFICIAL_DOMAIN,
+        "products": normalized_products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+        "pages": [page_meta, *detail_pages],
+    }
+
+
+def bsl_product_info_type(product_name: str) -> str:
+    if "重大疾病" in product_name or "疾病" in product_name or "防癌" in product_name or "癌" in product_name:
+        return "重疾险"
+    if "医疗" in product_name or "住院" in product_name or "津贴" in product_name:
+        return "医疗险"
+    if "意外" in product_name or "交通" in product_name:
+        return "意外险"
+    if "年金" in product_name or "养老" in product_name:
+        return "年金险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "定期寿险" in product_name:
+        return "定期寿险"
+    if "终身寿险" in product_name:
+        return "增额终身寿险"
+    if "万能" in product_name:
+        return "万能账户"
+    if "投连" in product_name or "投资连结" in product_name:
+        return "投连险"
+    if "护理" in product_name:
+        return "护理险"
+    return "其他"
+
+
+def bsl_product_info_material_type(label: str) -> str:
+    if BOC_SAMSUNG_LIFE_EXCLUDED_MATERIAL_RE.search(label):
+        return ""
+    if "产品说明" in label or "说明书" in label:
+        return "product_manual"
+    if "条款" in label:
+        return "terms"
+    return ""
+
+
+def bsl_product_info_material_url(value: str) -> str:
+    material_url = urljoin(BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL, trim(value))
+    host = (urlsplit(material_url).hostname or "").lower()
+    if host != BOC_SAMSUNG_LIFE_OFFICIAL_DOMAIN or ".pdf" not in material_url.lower():
+        return ""
+    return material_url
+
+
+def bsl_product_info_status(item: dict[str, Any]) -> str:
+    state = trim(item.get("state"))
+    if state in {"1", "在售", "Y"}:
+        return "在售"
+    if state in {"0", "3", "停售", "N"}:
+        return "停售"
+    return "公开披露"
+
+
+def bsl_product_info_fetch_page(page_number: int, page_size: int) -> tuple[int, dict[str, Any]]:
+    status, response = boc_samsung_life_post_api(
+        BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT,
+        {"pageNum": page_number, "pageSize": page_size, "queryBean": {}},
+        "https://www.boc-samsunglife.cn/Information",
+    )
+    return status, response.get("data") if isinstance(response.get("data"), dict) else {}
+
+
+def bsl_product_info_tasks_from_item(company: str, item: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    product_name = trim(item.get("productName"))
+    if not product_name:
+        return None, []
+    product = {
+        "company": company,
+        "productName": product_name,
+        "productType": bsl_product_info_type(product_name),
+        "salesStatus": bsl_product_info_status(item),
+        "sourcePage": "https://www.boc-samsunglife.cn/Information",
+        "productCode": trim(item.get("productCode")),
+        "sourceId": trim(item.get("id")),
+        "publishedAt": trim(item.get("gmtCreated")),
+    }
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    candidates = [{"displayName": trim(item.get("newFileName")), "url": trim(item.get("newFileUrl"))}]
+    candidates.extend(item.get("productFileList") or [])
+    for candidate in candidates:
+        label = trim(candidate.get("displayName")) or trim(candidate.get("fileName"))
+        material_type = bsl_product_info_material_type(label)
+        material_url = bsl_product_info_material_url(trim(candidate.get("url")))
+        if not material_type or not material_url or material_url in seen_urls:
+            continue
+        seen_urls.add(material_url)
+        tasks.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": product["productType"],
+                "salesStatus": product["salesStatus"],
+                "label": label,
+                "materialType": material_type,
+                "url": material_url,
+                "sourcePage": product["sourcePage"],
+            }
+        )
+    return product, tasks
+
+
+def bsl_product_info_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "保险责任正文为空"
+    if re.match(r"^(?:保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外|其中)", text):
+        return "valid_partial", "疑似从条款中段开始"
+    if not has_actual_responsibility_text(text):
+        return "suspect_needs_source_check", "缺少明确保险责任触发条件或给付规则"
+    return "valid_complete", ""
+
+
+def crawl_bsl_product_info_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    pdf_status, data = fetch_bytes_direct(material_url, referer=trim(task.get("sourcePage")) or BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text:
+        return None
+    quality_status, quality_issue = bsl_product_info_quality(page_text)
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "中银三星人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": label or f"{product_name}产品资料",
+        "url": material_url,
+        "snippet": f"中银三星人寿官网{label or '产品资料'}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": BOC_SAMSUNG_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_boc_samsung_life_product_info_directory",
+        "qualityStatus": quality_status,
+        "qualityReason": quality_issue,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def crawl_boc_samsung_life_product_info_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "中银三星人寿"
+    page_size = max(1, int(payload.get("pageSize") or 20))
+    start_page = max(1, int(payload.get("startPage") or 1))
+    max_pages = max(0, int(payload.get("maxPages") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+    page_number = start_page
+    fetched_pages = 0
+
+    while True:
+        status, data = bsl_product_info_fetch_page(page_number, page_size)
+        rows = data.get("list") if isinstance(data.get("list"), list) else []
+        page_meta = {
+            "url": BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT,
+            "status": status,
+            "pageNumber": page_number,
+            "pageSize": page_size,
+            "totalCount": int(data.get("total") or 0),
+            "totalPages": int(data.get("pages") or 0),
+            "productCount": 0,
+            "materialTaskCount": 0,
+            "recordCount": 0,
+        }
+        if status < 200 or status >= 300:
+            pages.append(page_meta)
+            break
+        for item in rows:
+            product, product_tasks = bsl_product_info_tasks_from_item(company, item)
+            if not product:
+                continue
+            product_key = f"{product.get('productCode')}|{product.get('productName')}|{product.get('publishedAt')}"
+            if product_key not in seen_products:
+                if max_products and len(seen_products) >= max_products:
+                    continue
+                seen_products.add(product_key)
+                products.append(product)
+                page_meta["productCount"] += 1
+            for task in product_tasks:
+                material_url = trim(task.get("url"))
+                if not material_url or material_url in skip_urls or material_url in seen_urls:
+                    continue
+                seen_urls.add(material_url)
+                tasks.append(task)
+                page_meta["materialTaskCount"] += 1
+        pages.append(page_meta)
+        fetched_pages += 1
+        if max_products and len(seen_products) >= max_products:
+            break
+        if max_pages and fetched_pages >= max_pages:
+            break
+        if not data.get("hasNextPage"):
+            break
+        page_number += 1
+
+    if max_workers <= 1:
+        records = [record for record in (crawl_bsl_product_info_material_record(task) for task in tasks) if record]
+    else:
+        records: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(crawl_bsl_product_info_material_record, task) for task in tasks]
+            for future in as_completed(futures):
+                record = future.result()
+                if record:
+                    records.append(record)
+    for page in pages:
+        if page["status"] >= 200 and page["status"] < 300:
+            page["recordCount"] = len(records)
+            break
+    return {
+        "ok": all(int(page.get("status") or 0) >= 200 and int(page.get("status") or 0) < 300 for page in pages),
+        "company": company,
+        "source": BOC_SAMSUNG_LIFE_OFFICIAL_BASE_URL,
+        "endpoint": BOC_SAMSUNG_LIFE_PRODUCT_INFO_ENDPOINT,
+        "startPage": start_page,
+        "pageSize": page_size,
+        "maxPages": max_pages,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+    }
+
+
+def sinokorea_life_decode_html(raw_html: str, page_url: str) -> str:
+    if not raw_html:
+        return ""
+    if "document.write" not in raw_html and "<body" in raw_html.lower():
+        return raw_html
+    node_code = r"""
+const vm = require('vm');
+const fs = require('fs');
+const pageUrl = process.argv[1] || '';
+const raw = fs.readFileSync(0, 'utf8');
+const scripts = [...raw.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((match) => match[1]);
+let writes = [];
+const sandbox = {
+  location: { href: pageUrl, host: 'www.sinokorealife.com.cn', hostname: 'www.sinokorealife.com.cn' },
+  navigator: { userAgent: 'Mozilla/5.0', webdriver: false },
+  document: {
+    cookie: '',
+    write: (value) => writes.push(String(value)),
+    writeln: (value) => writes.push(String(value) + '\n'),
+    createElement: () => ({}),
+    getElementsByTagName: () => [],
+    addEventListener: () => {},
+  },
+  console: { log: () => {}, warn: () => {}, error: () => {} },
+  setTimeout: () => {},
+  clearTimeout: () => {},
+  setInterval: () => {},
+  clearInterval: () => {},
+};
+sandbox.window = sandbox;
+for (const script of scripts) {
+  vm.runInNewContext(script, sandbox, { timeout: 10000 });
+}
+process.stdout.write(writes.join('') || raw);
+"""
+    proc = subprocess.run(
+        ["node", "-e", node_code, page_url],
+        input=raw_html.encode("utf-8"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=20,
+    )
+    decoded = proc.stdout.decode("utf-8", "ignore")
+    return decoded if proc.returncode == 0 and decoded.strip() else raw_html
+
+
+def fetch_sinokorea_life_html(url: str) -> tuple[int, str]:
+    status, raw_html = fetch_html_direct(url)
+    if status < 200 or status >= 300:
+        return status, raw_html
+    return status, sinokorea_life_decode_html(raw_html, url)
+
+
+def sinokorea_life_official_url(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    return host in SINOKOREA_LIFE_OFFICIAL_DOMAINS
+
+
+def sinokorea_life_product_type(product_name: str, category: str = "") -> str:
+    name = trim(product_name)
+    if "团体" in name:
+        return "团体保险"
+    if "医疗" in name or "津贴" in name:
+        return "医疗险"
+    if "重大疾病" in name or "疾病" in name or "防癌" in name or "护理" in name:
+        return "健康险"
+    if "意外" in name:
+        return "意外险"
+    if "年金" in name or "养老" in name or "教育金" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "终身寿险" in name or "定期寿险" in name or name.endswith("寿险"):
+        return "寿险"
+    return trim(category)
+
+
+def sinokorea_life_product_name(title: str) -> str:
+    name = trim(re.sub(r"条款$", "", trim(title)))
+    return name or trim(title)
+
+
+def sinokorea_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "保险责任正文为空"
+    if re.match(r"^(?:保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外|其中)", text):
+        return "valid_partial", "疑似从条款中段开始"
+    if not has_actual_responsibility_text(text):
+        return "suspect_needs_source_check", "缺少明确保险责任触发条件或给付规则"
+    return "valid_complete", ""
+
+
+def extract_sinokorea_life_product_tasks(
+    company: str,
+    html: str,
+    max_products: int,
+    skip_urls: set[str],
+    sales_status_filter: set[str],
+    start_index: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[dict[str, Any]]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    seen_products: set[str] = set()
+    seen_detail_urls: set[str] = set()
+    sections = [
+        ("/zscp.jhtml", "在售", "/zscp/"),
+        ("/tscp.jhtml", "停售", "/tscp/"),
+    ]
+    for src, sales_status, path_marker in sections:
+        section = soup.find(attrs={"data-src": src})
+        rows = section.find_all("tr") if section else []
+        page_meta = {
+            "url": urljoin(SINOKOREA_LIFE_OFFICIAL_BASE_URL, src),
+            "status": 200 if section else 0,
+            "salesStatus": sales_status,
+            "productCount": 0,
+            "materialTaskCount": 0,
+            "recordCount": 0,
+        }
+        matched_index = 0
+        for row in rows:
+            if sales_status_filter and sales_status not in sales_status_filter:
+                continue
+            link = row.find("a", href=re.compile(rf"^{re.escape(path_marker)}\d+\.jhtml$"))
+            if not link:
+                continue
+            if matched_index < start_index:
+                matched_index += 1
+                continue
+            matched_index += 1
+            title = trim(link.get("title")) or clean_text(link.get_text(" ", strip=True))
+            detail_url = urljoin(SINOKOREA_LIFE_OFFICIAL_BASE_URL, trim(link.get("href")))
+            if not title or detail_url in seen_detail_urls:
+                continue
+            if max_products and len(seen_products) >= max_products:
+                continue
+            cells = row.find_all("td")
+            category = clean_text(cells[2].get_text(" ", strip=True)) if len(cells) > 2 else ""
+            published_at = clean_text(cells[3].get_text(" ", strip=True)) if len(cells) > 3 else ""
+            product_name = sinokorea_life_product_name(title)
+            product_key = f"{sales_status}|{product_name}|{published_at}"
+            seen_detail_urls.add(detail_url)
+            if product_key not in seen_products:
+                seen_products.add(product_key)
+                page_meta["productCount"] += 1
+                products.append(
+                    {
+                        "company": company,
+                        "productName": product_name,
+                        "productType": sinokorea_life_product_type(product_name, category),
+                        "salesStatus": sales_status,
+                        "category": category,
+                        "publishedAt": published_at,
+                        "sourcePage": detail_url,
+                    }
+                )
+            if detail_url not in skip_urls:
+                tasks.append(
+                    {
+                        "company": company,
+                        "productName": product_name,
+                        "productType": sinokorea_life_product_type(product_name, category),
+                        "salesStatus": sales_status,
+                        "category": category,
+                        "publishedAt": published_at,
+                        "label": title,
+                        "materialType": "terms",
+                        "detailUrl": detail_url,
+                    }
+                )
+                page_meta["materialTaskCount"] += 1
+        pages.append(page_meta)
+    return products, tasks, pages
+
+
+def sinokorea_life_detail_pdf_url(detail_url: str) -> tuple[int, str]:
+    status, html = fetch_sinokorea_life_html(detail_url)
+    if status < 200 or status >= 300:
+        return status, ""
+    soup = BeautifulSoup(html or "", "html.parser")
+    for iframe in soup.find_all("iframe"):
+        src = trim(iframe.get("src"))
+        file_values = parse_qs(urlsplit(src).query).get("file") if src else []
+        if file_values:
+            pdf_url = urljoin(SINOKOREA_LIFE_OFFICIAL_BASE_URL, file_values[0])
+            return status, pdf_url if sinokorea_life_official_url(pdf_url) else ""
+    match = re.search(r"(/u/cms/www/[^\"']+\.pdf)", html or "", re.I)
+    if match:
+        pdf_url = urljoin(SINOKOREA_LIFE_OFFICIAL_BASE_URL, match.group(1))
+        return status, pdf_url if sinokorea_life_official_url(pdf_url) else ""
+    return status, ""
+
+
+def crawl_sinokorea_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    detail_url = trim(task.get("detailUrl"))
+    detail_status, material_url = sinokorea_life_detail_pdf_url(detail_url)
+    if detail_status < 200 or detail_status >= 300 or not material_url:
+        return None
+    pdf_status, content_type, data = fetch_binary_direct(material_url, referer=detail_url, max_bytes=MAX_PDF_BYTES)
+    if (
+        pdf_status < 200
+        or pdf_status >= 300
+        or len(data) > MAX_PDF_BYTES
+        or not data.startswith(b"%PDF")
+        or ("pdf" not in content_type.lower() and content_type)
+    ):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = sinokorea_life_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label"))
+    return {
+        "company": trim(task.get("company")) or "中韩人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or sinokorea_life_product_type(product_name, trim(task.get("category"))),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": label or f"{product_name}条款",
+        "url": material_url,
+        "snippet": f"中韩人寿/东方嘉富人寿官网{label or '产品条款'}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or "terms",
+        "official": True,
+        "officialDomain": SINOKOREA_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_sinokorea_life_product_info",
+        "qualityStatus": quality_status,
+        "qualityReason": quality_issue,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "sourcePage": detail_url,
+        "publishedAt": trim(task.get("publishedAt")),
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def crawl_sinokorea_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "中韩人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    start_index = max(0, int(payload.get("startIndex") or 0))
+    sales_status_value = trim(payload.get("salesStatus")).lower()
+    sales_status_filter = set()
+    if sales_status_value in {"in_sale", "sale", "onsale", "在售"}:
+        sales_status_filter = {"在售"}
+    elif sales_status_value in {"stopped", "stop", "停售"}:
+        sales_status_filter = {"停售"}
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    status, html = fetch_sinokorea_life_html(SINOKOREA_LIFE_PRODUCT_INFO_URL)
+    if status < 200 or status >= 300:
+        return {
+            "ok": False,
+            "company": company,
+            "source": SINOKOREA_LIFE_OFFICIAL_BASE_URL,
+            "endpoint": SINOKOREA_LIFE_PRODUCT_INFO_URL,
+            "pages": [{"url": SINOKOREA_LIFE_PRODUCT_INFO_URL, "status": status, "productCount": 0, "materialTaskCount": 0, "recordCount": 0}],
+            "products": [],
+            "materialTaskCount": 0,
+            "records": [],
+        }
+    products, tasks, pages = extract_sinokorea_life_product_tasks(company, html, max_products, skip_urls, sales_status_filter, start_index)
+    if max_workers <= 1:
+        records = [record for record in (crawl_sinokorea_life_material_record(task) for task in tasks) if record]
+    else:
+        records: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(crawl_sinokorea_life_material_record, task) for task in tasks]
+            for future in as_completed(futures):
+                record = future.result()
+                if record:
+                    records.append(record)
+    record_counts_by_status: dict[str, int] = {}
+    for record in records:
+        status_label = trim(record.get("salesStatus"))
+        record_counts_by_status[status_label] = record_counts_by_status.get(status_label, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_status.get(trim(page.get("salesStatus")), 0)
+    return {
+        "ok": True,
+        "company": company,
+        "source": SINOKOREA_LIFE_OFFICIAL_BASE_URL,
+        "endpoint": SINOKOREA_LIFE_PRODUCT_INFO_URL,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "startIndex": start_index,
+        "salesStatus": sales_status_value or "all",
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
+    }
+
+
+def changsheng_life_sale_status_filter(value: str) -> set[str]:
+    text = trim(value).lower()
+    if text in {"", "all", "全部"}:
+        return {"在售", "停售"}
+    if text in {"in_sale", "sale", "onsale", "available", "在售"}:
+        return {"在售"}
+    if text in {"stopped", "stop", "off_sale", "discontinued", "停售"}:
+        return {"停售"}
+    output: set[str] = set()
+    if "在售" in text:
+        output.add("在售")
+    if "停售" in text:
+        output.add("停售")
+    return output or {"在售", "停售"}
+
+
+def changsheng_life_official_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return host in CHANGSHENG_LIFE_OFFICIAL_DOMAINS
+
+
+def changsheng_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    if "团体" in name:
+        return "团体保险"
+    if "医疗" in name or "津贴" in name or "住院" in name:
+        return "医疗险"
+    if "重大疾病" in name or "疾病" in name or "防癌" in name or "护理" in name:
+        return "健康险"
+    if "意外" in name or "交通" in name:
+        return "意外险"
+    if "年金" in name or "养老" in name or "教育金" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "万能" in name:
+        return "万能账户"
+    if "投连" in name or "投资连结" in name:
+        return "投连险"
+    if "终身寿险" in name or "定期寿险" in name or name.endswith("寿险"):
+        return "寿险"
+    return "其他"
+
+
+def changsheng_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "保险责任正文为空"
+    if re.match(r"^(?:保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外|其中)", text):
+        return "valid_partial", "疑似从条款中段开始"
+    if not has_actual_responsibility_text(text):
+        return "suspect_needs_source_check", "缺少明确保险责任触发条件或给付规则"
+    return "valid_complete", ""
+
+
+def changsheng_life_clean_page_text(page_text: str) -> str:
+    text = re.sub(r"\x00", "", page_text or "")
+    text = re.sub(r"(?:\s*h7g,?\s*){2,}", "\n", text)
+    return clean_text(text)
+
+
+def changsheng_life_product_tasks_from_html(
+    company: str,
+    page_url: str,
+    html: str,
+    sales_status: str,
+    max_products: int,
+    skip_urls: set[str],
+    seen_products: set[str],
+    seen_urls: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    for table in soup.find_all("table"):
+        headers: list[str] = []
+        for row in table.find_all("tr"):
+            cells = row.find_all(["td", "th"], recursive=False)
+            texts = [clean_text(cell.get_text(" ", strip=True)) for cell in cells]
+            if "产品名称" in texts and "条款" in texts:
+                headers = texts
+                continue
+            if not headers or len(cells) < 2:
+                continue
+            product_name_index = headers.index("产品名称") if "产品名称" in headers else 0
+            terms_index = headers.index("条款") if "条款" in headers else 1
+            if product_name_index >= len(cells) or terms_index >= len(cells):
+                continue
+            product_name = clean_text(cells[product_name_index].get_text(" ", strip=True))
+            if not product_name or product_name in {"个人保险产品", "团体保险产品", "互联网保险产品"}:
+                continue
+            terms_cell = cells[terms_index]
+            anchors = terms_cell.find_all("a")
+            if not anchors:
+                continue
+            product_key = f"{sales_status}|{product_name}"
+            product = {
+                "company": company,
+                "productName": product_name,
+                "productType": changsheng_life_product_type(product_name),
+                "salesStatus": sales_status,
+                "sourcePage": page_url,
+            }
+            if product_key not in seen_products:
+                if max_products and len(seen_products) >= max_products:
+                    continue
+                seen_products.add(product_key)
+                products.append(product)
+            for anchor in anchors:
+                label = clean_text(anchor.get_text(" ", strip=True)) or "条款"
+                href = trim(anchor.get("href"))
+                material_url = urljoin(CHANGSHENG_LIFE_OFFICIAL_BASE_URL, href)
+                if not href or label != "条款" or not changsheng_life_official_url(material_url):
+                    continue
+                lower_url = material_url.lower()
+                if not (lower_url.endswith(".pdf") or lower_url.endswith(".zip")):
+                    continue
+                if material_url in skip_urls or material_url in seen_urls:
+                    continue
+                seen_urls.add(material_url)
+                tasks.append(
+                    {
+                        "company": company,
+                        "productName": product_name,
+                        "productType": product["productType"],
+                        "salesStatus": sales_status,
+                        "label": label,
+                        "materialType": "terms",
+                        "url": material_url,
+                        "sourcePage": page_url,
+                    }
+                )
+    return products, tasks
+
+
+def changsheng_life_select_pdf_from_zip(data: bytes) -> tuple[str, bytes]:
+    if not data or len(data) > MAX_ZIP_BYTES or not data.startswith(b"PK"):
+        return "", b""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data), metadata_encoding="gbk")
+    except TypeError:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:
+        return "", b""
+    try:
+        entries = [item for item in archive.infolist() if item.filename.lower().endswith(".pdf") and not item.is_dir()]
+        if not entries:
+            return "", b""
+        preferred = [
+            item
+            for item in entries
+            if "条款" in item.filename
+            and not re.search(r"费率|现金|说明|分类|声明|告知|职业|利益演示|投保须知", item.filename)
+        ]
+        selected = preferred[0] if preferred else entries[0]
+        return selected.filename, archive.read(selected)
+    finally:
+        archive.close()
+
+
+def crawl_changsheng_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    referer = trim(task.get("sourcePage")) or CHANGSHENG_LIFE_PRODUCT_INFO_URL
+    if not material_url or not changsheng_life_official_url(material_url):
+        return None
+    source_type = "zip" if material_url.lower().endswith(".zip") else "pdf"
+    max_bytes = MAX_ZIP_BYTES if source_type == "zip" else MAX_PDF_BYTES
+    status, content_type, data = fetch_binary_direct(material_url, referer=referer, max_bytes=max_bytes)
+    if status < 200 or status >= 300 or len(data) > max_bytes:
+        return None
+    archive_entry = ""
+    pdf_data = data
+    if source_type == "zip":
+        archive_entry, pdf_data = changsheng_life_select_pdf_from_zip(data)
+        if not archive_entry:
+            return None
+    if not pdf_data.startswith(b"%PDF"):
+        return None
+    if source_type == "pdf" and content_type and "pdf" not in content_type.lower() and "octet-stream" not in content_type.lower():
+        return None
+    extracted = extract_pdf_text_with_system_python(pdf_data)
+    page_text = changsheng_life_clean_page_text(focused_responsibility_excerpt(extracted.get("text", "")))
+    quality_status, quality_issue = changsheng_life_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "条款"
+    record_url = material_url if source_type == "pdf" else f"{material_url}#{archive_entry}"
+    return {
+        "company": trim(task.get("company")) or "长生人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or changsheng_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": record_url,
+        "archiveUrl": material_url if source_type == "zip" else "",
+        "archiveEntry": archive_entry,
+        "snippet": f"长生人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": source_type,
+        "materialType": trim(task.get("materialType")) or "terms",
+        "official": True,
+        "officialDomain": CHANGSHENG_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_changsheng_life_product_info",
+        "qualityStatus": quality_status,
+        "qualityReason": quality_issue,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "sourcePage": referer,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "pdfBytes": len(pdf_data),
+    }
+
+
+def crawl_changsheng_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_changsheng_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_changsheng_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_changsheng_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "长生人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    status_filter = changsheng_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("salesStatus") or payload.get("status")))
+    skip_urls = {trim(item).split("#", 1)[0] for item in (payload.get("skipUrls") or []) if trim(item)}
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+    for page_info in CHANGSHENG_LIFE_PRODUCT_PAGES:
+        page_url = page_info["url"]
+        sales_status = page_info["salesStatus"]
+        page_meta = {
+            "url": page_url,
+            "status": 0,
+            "salesStatus": sales_status,
+            "productCount": 0,
+            "materialTaskCount": 0,
+            "recordCount": 0,
+        }
+        if sales_status not in status_filter:
+            pages.append(page_meta)
+            continue
+        status, html = fetch_html_direct(page_url, referer=CHANGSHENG_LIFE_PRODUCT_INFO_URL)
+        page_meta["status"] = status
+        if status < 200 or status >= 300:
+            pages.append(page_meta)
+            continue
+        page_products, page_tasks = changsheng_life_product_tasks_from_html(
+            company,
+            page_url,
+            html,
+            sales_status,
+            max_products,
+            skip_urls,
+            seen_products,
+            seen_urls,
+        )
+        products.extend(page_products)
+        tasks.extend(page_tasks)
+        page_meta["productCount"] = len(page_products)
+        page_meta["materialTaskCount"] = len(page_tasks)
+        pages.append(page_meta)
+        if max_products and len(seen_products) >= max_products:
+            break
+    records = crawl_changsheng_life_material_records(tasks, max_workers=max_workers)
+    record_counts_by_status: dict[str, int] = {}
+    for record in records:
+        sales_status = trim(record.get("salesStatus"))
+        record_counts_by_status[sales_status] = record_counts_by_status.get(sales_status, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_status.get(trim(page.get("salesStatus")), 0)
+    return {
+        "ok": all(int(page.get("status") or 0) == 0 or 200 <= int(page.get("status") or 0) < 300 for page in pages),
+        "company": company,
+        "source": CHANGSHENG_LIFE_OFFICIAL_BASE_URL,
+        "endpoint": CHANGSHENG_LIFE_PRODUCT_INFO_URL,
+        "saleStatus": sorted(status_filter),
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
     }
 
 
@@ -11663,6 +17960,875 @@ def crawl_bohai_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "products": products,
         "materialTaskCount": len(tasks),
         "records": records,
+    }
+
+
+def hengqin_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    if "医疗" in name or "住院" in name or "津贴" in name:
+        return "医疗险"
+    if "重大疾病" in name or "疾病" in name or "癌" in name:
+        return "重疾险"
+    if "意外" in name:
+        return "意外险"
+    if "护理" in name:
+        return "护理险"
+    if "年金" in name or "养老" in name or "教育金" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "终身寿险" in name:
+        return "增额终身寿险"
+    if "定期寿险" in name:
+        return "定期寿险"
+    if "万能" in name:
+        return "万能账户"
+    if "投连" in name or "投资连结" in name:
+        return "投连险"
+    return "其他"
+
+
+def hengqin_life_material_type(label: str) -> str:
+    text = trim(label)
+    if "说明" in text:
+        return "product_manual"
+    if "条款" in text:
+        return "terms"
+    return ""
+
+
+def hengqin_life_keep_material(label: str, material_url: str) -> bool:
+    text = clean_text(f"{label} {material_url}")
+    if ".pdf" not in material_url.lower():
+        return False
+    if "条款" not in text and "说明" not in text:
+        return False
+    return not EXCLUDED_MATERIAL_RE.search(text)
+
+
+def hengqin_life_official_url(url: str) -> bool:
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in HENGQIN_LIFE_OFFICIAL_DOMAINS
+
+
+def hengqin_life_fetch_json(path: str, params: dict[str, Any] | None = None, referer: str = HENGQIN_LIFE_PRODUCT_INFO_URL) -> tuple[int, dict[str, Any]]:
+    query = dict(params or {})
+    query["t"] = int(time.time())
+    url = f"{HENGQIN_LIFE_API_BASE_URL}{path}?{urlencode(query)}"
+    remote_client = base64.b64encode(json.dumps({"appId": 308, "visitorId": None}, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    proc = subprocess.run(
+        [
+            "curl",
+            "--http1.1",
+            "-L",
+            "-sS",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "Mozilla/5.0",
+            "-H",
+            f"Referer: {referer}",
+            "-H",
+            f"X-Remote-Client: {remote_client}",
+            quote_url(url),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=40,
+    )
+    if proc.returncode != 0:
+        return 0, {}
+    try:
+        return 200, json.loads(proc.stdout.decode("utf-8", "ignore"))
+    except Exception:
+        return 200, {}
+
+
+def hengqin_life_article_content(article_code: str, referer: str) -> tuple[int, dict[str, Any]]:
+    status, response = hengqin_life_fetch_json("/new/newsDetails", {"code": article_code}, referer=referer)
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    return status, data
+
+
+def hengqin_life_cell_text(cell: Any) -> str:
+    return html_text(str(cell)).replace("\xa0", " ").strip()
+
+
+def hengqin_life_normalize_product_name(value: str) -> str:
+    text = clean_text(value)
+    text = re.sub(r"\s+", "", text)
+    return text.strip("：:；;、")
+
+
+def hengqin_life_parse_material_tasks(company: str, article: dict[str, Any], profile: dict[str, str]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    content = trim(article.get("content"))
+    soup = BeautifulSoup(content, "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    current_product = ""
+    current_date = ""
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+    source_page = f"{HENGQIN_LIFE_PRODUCT_INFO_URL}/{profile['path']}"
+    for row in soup.find_all("tr"):
+        cells = row.find_all(["td", "th"])
+        if not cells:
+            continue
+        row_text = hengqin_life_cell_text(row)
+        if "产品名称" in row_text and "产品报备材料" in row_text:
+            continue
+        first_text = hengqin_life_cell_text(cells[0]) if cells else ""
+        second_text = hengqin_life_cell_text(cells[1]) if len(cells) > 1 else ""
+        if len(cells) >= 3 and not cells[0].find("a"):
+            candidate_product = hengqin_life_normalize_product_name(first_text)
+            if candidate_product and "产品名称" not in candidate_product:
+                current_product = candidate_product
+                current_date = second_text
+        elif len(cells) >= 2 and not cells[0].find("a") and re.search(r"\d{4}年\d{1,2}月\d{1,2}日", first_text):
+            current_date = first_text
+        if not current_product:
+            continue
+        product_key = f"{current_product}|{profile['salesStatus']}"
+        if product_key not in seen_products:
+            seen_products.add(product_key)
+            products.append(
+                {
+                    "company": company,
+                    "productName": current_product,
+                    "productType": hengqin_life_product_type(current_product),
+                    "salesStatus": profile["salesStatus"],
+                    "sourcePage": source_page,
+                    "publishedAt": current_date,
+                    "sourceArticleCode": trim(article.get("code")),
+                }
+            )
+        for anchor in row.find_all("a"):
+            label = trim(anchor.get_text(" ", strip=True)) or trim(anchor.get("title")) or "产品资料"
+            title = trim(anchor.get("title")) or label
+            material_url = urljoin(HENGQIN_LIFE_OFFICIAL_BASE_URL, trim(anchor.get("href")))
+            parts = urlsplit(material_url)
+            if parts.scheme == "http" and (parts.hostname or "").lower() == "static.e-hqins.com":
+                material_url = urlunsplit(("https", parts.netloc, parts.path, parts.query, parts.fragment))
+            if not hengqin_life_official_url(material_url) or not hengqin_life_keep_material(f"{label} {title}", material_url):
+                continue
+            if material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            material_type_value = hengqin_life_material_type(f"{label} {title}")
+            tasks.append(
+                {
+                    "company": company,
+                    "productName": current_product,
+                    "productType": hengqin_life_product_type(current_product),
+                    "salesStatus": profile["salesStatus"],
+                    "label": "产品说明书" if material_type_value == "product_manual" else "保险条款",
+                    "materialType": material_type_value,
+                    "title": title if title.endswith(".pdf") else f"{current_product}{label}",
+                    "url": material_url,
+                    "sourcePage": source_page,
+                    "publishedAt": current_date,
+                    "sourceArticleCode": trim(article.get("code")),
+                    "sourceArticleTitle": trim(article.get("title")) or profile["label"],
+                }
+            )
+    return products, tasks
+
+
+def hengqin_life_responsibility_excerpt(text: str) -> str:
+    normalized = normalize_responsibility_source_text(text)
+    if not normalized:
+        return ""
+    best = ""
+    for match in re.finditer(r"保险责任", normalized):
+        start = match.start()
+        if is_responsibility_toc_context(normalized, start):
+            continue
+        tail = normalized[start:]
+        end_match = re.search(r"(?:\d+(?:[．.]\d+)+|第[一二三四五六七八九十百]+条|❸|三[、.])\s*(?:责任免除|其他免责条款|如何申请领取保险金|如何申请|受益人|保险金申请)", tail[80:])
+        excerpt = tail[: 80 + end_match.start()] if end_match else tail[:MAX_EXCERPT_CHARS]
+        excerpt = excerpt[:MAX_EXCERPT_CHARS].strip()
+        if has_actual_responsibility_text(excerpt) and len(excerpt) > len(best):
+            best = excerpt
+    return best or focused_responsibility_excerpt(text)
+
+
+def hengqin_life_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_placeholder"
+    if re.match(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外|其中)", text):
+        return "valid_partial", "starts_mid_clause"
+    if not has_actual_responsibility_text(text):
+        return "suspect_needs_source_check", "no_clear_trigger_or_payment"
+    return "valid_complete", ""
+
+
+def crawl_hengqin_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not hengqin_life_official_url(material_url):
+        return None
+    pdf_status, content_type, data = fetch_binary_direct(material_url, referer=trim(task.get("sourcePage")) or HENGQIN_LIFE_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = hengqin_life_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = hengqin_life_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    host = (urlsplit(material_url).hostname or "").lower()
+    return {
+        "company": trim(task.get("company")) or "横琴人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or hengqin_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": trim(task.get("title")) or f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"横琴人寿官网{trim(task.get('sourceArticleTitle')) or '产品信息'}{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or hengqin_life_material_type(label),
+        "official": True,
+        "officialDomain": host,
+        "parser": "scrapling_hengqin_life_product_info",
+        "qualityStatus": quality_status,
+        "qualityReason": quality_issue,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "publishedAt": trim(task.get("publishedAt")),
+        "sourceArticleCode": trim(task.get("sourceArticleCode")),
+    }
+
+
+def crawl_hengqin_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_hengqin_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_hengqin_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def hengqin_life_status_filter(value: str) -> set[str]:
+    normalized = trim(value).lower()
+    if normalized in {"", "all", "全部"}:
+        return {"in_sale", "stopped"}
+    selected: set[str] = set()
+    for part in re.split(r"[,，\s]+", normalized):
+        if part in {"in_sale", "sale", "active", "在售", "y", "1"}:
+            selected.add("in_sale")
+        elif part in {"stopped", "stop", "停售", "n", "0"}:
+            selected.add("stopped")
+    return selected or {"in_sale", "stopped"}
+
+
+def crawl_hengqin_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "横琴人寿"
+    status_filter = hengqin_life_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    product_offset = max(0, int(payload.get("productOffset") or payload.get("offset") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+    for key, profile in HENGQIN_LIFE_PRODUCT_ARTICLES.items():
+        if key not in status_filter:
+            continue
+        referer = f"{HENGQIN_LIFE_PRODUCT_INFO_URL}/{profile['path']}"
+        status, article = hengqin_life_article_content(profile["code"], referer=referer)
+        page_products, page_tasks = hengqin_life_parse_material_tasks(company, article, profile) if article else ([], [])
+        pages.append(
+            {
+                "url": referer,
+                "status": status,
+                "articleCode": profile["code"],
+                "label": profile["label"],
+                "salesStatus": profile["salesStatus"],
+                "productCount": len(page_products),
+                "materialTaskCount": len(page_tasks),
+                "recordCount": 0,
+            }
+        )
+        for product in page_products:
+            product_key = f"{trim(product.get('productName'))}|{trim(product.get('salesStatus'))}"
+            if product_key in seen_products:
+                continue
+            seen_products.add(product_key)
+            products.append(product)
+        for task in page_tasks:
+            material_url = trim(task.get("url"))
+            if not material_url or material_url in skip_urls or material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            tasks.append(task)
+
+    selected_products = products[product_offset:]
+    if max_products:
+        selected_products = selected_products[:max_products]
+        allowed = {trim(product.get("productName")) for product in selected_products}
+        tasks = [task for task in tasks if trim(task.get("productName")) in allowed]
+
+    records = crawl_hengqin_life_material_records(tasks, max_workers=max_workers)
+    product_by_name = {trim(product.get("productName")): product for product in selected_products}
+    selected_records = [record for record in records if trim(record.get("productName")) in product_by_name]
+    record_counts_by_page: dict[str, int] = {}
+    for record in selected_records:
+        source_page = trim(record.get("sourcePage"))
+        record_counts_by_page[source_page] = record_counts_by_page.get(source_page, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_page.get(trim(page.get("url")), 0)
+    return {
+        "ok": all(int(page.get("status") or 0) >= 200 and int(page.get("status") or 0) < 300 for page in pages),
+        "company": company,
+        "source": HENGQIN_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": HENGQIN_LIFE_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(HENGQIN_LIFE_OFFICIAL_DOMAINS),
+        "saleStatus": sorted(status_filter),
+        "maxProducts": max_products,
+        "productOffset": product_offset,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "totalCandidateProductCount": len(products),
+        "products": selected_products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(selected_records, key=lambda record: trim(record.get("url"))),
+    }
+
+
+def soochow_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    if "医疗" in name:
+        return "医疗险"
+    if "护理" in name or "重大疾病" in name or "疾病" in name or "恶性肿瘤" in name:
+        return "重疾险"
+    if "意外" in name:
+        return "意外险"
+    if "年金" in name or "养老" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "增额终身寿险" in name:
+        return "增额终身寿险"
+    if "万能" in name:
+        return "万能账户"
+    if "定期寿险" in name:
+        return "定期寿险"
+    return "其他"
+
+
+def soochow_life_material_type(label: str) -> str:
+    return "product_manual" if "说明" in trim(label) else "terms"
+
+
+def soochow_life_keep_material(label: str, material_url: str) -> bool:
+    text = clean_text(f"{label} {material_url}")
+    if not material_url.lower().split("?", 1)[0].endswith(".pdf"):
+        return False
+    if "条款" not in text and "说明" not in text:
+        return False
+    return not EXCLUDED_MATERIAL_RE.search(text)
+
+
+def soochow_life_page_url(page_number: int) -> str:
+    if page_number <= 1:
+        return SOOCHOW_LIFE_PRODUCT_INFO_URL
+    return f"{SOOCHOW_LIFE_PRODUCT_INFO_URL}&currentPage={page_number}"
+
+
+def soochow_life_normalize_url(href: str, page_url: str) -> str:
+    raw = trim(href)
+    if not raw:
+        return ""
+    candidate = urljoin(page_url, raw)
+    hostname = (urlsplit(candidate).hostname or "").lower()
+    if hostname not in SOOCHOW_LIFE_OFFICIAL_DOMAINS:
+        return ""
+    return candidate
+
+
+def soochow_life_sales_status(row: Any, fallback: str) -> str:
+    text = clean_text(row.get_text(" ", strip=True) if row else "")
+    if "停售" in text or "已停售" in text:
+        return "停售"
+    return fallback
+
+
+def extract_soochow_life_page(company: str, page_number: int, fallback_status: str, max_products: int) -> dict[str, Any]:
+    page_url = soochow_life_page_url(page_number)
+    status, html = fetch_html_direct(page_url, referer=SOOCHOW_LIFE_PRODUCT_INFO_URL)
+    page_meta = {
+        "url": page_url,
+        "status": status,
+        "pageNumber": page_number,
+        "productCount": 0,
+        "materialTaskCount": 0,
+        "recordCount": 0,
+    }
+    if status < 200 or status >= 300 or not html:
+        return {"page": page_meta, "products": [], "tasks": []}
+    soup = BeautifulSoup(html, "html.parser")
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+    for row in soup.find_all("tr"):
+        product_cell = row.find(attrs={"data-title": "产品名称"})
+        material_cell = row.find(attrs={"data-title": re.compile(r"产品材料|点击查看")})
+        if not product_cell or not material_cell:
+            continue
+        product_name = html_text(str(product_cell)).replace("\ufeff", "")
+        if not product_name or product_name in {"产品名称", "保险产品名称"}:
+            continue
+        product_name = product_name.replace("（已停售）", "").replace("(已停售）", "").replace("（已停售)", "").strip()
+        product_type = soochow_life_product_type(product_name)
+        sales_status = soochow_life_sales_status(row, fallback_status)
+        product_key = f"{product_name}|{sales_status}"
+        if product_key not in seen_products:
+            if max_products and len(products) >= max_products:
+                break
+            seen_products.add(product_key)
+            products.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                    "sourcePage": page_url,
+                }
+            )
+        for anchor in material_cell.find_all("a"):
+            label = html_text(str(anchor)) or trim(anchor.get("title")) or "产品材料"
+            material_url = soochow_life_normalize_url(trim(anchor.get("href")), page_url)
+            if not soochow_life_keep_material(label, material_url) or material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            tasks.append(
+                {
+                    "company": company,
+                    "productName": product_name,
+                    "productType": product_type,
+                    "salesStatus": sales_status,
+                    "label": label,
+                    "materialType": soochow_life_material_type(label),
+                    "url": material_url,
+                    "sourcePage": page_url,
+                }
+            )
+    page_meta["productCount"] = len(products)
+    page_meta["materialTaskCount"] = len(tasks)
+    return {"page": page_meta, "products": products, "tasks": tasks}
+
+
+def crawl_soochow_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    hostname = (urlsplit(material_url).hostname or "").lower()
+    if hostname not in SOOCHOW_LIFE_OFFICIAL_DOMAINS:
+        return None
+    pdf_status, content_type, data = fetch_binary_direct(material_url, referer=trim(task.get("sourcePage")) or SOOCHOW_LIFE_PRODUCT_INFO_URL)
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or "保险责任" not in page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    return {
+        "company": trim(task.get("company")) or "东吴人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or soochow_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"东吴人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or soochow_life_material_type(label),
+        "official": True,
+        "officialDomain": hostname,
+        "parser": "scrapling_soochow_life_product_info",
+        "qualityStatus": "valid_complete",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+    }
+
+
+def crawl_soochow_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_soochow_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_soochow_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_soochow_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "东吴人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    product_offset = max(0, int(payload.get("productOffset") or 0))
+    max_pages = max(1, int(payload.get("maxPages") or 1))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+
+    for page_number in range(1, max_pages + 1):
+        remaining = max(0, product_offset + max_products - len(products)) if max_products else 0
+        page_result = extract_soochow_life_page(company, page_number, "在售", remaining)
+        page_products = page_result["products"]
+        page_tasks = page_result["tasks"]
+        if not page_products and page_number > 1:
+            break
+        selected_page_products = page_products[product_offset:]
+        if max_products:
+            selected_page_products = selected_page_products[:max_products]
+        allowed_names = {trim(product.get("productName")) for product in selected_page_products}
+        for product in selected_page_products:
+            product_key = f"{trim(product.get('productName'))}|{trim(product.get('salesStatus'))}"
+            if product_key in seen_products:
+                continue
+            seen_products.add(product_key)
+            products.append(product)
+        task_count = 0
+        for task in page_tasks:
+            if max_products and trim(task.get("productName")) not in allowed_names:
+                continue
+            material_url = trim(task.get("url"))
+            if not material_url or material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            tasks.append(task)
+            task_count += 1
+        page_meta = page_result["page"]
+        page_meta["materialTaskCount"] = task_count
+        pages.append(page_meta)
+        if max_products and len(products) >= max_products:
+            break
+
+    records = crawl_soochow_life_material_records(tasks, max_workers=max_workers)
+    task_page_by_url = {trim(task.get("url")): trim(task.get("sourcePage")) for task in tasks}
+    record_counts_by_page: dict[str, int] = {}
+    for record in records:
+        page_url = task_page_by_url.get(trim(record.get("url")))
+        if page_url:
+            record_counts_by_page[page_url] = record_counts_by_page.get(page_url, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_page.get(trim(page.get("url")), 0)
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": SOOCHOW_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": SOOCHOW_LIFE_OFFICIAL_DOMAIN,
+        "maxProducts": max_products,
+        "productOffset": product_offset,
+        "maxPages": max_pages,
+        "maxWorkers": max_workers,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def guolian_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    if "医疗" in name:
+        return "医疗险"
+    if "重大疾病" in name or "疾病" in name or "恶性肿瘤" in name or "护理" in name:
+        return "重疾险"
+    if "意外" in name:
+        return "意外险"
+    if "年金" in name or "养老" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "增额终身寿险" in name:
+        return "增额终身寿险"
+    if "万能" in name:
+        return "万能账户"
+    if "定期寿险" in name:
+        return "定期寿险"
+    return "其他"
+
+
+def guolian_life_material_type(label: str) -> str:
+    return "product_manual" if "说明" in trim(label) else "terms"
+
+
+def guolian_life_official_url(url: str) -> bool:
+    try:
+        hostname = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    return hostname in GUOLIAN_LIFE_OFFICIAL_DOMAINS
+
+
+def guolian_life_keep_material(label: str, material_url: str) -> bool:
+    text = clean_text(f"{label} {material_url}")
+    if not material_url.lower().split("?", 1)[0].endswith(".pdf"):
+        return False
+    if "条款" not in text and "说明" not in text:
+        return False
+    return not EXCLUDED_MATERIAL_RE.search(text)
+
+
+def guolian_life_source_scopes(value: str) -> list[dict[str, str]]:
+    normalized = trim(value).lower()
+    if normalized in {"", "all", "全部"}:
+        return [GUOLIAN_LIFE_PRODUCT_MENUS["in_sale"], GUOLIAN_LIFE_PRODUCT_MENUS["stopped"]]
+    if normalized in {"in_sale", "sale", "available", "在售", "y", "1"}:
+        return [GUOLIAN_LIFE_PRODUCT_MENUS["in_sale"]]
+    if normalized in {"stopped", "stop", "discontinued", "停售", "n", "0"}:
+        return [GUOLIAN_LIFE_PRODUCT_MENUS["stopped"]]
+    return [GUOLIAN_LIFE_PRODUCT_MENUS["in_sale"], GUOLIAN_LIFE_PRODUCT_MENUS["stopped"]]
+
+
+async def guolian_life_fetch_catalog_pages_async(scopes: list[dict[str, str]], max_pages: int) -> list[dict[str, Any]]:
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        raise RuntimeError(f"GUOLIAN_LIFE_PLAYWRIGHT_UNAVAILABLE: {exc}") from exc
+
+    pages: list[dict[str, Any]] = []
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        try:
+            for scope in scopes:
+                menu_code = trim(scope.get("menuCode"))
+                grade = trim(scope.get("grade")) or "4"
+                route_url = f"{GUOLIAN_LIFE_PRODUCT_PAGE_URL}?menuCode={quote(menu_code)}&grade={quote(grade)}"
+                await page.goto(route_url, wait_until="networkidle", timeout=60000)
+                await page.wait_for_timeout(1200)
+                first = await page.evaluate(
+                    """async ({menuCode, grade}) => {
+                      const mod = await import('/web/assets/index-DIHm7fd8.js');
+                      return await mod.ag({menuCode, grade, pageNo: 1});
+                    }""",
+                    {"menuCode": menu_code, "grade": grade},
+                )
+                total_pages = int(first.get("totalPage") or 1)
+                limit = min(total_pages, max_pages) if max_pages else total_pages
+                first["sourceScope"] = scope
+                first["pageNo"] = 1
+                pages.append(first)
+                for page_no in range(2, limit + 1):
+                    data = await page.evaluate(
+                        """async ({menuCode, grade, pageNo}) => {
+                          const mod = await import('/web/assets/index-DIHm7fd8.js');
+                          return await mod.ag({menuCode, grade, pageNo});
+                        }""",
+                        {"menuCode": menu_code, "grade": grade, "pageNo": page_no},
+                    )
+                    data["sourceScope"] = scope
+                    data["pageNo"] = page_no
+                    pages.append(data)
+        finally:
+            await browser.close()
+    return pages
+
+
+def guolian_life_fetch_catalog_pages(scopes: list[dict[str, str]], max_pages: int) -> list[dict[str, Any]]:
+    return asyncio.run(guolian_life_fetch_catalog_pages_async(scopes, max_pages=max_pages))
+
+
+def guolian_life_products_and_tasks(
+    company: str,
+    catalog_pages: list[dict[str, Any]],
+    max_products: int,
+    product_offset: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[dict[str, Any]]]:
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    seen_products: set[str] = set()
+    seen_urls: set[str] = set()
+    product_index = 0
+
+    for catalog_page in catalog_pages:
+        scope = catalog_page.get("sourceScope") or {}
+        sales_status = trim(scope.get("salesStatus"))
+        source_page = (
+            f"{GUOLIAN_LIFE_PRODUCT_PAGE_URL}?menuCode={quote(trim(scope.get('menuCode')))}&grade={quote(trim(scope.get('grade')) or '4')}"
+        )
+        page_product_count = 0
+        page_task_count = 0
+        for item in catalog_page.get("articleInfoList") or []:
+            product_name = trim(item.get("title"))
+            if not product_name:
+                continue
+            page_product_count += 1
+            product_index += 1
+            if product_index <= product_offset:
+                continue
+            if max_products and len(products) >= max_products:
+                continue
+            product_type = guolian_life_product_type(product_name)
+            product_key = f"{product_name}|{sales_status}"
+            if product_key not in seen_products:
+                seen_products.add(product_key)
+                products.append(
+                    {
+                        "company": company,
+                        "productName": product_name,
+                        "productType": product_type,
+                        "salesStatus": sales_status,
+                        "sourcePage": source_page,
+                    }
+                )
+            for material in item.get("articleInfoFileList") or []:
+                label = trim(material.get("articleName"))
+                material_url = trim(material.get("fileurl") or material.get("fileUrl"))
+                if not guolian_life_official_url(material_url) or not guolian_life_keep_material(label, material_url):
+                    continue
+                if material_url in seen_urls:
+                    continue
+                seen_urls.add(material_url)
+                tasks.append(
+                    {
+                        "company": company,
+                        "productName": product_name,
+                        "productType": product_type,
+                        "salesStatus": sales_status,
+                        "label": label,
+                        "materialType": guolian_life_material_type(label),
+                        "title": label,
+                        "url": material_url,
+                        "sourcePage": source_page,
+                        "articleId": trim(item.get("articleId")),
+                    }
+                )
+                page_task_count += 1
+        pages.append(
+            {
+                "url": source_page,
+                "pageNumber": int(catalog_page.get("pageNo") or 1),
+                "totalPage": int(catalog_page.get("totalPage") or 1),
+                "title": trim(catalog_page.get("articleInfoTitle")) or trim(scope.get("label")),
+                "salesStatus": sales_status,
+                "productCount": page_product_count,
+                "materialTaskCount": page_task_count,
+                "recordCount": 0,
+            }
+        )
+    return products, tasks, pages
+
+
+def guolian_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not guolian_life_official_url(material_url):
+        return None
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or GUOLIAN_LIFE_OFFICIAL_BASE_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or "保险责任" not in page_text:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    hostname = (urlsplit(material_url).hostname or "").lower()
+    return {
+        "company": trim(task.get("company")) or "国联人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or guolian_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": trim(task.get("title")) or f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"国联人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or guolian_life_material_type(label),
+        "official": True,
+        "officialDomain": hostname,
+        "parser": "scrapling_guolian_life_product_info",
+        "qualityStatus": "valid_complete",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+    }
+
+
+def guolian_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (guolian_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(guolian_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_guolian_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "国联人寿"
+    sale_status = trim(payload.get("saleStatus")) or "all"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    product_offset = max(0, int(payload.get("productOffset") or payload.get("offset") or 0))
+    max_pages = max(0, int(payload.get("maxPages") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    scopes = guolian_life_source_scopes(sale_status)
+    catalog_pages = guolian_life_fetch_catalog_pages(scopes, max_pages=max_pages)
+    products, tasks, pages = guolian_life_products_and_tasks(company, catalog_pages, max_products, product_offset)
+    records = guolian_life_material_records(tasks, max_workers=max_workers)
+    task_page_by_url = {trim(task.get("url")): trim(task.get("sourcePage")) for task in tasks}
+    record_counts_by_page: dict[str, int] = {}
+    for record in records:
+        page_url = task_page_by_url.get(trim(record.get("url")))
+        if page_url:
+            record_counts_by_page[page_url] = record_counts_by_page.get(page_url, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_counts_by_page.get(trim(page.get("url")), 0)
+    return {
+        "ok": True,
+        "company": company,
+        "source": "guolian_life_official_product_info",
+        "officialDomain": "guolian-life.com",
+        "officialDomains": sorted(GUOLIAN_LIFE_OFFICIAL_DOMAINS),
+        "pages": pages,
+        "totalCandidateProductCount": sum(int(page.get("productCount") or 0) for page in pages),
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": sorted(records, key=lambda record: trim(record.get("url"))),
     }
 
 
@@ -12198,12 +19364,24 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_taikang_life_pages(payload)
     if trim(payload.get("mode")) == "sunshine_life_browser_pages":
         return crawl_sunshine_life_browser_pages(payload)
+    if trim(payload.get("mode")) == "zhongan_pages":
+        return crawl_zhongan_pages(payload)
+    if trim(payload.get("mode")) == "hongkang_life_pages":
+        return crawl_hongkang_life_pages(payload)
     if trim(payload.get("mode")) == "guohua_life_pages":
         return crawl_guohua_life_pages(payload)
     if trim(payload.get("mode")) == "happy_life_pages":
         return crawl_happy_life_pages(payload)
+    if trim(payload.get("mode")) == "xiaokang_life_pages":
+        return crawl_xiaokang_life_pages(payload)
     if trim(payload.get("mode")) == "caixin_life_pages":
         return crawl_caixin_life_pages(payload)
+    if trim(payload.get("mode")) == "focused_responsibility_excerpt":
+        return {"ok": True, "pageText": focused_responsibility_excerpt(trim(payload.get("text")))}
+    if trim(payload.get("mode")) == "guobao_life_material_tasks":
+        return crawl_guobao_life_material_tasks(payload)
+    if trim(payload.get("mode")) == "guobao_life_pages":
+        return crawl_guobao_life_pages(payload)
     if trim(payload.get("mode")) == "china_taiping_pages":
         return crawl_china_taiping_pages(payload)
     if trim(payload.get("mode")) == "china_taiping_disclosure_html":
@@ -12214,6 +19392,14 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_aia_life_pages(payload)
     if trim(payload.get("mode")) == "ccb_life_pages":
         return crawl_ccb_life_pages(payload)
+    if trim(payload.get("mode")) == "haibao_life_pages":
+        return crawl_haibao_life_pages(payload)
+    if trim(payload.get("mode")) == "hsbc_life_pages":
+        return crawl_hsbc_life_pages(payload)
+    if trim(payload.get("mode")) == "huagui_life_pages":
+        return crawl_huagui_life_pages(payload)
+    if trim(payload.get("mode")) == "huahui_life_pages":
+        return crawl_huahui_life_pages(payload)
     if trim(payload.get("mode")) == "minsheng_life_pages":
         return crawl_minsheng_life_pages(payload)
     if trim(payload.get("mode")) == "cathay_life_pages":
@@ -12224,6 +19410,14 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_union_life_pages(payload)
     if trim(payload.get("mode")) == "bocomm_life_pages":
         return crawl_bocomm_life_pages(payload)
+    if trim(payload.get("mode")) == "boc_samsung_life_product_info_pages":
+        return crawl_boc_samsung_life_product_info_pages(payload)
+    if trim(payload.get("mode")) == "boc_samsung_life_pages":
+        return crawl_boc_samsung_life_pages(payload)
+    if trim(payload.get("mode")) == "sinokorea_life_pages":
+        return crawl_sinokorea_life_pages(payload)
+    if trim(payload.get("mode")) == "changsheng_life_pages":
+        return crawl_changsheng_life_pages(payload)
     if trim(payload.get("mode")) == "xintai_life_product_info":
         return crawl_xintai_life_product_info(payload)
     if trim(payload.get("mode")) == "xintai_life_internet_products":
@@ -12232,6 +19426,8 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_metlife_china_life_pages(payload)
     if trim(payload.get("mode")) == "abc_life_pages":
         return crawl_abc_life_pages(payload)
+    if trim(payload.get("mode")) == "yingda_life_pages":
+        return crawl_yingda_life_pages(payload)
     if trim(payload.get("mode")) == "icbc_axa_life_pages":
         return crawl_icbc_axa_life_pages(payload)
     if trim(payload.get("mode")) == "aviva_cofco_life_pages":
@@ -12240,6 +19436,10 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_greatwall_life_pages(payload)
     if trim(payload.get("mode")) == "guofu_life_pages":
         return crawl_guofu_life_pages(payload)
+    if trim(payload.get("mode")) == "beijing_life_pages":
+        return crawl_beijing_life_pages(payload)
+    if trim(payload.get("mode")) == "ruitai_life_pages":
+        return crawl_ruitai_life_pages(payload)
     if trim(payload.get("mode")) == "china_post_life_pages":
         return crawl_china_post_life_pages(payload)
     if trim(payload.get("mode")) == "cmrh_life_pages":
@@ -12252,10 +19452,28 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_sunlife_everbright_life_pages(payload)
     if trim(payload.get("mode")) == "aegon_thtf_life_pages":
         return crawl_aegon_thtf_life_pages(payload)
+    if trim(payload.get("mode")) == "fosun_prudential_life_pages":
+        return crawl_fosun_prudential_life_pages(payload)
+    if trim(payload.get("mode")) == "citic_prudential_life_pages":
+        return crawl_citic_prudential_life_pages(payload)
+    if trim(payload.get("mode")) == "fosun_uhi_health_pages":
+        return crawl_fosun_uhi_health_pages(payload)
+    if trim(payload.get("mode")) == "bob_cardif_life_pages":
+        return crawl_bob_cardif_life_pages(payload)
     if trim(payload.get("mode")) == "generali_china_life_pages":
         return crawl_generali_china_life_pages(payload)
+    if trim(payload.get("mode")) == "dingcheng_life_pages":
+        return crawl_dingcheng_life_pages(payload)
+    if trim(payload.get("mode")) == "pku_founder_life_pages":
+        return crawl_pku_founder_life_pages(payload)
     if trim(payload.get("mode")) == "bohai_life_pages":
         return crawl_bohai_life_pages(payload)
+    if trim(payload.get("mode")) == "hengqin_life_pages":
+        return crawl_hengqin_life_pages(payload)
+    if trim(payload.get("mode")) == "soochow_life_pages":
+        return crawl_soochow_life_pages(payload)
+    if trim(payload.get("mode")) == "guolian_life_pages":
+        return crawl_guolian_life_pages(payload)
     if trim(payload.get("mode")) == "lian_life_pages":
         return crawl_lian_life_pages(payload)
     company = trim(payload.get("company"))

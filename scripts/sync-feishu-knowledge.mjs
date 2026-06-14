@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -141,10 +142,8 @@ function limitText(value, max = 9000) {
   return `${text.slice(0, max - 18)}\n...已截断同步展示`;
 }
 
-function loadKnowledgeRecords(statePath) {
-  const state = readJsonFile(statePath, {});
-  return (Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [])
-    .map((record) => ({
+function normalizeKnowledgeRecord(record) {
+  return {
       id: String(record.id || '').trim(),
       company: trim(record.company),
       productName: trim(record.productName),
@@ -160,8 +159,32 @@ function loadKnowledgeRecords(statePath) {
       qualityReason: trim(record.qualityReason),
       parser: trim(record.parser),
       updatedAt: trim(record.updatedAt || record.lastFetchedAt || record.discoveredAt),
-    }))
+    };
+}
+
+function loadKnowledgeRecords(statePath) {
+  const state = readJsonFile(statePath, {});
+  return (Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [])
+    .map(normalizeKnowledgeRecord)
     .filter((record) => record.id && (record.company || record.productName || record.url));
+}
+
+async function loadKnowledgeRecordsForSync(statePath, { preferFile = false } = {}) {
+  if (preferFile) return { records: loadKnowledgeRecords(statePath), source: statePath };
+  try {
+    const knowledgeStore = await createKnowledgeStateStore();
+    try {
+      const records = knowledgeStore.loadState().knowledgeRecords
+        .map(normalizeKnowledgeRecord)
+        .filter((record) => record.id && (record.company || record.productName || record.url));
+      if (records.length) return { records, source: knowledgeStore.dbPath };
+    } finally {
+      knowledgeStore.close();
+    }
+  } catch (error) {
+    console.warn(`[feishu] SQLite 知识库读取失败，回退到 state.json：${error.message}`);
+  }
+  return { records: loadKnowledgeRecords(statePath), source: statePath };
 }
 
 function resolveConfig() {
@@ -451,11 +474,12 @@ function buildSyncPlan(records) {
   };
 }
 
-function main() {
+async function main() {
   loadEnvFile(path.join(projectRoot, '.env'));
   loadEnvFile(path.join(projectRoot, '.env.local'), { override: true });
 
-  const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || DEFAULT_STATE_PATH);
+  const explicitStatePath = Boolean(readArg('state-path', ''));
+  const statePath = path.resolve(readArg('state-path', process.env.POLICY_OCR_APP_STATE_PATH || DEFAULT_STATE_PATH));
   const localIdMin = readNumberArg('local-id-min', Number(process.env.FEISHU_KNOWLEDGE_LOCAL_ID_MIN || 0));
   const localIdMax = readNumberArg('local-id-max', Number(process.env.FEISHU_KNOWLEDGE_LOCAL_ID_MAX || 0));
   const createOnly = readBooleanArg('create-only');
@@ -472,7 +496,8 @@ function main() {
       .map((item) => item.trim())
       .filter(Boolean),
   );
-  let records = loadKnowledgeRecords(statePath)
+  const localKnowledge = await loadKnowledgeRecordsForSync(statePath, { preferFile: explicitStatePath });
+  let records = localKnowledge.records
     .filter((record) => !company || record.company === company)
     .filter((record) => !qualityStatus || record.qualityStatus === qualityStatus)
     .filter((record) => !idFilter.size || idFilter.has(record.id))
@@ -480,7 +505,7 @@ function main() {
     .filter((record) => !localIdMax || Number(record.id) <= localIdMax)
     .sort((left, right) => Number(left.id) - Number(right.id));
   if (!records.length) {
-    console.log(`[feishu] 本地知识库为空：${statePath}`);
+    console.log(`[feishu] 本地知识库为空：${localKnowledge.source}`);
     return;
   }
 
@@ -549,4 +574,7 @@ function main() {
   console.log(`[feishu] 配置: ${config.configPath}`);
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

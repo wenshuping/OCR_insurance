@@ -3,11 +3,7 @@ import { respondInsurancePolicyScanError } from './insurance-scan-error.mjs';
 import { scanCashValueTable, scanInsurancePolicyLocal } from './insurance-ocr.service.mjs';
 import { scanPolicyBodySchema } from './insurance.schemas.mjs';
 import { validateBody } from './middleware.mjs';
-import {
-  resolvePolicyOcrAdminPayload,
-  resolvePolicyOcrRuntimePayload,
-  savePolicyOcrConfig,
-} from './ocr-config.service.mjs';
+import { resolvePolicyOcrRuntimePayload } from './ocr-config.service.mjs';
 
 function requireOcrServiceToken(req, res, next) {
   const expected = String(process.env.POLICY_OCR_SERVICE_TOKEN || '').trim();
@@ -81,27 +77,7 @@ export function createOcrServiceRouter() {
   });
 
   router.get('/internal/ocr-service/config', requireOcrServiceToken, (_req, res) => {
-    res.json(resolvePolicyOcrAdminPayload());
-  });
-
-  router.post('/internal/ocr-service/config', requireOcrServiceToken, async (req, res) => {
-    try {
-      const payload = await savePolicyOcrConfig({
-        mode: req.body?.mode,
-        updatedByActorId: req.body?.updatedByActorId,
-      });
-      return res.json(payload);
-    } catch (error) {
-      const code = String(error?.code || error?.message || 'POLICY_OCR_CONFIG_UPDATE_FAILED');
-      const status = code === 'POLICY_OCR_MODE_INVALID' ? 400 : code === 'POLICY_OCR_MODE_NOT_READY' ? 409 : 500;
-      const message =
-        code === 'POLICY_OCR_MODE_INVALID'
-          ? 'OCR 识别方式无效'
-          : code === 'POLICY_OCR_MODE_NOT_READY'
-            ? '当前 OCR 识别方式未就绪'
-            : 'OCR 识别方式更新失败';
-      return res.status(status).json({ ok: false, code, message });
-    }
+    res.json(resolvePolicyOcrRuntimePayload());
   });
 
   return router;

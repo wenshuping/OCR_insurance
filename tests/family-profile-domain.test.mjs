@@ -204,6 +204,8 @@ test('normalizeFamilyRelation maps common labels to stable values', () => {
   assert.deepEqual(normalizeFamilyRelation('子女'), { relationToCore: 'child', relationLabel: '子女', role: 'child' });
   assert.deepEqual(normalizeFamilyRelation('孩子'), { relationToCore: 'child', relationLabel: '子女', role: 'child' });
   assert.deepEqual(normalizeFamilyRelation('小孩'), { relationToCore: 'child', relationLabel: '子女', role: 'child' });
+  assert.deepEqual(normalizeFamilyRelation('儿媳'), { relationToCore: 'daughter_in_law', relationLabel: '儿媳', role: 'adult' });
+  assert.deepEqual(normalizeFamilyRelation('女婿'), { relationToCore: 'son_in_law', relationLabel: '女婿', role: 'adult' });
   assert.deepEqual(normalizeFamilyRelation('孙子'), { relationToCore: 'grandson', relationLabel: '孙子', role: 'child' });
   assert.deepEqual(normalizeFamilyRelation('孙女'), { relationToCore: 'granddaughter', relationLabel: '孙女', role: 'child' });
   assert.deepEqual(normalizeFamilyRelation('外孙'), { relationToCore: 'maternal_grandson', relationLabel: '外孙', role: 'child' });

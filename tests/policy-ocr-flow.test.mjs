@@ -7810,6 +7810,52 @@ test('admin can login and read all accounts, insured groups, and policies', asyn
   }
 });
 
+test('admin login persists only the new admin session', async () => {
+  const persistedAdminSessions = [];
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      pendingScans: [],
+      policies: [],
+      sourceRecords: [],
+      knowledgeRecords: [
+        { id: 1, company: '测试保险', productName: '慢库产品', pageText: '可选责任一 保险金' },
+      ],
+      insuranceIndicatorRecords: [],
+      optionalResponsibilityRecords: [],
+      nextId: 2,
+    },
+    optionalResponsibilityGovernanceRebuilder: () => {
+      throw new Error('admin login should not rebuild optional responsibility governance');
+    },
+    persist: async () => {
+      throw new Error('admin login should not run full-state persist');
+    },
+    persistAdminSession: async ({ session }) => {
+      persistedAdminSessions.push(JSON.parse(JSON.stringify(session)));
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+
+    assert.equal(loggedIn.response.status, 200);
+    assert.ok(loggedIn.payload.token);
+    assert.equal(persistedAdminSessions.length, 1);
+    assert.equal(persistedAdminSessions[0].token, loggedIn.payload.token);
+  } finally {
+    await server.close();
+  }
+});
+
 test('policy list attaches local indicator records for matched policy plans', async () => {
   const app = createPolicyOcrApp({
     state: {
@@ -8448,6 +8494,67 @@ test('admin can maintain insurer official domain whitelist profiles', async () =
     assert.equal(deleted.response.status, 200);
     assert.equal(app.locals.state.officialDomainProfiles.length, 0);
     assert.ok(persisted.length >= 3);
+  } finally {
+    await server.close();
+  }
+});
+
+test('admin membership config save persists only membership config', async () => {
+  const persistedMembershipConfigs = [];
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [
+        {
+          token: 'admin-token',
+          createdAt: '2026-06-14T00:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        },
+      ],
+      smsCodes: [],
+      pendingScans: [],
+      policies: [],
+      sourceRecords: [],
+      knowledgeRecords: [
+        { id: 1, company: '测试保险', productName: '慢库产品', pageText: '可选责任一 保险金' },
+      ],
+      insuranceIndicatorRecords: [],
+      optionalResponsibilityRecords: [],
+      membershipConfig: {
+        enabled: true,
+        annualPriceCents: 30000,
+        annualDurationDays: 365,
+        registeredFreePolicyQuota: 3,
+        updatedAt: '2026-06-14T00:00:00.000Z',
+      },
+      nextId: 2,
+    },
+    optionalResponsibilityGovernanceRebuilder: () => {
+      throw new Error('membership config save should not rebuild optional responsibility governance');
+    },
+    persist: async () => {
+      throw new Error('membership config save should not run full-state persist');
+    },
+    persistMembershipConfig: async ({ config }) => {
+      persistedMembershipConfigs.push(JSON.parse(JSON.stringify(config)));
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/admin/membership-config', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer admin-token' },
+      body: JSON.stringify({ enabled: false, registeredFreePolicyQuota: 6 }),
+    });
+
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.payload.config.enabled, false);
+    assert.equal(saved.payload.config.registeredFreePolicyQuota, 6);
+    assert.equal(persistedMembershipConfigs.length, 1);
+    assert.equal(persistedMembershipConfigs[0].registeredFreePolicyQuota, 6);
   } finally {
     await server.close();
   }
@@ -9982,6 +10089,54 @@ test('registration migrates guest family ownership and lists family profiles for
     assert.equal(families.payload.families[0].ownerUserId, registered.payload.user.id);
     assert.equal(families.payload.families[0].ownerGuestId, '');
     assert.equal(families.payload.families[0].members[0].name, '张三');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family list does not rebind orphan policies when active families already exist', async () => {
+  const state = createInitialState();
+  state.users = [{ id: 1, mobile: '18616135811', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' }];
+  state.sessions = [{ token: 'token-1', userId: 1, createdAt: '2026-06-14T00:00:00.000Z' }];
+  state.familyProfiles = [
+    { id: 10, ownerUserId: 1, ownerGuestId: '', familyName: '默认家庭', coreMemberId: 11, status: 'active', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' },
+    { id: 20, ownerUserId: 1, ownerGuestId: '', familyName: '吴连英', coreMemberId: null, status: 'active', createdAt: '2026-06-14T00:01:00.000Z', updatedAt: '2026-06-14T00:01:00.000Z' },
+  ];
+  state.familyMembers = [
+    { id: 11, familyId: 10, name: '温舒萍', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' },
+  ];
+  state.policies = [
+    { id: 30, userId: 1, guestId: '', familyId: null, applicantMemberId: null, insuredMemberId: null, company: '中国人寿', name: '国寿鑫颐宝两全保险（2024版）', applicant: '翟卿', insured: '翟卿', responsibilities: [], coverageIndicators: [], createdAt: '2026-06-14T00:02:00.000Z', updatedAt: '2026-06-14T00:02:00.000Z' },
+  ];
+  state.nextId = 40;
+  const persisted = [];
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {
+      persisted.push(JSON.parse(JSON.stringify({
+        nextId: state.nextId,
+        familyProfiles: state.familyProfiles,
+        familyMembers: state.familyMembers,
+        policies: state.policies,
+      })));
+    },
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const families = await jsonFetch(server.baseUrl, '/api/family-profiles', {
+      headers: { authorization: 'Bearer token-1' },
+    });
+
+    assert.equal(families.response.status, 200);
+    assert.deepEqual(families.payload.families.map((family) => family.id), [10, 20]);
+    assert.equal(state.policies[0].familyId, null);
+    assert.equal(state.policies[0].applicantMemberId, null);
+    assert.equal(state.policies[0].insuredMemberId, null);
+    assert.deepEqual(state.familyMembers.map((member) => member.id), [11]);
+    assert.equal(state.nextId, 40);
+    assert.equal(persisted.length, 0);
   } finally {
     await server.close();
   }

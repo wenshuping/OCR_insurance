@@ -18,6 +18,7 @@ test('local production stack lets runtime OCR env override the default provider'
   assert.doesNotMatch(localStackSource, /'POLICY_OCR_STRUCTUREV3_LLM_BASE_URL'/u);
   assert.doesNotMatch(localStackSource, /'POLICY_OCR_STRUCTUREV3_LLM_MODEL'/u);
 
-  const envBlock = localStackSource.match(/env:\s*\{[\s\S]+?POLICY_OCR_CONFIG_PATH:[\s\S]+?\n\s*\},\n\s*\};/u)?.[0] || '';
+  const envBlock = localStackSource.match(/env:\s*\{[\s\S]+?POLICY_OCR_PROVIDER:[\s\S]+?\n\s*\},\n\s*\};/u)?.[0] || '';
+  assert.doesNotMatch(envBlock, /POLICY_OCR_CONFIG_PATH/u);
   assert.match(envBlock, /POLICY_OCR_PROVIDER:\s*'remote_gpu_vision'[\s\S]+?\.\.\.extraEnv/u);
 });

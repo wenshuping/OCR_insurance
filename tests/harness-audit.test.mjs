@@ -6,10 +6,12 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
+  auditDurableDataPersistence,
   auditExecutionPoints,
   auditFeatureTestGate,
   auditHighRiskScriptDefaults,
   auditOptionalResponsibilityDatabase,
+  auditRouteSqlPersistence,
   auditSensitivePathChanges,
   parseGitStatus,
   patternMatches,
@@ -117,6 +119,125 @@ test('feature test gate maps changed files, de-duplicates commands, and fails un
   assert.equal(unmapped.failed.length, 1);
   assert.match(unmapped.failed[0].detail, /server\/unmapped-domain\.mjs/);
   assert.equal(unmapped.skipped.some((item) => item.message.includes('docs-only change')), true);
+});
+
+test('durable data audit fails crawler scripts without SQLite persistence', async () => {
+  const root = await makeTempDir();
+  await writeFile(root, 'scripts/crawl-demo-knowledge.mjs', `
+import fs from 'node:fs';
+
+const statePath = '.runtime/state.json';
+const records = [{ company: '示例保险', productName: '示例产品' }];
+fs.writeFileSync(statePath, JSON.stringify({ knowledgeRecords: records }));
+console.log(JSON.stringify({ ok: true, records }));
+`);
+
+  const report = auditDurableDataPersistence({
+    projectRoot: root,
+    changedFiles: ['scripts/crawl-demo-knowledge.mjs'],
+  });
+  assert.equal(report.failed.length, 1);
+  assert.match(report.failed[0].detail, /no SQLite write evidence/);
+  assert.match(report.failed[0].detail, /temporary JSON\/CSV\/NDJSON\/state files/);
+});
+
+test('durable data audit passes crawler scripts with SQLite persistence evidence', async () => {
+  const root = await makeTempDir();
+  await writeFile(root, 'scripts/crawl-demo-knowledge.mjs', `
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
+import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+
+const knowledgeStore = await createKnowledgeStateStore();
+try {
+  const state = knowledgeStore.loadState();
+  const saved = upsertKnowledgeRecords(state, [{ company: '示例保险', productName: '示例产品' }]);
+  knowledgeStore.saveState(state);
+  console.log(JSON.stringify({ ok: true, savedRecordCount: saved.length, dbPath: knowledgeStore.dbPath }));
+} finally {
+  knowledgeStore.close();
+}
+`);
+
+  const report = auditDurableDataPersistence({
+    projectRoot: root,
+    changedFiles: ['scripts/crawl-demo-knowledge.mjs'],
+  });
+  assert.equal(report.failed.length, 0);
+  assert.equal(report.passed.length, 1);
+});
+
+test('route SQL persistence audit fails new full-state persist calls', async () => {
+  const root = await makeTempDir();
+  await writeFile(root, 'server/routes/policies.routes.mjs', `
+export function createPolicyRoutes({ state, persist }) {
+  return async function handler(policy) {
+    state.policies.push(policy);
+    await persist(state);
+  };
+}
+`);
+  const report = auditRouteSqlPersistence({
+    projectRoot: root,
+    changedEntries: [{ path: 'server/routes/policies.routes.mjs', status: ' M' }],
+  });
+  assert.equal(report.failed.length, 1);
+  assert.match(report.failed[0].detail, /server\/routes\/policies\.routes\.mjs:\d+/);
+  assert.match(report.failed[0].detail, /await persist\(state\)/);
+});
+
+test('route SQL persistence audit fails granular persister fallback paths', async () => {
+  const root = await makeTempDir();
+  await writeFile(root, 'server/routes/policies.routes.mjs', `
+export function createPolicyRoutes({ state, persist, persistPendingScan }) {
+  return async function handler(guestId) {
+    if (persistPendingScan) {
+      await persistPendingScan({ guestId });
+    } else {
+      await persist(state);
+    }
+  };
+}
+`);
+  const report = auditRouteSqlPersistence({
+    projectRoot: root,
+    changedEntries: [{ path: 'server/routes/policies.routes.mjs', status: ' M' }],
+  });
+  assert.equal(report.failed.length, 1);
+  assert.match(report.failed[0].detail, /await persist\(state\)/);
+});
+
+test('route SQL persistence audit allows granular persister calls', async () => {
+  const root = await makeTempDir();
+  await writeFile(root, 'server/routes/policies.routes.mjs', `
+export function createPolicyRoutes({ persistPendingScan }) {
+  return async function handler(guestId) {
+    await persistPendingScan({ guestId });
+  };
+}
+`);
+  const report = auditRouteSqlPersistence({
+    projectRoot: root,
+    changedEntries: [{ path: 'server/routes/policies.routes.mjs', status: ' M' }],
+  });
+  assert.equal(report.failed.length, 0);
+  assert.equal(report.passed.length, 1);
+});
+
+test('route SQL persistence audit scans untracked route modules', async () => {
+  const root = await makeTempDir();
+  await writeFile(root, 'server/routes/new-user.routes.mjs', `
+export function createNewUserRoutes({ state, persist }) {
+  return async function handler() {
+    await persist(state);
+  };
+}
+`);
+  const report = auditRouteSqlPersistence({
+    projectRoot: root,
+    changedEntries: [{ path: 'server/routes/new-user.routes.mjs', status: '??' }],
+  });
+  assert.equal(report.failed.length, 1);
+  assert.match(report.failed[0].detail, /new-user\.routes\.mjs/);
 });
 
 test('optional responsibility DB audit skips a missing development DB', async () => {
