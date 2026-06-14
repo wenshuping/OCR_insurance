@@ -66,6 +66,10 @@ const app = createPolicyOcrApp({
   persistFamilyState: store.persistFamilyState,
   persistAuthSmsCode: store.persistAuthSmsCode,
   persistAuthRegistration: store.persistAuthRegistration,
+  persistAuthLogout: store.persistAuthLogout,
+  persistPolicyState: store.persistPolicyState,
+  persistPolicyDelete: store.persistPolicyDelete,
+  persistMembershipState: store.persistMembershipState,
   db: store.db,
 });
 

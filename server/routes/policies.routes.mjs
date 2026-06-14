@@ -14,6 +14,8 @@ export function createPolicyRoutes(context) {
     persist,
     persistPolicyScanSave,
     persistPendingScan,
+    persistPolicyState,
+    persistPolicyDelete,
     scanner,
     analyzer,
     adminPassword,
@@ -149,7 +151,8 @@ export function createPolicyRoutes(context) {
       const rawUpload = buildRawUploadSnapshot(req.body);
       if (!user && guestId && !req.body?.scan) {
         storeGuestPendingScan(state, { guestId, scan: null, analysis: null, rawUpload });
-        await persist(state);
+        if (persistPendingScan) await persistPendingScan({ guestId });
+        else await persist(state);
       }
       const scanStartedAt = nowMs();
       const normalizedScan = await resolvePolicyScanInput({ scanner, body: req.body, state });
@@ -192,7 +195,8 @@ export function createPolicyRoutes(context) {
           analysis: analysisWithOptionalResponsibilities,
           rawUpload,
         });
-        await persist(state);
+        if (persistPendingScan) await persistPendingScan({ guestId });
+        else await persist(state);
       }
       logPerformance(performanceLogger, 'policy.analyze.complete', {
         route: '/api/policies/analyze',
@@ -297,7 +301,7 @@ export function createPolicyRoutes(context) {
           policy,
           scan: normalizedScan,
           analyzer,
-          persist: () => persist(state),
+          persist: () => (persistPolicyState ? persistPolicyState({ policy }) : persist(state)),
           performanceLogger,
           requestMetrics: policyInputMetrics(req.body),
         });
@@ -366,7 +370,8 @@ export function createPolicyRoutes(context) {
       if (hasOwn(updates, 'insuredIdNumber') && !hasOwn(updates, 'insuredBirthday')) {
         updates.insuredBirthday = birthdayFromIdNumber(updates.insuredIdNumber);
       }
-      if (shouldRebuildPolicyFamilyBinding(updates, policy)) {
+      const shouldPersistFamilyState = shouldRebuildPolicyFamilyBinding(updates, policy);
+      if (shouldPersistFamilyState) {
         const familyBinding = buildPolicyFamilyBinding(
           state,
           familyBindingInputFromPolicyUpdate(updates, policy),
@@ -382,7 +387,8 @@ export function createPolicyRoutes(context) {
       const identityChanged = beforeIdentity !== policyProductIdentity(policy);
       if (identityChanged) clearPolicyReportForRegeneration(state, policy);
       policy.updatedAt = new Date().toISOString();
-      await persist(state);
+      if (persistPolicyState) await persistPolicyState({ policy, includeFamilyState: shouldPersistFamilyState });
+      else await persist(state);
 
       try {
         computeAndStoreCashflow(policy);
@@ -396,7 +402,7 @@ export function createPolicyRoutes(context) {
           policy,
           scan: buildPolicyReportScan(policy),
           analyzer,
-          persist: () => persist(state),
+          persist: () => (persistPolicyState ? persistPolicyState({ policy }) : persist(state)),
           performanceLogger,
           requestMetrics: { inputOcrChars: String(policy.ocrText || '').length },
         });
@@ -427,7 +433,8 @@ export function createPolicyRoutes(context) {
       cashValueStore.deleteValues(policyId);
       state.policies = (state.policies || []).filter((policy) => Number(policy.id) !== policyId);
       state.sourceRecords = (state.sourceRecords || []).filter((source) => Number(source.policyId) !== policyId);
-      await persist(state);
+      if (persistPolicyDelete) await persistPolicyDelete({ policyId });
+      else await persist(state);
       res.json({ ok: true, deletedId: policyId });
     } catch (error) {
       sendError(res, error);
@@ -460,13 +467,14 @@ export function createPolicyRoutes(context) {
         policy.report = '';
         policy.sources = [];
         policy.updatedAt = new Date().toISOString();
-        await persist(state);
+        if (persistPolicyState) await persistPolicyState({ policy });
+        else await persist(state);
         startPolicyReportGeneration({
           state,
           policy,
           scan: buildPolicyReportScan(policy),
           analyzer,
-          persist: () => persist(state),
+          persist: () => (persistPolicyState ? persistPolicyState({ policy }) : persist(state)),
           performanceLogger,
           requestMetrics: { inputOcrChars: String(policy.ocrText || '').length },
         });

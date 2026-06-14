@@ -114,6 +114,7 @@ export function createMembershipRoutes(context) {
   const {
     state,
     persist,
+    persistMembershipState,
     resolveAuthUser,
     buildMembershipSnapshot,
     getMembershipConfig,
@@ -133,6 +134,13 @@ export function createMembershipRoutes(context) {
     verifyWechatPaySignature,
     fetchWechatOAuthOpenid,
   } = context;
+  const saveMembershipState = async (input = {}) => {
+    if (persistMembershipState) {
+      await persistMembershipState(input);
+      return;
+    }
+    await persist(state);
+  };
 
   router.get('/me', async (req, res) => {
     try {
@@ -167,7 +175,7 @@ export function createMembershipRoutes(context) {
           now: nowIso(),
           payload: { mode: 'live' },
         });
-        await persist(state);
+        await saveMembershipState({ order });
         res.json({ ok: true, order: orderSummary(order), payParams: prepay.payParams });
         return;
       }
@@ -178,7 +186,7 @@ export function createMembershipRoutes(context) {
         now: nowIso(),
         payload: { mode: 'mock' },
       });
-      await persist(state);
+      await saveMembershipState({ order });
       res.json({ ok: true, order: orderSummary(order), payParams });
     } catch (error) {
       sendError(res, error, 400);
@@ -200,14 +208,14 @@ export function createMembershipRoutes(context) {
       if (!isMockPayMode(resolveWechatPayConfig())) throw routeError('ORDER_NOT_FOUND', 404);
       const user = requireUser(req, state, resolveAuthUser);
       const order = requireOrder(state, user, req.params.id);
-      processMembershipPaymentSuccess(state, {
+      const payment = processMembershipPaymentSuccess(state, {
         outTradeNo: order.outTradeNo,
         transactionId: `mock_${order.outTradeNo}`,
         amountCents: order.amountCents,
         paidAt: nowIso(),
         notifyPayload: { mode: 'mock' },
       });
-      await persist(state);
+      await saveMembershipState({ order: payment.order, membership: payment.membership });
       res.json({ ok: true, order: orderSummary(order), ...buildMembershipSnapshot(state, user, { now: nowIso() }) });
     } catch (error) {
       sendError(res, error, 400);
@@ -226,7 +234,7 @@ export function createMembershipRoutes(context) {
         redirectUrl: req.body?.redirectUrl || '/',
         now: nowIso(),
       });
-      await persist(state);
+      await saveMembershipState({ oauthState: oauth });
       res.json({ ok: true, authorizeUrl: buildWechatOAuthAuthorizeUrl(req, appId, oauth.state) });
     } catch (error) {
       sendError(res, error, 400);
@@ -241,13 +249,13 @@ export function createMembershipRoutes(context) {
       const identitiesBefore = (state.userWechatIdentities || []).map((identity) => ({ ...identity }));
       try {
         const openid = await fetchWechatOAuthOpenid(code);
-        upsertUserWechatIdentity(state, {
+        const identity = upsertUserWechatIdentity(state, {
           userId: oauth.userId,
           appId: oauth.appId,
           openid,
           now: nowIso(),
         });
-        await persist(state);
+        await saveMembershipState({ oauthState: oauth, identity });
         res.redirect(oauth.redirectUrl || '/');
       } catch (error) {
         oauth.usedAt = '';
@@ -284,14 +292,14 @@ export function createMembershipRoutes(context) {
         ciphertext: resource.ciphertext,
       });
       validateWechatNotifyTransaction(transaction, config);
-      processMembershipPaymentSuccess(state, {
+      const payment = processMembershipPaymentSuccess(state, {
         outTradeNo: transaction.out_trade_no,
         transactionId: transaction.transaction_id,
         amountCents: transaction.amount?.total,
         paidAt: normalizedPaidAt(transaction.success_time, nowIso()),
         notifyPayload: transaction,
       });
-      await persist(state);
+      await saveMembershipState({ order: payment.order, membership: payment.membership });
       res.json({ code: 'SUCCESS', message: '成功' });
     } catch (error) {
       sendError(res, error, 400);
