@@ -25,6 +25,8 @@ export function createAuthRoutes(context) {
     normalizeMobile,
     assertValidMobile,
     assertSmsSendAllowed,
+    persistAuthSmsCode,
+    persistAuthRegistration,
     smsDeliveryPlanResolver,
     smsDeliverer,
     allocateId,
@@ -78,7 +80,11 @@ export function createAuthRoutes(context) {
         expiresAt: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
       };
       state.smsCodes.push(sms);
-      await persist(state);
+      if (persistAuthSmsCode) {
+        await persistAuthSmsCode({ sms });
+      } else {
+        await persist(state);
+      }
       const payload = {
         ok: true,
         expiresInSeconds: 600,
@@ -110,6 +116,7 @@ export function createAuthRoutes(context) {
       const guestId = normalizeGuestId(req.body?.guestId);
       const guestPolicies = guestPoliciesToMigrate(state, guestId);
       const pendingScans = guestPendingScans(state, guestId);
+      const affectedPolicyIds = [];
       assertCanMigrateGuestPolicies({
         state,
         user,
@@ -151,6 +158,7 @@ export function createAuthRoutes(context) {
           policy.userId = Number(user.id);
           policy.guestId = '';
           policy.updatedAt = new Date().toISOString();
+          affectedPolicyIds.push(policy.id);
           migratedPolicyCount += 1;
         }
       }
@@ -170,12 +178,24 @@ export function createAuthRoutes(context) {
         });
         state.policies.push(policy);
         recordPolicySourceRecords(state, policy, analysis);
+        affectedPolicyIds.push(policy.id);
         migratedPolicyCount += 1;
       }
       clearGuestPendingScans(state, guestId);
 
       const token = createSession(state, user.id);
-      await persist(state);
+      const session = state.sessions.find((row) => String(row.token || '') === String(token)) || null;
+      if (persistAuthRegistration) {
+        await persistAuthRegistration({
+          user,
+          sms,
+          session,
+          guestId,
+          policyIds: affectedPolicyIds,
+        });
+      } else {
+        await persist(state);
+      }
       const policies = state.policies.filter((policy) => Number(policy.userId) === Number(user.id));
       res.json({
         ok: true,

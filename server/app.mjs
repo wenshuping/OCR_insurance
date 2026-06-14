@@ -1825,6 +1825,12 @@ export function createPolicyOcrApp(options = {}) {
   const persistFamilyState = typeof options.persistFamilyState === 'function'
     ? (input = {}) => options.persistFamilyState({ state, ...input })
     : null;
+  const persistAuthSmsCode = typeof options.persistAuthSmsCode === 'function'
+    ? (input = {}) => options.persistAuthSmsCode({ state, ...input })
+    : null;
+  const persistAuthRegistration = typeof options.persistAuthRegistration === 'function'
+    ? (input = {}) => options.persistAuthRegistration({ state, ...input })
+    : null;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
 
@@ -1905,6 +1911,8 @@ export function createPolicyOcrApp(options = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistAuthSmsCode,
+    persistAuthRegistration,
     scanner,
     analyzer,
     adminPassword,

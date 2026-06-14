@@ -453,6 +453,189 @@ test('sqlite state store incrementally persists pending scan diagnostics', async
   }
 });
 
+test('sqlite state store incrementally persists auth sms codes without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    smsCodes: [],
+    knowledgeRecords: [{ id: 5, company: '新华保险', productName: '已有保单', url: 'https://example.test/terms' }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_1',
+      company: '新华保险',
+      productName: '已有保单',
+      coverageType: '现金流',
+      liability: '满期返还',
+    }],
+    nextId: 20,
+  };
+  await store.persist(state);
+  store.db.prepare(`
+    INSERT INTO knowledge_records (id, company, product_name, url, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    99,
+    '测试保险',
+    '外部写入记录',
+    'https://example.test/extra',
+    JSON.stringify({ id: 99, company: '测试保险', productName: '外部写入记录' }),
+  );
+
+  const sms = {
+    id: 20,
+    mobile: '18616135811',
+    code: '123456',
+    used: false,
+    createdAt: '2026-06-14T00:00:00.000Z',
+    expiresAt: '2026-06-14T00:10:00.000Z',
+  };
+  state.smsCodes.push(sms);
+  state.nextId = 21;
+  await store.persistAuthSmsCode({ state, sms });
+
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS count FROM sms_codes WHERE id = ?').get(20).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 1);
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '21');
+  } finally {
+    db.close();
+    store.close();
+  }
+});
+
+test('sqlite state store incrementally persists auth registration without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    smsCodes: [{
+      id: 20,
+      mobile: '18616135811',
+      code: '123456',
+      used: false,
+      createdAt: '2026-06-14T00:00:00.000Z',
+      expiresAt: '2026-06-14T00:10:00.000Z',
+    }],
+    policies: [{
+      id: 21,
+      userId: null,
+      guestId: 'guest-fast-auth',
+      company: '新华保险',
+      name: '盛世荣耀',
+      insured: '温舒萍',
+      createdAt: '2026-06-14T00:01:00.000Z',
+      updatedAt: '2026-06-14T00:01:00.000Z',
+    }],
+    pendingScans: [{
+      id: 22,
+      guestId: 'guest-fast-auth',
+      scan: { data: { company: '新华保险', name: '待保存保单' } },
+      createdAt: '2026-06-14T00:02:00.000Z',
+    }],
+    sourceRecords: [{
+      id: 23,
+      policyId: 21,
+      company: '新华保险',
+      productName: '盛世荣耀',
+      url: 'https://example.test/source',
+    }],
+    familyProfiles: [{
+      id: 24,
+      ownerUserId: null,
+      ownerGuestId: 'guest-fast-auth',
+      familyName: '默认家庭',
+      coreMemberId: 25,
+      status: 'active',
+      createdAt: '2026-06-14T00:03:00.000Z',
+      updatedAt: '2026-06-14T00:03:00.000Z',
+    }],
+    familyMembers: [{
+      id: 25,
+      familyId: 24,
+      name: '温舒萍',
+      relationToCore: 'self',
+      status: 'active',
+      createdAt: '2026-06-14T00:03:00.000Z',
+      updatedAt: '2026-06-14T00:03:00.000Z',
+    }],
+    knowledgeRecords: [{ id: 5, company: '新华保险', productName: '已有保单', url: 'https://example.test/terms' }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_1',
+      company: '新华保险',
+      productName: '已有保单',
+      coverageType: '现金流',
+      liability: '满期返还',
+    }],
+    nextId: 30,
+  };
+  await store.persist(state);
+  store.db.prepare(`
+    INSERT INTO knowledge_records (id, company, product_name, url, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    99,
+    '测试保险',
+    '外部写入记录',
+    'https://example.test/extra',
+    JSON.stringify({ id: 99, company: '测试保险', productName: '外部写入记录' }),
+  );
+
+  const user = {
+    id: 30,
+    mobile: '18616135811',
+    createdAt: '2026-06-14T00:04:00.000Z',
+    updatedAt: '2026-06-14T00:04:00.000Z',
+  };
+  const session = {
+    token: 'user-fast-token',
+    userId: 30,
+    createdAt: '2026-06-14T00:05:00.000Z',
+  };
+  state.users.push(user);
+  state.sessions.push(session);
+  state.smsCodes[0].used = true;
+  state.policies[0].userId = 30;
+  state.policies[0].guestId = '';
+  state.policies[0].updatedAt = '2026-06-14T00:05:00.000Z';
+  state.familyProfiles[0].ownerUserId = 30;
+  state.familyProfiles[0].ownerGuestId = '';
+  state.familyProfiles[0].updatedAt = '2026-06-14T00:05:00.000Z';
+  state.pendingScans = [];
+  state.nextId = 31;
+
+  await store.persistAuthRegistration({
+    state,
+    user,
+    sms: state.smsCodes[0],
+    session,
+    guestId: 'guest-fast-auth',
+    policyIds: [21],
+  });
+
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS count FROM users WHERE id = ?').get(30).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM sessions WHERE token = ?').get('user-fast-token').count, 1);
+    assert.equal(db.prepare('SELECT used FROM sms_codes WHERE id = ?').get(20).used, 1);
+    assert.equal(db.prepare('SELECT user_id AS userId, guest_id AS guestId FROM policies WHERE id = ?').get(21).userId, 30);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM pending_scans WHERE guest_id = ?').get('guest-fast-auth').count, 0);
+    assert.equal(db.prepare('SELECT owner_user_id AS ownerUserId FROM family_profiles WHERE id = ?').get(24).ownerUserId, 30);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM source_records WHERE policy_id = ?').get(21).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 1);
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '31');
+  } finally {
+    db.close();
+    store.close();
+  }
+});
+
 test('sqlite state store persists product optional responsibility records', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');

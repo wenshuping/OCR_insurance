@@ -608,6 +608,62 @@ function upsertPolicy(db, policy = {}) {
   );
 }
 
+function upsertUser(db, user = {}) {
+  db.prepare(`
+    INSERT INTO users (id, mobile, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      mobile = excluded.mobile,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    Number(user.id),
+    String(user.mobile || ''),
+    String(user.createdAt || ''),
+    String(user.updatedAt || ''),
+    jsonPayload(user),
+  );
+}
+
+function upsertSession(db, session = {}) {
+  const token = String(session?.token || '').trim();
+  if (!token) return;
+  db.prepare(`
+    INSERT INTO sessions (token, user_id, created_at, payload)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(token) DO UPDATE SET
+      user_id = excluded.user_id,
+      created_at = excluded.created_at,
+      payload = excluded.payload
+  `).run(
+    token,
+    Number(session.userId || 0) || null,
+    String(session.createdAt || ''),
+    jsonPayload(session),
+  );
+}
+
+function upsertSmsCode(db, sms = {}) {
+  db.prepare(`
+    INSERT INTO sms_codes (id, mobile, used, expires_at, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      mobile = excluded.mobile,
+      used = excluded.used,
+      expires_at = excluded.expires_at,
+      created_at = excluded.created_at,
+      payload = excluded.payload
+  `).run(
+    Number(sms.id),
+    String(sms.mobile || ''),
+    sms.used ? 1 : 0,
+    String(sms.expiresAt || ''),
+    String(sms.createdAt || ''),
+    jsonPayload(sms),
+  );
+}
+
 function replaceSourceRecordsForPolicy(db, state, policyId) {
   const id = Number(policyId);
   if (!Number.isFinite(id)) return;
@@ -831,6 +887,59 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  async function persistAuthSmsCode({ state, sms = null } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const targetSms = sms || normalizeArray(nextState.smsCodes).at(-1);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (targetSms) upsertSmsCode(db, targetSms);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistAuthRegistration({
+    state,
+    user = null,
+    sms = null,
+    session = null,
+    guestId = '',
+    policyIds = [],
+  } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const pendingGuestId = String(guestId || '').trim();
+    const affectedPolicyIds = new Set(policyIds.map((id) => Number(id)).filter(Number.isFinite));
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec('PRAGMA defer_foreign_keys = ON');
+      if (user) upsertUser(db, user);
+      if (sms) upsertSmsCode(db, sms);
+      if (session) upsertSession(db, session);
+      if (pendingGuestId) {
+        replaceFamilyProfiles(db, nextState);
+        db.prepare('DELETE FROM pending_scans WHERE guest_id = ?').run(pendingGuestId);
+      }
+      for (const policyId of affectedPolicyIds) {
+        const policy = normalizeArray(nextState.policies).find((row) => Number(row?.id) === policyId);
+        if (!policy) continue;
+        upsertPolicy(db, policy);
+        replaceSourceRecordsForPolicy(db, nextState, policy.id);
+      }
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async function persistPendingScan({ state, guestId = '' } = {}) {
     const pendingGuestId = String(guestId || '').trim();
     if (!pendingGuestId) {
@@ -895,6 +1004,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     seedStatePath,
     load,
     persist,
+    persistAuthSmsCode,
+    persistAuthRegistration,
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
