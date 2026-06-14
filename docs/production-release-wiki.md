@@ -37,6 +37,23 @@ Run on ECS:
 ```bash
 cd ~/OCR_insurance
 
+# Deploy the current working branch before merge:
+scripts/release-ecs-production.sh --ref origin/codex/wechat-pay-membership
+
+# After merge, deploy master:
+scripts/release-ecs-production.sh --ref origin/master
+```
+
+The script fetches the selected ref, rebuilds `api` and `web` without cache,
+waits for container, local, and public health checks, verifies the persistent
+SQLite path, and checks admin plus WeChat Pay readiness without printing
+secrets. It does not install or overwrite production SQLite data.
+
+Manual equivalent:
+
+```bash
+cd ~/OCR_insurance
+
 git fetch origin
 git reset --hard origin/master
 
@@ -197,6 +214,22 @@ curl -fsS -G 'https://ocr.joyhive.cn/api/policy-responsibilities/product-suggest
 ## AutoDL OCR Release
 
 Run on AutoDL when OCR service code or OCR dependencies changed:
+
+```bash
+cd /root/autodl-tmp/OCR_insurance
+
+# Deploy the current working branch before merge:
+scripts/release-autodl-ocr.sh --ref origin/codex/wechat-pay-membership
+
+# After merge, deploy master:
+scripts/release-autodl-ocr.sh --ref origin/master
+```
+
+The script fetches the selected ref, installs production Node dependencies,
+restarts `ocr-service/index.mjs` with `nohup`, tails the log, and waits for the
+local OCR health endpoint. It does not touch ECS or SQLite data.
+
+Manual equivalent:
 
 ```bash
 cd /root/autodl-tmp/OCR_insurance

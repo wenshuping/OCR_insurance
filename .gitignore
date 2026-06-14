@@ -10,6 +10,7 @@ node_modules/
 # Environment files (keep .env.example, ignore actual secrets)
 .env
 .env.local
+deploy/*.env
 server/.env
 server/.env.local
 ocr-service/.env
@@ -26,6 +27,8 @@ crawled/
 outputs/
 .structurev3-inspect/
 graphify-out/
+upload-to-ecs/
+production-data/
 
 # Temp files
 tmp/
