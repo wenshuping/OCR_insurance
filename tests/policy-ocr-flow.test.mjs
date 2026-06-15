@@ -11184,7 +11184,15 @@ test('share snapshots only selected family members and policies', async () => {
     { id: 103, userId: null, guestId: 'guest-other', familyId: 1, applicantMemberId: 11, insuredMemberId: 12, company: 'C保险', name: '串户保单', applicant: '张一', insured: '张二', responsibilities: [], coverageIndicators: [], createdAt: '2026-01-01T00:00:00.000Z' },
   ];
   state.nextId = 200;
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+  db.prepare('INSERT INTO policies (id) VALUES (?)').run(101);
+  createCashValueStore(db).replaceValues(101, [
+    { policyYear: 1, age: 30, cashValue: 8500, source: 'manual' },
+    { policyYear: 2, age: 31, cashValue: 19200, source: 'manual' },
+  ]);
   const app = createPolicyOcrApp({
+    db,
     state,
     persist: async () => {},
     scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
@@ -11214,6 +11222,7 @@ test('share snapshots only selected family members and policies', async () => {
     assert.deepEqual(fetched.payload.members.map((member) => member.name), ['张一', '张二']);
     assert.deepEqual(fetched.payload.policies.map((policy) => policy.familyId), [1]);
     assert.deepEqual(fetched.payload.policies.map((policy) => policy.name), ['一号保单']);
+    assert.deepEqual(fetched.payload.policies[0].cashValues.map((row) => row.cashValue), [8500, 19200]);
     assert.ok(fetched.payload.snapshotAt);
     assert.equal(fetched.payload.members.some((member) => Number(member.familyId) === 2), false);
     assert.equal(fetched.payload.members.some((member) => member.name === '李一' || member.name === '李二'), false);
@@ -11222,6 +11231,7 @@ test('share snapshots only selected family members and policies', async () => {
     assert.doesNotMatch(JSON.stringify(fetched.payload), /guest-share|guest-other|member-secret/);
   } finally {
     await server.close();
+    db.close();
   }
 });
 

@@ -47,7 +47,7 @@ export function createFamilyRoutes(context) {
   const ownerResolverContext = { resolveAuthUser, requestOwner, state };
   const familyLookupContext = { familyOwnerMatches };
   const familyMembersContext = { listFamilyMembers };
-  const familyShareContext = { attachPolicyFamilyDisplay, listFamilyMembers, normalizeGuestId };
+  const familyShareContext = { attachPolicyFamilyDisplay: attachPolicyForFamilyReview, listFamilyMembers, normalizeGuestId };
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
   const saveFamilyState = async ({ includePolicies = false } = {}) => {
     if (persistFamilyState) {
