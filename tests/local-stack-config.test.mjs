@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const localStackSource = readFileSync(new URL('../scripts/local-stack.mjs', import.meta.url), 'utf8');
 const serverIndexSource = readFileSync(new URL('../server/index.mjs', import.meta.url), 'utf8');
+const dockerfileSource = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
 
 test('local production stack lets runtime OCR env override the default provider', () => {
   assert.match(localStackSource, /'POLICY_OCR_OLLAMA_VISION_NUM_PREDICT'/u);
@@ -30,4 +31,10 @@ test('development dotenv skip still permits DeepSeek review configuration', () =
   assert.match(serverIndexSource, /'DEEPSEEK_FAMILY_REVIEW_MODEL'/u);
   assert.match(serverIndexSource, /allowKeys:\s*skippedProjectDotenvLocalAllowKeys/u);
   assert.match(serverIndexSource, /POLICY_OCR_SKIP_PROJECT_DOTENV_LOCAL/u);
+});
+
+test('production Docker runtime copies src modules imported by the API server', () => {
+  assert.match(dockerfileSource, /COPY src\/family-report-engine\.mjs \.\/src\/family-report-engine\.mjs/u);
+  assert.match(dockerfileSource, /COPY src\/policy-plan-filter\.mjs \.\/src\/policy-plan-filter\.mjs/u);
+  assert.match(dockerfileSource, /COPY src\/policy-validity\.mjs \.\/src\/policy-validity\.mjs/u);
 });
