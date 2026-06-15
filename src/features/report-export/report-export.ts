@@ -668,15 +668,26 @@ export function createPdfRenderTarget(target: HTMLElement, title: string, policy
     wrapper.style.width = `${rawTargetWidth}px`;
     reportNode.style.width = `${rawTargetWidth}px`;
   }
+  const captureWidth = options?.matchScreenStyle || options?.preservePageStyle ? width : getReportCaptureWidth(reportNode, width);
+  if (options?.preservePageStyle) wrapper.style.width = `${captureWidth}px`;
 
   return {
     node: reportNode,
     width,
-    captureWidth: options?.matchScreenStyle || options?.preservePageStyle ? width : Math.max(width, reportNode.scrollWidth || 0),
+    captureWidth,
     cleanup() {
       wrapper.remove();
     },
   };
+}
+
+function getReportCaptureWidth(reportNode: HTMLElement, fallbackWidth: number) {
+  const reportRect = reportNode.getBoundingClientRect();
+  let maxRight = reportRect.right;
+  reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap], table').forEach((node) => {
+    maxRight = Math.max(maxRight, node.getBoundingClientRect().right);
+  });
+  return Math.max(fallbackWidth, reportNode.scrollWidth || 0, Math.ceil(maxRight - reportRect.left));
 }
 
 function prepareScreenStyleReportNode(reportNode: HTMLElement, width: number, backgroundColor: string) {
@@ -716,23 +727,28 @@ function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
   reportNode.querySelectorAll<HTMLElement>('.print-only').forEach((node) => {
     node.style.display = 'none';
   });
+  preparePageStyleTableWidths(reportNode);
+  normalizeCanvasColorValues(reportNode);
+}
+
+function preparePageStyleTableWidths(reportNode: HTMLElement) {
   reportNode.querySelectorAll<HTMLElement>('[data-pdf-table-wrap]').forEach((node) => {
-    node.style.overflow = 'visible';
-    node.style.width = '100%';
-    node.style.maxWidth = '100%';
+    node.style.setProperty('overflow', 'visible', 'important');
+    node.style.setProperty('width', '100%', 'important');
+    node.style.setProperty('max-width', '100%', 'important');
   });
   reportNode.querySelectorAll<HTMLElement>('table').forEach((table) => {
-    table.style.width = '100%';
-    table.style.minWidth = '0';
-    table.style.tableLayout = 'fixed';
+    table.style.setProperty('width', '100%', 'important');
+    table.style.setProperty('min-width', '0', 'important');
+    table.style.setProperty('max-width', '100%', 'important');
+    table.style.setProperty('table-layout', 'fixed', 'important');
   });
   reportNode.querySelectorAll<HTMLElement>('th,td').forEach((cell) => {
-    cell.style.minWidth = '0';
-    cell.style.whiteSpace = 'normal';
-    cell.style.wordBreak = 'break-word';
-    cell.style.verticalAlign = 'top';
+    cell.style.setProperty('min-width', '0', 'important');
+    cell.style.setProperty('white-space', 'normal', 'important');
+    cell.style.setProperty('word-break', 'break-word', 'important');
+    cell.style.setProperty('vertical-align', 'top', 'important');
   });
-  normalizeCanvasColorValues(reportNode);
 }
 
 function escapeHtml(value: string) {
@@ -1173,16 +1189,21 @@ export function createInPageReportExportPanel(fileName: string) {
       const safeFileName = escapeHtml(fileName);
       const safeReportImage = escapeHtml(reportImage);
       const safeDownloadHref = escapeHtml(downloadHref);
+      const useLongPressSave = isWeChatBrowser() || isWeChatMiniProgramWebView();
+      const primaryAction = useLongPressSave
+        ? '<span style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800">长按图片保存</span>'
+        : `<a href="${safeDownloadHref}" download="${safeFileName}.jpg" style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800;text-decoration:none">下载长图</a>`;
+      const saveHint = useLongPressSave ? '下面是一张包含整份报告的长图，长按下面图片保存到相册。' : '下面是一张包含整份报告的长图，点击“下载长图”保存。';
       setHtml(`
         <main style="box-sizing:border-box;padding:16px 14px 32px">
           <section style="position:sticky;top:0;z-index:1;margin:0 auto 14px;max-width:520px;border:1px solid #e2e8f0;border-radius:18px;background:#fff;padding:18px;box-shadow:0 12px 30px rgba(15,23,42,.08);box-sizing:border-box">
             <h1 style="margin:0;font-size:20px;line-height:1.35">完整报告长图已生成</h1>
             <p style="margin:6px 0 0;color:#64748b;font-size:13px;line-height:1.7">${safeFileName}</p>
             <div style="display:flex;gap:10px;margin-top:14px">
-              <a href="${safeDownloadHref}" download="${safeFileName}.jpg" style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800;text-decoration:none">下载长图</a>
+              ${primaryAction}
               <button data-action="close" type="button" style="flex:1;border:0;border-radius:12px;background:#eef2ff;color:#1d4ed8;padding:12px;text-align:center;font-size:15px;font-weight:800">返回报告</button>
             </div>
-            <p style="margin:10px 0 0;color:#64748b;font-size:12px;line-height:1.7">下面是一张包含整份报告的长图，点击“下载长图”保存。</p>
+            <p style="margin:10px 0 0;color:#64748b;font-size:12px;line-height:1.7">${saveHint}</p>
           </section>
           <section style="margin:0 auto;max-width:min(1180px,calc(100vw - 28px))">
             <figure style="margin:14px 0 0">

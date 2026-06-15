@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { createPolicyOcrApp } from '../server/app.mjs';
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
+import { buildPolicyDerivedResult } from '../server/policy-derived-results.service.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 import { createInitialState, latestValidSmsCode } from '../server/policy-ocr.domain.mjs';
 import { rebuildOptionalResponsibilityGovernance } from '../server/optional-responsibility-governance.mjs';
@@ -22,13 +23,96 @@ import {
 } from '../ocr-service/insurance-ocr.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 
+const TEST_POLICY_ENTRY_DEFAULT_GUEST = '__default_policy_entry_guest__';
+const appStateByBaseUrl = new Map();
+const policyEntryAuthByBaseUrl = new Map();
+
+function parseJsonFetchBody(body) {
+  if (!body || typeof body !== 'string') return {};
+  try {
+    return JSON.parse(body);
+  } catch {
+    return {};
+  }
+}
+
+function guestIdFromPath(path) {
+  try {
+    return new URL(path, 'http://policy-ocr.test').searchParams.get('guestId') || '';
+  } catch {
+    return '';
+  }
+}
+
+function nextPolicyEntryTestUserId(state, authByGuest) {
+  const usedIds = new Set((state.users || []).map((row) => Number(row.id || 0)).filter(Boolean));
+  let id = 900000 + authByGuest.size + 1;
+  while (usedIds.has(id)) id += 1;
+  return id;
+}
+
+function migrateGuestFamiliesToPolicyEntryUser(state, guestId, userId) {
+  if (!guestId || guestId === TEST_POLICY_ENTRY_DEFAULT_GUEST || !Array.isArray(state.familyProfiles)) return;
+  for (const family of state.familyProfiles) {
+    if (String(family.ownerGuestId || '') !== guestId || family.ownerUserId) continue;
+    family.ownerUserId = userId;
+    family.ownerGuestId = '';
+  }
+}
+
+function ensurePolicyEntryTestAuth(baseUrl, guestIdInput = '') {
+  const state = appStateByBaseUrl.get(baseUrl);
+  if (!state || typeof state !== 'object') return null;
+  if (!Array.isArray(state.users)) state.users = [];
+  if (!Array.isArray(state.sessions)) state.sessions = [];
+  const guestId = String(guestIdInput || TEST_POLICY_ENTRY_DEFAULT_GUEST);
+  let authByGuest = policyEntryAuthByBaseUrl.get(baseUrl);
+  if (!authByGuest) {
+    authByGuest = new Map();
+    policyEntryAuthByBaseUrl.set(baseUrl, authByGuest);
+  }
+  let auth = authByGuest.get(guestId);
+  if (!auth) {
+    const userId = nextPolicyEntryTestUserId(state, authByGuest);
+    const token = `test-policy-entry-token-${userId}`;
+    const user = {
+      id: userId,
+      mobile: `139${String(userId).slice(-8).padStart(8, '0')}`,
+      createdAt: '2026-05-01T00:00:00.000Z',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+    };
+    state.users.push(user);
+    state.sessions.push({
+      token,
+      userId: user.id,
+      createdAt: '2026-05-01T00:01:00.000Z',
+    });
+    auth = { token, userId };
+    authByGuest.set(guestId, auth);
+  }
+  migrateGuestFamiliesToPolicyEntryUser(state, guestId, auth.userId);
+  return auth;
+}
+
+function policyEntryAuthForGuest(baseUrl, guestIdInput = '') {
+  const authByGuest = policyEntryAuthByBaseUrl.get(baseUrl);
+  if (!authByGuest) return null;
+  return authByGuest.get(String(guestIdInput || TEST_POLICY_ENTRY_DEFAULT_GUEST)) || null;
+}
+
 function listen(app) {
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => {
       const address = server.address();
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      appStateByBaseUrl.set(baseUrl, app.locals?.state);
       resolve({
-        baseUrl: `http://127.0.0.1:${address.port}`,
-        close: () => new Promise((done) => server.close(done)),
+        baseUrl,
+        close: () => new Promise((done) => server.close(() => {
+          appStateByBaseUrl.delete(baseUrl);
+          policyEntryAuthByBaseUrl.delete(baseUrl);
+          done();
+        })),
       });
     });
   });
@@ -80,12 +164,26 @@ async function startStructureV3MockServer(payload) {
 }
 
 async function jsonFetch(baseUrl, path, options = {}) {
+  const { policyEntryAuth = true, ...fetchOptions } = options;
+  const headers = {
+    'content-type': 'application/json',
+    ...(fetchOptions.headers || {}),
+  };
+  const bodyPayload = parseJsonFetchBody(fetchOptions.body);
+  const bodyGuestId = String(bodyPayload?.guestId || '');
+  const queryGuestId = guestIdFromPath(path);
+  if (policyEntryAuth !== false && !headers.authorization) {
+    if (/^\/api\/policies\/(?:recognize|analyze|scan)$/u.test(path)) {
+      const auth = ensurePolicyEntryTestAuth(baseUrl, bodyGuestId || queryGuestId);
+      if (auth) headers.authorization = `Bearer ${auth.token}`;
+    } else if (/^\/api\/(?:policies|family-profiles)(?:\/|$|\?)/u.test(path) && queryGuestId) {
+      const auth = policyEntryAuthForGuest(baseUrl, queryGuestId);
+      if (auth) headers.authorization = `Bearer ${auth.token}`;
+    }
+  }
   const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      'content-type': 'application/json',
-      ...(options.headers || {}),
-    },
+    ...fetchOptions,
+    headers,
   });
   const payload = await response.json();
   return { response, payload };
@@ -4725,10 +4823,11 @@ test('sms verification accepts codes copied with spaces or full-width digits', (
   assert.equal(latestValidSmsCode(state, { mobile: '13800000000', code: '１２３４５６' })?.code, '123456');
 });
 
-test('guest can scan once without registering and must verify phone before the second policy', async () => {
+test('guest must verify phone before policy OCR, analysis, or save', async () => {
   const scannedTexts = [];
   const app = createPolicyOcrApp({
     state: {
+      ...createInitialState(),
       users: [],
       sessions: [],
       smsCodes: [],
@@ -4768,28 +4867,21 @@ test('guest can scan once without registering and must verify phone before the s
   const server = await listen(app);
 
   try {
-    const first = await jsonFetch(server.baseUrl, '/api/policies/scan', {
-      method: 'POST',
-      body: JSON.stringify({
-        guestId: 'guest-a',
-        ocrText: '新华保险 多倍保障重大疾病保险 重大疾病保险金 50万元',
-      }),
-    });
-    assert.equal(first.response.status, 201);
-    assert.equal(first.payload.policy.company, '新华保险');
-    assert.equal(first.payload.policy.reportStatus, 'generating');
-    assert.equal(first.payload.registrationRequiredNext, true);
-
-    const second = await jsonFetch(server.baseUrl, '/api/policies/scan', {
-      method: 'POST',
-      body: JSON.stringify({
-        guestId: 'guest-a',
-        ocrText: '第二张保单',
-      }),
-    });
-    assert.equal(second.response.status, 401);
-    assert.equal(second.payload.code, 'REGISTRATION_REQUIRED');
-    assert.equal(second.payload.registrationRequiredNext, true);
+    for (const path of ['/api/policies/recognize', '/api/policies/analyze', '/api/policies/scan']) {
+      const denied = await jsonFetch(server.baseUrl, path, {
+        method: 'POST',
+        policyEntryAuth: false,
+        body: JSON.stringify({
+          guestId: 'guest-a',
+          ocrText: '新华保险 多倍保障重大疾病保险 重大疾病保险金 50万元',
+        }),
+      });
+      assert.equal(denied.response.status, 401, `${path} should require phone verification`);
+      assert.equal(denied.payload.code, 'REGISTRATION_REQUIRED');
+      assert.equal(denied.payload.registrationRequiredNext, true);
+    }
+    assert.equal(scannedTexts.length, 0);
+    assert.equal(app.locals.state.policies.length, 0);
 
     const code = await jsonFetch(server.baseUrl, '/api/auth/send-code', {
       method: 'POST',
@@ -4807,50 +4899,195 @@ test('guest can scan once without registering and must verify phone before the s
       }),
     });
     assert.equal(registered.response.status, 200);
-    assert.equal(registered.payload.migratedPolicyCount, 1);
+    assert.equal(registered.payload.migratedPolicyCount, 0);
     assert.ok(registered.payload.token);
 
     const auth = { authorization: `Bearer ${registered.payload.token}` };
-    const list = await jsonFetch(server.baseUrl, '/api/policies', { headers: auth });
-    assert.equal(list.response.status, 200);
-    assert.equal(list.payload.policies.length, 1);
-    assert.ok(list.payload.policies.some((policy) => policy.name === '多倍保障重大疾病保险'));
-
-    await waitUntil(() => {
-      const policy = app.locals.state.policies.find((row) => Number(row.id) === Number(list.payload.policies[0].id));
-      assert.equal(policy.reportStatus, 'ready');
-      assert.equal(policy.responsibilities[0].coverageType, '重大疾病保险金');
-    });
-
-    const detail = await jsonFetch(server.baseUrl, `/api/policies/${list.payload.policies[0].id}`, { headers: auth });
-    assert.equal(detail.response.status, 200);
-    assert.equal(detail.payload.policy.ocrText, '新华保险 多倍保障重大疾病保险 重大疾病保险金 50万元');
-    assert.equal(detail.payload.policy.responsibilities[0].payout, '给付基本保险金额50万元');
-
-    const third = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
       method: 'POST',
       headers: auth,
       body: JSON.stringify({
-        ocrText: '登录后第二张保单',
-        manualData: {
-          company: '平安人寿',
-          name: '平安福',
-          insured: '李四',
-          amount: '800000',
-        },
+        ocrText: '新华保险 多倍保障重大疾病保险 重大疾病保险金 50万元',
       }),
     });
-    assert.equal(third.response.status, 201);
-    assert.equal(third.payload.policy.company, '平安人寿');
-    assert.equal(third.payload.policy.insured, '李四');
-    assert.equal(third.payload.policy.amount, 800000);
-    assert.equal(scannedTexts.length, 2);
+    assert.equal(recognized.response.status, 200);
+    assert.equal(recognized.payload.scan.data.company, '新华保险');
+    assert.equal(recognized.payload.registrationRequiredNext, false);
+
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        scan: recognized.payload.scan,
+        analysis: recognized.payload.analysis,
+      }),
+    });
+    assert.equal(saved.response.status, 201);
+    assert.equal(saved.payload.policy.company, '新华保险');
+    assert.equal(saved.payload.policy.userId, registered.payload.user.id);
+    assert.equal(saved.payload.registrationRequiredNext, false);
+    assert.equal(scannedTexts.length, 1);
   } finally {
     await server.close();
   }
 });
 
-test('existing mobile verification reuses original account and migrates guest policy', async () => {
+test('public responsibility lookup remains available without phone verification', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      ...createInitialState(),
+    },
+    assistantAnalyzer: async ({ scan }) => {
+      assert.equal(scan.data.company, '新华保险');
+      assert.equal(scan.data.name, '多倍保障重大疾病保险');
+      return {
+        coverageTable: [{
+          coverageType: '重大疾病保障',
+          scenario: '确诊合同约定重大疾病',
+          payout: '给付重大疾病保险金',
+          note: '公开责任查询结果',
+        }],
+        sources: [],
+        rawAnalysis: {
+          generatedBy: 'test_public_responsibility_lookup',
+        },
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '新华保险',
+        name: '多倍保障重大疾病保险',
+      }),
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.payload.ok, true);
+    assert.ok(result.payload.analysis.coverageTable.length >= 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('register can defer policy payload loading', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '多倍保障重大疾病保险',
+      insured: '温舒萍',
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    policyDerivedResults: [{
+      policyId: 7,
+      productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+      coverageIndicators: [{ id: 'persisted_indicator' }],
+      optionalResponsibilities: [],
+      indicatorVersions: {},
+      knowledgeVersion: 0,
+      status: 'ready',
+      staleReason: '',
+      generatedAt: '2026-06-15T00:00:00.000Z',
+      error: '',
+    }],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({ state, codeGenerator: () => '246810' });
+  const server = await listen(app);
+
+  try {
+    await jsonFetch(server.baseUrl, '/api/auth/send-code', {
+      method: 'POST',
+      body: JSON.stringify({ mobile: '13800000000' }),
+    });
+    const registered = await jsonFetch(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        mobile: '13800000000',
+        code: '246810',
+        guestId: '',
+        includePolicies: false,
+      }),
+    });
+
+    assert.equal(registered.response.status, 200);
+    assert.ok(registered.payload.token);
+    assert.deepEqual(registered.payload.policies, []);
+    assert.equal(registered.payload.policiesDeferred, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('register returns stored policy derived results when policy loading is requested', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '多倍保障重大疾病保险',
+      insured: '温舒萍',
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    insuranceIndicatorRecords: [],
+    knowledgeRecords: [],
+    policyDerivedResults: [{
+      policyId: 7,
+      productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+      coverageIndicators: [{ id: 'persisted_indicator', liability: '持久化责任' }],
+      optionalResponsibilities: [{ id: 'persisted_optional' }],
+      indicatorVersions: {},
+      knowledgeVersion: 0,
+      status: 'ready',
+      staleReason: '',
+      generatedAt: '2026-06-15T00:00:00.000Z',
+      error: '',
+    }],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({ state, codeGenerator: () => '135791' });
+  const server = await listen(app);
+
+  try {
+    await jsonFetch(server.baseUrl, '/api/auth/send-code', {
+      method: 'POST',
+      body: JSON.stringify({ mobile: '13800000000' }),
+    });
+    const registered = await jsonFetch(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        mobile: '13800000000',
+        code: '135791',
+        guestId: '',
+      }),
+    });
+
+    assert.equal(registered.response.status, 200);
+    assert.deepEqual(registered.payload.policies[0].coverageIndicators, [{ id: 'persisted_indicator', liability: '持久化责任' }]);
+    assert.deepEqual(registered.payload.policies[0].optionalResponsibilities, [{ id: 'persisted_optional' }]);
+    assert.equal(registered.payload.policies[0].derivedStatus, 'ready');
+  } finally {
+    await server.close();
+  }
+});
+
+test('existing mobile verification reuses original account before saving policy', async () => {
   const state = {
     users: [],
     sessions: [],
@@ -4907,16 +5144,16 @@ test('existing mobile verification reuses original account and migrates guest po
     assert.equal(state.users.length, 1);
     const originalUserId = firstLogin.payload.user.id;
 
-    const guestPolicy = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+    const savedPolicy = await jsonFetch(server.baseUrl, '/api/policies/scan', {
       method: 'POST',
+      headers: { authorization: `Bearer ${firstLogin.payload.token}` },
       body: JSON.stringify({
-        guestId: 'guest-existing-mobile',
         ocrText: '新华保险 盛世荣耀臻享版终身寿险 终身 10年交',
       }),
     });
-    assert.equal(guestPolicy.response.status, 201);
-    assert.equal(guestPolicy.payload.policy.guestId, 'guest-existing-mobile');
-    assert.equal(guestPolicy.payload.policy.userId, null);
+    assert.equal(savedPolicy.response.status, 201);
+    assert.equal(savedPolicy.payload.policy.guestId, '');
+    assert.equal(savedPolicy.payload.policy.userId, originalUserId);
 
     await jsonFetch(server.baseUrl, '/api/auth/send-code', {
       method: 'POST',
@@ -4933,7 +5170,7 @@ test('existing mobile verification reuses original account and migrates guest po
 
     assert.equal(verifiedAgain.response.status, 200);
     assert.equal(verifiedAgain.payload.user.id, originalUserId);
-    assert.equal(verifiedAgain.payload.migratedPolicyCount, 1);
+    assert.equal(verifiedAgain.payload.migratedPolicyCount, 0);
     assert.equal(state.users.length, 1);
     assert.equal(state.policies[0].userId, originalUserId);
     assert.equal(state.policies[0].guestId, '');
@@ -5543,8 +5780,11 @@ test('recognize stores pending scan diagnostics through incremental persistence 
 
     assert.equal(recognized.response.status, 200);
     assert.equal(fullPersistCalls, 0);
-    assert.deepEqual(pendingPersistKeys, ['guest-fast-recognize', 'guest-fast-recognize']);
+    assert.equal(pendingPersistKeys.length, 2);
+    assert.match(pendingPersistKeys[0], /^user:\d+:recognize$/);
+    assert.equal(pendingPersistKeys[1], pendingPersistKeys[0]);
     assert.equal(state.pendingScans.length, 1);
+    assert.equal(state.pendingScans[0].guestId, pendingPersistKeys[0]);
     assert.equal(state.pendingScans[0].scan.data.name, 'fast-policy.jpg');
   } finally {
     await server.close();
@@ -6194,12 +6434,12 @@ test('scan save uses incremental persistence when the sqlite store provides it',
   const incrementalCalls = [];
   const app = createPolicyOcrApp({
     state: {
-      users: [],
-      sessions: [],
+      users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+      sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-08T00:00:00.000Z' }],
       smsCodes: [],
       policies: [],
       pendingScans: [
-        { guestId: 'guest-fast-save', createdAt: '2026-06-08T00:00:00.000Z', scan: { data: { name: '待保存保单' } } },
+        { guestId: 'user:1:recognize', createdAt: '2026-06-08T00:00:00.000Z', scan: { data: { name: '待保存保单' } } },
       ],
       nextId: 1,
     },
@@ -6215,8 +6455,8 @@ test('scan save uses incremental persistence when the sqlite store provides it',
   try {
     const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
       method: 'POST',
+      headers: { authorization: 'Bearer user-token' },
       body: JSON.stringify({
-        guestId: 'guest-fast-save',
         scan: {
           ocrText: '新华保险 多倍保障重大疾病保险',
           data: {
@@ -6249,8 +6489,172 @@ test('scan save uses incremental persistence when the sqlite store provides it',
     assert.equal(fullPersistCalls, 0);
     assert.equal(incrementalCalls.length, 1);
     assert.equal(incrementalCalls[0].policy.name, '多倍保障重大疾病保险');
-    assert.equal(incrementalCalls[0].clearPendingGuestId, 'guest-fast-save');
+    assert.equal(incrementalCalls[0].clearPendingGuestId, 'user:1:recognize');
     assert.equal(app.locals.state.pendingScans.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('scan save persists a policy derived result', async () => {
+  const derivedCalls = [];
+  const app = createPolicyOcrApp({
+    state: {
+      users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+      sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-08T00:00:00.000Z' }],
+      smsCodes: [],
+      policies: [],
+      pendingScans: [],
+      knowledgeRecords: [],
+      insuranceIndicatorRecords: [{
+        id: 'ind_derived_scan',
+        company: '新华保险',
+        productName: '多倍保障重大疾病保险',
+        coverageType: '重大疾病保险金',
+        liability: '确诊重大疾病',
+      }],
+      nextId: 1,
+    },
+    persist: async () => undefined,
+    persistPolicyDerivedResult: async (input) => {
+      derivedCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      headers: { authorization: 'Bearer user-token' },
+      body: JSON.stringify({
+        scan: {
+          ocrText: '新华保险 多倍保障重大疾病保险',
+          data: {
+            company: '新华保险',
+            name: '多倍保障重大疾病保险',
+            applicant: '温舒萍',
+            insured: '温舒萍',
+            date: '2026-06-08',
+            paymentPeriod: '20年交',
+            coveragePeriod: '终身',
+            amount: '170000',
+            firstPremium: '7667',
+          },
+        },
+        analysis: { report: '已提供报告', coverageTable: [] },
+      }),
+    });
+
+    assert.equal(saved.response.status, 201);
+    assert.equal(derivedCalls.length, 1);
+    assert.equal(derivedCalls[0].derivedResult.policyId, saved.payload.policy.id);
+    assert.deepEqual(derivedCalls[0].derivedResult.productKeys, ['company_product:新华保险:多倍保障重大疾病保险']);
+    assert.equal(derivedCalls[0].derivedResult.coverageIndicators.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy derived result is used by list and detail without live indicator records', async () => {
+  const state = {
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-08T00:00:00.000Z' }],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '多倍保障重大疾病保险',
+      insured: '温舒萍',
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    insuranceIndicatorRecords: [],
+    knowledgeRecords: [],
+    policyDerivedResults: [{
+      policyId: 7,
+      productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+      coverageIndicators: [{ id: 'persisted_indicator', liability: '持久化责任' }],
+      optionalResponsibilities: [{ id: 'persisted_optional' }],
+      indicatorVersions: {},
+      knowledgeVersion: 0,
+      status: 'ready',
+      staleReason: '',
+      generatedAt: '2026-06-15T00:00:00.000Z',
+      error: '',
+    }],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({ state });
+  const server = await listen(app);
+
+  try {
+    const listed = await jsonFetch(server.baseUrl, '/api/policies', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+    assert.equal(listed.response.status, 200);
+    assert.deepEqual(listed.payload.policies[0].coverageIndicators, [{ id: 'persisted_indicator', liability: '持久化责任' }]);
+    assert.equal(listed.payload.policies[0].derivedStatus, 'ready');
+
+    const detail = await jsonFetch(server.baseUrl, '/api/policies/7', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+    assert.equal(detail.response.status, 200);
+    assert.deepEqual(detail.payload.policy.optionalResponsibilities, [{ id: 'persisted_optional' }]);
+    assert.equal(detail.payload.policy.derivedGeneratedAt, '2026-06-15T00:00:00.000Z');
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy update recomputes and persists the derived result', async () => {
+  const derivedCalls = [];
+  const state = {
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-08T00:00:00.000Z' }],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '旧产品',
+      insured: '温舒萍',
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_updated',
+      company: '新华保险',
+      productName: '新产品',
+      coverageType: '重大疾病保险金',
+      liability: '更新后责任',
+    }],
+    knowledgeRecords: [],
+    policyDerivedResults: [],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => undefined,
+    persistPolicyDerivedResult: async (input) => {
+      derivedCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const updated = await jsonFetch(server.baseUrl, '/api/policies/7', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer user-token' },
+      body: JSON.stringify({ name: '新产品' }),
+    });
+
+    assert.equal(updated.response.status, 202);
+    assert.equal(derivedCalls.length, 1);
+    assert.deepEqual(derivedCalls[0].derivedResult.productKeys, ['company_product:新华保险:新产品']);
+    assert.equal(derivedCalls[0].derivedResult.coverageIndicators[0].id, 'ind_updated');
   } finally {
     await server.close();
   }
@@ -7857,44 +8261,43 @@ test('admin login persists only the new admin session', async () => {
 });
 
 test('policy list attaches local indicator records for matched policy plans', async () => {
-  const app = createPolicyOcrApp({
-    state: {
-      users: [{ id: 1, mobile: '13800000000', createdAt: '2026-05-01T00:00:00.000Z' }],
-      sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-05-01T00:01:00.000Z' }],
-      smsCodes: [],
-      policies: [
-        {
-          id: 2,
-          userId: 1,
-          guestId: '',
-          company: '新华保险',
-          name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
-          applicant: '冯力',
-          insured: '冯力',
-          amount: 60000,
-          firstPremium: 3296,
-          plans: [
-            {
-              company: '新华保险',
-              role: 'main',
-              name: '畅行万里智赢版两全保险',
-              matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
-              amount: 60000,
-            },
-          ],
-          responsibilities: [
-            {
-              coverageType: '保险责任',
-              scenario: '新华保险[2024]两全保险050号，按基本保险金额的15倍给付',
-              payout: '以正式条款为准',
-              note: '',
-            },
-          ],
-          createdAt: '2026-05-01T00:03:00.000Z',
-          updatedAt: '2026-05-01T00:03:00.000Z',
-        },
-      ],
-      insuranceIndicatorRecords: [
+  const state = {
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-05-01T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-05-01T00:01:00.000Z' }],
+    smsCodes: [],
+    policies: [
+      {
+        id: 2,
+        userId: 1,
+        guestId: '',
+        company: '新华保险',
+        name: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+        applicant: '冯力',
+        insured: '冯力',
+        amount: 60000,
+        firstPremium: 3296,
+        plans: [
+          {
+            company: '新华保险',
+            role: 'main',
+            name: '畅行万里智赢版两全保险',
+            matchedProductName: '新华人寿保险股份有限公司畅行万里智赢版两全保险',
+            amount: 60000,
+          },
+        ],
+        responsibilities: [
+          {
+            coverageType: '保险责任',
+            scenario: '新华保险[2024]两全保险050号，按基本保险金额的15倍给付',
+            payout: '以正式条款为准',
+            note: '',
+          },
+        ],
+        createdAt: '2026-05-01T00:03:00.000Z',
+        updatedAt: '2026-05-01T00:03:00.000Z',
+      },
+    ],
+    insuranceIndicatorRecords: [
         {
           id: 'ind-accident-1',
           company: '新华保险',
@@ -8045,10 +8448,18 @@ test('policy list attaches local indicator records for matched policy plans', as
           formulaText: '满期返还 = 基本保险金额',
           sourceRecordId: '784',
         },
-      ],
-      nextId: 3,
-    },
-  });
+    ],
+    nextId: 3,
+  };
+  state.policyDerivedResults = [buildPolicyDerivedResult({
+    policy: state.policies[0],
+    indicatorRecords: state.insuranceIndicatorRecords,
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [],
+    productIndicatorVersions: [],
+    now: '2026-06-15T00:00:00.000Z',
+  })];
+  const app = createPolicyOcrApp({ state });
   const server = await listen(app);
 
   try {
@@ -9786,8 +10197,11 @@ test('policy scan without explicit family binding saves into a default family', 
     assert.ok(result.payload.policy.insuredMemberId);
     assert.equal(result.payload.policy.applicantMemberName, '张三');
     assert.equal(result.payload.policy.insuredMemberName, '李四');
+    assert.ok(result.payload.policy.userId);
+    assert.equal(result.payload.policy.guestId, '');
     assert.equal(state.familyProfiles.length, 1);
-    assert.equal(state.familyProfiles[0].ownerGuestId, 'guest-default-family-save');
+    assert.equal(state.familyProfiles[0].ownerUserId, result.payload.policy.userId);
+    assert.equal(state.familyProfiles[0].ownerGuestId, '');
     assert.equal(state.familyMembers.find((member) => member.id === state.familyProfiles[0].coreMemberId)?.name, '张三');
     assert.equal(state.familyMembers.some((member) => member.name === '李四'), true);
   } finally {
@@ -9886,7 +10300,7 @@ test('family profile list migrates existing policies into a default family', asy
   }
 });
 
-test('registration saves pending recognized policy into a family profile', async () => {
+test('registered recognition and save creates a family profile', async () => {
   const state = createInitialState();
   const app = createPolicyOcrApp({
     state,
@@ -9900,16 +10314,6 @@ test('registration saves pending recognized policy into a family profile', async
   });
   const server = await listen(app);
   try {
-    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
-      method: 'POST',
-      body: JSON.stringify({
-        guestId: 'guest-pending-family',
-        ocrText: '投保人:张三\n被保险人:李四',
-      }),
-    });
-    assert.equal(recognized.response.status, 200);
-    assert.equal(state.policies.length, 0);
-
     await jsonFetch(server.baseUrl, '/api/auth/send-code', {
       method: 'POST',
       body: JSON.stringify({ mobile: '13600000000' }),
@@ -9922,13 +10326,33 @@ test('registration saves pending recognized policy into a family profile', async
         guestId: 'guest-pending-family',
       }),
     });
-
     assert.equal(registered.response.status, 200);
-    assert.equal(registered.payload.policies.length, 1);
-    assert.ok(registered.payload.policies[0].familyId);
-    assert.ok(registered.payload.policies[0].applicantMemberId);
-    assert.ok(registered.payload.policies[0].insuredMemberId);
-    assert.equal(registered.payload.policies[0].familyName, '默认家庭');
+    const auth = { authorization: `Bearer ${registered.payload.token}` };
+
+    const recognized = await jsonFetch(server.baseUrl, '/api/policies/recognize', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        ocrText: '投保人:张三\n被保险人:李四',
+      }),
+    });
+    assert.equal(recognized.response.status, 200);
+    assert.equal(state.policies.length, 0);
+
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        scan: recognized.payload.scan,
+        analysis: recognized.payload.analysis,
+      }),
+    });
+
+    assert.equal(saved.response.status, 201);
+    assert.ok(saved.payload.policy.familyId);
+    assert.ok(saved.payload.policy.applicantMemberId);
+    assert.ok(saved.payload.policy.insuredMemberId);
+    assert.equal(saved.payload.policy.familyName, '默认家庭');
     assert.equal(state.familyProfiles[0].ownerUserId, registered.payload.user.id);
     assert.equal(state.familyMembers.some((member) => member.name === '张三'), true);
     assert.equal(state.familyMembers.some((member) => member.name === '李四'), true);
@@ -10049,20 +10473,7 @@ test('registration migrates guest family ownership and lists family profiles for
       method: 'POST',
       body: JSON.stringify({ name: '张三', relationLabel: '本人', setAsCore: true }),
     });
-    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
-      method: 'POST',
-      body: JSON.stringify({
-        guestId: 'guest-register-family',
-        scan: { ocrText: '', data: { company: '新华保险', name: '测试保单', applicant: '张三', insured: '张三' } },
-        analysis: { report: 'ok', coverageTable: [] },
-        manualData: {
-          familyId,
-          applicantMemberId: memberRes.payload.member.id,
-          insuredMemberId: memberRes.payload.member.id,
-        },
-      }),
-    });
-    assert.equal(saved.response.status, 201);
+    assert.equal(memberRes.response.status, 201);
 
     await jsonFetch(server.baseUrl, '/api/auth/send-code', {
       method: 'POST',

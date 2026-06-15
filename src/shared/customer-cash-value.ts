@@ -53,6 +53,31 @@ export function nextManualCashValueRow(rows: CashValueRow[]) {
   return makeManualCashValueRow(nextPolicyYear, Number.isFinite(Number(nextAge)) ? nextAge : null);
 }
 
+export function appendCashValueRowsSequentially(
+  existingRows: CashValueRow[],
+  supplementalRows: CashValueRow[],
+  source = 'ocr',
+) {
+  const existing = normalizeCashValueRowsForSaving(existingRows, source);
+  const incoming = normalizeCashValueRowsForSaving(supplementalRows, source);
+  if (!existing.length) return incoming;
+  if (!incoming.length) return existing;
+
+  const lastExisting = existing[existing.length - 1];
+  const maxPolicyYear = Number(lastExisting.policyYear);
+  const maxAge = lastExisting.age === null || lastExisting.age === undefined ? null : Number(lastExisting.age);
+  const alreadyNumberedRows = incoming.filter((row) => Number(row.policyYear) > maxPolicyYear);
+  const rowsToAppend = alreadyNumberedRows.length
+    ? alreadyNumberedRows
+    : incoming.map((row, index) => ({
+      ...row,
+      policyYear: maxPolicyYear + index + 1,
+      age: Number.isFinite(maxAge) ? Number(maxAge) + index + 1 : row.age,
+    }));
+
+  return normalizeCashValueRowsForSaving([...existing, ...rowsToAppend], source);
+}
+
 export function normalizeCashValueRowsForSaving(rows: CashValueRow[], source = 'manual') {
   const normalized: CashValueRow[] = [];
   for (const row of rows) {

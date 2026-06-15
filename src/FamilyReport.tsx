@@ -900,52 +900,276 @@ function PolicyPlanTypeList({ row }: { row: FamilyPolicyInventoryRow }) {
   );
 }
 
+function exportStatusToneClassName(status?: string | null) {
+  const text = compactText(status);
+  if (/量化|完整|正常|有效/u.test(text)) return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+  if (/待|缺|核对|未知|未/u.test(text)) return 'bg-amber-50 text-amber-700 ring-amber-100';
+  if (/失效|过期|异常/u.test(text)) return 'bg-red-50 text-red-700 ring-red-100';
+  return 'bg-[#EEF3F7] text-[#42566B] ring-[#D7E2EA]';
+}
+
+type ExportTone = 'blue' | 'emerald' | 'amber' | 'violet' | 'rose';
+
+const exportToneOrder: ExportTone[] = ['blue', 'emerald', 'amber', 'violet', 'rose'];
+
+const exportToneClassNames: Record<ExportTone, {
+  border: string;
+  rail: string;
+  header: string;
+  soft: string;
+  badge: string;
+  text: string;
+  line: string;
+}> = {
+  blue: {
+    border: 'border-blue-100',
+    rail: 'bg-[#0B72B9]',
+    header: 'bg-[#F0F8FF]',
+    soft: 'bg-blue-50 ring-blue-100',
+    badge: 'bg-blue-50 text-[#0B72B9] ring-blue-100',
+    text: 'text-[#0B72B9]',
+    line: 'border-[#0B72B9]',
+  },
+  emerald: {
+    border: 'border-emerald-100',
+    rail: 'bg-emerald-500',
+    header: 'bg-emerald-50',
+    soft: 'bg-emerald-50 ring-emerald-100',
+    badge: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
+    text: 'text-emerald-700',
+    line: 'border-emerald-500',
+  },
+  amber: {
+    border: 'border-amber-100',
+    rail: 'bg-amber-500',
+    header: 'bg-amber-50',
+    soft: 'bg-amber-50 ring-amber-100',
+    badge: 'bg-amber-50 text-amber-700 ring-amber-100',
+    text: 'text-amber-700',
+    line: 'border-amber-500',
+  },
+  violet: {
+    border: 'border-violet-100',
+    rail: 'bg-violet-500',
+    header: 'bg-violet-50',
+    soft: 'bg-violet-50 ring-violet-100',
+    badge: 'bg-violet-50 text-violet-700 ring-violet-100',
+    text: 'text-violet-700',
+    line: 'border-violet-500',
+  },
+  rose: {
+    border: 'border-rose-100',
+    rail: 'bg-rose-500',
+    header: 'bg-rose-50',
+    soft: 'bg-rose-50 ring-rose-100',
+    badge: 'bg-rose-50 text-rose-700 ring-rose-100',
+    text: 'text-rose-700',
+    line: 'border-rose-500',
+  },
+};
+
+function exportToneByIndex(index: number): ExportTone {
+  return exportToneOrder[index % exportToneOrder.length];
+}
+
+function exportMetricToneClassName(label: string, highlight?: boolean) {
+  const text = compactText(label);
+  if (/保费|交费|年交/u.test(text)) return 'bg-amber-50 text-amber-700 ring-amber-100';
+  if (/保障|保额|身故|受益/u.test(text)) return 'bg-blue-50 text-[#0B72B9] ring-blue-100';
+  if (/现金价值|价值合计/u.test(text)) return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+  if (/领取|累计/u.test(text)) return 'bg-violet-50 text-violet-700 ring-violet-100';
+  if (/身份|被保人|投保人/u.test(text)) return 'bg-cyan-50 text-cyan-700 ring-cyan-100';
+  return highlight ? 'bg-blue-50 text-[#0B72B9] ring-blue-100' : 'bg-white text-[#102033] ring-[#E1E8EF]';
+}
+
+function exportPlanToneClassName(index: number) {
+  return exportToneClassNames[exportToneByIndex(index)].badge;
+}
+
+function ExportMetricStrip({ rows }: { rows: Array<{ label: string; value?: string | number | null; highlight?: boolean }> }) {
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] leading-4 md:grid-cols-3">
+      {rows.map((row) => (
+        <div key={row.label} className={`min-w-0 rounded-lg px-2.5 py-2 ring-1 ${exportMetricToneClassName(row.label, row.highlight)}`}>
+          <p className="font-black text-[#72849A]">{row.label}</p>
+          <p className="mt-1 break-words font-black">{emptyText(row.value)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PolicyPlanExportList({ row }: { row: FamilyPolicyInventoryRow }) {
+  return (
+    <div className="mt-3 divide-y divide-[#E6EEF5]">
+      {rowPlanItems(row).map((item, index) => {
+        const productName = item.productName || item.matchedProductName || row.productName;
+        const officialName = item.matchedProductName && compactText(item.matchedProductName) !== compactText(item.productName)
+          ? item.matchedProductName
+          : '';
+        const meta = [
+          item.typeLabel,
+          item.coverageText && item.coverageText !== '按条款' ? `保额 ${item.coverageText}` : '',
+          item.premiumText ? `保费 ${item.premiumText}` : '',
+          item.coveragePeriod ? `保障 ${item.coveragePeriod}` : '',
+        ].filter(Boolean).join(' · ');
+        const roleToneClassName = exportPlanToneClassName(index);
+
+        return (
+          <div key={`${item.roleLabel}-${productName}-${index}`} className="grid grid-cols-[44px_minmax(0,1fr)] gap-2 py-2 first:pt-0 last:pb-0">
+            <span className={`mt-0.5 h-fit rounded-md px-1.5 py-1 text-center text-[11px] font-black ring-1 ${roleToneClassName}`}>{emptyText(item.roleLabel)}</span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-start gap-1.5">
+                <p className="min-w-0 flex-1 break-words text-sm font-black leading-5 text-[#102033]">{emptyText(productName)}</p>
+                {item.statusLabel ? (
+                  <span className="shrink-0 rounded-md bg-[#FFF8EB] px-1.5 py-0.5 text-[11px] font-black text-[#9A4A16] ring-1 ring-[#F3D9B4]">{item.statusLabel}</span>
+                ) : null}
+              </div>
+              {officialName ? (
+                <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-[#64748B]">匹配产品：{officialName}</p>
+              ) : null}
+              {meta ? (
+                <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-[#64748B]">{meta}</p>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExportPolicyShell({
+  row,
+  tone = 'status',
+  accent = 'blue',
+  children,
+}: {
+  row: FamilyPolicyInventoryRow;
+  tone?: 'status' | 'type';
+  accent?: ExportTone;
+  children: React.ReactNode;
+}) {
+  const pillText = tone === 'type' ? row.typeLabel : row.dataStatus;
+  const color = exportToneClassNames[accent];
+  return (
+    <article className={`relative overflow-hidden rounded-lg border bg-white shadow-[0_10px_28px_-24px_rgba(15,23,42,0.36)] ${color.border}`}>
+      <span className={`absolute inset-y-0 left-0 w-1 ${color.rail}`} aria-hidden="true" />
+      <div className={`border-b border-[#E6EEF5] p-3 pl-4 ${color.header}`}>
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="break-words text-sm font-black leading-5 text-[#102033]">{emptyText(row.company || row.productName)}</p>
+            {row.policyNumber ? (
+              <p className="mt-1 break-words text-[11px] font-semibold leading-4 text-[#64748B]">保单号 {row.policyNumber}</p>
+            ) : null}
+          </div>
+          <span className={`shrink-0 rounded-md px-2 py-1 text-[11px] font-black ring-1 ${tone === 'type' ? color.badge : exportStatusToneClassName(row.dataStatus)}`}>
+            {emptyText(pillText)}
+          </span>
+        </div>
+      </div>
+      <div className="p-3 pl-4">{children}</div>
+    </article>
+  );
+}
+
+function InventoryExportCards({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
+  return (
+    <div data-report-export-cards className="hidden space-y-3">
+      {rows.map((row, index) => (
+        <ExportPolicyShell key={`inventory-export-${row.policyId}`} row={row} accent={exportToneByIndex(index)}>
+          <PolicyPlanExportList row={row} />
+          <ExportMetricStrip
+            rows={[
+              { label: '投保人', value: row.applicant },
+              { label: '被保人', value: row.member },
+              { label: '家庭身份', value: row.relationLabel },
+              { label: '年交保费', value: row.annualPremiumText || formatMoney(row.annualPremium), highlight: true },
+              { label: '保障/保额', value: row.coverageText, highlight: true },
+              { label: '现金价值', value: row.cashValueText || '-' },
+            ]}
+          />
+        </ExportPolicyShell>
+      ))}
+    </div>
+  );
+}
+
+function InsuredPolicyExportCards({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
+  return (
+    <div data-report-export-cards className="hidden space-y-2">
+      {rows.map((row, index) => (
+        <ExportPolicyShell key={`insured-policy-export-${row.policyId}`} row={row} tone="type" accent={exportToneByIndex(index + 1)}>
+          <PolicyPlanExportList row={row} />
+          <ExportMetricStrip
+            rows={[
+              { label: '保费(元)', value: row.annualPremiumText || formatMoney(row.annualPremium), highlight: true },
+              { label: '交费期', value: row.paymentPeriod },
+              { label: '保障期', value: row.coveragePeriod },
+              { label: '生效日期', value: row.effectiveDate },
+              { label: '保额(元)', value: row.coverageText || formatMoney(row.coverage), highlight: true },
+              { label: '身故受益人', value: row.beneficiary },
+              { label: '期交总保费', value: row.totalPremiumText },
+              { label: '现金价值', value: row.cashValueText || '-' },
+            ]}
+          />
+        </ExportPolicyShell>
+      ))}
+    </div>
+  );
+}
+
 function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
   return (
     <Section title="家庭保单清单">
       {rows.length ? (
-        <TableWrap>
-          <table className="min-w-full border-separate border-spacing-0 text-left">
-            <thead>
-              <tr>
-                <th className={`${thClassName} rounded-tl-[18px]`}>投保人</th>
-                <th className={thClassName}>被保人</th>
-                <th className={thClassName}>家庭身份</th>
-                <th className={thClassName}>保单/产品</th>
-                <th className={thClassName}>类型</th>
-                <th className={`${thClassName} text-right`}>年交保费</th>
-                <th className={thClassName}>保障/保额</th>
-                <th className={`${thClassName} text-right`}>现金价值</th>
-                <th className={`${thClassName} rounded-tr-[18px]`}>数据状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.policyId}>
-                  <td className={tdClassName}>{emptyText(row.applicant)}</td>
-                  <td className={tdClassName}>
-                    <span className="block">{row.member}</span>
-                    {row.participantReviewStatus === 'name_mismatch' ? (
-                      <span className="mt-1 inline-flex rounded-full bg-[#FFF8EB] px-2 py-0.5 text-[11px] font-black text-[#9A4A16] ring-1 ring-[#F3D9B4]">姓名待核对</span>
-                    ) : null}
-                  </td>
-                  <td className={tdClassName}>{emptyText(row.relationLabel)}</td>
-                  <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
-                    <PolicyPlanList row={row} />
-                    <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{emptyText(row.company)}</span>
-                  </td>
-                  <td className="min-w-[180px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
-                    <PolicyPlanTypeList row={row} />
-                  </td>
-                  <td className={`${tdClassName} text-right`}>{row.annualPremiumText || formatMoney(row.annualPremium)}</td>
-                  <td className={tdClassName}>{emptyText(row.coverageText)}</td>
-                  <td className={`${tdClassName} text-right`}>{row.cashValueText || '-'}</td>
-                  <td className={mutedTdClassName}>{emptyText(row.dataStatus)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
+        <>
+          <InventoryExportCards rows={rows} />
+          <div data-report-export-table>
+            <TableWrap>
+              <table className="min-w-full border-separate border-spacing-0 text-left">
+                <thead>
+                  <tr>
+                    <th className={`${thClassName} rounded-tl-[18px]`}>投保人</th>
+                    <th className={thClassName}>被保人</th>
+                    <th className={thClassName}>家庭身份</th>
+                    <th className={thClassName}>保单/产品</th>
+                    <th className={thClassName}>类型</th>
+                    <th className={`${thClassName} text-right`}>年交保费</th>
+                    <th className={thClassName}>保障/保额</th>
+                    <th className={`${thClassName} text-right`}>现金价值</th>
+                    <th className={`${thClassName} rounded-tr-[18px]`}>数据状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.policyId}>
+                      <td className={tdClassName}>{emptyText(row.applicant)}</td>
+                      <td className={tdClassName}>
+                        <span className="block">{row.member}</span>
+                        {row.participantReviewStatus === 'name_mismatch' ? (
+                          <span className="mt-1 inline-flex rounded-full bg-[#FFF8EB] px-2 py-0.5 text-[11px] font-black text-[#9A4A16] ring-1 ring-[#F3D9B4]">姓名待核对</span>
+                        ) : null}
+                      </td>
+                      <td className={tdClassName}>{emptyText(row.relationLabel)}</td>
+                      <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
+                        <PolicyPlanList row={row} />
+                        <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{emptyText(row.company)}</span>
+                      </td>
+                      <td className="min-w-[180px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
+                        <PolicyPlanTypeList row={row} />
+                      </td>
+                      <td className={`${tdClassName} text-right`}>{row.annualPremiumText || formatMoney(row.annualPremium)}</td>
+                      <td className={tdClassName}>{emptyText(row.coverageText)}</td>
+                      <td className={`${tdClassName} text-right`}>{row.cashValueText || '-'}</td>
+                      <td className={mutedTdClassName}>{emptyText(row.dataStatus)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableWrap>
+          </div>
+        </>
       ) : (
         <EmptyState text="暂无家庭保单清单" />
       )}
@@ -978,45 +1202,48 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
                   {group.policies.length}张保单
                 </span>
               </div>
-              <TableWrap>
-                <table className="min-w-full border-separate border-spacing-0 text-left">
-                  <thead>
-                    <tr>
-                      <th className={`${thClassName} rounded-tl-[18px]`}>保险公司/保单号</th>
-                      <th className={thClassName}>险种名称</th>
-                      <th className={`${thClassName} text-right`}>保费(元)</th>
-                      <th className={thClassName}>交费期</th>
-                      <th className={thClassName}>保障期</th>
-                      <th className={thClassName}>生效日期</th>
-                      <th className={`${thClassName} text-right`}>保额(元)</th>
-                      <th className={thClassName}>身故受益人</th>
-                      <th className={`${thClassName} rounded-tr-[18px] text-right`}>期交总保费</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {group.policies.map((row) => (
-                      <tr key={row.policyId}>
-                        <td className="min-w-[170px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
-                          <span className="block">{emptyText(row.company)}</span>
-                          {row.policyNumber ? (
-                            <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{row.policyNumber}</span>
-                          ) : null}
-                        </td>
-                        <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-slate-800">
-                          <PolicyPlanList row={row} />
-                        </td>
-                        <td className={`${tdClassName} text-right`}>{formatMoney(row.annualPremium)}</td>
-                        <td className={tdClassName}>{emptyText(row.paymentPeriod)}</td>
-                        <td className={tdClassName}>{emptyText(row.coveragePeriod)}</td>
-                        <td className={tdClassName}>{emptyText(row.effectiveDate)}</td>
-                        <td className={`${tdClassName} text-right`}>{formatMoney(row.coverage)}</td>
-                        <td className={tdClassName}>{emptyText(row.beneficiary)}</td>
-                        <td className={`${tdClassName} text-right`}>{emptyText(row.totalPremiumText)}</td>
+              <InsuredPolicyExportCards rows={group.policies} />
+              <div data-report-export-table>
+                <TableWrap>
+                  <table className="min-w-full border-separate border-spacing-0 text-left">
+                    <thead>
+                      <tr>
+                        <th className={`${thClassName} rounded-tl-[18px]`}>保险公司/保单号</th>
+                        <th className={thClassName}>险种名称</th>
+                        <th className={`${thClassName} text-right`}>保费(元)</th>
+                        <th className={thClassName}>交费期</th>
+                        <th className={thClassName}>保障期</th>
+                        <th className={thClassName}>生效日期</th>
+                        <th className={`${thClassName} text-right`}>保额(元)</th>
+                        <th className={thClassName}>身故受益人</th>
+                        <th className={`${thClassName} rounded-tr-[18px] text-right`}>期交总保费</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </TableWrap>
+                    </thead>
+                    <tbody>
+                      {group.policies.map((row) => (
+                        <tr key={row.policyId}>
+                          <td className="min-w-[170px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
+                            <span className="block">{emptyText(row.company)}</span>
+                            {row.policyNumber ? (
+                              <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{row.policyNumber}</span>
+                            ) : null}
+                          </td>
+                          <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-slate-800">
+                            <PolicyPlanList row={row} />
+                          </td>
+                          <td className={`${tdClassName} text-right`}>{formatMoney(row.annualPremium)}</td>
+                          <td className={tdClassName}>{emptyText(row.paymentPeriod)}</td>
+                          <td className={tdClassName}>{emptyText(row.coveragePeriod)}</td>
+                          <td className={tdClassName}>{emptyText(row.effectiveDate)}</td>
+                          <td className={`${tdClassName} text-right`}>{formatMoney(row.coverage)}</td>
+                          <td className={tdClassName}>{emptyText(row.beneficiary)}</td>
+                          <td className={`${tdClassName} text-right`}>{emptyText(row.totalPremiumText)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </TableWrap>
+              </div>
             </article>
           ))}
         </div>
@@ -1592,47 +1819,91 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
 
   return (
     <div>
-      <TableWrap>
-        <div className="flex min-w-max gap-3">
-          {columns.map((column, columnIndex) => (
-            <table key={`${policy.policyId}-${columnIndex}`} className="border-separate border-spacing-0 text-left">
-              <thead>
-                <tr>
-                  <th className={`${compactThClassName} rounded-tl-[14px]`}>年份</th>
-                  <th className={compactThClassName}>领取金额</th>
-                  <th className={compactThClassName}>累计领取</th>
-                  <th className={`${compactThClassName} rounded-tr-[14px]`}>现金价值参考</th>
-                </tr>
-              </thead>
-              <tbody>
-                {column.map((row) => (
-                  <tr key={`${policy.policyId}-${row.year}`} className={row.isContractTerminatingPayout ? 'bg-orange-50' : undefined}>
-                    <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
-                    <td className={`${compactTdClassName} text-right`}>
-                      {row.amount > 0 ? (
-                        <span className={`inline-block rounded px-1 text-[11px] font-black ${row.isContractTerminatingPayout ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
-                          {formatMoney(row.amount)}
-                        </span>
-                      ) : '—'}
-                    </td>
-                    <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
-                      {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
-                    </td>
-                    <td className={`${compactTdClassName} text-right text-[#0B72B9]`}>
-                      {row.cashValue != null ? formatMoney(row.cashValue) : '—'}
-                    </td>
+      <AnnualCashflowExportList policy={policy} />
+      <div data-report-export-table>
+        <TableWrap>
+          <div className="flex min-w-max gap-3">
+            {columns.map((column, columnIndex) => (
+              <table key={`${policy.policyId}-${columnIndex}`} className="border-separate border-spacing-0 text-left">
+                <thead>
+                  <tr>
+                    <th className={`${compactThClassName} rounded-tl-[14px]`}>年份</th>
+                    <th className={compactThClassName}>领取金额</th>
+                    <th className={compactThClassName}>累计领取</th>
+                    <th className={`${compactThClassName} rounded-tr-[14px]`}>现金价值参考</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          ))}
-        </div>
-      </TableWrap>
+                </thead>
+                <tbody>
+                  {column.map((row) => (
+                    <tr key={`${policy.policyId}-${row.year}`} className={row.isContractTerminatingPayout ? 'bg-orange-50' : undefined}>
+                      <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
+                      <td className={`${compactTdClassName} text-right`}>
+                        {row.amount > 0 ? (
+                          <span className={`inline-block rounded px-1 text-[11px] font-black ${row.isContractTerminatingPayout ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
+                            {formatMoney(row.amount)}
+                          </span>
+                        ) : '—'}
+                      </td>
+                      <td className={`${compactTdClassName} text-right text-[#5E7290]`}>
+                        {row.amount > 0 ? formatMoney(row.cumulative) : '—'}
+                      </td>
+                      <td className={`${compactTdClassName} text-right text-[#0B72B9]`}>
+                        {row.cashValue != null ? formatMoney(row.cashValue) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ))}
+          </div>
+        </TableWrap>
+      </div>
       {hasCashValueReference ? (
         <p className="mt-2 rounded-[14px] border border-[#D7E2EA] bg-[#F8FBFF] px-3 py-2 text-[11px] font-semibold leading-5 text-[#5E7290]">
           现金价值不等同于当年可直接领取金额；与领取金额同年出现时不代表可叠加领取。合同终止型给付发生后，现金价值不再保留。
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function AnnualCashflowExportList({ policy }: { policy: FamilyWealthPolicyReport }) {
+  const informativeRows = policy.annualCashflowRows.filter((row) => (
+    row.amount > 0 || row.cashValue != null || row.liabilities.length > 0 || row.isContractTerminatingPayout
+  ));
+  const rows = informativeRows.length ? informativeRows : policy.annualCashflowRows.slice(0, 1);
+
+  return (
+    <div data-report-export-cards className="hidden overflow-hidden rounded-lg border border-blue-100 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-100 bg-[#F0F8FF] px-3 py-2">
+        <p className="text-xs font-black text-[#102033]">现金流年度摘要</p>
+        <span className="rounded-md bg-white px-2 py-0.5 text-[11px] font-black text-[#0B72B9] ring-1 ring-blue-100">
+          展示{rows.length}个关键年份
+        </span>
+      </div>
+      <div className="space-y-2 p-3">
+        {rows.map((row, index) => {
+          const yearTone = row.isContractTerminatingPayout ? exportToneClassNames.amber : exportToneClassNames[exportToneByIndex(index)];
+          return (
+          <div key={`${policy.policyId}-export-cashflow-${row.year}`} className={`grid grid-cols-[68px_minmax(0,1fr)_minmax(0,1fr)] gap-2 rounded-lg p-2 text-[11px] leading-4 ring-1 ${yearTone.soft}`}>
+            <div className="min-w-0">
+              <p className={`font-black ${yearTone.text}`}>{row.year}</p>
+              <p className="mt-0.5 font-semibold text-[#72849A]">{row.age === null ? '年龄 -' : `${row.age}岁`}</p>
+            </div>
+            <div className="min-w-0">
+              <p className="font-bold text-[#72849A]">领取金额</p>
+              <p className={`mt-0.5 break-words font-black ${row.amount > 0 ? yearTone.text : 'text-[#94A3B8]'}`}>{row.amount > 0 ? formatMoney(row.amount) : '-'}</p>
+              {row.liabilities.length ? <p className="mt-0.5 break-words font-semibold text-[#64748B]">{row.liabilities.slice(0, 2).join('、')}</p> : null}
+            </div>
+            <div className="min-w-0 text-right">
+              <p className="font-bold text-[#72849A]">现金价值参考</p>
+              <p className="mt-0.5 break-words font-black text-emerald-700">{row.cashValue != null ? formatMoney(row.cashValue) : '-'}</p>
+              {row.amount > 0 ? <p className="mt-0.5 font-semibold text-[#64748B]">累计 {formatMoney(row.cumulative)}</p> : null}
+            </div>
+          </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1762,86 +2033,143 @@ function wealthAggregateDetailRows(row: FamilyWealthAggregateRow) {
   return details.length ? details : [null];
 }
 
+function WealthAggregateExportList({ rows }: { rows: FamilyWealthAggregateRow[] }) {
+  const informativeRows = rows.filter((row) => row.payoutInflow > 0 || row.cashValueTotal > 0 || cashflowAggregateDetails(row).length > 0);
+  const exportRows = informativeRows.length ? informativeRows : rows.slice(0, 1);
+
+  return exportRows.length ? (
+    <div data-report-export-cards className="hidden space-y-2">
+      {exportRows.map((row, index) => {
+        const details = cashflowAggregateDetails(row).slice(0, 3);
+        const tone = exportToneClassNames[exportToneByIndex(index + 3)];
+        return (
+          <article key={`wealth-aggregate-export-${row.year}`} className={`overflow-hidden rounded-lg border bg-white shadow-[0_10px_28px_-24px_rgba(15,23,42,0.3)] ${tone.border}`}>
+            <div className={`flex flex-wrap items-start justify-between gap-2 border-b border-[#E6EEF5] px-3 py-2.5 ${tone.header}`}>
+              <div className="min-w-0">
+                <p className={`text-sm font-black ${tone.text}`}>{row.year} 年</p>
+                <p className="mt-0.5 text-[11px] font-semibold text-[#72849A]">仅统计确定领取现金流</p>
+              </div>
+              <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${tone.badge}`}>
+                当年领取 {formatMoney(row.payoutInflow)}
+              </span>
+            </div>
+            <div className="p-3 pt-0">
+              <ExportMetricStrip
+                rows={[
+                  { label: '累计领取', value: formatMoney(row.cumulativePayoutInflow), highlight: true },
+                  { label: '现金价值合计', value: formatMoney(row.cashValueTotal), highlight: true },
+                  { label: '价值合计', value: formatMoney(row.totalValue), highlight: true },
+                ]}
+              />
+              {details.length ? (
+                <div className="mt-3 divide-y divide-[#E6EEF5] overflow-hidden rounded-lg border border-[#E1E8EF] bg-white">
+                  {details.map((detail, detailIndex) => {
+                    const detailTone = exportToneClassNames[exportToneByIndex(detailIndex)];
+                    return (
+                    <div key={`${row.year}-${detail.policyId}-${detail.liability}-${detail.amount}`} className="grid grid-cols-[minmax(0,1fr)_92px] gap-3 py-2 pl-3 pr-2 text-[11px] leading-4">
+                      <div className={`min-w-0 border-l-2 pl-2 ${detailTone.line}`}>
+                        <p className="break-words font-black text-[#102033]">{insuranceProductKeyword(detail.productName)}</p>
+                        <p className="mt-0.5 break-words font-semibold text-[#64748B]">{detail.policyholder || '-'} · {truncateText(detail.liability || '领取', 18)}</p>
+                      </div>
+                      <p className={`text-right font-black ${detailTone.text}`}>{formatMoney(detail.amount)}</p>
+                    </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  ) : null;
+}
+
 function WealthAggregateTable({ rows }: { rows: FamilyWealthAggregateRow[] }) {
   const summaryTdClassName = `${tdClassName} align-top`;
   const detailTdClassName = 'bg-[#F8FBFF] px-2.5 py-2 text-xs font-semibold text-slate-700 align-top ring-1 ring-[#E1EAF5]';
   const detailStartTdClassName = `${detailTdClassName} border-l border-[#CAD7E4]`;
 
   return rows.length ? (
-    <TableWrap>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E1E8EF] bg-[#F8FBFF] px-3 py-2 text-[11px] font-black">
-        <div className="flex flex-wrap items-center gap-2 text-[#36516A]">
-          <span className="rounded-full bg-blue-50 px-2 py-1 text-[#0B72B9] ring-1 ring-blue-100">年度汇总</span>
-          <span>仅统计确定领取现金流</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5 text-[#72849A]">
-          <span className="rounded-full bg-white px-2 py-1 ring-1 ring-[#E1E8EF]">左侧：年度合计</span>
-          <span className="rounded-full bg-white px-2 py-1 ring-1 ring-[#E1E8EF]">右侧：现金流明细</span>
-        </div>
-      </div>
-      <table className="min-w-[1060px] table-fixed border-separate border-spacing-0 text-left">
-        <colgroup>
-          <col className="w-[72px]" />
-          <col className="w-[116px]" />
-          <col className="w-[116px]" />
-          <col className="w-[96px]" />
-          <col className="w-[158px]" />
-          <col className="w-[110px]" />
-          <col className="w-[120px]" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th className={thClassName} title="年份" aria-label="年份">年</th>
-            <th className={`${thClassName} text-right`} title="当年领取现金流" aria-label="当年现金流">当年现金流</th>
-            <th className={`${thClassName} text-right`} title="累计领取现金流" aria-label="累计现金流">累计现金流</th>
-            <th className={`${thClassName} border-l border-blue-300`} title="现金流明细：投保人">投保人</th>
-            <th className={thClassName} title="现金流明细产品">产品</th>
-            <th className={thClassName} title="现金流项目">项目</th>
-            <th className={`${thClassName} text-right`} title="该保单当年领取现金流" aria-label="该保单现金流">现金流</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.flatMap((row) => {
-            const detailRows = wealthAggregateDetailRows(row);
-            return detailRows.map((detail, index) => (
-              <tr key={`${row.year}-${detail?.policyId ?? 'empty'}-${detail?.policyYear ?? index}-${index}`}>
-                {index === 0 ? (
-                  <>
-                    <td className={summaryTdClassName} rowSpan={detailRows.length}>{row.year}</td>
-                    <td className={`${summaryTdClassName} text-right`} rowSpan={detailRows.length}>{formatMoney(row.payoutInflow)}</td>
-                    <td className={`${summaryTdClassName} text-right`} rowSpan={detailRows.length}>{formatMoney(row.cumulativePayoutInflow)}</td>
-                  </>
-                ) : null}
-                <td className={detailStartTdClassName}>
-                  {detail ? (
-                    <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-black text-[#0B72B9] ring-1 ring-blue-100">
-                      {detail.policyholder || '-'}
-                    </span>
-                  ) : <span className="text-[#8AA0B8]">—</span>}
-                </td>
-                <td className={`${detailTdClassName} min-w-[116px] max-w-[150px]`}>
-                  {detail ? (
-                    <span title={detail.productName || ''} className="font-black text-[#102033]">
-                      {insuranceProductKeyword(detail.productName)}
-                    </span>
-                  ) : <span className="text-[#8AA0B8]">—</span>}
-                </td>
-                <td className={`${detailTdClassName} min-w-[86px] max-w-[110px]`}>
-                  {detail ? (
-                    <span title={detail.liability || ''} className="font-bold text-[#36516A]">
-                      {truncateText(detail.liability || '领取', 8)}
-                    </span>
-                  ) : <span className="text-[#8AA0B8]">—</span>}
-                </td>
-                <td className={`${detailTdClassName} text-right font-black text-[#0B72B9] tabular-nums`}>
-                  {detail ? formatMoney(detail.amount) : '—'}
-                </td>
+    <>
+      <WealthAggregateExportList rows={rows} />
+      <div data-report-export-table>
+        <TableWrap>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E1E8EF] bg-[#F8FBFF] px-3 py-2 text-[11px] font-black">
+            <div className="flex flex-wrap items-center gap-2 text-[#36516A]">
+              <span className="rounded-full bg-blue-50 px-2 py-1 text-[#0B72B9] ring-1 ring-blue-100">年度汇总</span>
+              <span>仅统计确定领取现金流</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[#72849A]">
+              <span className="rounded-full bg-white px-2 py-1 ring-1 ring-[#E1E8EF]">左侧：年度合计</span>
+              <span className="rounded-full bg-white px-2 py-1 ring-1 ring-[#E1E8EF]">右侧：现金流明细</span>
+            </div>
+          </div>
+          <table className="min-w-[1060px] table-fixed border-separate border-spacing-0 text-left">
+            <colgroup>
+              <col className="w-[72px]" />
+              <col className="w-[116px]" />
+              <col className="w-[116px]" />
+              <col className="w-[96px]" />
+              <col className="w-[158px]" />
+              <col className="w-[110px]" />
+              <col className="w-[120px]" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th className={thClassName} title="年份" aria-label="年份">年</th>
+                <th className={`${thClassName} text-right`} title="当年领取现金流" aria-label="当年现金流">当年现金流</th>
+                <th className={`${thClassName} text-right`} title="累计领取现金流" aria-label="累计现金流">累计现金流</th>
+                <th className={`${thClassName} border-l border-blue-300`} title="现金流明细：投保人">投保人</th>
+                <th className={thClassName} title="现金流明细产品">产品</th>
+                <th className={thClassName} title="现金流项目">项目</th>
+                <th className={`${thClassName} text-right`} title="该保单当年领取现金流" aria-label="该保单现金流">现金流</th>
               </tr>
-            ));
-          })}
-        </tbody>
-      </table>
-    </TableWrap>
+            </thead>
+            <tbody>
+              {rows.flatMap((row) => {
+                const detailRows = wealthAggregateDetailRows(row);
+                return detailRows.map((detail, index) => (
+                  <tr key={`${row.year}-${detail?.policyId ?? 'empty'}-${detail?.policyYear ?? index}-${index}`}>
+                    {index === 0 ? (
+                      <>
+                        <td className={summaryTdClassName} rowSpan={detailRows.length}>{row.year}</td>
+                        <td className={`${summaryTdClassName} text-right`} rowSpan={detailRows.length}>{formatMoney(row.payoutInflow)}</td>
+                        <td className={`${summaryTdClassName} text-right`} rowSpan={detailRows.length}>{formatMoney(row.cumulativePayoutInflow)}</td>
+                      </>
+                    ) : null}
+                    <td className={detailStartTdClassName}>
+                      {detail ? (
+                        <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-black text-[#0B72B9] ring-1 ring-blue-100">
+                          {detail.policyholder || '-'}
+                        </span>
+                      ) : <span className="text-[#8AA0B8]">—</span>}
+                    </td>
+                    <td className={`${detailTdClassName} min-w-[116px] max-w-[150px]`}>
+                      {detail ? (
+                        <span title={detail.productName || ''} className="font-black text-[#102033]">
+                          {insuranceProductKeyword(detail.productName)}
+                        </span>
+                      ) : <span className="text-[#8AA0B8]">—</span>}
+                    </td>
+                    <td className={`${detailTdClassName} min-w-[86px] max-w-[110px]`}>
+                      {detail ? (
+                        <span title={detail.liability || ''} className="font-bold text-[#36516A]">
+                          {truncateText(detail.liability || '领取', 8)}
+                        </span>
+                      ) : <span className="text-[#8AA0B8]">—</span>}
+                    </td>
+                    <td className={`${detailTdClassName} text-right font-black text-[#0B72B9] tabular-nums`}>
+                      {detail ? formatMoney(detail.amount) : '—'}
+                    </td>
+                  </tr>
+                ));
+              })}
+            </tbody>
+          </table>
+        </TableWrap>
+      </div>
+    </>
   ) : (
     <EmptyState text="暂无全家财富统计" />
   );

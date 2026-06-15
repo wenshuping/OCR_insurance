@@ -7,6 +7,15 @@ function recognizePendingScanKey({ user, guestId }) {
   return guestId;
 }
 
+function assertPolicyEntryAuthenticated(user, message = '录入或上传保单前需要先完成手机验证码') {
+  if (user?.id) return;
+  const error = new Error(message);
+  error.code = 'REGISTRATION_REQUIRED';
+  error.status = 401;
+  error.registrationRequiredNext = true;
+  throw error;
+}
+
 export function createPolicyRoutes(context) {
   const router = express.Router();
   const {
@@ -14,6 +23,7 @@ export function createPolicyRoutes(context) {
     persist,
     persistPolicyScanSave,
     persistPendingScan,
+    persistPolicyDerivedResult,
     scanner,
     analyzer,
     adminPassword,
@@ -26,14 +36,12 @@ export function createPolicyRoutes(context) {
     policyInputMetrics,
     resolveAuthUser,
     normalizeGuestId,
-    assertGuestCanScan,
     assertUserCanSavePolicy,
     recognizePolicyInput,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
     buildRawUploadSnapshot,
     storeGuestPendingScan,
-    guestRegistrationRequiredNext,
     resolvePolicyScanInput,
     normalizeOptionalResponsibilities,
     buildOptionalResponsibilityReview,
@@ -50,7 +58,8 @@ export function createPolicyRoutes(context) {
     computeAndStoreCashflow,
     startPolicyReportGeneration,
     attachPolicyCoverageIndicators,
-    attachPoliciesCoverageIndicators,
+    buildPolicyDerivedResult,
+    mergePolicyDerivedResult,
     attachPolicyFamilyDisplay,
     selectedCoverageIndicators,
     computeScenarioEntries,
@@ -67,13 +76,62 @@ export function createPolicyRoutes(context) {
     nowIso,
   } = context;
 
+  function findPolicyDerivedResult(policyId) {
+    const id = Number(policyId || 0);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    return (Array.isArray(state.policyDerivedResults) ? state.policyDerivedResults : [])
+      .find((row) => Number(row?.policyId || 0) === id) || null;
+  }
+
+  function replacePolicyDerivedResult(derivedResult) {
+    if (!derivedResult?.policyId) return;
+    if (!Array.isArray(state.policyDerivedResults)) state.policyDerivedResults = [];
+    const policyId = Number(derivedResult.policyId);
+    state.policyDerivedResults = state.policyDerivedResults
+      .filter((row) => Number(row?.policyId || 0) !== policyId);
+    state.policyDerivedResults.push(derivedResult);
+  }
+
+  function buildDerivedResultForPolicy(policy) {
+    if (typeof buildPolicyDerivedResult !== 'function') return null;
+    return buildPolicyDerivedResult({
+      policy,
+      indicatorRecords: state.insuranceIndicatorRecords,
+      knowledgeRecords: state.knowledgeRecords,
+      optionalResponsibilityRecords: state.optionalResponsibilityRecords,
+      productIndicatorVersions: state.productIndicatorVersions,
+      now: typeof nowIso === 'function' ? nowIso() : new Date().toISOString(),
+    });
+  }
+
+  function attachStoredPolicyDerivedResult(policy, derivedResult = findPolicyDerivedResult(policy?.id)) {
+    const displayed = attachPolicyFamilyDisplay(policy, state);
+    if (typeof mergePolicyDerivedResult === 'function') {
+      return mergePolicyDerivedResult(displayed, derivedResult || null);
+    }
+    if (derivedResult) {
+      return {
+        ...displayed,
+        coverageIndicators: Array.isArray(derivedResult.coverageIndicators) ? derivedResult.coverageIndicators : [],
+        optionalResponsibilities: Array.isArray(derivedResult.optionalResponsibilities) ? derivedResult.optionalResponsibilities : [],
+      };
+    }
+    return {
+      ...displayed,
+      coverageIndicators: Array.isArray(displayed.coverageIndicators) ? displayed.coverageIndicators : [],
+      optionalResponsibilities: Array.isArray(displayed.optionalResponsibilities) ? displayed.optionalResponsibilities : [],
+    };
+  }
+
   function attachPolicyCashflowData(policy) {
     const entries = cashflowStore.getEntries(policy.id);
     const cashValues = cashValueStore.getValues(policy.id);
     const totalCashflow = entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
     let scenarioEntries = [];
     try {
-      const policyIndicators = findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
+      const policyIndicators = Array.isArray(policy.coverageIndicators)
+        ? policy.coverageIndicators
+        : findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
       scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), policy);
     } catch (_err) {
       // non-fatal: scenarioEntries stays empty
@@ -91,8 +149,8 @@ export function createPolicyRoutes(context) {
     const routeStartedAt = nowMs();
     try {
       const user = resolveAuthUser(req, state);
+      assertPolicyEntryAuthenticated(user, '上传保单照片前需要先验证手机号');
       const guestId = normalizeGuestId(req.body?.guestId);
-      assertGuestCanScan({ state, user, guestId });
       const rawUpload = buildRawUploadSnapshot(req.body);
       const pendingScanKey = recognizePendingScanKey({ user, guestId });
       if (pendingScanKey) {
@@ -126,7 +184,7 @@ export function createPolicyRoutes(context) {
       const payload = {
         ok: true,
         scan,
-        registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
+        registrationRequiredNext: false,
       };
       if (analysis) payload.analysis = analysis;
       res.json(payload);
@@ -144,8 +202,8 @@ export function createPolicyRoutes(context) {
     const routeStartedAt = nowMs();
     try {
       const user = resolveAuthUser(req, state);
+      assertPolicyEntryAuthenticated(user);
       const guestId = normalizeGuestId(req.body?.guestId);
-      assertGuestCanScan({ state, user, guestId });
       const rawUpload = buildRawUploadSnapshot(req.body);
       if (!user && guestId && !req.body?.scan) {
         storeGuestPendingScan(state, { guestId, scan: null, analysis: null, rawUpload });
@@ -203,7 +261,7 @@ export function createPolicyRoutes(context) {
         ok: true,
         scan: normalizedScan,
         analysis: analysisWithOptionalResponsibilities,
-        registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
+        registrationRequiredNext: false,
       });
     } catch (error) {
       sendError(res, error);
@@ -214,8 +272,8 @@ export function createPolicyRoutes(context) {
     const routeStartedAt = nowMs();
     try {
       const user = resolveAuthUser(req, state);
+      assertPolicyEntryAuthenticated(user, '保存保单前需要先验证手机号');
       const guestId = normalizeGuestId(req.body?.guestId);
-      assertGuestCanScan({ state, user, guestId });
       if (typeof assertUserCanSavePolicy === 'function') {
         assertUserCanSavePolicy(state, user, { now: typeof nowIso === 'function' ? nowIso() : undefined });
       }
@@ -271,12 +329,17 @@ export function createPolicyRoutes(context) {
       });
       state.policies.push(policy);
       if (providedAnalysis) recordPolicySourceRecords(state, policy, providedAnalysis);
-      const clearPendingGuestId = !user && guestId ? guestId : '';
+      const derivedResult = buildDerivedResultForPolicy(policy);
+      if (derivedResult) replacePolicyDerivedResult(derivedResult);
+      const clearPendingGuestId = recognizePendingScanKey({ user, guestId }) || '';
       if (clearPendingGuestId) clearGuestPendingScans(state, clearPendingGuestId);
       if (persistPolicyScanSave) {
         await persistPolicyScanSave({ policy, clearPendingGuestId });
       } else {
         await persist(state);
+      }
+      if (derivedResult && persistPolicyDerivedResult) {
+        await persistPolicyDerivedResult({ derivedResult });
       }
 
       let cashflowEntries = [];
@@ -312,17 +375,12 @@ export function createPolicyRoutes(context) {
       res.status(201).json({
         ok: true,
         policy: {
-          ...attachPolicyCoverageIndicators(
-            attachPolicyFamilyDisplay(policy, state),
-            state.insuranceIndicatorRecords,
-            state.knowledgeRecords,
-            state.optionalResponsibilityRecords,
-          ),
+          ...attachStoredPolicyDerivedResult(policy, derivedResult),
           cashflowEntries,
           scenarioEntries,
           totalCashflow,
         },
-        registrationRequiredNext: guestRegistrationRequiredNext({ state, user, guestId }),
+        registrationRequiredNext: false,
       });
     } catch (error) {
       sendError(res, error);
@@ -341,13 +399,9 @@ export function createPolicyRoutes(context) {
         return String(policy.guestId || '') === guestId && !policy.userId;
       })
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const policiesWithIndicators = attachPoliciesCoverageIndicators(
-      policies.map((policy) => attachPolicyFamilyDisplay(policy, state)),
-      state.insuranceIndicatorRecords,
-      state.knowledgeRecords,
-      state.optionalResponsibilityRecords,
-    );
-    const policiesWithCashflow = policiesWithIndicators.map((policy) => attachPolicyCashflowData(policy));
+    const policiesWithCashflow = policies
+      .map((policy) => attachStoredPolicyDerivedResult(policy))
+      .map((policy) => attachPolicyCashflowData(policy));
     res.json({ ok: true, policies: policiesWithCashflow });
   });
 
@@ -382,7 +436,12 @@ export function createPolicyRoutes(context) {
       const identityChanged = beforeIdentity !== policyProductIdentity(policy);
       if (identityChanged) clearPolicyReportForRegeneration(state, policy);
       policy.updatedAt = new Date().toISOString();
+      const derivedResult = buildDerivedResultForPolicy(policy);
+      if (derivedResult) replacePolicyDerivedResult(derivedResult);
       await persist(state);
+      if (derivedResult && persistPolicyDerivedResult) {
+        await persistPolicyDerivedResult({ derivedResult });
+      }
 
       try {
         computeAndStoreCashflow(policy);
@@ -403,12 +462,7 @@ export function createPolicyRoutes(context) {
       }
       res.status(identityChanged ? 202 : 200).json({
         ok: true,
-        policy: attachPolicyCashflowData(attachPolicyCoverageIndicators(
-          attachPolicyFamilyDisplay(policy, state),
-          state.insuranceIndicatorRecords,
-          state.knowledgeRecords,
-          state.optionalResponsibilityRecords,
-        )),
+        policy: attachPolicyCashflowData(attachStoredPolicyDerivedResult(policy, derivedResult)),
         reportRegenerating: identityChanged,
       });
     } catch (error) {
@@ -498,13 +552,7 @@ export function createPolicyRoutes(context) {
       return String(row.guestId || '') === guestId && !row.userId;
     });
     if (!policy) return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
-    const policyWithIndicators = attachPolicyCoverageIndicators(
-      attachPolicyFamilyDisplay(policy, state),
-      state.insuranceIndicatorRecords,
-      state.knowledgeRecords,
-      state.optionalResponsibilityRecords,
-    );
-    res.json({ ok: true, policy: attachPolicyCashflowData(policyWithIndicators) });
+    res.json({ ok: true, policy: attachPolicyCashflowData(attachStoredPolicyDerivedResult(policy)) });
   });
 
   return router;

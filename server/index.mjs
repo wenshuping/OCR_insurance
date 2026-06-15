@@ -69,6 +69,10 @@ const app = createPolicyOcrApp({
   persistAuthRegistration: store.persistAuthRegistration,
   persistMembershipConfig: store.persistMembershipConfig,
   persistOfficialDomainProfiles: store.persistOfficialDomainProfiles,
+  persistPolicyDerivedResult: store.persistPolicyDerivedResult,
+  markPolicyDerivedResultsStaleByProductKeys: store.markPolicyDerivedResultsStaleByProductKeys,
+  upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
+  recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
   db: store.db,
 });
 

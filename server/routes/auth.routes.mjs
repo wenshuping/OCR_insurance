@@ -42,13 +42,33 @@ export function createAuthRoutes(context) {
     clearGuestPendingScans,
     createSession,
     publicUser,
-    attachPoliciesCoverageIndicators,
     attachPolicyFamilyDisplay,
+    mergePolicyDerivedResult,
     getBearerToken,
     deleteSession,
     assertUserCanSavePolicy,
     nowIso,
   } = context;
+
+  function findPolicyDerivedResult(policyId) {
+    const id = Number(policyId || 0);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    return (Array.isArray(state.policyDerivedResults) ? state.policyDerivedResults : [])
+      .find((row) => Number(row?.policyId || 0) === id) || null;
+  }
+
+  function attachStoredPolicyDerivedResult(policy) {
+    const displayed = attachPolicyFamilyDisplay(policy, state);
+    const derivedResult = findPolicyDerivedResult(policy?.id);
+    if (typeof mergePolicyDerivedResult === 'function') {
+      return mergePolicyDerivedResult(displayed, derivedResult);
+    }
+    return {
+      ...displayed,
+      coverageIndicators: Array.isArray(derivedResult?.coverageIndicators) ? derivedResult.coverageIndicators : [],
+      optionalResponsibilities: Array.isArray(derivedResult?.optionalResponsibilities) ? derivedResult.optionalResponsibilities : [],
+    };
+  }
 
   router.post('/send-code', async (req, res) => {
     try {
@@ -196,18 +216,24 @@ export function createAuthRoutes(context) {
       } else {
         await persist(state);
       }
+      if (req.body?.includePolicies === false) {
+        return res.json({
+          ok: true,
+          token,
+          user: publicUser(user),
+          migratedPolicyCount,
+          policies: [],
+          policiesDeferred: true,
+        });
+      }
+
       const policies = state.policies.filter((policy) => Number(policy.userId) === Number(user.id));
       res.json({
         ok: true,
         token,
         user: publicUser(user),
         migratedPolicyCount,
-        policies: attachPoliciesCoverageIndicators(
-          policies.map((policy) => attachPolicyFamilyDisplay(policy, state)),
-          state.insuranceIndicatorRecords,
-          state.knowledgeRecords,
-          state.optionalResponsibilityRecords,
-        ),
+        policies: policies.map((policy) => attachStoredPolicyDerivedResult(policy)),
       });
     } catch (error) {
       sendError(res, error, 400);

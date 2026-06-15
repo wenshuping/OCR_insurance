@@ -556,6 +556,115 @@ test('sqlite state store incrementally persists auth sms codes without rewriting
   }
 });
 
+test('sqlite state store persists and reloads policy derived results', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    const row = {
+      policyId: 101,
+      productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+      coverageIndicators: [{ id: 'ind_1' }],
+      optionalResponsibilities: [{ id: 'opt_1' }],
+      indicatorVersions: { 'company_product:新华保险:多倍保障重大疾病保险': 2 },
+      knowledgeVersion: 0,
+      status: 'ready',
+      staleReason: '',
+      generatedAt: '2026-06-15T00:00:00.000Z',
+      error: '',
+    };
+
+    await store.persistPolicyDerivedResult({ state, derivedResult: row });
+
+    const reloaded = await store.load();
+    assert.equal(reloaded.policyDerivedResults.length, 1);
+    assert.equal(reloaded.policyDerivedResults[0].policyId, 101);
+    assert.deepEqual(reloaded.policyDerivedResults[0].coverageIndicators, [{ id: 'ind_1' }]);
+    assert.deepEqual(state.policyDerivedResults, reloaded.policyDerivedResults);
+  } finally {
+    store.close();
+  }
+});
+
+test('sqlite state store marks derived results stale by changed product keys', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    await store.persistPolicyDerivedResult({
+      state,
+      derivedResult: {
+        policyId: 201,
+        productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+        coverageIndicators: [],
+        optionalResponsibilities: [],
+        indicatorVersions: {},
+        knowledgeVersion: 0,
+        status: 'ready',
+        staleReason: '',
+        generatedAt: '2026-06-15T00:00:00.000Z',
+        error: '',
+      },
+    });
+
+    const marked = await store.markPolicyDerivedResultsStaleByProductKeys({
+      state,
+      productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+      staleReason: 'indicator_updated',
+    });
+
+    assert.deepEqual(marked.policyIds, [201]);
+    const reloaded = await store.load();
+    assert.equal(reloaded.policyDerivedResults[0].status, 'stale');
+    assert.equal(reloaded.policyDerivedResults[0].staleReason, 'indicator_updated');
+  } finally {
+    store.close();
+  }
+});
+
+test('sqlite state store records product indicator versions and update batches', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    await store.upsertProductIndicatorVersions({
+      state,
+      productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+      batchId: 'batch_1',
+    });
+    await store.recordIndicatorUpdateBatch({
+      state,
+      batch: {
+        id: 'batch_1',
+        productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
+        changedProductKeyCount: 1,
+        affectedPolicyCount: 0,
+        createdAt: '2026-06-15T00:00:00.000Z',
+      },
+    });
+
+    const reloaded = await store.load();
+    assert.deepEqual(reloaded.productIndicatorVersions.map((row) => ({
+      productKey: row.productKey,
+      version: row.version,
+      batchId: row.batchId,
+    })), [
+      {
+        productKey: 'company_product:新华保险:多倍保障重大疾病保险',
+        version: 1,
+        batchId: 'batch_1',
+      },
+    ]);
+    assert.equal(reloaded.indicatorUpdateBatches.length, 1);
+    assert.equal(reloaded.indicatorUpdateBatches[0].id, 'batch_1');
+  } finally {
+    store.close();
+  }
+});
+
 test('sqlite state store incrementally persists auth registration without rewriting knowledge tables', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');

@@ -80,13 +80,14 @@ export function sendCode(mobile: string) {
   });
 }
 
-export function register(input: { mobile: string; code: string; guestId: string }) {
+export function register(input: { mobile: string; code: string; guestId: string; includePolicies?: boolean }) {
   return request<{
     ok: true;
     token: string;
     user: User;
     migratedPolicyCount: number;
     policies: Policy[];
+    policiesDeferred?: boolean;
   }>('/api/auth/register', {
     body: input,
   });

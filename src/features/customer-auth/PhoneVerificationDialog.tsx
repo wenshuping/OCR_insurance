@@ -17,7 +17,7 @@ export function PhoneVerificationDialog(props: {
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-black text-slate-950">手机验证码</h2>
-            <p className="mt-1 text-sm leading-6 text-slate-500">第一张保单可直接录入，第二张开始需要验证手机号。</p>
+            <p className="mt-1 text-sm leading-6 text-slate-500">录入或上传保单前需要验证手机号；仅查询保险责任无需验证。</p>
           </div>
           <button className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-500" type="button" onClick={onClose}>
             稍后

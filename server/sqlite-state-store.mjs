@@ -5,7 +5,7 @@ import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 
-const SCHEMA_VERSION = '2';
+const SCHEMA_VERSION = '3';
 
 const DB_OWNED_KEYS = new Set([
   'users',
@@ -18,6 +18,9 @@ const DB_OWNED_KEYS = new Set([
   'knowledgeRecords',
   'insuranceIndicatorRecords',
   'optionalResponsibilityRecords',
+  'policyDerivedResults',
+  'productIndicatorVersions',
+  'indicatorUpdateBatches',
   'officialDomainProfiles',
   'familyProfiles',
   'familyMembers',
@@ -52,6 +55,18 @@ function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function normalizeStringArray(value) {
+  const seen = new Set();
+  const result = [];
+  for (const item of normalizeArray(value)) {
+    const text = String(item || '').trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+}
+
 function maxNumericId(rows) {
   return normalizeArray(rows).reduce((max, row) => {
     const id = Number(row?.id || 0);
@@ -76,6 +91,53 @@ function resolveNextId(state) {
 
 function jsonPayload(value) {
   return JSON.stringify(value || {});
+}
+
+function normalizePolicyDerivedResult(row = {}) {
+  const policyId = Number(row.policyId || row.policy_id || 0);
+  if (!Number.isFinite(policyId) || policyId <= 0) return null;
+  return {
+    ...row,
+    policyId,
+    productKeys: normalizeStringArray(row.productKeys || row.product_keys),
+    coverageIndicators: normalizeArray(row.coverageIndicators),
+    optionalResponsibilities: normalizeArray(row.optionalResponsibilities),
+    indicatorVersions: row.indicatorVersions && typeof row.indicatorVersions === 'object' && !Array.isArray(row.indicatorVersions)
+      ? row.indicatorVersions
+      : {},
+    knowledgeVersion: Number(row.knowledgeVersion || 0) || 0,
+    status: String(row.status || 'ready'),
+    staleReason: String(row.staleReason || row.stale_reason || ''),
+    generatedAt: String(row.generatedAt || row.generated_at || ''),
+    updatedAt: String(row.updatedAt || row.updated_at || ''),
+    error: String(row.error || ''),
+  };
+}
+
+function normalizeProductIndicatorVersion(row = {}) {
+  const productKey = String(row.productKey || row.product_key || '').trim();
+  if (!productKey) return null;
+  return {
+    ...row,
+    productKey,
+    version: Math.max(0, Number(row.version || 0) || 0),
+    batchId: String(row.batchId || row.batch_id || ''),
+    updatedAt: String(row.updatedAt || row.updated_at || ''),
+  };
+}
+
+function normalizeIndicatorUpdateBatch(row = {}) {
+  const id = String(row.id || '').trim();
+  if (!id) return null;
+  const productKeys = normalizeStringArray(row.productKeys || row.product_keys);
+  return {
+    ...row,
+    id,
+    productKeys,
+    changedProductKeyCount: Number(row.changedProductKeyCount ?? row.changed_product_key_count ?? productKeys.length) || 0,
+    affectedPolicyCount: Number(row.affectedPolicyCount ?? row.affected_policy_count ?? 0) || 0,
+    createdAt: String(row.createdAt || row.created_at || ''),
+  };
 }
 
 function getMeta(db, key) {
@@ -198,6 +260,34 @@ function createSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_company ON optional_responsibility_records(company);
     CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_product_name ON optional_responsibility_records(product_name);
+
+    CREATE TABLE IF NOT EXISTS policy_derived_results (
+      policy_id INTEGER PRIMARY KEY,
+      product_keys TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'ready',
+      stale_reason TEXT,
+      generated_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_policy_derived_results_status ON policy_derived_results(status);
+
+    CREATE TABLE IF NOT EXISTS product_indicator_versions (
+      product_key TEXT PRIMARY KEY,
+      version INTEGER NOT NULL DEFAULT 0,
+      batch_id TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS indicator_update_batches (
+      id TEXT PRIMARY KEY,
+      created_at TEXT,
+      product_keys TEXT NOT NULL DEFAULT '[]',
+      changed_product_key_count INTEGER NOT NULL DEFAULT 0,
+      affected_policy_count INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS official_domain_profiles (
       id TEXT PRIMARY KEY,
@@ -437,6 +527,57 @@ function insertRows(db, state) {
       String(record.productName || ''),
       String(record.liability || ''),
       jsonPayload(record),
+    );
+  }
+
+  const insertPolicyDerivedResult = db.prepare(`
+    INSERT INTO policy_derived_results (policy_id, product_keys, status, stale_reason, generated_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of normalizeArray(state.policyDerivedResults)) {
+    const derived = normalizePolicyDerivedResult(row);
+    if (!derived) continue;
+    insertPolicyDerivedResult.run(
+      derived.policyId,
+      JSON.stringify(derived.productKeys),
+      derived.status,
+      derived.staleReason,
+      derived.generatedAt,
+      derived.updatedAt,
+      jsonPayload(derived),
+    );
+  }
+
+  const insertProductIndicatorVersion = db.prepare(`
+    INSERT INTO product_indicator_versions (product_key, version, batch_id, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const row of normalizeArray(state.productIndicatorVersions)) {
+    const version = normalizeProductIndicatorVersion(row);
+    if (!version) continue;
+    insertProductIndicatorVersion.run(
+      version.productKey,
+      version.version,
+      version.batchId,
+      version.updatedAt,
+      jsonPayload(version),
+    );
+  }
+
+  const insertIndicatorUpdateBatch = db.prepare(`
+    INSERT INTO indicator_update_batches (id, created_at, product_keys, changed_product_key_count, affected_policy_count, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of normalizeArray(state.indicatorUpdateBatches)) {
+    const batch = normalizeIndicatorUpdateBatch(row);
+    if (!batch) continue;
+    insertIndicatorUpdateBatch.run(
+      batch.id,
+      batch.createdAt,
+      JSON.stringify(batch.productKeys),
+      batch.changedProductKeyCount,
+      batch.affectedPolicyCount,
+      jsonPayload(batch),
     );
   }
 
@@ -688,6 +829,75 @@ function upsertPolicy(db, policy = {}) {
   );
 }
 
+function upsertPolicyDerivedResultRow(db, row = {}) {
+  const derived = normalizePolicyDerivedResult(row);
+  if (!derived) return null;
+  db.prepare(`
+    INSERT INTO policy_derived_results (policy_id, product_keys, status, stale_reason, generated_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(policy_id) DO UPDATE SET
+      product_keys = excluded.product_keys,
+      status = excluded.status,
+      stale_reason = excluded.stale_reason,
+      generated_at = excluded.generated_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    derived.policyId,
+    JSON.stringify(derived.productKeys),
+    derived.status,
+    derived.staleReason,
+    derived.generatedAt,
+    derived.updatedAt,
+    jsonPayload(derived),
+  );
+  return derived;
+}
+
+function upsertProductIndicatorVersionRow(db, row = {}) {
+  const version = normalizeProductIndicatorVersion(row);
+  if (!version) return null;
+  db.prepare(`
+    INSERT INTO product_indicator_versions (product_key, version, batch_id, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(product_key) DO UPDATE SET
+      version = excluded.version,
+      batch_id = excluded.batch_id,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    version.productKey,
+    version.version,
+    version.batchId,
+    version.updatedAt,
+    jsonPayload(version),
+  );
+  return version;
+}
+
+function upsertIndicatorUpdateBatchRow(db, row = {}) {
+  const batch = normalizeIndicatorUpdateBatch(row);
+  if (!batch) return null;
+  db.prepare(`
+    INSERT INTO indicator_update_batches (id, created_at, product_keys, changed_product_key_count, affected_policy_count, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      created_at = excluded.created_at,
+      product_keys = excluded.product_keys,
+      changed_product_key_count = excluded.changed_product_key_count,
+      affected_policy_count = excluded.affected_policy_count,
+      payload = excluded.payload
+  `).run(
+    batch.id,
+    batch.createdAt,
+    JSON.stringify(batch.productKeys),
+    batch.changedProductKeyCount,
+    batch.affectedPolicyCount,
+    jsonPayload(batch),
+  );
+  return batch;
+}
+
 function replaceSourceRecordsForPolicy(db, state, policyId) {
   const id = Number(policyId);
   if (!Number.isFinite(id)) return;
@@ -814,6 +1024,9 @@ function clearDbOwnedTables(db) {
     DELETE FROM knowledge_records;
     DELETE FROM insurance_indicator_records;
     DELETE FROM optional_responsibility_records;
+    DELETE FROM policy_derived_results;
+    DELETE FROM product_indicator_versions;
+    DELETE FROM indicator_update_batches;
     DELETE FROM official_domain_profiles;
     DELETE FROM membership_config;
     DELETE FROM membership_orders;
@@ -843,6 +1056,9 @@ function loadDbOwnedState(db) {
     knowledgeRecords: loadPayloadRows(db, 'knowledge_records', 'id ASC'),
     insuranceIndicatorRecords: loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC'),
     optionalResponsibilityRecords: loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC'),
+    policyDerivedResults: loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC'),
+    productIndicatorVersions: loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC'),
+    indicatorUpdateBatches: loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC'),
     officialDomainProfiles: loadPayloadRows(db, 'official_domain_profiles', 'id ASC'),
     familyProfiles: loadPayloadRows(db, 'family_profiles', 'id ASC'),
     familyMembers: loadPayloadRows(db, 'family_members', 'id ASC'),
@@ -855,6 +1071,15 @@ function loadDbOwnedState(db) {
   };
   state.knowledgeRecords = state.knowledgeRecords
     .map((record) => normalizeKnowledgeRecord(record))
+    .filter(Boolean);
+  state.policyDerivedResults = state.policyDerivedResults
+    .map((row) => normalizePolicyDerivedResult(row))
+    .filter(Boolean);
+  state.productIndicatorVersions = state.productIndicatorVersions
+    .map((row) => normalizeProductIndicatorVersion(row))
+    .filter(Boolean);
+  state.indicatorUpdateBatches = state.indicatorUpdateBatches
+    .map((row) => normalizeIndicatorUpdateBatch(row))
     .filter(Boolean);
   for (const row of db.prepare('SELECT key, payload FROM state_documents ORDER BY key ASC').all()) {
     state[row.key] = parseJson(row.payload, null);
@@ -1065,6 +1290,131 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  async function persistPolicyDerivedResult({ state, derivedResult = null } = {}) {
+    const target = normalizePolicyDerivedResult(derivedResult);
+    if (!target) return null;
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    const row = { ...target, updatedAt: target.updatedAt || now };
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      upsertPolicyDerivedResultRow(db, row);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') {
+      state.policyDerivedResults = loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC')
+        .map((item) => normalizePolicyDerivedResult(item))
+        .filter(Boolean);
+    }
+    return row;
+  }
+
+  async function markPolicyDerivedResultsStaleByProductKeys({
+    state,
+    productKeys = [],
+    staleReason = 'indicator_updated',
+  } = {}) {
+    const changedKeys = new Set(normalizeStringArray(productKeys));
+    if (!changedKeys.size) return { policyIds: [] };
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    const rows = loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC')
+      .map((item) => normalizePolicyDerivedResult(item))
+      .filter(Boolean);
+    const affectedRows = rows.filter((row) => row.productKeys.some((key) => changedKeys.has(key)));
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const row of affectedRows) {
+        upsertPolicyDerivedResultRow(db, {
+          ...row,
+          status: 'stale',
+          staleReason: String(staleReason || 'indicator_updated'),
+          updatedAt: now,
+        });
+      }
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') {
+      state.policyDerivedResults = loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC')
+        .map((item) => normalizePolicyDerivedResult(item))
+        .filter(Boolean);
+    }
+    return { policyIds: affectedRows.map((row) => row.policyId) };
+  }
+
+  async function upsertProductIndicatorVersions({ state, productKeys = [], batchId = '' } = {}) {
+    const keys = normalizeStringArray(productKeys);
+    if (!keys.length) return { productKeys: [], rows: [] };
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    const currentRows = loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC')
+      .map((item) => normalizeProductIndicatorVersion(item))
+      .filter(Boolean);
+    const currentByKey = new Map(currentRows.map((row) => [row.productKey, row]));
+    const rows = keys.map((productKey) => {
+      const current = currentByKey.get(productKey);
+      return {
+        productKey,
+        version: (Number(current?.version || 0) || 0) + 1,
+        batchId: String(batchId || ''),
+        updatedAt: now,
+      };
+    });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const row of rows) upsertProductIndicatorVersionRow(db, row);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') {
+      state.productIndicatorVersions = loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC')
+        .map((item) => normalizeProductIndicatorVersion(item))
+        .filter(Boolean);
+    }
+    return { productKeys: keys, rows };
+  }
+
+  async function recordIndicatorUpdateBatch({ state, batch = {} } = {}) {
+    const now = new Date().toISOString();
+    const target = normalizeIndicatorUpdateBatch({
+      ...batch,
+      id: batch.id || `batch_${Date.now()}`,
+      createdAt: batch.createdAt || now,
+    });
+    if (!target) return null;
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      upsertIndicatorUpdateBatchRow(db, target);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') {
+      state.indicatorUpdateBatches = loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC')
+        .map((item) => normalizeIndicatorUpdateBatch(item))
+        .filter(Boolean);
+    }
+    return target;
+  }
+
   async function load() {
     if (!getMeta(db, 'state_initialized_at')) {
       const seedState = await loadSeedState();
@@ -1095,6 +1445,10 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistPolicyDerivedResult,
+    markPolicyDerivedResultsStaleByProductKeys,
+    upsertProductIndicatorVersions,
+    recordIndicatorUpdateBatch,
     close,
   };
 }

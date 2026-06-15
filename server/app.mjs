@@ -69,6 +69,10 @@ import { computePolicyCashflow, computeScenarioEntries } from './cashflow-comput
 import { findProductCashflowTemplate } from './cashflow-template.mjs';
 import { createCashflowStore, createCashValueStore } from './cashflow-store.mjs';
 import {
+  buildPolicyDerivedResult,
+  mergePolicyDerivedResult,
+} from './policy-derived-results.service.mjs';
+import {
   buildOptionalResponsibilityGaps,
   rebuildOptionalResponsibilityGovernance,
 } from './optional-responsibility-governance.mjs';
@@ -1732,6 +1736,9 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.knowledgeRecords)) state.knowledgeRecords = [];
   if (!Array.isArray(state.insuranceIndicatorRecords)) state.insuranceIndicatorRecords = [];
   if (!Array.isArray(state.optionalResponsibilityRecords)) state.optionalResponsibilityRecords = [];
+  if (!Array.isArray(state.policyDerivedResults)) state.policyDerivedResults = [];
+  if (!Array.isArray(state.productIndicatorVersions)) state.productIndicatorVersions = [];
+  if (!Array.isArray(state.indicatorUpdateBatches)) state.indicatorUpdateBatches = [];
   if (!Array.isArray(state.officialDomainProfiles)) state.officialDomainProfiles = [];
   if (!Array.isArray(state.familyReportShares)) state.familyReportShares = [];
   if (!state.membershipConfig) state.membershipConfig = null;
@@ -1808,6 +1815,18 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistOfficialDomainProfiles = typeof options.persistOfficialDomainProfiles === 'function'
     ? (input = {}) => options.persistOfficialDomainProfiles({ state, ...input })
+    : null;
+  const persistPolicyDerivedResult = typeof options.persistPolicyDerivedResult === 'function'
+    ? (input = {}) => options.persistPolicyDerivedResult({ state, ...input })
+    : null;
+  const markPolicyDerivedResultsStaleByProductKeys = typeof options.markPolicyDerivedResultsStaleByProductKeys === 'function'
+    ? (input = {}) => options.markPolicyDerivedResultsStaleByProductKeys({ state, ...input })
+    : null;
+  const upsertProductIndicatorVersions = typeof options.upsertProductIndicatorVersions === 'function'
+    ? (input = {}) => options.upsertProductIndicatorVersions({ state, ...input })
+    : null;
+  const recordIndicatorUpdateBatch = typeof options.recordIndicatorUpdateBatch === 'function'
+    ? (input = {}) => options.recordIndicatorUpdateBatch({ state, ...input })
     : null;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
@@ -1894,6 +1913,10 @@ export function createPolicyOcrApp(options = {}) {
     persistAuthRegistration,
     persistMembershipConfig,
     persistOfficialDomainProfiles,
+    persistPolicyDerivedResult,
+    markPolicyDerivedResultsStaleByProductKeys,
+    upsertProductIndicatorVersions,
+    recordIndicatorUpdateBatch,
     scanner,
     analyzer,
     adminPassword,
@@ -1944,6 +1967,8 @@ export function createPolicyOcrApp(options = {}) {
     publicUser,
     attachPoliciesCoverageIndicators,
     attachPolicyCoverageIndicators,
+    buildPolicyDerivedResult,
+    mergePolicyDerivedResult,
     attachPolicyFamilyDisplay,
     selectedCoverageIndicators,
     computeScenarioEntries,

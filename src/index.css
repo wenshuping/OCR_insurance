@@ -251,6 +251,7 @@ body {
 .pdf-page-style-export-mode .family-report-pdf-target [data-pdf-table-wrap] table {
   width: 100% !important;
   min-width: 0 !important;
+  max-width: 100% !important;
   table-layout: fixed !important;
 }
 

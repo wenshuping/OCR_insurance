@@ -146,6 +146,7 @@ import {
   validatePolicyEntryForm,
 } from '../../shared/customer-policy-form';
 import {
+  appendCashValueRowsSequentially,
   makeManualCashValueRow,
   nextManualCashValueRow,
   normalizeCashValueRowsForEditing,
@@ -506,7 +507,7 @@ export function CustomerApp() {
   const [showAccountSheet, setShowAccountSheet] = useState(false);
   const [authMobile, setAuthMobile] = useState(() => localStorage.getItem(USER_MOBILE_KEY) || '');
   const [authCode, setAuthCode] = useState('');
-  const [authMessage, setAuthMessage] = useState('第二次录入需要先完成手机验证码');
+  const [authMessage, setAuthMessage] = useState('录入或上传保单前需要先验证手机号');
   const [authLoading, setAuthLoading] = useState(false);
   const [authDevCode, setAuthDevCode] = useState('');
   const [membershipStatus, setMembershipStatus] = useState<MembershipStatus | null>(null);
@@ -1536,22 +1537,22 @@ export function CustomerApp() {
     setShowAnalysisReport(false);
   }
 
-  function openPhoneVerificationDialog(nextMessage = '第二次录入需要先完成手机验证码') {
+  function openPhoneVerificationDialog(nextMessage = '录入或上传保单前需要先验证手机号') {
     setAuthMessage(nextMessage);
     setAuthMobile((current) => current || mobile);
     setAuthDevCode('');
     setShowAuthDialog(true);
   }
 
-  function blockSecondGuestPolicyIfNeeded() {
-    if (token || policies.length < 1) return false;
-    openPhoneVerificationDialog('第一次录入不用验证码；第二次录入请先验证手机号');
+  function blockPolicyEntryIfUnauthenticated(reason = '录入或上传保单前需要先验证手机号') {
+    if (token) return false;
+    openPhoneVerificationDialog(reason);
     return true;
   }
 
   function handleRegistrationRequiredError(error: unknown) {
     if (error instanceof ApiError && error.code === 'REGISTRATION_REQUIRED') {
-      openPhoneVerificationDialog(error.message || '第二次录入需要先完成手机验证码');
+      openPhoneVerificationDialog(error.message || '录入或上传保单前需要先验证手机号');
       return true;
     }
     return false;
@@ -1619,7 +1620,7 @@ export function CustomerApp() {
   }
 
   function handleScanClick() {
-    if (blockSecondGuestPolicyIfNeeded()) return;
+    if (blockPolicyEntryIfUnauthenticated('上传保单照片前需要先验证手机号')) return;
     fileInputRef.current?.click();
   }
 
@@ -1654,12 +1655,14 @@ export function CustomerApp() {
     setAuthLoading(true);
     setAuthMessage('正在验证手机号');
     try {
-      const payload = await register({ mobile: normalizedMobile, code: normalizedCode, guestId });
+      const payload = await register({ mobile: normalizedMobile, code: normalizedCode, guestId, includePolicies: false });
       localStorage.setItem(TOKEN_KEY, payload.token);
       localStorage.setItem(USER_MOBILE_KEY, payload.user.mobile);
       setToken(payload.token);
       setMobile(payload.user.mobile);
-      setPolicies([...payload.policies].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))));
+      if (!payload.policiesDeferred) {
+        setPolicies([...payload.policies].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))));
+      }
       void refreshMembershipStatus(payload.token).catch(() => undefined);
       setAuthCode('');
       setAuthDevCode('');
@@ -1676,7 +1679,7 @@ export function CustomerApp() {
     const flowStartedAt = clientPerfNow();
     const file = event.target.files?.[0] || null;
     if (!file) return;
-    if (blockSecondGuestPolicyIfNeeded()) {
+    if (blockPolicyEntryIfUnauthenticated('上传保单照片前需要先验证手机号')) {
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -1722,7 +1725,7 @@ export function CustomerApp() {
 
   async function handleGenerateAnalysis() {
     if (!canSubmit || loading) return;
-    if (blockSecondGuestPolicyIfNeeded()) return;
+    if (blockPolicyEntryIfUnauthenticated()) return;
     const startedAt = clientPerfNow();
     setLoading(true);
     setMessage('正在生成保险责任');
@@ -1924,7 +1927,7 @@ export function CustomerApp() {
 
   async function handleSubmit() {
     if (loading) return;
-    if (blockSecondGuestPolicyIfNeeded()) return;
+    if (blockPolicyEntryIfUnauthenticated('保存保单前需要先验证手机号')) return;
     const submitBaseData = Number(entryFamilyId || 0) && Number(formData.familyId || 0) !== Number(entryFamilyId)
       ? {
           ...formData,
@@ -2114,8 +2117,7 @@ export function CustomerApp() {
         setCashValuePolicyId(payload.policy.id);
         setCashValueDialogOpen(true);
       }
-      const suffix = payload.registrationRequiredNext ? '；第二次录入需要手机验证码' : '';
-      setMessage(isPolicyReportGenerating(payload.policy) ? `保单已保存，报告正在后台生成${suffix}` : `保单已保存到我的保单${suffix}`);
+      setMessage(isPolicyReportGenerating(payload.policy) ? '保单已保存，报告正在后台生成' : '保单已保存到我的保单');
     } catch (error) {
       reportClientPerformance('client.scan.error', {
         durationMs: clientElapsedMs(startedAt),
@@ -2139,13 +2141,13 @@ export function CustomerApp() {
     }
   }
 
-  async function handleCashValueFileChange(e: ChangeEvent<HTMLInputElement>) {
+  async function handleCashValueFileChange(e: ChangeEvent<HTMLInputElement>, mode: 'replace' | 'append' = 'replace') {
     const file = e.target.files?.[0];
     if (!file || cashValuePolicyId === null) return;
     e.target.value = '';
 
     setCashValueLoading(true);
-    setCashValueMessage('正在识别现金价值表...');
+    setCashValueMessage(mode === 'append' ? '正在识别剩余现金价值表...' : '正在识别现金价值表...');
 
     try {
       const uploadItem = await fileToUploadItem(file);
@@ -2157,18 +2159,34 @@ export function CustomerApp() {
       });
 
       if (result.ok && result.rows?.length) {
-        setCashValueScanResult(result);
-        setCashValueEditRows(result.rows);
-        setCashValueMessage('');
+        const nextRows = mode === 'append'
+          ? appendCashValueRowsSequentially(cashValueEditRows, result.rows, result.source || 'ocr')
+          : result.rows;
+        const nextTableType = mode === 'append' && (cashValueScanResult?.tableType === 3 || result.tableType === 3)
+          ? 3
+          : result.tableType;
+        const appendedCount = Math.max(0, nextRows.length - cashValueEditRows.length);
+        setCashValueScanResult({
+          ...result,
+          tableType: nextTableType,
+          rows: nextRows,
+          rowCount: nextRows.length,
+        });
+        setCashValueEditRows(nextRows);
+        setCashValueMessage(mode === 'append' ? `已追加 ${appendedCount} 行现金价值，请确认后保存` : '');
       } else {
         setCashValueMessage(result.message || '未能识别现金价值表，请确保照片清晰且包含完整表格');
-        setCashValueScanResult(null);
-        setCashValueEditRows([]);
+        if (mode !== 'append') {
+          setCashValueScanResult(null);
+          setCashValueEditRows([]);
+        }
       }
     } catch (error) {
       setCashValueMessage(error instanceof Error ? error.message : '识别失败');
-      setCashValueScanResult(null);
-      setCashValueEditRows([]);
+      if (mode !== 'append') {
+        setCashValueScanResult(null);
+        setCashValueEditRows([]);
+      }
     } finally {
       setCashValueLoading(false);
     }
@@ -2421,7 +2439,7 @@ export function CustomerApp() {
       onCancel={closeCashValueDialog}
       onCellEdit={handleCashValueCellEdit}
       onConfirm={() => { void handleCashValueConfirm(); }}
-      onFileChange={(e) => { void handleCashValueFileChange(e); }}
+      onFileChange={(e, mode) => { void handleCashValueFileChange(e, mode); }}
       onRemoveRow={handleRemoveCashValueRow}
       onResetForRescan={() => {
         setCashValueScanResult(null);

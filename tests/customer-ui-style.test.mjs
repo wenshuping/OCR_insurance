@@ -153,6 +153,30 @@ test('phone verification send-code button uses the blue primary style', () => {
   assert.match(source, /className="[^"]*bg-blue-500[^"]*"[\s\S]*发验证码/);
 });
 
+test('phone verification copy matches policy entry gate rules', () => {
+  const source = extractedOrBoundedComponentSource('PhoneVerificationDialog', null);
+  assert.match(source, /录入或上传保单前需要验证手机号；仅查询保险责任无需验证/);
+  assert.doesNotMatch(source, /第一张保单可直接录入/);
+  assert.doesNotMatch(source, /第二张开始需要验证手机号/);
+});
+
+test('customer policy entry gates upload and save before phone verification', () => {
+  const source = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  assert.match(source, /function blockPolicyEntryIfUnauthenticated/);
+  assert.match(source, /handleScanClick\(\)[\s\S]*blockPolicyEntryIfUnauthenticated\('上传保单照片前需要先验证手机号'\)/);
+  assert.match(source, /handleFileChange[\s\S]*blockPolicyEntryIfUnauthenticated\('上传保单照片前需要先验证手机号'\)/);
+  assert.match(source, /handleGenerateAnalysis[\s\S]*blockPolicyEntryIfUnauthenticated\(\)/);
+  assert.match(source, /handleSubmit\(\)[\s\S]*blockPolicyEntryIfUnauthenticated\('保存保单前需要先验证手机号'\)/);
+  assert.doesNotMatch(source, /blockSecondGuestPolicyIfNeeded/);
+  assert.doesNotMatch(source, /第二次录入需要手机验证码/);
+});
+
+test('customer phone verification defers policy payload loading', () => {
+  const source = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  assert.match(source, /register\(\{ mobile: normalizedMobile, code: normalizedCode, guestId, includePolicies: false \}\)/);
+  assert.match(source, /if \(!payload\.policiesDeferred\) \{[\s\S]*setPolicies\(/);
+});
+
 test('entry form exposes local product candidates before responsibility generation', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
@@ -926,8 +950,13 @@ test('customer policy detail can open manual cash value entry', () => {
   assert.match(customerSource, /handleRemoveCashValueRow/);
   assert.match(customerSource, /normalizeCashValueRowsForSaving/);
   assert.match(customerSource, /confirmCashValue/);
+  assert.match(customerSource, /appendCashValueRowsSequentially/);
+  assert.match(customerSource, /mode === 'append'/);
   assert.match(cashValueSource, /手动录入/);
   assert.match(cashValueSource, /添加年度/);
+  assert.match(cashValueSource, /openCashValueUpload\('append'\)/);
+  assert.match(cashValueSource, /scanResult\.source === 'manual'/);
+  assert.match(cashValueSource, /cashValueInputModeRef\.current/);
   assert.match(detailSource, /onEditCashValue/);
   assert.match(detailSource, /录入现金价值/);
   assert.match(detailSource, /修改现金价值/);
@@ -1363,8 +1392,10 @@ test('family report export downloads a page-styled image instead of paginated pd
   assert.match(reportExportSource, /link\.download = `\$\{fileName\}\.jpg`/);
   assert.match(reportExportSource, /showBlobResult\(imageBlob: Blob\)/);
   assert.match(reportExportSource, /download="\$\{safeFileName\}\.jpg"/);
+  assert.match(reportExportSource, /const useLongPressSave = isWeChatBrowser\(\) \|\| isWeChatMiniProgramWebView\(\)/);
+  assert.match(reportExportSource, /长按图片保存/);
+  assert.match(reportExportSource, /长按下面图片保存到相册/);
   assert.match(reportExportSource, /点击“下载长图”保存/);
-  assert.doesNotMatch(reportExportSource, /长按完整长图保存|长按这张长图|长按图片可保存/);
   const imageExportSource = functionSource(reportExportSource, 'downloadReportImage', null);
   const imageCaptureSource = functionSource(reportExportSource, 'captureReportImageCanvas', 'downloadReportPdf');
   assert.doesNotMatch(imageExportSource, /exportCurrentReportAsPdf/);
@@ -1393,6 +1424,10 @@ test('family report export keeps page styling and still supports safe pdf captur
   const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
   assert.match(familySource, /data-pdf-table-wrap/);
+  assert.match(familySource, /function InventoryExportCards/);
+  assert.match(familySource, /function InsuredPolicyExportCards/);
+  assert.match(familySource, /function AnnualCashflowExportList/);
+  assert.match(familySource, /function WealthAggregateExportList/);
   assert.match(reportExportSource, /prepareScreenStyleReportNode\(reportNode,\s*width,\s*backgroundColor\)/);
   assert.match(reportExportSource, /family-report-screen-export-target/);
   assert.match(reportExportSource, /getScreenStyleReportBackground\(target\)/);
@@ -1410,9 +1445,11 @@ test('family report export keeps page styling and still supports safe pdf captur
   assert.match(reportExportSource, /classList\.remove\('hidden', 'md:hidden'\)/);
   assert.match(reportExportSource, /setProperty\('display', 'block', 'important'\)/);
   assert.match(reportExportSource, /querySelectorAll<HTMLElement>\('\[data-pdf-table-wrap\]'\)/);
+  assert.match(reportExportSource, /preparePageStyleTableWidths\(reportNode\)/);
+  assert.match(reportExportSource, /getReportCaptureWidth\(reportNode,\s*width\)/);
   assert.match(reportExportSource, /compactReportCanvasText/);
   assert.match(reportExportSource, /\[data-family-report-raw-note\], \[data-report-canvas-skip\]/);
-  assert.match(reportExportSource, /captureWidth: options\?\.matchScreenStyle \|\| options\?\.preservePageStyle \? width/);
+  assert.match(reportExportSource, /const captureWidth = options\?\.matchScreenStyle \|\| options\?\.preservePageStyle \? width : getReportCaptureWidth\(reportNode,\s*width\)/);
   assert.match(reportExportSource, /new jsPDF\(options\?\.preservePageStyle \? 'l' : 'p'/);
   assert.match(cssSource, /\.pdf-page-style-export-mode \.html2canvas-safe-export/);
   assert.match(cssSource, /background-color:\s*transparent !important/);
@@ -1420,8 +1457,11 @@ test('family report export keeps page styling and still supports safe pdf captur
   assert.match(cssSource, /\[data-family-report-raw-note\]/);
   assert.match(cssSource, /\[data-report-export-cards\]/);
   assert.match(cssSource, /\[data-report-export-table\]/);
+  assert.match(cssSource, /\.family-report-pdf-target \[data-report-export-table\][\s\S]*display:\s*none !important/);
+  assert.match(cssSource, /\.family-report-pdf-target \[data-report-export-cards\][\s\S]*display:\s*block !important/);
   assert.match(cssSource, /\.pdf-page-style-export-mode \.family-report-pdf-target \[data-pdf-table-wrap\]/);
   assert.match(cssSource, /overflow:\s*visible !important/);
+  assert.match(cssSource, /width:\s*100% !important/);
   assert.match(cssSource, /max-width:\s*100% !important/);
   assert.match(cssSource, /table-layout:\s*fixed !important/);
   assert.match(cssSource, /white-space:\s*normal !important/);

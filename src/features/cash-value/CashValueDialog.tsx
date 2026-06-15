@@ -12,6 +12,8 @@ import type {
   CashValueScanResult,
 } from '../../api';
 
+type CashValueUploadMode = 'replace' | 'append';
+
 export function CashValueDialog(props: {
   editRows: CashValueRow[];
   loading: boolean;
@@ -22,7 +24,7 @@ export function CashValueDialog(props: {
   onCancel: () => void;
   onCellEdit: (rowIndex: number, field: 'policyYear' | 'age' | 'cashValue', value: string) => void;
   onConfirm: () => void;
-  onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFileChange: (event: ChangeEvent<HTMLInputElement>, mode: CashValueUploadMode) => void;
   onRemoveRow: (rowIndex: number) => void;
   onResetForRescan: () => void;
   onStartManualEntry: () => void;
@@ -43,8 +45,19 @@ export function CashValueDialog(props: {
     onStartManualEntry,
   } = props;
   const cashValueInputRef = useRef<HTMLInputElement | null>(null);
+  const cashValueInputModeRef = useRef<CashValueUploadMode>('replace');
 
   if (!open) return null;
+
+  function openCashValueUpload(mode: CashValueUploadMode) {
+    cashValueInputModeRef.current = mode;
+    cashValueInputRef.current?.click();
+  }
+  const messageClassName = message.startsWith('已追加')
+    ? 'text-emerald-600'
+    : loading
+      ? 'text-blue-600'
+      : 'text-red-500';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -59,7 +72,7 @@ export function CashValueDialog(props: {
               从本地照片或拍照上传保单的现金价值页面，系统将自动识别并录入
             </p>
             {message && (
-              <p className="mb-3 text-sm text-red-500">{message}</p>
+              <p className={`mb-3 text-sm ${messageClassName}`}>{message}</p>
             )}
             {loading && (
               <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-left" aria-live="polite">
@@ -83,7 +96,7 @@ export function CashValueDialog(props: {
                 type="button"
                 className="rounded-lg bg-[#0B72B9] px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
                 disabled={loading}
-                onClick={() => cashValueInputRef.current?.click()}
+                onClick={() => openCashValueUpload('replace')}
               >
                 本地照片上传
               </button>
@@ -117,13 +130,22 @@ export function CashValueDialog(props: {
               </span>
             </div>
             {message && (
-              <p className="mb-2 text-sm text-red-500">{message}</p>
+              <p className={`mb-2 text-sm ${messageClassName}`}>{message}</p>
             )}
             <div className="mb-3 flex justify-end">
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
-                onClick={onAddRow}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 ring-1 ring-emerald-100 disabled:opacity-50"
+                disabled={loading}
+                onClick={() => {
+                  if (scanResult.source === 'manual') {
+                    onAddRow();
+                    return;
+                  }
+                  openCashValueUpload('append');
+                }}
+                aria-label={scanResult.source === 'manual' ? '添加现金价值年度' : '上传剩余现金价值并追加年度'}
+                title={scanResult.source === 'manual' ? '添加现金价值年度' : '上传剩余现金价值并追加年度'}
               >
                 <Plus size={14} />
                 添加年度
@@ -199,6 +221,7 @@ export function CashValueDialog(props: {
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 disabled:opacity-50"
                 disabled={loading}
                 onClick={() => {
+                  cashValueInputModeRef.current = 'replace';
                   onResetForRescan();
                   cashValueInputRef.current?.click();
                 }}
@@ -220,7 +243,7 @@ export function CashValueDialog(props: {
           type="file"
           accept="image/*"
           className="hidden"
-          onChange={onFileChange}
+          onChange={(event) => onFileChange(event, cashValueInputModeRef.current)}
         />
       </div>
     </div>
