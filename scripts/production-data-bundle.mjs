@@ -14,12 +14,18 @@ const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'policy-ocr.sqlite');
 const DEFAULT_OUT_DIR = path.join(projectRoot, '.runtime', 'production-data-bundles');
 const DEFAULT_TARGET_DB_PATH = process.env.POLICY_OCR_APP_DB_PATH || '/data/policy-ocr.sqlite';
 const BUNDLE_FORMAT = 'policy-ocr-production-sqlite-bundle-v1';
+const FULL_BUNDLE_MODE = 'full';
+const KNOWLEDGE_BUNDLE_MODE = 'knowledge';
 const KNOWLEDGE_TABLES = [
   'knowledge_records',
   'insurance_indicator_records',
   'optional_responsibility_records',
   'official_domain_profiles',
   'indicator_definitions',
+];
+const KNOWLEDGE_BUNDLE_TABLES = [
+  ...KNOWLEDGE_TABLES,
+  'state_documents',
 ];
 const KNOWLEDGE_STATE_DOCUMENT_KEYS = ['insuranceIndicatorSnapshot'];
 const PROTECTED_TABLE_KEYS = {
@@ -147,6 +153,88 @@ async function readJsonIfExists(filePath) {
 function defaultManifestPath(bundlePath) {
   if (bundlePath.endsWith('.sqlite.gz')) return bundlePath.replace(/\.sqlite\.gz$/u, '.manifest.json');
   return `${bundlePath}.manifest.json`;
+}
+
+function copyTableSchema({ sourceDb, targetDb, table }) {
+  const row = sourceDb
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+  if (!row?.sql) return false;
+  targetDb.exec(row.sql);
+  return true;
+}
+
+function copyKnowledgeTableRows({ sourceDb, targetDb, table }) {
+  if (!hasTable(sourceDb, table) || !hasTable(targetDb, table)) {
+    return { table, copied: 0, skipped: true };
+  }
+  const columns = tableColumns(sourceDb, table);
+  if (!columns.length) return { table, copied: 0, skipped: true };
+  const quotedColumns = columns.map((column) => `"${column}"`).join(', ');
+  const placeholders = columns.map(() => '?').join(', ');
+  const insert = targetDb.prepare(`INSERT INTO ${table} (${quotedColumns}) VALUES (${placeholders})`);
+  const whereClause = table === 'state_documents'
+    ? ` WHERE key IN (${KNOWLEDGE_STATE_DOCUMENT_KEYS.map(sqlString).join(', ')})`
+    : '';
+  const rows = sourceDb.prepare(`SELECT ${quotedColumns} FROM ${table}${whereClause}`).all();
+  for (const row of rows) insert.run(...columns.map((column) => row[column]));
+  return { table, copied: rows.length, skipped: false };
+}
+
+function createKnowledgeOnlySnapshot({ sourceDbPath, snapshotPath }) {
+  const sourceDb = new DatabaseSync(sourceDbPath, { readOnly: true });
+  const targetDb = new DatabaseSync(snapshotPath);
+  try {
+    targetDb.exec('PRAGMA foreign_keys = OFF');
+    const tableResults = [];
+    for (const table of KNOWLEDGE_BUNDLE_TABLES) {
+      if (!copyTableSchema({ sourceDb, targetDb, table })) {
+        tableResults.push({ table, copied: 0, skipped: true });
+        continue;
+      }
+      tableResults.push(copyKnowledgeTableRows({ sourceDb, targetDb, table }));
+    }
+    targetDb.exec('VACUUM');
+    return tableResults;
+  } finally {
+    targetDb.close();
+    sourceDb.close();
+  }
+}
+
+function assertKnowledgeOnlySnapshot(snapshotSummary) {
+  const protectedTables = Object.keys(PROTECTED_TABLE_KEYS)
+    .filter((table) => Number(snapshotSummary.counts?.[table] || 0) > 0);
+  if (protectedTables.length) {
+    throw new Error(`Knowledge bundle unexpectedly contains protected tables: ${protectedTables.join(', ')}`);
+  }
+}
+
+function summarizeKnowledgeBundleSource(sourceSummary) {
+  const knowledgeCounts = {};
+  for (const table of KNOWLEDGE_BUNDLE_TABLES) {
+    knowledgeCounts[table] = Number(sourceSummary.counts?.[table] || 0);
+  }
+  return {
+    exists: sourceSummary.exists,
+    bytes: sourceSummary.bytes,
+    integrity: sourceSummary.integrity,
+    knowledgeCounts,
+  };
+}
+
+function summarizeKnowledgeBundleSnapshot(snapshotSummary) {
+  const counts = {};
+  for (const table of KNOWLEDGE_BUNDLE_TABLES) {
+    counts[table] = Number(snapshotSummary.counts?.[table] || 0);
+  }
+  return {
+    exists: snapshotSummary.exists,
+    bytes: snapshotSummary.bytes,
+    integrity: snapshotSummary.integrity,
+    counts,
+    coreCounts: snapshotSummary.coreCounts,
+  };
 }
 
 async function validateBundleFile({ resolvedBundlePath, resolvedManifestPath }) {
@@ -309,6 +397,7 @@ export async function createProductionDataBundle({
   const bundleSha256 = await fileSha256(bundlePath);
   const manifest = {
     format: BUNDLE_FORMAT,
+    mode: FULL_BUNDLE_MODE,
     createdAt: new Date().toISOString(),
     sourceDbPath: resolvedDbPath,
     bundlePath,
@@ -322,6 +411,52 @@ export async function createProductionDataBundle({
   await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   await fs.rm(snapshotPath, { force: true });
   return { ...manifest, manifestPath };
+}
+
+export async function createKnowledgeDataBundle({
+  dbPath = DEFAULT_DB_PATH,
+  outDir = DEFAULT_OUT_DIR,
+  name = `policy-ocr-knowledge-data-${timestampSlug()}`,
+} = {}) {
+  const resolvedDbPath = path.resolve(dbPath);
+  const resolvedOutDir = path.resolve(outDir);
+  if (!existsSync(resolvedDbPath)) throw new Error(`Database not found: ${resolvedDbPath}`);
+  await fs.mkdir(resolvedOutDir, { recursive: true });
+
+  const snapshotPath = path.join(resolvedOutDir, `${name}.sqlite`);
+  const bundlePath = `${snapshotPath}.gz`;
+  const manifestPath = path.join(resolvedOutDir, `${name}.manifest.json`);
+  await fs.rm(snapshotPath, { force: true });
+  await fs.rm(bundlePath, { force: true });
+  await fs.rm(manifestPath, { force: true });
+
+  const sourceSummary = summarizeSqliteDatabase(resolvedDbPath);
+  const tableResults = createKnowledgeOnlySnapshot({
+    sourceDbPath: resolvedDbPath,
+    snapshotPath,
+  });
+  const snapshotSummary = summarizeSqliteDatabase(snapshotPath);
+  assertKnowledgeOnlySnapshot(snapshotSummary);
+
+  const uncompressedSha256 = await fileSha256(snapshotPath);
+  await gzipFile(snapshotPath, bundlePath);
+  const bundleSha256 = await fileSha256(bundlePath);
+  const manifest = {
+    format: BUNDLE_FORMAT,
+    mode: KNOWLEDGE_BUNDLE_MODE,
+    createdAt: new Date().toISOString(),
+    bundleFile: path.basename(bundlePath),
+    sqliteBytes: statSync(snapshotPath).size,
+    bundleBytes: statSync(bundlePath).size,
+    sqliteSha256: uncompressedSha256,
+    bundleSha256,
+    tables: tableResults,
+    source: summarizeKnowledgeBundleSource(sourceSummary),
+    snapshot: summarizeKnowledgeBundleSnapshot(snapshotSummary),
+  };
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  await fs.rm(snapshotPath, { force: true });
+  return { ...manifest, bundlePath, manifestPath };
 }
 
 async function backupSqliteFiles(targetDbPath, backupDir) {
@@ -359,6 +494,9 @@ export async function installProductionDataBundle({
   const resolvedManifestPath = path.resolve(manifestPath || defaultManifestPath(resolvedBundlePath));
   const resolvedBackupDir = path.resolve(backupDir || path.join(path.dirname(resolvedTargetDbPath), 'backups'));
   const manifest = await validateBundleFile({ resolvedBundlePath, resolvedManifestPath });
+  if (manifest?.mode === KNOWLEDGE_BUNDLE_MODE) {
+    throw new Error('Knowledge-only bundle cannot be installed as a full production database. Use install-knowledge.');
+  }
 
   const before = summarizeSqliteDatabase(resolvedTargetDbPath);
   if (before.nonEmptyGuardTotal > 0 && !replaceNonEmpty) {
@@ -486,6 +624,7 @@ export async function installKnowledgeDataBundle({
 function printUsageAndExit() {
   console.error(`Usage:
   node scripts/production-data-bundle.mjs export [--db-path <path>] [--out-dir <dir>] [--name <name>]
+  node scripts/production-data-bundle.mjs export-knowledge [--db-path <path>] [--out-dir <dir>] [--name <name>]
   node scripts/production-data-bundle.mjs inspect --db-path <path>
   node scripts/production-data-bundle.mjs install-knowledge --bundle <path> [--manifest <path>] [--target-db <path>] [--backup-dir <dir>]
   node scripts/production-data-bundle.mjs install --bundle <path> [--manifest <path>] [--target-db <path>] [--backup-dir <dir>] [--replace-non-empty] [--allow-user-data-loss]
@@ -501,6 +640,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         dbPath: readArg('db-path', DEFAULT_DB_PATH),
         outDir: readArg('out-dir', DEFAULT_OUT_DIR),
         name: readArg('name', `policy-ocr-production-data-${timestampSlug()}`),
+      });
+      console.log(JSON.stringify(result, null, 2));
+    } else if (command === 'export-knowledge') {
+      const result = await createKnowledgeDataBundle({
+        dbPath: readArg('db-path', DEFAULT_DB_PATH),
+        outDir: readArg('out-dir', DEFAULT_OUT_DIR),
+        name: readArg('name', `policy-ocr-knowledge-data-${timestampSlug()}`),
       });
       console.log(JSON.stringify(result, null, 2));
     } else if (command === 'inspect') {

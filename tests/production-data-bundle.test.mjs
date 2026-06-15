@@ -9,6 +9,7 @@ import { createCashflowStore, createCashValueStore } from '../server/cashflow-st
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 import {
+  createKnowledgeDataBundle,
   createProductionDataBundle,
   installKnowledgeDataBundle,
   installProductionDataBundle,
@@ -218,11 +219,42 @@ test('knowledge data install updates knowledge tables without replacing user pol
   replaceKnowledgeRows(sourceDbPath, 'source');
   replaceKnowledgeRows(targetDbPath, 'target');
 
-  const bundle = await createProductionDataBundle({
+  const bundle = await createKnowledgeDataBundle({
     dbPath: sourceDbPath,
     outDir,
     name: 'knowledge-install-test',
   });
+  assert.equal(bundle.mode, 'knowledge');
+  assert.equal(bundle.snapshot.coreCounts.users, 0);
+  assert.equal(bundle.snapshot.coreCounts.policies, 0);
+  assert.equal(bundle.snapshot.coreCounts.family_profiles, 0);
+  assert.equal(bundle.snapshot.coreCounts.policy_cashflows, 0);
+  assert.equal(bundle.snapshot.coreCounts.policy_cash_values, 0);
+  assert.equal(bundle.snapshot.coreCounts.knowledge_records, 1);
+  assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
+  assert.equal(bundle.snapshot.coreCounts.optional_responsibility_records, 1);
+  const manifest = JSON.parse(await fs.readFile(bundle.manifestPath, 'utf8'));
+  assert.equal(manifest.sourceDbPath, undefined);
+  assert.equal(manifest.bundlePath, undefined);
+  assert.equal(manifest.bundleFile, 'knowledge-install-test.sqlite.gz');
+  assert.equal(manifest.source.counts, undefined);
+  assert.equal(manifest.source.coreCounts, undefined);
+  assert.equal(manifest.source.knowledgeCounts.users, undefined);
+  assert.equal(manifest.source.knowledgeCounts.policies, undefined);
+  assert.equal(manifest.source.knowledgeCounts.knowledge_records, 1);
+  assert.equal(manifest.snapshot.nonEmptyGuardTotal, undefined);
+  assert.equal(manifest.snapshot.counts.users, undefined);
+  assert.equal(manifest.snapshot.counts.policies, undefined);
+  assert.equal(manifest.snapshot.counts.knowledge_records, 1);
+
+  await assert.rejects(
+    () => installProductionDataBundle({
+      bundlePath: bundle.bundlePath,
+      manifestPath: bundle.manifestPath,
+      targetDbPath: path.join(dir, 'wrong-full-target.sqlite'),
+    }),
+    /Knowledge-only bundle cannot be installed as a full production database/u,
+  );
 
   const installed = await installKnowledgeDataBundle({
     bundlePath: bundle.bundlePath,

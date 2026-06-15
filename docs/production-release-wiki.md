@@ -152,11 +152,11 @@ Use this when production must receive local knowledge-base updates: knowledge re
 
 This is separate from code release. Rebuilding Docker images must not create or overwrite production data. Knowledge data release must not replace production users, policies, pending scans, memberships, family data, policy source records, cash values, or cashflows.
 
-On the local machine, generate a consistent SQLite bundle with `VACUUM INTO`:
+On the local machine, generate a knowledge-only SQLite bundle:
 
 ```bash
 cd /Users/wenshuping/Documents/OCR_insurance
-node scripts/production-data-bundle.mjs export \
+node scripts/production-data-bundle.mjs export-knowledge \
   --db-path .runtime/local/policy-ocr.sqlite \
   --out-dir .runtime/production-data-bundles
 ```
@@ -191,6 +191,13 @@ curl -fsS http://127.0.0.1/api/health
 ```
 
 The knowledge installer writes a backup under `/data/backups/`, then replaces only the knowledge/indicator tables. It preserves real production users, policies, pending scans, memberships, family data, policy source records, cash values, and cashflows.
+
+The knowledge-only bundle itself contains only `knowledge_records`,
+`insurance_indicator_records`, `optional_responsibility_records`,
+`official_domain_profiles`, `indicator_definitions`, and the
+`insuranceIndicatorSnapshot` state document. It must not contain production
+users, policies, family rows, source records, pending scans, cash values, or
+cashflows.
 
 Full SQLite replacement is a disaster-recovery operation, not a normal release path. The full installer refuses to replace a non-empty target by default. Even with `--replace-non-empty`, it now refuses if the incoming bundle would remove protected production rows such as `users`, `policies`, `pending_scans`, memberships, family rows, source records, cash values, or cashflows. Use `--allow-user-data-loss` only after a separate written confirmation that deleting those rows is intentional.
 
