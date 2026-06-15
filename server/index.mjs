@@ -7,6 +7,17 @@ import { createSqliteStateStore } from './sqlite-state-store.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const initialEnvKeys = new Set(Object.keys(process.env));
+const projectDotenvLocalPath = path.join(projectRoot, '.env.local');
+const skippedProjectDotenvLocalAllowKeys = new Set([
+  'DEEPSEEK_API_KEY',
+  'DEEPSEEK_BASE_URL',
+  'DEEPSEEK_MODEL',
+  'DEEPSEEK_FALLBACK_MODEL',
+  'DEEPSEEK_TIMEOUT_MS',
+  'DEEPSEEK_FAMILY_REVIEW_MODEL',
+  'DEEPSEEK_FAMILY_REVIEW_TIMEOUT_MS',
+  'DEEPSEEK_FAMILY_REVIEW_MAX_TOKENS',
+]);
 
 function normalizeEnvValue({ key, value, envPath }) {
   if (key === 'SMS_DELIVERY_CONFIG_PATH' && value && !path.isAbsolute(value)) {
@@ -15,7 +26,7 @@ function normalizeEnvValue({ key, value, envPath }) {
   return value;
 }
 
-async function loadEnvFile(envPath, { override = false } = {}) {
+async function loadEnvFile(envPath, { override = false, allowKeys = null } = {}) {
   let raw = '';
   try {
     raw = await fs.readFile(envPath, 'utf8');
@@ -28,6 +39,7 @@ async function loadEnvFile(envPath, { override = false } = {}) {
     const index = trimmed.indexOf('=');
     if (index <= 0) continue;
     const key = trimmed.slice(0, index).trim();
+    if (allowKeys && !allowKeys.has(key)) continue;
     let value = trimmed.slice(index + 1).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
@@ -46,7 +58,9 @@ const skipProjectDotenvLocal = String(process.env.POLICY_OCR_SKIP_PROJECT_DOTENV
 
 await loadEnvFile(path.join(projectRoot, '.env'));
 if (!['1', 'true', 'yes', 'on'].includes(skipProjectDotenvLocal)) {
-  await loadEnvFile(path.join(projectRoot, '.env.local'), { override: true });
+  await loadEnvFile(projectDotenvLocalPath, { override: true });
+} else {
+  await loadEnvFile(projectDotenvLocalPath, { override: true, allowKeys: skippedProjectDotenvLocalAllowKeys });
 }
 await loadEnvFile(path.resolve(__dirname, '.env'), { override: true });
 await loadEnvFile(path.resolve(__dirname, '.env.local'), { override: true });

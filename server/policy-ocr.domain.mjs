@@ -31,6 +31,7 @@ export function createInitialState() {
     familyProfiles: [],
     familyMembers: [],
     familyReportShares: [],
+    familySalesReviews: [],
     membershipConfig: null,
     membershipOrders: [],
     memberships: [],

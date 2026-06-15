@@ -70,6 +70,24 @@ export type FamilyReportSharePayload = {
   snapshotAt: string;
 };
 
+export type FamilySalesReview = {
+  id?: number;
+  familyId?: number;
+  status?: 'active' | 'archived';
+  content: string;
+  model: string;
+  generatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
+  inputSummary?: {
+    familyId?: number | null;
+    memberCount?: number;
+    policyCount?: number;
+    membersWithoutPolicyCount?: number;
+    officialProductCount?: number;
+  };
+};
+
 export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
   return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
 }
@@ -152,6 +170,19 @@ export function updateFamilyMemberRelation(input: { token?: string; guestId?: st
 
 export function createFamilyReportShare(input: { token?: string; guestId?: string; familyId: number }) {
   return request<{ ok: true; share: FamilyReportShare }>(`/api/family-profiles/${input.familyId}/share${authQuery(input)}`, {
+    token: input.token,
+    body: {},
+  });
+}
+
+export function getFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; review: FamilySalesReview | null }>(`/api/family-profiles/${input.familyId}/sales-review${authQuery(input)}`, {
+    token: input.token,
+  });
+}
+
+export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; review: FamilySalesReview }>(`/api/family-profiles/${input.familyId}/sales-review${authQuery(input)}`, {
     token: input.token,
     body: {},
   });

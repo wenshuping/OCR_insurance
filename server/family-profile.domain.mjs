@@ -63,6 +63,7 @@ function ensureFamilyState(state) {
   state.familyProfiles = Array.isArray(state.familyProfiles) ? state.familyProfiles : [];
   state.familyMembers = Array.isArray(state.familyMembers) ? state.familyMembers : [];
   state.familyReportShares = Array.isArray(state.familyReportShares) ? state.familyReportShares : [];
+  state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
 }
 
 function normalizeOwner(owner = {}) {
@@ -468,6 +469,15 @@ export function archiveFamilyProfile(state, family, owner = {}) {
     archivedShareCount += 1;
   }
 
+  let archivedSalesReviewCount = 0;
+  for (const review of state.familySalesReviews || []) {
+    if (Number(review?.familyId || 0) !== Number(family.id)) continue;
+    if (String(review.status || 'active') === 'archived') continue;
+    review.status = 'archived';
+    review.updatedAt = now;
+    archivedSalesReviewCount += 1;
+  }
+
   let clearedPolicyCount = 0;
   for (const policy of state.policies || []) {
     if (Number(policy?.familyId || 0) !== Number(family.id)) continue;
@@ -476,7 +486,7 @@ export function archiveFamilyProfile(state, family, owner = {}) {
     clearedPolicyCount += 1;
   }
 
-  return { family, archivedMemberCount, archivedShareCount, clearedPolicyCount };
+  return { family, archivedMemberCount, archivedShareCount, archivedSalesReviewCount, clearedPolicyCount };
 }
 
 export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {

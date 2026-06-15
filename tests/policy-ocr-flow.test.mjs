@@ -9706,6 +9706,120 @@ test('family profile creation uses family-only persistence and skips optional re
   }
 });
 
+test('family sales review is generated once persisted and returned by latest report API', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-sales-review',
+    familyName: '销售建议家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push(
+    {
+      id: 9,
+      familyId: 8,
+      name: '张三',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+      birthday: '1988-01-01',
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    {
+      id: 10,
+      familyId: 8,
+      name: '李四',
+      relationToCore: 'spouse',
+      relationLabel: '配偶',
+      role: 'adult',
+      birthday: '1990-02-02',
+      status: 'active',
+      createdAt: '2026-06-15T00:01:00.000Z',
+      updatedAt: '2026-06-15T00:01:00.000Z',
+    },
+  );
+  state.policies.push({
+    id: 11,
+    userId: null,
+    guestId: 'guest-sales-review',
+    familyId: 8,
+    company: '新华保险',
+    name: '测试终身寿',
+    applicant: '张三',
+    insured: '张三',
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    applicantMemberName: '张三',
+    insuredMemberName: '张三',
+    amount: 100000,
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+  state.nextId = 12;
+  const familyPersistCalls = [];
+  let generationCount = 0;
+  const app = createPolicyOcrApp({
+    state,
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+    generateFamilySalesReview: async ({ input }) => {
+      generationCount += 1;
+      assert.equal(input.family.familyRef, '当前家庭');
+      assert.equal(input.members.length, 2);
+      assert.equal(input.policies.length, 1);
+      return {
+        content: `## 一、销售结论摘要\n- 第 ${generationCount} 次销售建议`,
+        model: 'test-internal-expert',
+        generatedAt: `2026-06-15T00:0${generationCount + 2}:00.000Z`,
+        inputSummary: {
+          memberCount: input.dataQuality.memberCount,
+          policyCount: input.dataQuality.policyCount,
+          membersWithoutPolicyCount: input.dataQuality.membersWithoutPolicy.length,
+          officialProductCount: input.officialEvidence.length,
+        },
+      };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const firstGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
+    assert.equal(firstGet.response.status, 200);
+    assert.equal(firstGet.payload.review, null);
+
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(generated.response.status, 200);
+    assert.equal(generated.payload.review.id, 12);
+    assert.equal(generated.payload.review.familyId, 8);
+    assert.equal(generated.payload.review.model, '');
+    assert.equal(generated.payload.review.content.includes('第 1 次销售建议'), true);
+    assert.equal(generated.payload.review.inputSummary.memberCount, 2);
+    assert.equal(state.familySalesReviews.length, 1);
+    assert.equal(state.familySalesReviews[0].content, generated.payload.review.content);
+    assert.equal(state.familySalesReviews[0].ownerGuestId, 'guest-sales-review');
+    assert.equal(state.nextId, 13);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+
+    const saved = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.payload.review.id, generated.payload.review.id);
+    assert.equal(saved.payload.review.content, generated.payload.review.content);
+    assert.equal(saved.payload.review.model, '');
+    assert.equal(generationCount, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test('family APIs rename and archive a family while clearing policy family bindings', async () => {
   const state = createInitialState();
   state.familyProfiles.push({
@@ -9750,6 +9864,17 @@ test('family APIs rename and archive a family while clearing policy family bindi
     status: 'active',
     createdAt: '2026-06-08T00:02:00.000Z',
     updatedAt: '2026-06-08T00:02:00.000Z',
+  });
+  state.familySalesReviews.push({
+    id: 14,
+    familyId: 8,
+    ownerGuestId: 'guest-family-admin',
+    status: 'active',
+    content: '待归档销售建议',
+    model: 'internal-expert',
+    generatedAt: '2026-06-08T00:02:30.000Z',
+    createdAt: '2026-06-08T00:02:30.000Z',
+    updatedAt: '2026-06-08T00:02:30.000Z',
   });
   state.policies.push(
     {
@@ -9813,6 +9938,7 @@ test('family APIs rename and archive a family while clearing policy family bindi
     assert.equal(deleted.payload.clearedPolicyCount, 1);
     assert.equal(state.familyMembers.every((member) => member.status === 'archived'), true);
     assert.equal(state.familyReportShares[0].status, 'archived');
+    assert.equal(state.familySalesReviews[0].status, 'archived');
     assert.equal(state.policies[0].familyId, null);
     assert.equal(state.policies[0].familyBindingSource, '');
     assert.equal(state.policies[0].applicantMemberId, null);

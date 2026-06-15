@@ -7,10 +7,17 @@ import {
 } from 'react';
 import {
   ArrowLeft,
+  BrainCircuit,
+  CheckCircle2,
   CircleUserRound,
   Copy,
+  Download,
+  FileSearch,
   Shield,
+  ShieldCheck,
   Sparkles,
+  Target,
+  TrendingUp,
 } from 'lucide-react';
 import {
   ApiError,
@@ -24,6 +31,7 @@ import {
   CoverageIndicator,
   FamilyMember,
   FamilyProfile,
+  FamilySalesReview,
   PolicyFormData,
   PolicyKnowledgeMatch,
   PolicyProductSuggestion,
@@ -35,8 +43,10 @@ import {
   createFamilyMember,
   createFamilyProfile,
   createFamilyReportShare,
+  createFamilySalesReview,
   deleteFamilyProfile,
   deletePolicy,
+  getFamilySalesReview,
   getHealthStatus,
   getLocalPolicyAnalysisDraft,
   getPolicy,
@@ -476,8 +486,59 @@ function reportClientPerformance(event: string, payload: Record<string, unknown>
   });
 }
 
+type SalesReviewReportSection = {
+  title: string;
+  lines: string[];
+};
+
+function formatFamilySalesReviewLine(value: string) {
+  return String(value || '')
+    .replace(/\*+/gu, '')
+    .replace(/`([^`]+)`/gu, (_match, token) => {
+      const text = String(token || '');
+      if (/duplicatePolicyHints/iu.test(text)) return '重复保单提示';
+      if (/evidenceWarnings/iu.test(text)) return '条款证据冲突';
+      if (/canonical:product_/iu.test(text)) return '官方条款证据';
+      if (/plans/iu.test(text)) return '险种明细';
+      if (/officialEvidence/iu.test(text)) return '官网条款证据';
+      return text;
+    })
+    .replace(/\bduplicatePolicyHints\b/giu, '重复保单提示')
+    .replace(/\bevidenceWarnings\b/giu, '条款证据冲突')
+    .replace(/\bcanonical:product_[a-z0-9_-]+\b/giu, '官方条款证据')
+    .replace(/\bofficialEvidence\b/giu, '官网条款证据')
+    .replace(/\bplans\b/giu, '险种明细')
+    .replace(/^[#＃]{1,6}\s*/u, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function parseFamilySalesReviewContent(content = ''): SalesReviewReportSection[] {
+  const sections: SalesReviewReportSection[] = [];
+  let current: SalesReviewReportSection | null = null;
+  for (const rawLine of String(content || '').replace(/\r/gu, '').split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const headingMatch = line.match(/^#{1,3}\s*(.+)$/u);
+    if (headingMatch) {
+      const title = formatFamilySalesReviewLine(headingMatch[1]).replace(/^([一二三四五六七八九十]+|[0-9]+)[、.．]\s*/u, '');
+      current = { title: title || '专家研判', lines: [] };
+      sections.push(current);
+      continue;
+    }
+    if (!current) {
+      current = { title: '专家结论摘要', lines: [] };
+      sections.push(current);
+    }
+    const cleaned = formatFamilySalesReviewLine(line.replace(/^[-*]\s*/u, '').replace(/^\s*[-*]\s*/u, ''));
+    if (cleaned) current.lines.push(cleaned);
+  }
+  return sections.length ? sections : [{ title: '专家研判', lines: ['暂无专家研判内容'] }];
+}
+
 export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
   const membershipStatusRequestRef = useRef(0);
   const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
@@ -539,6 +600,13 @@ export function CustomerApp() {
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
   const [cashflowMember, setCashflowMember] = useState<string | null>(null);
   const [showFamilyReport, setShowFamilyReport] = useState(false);
+  const [familySalesReviewOpen, setFamilySalesReviewOpen] = useState(false);
+  const [familySalesReviewFamilyId, setFamilySalesReviewFamilyId] = useState<number | null>(null);
+  const [familySalesReview, setFamilySalesReview] = useState<FamilySalesReview | null>(null);
+  const [familySalesReviewLoading, setFamilySalesReviewLoading] = useState(false);
+  const familySalesReviewLoadingRef = useRef(false);
+  const [familySalesReviewProgress, setFamilySalesReviewProgress] = useState(0);
+  const [familySalesReviewMessage, setFamilySalesReviewMessage] = useState('');
   const [familyPlanningProfile, setFamilyPlanningProfile] = useState<FamilyPlanningProfile>(readFamilyPlanningProfile);
 
   // Cash value upload dialog state
@@ -568,6 +636,10 @@ export function CustomerApp() {
     () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
     [familyProfiles, selectedFamilyId],
   );
+  const familySalesReviewFamily = useMemo(
+    () => familyProfiles.find((family) => Number(family.id) === Number(familySalesReviewFamilyId)) || null,
+    [familyProfiles, familySalesReviewFamilyId],
+  );
   const entryFamilyId = formData.familyId ?? selectedFamilyId ?? null;
   const entrySelectedFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(entryFamilyId)) || null,
@@ -582,6 +654,33 @@ export function CustomerApp() {
     }
     return counts;
   }, [policies]);
+  const familyPolicyMemberIds = useMemo(() => {
+    const memberIds: Record<number, number[]> = {};
+    for (const policy of policies) {
+      const familyId = Number(policy.familyId || 0);
+      if (!familyId) continue;
+      const ids = memberIds[familyId] || [];
+      for (const candidate of [policy.applicantMemberId, policy.insuredMemberId]) {
+        const memberId = Number(candidate || 0);
+        if (memberId && !ids.includes(memberId)) ids.push(memberId);
+      }
+      memberIds[familyId] = ids;
+    }
+    return memberIds;
+  }, [policies]);
+  useEffect(() => {
+    if (!familySalesReviewLoading) return undefined;
+    setFamilySalesReviewProgress((current) => (current > 0 ? current : 12));
+    const progressTimer = window.setInterval(() => {
+      setFamilySalesReviewProgress((current) => {
+        if (current >= 92) return current;
+        if (current < 38) return current + 8;
+        if (current < 68) return current + 5;
+        return current + 2;
+      });
+    }, 900);
+    return () => window.clearInterval(progressTimer);
+  }, [familySalesReviewLoading]);
   const selectedFamilyMembers = useMemo(
     () => (Array.isArray(selectedFamily?.members) ? selectedFamily.members : []),
     [selectedFamily],
@@ -1357,6 +1456,87 @@ export function CustomerApp() {
     setShowFamilyPolicies(true);
   }
 
+  function familySalesReviewFailureMessage(error: unknown) {
+    const text = error instanceof Error ? error.message : '';
+    if (/DeepSeek|API Key|FAMILY_SALES_REVIEW_PROVIDER_NOT_READY|未配置/iu.test(text)) {
+      return '专家分析服务暂不可用，请联系管理员完成专家系统配置';
+    }
+    if (/timeout|超时/iu.test(text)) return '专家研判耗时较长，请稍后重试';
+    return '专家分析暂时未完成，请稍后重试';
+  }
+
+  function setFamilySalesReviewBusy(loading: boolean) {
+    familySalesReviewLoadingRef.current = loading;
+    setFamilySalesReviewLoading(loading);
+    setFamilySalesReviewProgress((current) => {
+      if (loading) return current > 0 && current < 100 ? current : 12;
+      return current >= 92 ? 100 : current;
+    });
+  }
+
+  async function openFamilySalesReview(familyId: number) {
+    if (familySalesReviewLoadingRef.current) {
+      handleSelectFamily(familyId);
+      setFamilySalesReviewFamilyId(familyId);
+      setFamilySalesReviewOpen(true);
+      setFamilySalesReviewMessage('专家系统仍在生成中，完成后会自动保存');
+      return;
+    }
+    handleSelectFamily(familyId);
+    setFamilySalesReviewFamilyId(familyId);
+    setFamilySalesReviewOpen(true);
+    setFamilySalesReview(null);
+    setFamilySalesReviewBusy(true);
+    setFamilySalesReviewMessage('正在读取已保存的专家报告');
+    try {
+      const authInput = {
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      };
+      const saved = await getFamilySalesReview(authInput);
+      if (saved.review?.content) {
+        setFamilySalesReview(saved.review);
+        setFamilySalesReviewMessage('已读取最近一次专家研判');
+        return;
+      }
+      setFamilySalesReviewMessage('暂无已保存报告，正在生成专家研判');
+      const generated = await createFamilySalesReview(authInput);
+      setFamilySalesReview(generated.review);
+      setFamilySalesReviewMessage('专家研判已完成并保存');
+    } catch (error) {
+      setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
+    } finally {
+      setFamilySalesReviewBusy(false);
+    }
+  }
+
+  async function regenerateFamilySalesReview() {
+    if (familySalesReviewLoadingRef.current) {
+      setFamilySalesReviewMessage('专家系统仍在生成中，完成后会自动保存');
+      return;
+    }
+    if (!familySalesReviewFamilyId) {
+      setFamilySalesReviewMessage('请先选择家庭档案');
+      return;
+    }
+    setFamilySalesReviewBusy(true);
+    setFamilySalesReviewMessage('专家系统正在重新生成策略简报');
+    try {
+      const payload = await createFamilySalesReview({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: familySalesReviewFamilyId,
+      });
+      setFamilySalesReview(payload.review);
+      setFamilySalesReviewMessage('专家研判已完成并保存');
+    } catch (error) {
+      setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
+    } finally {
+      setFamilySalesReviewBusy(false);
+    }
+  }
+
   async function handleShareFamilyReport() {
     if (!selectedFamilyId) {
       setMessage('请先选择家庭档案');
@@ -1431,7 +1611,7 @@ export function CustomerApp() {
     return family;
   }
 
-  async function createFamilyMemberForFamily(family: FamilyProfile, input: { name: string; relationLabel: string; setAsCore?: boolean }) {
+  async function createFamilyMemberForFamily(family: FamilyProfile, input: { name: string; relationLabel: string; birthday?: string; setAsCore?: boolean }) {
     const name = input.name.trim();
     if (!name) return null;
     const payload = await createFamilyMember({
@@ -1440,6 +1620,7 @@ export function CustomerApp() {
       familyId: family.id,
       name,
       relationLabel: input.relationLabel || '待确认',
+      birthday: input.birthday,
       setAsCore: input.setAsCore,
     });
     await refreshFamilyProfiles();
@@ -2463,6 +2644,400 @@ export function CustomerApp() {
     />
   );
 
+  const familySalesReviewSteps = [
+    {
+      label: '家庭成员画像',
+      detail: '整理成员关系、年龄结构与无保单成员',
+      signal: '成员图谱',
+      icon: BrainCircuit,
+      iconClass: 'bg-cyan-300/15 text-cyan-100 ring-cyan-300/25',
+      railClass: 'w-[72%] bg-cyan-300',
+      pulseClass: 'from-cyan-300 via-cyan-100 to-transparent',
+    },
+    {
+      label: '保障责任校验',
+      detail: '对照保单字段、条款证据与有效状态',
+      signal: '责任核验',
+      icon: ShieldCheck,
+      iconClass: 'bg-emerald-300/15 text-emerald-100 ring-emerald-300/25',
+      railClass: 'w-[64%] bg-emerald-300',
+      pulseClass: 'from-emerald-300 via-emerald-100 to-transparent',
+    },
+    {
+      label: '财富线索识别',
+      detail: '读取现金价值、现金流与传承机会',
+      signal: '财富路径',
+      icon: TrendingUp,
+      iconClass: 'bg-amber-300/15 text-amber-100 ring-amber-300/25',
+      railClass: 'w-[58%] bg-amber-300',
+      pulseClass: 'from-amber-300 via-amber-100 to-transparent',
+    },
+    {
+      label: '行动清单生成',
+      detail: '输出可跟进、可核实、可成交的销售动作',
+      signal: '跟进行动',
+      icon: Target,
+      iconClass: 'bg-indigo-300/15 text-indigo-100 ring-indigo-300/25',
+      railClass: 'w-[46%] bg-indigo-300',
+      pulseClass: 'from-indigo-300 via-indigo-100 to-transparent',
+    },
+  ];
+  const familySalesReviewSections = useMemo(
+    () => parseFamilySalesReviewContent(familySalesReview?.content || ''),
+    [familySalesReview?.content],
+  );
+  const familySalesReviewExportTitle = `${familySalesReviewFamily?.familyName || '当前家庭'}销售建议报告`;
+  const familySalesReviewFamilyMembers = Array.isArray(familySalesReviewFamily?.members) ? familySalesReviewFamily.members : [];
+  const familySalesReviewPolicyCount = familySalesReviewFamilyId
+    ? policies.filter((policy) => Number(policy.familyId) === Number(familySalesReviewFamilyId)).length
+    : selectedFamilyPolicies.length;
+  const familySalesReviewSignals = [
+    {
+      label: '成员画像',
+      value: `${familySalesReview?.inputSummary?.memberCount ?? familySalesReviewFamilyMembers.length}`,
+      detail: '关系与年龄结构',
+      className: 'bg-cyan-300/10 text-cyan-100 ring-cyan-300/20',
+    },
+    {
+      label: '保单样本',
+      value: `${familySalesReview?.inputSummary?.policyCount ?? familySalesReviewPolicyCount}`,
+      detail: '有效合同样本',
+      className: 'bg-emerald-300/10 text-emerald-100 ring-emerald-300/20',
+    },
+    {
+      label: '待覆盖成员',
+      value: `${familySalesReview?.inputSummary?.membersWithoutPolicyCount ?? '扫描中'}`,
+      detail: '缺口优先级',
+      className: 'bg-amber-300/10 text-amber-100 ring-amber-300/20',
+      pendingLabel: '扫描中',
+    },
+    {
+      label: '条款证据',
+      value: `${familySalesReview?.inputSummary?.officialProductCount ?? '校验中'}`,
+      detail: '官网责任依据',
+      className: 'bg-indigo-300/10 text-indigo-100 ring-indigo-300/20',
+      pendingLabel: '校验中',
+    },
+  ];
+  const familySalesReviewProgressStages = [
+    { label: '读取档案', threshold: 18 },
+    { label: '核验责任', threshold: 42 },
+    { label: '识别缺口', threshold: 68 },
+    { label: '生成报告', threshold: 90 },
+  ];
+
+  const familySalesReviewPage = familySalesReviewOpen ? (
+    <div className="min-h-screen bg-slate-50">
+      <section className="mx-auto flex min-h-screen max-w-5xl flex-col overflow-hidden bg-white shadow-sm shadow-slate-950/5">
+        <header className="relative overflow-hidden border-b border-cyan-100 bg-slate-950 px-4 py-5 text-white">
+          <div className="pointer-events-none absolute inset-0 opacity-35 [background-image:linear-gradient(rgba(34,211,238,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.18)_1px,transparent_1px)] [background-size:22px_22px]" />
+          <div className="relative flex flex-col gap-4">
+            <button
+              type="button"
+              className="flex w-fit items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-black text-cyan-100 ring-1 ring-white/15 transition hover:bg-white/15"
+              onClick={() => setFamilySalesReviewOpen(false)}
+              aria-label="返回家庭档案"
+            >
+              <ArrowLeft size={16} />
+              <span>返回家庭档案</span>
+            </button>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-300/35">
+                  <BrainCircuit size={24} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[11px] font-black uppercase text-cyan-200">Expert Intelligence</p>
+                  <h2 className="mt-1 text-xl font-black leading-tight">家庭保障策略简报</h2>
+                  <p className="mt-1 truncate text-xs font-semibold text-slate-300">
+                    {familySalesReviewFamily?.familyName || '当前家庭'}
+                    <span className="mx-1 text-cyan-300">·</span>
+                    公司专家分析系统
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                {familySalesReview?.content ? (
+                  <button
+                    type="button"
+                    className="flex h-11 items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 text-sm font-black text-cyan-100 ring-1 ring-white/15 transition hover:bg-white/15"
+                    aria-label="下载销售建议报告"
+                    title="下载销售建议报告"
+                    onClick={() => void downloadReportImage(familySalesReviewReportRef.current, familySalesReviewExportTitle)}
+                  >
+                    <Download size={16} />
+                    <span>下载报告</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className={`flex h-11 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-black shadow-lg shadow-cyan-950/20 transition ${
+                    familySalesReviewLoading
+                      ? 'cursor-wait bg-cyan-100 text-cyan-950 ring-1 ring-cyan-200'
+                      : 'bg-cyan-300 text-slate-950 hover:bg-cyan-200'
+                  }`}
+                  aria-busy={familySalesReviewLoading}
+                  onClick={() => void regenerateFamilySalesReview()}
+                >
+                  <Sparkles className={familySalesReviewLoading ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
+                  <span>{familySalesReviewLoading ? '正在生成专家报告' : '重新生成专家报告'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+        <div className="flex-1 bg-slate-50 px-4 py-4 sm:px-6">
+          {familySalesReviewMessage ? (
+            <div className={`mb-3 flex items-center gap-2 rounded-2xl px-3 py-2.5 text-xs font-black ring-1 ${
+              familySalesReviewLoading
+                ? 'bg-cyan-50 text-cyan-800 ring-cyan-100'
+                : familySalesReview?.content
+                  ? 'bg-emerald-50 text-emerald-800 ring-emerald-100'
+                  : 'bg-amber-50 text-amber-800 ring-amber-100'
+            }`}
+            >
+              {familySalesReviewLoading ? <Sparkles className="h-4 w-4 animate-pulse" /> : familySalesReview?.content ? <CheckCircle2 size={16} /> : <Shield size={16} />}
+              <span>{familySalesReviewMessage}</span>
+            </div>
+          ) : null}
+          {familySalesReview?.content ? (
+            <div ref={familySalesReviewReportRef} className="print-policy-report space-y-3 bg-slate-50">
+              {familySalesReview.inputSummary ? (
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
+                    <p className="text-[11px] font-black text-slate-400">家庭成员</p>
+                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.memberCount ?? 0}</p>
+                  </div>
+                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
+                    <p className="text-[11px] font-black text-slate-400">有效样本</p>
+                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.policyCount ?? 0}</p>
+                  </div>
+                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
+                    <p className="text-[11px] font-black text-slate-400">待覆盖成员</p>
+                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.membersWithoutPolicyCount ?? 0}</p>
+                  </div>
+                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
+                    <p className="text-[11px] font-black text-slate-400">条款证据</p>
+                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.officialProductCount ?? 0}</p>
+                  </div>
+                </div>
+              ) : null}
+              <article className="rounded-[22px] bg-white p-4 ring-1 ring-slate-200">
+                <div className="mb-3 flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100">
+                    <FileSearch size={18} />
+                  </span>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-950">专家研判报告</h3>
+                    <p className="mt-0.5 text-xs font-semibold text-slate-500">面向销售跟进的保障缺口与财富机会建议</p>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  {familySalesReviewSections.map((section, index) => {
+                    const title = section.title;
+                    const isRisk = /风险|核实|数据/u.test(title);
+                    const isGap = /缺口|保障/u.test(title);
+                    const isWealth = /理财|财富|传承/u.test(title);
+                    const isAction = /动作|清单|切入/u.test(title);
+                    const SectionIcon = isWealth ? TrendingUp : isAction ? Target : isRisk ? ShieldCheck : isGap ? BrainCircuit : FileSearch;
+                    const visual = isWealth
+                      ? 'border-emerald-100 bg-emerald-50/45 text-emerald-700'
+                      : isAction
+                        ? 'border-indigo-100 bg-indigo-50/45 text-indigo-700'
+                        : isRisk
+                          ? 'border-amber-100 bg-amber-50/50 text-amber-700'
+                          : isGap
+                            ? 'border-cyan-100 bg-cyan-50/45 text-cyan-700'
+                            : 'border-slate-200 bg-slate-50 text-slate-700';
+                    return (
+                      <section key={`${title}-${index}`} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                        <div className={`flex items-center gap-2 border-b px-3 py-3 ${visual}`}>
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/80 ring-1 ring-white/80">
+                            <SectionIcon size={16} />
+                          </span>
+                          <h4 className="min-w-0 text-sm font-black text-slate-950">{title}</h4>
+                        </div>
+                        <div className="space-y-2 px-3 py-3">
+                          {section.lines.length ? section.lines.map((line, lineIndex) => (
+                            <div key={`${title}-${lineIndex}`} className="flex gap-2 rounded-xl bg-slate-50 px-3 py-2.5">
+                              <span className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${
+                                isWealth ? 'bg-emerald-500' : isAction ? 'bg-indigo-500' : isRisk ? 'bg-amber-500' : isGap ? 'bg-cyan-500' : 'bg-slate-400'
+                              }`}
+                              />
+                              <p className="min-w-0 whitespace-pre-wrap break-words text-sm font-semibold leading-6 text-slate-700">{line}</p>
+                            </div>
+                          )) : (
+                            <p className="rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-500">暂无明确结论</p>
+                          )}
+                        </div>
+                      </section>
+                    );
+                  })}
+                </div>
+              </article>
+            </div>
+          ) : (
+            <div className={familySalesReviewLoading ? 'overflow-hidden rounded-[24px] bg-slate-950 text-white shadow-xl shadow-cyan-950/20 ring-1 ring-cyan-200/30' : 'rounded-[22px] bg-white p-4 ring-1 ring-slate-200'}>
+              {familySalesReviewLoading ? (
+                <div className="relative overflow-hidden px-4 py-4 sm:px-5 sm:py-5">
+                  <div className="pointer-events-none absolute inset-0 opacity-35 [background-image:linear-gradient(rgba(34,211,238,0.16)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.16)_1px,transparent_1px)] [background-size:26px_26px]" />
+                  <div className="pointer-events-none absolute left-0 right-0 top-14 h-px animate-pulse bg-gradient-to-r from-transparent via-cyan-200 to-transparent" />
+                  <div className="relative space-y-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-300/15 text-cyan-100 ring-1 ring-cyan-200/35">
+                          <Sparkles className="h-5 w-5 animate-pulse" />
+                          <span className="absolute inset-1 rounded-2xl border border-cyan-200/20" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-base font-black text-white">专家研判控制台</p>
+                            <span className="rounded-full bg-cyan-300/12 px-2.5 py-1 text-[11px] font-black text-cyan-100 ring-1 ring-cyan-200/25">实时生成中</span>
+                          </div>
+                          <p className="mt-1 text-xs font-semibold leading-5 text-slate-300">正在交叉研判家庭成员、保障缺口、条款证据与财富线索。</p>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl bg-white/8 px-3 py-2 ring-1 ring-white/10">
+                        <p className="text-[11px] font-black text-slate-400">策略生成进度</p>
+                        <p className="mt-1 text-lg font-black text-cyan-100">{familySalesReviewProgress}%</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-white/[0.07] px-4 py-4 ring-1 ring-white/10">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black text-white">报告生成进度条</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-400">生成完成后会自动保存到家庭档案</p>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-cyan-300/12 px-3 py-1.5 text-xs font-black text-cyan-100 ring-1 ring-cyan-200/25">
+                          {familySalesReviewProgress}%
+                        </span>
+                      </div>
+                      <div
+                        className="h-3 overflow-hidden rounded-full bg-white/10"
+                        role="progressbar"
+                        aria-label="专家报告生成进度"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={familySalesReviewProgress}
+                      >
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-300 transition-all duration-700 ease-out"
+                          style={{ width: `${familySalesReviewProgress}%` }}
+                        />
+                      </div>
+                      <div className="mt-3 grid grid-cols-4 gap-2">
+                        {familySalesReviewProgressStages.map((stage) => {
+                          const active = familySalesReviewProgress >= stage.threshold;
+                          return (
+                            <div key={stage.label} className="min-w-0">
+                              <div className={`h-1.5 rounded-full ${active ? 'bg-cyan-200' : 'bg-white/10'}`} />
+                              <p className={`mt-1 truncate text-[10px] font-black ${active ? 'text-cyan-100' : 'text-slate-500'}`}>{stage.label}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="overflow-hidden rounded-2xl bg-white/8 ring-1 ring-white/10">
+                      <div className="h-1.5 bg-white/10">
+                        <div className="h-full w-[68%] animate-pulse bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-300" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-px bg-white/10 sm:grid-cols-4">
+                        {familySalesReviewSignals.map((item) => (
+                          <div key={item.label} className={`relative overflow-hidden bg-slate-950/80 px-3 py-3 ${item.pendingLabel ? 'ring-1 ring-inset ring-white/10' : ''}`}>
+                            {item.pendingLabel ? (
+                              <div className="pointer-events-none absolute inset-x-0 top-0 h-px animate-pulse bg-gradient-to-r from-transparent via-cyan-100 to-transparent" />
+                            ) : null}
+                            <div className={`inline-flex rounded-full px-2 py-1 text-[11px] font-black ring-1 ${item.className}`}>
+                              {item.label}
+                            </div>
+                            {item.pendingLabel ? (
+                              <div
+                                className="mt-2 flex items-center gap-2"
+                                aria-live="polite"
+                                aria-label={`${item.label}${item.pendingLabel}`}
+                              >
+                                <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+                                  <span className="absolute h-full w-full animate-ping rounded-full bg-cyan-200/35" />
+                                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-cyan-100/30 border-t-cyan-100" />
+                                </span>
+                                <span className="text-lg font-black text-white">{item.value}</span>
+                                <span className="flex gap-0.5" aria-hidden="true">
+                                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-100" />
+                                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-100 [animation-delay:120ms]" />
+                                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-100 [animation-delay:240ms]" />
+                                </span>
+                              </div>
+                            ) : (
+                              <p className="mt-2 text-lg font-black text-white">{item.value}</p>
+                            )}
+                            <p className="mt-0.5 text-[11px] font-semibold text-slate-400">{item.detail}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {familySalesReviewSteps.map((step) => {
+                        const StepIcon = step.icon;
+                        return (
+                          <div key={step.label} className="relative overflow-hidden rounded-2xl bg-white/[0.07] px-3 py-3 ring-1 ring-white/10">
+                            <div className={`absolute left-0 right-0 top-0 h-px animate-pulse bg-gradient-to-r ${step.pulseClass}`} />
+                            <div className="flex items-start gap-3">
+                              <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ring-1 ${step.iconClass}`}>
+                                <StepIcon size={18} />
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="min-w-0 text-sm font-black text-white">{step.label}</p>
+                                  <span className="shrink-0 rounded-full bg-white/8 px-2 py-1 text-[10px] font-black text-slate-300 ring-1 ring-white/10">{step.signal}</span>
+                                </div>
+                                <p className="mt-1 text-xs font-semibold leading-5 text-slate-300">{step.detail}</p>
+                                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
+                                  <div className={`h-full animate-pulse rounded-full ${step.railClass}`} />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="rounded-2xl bg-white/[0.07] px-4 py-4 ring-1 ring-white/10">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <p className="text-sm font-black text-white">研判信号矩阵</p>
+                        <span className="rounded-full bg-emerald-300/10 px-2.5 py-1 text-[11px] font-black text-emerald-100 ring-1 ring-emerald-200/20">自动保存报告</span>
+                      </div>
+                      <div className="grid gap-2 text-xs font-semibold text-slate-300 sm:grid-cols-3">
+                        <div className="rounded-xl bg-slate-900/80 px-3 py-2 ring-1 ring-white/10">
+                          <span className="text-cyan-100">数据清洗</span>
+                          <p className="mt-1 text-slate-400">脱敏关系、年龄、投保人与被保人结构</p>
+                        </div>
+                        <div className="rounded-xl bg-slate-900/80 px-3 py-2 ring-1 ring-white/10">
+                          <span className="text-emerald-100">责任比对</span>
+                          <p className="mt-1 text-slate-400">重疾、医疗、寿险、意外与年金责任</p>
+                        </div>
+                        <div className="rounded-xl bg-slate-900/80 px-3 py-2 ring-1 ring-white/10">
+                          <span className="text-amber-100">机会建模</span>
+                          <p className="mt-1 text-slate-400">保障缺口、理财险切入点与跟进动作</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
+                  <p className="text-sm font-black text-slate-900">暂无专家研判内容</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  ) : null;
+
   const authDialog = showAuthDialog ? (
     <PhoneVerificationDialog
       code={authCode}
@@ -2570,6 +3145,19 @@ export function CustomerApp() {
     );
   }
   const responsibilityAssistant = renderResponsibilityAssistant('bottom-24');
+
+  if (familySalesReviewOpen) {
+    return (
+      <>
+        {familySalesReviewPage}
+        {authDialog}
+        {accountSheet}
+        {membershipDialog}
+        {cashValueDialog}
+        {familyCreateDialog}
+      </>
+    );
+  }
 
   if (showFamilyReport) {
     return (
@@ -2844,9 +3432,11 @@ export function CustomerApp() {
         <FamilyProfileManager
           familyProfiles={familyProfiles}
           familyPolicyCounts={familyPolicyCounts}
+          familyPolicyMemberIds={familyPolicyMemberIds}
           selectedFamilyId={selectedFamilyId}
           onSelectFamily={(familyId) => handleSelectFamily(familyId)}
           onCreateFamily={openFamilyCreateDialog}
+          onCreateFamilyMember={createFamilyMemberForFamily}
           onUpdateFamilyName={updateFamilyNameForFamily}
           onDeleteFamily={deleteFamilyForFamily}
           onSetCoreMember={setCoreMemberForCurrentFamily}
@@ -2855,6 +3445,7 @@ export function CustomerApp() {
             startEntryForm({ preserveSelectedFamily: true });
           }}
           onOpenReport={openFamilyReport}
+          onOpenSalesReview={(familyId) => void openFamilySalesReview(familyId)}
           onViewFamilyPolicies={viewFamilyPolicies}
         />
         <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />

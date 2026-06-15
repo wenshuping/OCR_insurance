@@ -25,6 +25,7 @@ const DB_OWNED_KEYS = new Set([
   'familyProfiles',
   'familyMembers',
   'familyReportShares',
+  'familySalesReviews',
   'membershipConfig',
   'membershipOrders',
   'memberships',
@@ -84,6 +85,7 @@ function resolveNextId(state) {
     maxNumericId(state.familyProfiles),
     maxNumericId(state.familyMembers),
     maxNumericId(state.familyReportShares),
+    maxNumericId(state.familySalesReviews),
     maxNumericId(state.membershipOrders),
   );
   return Math.max(Number(state.nextId || 1), maxId + 1, 1);
@@ -336,6 +338,22 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_report_shares_owner_user_id ON family_report_shares(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_family_report_shares_owner_guest_id ON family_report_shares(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_report_shares_token ON family_report_shares(token);
+
+    CREATE TABLE IF NOT EXISTS family_sales_reviews (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      status TEXT,
+      generated_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_family_id ON family_sales_reviews(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_owner_user_id ON family_sales_reviews(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_owner_guest_id ON family_sales_reviews(owner_guest_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_generated_at ON family_sales_reviews(generated_at);
 
     CREATE TABLE IF NOT EXISTS membership_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -641,6 +659,24 @@ function insertRows(db, state) {
       String(share.createdAt || ''),
       String(share.updatedAt || ''),
       jsonPayload(share),
+    );
+  }
+
+  const insertFamilySalesReview = db.prepare(`
+    INSERT INTO family_sales_reviews (id, family_id, owner_user_id, owner_guest_id, status, generated_at, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const review of normalizeArray(state.familySalesReviews)) {
+    insertFamilySalesReview.run(
+      Number(review.id),
+      Number(review.familyId || 0) || null,
+      Number(review.ownerUserId || 0) || null,
+      String(review.ownerGuestId || ''),
+      String(review.status || ''),
+      String(review.generatedAt || ''),
+      String(review.createdAt || ''),
+      String(review.updatedAt || ''),
+      jsonPayload(review),
     );
   }
 
@@ -1090,6 +1126,27 @@ function replaceFamilyReportShares(db, state) {
   }
 }
 
+function replaceFamilySalesReviews(db, state) {
+  db.prepare('DELETE FROM family_sales_reviews').run();
+  const insertFamilySalesReview = db.prepare(`
+    INSERT INTO family_sales_reviews (id, family_id, owner_user_id, owner_guest_id, status, generated_at, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const review of normalizeArray(state.familySalesReviews)) {
+    insertFamilySalesReview.run(
+      Number(review.id),
+      Number(review.familyId || 0) || null,
+      Number(review.ownerUserId || 0) || null,
+      String(review.ownerGuestId || ''),
+      String(review.status || ''),
+      String(review.generatedAt || ''),
+      String(review.createdAt || ''),
+      String(review.updatedAt || ''),
+      jsonPayload(review),
+    );
+  }
+}
+
 function replacePendingScan(db, state, guestId) {
   const id = String(guestId || '').trim();
   if (!id) return;
@@ -1111,6 +1168,7 @@ function updateStateMeta(db, state, now) {
 
 function clearDbOwnedTables(db) {
   db.exec(`
+    DELETE FROM family_sales_reviews;
     DELETE FROM family_report_shares;
     DELETE FROM family_members;
     DELETE FROM family_profiles;
@@ -1163,6 +1221,7 @@ function loadDbOwnedState(db) {
     familyProfiles: loadPayloadRows(db, 'family_profiles', 'id ASC'),
     familyMembers: loadPayloadRows(db, 'family_members', 'id ASC'),
     familyReportShares: loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
+    familySalesReviews: loadPayloadRows(db, 'family_sales_reviews', 'generated_at ASC, id ASC'),
     membershipConfig: parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null),
     membershipOrders: loadPayloadRows(db, 'membership_orders', 'id ASC'),
     memberships: loadPayloadRows(db, 'memberships', 'user_id ASC'),
@@ -1453,6 +1512,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       db.exec('PRAGMA defer_foreign_keys = ON');
       replaceFamilyProfiles(db, nextState);
       replaceFamilyReportShares(db, nextState);
+      replaceFamilySalesReviews(db, nextState);
       if (includePolicies) {
         for (const policy of normalizeArray(nextState.policies)) {
           upsertPolicy(db, policy);

@@ -29,6 +29,7 @@ async function seedDatabase(dbPath) {
     familyProfiles: [{ id: 3, ownerUserId: 1, ownerGuestId: '', familyName: '测试家庭', coreMemberId: 4, status: 'active', createdAt: '2026-06-13T00:02:00.000Z', updatedAt: '2026-06-13T00:02:00.000Z' }],
     familyMembers: [{ id: 4, familyId: 3, name: '测试客户', relationToCore: '本人', status: 'active', createdAt: '2026-06-13T00:03:00.000Z', updatedAt: '2026-06-13T00:03:00.000Z' }],
     familyReportShares: [{ id: 5, familyId: 3, ownerUserId: 1, ownerGuestId: '', token: 'share-token', status: 'active', createdAt: '2026-06-13T00:04:00.000Z', updatedAt: '2026-06-13T00:04:00.000Z' }],
+    familySalesReviews: [{ id: 8, familyId: 3, ownerUserId: 1, ownerGuestId: '', status: 'active', content: '家庭销售建议', model: 'internal-expert', generatedAt: '2026-06-13T00:04:30.000Z', createdAt: '2026-06-13T00:04:30.000Z', updatedAt: '2026-06-13T00:04:30.000Z', inputSummary: { familyId: 3, memberCount: 1, policyCount: 1 } }],
     sourceRecords: [{ id: 6, policyId: 2, company: '新华保险', productName: '福如东海A款终身寿险（分红型）', url: 'https://example.test/source.pdf' }],
     knowledgeRecords: [{ id: 7, company: '新华保险', productName: '福如东海A款终身寿险（分红型）', url: 'https://example.test/terms.pdf', pageText: '保险责任' }],
     insuranceIndicatorRecords: [{ id: 'indicator-1', company: '新华保险', productName: '福如东海A款终身寿险（分红型）', coverageType: '身故', liability: '身故保险金', formulaText: '身故保险金 = 有效保险金额' }],
@@ -36,7 +37,7 @@ async function seedDatabase(dbPath) {
     officialDomainProfiles: [{ id: 'new-china-life', company: '新华保险', officialDomains: ['newchinalife.com'] }],
     pendingScans: [{ guestId: 'guest-1', createdAt: '2026-06-13T00:05:00.000Z', scan: { data: { company: '新华保险' } } }],
     insuranceIndicatorSnapshot: { syncedAt: '2026-06-13T00:06:00.000Z', count: 1 },
-    nextId: 8,
+    nextId: 9,
   };
   await store.persist(state);
   const cashValueStore = createCashValueStore(store.db);
@@ -122,6 +123,7 @@ test('production data bundle preserves policies families knowledge indicators an
   assert.equal(bundle.format, 'policy-ocr-production-sqlite-bundle-v1');
   assert.equal(bundle.snapshot.coreCounts.policies, 1);
   assert.equal(bundle.snapshot.coreCounts.family_profiles, 1);
+  assert.equal(bundle.snapshot.coreCounts.family_sales_reviews, 1);
   assert.equal(bundle.snapshot.coreCounts.knowledge_records, 1);
   assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
   assert.equal(bundle.snapshot.coreCounts.optional_responsibility_records, 1);
@@ -140,6 +142,7 @@ test('production data bundle preserves policies families knowledge indicators an
   const targetSummary = summarizeSqliteDatabase(targetDbPath);
   assert.equal(targetSummary.coreCounts.policies, 1);
   assert.equal(targetSummary.coreCounts.family_members, 1);
+  assert.equal(targetSummary.coreCounts.family_sales_reviews, 1);
   assert.equal(targetSummary.coreCounts.knowledge_records, 1);
   assert.equal(targetSummary.coreCounts.policy_cashflows, 1);
 });

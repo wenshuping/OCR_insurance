@@ -1,5 +1,10 @@
 import crypto from 'node:crypto';
 import express from 'express';
+import { buildFamilyReport } from '../../src/family-report-engine.mjs';
+import {
+  buildFamilySalesReviewInput,
+  generateFamilySalesReview,
+} from '../family-sales-review.service.mjs';
 import { sendError } from '../http/errors.mjs';
 import {
   buildFamilySharePayload,
@@ -18,7 +23,10 @@ export function createFamilyRoutes(context) {
     persist,
     archiveFamilyProfile,
     allocateId,
+    attachPolicyCoverageIndicators,
     attachPolicyFamilyDisplay,
+    cashflowStore,
+    cashValueStore,
     createFamilyMember,
     createFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
@@ -31,8 +39,10 @@ export function createFamilyRoutes(context) {
     requestOwner,
     resolveAuthUser,
     setFamilyCoreMember,
+    mergePolicyDerivedResult,
     updateFamilyProfileName,
     updateFamilyMemberRelation,
+    generateFamilySalesReview: generateFamilySalesReviewImpl = generateFamilySalesReview,
   } = context;
   const ownerResolverContext = { resolveAuthUser, requestOwner, state };
   const familyLookupContext = { familyOwnerMatches };
@@ -46,6 +56,81 @@ export function createFamilyRoutes(context) {
     }
     await persist(state, familyPersistOptions);
   };
+
+  function ownerFields(owner = {}) {
+    return {
+      ownerUserId: Number(owner.userId || 0) || null,
+      ownerGuestId: owner.userId ? '' : normalizeGuestId(owner.guestId),
+    };
+  }
+
+  function salesReviewMatchesOwner(review = {}, owner = {}) {
+    if (owner.userId) return Number(review.ownerUserId || 0) === Number(owner.userId);
+    if (owner.guestId) return normalizeGuestId(review.ownerGuestId) === owner.guestId && !Number(review.ownerUserId || 0);
+    return false;
+  }
+
+  function latestFamilySalesReview(familyId, owner) {
+    return (Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [])
+      .filter((review) => (
+        Number(review?.familyId || 0) === Number(familyId) &&
+        String(review?.status || 'active') === 'active' &&
+        salesReviewMatchesOwner(review, owner)
+      ))
+      .sort((left, right) => (
+        String(right.generatedAt || right.createdAt || '').localeCompare(String(left.generatedAt || left.createdAt || '')) ||
+        Number(right.id || 0) - Number(left.id || 0)
+      ))[0] || null;
+  }
+
+  function clientSalesReview(review = null) {
+    if (!review) return null;
+    return {
+      id: review.id,
+      familyId: review.familyId,
+      content: review.content || '',
+      model: '',
+      generatedAt: review.generatedAt || review.createdAt || '',
+      inputSummary: review.inputSummary || {},
+      createdAt: review.createdAt || '',
+      updatedAt: review.updatedAt || '',
+    };
+  }
+
+  function findPolicyDerivedResult(policyId) {
+    const id = Number(policyId || 0);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    return (Array.isArray(state.policyDerivedResults) ? state.policyDerivedResults : [])
+      .find((row) => Number(row?.policyId || 0) === id) || null;
+  }
+
+  function attachPolicyForFamilyReview(policy) {
+    let displayed = typeof attachPolicyFamilyDisplay === 'function'
+      ? attachPolicyFamilyDisplay(policy, state)
+      : { ...policy };
+    const derivedResult = findPolicyDerivedResult(policy?.id);
+    if (typeof mergePolicyDerivedResult === 'function' && derivedResult) {
+      displayed = mergePolicyDerivedResult(displayed, derivedResult);
+    } else if (typeof attachPolicyCoverageIndicators === 'function') {
+      displayed = attachPolicyCoverageIndicators(
+        displayed,
+        state.insuranceIndicatorRecords,
+        state.knowledgeRecords,
+        state.optionalResponsibilityRecords,
+      );
+    }
+    const cashflowEntries = typeof cashflowStore?.getEntries === 'function'
+      ? cashflowStore.getEntries(policy.id)
+      : [];
+    const cashValues = typeof cashValueStore?.getValues === 'function'
+      ? cashValueStore.getValues(policy.id)
+      : [];
+    return {
+      ...displayed,
+      ...(cashflowEntries.length ? { cashflowEntries } : {}),
+      ...(cashValues.length ? { cashValues } : {}),
+    };
+  }
 
   router.get('/family-profiles', async (req, res) => {
     const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
@@ -258,6 +343,70 @@ export function createFamilyRoutes(context) {
         createdAt: share.createdAt,
       },
     });
+  });
+
+  router.get('/family-profiles/:id/sales-review', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    return res.json({ ok: true, review: clientSalesReview(latestFamilySalesReview(family.id, owner)) });
+  });
+
+  router.post('/family-profiles/:id/sales-review', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+
+    try {
+      const members = listFamilyMembers(state, family.id);
+      const policies = (state.policies || [])
+        .filter((policy) => (
+          Number(policy?.familyId || 0) === Number(family.id) &&
+          familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })
+        ))
+        .map(attachPolicyForFamilyReview);
+      const familyReport = buildFamilyReport(policies, null, { familyId: family.id });
+      const input = buildFamilySalesReviewInput({
+        family,
+        members,
+        policies,
+        familyReport,
+        knowledgeRecords: state.knowledgeRecords || [],
+        indicatorRecords: state.insuranceIndicatorRecords || [],
+        optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
+      });
+      const review = await generateFamilySalesReviewImpl({ input });
+      const now = new Date().toISOString();
+      const reviewOwner = ownerFields(owner);
+      const reviewRecord = {
+        id: allocateId(state),
+        familyId: Number(family.id),
+        ownerUserId: reviewOwner.ownerUserId,
+        ownerGuestId: reviewOwner.ownerGuestId,
+        status: 'active',
+        content: review.content,
+        model: review.model,
+        generatedAt: review.generatedAt || now,
+        createdAt: now,
+        updatedAt: now,
+        inputSummary: {
+          ...(review.inputSummary || {}),
+          familyId: Number(family.id),
+        },
+      };
+      state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
+      state.familySalesReviews.push(reviewRecord);
+      await saveFamilyState();
+      return res.json({ ok: true, review: clientSalesReview(reviewRecord) });
+    } catch (error) {
+      return sendError(res, error, error?.status || 500);
+    }
   });
 
   router.get('/family-report-shares/:token', async (req, res) => {

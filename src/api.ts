@@ -6,8 +6,10 @@ import {
   createFamilyMember as createFamilyMemberContract,
   createFamilyProfile as createFamilyProfileContract,
   createFamilyReportShare as createFamilyReportShareContract,
+  createFamilySalesReview as createFamilySalesReviewContract,
   deleteFamilyProfile as deleteFamilyProfileContract,
   ensureDefaultFamilyProfile as ensureDefaultFamilyProfileContract,
+  getFamilySalesReview as getFamilySalesReviewContract,
   getFamilyReportShare as getFamilyReportShareContract,
   listFamilyProfiles as listFamilyProfilesContract,
   setFamilyCoreMember as setFamilyCoreMemberContract,
@@ -32,6 +34,7 @@ import type {
   FamilyRelationToCore as FamilyRelationToCoreContract,
   FamilyReportShare as FamilyReportShareContract,
   FamilyReportSharePayload as FamilyReportSharePayloadContract,
+  FamilySalesReview as FamilySalesReviewContract,
 } from './api/contracts/family';
 import type {
   Policy as PolicyContract,
@@ -104,6 +107,8 @@ export type FamilyProfile = FamilyProfileContract;
 export type FamilyReportShare = FamilyReportShareContract;
 
 export type FamilyReportSharePayload = FamilyReportSharePayloadContract;
+
+export type FamilySalesReview = FamilySalesReviewContract;
 
 export function listPolicies(input: { token?: string; guestId?: string } = {}) {
   return listPoliciesContract(input);
@@ -179,6 +184,14 @@ export function updateFamilyMemberRelation(input: { token?: string; guestId?: st
 
 export function createFamilyReportShare(input: { token?: string; guestId?: string; familyId: number }) {
   return createFamilyReportShareContract(input);
+}
+
+export function getFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
+  return getFamilySalesReviewContract(input);
+}
+
+export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
+  return createFamilySalesReviewContract(input);
 }
 
 export function getFamilyReportShare(shareToken: string) {

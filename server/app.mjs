@@ -1741,6 +1741,7 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.indicatorUpdateBatches)) state.indicatorUpdateBatches = [];
   if (!Array.isArray(state.officialDomainProfiles)) state.officialDomainProfiles = [];
   if (!Array.isArray(state.familyReportShares)) state.familyReportShares = [];
+  if (!Array.isArray(state.familySalesReviews)) state.familySalesReviews = [];
   if (!state.membershipConfig) state.membershipConfig = null;
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
   if (!Array.isArray(state.memberships)) state.memberships = [];
@@ -1947,6 +1948,7 @@ export function createPolicyOcrApp(options = {}) {
     resolveOcrServiceUrl,
     computeAndStoreCashflow,
     recomputeAllCashflow,
+    generateFamilySalesReview: options.generateFamilySalesReview,
     createWechatJsSdkSignature,
     sanitizeClientPerformancePayload,
     logPerformance,

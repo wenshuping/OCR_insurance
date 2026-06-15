@@ -75,6 +75,19 @@ test('sqlite state store imports JSON once and keeps database as the source of t
     familyProfiles: [{ id: 8, ownerUserId: 1, ownerGuestId: '', familyName: '张三家庭', coreMemberId: 9, status: 'active', createdAt: '2026-05-01T00:09:00.000Z', updatedAt: '2026-05-01T00:09:00.000Z' }],
     familyMembers: [{ id: 9, familyId: 8, name: '张三', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-05-01T00:09:00.000Z', updatedAt: '2026-05-01T00:09:00.000Z' }],
     familyReportShares: [{ id: 10, familyId: 8, ownerUserId: 1, ownerGuestId: '', token: 'share-token-1', status: 'active', createdAt: '2026-05-01T00:10:00.000Z', updatedAt: '2026-05-01T00:10:00.000Z' }],
+    familySalesReviews: [{
+      id: 11,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      status: 'active',
+      content: '销售建议报告',
+      model: 'internal-expert',
+      generatedAt: '2026-05-01T00:11:00.000Z',
+      createdAt: '2026-05-01T00:11:00.000Z',
+      updatedAt: '2026-05-01T00:11:00.000Z',
+      inputSummary: { familyId: 8, memberCount: 1, policyCount: 1 },
+    }],
     insuranceIndicatorSnapshot: { syncedAt: '2026-05-01T00:05:00.000Z', count: 1 },
     nextId: 6,
   });
@@ -93,8 +106,11 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familyReportShares.length, 1);
   assert.equal(imported.familyReportShares[0].familyId, 8);
   assert.equal(imported.familyReportShares[0].token, 'share-token-1');
+  assert.equal(imported.familySalesReviews.length, 1);
+  assert.equal(imported.familySalesReviews[0].familyId, 8);
+  assert.equal(imported.familySalesReviews[0].content, '销售建议报告');
   assert.deepEqual(imported.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:05:00.000Z', count: 1 });
-  assert.equal(imported.nextId, 11);
+  assert.equal(imported.nextId, 12);
 
   imported.users.push({ id: 6, mobile: '13900000000', createdAt: '2026-05-01T00:06:00.000Z', updatedAt: '2026-05-01T00:06:00.000Z' });
   imported.policies.push({ id: 7, userId: 6, guestId: '', company: '平安人寿', name: '平安福', insured: '张三', createdAt: '2026-05-01T00:07:00.000Z', updatedAt: '2026-05-01T00:07:00.000Z' });
@@ -117,6 +133,7 @@ test('sqlite state store imports JSON once and keeps database as the source of t
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_profiles').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_members').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_shares').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_reviews').get().count, 1);
     assert.equal(
       JSON.parse(db.prepare('SELECT payload FROM insurance_indicator_records WHERE id = ?').get('ind_2').payload).formulaText,
       '重疾(首次给付) = 基本保险金额',
@@ -146,12 +163,14 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloaded.familyReportShares.length, 1);
   assert.equal(reloaded.familyReportShares[0].familyId, 8);
   assert.equal(reloaded.familyReportShares[0].token, 'share-token-1');
+  assert.equal(reloaded.familySalesReviews.length, 1);
+  assert.equal(reloaded.familySalesReviews[0].content, '销售建议报告');
   assert.equal(
     reloaded.insuranceIndicatorRecords.find((record) => record.id === 'ind_2')?.formulaText,
     '重疾(首次给付) = 基本保险金额',
   );
   assert.deepEqual(reloaded.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
-  assert.equal(reloaded.nextId, 11);
+  assert.equal(reloaded.nextId, 12);
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath, seedStatePath });
@@ -167,6 +186,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familyReportShares.length, 1);
   assert.equal(reloadedAfterRestart.familyReportShares[0].familyId, 8);
   assert.equal(reloadedAfterRestart.familyReportShares[0].token, 'share-token-1');
+  assert.equal(reloadedAfterRestart.familySalesReviews.length, 1);
+  assert.equal(reloadedAfterRestart.familySalesReviews[0].content, '销售建议报告');
   assert.deepEqual(reloadedAfterRestart.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
   reopened.close();
 });
@@ -413,9 +434,21 @@ test('sqlite state store incrementally persists family state without rewriting k
     createdAt: '2026-06-08T00:01:00.000Z',
     updatedAt: '2026-06-08T00:01:00.000Z',
   });
+  state.familySalesReviews.push({
+    id: 22,
+    familyId: 8,
+    ownerGuestId: 'guest-family',
+    status: 'active',
+    content: '家庭销售建议已保存',
+    model: 'internal-expert',
+    generatedAt: '2026-06-08T00:02:00.000Z',
+    createdAt: '2026-06-08T00:02:00.000Z',
+    updatedAt: '2026-06-08T00:02:00.000Z',
+    inputSummary: { familyId: 8, memberCount: 1, policyCount: 1 },
+  });
   state.policies[0].familyId = 8;
   state.policies[0].insuredMemberId = 20;
-  state.nextId = 22;
+  state.nextId = 23;
 
   await store.persistFamilyState({ state, includePolicies: true });
 
@@ -424,11 +457,13 @@ test('sqlite state store incrementally persists family state without rewriting k
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_profiles WHERE id = ?').get(8).payload).familyName, '更新后的测试家庭');
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_members WHERE family_id = ?').get(8).count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_shares WHERE token = ?').get('family-share-token').count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_reviews WHERE family_id = ?').get(8).count, 1);
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_sales_reviews WHERE id = ?').get(22).payload).content, '家庭销售建议已保存');
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM policies WHERE id = ?').get(3).payload).insuredMemberId, 20);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 1);
-    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '22');
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '23');
   } finally {
     db.close();
     store.close();
