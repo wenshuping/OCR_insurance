@@ -9961,6 +9961,429 @@ test('family APIs rename and archive a family while clearing policy family bindi
   }
 });
 
+test('new policy save archives generated family reports for the policy family', async () => {
+  const state = createInitialState();
+  state.nextId = 20;
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-new-policy-report-refresh',
+    familyName: '新增保单家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 9,
+    familyId: 8,
+    name: '张三',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyReportShares.push({
+    id: 10,
+    familyId: 8,
+    ownerGuestId: 'guest-new-policy-report-refresh',
+    token: 'share-token-new-policy-refresh',
+    status: 'active',
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+  state.familySalesReviews.push({
+    id: 11,
+    familyId: 8,
+    ownerGuestId: 'guest-new-policy-report-refresh',
+    status: 'active',
+    content: '新增前旧家庭专家报告',
+    model: 'internal-expert',
+    generatedAt: '2026-06-15T00:03:00.000Z',
+    createdAt: '2026-06-15T00:03:00.000Z',
+    updatedAt: '2026-06-15T00:03:00.000Z',
+  });
+
+  const policyScanSaveCalls = [];
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persistPolicyScanSave: async (input) => {
+      policyScanSaveCalls.push(input);
+    },
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-new-policy-report-refresh',
+        scan: {
+          ocrText: '投保人:张三\n被保险人:张三',
+          data: { company: '新华保险', name: '新增家庭保单', applicant: '张三', insured: '张三', amount: 100000 },
+        },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId: 8,
+          applicantMemberId: 9,
+          insuredMemberId: 9,
+          applicantRelationLabel: '本人',
+          insuredRelationLabel: '本人',
+        },
+      }),
+    });
+
+    assert.equal(saved.response.status, 201);
+    assert.equal(saved.payload.policy.familyId, 8);
+    assert.equal(state.familyReportShares[0].status, 'archived');
+    assert.equal(state.familySalesReviews[0].status, 'archived');
+    assert.equal(policyScanSaveCalls.length, 1);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy update archives generated family reports for the affected family', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-report-refresh',
+    familyName: '报告刷新家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 9,
+    familyId: 8,
+    name: '张三',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 12,
+    userId: null,
+    guestId: 'guest-family-report-refresh',
+    company: '新华保险',
+    name: '家庭保单A',
+    applicant: '张三',
+    insured: '张三',
+    familyId: 8,
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.familyReportShares.push(
+    {
+      id: 13,
+      familyId: 8,
+      ownerGuestId: 'guest-family-report-refresh',
+      token: 'share-token-refresh',
+      status: 'active',
+      createdAt: '2026-06-15T00:02:00.000Z',
+      updatedAt: '2026-06-15T00:02:00.000Z',
+    },
+    {
+      id: 14,
+      familyId: 99,
+      ownerGuestId: 'guest-family-report-refresh',
+      token: 'share-token-other-family',
+      status: 'active',
+      createdAt: '2026-06-15T00:02:30.000Z',
+      updatedAt: '2026-06-15T00:02:30.000Z',
+    },
+  );
+  state.familySalesReviews.push({
+    id: 15,
+    familyId: 8,
+    ownerGuestId: 'guest-family-report-refresh',
+    status: 'active',
+    content: '旧家庭专家报告',
+    model: 'internal-expert',
+    generatedAt: '2026-06-15T00:03:00.000Z',
+    createdAt: '2026-06-15T00:03:00.000Z',
+    updatedAt: '2026-06-15T00:03:00.000Z',
+  });
+
+  const policyPersistCalls = [];
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persistPolicyState: async (input) => {
+      policyPersistCalls.push(input);
+    },
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const updated = await jsonFetch(server.baseUrl, '/api/policies/12?guestId=guest-family-report-refresh', {
+      method: 'PATCH',
+      body: JSON.stringify({ amount: 220000 }),
+    });
+
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.payload.policy.amount, 220000);
+    assert.equal(updated.payload.reportRegenerating, false);
+    assert.equal(state.familyReportShares.find((share) => share.id === 13).status, 'archived');
+    assert.equal(state.familyReportShares.find((share) => share.id === 14).status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 15).status, 'archived');
+    assert.equal(policyPersistCalls.length, 1);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy delete archives generated family reports only for the deleted policy family', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push(
+    {
+      id: 8,
+      ownerUserId: null,
+      ownerGuestId: 'guest-delete-policy-report-refresh',
+      familyName: '删除保单家庭',
+      coreMemberId: 9,
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    {
+      id: 18,
+      ownerUserId: null,
+      ownerGuestId: 'guest-delete-policy-report-refresh',
+      familyName: '其他家庭',
+      coreMemberId: 19,
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+  );
+  state.familyMembers.push(
+    {
+      id: 9,
+      familyId: 8,
+      name: '张三',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    {
+      id: 19,
+      familyId: 18,
+      name: '李四',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+  );
+  state.policies.push({
+    id: 12,
+    userId: null,
+    guestId: 'guest-delete-policy-report-refresh',
+    company: '新华保险',
+    name: '待删除家庭保单',
+    applicant: '张三',
+    insured: '张三',
+    familyId: 8,
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.familyReportShares.push(
+    {
+      id: 13,
+      familyId: 8,
+      ownerGuestId: 'guest-delete-policy-report-refresh',
+      token: 'share-token-delete-refresh',
+      status: 'active',
+      createdAt: '2026-06-15T00:02:00.000Z',
+      updatedAt: '2026-06-15T00:02:00.000Z',
+    },
+    {
+      id: 14,
+      familyId: 18,
+      ownerGuestId: 'guest-delete-policy-report-refresh',
+      token: 'share-token-delete-other-family',
+      status: 'active',
+      createdAt: '2026-06-15T00:02:30.000Z',
+      updatedAt: '2026-06-15T00:02:30.000Z',
+    },
+  );
+  state.familySalesReviews.push(
+    {
+      id: 15,
+      familyId: 8,
+      ownerGuestId: 'guest-delete-policy-report-refresh',
+      status: 'active',
+      content: '待归档删除家庭专家报告',
+      model: 'internal-expert',
+      generatedAt: '2026-06-15T00:03:00.000Z',
+      createdAt: '2026-06-15T00:03:00.000Z',
+      updatedAt: '2026-06-15T00:03:00.000Z',
+    },
+    {
+      id: 16,
+      familyId: 18,
+      ownerGuestId: 'guest-delete-policy-report-refresh',
+      status: 'active',
+      content: '其他家庭专家报告',
+      model: 'internal-expert',
+      generatedAt: '2026-06-15T00:03:30.000Z',
+      createdAt: '2026-06-15T00:03:30.000Z',
+      updatedAt: '2026-06-15T00:03:30.000Z',
+    },
+  );
+
+  const policyDeleteCalls = [];
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persistPolicyDelete: async (input) => {
+      policyDeleteCalls.push(input);
+    },
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const deleted = await jsonFetch(server.baseUrl, '/api/policies/12?guestId=guest-delete-policy-report-refresh', {
+      method: 'DELETE',
+    });
+
+    assert.equal(deleted.response.status, 200);
+    assert.equal(deleted.payload.deletedId, 12);
+    assert.equal(state.familyReportShares.find((share) => share.id === 13).status, 'archived');
+    assert.equal(state.familyReportShares.find((share) => share.id === 14).status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 15).status, 'archived');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 16).status, 'active');
+    assert.equal(policyDeleteCalls.length, 1);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+  } finally {
+    await server.close();
+  }
+});
+
+test('cash value confirmation archives generated family reports for the policy family', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+  db.prepare('INSERT INTO policies (id) VALUES (?)').run(12);
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-cash-family-report-refresh',
+    familyName: '现金价值家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 9,
+    familyId: 8,
+    name: '张三',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 12,
+    userId: null,
+    guestId: 'guest-cash-family-report-refresh',
+    company: '新华保险',
+    name: '现金价值保单',
+    applicant: '张三',
+    insured: '张三',
+    familyId: 8,
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.familyReportShares.push({
+    id: 13,
+    familyId: 8,
+    ownerGuestId: 'guest-cash-family-report-refresh',
+    token: 'share-token-cash-refresh',
+    status: 'active',
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+  state.familySalesReviews.push({
+    id: 14,
+    familyId: 8,
+    ownerGuestId: 'guest-cash-family-report-refresh',
+    status: 'active',
+    content: '旧现金价值专家报告',
+    model: 'internal-expert',
+    generatedAt: '2026-06-15T00:03:00.000Z',
+    createdAt: '2026-06-15T00:03:00.000Z',
+    updatedAt: '2026-06-15T00:03:00.000Z',
+  });
+
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    db,
+    state,
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/12/cash-value/confirm?guestId=guest-cash-family-report-refresh', {
+      method: 'POST',
+      body: JSON.stringify({
+        rows: [
+          { policyYear: 1, age: 30, cashValue: 8500, source: 'manual' },
+          { policyYear: 2, age: 31, cashValue: 19200, source: 'manual' },
+        ],
+      }),
+    });
+
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.payload.savedCount, 2);
+    assert.equal(state.familyReportShares[0].status, 'archived');
+    assert.equal(state.familySalesReviews[0].status, 'archived');
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+
+    const detail = await jsonFetch(server.baseUrl, '/api/policies/12?guestId=guest-cash-family-report-refresh');
+    assert.deepEqual(detail.payload.policy.cashValues.map((row) => row.cashValue), [8500, 19200]);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('policy save applies confirmed spouse relation before binding family snapshots', async () => {
   const state = createInitialState();
   const app = createPolicyOcrApp({

@@ -79,6 +79,7 @@ import {
 import {
   createFamilyMember,
   createFamilyProfile,
+  archiveFamilyGeneratedReportsForPolicy,
   archiveFamilyProfile,
   enrichFamilyMemberIdentity,
   ensureDefaultFamilyProfileForPrincipal,
@@ -2050,6 +2051,7 @@ export function createPolicyOcrApp(options = {}) {
     upsertKnowledgeRecords,
     createFamilyMember,
     createFamilyProfile,
+    archiveFamilyGeneratedReportsForPolicy,
     archiveFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
     familyOwnerMatches,

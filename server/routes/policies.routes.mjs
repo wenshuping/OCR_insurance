@@ -23,6 +23,7 @@ export function createPolicyRoutes(context) {
     persist,
     persistPolicyScanSave,
     persistPendingScan,
+    persistFamilyState,
     persistPolicyDerivedResult,
     persistPolicyState,
     persistPolicyDelete,
@@ -73,10 +74,24 @@ export function createPolicyRoutes(context) {
     shouldRebuildPolicyFamilyBinding,
     familyBindingInputFromPolicyUpdate,
     policyOwner,
+    archiveFamilyGeneratedReportsForPolicy,
     clearPolicyReportForRegeneration,
     buildPolicyReportScan,
     nowIso,
   } = context;
+  const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
+
+  async function archiveGeneratedFamilyReportsForPolicy(policy, { previousFamilyId = null } = {}) {
+    if (typeof archiveFamilyGeneratedReportsForPolicy !== 'function') {
+      return { archivedShareCount: 0, archivedSalesReviewCount: 0 };
+    }
+    const result = archiveFamilyGeneratedReportsForPolicy(state, policy, { previousFamilyId });
+    if ((result.archivedShareCount || 0) || (result.archivedSalesReviewCount || 0)) {
+      if (persistFamilyState) await persistFamilyState({ includePolicies: false });
+      else await persist(state, familyPersistOptions);
+    }
+    return result;
+  }
 
   function findPolicyDerivedResult(policyId) {
     const id = Number(policyId || 0);
@@ -357,6 +372,7 @@ export function createPolicyRoutes(context) {
       } catch (cfError) {
         console.error('[cashflow] compute failed for policy', policy.id, cfError.message);
       }
+      await archiveGeneratedFamilyReportsForPolicy(policy);
 
       if (!providedAnalysis) {
         startPolicyReportGeneration({
@@ -416,6 +432,7 @@ export function createPolicyRoutes(context) {
         return res.status(result.status).json(result.payload);
       }
       const { policy } = result;
+      const previousFamilyId = Number(policy.familyId || 0) || null;
       const beforeIdentity = policyProductIdentity(policy);
       const updates = normalizePolicyUpdateData(req.body || {}, policy);
       if (!Object.keys(updates).length) {
@@ -454,6 +471,7 @@ export function createPolicyRoutes(context) {
       } catch (cfError) {
         console.error('[cashflow] compute failed for policy', policy.id, cfError.message);
       }
+      await archiveGeneratedFamilyReportsForPolicy(policy, { previousFamilyId });
 
       if (identityChanged) {
         startPolicyReportGeneration({
@@ -482,13 +500,15 @@ export function createPolicyRoutes(context) {
       if (!result.policy) {
         return res.status(result.status).json(result.payload);
       }
-      const policyId = Number(result.policy.id);
+      const policy = result.policy;
+      const policyId = Number(policy.id);
       cashflowStore.replaceEntries(policyId, []);
       cashValueStore.deleteValues(policyId);
       state.policies = (state.policies || []).filter((policy) => Number(policy.id) !== policyId);
       state.sourceRecords = (state.sourceRecords || []).filter((source) => Number(source.policyId) !== policyId);
       if (persistPolicyDelete) await persistPolicyDelete({ policyId });
       else await persist(state);
+      await archiveGeneratedFamilyReportsForPolicy(policy);
       res.json({ ok: true, deletedId: policyId });
     } catch (error) {
       sendError(res, error);

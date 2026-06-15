@@ -280,6 +280,41 @@ export function updateFamilyMemberRelation(member, relationLabel) {
   return applyFamilyMemberRelation(member, relationLabel);
 }
 
+export function archiveFamilyGeneratedReports(state, familyIds = []) {
+  ensureFamilyState(state);
+  const targetFamilyIds = new Set(
+    (Array.isArray(familyIds) ? familyIds : [familyIds])
+      .map((id) => Number(id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  );
+  if (!targetFamilyIds.size) return { archivedShareCount: 0, archivedSalesReviewCount: 0 };
+
+  const now = new Date().toISOString();
+  let archivedShareCount = 0;
+  for (const share of state.familyReportShares || []) {
+    if (!targetFamilyIds.has(Number(share?.familyId || 0))) continue;
+    if (String(share.status || 'active') === 'archived') continue;
+    share.status = 'archived';
+    share.updatedAt = now;
+    archivedShareCount += 1;
+  }
+
+  let archivedSalesReviewCount = 0;
+  for (const review of state.familySalesReviews || []) {
+    if (!targetFamilyIds.has(Number(review?.familyId || 0))) continue;
+    if (String(review.status || 'active') === 'archived') continue;
+    review.status = 'archived';
+    review.updatedAt = now;
+    archivedSalesReviewCount += 1;
+  }
+
+  return { archivedShareCount, archivedSalesReviewCount };
+}
+
+export function archiveFamilyGeneratedReportsForPolicy(state, policy, { previousFamilyId = null } = {}) {
+  return archiveFamilyGeneratedReports(state, [previousFamilyId, policy?.familyId]);
+}
+
 export function createFamilyProfile(state, input = {}, owner = {}) {
   ensureFamilyState(state);
   const normalizedOwner = normalizeOwner(owner);

@@ -5,6 +5,8 @@ export function createCashflowRoutes(context) {
   const router = express.Router();
   const {
     state,
+    persist,
+    persistFamilyState,
     requireAdmin,
     adminPassword,
     cashflowStore,
@@ -13,7 +15,21 @@ export function createCashflowRoutes(context) {
     resolveAuthUser,
     normalizeGuestId,
     resolveOcrServiceUrl,
+    archiveFamilyGeneratedReportsForPolicy,
   } = context;
+  const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
+
+  async function archiveGeneratedFamilyReportsForPolicy(policy) {
+    if (typeof archiveFamilyGeneratedReportsForPolicy !== 'function') {
+      return { archivedShareCount: 0, archivedSalesReviewCount: 0 };
+    }
+    const result = archiveFamilyGeneratedReportsForPolicy(state, policy);
+    if ((result.archivedShareCount || 0) || (result.archivedSalesReviewCount || 0)) {
+      if (persistFamilyState) await persistFamilyState({ includePolicies: false });
+      else await persist(state, familyPersistOptions);
+    }
+    return result;
+  }
 
   router.post('/admin/cashflow/recompute', async (req, res) => {
     const session = requireAdmin(req, res, state, adminPassword);
@@ -145,6 +161,7 @@ export function createCashflowRoutes(context) {
       }
 
       cashValueStore.replaceValues(policyId, rows);
+      await archiveGeneratedFamilyReportsForPolicy(policy);
 
       return res.json({ ok: true, savedCount: rows.length });
     } catch (error) {
