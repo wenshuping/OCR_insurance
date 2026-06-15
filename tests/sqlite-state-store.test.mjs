@@ -17,6 +17,38 @@ async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+function insertExternalKnowledgeRecord(store) {
+  store.db.prepare(`
+    INSERT INTO knowledge_records (id, company, product_name, url, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    99,
+    '测试保险',
+    '外部写入记录',
+    'https://example.test/extra',
+    JSON.stringify({ id: 99, company: '测试保险', productName: '外部写入记录' }),
+  );
+}
+
+function assertKnowledgeTablesUntouched(db) {
+  assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 1);
+}
+
+function baseKnowledgeState() {
+  return {
+    knowledgeRecords: [{ id: 5, company: '新华保险', productName: '已有保单', url: 'https://example.test/terms' }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_1',
+      company: '新华保险',
+      productName: '已有保单',
+      coverageType: '现金流',
+      liability: '满期返还',
+    }],
+  };
+}
+
 test('sqlite state store imports JSON once and keeps database as the source of truth', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
@@ -800,6 +832,7 @@ test('sqlite state store incrementally persists membership config without rewrit
   const store = await createSqliteStateStore({ dbPath });
   const state = {
     ...createInitialState(),
+    ...baseKnowledgeState(),
     membershipConfig: {
       enabled: true,
       annualPriceCents: 30000,
@@ -807,20 +840,10 @@ test('sqlite state store incrementally persists membership config without rewrit
       registeredFreePolicyQuota: 3,
       updatedAt: '2026-06-14T00:00:00.000Z',
     },
-    knowledgeRecords: [{ id: 5, company: '新华保险', productName: '已有保单', url: 'https://example.test/terms' }],
     nextId: 10,
   };
   await store.persist(state);
-  store.db.prepare(`
-    INSERT INTO knowledge_records (id, company, product_name, url, payload)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(
-    99,
-    '测试保险',
-    '外部写入记录',
-    'https://example.test/extra',
-    JSON.stringify({ id: 99, company: '测试保险', productName: '外部写入记录' }),
-  );
+  insertExternalKnowledgeRecord(store);
 
   state.membershipConfig = {
     ...state.membershipConfig,
@@ -835,8 +858,247 @@ test('sqlite state store incrementally persists membership config without rewrit
     const config = JSON.parse(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get().payload);
     assert.equal(config.enabled, false);
     assert.equal(config.registeredFreePolicyQuota, 6);
-    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
-    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);
+    assertKnowledgeTablesUntouched(db);
+  } finally {
+    db.close();
+    store.close();
+  }
+});
+
+test('sqlite state store incrementally deletes auth sessions without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    ...baseKnowledgeState(),
+    sessions: [{ token: 'user-fast-token', userId: 30, createdAt: '2026-06-14T00:05:00.000Z' }],
+    nextId: 40,
+  };
+  await store.persist(state);
+  insertExternalKnowledgeRecord(store);
+
+  state.sessions = [];
+  state.nextId = 41;
+  await store.persistAuthLogout({ state, token: 'user-fast-token' });
+
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS count FROM sessions WHERE token = ?').get('user-fast-token').count, 0);
+    assertKnowledgeTablesUntouched(db);
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '41');
+  } finally {
+    db.close();
+    store.close();
+  }
+});
+
+test('sqlite state store incrementally persists policy updates without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    ...baseKnowledgeState(),
+    policies: [{
+      id: 20,
+      userId: 30,
+      guestId: '',
+      company: '新华保险',
+      name: '旧保单',
+      insured: '温舒萍',
+      createdAt: '2026-06-14T00:01:00.000Z',
+      updatedAt: '2026-06-14T00:01:00.000Z',
+    }],
+    sourceRecords: [{
+      id: 21,
+      policyId: 20,
+      company: '新华保险',
+      productName: '旧保单',
+      url: 'https://example.test/old-source',
+    }],
+    familyProfiles: [{
+      id: 24,
+      ownerUserId: 30,
+      ownerGuestId: '',
+      familyName: '默认家庭',
+      coreMemberId: 25,
+      status: 'active',
+      createdAt: '2026-06-14T00:03:00.000Z',
+      updatedAt: '2026-06-14T00:03:00.000Z',
+    }],
+    familyMembers: [{
+      id: 25,
+      familyId: 24,
+      name: '温舒萍',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      status: 'active',
+      createdAt: '2026-06-14T00:03:00.000Z',
+      updatedAt: '2026-06-14T00:03:00.000Z',
+    }],
+    nextId: 50,
+  };
+  await store.persist(state);
+  insertExternalKnowledgeRecord(store);
+
+  state.policies[0].name = '更新后的保单';
+  state.policies[0].reportStatus = 'ready';
+  state.policies[0].updatedAt = '2026-06-14T00:06:00.000Z';
+  state.sourceRecords = [{
+    id: 22,
+    policyId: 20,
+    company: '新华保险',
+    productName: '更新后的保单',
+    url: 'https://example.test/new-source',
+  }];
+  state.familyMembers[0].relationLabel = '本人';
+  state.nextId = 51;
+
+  await store.persistPolicyState({ state, policy: state.policies[0], includeFamilyState: true });
+
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM policies WHERE id = ?').get(20).payload).name, '更新后的保单');
+    assert.equal(db.prepare('SELECT count(*) AS count FROM source_records WHERE policy_id = ?').get(20).count, 1);
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM source_records WHERE policy_id = ?').get(20).payload).url, 'https://example.test/new-source');
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_members WHERE id = ?').get(25).payload).relationLabel, '本人');
+    assertKnowledgeTablesUntouched(db);
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '51');
+  } finally {
+    db.close();
+    store.close();
+  }
+});
+
+test('sqlite state store incrementally deletes policies without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    ...baseKnowledgeState(),
+    policies: [{
+      id: 20,
+      userId: 30,
+      guestId: '',
+      company: '新华保险',
+      name: '待删除保单',
+      insured: '温舒萍',
+      createdAt: '2026-06-14T00:01:00.000Z',
+      updatedAt: '2026-06-14T00:01:00.000Z',
+    }],
+    sourceRecords: [{
+      id: 21,
+      policyId: 20,
+      company: '新华保险',
+      productName: '待删除保单',
+      url: 'https://example.test/source',
+    }],
+    nextId: 50,
+  };
+  await store.persist(state);
+  insertExternalKnowledgeRecord(store);
+
+  state.policies = [];
+  state.sourceRecords = [];
+  state.nextId = 51;
+  await store.persistPolicyDelete({ state, policyId: 20 });
+
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS count FROM policies WHERE id = ?').get(20).count, 0);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM source_records WHERE policy_id = ?').get(20).count, 0);
+    assertKnowledgeTablesUntouched(db);
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '51');
+  } finally {
+    db.close();
+    store.close();
+  }
+});
+
+test('sqlite state store incrementally persists membership and wechat state without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    ...baseKnowledgeState(),
+    users: [{ id: 30, mobile: '18616135811', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' }],
+    membershipOrders: [],
+    memberships: [],
+    userWechatIdentities: [],
+    wechatOAuthStates: [],
+    nextId: 60,
+  };
+  await store.persist(state);
+  insertExternalKnowledgeRecord(store);
+
+  const order = {
+    id: 60,
+    outTradeNo: 'm-test-order',
+    userId: 30,
+    productCode: 'annual_membership',
+    amountCents: 30000,
+    currency: 'CNY',
+    status: 'paid',
+    prepayId: 'wx-prepay',
+    transactionId: '4200001',
+    paidAt: '2026-06-14T00:10:00.000Z',
+    expiresAt: '2026-06-14T00:30:00.000Z',
+    createdAt: '2026-06-14T00:05:00.000Z',
+    updatedAt: '2026-06-14T00:10:00.000Z',
+    payload: { notify: { trade_state: 'SUCCESS' } },
+  };
+  const membership = {
+    userId: 30,
+    plan: 'annual',
+    status: 'active',
+    startedAt: '2026-06-14T00:10:00.000Z',
+    expiresAt: '2027-06-14T00:10:00.000Z',
+    lastOrderId: 60,
+    updatedAt: '2026-06-14T00:10:00.000Z',
+  };
+  const oauthState = {
+    state: 'oauth-state-fast',
+    userId: 30,
+    appId: 'wx123',
+    redirectUrl: '/#/member',
+    usedAt: '2026-06-14T00:11:00.000Z',
+    expiresAt: '2026-06-14T00:15:00.000Z',
+    createdAt: '2026-06-14T00:05:00.000Z',
+  };
+  const identity = {
+    userId: 30,
+    appId: 'wx123',
+    openid: 'openid-fast',
+    scope: 'snsapi_base',
+    createdAt: '2026-06-14T00:11:00.000Z',
+    updatedAt: '2026-06-14T00:11:00.000Z',
+  };
+  state.membershipOrders.push(order);
+  state.memberships.push(membership);
+  state.wechatOAuthStates.push(oauthState);
+  state.userWechatIdentities.push(identity);
+  state.nextId = 61;
+
+  await store.persistMembershipState({
+    state,
+    order,
+    membership,
+    oauthState,
+    identity,
+  });
+
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS count FROM membership_orders WHERE id = ?').get(60).count, 1);
+    assert.equal(db.prepare('SELECT status FROM membership_orders WHERE id = ?').get(60).status, 'paid');
+    assert.equal(db.prepare('SELECT status FROM memberships WHERE user_id = ?').get(30).status, 'active');
+    assert.equal(db.prepare('SELECT used_at AS usedAt FROM wechat_oauth_states WHERE state = ?').get('oauth-state-fast').usedAt, '2026-06-14T00:11:00.000Z');
+    assert.equal(db.prepare('SELECT openid FROM user_wechat_identities WHERE user_id = ? AND app_id = ?').get(30, 'wx123').openid, 'openid-fast');
+    assertKnowledgeTablesUntouched(db);
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '61');
   } finally {
     db.close();
     store.close();

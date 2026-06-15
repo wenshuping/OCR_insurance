@@ -27,6 +27,7 @@ export function createAuthRoutes(context) {
     assertSmsSendAllowed,
     persistAuthSmsCode,
     persistAuthRegistration,
+    persistAuthLogout,
     smsDeliveryPlanResolver,
     smsDeliverer,
     allocateId,
@@ -245,7 +246,11 @@ export function createAuthRoutes(context) {
       const token = getBearerToken(req);
       if (token) {
         deleteSession(state, token);
-        await persist(state);
+        if (persistAuthLogout) {
+          await persistAuthLogout({ token });
+        } else {
+          await persist(state);
+        }
       }
       res.json({ ok: true });
     } catch (error) {

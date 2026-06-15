@@ -898,6 +898,106 @@ function upsertIndicatorUpdateBatchRow(db, row = {}) {
   return batch;
 }
 
+function deleteSession(db, token) {
+  const value = String(token || '').trim();
+  if (!value) return;
+  db.prepare('DELETE FROM sessions WHERE token = ?').run(value);
+}
+
+function deletePolicy(db, policyId) {
+  const id = Number(policyId);
+  if (!Number.isFinite(id)) return;
+  db.prepare('DELETE FROM source_records WHERE policy_id = ?').run(id);
+  db.prepare('DELETE FROM policies WHERE id = ?').run(id);
+}
+
+function upsertMembershipOrder(db, order = {}) {
+  if (!order?.id) return;
+  db.prepare(`
+    INSERT INTO membership_orders (id, out_trade_no, user_id, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      out_trade_no = excluded.out_trade_no,
+      user_id = excluded.user_id,
+      status = excluded.status,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    Number(order.id),
+    String(order.outTradeNo || ''),
+    Number(order.userId || 0) || null,
+    String(order.status || ''),
+    String(order.createdAt || ''),
+    String(order.updatedAt || ''),
+    jsonPayload(order),
+  );
+}
+
+function upsertMembership(db, membership = {}) {
+  const userId = Number(membership?.userId || 0);
+  if (!userId) return;
+  db.prepare(`
+    INSERT INTO memberships (user_id, status, expires_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      status = excluded.status,
+      expires_at = excluded.expires_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    userId,
+    String(membership.status || ''),
+    String(membership.expiresAt || ''),
+    String(membership.updatedAt || ''),
+    jsonPayload(membership),
+  );
+}
+
+function upsertUserWechatIdentity(db, identity = {}) {
+  const userId = Number(identity?.userId || 0);
+  const appId = String(identity?.appId || '').trim();
+  if (!userId || !appId) return;
+  db.prepare(`
+    INSERT INTO user_wechat_identities (user_id, app_id, openid, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, app_id) DO UPDATE SET
+      openid = excluded.openid,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    userId,
+    appId,
+    String(identity.openid || ''),
+    String(identity.updatedAt || ''),
+    jsonPayload(identity),
+  );
+}
+
+function upsertWechatOAuthState(db, oauthState = {}) {
+  const stateToken = String(oauthState?.state || '').trim();
+  if (!stateToken) return;
+  db.prepare(`
+    INSERT INTO wechat_oauth_states (state, user_id, app_id, expires_at, used_at, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(state) DO UPDATE SET
+      user_id = excluded.user_id,
+      app_id = excluded.app_id,
+      expires_at = excluded.expires_at,
+      used_at = excluded.used_at,
+      created_at = excluded.created_at,
+      payload = excluded.payload
+  `).run(
+    stateToken,
+    Number(oauthState.userId || 0) || null,
+    String(oauthState.appId || ''),
+    String(oauthState.expiresAt || ''),
+    String(oauthState.usedAt || ''),
+    String(oauthState.createdAt || ''),
+    jsonPayload(oauthState),
+  );
+}
+
 function replaceSourceRecordsForPolicy(db, state, policyId) {
   const id = Number(policyId);
   if (!Number.isFinite(id)) return;
@@ -1248,6 +1348,82 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  async function persistAuthLogout({ state, token = '' } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      deleteSession(db, token);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistPolicyState({ state, policy = null, includeFamilyState = false } = {}) {
+    if (!policy?.id) {
+      await persist(state);
+      return;
+    }
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec('PRAGMA defer_foreign_keys = ON');
+      upsertPolicy(db, policy);
+      replaceSourceRecordsForPolicy(db, nextState, policy.id);
+      if (includeFamilyState) replaceFamilyProfiles(db, nextState);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistPolicyDelete({ state, policyId = 0 } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      deletePolicy(db, policyId);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistMembershipState({
+    state,
+    order = null,
+    membership = null,
+    identity = null,
+    oauthState = null,
+  } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (order) upsertMembershipOrder(db, order);
+      if (membership) upsertMembership(db, membership);
+      if (identity) upsertUserWechatIdentity(db, identity);
+      if (oauthState) upsertWechatOAuthState(db, oauthState);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async function persistPendingScan({ state, guestId = '' } = {}) {
     const pendingGuestId = String(guestId || '').trim();
     if (!pendingGuestId) {
@@ -1442,6 +1618,10 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistOfficialDomainProfiles,
     persistAuthSmsCode,
     persistAuthRegistration,
+    persistAuthLogout,
+    persistPolicyState,
+    persistPolicyDelete,
+    persistMembershipState,
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
