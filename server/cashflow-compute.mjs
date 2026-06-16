@@ -18,7 +18,7 @@ function parseConditionYearRange(condition, ctx) {
     let endYear = ctx.coverageEndYear - 1;
     if (/届满前|保障期满前/.test(text)) endYear = ctx.coverageEndYear - 1;
     if (/养老年金开始前/.test(text)) {
-      const pensionStartYear = ctx.birthYear + 55;
+      const pensionStartYear = ctx.birthYear + (ctx.pensionStartAge || 55);
       endYear = Math.min(endYear, pensionStartYear - 1);
     }
     return { startYear, endYear };
@@ -254,7 +254,7 @@ function formatCashflowCalculation(indicator, policy, amount) {
 }
 
 /** Expand a single cashflow indicator to yearly entries. */
-function expandCashflowIndicator(indicator, policy) {
+function expandCashflowIndicator(indicator, policy, pensionStartAge = 0) {
   if (shouldSkipCashflowIndicator(indicator)) return [];
   if (!policy.insuredBirthday || !policy.date) return [];
   const effectiveYear = new Date(policy.date).getFullYear();
@@ -262,12 +262,12 @@ function expandCashflowIndicator(indicator, policy) {
   const coverageEndYear = parseCoverageEndYear(policy);
   if (!coverageEndYear) return [];
 
-  const range = parseConditionYearRange(indicator.condition, { effectiveYear, birthYear, coverageEndYear });
+  const range = parseConditionYearRange(indicator.condition, { effectiveYear, birthYear, coverageEndYear, pensionStartAge });
   if (!range) return [];
 
   const conditionText = String(indicator.condition || '');
   if (/到养老年金开始前/.test(conditionText)) {
-    const pensionStartYear = birthYear + 55;
+    const pensionStartYear = birthYear + (pensionStartAge || 55);
     range.endYear = Math.min(range.endYear, pensionStartYear - 1);
   }
 
@@ -377,21 +377,34 @@ function splitResponsibilitySections(text) {
   if (!markers.length) return [];
 
   const sections = [];
+  let currentScope = 'basic';
   for (let i = 0; i < markers.length; i++) {
     const start = markers[i].end;
     const end = i + 1 < markers.length ? markers[i + 1].index : text.length;
     const chunk = text.substring(start, end).trim();
-    const knownNameMatch = chunk.match(/^(养老年金|年金|生存保险金|生存金|祝寿金|祝贺金|满期保险金|满期金|教育金|关爱金|婚嫁金|身故保险金|全残保险金)/u);
+    const compactChunk = normalizeCashflowLookupText(chunk);
+    if (/^基本责任/u.test(compactChunk)) currentScope = 'basic';
+    if (/^(?:可选责任|可选择责任)/u.test(compactChunk)) currentScope = 'optional';
+    const knownNameMatch = chunk.match(/^(养老年金|年金|生存保险金|生存金|祝寿金|祝贺金|满期生存保险金|满期保险金|满期金|教育金|关爱金|婚嫁金|身故保险金|全残保险金)/u);
     const nameMatch = chunk.match(/^(.+?)[\s\n]/);
     const name = knownNameMatch ? knownNameMatch[1] : nameMatch ? nameMatch[1].trim() : chunk.substring(0, 10);
-    sections.push({ name, content: chunk });
+    sections.push({ name, content: chunk, scope: currentScope });
   }
   return sections;
+}
+
+function isDeterministicWealthBenefitSection(section = {}) {
+  const text = normalizeCashflowLookupText([section.name, section.content].join(' '));
+  if (!text) return false;
+  if (/生存|满期|期满|年金|养老金|教育金|祝寿|祝贺|关爱金|婚嫁|成家|返还/u.test(text)) return true;
+  if (/医疗|医药|住院|门诊|治疗|费用|报销|补偿|赔付比例|免赔|理赔|疾病|意外|伤害|伤残|全残|津贴/u.test(text)) return false;
+  return true;
 }
 
 /** Parse a single benefit section into yearly items. */
 function parseBenefitSection(sec, ctx) {
   const { effectiveYear, birthYear, coverageEndYear, pensionStartAge, amount, policy } = ctx;
+  if (!isDeterministicWealthBenefitSection(sec)) return [];
   const text = sec.content;
   const compactText = normalizeCashflowLookupText(text);
   const name = sec.name;
@@ -731,6 +744,16 @@ function shouldSkipCashflowIndicator(indicator = {}) {
   return cashflowIndicatorIsParameter(indicator) || indicatorHasUncertainValue(indicator);
 }
 
+function resolvePensionStartAgeFromIndicators(cashflowIndicators = [], policy = {}) {
+  for (const indicator of Array.isArray(cashflowIndicators) ? cashflowIndicators : []) {
+    if (!cashflowIndicatorIsParameter(indicator)) continue;
+    if (policy?.__cashflowPlan && !policyPlanMatchesIndicator(policy.__cashflowPlan, indicator)) continue;
+    const value = Number(indicator.value);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 0;
+}
+
 function scenarioIndicatorIsRatioOnly(indicator = {}) {
   const unit = String(indicator.unit || '');
   if (!/%/u.test(unit)) return false;
@@ -740,7 +763,7 @@ function scenarioIndicatorIsRatioOnly(indicator = {}) {
     || (/医疗/u.test(text) && /比例|保险金额/u.test(text));
 }
 
-function expandCashflowIndicatorSourceText(indicator, policy) {
+function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators = []) {
   if (shouldSkipCashflowIndicator(indicator)) return [];
   const sourceText = indicatorSourceText(indicator);
   if (!sourceText) return [];
@@ -748,6 +771,7 @@ function expandCashflowIndicatorSourceText(indicator, policy) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
   const ctx = buildContext(scopedPolicy);
   if (!ctx.effectiveYear || !ctx.birthYear || !ctx.coverageEndYear) return [];
+  const pensionStartAge = resolvePensionStartAgeFromIndicators(cashflowIndicators, scopedPolicy);
 
   const sections = splitResponsibilitySections(sourceText);
   const effectiveSections = sections.length
@@ -761,7 +785,7 @@ function expandCashflowIndicatorSourceText(indicator, policy) {
       effectiveYear: ctx.effectiveYear,
       birthYear: ctx.birthYear,
       coverageEndYear: ctx.coverageEndYear,
-      pensionStartAge: 0,
+      pensionStartAge,
       amount: ctx.basicAmount,
       policy: scopedPolicy,
     });
@@ -1103,9 +1127,31 @@ function responsibilityMatchesOptionalResponsibility(row, optional) {
 }
 
 function isSelectedResponsibilityRow(policy, row) {
+  const rowText = normalizeOptionalText([
+    row?.coverageType,
+    row?.scenario,
+    row?.payout,
+    row?.note,
+  ].join(' '));
+  if (/基本责任/u.test(rowText) && /(?:可选责任|可选择责任)/u.test(rowText)) return true;
+
   const matchingOptionalResponsibilities = (Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : [])
     .filter((optional) => responsibilityMatchesOptionalResponsibility(row, optional));
   if (!matchingOptionalResponsibilities.length) return true;
+  return matchingOptionalResponsibilities.some((optional) =>
+    String(optional?.selectionStatus || '') === 'selected' &&
+    String(optional?.quantificationStatus || 'pending_review') === 'quantified'
+  );
+}
+
+function isSelectedOptionalResponsibilitySection(policy, section) {
+  const matchingOptionalResponsibilities = (Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : [])
+    .filter((optional) => responsibilityMatchesOptionalResponsibility({
+      coverageType: section?.scope,
+      scenario: section?.content,
+      payout: section?.name,
+    }, optional));
+  if (!matchingOptionalResponsibilities.length) return false;
   return matchingOptionalResponsibilities.some((optional) =>
     String(optional?.selectionStatus || '') === 'selected' &&
     String(optional?.quantificationStatus || 'pending_review') === 'quantified'
@@ -1117,16 +1163,7 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
   const productName = policy.name || '';
   const amount = ctx.basicAmount;
 
-  // Extract pension start age from indicators
-  let pensionStartAge = 0;
-  for (const ind of cashflowIndicators) {
-    const liab = String(ind.liability || '');
-    const basis = String(ind.basis || '');
-    if ((/领取.*年龄|年金.*年龄|养老.*年龄/.test(liab) || /领取.*年龄/.test(basis)) && ind.value) {
-      pensionStartAge = Number(ind.value);
-      break;
-    }
-  }
+  const pensionStartAge = resolvePensionStartAgeFromIndicators(cashflowIndicators, policy);
 
   // Concatenate responsibility texts
   const respText = (Array.isArray(policy.responsibilities) ? policy.responsibilities : [])
@@ -1143,6 +1180,7 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
 
   for (const sec of sections) {
     if (/身故/.test(sec.name)) continue;
+    if (sec.scope === 'optional' && !isSelectedOptionalResponsibilitySection(policy, sec)) continue;
 
     const parsed = parseBenefitSection(sec, {
       effectiveYear, birthYear, coverageEndYear, pensionStartAge,
@@ -1204,25 +1242,19 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
  */
 function computeFromIndicators(cashflowIndicators, ctx) {
   const entries = [];
-  const usableCashflowIndicators = (Array.isArray(cashflowIndicators) ? cashflowIndicators : [])
+  const allCashflowIndicators = Array.isArray(cashflowIndicators) ? cashflowIndicators : [];
+  const usableCashflowIndicators = allCashflowIndicators
     .filter((indicator) => !shouldSkipCashflowIndicator(indicator));
   for (const indicator of usableCashflowIndicators) {
     const scopedPolicy = policyScopedToIndicator(ctx.policy, indicator);
-    entries.push(...expandCashflowIndicator(indicator, scopedPolicy));
-    entries.push(...expandCashflowIndicatorSourceText(indicator, ctx.policy));
+    const pensionStartAge = resolvePensionStartAgeFromIndicators(allCashflowIndicators, scopedPolicy);
+    entries.push(...expandCashflowIndicator(indicator, scopedPolicy, pensionStartAge));
+    entries.push(...expandCashflowIndicatorSourceText(indicator, ctx.policy, allCashflowIndicators));
   }
 
   if (!entries.length && usableCashflowIndicators.length) {
     const { effectiveYear, birthYear, coverageEndYear } = ctx;
-    let pensionStartAge = 0;
-    for (const ind of usableCashflowIndicators) {
-      const liab = String(ind.liability || '');
-      const basis = String(ind.basis || '');
-      if ((/领取.*年龄|年金.*年龄|养老.*年龄/.test(liab) || /领取.*年龄/.test(basis)) && ind.value) {
-        pensionStartAge = Number(ind.value);
-        break;
-      }
-    }
+    const pensionStartAge = resolvePensionStartAgeFromIndicators(allCashflowIndicators, ctx.policy);
     return synthesizeCashflowFromIndicatorsOnly(usableCashflowIndicators, ctx.policy, effectiveYear, birthYear, coverageEndYear, pensionStartAge);
   }
 

@@ -712,6 +712,75 @@ test('computePolicyCashflow: responsibility text path skips unselected optional 
   assert.deepEqual(entries, []);
 });
 
+test('computePolicyCashflow: responsibility text path skips unselected optional sections inside combined terms', () => {
+  const policy = {
+    id: 20,
+    company: '测试保险',
+    name: '测试年金',
+    amount: 50000,
+    firstPremium: 5000,
+    date: '2020-01-01',
+    insuredBirthday: '1980-01-01',
+    paymentPeriod: '10年交',
+    coveragePeriod: '30年',
+    responsibilities: [
+      {
+        scenario: [
+          '1. 基本责任',
+          '（1）生存保险金',
+          '被保险人生存至保险期间届满，我们按本合同基本保险金额给付生存保险金。',
+          '2. 可选责任',
+          '（1）成家立业金',
+          '被保险人于30周岁保单周年日零时生存，我们按基本保险金额的2倍给付成家立业金。',
+        ].join('\n'),
+      },
+    ],
+    optionalResponsibilities: [
+      {
+        coverageType: '现金流',
+        liability: '成家立业金',
+        selectionStatus: 'not_selected',
+        quantificationStatus: 'quantified',
+      },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, []);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].liability, '生存保险金');
+});
+
+test('computePolicyCashflow: responsibility text path skips medical reimbursement continuation terms', () => {
+  const policy = {
+    id: 21,
+    company: '测试保险',
+    name: '学生平安意外伤害保险',
+    amount: 80000,
+    firstPremium: 100,
+    date: '2024-08-16',
+    insuredBirthday: '2009-06-08',
+    paymentPeriod: '趸交',
+    coveragePeriod: '至2025年08月15日',
+    responsibilities: [
+      {
+        scenario: [
+          '保险责任',
+          '在本合同保险期间内，本公司承担下列保险责任：',
+          '1. 被保险人已参加公费医疗或基本医疗保险，且在申请理赔时已获得补偿。',
+          '2. 被保险人在申请理赔时未参加公费医疗或基本医疗保险，或被保险人已参加公费医疗但未获得补偿。',
+          '被保险人因疾病在本公司认可医院治疗，至保险期间届满时治疗仍未结束的，本公司继续承担保险责任。',
+          '被保险人不论一次或多次因疾病产生的合理医疗费用，本公司均按本条约定分别给付保险金，累计给付达到本合同保险金额时，本合同终止。',
+        ].join('\n'),
+      },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, []);
+
+  assert.deepEqual(entries, []);
+});
+
 test('computePolicyCashflow: responsibility text path has calcText on entries', () => {
   const entries = computePolicyCashflow(policyWithResponsibilities, null, []);
   assert.ok(entries.length > 0);
@@ -913,6 +982,89 @@ test('computePolicyCashflow: does not merge special maturity benefits into stand
   assert.equal(entries.length, 2);
   assert.deepEqual(entries.map((entry) => entry.liability), ['特别满期保险金', '满期返还']);
   assert.deepEqual(entries.map((entry) => entry.cumulative), [50000, 100000]);
+});
+
+test('computePolicyCashflow: source excerpt stops survival benefit before pension start age', () => {
+  const policy = {
+    id: 18,
+    company: '测试保险',
+    name: '测试年金',
+    amount: 1465,
+    firstPremium: 11000,
+    date: '2025-12-22',
+    insuredBirthday: '1988-12-16',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至2073年12月22日',
+  };
+
+  const entries = computePolicyCashflow(policy, null, [
+    {
+      id: 'survival',
+      coverageType: '现金流',
+      liability: '生存保险金',
+      value: 100,
+      unit: '%',
+      basis: '基本保额',
+      productName: '测试年金',
+      sourceExcerpt: '（1）生存保险金 若被保险人于本合同生效满五年的首个保单周年日（含）起至养老年金开始领取日（不含）之前，在每个保单周年日零时生存，我们按基本保险金额给付生存保险金。',
+    },
+    {
+      id: 'pension_start',
+      coverageType: '现金流',
+      liability: '领取起始年龄',
+      value: 55,
+      unit: '周岁',
+      basis: '年金/养老金领取年龄',
+      productName: '测试年金',
+    },
+    {
+      id: 'pension',
+      coverageType: '现金流',
+      liability: '养老年金',
+      value: 100,
+      unit: '%',
+      basis: '基本保额',
+      productName: '测试年金',
+      sourceExcerpt: '（2）养老年金 被保险人于养老年金开始领取日（含）起至保险期间届满之前，在每个保单周年日零时生存，我们按基本保险金额给付养老年金。',
+    },
+  ]);
+
+  assert.equal(entries.length, 43);
+  assert.equal(entries.filter((entry) => entry.liability === '生存保险金').at(-1).year, 2042);
+  assert.deepEqual(entries.filter((entry) => entry.year === 2043).map((entry) => entry.liability), ['养老年金']);
+});
+
+test('computePolicyCashflow: normalizes maturity source excerpt names before merging', () => {
+  const policy = {
+    id: 19,
+    company: '测试保险',
+    name: '测试两全',
+    amount: 50000,
+    firstPremium: 5000,
+    date: '2020-01-01',
+    insuredBirthday: '1980-01-01',
+    paymentPeriod: '10年交',
+    coveragePeriod: '30年',
+    responsibilities: [
+      { scenario: '一、满期生存保险金 被保险人生存至保险期间届满，我们按本合同实际交纳的保险费给付满期生存保险金。' },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [
+    {
+      id: 'maturity_source',
+      coverageType: '现金流',
+      liability: '满期生存保险金',
+      unit: '公式',
+      basis: '已交保费',
+      productName: '测试两全',
+      sourceExcerpt: '（1）满期生存保险金被保险人生存至保险期间届满，我们按本合同实际交纳的保险费给付满期生存保险金。',
+    },
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].year, 2050);
+  assert.equal(entries[0].liability, '满期生存保险金');
 });
 
 test('computePolicyCashflow: expands China Life multi-plan annuity source excerpts with plan amounts', () => {

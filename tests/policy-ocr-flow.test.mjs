@@ -8776,6 +8776,95 @@ test('policy app recomputes cashflow cache on startup for persisted policies', a
   }
 });
 
+test('policy app startup cashflow recompute uses persisted optional responsibility selections', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+  db.prepare('INSERT INTO policies (id) VALUES (?)').run(500702);
+  const policy = {
+    id: 500702,
+    userId: 1,
+    guestId: '',
+    company: '测试保险',
+    name: '测试年金',
+    applicant: '温舒萍',
+    insured: '温舒萍',
+    insuredBirthday: '1988-12-16',
+    date: '2025-12-22',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至60周岁',
+    amount: 50000,
+    firstPremium: 5000,
+    responsibilities: [
+      {
+        scenario: [
+          '1. 基本责任',
+          '（1）满期生存保险金',
+          '被保险人生存至保险期间届满，我们按本合同基本保险金额给付满期生存保险金。',
+          '2. 可选责任',
+          '（1）可选满期金',
+          '被保险人生存至保险期间届满，我们按本合同基本保险金额的2倍给付可选满期金。',
+        ].join('\n'),
+      },
+    ],
+    createdAt: '2026-05-28T17:06:56.018Z',
+    updatedAt: '2026-05-28T19:49:53.416Z',
+    reportStatus: 'ready',
+  };
+  const app = createPolicyOcrApp({
+    db,
+    state: {
+      users: [{ id: 1, mobile: '13800000000', createdAt: '2026-05-01T00:00:00.000Z' }],
+      sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-05-01T00:01:00.000Z' }],
+      smsCodes: [],
+      policies: [policy],
+      pendingScans: [],
+      knowledgeRecords: [],
+      insuranceIndicatorRecords: [],
+      policyDerivedResults: [
+        {
+          policyId: 500702,
+          coverageIndicators: [],
+          optionalResponsibilities: [
+            {
+              coverageType: '现金流',
+              liability: '可选满期金',
+              selectionStatus: 'selected',
+              quantificationStatus: 'quantified',
+            },
+          ],
+          status: 'ready',
+          generatedAt: '2026-06-15T00:00:00.000Z',
+        },
+      ],
+      nextId: 500703,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const list = await jsonFetch(server.baseUrl, '/api/policies', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+
+    assert.equal(list.response.status, 200);
+    assert.deepEqual(
+      list.payload.policies[0].cashflowEntries.map((entry) => ({
+        year: entry.year,
+        amount: entry.amount,
+        cumulative: entry.cumulative,
+        liability: entry.liability,
+      })),
+      [
+        { year: 2048, amount: 50000, cumulative: 50000, liability: '满期生存保险金' },
+        { year: 2048, amount: 100000, cumulative: 150000, liability: '可选满期金' },
+      ],
+    );
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('policy app startup cashflow recompute skips cache writes without a persisted policy parent', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');

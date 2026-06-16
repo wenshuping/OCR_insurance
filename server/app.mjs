@@ -1929,11 +1929,15 @@ export function createPolicyOcrApp(options = {}) {
    * Returns { cashflowEntries, scenarioEntries, totalCashflow }.
    */
   function computeAndStoreCashflow(policy) {
-    const policyIndicators = findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
+    const derivedResult = state.policyDerivedResults.find((row) => Number(row?.policyId) === Number(policy?.id)) || null;
+    const policyForCashflow = derivedResult ? mergePolicyDerivedResult(policy, derivedResult) : policy;
+    const policyIndicators = derivedResult && Array.isArray(policyForCashflow.coverageIndicators)
+      ? policyForCashflow.coverageIndicators
+      : findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
     const selectedIndicators = selectedCoverageIndicators(policyIndicators);
-    const template = findProductCashflowTemplate(policy, state.knowledgeRecords);
-    const cashflowEntries = computePolicyCashflow(policy, template, selectedIndicators);
-    const scenarioEntries = computeScenarioEntries(selectedIndicators, policy);
+    const template = findProductCashflowTemplate(policyForCashflow, state.knowledgeRecords);
+    const cashflowEntries = computePolicyCashflow(policyForCashflow, template, selectedIndicators);
+    const scenarioEntries = computeScenarioEntries(selectedIndicators, policyForCashflow);
     const totalCashflow = cashflowEntries.reduce((sum, e) => sum + e.amount, 0);
 
     if (!cashflowEntries.length || ensureCashflowPolicyParent(policy.id)) {
