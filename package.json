@@ -83,6 +83,7 @@
     "sync:feishu-catalog": "node scripts/sync-feishu-product-catalog.mjs",
     "harness:audit": "node scripts/harness-audit.mjs",
     "audit:ocr-replay": "node scripts/audit-ocr-replay.mjs",
+    "family-sales-reviews:regenerate": "node scripts/regenerate-family-sales-reviews.mjs",
     "ocr:structurev3:inspect": "node scripts/inspect-pp-structurev3.mjs",
     "build": "vite build",
     "preview": "vite preview --port=3013 --host=0.0.0.0",

@@ -64,6 +64,16 @@ export function createFamilyRoutes(context) {
   }
 
   function archiveSalesReviewForFamily(familyId) {
+    state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
+    for (const review of state.familySalesReviews) {
+      if (Number(review?.familyId || 0) !== Number(familyId)) continue;
+      if (String(review?.status || 'active') !== 'active') continue;
+      review.status = 'archived';
+      review.updatedAt = new Date().toISOString();
+    }
+  }
+
+  function archiveGeneratedReportsForFamily(familyId) {
     if (typeof archiveFamilyGeneratedReports !== 'function') return;
     archiveFamilyGeneratedReports(state, [familyId]);
   }
@@ -221,7 +231,7 @@ export function createFamilyRoutes(context) {
     try {
       const shouldArchiveSalesReview = hasOwn(req.body, 'notes');
       updateFamilyProfileName(family, req.body || {});
-      if (shouldArchiveSalesReview) archiveSalesReviewForFamily(family.id);
+      if (shouldArchiveSalesReview) archiveGeneratedReportsForFamily(family.id);
       await saveFamilyState();
       return res.json({ ok: true, family, members: listFamilyMembers(state, family.id) });
     } catch (error) {
@@ -306,7 +316,7 @@ export function createFamilyRoutes(context) {
         const beforeMemberUpdatedAt = member.updatedAt;
         updateFamilyMemberNotes(member, req.body?.notes);
         if (member.updatedAt !== beforeMemberUpdatedAt) family.updatedAt = member.updatedAt;
-        archiveSalesReviewForFamily(family.id);
+        archiveGeneratedReportsForFamily(family.id);
       }
       await saveFamilyState();
       return res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
@@ -424,6 +434,7 @@ export function createFamilyRoutes(context) {
         },
       };
       state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
+      archiveSalesReviewForFamily(family.id);
       state.familySalesReviews.push(reviewRecord);
       await saveFamilyState();
       return res.json({ ok: true, review: clientSalesReview(reviewRecord) });

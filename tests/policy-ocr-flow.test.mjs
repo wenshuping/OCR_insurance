@@ -9938,6 +9938,10 @@ test('family sales review is generated once persisted and returned by latest rep
     assert.equal(regenerated.response.status, 200);
     assert.equal(regenerated.payload.review.id, 13);
     assert.equal(regenerated.payload.review.content.includes('第 2 次销售建议'), true);
+    assert.equal(state.familySalesReviews.length, 2);
+    assert.equal(state.familySalesReviews.find((review) => review.id === 12).status, 'archived');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 13).status, 'active');
+    assert.equal(state.familyReportShares.length, 0);
     assert.equal(generationCount, 2);
   } finally {
     await server.close();
