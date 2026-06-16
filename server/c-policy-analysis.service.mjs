@@ -674,11 +674,11 @@ function buildParticipantSummary(policy = {}) {
   const insuredRelation = trimString(policy.insuredRelation);
   if (!applicantRelation && !insuredRelation) return '';
   if (applicantRelation && insuredRelation && applicantRelation === insuredRelation) {
-    return `投保人与被保险人与核心人员的关系均为${applicantRelation}`;
+    return `投保人与被保险人与顶梁柱的关系均为${applicantRelation}`;
   }
   const parts = [];
-  if (applicantRelation) parts.push(`投保人与核心人员的关系为${applicantRelation}`);
-  if (insuredRelation) parts.push(`被保险人与核心人员的关系为${insuredRelation}`);
+  if (applicantRelation) parts.push(`投保人与顶梁柱的关系为${applicantRelation}`);
+  if (insuredRelation) parts.push(`被保险人与顶梁柱的关系为${insuredRelation}`);
   return parts.join('；');
 }
 

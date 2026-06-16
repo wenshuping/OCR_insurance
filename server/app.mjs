@@ -79,6 +79,7 @@ import {
 import {
   createFamilyMember,
   createFamilyProfile,
+  archiveFamilyGeneratedReports,
   archiveFamilyGeneratedReportsForPolicy,
   archiveFamilyProfile,
   enrichFamilyMemberIdentity,
@@ -89,7 +90,9 @@ import {
   matchFamilyMemberByPerson,
   normalizeFamilyRelation,
   setFamilyCoreMember,
+  syncFamilyMemberFromPolicyPerson,
   updateFamilyProfileName,
+  updateFamilyMemberNotes,
   updateFamilyMemberRelation,
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
@@ -432,8 +435,14 @@ function normalizeManualPolicyData(value) {
     const text = String(value[key] || '').trim();
     if (text) data[key] = text;
   }
+  const applicantBirthday = normalizeDateOnly(value.applicantBirthday || value.applicantBirthDate);
+  if (applicantBirthday) data.applicantBirthday = applicantBirthday;
   const beneficiary = normalizeBeneficiary(value.beneficiary);
   if (beneficiary) data.beneficiary = beneficiary;
+  const beneficiaryRelation = normalizePolicyRelation(value.beneficiaryRelation || value.beneficiaryRelationLabel);
+  if (beneficiaryRelation) data.beneficiaryRelation = beneficiaryRelation;
+  const beneficiaryBirthday = normalizeDateOnly(value.beneficiaryBirthday || value.beneficiaryBirthDate);
+  if (beneficiaryBirthday) data.beneficiaryBirthday = beneficiaryBirthday;
   const insuredIdNumber = normalizeIdNumber(value.insuredIdNumber || value.insuredIdentityNumber || value.insuredIdCard);
   if (insuredIdNumber) data.insuredIdNumber = insuredIdNumber;
   const insuredBirthday = normalizeDateOnly(value.insuredBirthday || value.insuredBirthDate) || birthdayFromIdNumber(insuredIdNumber);
@@ -442,7 +451,7 @@ function normalizeManualPolicyData(value) {
     { key: 'applicantRelation', labelKey: 'applicantRelationLabel' },
     { key: 'insuredRelation', labelKey: 'insuredRelationLabel' },
   ]) {
-    const relation = normalizePolicyRelation(value[labelKey] || value[key]);
+    const relation = normalizePolicyRelation(value[key] || value[labelKey]);
     if (relation) data[key] = relation;
   }
   for (const key of ['amount', 'firstPremium']) {
@@ -579,7 +588,16 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   }
   if (hasCanonicalProductIdInput) data.canonicalProductId = trim(input.canonicalProductId);
   if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
+  if (hasOwn(input, 'beneficiaryRelation') || hasOwn(input, 'beneficiaryRelationLabel')) {
+    data.beneficiaryRelation = normalizePolicyRelation(input.beneficiaryRelation || input.beneficiaryRelationLabel);
+  }
   if (hasOwn(input, 'date')) data.date = normalizeDateOnly(input.date) || trim(input.date);
+  if (hasOwn(input, 'applicantBirthday') || hasOwn(input, 'applicantBirthDate')) {
+    data.applicantBirthday = normalizeDateOnly(input.applicantBirthday || input.applicantBirthDate);
+  }
+  if (hasOwn(input, 'beneficiaryBirthday') || hasOwn(input, 'beneficiaryBirthDate')) {
+    data.beneficiaryBirthday = normalizeDateOnly(input.beneficiaryBirthday || input.beneficiaryBirthDate);
+  }
   if (hasOwn(input, 'insuredIdNumber') || hasOwn(input, 'insuredIdentityNumber') || hasOwn(input, 'insuredIdCard')) {
     data.insuredIdNumber = normalizeIdNumber(input.insuredIdNumber || input.insuredIdentityNumber || input.insuredIdCard);
   }
@@ -590,7 +608,7 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
     { key: 'applicantRelation', labelKey: 'applicantRelationLabel' },
     { key: 'insuredRelation', labelKey: 'insuredRelationLabel' },
   ]) {
-    if (hasOwn(input, key) || hasOwn(input, labelKey)) data[key] = normalizePolicyRelation(input[labelKey] || input[key]);
+    if (hasOwn(input, key) || hasOwn(input, labelKey)) data[key] = normalizePolicyRelation(input[key] || input[labelKey]);
   }
   for (const key of ['amount', 'firstPremium']) {
     if (!hasOwn(input, key)) continue;
@@ -657,8 +675,8 @@ function normalizeFamilyBindingInput(input = {}) {
     familyId: Number(input.familyId || 0) || null,
     applicantMemberId: Number(input.applicantMemberId || 0) || null,
     insuredMemberId: Number(input.insuredMemberId || 0) || null,
-    applicantRelationLabel: trim(input.applicantRelationLabel || input.applicantRelation),
-    insuredRelationLabel: trim(input.insuredRelationLabel || input.insuredRelation),
+    applicantRelationLabel: trim(input.applicantRelation || input.applicantRelationLabel),
+    insuredRelationLabel: trim(input.insuredRelation || input.insuredRelationLabel),
   };
 }
 
@@ -677,9 +695,18 @@ function policyHasFamilyBinding(policy = {}) {
 }
 
 function shouldRebuildPolicyFamilyBinding(updates = {}, policy = {}) {
+  const familyMemberFields = [
+    'applicant',
+    'insured',
+    'applicantBirthday',
+    'insuredBirthday',
+    'insuredIdNumber',
+    'applicantRelation',
+    'insuredRelation',
+  ];
   return (
     familyInputHasBindingFields(updates) ||
-    (policyHasFamilyBinding(policy) && (hasOwn(updates, 'applicant') || hasOwn(updates, 'insured')))
+    (policyHasFamilyBinding(policy) && familyMemberFields.some((key) => hasOwn(updates, key)))
   );
 }
 
@@ -690,24 +717,39 @@ function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}
   const members = listFamilyMembers(state, normalizedInput.familyId);
   const applicant = members.find((row) => Number(row.id) === Number(normalizedInput.applicantMemberId));
   const insured = members.find((row) => Number(row.id) === Number(normalizedInput.insuredMemberId));
+  const applicantPerson = familyPersonFromPolicyData(personData, 'applicant');
+  const insuredPerson = familyPersonFromPolicyData(personData, 'insured');
   for (const { member, relationLabel } of [
     { member: applicant, relationLabel: normalizedInput.applicantRelationLabel },
     { member: insured, relationLabel: normalizedInput.insuredRelationLabel },
   ]) {
     if (!member || !relationLabel) continue;
     const relation = normalizeFamilyRelation(relationLabel);
-    if (relation.relationToCore === 'self') continue;
+    if (relation.relationToCore === 'self') {
+      if (family && Number(family.coreMemberId || 0) !== Number(member.id)) {
+        setFamilyCoreMember(state, family, member);
+      } else if (member.relationLabel !== '本人') {
+        updateFamilyMemberRelation(member, '本人');
+        if (family) family.updatedAt = member.updatedAt;
+      }
+      continue;
+    }
     if (Number(member.id) === Number(family?.coreMemberId || 0)) {
-      if (relation.relationToCore === 'pending') continue;
-      const error = new Error('核心成员关系固定为本人');
-      error.code = 'FAMILY_CORE_RELATION_IMMUTABLE';
-      error.status = 400;
-      throw error;
+      if (member.relationLabel !== '本人') {
+        updateFamilyMemberRelation(member, '本人');
+        if (family) family.updatedAt = member.updatedAt;
+      }
+      continue;
     }
     if (member.relationLabel !== relation.relationLabel) {
       updateFamilyMemberRelation(member, relation.relationLabel);
       if (family) family.updatedAt = member.updatedAt;
     }
+  }
+  const applicantChanged = applicant ? syncFamilyMemberFromPolicyPerson(applicant, applicantPerson) : false;
+  const insuredChanged = insured ? syncFamilyMemberFromPolicyPerson(insured, insuredPerson) : false;
+  if (family && (applicantChanged || insuredChanged)) {
+    family.updatedAt = (insuredChanged ? insured : applicant)?.updatedAt || new Date().toISOString();
   }
   const applicantNameSnapshot = trim(personData.applicant);
   const insuredNameSnapshot = trim(personData.insured);
@@ -1672,7 +1714,10 @@ function buildPolicyReportScan(policy) {
       name: policy?.name || '',
       applicant: policy?.applicant || '',
       beneficiary: policy?.beneficiary || '',
+      beneficiaryRelation: policy?.beneficiaryRelation || '',
+      beneficiaryBirthday: policy?.beneficiaryBirthday || '',
       applicantRelation: policy?.applicantRelation || '',
+      applicantBirthday: policy?.applicantBirthday || '',
       insured: policy?.insured || '',
       insuredRelation: policy?.insuredRelation || '',
       insuredIdNumber: policy?.insuredIdNumber || '',
@@ -2051,6 +2096,7 @@ export function createPolicyOcrApp(options = {}) {
     upsertKnowledgeRecords,
     createFamilyMember,
     createFamilyProfile,
+    archiveFamilyGeneratedReports,
     archiveFamilyGeneratedReportsForPolicy,
     archiveFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
@@ -2059,6 +2105,7 @@ export function createPolicyOcrApp(options = {}) {
     listFamilyProfilesForOwner,
     setFamilyCoreMember,
     updateFamilyProfileName,
+    updateFamilyMemberNotes,
     updateFamilyMemberRelation,
   });
 

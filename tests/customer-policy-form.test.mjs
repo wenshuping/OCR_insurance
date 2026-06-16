@@ -13,6 +13,8 @@ function functionSource(source, name, nextName) {
 
 async function loadCustomerPolicyFormModule() {
   const source = fs.readFileSync(new URL('../src/shared/customer-policy-form.ts', import.meta.url), 'utf8');
+  const isValidDateInputPartsSource = functionSource(source, 'isValidDateInputParts', 'normalizeDateInputValue');
+  const normalizeDateInputValueSource = functionSource(source, 'normalizeDateInputValue', 'normalizePolicyPlanListWithIndex');
   const scanToFormSource = functionSource(source, 'scanToForm', 'canReuseParticipantMemberId');
   const canReuseParticipantMemberIdSource = functionSource(source, 'canReuseParticipantMemberId', 'mergeScanToForm');
   const mergeScanToFormSource = functionSource(source, 'mergeScanToForm', 'sanitizeAmount');
@@ -21,6 +23,7 @@ async function loadCustomerPolicyFormModule() {
   const hasPlanPremiumEvidenceSource = functionSource(source, 'hasPlanPremiumEvidence', 'hasConfirmedRelation');
   const hasConfirmedRelationSource = functionSource(source, 'hasConfirmedRelation', 'validatePolicyEntryForm');
   const validatePolicyEntryFormSource = functionSource(source, 'validatePolicyEntryForm', 'productLookupKey');
+  const buildPolicyUpdateDataSource = functionSource(source, 'buildPolicyUpdateData', 'scanToForm');
   const moduleSource = `
     type PolicyFormData = any;
     type PolicyScanResult = any;
@@ -43,6 +46,9 @@ async function loadCustomerPolicyFormModule() {
     function normalizePolicyPlanList(plans: unknown, company = '', options: { keepEmpty?: boolean; assignRolesByRecognizedOrder?: boolean } = {}) {
       return normalizePolicyPlanListWithIndex(plans, company, options).map(({ __originalIndex, ...plan }) => plan);
     }
+    ${isValidDateInputPartsSource}
+    ${normalizeDateInputValueSource}
+    ${buildPolicyUpdateDataSource}
     ${scanToFormSource}
     ${canReuseParticipantMemberIdSource}
     ${mergeScanToFormSource}
@@ -51,7 +57,7 @@ async function loadCustomerPolicyFormModule() {
     ${hasPlanPremiumEvidenceSource}
     ${hasConfirmedRelationSource}
     ${validatePolicyEntryFormSource}
-    export { scanToForm, mergeScanToForm, validatePolicyEntryForm };
+    export { scanToForm, mergeScanToForm, validatePolicyEntryForm, buildPolicyUpdateData, normalizeDateInputValue };
   `;
   const output = ts.transpileModule(moduleSource, {
     compilerOptions: {
@@ -62,6 +68,41 @@ async function loadCustomerPolicyFormModule() {
   const encoded = Buffer.from(output, 'utf8').toString('base64');
   return import(`data:text/javascript;base64,${encoded}`);
 }
+
+test('buildPolicyUpdateData normalizes slash date values before saving policy edits', async () => {
+  const { buildPolicyUpdateData, normalizeDateInputValue } = await loadCustomerPolicyFormModule();
+  assert.equal(normalizeDateInputValue('1987/12/02'), '1987-12-02');
+  assert.equal(normalizeDateInputValue('2024年12月05日'), '2024-12-05');
+
+  const updated = buildPolicyUpdateData(
+    { company: '新华保险', name: '旧产品', canonicalProductId: 'xinhua-old' },
+    {
+      company: '新华保险',
+      name: '旧产品',
+      canonicalProductId: 'xinhua-old',
+      applicant: '张三',
+      applicantBirthday: '',
+      beneficiary: '法定',
+      beneficiaryRelation: '',
+      beneficiaryBirthday: '2020/01/03',
+      applicantRelation: '配偶',
+      insured: '李四',
+      insuredRelation: '配偶',
+      insuredIdNumber: '',
+      insuredBirthday: '1987/12/02',
+      date: '2024/12/05',
+      paymentPeriod: '20年交',
+      coveragePeriod: '至60岁',
+      amount: '100000',
+      firstPremium: '12000',
+      plans: [],
+    },
+  );
+
+  assert.equal(updated.insuredBirthday, '1987-12-02');
+  assert.equal(updated.beneficiaryBirthday, '2020-01-03');
+  assert.equal(updated.date, '2024-12-05');
+});
 
 test('mergeScanToForm clears stale participant member ids when OCR changes participant names', async () => {
   const { mergeScanToForm } = await loadCustomerPolicyFormModule();
@@ -234,7 +275,9 @@ test('validatePolicyEntryForm accepts riders when OCR proves only total premium 
     applicantRelation: '本人',
     insured: '王後曦',
     insuredRelation: '子女',
-    insuredBirthday: '2009-06-08',
+    applicantBirthday: '',
+    beneficiaryBirthday: '',
+    insuredBirthday: '',
     date: '2024-08-16',
     paymentPeriod: '趸交',
     coveragePeriod: '至2025年08月15日',
@@ -263,6 +306,9 @@ test('validatePolicyEntryForm accepts riders when OCR proves only total premium 
   });
 
   assert.ok(!errors.includes('附加险1保费'));
+  assert.ok(!errors.includes('投保人生日'));
+  assert.ok(!errors.includes('受益人生日'));
+  assert.ok(!errors.includes('被保险人生日'));
 });
 
 test('scanToForm preserves linked account role from visual OCR plans', async () => {

@@ -513,9 +513,12 @@ export function createPrintableReportNode(target: HTMLElement, title: string, po
 
 export type ReportExportOptions = { rawTarget?: boolean; preservePageStyle?: boolean; matchScreenStyle?: boolean };
 
+const screenStyleReportWidth = 1180;
+
 function getScreenStyleReportWidth(target: HTMLElement) {
   const rect = target.getBoundingClientRect();
-  return Math.ceil(rect.width || target.offsetWidth || Math.min(target.scrollWidth || 0, window.innerWidth || 0) || 1120);
+  const width = Math.ceil(rect.width || target.offsetWidth || Math.min(target.scrollWidth || 0, window.innerWidth || 0) || screenStyleReportWidth);
+  return Math.max(screenStyleReportWidth, width);
 }
 
 function getScreenStyleReportBackground(target: HTMLElement) {
@@ -617,11 +620,14 @@ export function convertCssOklchToRgb(value: string) {
     .replace(/oklab\(([^)]*)\)/g, (_, colorValue: string) => convertOklabColorToRgb(colorValue));
 }
 
-export function normalizeCanvasColorValues(root: HTMLElement) {
+export function normalizeCanvasColorValues(root: HTMLElement, options: { includeCompositeColors?: boolean } = {}) {
+  const properties = options.includeCompositeColors === false
+    ? canvasColorStyleProperties
+    : [...canvasColorStyleProperties, ...canvasCompositeColorStyleProperties];
   const nodes = [root, ...Array.from(root.querySelectorAll<HTMLElement | SVGElement>('*'))];
   nodes.forEach((node) => {
     const computed = window.getComputedStyle(node);
-    [...canvasColorStyleProperties, ...canvasCompositeColorStyleProperties].forEach((property) => {
+    properties.forEach((property) => {
       const current = computed.getPropertyValue(property);
       const converted = convertCssOklchToRgb(current);
       if (converted && converted !== current) node.style.setProperty(property, converted);
@@ -702,7 +708,7 @@ function prepareScreenStyleReportNode(reportNode: HTMLElement, width: number, ba
   reportNode.style.minHeight = '1px';
   reportNode.style.overflow = 'visible';
   reportNode.style.background = backgroundColor;
-  normalizeCanvasColorValues(reportNode);
+  normalizeCanvasColorValues(reportNode, { includeCompositeColors: false });
 }
 
 function preparePageStyleReportNode(reportNode: HTMLElement, width: number) {
@@ -1416,9 +1422,7 @@ export function writePdfPreviewError(previewWindow: Window, fileName: string) {
 }
 
 function resolveImageCaptureOptions(options?: ReportExportOptions): ReportExportOptions {
-  if (options?.matchScreenStyle) return { rawTarget: true, ...options };
-  if (options?.preservePageStyle) return { rawTarget: true, preservePageStyle: true };
-  return { rawTarget: true, matchScreenStyle: true };
+  return { rawTarget: true, ...options, preservePageStyle: false, matchScreenStyle: true };
 }
 
 async function captureReportImageCanvas(target: HTMLElement, _title: string, _options?: ReportExportOptions) {
@@ -1427,11 +1431,9 @@ async function captureReportImageCanvas(target: HTMLElement, _title: string, _op
   const backgroundColor = renderOptions.preservePageStyle ? '#F4F8FC' : getScreenStyleReportBackground(target);
   const previousScrollX = window.scrollX;
   const previousScrollY = window.scrollY;
-  const usePageStyleExportMode = Boolean(renderOptions.preservePageStyle);
   let renderTarget: ReturnType<typeof createPdfRenderTarget> | null = null;
 
   window.scrollTo(0, 0);
-  if (usePageStyleExportMode) document.body.classList.add('pdf-page-style-export-mode');
   await new Promise((resolve) => requestAnimationFrame(resolve));
   try {
     renderTarget = createPdfRenderTarget(target, _title, undefined, renderOptions);
@@ -1464,7 +1466,6 @@ async function captureReportImageCanvas(target: HTMLElement, _title: string, _op
     });
   } finally {
     renderTarget?.cleanup();
-    if (usePageStyleExportMode) document.body.classList.remove('pdf-page-style-export-mode');
     window.scrollTo(previousScrollX, previousScrollY);
   }
 }

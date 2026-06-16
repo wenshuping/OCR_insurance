@@ -33,6 +33,28 @@ export const FAMILY_MEMBER_RELATION_OPTIONS = [
   '待确认',
 ];
 export const POLICY_RELATION_OPTIONS = ['本人', '子女', '父母', '夫妻'];
+export const POLICY_PERSON_RELATION_OPTIONS = FAMILY_MEMBER_RELATION_OPTIONS;
+
+function isValidDateInputParts(year: string, month: string, day: string) {
+  const parsedYear = Number(year);
+  const parsedMonth = Number(month);
+  const parsedDay = Number(day);
+  const date = new Date(Date.UTC(parsedYear, parsedMonth - 1, parsedDay));
+  return (
+    date.getUTCFullYear() === parsedYear &&
+    date.getUTCMonth() + 1 === parsedMonth &&
+    date.getUTCDate() === parsedDay
+  );
+}
+
+export function normalizeDateInputValue(value: unknown) {
+  const matched = String(value || '').trim().match(/(19\d{2}|20\d{2})[年./-]?(\d{1,2})[月./-]?(\d{1,2})/u);
+  if (!matched) return '';
+  const year = matched[1];
+  const month = matched[2].padStart(2, '0');
+  const day = matched[3].padStart(2, '0');
+  return isValidDateInputParts(year, month, day) ? `${year}-${month}-${day}` : '';
+}
 
 export function normalizePolicyPlanListWithIndex(
   plans: PolicyFormData['plans'] = [],
@@ -159,7 +181,10 @@ export function policyToForm(policy: Policy): PolicyFormData {
     name: policy.name || '',
     canonicalProductId: policy.canonicalProductId || '',
     applicant: policy.applicant || '',
+    applicantBirthday: policy.applicantBirthday || '',
     beneficiary: normalizeBeneficiaryValue(policy.beneficiary),
+    beneficiaryRelation: policy.beneficiaryRelation || '',
+    beneficiaryBirthday: policy.beneficiaryBirthday || '',
     applicantRelation: policy.applicantRelation || '',
     insured: policy.insured || '',
     insuredRelation: policy.insuredRelation || '',
@@ -185,6 +210,10 @@ export function policyToForm(policy: Policy): PolicyFormData {
 export function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): PolicyFormData {
   const nextCompany = data.company.trim();
   const nextName = data.name.trim();
+  const applicantBirthday = normalizeDateInputValue(data.applicantBirthday);
+  const beneficiaryBirthday = normalizeDateInputValue(data.beneficiaryBirthday);
+  const insuredBirthday = normalizeDateInputValue(data.insuredBirthday);
+  const date = normalizeDateInputValue(data.date) || data.date.trim();
   const companyChanged = nextCompany !== String(policy.company || '').trim();
   const productChanged = nextName !== String(policy.name || '').trim();
   const plans = normalizePolicyPlanList(data.plans, nextCompany).map((plan, index) => {
@@ -208,7 +237,11 @@ export function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): Pol
     company: nextCompany,
     name: nextName,
     canonicalProductId: productChanged ? '' : data.canonicalProductId,
+    applicantBirthday,
     beneficiary: normalizeBeneficiaryValue(data.beneficiary),
+    beneficiaryBirthday,
+    insuredBirthday,
+    date,
     plans,
   };
 }
@@ -221,7 +254,10 @@ export function scanToForm(scan: PolicyScanResult): PolicyFormData {
     name: String(data.name || ''),
     canonicalProductId: String(data.canonicalProductId || ''),
     applicant: String(data.applicant || ''),
+    applicantBirthday: String(data.applicantBirthday || ''),
     beneficiary: normalizeBeneficiaryValue(data.beneficiary),
+    beneficiaryRelation: String(data.beneficiaryRelation || ''),
+    beneficiaryBirthday: String(data.beneficiaryBirthday || ''),
     applicantRelation: String(data.applicantRelation || ''),
     insured: String(data.insured || ''),
     insuredRelation: String(data.insuredRelation || ''),
@@ -266,6 +302,9 @@ export function mergeScanToForm(scan: PolicyScanResult, current: PolicyFormData)
   return {
     ...next,
     beneficiary: next.beneficiary || current.beneficiary,
+    beneficiaryRelation: next.beneficiaryRelation || current.beneficiaryRelation,
+    beneficiaryBirthday: next.beneficiaryBirthday || current.beneficiaryBirthday,
+    applicantBirthday: next.applicantBirthday || (reuseApplicantFields ? current.applicantBirthday : ''),
     applicantRelation: next.applicantRelation || (reuseApplicantFields ? current.applicantRelation : ''),
     insuredRelation: next.insuredRelation || (reuseInsuredFields ? current.insuredRelation : ''),
     insuredIdNumber: next.insuredIdNumber || (reuseInsuredFields ? current.insuredIdNumber : ''),
@@ -320,11 +359,10 @@ export function validatePolicyEntryForm(data: PolicyFormData) {
   if (!hasRequiredText(data.company)) errors.push('保险公司');
   if (!hasRequiredText(data.name)) errors.push('保险名称');
   if (!hasRequiredText(data.applicant)) errors.push('投保人姓名');
-  if (!hasConfirmedRelation(applicantRelation)) errors.push('投保人与核心人员家庭关系');
+  if (!hasConfirmedRelation(applicantRelation)) errors.push('投保人与顶梁柱的关系');
   if (!hasRequiredText(data.insured)) errors.push('被保险人姓名');
-  if (!hasConfirmedRelation(insuredRelation)) errors.push('被保险人与核心人员家庭关系');
+  if (!hasConfirmedRelation(insuredRelation)) errors.push('被保险人与顶梁柱的关系');
   if (!hasRequiredText(data.beneficiary)) errors.push('受益人');
-  if (!hasRequiredText(data.insuredBirthday)) errors.push('被保险人生日');
   if (!hasRequiredText(data.date)) errors.push('投保时间');
   if (!hasRequiredText(data.paymentPeriod)) errors.push('缴费期间');
   if (!hasRequiredText(data.coveragePeriod)) errors.push('保障期间');

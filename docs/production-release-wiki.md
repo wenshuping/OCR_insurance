@@ -104,11 +104,17 @@ Verify admin and annual membership payment configuration without printing secret
 
 ```bash
 docker-compose -f docker-compose.poptonic.yml exec -T api node --input-type=module <<'NODE'
+import { isFamilySalesReviewConfigured } from './server/family-sales-review.service.mjs';
 import { resolveWechatPayConfig } from './server/wechat-pay.service.mjs';
 
 const pay = resolveWechatPayConfig();
 console.log(JSON.stringify({
   adminPasswordConfigured: Boolean(process.env.POLICY_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD),
+  ai: {
+    deepseekApiKeyConfigured: Boolean(process.env.DEEPSEEK_API_KEY),
+    familySalesReviewConfigured: isFamilySalesReviewConfigured(),
+    model: process.env.DEEPSEEK_FAMILY_REVIEW_MODEL || process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro',
+  },
   wechatPay: {
     mode: pay.mode,
     ready: pay.ready,
@@ -128,6 +134,8 @@ NODE
 Expected production values:
 
 - `adminPasswordConfigured: true`
+- `ai.deepseekApiKeyConfigured: true`
+- `ai.familySalesReviewConfigured: true`
 - `wechatPay.mode: "live"`
 - `wechatPay.ready: true`
 - `wechatPay.notifyUrl: "https://ocr.joyhive.cn/api/membership/wechatpay/notify"`

@@ -87,7 +87,7 @@ function SharedFamilyReportApp({ shareToken }: { shareToken: string }) {
       planningProfile={{}}
       onPlanningProfileChange={() => {}}
       onBack={backToEntry}
-      onExport={(target, title) => void downloadReportImage(target, title, { rawTarget: true, preservePageStyle: true })}
+      onExport={(target, title) => void downloadReportImage(target, title)}
       readOnly
     />
   );

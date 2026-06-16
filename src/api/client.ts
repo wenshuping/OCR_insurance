@@ -30,6 +30,7 @@ export async function request<T>(path: string, options: ApiOptions = {}): Promis
   const response = await fetch(path, {
     method: options.method || (options.body === undefined ? 'GET' : 'POST'),
     headers,
+    cache: 'no-store',
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
   const payload = (await response.json().catch(() => null)) as { code?: string; message?: string } | null;

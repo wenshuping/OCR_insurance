@@ -247,12 +247,19 @@ fi
 
 check_production_config() {
   compose exec -T api node --input-type=module <<'NODE'
+import { isFamilySalesReviewConfigured } from './server/family-sales-review.service.mjs';
 import { resolveWechatPayConfig } from './server/wechat-pay.service.mjs';
 
 const pay = resolveWechatPayConfig();
 const adminPasswordConfigured = Boolean(process.env.POLICY_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD);
+const deepseekApiKeyConfigured = Boolean(process.env.DEEPSEEK_API_KEY);
 const summary = {
   adminPasswordConfigured,
+  ai: {
+    deepseekApiKeyConfigured,
+    familySalesReviewConfigured: isFamilySalesReviewConfigured(),
+    model: process.env.DEEPSEEK_FAMILY_REVIEW_MODEL || process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro',
+  },
   wechatPay: {
     mode: pay.mode,
     ready: pay.ready,
@@ -271,6 +278,9 @@ console.log(JSON.stringify(summary, null, 2));
 if (!adminPasswordConfigured) {
   console.error('ADMIN_PASSWORD_NOT_CONFIGURED');
   process.exitCode = 2;
+} else if (!deepseekApiKeyConfigured) {
+  console.error('DEEPSEEK_API_KEY_NOT_CONFIGURED');
+  process.exitCode = 5;
 } else if (pay.nodeEnv === 'production' && pay.mode !== 'live') {
   console.error('WECHAT_PAY_MODE_NOT_LIVE');
   process.exitCode = 3;
@@ -281,13 +291,16 @@ if (!adminPasswordConfigured) {
 NODE
 }
 
-info "Checking admin and WeChat Pay readiness"
+info "Checking admin, AI, and WeChat Pay readiness"
 if check_production_config; then
   echo "Production config check passed"
-elif [ "$ALLOW_PAY_NOT_READY" -eq 1 ]; then
-  echo "WARNING: production config is incomplete, continuing because --allow-pay-not-ready was set" >&2
 else
-  die "Production config check failed. Fix deploy/poptonic.env or rerun with --allow-pay-not-ready."
+  config_status=$?
+  if [ "$ALLOW_PAY_NOT_READY" -eq 1 ] && { [ "$config_status" -eq 3 ] || [ "$config_status" -eq 4 ]; }; then
+    echo "WARNING: production config is incomplete, continuing because --allow-pay-not-ready was set" >&2
+  else
+    die "Production config check failed. Fix deploy/poptonic.env or rerun with --allow-pay-not-ready."
+  fi
 fi
 
 info "Release completed"

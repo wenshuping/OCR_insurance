@@ -45,7 +45,7 @@ import {
   isPolicyReportGenerating,
 } from '../../shared/policy-report-ui';
 import {
-  POLICY_RELATION_OPTIONS,
+  POLICY_PERSON_RELATION_OPTIONS,
   normalizePolicyPlanList,
   policyToForm,
   sanitizeAmount,
@@ -221,11 +221,14 @@ export function PolicyDetailSheet({
         <section className="mt-4 grid grid-cols-2 gap-3">
           <MetricBox label="被保人" value={policy.insured || '-'} />
           <MetricBox label="投保人" value={policy.applicant || '-'} />
+          <MetricBox label="投保人生日" value={policy.applicantBirthday || '-'} />
           <MetricBox label="受益人" value={formatBeneficiaryValue(policy.beneficiary)} />
+          <MetricBox label="受益人关系" value={policy.beneficiaryRelation || '-'} />
+          <MetricBox label="受益人生日" value={policy.beneficiaryBirthday || '-'} />
           <MetricBox label="被保人生日" value={policy.insuredBirthday || '-'} />
           <MetricBox label="保单生效日期" value={formatDateLabel(policy.date)} />
-          <MetricBox label="投保人关系" value={policy.applicantRelation || '-'} />
-          <MetricBox label="被保人关系" value={policy.insuredRelation || '-'} />
+          <MetricBox label="投保人与顶梁柱关系" value={policy.applicantRelation || '-'} />
+          <MetricBox label="被保人与顶梁柱关系" value={policy.insuredRelation || '-'} />
         </section>
 
         {cashValueSummary || onEditCashValue ? (
@@ -267,10 +270,13 @@ export function PolicyDetailSheet({
             <p><strong>保险公司：</strong>{policy.company || '-'}</p>
             <p><strong>产品名称：</strong>{policy.name || '-'}</p>
             <p><strong>投保人：</strong>{policy.applicant || '-'}</p>
+            <p><strong>投保人生日：</strong>{policy.applicantBirthday || '-'}</p>
             <p><strong>受益人：</strong>{formatBeneficiaryValue(policy.beneficiary)}</p>
-            <p><strong>投保人与核心人员家庭关系：</strong>{policy.applicantRelation || '-'}</p>
+            <p><strong>受益人与顶梁柱的关系：</strong>{policy.beneficiaryRelation || '-'}</p>
+            <p><strong>受益人生日：</strong>{policy.beneficiaryBirthday || '-'}</p>
+            <p><strong>投保人与顶梁柱的关系：</strong>{policy.applicantRelation || '-'}</p>
             <p><strong>被保人：</strong>{policy.insured || '-'}</p>
-            <p><strong>被保险人与核心人员家庭关系：</strong>{policy.insuredRelation || '-'}</p>
+            <p><strong>被保险人与顶梁柱的关系：</strong>{policy.insuredRelation || '-'}</p>
             <p><strong>被保险人生日：</strong>{policy.insuredBirthday || '-'}</p>
             <p><strong>生效日期：</strong>{policy.date || '-'}</p>
             <p><strong>缴费期间：</strong>{policy.paymentPeriod || '-'}</p>
@@ -694,6 +700,10 @@ function PolicyEditDialog({
             <TextField label="投保人" value={draft.applicant} onChange={(value) => updateDraft('applicant', value)} placeholder="投保人姓名" />
             <TextField label="被保人" value={draft.insured} onChange={(value) => updateDraft('insured', value)} placeholder="被保人姓名" />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="投保人生日" type="date" value={draft.applicantBirthday || ''} onChange={(value) => updateDraft('applicantBirthday', value)} />
+            <TextField label="被保人生日" type="date" value={draft.insuredBirthday || ''} onChange={(value) => updateDraft('insuredBirthday', value)} />
+          </div>
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
             <label className="flex items-center justify-between gap-3">
               <span className="text-sm font-bold text-slate-700">法定受益人</span>
@@ -709,14 +719,15 @@ function PolicyEditDialog({
             ) : (
               <TextField label="受益人姓名" value={draft.beneficiary} onChange={(value) => updateDraft('beneficiary', value)} placeholder="请输入受益人姓名" />
             )}
+            <SelectField label="与顶梁柱的关系" value={draft.beneficiaryRelation || ''} onChange={(value) => updateDraft('beneficiaryRelation', value)} options={POLICY_PERSON_RELATION_OPTIONS} />
+            <TextField label="受益人生日" type="date" value={draft.beneficiaryBirthday || ''} onChange={(value) => updateDraft('beneficiaryBirthday', value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <SelectField label="投保人关系" value={draft.applicantRelation} onChange={(value) => updateDraft('applicantRelation', value)} options={POLICY_RELATION_OPTIONS} />
-            <SelectField label="被保人关系" value={draft.insuredRelation} onChange={(value) => updateDraft('insuredRelation', value)} options={POLICY_RELATION_OPTIONS} />
+            <SelectField label="投保人与顶梁柱关系" value={draft.applicantRelation} onChange={(value) => updateDraft('applicantRelation', value)} options={POLICY_PERSON_RELATION_OPTIONS} />
+            <SelectField label="被保人与顶梁柱关系" value={draft.insuredRelation} onChange={(value) => updateDraft('insuredRelation', value)} options={POLICY_PERSON_RELATION_OPTIONS} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3">
             <TextField label="身份证号" value={draft.insuredIdNumber || ''} onChange={(value) => updateDraft('insuredIdNumber', value)} placeholder="被保人证件号" />
-            <TextField label="被保人生日" type="date" value={draft.insuredBirthday || ''} onChange={(value) => updateDraft('insuredBirthday', value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <TextField label="生效日期" type="date" value={draft.date} onChange={(value) => updateDraft('date', value)} />

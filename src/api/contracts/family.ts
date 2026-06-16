@@ -48,6 +48,7 @@ export type FamilyProfile = {
   ownerUserId?: number | null;
   ownerGuestId?: string;
   familyName: string;
+  notes?: string;
   coreMemberId: number | null;
   status: 'active' | 'archived';
   createdAt: string;
@@ -92,18 +93,18 @@ export function listFamilyProfiles(input: { token?: string; guestId?: string } =
   return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
 }
 
-export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string }) {
+export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string; notes?: string }) {
   return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles${authQuery(input)}`, {
     token: input.token,
-    body: { familyName: input.familyName },
+    body: { familyName: input.familyName, notes: input.notes },
   });
 }
 
-export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName: string }) {
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string }) {
   return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles/${input.familyId}${authQuery(input)}`, {
     token: input.token,
     method: 'PATCH',
-    body: { familyName: input.familyName },
+    body: { familyName: input.familyName, notes: input.notes },
   });
 }
 
@@ -135,6 +136,7 @@ export function createFamilyMember(input: {
   relationLabel: string;
   birthday?: string;
   idNumberTail?: string;
+  notes?: string;
   setAsCore?: boolean;
 }) {
   return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(`/api/family-profiles/${input.familyId}/members${authQuery(input)}`, {
@@ -144,6 +146,7 @@ export function createFamilyMember(input: {
       relationLabel: input.relationLabel,
       birthday: input.birthday,
       idNumberTail: input.idNumberTail,
+      notes: input.notes,
       setAsCore: input.setAsCore,
     },
   });
@@ -157,13 +160,13 @@ export function setFamilyCoreMember(input: { token?: string; guestId?: string; f
   });
 }
 
-export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel: string }) {
+export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel?: string; notes?: string }) {
   return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(
     `/api/family-profiles/${input.familyId}/members/${input.memberId}${authQuery(input)}`,
     {
       token: input.token,
       method: 'PATCH',
-      body: { relationLabel: input.relationLabel },
+      body: { relationLabel: input.relationLabel, notes: input.notes },
     },
   );
 }

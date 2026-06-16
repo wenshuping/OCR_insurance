@@ -76,7 +76,28 @@ export function normalizePolicyRelation(value) {
   if (['爸爸'].includes(text)) return '父亲';
   if (['妈妈'].includes(text)) return '母亲';
   if (['孩子', '小孩'].includes(text)) return '子女';
-  return ['本人', '配偶', '儿子', '女儿', '子女', '父亲', '母亲', '父母', '其他', '待确认'].includes(text) ? text : '';
+  return [
+    '本人',
+    '配偶',
+    '儿子',
+    '女儿',
+    '子女',
+    '儿媳',
+    '女婿',
+    '孙子',
+    '孙女',
+    '外孙',
+    '外孙女',
+    '父亲',
+    '母亲',
+    '父母',
+    '外公',
+    '外婆',
+    '爷爷',
+    '奶奶',
+    '其他',
+    '待确认',
+  ].includes(text) ? text : '';
 }
 
 export function normalizeIdNumber(value) {
@@ -143,7 +164,10 @@ export function normalizePolicyScanData(data = {}) {
     company: String(data.company || '').trim() || '待补充保险公司',
     name: String(data.name || '').trim() || '未命名保单',
     applicant: String(data.applicant || '').trim(),
+    applicantBirthday: normalizeDateOnly(data.applicantBirthday || data.applicantBirthDate),
     beneficiary: normalizeBeneficiary(data.beneficiary),
+    beneficiaryRelation: normalizePolicyRelation(data.beneficiaryRelation || data.beneficiaryRelationLabel),
+    beneficiaryBirthday: normalizeDateOnly(data.beneficiaryBirthday || data.beneficiaryBirthDate),
     applicantRelation: normalizePolicyRelation(data.applicantRelation),
     insured: String(data.insured || '').trim(),
     insuredRelation: normalizePolicyRelation(data.insuredRelation),
@@ -1038,7 +1062,10 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     company: data.company,
     name: data.name,
     applicant: data.applicant,
+    applicantBirthday: data.applicantBirthday,
     beneficiary: data.beneficiary,
+    beneficiaryRelation: data.beneficiaryRelation,
+    beneficiaryBirthday: data.beneficiaryBirthday,
     applicantRelation,
     insured: data.insured,
     insuredRelation,

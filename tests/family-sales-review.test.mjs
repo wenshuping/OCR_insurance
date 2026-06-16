@@ -7,10 +7,10 @@ import {
 } from '../server/family-sales-review.service.mjs';
 
 test('family sales review input keeps members without policies and official evidence', () => {
-  const family = { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active' };
+  const family = { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active', notes: '家庭年收入约80万，偏好稳健方案' };
   const members = [
-    { id: 10, familyId: 1, name: '张三', relationLabel: '本人', relationToCore: 'self', role: 'core', birthday: '1986-06-14', idNumberTail: '123456', status: 'active' },
-    { id: 11, familyId: 1, name: '李四', relationLabel: '配偶', relationToCore: 'spouse', role: 'adult', birthday: '1988-12-01', idNumberTail: '654321', status: 'active' },
+    { id: 10, familyId: 1, name: '张三', relationLabel: '本人', relationToCore: 'self', role: 'core', birthday: '1986-06-14', idNumberTail: '123456', notes: '做企业管理，喜欢先看现金流表', status: 'active' },
+    { id: 11, familyId: 1, name: '李四', relationLabel: '配偶', relationToCore: 'spouse', role: 'adult', birthday: '1988-12-01', idNumberTail: '654321', notes: '关注孩子教育金，沟通偏好简短结论', status: 'active' },
   ];
   const productName = '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）';
   const policies = [
@@ -61,6 +61,10 @@ test('family sales review input keeps members without policies and official evid
   assert.equal(input.members.find((member) => member.relationLabel === '配偶')?.memberRef, '{{member_2}}');
   assert.equal(input.members.find((member) => member.relationLabel === '配偶')?.hasPolicy, false);
   assert.equal(input.members.find((member) => member.relationLabel === '本人')?.age, 40);
+  assert.equal(input.family.topPillarMemberRef, '{{member_1}}');
+  assert.equal(input.family.notes, '家庭年收入约80万，偏好稳健方案');
+  assert.equal(input.members.find((member) => member.relationLabel === '本人')?.notes, '做企业管理，喜欢先看现金流表');
+  assert.equal(input.members.find((member) => member.relationLabel === '配偶')?.notes, '关注孩子教育金，沟通偏好简短结论');
   assert.deepEqual(input.dataQuality.membersWithoutPolicy.map((member) => member.memberRef), ['{{member_2}}']);
   assert.equal(input.policies[0].applicantMemberRef, '{{member_1}}');
   assert.equal(input.policies[0].applicantAge, 40);
@@ -81,6 +85,13 @@ test('family sales review input keeps members without policies and official evid
   assert.match(prompt, /暂时不想增加预算/);
   assert.match(prompt, /理财险收益不确定/);
   assert.match(prompt, /不要直接输出输入 JSON 的英文内部字段名/);
+  assert.match(prompt, /family\.notes 是整个家庭层面的备注，不属于某个具体成员/u);
+  assert.match(prompt, /members\[\]\.notes 才是成员个人备注/u);
+  assert.match(prompt, /family\.topPillarMemberRef 明确表示家庭顶梁柱/u);
+  assert.match(prompt, /"topPillarMemberRef": "\{\{member_1\}\}"/u);
+  assert.match(prompt, /家庭年收入约80万/);
+  assert.match(prompt, /喜欢先看现金流表/);
+  assert.match(prompt, /沟通偏好简短结论/);
   assert.match(prompt, /配偶/);
   assert.match(prompt, /\{\{member_1\}\}/);
   assert.match(prompt, /\{\{member_2\}\}/);
@@ -186,5 +197,61 @@ test('family sales review appends expanded plans and scripts when the model comp
   assert.match(review.content, /理财险收益不确定/);
   assert.match(review.content, /张三/);
   assert.match(review.content, /李四/);
+  assert.doesNotMatch(review.content, /\{\{member_1\}\}|\{\{member_2\}\}/);
+});
+
+test('family sales review backfills empty member gap and product sections', async () => {
+  const input = buildFamilySalesReviewInput({
+    family: { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active' },
+    members: [
+      { id: 10, familyId: 1, name: '张三', relationLabel: '本人', relationToCore: 'self', role: 'core', birthday: '1986-06-14', status: 'active' },
+      { id: 11, familyId: 1, name: '李四', relationLabel: '配偶', relationToCore: 'spouse', role: 'adult', birthday: '1988-12-01', status: 'active' },
+    ],
+    policies: [{
+      id: 101,
+      familyId: 1,
+      company: '新华保险',
+      name: '重疾险示例',
+      applicantMemberId: 10,
+      insuredMemberId: 10,
+      amount: 300000,
+      firstPremium: 12000,
+      coveragePeriod: '终身',
+      coverageIndicators: [{ coverageType: '重大疾病', liability: '重大疾病保险金' }],
+    }],
+    generatedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  const review = await generateFamilySalesReview({
+    input,
+    env: {
+      DEEPSEEK_API_KEY: 'test-key',
+      DEEPSEEK_BASE_URL: 'https://deepseek.test',
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        model: 'deepseek-v4-pro',
+        choices: [{
+          message: {
+            content: [
+              '## 一、销售结论摘要',
+              '- 先核实家庭资料。',
+              '## 三、成员级保障缺口',
+              '-',
+              '## 五、已有产品逐项切入建议',
+              '暂无明确结论',
+            ].join('\n'),
+          },
+        }],
+      }),
+    }),
+  });
+
+  assert.match(review.content, /成员级保障缺口/);
+  assert.match(review.content, /李四（配偶）.*系统内暂未关联保单/u);
+  assert.match(review.content, /已有产品逐项切入建议/);
+  assert.match(review.content, /新华保险 重疾险示例/);
+  assert.match(review.content, /重大疾病/);
   assert.doesNotMatch(review.content, /\{\{member_1\}\}|\{\{member_2\}\}/);
 });

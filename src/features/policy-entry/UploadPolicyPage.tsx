@@ -346,8 +346,13 @@ export function UploadPolicyPage(props: {
     return value && value !== '本人' && !options.includes(value) ? [value, ...options] : options;
   }
 
+  function familyRelationOptions(value: string) {
+    return value && !FAMILY_MEMBER_RELATION_OPTIONS.includes(value) ? [value, ...FAMILY_MEMBER_RELATION_OPTIONS] : FAMILY_MEMBER_RELATION_OPTIONS;
+  }
+
   function renderPolicyPersonFields(kind: 'applicant' | 'insured', label: string) {
     const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
+    const birthdayKey = kind === 'applicant' ? 'applicantBirthday' : 'insuredBirthday';
     const samePerson = participantsAreSamePerson();
     const sharesCoreControl = samePerson && kind === 'insured';
     const relation = participantRelation(kind);
@@ -368,29 +373,30 @@ export function UploadPolicyPage(props: {
                 onChange={(event) => setParticipantAsCore(kind, event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
               />
-              家庭核心人员
+              家庭顶梁柱
             </label>
           )}
         </div>
         <TextField label="姓名" value={String(formData[nameKey] || '')} onChange={(value) => updateParticipantName(kind, value)} placeholder="姓名" required />
+        <TextField label={`${label}生日`} value={String(formData[birthdayKey] || '')} onChange={(value) => onUpdateForm(birthdayKey, value)} type="date" />
         {sharesCoreControl ? (
           <div>
-            {requiredFieldLabel('与核心人员家庭关系')}
+            {requiredFieldLabel('与顶梁柱的关系')}
             <div className={`flex h-11 items-center rounded-xl border px-4 text-sm font-black ${isCore ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
               {relation}
             </div>
-            <p className="mt-2 text-xs font-medium text-slate-500">与投保人为同一人，核心身份和家庭关系随上方同步。</p>
+            <p className="mt-2 text-xs font-medium text-slate-500">与投保人为同一人，顶梁柱身份和关系随上方同步。</p>
           </div>
         ) : isCore ? (
           <div>
-            {requiredFieldLabel('与核心人员家庭关系')}
+            {requiredFieldLabel('与顶梁柱的关系')}
             <div className="flex h-11 items-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700">
               本人
             </div>
           </div>
         ) : (
           <SelectField
-            label="与核心人员家庭关系"
+            label="与顶梁柱的关系"
             value={relation}
             onChange={(value) => updateParticipantRelation(kind, value)}
             options={nonCoreRelationOptions(relation)}
@@ -475,7 +481,7 @@ export function UploadPolicyPage(props: {
             />
             {selectedFamily && !selectedFamily.coreMemberId ? (
               <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-700 ring-1 ring-amber-100">
-                家庭关系中心尚未设置，可先保存保单，稍后再补充核心成员。
+                家庭顶梁柱尚未设置，可先保存保单，稍后再补充顶梁柱。
               </p>
             ) : null}
           </section>
@@ -677,15 +683,20 @@ export function UploadPolicyPage(props: {
                 required
               />
             )}
+            <SelectField
+              label="与顶梁柱的关系"
+              value={formData.beneficiaryRelation || ''}
+              onChange={(value) => onUpdateForm('beneficiaryRelation', value)}
+              options={familyRelationOptions(formData.beneficiaryRelation || '')}
+              placeholder="请选择关系"
+            />
+            <TextField
+              label="受益人生日"
+              value={formData.beneficiaryBirthday || ''}
+              onChange={(value) => onUpdateForm('beneficiaryBirthday', value)}
+              type="date"
+            />
           </div>
-
-          <TextField
-            label="被保险人生日"
-            value={formData.insuredBirthday}
-            onChange={(value) => onUpdateForm('insuredBirthday', value)}
-            type="date"
-            required
-          />
 
           <TextField label="投保时间" value={formData.date} onChange={(value) => onUpdateForm('date', value)} type="date" required />
 
@@ -816,10 +827,14 @@ export function AnalysisReportPage(props: {
             <p><strong>保险公司：</strong>{formData.company || '-'}</p>
             <p><strong>产品名称：</strong>{formData.name || '-'}</p>
             <p><strong>投保人：</strong>{formData.applicant || '-'}</p>
+            <p><strong>投保人生日：</strong>{formData.applicantBirthday || '-'}</p>
             <p><strong>受益人：</strong>{formatBeneficiaryValue(formData.beneficiary)}</p>
-            <p><strong>投保人与核心人员家庭关系：</strong>{formData.applicantRelation || '-'}</p>
+            <p><strong>受益人与顶梁柱的关系：</strong>{formData.beneficiaryRelation || '-'}</p>
+            <p><strong>受益人生日：</strong>{formData.beneficiaryBirthday || '-'}</p>
+            <p><strong>投保人与顶梁柱的关系：</strong>{formData.applicantRelation || '-'}</p>
             <p><strong>被保人：</strong>{formData.insured || '-'}</p>
-            <p><strong>被保险人与核心人员家庭关系：</strong>{formData.insuredRelation || '-'}</p>
+            <p><strong>被保险人生日：</strong>{formData.insuredBirthday || '-'}</p>
+            <p><strong>被保险人与顶梁柱的关系：</strong>{formData.insuredRelation || '-'}</p>
             <p><strong>生效日期：</strong>{formData.date || '-'}</p>
             <p><strong>缴费期间：</strong>{formData.paymentPeriod || '-'}</p>
             <p><strong>保障期间：</strong>{formData.coveragePeriod || '-'}</p>

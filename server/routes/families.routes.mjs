@@ -22,6 +22,7 @@ export function createFamilyRoutes(context) {
     state,
     persist,
     archiveFamilyProfile,
+    archiveFamilyGeneratedReports,
     allocateId,
     attachPolicyCoverageIndicators,
     attachPolicyFamilyDisplay,
@@ -41,6 +42,7 @@ export function createFamilyRoutes(context) {
     setFamilyCoreMember,
     mergePolicyDerivedResult,
     updateFamilyProfileName,
+    updateFamilyMemberNotes,
     updateFamilyMemberRelation,
     generateFamilySalesReview: generateFamilySalesReviewImpl = generateFamilySalesReview,
   } = context;
@@ -56,6 +58,15 @@ export function createFamilyRoutes(context) {
     }
     await persist(state, familyPersistOptions);
   };
+
+  function hasOwn(value, key) {
+    return Object.prototype.hasOwnProperty.call(value || {}, key);
+  }
+
+  function archiveSalesReviewForFamily(familyId) {
+    if (typeof archiveFamilyGeneratedReports !== 'function') return;
+    archiveFamilyGeneratedReports(state, [familyId]);
+  }
 
   function ownerFields(owner = {}) {
     return {
@@ -208,7 +219,9 @@ export function createFamilyRoutes(context) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
     try {
+      const shouldArchiveSalesReview = hasOwn(req.body, 'notes');
       updateFamilyProfileName(family, req.body || {});
+      if (shouldArchiveSalesReview) archiveSalesReviewForFamily(family.id);
       await saveFamilyState();
       return res.json({ ok: true, family, members: listFamilyMembers(state, family.id) });
     } catch (error) {
@@ -272,18 +285,28 @@ export function createFamilyRoutes(context) {
         error.status = 400;
         throw error;
       }
-      const relation = normalizeFamilyRelation(req.body?.relationLabel || req.body?.relationToCore || req.body?.relation);
-      if (relation.relationToCore === 'self') {
-        setFamilyCoreMember(state, family, member);
-      } else {
-        if (Number(member.id) === Number(family.coreMemberId || 0)) {
-          const error = new Error('核心成员关系固定为本人');
-          error.code = 'FAMILY_CORE_RELATION_IMMUTABLE';
-          error.status = 400;
-          throw error;
+      const hasRelationInput = hasOwn(req.body, 'relationLabel') || hasOwn(req.body, 'relationToCore') || hasOwn(req.body, 'relation');
+      const hasNotesInput = hasOwn(req.body, 'notes');
+      if (hasRelationInput) {
+        const relation = normalizeFamilyRelation(req.body?.relationLabel || req.body?.relationToCore || req.body?.relation);
+        if (relation.relationToCore === 'self') {
+          setFamilyCoreMember(state, family, member);
+        } else {
+          if (Number(member.id) === Number(family.coreMemberId || 0)) {
+            const error = new Error('顶梁柱关系固定为本人');
+            error.code = 'FAMILY_CORE_RELATION_IMMUTABLE';
+            error.status = 400;
+            throw error;
+          }
+          updateFamilyMemberRelation(member, relation.relationLabel);
+          family.updatedAt = new Date().toISOString();
         }
-        updateFamilyMemberRelation(member, relation.relationLabel);
-        family.updatedAt = new Date().toISOString();
+      }
+      if (hasNotesInput) {
+        const beforeMemberUpdatedAt = member.updatedAt;
+        updateFamilyMemberNotes(member, req.body?.notes);
+        if (member.updatedAt !== beforeMemberUpdatedAt) family.updatedAt = member.updatedAt;
+        archiveSalesReviewForFamily(family.id);
       }
       await saveFamilyState();
       return res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });

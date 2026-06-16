@@ -12,7 +12,7 @@ import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_FAMILY_REVIEW_MODEL = 'deepseek-v4-pro';
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOKENS = 16_000;
 const DEFAULT_DEEPSEEK_REASONING_EFFORT = 'high';
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
@@ -447,6 +447,7 @@ function memberSummaries({ policies = [], family = {}, memberContext = {}, gener
       role: trim(member.role),
       gender: trim(member.gender),
       birthday: trim(member.birthday),
+      notes: trim(member.notes),
       age: ageFromBirthday(member.birthday, generatedDate),
       isCore: Number(member.id) === Number(family.coreMemberId || 0),
       insuredPolicyCount: policyRefs.insuredPolicyIds.length,
@@ -498,6 +499,31 @@ function policyDisplayName(policy = {}) {
   return trim([policy.company, policy.name].filter(Boolean).join(' ')) || '现有保单';
 }
 
+function stripMarkdownListMarker(value) {
+  return trim(String(value || '').replace(/^[-*]\s*/u, '').replace(/^\d+[.．、]\s*/u, ''));
+}
+
+function isPlaceholderMarkdownLine(value) {
+  const normalized = stripMarkdownListMarker(value).normalize('NFKC').replace(/\s+/gu, '').trim();
+  return !normalized || /^[•·\-_*—–]+$/u.test(normalized) || /^(暂无明确结论|暂无|无|待补充)$/u.test(normalized);
+}
+
+function sectionHasUsableContent(content = '', titlePattern = /./u) {
+  let matching = false;
+  for (const rawLine of String(content || '').replace(/\r/gu, '').split('\n')) {
+    const line = rawLine.trim();
+    const headingMatch = line.match(/^#{1,2}\s*(.+)$/u);
+    if (headingMatch) {
+      const title = trim(headingMatch[1]).replace(/^([一二三四五六七八九十]+|[0-9]+)[、.．]\s*/u, '');
+      matching = titlePattern.test(title);
+      continue;
+    }
+    if (/^#{3,6}\s+/u.test(line)) continue;
+    if (matching && !isPlaceholderMarkdownLine(line)) return true;
+  }
+  return false;
+}
+
 function isWealthPolicy(policy = {}) {
   const text = [
     policy.name,
@@ -507,6 +533,111 @@ function isWealthPolicy(policy = {}) {
   return /(年金|终身寿|两全|护理|分红|万能|现金价值|现金流|领取|养老|教育金)/u.test(text)
     || finiteNumber(policy.cashValue?.latest?.cashValue) !== null
     || asNumber(policy.cashflow?.positiveTotal) > 0;
+}
+
+function policiesForMember(member = {}, policies = []) {
+  const policyIds = new Set((Array.isArray(member.policyIds) ? member.policyIds : []).map(String));
+  return (Array.isArray(policies) ? policies : []).filter((policy) => {
+    if (policyIds.has(String(policy.id))) return true;
+    return trim(policy.insuredMemberRef) === trim(member.memberRef)
+      || trim(policy.applicantMemberRef) === trim(member.memberRef);
+  });
+}
+
+function memberCoverageText(policies = []) {
+  return unique((Array.isArray(policies) ? policies : []).flatMap((policy) => [
+    policy.name,
+    policy.coveragePeriod,
+    ...(Array.isArray(policy.coverageIndicators) ? policy.coverageIndicators.map((indicator) => `${indicator.coverageType || ''}${indicator.liability || ''}`) : []),
+    ...(Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities.map((row) => `${row.coverageType || ''}${row.liability || ''}`) : []),
+    ...(Array.isArray(policy.scenarioEntries) ? policy.scenarioEntries.map((row) => `${row.type || ''}${row.label || ''}`) : []),
+    ...(Array.isArray(policy.plans) ? policy.plans.map((plan) => `${plan.name || ''}${plan.matchedProductName || ''}`) : []),
+  ])).join(' ');
+}
+
+function buildMemberGapSection(input = {}) {
+  const members = Array.isArray(input.members) ? input.members : [];
+  const policies = Array.isArray(input.policies) ? input.policies : [];
+  if (!members.length) {
+    return [
+      '## 三、成员级保障缺口',
+      '- 家庭成员资料未提供，需先补齐成员清单、生日、社保状态和已有保单，再判断个人保障缺口。',
+    ].join('\n');
+  }
+
+  const lines = ['## 三、成员级保障缺口'];
+  for (const member of members) {
+    const relatedPolicies = policiesForMember(member, policies);
+    const coverageText = memberCoverageText(relatedPolicies);
+    const ageText = finiteNumber(member.age) === null ? '年龄待核实' : `${Math.round(Number(member.age))}岁`;
+    const policyText = relatedPolicies.length
+      ? `已关联 ${relatedPolicies.length} 张保单`
+      : '系统内暂未关联保单';
+    const gaps = [];
+    if (!relatedPolicies.length) {
+      gaps.push('先核实是否有保单未录入；确认无保障后，优先排查医疗险、意外险、重疾/寿险责任');
+    } else {
+      if (!/(医疗|住院|门诊|医保外|药品费|手术费)/u.test(coverageText)) {
+        gaps.push('医疗报销责任待核实，重点看百万医疗、住院医疗、医保外费用和续保条件');
+      }
+      if (!/(意外|伤残|残疾)/u.test(coverageText)) {
+        gaps.push('意外医疗和意外伤残责任待核实');
+      }
+      if (!/(重疾|重大疾病|轻症|中症|疾病)/u.test(coverageText)) {
+        gaps.push('重疾/疾病给付责任待核实');
+      }
+      if (member.isCore || /core|self|spouse|adult|本人|配偶/u.test(`${member.role || ''}${member.relationLabel || ''}${member.relationToCore || ''}`)) {
+        gaps.push('作为家庭责任成员，需额外测算身故/全残、定寿和收入中断责任');
+      }
+    }
+    if (!gaps.length) {
+      gaps.push('已有责任需结合保额、有效状态、官网条款证据和家庭责任重新复核，暂不直接判断为充足');
+    }
+    lines.push(`- ${memberLabel(member)}，${ageText}：${policyText}；${gaps.join('；')}。`);
+  }
+  return lines.join('\n');
+}
+
+function productSuggestionEvidence(policy = {}) {
+  const indicatorLabels = unique([
+    ...(Array.isArray(policy.coverageIndicators) ? policy.coverageIndicators.map((indicator) => trim(indicator.coverageType || indicator.liability)) : []),
+    ...(Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities.map((row) => trim(row.coverageType || row.liability)) : []),
+  ]).slice(0, 3);
+  const signals = [];
+  const validityLabel = trim(policy.validity?.label || policy.validity?.status);
+  if (policy.validity?.tone === 'expired') {
+    signals.push('效力状态需优先复核，避免拿失效保单做保障依据');
+  } else if (validityLabel) {
+    signals.push(`效力状态显示为${validityLabel}，面谈时仍需核对合同原件`);
+  }
+  if (indicatorLabels.length) {
+    signals.push(`可围绕${indicatorLabels.join('、')}做责任解释和缺口对比`);
+  } else {
+    signals.push('官网责任指标不足，先补齐条款证据，再判断可切入责任');
+  }
+  if (isWealthPolicy(policy)) {
+    signals.push('作为财富类/现金价值线索，重点核实现金价值、领取、减保、保单贷款和传承安排');
+  }
+  return signals.join('；');
+}
+
+function buildExistingProductSuggestionsSection(input = {}) {
+  const policies = Array.isArray(input.policies) ? input.policies : [];
+  if (!policies.length) {
+    return [
+      '## 五、已有产品逐项切入建议',
+      '- 当前家庭暂无已录入保单，销售动作先放在补录电子保单、确认家庭成员和核实社保/既往症上。',
+    ].join('\n');
+  }
+  return [
+    '## 五、已有产品逐项切入建议',
+    ...policies.slice(0, 20).map((policy) => {
+      const insuredRef = trim(policy.insuredMemberRef) && trim(policy.insuredMemberRef) !== '未匹配成员'
+        ? trim(policy.insuredMemberRef)
+        : '被保人待匹配';
+      return `- ${policyDisplayName(policy)}：被保人 ${insuredRef}；保额 ${formatMoney(policy.amount)}；首期/年交保费 ${formatMoney(policy.firstPremium)}；${productSuggestionEvidence(policy)}。`;
+    }),
+  ].join('\n');
 }
 
 function hasExpandedSalesPlan(content = '') {
@@ -567,17 +698,17 @@ function buildExpandedSalesPlanSection(input = {}) {
     '- 需补资料：每位成员的社保/医保状态、已有医疗险保单页、职业类别、近期住院或体检异常。',
     '- 下一步动作：面谈时用家庭成员清单逐个打勾，确认谁有医疗、谁有意外、谁没有，再输出一页补强清单。',
     '',
-    '- 方案二：核心收入成员重疾与定寿补强',
+    '- 方案二：顶梁柱收入成员重疾与定寿补强',
     `- 适合对象：${targetCore}${targetSpouse && targetSpouse !== targetCore ? `、${targetSpouse}` : ''}。`,
     '- 客户痛点：家庭收入责任通常集中在成年人身上，一旦重疾、身故或全残，现有财富型保单不一定能覆盖收入中断、贷款、父母赡养和子女教育责任。',
-    '- 推荐方向：先测算核心成员的重疾保额、身故/全残保额和保障期限；若重疾不足，优先补足重疾险；若家庭负债或子女教育责任较重，再讨论定寿/高额寿险责任。',
+    '- 推荐方向：先测算顶梁柱的重疾保额、身故/全残保额和保障期限；若重疾不足，优先补足重疾险；若家庭负债或子女教育责任较重，再讨论定寿/高额寿险责任。',
     `- 预算/保额口径：${coverageText}如客户不愿新增预算，可先做保单精简、责任重配或分阶段补齐。`,
     '- 销售话术：“您现在不是没有保单，而是要确认这些保单在收入中断时能不能真正替家里扛住三到五年的现金流。我们先把责任缺口算出来，再决定要不要补。”',
     '- 需补资料：家庭年收入、房贷/车贷余额、子女教育预算、双方单位福利、既往症和体检异常。',
-    '- 下一步动作：现场先定核心收入成员，再用家庭责任清单测算重疾、寿险、医疗三条线的缺口。',
+    '- 下一步动作：现场先定家庭顶梁柱，再用家庭责任清单测算重疾、寿险、医疗三条线的缺口。',
     '',
     '- 方案三：养老/教育金与财富传承配置',
-    `- 适合对象：${targetCore || '核心成员'}，以及需要规划养老、教育金或传承安排的家庭；可结合 ${wealthPolicyName} 做现有资产复盘。`,
+    `- 适合对象：${targetCore || '顶梁柱'}，以及需要规划养老、教育金或传承安排的家庭；可结合 ${wealthPolicyName} 做现有资产复盘。`,
     '- 客户痛点：已有年金、终身寿、两全、护理险或带现金价值保单时，客户容易只看“交了多少钱”，没有看清未来现金流、保单贷款、减保、领取和传承安排。',
     '- 推荐方向：先把现有财富类保单的现金价值、未来领取、减保规则和分红/万能账户演示利益核实清楚，再判断是继续持有、做教育金/养老金分层，还是补充增额终身寿/年金类配置。',
     '- 预算/保额口径：理财险不能承诺收益或确定利率，只能基于合同现金价值、保单利益演示和客户确认的长期闲置资金来设计；新增预算必须来自客户确认的长期资金，不挤占医疗和重疾保障预算。',
@@ -609,7 +740,7 @@ function buildSalesScriptSection() {
     '',
     '- 3. 保障缺口切入',
     '- 销售话术：“从保单结构看，您家不是没有保险，而是要确认医疗、重疾、寿险、意外这四条线是不是都够用。我们先看缺口最大的成员，不平均加保费。”',
-    '- 销售话术：“我建议先把医保外医疗和核心收入成员的大病/身故责任核清楚，这两块最影响家庭现金流。”',
+    '- 销售话术：“我建议先把医保外医疗和顶梁柱收入成员的大病/身故责任核清楚，这两块最影响家庭现金流。”',
     '',
     '- 4. 理财险/养老教育金切入',
     '- 销售话术：“财富类保单我不会跟您讲确定收益，因为合同里能确定的是现金价值、领取规则和保障责任。我们先把哪一年能用多少钱看清楚。”',
@@ -628,9 +759,12 @@ function buildSalesScriptSection() {
 
 function ensureFamilySalesReviewSalesEnablement(content = '', input = {}) {
   const additions = [];
-  if (!hasExpandedSalesPlan(content)) additions.push(buildExpandedSalesPlanSection(input));
-  if (!hasSalesScript(content)) additions.push(buildSalesScriptSection(input));
-  return [trim(content), ...additions].filter(Boolean).join('\n\n');
+  const source = trim(content);
+  if (!sectionHasUsableContent(source, /成员级保障缺口/u)) additions.push(buildMemberGapSection(input));
+  if (!sectionHasUsableContent(source, /已有产品逐项切入建议|产品逐项|逐项切入/u)) additions.push(buildExistingProductSuggestionsSection(input));
+  if (!hasExpandedSalesPlan(source)) additions.push(buildExpandedSalesPlanSection(input));
+  if (!hasSalesScript(source)) additions.push(buildSalesScriptSection(input));
+  return [source, ...additions].filter(Boolean).join('\n\n');
 }
 
 function sanitizeFamilyReport(report = {}) {
@@ -679,13 +813,16 @@ export function buildFamilySalesReviewInput({
       validity: policy.validity,
     }));
   const uninsuredMembers = summarizedMembers.filter((member) => !member.hasPolicy);
+  const topPillarMemberRef = memberContext.refById?.get(Number(family.coreMemberId || 0)) || '';
 
   const input = {
     generatedAt,
     analysisGoal: '给销售使用的家庭保单复盘、保障缺口、理财险销售机会、邀约面谈话术和销售方案建议。',
     family: {
       familyRef: '当前家庭',
-      coreMemberRef: memberContext.refById?.get(Number(family.coreMemberId || 0)) || '',
+      coreMemberRef: topPillarMemberRef,
+      topPillarMemberRef,
+      notes: trim(family.notes),
       status: trim(family.status || 'active'),
     },
     members: summarizedMembers,
@@ -738,6 +875,8 @@ export function buildFamilySalesReviewMessages(input = {}) {
         '8. 不要直接输出输入 JSON 的英文内部字段名或技术标识，例如 duplicatePolicyHints、evidenceWarnings、canonical:product_*、plans；必须改写为“重复保单提示”“官网条款证据冲突”“险种明细”等中文业务描述。',
         '9. 必须给出可直接复制给销售使用的邀约面谈话术和销售话术；不要只写“建议沟通”“引导客户重视”这类空泛句。',
         '10. 销售方案必须展开成完整方案包，不能只写一句方案名称；每个方案必须说明适合对象、客户痛点、推荐方向、预算/保额口径、面谈话术、需补资料和下一步动作。',
+        '11. family.notes 是整个家庭层面的备注，不属于某个具体成员；members[].notes 才是成员个人备注。两类备注都是客户工作、收入、喜好、沟通记录等销售线索；必须结合这些备注优化面谈重点，但备注没有写明的事实不能自行补充。',
+        '12. family.topPillarMemberRef 明确表示家庭顶梁柱；涉及收入中断、重疾、定寿、家庭责任和优先面谈对象时必须优先参考该成员。',
       ].join('\n'),
     },
     {

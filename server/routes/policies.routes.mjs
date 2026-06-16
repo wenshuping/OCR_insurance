@@ -449,7 +449,10 @@ export function createPolicyRoutes(context) {
           policyOwner(policy),
           {
             applicant: hasOwn(updates, 'applicant') ? updates.applicant : policy.applicant,
+            applicantBirthday: hasOwn(updates, 'applicantBirthday') ? updates.applicantBirthday : policy.applicantBirthday,
             insured: hasOwn(updates, 'insured') ? updates.insured : policy.insured,
+            insuredBirthday: hasOwn(updates, 'insuredBirthday') ? updates.insuredBirthday : policy.insuredBirthday,
+            insuredIdNumber: hasOwn(updates, 'insuredIdNumber') ? updates.insuredIdNumber : policy.insuredIdNumber,
           },
         );
         Object.assign(updates, familyBinding);

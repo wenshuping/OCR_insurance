@@ -65,6 +65,14 @@ body {
   display: none;
 }
 
+.family-report-screen-export-target [data-report-export-cards] {
+  display: none !important;
+}
+
+.family-report-screen-export-target [data-report-export-table] {
+  display: block !important;
+}
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }

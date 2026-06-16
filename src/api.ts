@@ -145,11 +145,11 @@ export function listFamilyProfiles(input: { token?: string; guestId?: string } =
   return listFamilyProfilesContract(input);
 }
 
-export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string }) {
+export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string; notes?: string }) {
   return createFamilyProfileContract(input);
 }
 
-export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName: string }) {
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string }) {
   return updateFamilyProfileContract(input);
 }
 
@@ -169,6 +169,7 @@ export function createFamilyMember(input: {
   relationLabel: string;
   birthday?: string;
   idNumberTail?: string;
+  notes?: string;
   setAsCore?: boolean;
 }) {
   return createFamilyMemberContract(input);
@@ -178,7 +179,7 @@ export function setFamilyCoreMember(input: { token?: string; guestId?: string; f
   return setFamilyCoreMemberContract(input);
 }
 
-export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel: string }) {
+export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel?: string; notes?: string }) {
   return updateFamilyMemberRelationContract(input);
 }
 

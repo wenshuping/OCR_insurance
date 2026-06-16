@@ -225,21 +225,23 @@ test('entry form surfaces OCR layout review warnings', () => {
   assert.match(pageSource, /ocrWarnings\.map/);
 });
 
-test('entry form requires family profile and supports core setup after OCR', () => {
+test('entry form requires family profile and supports top-pillar setup after OCR', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const formSource = normalizedCustomerPolicyFormSource;
   assert.match(pageSource, /家庭档案/);
   assert.match(pageSource, /新建家庭档案/);
-  assert.match(pageSource, /家庭关系中心/);
-  assert.match(pageSource, /可先保存保单，稍后再补充核心成员/);
-  assert.match(pageSource, /家庭核心人员/);
-  assert.match(pageSource, /与核心人员家庭关系/);
+  assert.match(pageSource, /家庭顶梁柱/);
+  assert.match(pageSource, /可先保存保单，稍后再补充顶梁柱/);
+  assert.match(pageSource, /家庭顶梁柱/);
+  assert.match(pageSource, /与顶梁柱的关系/);
   assert.match(pageSource, /requiredFieldLabel\('保险公司'\)/);
   assert.match(pageSource, /requiredFieldLabel\('保险名称'\)/);
   assert.match(pageSource, /label="姓名"[\s\S]*required/u);
   assert.match(pageSource, /label="投保时间"[\s\S]*required/u);
-  assert.match(pageSource, /label="被保险人生日"[\s\S]*required/u);
+  assert.match(pageSource, /birthdayKey/);
+  assert.match(pageSource, /\$\{label\}生日/u);
+  assert.doesNotMatch(pageSource, /label="被保险人生日"[\s\S]*required/u);
   assert.match(pageSource, /label="选择家庭档案"[\s\S]*required/u);
   assert.match(pageSource, /label="受益人姓名"[\s\S]*required/u);
   assert.match(pageSource, /label="缴费期间"[\s\S]*required/u);
@@ -250,7 +252,7 @@ test('entry form requires family profile and supports core setup after OCR', () 
   assert.match(pageSource, /areSameParticipantName\(formData\.applicant, formData\.insured\)/);
   assert.match(pageSource, /resolveSamePersonRelation/);
   assert.match(pageSource, /与投保人为同一人/);
-  assert.match(pageSource, /核心身份和家庭关系随上方同步/);
+  assert.match(pageSource, /顶梁柱身份和关系随上方同步/);
   assert.doesNotMatch(pageSource, /if \(participantsAreSamePerson\(\)\) return '本人'/);
   assert.doesNotMatch(pageSource, /disabled=\{samePerson\}/);
   assert.doesNotMatch(pageSource, /applicantRelation \|\| '本人'/);
@@ -409,6 +411,10 @@ test('customer app exposes family profile management surface', () => {
   assert.match(familySource, /hasPolicies \|\| members\.length/);
   assert.match(familySource, /onViewFamilyPolicies/);
   assert.match(familySource, /管理成员/);
+  assert.match(familySource, /家庭备注/);
+  assert.match(familySource, /成员备注/);
+  assert.match(familySource, /onUpdateFamilyNotes/);
+  assert.match(familySource, /onUpdateFamilyMemberNotes/);
   assert.match(familySource, /添加成员/);
   assert.match(familySource, /成员姓名/);
   assert.match(familySource, /出生日期/);
@@ -429,7 +435,7 @@ test('customer app exposes family profile management surface', () => {
   assert.doesNotMatch(familySource, /members\[0\]\?\.name \|\| '待设置'/);
   assert.doesNotMatch(familySource, /保单管理/);
   assert.doesNotMatch(familySource, /FamilyPolicyManagerPanel/);
-  assert.match(familySource, /设为核心/);
+  assert.match(familySource, /设为顶梁柱/);
   assert.match(familySource, /onUpdateFamilyMemberRelation/);
   assert.match(familySource, /onUpdateFamilyName/);
   assert.match(familySource, /onDeleteFamily/);
@@ -451,7 +457,27 @@ test('customer bottom tabs expose entry and family navigation only', () => {
   assert.match(source, /grid-cols-2/);
 });
 
-test('policy relation controls keep prior policy edit options', () => {
+test('family policy detail keeps entry and family bottom tabs visible', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const start = customerSource.indexOf('if (showFamilyPolicies)');
+  const end = customerSource.indexOf("if (activeTab === 'families')", start);
+  assert.notEqual(start, -1, 'family policy detail branch should exist');
+  assert.notEqual(end, -1, 'family profile branch should follow family policy detail');
+  const familyPolicyDetailSource = customerSource.slice(start, end);
+
+  const tabsIndex = familyPolicyDetailSource.indexOf('<CustomerBottomTabs');
+  const policyOverlayIndex = familyPolicyDetailSource.indexOf('{selectedPolicy ? (');
+  assert.notEqual(tabsIndex, -1, 'family policy detail should render bottom tabs');
+  assert.notEqual(policyOverlayIndex, -1, 'policy detail overlay should remain in the family policy detail branch');
+  assert.match(familyPolicyDetailSource, /<CustomerBottomTabs[\s\S]*activeTab="families"/);
+  assert.match(familyPolicyDetailSource, /tab === 'entry'[\s\S]*setShowFamilyPolicies\(false\)[\s\S]*startEntryForm\(\{ preserveSelectedFamily: true \}\)/);
+  assert.ok(
+    tabsIndex < policyOverlayIndex,
+    'family policy detail tabs should stay behind the policy detail overlay',
+  );
+});
+
+test('policy relation controls use top-pillar family relation options', () => {
   const source = `${normalizedCustomerPolicySharedSource}\n${normalizedPolicyDetailSource}`;
 
   assert.match(source, /'孙子'/u);
@@ -464,9 +490,10 @@ test('policy relation controls keep prior policy edit options', () => {
   assert.match(source, /'外婆'/u);
   assert.match(source, /'爷爷'/u);
   assert.match(source, /'奶奶'/u);
-  assert.match(source, /const POLICY_RELATION_OPTIONS = \['本人', '子女', '父母', '夫妻'\]/u);
-  assert.match(source, /SelectField label="投保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
-  assert.match(source, /SelectField label="被保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
+  assert.match(source, /POLICY_PERSON_RELATION_OPTIONS = FAMILY_MEMBER_RELATION_OPTIONS/u);
+  assert.match(source, /SelectField label="投保人与顶梁柱关系"[\s\S]*options=\{POLICY_PERSON_RELATION_OPTIONS\}/u);
+  assert.match(source, /SelectField label="被保人与顶梁柱关系"[\s\S]*options=\{POLICY_PERSON_RELATION_OPTIONS\}/u);
+  assert.match(source, /SelectField label="与顶梁柱的关系"[\s\S]*options=\{POLICY_PERSON_RELATION_OPTIONS\}/u);
 });
 
 test('policy period fields support common dropdown options plus manual entry', () => {
@@ -678,8 +705,11 @@ test('entry form preserves canonical product id and clears it when product name 
 test('entry form captures insured birthday for age-based reports', () => {
   const formSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
-  assert.match(formSource, /被保险人生日/);
+  assert.match(formSource, /\$\{label\}生日/u);
   assert.match(formSource, /insuredBirthday/);
+  assert.match(formSource, /applicantBirthday/);
+  assert.match(formSource, /受益人生日/);
+  assert.match(formSource, /beneficiaryRelation/);
   assert.match(customerSource, /selectedFamilyPolicies/);
   assert.match(customerSource, /buildFamilyReport\(selectedFamilyPolicies,\s*familyPlanningProfile,\s*\{\s*familyId:\s*selectedFamilyId\s*\}\)/);
   assert.match(customerSource, /<FamilyCoverageOverview[\s\S]*report=\{familyReport\}[\s\S]*policies=\{selectedFamilyPolicies\}/);
@@ -800,6 +830,7 @@ test('customer policy detail exposes edit and delete actions through policy APIs
   assert.match(apiSource, /method:\s*'DELETE'/);
   assert.match(customerSource, /handleUpdatePolicy/);
   assert.match(customerSource, /handleDeletePolicy/);
+  assert.match(customerSource, /payload\.policy\.familyId \? refreshFamilyProfiles\(\) : Promise\.resolve\(\[\]\)/u);
   assert.match(detailSource, /Pencil/);
   assert.match(detailSource, /Trash2/);
   assert.match(detailSource, /PolicyEditDialog/);
@@ -1427,15 +1458,23 @@ test('family report wealth policies show cashflow table with cash value and keep
   assert.doesNotMatch(source, /fill="#FFFFFF"[\s\S]{0,120}stroke=\{item\.color\}/);
 });
 
-test('family report export downloads a page-styled image instead of paginated pdf', () => {
+test('family report export downloads a desktop H5 styled image instead of paginated pdf', () => {
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
   assert.match(reportExportSource, /type ReportExportOptions = \{ rawTarget\?: boolean; preservePageStyle\?: boolean; matchScreenStyle\?: boolean \}/);
+  assert.match(reportExportSource, /const screenStyleReportWidth = 1180/);
   assert.match(reportExportSource, /rawTarget: true/);
   assert.match(reportExportSource, /matchScreenStyle: true/);
-  assert.match(reportExportSource, /preservePageStyle: true/);
+  assert.match(reportExportSource, /return Math\.max\(screenStyleReportWidth,\s*width\)/);
+  assert.match(reportExportSource, /return \{ rawTarget: true,\s*\.\.\.options,\s*preservePageStyle: false,\s*matchScreenStyle: true \}/);
   assert.match(reportExportSource, /resolveImageCaptureOptions/);
   assert.match(normalizedCustomerAppSource, /downloadReportImage\(target,\s*title/);
+  assert.match(normalizedCustomerAppSource, /onExport=\{\(target,\s*title\) => void downloadReportImage\(target,\s*title\)\}/);
+  assert.match(appShellSource, /onExport=\{\(target,\s*title\) => void downloadReportImage\(target,\s*title\)\}/);
+  assert.doesNotMatch(
+    `${normalizedCustomerAppSource}\n${appShellSource}`,
+    /downloadReportImage\(target,\s*title,\s*\{[^}]*preservePageStyle:\s*true/,
+  );
   assert.match(reportExportSource, /captureReportImageCanvas\(imageTarget,\s*fileName/);
   assert.match(reportExportSource, /exportScreenStyledReportImageInCurrentPage\(imageTarget,\s*fileName/);
   assert.match(reportExportSource, /await import\('html-to-image'\)/);
@@ -1463,7 +1502,7 @@ test('family report export downloads a page-styled image instead of paginated pd
   assert.match(imageCaptureSource, /skipFonts:\s*true/);
   assert.match(imageCaptureSource, /renderOptions = resolveImageCaptureOptions\(_options\)/);
   assert.match(imageCaptureSource, /createPdfRenderTarget\(target,\s*_title,\s*undefined,\s*renderOptions\)/);
-  assert.match(imageCaptureSource, /document\.body\.classList\.add\('pdf-page-style-export-mode'\)/);
+  assert.doesNotMatch(imageCaptureSource, /document\.body\.classList\.add\('pdf-page-style-export-mode'\)/);
   assert.match(imageCaptureSource, /margin:\s*'0'/);
   assert.match(imageCaptureSource, /renderTarget\?\.cleanup\(\)/);
   assert.match(reportExportSource, /max-width:min\(1180px,calc\(100vw - 28px\)\)/);
@@ -1487,7 +1526,7 @@ test('family report export keeps page styling and still supports safe pdf captur
   assert.match(reportExportSource, /family-report-screen-export-target/);
   assert.match(reportExportSource, /getScreenStyleReportBackground\(target\)/);
   assert.match(reportExportSource, /convertCssOklchToRgb/);
-  assert.match(reportExportSource, /normalizeCanvasColorValues\(reportNode\)/);
+  assert.match(reportExportSource, /normalizeCanvasColorValues\(reportNode,\s*\{ includeCompositeColors: false \}\)/);
   assert.match(reportExportSource, /reportNode\.style\.margin = '0'/);
   assert.match(reportExportSource, /reportNode\.style\.marginLeft = '0'/);
   assert.match(reportExportSource, /reportNode\.style\.marginRight = '0'/);
@@ -1512,6 +1551,8 @@ test('family report export keeps page styling and still supports safe pdf captur
   assert.match(cssSource, /\[data-family-report-raw-note\]/);
   assert.match(cssSource, /\[data-report-export-cards\]/);
   assert.match(cssSource, /\[data-report-export-table\]/);
+  assert.match(cssSource, /\.family-report-screen-export-target \[data-report-export-cards\][\s\S]*display:\s*none !important/);
+  assert.match(cssSource, /\.family-report-screen-export-target \[data-report-export-table\][\s\S]*display:\s*block !important/);
   assert.match(cssSource, /\.family-report-pdf-target \[data-report-export-table\][\s\S]*display:\s*none !important/);
   assert.match(cssSource, /\.family-report-pdf-target \[data-report-export-cards\][\s\S]*display:\s*block !important/);
   assert.match(cssSource, /\.pdf-page-style-export-mode \.family-report-pdf-target \[data-pdf-table-wrap\]/);
@@ -1543,6 +1584,7 @@ test('client API exposes family profile types and endpoints', () => {
   assert.match(apiSource, /createFamilyProfile/);
   assert.match(apiSource, /createFamilyMember/);
   assert.match(apiSource, /updateFamilyMemberRelation/);
+  assert.match(apiSource, /notes\?: string/);
   assert.match(apiSource, /ensureDefaultFamilyProfile/);
   assert.match(apiSource, /familyId\?: number/);
   assert.match(apiSource, /applicantMemberId\?: number/);

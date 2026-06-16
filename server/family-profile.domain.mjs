@@ -126,6 +126,14 @@ function familyBindingError(code, message = code) {
   return error;
 }
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value || {}, key);
+}
+
+function normalizeFamilyNotes(value) {
+  return String(value || '').trim();
+}
+
 function personIdentityParts(person) {
   return {
     birthday: normalizeDateOnly(person?.birthday || person?.birthDate),
@@ -156,6 +164,27 @@ export function enrichFamilyMemberIdentity(member, person = {}) {
     changed = true;
   }
   if (!normalizeIdNumberTail(member.idNumberTail) && identity.idNumberTail) {
+    member.idNumberTail = identity.idNumberTail;
+    changed = true;
+  }
+  if (changed) member.updatedAt = new Date().toISOString();
+  return changed;
+}
+
+export function syncFamilyMemberFromPolicyPerson(member, person = {}) {
+  if (!member) return false;
+  const name = normalizeName(person?.name);
+  const identity = personIdentityParts(person);
+  let changed = false;
+  if (name && name !== normalizeName(member.name)) {
+    member.name = name;
+    changed = true;
+  }
+  if (identity.birthday && identity.birthday !== normalizeDateOnly(member.birthday)) {
+    member.birthday = identity.birthday;
+    changed = true;
+  }
+  if (identity.idNumberTail && identity.idNumberTail !== normalizeIdNumberTail(member.idNumberTail)) {
     member.idNumberTail = identity.idNumberTail;
     changed = true;
   }
@@ -263,6 +292,7 @@ export function normalizeFamilyMemberInput(input = {}) {
     relationToCore: relation.relationToCore,
     relationLabel: relation.relationLabel,
     role: relation.role,
+    ...(hasOwn(input, 'notes') ? { notes: normalizeFamilyNotes(input.notes) } : {}),
     status: String(input.status || 'active').trim() || 'active',
   };
 }
@@ -278,6 +308,16 @@ function applyFamilyMemberRelation(member, relationLabel, now = new Date().toISO
 
 export function updateFamilyMemberRelation(member, relationLabel) {
   return applyFamilyMemberRelation(member, relationLabel);
+}
+
+export function updateFamilyMemberNotes(member, notes) {
+  if (!member) throw familyBindingError('FAMILY_MEMBER_NOT_FOUND', '家庭成员不存在');
+  const nextNotes = normalizeFamilyNotes(notes);
+  if (String(member.notes || '') !== nextNotes) {
+    member.notes = nextNotes;
+    member.updatedAt = new Date().toISOString();
+  }
+  return member;
 }
 
 export function archiveFamilyGeneratedReports(state, familyIds = []) {
@@ -324,6 +364,7 @@ export function createFamilyProfile(state, input = {}, owner = {}) {
     ownerUserId: normalizedOwner.ownerUserId,
     ownerGuestId: normalizedOwner.ownerGuestId,
     familyName: normalizeFamilyName(input.familyName || input.name),
+    ...(hasOwn(input, 'notes') ? { notes: normalizeFamilyNotes(input.notes) } : {}),
     coreMemberId: Number(input.coreMemberId || 0) || null,
     status: String(input.status || 'active').trim() || 'active',
     createdAt: input.createdAt || now,
@@ -335,8 +376,22 @@ export function createFamilyProfile(state, input = {}, owner = {}) {
 
 export function updateFamilyProfileName(family, input = {}) {
   if (!family) throw familyBindingError('FAMILY_NOT_FOUND', '家庭档案不存在');
-  family.familyName = normalizeFamilyName(input.familyName || input.name);
-  family.updatedAt = new Date().toISOString();
+  let changed = false;
+  if (hasOwn(input, 'familyName') || hasOwn(input, 'name')) {
+    const nextName = normalizeFamilyName(input.familyName || input.name);
+    if (family.familyName !== nextName) {
+      family.familyName = nextName;
+      changed = true;
+    }
+  }
+  if (hasOwn(input, 'notes')) {
+    const nextNotes = normalizeFamilyNotes(input.notes);
+    if (String(family.notes || '') !== nextNotes) {
+      family.notes = nextNotes;
+      changed = true;
+    }
+  }
+  if (changed) family.updatedAt = new Date().toISOString();
   return family;
 }
 
@@ -359,6 +414,7 @@ export function createFamilyMember(state, familyId, input = {}) {
     relationToCore: memberInput.relationToCore,
     relationLabel: memberInput.relationLabel,
     role: memberInput.role,
+    notes: memberInput.notes,
     status: memberInput.status,
     createdAt: input.createdAt || now,
     updatedAt: input.updatedAt || now,

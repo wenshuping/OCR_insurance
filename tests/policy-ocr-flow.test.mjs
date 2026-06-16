@@ -9713,6 +9713,7 @@ test('family sales review is generated once persisted and returned by latest rep
     ownerUserId: null,
     ownerGuestId: 'guest-sales-review',
     familyName: '销售建议家庭',
+    notes: '初始家庭备注',
     coreMemberId: 9,
     status: 'active',
     createdAt: '2026-06-15T00:00:00.000Z',
@@ -9727,6 +9728,7 @@ test('family sales review is generated once persisted and returned by latest rep
       relationLabel: '本人',
       role: 'core',
       birthday: '1988-01-01',
+      notes: '初始成员备注',
       status: 'active',
       createdAt: '2026-06-15T00:00:00.000Z',
       updatedAt: '2026-06-15T00:00:00.000Z',
@@ -9774,6 +9776,11 @@ test('family sales review is generated once persisted and returned by latest rep
       assert.equal(input.family.familyRef, '当前家庭');
       assert.equal(input.members.length, 2);
       assert.equal(input.policies.length, 1);
+      assert.equal(input.family.notes, generationCount === 1 ? '初始家庭备注' : '更新后的家庭备注：年收入约80万，喜欢现金流方案');
+      assert.equal(
+        input.members.find((member) => member.memberRef === '{{member_1}}')?.notes,
+        generationCount === 1 ? '初始成员备注' : '更新后的成员备注：企业管理者，关注养老金',
+      );
       return {
         content: `## 一、销售结论摘要\n- 第 ${generationCount} 次销售建议`,
         model: 'test-internal-expert',
@@ -9815,6 +9822,34 @@ test('family sales review is generated once persisted and returned by latest rep
     assert.equal(saved.payload.review.content, generated.payload.review.content);
     assert.equal(saved.payload.review.model, '');
     assert.equal(generationCount, 1);
+
+    const familyNotePatch = await jsonFetch(server.baseUrl, '/api/family-profiles/8?guestId=guest-sales-review', {
+      method: 'PATCH',
+      body: JSON.stringify({ notes: '更新后的家庭备注：年收入约80万，喜欢现金流方案' }),
+    });
+    assert.equal(familyNotePatch.response.status, 200);
+    assert.equal(familyNotePatch.payload.family.notes, '更新后的家庭备注：年收入约80万，喜欢现金流方案');
+    assert.equal(state.familySalesReviews[0].status, 'archived');
+
+    const memberNotePatch = await jsonFetch(server.baseUrl, '/api/family-profiles/8/members/9?guestId=guest-sales-review', {
+      method: 'PATCH',
+      body: JSON.stringify({ notes: '更新后的成员备注：企业管理者，关注养老金' }),
+    });
+    assert.equal(memberNotePatch.response.status, 200);
+    assert.equal(memberNotePatch.payload.member.notes, '更新后的成员备注：企业管理者，关注养老金');
+
+    const afterNotesGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
+    assert.equal(afterNotesGet.response.status, 200);
+    assert.equal(afterNotesGet.payload.review, null);
+
+    const regenerated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(regenerated.response.status, 200);
+    assert.equal(regenerated.payload.review.id, 13);
+    assert.equal(regenerated.payload.review.content.includes('第 2 次销售建议'), true);
+    assert.equal(generationCount, 2);
   } finally {
     await server.close();
   }
@@ -10988,15 +11023,101 @@ test('PATCH recomputes family participant snapshots when insured name changes', 
 
     const updated = await jsonFetch(server.baseUrl, `/api/policies/${saved.payload.policy.id}?guestId=guest-family-patch`, {
       method: 'PATCH',
-      body: JSON.stringify({ insured: '李四OCR错字' }),
+      body: JSON.stringify({ insured: '李四OCR错字', insuredBirthday: '1990-02-03' }),
     });
 
     assert.equal(updated.response.status, 200);
     assert.equal(updated.payload.policy.insured, '李四OCR错字');
     assert.equal(updated.payload.policy.insuredMemberId, insuredRes.payload.member.id);
-    assert.equal(updated.payload.policy.insuredMemberName, '李四');
+    assert.equal(updated.payload.policy.insuredMemberName, '李四OCR错字');
     assert.equal(updated.payload.policy.insuredNameSnapshot, '李四OCR错字');
-    assert.equal(updated.payload.policy.participantReviewStatus, 'name_mismatch');
+    assert.equal(updated.payload.policy.participantReviewStatus, 'ok');
+
+    const familyAfterNamePatch = await jsonFetch(server.baseUrl, `/api/family-profiles?guestId=guest-family-patch`);
+    const insuredMemberAfterNamePatch = familyAfterNamePatch.payload.families
+      .flatMap((family) => family.members || [])
+      .find((member) => Number(member.id) === Number(insuredRes.payload.member.id));
+    assert.equal(insuredMemberAfterNamePatch.name, '李四OCR错字');
+    assert.equal(insuredMemberAfterNamePatch.birthday, '1990-02-03');
+
+    const birthdayOnly = await jsonFetch(server.baseUrl, `/api/policies/${saved.payload.policy.id}?guestId=guest-family-patch`, {
+      method: 'PATCH',
+      body: JSON.stringify({ applicantBirthday: '1980-01-02', applicantRelation: '配偶' }),
+    });
+    assert.equal(birthdayOnly.response.status, 200);
+    assert.equal(birthdayOnly.payload.policy.applicantRelationLabel, '本人');
+
+    const familyAfterBirthdayPatch = await jsonFetch(server.baseUrl, `/api/family-profiles?guestId=guest-family-patch`);
+    const applicantMemberAfterBirthdayPatch = familyAfterBirthdayPatch.payload.families
+      .flatMap((family) => family.members || [])
+      .find((member) => Number(member.id) === Number(applicantRes.payload.member.id));
+    assert.equal(applicantMemberAfterBirthdayPatch.name, '张三');
+    assert.equal(applicantMemberAfterBirthdayPatch.birthday, '1980-01-02');
+    assert.equal(applicantMemberAfterBirthdayPatch.relationLabel, '本人');
+  } finally {
+    await server.close();
+  }
+});
+
+test('PATCH sets missing family top pillar when a bound policy member is changed to self', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family-self-patch', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '吴连英' }),
+    });
+    const familyId = familyRes.payload.family.id;
+    const memberRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family-self-patch`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '翟卿', relationLabel: '配偶' }),
+    });
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-family-self-patch',
+        scan: { ocrText: '', data: { company: '中国人寿', name: '测试保单', applicant: '翟卿', insured: '翟卿' } },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId,
+          applicantMemberId: memberRes.payload.member.id,
+          insuredMemberId: memberRes.payload.member.id,
+        },
+      }),
+    });
+    assert.equal(saved.response.status, 201);
+    assert.equal(saved.payload.policy.applicantRelationLabel, '配偶');
+
+    const updated = await jsonFetch(server.baseUrl, `/api/policies/${saved.payload.policy.id}?guestId=guest-family-self-patch`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        applicantRelation: '本人',
+        applicantRelationLabel: '配偶',
+        beneficiaryRelation: '本人',
+        beneficiaryRelationLabel: '配偶',
+        insuredRelation: '本人',
+        insuredRelationLabel: '配偶',
+      }),
+    });
+
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.payload.policy.applicantMemberId, memberRes.payload.member.id);
+    assert.equal(updated.payload.policy.insuredMemberId, memberRes.payload.member.id);
+    assert.equal(updated.payload.policy.applicantRelationLabel, '本人');
+    assert.equal(updated.payload.policy.insuredRelationLabel, '本人');
+    assert.equal(updated.payload.policy.beneficiaryRelation, '本人');
+
+    const familyAfterPatch = await jsonFetch(server.baseUrl, `/api/family-profiles?guestId=guest-family-self-patch`);
+    const family = familyAfterPatch.payload.families.find((row) => Number(row.id) === Number(familyId));
+    const member = family.members.find((row) => Number(row.id) === Number(memberRes.payload.member.id));
+    assert.equal(family.coreMemberId, memberRes.payload.member.id);
+    assert.equal(member.relationLabel, '本人');
   } finally {
     await server.close();
   }

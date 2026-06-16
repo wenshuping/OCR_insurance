@@ -18,7 +18,10 @@ export type Policy = {
   name: string;
   canonicalProductId?: string;
   applicant: string;
+  applicantBirthday?: string;
   beneficiary?: string;
+  beneficiaryRelation?: string;
+  beneficiaryBirthday?: string;
   applicantRelation: string;
   insured: string;
   insuredRelation: string;
@@ -130,7 +133,10 @@ export type PolicyScanData = {
   name: string;
   canonicalProductId?: string;
   applicant: string;
+  applicantBirthday?: string;
   beneficiary?: string;
+  beneficiaryRelation?: string;
+  beneficiaryBirthday?: string;
   applicantRelation: string;
   insured: string;
   insuredRelation: string;
@@ -227,7 +233,10 @@ export type PolicyFormData = {
   name: string;
   canonicalProductId?: string;
   applicant: string;
+  applicantBirthday: string;
   beneficiary: string;
+  beneficiaryRelation: string;
+  beneficiaryBirthday: string;
   applicantRelation: string;
   insured: string;
   insuredRelation: string;
