@@ -59,7 +59,8 @@ function parseCoverageEndYear(policy) {
     const birthYear = new Date(policy.insuredBirthday).getFullYear();
     return birthYear + 105;
   }
-  const ageMatch = text.match(/(\d+)\s*周岁/);
+  const normalizedText = text.replace(/\s+/gu, '');
+  const ageMatch = normalizedText.match(/(?:至|保至)?(\d{1,3})(?:周岁|岁)/u);
   if (ageMatch && policy.insuredBirthday) {
     const birthYear = new Date(policy.insuredBirthday).getFullYear();
     return birthYear + Number(ageMatch[1]);
@@ -286,6 +287,8 @@ function expandCashflowIndicator(indicator, policy) {
       policyId: policy.id,
       productName: policy.name || indicator.productName || '',
       calcText: formatCashflowCalculation(indicator, policy, amount),
+      _cashflowSource: 'indicator',
+      _cashflowIndicatorId: indicator.id || '',
     });
   }
   return entries;
@@ -604,12 +607,80 @@ function cashflowEntryKey(entry = {}) {
   ].join('\u001f');
 }
 
+function standardMaturityLiabilityKey(entry = {}) {
+  const liability = normalizeCashflowLookupText(entry.liability);
+  if (/^(满期生存保险金|满期保险金|满期金|满期返还|期满保险金|期满金)$/u.test(liability)) {
+    return 'standard_maturity';
+  }
+  return '';
+}
+
+function cashflowBenefitBasisKey(entry = {}) {
+  const liabilityKey = standardMaturityLiabilityKey(entry);
+  if (!liabilityKey) return '';
+  const text = normalizeCashflowLookupText([
+    entry.calcText,
+    entry.calculationText,
+  ].join(' '));
+  if (/实际交纳|已交保费|所交保费/u.test(text)) return `${liabilityKey}:paid_premium`;
+  if (/基本保额|基本保险金额/u.test(text)) return `${liabilityKey}:basic_amount`;
+  return '';
+}
+
+function equivalentCashflowEntryKey(entry = {}) {
+  const benefitKey = cashflowBenefitBasisKey(entry);
+  if (!benefitKey) return '';
+  return [
+    Number(entry.year || 0),
+    normalizeCashflowLookupText(entry.productName),
+    benefitKey,
+  ].join('\u001f');
+}
+
+function cashflowEntriesCanMergeEquivalent(current = {}, next = {}) {
+  const currentKey = equivalentCashflowEntryKey(current);
+  if (!currentKey || currentKey !== equivalentCashflowEntryKey(next)) return false;
+  const currentSource = String(current._cashflowSource || '');
+  const nextSource = String(next._cashflowSource || '');
+  if (currentSource && nextSource && currentSource === nextSource) return false;
+  const currentIndicatorId = String(current._cashflowIndicatorId || '');
+  const nextIndicatorId = String(next._cashflowIndicatorId || '');
+  if (currentIndicatorId && nextIndicatorId && currentIndicatorId !== nextIndicatorId) return false;
+  return true;
+}
+
+function cashflowEntryDetailScore(entry = {}) {
+  const source = String(entry._cashflowSource || '');
+  const sourceScore = source === 'indicator_source_text' ? 20 : source === 'responsibility' ? 10 : 0;
+  return sourceScore + normalizeCashflowLookupText(entry.liability).length;
+}
+
+function preferCashflowEntry(current = {}, next = {}) {
+  return cashflowEntryDetailScore(next) > cashflowEntryDetailScore(current) ? next : current;
+}
+
 function mergeCashflowEntries(...groups) {
   const byKey = new Map();
+  const equivalentKeyIndex = new Map();
   for (const group of groups) {
     for (const entry of Array.isArray(group) ? group : []) {
       const key = cashflowEntryKey(entry);
+      const existing = byKey.get(key);
+      if (existing) {
+        byKey.set(key, preferCashflowEntry(existing, entry));
+        continue;
+      }
+
+      const equivalentKey = equivalentCashflowEntryKey(entry);
+      const equivalentExistingKey = equivalentKey ? equivalentKeyIndex.get(equivalentKey) : '';
+      const equivalentExisting = equivalentExistingKey ? byKey.get(equivalentExistingKey) : null;
+      if (equivalentExisting && cashflowEntriesCanMergeEquivalent(equivalentExisting, entry)) {
+        byKey.set(equivalentExistingKey, preferCashflowEntry(equivalentExisting, entry));
+        continue;
+      }
+
       byKey.set(key, entry);
+      if (equivalentKey) equivalentKeyIndex.set(equivalentKey, key);
     }
   }
   return [...byKey.values()];
@@ -705,6 +776,8 @@ function expandCashflowIndicatorSourceText(indicator, policy) {
         policyId: policy.id,
         productName: scopedPolicy.name || indicator.productName || policy.name || '',
         calcText: item.calculationText,
+        _cashflowSource: 'indicator_source_text',
+        _cashflowIndicatorId: indicator.id || '',
       });
     }
   }
@@ -737,6 +810,8 @@ function synthesizeCashflowFromIndicatorsOnly(cashflowIndicators, policy, effect
           year, age: ageAtCalendarYear(scopedPolicy, year, year - scopedBirthYear), amount, cumulative,
           liability: '年金', policyId: policy.id, productName,
           calcText: formatCashflowCalculation(ind, scopedPolicy, amount),
+          _cashflowSource: 'indicator',
+          _cashflowIndicatorId: ind.id || '',
         });
       }
     }
@@ -749,6 +824,8 @@ function synthesizeCashflowFromIndicatorsOnly(cashflowIndicators, policy, effect
         year: scopedCoverageEndYear, age: ageAtCoverageEnd(scopedPolicy) ?? (scopedCoverageEndYear - scopedBirthYear), amount, cumulative,
         liability: '满期金', policyId: policy.id, productName,
         calcText: formatCashflowCalculation(ind, scopedPolicy, amount),
+        _cashflowSource: 'indicator',
+        _cashflowIndicatorId: ind.id || '',
       });
     }
   }
@@ -1083,6 +1160,7 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
         policyId: policy.id,
         productName,
         calcText: item.calculationText,
+        _cashflowSource: 'responsibility',
       });
     }
   }
@@ -1110,6 +1188,8 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
             policyId: policy.id,
             productName,
             calcText: formatCashflowCalculation(ind, policy, indAmount),
+            _cashflowSource: 'indicator',
+            _cashflowIndicatorId: ind.id || '',
           });
         }
       }
@@ -1193,7 +1273,11 @@ export function computePolicyCashflow(policy, template, indicators) {
   let cumulative = 0;
   entries = entries
     .sort((a, b) => a.year - b.year)
-    .map(e => { cumulative += e.amount; return { ...e, cumulative }; });
+    .map(e => {
+      cumulative += e.amount;
+      const { _cashflowSource, _cashflowIndicatorId, ...publicEntry } = e;
+      return { ...publicEntry, cumulative };
+    });
 
   return entries;
 }

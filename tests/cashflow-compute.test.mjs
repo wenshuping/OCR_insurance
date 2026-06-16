@@ -786,6 +786,135 @@ test('computePolicyCashflow: indicator source replaces policy-level duplicate re
   assert.equal(entries[0].calcText, '实际交纳保险费 = 31,050元');
 });
 
+test('computePolicyCashflow: dedupes synonymous maturity entries across responsibility and indicator sources', () => {
+  const policy = {
+    id: 500744,
+    company: '中国人寿',
+    name: '国寿鑫颐宝两全保险（2024版）',
+    amount: 159948,
+    firstPremium: 12000,
+    date: '2024-12-05',
+    insuredBirthday: '1987-12-02',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至60岁',
+    plans: [
+      {
+        company: '中国人寿',
+        role: 'main',
+        name: '国寿鑫颐宝两全保险（2024版）',
+        matchedProductName: '国寿鑫颐宝两全保险（2024版）',
+        amount: 159948,
+        premium: 12000,
+        paymentPeriod: '',
+        coveragePeriod: '',
+        canonicalProductId: 'product_ebc4958897c71d57',
+      },
+    ],
+    responsibilities: [
+      {
+        scenario: '二、满期保险金\n被保险人生存至本合同保险期间届满的年生效对应日，本合同终止，本公司按本合同基本保险金额给付满期保险金。',
+      },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [
+    {
+      id: 'ind_8305e5dc67ca675931',
+      coverageType: '现金流',
+      liability: '满期返还',
+      value: 100,
+      unit: '%',
+      basis: '基本保额',
+      productName: '国寿鑫颐宝两全保险（2024版）',
+      canonicalProductId: 'product_ebc4958897c71d57',
+      sourceExcerpt: '二、满期保险金被保险人生存至本合同保险期间届满的年生效对应日，本合同终止，本公司按本合同基本保险金额给付满期保险金',
+    },
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.deepEqual(entries.map((entry) => ({
+    year: entry.year,
+    age: entry.age,
+    amount: entry.amount,
+    cumulative: entry.cumulative,
+    liability: entry.liability,
+    calcText: entry.calcText,
+  })), [
+    {
+      year: 2047,
+      age: 60,
+      amount: 159948,
+      cumulative: 159948,
+      liability: '满期保险金',
+      calcText: '基本保额 = 159,948元',
+    },
+  ]);
+});
+
+test('computePolicyCashflow: keeps same-year same-amount distinct liabilities separate', () => {
+  const policy = {
+    id: 16,
+    company: '测试保险',
+    name: '测试年金',
+    amount: 50000,
+    firstPremium: 5000,
+    date: '2020-01-01',
+    insuredBirthday: '1980-01-01',
+    paymentPeriod: '10年交',
+    coveragePeriod: '30年',
+    responsibilities: [
+      { scenario: '一、生存保险金\n被保险人生存至保险期间届满的年生效对应日，我们按本合同基本保险金额给付生存保险金。\n二、祝寿金\n被保险人生存至保险期间届满的年生效对应日，我们按本合同基本保险金额给付祝寿金。' },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, []);
+
+  assert.equal(entries.length, 2);
+  assert.deepEqual(entries.map((entry) => ({
+    year: entry.year,
+    amount: entry.amount,
+    liability: entry.liability,
+    cumulative: entry.cumulative,
+  })), [
+    { year: 2050, amount: 50000, liability: '生存保险金', cumulative: 50000 },
+    { year: 2050, amount: 50000, liability: '祝寿金', cumulative: 100000 },
+  ]);
+});
+
+test('computePolicyCashflow: does not merge special maturity benefits into standard maturity', () => {
+  const policy = {
+    id: 17,
+    company: '测试保险',
+    name: '测试两全',
+    amount: 50000,
+    firstPremium: 5000,
+    date: '2020-01-01',
+    insuredBirthday: '1980-01-01',
+    paymentPeriod: '10年交',
+    coveragePeriod: '30年',
+    responsibilities: [
+      { scenario: '一、特别满期保险金\n被保险人生存至保险期间届满的年生效对应日，我们按本合同基本保险金额给付特别满期保险金。' },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [
+    {
+      id: 'standard_maturity_indicator',
+      coverageType: '现金流',
+      liability: '满期返还',
+      value: 100,
+      unit: '%',
+      basis: '基本保额',
+      productName: '测试两全',
+      sourceExcerpt: '满期保险金被保险人生存至本合同保险期间届满的年生效对应日，我们按本合同基本保险金额给付满期保险金。',
+    },
+  ]);
+
+  assert.equal(entries.length, 2);
+  assert.deepEqual(entries.map((entry) => entry.liability), ['特别满期保险金', '满期返还']);
+  assert.deepEqual(entries.map((entry) => entry.cumulative), [50000, 100000]);
+});
+
 test('computePolicyCashflow: expands China Life multi-plan annuity source excerpts with plan amounts', () => {
   const policy = {
     id: 500747,
