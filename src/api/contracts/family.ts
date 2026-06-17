@@ -1,4 +1,5 @@
 import type { Policy } from './policy';
+import type { FamilyPlanningProfile, FamilyReport } from '../../family-report-engine.mjs';
 import { authQuery, request } from '../client';
 
 export type FamilyRelationToCore =
@@ -69,6 +70,18 @@ export type FamilyReportSharePayload = {
   members: FamilyMember[];
   policies: Policy[];
   snapshotAt: string;
+};
+
+export type FamilyReportRecord = {
+  id: number;
+  familyId: number;
+  status: 'active' | 'archived' | string;
+  source: 'code' | 'deepseek' | string;
+  generatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
+  summary?: FamilyReport['summary'] & { issueCount?: number };
+  report: FamilyReport;
 };
 
 export type FamilySalesReview = {
@@ -160,15 +173,46 @@ export function setFamilyCoreMember(input: { token?: string; guestId?: string; f
   });
 }
 
-export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel?: string; notes?: string }) {
+export function updateFamilyMember(input: {
+  token?: string;
+  guestId?: string;
+  familyId: number;
+  memberId: number;
+  name?: string;
+  relationLabel?: string;
+  birthday?: string;
+  idNumberTail?: string;
+  notes?: string;
+}) {
   return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(
     `/api/family-profiles/${input.familyId}/members/${input.memberId}${authQuery(input)}`,
     {
       token: input.token,
       method: 'PATCH',
-      body: { relationLabel: input.relationLabel, notes: input.notes },
+      body: {
+        name: input.name,
+        relationLabel: input.relationLabel,
+        birthday: input.birthday,
+        idNumberTail: input.idNumberTail,
+        notes: input.notes,
+      },
     },
   );
+}
+
+export const updateFamilyMemberRelation = updateFamilyMember;
+
+export function deleteFamilyMember(input: { token?: string; guestId?: string; familyId: number; memberId: number }) {
+  return request<{
+    ok: true;
+    family: FamilyProfile;
+    member: FamilyMember;
+    members: FamilyMember[];
+    clearedPolicyCount: number;
+  }>(`/api/family-profiles/${input.familyId}/members/${input.memberId}${authQuery(input)}`, {
+    token: input.token,
+    method: 'DELETE',
+  });
 }
 
 export function createFamilyReportShare(input: { token?: string; guestId?: string; familyId: number }) {
@@ -178,16 +222,33 @@ export function createFamilyReportShare(input: { token?: string; guestId?: strin
   });
 }
 
+export function getFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; reportRecord: FamilyReportRecord | null }>(`/api/family-profiles/${input.familyId}/report${authQuery(input)}`, {
+    token: input.token,
+  });
+}
+
+export function createFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null; userRefresh?: boolean }) {
+  return request<{ ok: true; reportRecord: FamilyReportRecord }>(`/api/family-profiles/${input.familyId}/report${authQuery(input)}`, {
+    token: input.token,
+    body: { planningProfile: input.planningProfile || null, userRefresh: input.userRefresh === true },
+  });
+}
+
+export function regenerateFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null; userRefresh?: boolean }) {
+  return createFamilyReportRecord(input);
+}
+
 export function getFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
   return request<{ ok: true; review: FamilySalesReview | null }>(`/api/family-profiles/${input.familyId}/sales-review${authQuery(input)}`, {
     token: input.token,
   });
 }
 
-export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
+export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number; userRefresh?: boolean }) {
   return request<{ ok: true; review: FamilySalesReview }>(`/api/family-profiles/${input.familyId}/sales-review${authQuery(input)}`, {
     token: input.token,
-    body: {},
+    body: { userRefresh: input.userRefresh === true },
   });
 }
 

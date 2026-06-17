@@ -88,6 +88,51 @@ test('sqlite state store imports JSON once and keeps database as the source of t
       updatedAt: '2026-05-01T00:11:00.000Z',
       inputSummary: { familyId: 8, memberCount: 1, policyCount: 1 },
     }],
+    familyReports: [{
+      id: 12,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      status: 'active',
+      source: 'code',
+      report: { summary: { familyId: 8, memberCount: 1, policyCount: 1 } },
+      generatedAt: '2026-05-01T00:12:00.000Z',
+      createdAt: '2026-05-01T00:12:00.000Z',
+      updatedAt: '2026-05-01T00:12:00.000Z',
+      summary: { familyId: 8, memberCount: 1, policyCount: 1, issueCount: 1 },
+    }],
+    familyReportIssues: [{
+      id: 13,
+      reportId: 12,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      severity: 'warning',
+      category: 'coverage_gap',
+      status: 'open',
+      source: 'rule',
+      title: '家庭成员未绑定保单',
+      detail: '测试问题',
+      createdAt: '2026-05-01T00:12:30.000Z',
+      updatedAt: '2026-05-01T00:12:30.000Z',
+    }],
+    familyReportCorrections: [{
+      id: 14,
+      reportId: 12,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      policyId: 3,
+      memberId: 9,
+      dimension: 'medical',
+      action: 'mark_unquantifiable',
+      status: 'auto_applied',
+      source: 'deepseek',
+      issueId: 13,
+      reason: '报销型医疗不展示固定保额',
+      createdAt: '2026-05-01T00:12:40.000Z',
+      updatedAt: '2026-05-01T00:12:40.000Z',
+    }],
     insuranceIndicatorSnapshot: { syncedAt: '2026-05-01T00:05:00.000Z', count: 1 },
     nextId: 6,
   });
@@ -109,8 +154,14 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familySalesReviews.length, 1);
   assert.equal(imported.familySalesReviews[0].familyId, 8);
   assert.equal(imported.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(imported.familyReports.length, 1);
+  assert.equal(imported.familyReports[0].summary.issueCount, 1);
+  assert.equal(imported.familyReportIssues.length, 1);
+  assert.equal(imported.familyReportIssues[0].reportId, 12);
+  assert.equal(imported.familyReportCorrections.length, 1);
+  assert.equal(imported.familyReportCorrections[0].status, 'auto_applied');
   assert.deepEqual(imported.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:05:00.000Z', count: 1 });
-  assert.equal(imported.nextId, 12);
+  assert.equal(imported.nextId, 15);
 
   imported.users.push({ id: 6, mobile: '13900000000', createdAt: '2026-05-01T00:06:00.000Z', updatedAt: '2026-05-01T00:06:00.000Z' });
   imported.policies.push({ id: 7, userId: 6, guestId: '', company: '平安人寿', name: '平安福', insured: '张三', createdAt: '2026-05-01T00:07:00.000Z', updatedAt: '2026-05-01T00:07:00.000Z' });
@@ -132,6 +183,9 @@ test('sqlite state store imports JSON once and keeps database as the source of t
     assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 2);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_profiles').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_members').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_reports').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_issues').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_corrections').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_shares').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_reviews').get().count, 1);
     assert.equal(
@@ -165,12 +219,18 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloaded.familyReportShares[0].token, 'share-token-1');
   assert.equal(reloaded.familySalesReviews.length, 1);
   assert.equal(reloaded.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(reloaded.familyReports.length, 1);
+  assert.equal(reloaded.familyReports[0].summary.issueCount, 1);
+  assert.equal(reloaded.familyReportIssues.length, 1);
+  assert.equal(reloaded.familyReportIssues[0].title, '家庭成员未绑定保单');
+  assert.equal(reloaded.familyReportCorrections.length, 1);
+  assert.equal(reloaded.familyReportCorrections[0].action, 'mark_unquantifiable');
   assert.equal(
     reloaded.insuranceIndicatorRecords.find((record) => record.id === 'ind_2')?.formulaText,
     '重疾(首次给付) = 基本保险金额',
   );
   assert.deepEqual(reloaded.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
-  assert.equal(reloaded.nextId, 12);
+  assert.equal(reloaded.nextId, 15);
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath, seedStatePath });
@@ -188,6 +248,12 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familyReportShares[0].token, 'share-token-1');
   assert.equal(reloadedAfterRestart.familySalesReviews.length, 1);
   assert.equal(reloadedAfterRestart.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(reloadedAfterRestart.familyReports.length, 1);
+  assert.equal(reloadedAfterRestart.familyReports[0].summary.issueCount, 1);
+  assert.equal(reloadedAfterRestart.familyReportIssues.length, 1);
+  assert.equal(reloadedAfterRestart.familyReportIssues[0].reportId, 12);
+  assert.equal(reloadedAfterRestart.familyReportCorrections.length, 1);
+  assert.equal(reloadedAfterRestart.familyReportCorrections[0].reportId, 12);
   assert.deepEqual(reloadedAfterRestart.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
   reopened.close();
 });
@@ -313,6 +379,51 @@ test('sqlite state store incrementally persists a saved policy without rewriting
       createdAt: '2026-05-01T00:09:00.000Z',
       updatedAt: '2026-05-01T00:09:00.000Z',
     }],
+    familyReports: [{
+      id: 18,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      status: 'active',
+      source: 'code',
+      report: { summary: { familyId: 8, policyCount: 1, memberCount: 1 } },
+      generatedAt: '2026-05-01T00:10:00.000Z',
+      createdAt: '2026-05-01T00:10:00.000Z',
+      updatedAt: '2026-05-01T00:10:00.000Z',
+      summary: { familyId: 8, policyCount: 1, memberCount: 1, issueCount: 1 },
+    }],
+    familyReportIssues: [{
+      id: 19,
+      reportId: 18,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      severity: 'warning',
+      category: 'coverage_gap',
+      status: 'open',
+      source: 'rule',
+      title: '家庭成员未绑定保单',
+      detail: '保存保单时应保留报告问题',
+      createdAt: '2026-05-01T00:10:30.000Z',
+      updatedAt: '2026-05-01T00:10:30.000Z',
+    }],
+    familyReportCorrections: [{
+      id: 23,
+      reportId: 18,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      policyId: 20,
+      memberId: 9,
+      dimension: 'medical',
+      action: 'exclude_amount',
+      status: 'pending_review',
+      source: 'deepseek',
+      issueId: 19,
+      reason: '测试保存保单时保留报告修正',
+      createdAt: '2026-05-01T00:10:40.000Z',
+      updatedAt: '2026-05-01T00:10:40.000Z',
+    }],
     nextId: 20,
   };
   await store.persist(state);
@@ -354,7 +465,10 @@ test('sqlite state store incrementally persists a saved policy without rewriting
     assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM source_records WHERE policy_id = ?').get(savedPolicy.id).count, 1);
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_members WHERE id = ?').get(9).payload).relationLabel, '本人');
-    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '22');
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_reports WHERE id = ?').get(18).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_issues WHERE id = ?').get(19).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_corrections WHERE id = ?').get(23).count, 1);
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '24');
   } finally {
     db.close();
     store.close();
@@ -873,8 +987,19 @@ test('sqlite state store incrementally persists membership config without rewrit
       annualPriceCents: 30000,
       annualDurationDays: 365,
       registeredFreePolicyQuota: 3,
+      familyReportDailyRefreshLimit: 3,
+      familySalesReviewDailyRefreshLimit: 3,
       updatedAt: '2026-06-14T00:00:00.000Z',
     },
+    reportRefreshEvents: [{
+      id: 9,
+      kind: 'familyReport',
+      familyId: 3,
+      reportId: 7,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      createdAt: '2026-06-14T00:02:00.000Z',
+    }],
     nextId: 10,
   };
   await store.persist(state);
@@ -891,8 +1016,11 @@ test('sqlite state store incrementally persists membership config without rewrit
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const config = JSON.parse(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get().payload);
+    const event = JSON.parse(db.prepare('SELECT payload FROM report_refresh_events WHERE id = 9').get().payload);
     assert.equal(config.enabled, false);
     assert.equal(config.registeredFreePolicyQuota, 6);
+    assert.equal(event.kind, 'familyReport');
+    assert.equal(event.reportId, 7);
     assertKnowledgeTablesUntouched(db);
   } finally {
     db.close();
@@ -1176,7 +1304,24 @@ test('sqlite state store persists membership orders, memberships, wechat identit
   const seedStatePath = path.join(dir, 'state.json');
   await writeJson(seedStatePath, {
     users: [{ id: 1, mobile: '18616135811', createdAt: '2026-06-11T08:00:00.000Z', updatedAt: '2026-06-11T08:00:00.000Z' }],
-    membershipConfig: { enabled: true, annualPriceCents: 30000, annualDurationDays: 365, registeredFreePolicyQuota: 2, updatedAt: '2026-06-11T08:00:00.000Z' },
+    membershipConfig: {
+      enabled: true,
+      annualPriceCents: 30000,
+      annualDurationDays: 365,
+      registeredFreePolicyQuota: 2,
+      familyReportDailyRefreshLimit: 4,
+      familySalesReviewDailyRefreshLimit: 5,
+      updatedAt: '2026-06-11T08:00:00.000Z',
+    },
+    reportRefreshEvents: [{
+      id: 19,
+      kind: 'familySalesReview',
+      familyId: 3,
+      reportId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      createdAt: '2026-06-11T08:00:30.000Z',
+    }],
     membershipOrders: [{
       id: 20,
       outTradeNo: 'mem_1_1790000000000_abcdef',
@@ -1202,6 +1347,9 @@ test('sqlite state store persists membership orders, memberships, wechat identit
   const store = await createSqliteStateStore({ dbPath, seedStatePath });
   const imported = await store.load();
   assert.equal(imported.membershipConfig.registeredFreePolicyQuota, 2);
+  assert.equal(imported.membershipConfig.familyReportDailyRefreshLimit, 4);
+  assert.equal(imported.membershipConfig.familySalesReviewDailyRefreshLimit, 5);
+  assert.equal(imported.reportRefreshEvents[0].kind, 'familySalesReview');
   assert.equal(imported.membershipOrders[0].outTradeNo, 'mem_1_1790000000000_abcdef');
   assert.equal(imported.memberships[0].expiresAt, '2027-06-11T08:01:00.000Z');
   assert.equal(imported.userWechatIdentities[0].openid, 'openid-1');
@@ -1209,6 +1357,7 @@ test('sqlite state store persists membership orders, memberships, wechat identit
   assert.equal(imported.nextId, 21);
   assert.equal(store.db.prepare('SELECT count(*) AS count FROM membership_orders').get().count, 1);
   assert.equal(store.db.prepare('SELECT count(*) AS count FROM memberships').get().count, 1);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM report_refresh_events').get().count, 1);
   assert.equal(store.db.prepare('SELECT count(*) AS count FROM user_wechat_identities').get().count, 1);
   assert.equal(store.db.prepare('SELECT count(*) AS count FROM wechat_oauth_states').get().count, 1);
   assert.equal(

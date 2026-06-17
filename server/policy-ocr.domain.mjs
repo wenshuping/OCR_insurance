@@ -30,8 +30,12 @@ export function createInitialState() {
     officialDomainProfiles: [],
     familyProfiles: [],
     familyMembers: [],
+    familyReports: [],
+    familyReportIssues: [],
+    familyReportCorrections: [],
     familyReportShares: [],
     familySalesReviews: [],
+    reportRefreshEvents: [],
     membershipConfig: null,
     membershipOrders: [],
     memberships: [],
@@ -852,9 +856,15 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
     if (!optionalResponsibilityRecordMatchesPolicy(policy, persisted)) continue;
     const existingByKey = [...candidates.values()].find((candidate) => optionalResponsibilityKey(candidate) === optionalResponsibilityKey(persisted));
     const id = existingByKey?.id || persisted.id;
+    const governanceRecord = id ? candidates.get(id) : null;
+    const governanceNotQuantifiable = String(governanceRecord?.quantificationStatus || '') === 'not_quantifiable';
     mergeOptionalResponsibilityCandidate(candidates, {
       ...persisted,
       id,
+      ...(governanceNotQuantifiable ? {
+        quantificationStatus: 'not_quantifiable',
+        quantificationReason: governanceRecord.quantificationReason || persisted.quantificationReason,
+      } : {}),
       mergeCanonicalProductId: mergeCanonicalProductIdForPolicyCandidate(policy, persisted),
     });
   }

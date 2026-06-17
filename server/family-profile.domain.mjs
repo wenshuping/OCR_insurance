@@ -62,6 +62,9 @@ const RELATION_MAP = new Map([
 function ensureFamilyState(state) {
   state.familyProfiles = Array.isArray(state.familyProfiles) ? state.familyProfiles : [];
   state.familyMembers = Array.isArray(state.familyMembers) ? state.familyMembers : [];
+  state.familyReports = Array.isArray(state.familyReports) ? state.familyReports : [];
+  state.familyReportIssues = Array.isArray(state.familyReportIssues) ? state.familyReportIssues : [];
+  state.familyReportCorrections = Array.isArray(state.familyReportCorrections) ? state.familyReportCorrections : [];
   state.familyReportShares = Array.isArray(state.familyReportShares) ? state.familyReportShares : [];
   state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
 }
@@ -83,6 +86,12 @@ function hasOwnerPrincipal(owner) {
 
 function normalizeName(value) {
   return String(value || '').trim();
+}
+
+function normalizeFamilyMemberDedupeName(value, { relaxed = false } = {}) {
+  const name = normalizeName(value);
+  if (!relaxed) return name;
+  return name.replace(/^的+/u, '').trim() || name;
 }
 
 function normalizeIdNumberTail(value) {
@@ -197,20 +206,33 @@ function familyMemberIdentityScore(member) {
   return (identity.birthday ? 1 : 0) + (identity.idNumberTail ? 1 : 0);
 }
 
+function familyMemberRelationScore(member) {
+  const relationToCore = String(member?.relationToCore || '').trim();
+  const relationLabel = String(member?.relationLabel || '').trim();
+  const role = String(member?.role || '').trim();
+  if (relationToCore === 'self' || relationLabel === '本人' || role === 'core') return 3;
+  if (relationToCore && relationToCore !== 'pending') return 2;
+  if (relationLabel && relationLabel !== '待确认') return 2;
+  if (role && role !== 'unknown') return 1;
+  return 0;
+}
+
 function chooseMergedFamilyMember(family, members) {
   return [...members].sort((left, right) => (
     (Number(right.id) === Number(family.coreMemberId || 0) ? 1 : 0) -
       (Number(left.id) === Number(family.coreMemberId || 0) ? 1 : 0) ||
+    familyMemberRelationScore(right) - familyMemberRelationScore(left) ||
     familyMemberIdentityScore(right) - familyMemberIdentityScore(left) ||
     Number(left.id || 0) - Number(right.id || 0)
   ))[0] || null;
 }
 
-function repairDuplicateFamilyMembers(state, family) {
+export function repairDuplicateFamilyMembers(state, family, options = {}) {
+  const relaxedNameOnly = Boolean(options.relaxedNameOnly);
   const activeMembers = listFamilyMembers(state, family.id);
   const membersByName = new Map();
   for (const member of activeMembers) {
-    const name = normalizeName(member?.name);
+    const name = normalizeFamilyMemberDedupeName(member?.name, { relaxed: relaxedNameOnly });
     if (!name) continue;
     membersByName.set(name, [...(membersByName.get(name) || []), member]);
   }
@@ -223,18 +245,28 @@ function repairDuplicateFamilyMembers(state, family) {
     const emptyIdentityMembers = members.filter((member) => !hasPersonIdentity(member));
     const groups = [];
 
-    for (const member of identityMembers) {
-      const group = groups.find((items) => items.every((item) => peopleAreCompatible(item, member)));
-      if (group) group.push(member);
-      else groups.push([member]);
+    if (relaxedNameOnly) {
+      groups.push([...members]);
+    } else {
+      for (const member of identityMembers) {
+        const group = groups.find((items) => items.every((item) => peopleAreCompatible(item, member)));
+        if (group) group.push(member);
+        else groups.push([member]);
+      }
+      if (!groups.length && emptyIdentityMembers.length > 1) groups.push([...emptyIdentityMembers]);
+      if (groups.length === 1 && emptyIdentityMembers.length) groups[0].push(...emptyIdentityMembers);
     }
-    if (!groups.length && emptyIdentityMembers.length > 1) groups.push([...emptyIdentityMembers]);
-    if (groups.length === 1 && emptyIdentityMembers.length) groups[0].push(...emptyIdentityMembers);
 
     for (const group of groups) {
       if (group.length <= 1) continue;
       const keeper = chooseMergedFamilyMember(family, group);
       if (!keeper) continue;
+      const dedupedName = normalizeFamilyMemberDedupeName(keeper.name, { relaxed: relaxedNameOnly });
+      if (relaxedNameOnly && dedupedName && normalizeName(keeper.name) !== dedupedName) {
+        keeper.name = dedupedName;
+        keeper.updatedAt = now;
+        changed = true;
+      }
       for (const member of group) {
         enrichFamilyMemberIdentity(keeper, member);
       }
@@ -320,6 +352,97 @@ export function updateFamilyMemberNotes(member, notes) {
   return member;
 }
 
+export function updateFamilyMemberProfile(member, input = {}) {
+  if (!member) throw familyBindingError('FAMILY_MEMBER_NOT_FOUND', '家庭成员不存在');
+  let changed = false;
+  if (hasOwn(input, 'name')) {
+    const nextName = normalizeName(input.name);
+    if (!nextName) throw familyBindingError('FAMILY_MEMBER_NAME_REQUIRED', '成员姓名不能为空');
+    if (normalizeName(member.name) !== nextName) {
+      member.name = nextName;
+      changed = true;
+    }
+  }
+  if (hasOwn(input, 'birthday') || hasOwn(input, 'birthDate')) {
+    const nextBirthday = normalizeDateOnly(input.birthday || input.birthDate);
+    if (normalizeDateOnly(member.birthday) !== nextBirthday) {
+      member.birthday = nextBirthday;
+      changed = true;
+    }
+  }
+  if (hasOwn(input, 'idNumberTail') || hasOwn(input, 'idNumber') || hasOwn(input, 'identityNumber') || hasOwn(input, 'idCard')) {
+    const nextIdNumberTail = normalizeIdNumberTail(input.idNumberTail || input.idNumber || input.identityNumber || input.idCard);
+    if (normalizeIdNumberTail(member.idNumberTail) !== nextIdNumberTail) {
+      member.idNumberTail = nextIdNumberTail;
+      changed = true;
+    }
+  }
+  if (changed) member.updatedAt = new Date().toISOString();
+  return member;
+}
+
+export function upsertFamilyMember(state, family, input = {}) {
+  ensureFamilyState(state);
+  if (!family) throw familyBindingError('FAMILY_NOT_FOUND', '家庭档案不存在');
+  const memberInput = normalizeFamilyMemberInput(input);
+  if (!memberInput.name) {
+    throw familyBindingError('FAMILY_MEMBER_NAME_REQUIRED', '成员姓名不能为空');
+  }
+  const existing = matchFamilyMemberByPerson(listFamilyMembers(state, family.id), memberInput);
+  if (!existing) return createFamilyMember(state, family.id, input);
+
+  enrichFamilyMemberIdentity(existing, memberInput);
+  if (hasOwn(input, 'notes') && !String(existing.notes || '').trim()) {
+    updateFamilyMemberNotes(existing, input.notes);
+  }
+  return existing;
+}
+
+export function archiveFamilyMember(state, family, member) {
+  ensureFamilyState(state);
+  if (!family) throw familyBindingError('FAMILY_NOT_FOUND', '家庭档案不存在');
+  if (!member || String(member.status || 'active') !== 'active') {
+    throw familyBindingError('FAMILY_MEMBER_NOT_FOUND', '家庭成员不存在');
+  }
+  const now = new Date().toISOString();
+  member.status = 'archived';
+  member.updatedAt = now;
+  if (Number(family.coreMemberId || 0) === Number(member.id || 0)) family.coreMemberId = null;
+  family.updatedAt = now;
+
+  let clearedPolicyCount = 0;
+  for (const policy of state.policies || []) {
+    if (Number(policy?.familyId || 0) !== Number(family.id)) continue;
+    let changed = false;
+    if (Number(policy.applicantMemberId || 0) === Number(member.id)) {
+      policy.applicantMemberId = null;
+      policy.applicantSnapshot = null;
+      policy.applicantNameSnapshot = '';
+      policy.applicantRelationSnapshot = '';
+      policy.applicantMemberName = '';
+      policy.applicantRelation = '';
+      policy.applicantRelationLabel = '';
+      changed = true;
+    }
+    if (Number(policy.insuredMemberId || 0) === Number(member.id)) {
+      policy.insuredMemberId = null;
+      policy.insuredSnapshot = null;
+      policy.insuredNameSnapshot = '';
+      policy.insuredRelationSnapshot = '';
+      policy.insuredMemberName = '';
+      policy.insuredRelation = '';
+      policy.insuredRelationLabel = '';
+      changed = true;
+    }
+    if (!changed) continue;
+    policy.participantReviewStatus = 'pending_review';
+    policy.updatedAt = now;
+    clearedPolicyCount += 1;
+  }
+
+  return { family, member, members: listFamilyMembers(state, family.id), clearedPolicyCount };
+}
+
 export function archiveFamilyGeneratedReports(state, familyIds = []) {
   ensureFamilyState(state);
   const targetFamilyIds = new Set(
@@ -327,9 +450,44 @@ export function archiveFamilyGeneratedReports(state, familyIds = []) {
       .map((id) => Number(id || 0))
       .filter((id) => Number.isFinite(id) && id > 0),
   );
-  if (!targetFamilyIds.size) return { archivedShareCount: 0, archivedSalesReviewCount: 0 };
+  if (!targetFamilyIds.size) {
+    return {
+      archivedReportCount: 0,
+      archivedReportIssueCount: 0,
+      archivedReportCorrectionCount: 0,
+      archivedShareCount: 0,
+      archivedSalesReviewCount: 0,
+    };
+  }
 
   const now = new Date().toISOString();
+  let archivedReportCount = 0;
+  for (const report of state.familyReports || []) {
+    if (!targetFamilyIds.has(Number(report?.familyId || 0))) continue;
+    if (String(report.status || 'active') === 'archived') continue;
+    report.status = 'archived';
+    report.updatedAt = now;
+    archivedReportCount += 1;
+  }
+
+  let archivedReportIssueCount = 0;
+  for (const issue of state.familyReportIssues || []) {
+    if (!targetFamilyIds.has(Number(issue?.familyId || 0))) continue;
+    if (String(issue.status || 'open') === 'archived') continue;
+    issue.status = 'archived';
+    issue.updatedAt = now;
+    archivedReportIssueCount += 1;
+  }
+
+  let archivedReportCorrectionCount = 0;
+  for (const correction of state.familyReportCorrections || []) {
+    if (!targetFamilyIds.has(Number(correction?.familyId || 0))) continue;
+    if (String(correction.status || 'pending_review') === 'archived') continue;
+    correction.status = 'archived';
+    correction.updatedAt = now;
+    archivedReportCorrectionCount += 1;
+  }
+
   let archivedShareCount = 0;
   for (const share of state.familyReportShares || []) {
     if (!targetFamilyIds.has(Number(share?.familyId || 0))) continue;
@@ -348,7 +506,7 @@ export function archiveFamilyGeneratedReports(state, familyIds = []) {
     archivedSalesReviewCount += 1;
   }
 
-  return { archivedShareCount, archivedSalesReviewCount };
+  return { archivedReportCount, archivedReportIssueCount, archivedReportCorrectionCount, archivedShareCount, archivedSalesReviewCount };
 }
 
 export function archiveFamilyGeneratedReportsForPolicy(state, policy, { previousFamilyId = null } = {}) {

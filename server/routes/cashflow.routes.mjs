@@ -19,12 +19,28 @@ export function createCashflowRoutes(context) {
   } = context;
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
 
+  function archivedFamilyReportArtifactsChanged(result = {}) {
+    return Boolean(
+      Number(result.archivedReportCount || 0) ||
+      Number(result.archivedReportIssueCount || 0) ||
+      Number(result.archivedReportCorrectionCount || 0) ||
+      Number(result.archivedShareCount || 0) ||
+      Number(result.archivedSalesReviewCount || 0)
+    );
+  }
+
   async function archiveGeneratedFamilyReportsForPolicy(policy) {
     if (typeof archiveFamilyGeneratedReportsForPolicy !== 'function') {
-      return { archivedShareCount: 0, archivedSalesReviewCount: 0 };
+      return {
+        archivedReportCount: 0,
+        archivedReportIssueCount: 0,
+        archivedReportCorrectionCount: 0,
+        archivedShareCount: 0,
+        archivedSalesReviewCount: 0,
+      };
     }
     const result = archiveFamilyGeneratedReportsForPolicy(state, policy);
-    if ((result.archivedShareCount || 0) || (result.archivedSalesReviewCount || 0)) {
+    if (archivedFamilyReportArtifactsChanged(result)) {
       if (persistFamilyState) await persistFamilyState({ includePolicies: false });
       else await persist(state, familyPersistOptions);
     }

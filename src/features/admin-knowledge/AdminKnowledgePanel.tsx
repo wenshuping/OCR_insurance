@@ -1,6 +1,12 @@
+import { useId, useMemo, useState } from 'react';
 import { Database } from 'lucide-react';
 
 import type { KnowledgeRecord } from '../../api';
+import { AdminPagination } from '../admin-shared/AdminPagination';
+import { filterAdminList, getAdminPageWindow } from '../admin-shared/fuzzyList';
+
+const KNOWLEDGE_PAGE_SIZE = 10;
+const KNOWLEDGE_SUGGESTION_LIMIT = 10;
 
 export type KnowledgeCrawlForm = {
   company: string;
@@ -30,6 +36,17 @@ export function AdminKnowledgePanel({
   onCrawl: () => void;
 }) {
   const officialCount = records.filter((record) => record.official).length;
+  const searchListId = useId();
+  const [query, setQuery] = useState('');
+  const [requestedPage, setRequestedPage] = useState(1);
+  const filteredRecords = useMemo(
+    () => filterAdminList(records, query, getKnowledgeSearchFields),
+    [records, query],
+  );
+  const { page, pageCount, startIndex, endIndex } = getAdminPageWindow(filteredRecords.length, requestedPage, KNOWLEDGE_PAGE_SIZE);
+  const pageRecords = filteredRecords.slice(startIndex, endIndex);
+  const suggestions = filteredRecords.slice(0, KNOWLEDGE_SUGGESTION_LIMIT);
+
   return (
     <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_-42px_rgba(15,23,42,0.45)]">
       <div className="mb-4 flex items-start justify-between gap-3">
@@ -73,8 +90,31 @@ export function AdminKnowledgePanel({
         <span>{records.length} 条资料</span>
         <span>{officialCount} 条官方</span>
       </div>
-      <div className="mt-2 max-h-[260px] space-y-2 overflow-auto pr-1">
-        {records.slice(0, 30).map((record) => (
+      <label className="mt-3 block">
+        <span className="sr-only">搜索产品知识库资料</span>
+        <input
+          type="search"
+          list={searchListId}
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setRequestedPage(1);
+          }}
+          placeholder="搜索产品、公司、官网或链接，支持模糊匹配"
+          className="h-11 w-full rounded-xl border border-blue-100 bg-blue-50/60 px-3 text-sm font-semibold outline-none transition focus:border-blue-400 focus:bg-white"
+        />
+        <datalist id={searchListId}>
+          {suggestions.map((record) => (
+            <option key={`${record.id}-${record.url}`} value={getKnowledgeSuggestionLabel(record)} />
+          ))}
+        </datalist>
+      </label>
+      <div className="mt-3 flex items-center justify-between text-xs font-black text-slate-400">
+        <span>{filteredRecords.length} / {records.length} 条匹配</span>
+        <span>每页 {KNOWLEDGE_PAGE_SIZE} 条</span>
+      </div>
+      <div className="mt-2 space-y-2">
+        {pageRecords.map((record) => (
           <a
             key={`${record.id}-${record.url}`}
             className="block rounded-[16px] border border-slate-100 bg-slate-50 px-3 py-2.5 text-sm transition hover:border-blue-100 hover:bg-blue-50"
@@ -92,8 +132,34 @@ export function AdminKnowledgePanel({
             <p className="mt-1 truncate text-xs text-slate-400">{record.url}</p>
           </a>
         ))}
+        {records.length && !filteredRecords.length ? <p className="rounded-[16px] bg-slate-50 px-3 py-8 text-center text-sm font-bold text-slate-400">没有匹配的知识库资料</p> : null}
         {!records.length ? <p className="rounded-[16px] bg-slate-50 px-3 py-4 text-sm font-bold text-slate-400">暂无本地知识库资料</p> : null}
       </div>
+      <AdminPagination
+        page={page}
+        pageCount={pageCount}
+        totalItems={filteredRecords.length}
+        startIndex={startIndex}
+        endIndex={endIndex}
+        onPageChange={setRequestedPage}
+      />
     </section>
   );
+}
+
+function getKnowledgeSearchFields(record: KnowledgeRecord) {
+  return [
+    record.productName,
+    record.title,
+    record.company,
+    record.url,
+    record.sourceType,
+    record.materialType,
+    record.officialDomain,
+    record.parser,
+  ];
+}
+
+function getKnowledgeSuggestionLabel(record: KnowledgeRecord) {
+  return `${record.productName || record.title} · ${record.company}`;
 }

@@ -12,6 +12,7 @@ import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
+import { buildFamilyReport } from '../src/family-report-engine.mjs';
 import {
   allocateId,
   assertValidMobile,
@@ -77,6 +78,7 @@ import {
   rebuildOptionalResponsibilityGovernance,
 } from './optional-responsibility-governance.mjs';
 import {
+  archiveFamilyMember,
   createFamilyMember,
   createFamilyProfile,
   archiveFamilyGeneratedReports,
@@ -89,15 +91,34 @@ import {
   listFamilyProfilesForOwner,
   matchFamilyMemberByPerson,
   normalizeFamilyRelation,
+  repairDuplicateFamilyMembers,
   setFamilyCoreMember,
   syncFamilyMemberFromPolicyPerson,
   updateFamilyProfileName,
+  updateFamilyMemberProfile,
   updateFamilyMemberNotes,
   updateFamilyMemberRelation,
+  upsertFamilyMember,
   validatePolicyFamilyBinding,
 } from './family-profile.domain.mjs';
 import {
+  appendFamilyReportCorrections,
+  appendFamilyReportIssues,
+  buildAdminReportIssueDetail,
+  buildAdminReportIssueSummaries,
+  clientFamilyReportRecord,
+  createFamilyReportRecord,
+  FAMILY_REPORT_ENGINE_VERSION,
+  applyFamilyReportPolicyCorrections,
+  trustedFamilyReportCorrections,
+  syncFamilyReportRuleIssues,
+  updateFamilyReportCorrectionStatus,
+  updateFamilyReportRecordReport,
+} from './family-report-record.service.mjs';
+import { generateFamilyReportQualityIssues } from './family-report-quality.service.mjs';
+import {
   assertUserCanSavePolicy,
+  assertUserReportRefreshAllowed,
   buildMembershipSnapshot,
   consumeWechatOAuthState,
   createMembershipOrder,
@@ -106,6 +127,7 @@ import {
   getMembershipConfig,
   markMembershipOrderPrepayCreated,
   processMembershipPaymentSuccess,
+  recordUserReportRefresh,
   updateMembershipConfig,
   upsertUserWechatIdentity,
 } from './membership.domain.mjs';
@@ -1010,6 +1032,33 @@ function buildAdminOverview(state) {
       };
     })
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const activeFamilies = (Array.isArray(state.familyProfiles) ? state.familyProfiles : [])
+    .filter((family) => String(family?.status || 'active') === 'active');
+  const activeFamilyById = new Map(activeFamilies.map((family) => [Number(family?.id || 0), family]));
+  const familyCountByUserId = new Map();
+  const familyIdsByUserId = new Map();
+  function addUserFamily(userId, familyId) {
+    const normalizedUserId = Number(userId || 0);
+    const normalizedFamilyId = Number(familyId || 0);
+    if (!normalizedUserId || !normalizedFamilyId) return;
+    const familyIds = familyIdsByUserId.get(normalizedUserId) || new Set();
+    familyIds.add(normalizedFamilyId);
+    familyIdsByUserId.set(normalizedUserId, familyIds);
+  }
+  for (const family of activeFamilies) {
+    const ownerUserId = Number(family?.ownerUserId || 0);
+    if (!ownerUserId) continue;
+    addUserFamily(ownerUserId, family?.id);
+  }
+  for (const policy of policyRows) {
+    const userId = Number(policy?.userId || 0);
+    const family = activeFamilyById.get(Number(policy?.familyId || 0)) || null;
+    if (!userId || !family || Number(family?.ownerUserId || 0)) continue;
+    addUserFamily(userId, family.id);
+  }
+  for (const [userId, familyIds] of familyIdsByUserId.entries()) {
+    familyCountByUserId.set(userId, familyIds.size);
+  }
 
   const users = (state.users || [])
     .map((user) => {
@@ -1019,6 +1068,7 @@ function buildAdminOverview(state) {
         id: Number(user.id),
         mobile: String(user.mobile || ''),
         createdAt: user.createdAt,
+        familyCount: familyCountByUserId.get(Number(user.id)) || 0,
         policyCount: policies.length,
         insuredCount: insuredNames.size,
         totalCoverage: policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0),
@@ -1063,6 +1113,7 @@ function buildAdminOverview(state) {
     }),
     summary: {
       userCount: users.length,
+      familyCount: activeFamilies.length,
       insuredCount: insuredMap.size,
       policyCount: policyRows.length,
       sourceRecordCount: sourceRecords.length,
@@ -1786,6 +1837,8 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.productIndicatorVersions)) state.productIndicatorVersions = [];
   if (!Array.isArray(state.indicatorUpdateBatches)) state.indicatorUpdateBatches = [];
   if (!Array.isArray(state.officialDomainProfiles)) state.officialDomainProfiles = [];
+  if (!Array.isArray(state.familyReports)) state.familyReports = [];
+  if (!Array.isArray(state.familyReportIssues)) state.familyReportIssues = [];
   if (!Array.isArray(state.familyReportShares)) state.familyReportShares = [];
   if (!Array.isArray(state.familySalesReviews)) state.familySalesReviews = [];
   if (!state.membershipConfig) state.membershipConfig = null;
@@ -1847,6 +1900,9 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistFamilyState = typeof options.persistFamilyState === 'function'
     ? (input = {}) => options.persistFamilyState({ state, ...input })
+    : null;
+  const persistFamilyReportState = typeof options.persistFamilyReportState === 'function'
+    ? (input = {}) => options.persistFamilyReportState({ state, ...input })
     : null;
   const persistAdminSession = typeof options.persistAdminSession === 'function'
     ? (input = {}) => options.persistAdminSession({ state, ...input })
@@ -1971,6 +2027,7 @@ export function createPolicyOcrApp(options = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistFamilyReportState,
     persistAdminSession,
     persistAuthSmsCode,
     persistAuthRegistration,
@@ -1999,6 +2056,8 @@ export function createPolicyOcrApp(options = {}) {
     computeAndStoreCashflow,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
+    generateFamilyReportQualityIssues: options.generateFamilyReportQualityIssues || generateFamilyReportQualityIssues,
+    buildFamilyReport,
     createWechatJsSdkSignature,
     sanitizeClientPerformancePayload,
     logPerformance,
@@ -2064,11 +2123,13 @@ export function createPolicyOcrApp(options = {}) {
     startPolicyReportGeneration,
     buildPolicyReportScan,
     assertUserCanSavePolicy,
+    assertUserReportRefreshAllowed,
     buildMembershipSnapshot,
     createMembershipOrder,
     getMembershipConfig,
     markMembershipOrderPrepayCreated,
     processMembershipPaymentSuccess,
+    recordUserReportRefresh,
     updateMembershipConfig,
     createMockJsapiPayParams,
     consumeWechatOAuthState,
@@ -2089,6 +2150,14 @@ export function createPolicyOcrApp(options = {}) {
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
     buildAdminOverview,
+    buildAdminReportIssueDetail,
+    buildAdminReportIssueSummaries,
+    applyFamilyReportPolicyCorrections,
+    familyReportEngineVersion: FAMILY_REPORT_ENGINE_VERSION,
+    trustedFamilyReportCorrections,
+    syncFamilyReportRuleIssues,
+    updateFamilyReportCorrectionStatus,
+    updateFamilyReportRecordReport,
     rebuildOptionalResponsibilityGovernance,
     buildAdminOfficialDomainProfiles,
     getDefaultOfficialDomainProfiles,
@@ -2097,20 +2166,28 @@ export function createPolicyOcrApp(options = {}) {
     normalizeAdminKnowledgeCrawlInput,
     crawlOfficialKnowledge,
     knowledgeFetchImpl,
+    archiveFamilyMember,
     upsertKnowledgeRecords,
     createFamilyMember,
     createFamilyProfile,
     archiveFamilyGeneratedReports,
     archiveFamilyGeneratedReportsForPolicy,
     archiveFamilyProfile,
+    appendFamilyReportIssues,
+    appendFamilyReportCorrections,
+    clientFamilyReportRecord,
+    createFamilyReportRecord,
     ensureDefaultFamilyProfileForPrincipal,
     familyOwnerMatches,
     listFamilyMembers,
     listFamilyProfilesForOwner,
+    repairDuplicateFamilyMembers,
     setFamilyCoreMember,
     updateFamilyProfileName,
+    updateFamilyMemberProfile,
     updateFamilyMemberNotes,
     updateFamilyMemberRelation,
+    upsertFamilyMember,
   });
 
   const app = express();

@@ -24,8 +24,12 @@ const DB_OWNED_KEYS = new Set([
   'officialDomainProfiles',
   'familyProfiles',
   'familyMembers',
+  'familyReports',
+  'familyReportIssues',
+  'familyReportCorrections',
   'familyReportShares',
   'familySalesReviews',
+  'reportRefreshEvents',
   'membershipConfig',
   'membershipOrders',
   'memberships',
@@ -84,8 +88,12 @@ function resolveNextId(state) {
     maxNumericId(state.knowledgeRecords),
     maxNumericId(state.familyProfiles),
     maxNumericId(state.familyMembers),
+    maxNumericId(state.familyReports),
+    maxNumericId(state.familyReportIssues),
+    maxNumericId(state.familyReportCorrections),
     maxNumericId(state.familyReportShares),
     maxNumericId(state.familySalesReviews),
+    maxNumericId(state.reportRefreshEvents),
     maxNumericId(state.membershipOrders),
   );
   return Math.max(Number(state.nextId || 1), maxId + 1, 1);
@@ -323,6 +331,65 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_members_family_id ON family_members(family_id);
     CREATE INDEX IF NOT EXISTS idx_family_members_name ON family_members(name);
 
+    CREATE TABLE IF NOT EXISTS family_reports (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      status TEXT,
+      source TEXT,
+      generated_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_reports_family_id ON family_reports(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_reports_owner_user_id ON family_reports(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_family_reports_owner_guest_id ON family_reports(owner_guest_id);
+    CREATE INDEX IF NOT EXISTS idx_family_reports_status ON family_reports(status);
+    CREATE INDEX IF NOT EXISTS idx_family_reports_generated_at ON family_reports(generated_at);
+
+    CREATE TABLE IF NOT EXISTS family_report_issues (
+      id INTEGER PRIMARY KEY,
+      report_id INTEGER,
+      family_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      severity TEXT,
+      category TEXT,
+      status TEXT,
+      source TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_report_issues_report_id ON family_report_issues(report_id);
+    CREATE INDEX IF NOT EXISTS idx_family_report_issues_family_id ON family_report_issues(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_report_issues_status ON family_report_issues(status);
+    CREATE INDEX IF NOT EXISTS idx_family_report_issues_severity ON family_report_issues(severity);
+
+    CREATE TABLE IF NOT EXISTS family_report_corrections (
+      id INTEGER PRIMARY KEY,
+      report_id INTEGER,
+      family_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      policy_id INTEGER,
+      member_id INTEGER,
+      dimension TEXT,
+      action TEXT,
+      status TEXT,
+      source TEXT,
+      issue_id INTEGER,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_report_corrections_report_id ON family_report_corrections(report_id);
+    CREATE INDEX IF NOT EXISTS idx_family_report_corrections_family_id ON family_report_corrections(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_report_corrections_status ON family_report_corrections(status);
+    CREATE INDEX IF NOT EXISTS idx_family_report_corrections_issue_id ON family_report_corrections(issue_id);
+
     CREATE TABLE IF NOT EXISTS family_report_shares (
       id INTEGER PRIMARY KEY,
       family_id INTEGER,
@@ -354,6 +421,22 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_owner_user_id ON family_sales_reviews(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_owner_guest_id ON family_sales_reviews(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_generated_at ON family_sales_reviews(generated_at);
+
+    CREATE TABLE IF NOT EXISTS report_refresh_events (
+      id INTEGER PRIMARY KEY,
+      kind TEXT,
+      family_id INTEGER,
+      report_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      created_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_report_refresh_events_kind ON report_refresh_events(kind);
+    CREATE INDEX IF NOT EXISTS idx_report_refresh_events_family_id ON report_refresh_events(family_id);
+    CREATE INDEX IF NOT EXISTS idx_report_refresh_events_owner_user_id ON report_refresh_events(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_report_refresh_events_owner_guest_id ON report_refresh_events(owner_guest_id);
+    CREATE INDEX IF NOT EXISTS idx_report_refresh_events_created_at ON report_refresh_events(created_at);
 
     CREATE TABLE IF NOT EXISTS membership_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -644,6 +727,70 @@ function insertRows(db, state) {
     );
   }
 
+  const insertFamilyReport = db.prepare(`
+    INSERT INTO family_reports (id, family_id, owner_user_id, owner_guest_id, status, source, generated_at, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const report of normalizeArray(state.familyReports)) {
+    insertFamilyReport.run(
+      Number(report.id),
+      Number(report.familyId || 0) || null,
+      Number(report.ownerUserId || 0) || null,
+      String(report.ownerGuestId || ''),
+      String(report.status || ''),
+      String(report.source || ''),
+      String(report.generatedAt || ''),
+      String(report.createdAt || ''),
+      String(report.updatedAt || ''),
+      jsonPayload(report),
+    );
+  }
+
+  const insertFamilyReportIssue = db.prepare(`
+    INSERT INTO family_report_issues (id, report_id, family_id, owner_user_id, owner_guest_id, severity, category, status, source, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const issue of normalizeArray(state.familyReportIssues)) {
+    insertFamilyReportIssue.run(
+      Number(issue.id),
+      Number(issue.reportId || 0) || null,
+      Number(issue.familyId || 0) || null,
+      Number(issue.ownerUserId || 0) || null,
+      String(issue.ownerGuestId || ''),
+      String(issue.severity || ''),
+      String(issue.category || ''),
+      String(issue.status || ''),
+      String(issue.source || ''),
+      String(issue.createdAt || ''),
+      String(issue.updatedAt || ''),
+      jsonPayload(issue),
+    );
+  }
+
+  const insertFamilyReportCorrection = db.prepare(`
+    INSERT INTO family_report_corrections (id, report_id, family_id, owner_user_id, owner_guest_id, policy_id, member_id, dimension, action, status, source, issue_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const correction of normalizeArray(state.familyReportCorrections)) {
+    insertFamilyReportCorrection.run(
+      Number(correction.id),
+      Number(correction.reportId || 0) || null,
+      Number(correction.familyId || 0) || null,
+      Number(correction.ownerUserId || 0) || null,
+      String(correction.ownerGuestId || ''),
+      Number(correction.policyId || 0) || null,
+      Number(correction.memberId || 0) || null,
+      String(correction.dimension || ''),
+      String(correction.action || ''),
+      String(correction.status || ''),
+      String(correction.source || ''),
+      Number(correction.issueId || 0) || null,
+      String(correction.createdAt || ''),
+      String(correction.updatedAt || ''),
+      jsonPayload(correction),
+    );
+  }
+
   const insertFamilyReportShare = db.prepare(`
     INSERT INTO family_report_shares (id, family_id, owner_user_id, owner_guest_id, token, status, created_at, updated_at, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -677,6 +824,23 @@ function insertRows(db, state) {
       String(review.createdAt || ''),
       String(review.updatedAt || ''),
       jsonPayload(review),
+    );
+  }
+
+  const insertReportRefreshEvent = db.prepare(`
+    INSERT INTO report_refresh_events (id, kind, family_id, report_id, owner_user_id, owner_guest_id, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const event of normalizeArray(state.reportRefreshEvents)) {
+    insertReportRefreshEvent.run(
+      Number(event.id),
+      String(event.kind || ''),
+      Number(event.familyId || 0) || null,
+      Number(event.reportId || 0) || null,
+      Number(event.ownerUserId || 0) || null,
+      String(event.ownerGuestId || ''),
+      String(event.createdAt || ''),
+      jsonPayload(event),
     );
   }
 
@@ -1068,7 +1232,7 @@ function replaceOfficialDomainProfiles(db, state) {
 }
 
 function replaceFamilyProfiles(db, state) {
-  db.exec('DELETE FROM family_members; DELETE FROM family_profiles;');
+  db.exec('DELETE FROM family_report_corrections; DELETE FROM family_report_issues; DELETE FROM family_reports; DELETE FROM family_members; DELETE FROM family_profiles;');
   const insertFamilyProfile = db.prepare(`
     INSERT INTO family_profiles (id, owner_user_id, owner_guest_id, family_name, core_member_id, status, created_at, updated_at, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1126,6 +1290,73 @@ function replaceFamilyReportShares(db, state) {
   }
 }
 
+function replaceFamilyReports(db, state) {
+  db.prepare('DELETE FROM family_report_corrections').run();
+  db.prepare('DELETE FROM family_report_issues').run();
+  db.prepare('DELETE FROM family_reports').run();
+  const insertFamilyReport = db.prepare(`
+    INSERT INTO family_reports (id, family_id, owner_user_id, owner_guest_id, status, source, generated_at, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const report of normalizeArray(state.familyReports)) {
+    insertFamilyReport.run(
+      Number(report.id),
+      Number(report.familyId || 0) || null,
+      Number(report.ownerUserId || 0) || null,
+      String(report.ownerGuestId || ''),
+      String(report.status || ''),
+      String(report.source || ''),
+      String(report.generatedAt || ''),
+      String(report.createdAt || ''),
+      String(report.updatedAt || ''),
+      jsonPayload(report),
+    );
+  }
+  const insertFamilyReportIssue = db.prepare(`
+    INSERT INTO family_report_issues (id, report_id, family_id, owner_user_id, owner_guest_id, severity, category, status, source, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const issue of normalizeArray(state.familyReportIssues)) {
+    insertFamilyReportIssue.run(
+      Number(issue.id),
+      Number(issue.reportId || 0) || null,
+      Number(issue.familyId || 0) || null,
+      Number(issue.ownerUserId || 0) || null,
+      String(issue.ownerGuestId || ''),
+      String(issue.severity || ''),
+      String(issue.category || ''),
+      String(issue.status || ''),
+      String(issue.source || ''),
+      String(issue.createdAt || ''),
+      String(issue.updatedAt || ''),
+      jsonPayload(issue),
+    );
+  }
+  const insertFamilyReportCorrection = db.prepare(`
+    INSERT INTO family_report_corrections (id, report_id, family_id, owner_user_id, owner_guest_id, policy_id, member_id, dimension, action, status, source, issue_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const correction of normalizeArray(state.familyReportCorrections)) {
+    insertFamilyReportCorrection.run(
+      Number(correction.id),
+      Number(correction.reportId || 0) || null,
+      Number(correction.familyId || 0) || null,
+      Number(correction.ownerUserId || 0) || null,
+      String(correction.ownerGuestId || ''),
+      Number(correction.policyId || 0) || null,
+      Number(correction.memberId || 0) || null,
+      String(correction.dimension || ''),
+      String(correction.action || ''),
+      String(correction.status || ''),
+      String(correction.source || ''),
+      Number(correction.issueId || 0) || null,
+      String(correction.createdAt || ''),
+      String(correction.updatedAt || ''),
+      jsonPayload(correction),
+    );
+  }
+}
+
 function replaceFamilySalesReviews(db, state) {
   db.prepare('DELETE FROM family_sales_reviews').run();
   const insertFamilySalesReview = db.prepare(`
@@ -1143,6 +1374,26 @@ function replaceFamilySalesReviews(db, state) {
       String(review.createdAt || ''),
       String(review.updatedAt || ''),
       jsonPayload(review),
+    );
+  }
+}
+
+function replaceReportRefreshEvents(db, state) {
+  db.prepare('DELETE FROM report_refresh_events').run();
+  const insertReportRefreshEvent = db.prepare(`
+    INSERT INTO report_refresh_events (id, kind, family_id, report_id, owner_user_id, owner_guest_id, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const event of normalizeArray(state.reportRefreshEvents)) {
+    insertReportRefreshEvent.run(
+      Number(event.id),
+      String(event.kind || ''),
+      Number(event.familyId || 0) || null,
+      Number(event.reportId || 0) || null,
+      Number(event.ownerUserId || 0) || null,
+      String(event.ownerGuestId || ''),
+      String(event.createdAt || ''),
+      jsonPayload(event),
     );
   }
 }
@@ -1168,7 +1419,11 @@ function updateStateMeta(db, state, now) {
 
 function clearDbOwnedTables(db) {
   db.exec(`
+    DELETE FROM family_report_issues;
+    DELETE FROM family_report_corrections;
+    DELETE FROM family_reports;
     DELETE FROM family_sales_reviews;
+    DELETE FROM report_refresh_events;
     DELETE FROM family_report_shares;
     DELETE FROM family_members;
     DELETE FROM family_profiles;
@@ -1220,8 +1475,12 @@ function loadDbOwnedState(db) {
     officialDomainProfiles: loadPayloadRows(db, 'official_domain_profiles', 'id ASC'),
     familyProfiles: loadPayloadRows(db, 'family_profiles', 'id ASC'),
     familyMembers: loadPayloadRows(db, 'family_members', 'id ASC'),
+    familyReports: loadPayloadRows(db, 'family_reports', 'generated_at ASC, id ASC'),
+    familyReportIssues: loadPayloadRows(db, 'family_report_issues', 'created_at ASC, id ASC'),
+    familyReportCorrections: loadPayloadRows(db, 'family_report_corrections', 'created_at ASC, id ASC'),
     familyReportShares: loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
     familySalesReviews: loadPayloadRows(db, 'family_sales_reviews', 'generated_at ASC, id ASC'),
+    reportRefreshEvents: loadPayloadRows(db, 'report_refresh_events', 'created_at ASC, id ASC'),
     membershipConfig: parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null),
     membershipOrders: loadPayloadRows(db, 'membership_orders', 'id ASC'),
     memberships: loadPayloadRows(db, 'memberships', 'user_id ASC'),
@@ -1342,6 +1601,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       upsertPolicy(db, policy);
       replaceSourceRecordsForPolicy(db, nextState, policy.id);
       replaceFamilyProfiles(db, nextState);
+      replaceFamilyReports(db, nextState);
+      replaceReportRefreshEvents(db, nextState);
       const pendingGuestId = String(clearPendingGuestId || '').trim();
       if (pendingGuestId) {
         db.prepare('DELETE FROM pending_scans WHERE guest_id = ?').run(pendingGuestId);
@@ -1391,6 +1652,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       if (session) upsertSession(db, session);
       if (pendingGuestId) {
         replaceFamilyProfiles(db, nextState);
+        replaceFamilyReports(db, nextState);
+        replaceReportRefreshEvents(db, nextState);
         db.prepare('DELETE FROM pending_scans WHERE guest_id = ?').run(pendingGuestId);
       }
       for (const policyId of affectedPolicyIds) {
@@ -1435,7 +1698,11 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       db.exec('PRAGMA defer_foreign_keys = ON');
       upsertPolicy(db, policy);
       replaceSourceRecordsForPolicy(db, nextState, policy.id);
-      if (includeFamilyState) replaceFamilyProfiles(db, nextState);
+      if (includeFamilyState) {
+        replaceFamilyProfiles(db, nextState);
+        replaceFamilyReports(db, nextState);
+        replaceReportRefreshEvents(db, nextState);
+      }
       updateStateMeta(db, nextState, now);
       db.exec('COMMIT');
     } catch (error) {
@@ -1511,13 +1778,31 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     try {
       db.exec('PRAGMA defer_foreign_keys = ON');
       replaceFamilyProfiles(db, nextState);
+      replaceFamilyReports(db, nextState);
       replaceFamilyReportShares(db, nextState);
       replaceFamilySalesReviews(db, nextState);
+      replaceReportRefreshEvents(db, nextState);
       if (includePolicies) {
         for (const policy of normalizeArray(nextState.policies)) {
           upsertPolicy(db, policy);
         }
       }
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistFamilyReportState({ state } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      replaceFamilyReports(db, nextState);
+      replaceReportRefreshEvents(db, nextState);
       updateStateMeta(db, nextState, now);
       db.exec('COMMIT');
     } catch (error) {
@@ -1685,6 +1970,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistFamilyReportState,
     persistPolicyDerivedResult,
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,

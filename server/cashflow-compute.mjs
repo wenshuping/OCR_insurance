@@ -226,9 +226,9 @@ function resolveIndicatorAmountForCashflow(indicator, policy) {
   const unit = String(indicator.unit || '').trim();
   const basis = String(indicator.basis || '').trim();
   const amount = Number(scopedPolicy.amount || 0);
-  if (/%/.test(unit) && /基本保额/.test(basis)) return amount * value / 100;
-  if (/倍/.test(unit) && /基本保额/.test(basis)) return amount * value;
-  if (/基本保额/.test(basis) && /公式/.test(unit)) return amount;
+  if (/%/.test(unit) && /(?:基本保额|基本保险金额|保险金额)/.test(basis)) return amount * value / 100;
+  if (/倍/.test(unit) && /(?:基本保额|基本保险金额|保险金额)/.test(basis)) return amount * value;
+  if (/(?:基本保额|基本保险金额|保险金额)/.test(basis) && /公式/.test(unit)) return amount;
   return amount || 0;
 }
 
@@ -246,10 +246,10 @@ function formatCashflowCalculation(indicator, policy, amount) {
   const value = Number(indicator.value);
   const unit = String(indicator.unit || '').trim();
   const basis = String(indicator.basis || '').trim();
-  if (/%/.test(unit) && /基本保额/.test(basis) && value) {
+  if (/%/.test(unit) && /(?:基本保额|基本保险金额|保险金额)/.test(basis) && value) {
     return `基本保额 ${basicAmount.toLocaleString('zh-CN')} × ${value}% = ${amount.toLocaleString('zh-CN')}元`;
   }
-  if (/基本保额/.test(text)) return `基本保额 = ${amount.toLocaleString('zh-CN')}元`;
+  if (/(?:基本保额|基本保险金额|保险金额)/.test(text)) return `基本保额 = ${amount.toLocaleString('zh-CN')}元`;
   return indicator.formulaText || `${amount.toLocaleString('zh-CN')}元`;
 }
 
@@ -360,8 +360,12 @@ function splitResponsibilitySections(text) {
   while ((m = cnRe.exec(text)) !== null) {
     markers.push({ index: m.index, end: m.index + m[0].length });
   }
-  // Pattern 2: "N. " Arabic numeral section markers (not decimals like 1.6)
-  const arRe = /(?:^|\n)\s*(\d+)\.\s+(?!\d)/g;
+  const cnParenRe = /[（(]\s*[一二三四五六七八九十]+\s*[）)]\s*/g;
+  while ((m = cnParenRe.exec(text)) !== null) {
+    markers.push({ index: m.index, end: m.index + m[0].length });
+  }
+  // Pattern 2: "N. " / "N、" Arabic section markers, but not OCR-split decimals like "1. 4 倍".
+  const arRe = /(?:^|\n)\s*(\d+)(?:、\s*|\.\s+(?!\d))/g;
   while ((m = arRe.exec(text)) !== null) {
     const markerStart = m.index + m[0].indexOf(m[1]);
     const markerEnd = markerStart + m[1].length + 1 + m[0].slice(m[0].indexOf(m[1]) + m[1].length + 1).match(/^\s*/)[0].length;
@@ -409,6 +413,48 @@ function parseBenefitSection(sec, ctx) {
   const compactText = normalizeCashflowLookupText(text);
   const name = sec.name;
   const results = [];
+
+  const educationRangeMatch = compactText.match(/(?:十八|18)(?:[—\-至到－]+)(?:二十一|21)周岁.*?有效保险金额(?:[（(][^）)]*[）)])?(?:的)?(\d+(?:\.\d+)?)%/u);
+  if (educationRangeMatch) {
+    const pct = Number(educationRangeMatch[1]);
+    const yearAmount = Math.round(amount * pct / 100);
+    for (let age = 18; age <= 21; age++) {
+      const year = birthYear + age;
+      if (year >= effectiveYear && year <= coverageEndYear) {
+        results.push({
+          year,
+          age,
+          amount: yearAmount,
+          liability: '大学教育金',
+          calculationText: `基本保额 ${amount.toLocaleString('zh-CN')} × ${pct}% = ${yearAmount.toLocaleString('zh-CN')}元`,
+        });
+      }
+    }
+  }
+
+  const namedAgeBenefits = [
+    ['深造金', /(?:二十二|22)周岁.*?有效保险金额(?:[（(][^）)]*[）)])?(?:的)?(\d+(?:\.\d+)?)%/u, 22],
+    ['立业金', /(?:二十五|25)周岁.*?有效保险金额(?:[（(][^）)]*[）)])?(?:的)?(\d+(?:\.\d+)?)%/u, 25],
+    ['婚嫁金', /(?:二十八|28)周岁.*?有效保险金额(?:[（(][^）)]*[）)])?(?:的)?(\d+(?:\.\d+)?)%/u, 28],
+  ];
+  for (const [liability, pattern, age] of namedAgeBenefits) {
+    const match = compactText.match(pattern);
+    if (!match) continue;
+    const pct = Number(match[1]);
+    const yearAmount = Math.round(amount * pct / 100);
+    const year = birthYear + age;
+    if (year >= effectiveYear && year <= coverageEndYear) {
+      results.push({
+        year,
+        age,
+        amount: yearAmount,
+        liability,
+        calculationText: `基本保额 ${amount.toLocaleString('zh-CN')} × ${pct}% = ${yearAmount.toLocaleString('zh-CN')}元`,
+      });
+    }
+  }
+
+  if (results.length) return results;
 
   const benefitAmount = resolveBenefitAmount(text, amount, policy);
   if (benefitAmount <= 0) return results;

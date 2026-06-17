@@ -29,6 +29,7 @@ test('development dotenv skip still permits DeepSeek review configuration', () =
   assert.match(serverIndexSource, /skippedProjectDotenvLocalAllowKeys/u);
   assert.match(serverIndexSource, /'DEEPSEEK_API_KEY'/u);
   assert.match(serverIndexSource, /'DEEPSEEK_FAMILY_REVIEW_MODEL'/u);
+  assert.match(serverIndexSource, /'DEEPSEEK_FAMILY_REPORT_MODEL'/u);
   assert.match(serverIndexSource, /allowKeys:\s*skippedProjectDotenvLocalAllowKeys/u);
   assert.match(serverIndexSource, /POLICY_OCR_SKIP_PROJECT_DOTENV_LOCAL/u);
 });

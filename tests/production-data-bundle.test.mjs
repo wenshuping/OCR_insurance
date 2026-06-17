@@ -29,6 +29,9 @@ async function seedDatabase(dbPath) {
     familyProfiles: [{ id: 3, ownerUserId: 1, ownerGuestId: '', familyName: '测试家庭', coreMemberId: 4, status: 'active', createdAt: '2026-06-13T00:02:00.000Z', updatedAt: '2026-06-13T00:02:00.000Z' }],
     familyMembers: [{ id: 4, familyId: 3, name: '测试客户', relationToCore: '本人', status: 'active', createdAt: '2026-06-13T00:03:00.000Z', updatedAt: '2026-06-13T00:03:00.000Z' }],
     familyReportShares: [{ id: 5, familyId: 3, ownerUserId: 1, ownerGuestId: '', token: 'share-token', status: 'active', createdAt: '2026-06-13T00:04:00.000Z', updatedAt: '2026-06-13T00:04:00.000Z' }],
+    familyReports: [{ id: 9, familyId: 3, ownerUserId: 1, ownerGuestId: '', status: 'active', source: 'code', report: { summary: { familyId: 3, memberCount: 1, policyCount: 1 } }, generatedAt: '2026-06-13T00:04:10.000Z', createdAt: '2026-06-13T00:04:10.000Z', updatedAt: '2026-06-13T00:04:10.000Z', summary: { familyId: 3, memberCount: 1, policyCount: 1, issueCount: 1 } }],
+    familyReportIssues: [{ id: 10, reportId: 9, familyId: 3, ownerUserId: 1, ownerGuestId: '', severity: 'warning', category: 'coverage_gap', status: 'open', source: 'rule', title: '家庭成员未绑定保单', detail: '测试报告问题', createdAt: '2026-06-13T00:04:20.000Z', updatedAt: '2026-06-13T00:04:20.000Z' }],
+    familyReportCorrections: [{ id: 11, reportId: 9, familyId: 3, ownerUserId: 1, ownerGuestId: '', policyId: 2, memberId: 4, dimension: 'medical', action: 'mark_unquantifiable', status: 'auto_applied', source: 'deepseek', issueId: 10, reason: '报销型医疗不展示固定保额', createdAt: '2026-06-13T00:04:25.000Z', updatedAt: '2026-06-13T00:04:25.000Z' }],
     familySalesReviews: [{ id: 8, familyId: 3, ownerUserId: 1, ownerGuestId: '', status: 'active', content: '家庭销售建议', model: 'internal-expert', generatedAt: '2026-06-13T00:04:30.000Z', createdAt: '2026-06-13T00:04:30.000Z', updatedAt: '2026-06-13T00:04:30.000Z', inputSummary: { familyId: 3, memberCount: 1, policyCount: 1 } }],
     sourceRecords: [{ id: 6, policyId: 2, company: '新华保险', productName: '福如东海A款终身寿险（分红型）', url: 'https://example.test/source.pdf' }],
     knowledgeRecords: [{ id: 7, company: '新华保险', productName: '福如东海A款终身寿险（分红型）', url: 'https://example.test/terms.pdf', pageText: '保险责任' }],
@@ -37,7 +40,7 @@ async function seedDatabase(dbPath) {
     officialDomainProfiles: [{ id: 'new-china-life', company: '新华保险', officialDomains: ['newchinalife.com'] }],
     pendingScans: [{ guestId: 'guest-1', createdAt: '2026-06-13T00:05:00.000Z', scan: { data: { company: '新华保险' } } }],
     insuranceIndicatorSnapshot: { syncedAt: '2026-06-13T00:06:00.000Z', count: 1 },
-    nextId: 9,
+    nextId: 12,
   };
   await store.persist(state);
   const cashValueStore = createCashValueStore(store.db);
@@ -123,6 +126,9 @@ test('production data bundle preserves policies families knowledge indicators an
   assert.equal(bundle.format, 'policy-ocr-production-sqlite-bundle-v1');
   assert.equal(bundle.snapshot.coreCounts.policies, 1);
   assert.equal(bundle.snapshot.coreCounts.family_profiles, 1);
+  assert.equal(bundle.snapshot.coreCounts.family_reports, 1);
+  assert.equal(bundle.snapshot.coreCounts.family_report_issues, 1);
+  assert.equal(bundle.snapshot.coreCounts.family_report_corrections, 1);
   assert.equal(bundle.snapshot.coreCounts.family_sales_reviews, 1);
   assert.equal(bundle.snapshot.coreCounts.knowledge_records, 1);
   assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
@@ -142,6 +148,9 @@ test('production data bundle preserves policies families knowledge indicators an
   const targetSummary = summarizeSqliteDatabase(targetDbPath);
   assert.equal(targetSummary.coreCounts.policies, 1);
   assert.equal(targetSummary.coreCounts.family_members, 1);
+  assert.equal(targetSummary.coreCounts.family_reports, 1);
+  assert.equal(targetSummary.coreCounts.family_report_issues, 1);
+  assert.equal(targetSummary.coreCounts.family_report_corrections, 1);
   assert.equal(targetSummary.coreCounts.family_sales_reviews, 1);
   assert.equal(targetSummary.coreCounts.knowledge_records, 1);
   assert.equal(targetSummary.coreCounts.policy_cashflows, 1);

@@ -798,6 +798,78 @@ test('computePolicyCashflow: responsibility text path cumulative is correct', ()
   assert.equal(entries[entries.length - 1].cumulative, entries.length * 10000);
 });
 
+test('computePolicyCashflow: responsibility text path expands child education staged benefits', () => {
+  const policy = {
+    id: 508870,
+    company: '新华保险',
+    name: '成长阳光少儿两全保险(A款)（分红型）',
+    amount: 38760,
+    firstPremium: 5475,
+    date: '2014-01-01',
+    insuredBirthday: '2013-11-26',
+    paymentPeriod: '18年交',
+    coveragePeriod: '至2041年12月31日',
+    responsibilities: [
+      {
+        scenario: [
+          '（一）被保险人生存保险金',
+          '1、大学教育金 被保险人生存至十八——二十一周岁生效对应日，本公司分别按该保单在每一生效对应日有效保险金额的20%给付大学教育金。',
+          '2、深造金 被保险人生存至二十二周岁生效对应日，本公司按该保单生效对应日有效保险金额的60%给付深造金。',
+          '3、立业金 被保险人生存至二十五周岁生效对应日，本公司按该保单生效对应日有效保险金额的80%给付立业金。',
+          '4、婚嫁金 被保险人生存至二十八周岁生效对应日，本公司按该保单生效对应日有效保险金额的80%给付婚嫁金。',
+        ].join('\n'),
+      },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, []);
+
+  assert.deepEqual(entries.map((entry) => [entry.year, entry.age, entry.liability, entry.amount]), [
+    [2031, 18, '大学教育金', 7752],
+    [2032, 19, '大学教育金', 7752],
+    [2033, 20, '大学教育金', 7752],
+    [2034, 21, '大学教育金', 7752],
+    [2035, 22, '深造金', 23256],
+    [2038, 25, '立业金', 31008],
+    [2041, 28, '婚嫁金', 31008],
+  ]);
+  assert.equal(entries.at(-1).cumulative, 116280);
+});
+
+test('computePolicyCashflow: responsibility parser ignores OCR-split decimal multipliers', () => {
+  const policy = {
+    id: 500552,
+    company: '新华保险',
+    name: '畅行万里智赢版两全保险',
+    amount: 60000,
+    firstPremium: 3296,
+    date: '2024-09-30',
+    insuredBirthday: '1987-12-07',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至2068年9月30日零时',
+    responsibilities: [
+      {
+        scenario: [
+          '1. 满期生存保险金',
+          '被保险人生存至保险期间届满，我们按本合同实际交纳的保险费给付满期生存保险金，本合同终止。',
+          '2. 疾病身故或身体全残保险金',
+          '41 周岁保单周年日（含）之后、61 周岁保单周年日（不含）之前 本合同实际交纳的保险费的',
+          '1. 4 倍 61 周岁保单周年日（含）之后 本合同实际交纳的保险费的',
+          '1. 2 倍',
+          '3. 一般意外伤害身故或身体全残保险金',
+          '被保险人因意外伤害身故，我们按基本保险金额的10倍给付。',
+        ].join('\n'),
+      },
+    ],
+  };
+
+  const entries = computePolicyCashflow(policy, null, []);
+
+  assert.deepEqual(entries.map((entry) => [entry.year, entry.liability, entry.amount]), [
+    [2068, '满期生存保险金', 32960],
+  ]);
+});
+
 test('computePolicyCashflow: indicator source replaces policy-level duplicate responsibility amount', () => {
   const policy = {
     id: 15,

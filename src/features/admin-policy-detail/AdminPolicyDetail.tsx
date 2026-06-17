@@ -86,7 +86,7 @@ export function AdminPolicyDetail({
 
           {reportGenerating || reportFailed ? (
             <section className={`rounded-2xl border px-4 py-3 text-sm ${
-              reportFailed ? 'border-red-100 bg-red-50 text-red-700' : 'border-orange-100 bg-orange-50 text-orange-700'
+              reportFailed ? 'border-red-100 bg-red-50 text-red-700' : 'border-blue-100 bg-blue-50 text-blue-700'
             }`}>
               <div className="flex items-start justify-between gap-3">
                 <div>

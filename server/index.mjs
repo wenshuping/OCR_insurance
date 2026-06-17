@@ -17,6 +17,9 @@ const skippedProjectDotenvLocalAllowKeys = new Set([
   'DEEPSEEK_FAMILY_REVIEW_MODEL',
   'DEEPSEEK_FAMILY_REVIEW_TIMEOUT_MS',
   'DEEPSEEK_FAMILY_REVIEW_MAX_TOKENS',
+  'DEEPSEEK_FAMILY_REPORT_MODEL',
+  'DEEPSEEK_FAMILY_REPORT_TIMEOUT_MS',
+  'DEEPSEEK_FAMILY_REPORT_MAX_TOKENS',
 ]);
 
 function normalizeEnvValue({ key, value, envPath }) {
@@ -78,6 +81,7 @@ const app = createPolicyOcrApp({
   persistPolicyScanSave: store.persistPolicyScanSave,
   persistPendingScan: store.persistPendingScan,
   persistFamilyState: store.persistFamilyState,
+  persistFamilyReportState: store.persistFamilyReportState,
   persistAdminSession: store.persistAdminSession,
   persistAuthSmsCode: store.persistAuthSmsCode,
   persistAuthRegistration: store.persistAuthRegistration,

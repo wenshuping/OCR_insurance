@@ -10,7 +10,6 @@ import {
   BrainCircuit,
   CheckCircle2,
   CircleUserRound,
-  Copy,
   Download,
   FileSearch,
   Shield,
@@ -31,6 +30,7 @@ import {
   CoverageIndicator,
   FamilyMember,
   FamilyProfile,
+  FamilyReportRecord,
   FamilySalesReview,
   PolicyFormData,
   PolicyKnowledgeMatch,
@@ -44,8 +44,10 @@ import {
   createFamilyProfile,
   createFamilyReportShare,
   createFamilySalesReview,
+  deleteFamilyMember,
   deleteFamilyProfile,
   deletePolicy,
+  getFamilyReportRecord,
   getFamilySalesReview,
   getHealthStatus,
   getLocalPolicyAnalysisDraft,
@@ -59,6 +61,7 @@ import {
   matchPolicyResponsibilities,
   queryPolicyResponsibilities,
   register,
+  regenerateFamilyReportRecord,
   regeneratePolicyReport,
   recognizePolicy,
   scanCashValue,
@@ -66,6 +69,7 @@ import {
   sendCode,
   setFamilyCoreMember,
   updateFamilyProfile,
+  updateFamilyMember,
   updateFamilyMemberRelation,
   updatePolicy,
 } from '../../api';
@@ -136,6 +140,7 @@ import {
 import { CashflowDetailPage } from '../../features/cashflow/CashflowDetailPage';
 import { CashValueDialog } from '../../features/cash-value/CashValueDialog';
 import { FamilyCoverageOverview } from '../../features/family-report/FamilyCoverageOverview';
+import { FamilySalesReviewMarkdown } from '../../features/family-report/FamilySalesReviewMarkdown';
 import {
   readFamilyPlanningProfile,
   saveFamilyPlanningProfile,
@@ -489,73 +494,6 @@ function reportClientPerformance(event: string, payload: Record<string, unknown>
   });
 }
 
-type SalesReviewReportSection = {
-  title: string;
-  lines: string[];
-};
-
-function isFamilySalesReviewPlaceholderLine(value: string) {
-  const normalized = String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
-  return !normalized || /^[•·\-_*—–]+$/u.test(normalized) || /^(暂无明确结论|暂无|无|待补充)$/u.test(normalized);
-}
-
-function formatFamilySalesReviewLine(value: string) {
-  return String(value || '')
-    .replace(/\*+/gu, '')
-    .replace(/`([^`]+)`/gu, (_match, token) => {
-      const text = String(token || '');
-      if (/duplicatePolicyHints/iu.test(text)) return '重复保单提示';
-      if (/evidenceWarnings/iu.test(text)) return '条款证据冲突';
-      if (/canonical:product_/iu.test(text)) return '官方条款证据';
-      if (/plans/iu.test(text)) return '险种明细';
-      if (/officialEvidence/iu.test(text)) return '官网条款证据';
-      return text;
-    })
-    .replace(/\bduplicatePolicyHints\b/giu, '重复保单提示')
-    .replace(/\bevidenceWarnings\b/giu, '条款证据冲突')
-    .replace(/\bcanonical:product_[a-z0-9_-]+\b/giu, '官方条款证据')
-    .replace(/\bofficialEvidence\b/giu, '官网条款证据')
-    .replace(/\bplans\b/giu, '险种明细')
-    .replace(/^[#＃]{1,6}\s*/u, '')
-    .replace(/\s+/gu, ' ')
-    .trim();
-}
-
-function parseFamilySalesReviewContent(content = ''): SalesReviewReportSection[] {
-  const sections: SalesReviewReportSection[] = [];
-  let current: SalesReviewReportSection | null = null;
-  for (const rawLine of String(content || '').replace(/\r/gu, '').split('\n')) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const headingMatch = line.match(/^#{1,3}\s*(.+)$/u);
-    if (headingMatch) {
-      const title = formatFamilySalesReviewLine(headingMatch[1]).replace(/^([一二三四五六七八九十]+|[0-9]+)[、.．]\s*/u, '');
-      current = { title: title || '专家研判', lines: [] };
-      sections.push(current);
-      continue;
-    }
-    if (!current) {
-      current = { title: '专家结论摘要', lines: [] };
-      sections.push(current);
-    }
-    const cleaned = formatFamilySalesReviewLine(line.replace(/^[-*]\s*/u, '').replace(/^\s*[-*]\s*/u, ''));
-    if (!isFamilySalesReviewPlaceholderLine(cleaned)) current.lines.push(cleaned);
-  }
-  const visibleSections = sections.filter((section) => section.lines.length > 0);
-  const mergedSections: SalesReviewReportSection[] = [];
-  for (const section of visibleSections) {
-    const existing = mergedSections.find((item) => item.title === section.title);
-    if (existing) {
-      for (const line of section.lines) {
-        if (!existing.lines.includes(line)) existing.lines.push(line);
-      }
-    } else {
-      mergedSections.push({ title: section.title, lines: [...section.lines] });
-    }
-  }
-  return mergedSections.length ? mergedSections : [{ title: '专家研判', lines: ['暂无专家研判内容'] }];
-}
-
 export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
@@ -620,6 +558,8 @@ export function CustomerApp() {
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
   const [cashflowMember, setCashflowMember] = useState<string | null>(null);
   const [showFamilyReport, setShowFamilyReport] = useState(false);
+  const [savedFamilyReportRecord, setSavedFamilyReportRecord] = useState<FamilyReportRecord | null>(null);
+  const [familyReportLoading, setFamilyReportLoading] = useState(false);
   const [familySalesReviewOpen, setFamilySalesReviewOpen] = useState(false);
   const [familySalesReviewFamilyId, setFamilySalesReviewFamilyId] = useState<number | null>(null);
   const [familySalesReview, setFamilySalesReview] = useState<FamilySalesReview | null>(null);
@@ -652,6 +592,7 @@ export function CustomerApp() {
     () => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile, { familyId: selectedFamilyId }),
     [selectedFamilyPolicies, familyPlanningProfile, selectedFamilyId],
   );
+  const displayFamilyReport = savedFamilyReportRecord?.report || familyReport;
   const selectedFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
     [familyProfiles, selectedFamilyId],
@@ -660,6 +601,12 @@ export function CustomerApp() {
     () => familyProfiles.find((family) => Number(family.id) === Number(familySalesReviewFamilyId)) || null,
     [familyProfiles, familySalesReviewFamilyId],
   );
+  function familyReportGenerationMessage(reportRecord: FamilyReportRecord, actionText: string) {
+    return String(reportRecord?.source || '').includes('deepseek')
+      ? `家庭保障分析报告已${actionText}，DeepSeek质检已完成`
+      : `家庭保障分析报告已${actionText}，当前为本地规则结果`;
+  }
+
   const entryFamilyId = formData.familyId ?? selectedFamilyId ?? null;
   const entrySelectedFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(entryFamilyId)) || null,
@@ -756,6 +703,7 @@ export function CustomerApp() {
 
   function handleFamilyPlanningProfileChange(next: FamilyPlanningProfile) {
     setFamilyPlanningProfile(saveFamilyPlanningProfile(next));
+    setSavedFamilyReportRecord(null);
   }
 
   async function refreshPolicies(nextToken = token) {
@@ -1459,6 +1407,7 @@ export function CustomerApp() {
 
   function handleSelectFamily(familyId: number | null) {
     setSelectedFamilyId(familyId);
+    setSavedFamilyReportRecord(null);
     setFormData((current) => ({
       ...current,
       familyId,
@@ -1467,9 +1416,73 @@ export function CustomerApp() {
     }));
   }
 
-  function openFamilyReport(familyId: number) {
+  async function openFamilyReport(familyId: number) {
     handleSelectFamily(familyId);
+    setFamilyReportLoading(true);
+    setMessage('正在加载家庭保障分析报告');
     setShowFamilyReport(true);
+    try {
+      const loaded = await getFamilyReportRecord({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      });
+      if (!loaded.reportRecord) {
+        setMessage('暂无已保存家庭保障分析报告，可在报告页点击重新生成');
+        return;
+      }
+      setSavedFamilyReportRecord(loaded.reportRecord);
+      setMessage(familyReportGenerationMessage(loaded.reportRecord, '加载'));
+    } catch (error) {
+      setSavedFamilyReportRecord(null);
+      setMessage(error instanceof Error ? error.message : '家庭报告加载失败，已展示本地预览');
+    } finally {
+      setFamilyReportLoading(false);
+    }
+  }
+
+  async function regenerateFamilyReport() {
+    if (!selectedFamilyId) {
+      setMessage('请先选择家庭档案');
+      return;
+    }
+    if (familyReportLoading) return;
+    setFamilyReportLoading(true);
+    setMessage('正在重新生成家庭保障分析报告');
+    try {
+      const generated = await regenerateFamilyReportRecord({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: selectedFamilyId,
+        planningProfile: familyPlanningProfile,
+        userRefresh: true,
+      });
+      setSavedFamilyReportRecord(generated.reportRecord);
+      setMessage(familyReportGenerationMessage(generated.reportRecord, '重新生成'));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '家庭报告重新生成失败');
+    } finally {
+      setFamilyReportLoading(false);
+    }
+  }
+
+  async function handleShareFamilyReport(familyId = selectedFamilyId) {
+    if (!familyId) {
+      setMessage('请先选择家庭档案');
+      return;
+    }
+    try {
+      const created = await createFamilyReportShare({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      });
+      const shareUrl = `${window.location.origin}${window.location.pathname}#/family-share/${created.share.token}`;
+      await navigator.clipboard.writeText(shareUrl);
+      setMessage(`分享链接：${shareUrl}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '家庭报告分享失败');
+    }
   }
 
   function viewFamilyPolicies(familyId: number) {
@@ -1548,6 +1561,7 @@ export function CustomerApp() {
         token: token || undefined,
         guestId: token ? undefined : guestId,
         familyId: familySalesReviewFamilyId,
+        userRefresh: true,
       });
       setFamilySalesReview(payload.review);
       setFamilySalesReviewMessage('专家研判已完成并保存');
@@ -1555,29 +1569,6 @@ export function CustomerApp() {
       setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
     } finally {
       setFamilySalesReviewBusy(false);
-    }
-  }
-
-  async function handleShareFamilyReport() {
-    if (!selectedFamilyId) {
-      setMessage('请先选择家庭档案');
-      return;
-    }
-    try {
-      const payload = await createFamilyReportShare({
-        token: token || undefined,
-        guestId: token ? undefined : guestId,
-        familyId: selectedFamilyId,
-      });
-      const shareUrl = `${window.location.origin}${window.location.pathname}#/family-share/${payload.share.token}`;
-      try {
-        await navigator.clipboard.writeText(shareUrl);
-        setMessage('家庭报告分享链接已复制');
-      } catch {
-        setMessage(`分享链接：${shareUrl}`);
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '家庭报告分享失败');
     }
   }
 
@@ -1687,6 +1678,42 @@ export function CustomerApp() {
       notes,
     });
     setMessage(`已更新${payload.member.name}的备注`);
+    return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function updateFamilyMemberForFamily(family: FamilyProfile, member: FamilyMember, input: { name: string; birthday?: string }) {
+    const payload = await updateFamilyMember({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      memberId: member.id,
+      name: input.name,
+      birthday: input.birthday,
+    });
+    setPolicies((current) => current.map((policy) => {
+      if (Number(policy.familyId || 0) !== Number(family.id)) return policy;
+      const nextPolicy = { ...policy };
+      if (Number(nextPolicy.applicantMemberId || 0) === Number(member.id)) {
+        nextPolicy.applicantMemberName = payload.member.name;
+      }
+      if (Number(nextPolicy.insuredMemberId || 0) === Number(member.id)) {
+        nextPolicy.insuredMemberName = payload.member.name;
+      }
+      return nextPolicy;
+    }));
+    setMessage(`已更新成员：${payload.member.name}`);
+    return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function deleteFamilyMemberForFamily(family: FamilyProfile, member: FamilyMember) {
+    const payload = await deleteFamilyMember({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      memberId: member.id,
+    });
+    if (payload.clearedPolicyCount) await refreshPolicies();
+    setMessage(`已删除成员：${member.name}`);
     return replaceFamilyProfile(payload.family, payload.members);
   }
 
@@ -2737,10 +2764,6 @@ export function CustomerApp() {
       pulseClass: 'from-indigo-300 via-indigo-100 to-transparent',
     },
   ];
-  const familySalesReviewSections = useMemo(
-    () => parseFamilySalesReviewContent(familySalesReview?.content || ''),
-    [familySalesReview?.content],
-  );
   const familySalesReviewExportTitle = `${familySalesReviewFamily?.familyName || '当前家庭'}销售建议报告`;
   const familySalesReviewFamilyMembers = Array.isArray(familySalesReviewFamily?.members) ? familySalesReviewFamily.members : [];
   const familySalesReviewPolicyCount = familySalesReviewFamilyId
@@ -2887,48 +2910,7 @@ export function CustomerApp() {
                     <p className="mt-0.5 text-xs font-semibold text-slate-500">面向销售跟进的保障缺口与财富机会建议</p>
                   </div>
                 </div>
-                <div className="space-y-3">
-                  {familySalesReviewSections.map((section, index) => {
-                    const title = section.title;
-                    const isRisk = /风险|核实|数据/u.test(title);
-                    const isGap = /缺口|保障/u.test(title);
-                    const isWealth = /理财|财富|传承/u.test(title);
-                    const isAction = /动作|清单|切入/u.test(title);
-                    const SectionIcon = isWealth ? TrendingUp : isAction ? Target : isRisk ? ShieldCheck : isGap ? BrainCircuit : FileSearch;
-                    const visual = isWealth
-                      ? 'border-emerald-100 bg-emerald-50/45 text-emerald-700'
-                      : isAction
-                        ? 'border-indigo-100 bg-indigo-50/45 text-indigo-700'
-                        : isRisk
-                          ? 'border-amber-100 bg-amber-50/50 text-amber-700'
-                          : isGap
-                            ? 'border-cyan-100 bg-cyan-50/45 text-cyan-700'
-                            : 'border-slate-200 bg-slate-50 text-slate-700';
-                    return (
-                      <section key={`${title}-${index}`} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                        <div className={`flex items-center gap-2 border-b px-3 py-3 ${visual}`}>
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/80 ring-1 ring-white/80">
-                            <SectionIcon size={16} />
-                          </span>
-                          <h4 className="min-w-0 text-sm font-black text-slate-950">{title}</h4>
-                        </div>
-                        <div className="space-y-2 px-3 py-3">
-                          {section.lines.length ? section.lines.map((line, lineIndex) => (
-                            <div key={`${title}-${lineIndex}`} className="flex gap-2 rounded-xl bg-slate-50 px-3 py-2.5">
-                              <span className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${
-                                isWealth ? 'bg-emerald-500' : isAction ? 'bg-indigo-500' : isRisk ? 'bg-amber-500' : isGap ? 'bg-cyan-500' : 'bg-slate-400'
-                              }`}
-                              />
-                              <p className="min-w-0 whitespace-pre-wrap break-words text-sm font-semibold leading-6 text-slate-700">{line}</p>
-                            </div>
-                          )) : (
-                            <p className="rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-500">暂无明确结论</p>
-                          )}
-                        </div>
-                      </section>
-                    );
-                  })}
-                </div>
+                <FamilySalesReviewMarkdown content={familySalesReview.content} />
               </article>
             </div>
           ) : (
@@ -3218,22 +3200,19 @@ export function CustomerApp() {
     return (
       <>
         <FamilyReportPage
-          report={familyReport}
+          report={displayFamilyReport}
           planningProfile={familyPlanningProfile}
           onPlanningProfileChange={handleFamilyPlanningProfileChange}
           onBack={() => setShowFamilyReport(false)}
           onExport={(target, title) => void downloadReportImage(target, title)}
+          onRegenerate={regenerateFamilyReport}
+          regenerating={familyReportLoading}
         />
-        <button
-          type="button"
-          onClick={() => void handleShareFamilyReport()}
-          className="no-print fixed bottom-24 right-4 z-30 flex h-12 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white shadow-xl shadow-slate-950/20 active:scale-[0.98]"
-          aria-label="分享家庭报告"
-          title="分享家庭报告"
-        >
-          <Copy size={18} />
-          <span>分享</span>
-        </button>
+        {familyReportLoading ? (
+          <div className="no-print fixed bottom-40 right-4 z-30 rounded-full bg-white px-4 py-2 text-xs font-black text-slate-600 shadow-lg shadow-slate-950/10">
+            报告加载中...
+          </div>
+        ) : null}
         {authDialog}
         {accountSheet}
         {membershipDialog}
@@ -3398,23 +3377,34 @@ export function CustomerApp() {
           </div>
 
           <FamilyCoverageOverview
-            report={familyReport}
+            report={displayFamilyReport}
             policies={selectedFamilyPolicies}
           />
 
           {selectedFamilyPolicies.length ? (
             <section className="px-4 pt-3">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between rounded-[20px] border border-[#D9E6F4] bg-white px-4 py-3 text-left shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
-                onClick={() => setShowFamilyReport(true)}
-              >
-                <span>
-                  <span className="block text-sm font-black text-[#0F172A]">家庭保障分析报告</span>
-                  <span className="mt-1 block text-xs font-semibold text-[#7890AA]">全家统计、保单清单、重疾、意外、财富分析</span>
-                </span>
-                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">查看</span>
-              </button>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center justify-between rounded-[20px] border border-[#D9E6F4] bg-white px-4 py-3 text-left shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
+                  onClick={() => selectedFamilyId ? void openFamilyReport(selectedFamilyId) : undefined}
+                >
+                  <span className="min-w-0">
+                    <span className="block text-sm font-black text-[#0F172A]">家庭保障分析报告</span>
+                    <span className="mt-1 block text-xs font-semibold text-[#7890AA]">全家统计、保单清单、重疾、意外、财富分析</span>
+                  </span>
+                  <span className="ml-3 shrink-0 rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">查看</span>
+                </button>
+                <button
+                  type="button"
+                  className="flex min-h-[64px] items-center justify-center rounded-[20px] border border-[#D9E6F4] bg-white px-4 text-xs font-black text-blue-600 shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
+                  onClick={() => void handleShareFamilyReport(selectedFamilyId)}
+                  aria-label="分享家庭报告"
+                  title="分享家庭报告"
+                >
+                  <span>分享</span>
+                </button>
+              </div>
             </section>
           ) : null}
 
@@ -3506,8 +3496,10 @@ export function CustomerApp() {
           onUpdateFamilyNotes={updateFamilyNotesForFamily}
           onDeleteFamily={deleteFamilyForFamily}
           onSetCoreMember={setCoreMemberForCurrentFamily}
+          onUpdateFamilyMember={updateFamilyMemberForFamily}
           onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
           onUpdateFamilyMemberNotes={updateFamilyMemberNotesForFamily}
+          onDeleteFamilyMember={deleteFamilyMemberForFamily}
           onBackToEntry={() => {
             startEntryForm({ preserveSelectedFamily: true });
           }}

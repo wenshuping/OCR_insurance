@@ -29,8 +29,10 @@ export function FamilyProfileManager({
   onUpdateFamilyNotes,
   onDeleteFamily,
   onSetCoreMember,
+  onUpdateFamilyMember,
   onUpdateFamilyMemberRelation,
   onUpdateFamilyMemberNotes,
+  onDeleteFamilyMember,
   onBackToEntry,
   onOpenReport,
   onOpenSalesReview,
@@ -47,8 +49,10 @@ export function FamilyProfileManager({
   onUpdateFamilyNotes: (family: FamilyProfile, notes: string) => Promise<FamilyProfile>;
   onDeleteFamily: (family: FamilyProfile) => Promise<void>;
   onSetCoreMember: (family: FamilyProfile, member: FamilyMember) => Promise<FamilyProfile>;
+  onUpdateFamilyMember: (family: FamilyProfile, member: FamilyMember, input: { name: string; birthday?: string }) => Promise<FamilyProfile>;
   onUpdateFamilyMemberRelation: (family: FamilyProfile, member: FamilyMember, relationLabel: string) => Promise<FamilyProfile>;
   onUpdateFamilyMemberNotes: (family: FamilyProfile, member: FamilyMember, notes: string) => Promise<FamilyProfile>;
+  onDeleteFamilyMember: (family: FamilyProfile, member: FamilyMember) => Promise<FamilyProfile>;
   onBackToEntry: () => void;
   onOpenReport: (familyId: number) => void;
   onOpenSalesReview: (familyId: number) => void;
@@ -63,6 +67,9 @@ export function FamilyProfileManager({
   const [editingBusy, setEditingBusy] = useState(false);
   const [deletingFamilyId, setDeletingFamilyId] = useState<number | null>(null);
   const [memberNoteDrafts, setMemberNoteDrafts] = useState<Record<number, string>>({});
+  const [editingMemberId, setEditingMemberId] = useState<number | null>(null);
+  const [memberProfileDrafts, setMemberProfileDrafts] = useState<Record<number, { name: string; birthday: string }>>({});
+  const [deleteConfirmMemberId, setDeleteConfirmMemberId] = useState<number | null>(null);
   const [memberNameDraft, setMemberNameDraft] = useState('');
   const [memberRelationDraft, setMemberRelationDraft] = useState('待确认');
   const [memberBirthdayDraft, setMemberBirthdayDraft] = useState('');
@@ -109,8 +116,26 @@ export function FamilyProfileManager({
     return Object.fromEntries(activeMembers(family).map((member) => [member.id, member.notes || '']));
   }
 
+  function memberProfilesFromFamily(family: FamilyProfile) {
+    return Object.fromEntries(activeMembers(family).map((member) => [
+      member.id,
+      { name: member.name || '', birthday: member.birthday || '' },
+    ]));
+  }
+
   function updateMemberNoteDraft(memberId: number, notes: string) {
     setMemberNoteDrafts((current) => ({ ...current, [memberId]: notes }));
+  }
+
+  function updateMemberProfileDraft(memberId: number, input: Partial<{ name: string; birthday: string }>) {
+    setMemberProfileDrafts((current) => ({
+      ...current,
+      [memberId]: {
+        name: current[memberId]?.name || '',
+        birthday: current[memberId]?.birthday || '',
+        ...input,
+      },
+    }));
   }
 
   function resetMemberDrafts() {
@@ -126,8 +151,11 @@ export function FamilyProfileManager({
     setFamilyNameDraft(family.familyName || `家庭 ${family.id}`);
     setFamilyNotesDraft(family.notes || '');
     setMemberNoteDrafts(memberNotesFromFamily(family));
+    setMemberProfileDrafts(memberProfilesFromFamily(family));
     setEditingFamilyId(nextEditing);
     setDeleteConfirmFamilyId(null);
+    setDeleteConfirmMemberId(null);
+    setEditingMemberId(null);
     setEditingMessage('');
     resetMemberDrafts();
   }
@@ -215,6 +243,47 @@ export function FamilyProfileManager({
       setEditingMessage(`已保存${nextMember?.name || member.name}的备注`);
     } catch (error) {
       setEditingMessage(error instanceof Error ? error.message : '保存成员备注失败');
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function handleUpdateFamilyMember(family: FamilyProfile, member: FamilyMember) {
+    const draft = memberProfileDrafts[member.id] || { name: member.name || '', birthday: member.birthday || '' };
+    const name = draft.name.trim();
+    if (!name) {
+      setEditingMessage('成员姓名不能为空');
+      return;
+    }
+    setEditingBusy(true);
+    setEditingMessage('');
+    try {
+      const nextFamily = await onUpdateFamilyMember(family, member, {
+        name,
+        birthday: draft.birthday.trim() || undefined,
+      });
+      setMemberProfileDrafts(memberProfilesFromFamily(nextFamily));
+      setEditingMemberId(null);
+      setEditingMessage(`已保存成员：${name}`);
+    } catch (error) {
+      setEditingMessage(error instanceof Error ? error.message : '保存成员失败');
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function handleDeleteFamilyMember(family: FamilyProfile, member: FamilyMember) {
+    setEditingBusy(true);
+    setEditingMessage('');
+    try {
+      const nextFamily = await onDeleteFamilyMember(family, member);
+      setMemberNoteDrafts(memberNotesFromFamily(nextFamily));
+      setMemberProfileDrafts(memberProfilesFromFamily(nextFamily));
+      setDeleteConfirmMemberId(null);
+      setEditingMemberId(null);
+      setEditingMessage(`已删除成员：${member.name}`);
+    } catch (error) {
+      setEditingMessage(error instanceof Error ? error.message : '删除成员失败');
     } finally {
       setEditingBusy(false);
     }
@@ -519,18 +588,48 @@ export function FamilyProfileManager({
                       const core = isCoreMember(family, member);
                       const policyBound = boundMemberIds.has(Number(member.id));
                       const memberNoteDraft = memberNoteDrafts[member.id] ?? member.notes ?? '';
+                      const profileDraft = memberProfileDrafts[member.id] || { name: member.name || '', birthday: member.birthday || '' };
+                      const editingMember = Number(editingMemberId) === Number(member.id);
+                      const confirmingDelete = Number(deleteConfirmMemberId) === Number(member.id);
                       return (
                         <div key={member.id} className="rounded-xl bg-white p-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-black text-slate-950">{member.name}</p>
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0 flex-1">
+                              {editingMember ? (
+                                <div className="grid gap-2 sm:grid-cols-[1fr_0.75fr]">
+                                  <label className="block">
+                                    <span className="mb-1 block text-xs font-black text-slate-400">成员姓名</span>
+                                    <input
+                                      value={profileDraft.name}
+                                      disabled={editingBusy}
+                                      onChange={(event) => updateMemberProfileDraft(member.id, { name: event.target.value })}
+                                      className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
+                                    />
+                                  </label>
+                                  <label className="block">
+                                    <span className="mb-1 block text-xs font-black text-slate-400">出生日期</span>
+                                    <input
+                                      type="date"
+                                      value={profileDraft.birthday}
+                                      disabled={editingBusy}
+                                      onChange={(event) => updateMemberProfileDraft(member.id, { birthday: event.target.value })}
+                                      className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
+                                    />
+                                  </label>
+                                </div>
+                              ) : (
+                                <>
+                                  <p className="truncate text-sm font-black text-slate-950">{member.name}</p>
+                                  {member.birthday ? <p className="mt-0.5 text-xs font-semibold text-slate-400">{member.birthday}</p> : null}
+                                </>
+                              )}
                               {policyBound ? (
                                 <>
-                                  <p className="mt-0.5 text-xs font-semibold text-slate-500">{member.relationLabel || (core ? '本人' : '待确认')}</p>
-                                  <p className="mt-0.5 text-[11px] font-semibold text-slate-400">由保单扫描生成，请在保单详情修改</p>
+                                  <p className="mt-1 text-xs font-semibold text-slate-500">{member.relationLabel || (core ? '本人' : '待确认')}</p>
+                                  <p className="mt-0.5 text-[11px] font-semibold text-slate-400">由保单扫描生成，可编辑姓名备注；关系请在保单详情修改</p>
                                 </>
                               ) : core ? (
-                                <p className="mt-0.5 text-xs font-semibold text-slate-500">{member.relationLabel || '本人'}</p>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">{member.relationLabel || '本人'}</p>
                               ) : (
                                 <select
                                   aria-label={`设置${member.name}家庭关系`}
@@ -545,7 +644,7 @@ export function FamilyProfileManager({
                                 </select>
                               )}
                             </div>
-                            <div className="flex shrink-0 items-center gap-2">
+                            <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                               {core ? (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">
                                   <CheckCircle2 size={14} />
@@ -564,8 +663,79 @@ export function FamilyProfileManager({
                                   设为顶梁柱
                                 </button>
                               ) : null}
+                              {editingMember ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="rounded-full bg-blue-500 px-3 py-1.5 text-xs font-black text-white shadow-lg shadow-blue-500/20 disabled:opacity-50"
+                                    disabled={editingBusy || !profileDraft.name.trim()}
+                                    onClick={() => void handleUpdateFamilyMember(family, member)}
+                                  >
+                                    保存
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded-full bg-white px-3 py-1.5 text-xs font-black text-slate-600 ring-1 ring-slate-200 disabled:opacity-50"
+                                    disabled={editingBusy}
+                                    onClick={() => {
+                                      updateMemberProfileDraft(member.id, { name: member.name || '', birthday: member.birthday || '' });
+                                      setEditingMemberId(null);
+                                    }}
+                                  >
+                                    取消
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="rounded-full bg-white px-3 py-1.5 text-xs font-black text-slate-700 ring-1 ring-slate-200 disabled:opacity-50"
+                                  disabled={editingBusy}
+                                  onClick={() => {
+                                    setEditingMemberId(member.id);
+                                    setDeleteConfirmMemberId(null);
+                                    updateMemberProfileDraft(member.id, { name: member.name || '', birthday: member.birthday || '' });
+                                  }}
+                                >
+                                  编辑
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-black text-rose-700 ring-1 ring-rose-100 disabled:opacity-50"
+                                disabled={editingBusy}
+                                onClick={() => {
+                                  setDeleteConfirmMemberId(member.id);
+                                  setEditingMemberId(null);
+                                }}
+                              >
+                                删除
+                              </button>
                             </div>
                           </div>
+                          {confirmingDelete ? (
+                            <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 p-3">
+                              <p className="text-xs font-black text-rose-900">确认删除成员 {member.name}？</p>
+                              <p className="mt-1 text-xs font-semibold leading-5 text-rose-700">关联保单会保留，但需要重新确认家庭成员绑定。</p>
+                              <div className="mt-2 flex gap-2">
+                                <button
+                                  type="button"
+                                  className="flex h-9 flex-1 items-center justify-center rounded-xl bg-white text-xs font-black text-slate-700 ring-1 ring-slate-200"
+                                  disabled={editingBusy}
+                                  onClick={() => setDeleteConfirmMemberId(null)}
+                                >
+                                  取消
+                                </button>
+                                <button
+                                  type="button"
+                                  className="flex h-9 flex-1 items-center justify-center rounded-xl bg-rose-600 text-xs font-black text-white disabled:opacity-50"
+                                  disabled={editingBusy}
+                                  onClick={() => void handleDeleteFamilyMember(family, member)}
+                                >
+                                  确认删除
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
                           <label className="mt-3 block" htmlFor={`member-notes-${family.id}-${member.id}`}>
                             <span className="mb-1 block text-xs font-black text-slate-400">成员备注</span>
                             <textarea

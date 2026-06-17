@@ -27,6 +27,8 @@ type FamilyReportPageProps = {
   onPlanningProfileChange: (profile: FamilyPlanningProfile) => void;
   onBack: () => void;
   onExport: (target: HTMLElement | null, title: string) => void | Promise<void>;
+  onRegenerate?: () => void | Promise<void>;
+  regenerating?: boolean;
   readOnly?: boolean;
 };
 
@@ -225,6 +227,18 @@ type RadarSeries = FamilyReport['radar']['family'];
 
 const radarColors = ['#0EA5E9', '#22C55E', '#F97316', '#8B5CF6'];
 
+type RadarReferenceMarker = {
+  key: string;
+  color: string;
+  amountText: string;
+  visualScore: number;
+  x: number;
+  y: number;
+  textX: number;
+  textY: number;
+  textAnchor: 'start' | 'middle' | 'end';
+};
+
 function scoreByKey(series: RadarSeries, key: string) {
   return series.scores.find((score) => score.key === key);
 }
@@ -262,6 +276,34 @@ function radarStructureAmount(score: RadarSeries['scores'][number]) {
   return score.key === 'accident' ? Number(score.effectiveAmount || score.amount || 0) : Number(score.amount || 0);
 }
 
+function radarReferenceOnlyDetails(score: RadarSeries['scores'][number]) {
+  return (score.amountDetails || []).filter((detail) => detail.referenceOnly && Number(detail.amount || 0) > 0);
+}
+
+function radarReferenceAmount(score: RadarSeries['scores'][number]) {
+  const details = radarReferenceOnlyDetails(score);
+  return details.length ? Math.max(...details.map((detail) => Number(detail.amount || 0))) : 0;
+}
+
+function radarReferenceAmountText(score: RadarSeries['scores'][number]) {
+  const maxReferenceAmount = radarReferenceAmount(score);
+  if (maxReferenceAmount <= 0) return '';
+  return score.amountText || `≥${formatMoneyWithUnit(maxReferenceAmount)}参考`;
+}
+
+function radarChartAmount(score: RadarSeries['scores'][number]) {
+  return radarStructureAmount(score) || radarReferenceAmount(score);
+}
+
+function radarChartScore(score: RadarSeries['scores'][number], series: RadarSeries, mode: FamilyReport['radar']['mode']) {
+  if (mode === 'planning') return Math.max(0, Math.min(100, Number(score.score || 0)));
+
+  const amount = radarChartAmount(score);
+  if (amount <= 0) return 0;
+  const maxBase = Math.max(0, ...series.scores.map((item) => Math.sqrt(Math.max(0, radarChartAmount(item)))));
+  return maxBase > 0 ? Math.round((Math.sqrt(amount) / maxBase) * 100) : 0;
+}
+
 function calculationRowsForScore(
   score: RadarSeries['scores'][number],
   series: RadarSeries,
@@ -288,6 +330,17 @@ function calculationRowsForScore(
   const amountText = formatMoneyWithUnit(amount);
   const maxText = formatMoneyWithUnit(maxAmount);
   const basisLabel = score.key === 'accident' ? '有效金额' : '原始金额';
+  const referenceDetails = radarReferenceOnlyDetails(score);
+
+  if (amount <= 0 && referenceDetails.length) {
+    const referenceScore = radarChartScore(score, series, mode);
+    return [
+      { label: '固定保额', value: amountText },
+      { label: '参考下限', value: score.amountText },
+      { label: '固定雷达值', value: `${score.score}/100（参考下限不计入固定保额）` },
+      { label: '图表参考', value: `${referenceScore}/100（图形按参考下限显示）` },
+    ];
+  }
 
   return [
     { label: '金额合计', value: score.amountText },
@@ -391,7 +444,6 @@ function profileHasValue(profile: FamilyPlanningProfile) {
 
 const thClassName = 'bg-blue-500 px-3 py-2.5 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
-const mutedTdClassName = 'whitespace-nowrap bg-white px-3 py-2.5 text-xs font-medium text-slate-500 ring-1 ring-[#E1EAF5]';
 const compactThClassName = 'bg-blue-500 px-2 py-1.5 text-center text-xs font-black text-white';
 const compactTdClassName = 'whitespace-nowrap bg-white px-2 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 
@@ -621,11 +673,13 @@ function RadarChart({
   dimensions,
   series,
   ariaLabel,
+  mode,
   framed = true,
 }: {
   dimensions: FamilyReport['radar']['dimensions'];
   series: RadarSeries[];
   ariaLabel: string;
+  mode: FamilyReport['radar']['mode'];
   framed?: boolean;
 }) {
   const width = 320;
@@ -645,12 +699,37 @@ function RadarChart({
       labelY: centerY + Math.sin(angle) * (radius + 24),
     };
   });
-  const hasShape = series.some((item) => item.scores.some((score) => score.score > 0));
+  const referenceMarkers = series.flatMap((item, seriesIndex) => axisPoints.map((point): RadarReferenceMarker | null => {
+    const score = scoreByKey(item, point.key);
+    const amountText = score ? radarReferenceAmountText(score) : '';
+    if (!score || !amountText) return null;
 
-  if (!hasShape) return <EmptyState text="暂无可绘制雷达图的金额数据" />;
+    const color = radarColors[seriesIndex % radarColors.length];
+    const visualScore = radarChartScore(score, item, mode);
+    const visibleScore = mode === 'structure' ? Math.max(visualScore, 28) : visualScore;
+    const markerRadius = radius * Math.max(12, Math.min(100, visibleScore)) / 100;
+    const cos = Math.cos(point.angle);
+    const sin = Math.sin(point.angle);
+    const textAnchor = cos > 0.35 ? 'start' : (cos < -0.35 ? 'end' : 'middle');
+    return {
+      key: `${item.name}-${point.key}`,
+      color,
+      amountText,
+      visualScore: visibleScore,
+      x: centerX + cos * markerRadius,
+      y: centerY + sin * markerRadius,
+      textX: centerX + cos * (markerRadius + 12),
+      textY: centerY + sin * (markerRadius + 12) + (Math.abs(sin) > 0.8 ? (sin > 0 ? 10 : -4) : 4),
+      textAnchor,
+    };
+  }).filter((marker): marker is RadarReferenceMarker => Boolean(marker)));
+  const hasShape = series.some((item) => item.scores.some((score) => radarChartScore(score, item, mode) > 0));
+
+  if (!hasShape && !referenceMarkers.length) return <EmptyState text="暂无可绘制雷达图的金额数据" />;
 
   const polygonForSeries = (item: RadarSeries) => axisPoints.map((point) => {
-    const score = Math.max(0, Math.min(100, scoreByKey(item, point.key)?.score || 0));
+    const matchedScore = scoreByKey(item, point.key);
+    const score = matchedScore ? radarChartScore(matchedScore, item, mode) : 0;
     const pointRadius = (radius * score) / 100;
     return `${(centerX + Math.cos(point.angle) * pointRadius).toFixed(1)},${(centerY + Math.sin(point.angle) * pointRadius).toFixed(1)}`;
   }).join(' ');
@@ -680,10 +759,31 @@ function RadarChart({
           const color = radarColors[index % radarColors.length];
           return (
             <g key={item.name}>
-              <polygon points={polygonForSeries(item)} fill={color} opacity={series.length === 1 ? 0.18 : 0.1} stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
+              {item.scores.some((score) => radarChartScore(score, item, mode) > 0) ? (
+                <polygon points={polygonForSeries(item)} fill={color} opacity={series.length === 1 ? 0.18 : 0.1} stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
+              ) : null}
             </g>
           );
         })}
+        {referenceMarkers.map((marker) => (
+          <g key={marker.key}>
+            <line
+              x1={centerX}
+              y1={centerY}
+              x2={marker.x}
+              y2={marker.y}
+              stroke={marker.color}
+              strokeWidth={marker.visualScore >= 24 ? 4 : 3}
+              strokeLinecap="round"
+              strokeDasharray="5 4"
+              opacity="0.82"
+            />
+            <path d={`M ${marker.x} ${marker.y - 4} L ${marker.x + 4} ${marker.y} L ${marker.x} ${marker.y + 4} L ${marker.x - 4} ${marker.y} Z`} fill={marker.color} stroke="#FFFFFF" strokeWidth="1.8" />
+            <text x={marker.textX} y={marker.textY} textAnchor={marker.textAnchor} fontSize="10" fontWeight="800" fill={marker.color}>
+              {marker.amountText}
+            </text>
+          </g>
+        ))}
       </svg>
       <div className="mt-2 flex min-w-0 flex-wrap gap-x-3 gap-y-1 px-1 pb-1" aria-hidden="true">
         {series.map((item, index) => {
@@ -725,7 +825,7 @@ export function FamilyRadarSection({ report }: { report: FamilyReport }) {
         </button>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(280px,380px)_1fr]">
-        <RadarChart dimensions={report.radar.dimensions} series={[family]} ariaLabel="全家保障均衡雷达" />
+        <RadarChart dimensions={report.radar.dimensions} series={[family]} mode={report.radar.mode} ariaLabel="全家保障均衡雷达" />
         <div className="grid gap-3 sm:grid-cols-2">
           {family.scores.map((score) => (
             <div key={score.key} className="min-w-0 rounded-[18px] border border-[#E1E8EF] bg-[#F8FAFC] px-3 py-3">
@@ -792,7 +892,7 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
                 </div>
               </div>
               <div className="grid gap-3 xl:grid-cols-[minmax(0,220px)_1fr]">
-                <RadarChart dimensions={report.radar.dimensions} series={[member]} ariaLabel={`${member.name}保障雷达`} framed={false} />
+                <RadarChart dimensions={report.radar.dimensions} series={[member]} mode={report.radar.mode} ariaLabel={`${member.name}保障雷达`} framed={false} />
                 <div className="divide-y divide-[#E1E8EF]">
                   {member.scores.map((score) => (
                     <div key={score.key} className="flex min-w-0 items-start justify-between gap-3 py-2 first:pt-0 last:pb-0">
@@ -1077,7 +1177,7 @@ function InventoryExportCards({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
   return (
     <div data-report-export-cards className="hidden space-y-3">
       {rows.map((row, index) => (
-        <ExportPolicyShell key={`inventory-export-${row.policyId}`} row={row} accent={exportToneByIndex(index)}>
+        <ExportPolicyShell key={`inventory-export-${row.policyId}`} row={row} tone="type" accent={exportToneByIndex(index)}>
           <PolicyPlanExportList row={row} />
           <ExportMetricStrip
             rows={[
@@ -1086,7 +1186,6 @@ function InventoryExportCards({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
               { label: '家庭身份', value: row.relationLabel },
               { label: '年交保费', value: row.annualPremiumText || formatMoney(row.annualPremium), highlight: true },
               { label: '保障/保额', value: row.coverageText, highlight: true },
-              { label: '现金价值', value: row.cashValueText || '-' },
             ]}
           />
         </ExportPolicyShell>
@@ -1136,9 +1235,7 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
                     <th className={thClassName}>保单/产品</th>
                     <th className={thClassName}>类型</th>
                     <th className={`${thClassName} text-right`}>年交保费</th>
-                    <th className={thClassName}>保障/保额</th>
-                    <th className={`${thClassName} text-right`}>现金价值</th>
-                    <th className={`${thClassName} rounded-tr-[18px]`}>数据状态</th>
+                    <th className={`${thClassName} rounded-tr-[18px]`}>保障/保额</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1161,8 +1258,6 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
                       </td>
                       <td className={`${tdClassName} text-right`}>{row.annualPremiumText || formatMoney(row.annualPremium)}</td>
                       <td className={tdClassName}>{emptyText(row.coverageText)}</td>
-                      <td className={`${tdClassName} text-right`}>{row.cashValueText || '-'}</td>
-                      <td className={mutedTdClassName}>{emptyText(row.dataStatus)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1969,6 +2064,8 @@ export function FamilyReportPage({
   onPlanningProfileChange,
   onBack,
   onExport,
+  onRegenerate,
+  regenerating = false,
   readOnly = false,
 }: FamilyReportPageProps) {
   const reportRef = useRef<HTMLElement | null>(null);
@@ -1993,16 +2090,32 @@ export function FamilyReportPage({
             <h1 className="family-report-heading truncate text-lg font-black text-[#102033]">家庭保障分析报告</h1>
             <p className="family-report-kicker mt-0.5 hidden text-[11px] text-[#72849A] sm:block">Family Policy Dossier</p>
           </div>
-          <button
-            type="button"
-            onClick={() => void onExport(reportRef.current, exportTitle)}
-            className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-[#0B72B9] active:bg-blue-100"
-            aria-label="下载报告图片"
-            title="下载报告图片"
-          >
-            <Download size={18} />
-            <span>图片</span>
-          </button>
+          <div className="flex items-center justify-end gap-2">
+            {onRegenerate ? (
+              <button
+                type="button"
+                onClick={() => void onRegenerate()}
+                disabled={regenerating}
+                className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-emerald-50 px-3 text-xs font-black text-emerald-700 active:bg-emerald-100 disabled:opacity-60"
+                aria-label="重新生成家庭保障分析报告"
+                aria-busy={regenerating}
+                title="重新生成家庭保障分析报告"
+              >
+                <RotateCcw className={regenerating ? 'h-[18px] w-[18px] animate-spin' : 'h-[18px] w-[18px]'} />
+                <span>{regenerating ? '生成中' : '重算'}</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void onExport(reportRef.current, exportTitle)}
+              className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-[#0B72B9] active:bg-blue-100"
+              aria-label="下载报告图片"
+              title="下载报告图片"
+            >
+              <Download size={18} />
+              <span>图片</span>
+            </button>
+          </div>
         </div>
       </header>
 

@@ -29,6 +29,8 @@ outputs/
 graphify-out/
 upload-to-ecs/
 production-data/
+production-data-bundles/
+reports/
 
 # Temp files
 tmp/

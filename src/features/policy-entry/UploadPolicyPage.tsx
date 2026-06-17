@@ -249,6 +249,33 @@ export function UploadPolicyPage(props: {
   const showCompanySuggestions = companyFocused && companyQuery && (formCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (formProductSuggestionLoading || visibleProductSuggestions.length);
 
+  function findSingleFamilyMemberByName(name: string) {
+    const normalizedName = name.trim();
+    if (!normalizedName) return null;
+    const matches = selectedFamilyMembers.filter((member) => (
+      member.status === 'active' &&
+      member.name.trim() === normalizedName
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function relationForFamilyMember(member: FamilyMember) {
+    if (Number(member.id) === Number(selectedFamily?.coreMemberId || 0)) return '本人';
+    return member.relationLabel || '待确认';
+  }
+
+  function applyParticipantMember(kind: 'applicant' | 'insured', member: FamilyMember | null) {
+    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
+    const birthdayKey = kind === 'applicant' ? 'applicantBirthday' : 'insuredBirthday';
+    if (!member) {
+      if (formData[memberIdKey]) onUpdateForm(memberIdKey, null);
+      return;
+    }
+    if (Number(formData[memberIdKey] || 0) !== Number(member.id)) onUpdateForm(memberIdKey, member.id);
+    applyParticipantRelation(kind, relationForFamilyMember(member));
+    if (member.birthday && !String(formData[birthdayKey] || '').trim()) onUpdateForm(birthdayKey, member.birthday);
+  }
+
   useEffect(() => {
     if (!participantsAreSamePerson()) return;
     const applicantRelation = participantRelation('applicant');
@@ -267,6 +294,18 @@ export function UploadPolicyPage(props: {
     onUpdateForm,
   ]);
 
+  useEffect(() => {
+    applyParticipantMember('applicant', findSingleFamilyMemberByName(formData.applicant || ''));
+    applyParticipantMember('insured', findSingleFamilyMemberByName(formData.insured || ''));
+  }, [
+    formData.applicant,
+    formData.insured,
+    formData.applicantMemberId,
+    formData.insuredMemberId,
+    selectedFamily?.coreMemberId,
+    selectedFamilyMembers,
+  ]);
+
   async function handleCopyOcrText() {
     const text = ocrText.trim();
     if (!text) return;
@@ -280,13 +319,7 @@ export function UploadPolicyPage(props: {
 
   function updateParticipantName(kind: 'applicant' | 'insured', value: string) {
     const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
-    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
-    const selectedMemberId = formData[memberIdKey];
-    const selectedMember = selectedFamilyMembers.find((member) => Number(member.id) === Number(selectedMemberId || 0));
     onUpdateForm(nameKey, value);
-    if (!selectedMember || selectedMember.name.trim() !== value.trim()) {
-      onUpdateForm(memberIdKey, null);
-    }
   }
 
   function participantRelation(kind: 'applicant' | 'insured') {

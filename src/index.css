@@ -73,6 +73,211 @@ body {
   display: block !important;
 }
 
+.family-sales-review-markdown {
+  --sales-review-font-body: "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --sales-review-font-heading: "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --sales-review-ink: #172033;
+  --sales-review-muted: #5b677a;
+  --sales-review-rule: #dce6f0;
+  width: min(100%, 72ch);
+  margin: 0 auto;
+  color: var(--sales-review-ink);
+  font-family: var(--sales-review-font-body);
+  font-size: 1rem;
+  font-kerning: normal;
+  line-height: 1.65;
+  text-rendering: optimizeLegibility;
+}
+
+.family-sales-review-markdown * {
+  letter-spacing: 0;
+}
+
+.family-sales-review-markdown > * + * {
+  margin-top: 0.875rem;
+}
+
+.family-sales-review-markdown h2,
+.family-sales-review-markdown h3,
+.family-sales-review-markdown h4 {
+  font-family: var(--sales-review-font-heading);
+  color: #101827;
+  font-weight: 760;
+  line-height: 1.25;
+}
+
+.family-sales-review-markdown h2 {
+  margin-top: 1.75rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--sales-review-rule);
+  border-radius: 0.75rem;
+  background: #f7fafc;
+  font-size: 1.25rem;
+}
+
+.family-sales-review-markdown h2:first-child {
+  margin-top: 0;
+}
+
+.family-sales-review-markdown h3 {
+  margin-top: 1.25rem;
+  font-size: 1.0625rem;
+}
+
+.family-sales-review-markdown h4 {
+  margin-top: 1rem;
+  color: #273548;
+  font-size: 1rem;
+}
+
+.family-sales-review-markdown p {
+  margin: 0.75rem 0 0;
+  color: #273548;
+  font-size: 1rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.family-sales-review-markdown strong {
+  color: #0f172a;
+  font-weight: 720;
+}
+
+.family-sales-review-markdown code {
+  border: 1px solid #d9e3ed;
+  border-radius: 0.375rem;
+  background: #f3f7fb;
+  color: #244b7a;
+  font-family: ui-monospace, "SFMono-Regular", "SF Mono", Consolas, monospace;
+  font-size: 0.875em;
+  padding: 0.05rem 0.3rem;
+}
+
+.family-sales-review-markdown ul,
+.family-sales-review-markdown ol {
+  display: grid;
+  gap: 0.625rem;
+  margin: 0.875rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.family-sales-review-markdown li {
+  position: relative;
+  border: 1px solid #e0e8f0;
+  border-radius: 0.75rem;
+  background: #fbfdff;
+  color: #273548;
+  font-size: 0.96875rem;
+  font-weight: 560;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  padding: 0.75rem 0.875rem 0.75rem 2.25rem;
+}
+
+.family-sales-review-markdown ul li::before {
+  content: "";
+  position: absolute;
+  top: 1.35rem;
+  left: 1rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.family-sales-review-markdown ol {
+  counter-reset: sales-review-list;
+}
+
+.family-sales-review-markdown ol li {
+  counter-increment: sales-review-list;
+}
+
+.family-sales-review-markdown ol li::before {
+  content: counter(sales-review-list);
+  position: absolute;
+  top: 0.78rem;
+  left: 0.75rem;
+  display: inline-grid;
+  width: 1.15rem;
+  height: 1.15rem;
+  place-items: center;
+  border-radius: 999px;
+  background: #174ea6;
+  color: #ffffff;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 760;
+  line-height: 1;
+}
+
+.family-sales-review-markdown blockquote {
+  margin: 1rem 0 0;
+  border: 1px solid #dce6f0;
+  border-radius: 0.875rem;
+  background: #f8faf5;
+  color: #304154;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.7;
+  padding: 0.875rem 1rem;
+}
+
+.family-sales-review-markdown hr {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--sales-review-rule);
+}
+
+.family-sales-review-table-wrap {
+  width: 100%;
+  margin-top: 1rem;
+  overflow-x: auto;
+}
+
+.family-sales-review-markdown table {
+  width: 100%;
+  min-width: 34rem;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid #dce6f0;
+  border-radius: 0.875rem;
+  color: #273548;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  overflow: hidden;
+  table-layout: fixed;
+}
+
+.family-sales-review-markdown th,
+.family-sales-review-markdown td {
+  padding: 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.family-sales-review-markdown th {
+  background: #f1f6fb;
+  color: #172033;
+  font-weight: 760;
+}
+
+.family-sales-review-markdown td {
+  border-top: 1px solid #e3ebf3;
+  background: #ffffff;
+  font-weight: 520;
+}
+
+.family-sales-review-markdown tr:nth-child(even) td {
+  background: #f9fbfd;
+}
+
+.family-sales-review-markdown :is(td, th) {
+  font-variant-numeric: tabular-nums;
+}
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }

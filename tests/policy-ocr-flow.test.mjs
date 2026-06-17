@@ -8214,6 +8214,95 @@ test('admin can login and read all accounts, insured groups, and policies', asyn
   }
 });
 
+test('admin can list selected user families without mutating family state', async () => {
+  const state = createInitialState();
+  state.users = [{ id: 1, mobile: '13800000000', createdAt: '2026-06-17T00:00:00.000Z', updatedAt: '2026-06-17T00:00:00.000Z' }];
+  state.adminSessions = [{ token: 'admin-token', createdAt: '2026-06-17T00:01:00.000Z', expiresAt: '2999-01-01T00:00:00.000Z' }];
+  state.familyProfiles = [
+    { id: 10, ownerUserId: 1, ownerGuestId: '', familyName: '默认家庭', coreMemberId: 11, status: 'active', createdAt: '2026-06-17T00:02:00.000Z', updatedAt: '2026-06-17T00:02:00.000Z' },
+    { id: 20, ownerUserId: 1, ownerGuestId: '', familyName: '吴连英', coreMemberId: null, status: 'active', createdAt: '2026-06-17T00:03:00.000Z', updatedAt: '2026-06-17T00:03:00.000Z' },
+    { id: 25, ownerUserId: null, ownerGuestId: 'legacy-guest', familyName: '旧数据家庭', coreMemberId: null, status: 'active', createdAt: '2026-06-17T00:03:30.000Z', updatedAt: '2026-06-17T00:03:30.000Z' },
+    { id: 30, ownerUserId: 2, ownerGuestId: '', familyName: '其他用户家庭', coreMemberId: null, status: 'active', createdAt: '2026-06-17T00:04:00.000Z', updatedAt: '2026-06-17T00:04:00.000Z' },
+  ];
+  state.familyMembers = [
+    { id: 11, familyId: 10, name: '温舒萍', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-06-17T00:02:10.000Z', updatedAt: '2026-06-17T00:02:10.000Z' },
+    { id: 12, familyId: 10, name: '冯力', relationToCore: 'spouse', relationLabel: '配偶', role: 'adult', status: 'active', createdAt: '2026-06-17T00:02:20.000Z', updatedAt: '2026-06-17T00:02:20.000Z' },
+    { id: 21, familyId: 20, name: '翟卿', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active', createdAt: '2026-06-17T00:03:10.000Z', updatedAt: '2026-06-17T00:03:10.000Z' },
+    { id: 25, familyId: 25, name: '旧成员', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active', createdAt: '2026-06-17T00:03:40.000Z', updatedAt: '2026-06-17T00:03:40.000Z' },
+  ];
+  state.policies = [
+    { id: 100, userId: 1, familyId: 10, company: '中国人寿', name: '测试保单 A', insured: '温舒萍', applicant: '温舒萍', amount: 100000, firstPremium: 1000, responsibilities: [], coverageIndicators: [], createdAt: '2026-06-17T00:05:00.000Z', updatedAt: '2026-06-17T00:05:00.000Z' },
+    { id: 101, userId: 1, familyId: 10, company: '新华保险', name: '测试保单 B', insured: '冯力', applicant: '温舒萍', amount: 200000, firstPremium: 2000, responsibilities: [], coverageIndicators: [], createdAt: '2026-06-17T00:06:00.000Z', updatedAt: '2026-06-17T00:06:00.000Z' },
+    { id: 102, userId: 1, familyId: 20, company: '平安人寿', name: '测试保单 C', insured: '翟卿', applicant: '翟卿', amount: 300000, firstPremium: 3000, responsibilities: [], coverageIndicators: [], createdAt: '2026-06-17T00:07:00.000Z', updatedAt: '2026-06-17T00:07:00.000Z' },
+    { id: 103, userId: 1, familyId: 25, company: '友邦人寿', name: '旧家庭保单', insured: '旧成员', applicant: '旧成员', amount: 400000, firstPremium: 4000, responsibilities: [], coverageIndicators: [], createdAt: '2026-06-17T00:08:00.000Z', updatedAt: '2026-06-17T00:08:00.000Z' },
+  ];
+  state.familySalesReviews = [
+    {
+      id: 201,
+      familyId: 20,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      status: 'active',
+      content: '## 销售建议\n- 只读查看',
+      model: 'test-model',
+      generatedAt: '2026-06-17T00:09:00.000Z',
+      createdAt: '2026-06-17T00:09:00.000Z',
+      updatedAt: '2026-06-17T00:09:00.000Z',
+      inputSummary: { familyId: 20, memberCount: 1, policyCount: 1, membersWithoutPolicyCount: 0, officialProductCount: 1 },
+    },
+  ];
+  const before = JSON.stringify({ nextId: state.nextId, familyProfiles: state.familyProfiles, familyMembers: state.familyMembers, policies: state.policies, familySalesReviews: state.familySalesReviews });
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    persist: async () => {
+      throw new Error('admin user family list must not persist');
+    },
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const overview = await jsonFetch(server.baseUrl, '/api/admin/overview', {
+      headers: { authorization: 'Bearer admin-token' },
+    });
+    assert.equal(overview.response.status, 200);
+    assert.equal(overview.payload.users[0].familyCount, 3);
+
+    const result = await jsonFetch(server.baseUrl, '/api/admin/users/1/families', {
+      headers: { authorization: 'Bearer admin-token' },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.equal(result.payload.ok, true);
+    assert.equal(result.payload.user.id, 1);
+    assert.equal(result.payload.user.mobile, '13800000000');
+    assert.deepEqual(result.payload.families.map((family) => family.id), [25, 20, 10]);
+    assert.equal(result.payload.families[0].familyName, '旧数据家庭');
+    assert.equal(result.payload.families[0].memberCount, 1);
+    assert.equal(result.payload.families[0].policyCount, 1);
+    assert.equal(result.payload.families[0].coreMemberName, '待设置');
+    assert.equal(result.payload.families[1].familyName, '吴连英');
+    assert.equal(result.payload.families[1].memberCount, 1);
+    assert.equal(result.payload.families[1].policyCount, 1);
+    assert.equal(result.payload.families[1].coreMemberName, '待设置');
+    assert.equal(result.payload.families[2].memberCount, 2);
+    assert.equal(result.payload.families[2].policyCount, 2);
+    assert.equal(result.payload.families[2].coreMemberName, '温舒萍');
+
+    const salesReview = await jsonFetch(server.baseUrl, '/api/admin/families/20/sales-review', {
+      headers: { authorization: 'Bearer admin-token' },
+    });
+    assert.equal(salesReview.response.status, 200);
+    assert.equal(salesReview.payload.ok, true);
+    assert.equal(salesReview.payload.review.content.includes('只读查看'), true);
+    assert.equal(salesReview.payload.review.inputSummary.policyCount, 1);
+    assert.equal(JSON.stringify({ nextId: state.nextId, familyProfiles: state.familyProfiles, familyMembers: state.familyMembers, policies: state.policies, familySalesReviews: state.familySalesReviews }), before);
+  } finally {
+    await server.close();
+  }
+});
+
 test('admin login persists only the new admin session', async () => {
   const persistedAdminSessions = [];
   const app = createPolicyOcrApp({
@@ -9027,6 +9116,8 @@ test('admin membership config save persists only membership config', async () =>
         annualPriceCents: 30000,
         annualDurationDays: 365,
         registeredFreePolicyQuota: 3,
+        familyReportDailyRefreshLimit: 3,
+        familySalesReviewDailyRefreshLimit: 3,
         updatedAt: '2026-06-14T00:00:00.000Z',
       },
       nextId: 2,
@@ -9047,14 +9138,23 @@ test('admin membership config save persists only membership config', async () =>
     const saved = await jsonFetch(server.baseUrl, '/api/admin/membership-config', {
       method: 'PATCH',
       headers: { authorization: 'Bearer admin-token' },
-      body: JSON.stringify({ enabled: false, registeredFreePolicyQuota: 6 }),
+      body: JSON.stringify({
+        enabled: false,
+        registeredFreePolicyQuota: 6,
+        familyReportDailyRefreshLimit: 4,
+        familySalesReviewDailyRefreshLimit: 5,
+      }),
     });
 
     assert.equal(saved.response.status, 200);
     assert.equal(saved.payload.config.enabled, false);
     assert.equal(saved.payload.config.registeredFreePolicyQuota, 6);
+    assert.equal(saved.payload.config.familyReportDailyRefreshLimit, 4);
+    assert.equal(saved.payload.config.familySalesReviewDailyRefreshLimit, 5);
     assert.equal(persistedMembershipConfigs.length, 1);
     assert.equal(persistedMembershipConfigs[0].registeredFreePolicyQuota, 6);
+    assert.equal(persistedMembershipConfigs[0].familyReportDailyRefreshLimit, 4);
+    assert.equal(persistedMembershipConfigs[0].familySalesReviewDailyRefreshLimit, 5);
   } finally {
     await server.close();
   }
@@ -9212,6 +9312,164 @@ test('admin overview lists optional responsibility quantification gaps and can m
     });
     assert.equal(updated.response.status, 200);
     assert.equal(updated.payload.record.quantificationStatus, 'not_quantifiable');
+  } finally {
+    await server.close();
+  }
+});
+
+test('admin not-quantifiable optional responsibility archives stale family report and derived result', async () => {
+  const state = createInitialState();
+  state.policyDerivedResults = [];
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-optional-report-refresh',
+    familyName: '可选责任家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 9,
+    familyId: 8,
+    name: '妈妈',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 12,
+    userId: null,
+    guestId: 'guest-optional-report-refresh',
+    company: '新华保险',
+    name: '测试重疾',
+    applicant: '妈妈',
+    insured: '妈妈',
+    familyId: 8,
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    optionalResponsibilities: [{
+      id: 'opt_gap',
+      productName: '测试重疾',
+      liability: '可选责任一',
+      responsibilityScope: 'optional',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+      quantificationReason: '缺少可计算结构化指标',
+    }],
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.optionalResponsibilityRecords.push({
+    id: 'opt_gap',
+    company: '新华保险',
+    productName: '测试重疾',
+    liability: '可选责任一',
+    quantificationStatus: 'pending_review',
+    quantificationReason: '缺少可计算结构化指标',
+    indicatorIds: [],
+  });
+  state.policyDerivedResults.push({
+    policyId: 12,
+    productKeys: [],
+    coverageIndicators: [],
+    optionalResponsibilities: [{
+      id: 'opt_gap',
+      productName: '测试重疾',
+      liability: '可选责任一',
+      responsibilityScope: 'optional',
+      selectionStatus: 'selected',
+      quantificationStatus: 'pending_review',
+      quantificationReason: '缺少可计算结构化指标',
+    }],
+    indicatorVersions: {},
+    knowledgeVersion: 0,
+    status: 'ready',
+    staleReason: '',
+    generatedAt: '2026-06-15T00:01:30.000Z',
+    error: '',
+  });
+  state.familyReports.push({
+    id: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-optional-report-refresh',
+    status: 'active',
+    source: 'code',
+    report: {
+      summary: { familyId: 8, memberCount: 1, policyCount: 1 },
+      optionalResponsibilityGaps: [{
+        member: '妈妈',
+        policyId: 12,
+        productName: '测试重疾',
+        liability: '可选责任一',
+        quantificationStatus: 'pending_review',
+        quantificationReason: '缺少可计算结构化指标',
+      }],
+      radar: { members: [], hiddenMembers: [] },
+      wealth: { memberReports: [] },
+    },
+    planningProfile: null,
+    generatedAt: '2026-06-15T00:02:00.000Z',
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+    summary: { familyId: 8, memberCount: 1, policyCount: 1, issueCount: 1 },
+  });
+  state.familyReportIssues.push({
+    id: 14,
+    reportId: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-optional-report-refresh',
+    severity: 'warning',
+    category: 'unquantified_optional_responsibility',
+    status: 'open',
+    source: 'rule',
+    title: '已投保可选责任未量化',
+    detail: '测试重疾的可选责任一未进入量化计算：缺少可计算结构化指标',
+    suggestion: '补充官网指标或在后台标记为不可量化。',
+    policyId: 12,
+    productName: '测试重疾',
+    createdAt: '2026-06-15T00:02:10.000Z',
+    updatedAt: '2026-06-15T00:02:10.000Z',
+  });
+
+  const app = createPolicyOcrApp({
+    state,
+    adminPassword: 'admin123456',
+  });
+  const server = await listen(app);
+  try {
+    const login = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin123456' }),
+    });
+    const token = login.payload.token;
+
+    const updated = await jsonFetch(server.baseUrl, '/api/admin/optional-responsibilities/opt_gap/not-quantifiable', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ reason: '后台确认不进入金额计算' }),
+    });
+
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.payload.archivedReportCount, 1);
+    assert.equal(updated.payload.reportArchived, true);
+    assert.equal(state.familyReports[0].status, 'archived');
+    assert.equal(state.familyReportIssues[0].status, 'archived');
+    assert.equal(state.policyDerivedResults.some((row) => Number(row.policyId) === 12), false);
+
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/report?guestId=guest-optional-report-refresh', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(generated.response.status, 200);
+    assert.deepEqual(generated.payload.reportRecord.report.optionalResponsibilityGaps, []);
   } finally {
     await server.close();
   }
@@ -9948,6 +10206,1336 @@ test('family sales review is generated once persisted and returned by latest rep
   }
 });
 
+test('family sales review daily refresh limit only counts explicit user refreshes', async () => {
+  const state = createInitialState();
+  state.membershipConfig = {
+    enabled: true,
+    annualPriceCents: 30000,
+    annualDurationDays: 365,
+    registeredFreePolicyQuota: 3,
+    familyReportDailyRefreshLimit: 3,
+    familySalesReviewDailyRefreshLimit: 1,
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  };
+  state.familyProfiles.push({
+    id: 80,
+    ownerGuestId: 'guest-sales-limit',
+    familyName: '销售限制家庭',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 81,
+    guestId: 'guest-sales-limit',
+    familyId: 80,
+    company: '测试保险',
+    name: '测试保单',
+    applicant: '张三',
+    insured: '张三',
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.nextId = 90;
+  let generatedCount = 0;
+  const app = createPolicyOcrApp({
+    state,
+    now: () => '2026-06-15T08:00:00.000Z',
+    generateFamilySalesReview: async () => {
+      generatedCount += 1;
+      return {
+        content: `第 ${generatedCount} 次销售建议`,
+        model: 'test',
+        generatedAt: `2026-06-15T08:0${generatedCount}:00.000Z`,
+      };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const autoGenerated = await jsonFetch(server.baseUrl, '/api/family-profiles/80/sales-review?guestId=guest-sales-limit', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(autoGenerated.response.status, 200);
+    assert.equal(state.reportRefreshEvents.length, 0);
+
+    const userRefresh = await jsonFetch(server.baseUrl, '/api/family-profiles/80/sales-review?guestId=guest-sales-limit', {
+      method: 'POST',
+      body: JSON.stringify({ userRefresh: true }),
+    });
+    assert.equal(userRefresh.response.status, 200);
+    assert.equal(state.reportRefreshEvents.length, 1);
+    assert.equal(state.reportRefreshEvents[0].kind, 'familySalesReview');
+
+    const rejected = await jsonFetch(server.baseUrl, '/api/family-profiles/80/sales-review?guestId=guest-sales-limit', {
+      method: 'POST',
+      body: JSON.stringify({ userRefresh: true }),
+    });
+    assert.equal(rejected.response.status, 429);
+    assert.equal(rejected.payload.code, 'FAMILY_SALES_REVIEW_DAILY_REFRESH_LIMIT_EXCEEDED');
+    assert.equal(state.reportRefreshEvents.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report generation persists report records and exposes issues only in admin', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-report-record',
+    familyName: '保障分析家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push(
+    {
+      id: 9,
+      familyId: 8,
+      name: '张三',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    {
+      id: 10,
+      familyId: 8,
+      name: '李四',
+      relationToCore: 'spouse',
+      relationLabel: '配偶',
+      role: 'adult',
+      status: 'active',
+      createdAt: '2026-06-15T00:01:00.000Z',
+      updatedAt: '2026-06-15T00:01:00.000Z',
+    },
+  );
+  state.policies.push({
+    id: 11,
+    userId: null,
+    guestId: 'guest-family-report-record',
+    familyId: 8,
+    company: '新华保险',
+    name: '测试终身寿',
+    applicant: '张三',
+    insured: '张三',
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    applicantMemberName: '张三',
+    insuredMemberName: '张三',
+    applicantRelationLabel: '本人',
+    insuredRelationLabel: '本人',
+    amount: 100000,
+    firstPremium: 5000,
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+  state.nextId = 12;
+  const reportPersistCalls = [];
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    persistFamilyReportState: async (input) => {
+      reportPersistCalls.push(input);
+    },
+    generateFamilyReportQualityIssues: async () => ({
+      issues: [{
+        severity: 'warning',
+        category: 'product_classification',
+        title: '产品类型需复核',
+        detail: 'DeepSeek认为policy_1不应直接写成增额终身寿险。',
+        suggestion: '后台核对官网条款后修正产品类型。',
+        source: 'deepseek',
+        memberId: 9,
+        memberName: '张三',
+        policyId: 11,
+        productName: '测试终身寿',
+        dimension: 'wealth',
+        model: 'deepseek-v4-pro',
+        confidence: 0.9,
+      }],
+      corrections: [],
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/report?guestId=guest-family-report-record', {
+      method: 'POST',
+      body: JSON.stringify({ planningProfile: { annualIncome: 300000 } }),
+    });
+    assert.equal(generated.response.status, 200);
+    assert.equal(generated.payload.reportRecord.id, 12);
+    assert.equal(generated.payload.reportRecord.familyId, 8);
+    assert.equal(generated.payload.reportRecord.report.summary.memberCount, 2);
+    assert.equal(generated.payload.reportRecord.report.criticalIllness.members.some((member) => member.member === '李四'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(generated.payload.reportRecord, 'issues'), false);
+    assert.equal(state.familyReports.length, 1);
+    assert.equal(state.familyReports[0].summary.issueCount > 0, true);
+    assert.equal(state.familyReports[0].source, 'code+deepseek');
+    assert.equal(state.familyReportIssues.some((issue) => issue.memberName === '李四' && issue.category === 'coverage_gap'), true);
+    assert.equal(state.familyReportIssues.some((issue) => issue.source === 'deepseek' && issue.category === 'product_classification'), true);
+    assert.equal(reportPersistCalls.length, 1);
+
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const headers = { authorization: `Bearer ${loggedIn.payload.token}` };
+    const reports = await jsonFetch(server.baseUrl, '/api/admin/report-issues', { headers });
+    assert.equal(reports.response.status, 200);
+    assert.equal(reports.payload.reports.length, 1);
+    assert.equal(reports.payload.reports[0].id, 12);
+    assert.equal(reports.payload.reports[0].familyName, '保障分析家庭');
+
+    const detail = await jsonFetch(server.baseUrl, '/api/admin/report-issues/12', { headers });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.report.id, 12);
+    assert.equal(detail.payload.issues.some((issue) => issue.memberName === '李四' && /暂无保单/u.test(issue.detail)), true);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.title === '产品类型需复核'), true);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && /^未修正：/u.test(issue.correctionLabel)), true);
+
+    const noPolicy = createInitialState();
+    noPolicy.familyProfiles.push({
+      id: 20,
+      ownerGuestId: 'guest-family-report-empty',
+      familyName: '空保单家庭',
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    });
+    const emptyApp = createPolicyOcrApp({ state: noPolicy });
+    const emptyServer = await listen(emptyApp);
+    try {
+      const rejected = await jsonFetch(emptyServer.baseUrl, '/api/family-profiles/20/report?guestId=guest-family-report-empty', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      assert.equal(rejected.response.status, 400);
+      assert.equal(rejected.payload.code, 'FAMILY_REPORT_NO_POLICIES');
+      assert.equal(noPolicy.familyReports.length, 0);
+    } finally {
+      await emptyServer.close();
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report daily refresh limit ignores automatic generations', async () => {
+  const state = createInitialState();
+  state.membershipConfig = {
+    enabled: true,
+    annualPriceCents: 30000,
+    annualDurationDays: 365,
+    registeredFreePolicyQuota: 3,
+    familyReportDailyRefreshLimit: 1,
+    familySalesReviewDailyRefreshLimit: 3,
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  };
+  state.familyProfiles.push({
+    id: 90,
+    ownerGuestId: 'guest-report-limit',
+    familyName: '报告限制家庭',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 91,
+    guestId: 'guest-report-limit',
+    familyId: 90,
+    company: '测试保险',
+    name: '测试保单',
+    applicant: '张三',
+    insured: '张三',
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.nextId = 100;
+  const app = createPolicyOcrApp({
+    state,
+    now: () => '2026-06-15T08:00:00.000Z',
+    generateFamilyReportQualityIssues: async () => ({ issues: [], corrections: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const autoGenerated = await jsonFetch(server.baseUrl, '/api/family-profiles/90/report?guestId=guest-report-limit', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(autoGenerated.response.status, 200);
+    assert.equal(state.reportRefreshEvents.length, 0);
+
+    const userRefresh = await jsonFetch(server.baseUrl, '/api/family-profiles/90/report?guestId=guest-report-limit', {
+      method: 'POST',
+      body: JSON.stringify({ userRefresh: true }),
+    });
+    assert.equal(userRefresh.response.status, 200);
+    assert.equal(state.reportRefreshEvents.length, 1);
+    assert.equal(state.reportRefreshEvents[0].kind, 'familyReport');
+
+    const rejected = await jsonFetch(server.baseUrl, '/api/family-profiles/90/report?guestId=guest-report-limit', {
+      method: 'POST',
+      body: JSON.stringify({ userRefresh: true }),
+    });
+    assert.equal(rejected.response.status, 429);
+    assert.equal(rejected.payload.code, 'FAMILY_REPORT_DAILY_REFRESH_LIMIT_EXCEEDED');
+    assert.equal(state.reportRefreshEvents.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report fetch refreshes stale formula life reference snapshots', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 230,
+    ownerGuestId: 'guest-family-stale-life-reference',
+    familyName: '旧报告刷新家庭',
+    coreMemberId: 231,
+    status: 'active',
+    createdAt: '2026-06-17T01:00:00.000Z',
+    updatedAt: '2026-06-17T01:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 231,
+    familyId: 230,
+    name: '翟宸彬',
+    relationToCore: 'child',
+    relationLabel: '儿子',
+    role: 'child',
+    status: 'active',
+    createdAt: '2026-06-17T01:00:00.000Z',
+    updatedAt: '2026-06-17T01:00:00.000Z',
+  });
+  state.policies.push({
+    id: 232,
+    userId: null,
+    guestId: 'guest-family-stale-life-reference',
+    familyId: 230,
+    company: '新华保险',
+    name: '成长阳光少儿两全保险(A款)（分红型）',
+    applicant: '家长',
+    insured: '翟宸彬',
+    insuredMemberId: 231,
+    insuredMemberName: '翟宸彬',
+    amount: 38760,
+    firstPremium: 5475,
+    createdAt: '2026-06-17T01:01:00.000Z',
+    updatedAt: '2026-06-17T01:01:00.000Z',
+  });
+  state.insuranceIndicatorRecords.push({
+    id: 'ind_stale_life_reference',
+    company: '新华保险',
+    productName: '成长阳光少儿两全保险(A款)（分红型）',
+    coverageType: '规则参数',
+    liability: '赔付方式',
+    valueText: '定额给付型',
+    unit: '方式',
+    basis: '保险责任赔付机制',
+    quantificationStatus: 'not_quantifiable',
+    calculationEligible: false,
+    excludeFromCalculation: true,
+    sourceExcerpt: '被保险人于十八周岁生效对应日前身故，本公司按您所交保险费及累计红利保险金额对应的现金价值两者之和给付身故保险金。被保险人于十八周岁生效对应日后身故，本公司按本合同有效保险金额的三倍给付身故保险金。',
+  });
+  state.familyReports.push({
+    id: 233,
+    familyId: 230,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-stale-life-reference',
+    status: 'active',
+    source: 'code',
+    generatedAt: '2026-06-17T01:02:00.000Z',
+    createdAt: '2026-06-17T01:02:00.000Z',
+    updatedAt: '2026-06-17T01:02:00.000Z',
+    summary: { memberCount: 1, policyCount: 1, issueCount: 1 },
+    report: {
+      summary: { memberCount: 1, policyCount: 1, totalCoverage: 38760, annualPremium: 5475 },
+      policyInventory: { rows: [], memberGroups: [] },
+      optionalResponsibilityGaps: [],
+      criticalIllness: { members: [] },
+      accident: { members: [] },
+      wealth: { memberReports: [], aggregateRows: [], attentionItems: [] },
+      radar: {
+        mode: 'structure',
+        family: {
+          name: '全家',
+          totalAmount: 0,
+          notes: ['缺口维度: 寿险'],
+          scores: [
+            { key: 'life', label: '寿险', amount: 0, effectiveAmount: 0, coveragePresent: false, score: 0, amountText: '0元', effectiveAmountText: '0元', policyCount: 0, note: '公式型/不可量化责任未统计为固定保额', amountDetails: [] },
+          ],
+        },
+        members: [{
+          memberKey: 'member:231',
+          memberId: 231,
+          name: '翟宸彬',
+          role: 'child',
+          roleLabel: '子女',
+          totalAmount: 0,
+          notes: ['缺口维度: 寿险'],
+          scores: [
+            { key: 'life', label: '寿险', amount: 0, effectiveAmount: 0, coveragePresent: false, score: 0, amountText: '0元', effectiveAmountText: '0元', policyCount: 0, note: '公式型/不可量化责任未统计为固定保额', amountDetails: [] },
+          ],
+        }],
+        hiddenMembers: [],
+        assumptions: {},
+      },
+    },
+  });
+  state.familyReportIssues.push({
+    id: 234,
+    reportId: 233,
+    familyId: 230,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-stale-life-reference',
+    status: 'open',
+    severity: 'warning',
+    category: 'coverage_gap',
+    source: 'rule',
+    title: '寿险保障缺失',
+    detail: '翟宸彬当前未识别到寿险保障。',
+    suggestion: '',
+    memberId: 231,
+    memberName: '翟宸彬',
+    dimension: 'life',
+    createdAt: '2026-06-17T01:02:00.000Z',
+    updatedAt: '2026-06-17T01:02:00.000Z',
+  });
+
+  const persistCalls = [];
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    persistFamilyReportState: async () => {
+      persistCalls.push(true);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const fetched = await jsonFetch(server.baseUrl, '/api/family-profiles/230/report?guestId=guest-family-stale-life-reference');
+    assert.equal(fetched.response.status, 200);
+    assert.equal(fetched.payload.reportRecord.engineVersion > 0, true);
+    const life = fetched.payload.reportRecord.report.radar.members[0].scores.find((score) => score.key === 'life');
+    assert.equal(life.amount, 0);
+    assert.equal(life.coveragePresent, true);
+    assert.equal(life.amountText, '≥116,280元参考');
+    assert.equal(life.amountDetails[0].referenceOnly, true);
+    assert.equal(state.familyReportIssues.some((issue) => issue.status === 'open' && issue.category === 'coverage_gap' && issue.dimension === 'life'), false);
+    assert.equal(persistCalls.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report generation auto-applies low-risk DeepSeek medical corrections and labels issues', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 80,
+    ownerGuestId: 'guest-family-medical-correction',
+    familyName: '医疗修正家庭',
+    coreMemberId: 81,
+    status: 'active',
+    createdAt: '2026-06-16T00:00:00.000Z',
+    updatedAt: '2026-06-16T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 81,
+    familyId: 80,
+    name: '顾晨妍',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-16T00:00:00.000Z',
+    updatedAt: '2026-06-16T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 82,
+    userId: null,
+    guestId: 'guest-family-medical-correction',
+    familyId: 80,
+    company: '测试保险',
+    name: '住院费用医疗保险（2007）',
+    applicant: '顾晨妍',
+    insured: '顾晨妍',
+    applicantMemberId: 81,
+    insuredMemberId: 81,
+    applicantMemberName: '顾晨妍',
+    insuredMemberName: '顾晨妍',
+    amount: 60,
+    coverageIndicators: [{
+      coverageType: '医疗保障',
+      liability: '住院床位费',
+      value: 60,
+      unit: '元',
+      productName: '住院费用医疗保险（2007）',
+    }],
+    createdAt: '2026-06-16T00:01:00.000Z',
+    updatedAt: '2026-06-16T00:01:00.000Z',
+  });
+  state.nextId = 90;
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    generateFamilyReportQualityIssues: async () => ({
+      issues: [{
+        severity: 'warning',
+        category: 'amount_calculation',
+        title: '意外医疗保障金额计算错误',
+        detail: '住院费用医疗保险按实际费用报销，不应以60元作为固定医疗保额。',
+        suggestion: '标记为报销型，不显示固定数字。',
+        source: 'deepseek',
+        memberId: 81,
+        memberName: '顾晨妍',
+        policyId: 82,
+        productName: '住院费用医疗保险（2007）',
+        dimension: 'medical',
+        confidence: 0.92,
+      }],
+      corrections: [{
+        issueIndex: 0,
+        action: 'mark_unquantifiable',
+        targetPath: 'radar.medical.policyAmount',
+        originalValue: 60,
+        correctedValue: null,
+        reason: '报销型医疗不展示固定保额',
+        evidence: '官网条款仅支持按实际费用报销。',
+        source: 'deepseek',
+        memberId: 81,
+        memberName: '顾晨妍',
+        policyId: 82,
+        productName: '住院费用医疗保险（2007）',
+        dimension: 'medical',
+        riskLevel: 'low',
+        confidence: 0.92,
+      }],
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/80/report?guestId=guest-family-medical-correction', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(generated.response.status, 200);
+    const medical = generated.payload.reportRecord.report.radar.family.scores.find((score) => score.key === 'medical');
+    assert.equal(medical.amount, 0);
+    assert.match(medical.note, /报销型|不可量化/u);
+    assert.equal(state.familyReportCorrections.length, 1);
+    assert.equal(state.familyReportCorrections[0].status, 'auto_applied');
+
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const detail = await jsonFetch(server.baseUrl, `/api/admin/report-issues/${generated.payload.reportRecord.id}`, {
+      headers: { authorization: `Bearer ${loggedIn.payload.token}` },
+    });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.correctionLabel === '已用 DeepSeek 修正'), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report generation refreshes stale rule issues after DeepSeek critical corrections', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 120,
+    ownerGuestId: 'guest-family-critical-correction',
+    familyName: '重疾修正家庭',
+    coreMemberId: 121,
+    status: 'active',
+    createdAt: '2026-06-16T00:00:00.000Z',
+    updatedAt: '2026-06-16T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 121,
+    familyId: 120,
+    name: '顾晨妍',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-16T00:00:00.000Z',
+    updatedAt: '2026-06-16T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 122,
+    userId: null,
+    guestId: 'guest-family-critical-correction',
+    familyId: 120,
+    company: '新华保险',
+    name: '福如东海A款终身寿险（分红型）',
+    applicant: '顾晨妍',
+    insured: '顾晨妍',
+    applicantMemberId: 121,
+    insuredMemberId: 121,
+    applicantMemberName: '顾晨妍',
+    insuredMemberName: '顾晨妍',
+    amount: 100000,
+    plans: [{
+      role: 'rider',
+      name: '附加安康提前给付重大疾病保险',
+      matchedProductName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+      amount: 100000,
+    }],
+    coverageIndicators: [
+      {
+        coverageType: '疾病保障',
+        liability: '重疾(首次给付)',
+        value: 110,
+        unit: '%',
+        basis: '已交保费',
+        productName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+        sourceExcerpt: '一年内确诊初次发生重大疾病，给付本保险实际交纳的保险费的110%。',
+      },
+      {
+        coverageType: '疾病保障',
+        liability: '防癌/恶性肿瘤(首次给付)',
+        value: 50,
+        unit: '%',
+        basis: '基本保额',
+        productName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+        sourceExcerpt: '癌症特别关爱保险金：一年后确诊初次发生本合同所指的重大疾病中的恶性肿瘤，除按前款规定给付重大疾病保险金外，还按主险合同基本保险金额的50%给付。',
+      },
+    ],
+    createdAt: '2026-06-16T00:01:00.000Z',
+    updatedAt: '2026-06-16T00:01:00.000Z',
+  });
+  state.nextId = 130;
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    generateFamilyReportQualityIssues: async () => ({
+      issues: [{
+        severity: 'error',
+        category: 'amount_calculation',
+        title: '重疾首次给付金额计算错误',
+        detail: '福如东海A款终身寿险附加重疾险首次给付应为基本保额10万元，代码报告计算为5万元。',
+        suggestion: '将重疾首次给付修正为基本保额10万元。',
+        source: 'deepseek',
+        memberId: 121,
+        memberName: '顾晨妍',
+        policyId: 122,
+        productName: '福如东海A款终身寿险（分红型）',
+        dimension: 'critical',
+        confidence: 0.95,
+      }],
+      corrections: [{
+        issueIndex: 0,
+        action: 'replace_amount',
+        targetPath: 'criticalIllness.members[].rows[critical_first].amount',
+        originalValue: 50000,
+        correctedValue: 100000,
+        reason: '一年后确诊重疾按主险基本保险金额给付',
+        evidence: '官网条款约定一年后确诊重大疾病按主险合同基本保险金额给付。',
+        source: 'deepseek',
+        memberId: 121,
+        memberName: '顾晨妍',
+        policyId: 122,
+        productName: '福如东海A款终身寿险（分红型）',
+        dimension: 'critical',
+        riskLevel: 'high',
+        confidence: 0.95,
+      }],
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/120/report?guestId=guest-family-critical-correction', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(generated.response.status, 200);
+    const member = generated.payload.reportRecord.report.criticalIllness.members.find((item) => item.member === '顾晨妍');
+    const criticalFirst = member.rows.find((row) => row.key === 'critical_first');
+    assert.equal(criticalFirst.amount, 100000);
+    assert.equal(criticalFirst.amountText, '10万');
+    assert.match(criticalFirst.conditionText, /基本保险金额/u);
+    assert.equal(state.familyReportCorrections[0].status, 'auto_applied');
+
+    const openRuleIssues = state.familyReportIssues.filter((issue) => issue.source === 'rule' && String(issue.status || 'open') === 'open');
+    assert.equal(openRuleIssues.some((issue) => /重疾首次给付显示为5万/u.test(issue.detail)), false);
+
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const detail = await jsonFetch(server.baseUrl, `/api/admin/report-issues/${generated.payload.reportRecord.id}`, {
+      headers: { authorization: `Bearer ${loggedIn.payload.token}` },
+    });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.issues.some((issue) => /重疾首次给付显示为5万/u.test(issue.detail)), false);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.correctionLabel === '已用 DeepSeek 修正'), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('admin report issue detail reapplies legacy DeepSeek critical corrections and refreshes stale rule issues', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 140,
+    ownerGuestId: 'guest-family-legacy-critical-correction',
+    familyName: '历史重疾修正家庭',
+    coreMemberId: 141,
+    status: 'active',
+    createdAt: '2026-06-16T00:00:00.000Z',
+    updatedAt: '2026-06-16T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 141,
+    familyId: 140,
+    name: '顾晨妍',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-16T00:00:00.000Z',
+    updatedAt: '2026-06-16T00:00:00.000Z',
+  });
+  const policy = {
+    id: 142,
+    userId: null,
+    guestId: 'guest-family-legacy-critical-correction',
+    familyId: 140,
+    company: '新华保险',
+    name: '福如东海A款终身寿险（分红型）',
+    applicant: '顾晨妍',
+    insured: '顾晨妍',
+    applicantMemberId: 141,
+    insuredMemberId: 141,
+    applicantMemberName: '顾晨妍',
+    insuredMemberName: '顾晨妍',
+    amount: 100000,
+    coverageIndicators: [
+      {
+        coverageType: '疾病保障',
+        liability: '重疾(首次给付)',
+        value: 110,
+        unit: '%',
+        basis: '已交保费',
+        productName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+        sourceExcerpt: '一年内确诊初次发生重大疾病，给付本保险实际交纳的保险费的110%。',
+      },
+      {
+        coverageType: '疾病保障',
+        liability: '防癌/恶性肿瘤(首次给付)',
+        value: 50,
+        unit: '%',
+        basis: '基本保额',
+        productName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+        sourceExcerpt: '癌症特别关爱保险金：一年后确诊初次发生本合同所指的重大疾病中的恶性肿瘤，除按前款规定给付重大疾病保险金外，还按主险合同基本保险金额的50%给付。',
+      },
+    ],
+    createdAt: '2026-06-16T00:01:00.000Z',
+    updatedAt: '2026-06-16T00:01:00.000Z',
+  };
+  state.policies.push(policy);
+  const staleReport = buildFamilyReport([policy], null, { familyId: 140 });
+  const staleMember = staleReport.criticalIllness.members.find((item) => item.member === '顾晨妍');
+  const staleCriticalFirst = staleMember.rows.find((row) => row.key === 'critical_first');
+  staleCriticalFirst.amount = 50000;
+  staleCriticalFirst.amountText = '5万';
+  staleCriticalFirst.status = 'covered';
+  staleCriticalFirst.conditionText = '癌症特别关爱保险金按主险基本保额50%给付';
+  staleCriticalFirst.sourcePolicies = [{
+    policyId: 142,
+    company: '新华保险',
+    productName: '福如东海A款终身寿险（分红型）',
+    liability: '重疾(首次给付)',
+    amount: 0,
+    amountText: '0元',
+    calculationText: '按识别责任金额合计 = 0元',
+  }];
+  const staleRadarCritical = staleReport.radar.family.scores.find((score) => score.key === 'critical');
+  staleRadarCritical.amount = 50000;
+  staleRadarCritical.amountText = '5万';
+  staleRadarCritical.note = '重疾保额50,000';
+  state.familyReports.push({
+    id: 143,
+    familyId: 140,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-legacy-critical-correction',
+    status: 'active',
+    source: 'code+deepseek',
+    report: staleReport,
+    planningProfile: null,
+    generatedAt: '2026-06-16T00:02:00.000Z',
+    createdAt: '2026-06-16T00:02:00.000Z',
+    updatedAt: '2026-06-16T00:02:00.000Z',
+    summary: { ...(staleReport.summary || {}), issueCount: 2, correctionCount: 1, autoAppliedCorrectionCount: 1 },
+  });
+  state.familyReportIssues.push(
+    {
+      id: 144,
+      reportId: 143,
+      familyId: 140,
+      ownerUserId: null,
+      ownerGuestId: 'guest-family-legacy-critical-correction',
+      severity: 'error',
+      category: 'amount_calculation',
+      status: 'open',
+      source: 'rule',
+      title: '重疾首次给付金额需复核',
+      detail: '顾晨妍的重疾首次给付显示为5万，但来源责任金额为0或缺少可复核计算结果。',
+      suggestion: '核对官网条款中重疾基础给付与癌症额外给付是否被混算。',
+      memberId: 141,
+      memberName: '顾晨妍',
+      dimension: 'critical',
+      createdAt: '2026-06-16T00:02:10.000Z',
+      updatedAt: '2026-06-16T00:02:10.000Z',
+    },
+    {
+      id: 145,
+      reportId: 143,
+      familyId: 140,
+      ownerUserId: null,
+      ownerGuestId: 'guest-family-legacy-critical-correction',
+      severity: 'error',
+      category: 'amount_calculation',
+      status: 'open',
+      source: 'deepseek',
+      title: '重疾首次给付金额计算错误',
+      detail: '福如东海A款终身寿险附加重疾险首次给付应为基本保额10万元，代码报告计算为5万元。',
+      suggestion: '将重疾首次给付修正为基本保额10万元。',
+      memberId: 141,
+      memberName: '顾晨妍',
+      policyId: 142,
+      productName: '福如东海A款终身寿险（分红型）',
+      dimension: 'critical',
+      createdAt: '2026-06-16T00:02:20.000Z',
+      updatedAt: '2026-06-16T00:02:20.000Z',
+    },
+  );
+  state.familyReportCorrections.push({
+    id: 146,
+    reportId: 143,
+    familyId: 140,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-legacy-critical-correction',
+    policyId: 142,
+    memberId: 141,
+    dimension: 'critical',
+    action: 'replace_amount',
+    targetPath: 'criticalIllness.members[].rows[critical_first].amount',
+    originalValue: 50000,
+    correctedValue: 100000,
+    reason: '一年后确诊重疾按主险基本保险金额给付',
+    evidence: '官网条款约定一年后确诊重大疾病按主险合同基本保险金额给付。',
+    confidence: 0.95,
+    riskLevel: 'high',
+    status: 'auto_applied',
+    source: 'deepseek',
+    issueId: 145,
+    memberName: '顾晨妍',
+    productName: '福如东海A款终身寿险（分红型）',
+    createdAt: '2026-06-16T00:02:30.000Z',
+    updatedAt: '2026-06-16T00:02:30.000Z',
+  });
+
+  const app = createPolicyOcrApp({ adminPassword: 'admin-pass', state });
+  const server = await listen(app);
+  try {
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const detail = await jsonFetch(server.baseUrl, '/api/admin/report-issues/143', {
+      headers: { authorization: `Bearer ${loggedIn.payload.token}` },
+    });
+    assert.equal(detail.response.status, 200);
+    const refreshedMember = state.familyReports[0].report.criticalIllness.members.find((item) => item.member === '顾晨妍');
+    const refreshedCriticalFirst = refreshedMember.rows.find((row) => row.key === 'critical_first');
+    assert.equal(refreshedCriticalFirst.amount, 100000);
+    assert.equal(refreshedCriticalFirst.amountText, '10万');
+    assert.equal(state.familyReportIssues.find((issue) => issue.id === 144).status, 'archived');
+    assert.equal(detail.payload.issues.some((issue) => /重疾首次给付显示为5万/u.test(issue.detail)), false);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.correctionLabel === '已用 DeepSeek 修正'), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report generation auto-applies high-confidence DeepSeek life replacement corrections', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 180,
+    ownerGuestId: 'guest-family-life-auto-correction',
+    familyName: '高置信寿险修正家庭',
+    coreMemberId: 181,
+    status: 'active',
+    createdAt: '2026-06-16T01:00:00.000Z',
+    updatedAt: '2026-06-16T01:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 181,
+    familyId: 180,
+    name: '测试成员',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-16T01:00:00.000Z',
+    updatedAt: '2026-06-16T01:00:00.000Z',
+  });
+  state.policies.push({
+    id: 182,
+    userId: null,
+    guestId: 'guest-family-life-auto-correction',
+    familyId: 180,
+    company: '测试保险',
+    name: '测试终身寿险',
+    applicant: '测试成员',
+    insured: '测试成员',
+    applicantMemberId: 181,
+    insuredMemberId: 181,
+    applicantMemberName: '测试成员',
+    insuredMemberName: '测试成员',
+    amount: 159948,
+    coverageIndicators: [{
+      coverageType: '人寿保障',
+      liability: '身故保险金',
+      value: 159948,
+      unit: '元',
+      productName: '测试终身寿险',
+    }],
+    createdAt: '2026-06-16T01:01:00.000Z',
+    updatedAt: '2026-06-16T01:01:00.000Z',
+  });
+  state.nextId = 190;
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    generateFamilyReportQualityIssues: async () => ({
+      issues: [{
+        severity: 'warning',
+        category: 'amount_calculation',
+        title: '寿险保额误取满期基本保额',
+        detail: 'DeepSeek认为该寿险责任无法量化为固定寿险保额。',
+        suggestion: '从寿险维度排除该固定金额。',
+        source: 'deepseek',
+        memberId: 181,
+        memberName: '测试成员',
+        policyId: 182,
+        productName: '测试终身寿险',
+        dimension: 'life',
+        confidence: 0.91,
+      }],
+      corrections: [{
+        issueIndex: 0,
+        action: 'replace_amount',
+        targetPath: 'radar.life.policyAmount',
+        originalValue: 159948,
+        correctedValue: 0,
+        reason: '寿险责任为公式型，不展示固定保额',
+        evidence: '官网条款显示身故保险金按约定公式给付。',
+        source: 'deepseek',
+        memberId: 181,
+        memberName: '测试成员',
+        policyId: 182,
+        productName: '测试终身寿险',
+        dimension: 'life',
+        riskLevel: 'high',
+        confidence: 0.91,
+      }],
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/180/report?guestId=guest-family-life-auto-correction', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(generated.response.status, 200);
+    assert.equal(state.familyReportCorrections[0].status, 'auto_applied');
+    const life = generated.payload.reportRecord.report.radar.family.scores.find((score) => score.key === 'life');
+    assert.equal(life.amount, 0);
+    assert.equal(life.amountText, '0元');
+
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const headers = { authorization: `Bearer ${loggedIn.payload.token}` };
+    const detail = await jsonFetch(server.baseUrl, `/api/admin/report-issues/${generated.payload.reportRecord.id}`, { headers });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.correctionLabel === '已用 DeepSeek 修正'), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report generation applies explicit DeepSeek replacements without manual acceptance', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 190,
+    ownerGuestId: 'guest-family-pending-correction',
+    familyName: '待确认修正家庭',
+    coreMemberId: 191,
+    status: 'active',
+    createdAt: '2026-06-16T01:00:00.000Z',
+    updatedAt: '2026-06-16T01:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 191,
+    familyId: 190,
+    name: '测试成员',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-16T01:00:00.000Z',
+    updatedAt: '2026-06-16T01:00:00.000Z',
+  });
+  state.policies.push({
+    id: 192,
+    userId: null,
+    guestId: 'guest-family-pending-correction',
+    familyId: 190,
+    company: '测试保险',
+    name: '测试终身寿险',
+    applicant: '测试成员',
+    insured: '测试成员',
+    applicantMemberId: 191,
+    insuredMemberId: 191,
+    applicantMemberName: '测试成员',
+    insuredMemberName: '测试成员',
+    amount: 0,
+    createdAt: '2026-06-16T01:01:00.000Z',
+    updatedAt: '2026-06-16T01:01:00.000Z',
+  });
+  state.nextId = 200;
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    generateFamilyReportQualityIssues: async () => ({
+      issues: [{
+        severity: 'warning',
+        category: 'amount_calculation',
+        title: '寿险保额需要替换',
+        detail: 'DeepSeek认为寿险保额可能需要从0修正。',
+        suggestion: '使用DeepSeek给出的替换值重算报告。',
+        source: 'deepseek',
+        memberId: 191,
+        memberName: '测试成员',
+        policyId: 192,
+        productName: '测试终身寿险',
+        dimension: 'life',
+        confidence: 0.72,
+      }],
+      corrections: [{
+        issueIndex: 0,
+        action: 'replace_amount',
+        targetPath: 'radar.life.policyAmount',
+        originalValue: 0,
+        correctedValue: 100000,
+        reason: 'DeepSeek给出明确寿险替换值',
+        evidence: '官网条款显示身故保险金。',
+        source: 'deepseek',
+        memberId: 191,
+        memberName: '测试成员',
+        policyId: 192,
+        productName: '测试终身寿险',
+        dimension: 'life',
+        riskLevel: 'high',
+        confidence: 0.72,
+      }],
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/190/report?guestId=guest-family-pending-correction', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(generated.response.status, 200);
+    assert.equal(state.familyReportCorrections[0].status, 'auto_applied');
+    const generatedLife = generated.payload.reportRecord.report.radar.family.scores.find((score) => score.key === 'life');
+    assert.equal(generatedLife.amount, 100000);
+
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const headers = { authorization: `Bearer ${loggedIn.payload.token}` };
+    const detail = await jsonFetch(server.baseUrl, `/api/admin/report-issues/${generated.payload.reportRecord.id}`, { headers });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.correctionLabel === '已用 DeepSeek 修正'), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report generation auto-applies DeepSeek annuity cashflow overrides', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 220,
+    ownerGuestId: 'guest-family-cashflow-override',
+    familyName: '年金现金流修正家庭',
+    coreMemberId: 221,
+    status: 'active',
+    createdAt: '2026-06-16T02:00:00.000Z',
+    updatedAt: '2026-06-16T02:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 221,
+    familyId: 220,
+    name: '顾晨妍',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    birthday: '1988-01-01',
+    status: 'active',
+    createdAt: '2026-06-16T02:00:00.000Z',
+    updatedAt: '2026-06-16T02:00:00.000Z',
+  });
+  state.policies.push({
+    id: 222,
+    userId: null,
+    guestId: 'guest-family-cashflow-override',
+    familyId: 220,
+    company: '测试保险',
+    name: '测试养老年金保险',
+    applicant: '顾晨妍',
+    insured: '顾晨妍',
+    applicantMemberId: 221,
+    insuredMemberId: 221,
+    applicantMemberName: '顾晨妍',
+    insuredMemberName: '顾晨妍',
+    insuredBirthday: '1988-01-01',
+    firstPremium: 10000,
+    paymentPeriod: '10年',
+    coveragePeriod: '至80周岁',
+    createdAt: '2026-06-16T02:01:00.000Z',
+    updatedAt: '2026-06-16T02:01:00.000Z',
+  });
+  state.nextId = 230;
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state,
+    generateFamilyReportQualityIssues: async () => ({
+      issues: [{
+        severity: 'warning',
+        category: 'amount_calculation',
+        title: '年金现金流未展示',
+        detail: '代码报告没有展示确定领取现金流，但官网条款可确定年度生存金和满期金。',
+        suggestion: '使用DeepSeek按条款提取的确定现金流重算财富页。',
+        source: 'deepseek',
+        memberId: 221,
+        memberName: '顾晨妍',
+        policyId: 222,
+        productName: '测试养老年金保险',
+        dimension: 'wealth',
+        confidence: 0.94,
+      }],
+      corrections: [{
+        issueIndex: 0,
+        action: 'override_cashflow',
+        targetPath: 'policy.cashflowEntries',
+        originalValue: [],
+        correctedValue: null,
+        cashflowRows: [
+          { year: 2030, age: 42, amount: 1465, liability: '生存保险金', calculationText: '第5个保单周年日起每年给付1465元', evidence: '官网条款：每年给付生存保险金1465元。' },
+          { year: 2031, age: 43, amount: 1465, liability: '生存保险金', calculationText: '第6个保单周年日给付1465元', evidence: '官网条款：每年给付生存保险金1465元。' },
+          { year: 2035, age: 47, amount: 110100, liability: '满期保险金', calculationText: '保险期间届满给付110100元', evidence: '官网条款：满期给付110100元。' },
+        ],
+        reason: '年金险存在确定生存金和满期金，代码报告现金流为空，应以条款年度表覆盖。',
+        evidence: '官网条款列明每年生存金和满期金。',
+        source: 'deepseek',
+        memberId: 221,
+        memberName: '顾晨妍',
+        policyId: 222,
+        productName: '测试养老年金保险',
+        dimension: 'wealth',
+        riskLevel: 'high',
+        confidence: 0.94,
+      }],
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/220/report?guestId=guest-family-cashflow-override', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(generated.response.status, 200);
+    assert.equal(state.familyReportCorrections[0].status, 'auto_applied');
+    assert.equal(state.familyReportCorrections[0].action, 'override_cashflow');
+    assert.equal(state.familyReportCorrections[0].cashflowRows.length, 3);
+    assert.equal(generated.payload.reportRecord.summary.futurePayoutTotal, 113030);
+
+    const wealthPolicy = generated.payload.reportRecord.report.wealth.memberReports
+      .flatMap((member) => member.policies)
+      .find((policy) => policy.policyId === 222);
+    assert.ok(wealthPolicy);
+    assert.deepEqual(wealthPolicy.cashflowRows.map((row) => [row.year, row.amount, row.liability]), [
+      [2030, 1465, '生存保险金'],
+      [2031, 1465, '生存保险金'],
+      [2035, 110100, '满期保险金'],
+    ]);
+    assert.equal(wealthPolicy.cashflowRows[2].cumulative, 113030);
+
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const detail = await jsonFetch(server.baseUrl, `/api/admin/report-issues/${generated.payload.reportRecord.id}`, {
+      headers: { authorization: `Bearer ${loggedIn.payload.token}` },
+    });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.correctionLabel === '已用 DeepSeek 修正'), true);
+    assert.equal(detail.payload.corrections[0].cashflowRows.length, 3);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report GET reapplies legacy pending DeepSeek corrections to stored report', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 210,
+    ownerGuestId: 'guest-family-legacy-correction',
+    familyName: '老修正报告家庭',
+    coreMemberId: 211,
+    status: 'active',
+    createdAt: '2026-06-16T01:00:00.000Z',
+    updatedAt: '2026-06-16T01:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 211,
+    familyId: 210,
+    name: '翟卿',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-16T01:00:00.000Z',
+    updatedAt: '2026-06-16T01:00:00.000Z',
+  });
+  const policy = {
+    id: 212,
+    userId: null,
+    guestId: 'guest-family-legacy-correction',
+    familyId: 210,
+    company: '中国人寿',
+    name: '国寿鑫颐宝两全保险（2024版）',
+    applicant: '翟卿',
+    insured: '翟卿',
+    applicantMemberId: 211,
+    insuredMemberId: 211,
+    applicantMemberName: '翟卿',
+    insuredMemberName: '翟卿',
+    amount: 159948,
+    coverageIndicators: [{
+      coverageType: '人寿保障',
+      liability: '身故保险金',
+      value: 159948,
+      unit: '元',
+      productName: '国寿鑫颐宝两全保险（2024版）',
+    }],
+    createdAt: '2026-06-16T01:01:00.000Z',
+    updatedAt: '2026-06-16T01:01:00.000Z',
+  };
+  state.policies.push(policy);
+  const storedReport = buildFamilyReport([policy], null, { familyId: 210 });
+  state.familyReports.push({
+    id: 213,
+    familyId: 210,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-legacy-correction',
+    status: 'active',
+    source: 'code+deepseek',
+    report: storedReport,
+    planningProfile: null,
+    generatedAt: '2026-06-16T01:03:00.000Z',
+    createdAt: '2026-06-16T01:03:00.000Z',
+    updatedAt: '2026-06-16T01:03:00.000Z',
+    summary: { ...(storedReport.summary || {}), issueCount: 1, correctionCount: 1 },
+  });
+  state.familyReportIssues.push({
+    id: 214,
+    reportId: 213,
+    familyId: 210,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-legacy-correction',
+    severity: 'warning',
+    category: 'amount_calculation',
+    status: 'open',
+    source: 'deepseek',
+    title: '国寿鑫颐宝两全保险寿险保额虚高',
+    detail: '满期保险金不应计入寿险维度。',
+    suggestion: '移除寿险维度下该保单金额贡献。',
+    policyId: 212,
+    memberId: 211,
+    productName: '国寿鑫颐宝两全保险（2024版）',
+    dimension: 'life',
+    createdAt: '2026-06-16T01:03:10.000Z',
+    updatedAt: '2026-06-16T01:03:10.000Z',
+  });
+  state.familyReportCorrections.push({
+    id: 215,
+    reportId: 213,
+    familyId: 210,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-legacy-correction',
+    policyId: 212,
+    memberId: 211,
+    dimension: 'life',
+    action: 'replace_amount',
+    targetPath: 'radar.life.policyAmount',
+    originalValue: 159948,
+    correctedValue: 0,
+    reason: '身故保险金为已交保费比例与现金价值较大值，非固定保额，不可量化',
+    evidence: '官网条款显示公式给付。',
+    confidence: 0.91,
+    riskLevel: 'high',
+    status: 'pending_review',
+    source: 'deepseek',
+    issueId: 214,
+    memberName: '翟卿',
+    productName: '国寿鑫颐宝两全保险（2024版）',
+    createdAt: '2026-06-16T01:03:20.000Z',
+    updatedAt: '2026-06-16T01:03:20.000Z',
+  });
+
+  const initialLife = state.familyReports[0].report.radar.family.scores.find((score) => score.key === 'life');
+  assert.equal(initialLife.amount, 159948);
+
+  const app = createPolicyOcrApp({ adminPassword: 'admin-pass', state });
+  const server = await listen(app);
+  try {
+    const fetched = await jsonFetch(server.baseUrl, '/api/family-profiles/210/report?guestId=guest-family-legacy-correction');
+    assert.equal(fetched.response.status, 200);
+    const life = fetched.payload.reportRecord.report.radar.family.scores.find((score) => score.key === 'life');
+    assert.equal(life.amount, 0);
+    assert.equal(life.amountText, '0元');
+    assert.match(life.note, /不可量化|公式型/u);
+
+    const loggedIn = await jsonFetch(server.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'admin-pass' }),
+    });
+    const detail = await jsonFetch(server.baseUrl, '/api/admin/report-issues/213', {
+      headers: { authorization: `Bearer ${loggedIn.payload.token}` },
+    });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.issues.some((issue) => issue.source === 'deepseek' && issue.correctionLabel === '已用 DeepSeek 修正'), true);
+    assert.equal(detail.payload.corrections[0].status, 'auto_applied');
+  } finally {
+    await server.close();
+  }
+});
+
 test('family APIs rename and archive a family while clearing policy family bindings', async () => {
   const state = createInitialState();
   state.familyProfiles.push({
@@ -10278,6 +11866,126 @@ test('policy update archives generated family reports for the affected family', 
   }
 });
 
+test('policy update persists archived family report records without shares or sales reviews', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-report-only-refresh',
+    familyName: '报告记录家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 9,
+    familyId: 8,
+    name: '张三',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 12,
+    userId: null,
+    guestId: 'guest-family-report-only-refresh',
+    company: '新华保险',
+    name: '家庭保单A',
+    applicant: '张三',
+    insured: '张三',
+    familyId: 8,
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.familyReports.push({
+    id: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-report-only-refresh',
+    status: 'active',
+    source: 'code+deepseek',
+    report: { summary: { familyId: 8, memberCount: 1, policyCount: 1 } },
+    planningProfile: null,
+    generatedAt: '2026-06-15T00:02:00.000Z',
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+    summary: { familyId: 8, memberCount: 1, policyCount: 1, issueCount: 1, correctionCount: 1 },
+  });
+  state.familyReportIssues.push({
+    id: 14,
+    reportId: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-report-only-refresh',
+    severity: 'warning',
+    category: 'amount_calculation',
+    status: 'open',
+    source: 'deepseek',
+    title: '旧报告问题',
+    detail: '旧报告金额需要复核。',
+    suggestion: '重新生成家庭报告。',
+    createdAt: '2026-06-15T00:02:10.000Z',
+    updatedAt: '2026-06-15T00:02:10.000Z',
+  });
+  state.familyReportCorrections.push({
+    id: 15,
+    reportId: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-family-report-only-refresh',
+    policyId: 12,
+    memberId: 9,
+    dimension: 'life',
+    action: 'replace_amount',
+    originalValue: 100000,
+    correctedValue: 0,
+    reason: '旧报告修正',
+    confidence: 0.91,
+    riskLevel: 'high',
+    status: 'auto_applied',
+    source: 'deepseek',
+    issueId: 14,
+    createdAt: '2026-06-15T00:02:20.000Z',
+    updatedAt: '2026-06-15T00:02:20.000Z',
+  });
+
+  const policyPersistCalls = [];
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persistPolicyState: async (input) => {
+      policyPersistCalls.push(input);
+    },
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const updated = await jsonFetch(server.baseUrl, '/api/policies/12?guestId=guest-family-report-only-refresh', {
+      method: 'PATCH',
+      body: JSON.stringify({ amount: 220000 }),
+    });
+
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.payload.policy.amount, 220000);
+    assert.equal(state.familyReports[0].status, 'archived');
+    assert.equal(state.familyReportIssues[0].status, 'archived');
+    assert.equal(state.familyReportCorrections[0].status, 'archived');
+    assert.equal(policyPersistCalls.length, 1);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+  } finally {
+    await server.close();
+  }
+});
+
 test('policy delete archives generated family reports only for the deleted policy family', async () => {
   const state = createInitialState();
   state.familyProfiles.push(
@@ -10413,6 +12121,129 @@ test('policy delete archives generated family reports only for the deleted polic
     assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
   } finally {
     await server.close();
+  }
+});
+
+test('cash value confirmation persists archived family report records without shares or sales reviews', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY)');
+  db.prepare('INSERT INTO policies (id) VALUES (?)').run(12);
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-cash-report-only-refresh',
+    familyName: '现金价值报告家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 9,
+    familyId: 8,
+    name: '张三',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 12,
+    userId: null,
+    guestId: 'guest-cash-report-only-refresh',
+    company: '新华保险',
+    name: '现金价值保单',
+    applicant: '张三',
+    insured: '张三',
+    familyId: 8,
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.familyReports.push({
+    id: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-cash-report-only-refresh',
+    status: 'active',
+    source: 'code+deepseek',
+    report: { summary: { familyId: 8, memberCount: 1, policyCount: 1 } },
+    planningProfile: null,
+    generatedAt: '2026-06-15T00:02:00.000Z',
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+    summary: { familyId: 8, memberCount: 1, policyCount: 1, issueCount: 1, correctionCount: 1 },
+  });
+  state.familyReportIssues.push({
+    id: 14,
+    reportId: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-cash-report-only-refresh',
+    severity: 'warning',
+    category: 'cashflow',
+    status: 'open',
+    source: 'deepseek',
+    title: '旧现金流问题',
+    detail: '旧报告现金流需要复核。',
+    suggestion: '重新生成家庭报告。',
+    createdAt: '2026-06-15T00:02:10.000Z',
+    updatedAt: '2026-06-15T00:02:10.000Z',
+  });
+  state.familyReportCorrections.push({
+    id: 15,
+    reportId: 13,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-cash-report-only-refresh',
+    policyId: 12,
+    memberId: 9,
+    dimension: 'wealth',
+    action: 'override_cashflow',
+    reason: '旧现金流修正',
+    confidence: 0.92,
+    riskLevel: 'high',
+    status: 'auto_applied',
+    source: 'deepseek',
+    issueId: 14,
+    createdAt: '2026-06-15T00:02:20.000Z',
+    updatedAt: '2026-06-15T00:02:20.000Z',
+  });
+
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    db,
+    state,
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/12/cash-value/confirm?guestId=guest-cash-report-only-refresh', {
+      method: 'POST',
+      body: JSON.stringify({
+        rows: [
+          { policyYear: 1, age: 30, cashValue: 8500, source: 'manual' },
+          { policyYear: 2, age: 31, cashValue: 19200, source: 'manual' },
+        ],
+      }),
+    });
+
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.payload.savedCount, 2);
+    assert.equal(state.familyReports[0].status, 'archived');
+    assert.equal(state.familyReportIssues[0].status, 'archived');
+    assert.equal(state.familyReportCorrections[0].status, 'archived');
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+  } finally {
+    await server.close();
+    db.close();
   }
 });
 
@@ -10562,6 +12393,191 @@ test('policy save applies confirmed spouse relation before binding family snapsh
     const savedSpouse = state.familyMembers.find((member) => Number(member.id) === Number(spouseRes.payload.member.id));
     assert.equal(savedSpouse.relationToCore, 'spouse');
     assert.equal(savedSpouse.relationLabel, '配偶');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family member API deduplicates, edits, and deletes members', async () => {
+  const state = createInitialState();
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-member-manage', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '成员管理家庭' }),
+    });
+    const familyId = familyRes.payload.family.id;
+    const firstRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-member-manage`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '翟卿', relationLabel: '儿子' }),
+    });
+    const duplicateRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-member-manage`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '翟卿', relationLabel: '儿子', birthday: '2018-01-01' }),
+    });
+
+    assert.equal(duplicateRes.response.status, 201);
+    assert.equal(duplicateRes.payload.member.id, firstRes.payload.member.id);
+    assert.equal(duplicateRes.payload.members.filter((member) => member.name === '翟卿').length, 1);
+    assert.equal(duplicateRes.payload.member.birthday, '2018-01-01');
+
+    const editRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members/${firstRes.payload.member.id}?guestId=guest-member-manage`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: '翟卿改', birthday: '2019-02-02' }),
+    });
+    assert.equal(editRes.response.status, 200);
+    assert.equal(editRes.payload.member.name, '翟卿改');
+    assert.equal(editRes.payload.member.birthday, '2019-02-02');
+
+    const deleteRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members/${firstRes.payload.member.id}?guestId=guest-member-manage`, {
+      method: 'DELETE',
+    });
+    assert.equal(deleteRes.response.status, 200);
+    assert.equal(deleteRes.payload.member.status, 'archived');
+    assert.equal(deleteRes.payload.members.some((member) => member.id === firstRes.payload.member.id), false);
+    assert.ok(familyPersistCalls.length >= 4);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family list repairs compatible duplicate member names for existing data', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 10,
+    ownerUserId: null,
+    ownerGuestId: 'guest-member-repair-list',
+    familyName: '旧重复家庭',
+    coreMemberId: 11,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push(
+    { id: 11, familyId: 10, name: '顾晨妍', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active' },
+    { id: 12, familyId: 10, name: '顾晨妍', birthday: '1990-01-01', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active' },
+  );
+  state.policies.push({
+    id: 20,
+    guestId: 'guest-member-repair-list',
+    familyId: 10,
+    applicant: '顾晨妍',
+    insured: '顾晨妍',
+    applicantMemberId: 11,
+    insuredMemberId: 12,
+  });
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const listRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-member-repair-list');
+
+    assert.equal(listRes.response.status, 200);
+    assert.deepEqual(listRes.payload.families[0].members.map((member) => member.name), ['顾晨妍']);
+    assert.equal(state.policies[0].insuredMemberId, 11);
+    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [true]);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family sales review repairs duplicate members before returning or generating reports', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-sales-review-repair',
+    familyName: '吴连英的家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push(
+    { id: 9, familyId: 8, name: '吴连英', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active' },
+    { id: 10, familyId: 8, name: '翟卿', relationToCore: 'son', relationLabel: '儿子', role: 'child', status: 'active' },
+    { id: 11, familyId: 8, name: '翟卿', birthday: '2018-01-01', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active' },
+  );
+  state.policies.push({
+    id: 20,
+    guestId: 'guest-sales-review-repair',
+    familyId: 8,
+    company: '新华保险',
+    name: '少儿测试保单',
+    applicant: '吴连英',
+    insured: '翟卿',
+    applicantMemberId: 9,
+    insuredMemberId: 11,
+  });
+  state.familySalesReviews.push({
+    id: 30,
+    familyId: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-sales-review-repair',
+    status: 'active',
+    content: '旧报告：翟卿出现两次',
+    model: 'test',
+    generatedAt: '2026-06-15T00:03:00.000Z',
+    createdAt: '2026-06-15T00:03:00.000Z',
+    updatedAt: '2026-06-15T00:03:00.000Z',
+  });
+  state.nextId = 31;
+  const familyPersistCalls = [];
+  let reviewedInput = null;
+  const app = createPolicyOcrApp({
+    state,
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+    generateFamilySalesReview: async ({ input }) => {
+      reviewedInput = input;
+      return {
+        content: '## 一、销售结论摘要\n- 已按当前家庭成员生成',
+        model: 'test-internal-expert',
+        generatedAt: '2026-06-15T00:04:00.000Z',
+        inputSummary: {
+          memberCount: input.members.length,
+          policyCount: input.policies.length,
+          membersWithoutPolicyCount: input.dataQuality.membersWithoutPolicy.length,
+          officialProductCount: input.officialEvidence.length,
+        },
+      };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const staleGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review-repair');
+    assert.equal(staleGet.response.status, 200);
+    assert.equal(staleGet.payload.review, null);
+    assert.equal(state.familySalesReviews[0].status, 'archived');
+    assert.equal(state.familyMembers.filter((member) => member.status === 'active' && member.name === '翟卿').length, 1);
+    assert.equal(state.policies[0].insuredMemberId, 10);
+
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review-repair', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(generated.response.status, 200);
+    assert.equal(generated.payload.review.inputSummary.memberCount, 2);
+    assert.deepEqual(reviewedInput.members.map((member) => member.memberRef), ['{{member_1}}', '{{member_2}}']);
+    assert.equal(reviewedInput.members.filter((member) => member.relationLabel === '儿子').length, 1);
+    assert.equal(reviewedInput.policies[0].insuredMemberRef, '{{member_2}}');
+    assert.equal(familyPersistCalls.some((call) => call.includePolicies === true), true);
   } finally {
     await server.close();
   }

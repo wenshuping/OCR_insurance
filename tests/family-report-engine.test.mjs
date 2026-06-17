@@ -816,6 +816,11 @@ test('buildFamilyReport keeps formula-only radar amounts out of numeric radar va
       insured: '妈妈',
       name: '公式型寿险',
       amount: 0,
+      firstPremium: 58000,
+      cashValues: [
+        { policyYear: 1, age: 30, cashValue: 42000 },
+        { policyYear: 2, age: 31, cashValue: 116280 },
+      ],
       coverageIndicators: [
         { coverageType: '人寿保障', liability: '身故保险金', unit: '公式', basis: '已交保费', formulaText: '取已交保费、现金价值、基本保额较大者', productName: '公式型寿险' },
       ],
@@ -825,8 +830,362 @@ test('buildFamilyReport keeps formula-only radar amounts out of numeric radar va
   const life = radarScore(report.radar.family, 'life');
   assert.equal(life.amount, 0);
   assert.equal(life.score, 0);
+  assert.equal(life.amountText, '≥116,280元参考');
+  assert.match(life.note, /固定保额不可量化/u);
+  assert.equal(life.amountDetails.length, 1);
+  assert.equal(life.amountDetails[0].amount, 116280);
+  assert.equal(life.amountDetails[0].referenceOnly, true);
+  assert.match(life.amountDetails[0].calculationText, /现金价值116,280元/u);
+});
+
+test('buildFamilyReport shows reference lower bound for unquantifiable life responsibility', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 3030,
+      insured: '翟宸彬',
+      insuredMemberId: 3031,
+      name: '成长阳光少儿两全保险(A款)（分红型）',
+      amount: 38760,
+      firstPremium: 5475,
+      coverageIndicators: [{
+        coverageType: '规则参数',
+        liability: '赔付方式',
+        valueText: '定额给付型',
+        unit: '方式',
+        basis: '保险责任赔付机制',
+        productName: '成长阳光少儿两全保险(A款)（分红型）',
+        sourceExcerpt: '被保险人于十八周岁生效对应日前身故，本公司按您所交保险费及累计红利保险金额对应的现金价值两者之和给付身故保险金。被保险人于十八周岁生效对应日后身故，本公司按本合同有效保险金额的三倍给付身故保险金。',
+        quantificationStatus: 'not_quantifiable',
+        calculationEligible: false,
+        excludeFromCalculation: true,
+      }],
+    }),
+  ]);
+
+  const life = radarScore(report.radar.family, 'life');
+  const member = radarMember(report, '翟宸彬');
+  assert.equal(life.amount, 0);
+  assert.equal(life.score, 0);
+  assert.equal(life.coveragePresent, true);
+  assert.equal(life.amountText, '≥116,280元参考');
+  assert.equal(life.policyCount, 1);
+  assert.match(life.note, /参考下限/u);
+  assert.equal(life.amountDetails.length, 1);
+  assert.equal(life.amountDetails[0].amount, 116280);
+  assert.equal(life.amountDetails[0].referenceOnly, true);
+  assert.match(life.amountDetails[0].calculationText, /保险金额38,760元 × 3倍 = 116,280元/u);
+  assert.deepEqual(member.notes, ['缺口维度: 重疾、意外、医疗']);
+});
+
+test('buildFamilyReport uses post-waiting-period whole life responsibility for life radar', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 303,
+      insured: '顾晨妍',
+      name: '福如东海A款终身寿险（分红型）',
+      amount: 100000,
+      coverageIndicators: [
+        {
+          coverageType: '人寿保障',
+          liability: '疾病全残',
+          value: 10,
+          unit: '%',
+          basis: '基本保额',
+          condition: '合同生效之日起一年内因疾病导致身故或身体全残',
+          productName: '福如东海A款终身寿险（分红型）',
+        },
+        {
+          coverageType: '现金流',
+          liability: '增额/利率',
+          value: 100,
+          unit: '%',
+          basis: '保险金额',
+          condition: '被保险人因意外伤害或合同生效一年后因疾病导致身故或身体全残',
+          formulaText: '身故或全残保险金 = 基本保险金额与累积红利保险金额之和',
+          productName: '福如东海A款终身寿险（分红型）',
+          sourceExcerpt: '被保险人因意外伤害或于本合同生效之日起一年后因疾病导致身故或身体全残，本公司按基本保险金额与累积红利保险金额之和给付身故或全残保险金。',
+        },
+      ],
+    }),
+  ]);
+
+  const life = radarScore(report.radar.family, 'life');
+  assert.equal(life.amount, 100000);
+  assert.equal(life.policyCount, 1);
+  assert.match(life.note, /身故\/全残100,000/u);
+  assert.equal(life.amountDetails.length, 1);
+  assert.equal(life.amountDetails[0].liability, '身故/全残');
+  assert.match(life.amountDetails[0].calculationText, /基本保险金额100,000元 \+ 累积红利保险金额/);
+  assert.match(life.amountDetails[0].calculationText, /至少100,000元/u);
+});
+
+test('buildFamilyReport excludes non-calculable rule parameters from medical radar', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 304,
+      insured: '顾晨妍',
+      name: '住院费用医疗保险（2007）',
+      amount: 10000,
+      coverageIndicators: [
+        {
+          coverageType: '医疗保障',
+          liability: '医疗保障限额',
+          value: 20,
+          unit: '元',
+          basis: '实际医疗费用',
+          productName: '住院费用医疗保险（2007）',
+          sourceExcerpt: '住院床位费保险金每日给付限额为20元，每次住院最长给付天数为180天。',
+        },
+        {
+          coverageType: '规则参数',
+          liability: '等待期',
+          value: 60,
+          unit: '日',
+          basis: '合同等待期',
+          productName: '住院费用医疗保险（2007）',
+          sourceExcerpt: '自本合同生效之日起60日为等待期。',
+        },
+        {
+          coverageType: '规则参数',
+          liability: '赔付方式',
+          valueText: '费用报销型+津贴给付型',
+          unit: '方式',
+          basis: '保险责任赔付机制',
+          productName: '住院费用医疗保险（2007）',
+          excludeFromCalculation: true,
+          calculationEligible: false,
+        },
+      ],
+    }),
+  ]);
+
+  const medical = radarScore(report.radar.family, 'medical');
+  assert.equal(medical.amount, 0);
+  assert.equal(medical.policyCount, 0);
+  assert.match(medical.note, /报销型|不可量化/u);
+});
+
+test('buildFamilyReport excludes payout method rule parameters from life radar fallback', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 305,
+      insured: '温舒萍',
+      name: '盛世恒盈年金保险（分红型）',
+      amount: 1465,
+      coverageIndicators: [
+        {
+          coverageType: '规则参数',
+          liability: '赔付方式',
+          valueText: '定额给付型',
+          unit: '方式',
+          basis: '保险责任赔付机制',
+          productName: '盛世恒盈年金保险（分红型）',
+          sourceExcerpt: '生存保险金：被保险人在每个保单周年日零时生存，我们按基本保险金额给付生存保险金。身故保险金：被保险人身故，我们按已交保险费与现金价值较大者给付身故保险金。',
+          quantificationStatus: 'not_quantifiable',
+          calculationEligible: false,
+          excludeFromCalculation: true,
+          qualityStatus: 'non_calculable_rule_parameter',
+        },
+      ],
+    }),
+  ]);
+
+  const life = radarScore(report.radar.family, 'life');
+  assert.equal(life.amount, 0);
+  assert.equal(life.policyCount, 0);
+  assert.match(life.note, /不可量化/u);
+});
+
+test('buildFamilyReport keeps unquantifiable life without death evidence out of coverage', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 3051,
+      insured: '温舒萍',
+      name: '盛世恒盈年金保险（分红型）',
+      amount: 1465,
+      coverageIndicators: [{
+        coverageType: '规则参数',
+        liability: '赔付方式',
+        valueText: '定额给付型',
+        unit: '方式',
+        basis: '保险责任赔付机制',
+        productName: '盛世恒盈年金保险（分红型）',
+        sourceExcerpt: '生存保险金：被保险人在每个保单周年日零时生存，我们按基本保险金额给付生存保险金。',
+        quantificationStatus: 'not_quantifiable',
+        calculationEligible: false,
+        excludeFromCalculation: true,
+      }],
+    }),
+  ]);
+
+  const life = radarScore(report.radar.family, 'life');
+  assert.equal(life.amount, 0);
+  assert.equal(life.coveragePresent, false);
+  assert.equal(life.amountDetails.length, 0);
+});
+
+test('buildFamilyReport only treats pending optional responsibilities as report gaps', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 306,
+      insured: '妈妈',
+      name: '测试重疾',
+      optionalResponsibilities: [
+        {
+          id: 'opt_pending',
+          productName: '测试重疾',
+          liability: '待复核可选责任',
+          responsibilityScope: 'optional',
+          selectionStatus: 'selected',
+          quantificationStatus: 'pending_review',
+          quantificationReason: '缺少可计算结构化指标',
+        },
+        {
+          id: 'opt_not_quantifiable',
+          productName: '测试重疾',
+          liability: '不进入量化责任',
+          responsibilityScope: 'optional',
+          selectionStatus: 'selected',
+          quantificationStatus: 'not_quantifiable',
+          quantificationReason: '后台确认不进入金额计算',
+        },
+      ],
+    }),
+  ]);
+
+  assert.deepEqual(report.optionalResponsibilityGaps.map((gap) => gap.liability), ['待复核可选责任']);
+});
+
+test('buildFamilyReport applies trusted medical corrections to remove fixed amount false positives', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 901,
+      insured: '顾晨妍',
+      insuredMemberId: 902,
+      name: '住院费用医疗保险（2007）',
+      amount: 60,
+      coverageIndicators: [{
+        coverageType: '医疗保障',
+        liability: '住院床位费',
+        value: 60,
+        unit: '元',
+        productName: '住院费用医疗保险（2007）',
+      }],
+    }),
+  ], null, {
+    corrections: [{
+      status: 'auto_applied',
+      action: 'mark_unquantifiable',
+      dimension: 'medical',
+      policyId: 901,
+      memberId: 902,
+      productName: '住院费用医疗保险（2007）',
+    }],
+  });
+
+  const medical = radarScore(report.radar.family, 'medical');
+  assert.equal(medical.amount, 0);
+  assert.equal(medical.amountText, '0元');
+  assert.equal(medical.policyCount, 0);
+  assert.match(medical.note, /报销型|不可量化/u);
+});
+
+test('buildFamilyReport applies trusted life replacement corrections to radar amounts', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 911,
+      insured: '翟卿',
+      insuredMemberId: 912,
+      name: '国寿鑫颐宝两全保险（2024版）',
+      amount: 159948,
+      coverageIndicators: [{
+        coverageType: '人寿保障',
+        liability: '身故保险金',
+        value: 159948,
+        unit: '元',
+        productName: '国寿鑫颐宝两全保险（2024版）',
+      }],
+    }),
+  ], null, {
+    corrections: [{
+      status: 'auto_applied',
+      action: 'replace_amount',
+      dimension: 'life',
+      policyId: 911,
+      memberId: 912,
+      productName: '国寿鑫颐宝两全保险（2024版）',
+      correctedValue: 0,
+    }],
+  });
+
+  const life = radarScore(report.radar.family, 'life');
+  assert.equal(life.amount, 0);
   assert.equal(life.amountText, '0元');
-  assert.match(life.note, /公式型待确认/);
+  assert.match(life.note, /不可量化|公式型/u);
+});
+
+test('buildFamilyReport applies trusted critical replacements to detail rows', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 921,
+      insured: '顾晨妍',
+      insuredMemberId: 922,
+      name: '福如东海A款终身寿险（分红型）',
+      amount: 100000,
+      plans: [{
+        role: 'rider',
+        name: '附加安康提前给付重大疾病保险',
+        matchedProductName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+        amount: 100000,
+      }],
+      coverageIndicators: [
+        {
+          coverageType: '疾病保障',
+          liability: '重疾(首次给付)',
+          value: 110,
+          unit: '%',
+          basis: '已交保费',
+          productName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+          sourceExcerpt: '一年内确诊初次发生重大疾病，给付本保险实际交纳的保险费的110%。',
+        },
+        {
+          coverageType: '疾病保障',
+          liability: '防癌/恶性肿瘤(首次给付)',
+          value: 50,
+          unit: '%',
+          basis: '基本保额',
+          productName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+          sourceExcerpt: '癌症特别关爱保险金：一年后确诊初次发生本合同所指的重大疾病中的恶性肿瘤，除按前款规定给付重大疾病保险金外，还按主险合同基本保险金额的50%给付。',
+        },
+      ],
+    }),
+  ], null, {
+    corrections: [{
+      status: 'auto_applied',
+      action: 'replace_amount',
+      dimension: 'critical',
+      policyId: 921,
+      memberId: 922,
+      productName: '福如东海A款终身寿险（分红型）',
+      correctedValue: 100000,
+      reason: '一年后确诊重疾按主险基本保险金额给付',
+      evidence: '条款约定按主险合同基本保险金额给付重大疾病保险金',
+    }],
+  });
+
+  const member = report.criticalIllness.members.find((item) => item.member === '顾晨妍');
+  const criticalFirst = member.rows.find((item) => item.key === 'critical_first');
+  const specificDisease = member.rows.find((item) => item.key === 'specific_disease');
+  const criticalRadar = radarScore(report.radar.family, 'critical');
+
+  assert.equal(criticalFirst.amount, 100000);
+  assert.equal(criticalFirst.amountText, '10万');
+  assert.equal(criticalFirst.sourcePolicies[0].amount, 100000);
+  assert.match(criticalFirst.conditionText, /基本保险金额/u);
+  assert.equal(specificDisease.amount, 50000);
+  assert.equal(specificDisease.amountText, '5万');
+  assert.match(specificDisease.conditionText, /癌症特别关爱/u);
+  assert.equal(criticalRadar.amount, 100000);
 });
 
 test('buildFamilyReport keeps formula critical illness amounts out of radar fallback', () => {

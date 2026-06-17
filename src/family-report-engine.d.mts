@@ -242,6 +242,7 @@ export type FamilyRadarAmountDetail = {
   amount: number;
   amountText: string;
   calculationText: string;
+  referenceOnly?: boolean;
 };
 
 export type FamilyPlanningProfile = {
@@ -320,6 +321,14 @@ export type FamilyReport = {
 
 export type FamilyReportOptions = {
   familyId?: number | null;
+  corrections?: Array<{
+    status?: string;
+    action?: string;
+    dimension?: string;
+    policyId?: number | null;
+    memberId?: number | null;
+    productName?: string;
+  }>;
 };
 
 export function buildFamilyReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null, options?: FamilyReportOptions): FamilyReport;
@@ -328,4 +337,4 @@ export function buildPolicyInventory(policies: Policy[]): FamilyPolicyInventory;
 export function buildCriticalIllnessSection(policies: Policy[]): FamilySectionReport;
 export function buildAccidentSection(policies: Policy[]): FamilySectionReport;
 export function buildWealthSection(policies: Policy[]): FamilyWealthReport;
-export function buildFamilyRadarReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null): FamilyRadarReport;
+export function buildFamilyRadarReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null, options?: FamilyReportOptions): FamilyRadarReport;
