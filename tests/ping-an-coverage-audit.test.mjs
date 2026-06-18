@@ -248,3 +248,22 @@ test('normalizeExternalSourceRecords filters non Ping An issuers', () => {
   assert.equal(records.length, 1);
   assert.equal(records[0].productName, '平安产品');
 });
+
+test('normalizeExternalSourceRecord preserves existing normalized fields', () => {
+  const normalized = normalizeExternalSourceRecord({
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安产品（分红型）',
+    normalizedProductName: '已有标准产品名',
+    responsibilityPreview: '已有责任预览',
+    responsibilityQualityStatus: 'valid_reviewed',
+    qualityStatus: 'valid_complete',
+    pageText: '保险责任 '.repeat(200),
+    rawId: 'external-123',
+    id: 'local-456',
+  });
+
+  assert.equal(normalized.normalizedProductName, '已有标准产品名');
+  assert.equal(normalized.responsibilityPreview, '已有责任预览');
+  assert.equal(normalized.responsibilityQualityStatus, 'valid_reviewed');
+  assert.equal(normalized.rawId, 'external-123');
+});

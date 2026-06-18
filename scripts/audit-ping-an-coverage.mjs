@@ -80,7 +80,7 @@ export function normalizeExternalSourceRecord(record = {}, { sourceName = '' } =
     sourceLevel: trim(record.sourceLevel),
     issuerFullName,
     productName,
-    normalizedProductName: normalizeProductName(productName),
+    normalizedProductName: trim(record.normalizedProductName) || normalizeProductName(productName),
     productType: trim(record.productType || record['产品类别']),
     salesStatus: trim(record.salesStatus || record.productState || record['产品销售状态']),
     detailUrl,
@@ -88,12 +88,12 @@ export function normalizeExternalSourceRecord(record = {}, { sourceName = '' } =
     url: clauseUrl || detailUrl,
     planCode: trim(record.planCode) || planCodeFromUrl(clauseUrl || detailUrl),
     materialType: trim(record.materialType || 'terms'),
-    responsibilityPreview: pageText.slice(0, 800),
-    responsibilityQualityStatus: trim(record.qualityStatus || (pageText ? 'suspect_needs_source_check' : 'invalid_empty')),
+    responsibilityPreview: trim(record.responsibilityPreview) || pageText.slice(0, 800),
+    responsibilityQualityStatus: trim(record.responsibilityQualityStatus) || trim(record.qualityStatus || (pageText ? 'suspect_needs_source_check' : 'invalid_empty')),
     pdfLocalPath: trim(record.pdfLocalPath),
     pdfSha256: trim(record.pdfSha256),
     pdfBytes: Number(record.pdfBytes || record.bytes || 0) || 0,
-    rawId: trim(record.id || record.catalogId || record.localId),
+    rawId: trim(record.rawId) || trim(record.id || record.catalogId || record.localId),
   };
 }
 
