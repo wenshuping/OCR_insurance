@@ -3,8 +3,11 @@ import test from 'node:test';
 
 import {
   buildExistingRepairAudit,
+  buildLocalPingAnIndexes,
+  buildMissingSourceCandidates,
   classifyLocalRepairCandidate,
   isPingAnIssuer,
+  matchExternalToLocal,
   normalizeExternalSourceRecord,
   normalizeExternalSourceRecords,
   normalizeProductName,
@@ -266,4 +269,207 @@ test('normalizeExternalSourceRecord preserves existing normalized fields', () =>
   assert.equal(normalized.responsibilityPreview, '已有责任预览');
   assert.equal(normalized.responsibilityQualityStatus, 'valid_reviewed');
   assert.equal(normalized.rawId, 'external-123');
+});
+
+test('buildLocalPingAnIndexes indexes Ping An issuer variants and excludes non Ping An issuers', () => {
+  const indexes = buildLocalPingAnIndexes([
+    {
+      id: 10,
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安金宝贝少儿教育年金保险（分红型）',
+      url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=901&versionNo=901-1&attachmentType=1',
+    },
+    {
+      id: 11,
+      company: '新华保险股份有限公司',
+      productName: '新华金宝贝少儿教育年金保险（分红型）',
+      url: 'https://example.test/non-ping-an?planCode=902',
+    },
+  ]);
+
+  assert.equal(indexes.records.length, 1);
+  assert.equal(indexes.records[0].id, 10);
+  assert.equal(indexes.byProductName.get('平安金宝贝少儿教育年金保险(分红型)')[0].id, 10);
+  assert.equal(indexes.byPlanCode.get('901')[0].id, 10);
+  assert.equal(indexes.byPlanCode.has('902'), false);
+});
+
+test('matchExternalToLocal treats exact normalized local product as represented', () => {
+  const indexes = buildLocalPingAnIndexes([
+    {
+      id: 10,
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安金宝贝少儿教育年金保险（分红型）',
+      url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=901&versionNo=901-1&attachmentType=1',
+    },
+  ]);
+  const match = matchExternalToLocal(
+    normalizeExternalSourceRecord({
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安金宝贝少儿教育年金保险(分红型)',
+      clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+      pageText: '保险责任 大学教育金。',
+    }),
+    indexes,
+  );
+
+  assert.equal(match.status, 'represented_by_product_name');
+  assert.equal(match.missingReason, '');
+  assert.deepEqual(match.localMatches.map((row) => row.id), [10]);
+});
+
+test('matchExternalToLocal represents URL and plan code matches before product name', () => {
+  const indexes = buildLocalPingAnIndexes([
+    {
+      id: 20,
+      company: '中国平安',
+      productName: '平安URL匹配产品',
+      url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=820&versionNo=820-1&attachmentType=1',
+    },
+    {
+      id: 21,
+      company: '中国平安',
+      productName: '平安计划代码产品',
+      url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=821&versionNo=821-1&attachmentType=1',
+    },
+  ]);
+
+  const urlMatch = matchExternalToLocal(
+    normalizeExternalSourceRecord({
+      company: '中国平安人寿保险股份有限公司',
+      productName: '外部URL产品名称不同',
+      clauseUrl: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=820&versionNo=820-1&attachmentType=1',
+    }),
+    indexes,
+  );
+  const planCodeMatch = matchExternalToLocal(
+    normalizeExternalSourceRecord({
+      company: '中国平安人寿保险股份有限公司',
+      productName: '外部计划代码产品名称不同',
+      clauseUrl: 'https://external.test/terms.pdf',
+      planCode: '821',
+    }),
+    indexes,
+  );
+
+  assert.equal(urlMatch.status, 'represented_by_url');
+  assert.deepEqual(urlMatch.localMatches.map((row) => row.id), [20]);
+  assert.equal(planCodeMatch.status, 'represented_by_plan_code');
+  assert.deepEqual(planCodeMatch.localMatches.map((row) => row.id), [21]);
+});
+
+test('matchExternalToLocal returns ambiguous candidates for duplicate local product names', () => {
+  const indexes = buildLocalPingAnIndexes([
+    {
+      id: 30,
+      company: '中国平安',
+      productName: '平安重复产品（分红型）',
+      url: 'https://life.pingan.com/terms/first.pdf',
+    },
+    {
+      id: 31,
+      company: '中国平安健康保险股份有限公司',
+      productName: '平安重复产品(分红型)',
+      url: 'https://life.pingan.com/terms/second.pdf',
+    },
+  ]);
+  const match = matchExternalToLocal(
+    normalizeExternalSourceRecord({
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安重复产品（分红型）',
+      clauseUrl: 'https://external.test/repeated.pdf',
+    }),
+    indexes,
+  );
+
+  assert.equal(match.status, 'ambiguous_local_match');
+  assert.equal(match.missingReason, 'ambiguous_local_match');
+  assert.deepEqual(match.localMatches.map((row) => row.id), [30, 31]);
+});
+
+test('buildMissingSourceCandidates keeps missing and ambiguous records reviewable with source evidence', () => {
+  const localRecords = [
+    {
+      id: 10,
+      company: '中国平安',
+      productName: '平安智盈人生终身寿险（万能型）',
+      url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=810&versionNo=810-2&attachmentType=1',
+    },
+    {
+      id: 11,
+      company: '中国平安',
+      productName: '平安重复产品（分红型）',
+      url: 'https://life.pingan.com/terms/repeated-a.pdf',
+    },
+    {
+      id: 12,
+      company: '中国平安',
+      productName: '平安重复产品(分红型)',
+      url: 'https://life.pingan.com/terms/repeated-b.pdf',
+    },
+  ];
+  const externalRecords = normalizeExternalSourceRecords([
+    {
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安智盈人生终身寿险（万能型）',
+      clauseUrl: 'https://external.test/810.pdf',
+      pageText: '保险责任 身故保险金。',
+      qualityStatus: 'valid_complete',
+    },
+    {
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安康泰终身保险（甲）（9906）',
+      sourceLevel: 'regulatory_industry_terms',
+      detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=missing',
+      clauseUrl: 'https://external.test/738.pdf',
+      planCode: '738',
+      pageText: '保险责任 身故保险金。',
+      qualityStatus: 'valid_complete',
+      pdfLocalPath: '/tmp/ping-an-738.pdf',
+      pdfSha256: 'sha-738',
+      pdfBytes: 7380,
+    },
+    {
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安重复产品（分红型）',
+      clauseUrl: 'https://external.test/repeated.pdf',
+      pageText: '保险责任 生存保险金。',
+      qualityStatus: 'valid_complete',
+    },
+  ], { sourceName: 'sample' });
+
+  const candidates = buildMissingSourceCandidates(externalRecords, localRecords);
+
+  assert.equal(candidates.length, 2);
+  assert.deepEqual(candidates.map((row) => row.productName), [
+    '平安康泰终身保险（甲）（9906）',
+    '平安重复产品（分红型）',
+  ]);
+  assert.deepEqual(candidates[0], {
+    productName: '平安康泰终身保险（甲）（9906）',
+    normalizedProductName: '平安康泰终身保险(甲)(9906)',
+    issuerFullName: '中国平安人寿保险股份有限公司',
+    productType: '',
+    salesStatus: '',
+    sourceName: 'sample',
+    sourceLevel: 'regulatory_industry_terms',
+    detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=missing',
+    clauseUrl: 'https://external.test/738.pdf',
+    url: 'https://external.test/738.pdf',
+    planCode: '738',
+    materialType: 'terms',
+    pdfLocalPath: '/tmp/ping-an-738.pdf',
+    pdfSha256: 'sha-738',
+    pdfBytes: 7380,
+    responsibilityPreview: '保险责任 身故保险金。',
+    responsibilityQualityStatus: 'valid_complete',
+    localMatchCandidates: [],
+    matchStatus: 'missing',
+    missingReason: 'no_local_product_match',
+    recommendedAction: 'review_then_insert',
+  });
+  assert.equal(candidates[1].matchStatus, 'ambiguous_local_match');
+  assert.equal(candidates[1].missingReason, 'ambiguous_local_match');
+  assert.equal(candidates[1].recommendedAction, 'manual_review');
+  assert.deepEqual(candidates[1].localMatchCandidates.map((row) => row.id), [11, 12]);
 });

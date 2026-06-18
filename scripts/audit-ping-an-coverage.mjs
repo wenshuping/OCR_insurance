@@ -138,3 +138,92 @@ export function buildExistingRepairAudit(records = [], { existsFn = fs.existsSyn
     },
   };
 }
+
+function pushMap(map, key, value) {
+  if (!key) return;
+  if (!map.has(key)) map.set(key, []);
+  map.get(key).push(value);
+}
+
+export function buildLocalPingAnIndexes(localRecords = []) {
+  const byProductName = new Map();
+  const byUrl = new Map();
+  const byPlanCode = new Map();
+  const records = (Array.isArray(localRecords) ? localRecords : [])
+    .filter((record) => isPingAnIssuer(record.company))
+    .map((record) => ({
+      id: record.id,
+      company: trim(record.company),
+      productName: trim(record.productName),
+      normalizedProductName: normalizeProductName(record.productName),
+      title: trim(record.title),
+      url: trim(record.url),
+      planCode: trim(record.planCode) || planCodeFromUrl(record.url),
+      materialType: trim(record.materialType),
+    }));
+
+  for (const record of records) {
+    pushMap(byProductName, record.normalizedProductName, record);
+    pushMap(byUrl, record.url, record);
+    pushMap(byPlanCode, record.planCode, record);
+  }
+
+  return { records, byProductName, byUrl, byPlanCode };
+}
+
+export function matchExternalToLocal(externalRecord = {}, indexes = buildLocalPingAnIndexes([])) {
+  const urlMatches = indexes.byUrl.get(trim(externalRecord.url)) || indexes.byUrl.get(trim(externalRecord.clauseUrl)) || [];
+  if (urlMatches.length) {
+    return { status: 'represented_by_url', missingReason: '', localMatches: urlMatches };
+  }
+
+  const planCode = trim(externalRecord.planCode) || planCodeFromUrl(externalRecord.url) || planCodeFromUrl(externalRecord.clauseUrl);
+  const planMatches = planCode ? indexes.byPlanCode.get(planCode) || [] : [];
+  if (planMatches.length) {
+    return { status: 'represented_by_plan_code', missingReason: '', localMatches: planMatches };
+  }
+
+  const normalizedProductName = trim(externalRecord.normalizedProductName) || normalizeProductName(externalRecord.productName);
+  const nameMatches = indexes.byProductName.get(normalizedProductName) || [];
+  if (nameMatches.length === 1) {
+    return { status: 'represented_by_product_name', missingReason: '', localMatches: nameMatches };
+  }
+  if (nameMatches.length > 1) {
+    return { status: 'ambiguous_local_match', missingReason: 'ambiguous_local_match', localMatches: nameMatches };
+  }
+
+  return { status: 'missing', missingReason: 'no_local_product_match', localMatches: [] };
+}
+
+export function buildMissingSourceCandidates(externalRecords = [], localRecords = []) {
+  const indexes = buildLocalPingAnIndexes(localRecords);
+  const candidates = [];
+  for (const record of Array.isArray(externalRecords) ? externalRecords : []) {
+    const match = matchExternalToLocal(record, indexes);
+    if (!match.missingReason) continue;
+    candidates.push({
+      productName: record.productName,
+      normalizedProductName: record.normalizedProductName,
+      issuerFullName: record.issuerFullName,
+      productType: record.productType,
+      salesStatus: record.salesStatus,
+      sourceName: record.sourceName,
+      sourceLevel: record.sourceLevel,
+      detailUrl: record.detailUrl,
+      clauseUrl: record.clauseUrl,
+      url: record.url,
+      planCode: record.planCode,
+      materialType: record.materialType,
+      pdfLocalPath: record.pdfLocalPath,
+      pdfSha256: record.pdfSha256,
+      pdfBytes: record.pdfBytes,
+      responsibilityPreview: record.responsibilityPreview,
+      responsibilityQualityStatus: record.responsibilityQualityStatus,
+      localMatchCandidates: match.localMatches.slice(0, 10),
+      matchStatus: match.status,
+      missingReason: match.missingReason,
+      recommendedAction: match.missingReason === 'ambiguous_local_match' ? 'manual_review' : 'review_then_insert',
+    });
+  }
+  return candidates;
+}
