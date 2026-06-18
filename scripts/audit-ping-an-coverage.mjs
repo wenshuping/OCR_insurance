@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -239,23 +240,30 @@ export function buildMissingSourceCandidates(externalRecords = [], localRecords 
   return candidates;
 }
 
-function readJson(filePath, fallback = null) {
+export function readJsonStrict(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  let text = '';
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
+    text = fs.readFileSync(resolvedPath, 'utf8');
+  } catch (error) {
+    throw new Error(`Unable to read source JSON ${resolvedPath}: ${error.message}`);
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid source JSON ${resolvedPath}: ${error.message}`);
   }
 }
 
 function recordsFromPayload(payload) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== 'object') return [];
-
-  const records = [];
-  for (const key of ['records', 'products', 'suspects', 'candidates']) {
-    if (Array.isArray(payload[key])) records.push(...payload[key]);
-  }
-  return records;
+  if (Array.isArray(payload.records)) return payload.records;
+  if (Array.isArray(payload.candidates)) return payload.candidates;
+  if (Array.isArray(payload.suspects)) return payload.suspects;
+  if (Array.isArray(payload.products)) return payload.products;
+  return [];
 }
 
 export function collectExternalSourceRecords(sources = []) {
@@ -297,12 +305,39 @@ export function buildCoverageSummary({
   };
 }
 
-function readArg(name, fallback = '') {
+export function knowledgeRecordsFingerprint(db) {
+  const count = Number(db.prepare('SELECT COUNT(*) AS count FROM knowledge_records').get()?.count || 0);
+  const rows = db.prepare(`
+    SELECT id, company, product_name, url, payload
+    FROM knowledge_records
+    ORDER BY id ASC
+  `).all();
+  const hash = createHash('sha256');
+  for (const row of rows) {
+    hash.update(JSON.stringify([
+      Number(row.id || 0),
+      trim(row.company),
+      trim(row.product_name),
+      trim(row.url),
+      String(row.payload || ''),
+    ]));
+    hash.update('\n');
+  }
+  return { count, sha256: hash.digest('hex') };
+}
+
+export function readCliArg(args = [], name, fallback = '') {
   const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] || fallback : fallback;
+  const inline = args.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length) || fallback;
+  const index = args.indexOf(`--${name}`);
+  if (index < 0) return fallback;
+  const value = args[index + 1] || '';
+  return value && !value.startsWith('--') ? value : fallback;
+}
+
+function readArg(name, fallback = '') {
+  return readCliArg(process.argv.slice(2), name, fallback);
 }
 
 function splitList(value = '') {
@@ -328,7 +363,7 @@ async function main() {
 
   const store = await createKnowledgeStateStore({ dbPath, seedStatePath: statePath });
   try {
-    const beforeCount = store.countKnowledgeRecords();
+    const beforeFingerprint = knowledgeRecordsFingerprint(store.db);
     const state = store.loadState();
     const localRecords = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [];
     const externalRecords = collectExternalSourceRecords(
@@ -336,7 +371,7 @@ async function main() {
         const resolvedPath = path.resolve(sourcePath);
         return {
           sourceName: path.basename(resolvedPath).replace(/\.json$/u, ''),
-          payload: readJson(resolvedPath, {}),
+          payload: readJsonStrict(resolvedPath),
         };
       }),
     );
@@ -349,9 +384,9 @@ async function main() {
       missingCandidates,
       generatedAt,
     });
-    const afterCount = store.countKnowledgeRecords();
-    if (beforeCount !== afterCount) {
-      throw new Error(`Read-only audit changed knowledge row count: before=${beforeCount} after=${afterCount}`);
+    const afterFingerprint = knowledgeRecordsFingerprint(store.db);
+    if (JSON.stringify(beforeFingerprint) !== JSON.stringify(afterFingerprint)) {
+      throw new Error(`Read-only audit changed knowledge records: before=${JSON.stringify(beforeFingerprint)} after=${JSON.stringify(afterFingerprint)}`);
     }
 
     writeJson(existingRepairPath, existingRepairAudit);

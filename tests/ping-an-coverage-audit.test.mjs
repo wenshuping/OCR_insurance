@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -9,11 +12,14 @@ import {
   classifyLocalRepairCandidate,
   collectExternalSourceRecords,
   isPingAnIssuer,
+  knowledgeRecordsFingerprint,
   matchExternalToLocal,
   normalizeExternalSourceRecord,
   normalizeExternalSourceRecords,
   normalizeProductName,
   planCodeFromUrl,
+  readCliArg,
+  readJsonStrict,
 } from '../scripts/audit-ping-an-coverage.mjs';
 
 test('normalizeProductName handles spaces and bracket variants conservatively', () => {
@@ -566,6 +572,30 @@ test('collectExternalSourceRecords reads mixed source payload arrays', () => {
   ]);
 });
 
+test('collectExternalSourceRecords prefers detailed rows from one mixed payload', () => {
+  const records = collectExternalSourceRecords([
+    {
+      sourceName: 'merged-source',
+      payload: {
+        records: [
+          { company: '中国平安人寿保险股份有限公司', productName: '平安详细责任A', pageText: '保险责任 A' },
+        ],
+        candidates: [
+          { company: '中国平安人寿保险股份有限公司', productName: '平安候选A', pageText: '保险责任 候选' },
+        ],
+        suspects: [
+          { company: '中国平安人寿保险股份有限公司', productName: '平安疑似A', pageText: '保险责任 疑似' },
+        ],
+        products: [
+          { company: '中国平安人寿保险股份有限公司', productName: '平安索引A', pageText: '保险责任 索引' },
+        ],
+      },
+    },
+  ]);
+
+  assert.deepEqual(records.map((row) => row.productName), ['平安详细责任A']);
+});
+
 test('buildCoverageSummary reports local, repair, missing, and pdf counts', () => {
   const summary = buildCoverageSummary({
     generatedAt: '2026-06-18T00:00:00.000Z',
@@ -626,4 +656,52 @@ test('buildCoverageSummary reports local, repair, missing, and pdf counts', () =
     reextract_official_pdf: 1,
     boundary_cleanup: 1,
   });
+});
+
+function fakeKnowledgeDb(rows = []) {
+  return {
+    prepare(sql) {
+      if (/COUNT\(\*\)/u.test(sql)) {
+        return { get: () => ({ count: rows.length }) };
+      }
+      return { all: () => rows };
+    },
+  };
+}
+
+test('knowledgeRecordsFingerprint changes when payload changes at same row count', () => {
+  const base = knowledgeRecordsFingerprint(fakeKnowledgeDb([
+    { id: 1, company: '中国平安', product_name: '平安A', url: 'https://example.test/a', payload: '{"pageText":"保险责任 A"}' },
+  ]));
+  const changedPayload = knowledgeRecordsFingerprint(fakeKnowledgeDb([
+    { id: 1, company: '中国平安', product_name: '平安A', url: 'https://example.test/a', payload: '{"pageText":"保险责任 B"}' },
+  ]));
+
+  assert.equal(base.count, changedPayload.count);
+  assert.notEqual(base.sha256, changedPayload.sha256);
+});
+
+test('readCliArg does not consume following flags as values', () => {
+  assert.equal(readCliArg(['--db-path', '/tmp/a.sqlite'], 'db-path', 'fallback'), '/tmp/a.sqlite');
+  assert.equal(readCliArg(['--db-path=/tmp/a.sqlite'], 'db-path', 'fallback'), '/tmp/a.sqlite');
+  assert.equal(readCliArg(['--db-path', '--source-paths=/tmp/source.json'], 'db-path', 'fallback'), 'fallback');
+  assert.equal(readCliArg(['--db-path='], 'db-path', 'fallback'), 'fallback');
+  assert.equal(readCliArg(['--other', 'value'], 'db-path', 'fallback'), 'fallback');
+});
+
+test('readJsonStrict throws for missing and invalid source JSON', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ping-an-coverage-audit-'));
+  const validPath = path.join(dir, 'valid.json');
+  const invalidPath = path.join(dir, 'invalid.json');
+
+  try {
+    fs.writeFileSync(validPath, '{"ok":true}\n');
+    fs.writeFileSync(invalidPath, '{"ok":');
+
+    assert.deepEqual(readJsonStrict(validPath), { ok: true });
+    assert.throws(() => readJsonStrict(path.join(dir, 'missing.json')), /Unable to read source JSON/u);
+    assert.throws(() => readJsonStrict(invalidPath), /Invalid source JSON/u);
+  } finally {
+    fs.rmSync(dir, { force: true, recursive: true });
+  }
 });
