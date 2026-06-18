@@ -302,7 +302,7 @@ test('buildLocalPingAnIndexes indexes Ping An issuer variants and excludes non P
   assert.equal(indexes.byPlanCode.has('902'), false);
 });
 
-test('matchExternalToLocal treats exact normalized local product as represented', () => {
+test('matchExternalToLocal keeps same-name records reviewable without material proof', () => {
   const indexes = buildLocalPingAnIndexes([
     {
       id: 10,
@@ -321,8 +321,8 @@ test('matchExternalToLocal treats exact normalized local product as represented'
     indexes,
   );
 
-  assert.equal(match.status, 'represented_by_product_name');
-  assert.equal(match.missingReason, '');
+  assert.equal(match.status, 'same_name_no_material_match');
+  assert.equal(match.missingReason, 'same_name_no_material_match');
   assert.deepEqual(match.localMatches.map((row) => row.id), [10]);
 });
 
@@ -485,12 +485,17 @@ test('buildMissingSourceCandidates keeps missing and ambiguous records reviewabl
 
   const candidates = buildMissingSourceCandidates(externalRecords, localRecords);
 
-  assert.equal(candidates.length, 2);
+  assert.equal(candidates.length, 3);
   assert.deepEqual(candidates.map((row) => row.productName), [
+    '平安智盈人生终身寿险（万能型）',
     '平安康泰终身保险（甲）（9906）',
     '平安重复产品（分红型）',
   ]);
-  assert.deepEqual(candidates[0], {
+  assert.equal(candidates[0].matchStatus, 'same_name_no_material_match');
+  assert.equal(candidates[0].missingReason, 'same_name_no_material_match');
+  assert.equal(candidates[0].recommendedAction, 'manual_review');
+  assert.deepEqual(candidates[0].localMatchCandidates.map((row) => row.id), [10]);
+  assert.deepEqual(candidates[1], {
     productName: '平安康泰终身保险（甲）（9906）',
     normalizedProductName: '平安康泰终身保险(甲)(9906)',
     issuerFullName: '中国平安人寿保险股份有限公司',
@@ -513,10 +518,10 @@ test('buildMissingSourceCandidates keeps missing and ambiguous records reviewabl
     missingReason: 'no_local_product_match',
     recommendedAction: 'review_then_insert',
   });
-  assert.equal(candidates[1].matchStatus, 'ambiguous_local_match');
-  assert.equal(candidates[1].missingReason, 'ambiguous_local_match');
-  assert.equal(candidates[1].recommendedAction, 'manual_review');
-  assert.deepEqual(candidates[1].localMatchCandidates.map((row) => row.id), [11, 12]);
+  assert.equal(candidates[2].matchStatus, 'ambiguous_local_match');
+  assert.equal(candidates[2].missingReason, 'ambiguous_local_match');
+  assert.equal(candidates[2].recommendedAction, 'manual_review');
+  assert.deepEqual(candidates[2].localMatchCandidates.map((row) => row.id), [11, 12]);
 });
 
 test('collectExternalSourceRecords reads mixed source payload arrays', () => {

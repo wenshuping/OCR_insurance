@@ -198,7 +198,7 @@ export function matchExternalToLocal(externalRecord = {}, indexes = buildLocalPi
   const normalizedProductName = trim(externalRecord.normalizedProductName) || normalizeProductName(externalRecord.productName);
   const nameMatches = indexes.byProductName.get(normalizedProductName) || [];
   if (nameMatches.length === 1) {
-    return { status: 'represented_by_product_name', missingReason: '', localMatches: nameMatches };
+    return { status: 'same_name_no_material_match', missingReason: 'same_name_no_material_match', localMatches: nameMatches };
   }
   if (nameMatches.length > 1) {
     return { status: 'ambiguous_local_match', missingReason: 'ambiguous_local_match', localMatches: nameMatches };
@@ -209,6 +209,11 @@ export function matchExternalToLocal(externalRecord = {}, indexes = buildLocalPi
 
 export function buildMissingSourceCandidates(externalRecords = [], localRecords = []) {
   const indexes = buildLocalPingAnIndexes(localRecords);
+  const recommendedActionByReason = {
+    no_local_product_match: 'review_then_insert',
+    same_name_no_material_match: 'manual_review',
+    ambiguous_local_match: 'manual_review',
+  };
   const candidates = [];
   for (const record of Array.isArray(externalRecords) ? externalRecords : []) {
     const match = matchExternalToLocal(record, indexes);
@@ -234,7 +239,7 @@ export function buildMissingSourceCandidates(externalRecords = [], localRecords 
       localMatchCandidates: match.localMatches.slice(0, 10),
       matchStatus: match.status,
       missingReason: match.missingReason,
-      recommendedAction: match.missingReason === 'ambiguous_local_match' ? 'manual_review' : 'review_then_insert',
+      recommendedAction: recommendedActionByReason[match.missingReason] || 'manual_review',
     });
   }
   return candidates;
