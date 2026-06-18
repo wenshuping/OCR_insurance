@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 export function trim(value) {
   return String(value || '').trim();
 }
@@ -28,4 +30,77 @@ export function planCodeFromUrl(url = '') {
   } catch {
     return '';
   }
+}
+
+function countBy(rows = [], keyFn) {
+  return rows.reduce((acc, row) => {
+    const key = keyFn(row) || 'unknown';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function hasArchivedPdf(record = {}, existsFn = fs.existsSync) {
+  const pdfPath = trim(record.pdfLocalPath);
+  return Boolean(pdfPath && existsFn(pdfPath));
+}
+
+export function classifyLocalRepairCandidate(record = {}, { existsFn = fs.existsSync } = {}) {
+  const pageText = trim(record.pageText);
+  const qualityStatus = trim(record.qualityStatus);
+  const issues = [];
+  if (!pageText) issues.push('empty_text');
+  if (pageText && pageText.length < 100) issues.push('very_short_text_lt_100');
+  else if (pageText && pageText.length < 300) issues.push('short_text_lt_300');
+  if (!qualityStatus) issues.push('blank_quality_status');
+  if (qualityStatus === 'valid_partial') issues.push('flagged_valid_partial');
+  if (qualityStatus === 'invalid_empty' || qualityStatus === 'invalid_responsibility') issues.push('flagged_invalid');
+  if (/责任免除/u.test(pageText)) issues.push('boundary_overrun_exclusion_section');
+  if (/保单红利|现金价值|保险金申请|如何领取保险金/u.test(pageText)) issues.push('boundary_overrun_policy_benefit_section');
+  if (!hasArchivedPdf(record, existsFn)) issues.push('missing_archived_pdf');
+
+  let recommendedAction = '';
+  if (issues.includes('empty_text') || issues.includes('flagged_invalid')) recommendedAction = 'ocr_official_pdf';
+  else if (issues.some((issue) => issue.startsWith('boundary_overrun'))) recommendedAction = 'boundary_cleanup';
+  else if (issues.includes('missing_archived_pdf') || issues.includes('short_text_lt_300') || issues.includes('very_short_text_lt_100') || issues.includes('blank_quality_status') || issues.includes('flagged_valid_partial')) {
+    recommendedAction = 'reextract_official_pdf';
+  }
+
+  return { issues, recommendedAction };
+}
+
+export function buildExistingRepairAudit(records = [], { existsFn = fs.existsSync, generatedAt = new Date().toISOString() } = {}) {
+  const repairRecords = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    if (trim(record.company) !== '中国平安') continue;
+    const classification = classifyLocalRepairCandidate(record, { existsFn });
+    if (!classification.recommendedAction) continue;
+    repairRecords.push({
+      id: record.id,
+      company: trim(record.company),
+      productName: trim(record.productName),
+      title: trim(record.title),
+      materialType: trim(record.materialType),
+      url: trim(record.url),
+      currentQualityStatus: trim(record.qualityStatus),
+      pageTextChars: trim(record.pageText).length,
+      hasArchivedPdf: hasArchivedPdf(record, existsFn),
+      pdfLocalPath: trim(record.pdfLocalPath),
+      issues: classification.issues,
+      recommendedAction: classification.recommendedAction,
+    });
+  }
+  return {
+    generatedAt,
+    records: repairRecords,
+    summary: {
+      recordCount: repairRecords.length,
+      productCount: new Set(repairRecords.map((row) => normalizeProductName(row.productName)).filter(Boolean)).size,
+      byRecommendedAction: countBy(repairRecords, (row) => row.recommendedAction),
+      byIssue: repairRecords.reduce((acc, row) => {
+        for (const issue of row.issues) acc[issue] = (acc[issue] || 0) + 1;
+        return acc;
+      }, {}),
+    },
+  };
 }
