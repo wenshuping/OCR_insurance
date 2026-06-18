@@ -72,7 +72,7 @@ export function classifyLocalRepairCandidate(record = {}, { existsFn = fs.exists
 export function buildExistingRepairAudit(records = [], { existsFn = fs.existsSync, generatedAt = new Date().toISOString() } = {}) {
   const repairRecords = [];
   for (const record of Array.isArray(records) ? records : []) {
-    if (trim(record.company) !== '中国平安') continue;
+    if (!isPingAnIssuer(record.company)) continue;
     const classification = classifyLocalRepairCandidate(record, { existsFn });
     if (!classification.recommendedAction) continue;
     repairRecords.push({

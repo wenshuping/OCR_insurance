@@ -177,11 +177,12 @@ test('buildExistingRepairAudit returns only Ping An records with detected issues
       { id: 2, company: '新华保险', productName: '新华短文本', pageText: '', qualityStatus: '' },
       { id: 3, company: '中国平安', productName: '平安完整文本', pageText: '保险责任 ' + '我们按约定给付。'.repeat(80), qualityStatus: 'valid_complete', pdfLocalPath: '/tmp/a.pdf' },
       { id: 4, company: '中国平安', productName: '平安部分文本', pageText: partialText, qualityStatus: 'valid_partial', pdfLocalPath: '/tmp/b.pdf' },
+      { id: 5, company: '中国平安人寿保险股份有限公司', productName: '平安人寿短文本', pageText: shortText, qualityStatus: 'valid_complete', pdfLocalPath: '/tmp/c.pdf' },
     ],
     { existsFn: (filePath) => filePath === '/tmp/a.pdf' || filePath === '/tmp/b.pdf' },
   );
 
-  assert.equal(audit.records.length, 2);
+  assert.equal(audit.records.length, 3);
   assert.equal(audit.records[0].id, 1);
   assert.deepEqual(audit.records[0], {
     id: 1,
@@ -201,13 +202,15 @@ test('buildExistingRepairAudit returns only Ping An records with detected issues
   assert.equal(audit.records[1].currentQualityStatus, 'valid_partial');
   assert.equal(audit.records[1].pageTextChars, partialText.length);
   assert.equal(audit.records[1].hasArchivedPdf, true);
-  assert.equal(audit.summary.recordCount, 2);
-  assert.equal(audit.summary.productCount, 2);
-  assert.equal(audit.summary.byRecommendedAction.reextract_official_pdf, 2);
+  assert.equal(audit.records[2].id, 5);
+  assert.equal(audit.records[2].company, '中国平安人寿保险股份有限公司');
+  assert.equal(audit.summary.recordCount, 3);
+  assert.equal(audit.summary.productCount, 3);
+  assert.equal(audit.summary.byRecommendedAction.reextract_official_pdf, 3);
   assert.deepEqual(audit.summary.byIssue, {
-    very_short_text_lt_100: 1,
+    very_short_text_lt_100: 2,
     blank_quality_status: 1,
-    missing_archived_pdf: 1,
+    missing_archived_pdf: 2,
     flagged_valid_partial: 1,
   });
 });
