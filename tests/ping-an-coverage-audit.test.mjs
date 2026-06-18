@@ -86,6 +86,14 @@ test('classifyLocalRepairCandidate classifies text length and status issues', ()
 
   assert.deepEqual(
     classifyLocalRepairCandidate(
+      { pageText: '', qualityStatus: 'valid_complete', pdfLocalPath: '' },
+      { existsFn: () => false },
+    ),
+    { issues: ['empty_text', 'missing_archived_pdf'], recommendedAction: 'ocr_official_pdf' },
+  );
+
+  assert.deepEqual(
+    classifyLocalRepairCandidate(
       { pageText: 'a'.repeat(99), qualityStatus: 'valid_complete', pdfLocalPath: '/tmp/a.pdf' },
       { existsFn: () => true },
     ),
