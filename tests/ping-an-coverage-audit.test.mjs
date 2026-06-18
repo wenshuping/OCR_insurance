@@ -5,6 +5,8 @@ import {
   buildExistingRepairAudit,
   classifyLocalRepairCandidate,
   isPingAnIssuer,
+  normalizeExternalSourceRecord,
+  normalizeExternalSourceRecords,
   normalizeProductName,
   planCodeFromUrl,
 } from '../scripts/audit-ping-an-coverage.mjs';
@@ -213,4 +215,36 @@ test('buildExistingRepairAudit returns only Ping An records with detected issues
     missing_archived_pdf: 2,
     flagged_valid_partial: 1,
   });
+});
+
+test('normalizeExternalSourceRecord preserves JRCPCX Ping An evidence fields', () => {
+  const normalized = normalizeExternalSourceRecord({
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安金宝贝少儿教育年金保险（分红型）',
+    productType: '年金保险-非养老年金保险',
+    salesStatus: '停用',
+    sourceLevel: 'regulatory_industry_terms',
+    detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=abc',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+    pageText: '保险责任 大学教育金 被保险人生存至18周岁，我们给付大学教育金。',
+    qualityStatus: 'valid_complete',
+    pdfLocalPath: '/tmp/terms.pdf',
+    pdfSha256: 'abc123',
+    pdfBytes: 123,
+  }, { sourceName: 'jrcpcx' });
+
+  assert.equal(normalized.issuerFullName, '中国平安人寿保险股份有限公司');
+  assert.equal(normalized.normalizedProductName, '平安金宝贝少儿教育年金保险(分红型)');
+  assert.equal(normalized.sourceName, 'jrcpcx');
+  assert.equal(normalized.responsibilityPreview.includes('大学教育金'), true);
+});
+
+test('normalizeExternalSourceRecords filters non Ping An issuers', () => {
+  const records = normalizeExternalSourceRecords([
+    { company: '中国平安人寿保险股份有限公司', productName: '平安产品', pageText: '保险责任 身故给付。' },
+    { company: '新华保险股份有限公司', productName: '新华产品', pageText: '保险责任 身故给付。' },
+  ], { sourceName: 'sample' });
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].productName, '平安产品');
 });

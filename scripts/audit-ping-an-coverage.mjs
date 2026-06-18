@@ -69,6 +69,40 @@ export function classifyLocalRepairCandidate(record = {}, { existsFn = fs.exists
   return { issues, recommendedAction };
 }
 
+export function normalizeExternalSourceRecord(record = {}, { sourceName = '' } = {}) {
+  const issuerFullName = trim(record.issuerFullName || record.company || record.companyName || record.deptName || record['发行机构全称']);
+  const productName = trim(record.productName || record.product || record['产品名称']);
+  const detailUrl = trim(record.detailUrl || record.sourceUrl || record.source || record.url);
+  const clauseUrl = trim(record.clauseUrl || record.pdfOriginalUrl || record.url);
+  const pageText = trim(record.pageText);
+  return {
+    sourceName: trim(sourceName || record.sourceName || record.sourceLevel || record.parser || 'external_source'),
+    sourceLevel: trim(record.sourceLevel),
+    issuerFullName,
+    productName,
+    normalizedProductName: normalizeProductName(productName),
+    productType: trim(record.productType || record['产品类别']),
+    salesStatus: trim(record.salesStatus || record.productState || record['产品销售状态']),
+    detailUrl,
+    clauseUrl,
+    url: clauseUrl || detailUrl,
+    planCode: trim(record.planCode) || planCodeFromUrl(clauseUrl || detailUrl),
+    materialType: trim(record.materialType || 'terms'),
+    responsibilityPreview: pageText.slice(0, 800),
+    responsibilityQualityStatus: trim(record.qualityStatus || (pageText ? 'suspect_needs_source_check' : 'invalid_empty')),
+    pdfLocalPath: trim(record.pdfLocalPath),
+    pdfSha256: trim(record.pdfSha256),
+    pdfBytes: Number(record.pdfBytes || record.bytes || 0) || 0,
+    rawId: trim(record.id || record.catalogId || record.localId),
+  };
+}
+
+export function normalizeExternalSourceRecords(records = [], options = {}) {
+  return (Array.isArray(records) ? records : [])
+    .map((record) => normalizeExternalSourceRecord(record, options))
+    .filter((record) => record.productName && isPingAnIssuer(record.issuerFullName));
+}
+
 export function buildExistingRepairAudit(records = [], { existsFn = fs.existsSync, generatedAt = new Date().toISOString() } = {}) {
   const repairRecords = [];
   for (const record of Array.isArray(records) ? records : []) {
