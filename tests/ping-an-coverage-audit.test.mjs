@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildCoverageSummary,
   buildExistingRepairAudit,
   buildLocalPingAnIndexes,
   buildMissingSourceCandidates,
   classifyLocalRepairCandidate,
+  collectExternalSourceRecords,
   isPingAnIssuer,
   matchExternalToLocal,
   normalizeExternalSourceRecord,
@@ -509,4 +511,119 @@ test('buildMissingSourceCandidates keeps missing and ambiguous records reviewabl
   assert.equal(candidates[1].missingReason, 'ambiguous_local_match');
   assert.equal(candidates[1].recommendedAction, 'manual_review');
   assert.deepEqual(candidates[1].localMatchCandidates.map((row) => row.id), [11, 12]);
+});
+
+test('collectExternalSourceRecords reads mixed source payload arrays', () => {
+  const records = collectExternalSourceRecords([
+    {
+      sourceName: 'records-source',
+      payload: {
+        records: [
+          { company: '中国平安人寿保险股份有限公司', productName: '平安A', pageText: '保险责任 A' },
+          { company: '新华保险股份有限公司', productName: '新华A', pageText: '保险责任 A' },
+        ],
+      },
+    },
+    {
+      sourceName: 'products-source',
+      payload: {
+        products: [
+          { issuerFullName: '中国平安', productName: '平安B', pageText: '保险责任 B' },
+        ],
+      },
+    },
+    {
+      sourceName: 'suspects-source',
+      payload: {
+        suspects: [
+          { companyName: '平安健康保险股份有限公司', productName: '平安C', pageText: '保险责任 C' },
+        ],
+      },
+    },
+    {
+      sourceName: 'candidates-source',
+      payload: {
+        candidates: [
+          { deptName: '中国平安人寿保险股份有限公司', productName: '平安D', pageText: '保险责任 D' },
+        ],
+      },
+    },
+    {
+      sourceName: 'array-source',
+      payload: [
+        { company: '中国平安人寿保险股份有限公司', productName: '平安E', pageText: '保险责任 E' },
+      ],
+    },
+  ]);
+
+  assert.deepEqual(records.map((row) => row.productName), ['平安A', '平安B', '平安C', '平安D', '平安E']);
+  assert.deepEqual(records.map((row) => row.sourceName), [
+    'records-source',
+    'products-source',
+    'suspects-source',
+    'candidates-source',
+    'array-source',
+  ]);
+});
+
+test('buildCoverageSummary reports local, repair, missing, and pdf counts', () => {
+  const summary = buildCoverageSummary({
+    generatedAt: '2026-06-18T00:00:00.000Z',
+    localRecords: [
+      { company: '中国平安', productName: '平安A' },
+      { company: '中国平安人寿保险股份有限公司', productName: '平安B' },
+      { company: '平安健康保险股份有限公司', productName: '平安C' },
+      { company: '新华保险', productName: '新华A' },
+    ],
+    externalRecords: [
+      { productName: '平安D', normalizedProductName: '平安D', pdfLocalPath: '/tmp/d.pdf', responsibilityQualityStatus: 'valid_complete' },
+      { productName: '平安D', normalizedProductName: '平安D', responsibilityQualityStatus: 'invalid_empty' },
+    ],
+    existingRepairRecords: [
+      { productName: '平安A', recommendedAction: 'reextract_official_pdf' },
+      { productName: '平安B', recommendedAction: 'boundary_cleanup' },
+    ],
+    missingCandidates: [
+      {
+        productName: '平安D',
+        normalizedProductName: '平安D',
+        pdfLocalPath: '/tmp/d.pdf',
+        responsibilityPreview: '保险责任 D',
+        responsibilityQualityStatus: 'valid_complete',
+        missingReason: 'no_local_product_match',
+      },
+      {
+        productName: '平安E',
+        normalizedProductName: '平安E',
+        pdfLocalPath: '',
+        responsibilityPreview: '',
+        responsibilityQualityStatus: 'invalid_empty',
+        missingReason: 'ambiguous_local_match',
+      },
+    ],
+  });
+
+  assert.equal(summary.generatedAt, '2026-06-18T00:00:00.000Z');
+  assert.equal(summary.localPingAnRecordCount, 3);
+  assert.equal(summary.localPingAnProductCount, 3);
+  assert.equal(summary.externalSourceRecordCount, 2);
+  assert.equal(summary.externalSourceProductCount, 1);
+  assert.equal(summary.existingRepairCount, 2);
+  assert.equal(summary.existingRepairProductCount, 2);
+  assert.equal(summary.missingCandidateCount, 2);
+  assert.equal(summary.missingCandidateProductCount, 2);
+  assert.equal(summary.missingCandidatesWithPdfCount, 1);
+  assert.equal(summary.missingCandidatesWithResponsibilityCount, 1);
+  assert.deepEqual(summary.missingCandidatesByReason, {
+    no_local_product_match: 1,
+    ambiguous_local_match: 1,
+  });
+  assert.deepEqual(summary.missingCandidatesByQuality, {
+    valid_complete: 1,
+    invalid_empty: 1,
+  });
+  assert.deepEqual(summary.repairCandidatesByAction, {
+    reextract_official_pdf: 1,
+    boundary_cleanup: 1,
+  });
 });

@@ -1,4 +1,12 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, '..');
+const runtimeDir = path.join(projectRoot, '.runtime');
 
 export function trim(value) {
   return String(value || '').trim();
@@ -229,4 +237,152 @@ export function buildMissingSourceCandidates(externalRecords = [], localRecords 
     });
   }
   return candidates;
+}
+
+function readJson(filePath, fallback = null) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function recordsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+
+  const records = [];
+  for (const key of ['records', 'products', 'suspects', 'candidates']) {
+    if (Array.isArray(payload[key])) records.push(...payload[key]);
+  }
+  return records;
+}
+
+export function collectExternalSourceRecords(sources = []) {
+  return (Array.isArray(sources) ? sources : []).flatMap((source) => {
+    const sourceObject = source && typeof source === 'object' ? source : {};
+    const payload = Object.hasOwn(sourceObject, 'payload') ? sourceObject.payload : sourceObject;
+    const sourceName = trim(sourceObject.sourceName || sourceObject.name || payload?.sourceName || payload?.source || '');
+    return normalizeExternalSourceRecords(recordsFromPayload(payload), { sourceName });
+  });
+}
+
+export function buildCoverageSummary({
+  localRecords = [],
+  externalRecords = [],
+  existingRepairRecords = [],
+  missingCandidates = [],
+  generatedAt = new Date().toISOString(),
+} = {}) {
+  const localPingAnRecords = (Array.isArray(localRecords) ? localRecords : []).filter((record) => isPingAnIssuer(record.company));
+  const externalRows = Array.isArray(externalRecords) ? externalRecords : [];
+  const repairRows = Array.isArray(existingRepairRecords) ? existingRepairRecords : [];
+  const missingRows = Array.isArray(missingCandidates) ? missingCandidates : [];
+
+  return {
+    generatedAt,
+    localPingAnRecordCount: localPingAnRecords.length,
+    localPingAnProductCount: new Set(localPingAnRecords.map((row) => normalizeProductName(row.productName)).filter(Boolean)).size,
+    externalSourceRecordCount: externalRows.length,
+    externalSourceProductCount: new Set(externalRows.map((row) => row.normalizedProductName || normalizeProductName(row.productName)).filter(Boolean)).size,
+    existingRepairCount: repairRows.length,
+    existingRepairProductCount: new Set(repairRows.map((row) => normalizeProductName(row.productName)).filter(Boolean)).size,
+    missingCandidateCount: missingRows.length,
+    missingCandidateProductCount: new Set(missingRows.map((row) => row.normalizedProductName || normalizeProductName(row.productName)).filter(Boolean)).size,
+    missingCandidatesWithPdfCount: missingRows.filter((row) => trim(row.pdfLocalPath)).length,
+    missingCandidatesWithResponsibilityCount: missingRows.filter((row) => trim(row.responsibilityPreview)).length,
+    missingCandidatesByReason: countBy(missingRows, (row) => row.missingReason),
+    missingCandidatesByQuality: countBy(missingRows, (row) => row.responsibilityQualityStatus),
+    repairCandidatesByAction: countBy(repairRows, (row) => row.recommendedAction),
+  };
+}
+
+function readArg(name, fallback = '') {
+  const prefix = `--${name}=`;
+  const inline = process.argv.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = process.argv.indexOf(`--${name}`);
+  return index >= 0 ? process.argv[index + 1] || fallback : fallback;
+}
+
+function splitList(value = '') {
+  return trim(value)
+    .split(/[,，\n]/u)
+    .map((item) => trim(item))
+    .filter(Boolean);
+}
+
+function writeJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function main() {
+  const dbPath = path.resolve(readArg('db-path', process.env.POLICY_OCR_APP_DB_PATH || path.join(runtimeDir, 'policy-ocr.sqlite')));
+  const statePath = path.resolve(readArg('state-path', process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json')));
+  const sourcePaths = splitList(readArg('source-paths', process.env.PING_AN_COVERAGE_SOURCE_PATHS || ''));
+  const existingRepairPath = path.resolve(readArg('existing-repair-path', path.join(runtimeDir, 'ping-an-existing-repair-audit.json')));
+  const missingPath = path.resolve(readArg('missing-path', path.join(runtimeDir, 'ping-an-missing-source-candidates.json')));
+  const summaryPath = path.resolve(readArg('summary-path', path.join(runtimeDir, 'ping-an-coverage-audit-summary.json')));
+  const generatedAt = new Date().toISOString();
+
+  const store = await createKnowledgeStateStore({ dbPath, seedStatePath: statePath });
+  try {
+    const beforeCount = store.countKnowledgeRecords();
+    const state = store.loadState();
+    const localRecords = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [];
+    const externalRecords = collectExternalSourceRecords(
+      sourcePaths.map((sourcePath) => {
+        const resolvedPath = path.resolve(sourcePath);
+        return {
+          sourceName: path.basename(resolvedPath).replace(/\.json$/u, ''),
+          payload: readJson(resolvedPath, {}),
+        };
+      }),
+    );
+    const existingRepairAudit = buildExistingRepairAudit(localRecords, { generatedAt });
+    const missingCandidates = buildMissingSourceCandidates(externalRecords, localRecords);
+    const summary = buildCoverageSummary({
+      localRecords,
+      externalRecords,
+      existingRepairRecords: existingRepairAudit.records,
+      missingCandidates,
+      generatedAt,
+    });
+    const afterCount = store.countKnowledgeRecords();
+    if (beforeCount !== afterCount) {
+      throw new Error(`Read-only audit changed knowledge row count: before=${beforeCount} after=${afterCount}`);
+    }
+
+    writeJson(existingRepairPath, existingRepairAudit);
+    writeJson(missingPath, {
+      generatedAt,
+      records: missingCandidates,
+      summary: {
+        recordCount: missingCandidates.length,
+        productCount: new Set(missingCandidates.map((row) => row.normalizedProductName).filter(Boolean)).size,
+        byReason: countBy(missingCandidates, (row) => row.missingReason),
+        byRecommendedAction: countBy(missingCandidates, (row) => row.recommendedAction),
+      },
+    });
+    writeJson(summaryPath, {
+      ...summary,
+      dbPath: store.dbPath,
+      statePath: store.seedStatePath,
+      sourcePaths: sourcePaths.map((sourcePath) => path.resolve(sourcePath)),
+      existingRepairPath,
+      missingPath,
+    });
+
+    console.log(JSON.stringify({ ok: true, existingRepairPath, missingPath, summaryPath, summary }, null, 2));
+  } finally {
+    store.close();
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
 }
