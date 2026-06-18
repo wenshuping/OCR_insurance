@@ -358,6 +358,43 @@ test('matchExternalToLocal represents URL and plan code matches before product n
   assert.deepEqual(planCodeMatch.localMatches.map((row) => row.id), [21]);
 });
 
+test('buildMissingSourceCandidates keeps duplicate plan code matches under manual review', () => {
+  const localRecords = [
+    {
+      id: 22,
+      company: '中国平安',
+      productName: '平安计划代码重复产品A',
+      url: 'https://life.pingan.com/terms/plan-code-a.pdf',
+      planCode: '822',
+    },
+    {
+      id: 23,
+      company: '中国平安人寿保险股份有限公司',
+      productName: '平安计划代码重复产品B',
+      url: 'https://life.pingan.com/terms/plan-code-b.pdf',
+      planCode: '822',
+    },
+  ];
+  const externalRecords = normalizeExternalSourceRecords([
+    {
+      company: '中国平安人寿保险股份有限公司',
+      productName: '外部计划代码重复产品',
+      clauseUrl: 'https://external.test/822.pdf',
+      planCode: '822',
+      pageText: '保险责任 身故保险金。',
+      qualityStatus: 'valid_complete',
+    },
+  ], { sourceName: 'sample' });
+
+  const candidates = buildMissingSourceCandidates(externalRecords, localRecords);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].matchStatus, 'ambiguous_local_match');
+  assert.equal(candidates[0].missingReason, 'ambiguous_local_match');
+  assert.equal(candidates[0].recommendedAction, 'manual_review');
+  assert.deepEqual(candidates[0].localMatchCandidates.map((row) => row.id), [22, 23]);
+});
+
 test('matchExternalToLocal returns ambiguous candidates for duplicate local product names', () => {
   const indexes = buildLocalPingAnIndexes([
     {

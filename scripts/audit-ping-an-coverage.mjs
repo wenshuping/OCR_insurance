@@ -179,8 +179,11 @@ export function matchExternalToLocal(externalRecord = {}, indexes = buildLocalPi
 
   const planCode = trim(externalRecord.planCode) || planCodeFromUrl(externalRecord.url) || planCodeFromUrl(externalRecord.clauseUrl);
   const planMatches = planCode ? indexes.byPlanCode.get(planCode) || [] : [];
-  if (planMatches.length) {
+  if (planMatches.length === 1) {
     return { status: 'represented_by_plan_code', missingReason: '', localMatches: planMatches };
+  }
+  if (planMatches.length > 1) {
+    return { status: 'ambiguous_local_match', missingReason: 'ambiguous_local_match', localMatches: planMatches };
   }
 
   const normalizedProductName = trim(externalRecord.normalizedProductName) || normalizeProductName(externalRecord.productName);
