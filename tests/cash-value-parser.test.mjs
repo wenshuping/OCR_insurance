@@ -229,6 +229,52 @@ describe('cash-value-parser', () => {
       assert.deepEqual(result.rows[8], { policyYear: 45, age: null, cashValue: 52440 });
     });
 
+    it('parses skewed side-by-side cash value groups when repeated headers split into nearby rows', () => {
+      const boxes = [
+        { text: '保单年度末', box: [[2086, 940], [2200, 940], [2200, 956], [2086, 956]], confidence: 0.98 },
+        { text: '现金价值（元）', box: [[2490, 930], [2650, 930], [2650, 946], [2490, 946]], confidence: 0.98 },
+        { text: '保单年度末', box: [[1158, 960], [1270, 960], [1270, 976], [1158, 976]], confidence: 0.98 },
+        { text: '现金价值（元）', box: [[1564, 950], [1720, 950], [1720, 966], [1564, 966]], confidence: 0.98 },
+        { text: '保单年度末', box: [[223, 985], [340, 985], [340, 1001], [223, 1001]], confidence: 0.98 },
+        { text: '现金价值（元）', box: [[631, 978], [790, 978], [790, 994], [631, 994]], confidence: 0.98 },
+
+        { text: '21040.00', box: [[1651, 1051], [1770, 1051], [1770, 1067], [1651, 1067]], confidence: 0.99 },
+        { text: '69年末', box: [[2131, 1042], [2210, 1042], [2210, 1058], [2131, 1058]], confidence: 0.99 },
+        { text: '61380.00', box: [[2578, 1031], [2700, 1031], [2700, 1047], [2578, 1047]], confidence: 0.99 },
+        { text: '110.00', box: [[781, 1077], [860, 1077], [860, 1093], [781, 1093]], confidence: 0.99 },
+        { text: '35年末', box: [[1207, 1063], [1288, 1063], [1288, 1079], [1207, 1079]], confidence: 0.99 },
+        { text: '1年末', box: [[289, 1087], [360, 1087], [360, 1103], [289, 1103]], confidence: 0.99 },
+
+        { text: '70年末', box: [[2133, 1117], [2215, 1117], [2215, 1133], [2133, 1133]], confidence: 0.99 },
+        { text: '62880.00', box: [[2581, 1103], [2703, 1103], [2703, 1119], [2581, 1119]], confidence: 0.99 },
+        { text: '36年末', box: [[1206, 1138], [1288, 1138], [1288, 1154], [1206, 1154]], confidence: 0.99 },
+        { text: '21790.00', box: [[1653, 1127], [1773, 1127], [1773, 1143], [1653, 1143]], confidence: 0.99 },
+        { text: '2年末', box: [[288, 1161], [360, 1161], [360, 1177], [288, 1177]], confidence: 0.99 },
+        { text: '380.00', box: [[780, 1151], [860, 1151], [860, 1167], [780, 1167]], confidence: 0.99 },
+
+        { text: '71年末', box: [[2136, 1189], [2218, 1189], [2218, 1205], [2136, 1205]], confidence: 0.99 },
+        { text: '64370.00', box: [[2585, 1178], [2708, 1178], [2708, 1194], [2585, 1194]], confidence: 0.99 },
+        { text: '37年末', box: [[1209, 1212], [1290, 1212], [1290, 1228], [1209, 1228]], confidence: 0.99 },
+        { text: '22560.00', box: [[1654, 1200], [1775, 1200], [1775, 1216], [1654, 1216]], confidence: 0.99 },
+        { text: '3年末', box: [[285, 1233], [360, 1233], [360, 1249], [285, 1249]], confidence: 0.99 },
+        { text: '660.00', box: [[782, 1225], [862, 1225], [862, 1241], [782, 1241]], confidence: 0.99 },
+      ];
+
+      const result = parseCashValueTable(boxes);
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.rows, [
+        { policyYear: 1, age: null, cashValue: 110 },
+        { policyYear: 2, age: null, cashValue: 380 },
+        { policyYear: 3, age: null, cashValue: 660 },
+        { policyYear: 35, age: null, cashValue: 21040 },
+        { policyYear: 36, age: null, cashValue: 21790 },
+        { policyYear: 37, age: null, cashValue: 22560 },
+        { policyYear: 69, age: null, cashValue: 61380 },
+        { policyYear: 70, age: null, cashValue: 62880 },
+        { policyYear: 71, age: null, cashValue: 64370 },
+      ]);
+    });
+
     it('does not parse year/value pairs when headers are missed', () => {
       const boxes = [
         { text: '1年末', box: [[100, 90], [160, 90], [160, 110], [100, 110]], confidence: 0.98 },
@@ -381,6 +427,42 @@ describe('cash-value-parser', () => {
       assert.deepEqual(result.rows.find((row) => row.policyYear === 22), { policyYear: 22, age: null, cashValue: 29976 });
       assert.deepEqual(result.rows.find((row) => row.policyYear === 24), { policyYear: 24, age: null, cashValue: 31272 });
       assert.deepEqual(result.rows.find((row) => row.policyYear === 45), { policyYear: 45, age: null, cashValue: 47088 });
+    });
+
+    it('stops parsing at numbered cash value footnotes after the final segment', () => {
+      const ocrText = [
+        '保单年度末',
+        '1年末',
+        '2年末',
+        '3年末',
+        '现金价值（元）',
+        '110.00',
+        '380.00',
+        '660.00',
+        '保单年度末',
+        '69年末',
+        '70年末',
+        '71年末',
+        '现金价值（元）',
+        '61380.00',
+        '62880.00',
+        '64370.00',
+        '身',
+        '父',
+        '1.本表仅为保单年度末的基本保险金额现金价值',
+        '询。',
+      ].join('\n');
+
+      const result = parseCashValueText(ocrText, { source: 'macos_vision' });
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.rows, [
+        { policyYear: 1, age: null, cashValue: 110 },
+        { policyYear: 2, age: null, cashValue: 380 },
+        { policyYear: 3, age: null, cashValue: 660 },
+        { policyYear: 69, age: null, cashValue: 61380 },
+        { policyYear: 70, age: null, cashValue: 62880 },
+        { policyYear: 71, age: null, cashValue: 64370 },
+      ]);
     });
 
     it('fails when text does not contain table headers', () => {
