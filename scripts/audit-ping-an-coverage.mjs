@@ -1,13 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, '..');
-const runtimeDir = path.join(projectRoot, '.runtime');
-
 export function trim(value) {
   return String(value || '').trim();
 }
