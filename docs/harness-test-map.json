@@ -54,6 +54,16 @@
     ]
   },
   {
+    "name": "ping-an-coverage-audit",
+    "patterns": [
+      "scripts/audit-ping-an-coverage.mjs",
+      "tests/ping-an-coverage-audit.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/ping-an-coverage-audit.test.mjs"
+    ]
+  },
+  {
     "name": "policy-ocr",
     "patterns": [
       "ocr-service/**",
