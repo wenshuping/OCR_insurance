@@ -467,6 +467,41 @@ test('buildResponsibilitiesArtifact starts from responsibility headings and stop
   assert.doesNotMatch(artifact.records[0].pageText, /第七条 责任免除/u);
 });
 
+test('buildResponsibilitiesArtifact supports dotted numeric responsibility headings', () => {
+  const artifact = buildResponsibilitiesArtifact({
+    rows: [
+      {
+        productName: '平安示例年金保险',
+        pageText: [
+          '产品简介',
+          '本产品的保险责任包括生存、满期、身故等多项保障，具体以条款为准。',
+          '1.2 保险责任在本合同保险期间内，我们承担生存保险金、满期保险金和身故保险金责任。本条责任正文用于验证真实PDF章节标题格式能够被识别，并且不会因为简介句子先出现保险责任而清空。若被保险人生存至约定日期，我们按照合同约定给付相应保险金；若被保险人在保险期间内身故，我们按照合同约定给付身故保险金，本合同终止。',
+          '1.3 责任免除',
+          '因下列情形导致保险事故的，我们不承担给付责任。',
+        ].join('\n'),
+      },
+      {
+        productName: '平安示例保障保险',
+        pageText: [
+          '2.1 保障责任',
+          '在本合同有效期间内，我们按照约定承担疾病保险金、医疗保险金及身故保险金责任。本条责任正文用于覆盖保障责任标题，并保持足够长度以验证质量状态为有效。发生保险事故后，我们根据合同约定、申请材料和责任范围给付保险金；同一保险事故涉及多项保障的，我们按照合同载明的给付顺序和限额承担责任。',
+          '2.2 除外责任',
+          '发生除外责任列明事项的，我们不承担保险责任。',
+        ].join('\n'),
+      },
+    ],
+  });
+
+  assert.equal(artifact.records[0].qualityStatus, 'valid_complete');
+  assert.match(artifact.records[0].pageText, /^1\.2 保险责任/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /产品简介/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /本产品的保险责任包括/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /1\.3 责任免除/u);
+  assert.equal(artifact.records[1].qualityStatus, 'valid_complete');
+  assert.match(artifact.records[1].pageText, /^2\.1 保障责任/u);
+  assert.doesNotMatch(artifact.records[1].pageText, /2\.2 除外责任/u);
+});
+
 test('buildResponsibilitiesArtifact derives quality from current pageText extraction', () => {
   const artifact = buildResponsibilitiesArtifact({
     rows: [

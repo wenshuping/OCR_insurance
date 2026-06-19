@@ -358,21 +358,27 @@ function normalizePageText(value = '') {
     .replace(/\n{3,}/gu, '\n\n');
 }
 
+const RESPONSIBILITY_HEADING_PREFIX = String.raw`(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*|\d+(?:\.\d+)*(?:[、.．])?\s*|[一二三四五六七八九十百千万零〇]+[、.．]\s*|[（(][一二三四五六七八九十百千万零〇\d]+[）)]\s*)?`;
+
+function headingPattern(labelPattern) {
+  return new RegExp(String.raw`(^|\n)\s*(?:${RESPONSIBILITY_HEADING_PREFIX}${labelPattern})`, 'u');
+}
+
 function extractResponsibilitySection(pageText = '') {
   const sourceText = normalizePageText(pageText);
   if (!sourceText) {
     return { text: '', qualityStatus: 'invalid_empty', qualityReason: 'missing_page_text' };
   }
-  const startMatch = /(^|\n)\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:保险责任|保障责任|给付责任))/u.exec(sourceText);
+  const startMatch = headingPattern(String.raw`(?:保险责任|保障责任|给付责任)`).exec(sourceText);
   if (!startMatch) {
     return { text: '', qualityStatus: 'invalid_non_responsibility', qualityReason: 'missing_responsibility_heading' };
   }
   const responsibilityStart = startMatch.index + startMatch[1].length;
   const responsibilitySource = sourceText.slice(responsibilityStart);
   const endPatterns = [
-    /\n\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:责任免除|除外责任|免除责任))/u,
-    /\n\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:保险金申请|如何申请领取保险金|理赔申请))/u,
-    /\n\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:释义|定义|附则))/u,
+    headingPattern(String.raw`(?:责任免除|除外责任|免除责任)`),
+    headingPattern(String.raw`(?:保险金申请|如何申请领取保险金|理赔申请)`),
+    headingPattern(String.raw`(?:释义|定义|附则)`),
   ];
   const endIndex = endPatterns
     .map((pattern) => {
