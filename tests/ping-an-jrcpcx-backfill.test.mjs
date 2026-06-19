@@ -165,6 +165,40 @@ test('eligibleForAutoInsert does not treat generic source as detail url', () => 
   assert.deepEqual(result.reasons, ['missing_detail_url']);
 });
 
+test('eligibleForAutoInsert does not treat generic detailUrl as detail url', () => {
+  const result = eligibleForAutoInsert({
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安示例年金保险',
+    productType: '人身保险类',
+    detailUrl: 'https://www.jrcpcx.cn/#/query',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+    pdfLocalPath: ensurePdfFixture(),
+    pdfSha256: 'abc123',
+    pageText: '保险责任 年金给付',
+    qualityStatus: 'valid_complete',
+  });
+
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.reasons, ['missing_detail_url']);
+});
+
+test('eligibleForAutoInsert does not treat generic sourceUrl as detail url', () => {
+  const result = eligibleForAutoInsert({
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安示例年金保险',
+    productType: '人身保险类',
+    sourceUrl: 'https://www.jrcpcx.cn/#/query',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+    pdfLocalPath: ensurePdfFixture(),
+    pdfSha256: 'abc123',
+    pageText: '保险责任 年金给付',
+    qualityStatus: 'valid_complete',
+  });
+
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.reasons, ['missing_detail_url']);
+});
+
 test('buildCoverageGapReport separates represented and insertable material gaps', () => {
   const report = buildCoverageGapReport({
     localRecords: [

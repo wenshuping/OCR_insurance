@@ -72,10 +72,11 @@ export function productNameOf(row = {}) {
 }
 
 export function detailUrlOf(row = {}) {
-  const explicitDetailUrl = trim(row.detailUrl || row.sourceUrl);
-  if (explicitDetailUrl) return explicitDetailUrl;
-  const source = trim(row.source);
-  return isJrcpcxDetailUrl(source) ? source : '';
+  for (const value of [row.detailUrl, row.sourceUrl, row.source]) {
+    const candidate = trim(value);
+    if (isJrcpcxDetailUrl(candidate)) return candidate;
+  }
+  return '';
 }
 
 export function clauseUrlOf(row = {}) {
