@@ -5,8 +5,11 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  buildCatalogArtifact,
   buildCoverageGapReport,
   buildKnowledgeRecordFromJrcpcx,
+  buildResponsibilitiesArtifact,
+  buildShardPlanArtifact,
   dedupeCatalogRows,
   eligibleForAutoInsert,
   materialIdentityKey,
@@ -278,4 +281,113 @@ test('buildKnowledgeRecordFromJrcpcx maps detail rows to knowledge record fields
   assert.equal(record.seedSourceUrl, 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1');
   assert.equal(record.evidenceLevel, 'regulatory_industry_terms');
   assert.equal(record.versionNo, '平安人寿〔2026〕年金保险001号');
+});
+
+test('buildShardPlanArtifact includes Ping An Life filters and unresolved shards', () => {
+  const artifact = buildShardPlanArtifact({
+    generatedAt: '2026-06-19T00:00:00.000Z',
+    shardSummary: {
+      queryCount: 2,
+      truncatedCount: 1,
+      completeCount: 1,
+      unresolvedShards: [
+        {
+          deptName: '中国平安人寿保险股份有限公司',
+          productName: '年金',
+          status: '在售',
+          rowCount: 50,
+          nextAction: 'split_keyword',
+        },
+      ],
+    },
+  });
+
+  assert.equal(artifact.company, '中国平安人寿保险股份有限公司');
+  assert.equal(artifact.productTypeLabel, '人身保险类');
+  assert.equal(artifact.humanInsuranceFilter.productTypeLabel, '人身保险类');
+  assert.equal(artifact.summary.shardCount, 2);
+  assert.equal(artifact.summary.unresolvedShardCount, 1);
+  assert.equal(artifact.unresolvedShards[0].productName, '年金');
+});
+
+test('buildCatalogArtifact dedupes catalog rows, merges details, and reports coverage gaps', () => {
+  const pdfPath = ensurePdfFixture();
+  const artifact = buildCatalogArtifact({
+    generatedAt: '2026-06-19T00:00:00.000Z',
+    rows: [
+      {
+        deptName: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        industryCode: '平安人寿〔2026〕年金保险001号',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+      },
+      {
+        deptName: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        industryCode: '平安人寿〔2026〕年金保险001号',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+      },
+    ],
+    detailRows: [
+      {
+        company: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+      },
+      {
+        company: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+        pdfLocalPath: pdfPath,
+        pdfSha256: 'abc123',
+        qualityStatus: 'valid_partial',
+        pageText: '保险责任 年金给付',
+      },
+    ],
+    localRecords: [],
+  });
+
+  assert.equal(artifact.summary.rowCount, 2);
+  assert.equal(artifact.summary.dedupedCatalogRowCount, 1);
+  assert.equal(artifact.summary.mergedDetailRowCount, 1);
+  assert.equal(artifact.summary.uniqueProductCount, 1);
+  assert.equal(artifact.summary.uniqueMaterialCandidateCount, 1);
+  assert.equal(artifact.coverageGapSummary.insertableCount, 1);
+  assert.equal(artifact.dedupedCatalogRows[0].productName, '平安示例年金保险');
+  assert.equal(artifact.mergedDetailRows[0].pdfSha256, 'abc123');
+});
+
+test('buildResponsibilitiesArtifact extracts only insurance responsibility text and reports quality', () => {
+  const artifact = buildResponsibilitiesArtifact({
+    generatedAt: '2026-06-19T00:00:00.000Z',
+    rows: [
+      {
+        productName: '平安示例年金保险',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+        pageText: [
+          '产品简介 本产品为长期年金保险。',
+          '保险责任',
+          '在本合同保险期间内，我们承担生存保险金、满期保险金和身故保险金责任。',
+          '责任免除',
+          '因下列情形导致保险事故的，我们不承担给付责任。',
+        ].join('\n'),
+      },
+      {
+        productName: '平安空白条款',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=empty',
+        pageText: '',
+      },
+    ],
+  });
+
+  assert.equal(artifact.summary.recordCount, 2);
+  assert.equal(artifact.summary.byQualityStatus.valid_partial, 1);
+  assert.equal(artifact.summary.byQualityStatus.invalid_empty, 1);
+  assert.match(artifact.records[0].pageText, /^保险责任/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /产品简介/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /责任免除/u);
 });
