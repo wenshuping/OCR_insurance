@@ -363,16 +363,16 @@ function extractResponsibilitySection(pageText = '') {
   if (!sourceText) {
     return { text: '', qualityStatus: 'invalid_empty', qualityReason: 'missing_page_text' };
   }
-  const startMatch = /(?:保险责任|保障责任|给付责任)/u.exec(sourceText);
+  const startMatch = /(^|\n)\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:保险责任|保障责任|给付责任))/u.exec(sourceText);
   if (!startMatch) {
     return { text: '', qualityStatus: 'invalid_non_responsibility', qualityReason: 'missing_responsibility_heading' };
   }
-  const responsibilityStart = startMatch.index;
+  const responsibilityStart = startMatch.index + startMatch[1].length;
   const responsibilitySource = sourceText.slice(responsibilityStart);
   const endPatterns = [
-    /\n\s*(?:责任免除|除外责任|免除责任)/u,
-    /\n\s*(?:保险金申请|如何申请领取保险金|理赔申请)/u,
-    /\n\s*(?:释义|定义|附则)/u,
+    /\n\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:责任免除|除外责任|免除责任))/u,
+    /\n\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:保险金申请|如何申请领取保险金|理赔申请))/u,
+    /\n\s*(?:(?:第[一二三四五六七八九十百千万零〇\d]+条[、.．]?\s*)?(?:释义|定义|附则))/u,
   ];
   const endIndex = endPatterns
     .map((pattern) => {
@@ -400,8 +400,8 @@ export function buildResponsibilitiesArtifact({
 } = {}) {
   const sourceRows = rowsOf(detailRows ?? pageTextRows ?? rows);
   const records = mergeDetailRowsPreferEvidence(sourceRows).map((row) => {
-    const extracted = extractResponsibilitySection(row.pageText || row.responsibilityText || row.text);
-    const qualityStatus = trim(row.qualityStatus) || extracted.qualityStatus;
+    const extracted = extractResponsibilitySection(row.pageText);
+    const sourceQualityStatus = trim(row.qualityStatus);
     return {
       ...row,
       productName: productNameOf(row),
@@ -412,8 +412,9 @@ export function buildResponsibilitiesArtifact({
       pageText: extracted.text,
       responsibilityText: extracted.text,
       responsibilityQualityStatus: extracted.qualityStatus,
-      qualityStatus,
-      qualityReason: trim(row.qualityReason) || extracted.qualityReason,
+      sourceQualityStatus,
+      qualityStatus: extracted.qualityStatus,
+      qualityReason: extracted.qualityReason,
       extractedChars: extracted.text.length,
     };
   });
@@ -451,7 +452,7 @@ function parseCliArgs(argv = []) {
   return args;
 }
 
-function buildCliArtifact(mode, input) {
+export function buildCliArtifact(mode, input) {
   if (mode === 'shard-plan') {
     return buildShardPlanArtifact({
       shardPlan: input.shardPlan || input,
@@ -462,8 +463,8 @@ function buildCliArtifact(mode, input) {
   if (mode === 'catalog') {
     return buildCatalogArtifact({
       generatedAt: input.generatedAt,
-      rows: input.rows || input.catalogRows || input.records || input,
-      detailRows: input.detailRows || input.details || [],
+      catalogRows: input.catalogRows ?? input.products ?? input.rows ?? input,
+      detailRows: input.detailRows ?? input.details ?? input.records ?? [],
       localRecords: input.localRecords || input.knowledgeRecords || [],
       unresolvedShards: input.unresolvedShards || input.summary?.unresolvedShards || [],
     });

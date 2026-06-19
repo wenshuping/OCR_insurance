@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   buildCatalogArtifact,
+  buildCliArtifact,
   buildCoverageGapReport,
   buildKnowledgeRecordFromJrcpcx,
   buildResponsibilitiesArtifact,
@@ -361,6 +362,40 @@ test('buildCatalogArtifact dedupes catalog rows, merges details, and reports cov
   assert.equal(artifact.mergedDetailRows[0].pdfSha256, 'abc123');
 });
 
+test('buildCliArtifact catalog mode maps crawler products as catalog and records as detail rows', () => {
+  const pdfPath = ensurePdfFixture();
+  const artifact = buildCliArtifact('catalog', {
+    generatedAt: '2026-06-19T00:00:00.000Z',
+    products: [
+      {
+        deptName: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        industryCode: '平安人寿〔2026〕年金保险001号',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+      },
+    ],
+    records: [
+      {
+        company: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+        pdfLocalPath: pdfPath,
+        pdfSha256: 'abc123',
+        qualityStatus: 'valid_partial',
+        pageText: '保险责任 年金给付',
+      },
+    ],
+  });
+
+  assert.equal(artifact.summary.rowCount, 1);
+  assert.equal(artifact.summary.detailRowCount, 1);
+  assert.equal(artifact.coverageGapSummary.insertableCount, 1);
+  assert.equal(artifact.dedupedCatalogRows[0].industryCode, '平安人寿〔2026〕年金保险001号');
+  assert.equal(artifact.mergedDetailRows[0].pdfSha256, 'abc123');
+});
+
 test('buildResponsibilitiesArtifact extracts only insurance responsibility text and reports quality', () => {
   const artifact = buildResponsibilitiesArtifact({
     generatedAt: '2026-06-19T00:00:00.000Z',
@@ -390,4 +425,61 @@ test('buildResponsibilitiesArtifact extracts only insurance responsibility text 
   assert.match(artifact.records[0].pageText, /^保险责任/u);
   assert.doesNotMatch(artifact.records[0].pageText, /产品简介/u);
   assert.doesNotMatch(artifact.records[0].pageText, /责任免除/u);
+});
+
+test('buildResponsibilitiesArtifact ignores text fallback when pageText is missing', () => {
+  const artifact = buildResponsibilitiesArtifact({
+    rows: [
+      {
+        productName: '平安示例年金保险',
+        text: '保险责任 年金给付',
+        responsibilityText: '保险责任 身故保险金',
+      },
+    ],
+  });
+
+  assert.equal(artifact.records[0].pageText, '');
+  assert.equal(artifact.records[0].responsibilityText, '');
+  assert.equal(artifact.records[0].qualityStatus, 'invalid_empty');
+  assert.equal(artifact.summary.byQualityStatus.invalid_empty, 1);
+});
+
+test('buildResponsibilitiesArtifact starts from responsibility headings and stops at numbered exclusions', () => {
+  const artifact = buildResponsibilitiesArtifact({
+    rows: [
+      {
+        productName: '平安示例年金保险',
+        pageText: [
+          '产品简介',
+          '本产品的保险责任包括生存、满期、身故等多项保障，具体以条款为准。',
+          '第六条 保险责任',
+          '在本合同保险期间内，我们承担生存保险金、满期保险金和身故保险金责任。',
+          '第七条 责任免除',
+          '因下列情形导致保险事故的，我们不承担给付责任。',
+        ].join('\n'),
+      },
+    ],
+  });
+
+  assert.match(artifact.records[0].pageText, /^第六条 保险责任/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /产品简介/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /本产品的保险责任包括/u);
+  assert.doesNotMatch(artifact.records[0].pageText, /第七条 责任免除/u);
+});
+
+test('buildResponsibilitiesArtifact derives quality from current pageText extraction', () => {
+  const artifact = buildResponsibilitiesArtifact({
+    rows: [
+      {
+        productName: '平安示例年金保险',
+        qualityStatus: 'valid_complete',
+        pageText: '产品简介 本产品提供多项保障。',
+      },
+    ],
+  });
+
+  assert.equal(artifact.records[0].sourceQualityStatus, 'valid_complete');
+  assert.equal(artifact.records[0].qualityStatus, 'invalid_non_responsibility');
+  assert.equal(artifact.summary.byQualityStatus.invalid_non_responsibility, 1);
+  assert.equal(artifact.summary.byQualityStatus.valid_complete, undefined);
 });
