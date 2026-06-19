@@ -64,6 +64,16 @@
     ]
   },
   {
+    "name": "ping-an-jrcpcx-backfill",
+    "patterns": [
+      "scripts/ping-an-jrcpcx-backfill.mjs",
+      "tests/ping-an-jrcpcx-backfill.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/ping-an-jrcpcx-backfill.test.mjs"
+    ]
+  },
+  {
     "name": "policy-ocr",
     "patterns": [
       "ocr-service/**",
