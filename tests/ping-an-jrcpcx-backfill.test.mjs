@@ -8,6 +8,8 @@ import {
   buildCatalogArtifact,
   buildCliArtifact,
   buildCoverageGapReport,
+  buildInsertPlan,
+  buildInsertReport,
   buildKnowledgeRecordFromJrcpcx,
   buildResponsibilitiesArtifact,
   buildShardPlanArtifact,
@@ -282,6 +284,135 @@ test('buildKnowledgeRecordFromJrcpcx maps detail rows to knowledge record fields
   assert.equal(record.seedSourceUrl, 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1');
   assert.equal(record.evidenceLevel, 'regulatory_industry_terms');
   assert.equal(record.versionNo, '平安人寿〔2026〕年金保险001号');
+});
+
+test('buildInsertPlan includes only eligible insertable records and skips existing URLs', () => {
+  const evidence = { source: 'fixture' };
+  const plan = buildInsertPlan({
+    insertable: [
+      {
+        productName: '平安示例年金保险',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=new',
+        qualityStatus: 'valid_complete',
+        pageText: '保险责任 年金给付',
+        pdfLocalPath: ensurePdfFixture(),
+        pdfSha256: 'abc123',
+        evidence,
+        company: '中国平安人寿保险股份有限公司',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+      },
+      {
+        productName: '平安示例医疗保险',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old&t=111',
+        qualityStatus: 'valid_complete',
+        pageText: '保险责任 医疗保险金',
+        pdfLocalPath: ensurePdfFixture(),
+        pdfSha256: 'old123',
+        company: '中国平安人寿保险股份有限公司',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2',
+      },
+    ],
+    existingUrls: new Set(['https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old']),
+  });
+
+  assert.equal(plan.recordsToInsert.length, 1);
+  assert.equal(plan.recordsToInsert[0].url, 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=new');
+  assert.equal(plan.recordsToInsert[0].pdfLocalPath, pdfFixturePath);
+  assert.equal(plan.recordsToInsert[0].pdfSha256, 'abc123');
+  assert.deepEqual(plan.recordsToInsert[0].evidence, evidence);
+  assert.equal(plan.skipped.length, 1);
+  assert.equal(plan.skipped[0].reason, 'existing_url');
+});
+
+test('buildInsertPlan skips existing URL regardless of timestamp parameter side', () => {
+  const plan = buildInsertPlan({
+    insertable: [
+      {
+        productName: '平安示例医疗保险',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old',
+        qualityStatus: 'valid_complete',
+        pageText: '保险责任 医疗保险金',
+        pdfLocalPath: ensurePdfFixture(),
+        pdfSha256: 'old123',
+        company: '中国平安人寿保险股份有限公司',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2',
+      },
+    ],
+    existingUrls: ['https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=222&info=old'],
+  });
+
+  assert.equal(plan.recordsToInsert.length, 0);
+  assert.equal(plan.skipped[0].reason, 'existing_url');
+});
+
+test('buildInsertPlan keeps ineligible rows out of recordsToInsert', () => {
+  const plan = buildInsertPlan({
+    insertable: [
+      {
+        productName: '平安示例医疗保险',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=bad',
+        qualityStatus: 'valid_complete',
+        pageText: '保险责任 医疗保险金',
+        pdfLocalPath: ensurePdfFixture(),
+        pdfSha256: 'bad123',
+        company: '中国平安人寿保险股份有限公司',
+        productType: '',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2',
+      },
+    ],
+    existingUrls: [],
+  });
+
+  assert.equal(plan.recordsToInsert.length, 0);
+  assert.equal(plan.skipped[0].reason, 'missing_product_type');
+});
+
+test('buildInsertReport records before after counts and inserted IDs', () => {
+  const report = buildInsertReport({
+    dbPath: '/tmp/policy-ocr.sqlite',
+    dbBackupPath: '/tmp/backup.sqlite',
+    before: 10,
+    after: 12,
+    saved: [{ id: 101 }, { id: 102 }],
+    skipped: [],
+  });
+
+  assert.equal(report.insertedCount, 2);
+  assert.equal(report.insertedMinId, 101);
+  assert.equal(report.insertedMaxId, 102);
+  assert.equal(report.before, 10);
+  assert.equal(report.after, 12);
+  assert.equal(report.dbPath, '/tmp/policy-ocr.sqlite');
+  assert.equal(report.dbBackupPath, '/tmp/backup.sqlite');
+});
+
+test('buildCliArtifact insert mode returns dry-run report without saved writes', () => {
+  const artifact = buildCliArtifact('insert', {
+    generatedAt: '2026-06-19T00:00:00.000Z',
+    dbPath: '/tmp/policy-ocr.sqlite',
+    insertable: [
+      {
+        productName: '平安示例年金保险',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=new',
+        qualityStatus: 'valid_complete',
+        pageText: '保险责任 年金给付',
+        pdfLocalPath: ensurePdfFixture(),
+        pdfSha256: 'abc123',
+        company: '中国平安人寿保险股份有限公司',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+      },
+    ],
+  });
+
+  assert.equal(artifact.dryRun, true);
+  assert.equal(artifact.plannedInsertCount, 1);
+  assert.equal(artifact.insertedCount, 0);
+  assert.deepEqual(artifact.saved, []);
+  assert.equal(artifact.recordsToInsert[0].url, 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=new');
 });
 
 test('buildShardPlanArtifact includes Ping An Life filters and unresolved shards', () => {

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PING_AN_LIFE_FULL_NAME = '中国平安人寿保险股份有限公司';
@@ -8,6 +9,13 @@ export const JRCPCX_TERMS_EVIDENCE_LEVEL = 'regulatory_industry_terms';
 export const JRCPCX_OFFICIAL_DOMAIN = 'inspdinfo.iachina.cn';
 
 const SEP = '\u001f';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..');
+const runtimeDir = path.join(projectRoot, '.runtime');
+const DEFAULT_COVERAGE_PATH = path.join(runtimeDir, 'jrcpcx-ping-an-life-coverage-gap-full.json');
+const DEFAULT_INSERT_REPORT_PATH = path.join(runtimeDir, 'jrcpcx-ping-an-life-insert-report.json');
+const DEFAULT_DB_PATH = path.join(runtimeDir, 'policy-ocr.sqlite');
 
 export function trim(value) {
   return String(value || '').trim();
@@ -176,9 +184,92 @@ export function buildKnowledgeRecordFromJrcpcx(row = {}) {
     contentType: trim(row.contentType),
     pdfLocalPath: trim(row.pdfLocalPath),
     pdfSha256: trim(row.pdfSha256),
+    evidence: row.evidence,
     pdfBytes: Number(row.pdfBytes || row.bytes || 0) || 0,
     pdfOriginalUrl: trim(row.pdfOriginalUrl || row.clauseUrl),
     pdfArchivedAt: trim(row.pdfArchivedAt),
+  };
+}
+
+function normalizedUrlSet(urls = []) {
+  const values = urls instanceof Set ? [...urls] : (Array.isArray(urls) ? urls : []);
+  return new Set(
+    values
+      .map((value) => {
+        if (typeof value === 'string') return normalizeClauseUrl(value);
+        return normalizeClauseUrl(value?.url || value?.clauseUrl || value?.pdfOriginalUrl);
+      })
+      .filter(Boolean),
+  );
+}
+
+function skippedInsertRow(row = {}, reason, reasons = [reason]) {
+  return {
+    reason,
+    reasons,
+    productName: productNameOf(row),
+    clauseUrl: clauseUrlOf(row),
+    detailUrl: detailUrlOf(row),
+    materialIdentityKey: materialIdentityKey(row),
+  };
+}
+
+export function buildInsertPlan({ insertable = [], existingUrls = [] } = {}) {
+  const existingUrlSet = normalizedUrlSet(existingUrls);
+  const recordsToInsert = [];
+  const skipped = [];
+  for (const row of Array.isArray(insertable) ? insertable : []) {
+    const eligibility = eligibleForAutoInsert(row);
+    if (!eligibility.eligible) {
+      skipped.push(skippedInsertRow(row, eligibility.reasons[0] || 'ineligible', eligibility.reasons));
+      continue;
+    }
+    const clauseUrl = clauseUrlOf(row);
+    if (clauseUrl && existingUrlSet.has(clauseUrl)) {
+      skipped.push(skippedInsertRow(row, 'existing_url'));
+      continue;
+    }
+    recordsToInsert.push(buildKnowledgeRecordFromJrcpcx(row));
+  }
+  return {
+    recordsToInsert,
+    skipped,
+  };
+}
+
+export function buildInsertReport({
+  generatedAt = new Date().toISOString(),
+  dryRun = false,
+  dbPath = '',
+  dbBackupPath = '',
+  before = null,
+  after = null,
+  recordsToInsert,
+  saved = [],
+  skipped = [],
+} = {}) {
+  const savedRows = Array.isArray(saved) ? saved : [];
+  const skippedRows = Array.isArray(skipped) ? skipped : [];
+  const plannedRows = Array.isArray(recordsToInsert) ? recordsToInsert : savedRows;
+  const insertedIds = savedRows
+    .map((row) => Number(row?.id || 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  return {
+    schemaVersion: 'ping-an-jrcpcx-insert-report/v1',
+    generatedAt,
+    dryRun: Boolean(dryRun),
+    dbPath: trim(dbPath),
+    dbBackupPath: trim(dbBackupPath),
+    before,
+    after,
+    plannedInsertCount: plannedRows.length,
+    insertedCount: savedRows.length,
+    insertedMinId: insertedIds.length ? Math.min(...insertedIds) : null,
+    insertedMaxId: insertedIds.length ? Math.max(...insertedIds) : null,
+    skippedCount: skippedRows.length,
+    skipped: skippedRows,
+    saved: savedRows,
+    ...(Array.isArray(recordsToInsert) ? { recordsToInsert } : {}),
   };
 }
 
@@ -443,12 +534,18 @@ export function buildResponsibilitiesArtifact({
 
 function parseCliArgs(argv = []) {
   const args = {};
+  const booleanArgs = new Set(['pretty', 'write']);
+  const booleanValue = (value) => !['false', '0', 'no'].includes(trim(value).toLowerCase());
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!arg.startsWith('--')) continue;
     const [key, inlineValue] = arg.slice(2).split('=', 2);
-    if (key === 'pretty') {
-      args.pretty = true;
+    if (booleanArgs.has(key) && inlineValue === undefined) {
+      args[key] = true;
+      continue;
+    }
+    if (booleanArgs.has(key)) {
+      args[key] = booleanValue(inlineValue);
       continue;
     }
     const value = inlineValue ?? argv[index + 1];
@@ -481,22 +578,122 @@ export function buildCliArtifact(mode, input) {
       rows: input.rows || input.detailRows || input.pageTextRows || input.records || input,
     });
   }
-  throw new Error(`Unsupported --mode ${mode || '(missing)'}. Use shard-plan, catalog, or responsibilities.`);
+  if (mode === 'insert') {
+    const plan = buildInsertPlan({
+      insertable: input.insertable || input.coverageGap?.insertable || input.records || [],
+      existingUrls: input.existingUrls || input.localRecords || input.knowledgeRecords || [],
+    });
+    return buildInsertReport({
+      dryRun: true,
+      dbPath: input.dbPath || DEFAULT_DB_PATH,
+      dbBackupPath: '',
+      before: input.before ?? null,
+      after: input.after ?? null,
+      recordsToInsert: plan.recordsToInsert,
+      saved: [],
+      skipped: plan.skipped,
+      generatedAt: input.generatedAt,
+    });
+  }
+  throw new Error(`Unsupported --mode ${mode || '(missing)'}. Use shard-plan, catalog, responsibilities, or insert.`);
 }
 
-function runCli(argv = process.argv.slice(2)) {
+function writeJsonFile(filePath, value, pretty = false) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, pretty ? 2 : 0)}\n`);
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function backupSqliteFile(dbPath, generatedAt = new Date().toISOString()) {
+  const stamp = generatedAt.replace(/[:.]/gu, '-');
+  const backupDir = path.join(path.dirname(dbPath), 'backups');
+  const backupPath = path.join(backupDir, `policy-ocr-before-ping-an-jrcpcx-backfill-${stamp}.sqlite`);
+  fs.mkdirSync(backupDir, { recursive: true });
+  for (const suffix of ['', '-wal', '-shm']) {
+    const source = `${dbPath}${suffix}`;
+    if (fs.existsSync(source)) fs.copyFileSync(source, `${backupPath}${suffix}`);
+  }
+  return backupPath;
+}
+
+async function buildWriteInsertReport({ coverage, dbPath, dbBackupPath, generatedAt }) {
+  const [{ createKnowledgeStateStore }, { allocateId }, { upsertKnowledgeRecords }] = await Promise.all([
+    import('./runtime-knowledge-state.mjs'),
+    import('../server/policy-ocr.domain.mjs'),
+    import('../server/policy-knowledge.service.mjs'),
+  ]);
+  const knowledgeStore = await createKnowledgeStateStore({ dbPath });
+  try {
+    const before = knowledgeStore.countKnowledgeRecords();
+    const plan = buildInsertPlan({
+      insertable: coverage.insertable || coverage.coverageGap?.insertable || [],
+      existingUrls: knowledgeStore.allKnownUrls(),
+    });
+    const state = knowledgeStore.loadState();
+    const saved = upsertKnowledgeRecords(state, plan.recordsToInsert, { allocateId });
+    knowledgeStore.upsertRows(saved, { nextId: state.nextId });
+    const after = knowledgeStore.countKnowledgeRecords();
+    return buildInsertReport({
+      generatedAt,
+      dryRun: false,
+      dbPath: knowledgeStore.dbPath,
+      dbBackupPath,
+      before,
+      after,
+      recordsToInsert: plan.recordsToInsert,
+      saved,
+      skipped: plan.skipped,
+    });
+  } finally {
+    knowledgeStore.close();
+  }
+}
+
+async function runInsertCli(args) {
+  const generatedAt = new Date().toISOString();
+  const coveragePath = path.resolve(args['coverage-path'] || args.input || DEFAULT_COVERAGE_PATH);
+  const dbPath = path.resolve(args['db-path'] || process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH);
+  const coverage = readJsonFile(coveragePath);
+
+  if (!args.write) {
+    const artifact = buildCliArtifact('insert', {
+      ...coverage,
+      dbPath,
+      generatedAt: coverage.generatedAt || generatedAt,
+    });
+    if (args.output) writeJsonFile(path.resolve(args.output), artifact, Boolean(args.pretty));
+    process.stdout.write(`${JSON.stringify(artifact, null, 2)}\n`);
+    return artifact;
+  }
+
+  if (!fs.existsSync(dbPath)) throw new Error(`SQLite DB not found: ${dbPath}`);
+  const dbBackupPath = backupSqliteFile(dbPath, generatedAt);
+  const artifact = await buildWriteInsertReport({ coverage, dbPath, dbBackupPath, generatedAt });
+  writeJsonFile(path.resolve(args.output || DEFAULT_INSERT_REPORT_PATH), artifact, Boolean(args.pretty));
+  process.stdout.write(`${JSON.stringify(artifact, null, 2)}\n`);
+  return artifact;
+}
+
+async function runCli(argv = process.argv.slice(2)) {
   const args = parseCliArgs(argv);
+  if (args.mode === 'insert') {
+    await runInsertCli(args);
+    return;
+  }
   if (!args.input) throw new Error('Missing --input <json>');
   if (!args.output) throw new Error('Missing --output <json>');
-  const input = JSON.parse(fs.readFileSync(args.input, 'utf8'));
+  const input = readJsonFile(args.input);
   const artifact = buildCliArtifact(args.mode, input);
-  fs.writeFileSync(args.output, `${JSON.stringify(artifact, null, args.pretty ? 2 : 0)}\n`);
+  writeJsonFile(args.output, artifact, Boolean(args.pretty));
   process.stdout.write(`${JSON.stringify(artifact.summary || {}, null, 2)}\n`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === fs.realpathSync(process.argv[1])) {
+if (process.argv[1] && __filename === fs.realpathSync(process.argv[1])) {
   try {
-    runCli();
+    await runCli();
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;
