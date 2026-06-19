@@ -23,6 +23,14 @@ export function isPingAnLifeIssuer(value = '') {
   return trim(value).replace(/\s+/gu, '') === PING_AN_LIFE_FULL_NAME;
 }
 
+export function isHumanInsuranceProductType(value = '') {
+  const normalized = trim(value).replace(/\s+/gu, '');
+  if (!normalized) return false;
+  if (/财产保险|财产险|车险|机动车|责任保险|责任险|保证保险|保证险|信用保险|信用险/u.test(normalized)) return false;
+  if (normalized === '人身保险类' || normalized === '人身保险') return true;
+  return /寿险|人寿保险|健康险|健康保险|意外险|意外保险|意外伤害保险|年金险|年金保险|养老保险|医疗险|医疗保险|疾病险|疾病保险|护理保险|两全保险/u.test(normalized);
+}
+
 export function issuerFullNameOf(row = {}) {
   return trim(row.issuerFullName || row.company || row.companyName || row.deptName || row.queryDeptName || row.detailFields?.公司名称);
 }
@@ -90,7 +98,7 @@ export function eligibleForAutoInsert(row = {}) {
   const pdfLocalPath = trim(row.pdfLocalPath);
   if (!isPingAnLifeIssuer(issuer)) reasons.push('issuer_not_ping_an_life');
   if (!productName) reasons.push('missing_product_name');
-  if (productType && productType !== '人身保险类' && !/保险/u.test(productType)) reasons.push('not_human_insurance');
+  if (!isHumanInsuranceProductType(productType)) reasons.push(productType ? 'not_human_insurance' : 'missing_product_type');
   if (!detailUrlOf(row)) reasons.push('missing_detail_url');
   if (!clauseUrlOf(row)) reasons.push('missing_clause_url');
   if (!pdfLocalPath) reasons.push('missing_pdf_local_path');

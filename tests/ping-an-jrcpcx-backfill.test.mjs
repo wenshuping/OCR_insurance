@@ -88,6 +88,30 @@ test('eligibleForAutoInsert allows valid complete and valid partial with PDF evi
   assert.equal(eligibleForAutoInsert({ ...base, qualityStatus: 'suspect_needs_source_check' }).eligible, false);
 });
 
+test('eligibleForAutoInsert rejects blank and property insurance product types', () => {
+  const base = {
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安示例年金保险',
+    detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+    pdfLocalPath: ensurePdfFixture(),
+    pdfSha256: 'abc123',
+    pageText: '保险责任 年金给付',
+    qualityStatus: 'valid_complete',
+  };
+
+  const blank = eligibleForAutoInsert({ ...base, productType: '' });
+  const propertyClass = eligibleForAutoInsert({ ...base, productType: '财产保险类' });
+  const property = eligibleForAutoInsert({ ...base, productType: '财产保险' });
+
+  assert.equal(blank.eligible, false);
+  assert.deepEqual(blank.reasons, ['missing_product_type']);
+  assert.equal(propertyClass.eligible, false);
+  assert.deepEqual(propertyClass.reasons, ['not_human_insurance']);
+  assert.equal(property.eligible, false);
+  assert.deepEqual(property.reasons, ['not_human_insurance']);
+});
+
 test('buildCoverageGapReport separates represented and insertable material gaps', () => {
   const report = buildCoverageGapReport({
     localRecords: [
