@@ -237,6 +237,28 @@ export function buildInsertPlan({ insertable = [], existingUrls = [] } = {}) {
   };
 }
 
+export function buildRowsWithAllocatedIds({ state = {}, recordsToInsert = [], allocateId } = {}) {
+  if (!state || typeof state !== 'object') state = {};
+  if (!Array.isArray(state.knowledgeRecords)) state.knowledgeRecords = [];
+  if (!Number.isFinite(Number(state.nextId)) || Number(state.nextId) <= 0) state.nextId = 1;
+
+  const saved = [];
+  for (const record of Array.isArray(recordsToInsert) ? recordsToInsert : []) {
+    const id = typeof allocateId === 'function' ? allocateId(state) : 0;
+    if (!Number.isFinite(id) || id <= 0) throw new Error('Missing allocated id for insert row');
+    saved.push({
+      ...record,
+      id,
+    });
+    state.nextId = Math.max(Number(state.nextId || 1), id + 1);
+  }
+
+  return {
+    saved,
+    nextId: Number(state.nextId || 1),
+  };
+}
+
 export function buildInsertReport({
   generatedAt = new Date().toISOString(),
   dryRun = false,
@@ -620,10 +642,9 @@ function backupSqliteFile(dbPath, generatedAt = new Date().toISOString()) {
 }
 
 async function buildWriteInsertReport({ coverage, dbPath, dbBackupPath, generatedAt }) {
-  const [{ createKnowledgeStateStore }, { allocateId }, { upsertKnowledgeRecords }] = await Promise.all([
+  const [{ createKnowledgeStateStore }, { allocateId }] = await Promise.all([
     import('./runtime-knowledge-state.mjs'),
     import('../server/policy-ocr.domain.mjs'),
-    import('../server/policy-knowledge.service.mjs'),
   ]);
   const knowledgeStore = await createKnowledgeStateStore({ dbPath });
   try {
@@ -633,8 +654,12 @@ async function buildWriteInsertReport({ coverage, dbPath, dbBackupPath, generate
       existingUrls: knowledgeStore.allKnownUrls(),
     });
     const state = knowledgeStore.loadState();
-    const saved = upsertKnowledgeRecords(state, plan.recordsToInsert, { allocateId });
-    knowledgeStore.upsertRows(saved, { nextId: state.nextId });
+    const { saved, nextId } = buildRowsWithAllocatedIds({
+      state,
+      recordsToInsert: plan.recordsToInsert,
+      allocateId,
+    });
+    knowledgeStore.upsertRows(saved, { nextId });
     const after = knowledgeStore.countKnowledgeRecords();
     return buildInsertReport({
       generatedAt,

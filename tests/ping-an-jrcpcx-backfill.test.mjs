@@ -12,6 +12,7 @@ import {
   buildInsertReport,
   buildKnowledgeRecordFromJrcpcx,
   buildResponsibilitiesArtifact,
+  buildRowsWithAllocatedIds,
   buildShardPlanArtifact,
   dedupeCatalogRows,
   eligibleForAutoInsert,
@@ -387,6 +388,54 @@ test('buildInsertReport records before after counts and inserted IDs', () => {
   assert.equal(report.after, 12);
   assert.equal(report.dbPath, '/tmp/policy-ocr.sqlite');
   assert.equal(report.dbBackupPath, '/tmp/backup.sqlite');
+});
+
+test('buildRowsWithAllocatedIds preserves full JRCPCX PDF and evidence payload', () => {
+  const evidence = {
+    pdfSha256: 'abc123',
+    extraction: { page: 3, source: 'terms_pdf' },
+  };
+  const state = {
+    knowledgeRecords: [],
+    nextId: 500,
+  };
+  const record = {
+    id: 123,
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安示例年金保险',
+    url: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=new',
+    versionNo: '平安人寿〔2026〕年金保险001号',
+    catalogStatus: '停售',
+    seedSourceUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+    pdfLocalPath: '/tmp/example.pdf',
+    pdfSha256: 'abc123',
+    pdfBytes: 100,
+    pdfOriginalUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=new&t=111',
+    pdfArchivedAt: '2026-06-19T00:00:00.000Z',
+    evidence,
+  };
+
+  const result = buildRowsWithAllocatedIds({
+    state,
+    recordsToInsert: [record],
+    allocateId(targetState) {
+      const id = targetState.nextId;
+      targetState.nextId += 1;
+      return id;
+    },
+  });
+
+  assert.equal(result.nextId, 501);
+  assert.equal(result.saved[0].id, 500);
+  assert.equal(result.saved[0].versionNo, record.versionNo);
+  assert.equal(result.saved[0].catalogStatus, '停售');
+  assert.equal(result.saved[0].seedSourceUrl, record.seedSourceUrl);
+  assert.equal(result.saved[0].pdfLocalPath, '/tmp/example.pdf');
+  assert.equal(result.saved[0].pdfSha256, 'abc123');
+  assert.equal(result.saved[0].pdfBytes, 100);
+  assert.equal(result.saved[0].pdfOriginalUrl, record.pdfOriginalUrl);
+  assert.equal(result.saved[0].pdfArchivedAt, record.pdfArchivedAt);
+  assert.deepEqual(result.saved[0].evidence, evidence);
 });
 
 test('buildCliArtifact insert mode returns dry-run report without saved writes', () => {
