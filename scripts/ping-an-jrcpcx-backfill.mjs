@@ -31,6 +31,38 @@ export function isHumanInsuranceProductType(value = '') {
   return /寿险|人寿保险|健康险|健康保险|意外险|意外保险|意外伤害保险|年金险|年金保险|养老保险|医疗险|医疗保险|疾病险|疾病保险|护理保险|两全保险/u.test(normalized);
 }
 
+function parseUrl(value = '') {
+  try {
+    return new URL(trim(value));
+  } catch {
+    return null;
+  }
+}
+
+export function isJrcpcxDetailUrl(value = '') {
+  const url = parseUrl(value);
+  return Boolean(url && url.hostname === JRCPCX_OFFICIAL_DOMAIN && /\/lifeIns\/detail\b/u.test(url.pathname));
+}
+
+export function isJrcpcxClauseUrl(value = '') {
+  const url = parseUrl(value);
+  return Boolean(url && url.hostname === JRCPCX_OFFICIAL_DOMAIN && /\/lifeIns\/clauseInfo\b/u.test(url.pathname));
+}
+
+export function normalizeClauseUrl(value = '') {
+  const url = parseUrl(value);
+  if (!url || !isJrcpcxClauseUrl(url.href)) return '';
+  const params = [...url.searchParams.entries()]
+    .filter(([key]) => key !== 't')
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => {
+      if (leftKey === rightKey) return leftValue.localeCompare(rightValue);
+      return leftKey.localeCompare(rightKey);
+    });
+  url.search = '';
+  for (const [key, paramValue] of params) url.searchParams.append(key, paramValue);
+  return url.href;
+}
+
 export function issuerFullNameOf(row = {}) {
   return trim(row.issuerFullName || row.company || row.companyName || row.deptName || row.queryDeptName || row.detailFields?.公司名称);
 }
@@ -40,11 +72,14 @@ export function productNameOf(row = {}) {
 }
 
 export function detailUrlOf(row = {}) {
-  return trim(row.detailUrl || row.sourceUrl || row.source);
+  const explicitDetailUrl = trim(row.detailUrl || row.sourceUrl);
+  if (explicitDetailUrl) return explicitDetailUrl;
+  const source = trim(row.source);
+  return isJrcpcxDetailUrl(source) ? source : '';
 }
 
 export function clauseUrlOf(row = {}) {
-  return trim(row.clauseUrl || row.pdfOriginalUrl || row.url);
+  return normalizeClauseUrl(row.clauseUrl || row.pdfOriginalUrl) || normalizeClauseUrl(row.url);
 }
 
 export function termsTextCodeOf(row = {}) {
@@ -150,7 +185,7 @@ export function buildCoverageGapReport({
   unresolvedShards = [],
   generatedAt = new Date().toISOString(),
 } = {}) {
-  const localUrls = new Set((Array.isArray(localRecords) ? localRecords : []).map((row) => trim(row.url)).filter(Boolean));
+  const localUrls = new Set((Array.isArray(localRecords) ? localRecords : []).map((row) => normalizeClauseUrl(row.url)).filter(Boolean));
   const represented = [];
   const insertable = [];
   const manualReview = [];

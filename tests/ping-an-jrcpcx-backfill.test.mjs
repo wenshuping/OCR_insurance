@@ -33,6 +33,25 @@ test('materialIdentityKey prefers terms PDF URL and terms text code', () => {
   );
 });
 
+test('materialIdentityKey normalizes volatile clauseInfo timestamps', () => {
+  const first = materialIdentityKey({
+    productName: '平安示例年金保险',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc&t=111&data=1',
+    detailFields: { 产品条款文字编码: '平安人寿〔2026〕年金保险001号' },
+  });
+  const second = materialIdentityKey({
+    productName: '平安示例年金保险',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=222&data=1&info=abc',
+    detailFields: { 产品条款文字编码: '平安人寿〔2026〕年金保险001号' },
+  });
+
+  assert.equal(first, second);
+  assert.equal(
+    first,
+    '平安示例年金保险\u001f平安人寿〔2026〕年金保险001号\u001fhttps://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?data=1&info=abc',
+  );
+});
+
 test('dedupeCatalogRows keeps one row per issuer product industry code and detail URL', () => {
   const rows = dedupeCatalogRows([
     {
@@ -112,6 +131,40 @@ test('eligibleForAutoInsert rejects blank and property insurance product types',
   assert.deepEqual(property.reasons, ['not_human_insurance']);
 });
 
+test('eligibleForAutoInsert does not treat detail url as clause url', () => {
+  const result = eligibleForAutoInsert({
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安示例年金保险',
+    productType: '人身保险类',
+    detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+    url: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+    pdfLocalPath: ensurePdfFixture(),
+    pdfSha256: 'abc123',
+    pageText: '保险责任 年金给付',
+    qualityStatus: 'valid_complete',
+  });
+
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.reasons, ['missing_clause_url']);
+});
+
+test('eligibleForAutoInsert does not treat generic source as detail url', () => {
+  const result = eligibleForAutoInsert({
+    company: '中国平安人寿保险股份有限公司',
+    productName: '平安示例年金保险',
+    productType: '人身保险类',
+    source: 'https://www.jrcpcx.cn/#/query',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+    pdfLocalPath: ensurePdfFixture(),
+    pdfSha256: 'abc123',
+    pageText: '保险责任 年金给付',
+    qualityStatus: 'valid_complete',
+  });
+
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.reasons, ['missing_detail_url']);
+});
+
 test('buildCoverageGapReport separates represented and insertable material gaps', () => {
   const report = buildCoverageGapReport({
     localRecords: [
@@ -139,6 +192,35 @@ test('buildCoverageGapReport separates represented and insertable material gaps'
 
   assert.equal(report.summary.insertableCount, 1);
   assert.equal(report.insertable[0].productName, '平安示例年金保险');
+});
+
+test('buildCoverageGapReport uses normalized clause URL for represented materials', () => {
+  const report = buildCoverageGapReport({
+    localRecords: [
+      {
+        id: 1,
+        company: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        url: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc&t=111',
+      },
+    ],
+    detailRows: [
+      {
+        company: '中国平安人寿保险股份有限公司',
+        productName: '平安示例年金保险',
+        productType: '人身保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=222&info=abc',
+        pdfLocalPath: ensurePdfFixture(),
+        pdfSha256: 'abc123',
+        qualityStatus: 'valid_partial',
+        pageText: '保险责任 年金给付',
+      },
+    ],
+  });
+
+  assert.equal(report.summary.representedCount, 1);
+  assert.equal(report.summary.insertableCount, 0);
 });
 
 test('buildKnowledgeRecordFromJrcpcx maps detail rows to knowledge record fields', () => {
