@@ -305,3 +305,35 @@ test('governance treats basic annuity clauses as writable and suppresses equival
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('governance blocks single-formula writes for multi-rate annuity clauses', () => {
+  const { dir, dbPath } = makeTempDb();
+  const db = new DatabaseSync(dbPath);
+  try {
+    insertKnowledge(db, {
+      id: 5000,
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+      productType: '两全保险',
+      pageText: [
+        '保险责任 1.基本责任',
+        '（1）生存保险金 被保险人于本合同生效满三年起至60周岁保单生效对应日之前，在每一保单生效对应日零时生存，本公司按该保单生效对应日基本责任的保险金额的5%给付生存保险金；',
+        '被保险人于60周岁保单生效对应日起至80周岁保单生效对应日期间，在每一保单生效对应日零时生存，本公司按该保单生效对应日基本责任的保险金额的10%给付生存保险金。',
+      ].join(' '),
+    });
+
+    const result = auditInsuranceIndicatorQuality({
+      dbPath,
+      knowledgeIds: [5000],
+      includeExistingProducts: true,
+    });
+
+    const candidate = result.candidates.find((item) => item.proposedIndicator.liability === '生存保险金');
+    assert.equal(candidate?.lane, 'cashflow_annuity');
+    assert.equal(candidate?.writeAllowed, false);
+    assert.equal(candidate?.blockedReason, 'cashflow_candidate_not_high_confidence');
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

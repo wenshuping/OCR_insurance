@@ -92,6 +92,14 @@ function hasDisallowedCashflowContext(text) {
   return /恶性肿瘤|重大疾病|重疾|中症|轻症|特定疾病|疾病关爱金|医疗费用|住院|门诊|报销|豁免/u.test(compact);
 }
 
+function hasMultipleDistinctPayoutRates(text) {
+  const normalized = normalizeSpaces(text);
+  const values = new Set();
+  for (const match of normalized.matchAll(/(\d+(?:\.\d+)?)\s*[％%]/gu)) values.add(`percent:${Number(match[1])}`);
+  for (const match of normalized.matchAll(/(\d+(?:\.\d+)?)\s*倍/gu)) values.add(`multiple:${Number(match[1])}`);
+  return values.size > 1;
+}
+
 function laneForIndicator(indicator = {}) {
   const liability = normalizeSpaces(indicator.liability);
   const text = normalizeSpaces(`${indicator.liability || ''} ${indicator.coverageType || ''} ${indicator.formulaText || ''} ${indicator.sourceExcerpt || ''}`);
@@ -111,6 +119,7 @@ function isHighConfidenceAnnuityCandidate(indicator = {}) {
   if (!isAnnuityLiability(liability)) return false;
   if (!hasAnnuityTrigger(excerpt)) return false;
   if (hasDisallowedCashflowContext(`${liability} ${excerpt}`)) return false;
+  if (hasMultipleDistinctPayoutRates(excerpt)) return false;
   if (normalizeSpaces(indicator.responsibilityScope) === 'optional' && !trim(indicator.optionalResponsibilityId)) return false;
   if (!trim(indicator.formulaText)) return false;
   if (!trim(indicator.basis)) return false;
