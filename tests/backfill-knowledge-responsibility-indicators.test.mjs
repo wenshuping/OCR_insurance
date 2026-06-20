@@ -384,6 +384,13 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       pageText: '保险责任 (一)个人综合医疗保险金 被保险人因遭受意外伤害事故或疾病，本公司按与投保人的约定从该被保险人的个人账户中给付个人综合医疗保险金。个人综合医疗保险金的累计给付金额以该被保险人个人账户的账户余额为限。(二)公共综合医疗保险金 被保险人因遭受意外伤害事故或疾病，投保人与本公司有约定的，本公司按约定从公共账户中给付公共综合医疗保险金。公共综合医疗保险金的累计给付金额以公共账户的账户余额为限。投保人与本公司约定的个人综合医疗保险金和公共综合医疗保险金可以根据被保险人实际发生的医疗费用、住院日数、手术及所患疾病等因素确定，并可对给付比例、限额等事项进行约定。',
     });
     insertKnowledge(db, {
+      id: 143,
+      company: '测试人寿',
+      productName: '测试年金返钱保险',
+      productType: '年金险',
+      pageText: '保险责任 关爱年金如被保险人于犹豫期结束的次日、每年保单生效对应日生存，本公司按首次交纳的基本责任的保险费的1%给付关爱年金。生存保险金被保险人于本合同生效后每满两周年的保单生效对应日生存，本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
+    });
+    insertKnowledge(db, {
       id: 106,
       company: '测试人寿',
       productName: '测试后续年金保险',
@@ -437,9 +444,9 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
   try {
     const dryRun = backfillKnowledgeResponsibilityIndicators({ dbPath, minKnowledgeId: 100, sampleLimit: 10 });
     assert.equal(dryRun.dryRun, true);
-    assert.equal(dryRun.candidateProducts, 42);
-    assert.equal(dryRun.productsWithIndicators, 36);
-    assert.equal(dryRun.indicatorUpserts, 54);
+    assert.equal(dryRun.candidateProducts, 43);
+    assert.equal(dryRun.productsWithIndicators, 37);
+    assert.equal(dryRun.indicatorUpserts, 56);
     assert.equal(dryRun.skippedProducts, 6);
 
     const includeExisting = backfillKnowledgeResponsibilityIndicators({
@@ -448,9 +455,9 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       includeExistingProducts: true,
       sampleLimit: 10,
     });
-    assert.equal(includeExisting.candidateProducts, 43);
-    assert.equal(includeExisting.productsWithIndicators, 37);
-    assert.equal(includeExisting.indicatorUpserts, 55);
+    assert.equal(includeExisting.candidateProducts, 44);
+    assert.equal(includeExisting.productsWithIndicators, 38);
+    assert.equal(includeExisting.indicatorUpserts, 57);
 
     const targeted = backfillKnowledgeResponsibilityIndicators({
       dbPath,
@@ -477,7 +484,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
     );
 
     const write = backfillKnowledgeResponsibilityIndicators({ dbPath, write: true, minKnowledgeId: 100, sampleLimit: 10 });
-    assert.equal(write.indicatorUpserts, 54);
+    assert.equal(write.indicatorUpserts, 56);
 
     const readDb = new DatabaseSync(dbPath, { readOnly: true });
     try {
@@ -487,7 +494,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
          WHERE id LIKE 'ind_knowledge_auto_%'
          ORDER BY liability
       `).all();
-      assert.equal(rows.length, 54);
+      assert.equal(rows.length, 56);
       assert.ok(rows.some((row) => row.liability === '身故保险金'));
       assert.ok(rows.some((row) => row.liability === '住院医疗保险金'));
       assert.ok(rows.some((row) => row.liability === '后续年金'));
@@ -520,6 +527,8 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.ok(rows.some((row) => row.liability === '身故或全残豁免保险费'));
       assert.ok(rows.some((row) => row.liability === '个人综合医疗保险金'));
       assert.ok(rows.some((row) => row.liability === '公共综合医疗保险金'));
+      assert.ok(rows.some((row) => row.liability === '关爱年金'));
+      assert.ok(rows.some((row) => row.liability === '生存保险金'));
       assert.ok(!rows.some((row) => row.liability === '其中一项保险金'));
       assert.ok(!rows.some((row) => row.liability === '后该种轻症疾病保险金'));
       assert.ok(!rows.some((row) => row.liability === '期内应给付的养老保险金'));
@@ -569,6 +578,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       )));
       assert.equal(rows.find((row) => row.liability === '身故保险金').coverage_type, '身故保障');
       assert.equal(rows.find((row) => row.liability === '后续年金').coverage_type, '现金流');
+      assert.equal(rows.find((row) => row.liability === '关爱年金').coverage_type, '现金流');
       assert.equal(rows.find((row) => row.liability === '住院津贴保险金').coverage_type, '津贴保障');
       assert.equal(rows.find((row) => row.liability === '身故或身体高度残疾保险金').coverage_type, '身故保障');
       const optionalPayload = JSON.parse(rows.find((row) => (
@@ -733,6 +743,12 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       const accountPayload = JSON.parse(rows.find((row) => row.liability === '养老保险金').payload);
       assert.equal(accountPayload.formulaText, '养老保险金 = 个人账户价值');
       assert.equal(accountPayload.basis, '个人账户价值');
+      const careAnnuityPayload = JSON.parse(rows.find((row) => row.liability === '关爱年金').payload);
+      assert.equal(careAnnuityPayload.formulaText, '关爱年金 = 首次交纳的基本责任的保险费 × 1%');
+      assert.equal(careAnnuityPayload.coverageType, '现金流');
+      const survivalPayload = JSON.parse(rows.find((row) => row.liability === '生存保险金').payload);
+      assert.equal(survivalPayload.formulaText, '生存保险金 = 基本责任保险金额 × 9%');
+      assert.equal(survivalPayload.coverageType, '现金流');
       const diseasePayload = JSON.parse(rows.find((row) => row.liability === '首次重大疾病保险金').payload);
       assert.equal(diseasePayload.formulaText, '首次重大疾病保险金 = 基本保险金额 × 100%');
       const fixedDailyPayload = JSON.parse(rows.find((row) => row.liability === '重症监护室津贴保险金').payload);
@@ -780,7 +796,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.equal(icuDailyPayload.formulaText, '重症监护日额津贴保险金 = 给付天数 × 日津贴额');
       assert.equal(icuDailyPayload.responsibilityScope, 'optional');
       const total = readDb.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count;
-      assert.equal(total, 55);
+      assert.equal(total, 57);
     } finally {
       readDb.close();
     }

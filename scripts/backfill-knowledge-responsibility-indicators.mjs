@@ -391,12 +391,13 @@ function formulaFor(liability, sectionText) {
     if (amountPercentBeforeLiability?.[1] && amountPercentBeforeLiability?.[2] && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
       const percentValue = Number(amountPercentBeforeLiability[2]);
       if (Number.isFinite(percentValue) && percentValue > 0) {
+        const basis = /基本责任.{0,18}保险金额/u.test(leadWindow) ? '基本责任保险金额' : amountPercentBeforeLiability[1];
         return {
           value: percentValue,
           valueText: amountPercentBeforeLiability[2],
           unit: '%',
-          basis: amountPercentBeforeLiability[1],
-          formulaText: `${liability} = ${amountPercentBeforeLiability[1]} × ${amountPercentBeforeLiability[2]}%`,
+          basis,
+          formulaText: `${liability} = ${basis} × ${amountPercentBeforeLiability[2]}%`,
         };
       }
     }
@@ -723,6 +724,22 @@ function formulaFor(liability, sectionText) {
       basis: '已交保险费、给付比例',
       formulaText: `${liability} = 已交保险费 × 对应给付比例`,
     };
+  }
+  const paidPremiumPercent = text.match(/(?:按|按照)[^。；，,]{0,80}?(首次交纳的?[^。；，,]{0,40}?(?:保险费|保费)|已交(?:纳)?[^。；，,]{0,40}?(?:保险费|保费)|实际交纳[^。；，,]{0,40}?(?:保险费|保费))[^。；，,]{0,16}?(\d+(?:\.\d+)?)\s*[％%][^。；，,]{0,40}?给付/u);
+  if (paidPremiumPercent?.[1] && paidPremiumPercent?.[2]
+    && /年金|养老金|养老保险金|祝寿|生存金|生存保险金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|关爱金/u.test(liability)
+    && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
+    const percentValue = Number(paidPremiumPercent[2]);
+    if (Number.isFinite(percentValue) && percentValue > 0) {
+      const basis = normalizeSpaces(paidPremiumPercent[1]);
+      return {
+        value: percentValue,
+        valueText: paidPremiumPercent[2],
+        unit: '%',
+        basis,
+        formulaText: `${liability} = ${basis} × ${paidPremiumPercent[2]}%`,
+      };
+    }
   }
   const paidPremiumLooksComplete = /满期|生存|祝寿|教育|婚嫁|立业|关爱|年金/u.test(liability)
     || !/基本保险金额|基本保额|保险金额|有效保险金额|现金价值|周岁|等待期|意外|疾病/u.test(text);
