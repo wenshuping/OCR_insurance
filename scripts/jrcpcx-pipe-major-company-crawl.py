@@ -14,6 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CRAWLER_PATH = PROJECT_ROOT / "server" / "scrapling-policy-crawler.py"
 SOURCE = "https://www.jrcpcx.cn/#/query"
 SOURCE_LEVEL = "regulatory_industry_index"
+SUPPORTED_PAGE_SIZES = (10, 20, 50)
+USABLE_QUERY_FIELDS = ("deptName", "company", "queryDeptName", "productName", "industryCode")
 BROWSER_ARGS = [
     "--no-first-run",
     "--no-default-browser-check",
@@ -38,10 +40,6 @@ def resolve_path(value: str) -> str:
     return str(Path(value).expanduser().resolve())
 
 
-def clamp(value: int, lower: int, upper: int) -> int:
-    return max(lower, min(upper, value))
-
-
 def parse_args() -> argparse.Namespace:
     stamp = path_stamp()
     parser = argparse.ArgumentParser(
@@ -58,7 +56,7 @@ def parse_args() -> argparse.Namespace:
         default=f".runtime/chrome-jrcpcx-major-company-gap-{stamp}",
     )
     parser.add_argument("--wait-ms", type=int, default=20000)
-    parser.add_argument("--page-size", type=int, default=50)
+    parser.add_argument("--page-size", type=int, choices=SUPPORTED_PAGE_SIZES, default=50)
     parser.add_argument("--max-pages", type=int, default=2)
     parser.add_argument("--max-detail-products", type=int, default=180)
     parser.add_argument("--headless", action="store_true", default=False)
@@ -68,10 +66,30 @@ def parse_args() -> argparse.Namespace:
     args.pdf_archive_dir = resolve_path(args.pdf_archive_dir)
     args.user_data_dir = resolve_path(args.user_data_dir)
     args.wait_ms = max(1, args.wait_ms)
-    args.page_size = clamp(args.page_size, 10, 50)
     args.max_pages = max(1, args.max_pages)
     args.max_detail_products = max(0, args.max_detail_products)
     return args
+
+
+class InputError(Exception):
+    def __init__(self, code: str, message: str, **summary: Any) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.summary = summary
+
+
+def has_usable_query_filter(query: dict[str, Any]) -> bool:
+    return any(trim(query.get(field)) for field in USABLE_QUERY_FIELDS)
+
+
+def normalize_query(query: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(query)
+    if not trim(normalized.get("deptName")) and not trim(normalized.get("company")):
+        query_dept_name = trim(normalized.get("queryDeptName"))
+        if query_dept_name:
+            normalized["deptName"] = query_dept_name
+    return normalized
 
 
 def load_queries(query_file: str) -> list[dict[str, Any]]:
@@ -79,12 +97,31 @@ def load_queries(query_file: str) -> list[dict[str, Any]]:
         data = json.load(handle)
     queries = data if isinstance(data, list) else data.get("queries") if isinstance(data, dict) else None
     if not isinstance(queries, list):
-        raise ValueError("query file must contain a JSON array or an object with a queries array")
+        raise InputError(
+            "INVALID_QUERY",
+            "Query file must contain a JSON array or an object with a queries array.",
+            queryFile=query_file,
+        )
+    if not queries:
+        raise InputError("EMPTY_QUERY_FILE", "Query file contains no queries.", queryFile=query_file)
     normalized: list[dict[str, Any]] = []
     for index, query in enumerate(queries):
         if not isinstance(query, dict):
-            raise ValueError(f"query at index {index} must be an object")
-        normalized.append(dict(query))
+            raise InputError(
+                "INVALID_QUERY",
+                f"Query at index {index} must be an object.",
+                queryFile=query_file,
+                index=index,
+            )
+        if not has_usable_query_filter(query):
+            raise InputError(
+                "INVALID_QUERY",
+                f"Query at index {index} has no usable filter.",
+                queryFile=query_file,
+                index=index,
+                usableFields=list(USABLE_QUERY_FIELDS),
+            )
+        normalized.append(normalize_query(query))
     return normalized
 
 
@@ -101,9 +138,13 @@ def load_crawler_module() -> Any:
 def refresh_counts(state: dict[str, Any]) -> None:
     records = state.get("records") if isinstance(state.get("records"), list) else []
     products = state.get("products") if isinstance(state.get("products"), list) else []
+    detail_results = state.get("detailResults") if isinstance(state.get("detailResults"), list) else []
     state["productCount"] = len(products)
     state["recordCount"] = len(records)
     state["responsibilityCount"] = sum(1 for record in records if trim(record.get("pageText")))
+    state["detailFailureCount"] = sum(
+        1 for result in detail_results if isinstance(result, dict) and result.get("ok") is False
+    )
 
 
 def write_checkpoint(output_path: str, state: dict[str, Any]) -> None:
@@ -121,7 +162,13 @@ def query_metadata(result: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in result.items() if key != "products"}
 
 
-def detail_metadata(result: dict[str, Any]) -> dict[str, Any]:
+def detail_metadata(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "code": "JRCPCX_DETAIL_INVALID_RESULT",
+            "message": "Detail fetch returned a non-object result.",
+        }
     return {key: value for key, value in result.items() if key != "record"}
 
 
@@ -141,6 +188,7 @@ def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str,
         "productCount": 0,
         "recordCount": 0,
         "responsibilityCount": 0,
+        "detailFailureCount": 0,
         "pdfArchiveDir": args.pdf_archive_dir,
         "userDataDir": args.user_data_dir,
         "waitMs": args.wait_ms,
@@ -155,8 +203,9 @@ def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str,
 
 def mark_partial(state: dict[str, Any], code: str, message: str) -> None:
     state["partial"] = True
-    state["code"] = code
-    state["message"] = message
+    if not trim(state.get("code")):
+        state["code"] = code
+        state["message"] = message
 
 
 async def run_queries(args: argparse.Namespace, crawler: Any, queries: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -216,9 +265,30 @@ def run_details(args: argparse.Namespace, crawler: Any, state: dict[str, Any]) -
         if not detail_url or detail_url in seen_detail_urls:
             continue
         seen_detail_urls.add(detail_url)
-        detail_result = crawler.jrcpcx_fetch_life_ins_detail(product, args.pdf_archive_dir)
         fetched += 1
-        state["detailResults"].append(detail_metadata(detail_result))
+        try:
+            detail_result = crawler.jrcpcx_fetch_life_ins_detail(product, args.pdf_archive_dir)
+        except Exception as error:
+            detail_result = {
+                "ok": False,
+                "code": "JRCPCX_DETAIL_EXCEPTION",
+                "message": str(error)[:300],
+                "detailUrl": detail_url,
+                "productName": trim(product.get("productName")),
+            }
+            mark_partial(
+                state,
+                "JRCPCX_DETAIL_EXCEPTION",
+                "One or more detail fetches raised an exception; inspect detailResults and retry.",
+            )
+        metadata = detail_metadata(detail_result)
+        state["detailResults"].append(metadata)
+        if metadata.get("ok") is False:
+            mark_partial(
+                state,
+                "JRCPCX_DETAIL_FETCH_INCOMPLETE",
+                "One or more detail fetches failed; inspect detailResults and retry if needed.",
+            )
         record = detail_result.get("record") if isinstance(detail_result, dict) else None
         if isinstance(record, dict):
             state["records"].append(record)
@@ -238,6 +308,7 @@ def compact_summary(output_path: str, state: dict[str, Any]) -> dict[str, Any]:
         "completedQueryCount": len(state["queries"]),
         "productCount": state["productCount"],
         "detailCount": len(state["detailResults"]),
+        "detailFailureCount": state["detailFailureCount"],
         "recordCount": state["recordCount"],
         "responsibilityCount": state["responsibilityCount"],
         "pdfArchiveDir": state["pdfArchiveDir"],
@@ -258,9 +329,20 @@ async def run_async() -> dict[str, Any]:
 
 
 def main() -> int:
-    summary = asyncio.run(run_async())
+    try:
+        summary = asyncio.run(run_async())
+    except InputError as error:
+        summary = {
+            "ok": False,
+            "partial": False,
+            "code": error.code,
+            "message": error.message,
+            **error.summary,
+        }
+        print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
+        return 1
     print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
-    return 0 if summary.get("ok") else 1
+    return 0 if summary.get("ok") and not summary.get("partial") else 1
 
 
 if __name__ == "__main__":
