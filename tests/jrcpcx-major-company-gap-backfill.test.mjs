@@ -6,9 +6,14 @@ import test from 'node:test';
 
 import {
   TARGET_COMPANIES,
+  backupSqliteFile,
+  buildCoverageGapReport,
+  buildDefaultArtifactPath,
+  buildInsertReport,
   buildInsertPlan,
   buildJrcpcxQueriesFromGap,
   buildKnowledgeRecordFromJrcpcx,
+  buildSqliteBackupPath,
   companyConfigForIssuer,
   eligibleForAutoInsert,
   normalizeClauseUrl,
@@ -119,6 +124,105 @@ test('buildInsertPlan skips normalized existing clause URLs', () => {
 
   assert.equal(plan.recordsToInsert.length, 0);
   assert.equal(plan.skipped[0].reason, 'existing_url');
+});
+
+test('coverage report skips non-target and non-human rows out of manual review', () => {
+  const base = {
+    productName: '示例产品',
+    detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+    pdfLocalPath: ensurePdfFixture(),
+    pdfSha256: 'abc123',
+    pageText: '保险责任 示例责任',
+    qualityStatus: 'valid_complete',
+  };
+  const report = buildCoverageGapReport({
+    detailRows: [
+      { ...base, company: '中国平安人寿保险股份有限公司', productType: '人身保险类' },
+      {
+        ...base,
+        company: '阳光人寿保险股份有限公司',
+        productName: '阳光财产示例',
+        productType: '财产保险类',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=property',
+      },
+    ],
+  });
+
+  assert.equal(report.summary.skippedCount, 2);
+  assert.equal(report.summary.manualReviewCount, 0);
+  assert.deepEqual(report.skipped.map((row) => row.reason), ['issuer_not_target', 'not_human_insurance']);
+});
+
+test('insert report includes per-company planned and inserted id ranges', () => {
+  const report = buildInsertReport({
+    recordsToInsert: [
+      { company: '阳光人寿保险股份有限公司', productName: '阳光示例', url: 'https://example.com/sunshine' },
+      { company: '阳光人寿保险股份有限公司', productName: '阳光示例二', url: 'https://example.com/sunshine-2' },
+      { company: '中国人民人寿保险股份有限公司', productName: '人保示例', url: 'https://example.com/picc' },
+    ],
+    saved: [
+      { id: 101, company: '阳光人寿保险股份有限公司', productName: '阳光示例', url: 'https://example.com/sunshine' },
+      { id: 103, company: '阳光人寿保险股份有限公司', productName: '阳光示例二', url: 'https://example.com/sunshine-2' },
+    ],
+  });
+
+  assert.deepEqual(report.byCompany['阳光人寿保险股份有限公司'], {
+    plannedCount: 2,
+    insertedCount: 2,
+    insertedMinId: 101,
+    insertedMaxId: 103,
+  });
+  assert.deepEqual(report.byCompany['中国人民人寿保险股份有限公司'], {
+    plannedCount: 1,
+    insertedCount: 0,
+    insertedMinId: null,
+    insertedMaxId: null,
+  });
+});
+
+test('backup and default artifact paths use major-company gap stamp names', () => {
+  const generatedAt = '2026-06-21T12:34:56.789Z';
+  assert.equal(
+    buildSqliteBackupPath('/tmp/policy-ocr.sqlite', generatedAt),
+    '/tmp/policy-ocr.sqlite.backup-before-jrcpcx-major-company-gap-2026-06-21T12-34-56-789Z',
+  );
+  assert.equal(
+    path.basename(buildDefaultArtifactPath('query-file', generatedAt)),
+    'jrcpcx-major-company-gap-2026-06-21T12-34-56-789Z-queries.json',
+  );
+  assert.equal(
+    path.basename(buildDefaultArtifactPath('coverage', generatedAt)),
+    'jrcpcx-major-company-gap-2026-06-21T12-34-56-789Z-coverage-gap.json',
+  );
+  assert.equal(
+    path.basename(buildDefaultArtifactPath('insert-plan', generatedAt)),
+    'jrcpcx-major-company-gap-2026-06-21T12-34-56-789Z-insert-plan.json',
+  );
+  assert.equal(
+    path.basename(buildDefaultArtifactPath('insert-report', generatedAt)),
+    'jrcpcx-major-company-gap-2026-06-21T12-34-56-789Z-insert-report.json',
+  );
+});
+
+test('backupSqliteFile copies database and SQLite sidecars next to source DB', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-major-company-backup-'));
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const generatedAt = '2026-06-21T12:34:56.789Z';
+  fs.writeFileSync(dbPath, 'db');
+  fs.writeFileSync(`${dbPath}-wal`, 'wal');
+  fs.writeFileSync(`${dbPath}-shm`, 'shm');
+
+  const backupPath = backupSqliteFile(dbPath, generatedAt);
+
+  assert.equal(
+    backupPath,
+    `${dbPath}.backup-before-jrcpcx-major-company-gap-2026-06-21T12-34-56-789Z`,
+  );
+  assert.equal(fs.readFileSync(backupPath, 'utf8'), 'db');
+  assert.equal(fs.readFileSync(`${backupPath}-wal`, 'utf8'), 'wal');
+  assert.equal(fs.readFileSync(`${backupPath}-shm`, 'utf8'), 'shm');
 });
 
 test('buildKnowledgeRecordFromJrcpcx maps official evidence fields', () => {

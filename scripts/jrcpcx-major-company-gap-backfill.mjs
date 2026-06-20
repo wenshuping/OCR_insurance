@@ -24,8 +24,7 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
 const DEFAULT_DB_PATH = path.join(runtimeDir, 'policy-ocr.sqlite');
-const DEFAULT_COVERAGE_PATH = path.join(runtimeDir, 'jrcpcx-major-company-coverage-gap.json');
-const DEFAULT_INSERT_REPORT_PATH = path.join(runtimeDir, 'jrcpcx-major-company-insert-report.json');
+const DEFAULT_COVERAGE_INPUT_PATH = path.join(runtimeDir, 'jrcpcx-major-company-coverage-gap.json');
 
 export { normalizeClauseUrl };
 
@@ -58,6 +57,22 @@ export function companyConfigForIssuer(value = '') {
 
 function targetCompanySummaries() {
   return TARGET_COMPANIES.map((config) => ({ ...config }));
+}
+
+function timestampStamp(value = new Date().toISOString()) {
+  return trim(value).replace(/[:.]/gu, '-');
+}
+
+export function buildDefaultArtifactPath(kind, generatedAt = new Date().toISOString()) {
+  const suffixByKind = {
+    'query-file': 'queries',
+    coverage: 'coverage-gap',
+    'insert-plan': 'insert-plan',
+    'insert-report': 'insert-report',
+  };
+  const suffix = suffixByKind[kind];
+  if (!suffix) throw new Error(`Unsupported artifact kind: ${kind || '(missing)'}`);
+  return path.join(runtimeDir, `jrcpcx-major-company-gap-${timestampStamp(generatedAt)}-${suffix}.json`);
 }
 
 function productTypeOf(row = {}) {
@@ -210,6 +225,18 @@ function skippedInsertRow(row = {}, reason, reasons = [reason]) {
   };
 }
 
+function skippedCoverageRow(item = {}, reasons = []) {
+  return {
+    ...item,
+    reason: reasons[0] || 'out_of_scope',
+    reasons,
+  };
+}
+
+function isOutOfScopeEligibility(reasons = []) {
+  return reasons.includes('issuer_not_target') || reasons.includes('not_human_insurance');
+}
+
 export function buildInsertPlan({ insertable = [], existingUrls = [] } = {}) {
   const existingUrlSet = normalizedUrlSet(existingUrls);
   const recordsToInsert = [];
@@ -241,6 +268,7 @@ export function buildCoverageGapReport({
   const insertable = [];
   const manualReview = [];
   const invalid = [];
+  const skipped = [];
 
   for (const row of mergeDetailRowsPreferEvidence(detailRows)) {
     const clauseUrl = clauseUrlOf(row);
@@ -256,7 +284,8 @@ export function buildCoverageGapReport({
       materialIdentityKey: materialIdentityKey(row),
       eligibilityReasons: eligibility.reasons,
     };
-    if (clauseUrl && localUrls.has(clauseUrl)) represented.push(item);
+    if (isOutOfScopeEligibility(eligibility.reasons)) skipped.push(skippedCoverageRow(item, eligibility.reasons));
+    else if (clauseUrl && localUrls.has(clauseUrl)) represented.push(item);
     else if (eligibility.eligible) insertable.push(item);
     else if (['invalid_empty', 'invalid_non_responsibility', 'suspect_needs_source_check'].includes(trim(row.qualityStatus))) invalid.push(item);
     else manualReview.push(item);
@@ -273,17 +302,57 @@ export function buildCoverageGapReport({
       insertableCount: insertable.length,
       manualReviewCount: manualReview.length,
       invalidCount: invalid.length,
+      skippedCount: skipped.length,
       unresolvedShardCount: Array.isArray(unresolvedShards) ? unresolvedShards.length : 0,
     },
     represented,
     insertable,
     manualReview,
     invalid,
+    skipped,
     unresolvedShards,
   };
 }
 
-function buildInsertReport({
+function recordCompanyOf(row = {}) {
+  return trim(row.company || row.issuerFullName) || 'unknown';
+}
+
+function emptyCompanyInsertSummary() {
+  return {
+    plannedCount: 0,
+    insertedCount: 0,
+    insertedMinId: null,
+    insertedMaxId: null,
+  };
+}
+
+function buildByCompanyInsertSummary({ plannedRows = [], savedRows = [] } = {}) {
+  const byCompany = {};
+  for (const config of TARGET_COMPANIES) byCompany[config.issuerFullName] = emptyCompanyInsertSummary();
+  for (const row of Array.isArray(plannedRows) ? plannedRows : []) {
+    const company = recordCompanyOf(row);
+    if (!byCompany[company]) byCompany[company] = emptyCompanyInsertSummary();
+    byCompany[company].plannedCount += 1;
+  }
+  for (const row of Array.isArray(savedRows) ? savedRows : []) {
+    const company = recordCompanyOf(row);
+    if (!byCompany[company]) byCompany[company] = emptyCompanyInsertSummary();
+    byCompany[company].insertedCount += 1;
+    const id = Number(row?.id || 0);
+    if (Number.isFinite(id) && id > 0) {
+      byCompany[company].insertedMinId = byCompany[company].insertedMinId === null
+        ? id
+        : Math.min(byCompany[company].insertedMinId, id);
+      byCompany[company].insertedMaxId = byCompany[company].insertedMaxId === null
+        ? id
+        : Math.max(byCompany[company].insertedMaxId, id);
+    }
+  }
+  return byCompany;
+}
+
+export function buildInsertReport({
   generatedAt = new Date().toISOString(),
   dryRun = false,
   dbPath = '',
@@ -300,6 +369,10 @@ function buildInsertReport({
   const insertedIds = savedRows
     .map((row) => Number(row?.id || 0))
     .filter((id) => Number.isFinite(id) && id > 0);
+  const byCompany = buildByCompanyInsertSummary({
+    plannedRows,
+    savedRows,
+  });
   return {
     schemaVersion: 'jrcpcx-major-company-insert-report/v1',
     generatedAt,
@@ -313,6 +386,7 @@ function buildInsertReport({
     insertedCount: savedRows.length,
     insertedMinId: insertedIds.length ? Math.min(...insertedIds) : null,
     insertedMaxId: insertedIds.length ? Math.max(...insertedIds) : null,
+    byCompany,
     skippedCount: skippedRows.length,
     skipped: skippedRows,
     saved: savedRows,
@@ -376,11 +450,13 @@ function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
-function backupSqliteFile(dbPath, generatedAt = new Date().toISOString()) {
-  const stamp = generatedAt.replace(/[:.]/gu, '-');
-  const backupDir = path.join(path.dirname(dbPath), 'backups');
-  const backupPath = path.join(backupDir, `policy-ocr-before-jrcpcx-major-company-backfill-${stamp}.sqlite`);
-  fs.mkdirSync(backupDir, { recursive: true });
+export function buildSqliteBackupPath(dbPath, generatedAt = new Date().toISOString()) {
+  return `${dbPath}.backup-before-jrcpcx-major-company-gap-${timestampStamp(generatedAt)}`;
+}
+
+export function backupSqliteFile(dbPath, generatedAt = new Date().toISOString()) {
+  const backupPath = buildSqliteBackupPath(dbPath, generatedAt);
+  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
   for (const suffix of ['', '-wal', '-shm']) {
     const source = `${dbPath}${suffix}`;
     if (fs.existsSync(source)) fs.copyFileSync(source, `${backupPath}${suffix}`);
@@ -472,7 +548,8 @@ async function runQueryFileCli(args) {
     targetCompanies: targetCompanySummaries(),
     queries: buildJrcpcxQueriesFromGap(readJsonFile(gapPath)),
   };
-  if (args.output) writeJsonFile(path.resolve(args.output), artifact, Boolean(args.pretty));
+  const outputPath = path.resolve(args.output || buildDefaultArtifactPath('query-file', generatedAt));
+  writeJsonFile(outputPath, artifact, Boolean(args.pretty));
   process.stdout.write(`${JSON.stringify({ queryCount: artifact.queries.length }, null, 2)}\n`);
   return artifact;
 }
@@ -481,7 +558,7 @@ async function runCoverageCli(args) {
   const generatedAt = new Date().toISOString();
   if (!args.input) throw new Error('Missing --input <json>');
   const inputPath = path.resolve(args.input);
-  const outputPath = path.resolve(args.output || DEFAULT_COVERAGE_PATH);
+  const outputPath = path.resolve(args.output || buildDefaultArtifactPath('coverage', generatedAt));
   const dbPath = path.resolve(args['db-path'] || process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH);
   const input = readJsonFile(inputPath);
   const artifact = {
@@ -495,8 +572,8 @@ async function runCoverageCli(args) {
 
 async function runInsertCli(args) {
   const generatedAt = new Date().toISOString();
-  const coveragePath = path.resolve(args['coverage-path'] || args.input || DEFAULT_COVERAGE_PATH);
-  const outputPath = path.resolve(args.output || DEFAULT_INSERT_REPORT_PATH);
+  const coveragePath = path.resolve(args['coverage-path'] || args.input || DEFAULT_COVERAGE_INPUT_PATH);
+  const outputPath = path.resolve(args.output || buildDefaultArtifactPath(args.write ? 'insert-report' : 'insert-plan', generatedAt));
   const dbPath = path.resolve(args['db-path'] || process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH);
   const coverage = readJsonFile(coveragePath);
   if (args.write && !fs.existsSync(dbPath)) throw new Error(`SQLite DB not found: ${dbPath}`);
