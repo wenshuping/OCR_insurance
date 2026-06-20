@@ -13,7 +13,7 @@ function trim(value) {
   return String(value ?? '').trim();
 }
 
-function normalizeSpaces(value) {
+export function normalizeSpaces(value) {
   return trim(value)
     .normalize('NFKC')
     .replace(/\r/gu, '\n')
@@ -71,7 +71,7 @@ function limitText(value, max = 1200) {
   return text.length > max ? `${text.slice(0, max - 12)}...已截断` : text;
 }
 
-function normalizeLookupText(value) {
+export function normalizeLookupText(value) {
   return normalizeSpaces(value).replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
 }
 
@@ -159,7 +159,7 @@ function parameterizedMedicalFormulaFromText(text) {
   };
 }
 
-function sourceText(payload = {}) {
+export function sourceText(payload = {}) {
   return normalizeSpaces([
     payload.pageText,
     payload.responsibility,
@@ -175,7 +175,7 @@ function responsibilityTextLooksUsable(text) {
   return /保险责任|保险金|给付|赔付|报销|津贴|年金/u.test(text) && !/同产品官方资料已存在保险责任正文/u.test(text);
 }
 
-function splitBenefitSections(text) {
+export function splitBenefitSections(text) {
   const source = normalizeSpaces(text);
   const pattern = /([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费|豁免)|(?:满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费))(?:[（(][^）)]{0,12}[）)])?\s*(?=若|如|被保险人|本合同|自|在|=|＝|:|：|我们|本公司|投保人|[（(])/gu;
   const matches = [];
@@ -321,7 +321,7 @@ function responsibilityScopeForSection(rawLiability, sectionText) {
   return /可选(?:保险)?责任|可选部分/u.test(marker) ? 'optional' : 'basic';
 }
 
-function coverageTypeFor(liability, text) {
+export function coverageTypeFor(liability, text) {
   const direct = normalizeSpaces(liability);
   const haystack = normalizeSpaces(`${liability} ${text}`);
   if (/豁免/u.test(direct)) return '保费豁免';
@@ -364,7 +364,7 @@ function accountValueLooksScopedToLiability(liability, text) {
     && /账户价值[^。；]{0,90}给付|给付[^。；]{0,90}账户价值/u.test(compact);
 }
 
-function formulaFor(liability, sectionText) {
+export function formulaFor(liability, sectionText) {
   const fullText = normalizeSpaces(sectionText);
   const currentLiabilityIndex = fullText.indexOf(liability);
   const compactLiability = normalizeLookupText(liability);
@@ -802,7 +802,7 @@ function formulaFor(liability, sectionText) {
   return null;
 }
 
-function conditionFromText(text) {
+export function conditionFromText(text) {
   const normalized = normalizeSpaces(text);
   const match = normalized.match(/(?:若|如果|自)([^。；]{6,120}?)(?:，|,|我们|本公司|按|给付)/u);
   return trim(match?.[1] || '');
@@ -868,7 +868,7 @@ function loadProductsWithoutIndicators(db, {
   }));
 }
 
-function buildIndicatorsForProduct(product, now) {
+export function buildIndicatorsForProduct(product, now) {
   const indicators = [];
   const seen = new Set();
   for (const section of splitBenefitSections(product.sourceText)) {
@@ -931,7 +931,7 @@ function buildIndicatorsForProduct(product, now) {
   return deduped.sort((a, b) => indicators.findIndex((item) => item.id === a.id) - indicators.findIndex((item) => item.id === b.id));
 }
 
-function upsertIndicators(db, indicators) {
+export function upsertIndicators(db, indicators) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS insurance_indicator_records (
       id TEXT PRIMARY KEY,
@@ -1003,7 +1003,7 @@ function policyDerivedProductKeys(row = {}) {
   ]);
 }
 
-function affectedDerivedRows(db, productKeys) {
+export function affectedDerivedRows(db, productKeys) {
   const changedKeys = new Set(uniqueStrings(productKeys));
   if (!changedKeys.size || !tableExists(db, 'policy_derived_results')) return [];
   return db.prepare('SELECT policy_id, product_keys, payload FROM policy_derived_results ORDER BY policy_id ASC')
@@ -1016,7 +1016,7 @@ function affectedDerivedRows(db, productKeys) {
     .filter((row) => row.policyId && row.productKeys.some((key) => changedKeys.has(key)));
 }
 
-function markAffectedDerivedRowsStale(db, productKeys, now) {
+export function markAffectedDerivedRowsStale(db, productKeys, now) {
   const rows = affectedDerivedRows(db, productKeys);
   if (!rows.length) return [];
   const update = db.prepare(`
@@ -1043,7 +1043,7 @@ function markAffectedDerivedRowsStale(db, productKeys, now) {
   return rows.map((row) => row.policyId);
 }
 
-function recordIndicatorRefreshBatch(db, { productKeys, affectedPolicyCount, now }) {
+export function recordIndicatorRefreshBatch(db, { productKeys, affectedPolicyCount, now }) {
   const keys = uniqueStrings(productKeys);
   if (!keys.length) return '';
   ensureIndicatorRefreshTables(db);
