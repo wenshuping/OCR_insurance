@@ -239,6 +239,7 @@ function isOutOfScopeEligibility(reasons = []) {
 
 export function buildInsertPlan({ insertable = [], existingUrls = [] } = {}) {
   const existingUrlSet = normalizedUrlSet(existingUrls);
+  const plannedUrlSet = new Set(existingUrlSet);
   const recordsToInsert = [];
   const skipped = [];
   for (const row of Array.isArray(insertable) ? insertable : []) {
@@ -252,7 +253,12 @@ export function buildInsertPlan({ insertable = [], existingUrls = [] } = {}) {
       skipped.push(skippedInsertRow(row, 'existing_url'));
       continue;
     }
+    if (clauseUrl && plannedUrlSet.has(clauseUrl)) {
+      skipped.push(skippedInsertRow(row, 'duplicate_plan_url'));
+      continue;
+    }
     recordsToInsert.push(buildKnowledgeRecordFromJrcpcx(row));
+    if (clauseUrl) plannedUrlSet.add(clauseUrl);
   }
   return { recordsToInsert, skipped };
 }
@@ -469,6 +475,29 @@ async function openKnowledgeStore(dbPath) {
   return createKnowledgeStateStore({ dbPath });
 }
 
+async function openReadOnlyKnowledgeSnapshot(dbPath) {
+  const resolvedDbPath = path.resolve(dbPath);
+  if (!fs.existsSync(resolvedDbPath)) throw new Error(`SQLite DB not found: ${resolvedDbPath}`);
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(resolvedDbPath, { readOnly: true });
+  return {
+    dbPath: resolvedDbPath,
+    countKnowledgeRecords() {
+      return Number(db.prepare('SELECT COUNT(*) AS count FROM knowledge_records').get()?.count || 0);
+    },
+    allKnownUrls() {
+      return db
+        .prepare("SELECT url FROM knowledge_records WHERE TRIM(COALESCE(url, '')) <> '' ORDER BY id ASC")
+        .all()
+        .map((row) => trim(row.url))
+        .filter(Boolean);
+    },
+    close() {
+      db.close();
+    },
+  };
+}
+
 async function buildCoverageFromStore({ input, dbPath, generatedAt }) {
   const knowledgeStore = await openKnowledgeStore(dbPath);
   try {
@@ -488,6 +517,30 @@ async function buildCoverageFromStore({ input, dbPath, generatedAt }) {
 }
 
 async function buildInsertReportFromStore({ coverage, dbPath, dbBackupPath = '', generatedAt, write = false }) {
+  if (!write) {
+    const knowledgeSnapshot = await openReadOnlyKnowledgeSnapshot(dbPath);
+    try {
+      const before = knowledgeSnapshot.countKnowledgeRecords();
+      const plan = buildInsertPlan({
+        insertable: insertableRowsFromCoverage(coverage),
+        existingUrls: knowledgeSnapshot.allKnownUrls(),
+      });
+      return buildInsertReport({
+        generatedAt,
+        dryRun: true,
+        dbPath: knowledgeSnapshot.dbPath,
+        dbBackupPath,
+        before,
+        after: before,
+        recordsToInsert: plan.recordsToInsert,
+        saved: [],
+        skipped: plan.skipped,
+      });
+    } finally {
+      knowledgeSnapshot.close();
+    }
+  }
+
   const [{ allocateId }, knowledgeStore] = await Promise.all([
     import('../server/policy-ocr.domain.mjs'),
     openKnowledgeStore(dbPath),
@@ -498,20 +551,6 @@ async function buildInsertReportFromStore({ coverage, dbPath, dbBackupPath = '',
       insertable: insertableRowsFromCoverage(coverage),
       existingUrls: knowledgeStore.allKnownUrls(),
     });
-    if (!write) {
-      return buildInsertReport({
-        generatedAt,
-        dryRun: true,
-        dbPath: knowledgeStore.dbPath,
-        dbBackupPath,
-        before,
-        after: before,
-        recordsToInsert: plan.recordsToInsert,
-        saved: [],
-        skipped: plan.skipped,
-      });
-    }
-
     const state = knowledgeStore.loadState();
     const { saved, nextId } = buildRowsWithAllocatedIds({
       state,
@@ -576,7 +615,7 @@ async function runInsertCli(args) {
   const outputPath = path.resolve(args.output || buildDefaultArtifactPath(args.write ? 'insert-report' : 'insert-plan', generatedAt));
   const dbPath = path.resolve(args['db-path'] || process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH);
   const coverage = readJsonFile(coveragePath);
-  if (args.write && !fs.existsSync(dbPath)) throw new Error(`SQLite DB not found: ${dbPath}`);
+  if (!fs.existsSync(dbPath)) throw new Error(`SQLite DB not found: ${dbPath}`);
   const dbBackupPath = args.write ? backupSqliteFile(dbPath, generatedAt) : '';
   const artifact = await buildInsertReportFromStore({
     coverage,

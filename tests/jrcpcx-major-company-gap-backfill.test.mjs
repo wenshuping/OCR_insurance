@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -126,6 +127,37 @@ test('buildInsertPlan skips normalized existing clause URLs', () => {
   assert.equal(plan.skipped[0].reason, 'existing_url');
 });
 
+test('buildInsertPlan skips duplicate normalized clause URLs inside same batch', () => {
+  const base = {
+    company: '中国人民人寿保险股份有限公司',
+    productType: '人身保险类',
+    pdfLocalPath: ensurePdfFixture(),
+    pdfSha256: 'abc123',
+    pageText: '保险责任 年金给付',
+    qualityStatus: 'valid_partial',
+  };
+  const plan = buildInsertPlan({
+    insertable: [
+      {
+        ...base,
+        productName: '人保寿险示例年金保险',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=111&info=dup',
+      },
+      {
+        ...base,
+        productName: '人保寿险示例年金保险重复条款',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=dup&t=222',
+      },
+    ],
+  });
+
+  assert.equal(plan.recordsToInsert.length, 1);
+  assert.equal(plan.skipped.length, 1);
+  assert.equal(plan.skipped[0].reason, 'duplicate_plan_url');
+});
+
 test('coverage report skips non-target and non-human rows out of manual review', () => {
   const base = {
     productName: '示例产品',
@@ -223,6 +255,29 @@ test('backupSqliteFile copies database and SQLite sidecars next to source DB', (
   assert.equal(fs.readFileSync(backupPath, 'utf8'), 'db');
   assert.equal(fs.readFileSync(`${backupPath}-wal`, 'utf8'), 'wal');
   assert.equal(fs.readFileSync(`${backupPath}-shm`, 'utf8'), 'shm');
+});
+
+test('CLI insert dry-run fails read-only when SQLite DB is missing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-major-company-dryrun-'));
+  const coveragePath = path.join(dir, 'coverage.json');
+  const dbPath = path.join(dir, 'missing-policy-ocr.sqlite');
+  const outputPath = path.join(dir, 'insert-plan.json');
+  fs.writeFileSync(coveragePath, `${JSON.stringify({ insertable: [] })}\n`);
+
+  const result = spawnSync(process.execPath, [
+    'scripts/jrcpcx-major-company-gap-backfill.mjs',
+    '--mode=insert',
+    `--coverage-path=${coveragePath}`,
+    `--db-path=${dbPath}`,
+    `--output=${outputPath}`,
+  ], {
+    cwd: path.resolve('.'),
+    encoding: 'utf8',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /SQLite DB not found/u);
+  assert.equal(fs.existsSync(dbPath), false);
 });
 
 test('buildKnowledgeRecordFromJrcpcx maps official evidence fields', () => {
