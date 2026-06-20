@@ -28,6 +28,8 @@ NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
     "https://www.newchinalife.com/info/4596",
     "https://www.newchinalife.com/info/3279_23",
 ]
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_PDF_ARCHIVE_DIR = os.path.join(PROJECT_ROOT, ".runtime", "policy-material-pdfs")
 CHINA_LIFE_PRODUCT_INFO_ENDPOINT = "https://www.e-chinalife.com/jw/web/json/app/product_info_publish/plugin/com.chinalife.yunque.ProductInfoPublish/service"
 CHINA_LIFE_OFFICIAL_BASE_URL = "https://www.e-chinalife.com/"
 CHINA_UNITED_LIFE_OFFICIAL_BASE_URL = "https://life.cic.cn/"
@@ -95,6 +97,10 @@ GUOLIAN_LIFE_PRODUCT_MENUS = {
 }
 PING_AN_PRODUCT_LIST_ENDPOINT = "https://life.pingan.com/ilife-home/product/getProductList"
 PING_AN_PLAN_PDF_ENDPOINT = "https://life.pingan.com/ilife-home/product/getPlanClausePdf"
+PING_AN_LOAN_RATE_PDF_URL = "https://life.pingan.com/ilifecore/biaogexiazai/baodandaikuanlilv.pdf"
+JRCPCX_DETAIL_BASE_URL = "https://inspdinfo.iachina.cn"
+JRCPCX_DETAIL_AES_KEY = "0d36c68466e06b99"
+JRCPCX_DETAIL_AES_IV = "0840e274812143f5"
 CHINA_TAIPING_WCP_BASE_URL = "https://tpwx.life.cntaiping.com/tpwcp/wcp/wcpalpha/"
 CHINA_TAIPING_DISCLOSURE_URL = "https://life.cntaiping.com/info-zstscp/?source=sy"
 CHINA_TAIPING_OFFICIAL_BASE_URL = "https://life.cntaiping.com/"
@@ -2032,6 +2038,7 @@ async def crawl_ping_an_browser_pages_async(payload: dict[str, Any]) -> dict[str
     offset = max(0, int(payload.get("offset") or 0))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     cdp_url = trim(payload.get("cdpUrl")) or "http://127.0.0.1:9223"
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
     request_payload = {
         "isOrNotSale": sale_type,
         "planSalesStatus": sale_type,
@@ -2134,12 +2141,24 @@ async def crawl_ping_an_browser_pages_async(payload: dict[str, Any]) -> dict[str
                         "pages": extracted.get("pages", 0),
                         "bytes": len(data_bytes),
                         "contentType": content_type,
+                        **archive_pdf_bytes(data_bytes, pdf_archive_dir, material_url),
                     }
                 )
         page_meta["productCount"] = len(products)
         page_meta["recordCount"] = len(records)
         await browser.close()
-        return {"ok": True, "company": company, "saleType": sale_type, "offset": offset, "maxProducts": max_products, "pages": [page_meta], "products": products, "records": records}
+        return {
+            "ok": True,
+            "company": company,
+            "saleType": sale_type,
+            "offset": offset,
+            "maxProducts": max_products,
+            "pages": [page_meta],
+            "products": products,
+            "records": records,
+            "pdfArchiveDir": pdf_archive_dir,
+            "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+        }
 
 
 def crawl_ping_an_browser_pages(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2157,6 +2176,7 @@ async def crawl_ping_an_browser_catalog_materials_async(payload: dict[str, Any])
     delay_ms = max(0, int(payload.get("delayMs") or 0))
     pdf_retry_count = max(0, int(payload.get("pdfRetryCount") or 0))
     pdf_retry_delay_ms = max(0, int(payload.get("pdfRetryDelayMs") or 0))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
     products = []
     records = []
     skipped = []
@@ -2234,6 +2254,7 @@ async def crawl_ping_an_browser_catalog_materials_async(payload: dict[str, Any])
                     "pages": extracted.get("pages", 0),
                     "bytes": len(data_bytes),
                     "contentType": content_type,
+                    **archive_pdf_bytes(data_bytes, pdf_archive_dir, material_url),
                 }
             )
             products.append(
@@ -2256,6 +2277,8 @@ async def crawl_ping_an_browser_catalog_materials_async(payload: dict[str, Any])
         "skipped": skipped,
         "products": products,
         "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
     }
 
 
@@ -2352,6 +2375,1231 @@ async def crawl_ping_an_browser_catalog_async(payload: dict[str, Any]) -> dict[s
 
 def crawl_ping_an_browser_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(crawl_ping_an_browser_catalog_async(payload))
+
+
+def ping_an_loan_rate_product_type(value: str) -> str:
+    product_name = trim(value)
+    if "万能" in product_name:
+        return "万能账户"
+    if "投连" in product_name:
+        return "投连险"
+    if "重大疾病" in product_name or "疾病" in product_name:
+        return "重疾险"
+    if "医疗" in product_name:
+        return "医疗险"
+    if "年金" in product_name or "养老" in product_name or "教育" in product_name:
+        return "年金险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "寿险" in product_name or "终身寿" in product_name or "终身保险" in product_name:
+        return "寿险"
+    return ""
+
+
+def ping_an_parse_loan_rate_products(text: str) -> list[dict[str, Any]]:
+    product_type_words = "普通型|分红型|万能型|投资连结型|投连型"
+    row_re = re.compile(rf"^([0-9][0-9A-Za-z]*)\s+(.+?)\s+({product_type_words})\s+([0-9.]+%)?(?:\s+([0-9.]+%))?\s*$")
+    name_re = re.compile(rf"^(.+?)\s+({product_type_words})\s+([0-9.]+%)?(?:\s+([0-9.]+%))?\s*$")
+    products: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    pending_code = ""
+    for raw_line in (text or "").splitlines():
+        line = clean_text(raw_line)
+        if not line or "产品代码" in line or "保单贷款利率" in line or "一览表" in line:
+            continue
+        if re.fullmatch(r"[0-9][0-9A-Za-z]*", line):
+            pending_code = line
+            continue
+        match = row_re.match(line)
+        if not match and pending_code:
+            name_match = name_re.match(line)
+            if name_match:
+                match = (pending_code, *name_match.groups())
+            pending_code = ""
+        if not match:
+            continue
+        if isinstance(match, tuple):
+            plan_code, product_name, official_product_type, loan_rate, self_pay_rate = match
+        else:
+            plan_code, product_name, official_product_type, loan_rate, self_pay_rate = match.groups()
+        plan_code = trim(plan_code)
+        if not plan_code or plan_code in seen_codes:
+            continue
+        seen_codes.add(plan_code)
+        product_name = trim(product_name)
+        products.append(
+            {
+                "planCode": plan_code,
+                "productName": product_name,
+                "productType": ping_an_loan_rate_product_type(product_name),
+                "officialProductType": trim(official_product_type),
+                "loanRate": trim(loan_rate),
+                "selfPayRate": trim(self_pay_rate),
+                "sourceUrl": PING_AN_LOAN_RATE_PDF_URL,
+                "sourceName": "平安官网保单贷款利率表",
+            }
+        )
+    return products
+
+
+def crawl_ping_an_loan_rate_products(payload: dict[str, Any]) -> dict[str, Any]:
+    status, data = fetch_bytes(PING_AN_LOAN_RATE_PDF_URL)
+    if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return {
+            "ok": False,
+            "company": trim(payload.get("company")) or "中国平安",
+            "source": PING_AN_LOAN_RATE_PDF_URL,
+            "code": "PING_AN_LOAN_RATE_PDF_UNAVAILABLE",
+            "status": status,
+            "bytes": len(data),
+            "products": [],
+        }
+    extracted = extract_pdf_text_with_system_python(data)
+    products = ping_an_parse_loan_rate_products(extracted.get("text", ""))
+    return {
+        "ok": True,
+        "company": trim(payload.get("company")) or "中国平安",
+        "source": PING_AN_LOAN_RATE_PDF_URL,
+        "pages": extracted.get("pages", 0),
+        "productCount": len(products),
+        "products": products,
+    }
+
+
+def ping_an_history_seed_versions(seed: dict[str, Any], default_max_version: int) -> list[str]:
+    plan_code = trim(seed.get("planCode"))
+    if not plan_code:
+        return []
+    explicit_versions = seed.get("versions")
+    if isinstance(explicit_versions, list):
+        return [trim(item) for item in explicit_versions if trim(item)]
+    max_version = max(1, int(seed.get("maxVersion") or default_max_version or 1))
+    return [f"{plan_code}-{index}" for index in range(1, max_version + 1)]
+
+
+def ping_an_historical_product_title(text: str) -> str:
+    lines = []
+    for raw_line in (text or "").splitlines():
+        line = clean_text(raw_line)
+        line = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", line)
+        line = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[，,。：:；;、）)])", "", line)
+        line = re.sub(r"(?<=[（(])\s+(?=[\u4e00-\u9fff])", "", line)
+        if line:
+            lines.append(line)
+    for line in lines:
+        if "平安" not in line or "条款" not in line:
+            continue
+        if any(keyword in line for keyword in ["阅读指引", "内容的解释", "条款目录", "本条款", "合同构成"]):
+            continue
+        match = re.search(r"(平安[^。；;]{2,100}?条款)\s*$", line)
+        if match:
+            return trim(match.group(1))
+    return ""
+
+
+def ping_an_historical_product_name(seed: dict[str, Any], text: str) -> str:
+    seed_name = trim(seed.get("productName"))
+    if seed_name:
+        return seed_name
+    title = ping_an_historical_product_title(text)
+    if not title:
+        return ""
+    return trim(re.sub(r"\s*条款\s*$", "", title))
+
+
+def ping_an_historical_product_type(product_name: str, seed: dict[str, Any]) -> str:
+    seed_type = trim(seed.get("productType"))
+    if seed_type:
+        return seed_type
+    if "万能" in product_name:
+        return "万能账户"
+    if "投连" in product_name:
+        return "投连险"
+    if "重大疾病" in product_name:
+        return "重疾险"
+    if "医疗" in product_name:
+        return "医疗险"
+    if "年金" in product_name:
+        return "年金险"
+    if "两全" in product_name:
+        return "两全保险"
+    if "寿险" in product_name or "终身寿" in product_name:
+        return "寿险"
+    return ""
+
+
+def ping_an_pdf_unavailable_reason(data: bytes, content_type: str = "") -> str:
+    error_text = data[:1024].decode("utf-8", "ignore") if data else ""
+    if "31019888" in error_text or "人机检测" in error_text:
+        return "human_verification_required"
+    if "json" in content_type.lower() and ("CODE" in error_text or "MSG" in error_text):
+        return "non_pdf_json_response"
+    return "pdf_unavailable"
+
+
+def truthy(value: Any) -> bool:
+    return trim(value).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def resolve_pdf_archive_dir(payload: dict[str, Any]) -> str:
+    explicit_dir = trim(payload.get("pdfArchiveDir")) or trim(os.environ.get("POLICY_PDF_ARCHIVE_DIR"))
+    if explicit_dir:
+        return os.path.abspath(os.path.expanduser(explicit_dir))
+    if truthy(payload.get("archivePdf")) or truthy(os.environ.get("POLICY_PDF_ARCHIVE")):
+        return DEFAULT_PDF_ARCHIVE_DIR
+    return ""
+
+
+def archive_pdf_bytes(data: bytes, archive_dir: str, source_url: str = "") -> dict[str, Any]:
+    if not archive_dir or not data or not data.startswith(b"%PDF"):
+        return {}
+    sha256 = hashlib.sha256(data).hexdigest()
+    target_dir = os.path.join(archive_dir, sha256[:2], sha256[2:4])
+    target_path = os.path.join(target_dir, f"{sha256}.pdf")
+    os.makedirs(target_dir, exist_ok=True)
+    if not os.path.exists(target_path):
+        temp_path = f"{target_path}.{uuid.uuid4().hex}.tmp"
+        with open(temp_path, "wb") as handle:
+            handle.write(data)
+        os.replace(temp_path, target_path)
+    return {
+        "pdfLocalPath": target_path,
+        "pdfSha256": sha256,
+        "pdfBytes": len(data),
+        "pdfOriginalUrl": trim(source_url),
+        "pdfArchivedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+async def ensure_jrcpcx_query_page(browser: Any) -> Any:
+    for context in browser.contexts:
+        for page in context.pages:
+            if "jrcpcx.cn" in page.url:
+                if "#/query" not in page.url:
+                    await page.goto("https://www.jrcpcx.cn/#/query", wait_until="domcontentloaded", timeout=60000)
+                return page
+    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+    page = await context.new_page()
+    await page.goto("https://www.jrcpcx.cn/#/query", wait_until="domcontentloaded", timeout=60000)
+    return page
+
+
+def jrcpcx_extract_list(data: Any) -> tuple[list[dict[str, Any]], int]:
+    payload = data.get("data") if isinstance(data, dict) else data
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)], len(payload)
+    if not isinstance(payload, dict):
+        return [], 0
+    for key in ("list", "records", "rows", "data"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            total = payload.get("total") or payload.get("totalShow") or payload.get("totalCount") or payload.get("count") or len(rows)
+            return [item for item in rows if isinstance(item, dict)], int(total or 0)
+    return [], int(payload.get("total") or payload.get("totalShow") or payload.get("totalCount") or 0)
+
+
+def jrcpcx_catalog_id(row: dict[str, Any]) -> str:
+    explicit = trim(row.get("id") or row.get("productId") or row.get("productCode") or row.get("industryCode"))
+    if explicit:
+        return f"jrcpcx_{explicit}"
+    raw = json.dumps(row, ensure_ascii=False, sort_keys=True)
+    return f"jrcpcx_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
+
+
+def jrcpcx_normalize_product(row: dict[str, Any], detail: dict[str, Any] | None = None) -> dict[str, Any]:
+    detail_data = detail.get("data") if isinstance(detail, dict) and isinstance(detail.get("data"), dict) else {}
+    merged = {**row, **detail_data}
+    return {
+        "catalogId": jrcpcx_catalog_id(row),
+        "source": "https://www.jrcpcx.cn/#/query",
+        "sourceLevel": "regulatory_industry_index",
+        "productCategory": trim(merged.get("productCategory")) or "02",
+        "productName": trim(merged.get("productName")),
+        "industryCode": trim(merged.get("industryCode")),
+        "deptName": trim(merged.get("deptName")),
+        "productType": trim(merged.get("productType")),
+        "productTerm": trim(merged.get("productTerm")),
+        "productState": trim(merged.get("productState")),
+        "status": trim(merged.get("status")),
+        "rowId": trim(row.get("id")),
+        "raw": row,
+        "detail": detail_data,
+    }
+
+
+def jrcpcx_row_id_from_visible_row(row: dict[str, Any], query: str) -> str:
+    raw = "|".join(
+        [
+            trim(query),
+            trim(row.get("productName")),
+            trim(row.get("deptName")),
+            trim(row.get("productType")),
+            trim(row.get("productState")),
+        ]
+    )
+    return f"jrcpcx_ui_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
+
+
+def jrcpcx_visible_row_key(row: dict[str, Any]) -> str:
+    return "|".join([trim(row.get("productName")), trim(row.get("deptName")), trim(row.get("productType")), trim(row.get("productState"))])
+
+
+def jrcpcx_compact_text(value: Any) -> str:
+    return "".join(trim(value).split())
+
+
+def jrcpcx_visible_row_matches_query(
+    row: dict[str, Any],
+    dept_name: str,
+    product_name: str,
+    product_state_label: str = "",
+) -> bool:
+    row_dept = jrcpcx_compact_text(row.get("deptName"))
+    row_product = jrcpcx_compact_text(row.get("productName"))
+    row_state = jrcpcx_compact_text(row.get("productState"))
+    query_dept = jrcpcx_compact_text(dept_name)
+    query_product = jrcpcx_compact_text(product_name)
+    query_state = jrcpcx_compact_text(product_state_label)
+    if query_dept and query_dept not in row_dept:
+        return False
+    if query_product and query_product not in row_product:
+        return False
+    if query_state and query_state != "全部" and row_state != query_state:
+        return False
+    return True
+
+
+def jrcpcx_detail_aes_decrypt(value: str) -> str:
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    encrypted = base64.b64decode(trim(value).replace("_", "+"))
+    cipher = Cipher(
+        algorithms.AES(JRCPCX_DETAIL_AES_KEY.encode("utf-8")),
+        modes.CBC(JRCPCX_DETAIL_AES_IV.encode("utf-8")),
+        backend=default_backend(),
+    )
+    decryptor = cipher.decryptor()
+    decoded = decryptor.update(encrypted) + decryptor.finalize()
+    return decoded.decode("utf-8", "ignore").rstrip("\x00")
+
+
+def jrcpcx_detail_aes_encrypt(value: str) -> str:
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    data = value.encode("utf-8")
+    pad_size = (16 - (len(data) % 16)) % 16
+    if pad_size:
+        data += b"\x00" * pad_size
+    cipher = Cipher(
+        algorithms.AES(JRCPCX_DETAIL_AES_KEY.encode("utf-8")),
+        modes.CBC(JRCPCX_DETAIL_AES_IV.encode("utf-8")),
+        backend=default_backend(),
+    )
+    encryptor = cipher.encryptor()
+    encoded = encryptor.update(data) + encryptor.finalize()
+    return base64.b64encode(encoded).decode("ascii").replace("+", "_")
+
+
+def jrcpcx_detail_request(url: str, max_bytes: int = MAX_PDF_BYTES) -> tuple[int, str, bytes]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{JRCPCX_DETAIL_BASE_URL}/lifeIns/detail",
+            "Accept": "application/json,application/pdf,application/octet-stream,*/*",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            content_type = trim(response.headers.get("content-type"))
+            return int(getattr(response, "status", 0) or 0), content_type, response.read(max_bytes + 1)
+    except Exception:
+        return 0, "", b""
+
+
+def jrcpcx_detail_url_params(detail_url: str) -> dict[str, str]:
+    params = parse_qs(urlsplit(detail_url).query)
+    return {
+        "data": trim((params.get("data") or [""])[0]),
+        "dataId": trim((params.get("dataId") or [""])[0]),
+        "channelof": trim((params.get("channelof") or [""])[0]),
+    }
+
+
+def jrcpcx_detail_data_map(data_list: list[dict[str, Any]]) -> dict[str, str]:
+    mapped: dict[str, str] = {}
+    for item in data_list:
+        if not isinstance(item, dict):
+            continue
+        key = re.sub(r"[：:\s]+$", "", trim(item.get("key")))
+        value = trim(item.get("value"))
+        if key:
+            mapped[key] = value
+    return mapped
+
+
+def jrcpcx_fetch_life_ins_detail(product: dict[str, Any], pdf_archive_dir: str = "") -> dict[str, Any]:
+    detail_url = trim(product.get("detailUrl"))
+    if not detail_url:
+        return {"ok": False, "code": "JRCPCX_DETAIL_URL_MISSING", "productName": trim(product.get("productName"))}
+    params = jrcpcx_detail_url_params(detail_url)
+    if not params.get("data") or not params.get("dataId"):
+        return {"ok": False, "code": "JRCPCX_DETAIL_PARAMS_MISSING", "detailUrl": detail_url}
+    detail_query = urlencode(
+        {
+            "data": params["data"],
+            "dataId": params["dataId"],
+            "time": str(int(time.time() * 1000)),
+            "clientType": "02",
+        }
+    )
+    detail_api_url = f"{JRCPCX_DETAIL_BASE_URL}/prod-api/lifeIns/detail?{detail_query}"
+    status, content_type, body = jrcpcx_detail_request(detail_api_url)
+    if status < 200 or status >= 300:
+        return {"ok": False, "code": "JRCPCX_DETAIL_FETCH_FAILED", "status": status, "contentType": content_type, "detailUrl": detail_url}
+    try:
+        payload = json.loads(body.decode("utf-8", "ignore"))
+    except Exception as error:
+        return {"ok": False, "code": "JRCPCX_DETAIL_JSON_FAILED", "message": str(error)[:200], "detailUrl": detail_url}
+    if int(payload.get("code") or 0) != 200:
+        return {
+            "ok": False,
+            "code": "JRCPCX_DETAIL_API_FAILED",
+            "message": trim(payload.get("msg")),
+            "detailUrl": detail_url,
+        }
+    try:
+        data_list = json.loads(jrcpcx_detail_aes_decrypt(payload.get("data") or ""))
+        file_name = json.loads(jrcpcx_detail_aes_decrypt(payload.get("dataKey") or ""))
+    except Exception as error:
+        return {"ok": False, "code": "JRCPCX_DETAIL_DECRYPT_FAILED", "message": str(error)[:200], "detailUrl": detail_url}
+    fields = jrcpcx_detail_data_map(data_list if isinstance(data_list, list) else [])
+    info = jrcpcx_detail_aes_encrypt(json.dumps({"fileName": file_name, "pageSize": 1, "fileType": "01", "clientType": "02"}, ensure_ascii=False))
+    clause_url = f"{JRCPCX_DETAIL_BASE_URL}/prod-api/lifeIns/clauseInfo?{urlencode({'info': info, 't': str(int(time.time() * 1000))})}"
+    pdf_status, pdf_content_type, pdf_bytes = jrcpcx_detail_request(clause_url)
+    if pdf_status < 200 or pdf_status >= 300 or not pdf_bytes.startswith(b"%PDF"):
+        return {
+            "ok": False,
+            "code": "JRCPCX_CLAUSE_PDF_FETCH_FAILED",
+            "status": pdf_status,
+            "contentType": pdf_content_type,
+            "bytes": len(pdf_bytes),
+            "detailUrl": detail_url,
+            "fields": fields,
+        }
+    extracted = extract_pdf_text_with_system_python(pdf_bytes)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    archive = archive_pdf_bytes(pdf_bytes, pdf_archive_dir, clause_url) if pdf_archive_dir else {}
+    product_name = trim(fields.get("产品名称")) or trim(product.get("productName"))
+    company = trim(fields.get("公司名称")) or trim(product.get("deptName"))
+    record = {
+        "company": company,
+        "productName": product_name,
+        "productType": trim(fields.get("产品类别")) or trim(product.get("productType")),
+        "salesStatus": trim(fields.get("产品销售状态")) or trim(product.get("productState")),
+        "title": f"{product_name}条款" if product_name else "保险条款",
+        "url": detail_url,
+        "source": detail_url,
+        "sourceUrl": detail_url,
+        "sourceLevel": "regulatory_industry_terms",
+        "officialDomain": "inspdinfo.iachina.cn",
+        "materialType": "terms",
+        "parser": "jrcpcx_life_ins_detail",
+        "pageText": page_text,
+        "qualityStatus": "valid_complete" if page_text else "invalid_empty",
+        "snippet": "金融产品查询平台/中国保险行业协会条款 PDF，已截取保险责任正文段。" if page_text else "",
+        "detailUrl": detail_url,
+        "detailApiUrl": detail_api_url,
+        "clauseFileName": trim(file_name),
+        "clauseUrl": clause_url,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(pdf_bytes),
+        "contentType": pdf_content_type,
+        "detailFields": fields,
+        **archive,
+    }
+    return {
+        "ok": True,
+        "productName": product_name,
+        "company": company,
+        "detailUrl": detail_url,
+        "fields": fields,
+        "fileName": file_name,
+        "record": record,
+    }
+
+
+async def jrcpcx_visible_table_rows(page: Any) -> list[dict[str, Any]]:
+    rows = await page.evaluate(
+        """() => {
+          const parsed = [];
+          const trs = Array.from(document.querySelectorAll('.el-table__body-wrapper > table > tbody > tr.el-table__row'))
+            .filter((tr) => tr.querySelector(':scope > td.el-table__expand-column .el-table__expand-icon'));
+          for (const tr of trs) {
+            const cells = Array.from(tr.querySelectorAll(':scope > td'))
+              .map((td) => (td.innerText || '').trim());
+            if (cells.length < 5) continue;
+            parsed.push({
+              index: cells[0],
+              productName: cells[1],
+              deptName: cells[2],
+              productType: cells[3],
+              productState: cells[4],
+            });
+          }
+          return parsed;
+        }"""
+    )
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        key = jrcpcx_visible_row_key(row)
+        if not trim(row.get("productName")) or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def jrcpcx_table_rows_signature(rows: list[dict[str, Any]]) -> str:
+    return "\n".join(jrcpcx_visible_row_key(row) for row in rows)
+
+
+async def jrcpcx_visible_table_detail_links(page: Any) -> dict[str, dict[str, Any]]:
+    result = await page.evaluate(
+        """async () => {
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const output = {};
+          const rowKey = (row) => [row.productName, row.deptName, row.productType, row.productState]
+            .map((item) => (item || '').trim())
+            .join('|');
+          const parseMainRow = (tr) => {
+            const cells = Array.from(tr.querySelectorAll(':scope > td'))
+              .map((td) => (td.innerText || '').trim());
+            return {
+              index: cells[0] || '',
+              productName: cells[1] || '',
+              deptName: cells[2] || '',
+              productType: cells[3] || '',
+              productState: cells[4] || '',
+            };
+          };
+          const parseExpandedRow = (tr) => {
+            const expanded = tr.nextElementSibling;
+            if (!expanded || !expanded.querySelector('.el-table__expanded-cell')) return {};
+            const detailCells = Array.from(expanded.querySelectorAll('.sub-table .el-table__body-wrapper tbody tr:first-child td'))
+              .map((td) => (td.innerText || '').trim())
+              .filter(Boolean);
+            const detailLink = expanded.querySelector('.sub-table .el-table__body-wrapper tbody tr:first-child a[href*="/lifeIns/"], .sub-table .el-table__body-wrapper tbody tr:first-child a[href*="/propertyIns/"]');
+            return {
+              productTerm: detailCells[0] || '',
+              industryCode: detailCells[1] || '',
+              infoSource: detailCells[2] || '',
+              detailText: detailCells[3] || '',
+              detailUrl: detailLink ? detailLink.href : '',
+            };
+          };
+          const rows = Array.from(document.querySelectorAll('.el-table__body-wrapper > table > tbody > tr.el-table__row'))
+            .filter((tr) => tr.querySelector(':scope > td.el-table__expand-column .el-table__expand-icon'));
+          for (const tr of rows) {
+            const row = parseMainRow(tr);
+            if (!row.productName) continue;
+            const icon = tr.querySelector(':scope > td.el-table__expand-column .el-table__expand-icon');
+            const wasExpanded = icon && icon.classList.contains('el-table__expand-icon--expanded');
+            if (icon && !wasExpanded) {
+              icon.click();
+              await sleep(350);
+            }
+            output[rowKey(row)] = parseExpandedRow(tr);
+            if (icon && !wasExpanded && icon.classList.contains('el-table__expand-icon--expanded')) {
+              icon.click();
+              await sleep(100);
+            }
+          }
+          return output;
+        }"""
+    )
+    return result if isinstance(result, dict) else {}
+
+
+async def jrcpcx_fill_text_input(page: Any, placeholder: str, value: str) -> None:
+    locator = page.locator(f'input[placeholder="{placeholder}"]').first
+    await locator.fill("")
+    if value:
+        await locator.fill(value)
+
+
+async def jrcpcx_click_filter_option(page: Any, section_title: str, label: str) -> bool:
+    option_label = trim(label) or "全部"
+    target = await page.evaluate(
+        """({sectionTitle, optionLabel}) => {
+          const sections = Array.from(document.querySelectorAll('.list-sub'));
+          const section = sections.find((item) => (item.innerText || '').includes(sectionTitle));
+          if (!section) return null;
+          const options = Array.from(section.querySelectorAll('li'))
+            .map((el) => {
+              const rect = el.getBoundingClientRect();
+              return {
+                text: (el.innerText || '').trim(),
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              };
+            })
+            .filter((item) => item.text === optionLabel && item.width > 0 && item.height > 0);
+          return options[0] || null;
+        }""",
+        {"sectionTitle": section_title, "optionLabel": option_label},
+    )
+    if not target:
+        return False
+    await page.mouse.click(target["x"] + target["width"] / 2, target["y"] + target["height"] / 2)
+    await page.wait_for_timeout(500)
+    return True
+
+
+async def jrcpcx_set_visible_page_size(page: Any, page_size: int) -> None:
+    if page_size not in {10, 20, 50}:
+        return
+    boxes = await page.evaluate(
+        """() => Array.from(document.querySelectorAll('.el-pagination .el-select input')).map((el) => {
+          const rect = el.getBoundingClientRect();
+          return {x: rect.x, y: rect.y, width: rect.width, height: rect.height, value: el.value || ''};
+        })"""
+    )
+    visible = next((box for box in boxes if box.get("width", 0) > 0 and box.get("height", 0) > 0), None)
+    if not visible:
+        return
+    await page.mouse.click(visible["x"] + visible["width"] / 2, visible["y"] + visible["height"] / 2)
+    await page.wait_for_timeout(300)
+    label = f"{page_size}条/页"
+    options = await page.evaluate(
+        """(label) => Array.from(document.querySelectorAll('.el-select-dropdown__item')).map((el) => {
+          const rect = el.getBoundingClientRect();
+          return {text: (el.innerText || '').trim(), x: rect.x, y: rect.y, width: rect.width, height: rect.height};
+        }).filter((item) => item.text === label && item.width > 0 && item.height > 0)""",
+        label,
+    )
+    if not options:
+        return
+    option = options[-1]
+    await page.mouse.click(option["x"] + option["width"] / 2, option["y"] + option["height"] / 2)
+    await page.wait_for_timeout(1000)
+
+
+async def jrcpcx_click_visible_next_page(page: Any, previous_signature: str = "") -> bool:
+    buttons = await page.evaluate(
+        """() => Array.from(document.querySelectorAll('.el-pagination button.btn-next')).map((el) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            disabled: el.disabled || el.classList.contains('disabled'),
+          };
+        })"""
+    )
+    visible = next((button for button in buttons if button.get("width", 0) > 0 and button.get("height", 0) > 0 and not button.get("disabled")), None)
+    if not visible:
+        return False
+    await page.mouse.click(visible["x"] + visible["width"] / 2, visible["y"] + visible["height"] / 2)
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        await page.wait_for_timeout(500)
+        rows = await jrcpcx_visible_table_rows(page)
+        if rows and (not previous_signature or jrcpcx_table_rows_signature(rows) != previous_signature):
+            return True
+    return False
+
+
+async def jrcpcx_click_query_button(page: Any, timeout_ms: int = 20000) -> bool:
+    deadline = time.time() + max(1, timeout_ms / 1000)
+    while time.time() < deadline:
+        target = await page.evaluate(
+            """() => {
+              const elements = Array.from(document.querySelectorAll('button, span, div'));
+              const matches = elements
+                .filter((el) => (el.innerText || '').trim() === '查询')
+                .map((el) => {
+                  const button = el.closest('button') || el;
+                  const rect = button.getBoundingClientRect();
+                  const className = button.className || '';
+                  return {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    disabled:
+                      Boolean(button.disabled) ||
+                      button.getAttribute('aria-disabled') === 'true' ||
+                      String(className).includes('is-disabled') ||
+                      String(className).includes('disabled'),
+                  };
+                })
+                .filter((item) => item.width > 0 && item.height > 0);
+              return matches[0] || null;
+            }"""
+        )
+        if target and not target.get("disabled"):
+            await page.mouse.click(target["x"] + target["width"] / 2, target["y"] + target["height"] / 2)
+            await page.wait_for_timeout(300)
+            return True
+        await page.wait_for_timeout(500)
+    return False
+
+
+async def jrcpcx_query_visible_page(
+    page: Any,
+    query: dict[str, Any],
+    wait_ms: int,
+    max_pages: int = 1,
+    fetch_detail_links: bool = False,
+) -> dict[str, Any]:
+    dept_name = trim(query.get("deptName") or query.get("query") or query.get("company"))
+    product_name = trim(query.get("productName"))
+    industry_code = trim(query.get("industryCode"))
+    product_type_label = trim(query.get("productTypeLabel")) or "全部"
+    product_term_label = trim(query.get("productTermLabel")) or "全部"
+    product_state_label = trim(query.get("productStateLabel")) or "全部"
+    await jrcpcx_click_filter_option(page, "品类", "保险产品")
+    await jrcpcx_click_filter_option(page, "产品类型", product_type_label)
+    await jrcpcx_click_filter_option(page, "产品期限", product_term_label)
+    await jrcpcx_click_filter_option(page, "产品状态", product_state_label)
+    await jrcpcx_fill_text_input(page, "请输入产品名称", product_name)
+    await jrcpcx_fill_text_input(page, "请输入行业编码", industry_code)
+    await jrcpcx_fill_text_input(page, "请输入发行机构全称", dept_name)
+    before_text = await page.locator("body").inner_text(timeout=5000)
+    if not await jrcpcx_click_query_button(page, timeout_ms=max(20000, wait_ms)):
+        body_text = await page.locator("body").inner_text(timeout=5000)
+        return {
+            "queryDeptName": dept_name,
+            "productName": product_name,
+            "industryCode": industry_code,
+            "productTypeLabel": product_type_label,
+            "productTermLabel": product_term_label,
+            "productStateLabel": product_state_label,
+            "rowCount": 0,
+            "pageCount": 0,
+            "truncated": "查询结果超过100条" in body_text,
+            "verificationVisible": "请完成安全验证" in body_text or "向右拖动滑块" in body_text,
+            "queryButtonDisabled": True,
+            "products": [],
+        }
+    deadline = time.time() + max(5, wait_ms / 1000)
+    last_text = before_text
+    while time.time() < deadline:
+        await page.wait_for_timeout(1000)
+        last_text = await page.locator("body").inner_text(timeout=5000)
+        rows = await jrcpcx_visible_table_rows(page)
+        has_query_match = any(jrcpcx_visible_row_matches_query(row, dept_name, product_name, product_state_label) for row in rows)
+        if rows and has_query_match:
+            break
+        if "请完成安全验证" in last_text or "向右拖动滑块" in last_text:
+            continue
+        if "暂无数据" in last_text and not rows:
+            break
+    rows = [
+        row
+        for row in await jrcpcx_visible_table_rows(page)
+        if jrcpcx_visible_row_matches_query(row, dept_name, product_name, product_state_label)
+    ]
+    body_text = await page.locator("body").inner_text(timeout=5000)
+    products = []
+    seen_keys: set[str] = set()
+    page_count = 0
+    while True:
+        page_count += 1
+        detail_by_key = await jrcpcx_visible_table_detail_links(page) if fetch_detail_links else {}
+        for row in rows:
+            key = jrcpcx_visible_row_key(row)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            detail_info = detail_by_key.get(key) if isinstance(detail_by_key.get(key), dict) else {}
+            products.append(
+                {
+                    "catalogId": jrcpcx_row_id_from_visible_row(row, dept_name),
+                    "source": "https://www.jrcpcx.cn/#/query",
+                    "sourceLevel": "regulatory_industry_index",
+                    "queryDeptName": dept_name,
+                    "queryProductType": product_type_label,
+                    "queryProductTerm": product_term_label,
+                    "queryProductState": product_state_label,
+                    "pageNumber": page_count,
+                    "productName": trim(row.get("productName")),
+                    "deptName": trim(row.get("deptName")),
+                    "productType": trim(row.get("productType")),
+                    "productState": trim(row.get("productState")),
+                    "productTerm": trim(detail_info.get("productTerm")),
+                    "industryCode": trim(detail_info.get("industryCode")),
+                    "infoSource": trim(detail_info.get("infoSource")),
+                    "detailUrl": trim(detail_info.get("detailUrl")),
+                    "raw": row,
+                }
+            )
+        if page_count >= max(1, max_pages):
+            break
+        clicked = await jrcpcx_click_visible_next_page(page, previous_signature=jrcpcx_table_rows_signature(rows))
+        if not clicked:
+            break
+        next_rows = [
+            row
+            for row in await jrcpcx_visible_table_rows(page)
+            if jrcpcx_visible_row_matches_query(row, dept_name, product_name, product_state_label)
+        ]
+        if not next_rows:
+            break
+        rows = next_rows
+    return {
+        "queryDeptName": dept_name,
+        "productName": product_name,
+        "industryCode": industry_code,
+        "productTypeLabel": product_type_label,
+        "productTermLabel": product_term_label,
+        "productStateLabel": product_state_label,
+        "rowCount": len(products),
+        "pageCount": page_count,
+        "truncated": "查询结果超过100条" in body_text,
+        "verificationVisible": "请完成安全验证" in body_text or "向右拖动滑块" in body_text,
+        "products": products,
+    }
+
+
+async def crawl_jrcpcx_insurance_catalog_ui_async(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as error:
+        return {"ok": False, "code": "PLAYWRIGHT_NOT_AVAILABLE", "message": str(error), "products": []}
+    cdp_url = trim(payload.get("cdpUrl")) or "http://127.0.0.1:9224"
+    wait_ms = max(5000, int(payload.get("waitMs") or 120000))
+    page_size = max(10, min(50, int(payload.get("pageSize") or 50)))
+    max_pages = max(1, int(payload.get("maxPages") or 1))
+    fetch_detail_links = trim(payload.get("fetchDetailLinks")).lower() in {"1", "true", "yes"}
+    extract_responsibility = trim(payload.get("extractResponsibility")).lower() in {"1", "true", "yes"}
+    detail_limit = max(0, int(payload.get("maxDetailProducts") or 0))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload) if extract_responsibility else ""
+    queries = payload.get("queries") if isinstance(payload.get("queries"), list) else []
+    if not queries:
+        dept_names = payload.get("deptNames") if isinstance(payload.get("deptNames"), list) else []
+        queries = [
+            {
+                "deptName": item,
+                "productName": trim(payload.get("productName")),
+                "industryCode": trim(payload.get("industryCode")),
+            }
+            for item in dept_names
+        ]
+    if not queries:
+        single_dept = trim(payload.get("deptName"))
+        single_product = trim(payload.get("productName"))
+        single_industry_code = trim(payload.get("industryCode"))
+        queries = [{"deptName": single_dept, "productName": single_product, "industryCode": single_industry_code}] if (single_dept or single_product or single_industry_code) else []
+    if not queries:
+        return {"ok": False, "code": "JRCPCX_QUERY_FIELD_REQUIRED", "message": "缺少发行机构/产品名/行业编码查询条件。", "products": []}
+    products = []
+    query_results = []
+    partial_code = ""
+    partial_message = ""
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.connect_over_cdp(cdp_url)
+        page = await ensure_jrcpcx_query_page(browser)
+        await jrcpcx_set_visible_page_size(page, page_size)
+        for query in queries:
+            result = await jrcpcx_query_visible_page(page, query, wait_ms, max_pages=max_pages, fetch_detail_links=fetch_detail_links or extract_responsibility)
+            query_results.append({k: v for k, v in result.items() if k != "products"})
+            products.extend(result.get("products") or [])
+            if result.get("queryButtonDisabled"):
+                partial_code = "JRCPCX_QUERY_BUTTON_DISABLED"
+                partial_message = "页面查询按钮持续不可用，请检查发行机构字段是否被页面接受，或刷新监管平台查询页后重试。"
+                break
+            if result.get("verificationVisible") and not result.get("products"):
+                partial_code = "JRCPCX_VERIFICATION_REQUIRED"
+                partial_message = "页面仍显示行为验证码，请在浏览器完成滑块后重试。"
+                break
+        await browser.close()
+    records = []
+    detail_results = []
+    if extract_responsibility:
+        seen_detail_urls: set[str] = set()
+        extractable_products = [product for product in products if trim(product.get("detailUrl"))]
+        if detail_limit:
+            extractable_products = extractable_products[:detail_limit]
+        for product in extractable_products:
+            detail_url = trim(product.get("detailUrl"))
+            if detail_url in seen_detail_urls:
+                continue
+            seen_detail_urls.add(detail_url)
+            detail_result = jrcpcx_fetch_life_ins_detail(product, pdf_archive_dir)
+            detail_results.append({k: v for k, v in detail_result.items() if k != "record"})
+            record = detail_result.get("record") if isinstance(detail_result, dict) else None
+            if isinstance(record, dict):
+                records.append(record)
+    return {
+        "ok": True,
+        "partial": bool(partial_code),
+        "code": partial_code,
+        "message": partial_message,
+        "source": "https://www.jrcpcx.cn/#/query",
+        "sourceLevel": "regulatory_industry_index",
+        "cdpUrl": cdp_url,
+        "queryCount": len(queries),
+        "pageSize": page_size,
+        "maxPages": max_pages,
+        "productCount": len(products),
+        "recordCount": len(records),
+        "responsibilityCount": sum(1 for record in records if trim(record.get("pageText"))),
+        "pdfArchiveDir": pdf_archive_dir,
+        "queries": query_results,
+        "detailResults": detail_results,
+        "records": records,
+        "products": products,
+    }
+
+
+def crawl_jrcpcx_insurance_catalog_ui(payload: dict[str, Any]) -> dict[str, Any]:
+    return asyncio.run(crawl_jrcpcx_insurance_catalog_ui_async(payload))
+
+
+async def crawl_jrcpcx_insurance_catalog_async(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as error:
+        return {"ok": False, "code": "PLAYWRIGHT_NOT_AVAILABLE", "message": str(error), "products": []}
+    cdp_url = trim(payload.get("cdpUrl")) or "http://127.0.0.1:9224"
+    page_size = max(1, min(100, int(payload.get("pageSize") or 50)))
+    max_pages = max(1, int(payload.get("maxPages") or 1))
+    start_page = max(1, int(payload.get("startPage") or 1))
+    fetch_details = not (trim(payload.get("fetchDetails")).lower() in {"0", "false", "no"})
+    product_state = trim(payload.get("productState")) or "00"
+    product_type = trim(payload.get("productType")) or "00"
+    product_term = trim(payload.get("productTerm")) or "00"
+    product_name = trim(payload.get("productName"))
+    industry_code = trim(payload.get("industryCode"))
+    dept_name = trim(payload.get("deptName"))
+    products = []
+    pages = []
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.connect_over_cdp(cdp_url)
+        page = await ensure_jrcpcx_query_page(browser)
+        region_result = await browser_fetch_json(page, "/query/pc/getRegion", {})
+        region_data = region_result.get("data") if isinstance(region_result.get("data"), dict) else {}
+        region = trim(payload.get("region")) or trim(region_data.get("region")) or "330000"
+        for page_no in range(start_page, start_page + max_pages):
+            request_payload = {
+                "productName": product_name,
+                "industryCode": industry_code,
+                "deptName": dept_name,
+                "page": page_no,
+                "size": page_size,
+                "status": 1,
+                "region": region,
+                "productCategory": "02",
+                "raiseWay": "00",
+                "productType": product_type,
+                "productTerm": product_term,
+                "productState": product_state,
+                "productMessage": "custom01",
+            }
+            response = await browser_fetch_json(page, "/query/pc/advanced", request_payload)
+            data = response.get("data") if isinstance(response.get("data"), dict) else {}
+            code = data.get("code") if isinstance(data, dict) else None
+            msg = trim(data.get("msg") or data.get("message")) if isinstance(data, dict) else ""
+            if code == 700 or "验证码" in msg:
+                await browser.close()
+                return {
+                    "ok": False,
+                    "code": "JRCPCX_VERIFICATION_REQUIRED",
+                    "message": msg or "金融产品查询平台返回行为验证码，需要先在浏览器完成滑块验证。",
+                    "cdpUrl": cdp_url,
+                    "page": page_no,
+                    "request": request_payload,
+                    "products": products,
+                    "pages": pages,
+                }
+            if code not in (None, 200):
+                await browser.close()
+                return {
+                    "ok": False,
+                    "code": "JRCPCX_QUERY_FAILED",
+                    "message": msg or "金融产品查询平台列表接口返回失败。",
+                    "cdpUrl": cdp_url,
+                    "status": response.get("status"),
+                    "responseCode": code,
+                    "page": page_no,
+                    "request": request_payload,
+                    "response": data,
+                    "products": products,
+                    "pages": pages,
+                }
+            rows, total = jrcpcx_extract_list(data)
+            page_meta = {
+                "page": page_no,
+                "size": page_size,
+                "status": response.get("status"),
+                "total": total,
+                "rowCount": len(rows),
+            }
+            pages.append(page_meta)
+            if not rows:
+                break
+            for row in rows:
+                detail = {}
+                row_id = trim(row.get("id"))
+                if fetch_details and row_id:
+                    detail_response = await browser_fetch_json(page, "/query/pc/info", {"id": row_id, "region": region})
+                    detail = detail_response.get("data") if isinstance(detail_response.get("data"), dict) else {}
+                products.append(jrcpcx_normalize_product(row, detail))
+            if len(rows) < page_size:
+                break
+        await browser.close()
+    return {
+        "ok": True,
+        "source": "https://www.jrcpcx.cn/#/query",
+        "sourceLevel": "regulatory_industry_index",
+        "cdpUrl": cdp_url,
+        "region": region,
+        "startPage": start_page,
+        "pageSize": page_size,
+        "maxPages": max_pages,
+        "pageCount": len(pages),
+        "productCount": len(products),
+        "pages": pages,
+        "products": products,
+    }
+
+
+def crawl_jrcpcx_insurance_catalog(payload: dict[str, Any]) -> dict[str, Any]:
+    return asyncio.run(crawl_jrcpcx_insurance_catalog_async(payload))
+
+
+def ping_an_historical_record_from_pdf(
+    company: str,
+    seed: dict[str, Any],
+    plan_code: str,
+    version_no: str,
+    material_url: str,
+    data: bytes,
+    content_type: str = "",
+    pdf_archive_dir: str = "",
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    extracted = extract_pdf_text_with_system_python(data)
+    full_text = trim(extracted.get("text"))
+    product_name = ping_an_historical_product_name(seed, full_text)
+    page_text = focused_responsibility_excerpt(full_text)
+    if not product_name or not page_text:
+        return None, None, {
+            "planCode": plan_code,
+            "versionNo": version_no,
+            "url": material_url,
+            "status": 200,
+            "contentType": content_type,
+            "bytes": len(data),
+            "reason": "missing_product_name_or_responsibility",
+        }
+    product_type = ping_an_historical_product_type(product_name, seed)
+    title = ping_an_historical_product_title(full_text) or f"{product_name}条款"
+    record = {
+        "company": company,
+        "productName": product_name,
+        "productType": product_type,
+        "salesStatus": trim(seed.get("salesStatus")) or "停售（目录外历史产品）",
+        "title": title,
+        "url": material_url,
+        "snippet": "平安官网历史目录外官方条款 PDF，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": "terms",
+        "official": True,
+        "evidenceLabel": "平安官网历史官方条款",
+        "evidenceLevel": "insurer_official",
+        "officialDomain": "life.pingan.com",
+        "parser": "scrapling_ping_an_historical_seed",
+        "qualityStatus": "valid_complete",
+        "qualityReason": "official_pdf_seed_verified",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "planCode": plan_code,
+        "versionNo": version_no,
+        "catalogStatus": "missing_from_getProductList",
+        "seedSource": trim(seed.get("seedSource")),
+        "seedSourceUrl": trim(seed.get("seedSourceUrl")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
+    }
+    product = {
+        "company": company,
+        "productName": product_name,
+        "productType": product_type,
+        "salesStatus": trim(seed.get("salesStatus")) or "停售（目录外历史产品）",
+        "sourcePage": trim(seed.get("seedSourceUrl")),
+        "planCode": plan_code,
+        "versionNo": version_no,
+    }
+    return record, product, None
+
+
+def crawl_ping_an_historical_seed(payload: dict[str, Any]) -> dict[str, Any]:
+    if trim(payload.get("cdpUrl")):
+        return asyncio.run(crawl_ping_an_historical_seed_browser_async(payload))
+    company = trim(payload.get("company")) or "中国平安"
+    seeds = payload.get("seeds") if isinstance(payload.get("seeds"), list) else []
+    default_max_version = max(1, int(payload.get("maxVersion") or 3))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    records = []
+    skipped = []
+    products = []
+    seen_urls = set()
+    for seed in seeds:
+        plan_code = trim(seed.get("planCode"))
+        if not plan_code:
+            skipped.append({"reason": "missing_plan_code", "seed": seed})
+            continue
+        for version_no in ping_an_history_seed_versions(seed, default_max_version):
+            material_url = ping_an_material_url(plan_code, version_no, "1")
+            if material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            status, data = fetch_bytes(material_url)
+            if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+                skipped.append(
+                    {
+                        "planCode": plan_code,
+                        "versionNo": version_no,
+                        "url": material_url,
+                        "status": status,
+                        "bytes": len(data),
+                        "reason": ping_an_pdf_unavailable_reason(data),
+                    }
+                )
+                continue
+            record, product, skip = ping_an_historical_record_from_pdf(
+                company,
+                seed,
+                plan_code,
+                version_no,
+                material_url,
+                data,
+                pdf_archive_dir=pdf_archive_dir,
+            )
+            if skip:
+                skipped.append(skip)
+                continue
+            records.append(record)
+            products.append(product)
+    return {
+        "ok": True,
+        "company": company,
+        "seedCount": len(seeds),
+        "productCount": len(products),
+        "recordCount": len(records),
+        "skippedCount": len(skipped),
+        "products": products,
+        "records": records,
+        "skipped": skipped,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+    }
+
+
+async def crawl_ping_an_historical_seed_browser_async(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as error:
+        return {"ok": False, "code": "PLAYWRIGHT_NOT_AVAILABLE", "message": str(error), "records": []}
+    company = trim(payload.get("company")) or "中国平安"
+    seeds = payload.get("seeds") if isinstance(payload.get("seeds"), list) else []
+    default_max_version = max(1, int(payload.get("maxVersion") or 3))
+    cdp_url = trim(payload.get("cdpUrl")) or "http://127.0.0.1:9223"
+    delay_ms = max(0, int(payload.get("delayMs") or 0))
+    pdf_retry_count = max(0, int(payload.get("pdfRetryCount") or 0))
+    pdf_retry_delay_ms = max(0, int(payload.get("pdfRetryDelayMs") or 0))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    records = []
+    products = []
+    skipped = []
+    seen_urls = set()
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.connect_over_cdp(cdp_url)
+        page = await ensure_ping_an_product_page(browser)
+        for seed in seeds:
+            plan_code = trim(seed.get("planCode"))
+            if not plan_code:
+                skipped.append({"reason": "missing_plan_code", "seed": seed})
+                continue
+            for version_no in ping_an_history_seed_versions(seed, default_max_version):
+                material_url = ping_an_material_url(plan_code, version_no, "1")
+                if material_url in seen_urls:
+                    continue
+                seen_urls.add(material_url)
+                pdf_status, content_type, data_bytes = 0, "", b""
+                for attempt in range(pdf_retry_count + 1):
+                    pdf_status, content_type, data_bytes = await browser_fetch_bytes(page, material_url)
+                    if data_bytes.startswith(b"%PDF"):
+                        break
+                    should_retry = (
+                        attempt < pdf_retry_count
+                        and pdf_status == 200
+                        and "json" in content_type.lower()
+                        and len(data_bytes) <= 2048
+                    )
+                    if not should_retry:
+                        break
+                    await asyncio.sleep((pdf_retry_delay_ms or 3000) / 1000)
+                if pdf_status < 200 or pdf_status >= 300 or len(data_bytes) > MAX_PDF_BYTES or not data_bytes.startswith(b"%PDF"):
+                    skipped.append(
+                        {
+                            "planCode": plan_code,
+                            "versionNo": version_no,
+                            "url": material_url,
+                            "status": pdf_status,
+                            "contentType": content_type,
+                            "bytes": len(data_bytes),
+                            "reason": ping_an_pdf_unavailable_reason(data_bytes, content_type),
+                        }
+                    )
+                    if delay_ms:
+                        await asyncio.sleep(delay_ms / 1000)
+                    continue
+                record, product, skip = ping_an_historical_record_from_pdf(
+                    company,
+                    seed,
+                    plan_code,
+                    version_no,
+                    material_url,
+                    data_bytes,
+                    content_type,
+                    pdf_archive_dir,
+                )
+                if skip:
+                    skipped.append(skip)
+                    if delay_ms:
+                        await asyncio.sleep(delay_ms / 1000)
+                    continue
+                records.append(record)
+                products.append(product)
+                if delay_ms:
+                    await asyncio.sleep(delay_ms / 1000)
+        await browser.close()
+    return {
+        "ok": True,
+        "company": company,
+        "seedCount": len(seeds),
+        "productCount": len(products),
+        "recordCount": len(records),
+        "skippedCount": len(skipped),
+        "products": products,
+        "records": records,
+        "skipped": skipped,
+        "cdpUrl": cdp_url,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+    }
 
 
 def taikang_life_sale_status_filter(value: str) -> str:
@@ -19008,6 +20256,7 @@ def read_rar_entry_pdf(data: bytes, entry_ref: str, status: int, content_type: s
 def reextract_responsibility_record(task: dict[str, Any]) -> dict[str, Any]:
     product_name = trim(task.get("productName"))
     material_url = trim(task.get("url"))
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
     if not product_name or not material_url:
         return {
             "ok": False,
@@ -19137,6 +20386,7 @@ def reextract_responsibility_record(task: dict[str, Any]) -> dict[str, Any]:
             "reason": "pdf_unavailable",
         }
 
+    archive = archive_pdf_bytes(data, pdf_archive_dir, material_url) if pdf_archive_dir else {}
     extracted = extract_pdf_text_with_system_python(data)
     page_text = focused_responsibility_excerpt(extracted.get("text", ""))
     if not page_text:
@@ -19150,6 +20400,7 @@ def reextract_responsibility_record(task: dict[str, Any]) -> dict[str, Any]:
             "bytes": len(data),
             "pages": extracted.get("pages", 0),
             "reason": "no_responsibility_text",
+            **archive,
         }
 
     material_type_value = trim(task.get("materialType")) or ping_an_material_type_from_url(material_url)
@@ -19176,6 +20427,7 @@ def reextract_responsibility_record(task: dict[str, Any]) -> dict[str, Any]:
             "bytes": len(data),
             "contentType": content_type,
             "archiveEntry": archive_entry_name,
+            **archive,
         },
     }
 
@@ -19185,10 +20437,21 @@ def reextract_responsibility_records(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(tasks, list):
         tasks = []
     max_workers = max(1, min(8, int(payload.get("maxWorkers") or payload.get("concurrency") or 3)))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    tasks = [{**task, "pdfArchiveDir": pdf_archive_dir} if isinstance(task, dict) else task for task in tasks]
     records: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     if not tasks:
-        return {"ok": True, "taskCount": 0, "recordCount": 0, "skippedCount": 0, "records": [], "skipped": []}
+        return {
+            "ok": True,
+            "taskCount": 0,
+            "recordCount": 0,
+            "skippedCount": 0,
+            "records": [],
+            "skipped": [],
+            "pdfArchiveDir": pdf_archive_dir,
+            "archivedPdfCount": 0,
+        }
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_task = {executor.submit(reextract_responsibility_record, task): task for task in tasks}
         for future in as_completed(future_to_task):
@@ -19216,6 +20479,8 @@ def reextract_responsibility_records(payload: dict[str, Any]) -> dict[str, Any]:
         "skippedCount": len(skipped),
         "records": records,
         "skipped": skipped,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for item in [*records, *skipped] if trim(item.get("pdfLocalPath"))),
     }
 
 
@@ -19360,6 +20625,14 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_ping_an_browser_catalog_materials(payload)
     if trim(payload.get("mode")) == "ping_an_browser_catalog":
         return crawl_ping_an_browser_catalog(payload)
+    if trim(payload.get("mode")) == "ping_an_loan_rate_products":
+        return crawl_ping_an_loan_rate_products(payload)
+    if trim(payload.get("mode")) == "ping_an_historical_seed":
+        return crawl_ping_an_historical_seed(payload)
+    if trim(payload.get("mode")) == "jrcpcx_insurance_catalog_ui":
+        return crawl_jrcpcx_insurance_catalog_ui(payload)
+    if trim(payload.get("mode")) == "jrcpcx_insurance_catalog":
+        return crawl_jrcpcx_insurance_catalog(payload)
     if trim(payload.get("mode")) == "taikang_life_pages":
         return crawl_taikang_life_pages(payload)
     if trim(payload.get("mode")) == "sunshine_life_browser_pages":
