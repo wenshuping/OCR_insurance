@@ -177,7 +177,7 @@ function responsibilityTextLooksUsable(text) {
 
 export function splitBenefitSections(text) {
   const source = normalizeSpaces(text);
-  const pattern = /([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费|豁免)|(?:满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费))(?:[（(][^）)]{0,12}[）)])?\s*(?=若|如|被保险人|本合同|自|在|=|＝|:|：|我们|本公司|投保人|[（(])/gu;
+  const pattern = /([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费|豁免)|(?:满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费))(?:[（(][^）)]{0,12}[）)])?\s*(?=若|如|被保险人|本合同|自|在|=|＝|:|：|我们|本公司|投保人|[（(])/gu;
   const matches = [];
   for (const match of source.matchAll(pattern)) {
     matches.push({
@@ -188,7 +188,7 @@ export function splitBenefitSections(text) {
       scopeText: source.slice(Math.max(0, (match.index || 0) - 1000), Math.min(source.length, (match.index || 0) + match[0].length + 80)),
     });
   }
-  const payoutNamePattern = /(?:给付|赔付|豁免)([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费)|(?:满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费))/gu;
+  const payoutNamePattern = /(?:给付|赔付|豁免)([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费)|(?:满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费))/gu;
   for (const match of source.matchAll(payoutNamePattern)) {
     const index = (match.index || 0) + match[0].length - match[1].length;
     const prefix = source.slice(Math.max(0, index - 16), index);
@@ -201,7 +201,7 @@ export function splitBenefitSections(text) {
       scopeText: source.slice(Math.max(0, index - 1000), Math.min(source.length, index + match[1].length + 80)),
     });
   }
-  const assumeLiabilityPattern = /承担(?:给付)?([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,48}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费|豁免))(?:的|之)?责任/gu;
+  const assumeLiabilityPattern = /承担(?:给付)?([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,48}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费|豁免))(?:的|之)?责任/gu;
   for (const match of source.matchAll(assumeLiabilityPattern)) {
     const fullIndex = match.index || 0;
     const rawLiability = match[1] || '';
@@ -291,7 +291,7 @@ function cleanLiability(value) {
 function liabilityLooksClean(value) {
   const text = trim(value);
   if (text.length < 3 || text.length > 34) return false;
-  if (!/(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁免保险费)$/u.test(text)) return false;
+  if (!/(?:保险金|津贴|年金|满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁免保险费)$/u.test(text)) return false;
   if (/^(保险金|基本保险金|医疗保险金|特定医疗保险金|津贴保险金|年金)$/u.test(text)) return false;
   if (/^(每一保险期间累计给付|已达到保险单上载明的|外伤害|年度给付限额|年给付限额|累计给付限额|累计给付|扣除|已给付|已赔付)/u.test(text)) return false;
   if (/^(年免赔额给付比例|保险责任给付限额|\d+(?:\.\d+)?万保险责任给付限额)/u.test(text)) return false;
@@ -339,7 +339,7 @@ export function coverageTypeFor(liability, text) {
   if (/猝死/u.test(direct)) return '意外身故保障';
   if (/重大手术|特定重大手术|康复保险金/u.test(direct)) return '重大疾病保障';
   if (/恶性肿瘤|肿瘤|癌|白血病|重大疾病|重疾|中症|轻症|中度疾病|轻度疾病|特定疾病|疾病|并发症|罕见病|传染病|卵巢切除术|子宫全切术|全面保障/u.test(direct)) return '重大疾病保障';
-  if (/年金|养老金|养老|养老保险金|祝寿|生存金|生存保险金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|关爱保险金|研学深造|特别保险金/u.test(direct)) return '现金流';
+  if (/年金|养老金|养老|养老保险金|祝寿|贺寿|贺岁|长寿|生存金|生存保险金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|关爱保险金|研学深造|特别保险金/u.test(direct)) return '现金流';
   if (/门诊|住院|医疗|药品|药械|费用|报销|补偿|质子重离子/u.test(haystack)) return '医疗保障';
   if (/伤残|残疾|骨折|烧伤|烧烫伤|韧带|整形手术|手术意外伤害/u.test(haystack)) return '意外伤残保障';
   if (/意外/u.test(haystack) && /身故|全残/u.test(haystack)) return '意外身故保障';
@@ -347,7 +347,7 @@ export function coverageTypeFor(liability, text) {
   if (/手术保险金/u.test(haystack) && !/意外/u.test(haystack)) return '医疗保障';
   if (/重大手术|特定重大手术|康复保险金/u.test(haystack)) return '重大疾病保障';
   if (/恶性肿瘤|肿瘤|癌|白血病|重大疾病|重疾|中症|轻症|中度疾病|轻度疾病|特定疾病|疾病|卵巢切除术|子宫全切术/u.test(haystack)) return '重大疾病保障';
-  if (/年金|养老金|祝寿|生存金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|特别保险金/u.test(haystack)) return '现金流';
+  if (/年金|养老金|祝寿|贺寿|贺岁|长寿|生存金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|特别保险金/u.test(haystack)) return '现金流';
   return '责任项';
 }
 
@@ -690,7 +690,7 @@ export function formulaFor(liability, sectionText) {
       formulaText: `${liability} = ${basis} × ${accountPercent[1]}%`,
     };
   }
-  if (/年金|养老金|养老保险金|祝寿|生存金|生存保险金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|特别保险金/u.test(liability)
+  if (/年金|养老金|养老保险金|祝寿|贺寿|贺岁|长寿|生存金|生存保险金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|特别保险金/u.test(liability)
     && /养老年金领取金额|年金领取金额|生存年金领取金额|特别年金领取金额/u.test(text)) {
     const basis = text.match(/特别年金领取金额/u) ? '特别年金领取金额'
       : text.match(/生存年金领取金额/u) ? '生存年金领取金额'
@@ -727,7 +727,7 @@ export function formulaFor(liability, sectionText) {
   }
   const paidPremiumPercent = text.match(/(?:按|按照)[^。；，,]{0,80}?(首次交纳的?[^。；，,]{0,40}?(?:保险费|保费)|已交(?:纳)?[^。；，,]{0,40}?(?:保险费|保费)|实际交纳[^。；，,]{0,40}?(?:保险费|保费))[^。；，,]{0,16}?(\d+(?:\.\d+)?)\s*[％%][^。；，,]{0,40}?给付/u);
   if (paidPremiumPercent?.[1] && paidPremiumPercent?.[2]
-    && /年金|养老金|养老保险金|祝寿|生存金|生存保险金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|关爱金/u.test(liability)
+    && /年金|养老金|养老保险金|祝寿|贺寿|贺岁|长寿|生存金|生存保险金|满期|教育金|高中教育|大学教育|婚嫁|立业|创业|关爱金/u.test(liability)
     && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
     const percentValue = Number(paidPremiumPercent[2]);
     if (Number.isFinite(percentValue) && percentValue > 0) {
