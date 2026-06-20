@@ -317,8 +317,26 @@ function responsibilityScopeForSection(rawLiability, sectionText) {
   const rawMarker = normalizeSpaces(rawLiability);
   if (/基本(?:保险)?责任|基本部分|必选(?:保险)?责任|必选部分/u.test(rawMarker)) return 'basic';
   if (/可选(?:保险)?责任|可选部分/u.test(rawMarker)) return 'optional';
-  const marker = normalizeSpaces(sectionText.slice(0, 160));
-  return /可选(?:保险)?责任|可选部分/u.test(marker) ? 'optional' : 'basic';
+  const marker = normalizeSpaces(sectionText);
+  const compact = marker.replace(/\s+/gu, '');
+  const liabilityKey = normalizeSpaces(cleanLiability(rawLiability) || rawLiability).replace(/\s+/gu, '');
+  const liabilityIndex = liabilityKey ? compact.indexOf(liabilityKey) : -1;
+  const markerText = liabilityIndex >= 0 ? compact.slice(0, liabilityIndex) : compact.slice(0, 600);
+  const lastBasic = Math.max(
+    markerText.lastIndexOf('基本责任'),
+    markerText.lastIndexOf('基本保险责任'),
+    markerText.lastIndexOf('基本部分'),
+    markerText.lastIndexOf('必选责任'),
+    markerText.lastIndexOf('必选保险责任'),
+    markerText.lastIndexOf('必选部分'),
+  );
+  const lastOptional = Math.max(
+    markerText.lastIndexOf('可选责任'),
+    markerText.lastIndexOf('可选保险责任'),
+    markerText.lastIndexOf('可选部分'),
+  );
+  if (lastBasic >= 0 || lastOptional >= 0) return lastOptional > lastBasic ? 'optional' : 'basic';
+  return 'basic';
 }
 
 export function coverageTypeFor(liability, text) {

@@ -241,3 +241,67 @@ test('annuity lane recognizes broader return-money liability names', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('governance treats basic annuity clauses as writable and suppresses equivalent existing formulas', () => {
+  const { dir, dbPath } = makeTempDb();
+  const db = new DatabaseSync(dbPath);
+  try {
+    insertKnowledge(db, {
+      id: 4000,
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+      salesStatus: '在售',
+      pageText: [
+        '保险责任 本合同的保险责任分为基本责任和可选责任。在本合同保险期间内，我们根据您的选择承担下列保险责任：1.基本责任',
+        '（1）生存保险金 若男性被保险人在投保时未满55周岁，女性被保险人在投保时未满50周岁，被保险人于本合同生效满五年的首个保单周年日含起至养老年金开始领取日不含之前，在每个保单周年日零时生存，我们按基本保险金额给付生存保险金。',
+        '（2）养老年金 被保险人于养老年金开始领取日含起至保险期间届满之前，在每个保单周年日零时生存，我们按基本保险金额给付养老年金。',
+        '（3）满期生存保险金 被保险人生存至保险期间届满，我们按本合同实际交纳的保险费给付满期生存保险金，本合同终止。',
+        '2.可选责任 （1）成长教育金 本合同生效满五年之后，若被保险人于15周岁、18周岁、21周岁、24周岁的每个保单周年日零时生存，我们按基本保险金额的2倍给付成长教育金。',
+        '（2）成家立业金 被保险人于30周岁保单周年日零时生存，我们按基本保险金额的2倍给付成家立业金。',
+      ].join(' '),
+    });
+    insertIndicator(db, {
+      id: 'existing_maturity',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+      coverageType: '现金流',
+      liability: '满期生存保险金',
+      unit: '公式',
+      basis: '已交保费',
+      formulaText: '满期生存保险金 = 实际交纳保险费',
+      sourceRecordId: '4000',
+    });
+    insertIndicator(db, {
+      id: 'existing_career',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+      coverageType: '现金流',
+      liability: '成家立业金',
+      value: 2,
+      unit: '倍',
+      basis: '基本保险金额',
+      formulaText: '基本保险金额 × 2',
+      sourceRecordId: '4000',
+    });
+
+    const result = auditInsuranceIndicatorQuality({
+      dbPath,
+      knowledgeIds: [4000],
+      includeExistingProducts: true,
+      sampleLimit: 20,
+    });
+
+    const candidatesByLiability = new Map(result.candidates.map((candidate) => [
+      candidate.proposedIndicator.liability,
+      candidate,
+    ]));
+    assert.equal(candidatesByLiability.get('生存保险金')?.writeAllowed, true);
+    assert.equal(candidatesByLiability.get('养老年金')?.writeAllowed, true);
+    assert.equal(candidatesByLiability.has('满期生存保险金'), false);
+    assert.equal(candidatesByLiability.has('成家立业金'), false);
+    assert.equal(candidatesByLiability.get('成长教育金')?.writeAllowed, false);
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -188,13 +188,24 @@ function existingIndicatorsForProducts(db, products) {
     .filter((row) => productKeys.has(`${row.company}\u001f${row.product_name}`));
 }
 
+function comparableFormulaText(indicator = {}) {
+  const liability = normalizeSpaces(indicator.liability);
+  const rawFormula = normalizeSpaces(indicator.formulaText || indicator.payload?.formulaText);
+  const formula = liability
+    ? rawFormula.replace(new RegExp(`^${liability.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\s*=\\s*`, 'u'), '')
+    : rawFormula;
+  return normalizeLookupText(formula)
+    .replace(/本合同实际交纳的?保险费|实际交纳的?保险费|已交纳的?保险费|已交保险费|已交保费/gu, '已交保险费')
+    .replace(/基本保额|基本保险金/gu, '基本保险金额');
+}
+
 function indicatorComparableKey(indicator = {}) {
   return [
     normalizeLookupText(indicator.company),
     normalizeLookupText(indicator.productName || indicator.product_name),
     normalizeLookupText(indicator.coverageType || indicator.coverage_type),
     normalizeLookupText(indicator.liability),
-    normalizeLookupText(indicator.formulaText || indicator.payload?.formulaText),
+    comparableFormulaText(indicator),
   ].join('\u001f');
 }
 

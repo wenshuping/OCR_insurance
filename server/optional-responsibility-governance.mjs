@@ -400,6 +400,8 @@ function indicatorIdFor({ company = '', productName = '', liability = '', option
   return `ind_opt_${digest}`;
 }
 
+const BENEFIT_NAME_SUFFIX_PATTERN = '(?:保险金(?!额)|豁免保险费|豁免|年金|津贴|满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|创业金|深造金)';
+
 function splitBenefitClauses(text = '') {
   return String(text || '')
     .replace(/\s+/gu, ' ')
@@ -412,22 +414,19 @@ function splitBenefitClauses(text = '') {
 function classifyCoverageType(liability) {
   if (/轻度疾病|中度疾病|重度疾病|重大疾病|特定疾病|豁免/u.test(liability)) return '疾病保障';
   if (/身故|全残/u.test(liability)) return '人寿保障';
-  if (/生存|年金|满期|领取/u.test(liability)) return '现金流';
+  if (/生存|年金|满期|领取|祝寿|贺寿|贺岁|长寿|教育金|婚嫁金|立业金|创业金|深造金|关爱金/u.test(liability)) return '现金流';
   if (/医疗|住院|津贴/u.test(liability)) return '医疗保障';
   return '保险责任';
 }
 
 function extractLiability(clause) {
   const text = String(clause || '').replace(/\s+/gu, ' ').trim();
-  const numberedHeading = text.match(
-    /^[（(]?\d+[）)]\s*([一-龥A-Za-z0-9（）()]{2,48}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u,
-  );
+  const numberedHeading = text.match(new RegExp(`^[（(]?\\d+[）)]\\s*([一-龥A-Za-z0-9（）()]{2,48}?${BENEFIT_NAME_SUFFIX_PATTERN})`, 'u'));
   if (numberedHeading?.[1]) return numberedHeading[1].trim();
-  const heading = text.match(
-    /^可选(?:保险)?责任\s*[一二三四五六七八九十\d]*\s*[:：]?\s*([一-龥A-Za-z0-9（）()]{2,48}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u,
-  );
+  const heading = text.match(new RegExp(`^可选(?:保险)?责任\\s*[一二三四五六七八九十\\d]*\\s*[:：]?\\s*([一-龥A-Za-z0-9（）()]{2,48}?${BENEFIT_NAME_SUFFIX_PATTERN})`, 'u'));
   if (heading?.[1]) return heading[1].trim();
-  const directCandidates = [...text.matchAll(/[一-龥A-Za-z0-9（）()]{2,30}(?:保险金(?!额)|豁免保险费|豁免|年金|津贴)/gu)]
+  const directPattern = new RegExp(`[一-龥A-Za-z0-9（）()]{2,30}${BENEFIT_NAME_SUFFIX_PATTERN}`, 'gu');
+  const directCandidates = [...text.matchAll(directPattern)]
     .map((match) => match[0].trim()
       .replace(/^（\d+）/u, '')
       .replace(/^(?:给付|按|以|向|将按|本公司按|我们按)/u, ''))

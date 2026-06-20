@@ -466,6 +466,26 @@ test('extractOptionalIndicatorsFromSection reads optional heading benefit names 
   assert.equal(indicators.some((row) => /基本保险金额给付/u.test(row.liability)), false);
 });
 
+test('extractOptionalIndicatorsFromSection keeps annuity benefit names before payout wording', () => {
+  const section = {
+    id: 'opt_career',
+    company: '新华保险',
+    productName: '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）',
+    liability: '可选责任',
+    sourceRecordId: '130',
+    sourceExcerpt: [
+      '（1）成长教育金 本合同生效满五年之后，若被保险人于15周岁、18周岁、21周岁、24周岁的每个保单周年日零时生存，我们按基本保险金额的2倍给付成长教育金。',
+      '（2）成家立业金 被保险人于30周岁保单周年日零时生存，我们按基本保险金额的2倍给付成家立业金。',
+    ].join(' '),
+  };
+
+  const indicators = extractOptionalIndicatorsFromSection(section);
+
+  assert.deepEqual(indicators.map((indicator) => indicator.liability), ['成长教育金', '成家立业金']);
+  assert.ok(indicators.every((indicator) => indicator.coverageType === '现金流'));
+  assert.ok(indicators.every((indicator) => indicator.formulaText === '基本保险金额 × 2'));
+});
+
 test('rebuildOptionalResponsibilityGovernance produces records and indicators from knowledge records', () => {
   const state = {
     knowledgeRecords: [
