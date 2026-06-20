@@ -1,5 +1,5 @@
 import type { User } from '../client';
-import type { FamilyMember, FamilyProfile, FamilySalesReview } from './family';
+import type { FamilyMember, FamilyProfile, FamilyReportRecord, FamilySalesReview } from './family';
 import type { KnowledgeRecord, Policy, SourceRecord } from './policy';
 import type { OptionalResponsibility, QuantificationStatus } from './responsibility';
 import { request } from '../client';
@@ -192,8 +192,23 @@ export function getAdminOverview(token: string) {
   return request<AdminOverview>('/api/admin/overview', { token });
 }
 
+export function getAdminPolicy(token: string, policyId: number) {
+  return request<{ ok: true; policy: Policy }>(`/api/admin/policies/${encodeURIComponent(String(policyId))}`, { token });
+}
+
 export function getAdminUserFamilies(token: string, userId: number) {
   return request<AdminUserFamiliesResponse>(`/api/admin/users/${encodeURIComponent(String(userId))}/families`, { token });
+}
+
+export function getAdminFamilyReport(token: string, familyId: number) {
+  return request<{ ok: true; reportRecord: FamilyReportRecord | null }>(`/api/admin/families/${encodeURIComponent(String(familyId))}/report`, { token });
+}
+
+export function createAdminFamilyReport(token: string, familyId: number) {
+  return request<{ ok: true; reportRecord: FamilyReportRecord | null }>(`/api/admin/families/${encodeURIComponent(String(familyId))}/report`, {
+    token,
+    body: {},
+  });
 }
 
 export function getAdminFamilySalesReview(token: string, familyId: number) {
@@ -206,6 +221,10 @@ export function getAdminReportIssues(token: string) {
 
 export function getAdminReportIssueDetail(token: string, reportId: number) {
   return request<{ ok: true; report: AdminReportIssueSummary; issues: AdminReportIssue[]; corrections?: AdminReportCorrection[] }>(`/api/admin/report-issues/${reportId}`, { token });
+}
+
+export function getAdminOptionalResponsibilityGaps(token: string) {
+  return request<{ ok: true; gaps: OptionalResponsibilityGap[] }>('/api/admin/optional-responsibility-gaps', { token });
 }
 
 export function rejectAdminReportCorrection(token: string, correctionId: number) {

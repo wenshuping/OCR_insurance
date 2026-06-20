@@ -1,5 +1,6 @@
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 import { shouldKeepPolicyPlan } from '../src/policy-plan-filter.mjs';
+import { extractPolicyFieldsFromText } from '../ocr-service/insurance-ocr.service.mjs';
 
 const GENERIC_COMPANY_KEYWORDS = new Set(['保险', '保司', '人寿', '寿险', '公司', '集团', '中国', '股份', '有限责任公司', '股份有限公司']);
 
@@ -23,6 +24,29 @@ function trim(value) {
 
 function compactText(value) {
   return trim(value).replace(/\s+/gu, '');
+}
+
+const PERSON_NAME_TRAILING_LABEL_PATTERN = /(性别|生日|出生|生于|身份证号码|身份证号|居民身份证号码|居民身份证号|身份证|居民身份证|证件号码|证件号|受益顺序|受益份额|本栏以下空白|及保险主要事项).*$/u;
+
+function normalizePersonLikeOcrValue(value) {
+  return compactText(value)
+    .replace(/^(投保人姓名|投保人名称|投保人|要保人姓名|要保人|设保人姓名|设保人|被保险人姓名|被保险人|被保险入姓名|被保险入|披保险人姓名|披保险人|受保人姓名|受保人|被保人|身故保险金受益人|身故受益人|受益人)[:：]?/u, '')
+    .replace(/^（[^）]*）[:：]?/u, '')
+    .replace(PERSON_NAME_TRAILING_LABEL_PATTERN, '')
+    .trim();
+}
+
+function isIdentityOnlyPersonPlaceholder(value) {
+  return /^(?:身份证|居民身份证|证件号码|证件号)[:：]?(?:\d{6,}[\dXx]?)?$/u.test(compactText(value));
+}
+
+function shouldReplaceNoisyPersonValue(currentValue, extractedValue) {
+  const extracted = trim(extractedValue);
+  if (!extracted) return false;
+  const current = trim(currentValue);
+  if (!current) return false;
+  const normalizedCurrent = normalizePersonLikeOcrValue(current);
+  return normalizedCurrent === extracted && current !== extracted;
 }
 
 function normalizeIdNumber(value) {
@@ -65,7 +89,7 @@ function birthdayFromIdNumber(value) {
 
 function extractInsuredIdentityFromOcrText(ocrText = '', insuredName = '') {
   const lines = trim(ocrText).split(/\r?\n/u).map(trim).filter(Boolean);
-  const normalizedInsured = compactText(insuredName);
+  const normalizedInsured = normalizePersonLikeOcrValue(insuredName) || compactText(insuredName);
   const candidates = [];
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -77,11 +101,12 @@ function extractInsuredIdentityFromOcrText(ocrText = '', insuredName = '') {
     if (/^(?:证件号码|证件号|身份证号码|身份证号|居民身份证号码|居民身份证号)[:：]?/u.test(line)) score += 5;
     const previousWindow = lines.slice(Math.max(0, index - 3), index).map(compactText).join(' ');
     const nextWindow = lines.slice(index + 1, index + 4).map(compactText).join(' ');
-    if (/被保险[人入]|披保险人|被保人|受保人/u.test(previousWindow) || /被保险[人入]|披保险人|被保人|受保人/u.test(line)) score += 6;
-    if (/投保人|设保人|要保人/u.test(previousWindow) || /投保人|设保人|要保人/u.test(line)) score -= 3;
-    if (normalizedInsured && (previousWindow.includes(normalizedInsured) || line.includes(normalizedInsured) || nextWindow.includes(normalizedInsured))) {
-      score += 4;
-    }
+    if (/被保险[人入]|披保险人|被保人|受保人/u.test(line)) score += 10;
+    else if (/被保险[人入]|披保险人|被保人|受保人/u.test(previousWindow)) score += 3;
+    if (/投保人|设保人|要保人/u.test(line)) score -= 8;
+    else if (/投保人|设保人|要保人/u.test(previousWindow)) score -= 3;
+    if (normalizedInsured && line.includes(normalizedInsured)) score += 8;
+    else if (normalizedInsured && (previousWindow.includes(normalizedInsured) || nextWindow.includes(normalizedInsured))) score += 2;
     candidates.push({ idNumber, score, index });
   }
 
@@ -137,6 +162,48 @@ function companyKeywordCandidates(company, aliases = []) {
   return [...keywords.entries()].map(([normalized, raw]) => ({ normalized, raw }));
 }
 
+function splitOcrEvidenceLines(ocrText = '') {
+  return trim(ocrText).split(/\r?\n/u).map(trim).filter(Boolean);
+}
+
+function isShortCompanyAlias(keyword = {}) {
+  return normalizeOcrMappingText(keyword.raw || keyword.normalized).length <= 2;
+}
+
+function hasExplicitCompanySuffix(line = '', rawKeyword = '') {
+  const text = compactText(line);
+  const keyword = trim(rawKeyword).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  if (!keyword) return false;
+  return new RegExp(`${keyword}(?:人寿|财产|养老|健康|财险)?保险(?:股份有限公司|有限责任公司|有限公司)?`, 'u').test(text)
+    || new RegExp(`${keyword}(?:人寿|财产|养老|健康|财险)`, 'u').test(text);
+}
+
+function isCompanyContextLine(line = '') {
+  const text = compactText(line);
+  return /(?:保险公司|承保公司|公司名称|保险人|承保人|保险单|NCI|PINGAN|PINGAN|PICC)/iu.test(text);
+}
+
+function isProductContextLine(line = '') {
+  const text = compactText(line);
+  return /(?:险种名称|产品名称|保险项目|保险利益表|主险|附加险|附加|基本保险金额|保险金额|保险期间|保障期间|交费方式|缴费方式|保险费|保费)/u.test(text)
+    || /(?:两全|终身|年金|医疗|疾病|重疾|意外|护理|养老).{0,12}保险/u.test(text)
+    || /保险.{0,12}(?:A款|B款|C款|D款|万能型|分红型|费率可调)/u.test(text);
+}
+
+function hasCompanyKeywordEvidence(ocrText = '', keyword = {}) {
+  const normalizedOcr = normalizeOcrMappingText(ocrText);
+  if (!normalizedOcr || !keyword?.normalized || !normalizedOcr.includes(keyword.normalized)) return false;
+  if (!isShortCompanyAlias(keyword)) return true;
+
+  for (const line of splitOcrEvidenceLines(ocrText)) {
+    const normalizedLine = normalizeOcrMappingText(line);
+    if (!normalizedLine.includes(keyword.normalized)) continue;
+    if (hasExplicitCompanySuffix(line, keyword.raw)) return true;
+    if (isCompanyContextLine(line) && !isProductContextLine(line)) return true;
+  }
+  return false;
+}
+
 function buildKnownCompanyStats(state = {}) {
   const stats = new Map();
   const addCompany = (company, aliases = [], weight = 1) => {
@@ -170,7 +237,7 @@ export function matchInsuranceCompanyFromOcr(ocrText, state = {}) {
   const matches = [];
   for (const entry of buildKnownCompanyStats(state)) {
     for (const keyword of companyKeywordCandidates(entry.company, entry.aliases)) {
-      if (!normalizedOcr.includes(keyword.normalized)) continue;
+      if (!hasCompanyKeywordEvidence(ocrText, keyword)) continue;
       matches.push({
         company: entry.company,
         keyword: keyword.raw,
@@ -471,6 +538,135 @@ function normalizePolicyPlans(plans = [], company = '') {
     .map((plan, index) => normalizePolicyPlan(plan, index, company))
     .filter(Boolean)
     .filter((plan) => shouldKeepPolicyPlan(plan));
+}
+
+function countMissingCorePlanValues(plans = []) {
+  return normalizePolicyPlans(plans).reduce((count, plan) => {
+    const role = normalizePolicyPlanRole(plan.role, 0, plan.name);
+    if (role === 'linked_account') return count;
+    return count + (plan.amount ? 0 : 1) + (plan.premium ? 0 : 1);
+  }, 0);
+}
+
+function countCompleteCorePlans(plans = []) {
+  return normalizePolicyPlans(plans).filter((plan) => {
+    const role = normalizePolicyPlanRole(plan.role, 0, plan.name);
+    return role !== 'linked_account' && Boolean(plan.name && plan.amount && plan.premium);
+  }).length;
+}
+
+function shouldUseOcrTextPlans(currentPlans = [], extractedPlans = []) {
+  const current = normalizePolicyPlans(currentPlans);
+  const extracted = normalizePolicyPlans(extractedPlans);
+  if (!extracted.length) return false;
+  if (!current.length) return true;
+
+  const currentMissing = countMissingCorePlanValues(current);
+  const extractedMissing = countMissingCorePlanValues(extracted);
+  if (extractedMissing < currentMissing) return true;
+
+  const currentComplete = countCompleteCorePlans(current);
+  const extractedComplete = countCompleteCorePlans(extracted);
+  return extractedComplete > currentComplete && extractedMissing <= currentMissing;
+}
+
+const PLAN_DERIVED_TOP_LEVEL_FIELDS = new Set([
+  'amount',
+  'coveragePeriod',
+  'paymentMode',
+  'paymentPeriod',
+  'firstPremium',
+]);
+
+const NOISY_PERSON_FIELDS = new Set(['applicant', 'insured', 'beneficiary']);
+
+function mergeExtractedPolicyData(currentData = {}, extractedData = {}, { preferPlanDerivedFields = false } = {}) {
+  const merged = { ...currentData };
+  let changed = false;
+  for (const [field, value] of Object.entries(extractedData)) {
+    if (field === 'plans' || field === 'fieldEvidence' || field === 'fieldConfidence') continue;
+    if (Array.isArray(value)) continue;
+    if (value && typeof value === 'object') continue;
+    if (preferPlanDerivedFields && PLAN_DERIVED_TOP_LEVEL_FIELDS.has(field) && trim(value)) {
+      if (trim(merged[field]) !== trim(value)) {
+        merged[field] = value;
+        changed = true;
+      }
+      continue;
+    }
+    if (
+      NOISY_PERSON_FIELDS.has(field)
+      && trim(value)
+      && (shouldReplaceNoisyPersonValue(merged[field], value) || isIdentityOnlyPersonPlaceholder(merged[field]))
+    ) {
+      if (trim(merged[field]) !== trim(value)) {
+        merged[field] = value;
+        changed = true;
+      }
+      continue;
+    }
+    if (!trim(merged[field]) && trim(value)) {
+      merged[field] = value;
+      changed = true;
+    }
+  }
+
+  const currentInsuredName = normalizePersonLikeOcrValue(currentData.insured);
+  const extractedInsuredName = normalizePersonLikeOcrValue(extractedData.insured);
+  const extractedInsuredId = normalizeIdNumber(extractedData.insuredIdNumber);
+  const currentInsuredId = normalizeIdNumber(currentData.insuredIdNumber);
+  const sameInsured = extractedInsuredName && (!currentInsuredName || currentInsuredName === extractedInsuredName);
+  let insuredIdChanged = false;
+  if (sameInsured && extractedInsuredId && extractedInsuredId !== currentInsuredId) {
+    merged.insuredIdNumber = extractedInsuredId;
+    changed = true;
+    insuredIdChanged = true;
+  }
+  const extractedBirthday = trim(extractedData.insuredBirthday);
+  const currentBirthday = trim(currentData.insuredBirthday);
+  if (
+    sameInsured
+    && extractedBirthday
+    && extractedBirthday !== currentBirthday
+    && (insuredIdChanged || !currentBirthday || currentBirthday === birthdayFromIdNumber(currentInsuredId))
+  ) {
+    merged.insuredBirthday = extractedBirthday;
+    changed = true;
+  }
+
+  return { data: merged, changed };
+}
+
+export function repairPolicyScanDataFromOcrText(scan = {}) {
+  const sourceScan = scan && typeof scan === 'object' ? scan : {};
+  const ocrText = trim(sourceScan.ocrText);
+  if (!ocrText) return sourceScan;
+
+  const currentData = sourceScan.data && typeof sourceScan.data === 'object' ? sourceScan.data : {};
+  const extractedData = extractPolicyFieldsFromText(ocrText);
+  const extractedPlans = Array.isArray(extractedData?.plans) ? extractedData.plans : [];
+  const currentPlans = Array.isArray(currentData?.plans) ? currentData.plans : [];
+  const useExtractedPlans = shouldUseOcrTextPlans(currentPlans, extractedPlans);
+  const repaired = mergeExtractedPolicyData(currentData, extractedData, {
+    preferPlanDerivedFields: useExtractedPlans,
+  });
+  const repairedData = repaired.data;
+  if (useExtractedPlans) repairedData.plans = extractedPlans;
+
+  if (!useExtractedPlans && !repaired.changed) return sourceScan;
+  if (useExtractedPlans && currentPlans.length) {
+    console.info('[policy-ocr-mapping] repaired plans from OCR text', {
+      currentPlanCount: currentPlans.length,
+      extractedPlanCount: extractedPlans.length,
+      currentMissingCoreValues: countMissingCorePlanValues(currentPlans),
+      extractedMissingCoreValues: countMissingCorePlanValues(extractedPlans),
+    });
+  }
+
+  return {
+    ...sourceScan,
+    data: repairedData,
+  };
 }
 
 function chooseMatchedProductType(planType, matchedType) {
@@ -830,6 +1026,23 @@ function chooseMappedPolicyName(dataName, mainPlan, productMatch) {
   return planName || rawDataName || trim(productMatch?.productName) || '';
 }
 
+function logCompanyMappingDecision({ rawCompany = '', companyMatch = null, inferredCompanyMatch = null, finalCompany = '', mainPlan = null } = {}) {
+  const before = trim(rawCompany);
+  const matched = trim(companyMatch?.company);
+  const inferred = trim(inferredCompanyMatch?.company);
+  const final = trim(finalCompany);
+  if (!matched && !inferred && before === final) return;
+  console.info('[policy-ocr-mapping] company decision', {
+    rawCompany: before,
+    companyMatch: matched,
+    companyKeyword: trim(companyMatch?.keyword),
+    inferredCompany: inferred,
+    finalCompany: final,
+    mainPlanName: trim(mainPlan?.name),
+    matchedProductName: trim(mainPlan?.matchedProductName),
+  });
+}
+
 const OCR_REPAIR_WARNING_LABEL_FIELDS = [
   ['保险公司', 'company'],
   ['投保人', 'applicant'],
@@ -913,6 +1126,13 @@ export function enhancePolicyScanWithOcrMapping({ scan, state }) {
   const durations = extractDurationFieldsFromOcrText(ocrText);
   const orderedPlans = hydrateMappedMainPlanFields(orderPolicyPlans(plans), data, durations);
   const mainPlan = orderedPlans.find((plan) => plan.role === 'main') || orderedPlans[0] || null;
+  logCompanyMappingDecision({
+    rawCompany: data.company,
+    companyMatch,
+    inferredCompanyMatch,
+    finalCompany: company,
+    mainPlan,
+  });
   const productMatch = company
     ? findBestProductMatchForName(ocrText, state, company, mainPlan?.name || data.name) || matchInsuranceProductFromOcr(ocrText, state, company)
     : null;

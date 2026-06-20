@@ -139,15 +139,34 @@ export function createPolicyRoutes(context) {
 
   function attachStoredPolicyDerivedResult(policy, derivedResult = findPolicyDerivedResult(policy?.id)) {
     const displayed = attachPolicyFamilyDisplay(policy, state);
-    if (typeof mergePolicyDerivedResult === 'function') {
-      return mergePolicyDerivedResult(displayed, derivedResult || null);
-    }
     if (derivedResult) {
+      if (typeof mergePolicyDerivedResult === 'function') {
+        return mergePolicyDerivedResult(displayed, derivedResult);
+      }
       return {
         ...displayed,
         coverageIndicators: Array.isArray(derivedResult.coverageIndicators) ? derivedResult.coverageIndicators : [],
         optionalResponsibilities: Array.isArray(derivedResult.optionalResponsibilities) ? derivedResult.optionalResponsibilities : [],
       };
+    }
+    if (typeof attachPolicyCoverageIndicators === 'function') {
+      const attached = attachPolicyCoverageIndicators(
+        displayed,
+        state.insuranceIndicatorRecords,
+        state.knowledgeRecords,
+        state.optionalResponsibilityRecords,
+      );
+      if (typeof mergePolicyDerivedResult === 'function') {
+        return mergePolicyDerivedResult(attached, null);
+      }
+      return {
+        ...attached,
+        derivedStatus: 'stale',
+        derivedStaleReason: 'missing',
+      };
+    }
+    if (typeof mergePolicyDerivedResult === 'function') {
+      return mergePolicyDerivedResult(displayed, null);
     }
     return {
       ...displayed,

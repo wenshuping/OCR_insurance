@@ -311,6 +311,63 @@ test('validatePolicyEntryForm accepts riders when OCR proves only total premium 
   assert.ok(!errors.includes('被保险人生日'));
 });
 
+test('validatePolicyEntryForm can allow first save before a family profile exists', async () => {
+  const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
+  const form = {
+    familyId: null,
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    applicant: '楼媛媛',
+    beneficiary: '法定',
+    applicantRelation: '本人',
+    insured: '王後曦',
+    insuredRelation: '子女',
+    applicantBirthday: '',
+    beneficiaryBirthday: '',
+    insuredBirthday: '',
+    date: '2024-08-16',
+    paymentPeriod: '趸交',
+    coveragePeriod: '至2025年08月15日',
+    amount: '80000',
+    firstPremium: '298',
+    plans: [],
+  };
+
+  assert.ok(validatePolicyEntryForm(form).includes('选择家庭档案'));
+  assert.ok(!validatePolicyEntryForm(form, { requireFamily: false }).includes('选择家庭档案'));
+});
+
+test('validatePolicyEntryForm can allow pending top-pillar relations before core member is set', async () => {
+  const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
+  const form = {
+    familyId: 1,
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    applicant: '楼媛媛',
+    beneficiary: '法定',
+    applicantRelation: '待确认',
+    insured: '王後曦',
+    insuredRelation: '待确认',
+    applicantBirthday: '',
+    beneficiaryBirthday: '',
+    insuredBirthday: '',
+    date: '2024-08-16',
+    paymentPeriod: '趸交',
+    coveragePeriod: '至2025年08月15日',
+    amount: '80000',
+    firstPremium: '298',
+    plans: [],
+  };
+
+  const strictErrors = validatePolicyEntryForm(form);
+  assert.ok(strictErrors.includes('投保人与顶梁柱的关系'));
+  assert.ok(strictErrors.includes('被保险人与顶梁柱的关系'));
+
+  const relaxedErrors = validatePolicyEntryForm(form, { requireParticipantRelations: false });
+  assert.ok(!relaxedErrors.includes('投保人与顶梁柱的关系'));
+  assert.ok(!relaxedErrors.includes('被保险人与顶梁柱的关系'));
+});
+
 test('scanToForm preserves linked account role from visual OCR plans', async () => {
   const { scanToForm } = await loadCustomerPolicyFormModule();
   const form = scanToForm({

@@ -1,31 +1,16 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { allocateId, createInitialState } from '../server/policy-ocr.domain.mjs';
+import { allocateId } from '../server/policy-ocr.domain.mjs';
 import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
 const scraplingCwd = process.env.SCRAPLING_PROJECT_DIR || '/Users/wenshuping/Documents/Scrapling';
 const outputMarker = '__POLICY_KNOWLEDGE_JSON__';
-
-function readJson(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
-}
 
 function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -66,73 +51,81 @@ function runCrawler(payload) {
   return JSON.parse(line.slice(line.indexOf(outputMarker) + outputMarker.length));
 }
 
-function main() {
+async function main() {
   const saleStatus = readArg('sale-status', process.env.HUAHUI_LIFE_SALE_STATUS || 'all');
   const maxProducts = readNumberArg('max-products', Number(process.env.HUAHUI_LIFE_MAX_PRODUCTS || 0));
   const maxWorkers = readNumberArg('max-workers', Number(process.env.HUAHUI_LIFE_MAX_WORKERS || 6));
   const newOnly = readBooleanArg('new-only', process.env.HUAHUI_LIFE_NEW_ONLY === '1');
 
-  const stateBefore = readJson(statePath, createInitialState());
-  const beforeUrls = new Set((stateBefore.knowledgeRecords || []).map((record) => String(record.url || '')).filter(Boolean));
+  const knowledgeStore = await createKnowledgeStateStore();
+  try {
+    const beforeUrls = new Set(knowledgeStore.allKnownUrls());
 
-  const result = runCrawler({
-    mode: 'huahui_life_pages',
-    company: '华汇人寿',
-    saleStatus,
-    maxProducts,
-    maxWorkers,
-    skipUrls: newOnly ? [...beforeUrls] : [],
-  });
+    const result = runCrawler({
+      mode: 'huahui_life_pages',
+      company: '华汇人寿',
+      saleStatus,
+      maxProducts,
+      maxWorkers,
+      skipUrls: newOnly ? [...beforeUrls] : [],
+      archivePdf: true,
+    });
 
-  const state = readJson(statePath, createInitialState());
-  if (!Number(state.nextId)) state.nextId = 1;
-  const before = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const recordsToSave = newOnly
-    ? (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)))
-    : result.records || [];
-  const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
-  const after = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(String(record.url)));
-  const newSavedIds = newSaved.map((record) => Number(record.id)).filter(Number.isFinite).sort((left, right) => left - right);
-  const qualitySplit = saved.reduce((acc, record) => {
-    const status = String(record.responsibilityQualityStatus || record.qualityStatus || 'unknown');
-    acc[status] = (acc[status] || 0) + 1;
-    return acc;
-  }, {});
-  writeJson(statePath, state);
+    const state = knowledgeStore.loadState();
+    if (!Number(state.nextId)) state.nextId = 1;
+    const before = knowledgeStore.countKnowledgeRecords();
+    const recordsToSave = newOnly
+      ? (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)))
+      : result.records || [];
+    const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
+    knowledgeStore.saveState(state);
+    const after = knowledgeStore.countKnowledgeRecords();
+    const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(String(record.url)));
+    const newSavedIds = newSaved.map((record) => Number(record.id)).filter(Number.isFinite).sort((left, right) => left - right);
+    const qualitySplit = saved.reduce((acc, record) => {
+      const status = String(record.responsibilityQualityStatus || record.qualityStatus || 'unknown');
+      acc[status] = (acc[status] || 0) + 1;
+      return acc;
+    }, {});
 
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        company: result.company || '华汇人寿',
-        saleStatus,
-        maxProducts,
-        maxWorkers,
-        newOnly,
-        source: result.source,
-        officialDomain: result.officialDomain,
-        officialDomains: result.officialDomains,
-        pageCount: (result.pages || []).length,
-        pages: result.pages || [],
-        totalCandidateProductCount: result.totalCandidateProductCount || 0,
-        productCount: (result.products || []).length,
-        materialTaskCount: result.materialTaskCount || 0,
-        crawledRecordCount: (result.records || []).length,
-        recordsToSaveCount: recordsToSave.length,
-        savedRecordCount: saved.length,
-        newSavedRecordCount: newSaved.length,
-        newSavedMinId: newSavedIds[0] || null,
-        newSavedMaxId: newSavedIds.at(-1) || null,
-        responsibilityQualitySplit: qualitySplit,
-        localKnowledgeBefore: before,
-        localKnowledgeAfter: after,
-        statePath,
-      },
-      null,
-      2,
-    ),
-  );
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          company: result.company || '华汇人寿',
+          saleStatus,
+          maxProducts,
+          maxWorkers,
+          newOnly,
+          source: result.source,
+          officialDomain: result.officialDomain,
+          officialDomains: result.officialDomains,
+          pageCount: (result.pages || []).length,
+          pages: result.pages || [],
+          totalCandidateProductCount: result.totalCandidateProductCount || 0,
+          productCount: (result.products || []).length,
+          materialTaskCount: result.materialTaskCount || 0,
+          crawledRecordCount: (result.records || []).length,
+          recordsToSaveCount: recordsToSave.length,
+          savedRecordCount: saved.length,
+          newSavedRecordCount: newSaved.length,
+          newSavedMinId: newSavedIds[0] || null,
+          newSavedMaxId: newSavedIds.at(-1) || null,
+          responsibilityQualitySplit: qualitySplit,
+          localKnowledgeBefore: before,
+          localKnowledgeAfter: after,
+          dbPath: knowledgeStore.dbPath,
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    knowledgeStore.close();
+  }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

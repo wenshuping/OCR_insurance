@@ -115,7 +115,7 @@ function evidenceText(evidence) {
 
 function hasExplicitPremiumEvidence(evidence) {
   const text = evidenceText(evidence);
-  return /首期|首年|首次|保费|保险费合计|保险费|总保费|总保险费|每年/u.test(text);
+  return /首期|首年|首次|保费|保险费合计|保险费|总保费|总保险费|标准保险费|缴费标准|交费标准|每年/u.test(text);
 }
 
 function hasNonDeathBeneficiaryEvidence(evidence) {
@@ -125,7 +125,7 @@ function hasNonDeathBeneficiaryEvidence(evidence) {
 
 function hasResponsibilityDetailEvidence(evidence) {
   const text = evidenceText(evidence);
-  return /保险责任名称|金额\/?份数|给付标准|免赔额|赔付比例|社保赔付|保险金/u.test(text)
+  return /保险责任名称|金额\/?份数|给付标准|免赔额|赔付比例|社保赔付/u.test(text)
     && !/基本保险金额|保险金额\/保险金额/u.test(text);
 }
 

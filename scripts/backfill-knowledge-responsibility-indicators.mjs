@@ -36,6 +36,12 @@ function readArg(name, fallback = '') {
   return found ? found.slice(prefix.length) : fallback;
 }
 
+function parseIdList(value) {
+  return uniqueStrings(String(value || '').split(','))
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item > 0);
+}
+
 function hasFlag(name) {
   return process.argv.includes(`--${name}`);
 }
@@ -171,7 +177,7 @@ function responsibilityTextLooksUsable(text) {
 
 function splitBenefitSections(text) {
   const source = normalizeSpaces(text);
-  const pattern = /([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金)|(?:满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金))(?:（[^）]{0,12}）)?\s*(?=若|如|被保险人|本合同|自|在|=|＝|:|：|我们|本公司)/gu;
+  const pattern = /([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费|豁免)|(?:满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费))(?:[（(][^）)]{0,12}[）)])?\s*(?=若|如|被保险人|本合同|自|在|=|＝|:|：|我们|本公司|投保人|[（(])/gu;
   const matches = [];
   for (const match of source.matchAll(pattern)) {
     matches.push({
@@ -182,7 +188,7 @@ function splitBenefitSections(text) {
       scopeText: source.slice(Math.max(0, (match.index || 0) - 1000), Math.min(source.length, (match.index || 0) + match[0].length + 80)),
     });
   }
-  const payoutNamePattern = /(?:给付|赔付)([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金)|(?:满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金))/gu;
+  const payoutNamePattern = /(?:给付|赔付|豁免)([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,40}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费)|(?:满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费))/gu;
   for (const match of source.matchAll(payoutNamePattern)) {
     const index = (match.index || 0) + match[0].length - match[1].length;
     const prefix = source.slice(Math.max(0, index - 16), index);
@@ -195,7 +201,7 @@ function splitBenefitSections(text) {
       scopeText: source.slice(Math.max(0, index - 1000), Math.min(source.length, index + match[1].length + 80)),
     });
   }
-  const assumeLiabilityPattern = /承担给付([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,48}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金))(?:的|之)?责任/gu;
+  const assumeLiabilityPattern = /承担(?:给付)?([\u4e00-\u9fa5A-Za-z0-9“”\-—（）()\s]{2,48}?(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁\s*免\s*保\s*险\s*费|豁免))(?:的|之)?责任/gu;
   for (const match of source.matchAll(assumeLiabilityPattern)) {
     const fullIndex = match.index || 0;
     const rawLiability = match[1] || '';
@@ -270,6 +276,8 @@ function cleanLiability(value) {
     .replace(/^(?:年给付限额|年度给付限额|累计给付限额)?\d+(?:\.\d+)?\s*万?元(?=.+(?:保险金|津贴|年金|确诊金|慰问金))/u, '')
     .replace(/["“”']/gu, '')
     .replace(/\s+/gu, '')
+    .replace(/豁免$/u, '豁免保险费')
+    .replace(/豁免保险费保险费$/u, '豁免保险费')
     .replace(/^[（(]?[一二三四五六七八九十\d]+[）)、.．]+/u, '')
     .replace(/^(?:内|范围内|责任范围内)?按(?:本合同)?约定的?(?:给付比例|赔付比例)(?:[（(][^）)]{0,20}[）)])?给付(?=.+(?:保险金|津贴|年金|确诊金|慰问金))/u, '')
     .replace(/^\d+(?:\.\d+)?万?元/u, '')
@@ -283,7 +291,7 @@ function cleanLiability(value) {
 function liabilityLooksClean(value) {
   const text = trim(value);
   if (text.length < 3 || text.length > 34) return false;
-  if (!/(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金)$/u.test(text)) return false;
+  if (!/(?:保险金|津贴|年金|满期金|生存金|祝寿金|关爱金|教育金|婚嫁金|立业金|确诊金|慰问金|豁免保险费)$/u.test(text)) return false;
   if (/^(保险金|基本保险金|医疗保险金|特定医疗保险金|津贴保险金|年金)$/u.test(text)) return false;
   if (/^(每一保险期间累计给付|已达到保险单上载明的|外伤害|年度给付限额|年给付限额|累计给付限额|累计给付|扣除|已给付|已赔付)/u.test(text)) return false;
   if (/^(年免赔额给付比例|保险责任给付限额|\d+(?:\.\d+)?万保险责任给付限额)/u.test(text)) return false;
@@ -413,6 +421,47 @@ function formulaFor(liability, sectionText) {
   const text = exclusionIndex > 60 ? scopedText.slice(0, exclusionIndex) : scopedText;
   if (/(保险金给付限制|给付限制|已给付|已赔付|已领取)/u.test(scopedText.slice(0, 260)) && /降低为|降为|减少为/u.test(scopedText.slice(0, 360))) {
     return null;
+  }
+  if (/豁免/u.test(liability)) {
+    const compact = text.replace(/\s+/gu, '');
+    const positivePattern = /豁免[^。；]{0,180}(?:以后|之后|后续|剩余|余下|未交|应交|各期)[^。；]{0,140}(?:保险费|保费)|(?:以后|之后|后续|剩余|余下|未交|应交|各期)[^。；]{0,140}(?:保险费|保费)[^。；]{0,80}豁免/u;
+    const positiveWaiver = positivePattern.test(compact);
+    if (!positiveWaiver) return null;
+    const positiveIndex = compact.search(positivePattern);
+    const rejectedIndex = compact.search(/不(?:承担|予)[^。；]{0,30}豁免保险费/u);
+    if (rejectedIndex >= 0 && rejectedIndex < positiveIndex) return null;
+    const basis = /主合同/u.test(compact) && /附加/u.test(compact)
+      ? '主合同及符合约定附加合同后续应交保险费'
+      : /主合同/u.test(compact)
+        ? '主合同后续应交保险费'
+        : '后续应交保险费';
+    return {
+      value: null,
+      valueText: '',
+      unit: '公式',
+      basis,
+      formulaText: `${liability} = 豁免后续应交保险费`,
+    };
+  }
+  if (/综合医疗保险金/u.test(liability) && /账户余额/u.test(text) && /给付/u.test(text)) {
+    const compact = text.replace(/\s+/gu, '');
+    const accountBasis = /公共综合医疗保险金/u.test(liability) || /公共账户/u.test(compact.slice(0, 360))
+      ? '公共账户余额'
+      : /个人综合医疗保险金/u.test(liability) || /个人账户/u.test(compact.slice(0, 360))
+        ? '个人账户余额'
+        : '';
+    const accountBalanceLimitPattern = accountBasis === '个人账户余额'
+      ? /累计给付金额[^。；]{0,48}以[^。；]{0,80}个人账户[^。；]{0,16}账户余额[^。；]{0,12}为限/u
+      : /累计给付金额[^。；]{0,48}以[^。；]{0,80}公共账户[^。；]{0,16}账户余额[^。；]{0,12}为限/u;
+    if (accountBasis && accountBalanceLimitPattern.test(compact)) {
+      return {
+        value: null,
+        valueText: '',
+        unit: '公式',
+        basis: `${accountBasis}、约定给付标准`,
+        formulaText: `${liability} = min(约定给付金额, ${accountBasis})`,
+      };
+    }
   }
   if (/津贴|补贴|日额/u.test(liability)) {
     const dailyAllowanceTerms = '日住院津贴额|日住院津贴金额|每日津贴金额|每日给付金额|日津贴额|日津贴金额|津贴保险金日额|日重症监护住院津贴金额|意外住院日津贴金额|住院日额津贴|一般住院日额津贴|恶性肿瘤住院日额津贴|重症监护日额津贴';
@@ -742,13 +791,22 @@ function conditionFromText(text) {
   return trim(match?.[1] || '');
 }
 
-function loadProductsWithoutIndicators(db, { minKnowledgeId = 0, companies = [], includeExistingProducts = false } = {}) {
+function loadProductsWithoutIndicators(db, {
+  minKnowledgeId = 0,
+  companies = [],
+  includeExistingProducts = false,
+  knowledgeIds = [],
+} = {}) {
+  const targetIds = [...new Set((Array.isArray(knowledgeIds) ? knowledgeIds : [])
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item > 0))];
+  const idFilter = targetIds.length ? `AND id IN (${targetIds.map(() => '?').join(', ')})` : '';
   const rows = db.prepare(`
     SELECT id, company, product_name, url, payload
       FROM knowledge_records
-     WHERE product_name IS NOT NULL AND product_name <> '' AND id >= ?
+     WHERE product_name IS NOT NULL AND product_name <> '' AND id >= ? ${idFilter}
      ORDER BY company, product_name, id DESC
-  `).all(minKnowledgeId);
+  `).all(minKnowledgeId, ...targetIds);
   const indicatorKeys = new Set(db.prepare(`
     SELECT DISTINCT COALESCE(company, '') AS company, COALESCE(product_name, '') AS product_name
       FROM insurance_indicator_records
@@ -1023,10 +1081,11 @@ export function backfillKnowledgeResponsibilityIndicators({
   minKnowledgeId = 0,
   companies = [],
   includeExistingProducts = false,
+  knowledgeIds = [],
 } = {}) {
   const db = new DatabaseSync(dbPath);
   try {
-    const products = loadProductsWithoutIndicators(db, { minKnowledgeId, companies, includeExistingProducts });
+    const products = loadProductsWithoutIndicators(db, { minKnowledgeId, companies, includeExistingProducts, knowledgeIds });
     const now = new Date().toISOString();
     const indicators = products.flatMap((product) => buildIndicatorsForProduct(product, now));
     const changedProductKeys = uniqueStrings(indicators.flatMap((indicator) => deriveIndicatorProductKeys(indicator)));
@@ -1082,6 +1141,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     .split(',')
     .map((item) => trim(item))
     .filter(Boolean);
+  const knowledgeIds = parseIdList(readArg('knowledge-ids', ''));
   const result = backfillKnowledgeResponsibilityIndicators({
     dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
     write: hasFlag('write'),
@@ -1089,6 +1149,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     minKnowledgeId: Number(readArg('min-knowledge-id', 0)) || 0,
     companies,
     includeExistingProducts: hasFlag('include-existing-products'),
+    knowledgeIds,
   });
   console.log(JSON.stringify(result, null, 2));
 }

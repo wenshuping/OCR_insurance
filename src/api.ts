@@ -34,6 +34,7 @@ import type { FamilyPlanningProfile } from './family-report-engine.mjs';
 import type { OptionalResponsibilityGap as OptionalResponsibilityGapContract } from './api/contracts/admin';
 import type {
   FamilyMember as FamilyMemberContract,
+  FamilyMemberPolicyReference as FamilyMemberPolicyReferenceContract,
   FamilyProfile as FamilyProfileContract,
   FamilyRelationToCore as FamilyRelationToCoreContract,
   FamilyReportRecord as FamilyReportRecordContract,
@@ -106,6 +107,8 @@ export type FamilyRelationToCore =
   | 'child';
 
 export type FamilyMember = FamilyMemberContract;
+
+export type FamilyMemberPolicyReference = FamilyMemberPolicyReferenceContract;
 
 export type FamilyProfile = FamilyProfileContract;
 
@@ -196,6 +199,7 @@ export function updateFamilyMember(input: {
   birthday?: string;
   idNumberTail?: string;
   notes?: string;
+  syncBoundPolicies?: boolean;
 }) {
   return updateFamilyMemberContract(input);
 }

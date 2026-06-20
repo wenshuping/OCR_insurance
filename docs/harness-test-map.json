@@ -74,6 +74,19 @@
     ]
   },
   {
+    "name": "deepanalyze-indicator-review",
+    "patterns": [
+      "scripts/export-deepanalyze-indicator-review-samples.mjs",
+      "scripts/run-deepanalyze-indicator-review.mjs",
+      "tests/export-deepanalyze-indicator-review-samples.test.mjs",
+      "tests/run-deepanalyze-indicator-review.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/export-deepanalyze-indicator-review-samples.test.mjs",
+      "node --test tests/run-deepanalyze-indicator-review.test.mjs"
+    ]
+  },
+  {
     "name": "policy-ocr",
     "patterns": [
       "ocr-service/**",

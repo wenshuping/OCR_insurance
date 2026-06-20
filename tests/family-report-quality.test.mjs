@@ -5,6 +5,11 @@ import {
   generateFamilyReportQualityIssues,
   isFamilyReportQualityConfigured,
 } from '../server/family-report-quality.service.mjs';
+import {
+  buildFamilyReportPolicyEvidenceQueries,
+  collectFamilyReportLlmWikiEvidence,
+  generateFamilyReportQualityIssuesWithLlmWikiEvidence,
+} from '../server/family-report-rag-quality.service.mjs';
 
 test('family report quality service skips DeepSeek when api key is not configured', async () => {
   assert.equal(isFamilyReportQualityConfigured({}), false);
@@ -116,4 +121,135 @@ test('family report quality service requests structured DeepSeek issues with red
   assert.equal(corrections[0].policyId, 101);
   assert.equal(corrections[0].memberId, 10);
   assert.equal(corrections[0].confidence, 0.92);
+});
+
+test('family report RAG service builds policy evidence queries without touching DeepSeek', () => {
+  const queries = buildFamilyReportPolicyEvidenceQueries({
+    company: '新华保险',
+    name: '成长阳光少儿两全保险(A款)（分红型）',
+    plans: [{ name: '附加安康提前给付重大疾病保险' }],
+  });
+
+  assert.equal(queries.some((item) => item.dimension === 'life' && /身故|全残/u.test(item.query)), true);
+  assert.equal(queries.some((item) => item.dimension === 'wealth' && /生存金|满期金|领取/u.test(item.query)), true);
+  assert.equal(queries.some((item) => /附加安康提前给付重大疾病保险/u.test(item.query)), true);
+});
+
+test('family report RAG service collects LLM Wiki evidence as knowledge records', async () => {
+  const requests = [];
+  const result = await collectFamilyReportLlmWikiEvidence({
+    policies: [{
+      id: 101,
+      company: '新华保险',
+      name: '成长阳光少儿两全保险(A款)（分红型）',
+    }],
+    env: {
+      FAMILY_REPORT_RAG_PROJECT_ID: 'insurance-products',
+      FAMILY_REPORT_RAG_TOP_K: '2',
+      FAMILY_REPORT_RAG_MAX_QUERIES_PER_POLICY: '1',
+    },
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url: String(url), body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          results: [{
+            path: 'wiki/成长阳光少儿两全保险.md',
+            title: '成长阳光少儿两全保险',
+            snippet: '身故保险金按有效保险金额三倍给付。',
+            content: '身故保险金：18周岁后按有效保险金额的三倍给付。',
+            score: 123,
+          }],
+        }),
+      };
+    },
+  });
+
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].url, /\/api\/v1\/projects\/insurance-products\/search/u);
+  assert.equal(requests[0].body.includeContent, true);
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.policyEvidence.length, 1);
+  assert.equal(result.policyEvidence[0].evidence.length, 1);
+  assert.equal(result.knowledgeRecords.length, 1);
+  assert.match(result.knowledgeRecords[0].pageText, /LLM Wiki 检索证据/u);
+  assert.match(result.knowledgeRecords[0].pageText, /有效保险金额的三倍/u);
+});
+
+test('family report RAG DeepSeek method augments quality input with LLM Wiki evidence', async () => {
+  const deepseekBodies = [];
+  const result = await generateFamilyReportQualityIssuesWithLlmWikiEvidence({
+    family: { id: 1, familyName: '张三家庭' },
+    members: [
+      { id: 10, familyId: 1, name: '张三', relationLabel: '本人', relationToCore: 'self', role: 'core', status: 'active' },
+    ],
+    policies: [{
+      id: 101,
+      company: '新华保险',
+      name: '成长阳光少儿两全保险(A款)（分红型）',
+      insuredMemberId: 10,
+      insuredMemberName: '张三',
+      amount: 38760,
+    }],
+    report: {
+      summary: { memberCount: 1, policyCount: 1 },
+      criticalIllness: { members: [] },
+      accident: { members: [] },
+      radar: { members: [] },
+    },
+    env: {
+      DEEPSEEK_API_KEY: 'test-key',
+      DEEPSEEK_BASE_URL: 'https://deepseek.test',
+      FAMILY_REPORT_RAG_MAX_QUERIES_PER_POLICY: '1',
+    },
+    fetchImpl: async (url, options = {}) => {
+      const textUrl = String(url);
+      if (textUrl.includes('127.0.0.1:19828')) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            results: [{
+              path: 'wiki/成长阳光少儿两全保险.md',
+              title: '成长阳光少儿两全保险',
+              snippet: '身故保险金按有效保险金额三倍给付。',
+              content: '身故保险金：18周岁后按有效保险金额的三倍给付。',
+              score: 99,
+            }],
+          }),
+        };
+      }
+      deepseekBodies.push(JSON.parse(options.body));
+      return {
+        ok: true,
+        json: async () => ({
+          model: 'deepseek-v4-pro',
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                issues: [{
+                  severity: 'warning',
+                  category: 'amount_calculation',
+                  title: '寿险金额需复核',
+                  detail: 'LLM Wiki证据显示policy_1存在三倍给付条款。',
+                  suggestion: '后台复核寿险参考下限。',
+                  memberRef: 'member_1',
+                  policyRef: 'policy_1',
+                  dimension: 'life',
+                  confidence: 0.88,
+                }],
+                corrections: [],
+              }),
+            },
+          }],
+        }),
+      };
+    },
+  });
+
+  assert.equal(deepseekBodies.length, 1);
+  assert.match(JSON.stringify(deepseekBodies[0]), /LLM Wiki 检索证据/u);
+  assert.match(JSON.stringify(deepseekBodies[0]), /有效保险金额的三倍/u);
+  assert.equal(result.issues.length, 1);
+  assert.equal(result.issues[0].policyId, 101);
+  assert.equal(result.issues[0].source, 'deepseek');
 });

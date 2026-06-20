@@ -17,6 +17,9 @@ const DEFAULT_MAX_TOKENS = 16_000;
 const DEFAULT_DEEPSEEK_REASONING_EFFORT = 'high';
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const DISPLAY_REPLACEMENTS = Symbol('familySalesReviewDisplayReplacements');
+const ID_NUMBER_TOKEN_PATTERN = /\{\{id_number_\d+\}\}/gu;
+const CHINA_ID_NUMBER_PATTERN = /\b(?:[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3})\b/gu;
+const SENSITIVE_ID_KEY_PATTERN = /(?:idNumber|idCard|identityNumber|certificateNumber|certificateNo|certNumber|certNo|cardNumber|cardNo|证件号码|身份证号码)/iu;
 
 function trim(value) {
   return String(value || '').trim();
@@ -104,6 +107,58 @@ function applyTextReplacements(text = '', replacements = [], direction = 'tokenT
     result = result.split(from).join(to);
   }
   return result;
+}
+
+function createPrivacyTokenState() {
+  return { values: new Map(), nextIdNumberIndex: 1 };
+}
+
+function privacyTokenForValue(value, state = createPrivacyTokenState()) {
+  const text = trim(value);
+  if (!text) return '';
+  if (!state.values.has(text)) {
+    state.values.set(text, `{{id_number_${state.nextIdNumberIndex}}}`);
+    state.nextIdNumberIndex += 1;
+  }
+  return state.values.get(text);
+}
+
+function redactIdentityNumbersInText(value = '', state = createPrivacyTokenState()) {
+  return String(value || '').replace(CHINA_ID_NUMBER_PATTERN, (match) => privacyTokenForValue(match, state));
+}
+
+function isSensitiveIdentityKey(key = '') {
+  return SENSITIVE_ID_KEY_PATTERN.test(String(key || ''));
+}
+
+function privacySafeValue(value, key = '', state = createPrivacyTokenState()) {
+  if (Array.isArray(value)) {
+    return value.map((item) => privacySafeValue(item, '', state));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([itemKey, item]) => [itemKey, privacySafeValue(item, itemKey, state)]),
+    );
+  }
+  if (value === null || value === undefined) return value;
+  if (isSensitiveIdentityKey(key) && trim(value)) {
+    return privacyTokenForValue(value, state);
+  }
+  return typeof value === 'string' ? redactIdentityNumbersInText(value, state) : value;
+}
+
+function privacySafeInputJson(input = {}) {
+  const state = createPrivacyTokenState();
+  const safeInput = privacySafeValue(input, '', state);
+  return applyTextReplacements(
+    JSON.stringify(safeInput, null, 2),
+    displayReplacementsForInput(input),
+    'nameToToken',
+  );
+}
+
+function removeSensitiveTokens(text = '') {
+  return String(text || '').replace(ID_NUMBER_TOKEN_PATTERN, '身份证号已脱敏');
 }
 
 function displayReplacementsForInput(input = {}) {
@@ -854,11 +909,7 @@ export function buildFamilySalesReviewInput({
 }
 
 export function buildFamilySalesReviewMessages(input = {}) {
-  const inputJson = applyTextReplacements(
-    JSON.stringify(input, null, 2),
-    displayReplacementsForInput(input),
-    'nameToToken',
-  );
+  const inputJson = privacySafeInputJson(input);
   return [
     {
       role: 'system',
@@ -877,6 +928,7 @@ export function buildFamilySalesReviewMessages(input = {}) {
         '10. 销售方案必须展开成完整方案包，不能只写一句方案名称；每个方案必须说明适合对象、客户痛点、推荐方向、预算/保额口径、面谈话术、需补资料和下一步动作。',
         '11. family.notes 是整个家庭层面的备注，不属于某个具体成员；members[].notes 才是成员个人备注。两类备注都是客户工作、收入、喜好、沟通记录等销售线索；必须结合这些备注优化面谈重点，但备注没有写明的事实不能自行补充。',
         '12. family.topPillarMemberRef 明确表示家庭顶梁柱；涉及收入中断、重疾、定寿、家庭责任和优先面谈对象时必须优先参考该成员。',
+        '13. {{id_number_1}} 这类证件号码变量只表示本地已脱敏隐私，不得在报告正文中输出、解释或要求销售复述。',
       ].join('\n'),
     },
     {
@@ -962,10 +1014,12 @@ export async function generateFamilySalesReview({
     if (!upstreamContent) {
       throw withCode(new Error('FAMILY_SALES_REVIEW_EMPTY_RESPONSE'), 'FAMILY_SALES_REVIEW_EMPTY_RESPONSE', 502);
     }
-    const content = applyTextReplacements(
-      ensureFamilySalesReviewSalesEnablement(upstreamContent, input),
-      displayReplacementsForInput(input),
-      'tokenToName',
+    const content = removeSensitiveTokens(
+      applyTextReplacements(
+        ensureFamilySalesReviewSalesEnablement(upstreamContent, input),
+        displayReplacementsForInput(input),
+        'tokenToName',
+      ),
     );
     return {
       content,

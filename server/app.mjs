@@ -16,7 +16,6 @@ import { buildFamilyReport } from '../src/family-report-engine.mjs';
 import {
   allocateId,
   assertValidMobile,
-  attachPoliciesCoverageIndicators,
   attachPolicyCoverageIndicators,
   buildOptionalResponsibilityReview,
   buildPolicyFromScan,
@@ -42,7 +41,11 @@ import {
   publicUser,
 } from './policy-ocr.domain.mjs';
 import { scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
-import { buildPolicyOcrVisionContext, enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
+import {
+  buildPolicyOcrVisionContext,
+  enhancePolicyScanWithOcrMapping,
+  repairPolicyScanDataFromOcrText,
+} from './policy-ocr-mapping.mjs';
 import {
   buildLocalKnowledgeResponsibilityAnalysis,
   queryPolicyAndPlanResponsibilities,
@@ -1096,21 +1099,50 @@ function buildAdminOverview(state) {
     existing.annualPremium += Number(policy.firstPremium || 0);
     insuredMap.set(key, existing);
   }
+  const optionalResponsibilityGaps = buildOptionalResponsibilityGaps({
+    optionalResponsibilityRecords: state.optionalResponsibilityRecords,
+    policies: policyRows,
+  });
+  const previewOptionalResponsibilityGaps = optionalResponsibilityGaps.slice(0, 12).map((gap) => ({
+    ...gap,
+    sourceExcerpt: gap.sourceExcerpt ? String(gap.sourceExcerpt).slice(0, 240) : '',
+  }));
+  const policySummaries = policyRows
+    .map((policy) => attachPolicyFamilyDisplay(policy, state))
+    .map((policy) => ({
+      id: policy.id,
+      userId: policy.userId ?? null,
+      guestId: policy.guestId || '',
+      userMobile: policy.userMobile || '',
+      familyId: policy.familyId ?? null,
+      familyName: policy.familyName || '',
+      company: policy.company || '',
+      name: policy.name || '',
+      applicant: policy.applicant || '',
+      applicantRelation: policy.applicantRelation || '',
+      insured: policy.insured || '',
+      insuredRelation: policy.insuredRelation || '',
+      date: policy.date || '',
+      paymentPeriod: policy.paymentPeriod || '',
+      coveragePeriod: policy.coveragePeriod || '',
+      amount: Number(policy.amount || 0),
+      firstPremium: Number(policy.firstPremium || 0),
+      responsibilities: (Array.isArray(policy.responsibilities) ? policy.responsibilities : [])
+        .map((row) => ({ coverageType: row.coverageType || '' })),
+      report: policy.report || '',
+      reportStatus: policy.reportStatus || '',
+      reportError: policy.reportError || '',
+      sources: policy.sources || [],
+      createdAt: policy.createdAt,
+      updatedAt: policy.updatedAt,
+    }));
 
   return {
     users,
     insureds: [...insuredMap.values()].sort((a, b) => b.policyCount - a.policyCount || a.insured.localeCompare(b.insured)),
-    policies: attachPoliciesCoverageIndicators(
-      policyRows.map((policy) => attachPolicyFamilyDisplay(policy, state)),
-      state.insuranceIndicatorRecords,
-      state.knowledgeRecords,
-      state.optionalResponsibilityRecords,
-    ),
+    policies: policySummaries,
     sourceRecords,
-    optionalResponsibilityGaps: buildOptionalResponsibilityGaps({
-      optionalResponsibilityRecords: state.optionalResponsibilityRecords,
-      policies: policyRows,
-    }),
+    optionalResponsibilityGaps: previewOptionalResponsibilityGaps,
     summary: {
       userCount: users.length,
       familyCount: activeFamilies.length,
@@ -1118,10 +1150,7 @@ function buildAdminOverview(state) {
       policyCount: policyRows.length,
       sourceRecordCount: sourceRecords.length,
       knowledgeRecordCount: Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0,
-      optionalResponsibilityGapCount: buildOptionalResponsibilityGaps({
-        optionalResponsibilityRecords: state.optionalResponsibilityRecords,
-        policies: policyRows,
-      }).length,
+      optionalResponsibilityGapCount: optionalResponsibilityGaps.length,
       totalCoverage: policyRows.reduce((sum, policy) => sum + Number(policy.amount || 0), 0),
       annualPremium: policyRows.reduce((sum, policy) => sum + Number(policy.firstPremium || 0), 0),
     },
@@ -1435,7 +1464,8 @@ async function recognizePolicyInput({ scanner, body, state, applyManualData = tr
     ...scan,
     ocrText: String(scan?.ocrText || body?.ocrText || '').trim(),
   };
-  const mappedScan = safelyEnhancePolicyScanWithOcrMapping(scanWithText, state);
+  const repairedScan = repairPolicyScanDataFromOcrText(scanWithText);
+  const mappedScan = safelyEnhancePolicyScanWithOcrMapping(repairedScan, state);
   return applyManualData ? mergeManualPolicyDataIntoScan(mappedScan, body) : mappedScan;
 }
 
@@ -1446,7 +1476,8 @@ function normalizeProvidedScan(body, state) {
     ...scan,
     ocrText: String(scan.ocrText || body?.ocrText || '').trim(),
   };
-  const mappedScan = safelyEnhancePolicyScanWithOcrMapping(scanWithText, state);
+  const repairedScan = repairPolicyScanDataFromOcrText(scanWithText);
+  const mappedScan = safelyEnhancePolicyScanWithOcrMapping(repairedScan, state);
   return mergeManualPolicyDataIntoScan({
     ...mappedScan,
     ocrText: String(mappedScan.ocrText || '').trim(),
@@ -2092,7 +2123,6 @@ export function createPolicyOcrApp(options = {}) {
     clearGuestPendingScans,
     createSession,
     publicUser,
-    attachPoliciesCoverageIndicators,
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
     mergePolicyDerivedResult,
@@ -2150,6 +2180,7 @@ export function createPolicyOcrApp(options = {}) {
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
     buildAdminOverview,
+    buildOptionalResponsibilityGaps,
     buildAdminReportIssueDetail,
     buildAdminReportIssueSummaries,
     applyFamilyReportPolicyCorrections,

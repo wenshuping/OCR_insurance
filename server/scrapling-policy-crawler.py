@@ -6741,6 +6741,7 @@ def crawl_haibao_life_material_record(task: dict[str, str]) -> dict[str, Any] | 
     material_url = trim(task.get("url"))
     if not material_url:
         return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
     status, content_type, data = fetch_haibao_life_pdf(
         material_url,
         referer=trim(task.get("sourcePage")) or HAIBAO_LIFE_OFFICIAL_BASE_URL,
@@ -6770,6 +6771,7 @@ def crawl_haibao_life_material_record(task: dict[str, str]) -> dict[str, Any] | 
         "pages": extracted.get("pages", 0),
         "bytes": len(data),
         "contentType": content_type,
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
     }
 
 
@@ -6794,6 +6796,7 @@ def crawl_haibao_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     status_filter = {item.strip() for item in re.split(r"[,，\s]+", status_value) if item.strip()} or {"all"}
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -6815,6 +6818,7 @@ def crawl_haibao_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                     if trim(task.get("productName")) != product_name or not material_url or material_url in seen_urls:
                         continue
                     seen_urls.add(material_url)
+                    task["pdfArchiveDir"] = pdf_archive_dir
                     tasks.append(task)
             if max_products and len(products) >= max_products:
                 break
@@ -6843,6 +6847,8 @@ def crawl_haibao_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "products": products,
         "materialTaskCount": len(tasks),
         "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
     }
 
 
@@ -7291,6 +7297,7 @@ def crawl_huahui_life_material_record(task: dict[str, str]) -> dict[str, Any] | 
     material_url = trim(task.get("url"))
     if not material_url or not huahui_life_is_official_url(material_url):
         return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
     pdf_status, content_type, data = fetch_binary_direct(
         material_url,
         referer=trim(task.get("sourcePage")) or HUAHUI_LIFE_PRODUCT_TERMS_URL,
@@ -7334,6 +7341,7 @@ def crawl_huahui_life_material_record(task: dict[str, str]) -> dict[str, Any] | 
         "extractionMethod": extraction_method,
         "bytes": len(data),
         "contentType": content_type,
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
     }
 
 
@@ -7369,6 +7377,7 @@ def crawl_huahui_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
     skip_urls = set(str(item) for item in payload.get("skipUrls", []) if item)
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
 
     terms_status, terms_html = fetch_html_direct(HUAHUI_LIFE_PRODUCT_TERMS_URL, referer=HUAHUI_LIFE_OFFICIAL_BASE_URL)
     products: list[dict[str, Any]] = []
@@ -7407,7 +7416,7 @@ def crawl_huahui_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     products = [product for product in products if product["salesStatus"] in status_filter]
     product_names = {product["productName"] for product in products}
     tasks = [
-        task
+        {**task, "pdfArchiveDir": pdf_archive_dir}
         for task in tasks
         if task["salesStatus"] in status_filter and task["productName"] in product_names and trim(task.get("url")) not in skip_urls
     ]
@@ -7435,6 +7444,8 @@ def crawl_huahui_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "materialTaskCount": len(tasks),
         "records": records,
         "qualitySplit": quality_split,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
     }
 
 
@@ -15015,6 +15026,7 @@ def aegon_thtf_records_from_archive(task: dict[str, str], data: bytes) -> list[d
     if len(data) > MAX_ZIP_BYTES:
         return []
     archive_url = trim(task.get("url"))
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
     suffix = aegon_thtf_archive_suffix(archive_url, data)
     if suffix not in {".zip", ".rar"}:
         return []
@@ -15068,6 +15080,7 @@ def aegon_thtf_records_from_archive(task: dict[str, str], data: bytes) -> list[d
                 product_name = trim(task.get("productName"))
                 label = material["label"]
                 basename = material["basename"]
+                record_url = f"{archive_url}#entry={quote(rel_path, safe='')}"
                 records.append(
                     {
                         "company": trim(task.get("company")) or "同方全球人寿",
@@ -15075,7 +15088,7 @@ def aegon_thtf_records_from_archive(task: dict[str, str], data: bytes) -> list[d
                         "productType": trim(task.get("productType")),
                         "salesStatus": trim(task.get("salesStatus")),
                         "title": re.sub(r"\.pdf$", "", basename, flags=re.I),
-                        "url": f"{archive_url}#entry={quote(rel_path, safe='')}",
+                        "url": record_url,
                         "snippet": f"同方全球官网产品备案材料包内{label}，已截取保险责任正文段。",
                         "pageText": page_text,
                         "sourceType": "archive_pdf",
@@ -15089,6 +15102,7 @@ def aegon_thtf_records_from_archive(task: dict[str, str], data: bytes) -> list[d
                         "sourcePage": trim(task.get("sourcePage")),
                         "sourceList": trim(task.get("sourceList")),
                         "segment": trim(task.get("segment")),
+                        **archive_pdf_bytes(pdf_bytes, pdf_archive_dir, record_url),
                     }
                 )
     return records
@@ -15173,6 +15187,7 @@ def crawl_aegon_thtf_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     offset = max(0, int(payload.get("offset") or payload.get("startOffset") or 0))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
     status, html = fetch_html_direct(AEGON_THTF_PRODUCT_INFO_URL, referer=AEGON_THTF_OFFICIAL_BASE_URL)
     if status < 200 or status >= 300 or not html:
         try:
@@ -15208,6 +15223,7 @@ def crawl_aegon_thtf_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                     "url": product["archiveUrl"],
                     "sourcePage": product["sourcePage"],
                     "sourceList": product["sourceList"],
+                    "pdfArchiveDir": pdf_archive_dir,
                 }
             )
         pages.append(
@@ -15253,6 +15269,8 @@ def crawl_aegon_thtf_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "products": products,
         "materialTaskCount": len(tasks),
         "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
     }
 
 
@@ -16680,6 +16698,7 @@ def crawl_generali_china_life_detail_tasks(products: list[dict[str, str]], max_w
 
 def crawl_generali_china_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
     material_url = trim(task.get("url"))
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
     pdf_status, data = fetch_bytes_direct(material_url, referer=trim(task.get("detailUrl")) or GENERALI_CHINA_LIFE_OFFICIAL_BASE_URL)
     if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
         return None
@@ -16708,6 +16727,7 @@ def crawl_generali_china_life_material_record(task: dict[str, str]) -> dict[str,
         "enabledAt": trim(task.get("enabledAt")),
         "stoppedAt": trim(task.get("stoppedAt")),
         "disclosedAt": trim(task.get("disclosedAt")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
     }
 
 
@@ -16730,13 +16750,16 @@ def crawl_generali_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     company = trim(payload.get("company")) or "中意人寿"
     status_filter = generali_china_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     segment_filter = generali_china_life_segment_filter(trim(payload.get("segment") or payload.get("productSegment")))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_pages = max(0, int(payload.get("maxPages") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
     max_detail_workers = max(1, int(payload.get("maxDetailWorkers") or payload.get("detailConcurrency") or max_workers))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
     pages: list[dict[str, Any]] = []
     products: list[dict[str, str]] = []
     seen_products: set[str] = set()
+    skipped_products = 0
 
     for profile in GENERALI_CHINA_LIFE_PRODUCT_PAGES:
         if profile["salesStatus"] not in status_filter or profile["segment"] not in segment_filter:
@@ -16755,6 +16778,9 @@ def crawl_generali_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 if product_key in seen_products:
                     continue
                 seen_products.add(product_key)
+                if skipped_products < offset:
+                    skipped_products += 1
+                    continue
                 products.append({**product, "company": company})
             pages.append(page_result["page"])
             if max_products and len(products) >= max_products:
@@ -16771,6 +16797,7 @@ def crawl_generali_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
             if not material_url or material_url in seen_urls:
                 continue
             seen_urls.add(material_url)
+            task["pdfArchiveDir"] = pdf_archive_dir
             tasks.append(task)
 
     records = crawl_generali_china_life_material_records(tasks, max_workers=max_workers)
@@ -16796,6 +16823,7 @@ def crawl_generali_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "officialDomain": GENERALI_CHINA_LIFE_OFFICIAL_DOMAIN,
         "saleStatus": sorted(status_filter),
         "segment": sorted(segment_filter),
+        "offset": offset,
         "maxProducts": max_products,
         "maxPages": max_pages,
         "maxWorkers": max_workers,
@@ -16806,6 +16834,8 @@ def crawl_generali_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "failedDetailCount": len([item for item in detail_results if int(item.get("status") or 0) < 200 or int(item.get("status") or 0) >= 300]),
         "materialTaskCount": len(tasks),
         "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
     }
 
 
@@ -19029,6 +19059,7 @@ def crawl_bohai_life_material_record(task: dict[str, str]) -> dict[str, Any] | N
     material_url = trim(task.get("url"))
     if not material_url:
         return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
     hostname = urlsplit(material_url).hostname or ""
     if not hostname.lower().endswith(BOHAI_LIFE_OFFICIAL_DOMAIN):
         return None
@@ -19057,6 +19088,7 @@ def crawl_bohai_life_material_record(task: dict[str, str]) -> dict[str, Any] | N
         "parser": "scrapling_bohai_life_product_info",
         "pages": extracted.get("pages", 0),
         "bytes": len(data),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
     }
 
 
@@ -19064,6 +19096,7 @@ def crawl_bohai_life_archive_material_records(task: dict[str, str]) -> list[dict
     archive_url = trim(task.get("url"))
     if not archive_url or not bohai_life_is_archive_url(archive_url):
         return []
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
     hostname = urlsplit(archive_url).hostname or ""
     if not hostname.lower().endswith(BOHAI_LIFE_OFFICIAL_DOMAIN):
         return []
@@ -19080,11 +19113,11 @@ def crawl_bohai_life_archive_material_records(task: dict[str, str]) -> list[dict
         label = bohai_life_material_label("", entry, entry)
         if not label:
             continue
+        entry_url = bohai_life_archive_entry_url(archive_url, entry)
         extracted = extract_pdf_text_with_system_python(pdf_bytes)
         page_text = focused_responsibility_excerpt(extracted.get("text", ""))
         if not page_text or "保险责任" not in page_text:
             continue
-        entry_url = bohai_life_archive_entry_url(archive_url, entry)
         records.append(
             {
                 "company": trim(task.get("company")) or "渤海人寿",
@@ -19104,6 +19137,7 @@ def crawl_bohai_life_archive_material_records(task: dict[str, str]) -> list[dict
                 "bytes": len(pdf_bytes),
                 "archiveUrl": archive_url,
                 "archiveEntry": entry,
+                **archive_pdf_bytes(pdf_bytes, pdf_archive_dir, entry_url),
             }
         )
     return records
@@ -19138,6 +19172,7 @@ def crawl_bohai_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     status_filter = bohai_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -19175,6 +19210,7 @@ def crawl_bohai_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
             if not material_url or material_url in seen_task_urls:
                 continue
             seen_task_urls.add(material_url)
+            task["pdfArchiveDir"] = pdf_archive_dir
             tasks.append(task)
             page_task_count += 1
         page_meta["productCount"] = len([product for product in page_products if not status_filter or trim(product.get("salesStatus")) in status_filter])
@@ -19208,6 +19244,8 @@ def crawl_bohai_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "products": products,
         "materialTaskCount": len(tasks),
         "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
     }
 
 

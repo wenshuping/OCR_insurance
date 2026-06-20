@@ -313,6 +313,24 @@ const NEW_CHINA_INLINE_MAIN_RIDER_LINES = [
   '特别约定:',
 ];
 
+const NEW_CHINA_INLINE_MEDICAL_RIDER_LINES = [
+  'NCI新华保险',
+  '币值单位:人民币元保险合同号:886622470947',
+  '投保人:翟卿被保险人:翟宸彬',
+  '合同成立日期:2013年12月31日合同生效日期:2014年01月01日',
+  '险种名称:祥瑞一生终身寿险（分红型）',
+  '基本保险金额:100000.00元保险期间:2014年01月01日零时起至被保险人终身',
+  '保险费:每年1580.00元交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日',
+  '险种名称:住院费用医疗保险（2007）',
+  '保险金额:10000.00元保险期间:2014年01月01日零时起至2014年12月31日二十四时止',
+  '保险费:330.00元交费方式:一次交清',
+  '险种名称:附加祥瑞提前给付重大疾病保险可选责任的约定:癌症特别关爱金',
+  '保险金额:100000.00元保险期间:2014年01月01日零时起至被保险人终身',
+  '保险费:每年770.00元交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日',
+  '保险费合计:（大写）贰仟陆佰捌拾元整¥2680.00',
+  '特别约定:',
+];
+
 const NEW_CHINA_RIDER_VALUE_FIRST_LINES = [
   'NCI 新华保险',
   '保险单',
@@ -556,6 +574,8 @@ test('policy field schema includes OCR parser aliases used by field matching', (
   assert.ok(getPolicyFieldAliases('insured').includes('披保险人'));
   assert.ok(getPolicyFieldAliases('effectiveDate').includes('投保日期'));
   assert.ok(getPolicyFieldAliases('firstPremium').includes('首期保险费合计'));
+  assert.ok(getPolicyFieldAliases('amount').includes('基本保险金额/份数/档次'));
+  assert.ok(getPolicyFieldAliases('firstPremium').includes('应交保费'));
 });
 
 test('amount normalization rejects identifier and contact-number noise', () => {
@@ -578,6 +598,12 @@ test('field matcher scores OCR lines into canonical insurance fields', () => {
   assert.equal(result.fields.paymentPeriod, '10年');
   assert.equal(result.fields.amount, '24441');
   assert.equal(result.fields.firstPremium, '3000');
+  assert.equal(result.fieldConfidence.name, 'matcher-high');
+  assert.equal(result.fieldConfidence.amount, 'matcher');
+  assert.equal(result.fieldEvidence.name.source, 'match-policy-ocr-fields');
+  assert.equal(result.fieldEvidence.name.relation, 'benefit-table-combined');
+  assert.match(result.fieldEvidence.amount.rowText, /24441\.00元/u);
+  assert.match(result.fieldEvidence.firstPremium.rowText, /每年3000\.00元/u);
   assert.ok(result.candidates.name.some((candidate) => candidate.value === '心I新华保险' && candidate.rejected));
 });
 
@@ -648,6 +674,146 @@ test('field matcher extracts main plan and linked universal account from policy 
         paymentMode: '趸交',
         paymentPeriod: '趸交',
         premium: '10',
+      },
+    ],
+  );
+});
+
+test('field matcher maps app policy summary columns by meaning', () => {
+  const plans = extractPolicyPlansFromLines([
+    '保单详情',
+    '保单生效日期 2017-09-22',
+    '险种信息',
+    '险种名称标准保费基本保额交费期间保险期间',
+    '915 附加随意领年金保险（万能型） 0.00 元 0.00 元一次交清终身',
+    '694 V2.5 美利金生终身年金保险（分红型） 40,320.00 元 30000.00 元 10 年终身',
+    '847 附加住院安心医疗保险（费率可调） 263.00 元 10000.00 元一次交清 1 年',
+    '投保人详细信息',
+  ], {
+    company: '新华保险',
+  });
+
+  assert.deepEqual(
+    plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      coveragePeriod: plan.coveragePeriod,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'linked_account',
+        name: '附加随意领年金保险（万能型）',
+        amount: '0',
+        coveragePeriod: '终身',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '0',
+      },
+      {
+        role: 'main',
+        name: '美利金生终身年金保险（分红型）',
+        amount: '30000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '10年交',
+        premium: '40320',
+      },
+      {
+        role: 'rider',
+        name: '附加住院安心医疗保险（费率可调）',
+        amount: '10000',
+        coveragePeriod: '1年',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '263',
+      },
+    ],
+  );
+});
+
+test('field matcher maps app policy summary rows split across OCR lines', () => {
+  const plans = extractPolicyPlansFromLines([
+    '保单详情',
+    '保单生效日期 2017-09-22',
+    '险种信息',
+    '险种名称',
+    '标准保费',
+    '基本保额',
+    '交费期间',
+    '保险期间',
+    '915 附加随意',
+    '领年金保险',
+    '（万能型）',
+    '0.00元',
+    '0.00元',
+    '一次交',
+    '清',
+    '终身',
+    '694 V2.5 美利',
+    '金生终身年金',
+    '保险（分红',
+    '型）',
+    '40,32',
+    '0.00元',
+    '3000',
+    '0.00元',
+    '10年',
+    '终身',
+    '847 附加住院',
+    '安心医疗保险',
+    '（费率可调）',
+    '263.0',
+    '0元',
+    '10000.',
+    '00元',
+    '一次交清',
+    '1年',
+    '投保人详细信息',
+  ], {
+    company: '新华保险',
+  });
+
+  assert.deepEqual(
+    plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      coveragePeriod: plan.coveragePeriod,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'linked_account',
+        name: '附加随意领年金保险（万能型）',
+        amount: '0',
+        coveragePeriod: '终身',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '0',
+      },
+      {
+        role: 'main',
+        name: '美利金生终身年金保险（分红型）',
+        amount: '30000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '10年交',
+        premium: '40320',
+      },
+      {
+        role: 'rider',
+        name: '附加住院安心医疗保险（费率可调）',
+        amount: '10000',
+        coveragePeriod: '1年',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '263',
       },
     ],
   );
@@ -836,6 +1002,53 @@ test('field matcher keeps inline main plan before rider and skips optional respo
     ],
   );
   assert.ok(!plans.some((plan) => /可选责任|基本责任/u.test(plan.name || '')));
+});
+
+test('field matcher splits inline labeled rider name before parenthetical year and mixed amount period line', () => {
+  const plans = extractPolicyPlansFromLines(NEW_CHINA_INLINE_MEDICAL_RIDER_LINES, {
+    company: '新华保险',
+  });
+
+  assert.deepEqual(
+    plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      coveragePeriod: plan.coveragePeriod,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'main',
+        name: '祥瑞一生终身寿险（分红型）',
+        amount: '100000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '20年交',
+        premium: '1580',
+      },
+      {
+        role: 'rider',
+        name: '住院费用医疗保险（2007）',
+        amount: '10000',
+        coveragePeriod: '至2014年12月31日',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '330',
+      },
+      {
+        role: 'rider',
+        name: '附加祥瑞提前给付重大疾病保险可选责任的约定:癌症特别关爱金',
+        amount: '100000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '20年交',
+        premium: '770',
+      },
+    ],
+  );
 });
 
 test('field matcher reconstructs value-first benefit-table riders from real image OCR order', () => {

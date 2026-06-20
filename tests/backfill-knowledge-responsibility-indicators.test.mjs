@@ -363,6 +363,27 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       pageText: '第二条 保险责任 本附加合同的保险责任包括恶性肿瘤--重度院外特定药品费用医疗保险金和恶性肿瘤--重度特定器械耗材费用医疗保险金。（一）恶性肿瘤--重度院外特定药品费用医疗保险金 在本附加合同保险期间内，被保险人初次确诊恶性肿瘤--重度，对治疗实际发生的、必需且合理的院外特定药品费用，保险人在扣除合同约定的免赔额后按照本附加合同约定的给付比例给付恶性肿瘤--重度院外特定药品费用医疗保险金。（二）恶性肿瘤--重度特定器械耗材费用医疗保险金 在本附加合同保险期间内，被保险人初次确诊恶性肿瘤--重度，对治疗实际发生的、必需且合理的特定器械耗材费用，保险人在扣除合同约定的免赔额后按照本附加合同约定的给付比例给付恶性肿瘤--重度特定器械耗材费用医疗保险金。第四条 补偿原则 本附加合同适用医疗费用补偿原则，保险人仅对实际发生的合理费用扣除其已获得医疗费用补偿后的余额按本附加合同的约定进行赔付。',
     });
     insertKnowledge(db, {
+      id: 140,
+      company: '测试人寿',
+      productName: '测试投保人豁免保险费定期寿险',
+      productType: '定期寿险',
+      pageText: '保险责任 在本附加合同有效期内，我们承担如下保险责任：身故 或全残 豁免 保 险费 (1) 被保险人因意外伤害事故导致身故或全残，或者等待期后因疾病导致身故或全残，我们豁免被保险人身故或全残之日以后的主合同及保险期间超过1年的附加合同的各期保险费。等待期内因疾病身故或全残，我们不承担豁免保险费责任，无息退还本附加合同已交保险费，本附加合同终止。',
+    });
+    insertKnowledge(db, {
+      id: 141,
+      company: '测试人寿',
+      productName: '测试等待期退费不污染豁免保险',
+      productType: '定期寿险',
+      pageText: '保险责任 等待期内发生疾病，我们不承担豁免保险费责任，无息退还已交保险费，本合同终止。',
+    });
+    insertKnowledge(db, {
+      id: 142,
+      company: '测试人寿',
+      productName: '测试综合团体医疗保险',
+      productType: '医疗险',
+      pageText: '保险责任 (一)个人综合医疗保险金 被保险人因遭受意外伤害事故或疾病，本公司按与投保人的约定从该被保险人的个人账户中给付个人综合医疗保险金。个人综合医疗保险金的累计给付金额以该被保险人个人账户的账户余额为限。(二)公共综合医疗保险金 被保险人因遭受意外伤害事故或疾病，投保人与本公司有约定的，本公司按约定从公共账户中给付公共综合医疗保险金。公共综合医疗保险金的累计给付金额以公共账户的账户余额为限。投保人与本公司约定的个人综合医疗保险金和公共综合医疗保险金可以根据被保险人实际发生的医疗费用、住院日数、手术及所患疾病等因素确定，并可对给付比例、限额等事项进行约定。',
+    });
+    insertKnowledge(db, {
       id: 106,
       company: '测试人寿',
       productName: '测试后续年金保险',
@@ -416,10 +437,10 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
   try {
     const dryRun = backfillKnowledgeResponsibilityIndicators({ dbPath, minKnowledgeId: 100, sampleLimit: 10 });
     assert.equal(dryRun.dryRun, true);
-    assert.equal(dryRun.candidateProducts, 39);
-    assert.equal(dryRun.productsWithIndicators, 34);
-    assert.equal(dryRun.indicatorUpserts, 51);
-    assert.equal(dryRun.skippedProducts, 5);
+    assert.equal(dryRun.candidateProducts, 42);
+    assert.equal(dryRun.productsWithIndicators, 36);
+    assert.equal(dryRun.indicatorUpserts, 54);
+    assert.equal(dryRun.skippedProducts, 6);
 
     const includeExisting = backfillKnowledgeResponsibilityIndicators({
       dbPath,
@@ -427,12 +448,36 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       includeExistingProducts: true,
       sampleLimit: 10,
     });
-    assert.equal(includeExisting.candidateProducts, 40);
-    assert.equal(includeExisting.productsWithIndicators, 35);
-    assert.equal(includeExisting.indicatorUpserts, 52);
+    assert.equal(includeExisting.candidateProducts, 43);
+    assert.equal(includeExisting.productsWithIndicators, 37);
+    assert.equal(includeExisting.indicatorUpserts, 55);
+
+    const targeted = backfillKnowledgeResponsibilityIndicators({
+      dbPath,
+      knowledgeIds: [140],
+      sampleLimit: 10,
+    });
+    assert.equal(targeted.candidateProducts, 1);
+    assert.equal(targeted.productsWithIndicators, 1);
+    assert.equal(targeted.indicatorUpserts, 1);
+    assert.equal(targeted.samples[0].liability, '身故或全残豁免保险费');
+    assert.equal(targeted.samples[0].coverageType, '保费豁免');
+
+    const targetedAccount = backfillKnowledgeResponsibilityIndicators({
+      dbPath,
+      knowledgeIds: [142],
+      sampleLimit: 10,
+    });
+    assert.equal(targetedAccount.candidateProducts, 1);
+    assert.equal(targetedAccount.productsWithIndicators, 1);
+    assert.equal(targetedAccount.indicatorUpserts, 2);
+    assert.deepEqual(
+      targetedAccount.samples.map((item) => item.liability).sort(),
+      ['个人综合医疗保险金', '公共综合医疗保险金'],
+    );
 
     const write = backfillKnowledgeResponsibilityIndicators({ dbPath, write: true, minKnowledgeId: 100, sampleLimit: 10 });
-    assert.equal(write.indicatorUpserts, 51);
+    assert.equal(write.indicatorUpserts, 54);
 
     const readDb = new DatabaseSync(dbPath, { readOnly: true });
     try {
@@ -442,7 +487,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
          WHERE id LIKE 'ind_knowledge_auto_%'
          ORDER BY liability
       `).all();
-      assert.equal(rows.length, 51);
+      assert.equal(rows.length, 54);
       assert.ok(rows.some((row) => row.liability === '身故保险金'));
       assert.ok(rows.some((row) => row.liability === '住院医疗保险金'));
       assert.ok(rows.some((row) => row.liability === '后续年金'));
@@ -472,6 +517,9 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.ok(rows.some((row) => row.liability === '恶性肿瘤先进疗法医疗保险金'));
       assert.ok(rows.some((row) => row.liability === '恶性肿瘤--重度院外特定药品费用医疗保险金'));
       assert.ok(rows.some((row) => row.liability === '恶性肿瘤--重度特定器械耗材费用医疗保险金'));
+      assert.ok(rows.some((row) => row.liability === '身故或全残豁免保险费'));
+      assert.ok(rows.some((row) => row.liability === '个人综合医疗保险金'));
+      assert.ok(rows.some((row) => row.liability === '公共综合医疗保险金'));
       assert.ok(!rows.some((row) => row.liability === '其中一项保险金'));
       assert.ok(!rows.some((row) => row.liability === '后该种轻症疾病保险金'));
       assert.ok(!rows.some((row) => row.liability === '期内应给付的养老保险金'));
@@ -515,6 +563,10 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.ok(!rows.some((row) => row.liability === '每一保险期间累计给付的境内医疗保险金'));
       assert.ok(!rows.some((row) => row.liability === '已达到保险单上载明的住院医疗保险金'));
       assert.ok(!rows.some((row) => row.liability === '外伤害身故保险金'));
+      assert.ok(!rows.some((row) => (
+        row.liability === '豁免保险费'
+        && JSON.parse(row.payload).sourceRecordId === '141'
+      )));
       assert.equal(rows.find((row) => row.liability === '身故保险金').coverage_type, '身故保障');
       assert.equal(rows.find((row) => row.liability === '后续年金').coverage_type, '现金流');
       assert.equal(rows.find((row) => row.liability === '住院津贴保险金').coverage_type, '津贴保障');
@@ -628,6 +680,30 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
         && JSON.parse(row.payload).sourceRecordId === '139'
       )).payload);
       assert.equal(devicePayload.formulaText, '恶性肿瘤--重度特定器械耗材费用医疗保险金 = (实际合理医疗费用 - 已获补偿/给付 - 免赔额) × 约定给付比例');
+      const waiverPayload = JSON.parse(rows.find((row) => (
+        row.liability === '身故或全残豁免保险费'
+        && JSON.parse(row.payload).sourceRecordId === '140'
+      )).payload);
+      assert.equal(waiverPayload.coverageType, '保费豁免');
+      assert.equal(waiverPayload.formulaText, '身故或全残豁免保险费 = 豁免后续应交保险费');
+      assert.equal(waiverPayload.unit, '公式');
+      assert.equal(waiverPayload.basis, '主合同及符合约定附加合同后续应交保险费');
+      const personalAccountPayload = JSON.parse(rows.find((row) => (
+        row.liability === '个人综合医疗保险金'
+        && JSON.parse(row.payload).sourceRecordId === '142'
+      )).payload);
+      assert.equal(personalAccountPayload.coverageType, '医疗保障');
+      assert.equal(personalAccountPayload.formulaText, '个人综合医疗保险金 = min(约定给付金额, 个人账户余额)');
+      assert.equal(personalAccountPayload.unit, '公式');
+      assert.equal(personalAccountPayload.basis, '个人账户余额、约定给付标准');
+      const publicAccountPayload = JSON.parse(rows.find((row) => (
+        row.liability === '公共综合医疗保险金'
+        && JSON.parse(row.payload).sourceRecordId === '142'
+      )).payload);
+      assert.equal(publicAccountPayload.coverageType, '医疗保障');
+      assert.equal(publicAccountPayload.formulaText, '公共综合医疗保险金 = min(约定给付金额, 公共账户余额)');
+      assert.equal(publicAccountPayload.unit, '公式');
+      assert.equal(publicAccountPayload.basis, '公共账户余额、约定给付标准');
       const plannedAnnuityPayload = JSON.parse(rows.find((row) => (
         row.liability === '养老年金'
         && JSON.parse(row.payload).sourceRecordId === '136'
@@ -704,7 +780,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.equal(icuDailyPayload.formulaText, '重症监护日额津贴保险金 = 给付天数 × 日津贴额');
       assert.equal(icuDailyPayload.responsibilityScope, 'optional');
       const total = readDb.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count;
-      assert.equal(total, 52);
+      assert.equal(total, 55);
     } finally {
       readDb.close();
     }

@@ -21,6 +21,52 @@ test('normalizeKnowledgeRecord upgrades generic health type to critical illness 
   assert.equal(record?.productType, '重疾险');
 });
 
+test('normalizeKnowledgeRecord preserves historical official seed trace fields', () => {
+  const record = normalizeKnowledgeRecord({
+    company: '中国平安',
+    productName: '平安智富人生终身寿险（万能型，B，2004）',
+    title: '平安智富人生终身寿险（万能型，B，2004）条款',
+    url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=893&versionNo=893-2&attachmentType=1',
+    planCode: '893',
+    versionNo: '893-2',
+    catalogStatus: 'missing_from_getProductList',
+    seedSource: '平安官网保单E服务FAQ：万能险智富人生892/893',
+    seedSourceUrl: 'https://www.pingan.com/campaign/efuwu/questions.jsp',
+  });
+
+  assert.equal(record?.planCode, '893');
+  assert.equal(record?.versionNo, '893-2');
+  assert.equal(record?.catalogStatus, 'missing_from_getProductList');
+  assert.equal(record?.seedSourceUrl, 'https://www.pingan.com/campaign/efuwu/questions.jsp');
+});
+
+test('normalizeKnowledgeRecord preserves archived PDF metadata', () => {
+  const record = normalizeKnowledgeRecord({
+    company: '中国平安',
+    productName: '平安康泰终身保险（甲）（9906）',
+    title: '平安康泰终身保险（甲）（9906）条款',
+    url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=738&versionNo=738-1&attachmentType=1',
+    pageText: '保险责任 被保险人身故，我们按约定给付身故保险金。',
+    sourceType: 'pdf',
+    pages: 12,
+    bytes: 2048,
+    contentType: 'application/pdf',
+    pdfLocalPath: '/tmp/policy-material-pdfs/ab/cd/sample.pdf',
+    pdfSha256: 'abcd'.repeat(16),
+    pdfBytes: 2048,
+    pdfOriginalUrl: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=738&versionNo=738-1&attachmentType=1',
+    pdfArchivedAt: '2026-06-18T00:00:00Z',
+  });
+
+  assert.equal(record?.pages, 12);
+  assert.equal(record?.bytes, 2048);
+  assert.equal(record?.contentType, 'application/pdf');
+  assert.equal(record?.pdfLocalPath, '/tmp/policy-material-pdfs/ab/cd/sample.pdf');
+  assert.equal(record?.pdfSha256, 'abcd'.repeat(16));
+  assert.equal(record?.pdfBytes, 2048);
+  assert.equal(record?.pdfArchivedAt, '2026-06-18T00:00:00Z');
+});
+
 test('normalizeKnowledgeProductType keeps specific disease insurance separate from critical illness', () => {
   assert.equal(
     normalizeKnowledgeProductType({

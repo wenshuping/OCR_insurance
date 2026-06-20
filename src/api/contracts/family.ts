@@ -102,6 +102,26 @@ export type FamilySalesReview = {
   };
 };
 
+export type FamilyMemberPolicyReference = {
+  id: number;
+  company: string;
+  name: string;
+  policyNumber?: string;
+  applicant?: string;
+  insured?: string;
+  roles: string[];
+};
+
+export type UpdateFamilyMemberResponse = {
+  ok: true;
+  family: FamilyProfile;
+  member: FamilyMember;
+  members: FamilyMember[];
+  affectedPolicies?: FamilyMemberPolicyReference[];
+  syncedPolicyCount?: number;
+  policies?: Policy[];
+};
+
 export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
   return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
 }
@@ -183,8 +203,9 @@ export function updateFamilyMember(input: {
   birthday?: string;
   idNumberTail?: string;
   notes?: string;
+  syncBoundPolicies?: boolean;
 }) {
-  return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(
+  return request<UpdateFamilyMemberResponse>(
     `/api/family-profiles/${input.familyId}/members/${input.memberId}${authQuery(input)}`,
     {
       token: input.token,
@@ -195,6 +216,7 @@ export function updateFamilyMember(input: {
         birthday: input.birthday,
         idNumberTail: input.idNumberTail,
         notes: input.notes,
+        syncBoundPolicies: input.syncBoundPolicies,
       },
     },
   );

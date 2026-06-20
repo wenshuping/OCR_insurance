@@ -17,6 +17,7 @@ export function AdminOverviewPage({
 }) {
   const failedPolicies = (overview?.policies || []).filter(isPolicyReportFailed);
   const optionalGaps = overview?.optionalResponsibilityGaps || [];
+  const optionalGapCount = overview?.summary.optionalResponsibilityGapCount ?? optionalGaps.length;
   return (
     <div className="space-y-5">
       <section className="grid grid-cols-6 gap-3 max-[1200px]:grid-cols-3 max-[760px]:grid-cols-2">
@@ -51,7 +52,7 @@ export function AdminOverviewPage({
           <QueueCard
             title="可选责任缺口"
             icon={<CircleHelp size={18} />}
-            count={optionalGaps.length}
+            count={optionalGapCount}
             action="进入治理"
             onOpen={() => onNavigate('optionalResponsibilities')}
           >

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildPolicyOcrVisionContext, enhancePolicyScanWithOcrMapping } from '../server/policy-ocr-mapping.mjs';
+import {
+  buildPolicyOcrVisionContext,
+  enhancePolicyScanWithOcrMapping,
+  repairPolicyScanDataFromOcrText,
+} from '../server/policy-ocr-mapping.mjs';
 
 test('OCR vision context scopes local product candidates by manual insurer hints', () => {
   const context = buildPolicyOcrVisionContext({
@@ -164,6 +168,108 @@ test('OCR mapping infers insurer and matched products from recognized plan names
   assert.match(mapped.data.plans[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.match(mapped.data.plans[1].canonicalProductId, /^product_[a-f0-9]{16}$/u);
   assert.notEqual(mapped.data.plans[0].canonicalProductId, mapped.data.plans[1].canonicalProductId);
+});
+
+test('OCR mapping does not infer insurer from short company alias inside product name', () => {
+  const state = {
+    policies: [],
+    officialDomainProfiles: [],
+    knowledgeRecords: [
+      {
+        company: '阳光人寿',
+        productName: '阳光人寿金色阳光888少儿两全保险（分红型）',
+        productType: '两全保险',
+      },
+      {
+        company: '阳光人寿',
+        productName: '阳光人寿金娃娃少儿两全保险B款（万能型）',
+        productType: '两全保险',
+      },
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司福如东海A款终身寿险（分红型）',
+        productType: '终身寿险',
+      },
+    ],
+  };
+
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state,
+    scan: {
+      ocrText: [
+        '保险单',
+        '险种名称:成长阳光少儿两全保险（A款）（分红型）',
+        '基本保险金额:38760.00元',
+        '保险费:每年5475.00元',
+      ].join('\n'),
+      data: {
+        company: '',
+        name: '成长阳光少儿两全保险（A款）（分红型）',
+        plans: [
+          {
+            role: 'main',
+            name: '成长阳光少儿两全保险（A款）（分红型）',
+            amount: '38760',
+            premium: '5475',
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.company, '');
+  assert.equal(mapped.data.plans[0].company, '');
+  assert.equal(mapped.data.name, '成长阳光少儿两全保险（A款）（分红型）');
+  assert.equal(mapped.data.plans[0].matchedProductName, '');
+});
+
+test('OCR mapping accepts short company alias when it appears in header company context', () => {
+  const state = {
+    policies: [],
+    officialDomainProfiles: [],
+    knowledgeRecords: [
+      {
+        company: '阳光人寿',
+        productName: '阳光人寿金色阳光888少儿两全保险（分红型）',
+        productType: '两全保险',
+      },
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司福如东海A款终身寿险（分红型）',
+        productType: '终身寿险',
+      },
+    ],
+  };
+
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state,
+    scan: {
+      ocrText: [
+        'NCI新华保险',
+        '保险单',
+        '险种名称:成长阳光少儿两全保险（A款）（分红型）',
+        '基本保险金额:38760.00元',
+        '保险费:每年5475.00元',
+      ].join('\n'),
+      data: {
+        company: '',
+        name: '成长阳光少儿两全保险（A款）（分红型）',
+        plans: [
+          {
+            role: 'main',
+            name: '成长阳光少儿两全保险（A款）（分红型）',
+            amount: '38760',
+            premium: '5475',
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.company, '新华保险');
+  assert.equal(mapped.data.plans[0].company, '新华保险');
+  assert.equal(mapped.data.name, '成长阳光少儿两全保险（A款）（分红型）');
+  assert.equal(mapped.data.plans[0].matchedProductName, '');
 });
 
 test('OCR mapping promotes official inline main plan before riders and removes optional responsibility rows', () => {
@@ -393,6 +499,187 @@ test('OCR mapping repairs OCR-garbled main plan from official product mention wi
       },
     ],
   );
+});
+
+test('OCR mapping replaces stale missing plan values with complete OCR text extraction before product matching', () => {
+  const state = {
+    policies: [],
+    officialDomainProfiles: [],
+    knowledgeRecords: [
+      {
+        company: '新华保险',
+        productName: '福如东海A款终身寿险（分红型）',
+        productType: '寿险',
+      },
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司住院费用医疗保险（2007）',
+        productType: '医疗险',
+      },
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司附加安康提前给付重大疾病保险',
+        productType: '重疾险',
+      },
+    ],
+  };
+  const ocrText = [
+    'NCI新华保险',
+    '险种名称:福如东海A款终身寿险（分红型）',
+    '基本保险金额:100000.00元',
+    '保险期间:2014年01月01日零时起至被保险人终身',
+    '保险费:每年3000.00元',
+    '交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日',
+    '险种名称:住院费用医疗保险（2007）',
+    '保险金额:10000.00元',
+    '保险期间:2014年01月01日零时起至2014年12月31日二十四时止',
+    '保险费:234.00元',
+    '交费方式:一次交清',
+    '险种名称:附加安康提前给付重大疾病保险可选责任的约定:癌症特别关爱金',
+    '保险金额:100000.00元',
+    '保险期间:2014年01月01日零时起至被保险人终身',
+    '保险费:每年1100.00元',
+    '交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日',
+    '￥4334.00',
+  ].join('\n');
+  const staleScan = {
+    ocrText,
+    data: {
+      company: '',
+      name: '福如东海A款终身寿险（分红型）',
+      firstPremium: '6107',
+      plans: [
+        {
+          role: 'main',
+          name: '福如东海A款终身寿险（分红型）',
+          amount: '100000',
+          premium: '2007',
+          premiumText: '险种名称:住院费用医疗保险（2007）',
+        },
+        {
+          role: 'main',
+          name: '福如东海A款终身寿险（分红型）',
+          amount: '100000',
+          premium: '3000',
+        },
+        {
+          role: 'rider',
+          name: '住院费用医疗保险（2007）',
+          amount: '',
+          premium: '',
+        },
+        {
+          role: 'rider',
+          name: '附加安康提前给付重大疾病保险',
+          amount: '',
+          coveragePeriod: '终身',
+          paymentPeriod: '20年交',
+          premium: '',
+        },
+        {
+          role: 'rider',
+          name: '附加安康提前给付重大疾病保险可选责任的约定:癌症特别关爱金',
+          amount: '100000',
+          premium: '1100',
+        },
+      ],
+    },
+  };
+
+  const repaired = repairPolicyScanDataFromOcrText(staleScan);
+  assert.equal(repaired.data.plans.length, 3);
+  assert.deepEqual(
+    repaired.data.plans.map((plan) => ({
+      role: plan.role,
+      name: plan.name,
+      amount: plan.amount,
+      coveragePeriod: plan.coveragePeriod,
+      paymentMode: plan.paymentMode,
+      paymentPeriod: plan.paymentPeriod,
+      premium: plan.premium,
+    })),
+    [
+      {
+        role: 'main',
+        name: '福如东海A款终身寿险（分红型）',
+        amount: '100000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '20年交',
+        premium: '3000',
+      },
+      {
+        role: 'rider',
+        name: '住院费用医疗保险（2007）',
+        amount: '10000',
+        coveragePeriod: '至2014年12月31日',
+        paymentMode: '趸交',
+        paymentPeriod: '趸交',
+        premium: '234',
+      },
+      {
+        role: 'rider',
+        name: '附加安康提前给付重大疾病保险可选责任的约定:癌症特别关爱金',
+        amount: '100000',
+        coveragePeriod: '终身',
+        paymentMode: '年交',
+        paymentPeriod: '20年交',
+        premium: '1100',
+      },
+    ],
+  );
+
+  const mapped = enhancePolicyScanWithOcrMapping({ state, scan: repaired });
+  const hospital = mapped.data.plans.find((plan) => plan.name === '住院费用医疗保险（2007）');
+  const criticalIllness = mapped.data.plans.find((plan) => plan.name === '附加安康提前给付重大疾病保险');
+  assert.equal(mapped.data.company, '新华保险');
+  assert.equal(mapped.data.firstPremium, '4334');
+  assert.equal(hospital.amount, '10000');
+  assert.equal(hospital.premium, '234');
+  assert.equal(criticalIllness.amount, '100000');
+  assert.equal(criticalIllness.premium, '1100');
+});
+
+test('OCR text repair cleans same-line identity labels and corrects insured identity', () => {
+  const ocrText = [
+    '币值单位:人民币元保险合同号:886622461458',
+    '投保人:翟卿身份证:330106198411101516',
+    '被保险人:顾晨妍身份证:330184198610271824 性别:男',
+    '受益人身份证:330106201311261218 受益顺序受益份额',
+    '翟宸彬身份证:330106198411101516 1 50.00％',
+    '翟卿 1 50.00％',
+    '险种名称:福如东海A款终身寿险（分红型）',
+    '基本保险金额:100000.00元保险期间:2014年01月01日零时起至被保险人终身',
+    '保险费:每年3000.00元交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日',
+    '险种名称:住院费用医疗保险（2007）',
+    '保险金额:10000.00元保险期间:2014年01月01日零时起至2014年12月31日二十四时止',
+    '保险费:234.00元交费方式:一次交清',
+    '险种名称:附加安康提前给付重大疾病保险可选责任的约定:癌症特别关爱金',
+    '保险金额:100000.00元保险期间:2014年01月01日零时起至被保险人终身',
+    '保险费:每年1100.00元交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日',
+    '保险费合计:（大写）肆仟叁佰叁拾肆元整 ¥4334.00',
+  ].join('\n');
+
+  const repaired = repairPolicyScanDataFromOcrText({
+    ocrText,
+    data: {
+      applicant: '翟卿身份证',
+      insured: '顾晨妍身份证',
+      beneficiary: '身份证',
+      insuredIdNumber: '330106198411101516',
+      insuredBirthday: '1984-11-10',
+      plans: [{ name: '住院费用医疗保险（2007）' }],
+    },
+  });
+
+  assert.equal(repaired.data.applicant, '翟卿');
+  assert.equal(repaired.data.insured, '顾晨妍');
+  assert.equal(repaired.data.beneficiary, '翟宸彬');
+  assert.equal(repaired.data.insuredIdNumber, '330184198610271824');
+  assert.equal(repaired.data.insuredBirthday, '1986-10-27');
+  assert.equal(repaired.data.plans.length, 3);
+  assert.equal(repaired.data.plans[1].amount, '10000');
+  assert.equal(repaired.data.plans[1].premium, '234');
 });
 
 test('OCR mapping gives similar New China product editions different canonical ids', () => {

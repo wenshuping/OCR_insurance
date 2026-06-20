@@ -11,6 +11,7 @@ Browser
   -> ECS nginx/web/api
   -> AutoDL OCR service
        -> PaddleOCR boxes, or
+       -> DeepSeek-OCR vLLM markdown OCR, or
        -> local GPU vision model
 ```
 
@@ -79,6 +80,14 @@ For PaddleOCR GPU:
 python -m pip install -U pip
 python -m pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
 python -m pip install paddleocr
+```
+
+For DeepSeek-OCR vLLM, start the local vLLM service on AutoDL first and set:
+
+```bash
+POLICY_OCR_PROVIDER=deepseek_ocr_vllm
+POLICY_OCR_DEEPSEEK_OCR_BASE_URL=http://127.0.0.1:6008
+POLICY_OCR_DEEPSEEK_OCR_MODEL=deepseek-ai/DeepSeek-OCR
 ```
 
 Start OCR service:

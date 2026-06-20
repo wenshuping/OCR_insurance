@@ -17,12 +17,18 @@ export function createAdminRoutes(context) {
     buildAdminOverview,
     buildAdminReportIssueDetail,
     buildAdminReportIssueSummaries,
+    buildOptionalResponsibilityGaps,
+    clientFamilyReportRecord,
     applyFamilyReportPolicyCorrections,
     trustedFamilyReportCorrections,
     syncFamilyReportRuleIssues,
     updateFamilyReportCorrectionStatus,
     updateFamilyReportRecordReport,
+    appendFamilyReportCorrections,
+    appendFamilyReportIssues,
     buildFamilyReport,
+    createFamilyReportRecord,
+    generateFamilyReportQualityIssues,
     attachPolicyCoverageIndicators,
     attachPolicyFamilyDisplay,
     mergePolicyDerivedResult,
@@ -90,6 +96,27 @@ export function createAdminRoutes(context) {
     };
   }
 
+  function adminPolicySources(policy = {}) {
+    if (Array.isArray(policy.sources) && policy.sources.length) return policy.sources;
+    return (Array.isArray(state.sourceRecords) ? state.sourceRecords : [])
+      .filter((record) => Number(record?.policyId || 0) === Number(policy.id || 0))
+      .sort((left, right) => String(right.lastUsedAt || right.discoveredAt || '').localeCompare(String(left.lastUsedAt || left.discoveredAt || '')));
+  }
+
+  function adminPolicyDetail(policy) {
+    return attachPolicyForFamilyReport({
+      ...policy,
+      sources: adminPolicySources(policy),
+    });
+  }
+
+  function clientOptionalResponsibilityGap(gap = {}) {
+    return {
+      ...gap,
+      sourceExcerpt: gap.sourceExcerpt ? String(gap.sourceExcerpt).slice(0, 240) : '',
+    };
+  }
+
   function reportJson(value) {
     try {
       return JSON.stringify(value || null);
@@ -102,6 +129,58 @@ export function createAdminRoutes(context) {
     return (state.policies || [])
       .filter((policy) => Number(policy?.familyId || 0) === Number(report.familyId || 0))
       .map(attachPolicyForFamilyReport);
+  }
+
+  function policiesForAdminFamilyReport(familyId) {
+    return (state.policies || [])
+      .filter((policy) => Number(policy?.familyId || 0) === Number(familyId || 0))
+      .map(attachPolicyForFamilyReport);
+  }
+
+  async function appendAdminDeepSeekReportIssues({
+    record,
+    family,
+    members,
+    policies,
+    report,
+    planningProfile,
+  }) {
+    if (typeof appendFamilyReportIssues !== 'function' || typeof generateFamilyReportQualityIssues !== 'function') return;
+    try {
+      const result = await generateFamilyReportQualityIssues({
+        family,
+        members,
+        policies,
+        report,
+        planningProfile,
+        knowledgeRecords: state.knowledgeRecords || [],
+        indicatorRecords: state.insuranceIndicatorRecords || [],
+        optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
+      });
+      const issues = Array.isArray(result) ? result : (result?.issues || []);
+      const corrections = Array.isArray(result) ? [] : (result?.corrections || []);
+      const issueRows = appendFamilyReportIssues({ state, record, issues, allocateId });
+      if (typeof appendFamilyReportCorrections === 'function') {
+        appendFamilyReportCorrections({ state, record, corrections, issueRows, allocateId });
+      }
+    } catch (error) {
+      appendFamilyReportIssues({
+        state,
+        record,
+        allocateId,
+        issues: [{
+          severity: 'info',
+          category: 'deepseek_quality_failed',
+          title: 'DeepSeek质检未完成',
+          detail: error instanceof Error ? error.message : 'DeepSeek质检服务暂不可用',
+          suggestion: '报告已按代码规则生成；请稍后重新生成报告或检查DeepSeek配置。',
+          source: 'deepseek',
+          correctionStatus: 'not_corrected',
+          correctionLabel: '未修正：DeepSeek质检未完成',
+          correctionReason: 'DeepSeek质检服务暂不可用',
+        }],
+      });
+    }
   }
 
   function refreshReportWithTrustedCorrections(report = null) {
@@ -213,6 +292,18 @@ export function createAdminRoutes(context) {
       ))[0] || null;
   }
 
+  function latestAdminFamilyReport(familyId) {
+    return (Array.isArray(state.familyReports) ? state.familyReports : [])
+      .filter((report) => (
+        Number(report?.familyId || 0) === Number(familyId) &&
+        String(report?.status || 'active') === 'active'
+      ))
+      .sort((left, right) => (
+        String(right.generatedAt || right.createdAt || '').localeCompare(String(left.generatedAt || left.createdAt || '')) ||
+        Number(right.id || 0) - Number(left.id || 0)
+      ))[0] || null;
+  }
+
   async function handleReportCorrectionStatus(req, res, status) {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return undefined;
@@ -262,6 +353,18 @@ export function createAdminRoutes(context) {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return;
     res.json({ ok: true, ...buildAdminOverview(state) });
+  });
+
+  router.get('/policies/:policyId', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    const policyId = Number(req.params.policyId || 0);
+    const policy = (Array.isArray(state.policies) ? state.policies : [])
+      .find((row) => Number(row?.id || 0) === policyId) || null;
+    if (!policy) {
+      return res.status(404).json({ ok: false, code: 'ADMIN_POLICY_NOT_FOUND', message: '保单不存在' });
+    }
+    return res.json({ ok: true, policy: adminPolicyDetail(policy) });
   });
 
   router.get('/users/:userId/families', async (req, res) => {
@@ -314,6 +417,63 @@ export function createAdminRoutes(context) {
     return res.json({ ok: true, review: clientSalesReview(latestAdminFamilySalesReview(familyId)) });
   });
 
+  router.get('/families/:familyId/report', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    const familyId = Number(req.params.familyId || 0);
+    const family = (Array.isArray(state.familyProfiles) ? state.familyProfiles : [])
+      .find((row) => Number(row?.id || 0) === familyId && String(row?.status || 'active') === 'active') || null;
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'ADMIN_FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const reportRecord = latestAdminFamilyReport(familyId);
+    return res.json({ ok: true, reportRecord: clientFamilyReportRecord?.(reportRecord) || null });
+  });
+
+  router.post('/families/:familyId/report', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      const familyId = Number(req.params.familyId || 0);
+      const family = (Array.isArray(state.familyProfiles) ? state.familyProfiles : [])
+        .find((row) => Number(row?.id || 0) === familyId && String(row?.status || 'active') === 'active') || null;
+      if (!family) {
+        return res.status(404).json({ ok: false, code: 'ADMIN_FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+      }
+      const members = typeof listFamilyMembers === 'function' ? listFamilyMembers(state, familyId) : [];
+      const policies = policiesForAdminFamilyReport(familyId);
+      const planningProfile = req.body?.planningProfile || null;
+      const report = buildFamilyReport(policies, planningProfile, { familyId });
+      const { record } = createFamilyReportRecord({
+        state,
+        family,
+        owner: {
+          userId: family.ownerUserId,
+          guestId: family.ownerGuestId,
+        },
+        members,
+        policies,
+        report,
+        planningProfile,
+        allocateId,
+      });
+      await appendAdminDeepSeekReportIssues({
+        record,
+        family,
+        members,
+        policies,
+        report: record.report,
+        planningProfile,
+      });
+      refreshReportWithTrustedCorrections(record);
+      if (typeof persistFamilyReportState === 'function') await persistFamilyReportState();
+      else await persist(state, { refreshOptionalResponsibilityGovernance: false });
+      return res.json({ ok: true, reportRecord: clientFamilyReportRecord?.(record) || null });
+    } catch (error) {
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
   router.get('/report-issues', async (req, res) => {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return;
@@ -344,6 +504,18 @@ export function createAdminRoutes(context) {
       return res.status(404).json({ ok: false, code: 'REPORT_ISSUES_NOT_FOUND', message: '报告问题不存在' });
     }
     res.json({ ok: true, ...detail });
+  });
+
+  router.get('/optional-responsibility-gaps', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    const gaps = typeof buildOptionalResponsibilityGaps === 'function'
+      ? buildOptionalResponsibilityGaps({
+        optionalResponsibilityRecords: state.optionalResponsibilityRecords,
+        policies: state.policies,
+      }).map(clientOptionalResponsibilityGap)
+      : [];
+    res.json({ ok: true, gaps });
   });
 
   router.post('/report-corrections/:correctionId/accept', async (req, res) => (

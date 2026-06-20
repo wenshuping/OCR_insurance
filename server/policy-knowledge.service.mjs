@@ -924,8 +924,21 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     evidenceLevel: trimString(record.evidenceLevel) || 'insurer_official',
     officialDomain: trimString(record.officialDomain) || resolveOfficialDomain(url, officialDomainProfiles),
     parser: trimString(record.parser),
+    planCode: trimString(record.planCode),
+    versionNo: trimString(record.versionNo),
+    catalogStatus: trimString(record.catalogStatus),
+    seedSource: trimString(record.seedSource),
+    seedSourceUrl: trimString(record.seedSourceUrl),
     qualityStatus: trimString(record.qualityStatus),
     qualityReason: trimString(record.qualityReason),
+    pages: Number(record.pages || 0) || 0,
+    bytes: Number(record.bytes || 0) || 0,
+    contentType: trimString(record.contentType),
+    pdfLocalPath: trimString(record.pdfLocalPath),
+    pdfSha256: trimString(record.pdfSha256),
+    pdfBytes: Number(record.pdfBytes || 0) || 0,
+    pdfOriginalUrl: trimString(record.pdfOriginalUrl),
+    pdfArchivedAt: trimString(record.pdfArchivedAt),
     discoveredAt: trimString(record.discoveredAt) || now,
     lastFetchedAt: trimString(record.lastFetchedAt) || now,
     updatedAt: trimString(record.updatedAt) || now,
@@ -957,8 +970,21 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
       existing.evidenceLevel = record.evidenceLevel || existing.evidenceLevel;
       existing.officialDomain = record.officialDomain || existing.officialDomain;
       existing.parser = record.parser || existing.parser;
+      existing.planCode = record.planCode || existing.planCode;
+      existing.versionNo = record.versionNo || existing.versionNo;
+      existing.catalogStatus = record.catalogStatus || existing.catalogStatus;
+      existing.seedSource = record.seedSource || existing.seedSource;
+      existing.seedSourceUrl = record.seedSourceUrl || existing.seedSourceUrl;
       existing.qualityStatus = record.qualityStatus || existing.qualityStatus;
       existing.qualityReason = record.qualityReason || existing.qualityReason;
+      existing.pages = record.pages || existing.pages;
+      existing.bytes = record.bytes || existing.bytes;
+      existing.contentType = record.contentType || existing.contentType;
+      existing.pdfLocalPath = record.pdfLocalPath || existing.pdfLocalPath;
+      existing.pdfSha256 = record.pdfSha256 || existing.pdfSha256;
+      existing.pdfBytes = record.pdfBytes || existing.pdfBytes;
+      existing.pdfOriginalUrl = record.pdfOriginalUrl || existing.pdfOriginalUrl;
+      existing.pdfArchivedAt = record.pdfArchivedAt || existing.pdfArchivedAt;
       existing.lastFetchedAt = record.lastFetchedAt || existing.lastFetchedAt;
       existing.updatedAt = nowIso();
       saved.push(existing);

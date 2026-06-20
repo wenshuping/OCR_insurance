@@ -15,6 +15,7 @@ export type AdminPageKey =
   | 'overview'
   | 'policies'
   | 'users'
+  | 'familyReport'
   | 'reportIssues'
   | 'optionalResponsibilities'
   | 'knowledge'
@@ -73,6 +74,7 @@ export const ADMIN_PAGE_GROUPS: AdminPageGroup[] = [
 export const ADMIN_PAGE_META: Record<AdminPageKey, AdminPageMeta> = Object.fromEntries(
   [
     ...ADMIN_PAGE_GROUPS.flatMap((group) => group.items),
+    { key: 'familyReport', label: '家庭报告', description: '只读查看已保存的家庭保单分析报告', icon: LayoutDashboard },
     { key: 'salesReview', label: '销售建议', description: '只读查看已保存的家庭销售建议', icon: MessageSquareText },
   ].map((item) => [item.key, item]),
 ) as Record<AdminPageKey, AdminPageMeta>;

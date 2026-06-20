@@ -65,6 +65,7 @@ function main() {
   const offset = Math.max(0, Number(readArg('offset', process.env.PING_AN_OFFSET || 0)) || 0);
   const maxProducts = readNumberArg('max-products', Number(process.env.PING_AN_MAX_PRODUCTS || 0));
   const cdpUrl = readArg('cdp-url', process.env.PING_AN_CDP_URL || 'http://127.0.0.1:9223');
+  const pdfArchiveDir = readArg('pdf-archive-dir', process.env.POLICY_PDF_ARCHIVE_DIR || '');
 
   const result = runCrawler({
     mode: 'ping_an_browser_pages',
@@ -73,6 +74,8 @@ function main() {
     offset,
     maxProducts,
     cdpUrl,
+    archivePdf: true,
+    ...(pdfArchiveDir.trim() ? { pdfArchiveDir } : {}),
   });
 
   if (result.ok === false) {
@@ -103,6 +106,8 @@ function main() {
         localKnowledgeBefore: before,
         localKnowledgeAfter: after,
         statePath,
+        pdfArchiveDir: result.pdfArchiveDir || '',
+        archivedPdfCount: result.archivedPdfCount || 0,
       },
       null,
       2,

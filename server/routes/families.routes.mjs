@@ -29,6 +29,7 @@ export function createFamilyRoutes(context) {
     attachPolicyFamilyDisplay,
     cashflowStore,
     cashValueStore,
+    computeAndStoreCashflow,
     createFamilyMember,
     createFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
@@ -105,6 +106,95 @@ export function createFamilyRoutes(context) {
   function archiveGeneratedReportsForFamily(familyId) {
     if (typeof archiveFamilyGeneratedReports !== 'function') return;
     archiveFamilyGeneratedReports(state, [familyId]);
+  }
+
+  function policyRolesForFamilyMember(policy, memberId) {
+    const id = Number(memberId || 0);
+    if (!id) return [];
+    const roles = [];
+    if (Number(policy?.applicantMemberId || 0) === id) roles.push('投保人');
+    if (Number(policy?.insuredMemberId || 0) === id) roles.push('被保人');
+    return roles;
+  }
+
+  function policySummaryForFamilyMember(policy, roles = []) {
+    return {
+      id: policy.id,
+      company: policy.company || '',
+      name: policy.name || '',
+      policyNumber: policy.policyNumber || '',
+      applicant: policy.applicant || '',
+      insured: policy.insured || '',
+      roles,
+    };
+  }
+
+  function boundPolicyEntriesForMember({ family, member, owner }) {
+    return (state.policies || [])
+      .filter((policy) => (
+        Number(policy?.familyId || 0) === Number(family.id) &&
+        familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })
+      ))
+      .map((policy) => ({ policy, roles: policyRolesForFamilyMember(policy, member.id) }))
+      .filter((entry) => entry.roles.length > 0)
+      .sort((left, right) => Number(left.policy.id || 0) - Number(right.policy.id || 0));
+  }
+
+  function assignIfChanged(target, key, value) {
+    if (target[key] === value) return false;
+    target[key] = value;
+    return true;
+  }
+
+  async function recomputePolicyCashflow(policy) {
+    if (typeof computeAndStoreCashflow !== 'function') return;
+    try {
+      await computeAndStoreCashflow(policy);
+    } catch (error) {
+      console.warn(`[family-member] Failed to recompute cashflow policy=${policy?.id || ''}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  async function syncFamilyMemberToPolicies({ family, member, owner }) {
+    const entries = boundPolicyEntriesForMember({ family, member, owner });
+    const name = String(member?.name || '').trim();
+    const birthday = String(member?.birthday || '').trim();
+    const relationLabel = String(member?.relationLabel || '').trim();
+    const updatedAt = new Date().toISOString();
+    const policies = [];
+
+    for (const { policy, roles } of entries) {
+      let changed = false;
+      if (roles.includes('投保人')) {
+        changed = assignIfChanged(policy, 'applicant', name) || changed;
+        changed = assignIfChanged(policy, 'applicantBirthday', birthday) || changed;
+        changed = assignIfChanged(policy, 'applicantMemberName', name) || changed;
+        changed = assignIfChanged(policy, 'applicantRelation', relationLabel) || changed;
+        changed = assignIfChanged(policy, 'applicantRelationLabel', relationLabel) || changed;
+        changed = assignIfChanged(policy, 'applicantNameSnapshot', name) || changed;
+        changed = assignIfChanged(policy, 'applicantRelationSnapshot', relationLabel) || changed;
+      }
+      if (roles.includes('被保人')) {
+        changed = assignIfChanged(policy, 'insured', name) || changed;
+        changed = assignIfChanged(policy, 'insuredBirthday', birthday) || changed;
+        changed = assignIfChanged(policy, 'insuredMemberName', name) || changed;
+        changed = assignIfChanged(policy, 'insuredRelation', relationLabel) || changed;
+        changed = assignIfChanged(policy, 'insuredRelationLabel', relationLabel) || changed;
+        changed = assignIfChanged(policy, 'insuredNameSnapshot', name) || changed;
+        changed = assignIfChanged(policy, 'insuredRelationSnapshot', relationLabel) || changed;
+      }
+      if (!changed) continue;
+      policy.participantReviewStatus = policy.applicant && policy.insured ? 'ok' : 'pending_review';
+      policy.updatedAt = updatedAt;
+      policies.push(policy);
+      await recomputePolicyCashflow(policy);
+    }
+
+    if (policies.length) archiveGeneratedReportsForFamily(family.id);
+    return {
+      affectedPolicies: entries.map((entry) => policySummaryForFamilyMember(entry.policy, entry.roles)),
+      policies,
+    };
   }
 
   function ownerFields(owner = {}) {
@@ -474,6 +564,7 @@ export function createFamilyRoutes(context) {
       const hasRelationInput = hasOwn(req.body, 'relationLabel') || hasOwn(req.body, 'relationToCore') || hasOwn(req.body, 'relation');
       const hasNotesInput = hasOwn(req.body, 'notes');
       const hasProfileInput = hasOwn(req.body, 'name') || hasOwn(req.body, 'birthday') || hasOwn(req.body, 'birthDate') || hasOwn(req.body, 'idNumberTail') || hasOwn(req.body, 'idNumber') || hasOwn(req.body, 'identityNumber') || hasOwn(req.body, 'idCard');
+      const syncBoundPolicies = req.body?.syncBoundPolicies === true;
       if (hasProfileInput) {
         if (typeof updateFamilyMemberProfile === 'function') {
           const beforeMemberUpdatedAt = member.updatedAt;
@@ -486,6 +577,7 @@ export function createFamilyRoutes(context) {
       }
       if (hasRelationInput) {
         const relation = normalizeFamilyRelation(req.body?.relationLabel || req.body?.relationToCore || req.body?.relation);
+        const beforeMemberUpdatedAt = member.updatedAt;
         if (relation.relationToCore === 'self') {
           setFamilyCoreMember(state, family, member);
         } else {
@@ -498,6 +590,7 @@ export function createFamilyRoutes(context) {
           updateFamilyMemberRelation(member, relation.relationLabel);
           family.updatedAt = new Date().toISOString();
         }
+        if (member.updatedAt !== beforeMemberUpdatedAt) archiveGeneratedReportsForFamily(family.id);
       }
       if (hasNotesInput) {
         const beforeMemberUpdatedAt = member.updatedAt;
@@ -505,8 +598,21 @@ export function createFamilyRoutes(context) {
         if (member.updatedAt !== beforeMemberUpdatedAt) family.updatedAt = member.updatedAt;
         archiveGeneratedReportsForFamily(family.id);
       }
-      await saveFamilyState();
-      return res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
+      const affectedPolicies = boundPolicyEntriesForMember({ family, member, owner })
+        .map((entry) => policySummaryForFamilyMember(entry.policy, entry.roles));
+      const syncResult = syncBoundPolicies && (hasProfileInput || hasRelationInput)
+        ? await syncFamilyMemberToPolicies({ family, member, owner })
+        : { affectedPolicies, policies: [] };
+      await saveFamilyState({ includePolicies: syncResult.policies.length > 0 });
+      return res.json({
+        ok: true,
+        family,
+        member,
+        members: listFamilyMembers(state, family.id),
+        affectedPolicies: syncResult.affectedPolicies,
+        syncedPolicyCount: syncResult.policies.length,
+        policies: syncResult.policies.map(attachPolicyForFamilyReview),
+      });
     } catch (error) {
       return sendError(res, error, 400);
     }

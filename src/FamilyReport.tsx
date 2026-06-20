@@ -1183,7 +1183,6 @@ function InventoryExportCards({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
             rows={[
               { label: '投保人', value: row.applicant },
               { label: '被保人', value: row.member },
-              { label: '家庭身份', value: row.relationLabel },
               { label: '年交保费', value: row.annualPremiumText || formatMoney(row.annualPremium), highlight: true },
               { label: '保障/保额', value: row.coverageText, highlight: true },
             ]}
@@ -1231,7 +1230,6 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
                   <tr>
                     <th className={`${thClassName} rounded-tl-[18px]`}>投保人</th>
                     <th className={thClassName}>被保人</th>
-                    <th className={thClassName}>家庭身份</th>
                     <th className={thClassName}>保单/产品</th>
                     <th className={thClassName}>类型</th>
                     <th className={`${thClassName} text-right`}>年交保费</th>
@@ -1248,7 +1246,6 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
                           <span className="mt-1 inline-flex rounded-full bg-[#FFF8EB] px-2 py-0.5 text-[11px] font-black text-[#9A4A16] ring-1 ring-[#F3D9B4]">姓名待核对</span>
                         ) : null}
                       </td>
-                      <td className={tdClassName}>{emptyText(row.relationLabel)}</td>
                       <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
                         <PolicyPlanList row={row} />
                         <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{emptyText(row.company)}</span>

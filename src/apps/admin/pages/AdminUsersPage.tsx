@@ -135,7 +135,7 @@ function AdminFamilyCard({
           onClick={() => onOpenFamilyReport(family.id)}
         >
           <LayoutDashboard size={16} />
-          查看报告
+          家庭报告
         </button>
         <button
           type="button"

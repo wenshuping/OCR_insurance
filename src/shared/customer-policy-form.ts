@@ -350,18 +350,23 @@ function hasConfirmedRelation(value: unknown) {
   return Boolean(relation && relation !== '待确认');
 }
 
-export function validatePolicyEntryForm(data: PolicyFormData) {
+export function validatePolicyEntryForm(
+  data: PolicyFormData,
+  options: { requireFamily?: boolean; requireParticipantRelations?: boolean } = {},
+) {
   const errors: string[] = [];
   const applicantRelation = String(data.applicantRelationLabel || data.applicantRelation || '').trim();
   const insuredRelation = String(data.insuredRelationLabel || data.insuredRelation || '').trim();
+  const requireFamily = options.requireFamily !== false;
+  const requireParticipantRelations = options.requireParticipantRelations !== false;
 
-  if (!data.familyId) errors.push('选择家庭档案');
+  if (requireFamily && !data.familyId) errors.push('选择家庭档案');
   if (!hasRequiredText(data.company)) errors.push('保险公司');
   if (!hasRequiredText(data.name)) errors.push('保险名称');
   if (!hasRequiredText(data.applicant)) errors.push('投保人姓名');
-  if (!hasConfirmedRelation(applicantRelation)) errors.push('投保人与顶梁柱的关系');
+  if (requireParticipantRelations && !hasConfirmedRelation(applicantRelation)) errors.push('投保人与顶梁柱的关系');
   if (!hasRequiredText(data.insured)) errors.push('被保险人姓名');
-  if (!hasConfirmedRelation(insuredRelation)) errors.push('被保险人与顶梁柱的关系');
+  if (requireParticipantRelations && !hasConfirmedRelation(insuredRelation)) errors.push('被保险人与顶梁柱的关系');
   if (!hasRequiredText(data.beneficiary)) errors.push('受益人');
   if (!hasRequiredText(data.date)) errors.push('投保时间');
   if (!hasRequiredText(data.paymentPeriod)) errors.push('缴费期间');

@@ -280,6 +280,95 @@ test('OCR extraction ignores insurer logo text and combines split product table 
   assert.equal(data.firstPremium, '3000');
 });
 
+test('OCR extraction ignores app section title before applicant name', () => {
+  const data = extractPolicyFieldsFromText(`
+20:27 淘
+保单详情
+保单生效日期 2017-09-22
+保单来源服务单
+承接／分配日期 2025-09
+险种信息
+可左滑列表查看更多信息
+险种名称标准保费基本保额交费期间保险期间
+915 附加随意领年金保险（万能型） 0.00 元 0.00 元一次交清终身
+694 V2.5 美利金生终身年金保险（分红型） 40,320.00 元 30000.00 元 10 年终身
+847 附加住院安心医疗保险（费率可调） 263.00 元 10000.00 元一次交清 1 年
+投保人详细信息
+投保人姓名陈聿敏女
+手机号码 13857191122
+  `);
+
+  assert.equal(data.applicant, '陈聿敏');
+  assert.notEqual(data.applicant, '详细信息');
+  assert.equal(data.name, '美利金生终身年金保险（分红型）');
+  assert.equal(data.amount, '30000');
+  assert.equal(data.paymentPeriod, '10年交');
+  assert.equal(data.coveragePeriod, '终身');
+  assert.equal(data.plans.length, 3);
+  assert.equal(data.plans[1].premium, '40320');
+  assert.equal(data.plans[1].amount, '30000');
+  assert.equal(data.plans[2].premium, '263');
+  assert.equal(data.plans[2].amount, '10000');
+});
+
+test('OCR extraction rebuilds app policy summary rows split by screenshot OCR', () => {
+  const data = extractPolicyFieldsFromText(`
+20:27 淘
+保单详情
+保单生效日期 2017-09-22
+保单来源 服务单
+险种信息
+可左滑列表查看更多信息
+险种名称
+标准保费
+基本保额
+交费期间
+保险期间
+915 附加随意
+领年金保险
+（万能型）
+0.00元
+0.00元
+一次交
+清
+终身
+694 V2.5 美利
+金生终身年金
+保险（分红
+型）
+40,32
+0.00元
+3000
+0.00元
+10年
+终身
+847 附加住院
+安心医疗保险
+（费率可调）
+263.0
+0元
+10000.
+00元
+一次交清
+1年
+投保人详细信息
+投保人姓名陈聿敏女
+手机号码 13857191122
+  `);
+
+  assert.equal(data.name, '美利金生终身年金保险（分红型）');
+  assert.equal(data.amount, '30000');
+  assert.equal(data.firstPremium, '40583');
+  assert.equal(data.paymentPeriod, '10年交');
+  assert.equal(data.coveragePeriod, '终身');
+  assert.equal(data.plans.length, 3);
+  assert.equal(data.plans[0].premium, '0');
+  assert.equal(data.plans[1].premium, '40320');
+  assert.equal(data.plans[1].amount, '30000');
+  assert.equal(data.plans[2].premium, '263');
+  assert.equal(data.plans[2].amount, '10000');
+});
+
 test('remote GPU vision extraction keeps universal account plans as linked accounts', async () => {
   const calls = [];
   const sourceBuffer = Buffer.from('fake-image');
@@ -293,6 +382,7 @@ test('remote GPU vision extraction keeps universal account plans as linked accou
     {
       env: {
         POLICY_OCR_REMOTE_VISION_BASE_URL: 'http://gpu4080.local:8000',
+        POLICY_OCR_REMOTE_VISION_COMPLEX_PASSES: 'false',
       },
       prepareImageForRemoteVision: async (buffer, mimeType) => {
         assert.equal(buffer.toString('utf8'), sourceBuffer.toString('utf8'));
@@ -353,11 +443,126 @@ test('remote GPU vision extraction keeps universal account plans as linked accou
   assert.match(remoteRequestBody.messages[0].content[0].text, /请逐行转录 tableRows/u);
   assert.match(remoteRequestBody.messages[0].content[0].text, /不要把 tableRows 责任明细直接合并为 plans/u);
   assert.match(remoteRequestBody.messages[0].content[0].text, /经社保赔付\/未经社保赔付.*不是交费方式/u);
+  assert.match(remoteRequestBody.messages[0].content[0].text, /不要为了简短省略可见字段/u);
   assert.equal(remoteRequestBody.messages[0].content[1].image_url.url, `data:image/jpeg;base64,${resizedBuffer.toString('base64')}`);
   assert.equal(result.data.plans.length, 2);
   assert.equal(result.data.plans[1].role, 'linked_account');
   assert.equal(result.data.plans[1].productType, '万能账户');
   assert.equal(result.ocrText, '');
+});
+
+test('remote GPU vision supplements partial whole-image result with focused passes', async () => {
+  const calls = [];
+  const sourceBuffer = Buffer.from('fake-image');
+  const result = await extractPolicyFieldsFromImageWithRemoteVision(
+    {
+      name: 'partial-focused.jpg',
+      type: 'image/jpeg',
+      dataUrl: `data:image/jpeg;base64,${sourceBuffer.toString('base64')}`,
+    },
+    {
+      env: {
+        POLICY_OCR_REMOTE_VISION_BASE_URL: 'http://gpu4080.local:8000',
+      },
+      prepareImageForRemoteVision: async (buffer, mimeType) => ({ buffer, mimeType }),
+      fetchImpl: async (url, options) => {
+        const body = JSON.parse(String(options.body || '{}'));
+        const prompt = String(body.messages?.[0]?.content?.[0]?.text || '');
+        calls.push(prompt);
+        if (prompt.includes('页眉和基本内容区')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              choices: [{
+                finish_reason: 'stop',
+                message: {
+                  content: JSON.stringify({
+                    company: '新华保险',
+                    policyNumber: '990204352040',
+                    applicant: '温舒萍',
+                    insured: '温舒萍',
+                    insuredBirthday: '1987-12-07',
+                    date: '2026年03月31日',
+                  }),
+                },
+              }],
+            }),
+          };
+        }
+        if (prompt.includes('保险利益表和险种明细区')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              choices: [{
+                finish_reason: 'stop',
+                message: {
+                  content: JSON.stringify({
+                    name: '盛世荣耀臻享版终身寿险（分红型）',
+                    paymentPeriod: '10年',
+                    coveragePeriod: '终身',
+                    amount: '24441.00元',
+                    firstPremium: '3000.00',
+                    plans: [{
+                      role: 'main',
+                      name: '盛世荣耀臻享版终身寿险（分红型）',
+                      amount: '24441.00元',
+                      coveragePeriod: '终身',
+                      paymentMode: '年交',
+                      paymentPeriod: '10年',
+                      premium: '3000.00',
+                    }],
+                  }),
+                },
+              }],
+            }),
+          };
+        }
+        if (prompt.includes('受益人、特别约定和页面下半区')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              choices: [{
+                finish_reason: 'stop',
+                message: { content: JSON.stringify({ beneficiary: '法定' }) },
+              }],
+            }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [{
+              finish_reason: 'stop',
+              message: {
+                content: JSON.stringify({
+                  company: '新华保险',
+                  insured: '温舒萍',
+                }),
+              },
+            }],
+          }),
+        };
+      },
+    },
+  );
+
+  assert.equal(calls.length, 4);
+  assert.match(calls[0], /只输出一个 JSON 对象/u);
+  assert.match(calls[1], /页眉和基本内容区/u);
+  assert.match(calls[2], /保险利益表和险种明细区/u);
+  assert.match(calls[3], /受益人、特别约定和页面下半区/u);
+  assert.equal(result.data.company, '新华保险');
+  assert.equal(result.data.name, '盛世荣耀臻享版终身寿险（分红型）');
+  assert.equal(result.data.applicant, '温舒萍');
+  assert.equal(result.data.beneficiary, '法定');
+  assert.equal(result.data.firstPremium, '3000');
+  assert.equal(result.data.plans.length, 1);
+  assert.equal(result.visionDebug.missingBeforeFocusedPasses.includes('险种名称'), true);
+  assert.equal(result.visionDebug.focusedPasses.length, 3);
 });
 
 test('remote GPU vision maps aborted vLLM requests to upstream timeout', async () => {
@@ -2545,10 +2750,12 @@ test('remote GPU vision supplements only empty OCR fields', async () => {
   const previousProvider = process.env.POLICY_OCR_PROVIDER;
   const previousRemoteBaseUrl = process.env.POLICY_OCR_REMOTE_VISION_BASE_URL;
   const previousFallback = process.env.POLICY_OCR_FALLBACK_PADDLE;
+  const previousComplexPasses = process.env.POLICY_OCR_REMOTE_VISION_COMPLEX_PASSES;
   const previousFetch = globalThis.fetch;
   process.env.POLICY_OCR_PROVIDER = 'remote_gpu_vision';
   process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = 'http://gpu4080.test';
   process.env.POLICY_OCR_FALLBACK_PADDLE = 'true';
+  process.env.POLICY_OCR_REMOTE_VISION_COMPLEX_PASSES = 'false';
   const calls = [];
 
   globalThis.fetch = async () => {
@@ -2616,6 +2823,8 @@ test('remote GPU vision supplements only empty OCR fields', async () => {
     else process.env.POLICY_OCR_REMOTE_VISION_BASE_URL = previousRemoteBaseUrl;
     if (previousFallback === undefined) delete process.env.POLICY_OCR_FALLBACK_PADDLE;
     else process.env.POLICY_OCR_FALLBACK_PADDLE = previousFallback;
+    if (previousComplexPasses === undefined) delete process.env.POLICY_OCR_REMOTE_VISION_COMPLEX_PASSES;
+    else process.env.POLICY_OCR_REMOTE_VISION_COMPLEX_PASSES = previousComplexPasses;
     globalThis.fetch = previousFetch;
   }
 });
@@ -3515,6 +3724,45 @@ NCI新华保险
   );
 });
 
+test('OCR extraction strips same-line identity labels before matching insured identity', () => {
+  const data = extractPolicyFieldsFromText(`
+币值单位:人民币元保险合同号:886622461458
+投保人:翟卿身份证:330106198411101516
+被保险人:顾晨妍身份证:330184198610271824 性别:男
+受益人身份证:330106201311261218 受益顺序受益份额
+翟宸彬身份证:330106198411101516 1 50.00％
+翟卿 1 50.00％
+合同成立日期:2013年12月31日
+合同生效日期:2014年01月01日
+首期保险费交费日期:2013年12月29日
+险种名称:福如东海A款终身寿险（分红型）
+基本保险金额:100000.00元保险期间:2014年01月01日零时起至被保险人终身
+保险费:每年3000.00元交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日
+险种名称:住院费用医疗保险（2007）
+保险金额:10000.00元保险期间:2014年01月01日零时起至2014年12月31日二十四时止
+保险费:234.00元交费方式:一次交清
+险种名称:附加安康提前给付重大疾病保险可选责任的约定:癌症特别关爱金
+保险金额:100000.00元保险期间:2014年01月01日零时起至被保险人终身
+保险费:每年1100.00元交费方式:年交交费期间:20年续期保险费交费日期:每年01月01日
+保险费合计:（大写）肆仟叁佰叁拾肆元整 ¥4334.00
+  `);
+
+  assert.equal(data.applicant, '翟卿');
+  assert.equal(data.insured, '顾晨妍');
+  assert.equal(data.beneficiary, '翟宸彬');
+  assert.equal(data.insuredIdNumber, '330184198610271824');
+  assert.equal(data.insuredBirthday, '1986-10-27');
+  assert.equal(data.firstPremium, '4334');
+  assert.equal(data.plans.length, 3);
+  assert.equal(data.plans[0].amount, '100000');
+  assert.equal(data.plans[0].premium, '3000');
+  assert.equal(data.plans[1].name, '住院费用医疗保险（2007）');
+  assert.equal(data.plans[1].amount, '10000');
+  assert.equal(data.plans[1].premium, '234');
+  assert.equal(data.plans[2].amount, '100000');
+  assert.equal(data.plans[2].premium, '1100');
+});
+
 test('OCR extraction keeps receipt product rows as main policy plus rider plans', () => {
   const data = extractPolicyFieldsFromText(`
 保险业务收据
@@ -3561,6 +3809,59 @@ NCI新华保险
   assert.equal(data.plans[1].role, 'rider');
   assert.equal(data.plans[1].name, 'i他男性特定疾病保险');
   assert.equal(data.plans[1].premium, '140');
+});
+
+test('OCR extraction reads Ping An premium invoice fields without treating receipt numbers as amount', () => {
+  const data = extractPolicyFieldsFromText(`
+中國平安保限股份有限公司
+PING AN INSURANCE COMPANY
+OF CHINA.LTD
+暂收收据号：
+R01008445011
+人
+身险保险费发
+200202月10
+票
+No.
+3212010000014897
+投保人：
+杜金坤
+保单号码：
+HP12010000087018
+日
+保费缴至日：2003年02月08日
+保险费金额（大
+叁仟捌佰伍拾圆整（3850.00）
+被保险
+写）
+险种
+缴费类别
+杜金坤
+常青树
+标准保费
+附加保费
+合计保费
+年缴
+3850.0
+.00
+3850.00元
+生效日期：2002年02月09日
+  `);
+
+  assert.equal(data.company, '中国平安保险');
+  assert.equal(data.applicant, '杜金坤');
+  assert.equal(data.insured, '杜金坤');
+  assert.equal(data.name, '常青树');
+  assert.equal(data.policyNumber, 'HP12010000087018');
+  assert.equal(data.date, '2002-02-09');
+  assert.equal(data.paymentPeriod, '年交');
+  assert.equal(data.firstPremium, '3850');
+  assert.equal(data.amount, '');
+  assert.equal(data.plans.length, 1);
+  assert.equal(data.plans[0].role, 'main');
+  assert.equal(data.plans[0].name, '常青树');
+  assert.equal(data.plans[0].premium, '3850');
+  assert.equal(data.plans[0].amount, '');
 });
 
 test('OCR extraction keeps student responsibility-table amounts out of first premium', () => {
@@ -5087,6 +5388,73 @@ test('register returns stored policy derived results when policy loading is requ
   }
 });
 
+test('register falls back to live indicator records when derived result is missing', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+      insured: '温舒萍',
+      plans: [{
+        company: '新华保险',
+        role: 'main',
+        name: '盛世荣耀臻享版终身寿险（分红型）',
+        matchedProductName: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+        productType: '增额终身寿险',
+      }],
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_whole_life',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+      productType: '增额终身寿险',
+      coverageType: '人寿保障',
+      liability: '身故或身体全残保险金',
+      unit: '公式',
+      basis: '现金价值',
+      formulaText: '身故或身体全残保险金 = 现金价值、已交保费、有效保险金额三者较大者',
+    }],
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [],
+    policyDerivedResults: [],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({ state, codeGenerator: () => '975310' });
+  const server = await listen(app);
+
+  try {
+    await jsonFetch(server.baseUrl, '/api/auth/send-code', {
+      method: 'POST',
+      body: JSON.stringify({ mobile: '13800000000' }),
+    });
+    const registered = await jsonFetch(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        mobile: '13800000000',
+        code: '975310',
+        guestId: '',
+      }),
+    });
+
+    assert.equal(registered.response.status, 200);
+    assert.equal(registered.payload.policies[0].coverageIndicators.length, 1);
+    assert.equal(registered.payload.policies[0].coverageIndicators[0].id, 'ind_whole_life');
+    assert.equal(registered.payload.policies[0].coverageIndicators[0].productType, '增额终身寿险');
+    assert.equal(registered.payload.policies[0].derivedStatus, 'stale');
+    assert.equal(registered.payload.policies[0].derivedStaleReason, 'missing');
+  } finally {
+    await server.close();
+  }
+});
+
 test('existing mobile verification reuses original account before saving policy', async () => {
   const state = {
     users: [],
@@ -6603,6 +6971,63 @@ test('policy derived result is used by list and detail without live indicator re
     assert.equal(detail.response.status, 200);
     assert.deepEqual(detail.payload.policy.optionalResponsibilities, [{ id: 'persisted_optional' }]);
     assert.equal(detail.payload.policy.derivedGeneratedAt, '2026-06-15T00:00:00.000Z');
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy list falls back to live indicator records when derived result is missing', async () => {
+  const state = {
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-08T00:00:00.000Z' }],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+      insured: '温舒萍',
+      plans: [{
+        company: '新华保险',
+        role: 'main',
+        name: '盛世荣耀臻享版终身寿险（分红型）',
+        matchedProductName: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+        productType: '增额终身寿险',
+      }],
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_whole_life',
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世荣耀臻享版终身寿险（分红型）',
+      productType: '增额终身寿险',
+      coverageType: '人寿保障',
+      liability: '身故或身体全残保险金',
+      unit: '公式',
+      basis: '现金价值',
+      formulaText: '身故或身体全残保险金 = 现金价值、已交保费、有效保险金额三者较大者',
+    }],
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [],
+    policyDerivedResults: [],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({ state });
+  const server = await listen(app);
+
+  try {
+    const listed = await jsonFetch(server.baseUrl, '/api/policies', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+
+    assert.equal(listed.response.status, 200);
+    assert.equal(listed.payload.policies[0].coverageIndicators.length, 1);
+    assert.equal(listed.payload.policies[0].coverageIndicators[0].id, 'ind_whole_life');
+    assert.equal(listed.payload.policies[0].coverageIndicators[0].productType, '增额终身寿险');
+    assert.equal(listed.payload.policies[0].derivedStatus, 'stale');
+    assert.equal(listed.payload.policies[0].derivedStaleReason, 'missing');
   } finally {
     await server.close();
   }
@@ -8207,8 +8632,18 @@ test('admin can login and read all accounts, insured groups, and policies', asyn
     assert.equal(overview.payload.policies[0].userMobile, '13800000000');
     assert.equal(overview.payload.policies[0].name, '平安福重大疾病保险');
     assert.equal(overview.payload.policies[0].sources[0].url, 'https://www.pingan.com/official/productSeo/pinganfu-demo');
+    assert.equal(overview.payload.policies[0].ocrText, undefined);
+    assert.equal(overview.payload.policies[0].coverageIndicators, undefined);
     assert.equal(overview.payload.summary.sourceRecordCount, 1);
     assert.equal(overview.payload.sourceRecords[0].url, 'https://www.pingan.com/official/productSeo/pinganfu-demo');
+
+    const policyDetail = await jsonFetch(server.baseUrl, '/api/admin/policies/2', {
+      headers: { authorization: `Bearer ${loggedIn.payload.token}` },
+    });
+    assert.equal(policyDetail.response.status, 200);
+    assert.equal(policyDetail.payload.policy.ocrText, 'PING AN 中国平安保险 平安福重大疾病保险');
+    assert.equal(policyDetail.payload.policy.responsibilities[0].coverageType, '重大疾病保险金');
+    assert.equal(policyDetail.payload.policy.sources[0].url, 'https://www.pingan.com/official/productSeo/pinganfu-demo');
   } finally {
     await server.close();
   }
@@ -8251,12 +8686,27 @@ test('admin can list selected user families without mutating family state', asyn
       inputSummary: { familyId: 20, memberCount: 1, policyCount: 1, membersWithoutPolicyCount: 0, officialProductCount: 1 },
     },
   ];
-  const before = JSON.stringify({ nextId: state.nextId, familyProfiles: state.familyProfiles, familyMembers: state.familyMembers, policies: state.policies, familySalesReviews: state.familySalesReviews });
+  state.familyReports = [
+    {
+      id: 301,
+      familyId: 20,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      status: 'active',
+      source: 'code',
+      report: buildFamilyReport([state.policies[2]], null, { familyId: 20 }),
+      generatedAt: '2026-06-17T00:10:00.000Z',
+      createdAt: '2026-06-17T00:10:00.000Z',
+      updatedAt: '2026-06-17T00:10:00.000Z',
+    },
+  ];
+  const before = JSON.stringify({ nextId: state.nextId, familyProfiles: state.familyProfiles, familyMembers: state.familyMembers, policies: state.policies, familySalesReviews: state.familySalesReviews, familyReports: state.familyReports });
+  let persistCount = 0;
   const app = createPolicyOcrApp({
     adminPassword: 'admin-pass',
     state,
     persist: async () => {
-      throw new Error('admin user family list must not persist');
+      persistCount += 1;
     },
     scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '测试保单' } }),
     analyzer: async () => ({ report: 'ok', coverageTable: [] }),
@@ -8297,7 +8747,30 @@ test('admin can list selected user families without mutating family state', asyn
     assert.equal(salesReview.payload.ok, true);
     assert.equal(salesReview.payload.review.content.includes('只读查看'), true);
     assert.equal(salesReview.payload.review.inputSummary.policyCount, 1);
-    assert.equal(JSON.stringify({ nextId: state.nextId, familyProfiles: state.familyProfiles, familyMembers: state.familyMembers, policies: state.policies, familySalesReviews: state.familySalesReviews }), before);
+
+    const familyReport = await jsonFetch(server.baseUrl, '/api/admin/families/20/report', {
+      headers: { authorization: 'Bearer admin-token' },
+    });
+    assert.equal(familyReport.response.status, 200);
+    assert.equal(familyReport.payload.ok, true);
+    assert.equal(familyReport.payload.reportRecord.id, 301);
+    assert.equal(familyReport.payload.reportRecord.report.summary.policyCount, 1);
+    assert.equal(familyReport.payload.reportRecord.report.policyInventory.rows[0].productName, '测试保单 C');
+    assert.equal(JSON.stringify({ nextId: state.nextId, familyProfiles: state.familyProfiles, familyMembers: state.familyMembers, policies: state.policies, familySalesReviews: state.familySalesReviews, familyReports: state.familyReports }), before);
+    assert.equal(persistCount, 0);
+
+    const generatedFamilyReport = await jsonFetch(server.baseUrl, '/api/admin/families/10/report', {
+      method: 'POST',
+      headers: { authorization: 'Bearer admin-token' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(generatedFamilyReport.response.status, 200);
+    assert.equal(generatedFamilyReport.payload.ok, true);
+    assert.equal(generatedFamilyReport.payload.reportRecord.familyId, 10);
+    assert.equal(generatedFamilyReport.payload.reportRecord.report.summary.policyCount, 2);
+    assert.equal(generatedFamilyReport.payload.reportRecord.report.policyInventory.rows.some((row) => row.productName === '测试保单 A'), true);
+    assert.equal(state.familyReports.some((report) => Number(report.familyId) === 10 && String(report.status || 'active') === 'active'), true);
+    assert.equal(persistCount, 1);
   } finally {
     await server.close();
   }
@@ -9303,7 +9776,15 @@ test('admin overview lists optional responsibility quantification gaps and can m
       headers: { authorization: `Bearer ${token}` },
     });
     assert.equal(overview.payload.optionalResponsibilityGaps.length, 1);
+    assert.equal(overview.payload.summary.optionalResponsibilityGapCount, 1);
     assert.equal(overview.payload.optionalResponsibilityGaps[0].recentPolicyCount, 1);
+
+    const gaps = await jsonFetch(server.baseUrl, '/api/admin/optional-responsibility-gaps', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(gaps.response.status, 200);
+    assert.equal(gaps.payload.gaps.length, 1);
+    assert.equal(gaps.payload.gaps[0].recentPolicyCount, 1);
 
     const updated = await jsonFetch(server.baseUrl, '/api/admin/optional-responsibilities/opt_gap/not-quantifiable', {
       method: 'POST',
@@ -12444,6 +12925,142 @@ test('family member API deduplicates, edits, and deletes members', async () => {
     assert.equal(deleteRes.payload.member.status, 'archived');
     assert.equal(deleteRes.payload.members.some((member) => member.id === firstRes.payload.member.id), false);
     assert.ok(familyPersistCalls.length >= 4);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family member patch can confirm syncing profile changes to bound policies', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-member-sync',
+    familyName: '成员同步家庭',
+    coreMemberId: 10,
+    status: 'active',
+    createdAt: '2026-06-08T00:00:00.000Z',
+    updatedAt: '2026-06-08T00:00:00.000Z',
+  });
+  state.familyMembers.push(
+    {
+      id: 10,
+      familyId: 8,
+      name: '顶梁柱',
+      birthday: '1960-01-01',
+      relationToCore: 'self',
+      relationLabel: '本人',
+      role: 'core',
+      status: 'active',
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    },
+    {
+      id: 9,
+      familyId: 8,
+      name: '吴连英',
+      birthday: '1960-12-26',
+      relationToCore: 'spouse',
+      relationLabel: '配偶',
+      role: 'adult',
+      status: 'active',
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    },
+  );
+  state.policies.push(
+    {
+      id: 12,
+      userId: null,
+      guestId: 'guest-member-sync',
+      familyId: 8,
+      familyBindingSource: 'explicit',
+      company: '新华保险',
+      name: '家庭保单A',
+      applicant: '吴连英',
+      applicantBirthday: '1960-12-26',
+      insured: '吴连英',
+      insuredBirthday: '1960-12-26',
+      applicantMemberId: 9,
+      insuredMemberId: 9,
+      applicantMemberName: '吴连英',
+      insuredMemberName: '吴连英',
+      applicantRelation: '配偶',
+      insuredRelation: '配偶',
+      applicantRelationLabel: '配偶',
+      insuredRelationLabel: '配偶',
+      participantReviewStatus: 'ok',
+      createdAt: '2026-06-08T00:03:00.000Z',
+      updatedAt: '2026-06-08T00:03:00.000Z',
+    },
+    {
+      id: 13,
+      userId: null,
+      guestId: 'guest-member-sync',
+      familyId: 8,
+      familyBindingSource: 'explicit',
+      company: '新华保险',
+      name: '家庭保单B',
+      applicant: '其他人',
+      applicantBirthday: '1970-01-01',
+      insured: '吴连英',
+      insuredBirthday: '1960-12-26',
+      applicantMemberId: 18,
+      insuredMemberId: 9,
+      applicantMemberName: '其他人',
+      insuredMemberName: '吴连英',
+      applicantRelation: '其他',
+      insuredRelation: '配偶',
+      applicantRelationLabel: '其他',
+      insuredRelationLabel: '配偶',
+      participantReviewStatus: 'ok',
+      createdAt: '2026-06-08T00:04:00.000Z',
+      updatedAt: '2026-06-08T00:04:00.000Z',
+    },
+  );
+  const familyPersistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    persistFamilyState: async (input) => {
+      familyPersistCalls.push(input);
+    },
+  });
+  const server = await listen(app);
+  try {
+    const patched = await jsonFetch(server.baseUrl, '/api/family-profiles/8/members/9?guestId=guest-member-sync', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: '吴连英改',
+        birthday: '1961-01-02',
+        relationLabel: '母亲',
+        syncBoundPolicies: true,
+      }),
+    });
+
+    assert.equal(patched.response.status, 200);
+    assert.equal(patched.payload.member.name, '吴连英改');
+    assert.equal(patched.payload.member.birthday, '1961-01-02');
+    assert.equal(patched.payload.member.relationLabel, '母亲');
+    assert.equal(patched.payload.syncedPolicyCount, 2);
+    assert.deepEqual(patched.payload.affectedPolicies.map((policy) => policy.id), [12, 13]);
+    assert.deepEqual(patched.payload.affectedPolicies[0].roles, ['投保人', '被保人']);
+    assert.deepEqual(patched.payload.affectedPolicies[1].roles, ['被保人']);
+    assert.equal(state.policies[0].applicant, '吴连英改');
+    assert.equal(state.policies[0].applicantBirthday, '1961-01-02');
+    assert.equal(state.policies[0].applicantMemberName, '吴连英改');
+    assert.equal(state.policies[0].applicantRelation, '母亲');
+    assert.equal(state.policies[0].applicantRelationLabel, '母亲');
+    assert.equal(state.policies[0].insured, '吴连英改');
+    assert.equal(state.policies[0].insuredBirthday, '1961-01-02');
+    assert.equal(state.policies[0].insuredMemberName, '吴连英改');
+    assert.equal(state.policies[0].insuredRelation, '母亲');
+    assert.equal(state.policies[0].insuredRelationLabel, '母亲');
+    assert.equal(state.policies[1].applicant, '其他人');
+    assert.equal(state.policies[1].applicantBirthday, '1970-01-01');
+    assert.equal(state.policies[1].insured, '吴连英改');
+    assert.equal(state.policies[1].insuredBirthday, '1961-01-02');
+    assert.equal(state.policies[1].insuredRelation, '母亲');
+    assert.equal(familyPersistCalls.at(-1)?.includePolicies, true);
   } finally {
     await server.close();
   }

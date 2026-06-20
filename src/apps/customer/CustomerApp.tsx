@@ -29,6 +29,7 @@ import {
   PolicyCompanySuggestion,
   CoverageIndicator,
   FamilyMember,
+  FamilyMemberPolicyReference,
   FamilyProfile,
   FamilyReportRecord,
   FamilySalesReview,
@@ -634,6 +635,35 @@ export function CustomerApp() {
       memberIds[familyId] = ids;
     }
     return memberIds;
+  }, [policies]);
+  const familyMemberPolicyRefs = useMemo(() => {
+    const refs: Record<number, Record<number, FamilyMemberPolicyReference[]>> = {};
+    for (const policy of policies) {
+      const familyId = Number(policy.familyId || 0);
+      if (!familyId) continue;
+      refs[familyId] = refs[familyId] || {};
+      const rolesByMemberId: Record<number, string[]> = {};
+      const applicantMemberId = Number(policy.applicantMemberId || 0);
+      const insuredMemberId = Number(policy.insuredMemberId || 0);
+      if (applicantMemberId) rolesByMemberId[applicantMemberId] = [...(rolesByMemberId[applicantMemberId] || []), '投保人'];
+      if (insuredMemberId) rolesByMemberId[insuredMemberId] = [...(rolesByMemberId[insuredMemberId] || []), '被保人'];
+      for (const [memberIdText, roles] of Object.entries(rolesByMemberId)) {
+        const memberId = Number(memberIdText);
+        refs[familyId][memberId] = [
+          ...(refs[familyId][memberId] || []),
+          {
+            id: policy.id,
+            company: policy.company || '',
+            name: policy.name || '',
+            policyNumber: '',
+            applicant: policy.applicant || '',
+            insured: policy.insured || '',
+            roles,
+          },
+        ];
+      }
+    }
+    return refs;
   }, [policies]);
   useEffect(() => {
     if (!familySalesReviewLoading) return undefined;
@@ -1610,8 +1640,36 @@ export function CustomerApp() {
   function findFamilyMemberByName(name: string) {
     const normalizedName = name.trim();
     if (!normalizedName) return null;
-    const matches = entrySelectedFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
+    const matches = entrySelectedFamilyMembers.filter((member) => member.status === 'active' && areSameParticipantName(member.name, normalizedName));
     return matches.length === 1 ? matches[0] : null;
+  }
+
+  function relationLabelForEntryMember(member: FamilyMember) {
+    if (Number(member.id) === Number(entrySelectedFamily?.coreMemberId || 0)) return '本人';
+    return member.relationLabel || '待确认';
+  }
+
+  function autoBindEntryMembersByName(data: PolicyFormData): PolicyFormData {
+    const familyId = Number(data.familyId || entryFamilyId || 0);
+    if (!familyId || Number(entrySelectedFamily?.id || 0) !== familyId) return data;
+    const applicantMember = findFamilyMemberByName(data.applicant || '');
+    const insuredMember = findFamilyMemberByName(data.insured || '');
+    return {
+      ...data,
+      familyId,
+      ...(applicantMember ? {
+        applicantMemberId: applicantMember.id,
+        applicantRelation: relationLabelForEntryMember(applicantMember),
+        applicantRelationLabel: relationLabelForEntryMember(applicantMember),
+        applicantBirthday: data.applicantBirthday || applicantMember.birthday || '',
+      } : {}),
+      ...(insuredMember ? {
+        insuredMemberId: insuredMember.id,
+        insuredRelation: relationLabelForEntryMember(insuredMember),
+        insuredRelationLabel: relationLabelForEntryMember(insuredMember),
+        insuredBirthday: data.insuredBirthday || insuredMember.birthday || '',
+      } : {}),
+    };
   }
 
   async function ensureFamilyBeforeSave() {
@@ -1681,7 +1739,7 @@ export function CustomerApp() {
     return replaceFamilyProfile(payload.family, payload.members);
   }
 
-  async function updateFamilyMemberForFamily(family: FamilyProfile, member: FamilyMember, input: { name: string; birthday?: string }) {
+  async function updateFamilyMemberForFamily(family: FamilyProfile, member: FamilyMember, input: { name: string; birthday?: string; relationLabel?: string; notes?: string; syncBoundPolicies?: boolean }) {
     const payload = await updateFamilyMember({
       token: token || undefined,
       guestId: token ? undefined : guestId,
@@ -1689,19 +1747,40 @@ export function CustomerApp() {
       memberId: member.id,
       name: input.name,
       birthday: input.birthday,
+      relationLabel: input.relationLabel,
+      notes: input.notes,
+      syncBoundPolicies: input.syncBoundPolicies,
     });
-    setPolicies((current) => current.map((policy) => {
-      if (Number(policy.familyId || 0) !== Number(family.id)) return policy;
-      const nextPolicy = { ...policy };
-      if (Number(nextPolicy.applicantMemberId || 0) === Number(member.id)) {
-        nextPolicy.applicantMemberName = payload.member.name;
-      }
-      if (Number(nextPolicy.insuredMemberId || 0) === Number(member.id)) {
-        nextPolicy.insuredMemberName = payload.member.name;
-      }
-      return nextPolicy;
-    }));
-    setMessage(`已更新成员：${payload.member.name}`);
+    if (Array.isArray(payload.policies) && payload.policies.length) {
+      const updatedPolicies = new Map(payload.policies.map((policy) => [Number(policy.id), policy]));
+      setPolicies((current) => current.map((policy) => updatedPolicies.get(Number(policy.id)) || policy));
+    } else {
+      setPolicies((current) => current.map((policy) => {
+        if (Number(policy.familyId || 0) !== Number(family.id)) return policy;
+        const nextPolicy = { ...policy };
+        if (Number(nextPolicy.applicantMemberId || 0) === Number(member.id)) {
+          nextPolicy.applicantMemberName = payload.member.name;
+          if (input.syncBoundPolicies) {
+            nextPolicy.applicant = payload.member.name;
+            nextPolicy.applicantBirthday = payload.member.birthday || '';
+            nextPolicy.applicantRelation = payload.member.relationLabel || '';
+            nextPolicy.applicantRelationLabel = payload.member.relationLabel || '';
+          }
+        }
+        if (Number(nextPolicy.insuredMemberId || 0) === Number(member.id)) {
+          nextPolicy.insuredMemberName = payload.member.name;
+          if (input.syncBoundPolicies) {
+            nextPolicy.insured = payload.member.name;
+            nextPolicy.insuredBirthday = payload.member.birthday || '';
+            nextPolicy.insuredRelation = payload.member.relationLabel || '';
+            nextPolicy.insuredRelationLabel = payload.member.relationLabel || '';
+          }
+        }
+        return nextPolicy;
+      }));
+    }
+    const syncedPolicyCount = Number(payload.syncedPolicyCount || 0);
+    setMessage(syncedPolicyCount ? `已更新成员：${payload.member.name}，同步${syncedPolicyCount}张保单` : `已更新成员：${payload.member.name}`);
     return replaceFamilyProfile(payload.family, payload.members);
   }
 
@@ -1717,15 +1796,20 @@ export function CustomerApp() {
     return replaceFamilyProfile(payload.family, payload.members);
   }
 
-  async function updateFamilyNameForFamily(family: FamilyProfile, familyName: string) {
+  async function updateFamilyForFamily(family: FamilyProfile, input: { familyName: string; notes?: string }) {
     const payload = await updateFamilyProfile({
       token: token || undefined,
       guestId: token ? undefined : guestId,
       familyId: family.id,
-      familyName,
+      familyName: input.familyName,
+      notes: input.notes,
     });
-    setMessage(`已更新家庭名称：${payload.family.familyName}`);
+    setMessage(`已保存家庭档案：${payload.family.familyName}`);
     return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function updateFamilyNameForFamily(family: FamilyProfile, familyName: string) {
+    return updateFamilyForFamily(family, { familyName, notes: family.notes || '' });
   }
 
   async function updateFamilyNotesForFamily(family: FamilyProfile, notes: string) {
@@ -1848,7 +1932,7 @@ export function CustomerApp() {
       hasUpload: true,
       outputOcrChars: String(payload.scan?.ocrText || '').length,
     });
-    setFormData((current) => mergeScanToForm(payload.scan, current));
+    setFormData((current) => autoBindEntryMembersByName(mergeScanToForm(payload.scan, current)));
     setOcrText(payload.scan.ocrText || '');
     setScanResult(payload.scan);
     const recognizedAnalysis = payload.analysis || null;
@@ -2001,7 +2085,7 @@ export function CustomerApp() {
         responsibilityCount: payload.analysis?.coverageTable?.length || 0,
       });
       setScanResult(payload.scan);
-      setFormData((current) => mergeScanToForm(payload.scan, current));
+      setFormData((current) => autoBindEntryMembersByName(mergeScanToForm(payload.scan, current)));
       setOcrText(payload.scan.ocrText || '');
       setAnalysisDraft(withRememberedOptionalResponsibilitySelections(payload.analysis));
       setShowAnalysisReport(true);
@@ -2190,7 +2274,12 @@ export function CustomerApp() {
         }
       : formData;
     if (submitBaseData !== formData) setFormData(submitBaseData);
-    const validationErrors = validatePolicyEntryForm(submitBaseData);
+    const mustSelectExistingFamily = familyProfiles.some((family) => String(family.status || 'active') === 'active');
+    const familyHasCoreMember = Boolean(entrySelectedFamily?.coreMemberId);
+    const validationErrors = validatePolicyEntryForm(submitBaseData, {
+      requireFamily: mustSelectExistingFamily,
+      requireParticipantRelations: familyHasCoreMember,
+    });
     if (validationErrors.length) {
       const message = `以下必录项未填写：\n${validationErrors.map((item) => `- ${item}`).join('\n')}`;
       window.alert(message);
@@ -3488,17 +3577,16 @@ export function CustomerApp() {
           familyProfiles={familyProfiles}
           familyPolicyCounts={familyPolicyCounts}
           familyPolicyMemberIds={familyPolicyMemberIds}
+          familyMemberPolicyRefs={familyMemberPolicyRefs}
           selectedFamilyId={selectedFamilyId}
           onSelectFamily={(familyId) => handleSelectFamily(familyId)}
           onCreateFamily={openFamilyCreateDialog}
           onCreateFamilyMember={createFamilyMemberForFamily}
-          onUpdateFamilyName={updateFamilyNameForFamily}
-          onUpdateFamilyNotes={updateFamilyNotesForFamily}
+          onUpdateFamily={updateFamilyForFamily}
           onDeleteFamily={deleteFamilyForFamily}
           onSetCoreMember={setCoreMemberForCurrentFamily}
           onUpdateFamilyMember={updateFamilyMemberForFamily}
           onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
-          onUpdateFamilyMemberNotes={updateFamilyMemberNotesForFamily}
           onDeleteFamilyMember={deleteFamilyMemberForFamily}
           onBackToEntry={() => {
             startEntryForm({ preserveSelectedFamily: true });

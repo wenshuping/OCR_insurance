@@ -13,6 +13,7 @@ import {
   AdminReportIssueSummary,
   AdminUserFamiliesResponse,
   ApiError,
+  FamilyReportRecord,
   FamilySalesReview,
   KnowledgeRecord,
   OptionalResponsibilityGap,
@@ -20,14 +21,18 @@ import {
   adminLogin,
   crawlAdminKnowledge,
   createAdminOfficialDomainProfile,
+  createAdminFamilyReport,
   deleteAdminOfficialDomainProfile,
   getAdminOfficialDomainProfiles,
   getAdminKnowledgeRecords,
   getAdminMembershipConfig,
   getAdminOverview,
   getAdminFamilySalesReview,
+  getAdminFamilyReport,
   getAdminReportIssueDetail,
   getAdminReportIssues,
+  getAdminOptionalResponsibilityGaps,
+  getAdminPolicy,
   getAdminUserFamilies,
   markOptionalResponsibilityNotQuantifiable,
   regeneratePolicyReport,
@@ -51,6 +56,7 @@ import { isPolicyReportGenerating } from '../../shared/policy-report-ui';
 import { AdminShell } from './AdminShell';
 import type { AdminPageKey } from './adminPages';
 import { AdminKnowledgePage } from './pages/AdminKnowledgePage';
+import { AdminFamilyReportPage } from './pages/AdminFamilyReportPage';
 import { AdminMembershipPage } from './pages/AdminMembershipPage';
 import { AdminOfficialDomainsPage } from './pages/AdminOfficialDomainsPage';
 import { AdminOptionalResponsibilitiesPage } from './pages/AdminOptionalResponsibilitiesPage';
@@ -76,6 +82,10 @@ export function AdminApp() {
   const [selectedAdminFamilyId, setSelectedAdminFamilyId] = useState<number | null>(null);
   const [selectedUserFamilies, setSelectedUserFamilies] = useState<AdminUserFamiliesResponse | null>(null);
   const [userFamiliesLoading, setUserFamiliesLoading] = useState(false);
+  const [selectedFamilyReport, setSelectedFamilyReport] = useState<FamilyReportRecord | null>(null);
+  const [selectedFamilyReportFamilyName, setSelectedFamilyReportFamilyName] = useState('');
+  const [familyReportLoading, setFamilyReportLoading] = useState(false);
+  const [familyReportGenerating, setFamilyReportGenerating] = useState(false);
   const [selectedSalesReview, setSelectedSalesReview] = useState<FamilySalesReview | null>(null);
   const [selectedSalesReviewFamilyName, setSelectedSalesReviewFamilyName] = useState('');
   const [salesReviewLoading, setSalesReviewLoading] = useState(false);
@@ -97,6 +107,8 @@ export function AdminApp() {
   const [selectedReportIssues, setSelectedReportIssues] = useState<AdminReportIssue[]>([]);
   const [selectedReportCorrections, setSelectedReportCorrections] = useState<AdminReportCorrection[]>([]);
   const [reportIssuesLoading, setReportIssuesLoading] = useState(false);
+  const [optionalResponsibilityGaps, setOptionalResponsibilityGaps] = useState<OptionalResponsibilityGap[]>([]);
+  const [optionalResponsibilityGapsLoading, setOptionalResponsibilityGapsLoading] = useState(false);
 
   function clearAdminAuthState() {
     localStorage.removeItem(ADMIN_TOKEN_KEY);
@@ -114,12 +126,15 @@ export function AdminApp() {
     setSelectedAdminUserId(null);
     setSelectedAdminFamilyId(null);
     setSelectedUserFamilies(null);
+    setSelectedFamilyReport(null);
+    setSelectedFamilyReportFamilyName('');
     setSelectedSalesReview(null);
     setSelectedSalesReviewFamilyName('');
     setReportIssueReports([]);
     setSelectedReportIssueReport(null);
     setSelectedReportIssues([]);
     setSelectedReportCorrections([]);
+    setOptionalResponsibilityGaps([]);
     setActivePage('overview');
   }
 
@@ -129,9 +144,15 @@ export function AdminApp() {
     try {
       const payload = await getAdminOverview(token);
       setOverview(payload);
+      setOptionalResponsibilityGaps((current) => {
+        const preview = payload.optionalResponsibilityGaps || [];
+        const expectedCount = payload.summary.optionalResponsibilityGapCount ?? preview.length;
+        return current.length === expectedCount ? current : preview;
+      });
       setSelectedPolicy((current) => {
         if (!current) return current;
-        return payload.policies.find((policy) => Number(policy.id) === Number(current.id)) || current;
+        const summary = payload.policies.find((policy) => Number(policy.id) === Number(current.id));
+        return summary ? { ...summary, ...current, report: summary.report, reportStatus: summary.reportStatus, reportError: summary.reportError } : current;
       });
       setMessage('平台数据已加载');
     } catch (error) {
@@ -201,6 +222,21 @@ export function AdminApp() {
     }
   }
 
+  async function loadAdminOptionalResponsibilityGaps(token = adminToken) {
+    if (!token) return;
+    setOptionalResponsibilityGapsLoading(true);
+    try {
+      const payload = await getAdminOptionalResponsibilityGaps(token);
+      setOptionalResponsibilityGaps(payload.gaps);
+      setMessage('可选责任治理列表已加载');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '可选责任治理列表读取失败');
+    } finally {
+      setOptionalResponsibilityGapsLoading(false);
+    }
+  }
+
   async function loadSelectedUserFamilies(userId: number, token = adminToken) {
     if (!token || !userId) return;
     setUserFamiliesLoading(true);
@@ -213,6 +249,38 @@ export function AdminApp() {
       setMessage(error instanceof Error ? error.message : '用户家庭列表读取失败');
     } finally {
       setUserFamiliesLoading(false);
+    }
+  }
+
+  async function loadAdminFamilyReport(familyId: number, token = adminToken) {
+    if (!token || !familyId) return;
+    setFamilyReportLoading(true);
+    setSelectedFamilyReport(null);
+    try {
+      const payload = await getAdminFamilyReport(token, familyId);
+      setSelectedFamilyReport(payload.reportRecord || null);
+      setMessage(payload.reportRecord?.report ? '家庭保单分析报告已加载' : '暂无已保存家庭保单分析报告');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '家庭保单分析报告读取失败');
+    } finally {
+      setFamilyReportLoading(false);
+    }
+  }
+
+  async function generateAdminFamilyReport(familyId = selectedAdminFamilyId || 0, token = adminToken) {
+    if (!token || !familyId || familyReportGenerating) return;
+    setFamilyReportGenerating(true);
+    setMessage('正在生成家庭保单分析报告');
+    try {
+      const payload = await createAdminFamilyReport(token, familyId);
+      setSelectedFamilyReport(payload.reportRecord || null);
+      setMessage('家庭保单分析报告已生成');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '家庭保单分析报告生成失败');
+    } finally {
+      setFamilyReportGenerating(false);
     }
   }
 
@@ -353,6 +421,20 @@ export function AdminApp() {
     }
   }
 
+  async function openAdminPolicy(policy: Policy) {
+    if (!policy) return;
+    const policyId = Number(policy.id);
+    setSelectedPolicy(policy);
+    if (!adminToken || !policyId) return;
+    try {
+      const payload = await getAdminPolicy(adminToken, policyId);
+      setSelectedPolicy((current) => (Number(current?.id || 0) === policyId ? payload.policy : current));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '保单详情读取失败');
+    }
+  }
+
   async function saveOfficialDomainProfile() {
     if (!adminToken || officialDomainSaving || !officialDomainForm.company.trim() || !officialDomainForm.officialDomainsText.trim()) return;
     setOfficialDomainSaving(true);
@@ -413,6 +495,7 @@ export function AdminApp() {
     try {
       await markOptionalResponsibilityNotQuantifiable(adminToken, gap.id, '该责任暂不进入金额量化计算');
       await loadOverview(adminToken);
+      await loadAdminOptionalResponsibilityGaps(adminToken);
       setMessage('可选责任已标记为不可量化');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '标记失败');
@@ -428,6 +511,7 @@ export function AdminApp() {
     try {
       await reextractOptionalResponsibilities(adminToken);
       await loadOverview(adminToken);
+      await loadAdminOptionalResponsibilityGaps(adminToken);
       setMessage('可选责任拆解已刷新');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '重新拆解失败');
@@ -497,6 +581,10 @@ export function AdminApp() {
     setSelectedAdminUserId(userId);
     setSelectedAdminFamilyId(null);
     setSelectedUserFamilies(null);
+    setSelectedFamilyReport(null);
+    setSelectedFamilyReportFamilyName('');
+    setSelectedSalesReview(null);
+    setSelectedSalesReviewFamilyName('');
     void loadSelectedUserFamilies(userId);
   }
 
@@ -510,6 +598,12 @@ export function AdminApp() {
     setActivePage(page);
     if (page === 'knowledge' && !knowledgeRecords.length) void loadKnowledgeRecords();
     if (page === 'reportIssues' && !reportIssueReports.length) void loadReportIssues();
+    if (page === 'optionalResponsibilities') {
+      const expectedCount = overview?.summary.optionalResponsibilityGapCount ?? 0;
+      if (!optionalResponsibilityGaps.length || optionalResponsibilityGaps.length < expectedCount) {
+        void loadAdminOptionalResponsibilityGaps();
+      }
+    }
     if (page === 'officialDomains' && !officialDomainProfiles.length) void loadOfficialDomainProfiles();
     if (page === 'membership' && !membershipConfig) void loadMembershipConfig();
   }
@@ -522,14 +616,11 @@ export function AdminApp() {
   }
 
   function openAdminFamilyReport(familyId: number) {
-    const report = reportIssueReports.find((row) => Number(row.familyId) === Number(familyId));
-    if (report) {
-      changeAdminPage('reportIssues');
-      void openReportIssueDetail(report);
-      return;
-    }
-    openAdminFamilyPolicies(familyId);
-    setMessage('该家庭暂无报告问题，已切到家庭保单');
+    const family = selectedUserFamilies?.families.find((row) => Number(row.id) === Number(familyId)) || null;
+    setSelectedAdminFamilyId(familyId);
+    setSelectedFamilyReportFamilyName(family?.familyName || `家庭 ${familyId}`);
+    changeAdminPage('familyReport');
+    void loadAdminFamilyReport(familyId);
   }
 
   function openAdminFamilySalesReview(familyId: number) {
@@ -546,9 +637,12 @@ export function AdminApp() {
       void loadReportIssues();
     } else if (activePage === 'policies' || activePage === 'optionalResponsibilities') {
       void loadOverview();
+      if (activePage === 'optionalResponsibilities') void loadAdminOptionalResponsibilityGaps();
     } else if (activePage === 'users') {
       void loadOverview();
       if (selectedAdminUserId) void loadSelectedUserFamilies(selectedAdminUserId);
+    } else if (activePage === 'familyReport' && selectedAdminFamilyId) {
+      void loadAdminFamilyReport(selectedAdminFamilyId);
     } else if (activePage === 'reportIssues') {
       void loadReportIssues();
     } else if (activePage === 'knowledge') {
@@ -574,7 +668,7 @@ export function AdminApp() {
             selectedPolicy={selectedPolicy}
             retryingPolicyId={retryingPolicyId}
             onClearUserFilter={clearPolicyFilters}
-            onSelectPolicy={setSelectedPolicy}
+            onSelectPolicy={(policy) => (policy ? void openAdminPolicy(policy) : setSelectedPolicy(null))}
             onRetryPolicyReport={(policy) => void retryAdminPolicyReport(policy)}
           />
         );
@@ -589,6 +683,17 @@ export function AdminApp() {
             onOpenFamilyReport={openAdminFamilyReport}
             onViewFamilyPolicies={openAdminFamilyPolicies}
             onOpenSalesReview={openAdminFamilySalesReview}
+          />
+        );
+      case 'familyReport':
+        return (
+          <AdminFamilyReportPage
+            reportRecord={selectedFamilyReport}
+            familyName={selectedFamilyReportFamilyName}
+            loading={familyReportLoading}
+            generating={familyReportGenerating}
+            onBack={() => changeAdminPage('users')}
+            onGenerate={() => void generateAdminFamilyReport()}
           />
         );
       case 'reportIssues':
@@ -606,8 +711,8 @@ export function AdminApp() {
       case 'optionalResponsibilities':
         return (
           <AdminOptionalResponsibilitiesPage
-            gaps={overview?.optionalResponsibilityGaps || []}
-            loading={loading}
+            gaps={optionalResponsibilityGaps}
+            loading={loading || optionalResponsibilityGapsLoading}
             onMarkNotQuantifiable={(gap) => void handleMarkOptionalNotQuantifiable(gap)}
             onReextract={() => void handleReextractOptionalResponsibilities()}
           />
@@ -701,10 +806,10 @@ export function AdminApp() {
       activePage={activePage}
       query={query}
       message={message}
-      loading={loading || reportIssuesLoading || userFamiliesLoading || salesReviewLoading}
+      loading={loading || reportIssuesLoading || userFamiliesLoading || familyReportLoading || familyReportGenerating || salesReviewLoading || optionalResponsibilityGapsLoading}
       badgeCounts={{
         reportIssues: reportIssueReports.length,
-        optionalResponsibilities: overview?.optionalResponsibilityGaps?.length || 0,
+        optionalResponsibilities: overview?.summary.optionalResponsibilityGapCount ?? optionalResponsibilityGaps.length,
       }}
       onPageChange={changeAdminPage}
       onQueryChange={setQuery}

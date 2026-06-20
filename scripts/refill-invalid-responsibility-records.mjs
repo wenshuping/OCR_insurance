@@ -74,6 +74,10 @@ function normalizeSuspects(raw) {
 
 function runCrawler(records, options) {
   const mode = trim(options.crawlerMode) || 'reextract_responsibility_records';
+  const archiveOptions = {
+    archivePdf: true,
+    ...(trim(options.pdfArchiveDir) ? { pdfArchiveDir: trim(options.pdfArchiveDir) } : {}),
+  };
   const payload =
     mode === 'ping_an_browser_catalog_materials'
       ? {
@@ -83,11 +87,13 @@ function runCrawler(records, options) {
           delayMs: options.delayMs,
           pdfRetryCount: options.pdfRetryCount,
           pdfRetryDelayMs: options.pdfRetryDelayMs,
+          ...archiveOptions,
           tasks: records,
         }
       : {
           mode,
           maxWorkers: options.maxWorkers,
+          ...archiveOptions,
           records,
         };
   const result = spawnSync(scraplingPython, [crawlerPath], {
@@ -164,6 +170,7 @@ async function main() {
   const batchSize = readNumberArg('batch-size', 25) || 25;
   const maxWorkers = readNumberArg('max-workers', 3) || 3;
   const crawlerMode = trim(readArg('crawler-mode', 'reextract_responsibility_records'));
+  const pdfArchiveDir = trim(readArg('pdf-archive-dir', process.env.POLICY_PDF_ARCHIVE_DIR || ''));
   const cdpUrl = trim(readArg('cdp-url', process.env.PING_AN_CDP_URL || 'http://127.0.0.1:9223'));
   const delayMs = readNumberArg('delay-ms', Number(process.env.PING_AN_REFILL_DELAY_MS || 0));
   const pdfRetryCount = readNumberArg('pdf-retry-count', Number(process.env.PING_AN_REFILL_PDF_RETRY_COUNT || 2));
@@ -171,6 +178,7 @@ async function main() {
   const dryRun = process.argv.includes('--dry-run');
   const flushEachBatch = process.argv.includes('--flush-each-batch');
   const skipReextractFailed = process.argv.includes('--skip-reextract-failed');
+  const preserveExistingOnFail = process.argv.includes('--preserve-existing-on-fail');
   const batchTimeoutMs = readNumberArg('batch-timeout-ms', Number(process.env.RESPONSIBILITY_REFILL_BATCH_TIMEOUT_MS || 0));
   const recordTimeoutMs = readNumberArg('record-timeout-ms', Number(process.env.RESPONSIBILITY_REFILL_RECORD_TIMEOUT_MS || 0));
   const fallbackSingleTimeoutMs = readNumberArg(
@@ -255,6 +263,7 @@ async function main() {
         pdfRetryCount,
         pdfRetryDelayMs,
         recordTimeoutMs,
+        pdfArchiveDir,
       };
       let result;
       if (recordTimeoutMs) {
@@ -306,18 +315,24 @@ async function main() {
         record.updatedAt = now;
         if (Number(item.pages)) record.pages = item.pages;
         if (Number(item.bytes)) record.bytes = item.bytes;
+        if (trim(item.pdfLocalPath)) record.pdfLocalPath = trim(item.pdfLocalPath);
+        if (trim(item.pdfSha256)) record.pdfSha256 = trim(item.pdfSha256);
+        if (Number(item.pdfBytes)) record.pdfBytes = Number(item.pdfBytes);
+        if (trim(item.pdfOriginalUrl)) record.pdfOriginalUrl = trim(item.pdfOriginalUrl);
+        if (trim(item.pdfArchivedAt)) record.pdfArchivedAt = trim(item.pdfArchivedAt);
         changedRecords.set(String(record.id), record);
         refilled.push({
           id: trim(record.id),
           productName: trim(record.productName),
           url: trim(record.url),
           pageTextLength: trim(record.pageText).length,
+          pdfLocalPath: trim(record.pdfLocalPath),
           preview: trim(record.pageText).slice(0, 220),
         });
       }
       for (const item of Array.isArray(result.skipped) ? result.skipped : []) {
         const record = recordById.get(trim(item.id)) || recordByUrl.get(trim(item.url));
-        if (record) {
+        if (record && !preserveExistingOnFail) {
           record.qualityStatus = 'invalid_responsibility';
           record.qualityReason = `reextract_failed:${trim(item.reason) || 'unknown'}`;
           record.pageText = '';
@@ -350,6 +365,9 @@ async function main() {
           delayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? delayMs : 0,
           pdfRetryCount: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryCount : 0,
           pdfRetryDelayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryDelayMs : 0,
+          preserveExistingOnFail,
+          pdfArchiveDir: result.pdfArchiveDir || pdfArchiveDir || '',
+          archivedPdfCount: result.archivedPdfCount || 0,
           targetCount: allTargets.length,
           selectedCount: selected.length,
           processedCount: Math.min(index + batch.length, tasks.length),
@@ -384,6 +402,9 @@ async function main() {
       delayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? delayMs : 0,
       pdfRetryCount: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryCount : 0,
       pdfRetryDelayMs: crawlerMode === 'ping_an_browser_catalog_materials' ? pdfRetryDelayMs : 0,
+      preserveExistingOnFail,
+      pdfArchiveDir,
+      archivedPdfCount: [...changedRecords.values()].filter((record) => trim(record.pdfLocalPath)).length,
       targetCount: allTargets.length,
       selectedCount: selected.length,
       refilledCount: refilled.length,

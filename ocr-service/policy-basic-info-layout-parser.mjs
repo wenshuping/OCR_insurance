@@ -78,10 +78,13 @@ const GENERAL_LABEL_BOUNDARIES = [
   '手机',
   '地址',
   '关系',
+  '受益顺序',
+  '受益份额',
 ];
 
 function normalizePerson(value) {
   const matched = compactText(value).match(/^[一-龥·]{2,8}/u)?.[0] || '';
+  if (/^(?:申请|姓名|性别|出生日期|本人|受益顺序|受益份额)$/u.test(matched)) return '';
   return isKnownLabelText(matched) ? '' : matched;
 }
 
@@ -161,11 +164,11 @@ function inferPlanProductType(name) {
 }
 
 const FIELD_LABELS = [
-  { field: 'policyNumber', labels: ['保险合同号', '保单号', '合同号'], labelPattern: /^(?:保险合同号|保单号|合同号)[:：]?/u, normalize: normalizePolicyNumber },
+  { field: 'policyNumber', labels: ['保险合同号', '保险单号码', '保险单号', '保单号码', '保单号', '合同号'], labelPattern: /^(?:保险合同号|保险单号码|保险单号|保单号码|保单号|合同号)[:：]?/u, normalize: normalizePolicyNumber },
   { field: 'applicant', labels: ['投保人姓名', '投保人', '设保人姓名', '设保人'], labelPattern: /^(?:投保人(?:姓名)?|设保人(?:姓名)?)(?!豁免|的)[:：]?/u, normalize: normalizePerson },
   { field: 'insured', labels: ['被保险人姓名', '被保险入姓名', '披保险人姓名', '被保人姓名', '受保人姓名', '被保险人', '被保险入', '披保险人', '被保人', '受保人'], labelPattern: /^(?:被保险[人入](?:姓名)?(?!的)|披保险人(?:姓名)?|被保人(?:姓名)?|受保人(?:姓名)?)[:：]?/u, normalize: normalizePerson },
   { field: 'insuredIdNumber', labels: ['证件号码', '证件号', '身份证号码', '身份证号'], labelPattern: /^(?:证件号码|证件号|身份证号码|身份证号)[:：]?/u, normalize: normalizeIdNumber },
-  { field: 'date', labels: ['合同成立日期', '合同生效日期', '保单生效日期', '保单生效日', '生效日期', '生效日', '保险起期'], labelPattern: /^(?:合同成立日期|合同生效日期|保单生效日期|保单生效日|生效日期|生效日|保险起期)[:：]?/u, normalize: normalizeDateOnly },
+  { field: 'date', labels: ['保险责任开始时间', '合同成立日期', '合同生效日期', '保单生效日期', '保单生效日', '投保日期', '生效日期', '生效日', '保险起期'], labelPattern: /^(?:保险责任开始时间|合同成立日期|合同生效日期|保单生效日期|保单生效日|投保日期|生效日期|生效日|保险起期)[:：]?/u, normalize: normalizeDateOnly },
   { field: 'beneficiary', labels: ['身故保险金受益人', '身故受益人', '受益人'], labelPattern: /^(?:身故保险金受益人|身故受益人|受益人)[:：]?/u, normalize: normalizeBeneficiary },
   { field: 'name', labels: ['产品名称', '险种名称', '保险名称', '合同名称', '主险名称'], labelPattern: /^(?:产品名称|险种名称|保险名称|合同名称|主险名称)[:：]?/u, normalize: compactText },
 ];
@@ -207,8 +210,9 @@ function labelOccurrenceInText(labelDef, value) {
 
 function isAllowedLabelOccurrence(labelDef, text, index, label) {
   const afterLabel = text.slice(index + label.length);
-  if (labelDef.field === 'applicant' && /^(?:豁免|的)/u.test(afterLabel)) return false;
-  if (labelDef.field === 'insured' && /^(?:被保险[人入]|披保险人)$/u.test(label) && afterLabel.startsWith('的')) return false;
+  const beforeLabel = text.slice(0, index);
+  if (labelDef.field === 'applicant' && (/^(?:豁免|的|申请|关系)/u.test(afterLabel) || beforeLabel.endsWith('与'))) return false;
+  if (labelDef.field === 'insured' && (/^(?:关系|的)/u.test(afterLabel) || beforeLabel.endsWith('与'))) return false;
   return true;
 }
 
@@ -253,7 +257,7 @@ function candidateRightOf(label, row) {
   const nextLabel = nextLabelRightOf(label, row);
   const candidates = row.items
     .filter((item) => (
-      item.xMin > label.item.xMax
+      (item.xMin > label.item.xMax || (item.xMid > label.item.xMid && item.xMax > label.item.xMax))
       && item !== label.item
       && !isLabelItem(item)
       && (!nextLabel || item.xMin < nextLabel.xMin)
@@ -499,6 +503,218 @@ function applyDeathBeneficiaryCandidate(fields, fieldConfidence, evidence, rows)
   }
 }
 
+function labelForItem(item) {
+  return {
+    item,
+    index: 0,
+    length: compactText(item?.text || '').length,
+  };
+}
+
+function findRowItem(row, pattern) {
+  return row?.items?.find((item) => pattern.test(compactText(item.text))) || null;
+}
+
+function nearestGeneralLabelRight(row, item) {
+  return row?.items
+    ?.filter((candidate) => candidate !== item && candidate.xMin > item.xMax && isLabelItem(candidate))
+    .sort((left, right) => left.xMin - right.xMin)[0] || null;
+}
+
+function valueBelowLabel(rows, labelRowIndex, labelItem, normalize, { maxRows = 4, maxYDistance = 260 } = {}) {
+  if (!labelItem) return null;
+  const rightBoundary = nearestGeneralLabelRight(rows[labelRowIndex], labelItem)?.xMin || Number.POSITIVE_INFINITY;
+  const leftBoundary = labelItem.xMin - 80;
+  const labelMidY = Number(labelItem.yMid || 0);
+  for (let offset = 1; offset <= maxRows && labelRowIndex + offset < rows.length; offset += 1) {
+    const row = rows[labelRowIndex + offset];
+    if (labelMidY && Math.abs(Number(row.yMid || 0) - labelMidY) > maxYDistance) break;
+    const candidates = [...(row.items || [])]
+      .filter((item) => item.xMid >= leftBoundary && item.xMid < rightBoundary && !isLabelItem(item))
+      .sort((left, right) => left.xMin - right.xMin);
+    for (const item of candidates) {
+      const value = normalize(item.text);
+      if (value) return { value, rawValue: item.text, row, valueItem: item };
+    }
+  }
+  return null;
+}
+
+function firstValueInRows(rows, startIndex, normalize, {
+  maxRows = 4,
+  maxYDistance = 260,
+  leftBoundary = Number.NEGATIVE_INFINITY,
+  rightBoundary = Number.POSITIVE_INFINITY,
+} = {}) {
+  const anchorY = Number(rows[startIndex]?.yMid || 0);
+  for (let offset = 1; offset <= maxRows && startIndex + offset < rows.length; offset += 1) {
+    const row = rows[startIndex + offset];
+    if (anchorY && Math.abs(Number(row.yMid || 0) - anchorY) > maxYDistance) break;
+    for (const item of [...(row.items || [])].sort((left, right) => left.xMin - right.xMin)) {
+      if (item.xMid < leftBoundary || item.xMid > rightBoundary || isLabelItem(item)) continue;
+      const value = normalize(item.text);
+      if (value) return { value, rawValue: item.text, row, valueItem: item };
+    }
+  }
+  return null;
+}
+
+function dateItemInRow(row) {
+  for (const item of row?.items || []) {
+    const value = normalizeDateOnly(item.text);
+    if (value) return { value, rawValue: item.text, valueItem: item };
+  }
+  return null;
+}
+
+function applyLegacyTableField(fields, fieldConfidence, evidence, rows, {
+  field,
+  labelPattern,
+  normalize,
+  overwrite = false,
+}) {
+  if (!overwrite && fields[field]) return;
+  const labelRowIndex = rows.findIndex((row) => findRowItem(row, labelPattern));
+  if (labelRowIndex < 0) return;
+  const labelItem = findRowItem(rows[labelRowIndex], labelPattern);
+  const candidate = valueBelowLabel(rows, labelRowIndex, labelItem, normalize);
+  if (!candidate) return;
+  fields[field] = candidate.value;
+  fieldConfidence[field] = 'high';
+  evidence[field] = evidenceFromLayout({
+    value: candidate.value,
+    rawValue: candidate.rawValue,
+    label: labelForItem(labelItem),
+    row: candidate.row,
+    relation: 'below',
+    valueItem: candidate.valueItem,
+  });
+}
+
+function applyLegacyInsuredName(fields, fieldConfidence, evidence, rows) {
+  if (fields.insured) return;
+  const applicantHeaderIndex = rows.findIndex((row) => /投保人姓名/u.test(compactText(rowText(row))));
+  const insuredHeaderIndex = rows.findIndex((row, index) => (
+    index > applicantHeaderIndex
+    && /姓名/u.test(compactText(rowText(row)))
+    && /出生日期/u.test(compactText(rowText(row)))
+    && !/投保人|受益人/u.test(compactText(rowText(row)))
+  ));
+  if (insuredHeaderIndex < 0) return;
+
+  const nameHeader = findRowItem(rows[insuredHeaderIndex], /^姓名$/u) || rows[insuredHeaderIndex].items[0];
+  const nextHeader = nearestGeneralLabelRight(rows[insuredHeaderIndex], nameHeader);
+  const candidate = firstValueInRows(rows, insuredHeaderIndex, normalizePerson, {
+    rightBoundary: nextHeader?.xMin || nameHeader.xMax + 700,
+  });
+  if (!candidate) return;
+  fields.insured = candidate.value;
+  fieldConfidence.insured = 'high';
+  evidence.insured = evidenceFromLayout({
+    value: candidate.value,
+    rawValue: candidate.rawValue,
+    label: labelForItem(nameHeader),
+    row: candidate.row,
+    relation: 'below',
+    valueItem: candidate.valueItem,
+  });
+
+  if (!fields.insuredBirthday) {
+    const birthday = dateItemInRow(rows[insuredHeaderIndex]);
+    if (birthday) {
+      fields.insuredBirthday = birthday.value;
+      fieldConfidence.insuredBirthday = 'high';
+      evidence.insuredBirthday = evidenceFromLayout({
+        value: birthday.value,
+        rawValue: birthday.rawValue,
+        label: labelForItem(findRowItem(rows[insuredHeaderIndex], /出生日期/u) || nameHeader),
+        row: rows[insuredHeaderIndex],
+        relation: 'row',
+        valueItem: birthday.valueItem,
+      });
+    }
+  }
+}
+
+function applyLegacyResponsibilityStartDate(fields, fieldConfidence, evidence, rows) {
+  const labelRowIndex = rows.findIndex((row) => /保险责任开始时间/u.test(compactText(rowText(row))));
+  if (labelRowIndex < 0) return;
+  const labelItem = findRowItem(rows[labelRowIndex], /保险责任开始时间/u);
+  const nearbyRows = [rows[labelRowIndex], rows[labelRowIndex - 1], rows[labelRowIndex + 1]].filter(Boolean);
+  for (const row of nearbyRows) {
+    const candidate = dateItemInRow(row);
+    if (!candidate) continue;
+    fields.date = candidate.value;
+    fieldConfidence.date = 'high';
+    evidence.date = evidenceFromLayout({
+      value: candidate.value,
+      rawValue: candidate.rawValue,
+      label: labelForItem(labelItem),
+      row,
+      relation: row === rows[labelRowIndex] ? 'row' : 'nearby',
+      valueItem: candidate.valueItem,
+    });
+    return;
+  }
+}
+
+function applyLegacyAmountAndPremium(fields, fieldConfidence, evidence, rows) {
+  const amountRow = rows.find((row) => /保险金额/u.test(compactText(rowText(row))) && normalizeAmount(rowText(row)));
+  if (amountRow && !fields.amount) {
+    const labelItem = findRowItem(amountRow, /保险金额/u) || amountRow.items[0];
+    const valueItem = [...amountRow.items].reverse().find((item) => normalizeAmount(item.text)) || labelItem;
+    fields.amount = normalizeAmount(rowText(amountRow));
+    fieldConfidence.amount = 'visual-table';
+    evidence.amount = evidenceFromLayout({
+      value: fields.amount,
+      rawValue: rowText(amountRow),
+      label: labelForItem(labelItem),
+      row: amountRow,
+      relation: 'row',
+      valueItem,
+      source: 'legacy-policy-layout',
+    });
+  }
+
+  const premiumRow = rows.find((row) => /(?:缴费标准|交费标准|标准保险费|保险费标准)/u.test(compactText(rowText(row))) && normalizeAmount(rowText(row)));
+  if (premiumRow && !fields.firstPremium) {
+    const labelItem = findRowItem(premiumRow, /(?:缴费标准|交费标准|标准保险费|保险费标准)/u) || premiumRow.items[0];
+    const valueItem = [...premiumRow.items].reverse().find((item) => normalizeAmount(item.text)) || labelItem;
+    fields.firstPremium = normalizeAmount(rowText(premiumRow));
+    fieldConfidence.firstPremium = 'visual-table';
+    evidence.firstPremium = evidenceFromLayout({
+      value: fields.firstPremium,
+      rawValue: rowText(premiumRow),
+      label: labelForItem(labelItem),
+      row: premiumRow,
+      relation: 'row',
+      valueItem,
+      source: 'legacy-policy-layout',
+    });
+  }
+}
+
+function applyLegacyPolicyTableCandidates(fields, fieldConfidence, evidence, rows) {
+  applyLegacyTableField(fields, fieldConfidence, evidence, rows, {
+    field: 'policyNumber',
+    labelPattern: /^(?:保险单号码|保险单号)$/u,
+    normalize: normalizePolicyNumber,
+  });
+  applyLegacyTableField(fields, fieldConfidence, evidence, rows, {
+    field: 'applicant',
+    labelPattern: /^投保人姓名$/u,
+    normalize: normalizePerson,
+  });
+  applyLegacyInsuredName(fields, fieldConfidence, evidence, rows);
+  applyLegacyTableField(fields, fieldConfidence, evidence, rows, {
+    field: 'beneficiary',
+    labelPattern: /^受益人姓名$/u,
+    normalize: normalizeBeneficiary,
+  });
+  applyLegacyResponsibilityStartDate(fields, fieldConfidence, evidence, rows);
+  applyLegacyAmountAndPremium(fields, fieldConfidence, evidence, rows);
+}
+
 function isResponsibilityTableHeader(text) {
   const value = compactText(text);
   return /保险责任名称|金额\/份数|给付标准|免赔额|赔付比例/u.test(value);
@@ -518,8 +734,14 @@ function normalizeVisualPlanName(value, continuation = '') {
   let text = responsibilityMatch?.[1]
     ? `${responsibilityMatch[1]}${continuation === '险' || responsibilityMatch[1].endsWith('保') ? '险' : ''}`
     : cleanResponsibilityTail(`${value || ''}${continuation || ''}`);
+  text = text.replace(/^(?:投保主险|主险)[:：]?/u, '');
   if (/^(?:险种名称|保险责任名称|金额\/份数|给付标准|免赔额|赔付比例)$/u.test(text)) return '';
-  if (!/(保险|寿险)(?:（[^）]+）|\([^)]*\))?$/u.test(text)) return '';
+  if (
+    !/(保险|寿险)(?:（[^）]+）|\([^)]*\))?$/u.test(text)
+    && !/^[一-龥A-Za-z0-9]+(?:（[^）]+）|\([^)]*\))$/u.test(text)
+  ) {
+    return '';
+  }
   if (text.length <= 4) return '';
   return text;
 }
@@ -564,6 +786,23 @@ function columnItems(row, leftCut, rightCut) {
   return row.items.filter((item) => item.xMid >= leftCut && item.xMid < rightCut);
 }
 
+function columnBoundsByHeader(header, headerItem) {
+  const sortedHeaders = [...(header?.items || [])].sort((left, right) => left.xMid - right.xMid);
+  const index = sortedHeaders.indexOf(headerItem);
+  if (index < 0) return { left: Number.NEGATIVE_INFINITY, right: Number.POSITIVE_INFINITY };
+  const previous = sortedHeaders[index - 1];
+  const next = sortedHeaders[index + 1];
+  return {
+    left: previous ? (previous.xMid + headerItem.xMid) / 2 : Number.NEGATIVE_INFINITY,
+    right: next ? (headerItem.xMid + next.xMid) / 2 : Number.POSITIVE_INFINITY,
+  };
+}
+
+function columnTextForHeader(row, header, headerItem) {
+  const bounds = columnBoundsByHeader(header, headerItem);
+  return itemsText(columnItems(row, bounds.left, bounds.right));
+}
+
 function mergePlanFieldValue(current, next) {
   return current || next || '';
 }
@@ -571,27 +810,23 @@ function mergePlanFieldValue(current, next) {
 function parseVisualPlanSummaryTableFromRows(rows, company = '') {
   const headerIndex = rows.findIndex((row) => {
     const text = compactText(rowText(row));
-    return /险种名称/u.test(text)
+    return /险种名称|保险项目/u.test(text)
       && /基本保险金额|保险金额|保障计划|份数/u.test(text)
       && /保险期间/u.test(text)
-      && /交费方式|缴费方式|交费期间|缴费期间/u.test(text)
+      && /交费方式|缴费方式|交费期间|缴费期间|交费年限|缴费年限/u.test(text)
       && /保险费/u.test(text)
       && !/保险责任名称/u.test(text);
   });
   if (headerIndex < 0) return null;
 
   const header = rows[headerIndex];
-  const productHeader = findHeaderItem(header, /险种名称/u);
+  const productHeader = findHeaderItem(header, /险种名称|保险项目/u);
   const amountHeader = findHeaderItem(header, /基本保险金额|保险金额|保障计划|份数/u);
   const periodHeader = findHeaderItem(header, /保险期间/u);
-  const paymentHeader = findHeaderItem(header, /交费方式|缴费方式|交费期间|缴费期间/u);
+  const paymentHeader = findHeaderItem(header, /交费方式|缴费方式|交费期间|缴费期间|交费年限|缴费年限/u);
   const premiumHeader = findHeaderItem(header, /保险费/u);
   if (!productHeader || !amountHeader || !periodHeader || !paymentHeader || !premiumHeader) return null;
 
-  const productCut = columnCutBetween(productHeader, amountHeader, productHeader.xMax + 160);
-  const amountCut = columnCutBetween(amountHeader, periodHeader, amountHeader.xMax + 160);
-  const periodCut = columnCutBetween(periodHeader, paymentHeader, periodHeader.xMax + 160);
-  const paymentCut = columnCutBetween(paymentHeader, premiumHeader, paymentHeader.xMax + 160);
   const plans = [];
   let current = null;
 
@@ -624,13 +859,13 @@ function parseVisualPlanSummaryTableFromRows(rows, company = '') {
     if (/^首期保险费合计|^保险费合计|^特别约定|^备注|^保险单说明|^保单制作日期|^（?接第\d+页/u.test(text)) break;
     if (/险种名称|基本保险金额|保险金额|保障计划|份数|保险期间|交费方式|缴费方式|交费期间|缴费期间|保险费/u.test(text)) continue;
 
-    const rawProductText = compactText(itemsText(columnItems(row, Number.NEGATIVE_INFINITY, productCut)));
-    const amount = normalizeAmount(itemsText(columnItems(row, productCut, amountCut)));
-    const coveragePeriod = normalizeCoveragePeriod(itemsText(columnItems(row, amountCut, periodCut)));
-    const paymentText = itemsText(columnItems(row, periodCut, paymentCut));
+    const rawProductText = compactText(columnTextForHeader(row, header, productHeader));
+    const amount = normalizeAmount(columnTextForHeader(row, header, amountHeader));
+    const coveragePeriod = normalizeCoveragePeriod(columnTextForHeader(row, header, periodHeader));
+    const paymentText = columnTextForHeader(row, header, paymentHeader);
     const paymentMode = normalizePaymentMode(paymentText);
     const paymentPeriod = normalizePaymentPeriod(paymentText) || (paymentMode === '趸交' ? '趸交' : '');
-    const premium = normalizeAmount(itemsText(columnItems(row, paymentCut, Number.POSITIVE_INFINITY)));
+    const premium = normalizeAmount(columnTextForHeader(row, header, premiumHeader));
     const hasPlanFields = Boolean(amount || coveragePeriod || paymentMode || paymentPeriod || premium);
     const isParentheticalContinuation = /^（[^）]+）$|^\([^)]*\)$/u.test(rawProductText);
 
@@ -673,6 +908,7 @@ function parseVisualPlanSummaryTableFromRows(rows, company = '') {
     ...plan,
     role: inferPlanRole(plan.name, index),
   }));
+  const firstPremium = totalPremium || (normalizedPlans.length === 1 ? normalizedPlans[0]?.premium || '' : '');
 
   return {
     fields: {
@@ -680,7 +916,7 @@ function parseVisualPlanSummaryTableFromRows(rows, company = '') {
       amount: normalizedPlans[0]?.amount || '',
       coveragePeriod: normalizedPlans[0]?.coveragePeriod || '',
       paymentPeriod: normalizedPlans[0]?.paymentPeriod || '',
-      firstPremium: totalPremium || '',
+      firstPremium,
       plans: normalizedPlans,
     },
     evidence: {
@@ -707,7 +943,10 @@ function parseVisualBenefitTable(layout, company = '') {
     const text = compactText(rowText(row));
     return /险种名称/u.test(text) && /保险责任名称/u.test(text) && /金额\/份数/u.test(text);
   });
-  if (headerIndex < 0) return parseVisualPlanSummaryTableFromRows(clusterBoxesIntoRows(tableBoxes, { yThreshold: 40 }), company);
+  if (headerIndex < 0) {
+    return parseVisualPlanSummaryTableFromRows(rows, company)
+      || parseVisualPlanSummaryTableFromRows(clusterBoxesIntoRows(tableBoxes, { yThreshold: 40 }), company);
+  }
 
   const header = rows[headerIndex];
   const productHeader = findHeaderItem(header, /险种名称/u);
@@ -875,6 +1114,7 @@ export function parsePolicyBasicInfoFromLayoutBoxes(rawBoxes = []) {
   applyPreferredDateCandidate(fields, fieldConfidence, evidence, rows);
   applyInsuredIdentityCandidate(fields, fieldConfidence, evidence, rows);
   applyDeathBeneficiaryCandidate(fields, fieldConfidence, evidence, rows);
+  applyLegacyPolicyTableCandidates(fields, fieldConfidence, evidence, rows);
 
   if (fields.insuredIdNumber && !fields.insuredBirthday) {
     fields.insuredBirthday = birthdayFromIdNumber(fields.insuredIdNumber);

@@ -49,6 +49,7 @@ const adminUsersPageSource = readOptionalSource('../src/apps/admin/pages/AdminUs
 const adminOfficialDomainsPageSource = readOptionalSource('../src/apps/admin/pages/AdminOfficialDomainsPage.tsx');
 const adminOptionalResponsibilitiesPageSource = readOptionalSource('../src/apps/admin/pages/AdminOptionalResponsibilitiesPage.tsx');
 const adminReportIssuesPageSource = readOptionalSource('../src/apps/admin/pages/AdminReportIssuesPage.tsx');
+const adminFamilyReportPageSource = readOptionalSource('../src/apps/admin/pages/AdminFamilyReportPage.tsx');
 const adminSalesReviewPageSource = readOptionalSource('../src/apps/admin/pages/AdminSalesReviewPage.tsx');
 const normalizedCustomerAppSource = customerAppSource.replaceAll("from '../../", "from './");
 const normalizedAdminAppSource = adminAppSource.replaceAll("from '../../", "from './");
@@ -103,7 +104,9 @@ test('admin backoffice shell defines grouped sidebar navigation', () => {
   assert.match(adminPagesSource, /label: '产品知识库'/);
   assert.match(adminPagesSource, /label: '官方域名'/);
   assert.match(adminPagesSource, /label: '会员设置'/);
+  assert.match(adminPagesSource, /key: 'familyReport', label: '家庭报告'/);
   assert.match(adminPagesSource, /key: 'salesReview', label: '销售建议'/);
+  assert.doesNotMatch(adminPagesSource.match(/export const ADMIN_PAGE_GROUPS[\s\S]*?export const ADMIN_PAGE_META/u)?.[0] || '', /key: 'familyReport'/);
   assert.doesNotMatch(adminPagesSource.match(/export const ADMIN_PAGE_GROUPS[\s\S]*?export const ADMIN_PAGE_META/u)?.[0] || '', /key: 'salesReview'/);
   assert.match(adminShellSource, /aside/);
   assert.match(adminShellSource, /退出/);
@@ -113,7 +116,8 @@ test('admin backoffice shell defines grouped sidebar navigation', () => {
 test('admin users page is read-only and uses user label', () => {
   assert.match(adminUsersPageSource, /用户列表/);
   assert.match(adminUsersPageSource, /家庭列表/);
-  assert.match(adminUsersPageSource, /查看报告/);
+  assert.match(adminUsersPageSource, /家庭报告/);
+  assert.doesNotMatch(adminUsersPageSource, /查看报告/);
   assert.match(adminUsersPageSource, /家庭保单/);
   assert.match(adminUsersPageSource, /销售建议/);
   assert.doesNotMatch(adminUsersPageSource, /录入保单/);
@@ -121,6 +125,20 @@ test('admin users page is read-only and uses user label', () => {
   assert.doesNotMatch(adminUsersPageSource, /编辑家庭/);
   assert.doesNotMatch(adminUsersPageSource, /删除家庭/);
   assert.doesNotMatch(adminUsersPageSource, /新建家庭/);
+});
+
+test('admin family report page reuses family policy report read-only', () => {
+  assert.match(normalizedAdminAppSource, /getAdminFamilyReport/);
+  assert.match(normalizedAdminAppSource, /createAdminFamilyReport/);
+  assert.match(normalizedAdminAppSource, /changeAdminPage\('familyReport'\)/);
+  assert.match(normalizedAdminAppSource, /<AdminFamilyReportPage/);
+  assert.match(adminFamilyReportPageSource, /FamilyReportPage/);
+  assert.match(adminFamilyReportPageSource, /家庭保单分析报告/);
+  assert.match(adminFamilyReportPageSource, /暂无已保存家庭保单分析报告/);
+  assert.match(adminFamilyReportPageSource, /生成家庭保单分析报告/);
+  assert.match(adminFamilyReportPageSource, /onGenerate/);
+  assert.match(adminFamilyReportPageSource, /readOnly/);
+  assert.doesNotMatch(adminFamilyReportPageSource, /onRegenerate/);
 });
 
 test('admin sales review page is read-only and reuses customer markdown renderer', () => {
@@ -321,10 +339,13 @@ test('entry form requires family profile and supports top-pillar setup after OCR
   assert.match(customerSource, /insuredMemberId/);
   assert.match(customerSource, /setFamilyCoreMember/);
   assert.match(customerSource, /setAsCoreOnCreate/);
-  assert.match(customerSource, /validatePolicyEntryForm\(submitBaseData\)/);
+  assert.match(customerSource, /validatePolicyEntryForm\(submitBaseData,\s*\{/);
+  assert.match(customerSource, /requireFamily: mustSelectExistingFamily/);
+  assert.match(customerSource, /requireParticipantRelations: familyHasCoreMember/);
   assert.match(customerSource, /window\.alert\(message\)/);
   assert.match(customerSource, /请先补全必录项后再保存/);
-  assert.match(formSource, /if \(!data\.familyId\) errors\.push\('选择家庭档案'\)/);
+  assert.match(formSource, /if \(requireFamily && !data\.familyId\) errors\.push\('选择家庭档案'\)/);
+  assert.match(formSource, /requireParticipantRelations && !hasConfirmedRelation\(applicantRelation\)/);
   assert.doesNotMatch(formSource, /coreMemberId/);
   assert.match(pageSource, /updateParticipantName/);
   assert.match(pageSource, /setParticipantAsCore/);
@@ -390,6 +411,7 @@ test('customer app exposes family profile management surface', () => {
   assert.match(customerSource, /updateFamilyProfile/);
   assert.match(customerSource, /deleteFamilyProfile/);
   assert.match(customerSource, /familyPolicyMemberIds/);
+  assert.match(customerSource, /familyMemberPolicyRefs/);
   assert.match(customerSource, /createFamilyMemberForFamily/);
   assert.match(customerSource, /getFamilySalesReview/);
   assert.match(customerSource, /createFamilySalesReview/);
@@ -464,24 +486,31 @@ test('customer app exposes family profile management surface', () => {
   assert.match(familySource, /管理成员/);
   assert.match(familySource, /家庭备注/);
   assert.match(familySource, /成员备注/);
-  assert.match(familySource, /onUpdateFamilyNotes/);
-  assert.match(familySource, /onUpdateFamilyMemberNotes/);
+  assert.match(familySource, /onUpdateFamily/);
+  assert.match(familySource, /保存家庭/);
+  assert.doesNotMatch(familySource, /保存名称/);
+  assert.doesNotMatch(familySource, /保存备注/);
+  assert.doesNotMatch(familySource, /保存成员备注/);
   assert.match(familySource, /添加成员/);
   assert.match(familySource, /成员姓名/);
   assert.match(familySource, /出生日期/);
   assert.match(familySource, /handleAddFamilyMember/);
   assert.match(familySource, /onCreateFamilyMember/);
   assert.match(familySource, /familyPolicyMemberIds/);
+  assert.match(familySource, /familyMemberPolicyRefs/);
   assert.match(familySource, /policyBoundMemberIds/);
   assert.match(familySource, /保单成员/);
-  assert.match(familySource, /由保单扫描生成，可编辑姓名备注；关系请在保单详情修改/);
+  assert.match(familySource, /由保单扫描生成；修改姓名、生日或关系会提示同步关联保单/);
+  assert.match(familySource, /将同步以下保单/);
+  assert.match(familySource, /确认并同步/);
+  assert.match(familySource, /syncBoundPolicies/);
+  assert.doesNotMatch(familySource, /关系请在保单详情修改/);
   assert.match(familySource, /编辑家庭/);
   assert.match(familySource, /onUpdateFamilyMember/);
   assert.match(familySource, /onDeleteFamilyMember/);
   assert.match(familySource, /handleUpdateFamilyMember/);
   assert.match(familySource, /handleDeleteFamilyMember/);
   assert.match(familySource, /确认删除成员/);
-  assert.match(familySource, /保存名称/);
   assert.match(familySource, /删除家庭/);
   assert.match(familySource, /确认删除/);
   assert.match(familySource, /familyPolicyCounts/);
@@ -492,8 +521,9 @@ test('customer app exposes family profile management surface', () => {
   assert.doesNotMatch(familySource, /保单管理/);
   assert.doesNotMatch(familySource, /FamilyPolicyManagerPanel/);
   assert.match(familySource, /设为顶梁柱/);
+  assert.match(familySource, /\{!core \? \([\s\S]*设为顶梁柱/);
+  assert.doesNotMatch(familySource, /policyBound \? \([\s\S]*\) : !core \? \(/);
   assert.match(familySource, /onUpdateFamilyMemberRelation/);
-  assert.match(familySource, /onUpdateFamilyName/);
   assert.match(familySource, /onDeleteFamily/);
   assert.match(familySource, /设置\$\{member\.name\}家庭关系/);
   assert.doesNotMatch(familySource, /window\.confirm/);
@@ -1051,10 +1081,10 @@ test('family report renders optional responsibility gaps', () => {
   assert.match(source, /quantificationReason/);
 });
 
-test('family report renders household identity fields', () => {
+test('family report omits household identity from inventory table', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
-  assert.match(source, /家庭身份/);
+  assert.doesNotMatch(source, /家庭身份/);
   assert.match(source, /投保人/);
   assert.match(source, /姓名待核对/);
   assert.match(source, /relationLabel/);
@@ -1762,6 +1792,7 @@ test('policy save keeps existing core when another scanned member relation is re
 
 test('policy entry auto-links typed or OCR names to existing family members', () => {
   const source = componentSource('UploadPolicyPage', 'AnalysisReportPage');
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
 
   assert.match(source, /function findSingleFamilyMemberByName/);
   assert.match(source, /function relationForFamilyMember/);
@@ -1771,4 +1802,9 @@ test('policy entry auto-links typed or OCR names to existing family members', ()
   assert.match(source, /applyParticipantRelation\(kind, relationForFamilyMember\(member\)\)/);
   assert.match(source, /findSingleFamilyMemberByName\(formData\.applicant \|\| ''\)/);
   assert.match(source, /findSingleFamilyMemberByName\(formData\.insured \|\| ''\)/);
+  assert.match(customerSource, /function autoBindEntryMembersByName/);
+  assert.match(customerSource, /relationLabelForEntryMember/);
+  assert.match(customerSource, /autoBindEntryMembersByName\(mergeScanToForm\(payload\.scan, current\)\)/);
+  assert.match(customerSource, /applicantMemberId: applicantMember\.id/);
+  assert.match(customerSource, /insuredMemberId: insuredMember\.id/);
 });

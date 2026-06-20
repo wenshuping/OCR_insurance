@@ -23,6 +23,9 @@ test('local production stack lets runtime OCR env override the default provider'
   const envBlock = localStackSource.match(/env:\s*\{[\s\S]+?POLICY_OCR_PROVIDER:[\s\S]+?\n\s*\},\n\s*\};/u)?.[0] || '';
   assert.doesNotMatch(envBlock, /POLICY_OCR_CONFIG_PATH/u);
   assert.match(envBlock, /POLICY_OCR_PROVIDER:\s*'remote_gpu_vision'[\s\S]+?\.\.\.extraEnv/u);
+  assert.match(envBlock, /\.\.\.extraEnv[\s\S]+?\.\.\.readProcessRuntimeEnvOverrides\(\)/u);
+  assert.match(localStackSource, /function readProcessRuntimeEnvOverrides/u);
+  assert.match(localStackSource, /'POLICY_OCR_DEEPSEEK_OCR_BASE_URL'/u);
 });
 
 test('development dotenv skip still permits DeepSeek review configuration', () => {
