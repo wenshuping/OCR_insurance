@@ -200,3 +200,23 @@ test('buildLocalCompanyInventory counts JRCPCX clause URL from normalized and so
   assert.equal(inventory.length, 1);
   assert.equal(inventory[0].localJrcpcxClauseUrlCount, 2);
 });
+
+test('buildLocalCompanyInventory counts unique JRCPCX clause URLs across all row candidates', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 12,
+      company: '友邦人寿保险有限公司',
+      productName: '友邦终身寿险',
+      productType: '人身保险类',
+      clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-duplicate&t=1',
+      normalizedClauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-duplicate&t=2',
+      pdfOriginalUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-pdf&t=1',
+      payload: {
+        sourceKnowledgeUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-source&t=1',
+      },
+    },
+  ]);
+
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].localJrcpcxClauseUrlCount, 3);
+});

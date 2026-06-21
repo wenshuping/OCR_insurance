@@ -77,7 +77,8 @@ export function isHumanInsuranceEvidence(row = {}) {
   return hasStrongHumanEvidence;
 }
 
-function jrcpcxClauseUrlOf(row = {}) {
+function jrcpcxClauseUrlsOf(row = {}) {
+  const urls = new Set();
   for (const value of [
     row.clauseUrl,
     row.payload?.clauseUrl,
@@ -99,13 +100,13 @@ function jrcpcxClauseUrlOf(row = {}) {
     row.payload?.source_knowledge_url,
   ]) {
     const normalized = normalizeClauseUrl(value);
-    if (normalized) return normalized;
+    if (normalized) urls.add(normalized);
   }
-  return '';
+  return [...urls];
 }
 
 function companySummaryFromRows(company, rows = []) {
-  const localJrcpcxClauseUrlCount = rows.filter((row) => jrcpcxClauseUrlOf(row)).length;
+  const localJrcpcxClauseUrlCount = new Set(rows.flatMap((row) => jrcpcxClauseUrlsOf(row))).size;
   const localPdfPathCount = rows.filter((row) => pdfLocalPathOf(row)).length;
   const localHumanInsuranceEvidenceCount = rows.filter((row) => isHumanInsuranceEvidence(row)).length;
   const hasPropertyOnlyEvidence = rows.length > 0 && localHumanInsuranceEvidenceCount === 0 && rows.every((row) => hasPropertyInsuranceEvidence(row));
