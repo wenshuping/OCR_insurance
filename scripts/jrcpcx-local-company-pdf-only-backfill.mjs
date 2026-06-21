@@ -12,6 +12,24 @@ const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
 const DEFAULT_DB_PATH = path.join(runtimeDir, 'policy-ocr.sqlite');
 const DEFAULT_STATUS_SHARDS = Object.freeze(['在售', '停售', '停用']);
+const INVENTORY_CSV_HEADERS = Object.freeze([
+  'company',
+  'localCompanyName',
+  'submittedDeptName',
+  'localKnowledgeRecordCount',
+  'localHumanInsuranceEvidenceCount',
+  'localJrcpcxClauseUrlCount',
+  'localPdfPathCount',
+  'included',
+  'excludeReason',
+]);
+const QUERY_CSV_HEADERS = Object.freeze([
+  'deptName',
+  'localCompanyName',
+  'productTypeLabel',
+  'productTermLabel',
+  'productStateLabel',
+]);
 
 function trim(value = '') {
   return String(value || '').trim();
@@ -23,6 +41,46 @@ function parseJson(value, fallback = {}) {
   } catch {
     return fallback;
   }
+}
+
+export function timestampStamp(value = new Date().toISOString()) {
+  return trim(value).replace(/[:.]/gu, '-');
+}
+
+export function parseCliArgs(argv = []) {
+  const args = {};
+  const booleanArgs = new Set(['pretty']);
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg.startsWith('--')) continue;
+    const [key, inlineValue] = arg.slice(2).split('=', 2);
+    if (booleanArgs.has(key) && inlineValue === undefined) {
+      args[key] = true;
+      continue;
+    }
+    const value = inlineValue ?? argv[index + 1];
+    if (inlineValue === undefined && !booleanArgs.has(key)) index += 1;
+    args[key] = value;
+  }
+  return args;
+}
+
+export function csvCell(value) {
+  if (value === undefined || value === null) return '';
+  const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  return /[",\n\r]/u.test(text) ? `"${text.replace(/"/gu, '""')}"` : text;
+}
+
+export function writeJsonFile(filePath, value, pretty = false) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, pretty ? 2 : 0)}\n`);
+}
+
+export function writeCsvFile(filePath, rows = [], headers = []) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const lines = [`\ufeff${headers.join(',')}`];
+  for (const row of rows) lines.push(headers.map((header) => csvCell(row[header])).join(','));
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`);
 }
 
 function productNameOf(row = {}) {
@@ -159,4 +217,108 @@ export function buildLocalCompanyQueries(inventory = [], statusLabels = DEFAULT_
     }
   }
   return queries;
+}
+
+export async function readKnowledgeRecordsReadOnly(dbPath) {
+  const resolvedDbPath = path.resolve(dbPath);
+  if (!fs.existsSync(resolvedDbPath)) throw new Error(`SQLite DB not found: ${resolvedDbPath}`);
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(resolvedDbPath, { readOnly: true });
+  try {
+    return db.prepare('SELECT id, company, product_name, url, payload FROM knowledge_records ORDER BY id ASC')
+      .all()
+      .map((row) => {
+        const payload = parseJson(row.payload, {});
+        return {
+          ...payload,
+          id: row.id,
+          company: row.company || payload.company,
+          productName: row.product_name || payload.productName,
+          url: row.url || payload.url,
+          payload,
+        };
+      });
+  } finally {
+    db.close();
+  }
+}
+
+export function writeLocalCompanyQueryArtifacts({
+  inventory = [],
+  queries = [],
+  outputDir = runtimeDir,
+  batchName = `jrcpcx-local-company-pdf-only-${timestampStamp()}`,
+  generatedAt = new Date().toISOString(),
+  dbPath = '',
+  pretty = false,
+} = {}) {
+  const files = {
+    inventoryJson: path.join(outputDir, `${batchName}-company-inventory.json`),
+    inventoryCsv: path.join(outputDir, `${batchName}-company-inventory.csv`),
+    queriesJson: path.join(outputDir, `${batchName}-queries.json`),
+    queriesCsv: path.join(outputDir, `${batchName}-queries.csv`),
+  };
+  const inventorySummary = {
+    localCompanyCount: inventory.length,
+    includedCompanyCount: inventory.filter((row) => row.included).length,
+    excludedCompanyCount: inventory.filter((row) => !row.included).length,
+  };
+  writeJsonFile(files.inventoryJson, {
+    schemaVersion: 'jrcpcx-local-company-inventory/v1',
+    generatedAt,
+    dbPath,
+    inventory,
+  }, pretty);
+  writeCsvFile(files.inventoryCsv, inventory, INVENTORY_CSV_HEADERS);
+  writeJsonFile(files.queriesJson, {
+    schemaVersion: 'jrcpcx-local-company-query-file/v1',
+    generatedAt,
+    dbPath,
+    inventorySummary,
+    queries,
+  }, pretty);
+  writeCsvFile(files.queriesCsv, queries, QUERY_CSV_HEADERS);
+  return files;
+}
+
+async function runQueryFileCli(args) {
+  const generatedAt = new Date().toISOString();
+  const dbPath = path.resolve(args['db-path'] || process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH);
+  const outputDir = path.resolve(args['output-dir'] || runtimeDir);
+  const batchName = trim(args['batch-name']) || `jrcpcx-local-company-pdf-only-${timestampStamp(generatedAt)}`;
+  const records = await readKnowledgeRecordsReadOnly(dbPath);
+  const inventory = buildLocalCompanyInventory(records);
+  const queries = buildLocalCompanyQueries(inventory);
+  const files = writeLocalCompanyQueryArtifacts({
+    inventory,
+    queries,
+    outputDir,
+    batchName,
+    generatedAt,
+    dbPath,
+    pretty: Boolean(args.pretty),
+  });
+  const summary = {
+    localCompanyCount: inventory.length,
+    includedCompanyCount: inventory.filter((row) => row.included).length,
+    excludedCompanyCount: inventory.filter((row) => !row.included).length,
+    queryCount: queries.length,
+  };
+  process.stdout.write(`${JSON.stringify({ summary, files }, null, args.pretty ? 2 : 0)}\n`);
+  return { summary, files, inventory, queries };
+}
+
+export async function runCli(argv = process.argv.slice(2)) {
+  const args = parseCliArgs(argv);
+  if (args.mode === 'query-file') return runQueryFileCli(args);
+  throw new Error(`Unsupported --mode ${args.mode || '(missing)'}. Use query-file.`);
+}
+
+if (process.argv[1] && __filename === fs.realpathSync(process.argv[1])) {
+  try {
+    await runCli();
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  }
 }

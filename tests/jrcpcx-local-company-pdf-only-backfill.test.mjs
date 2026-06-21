@@ -260,3 +260,69 @@ test('buildLocalCompanyInventory counts every supported JRCPCX URL candidate var
     assert.equal(inventory[0].localJrcpcxClauseUrlCount, 1, candidate.label);
   }
 });
+
+test('CLI query-file mode writes inventory and queries from read-only SQLite', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-local-company-query-'));
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE knowledge_records (
+        id INTEGER PRIMARY KEY,
+        company TEXT,
+        product_name TEXT,
+        url TEXT,
+        payload TEXT NOT NULL
+      );
+    `);
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(1, '阳光人寿保险股份有限公司', '阳光人寿重大疾病保险', 'https://example.test/sunshine', JSON.stringify({
+        company: '阳光人寿保险股份有限公司',
+        productName: '阳光人寿重大疾病保险',
+        productType: '健康保险-疾病保险',
+        pageText: '保险责任包括重大疾病保险金。',
+        pdfLocalPath: '/tmp/sunshine.pdf',
+      }));
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(2, '某财产保险股份有限公司', '机动车商业保险', 'https://example.test/property', JSON.stringify({
+        company: '某财产保险股份有限公司',
+        productName: '机动车商业保险',
+        productType: '财产保险类',
+      }));
+  } finally {
+    db.close();
+  }
+
+  const result = spawnSync(process.execPath, [
+    'scripts/jrcpcx-local-company-pdf-only-backfill.mjs',
+    '--mode=query-file',
+    `--db-path=${dbPath}`,
+    `--output-dir=${dir}`,
+    '--batch-name=jrcpcx-local-company-pdf-only-test',
+    '--pretty',
+  ], {
+    cwd: path.resolve('.'),
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.summary.localCompanyCount, 2);
+  assert.equal(output.summary.includedCompanyCount, 1);
+  assert.equal(output.summary.excludedCompanyCount, 1);
+  assert.equal(output.summary.queryCount, 3);
+  assert.equal(fs.existsSync(output.files.inventoryJson), true);
+  assert.equal(fs.existsSync(output.files.inventoryCsv), true);
+  assert.equal(fs.existsSync(output.files.queriesJson), true);
+  assert.equal(fs.existsSync(output.files.queriesCsv), true);
+  const queries = JSON.parse(fs.readFileSync(output.files.queriesJson, 'utf8')).queries;
+  assert.equal(queries.length, 3);
+  assert.equal(queries[0].deptName, '阳光人寿保险股份有限公司');
+
+  const readOnlyDb = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(readOnlyDb.prepare('SELECT COUNT(*) AS count FROM knowledge_records').get().count, 2);
+  } finally {
+    readOnlyDb.close();
+  }
+});
