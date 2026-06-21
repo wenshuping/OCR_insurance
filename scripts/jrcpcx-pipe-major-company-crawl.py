@@ -199,6 +199,21 @@ def detail_metadata(result: Any) -> dict[str, Any]:
     return {key: value for key, value in result.items() if key != "record"}
 
 
+def is_life_ins_detail_url(value: str) -> bool:
+    return "/lifeIns/" in trim(value)
+
+
+def filter_query_products(query: dict[str, Any], products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    product_type_label = trim(query.get("productTypeLabel"))
+    if product_type_label != "人身保险类":
+        return products
+    return [
+        product
+        for product in products
+        if isinstance(product, dict) and is_life_ins_detail_url(product.get("detailUrl"))
+    ]
+
+
 def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str, Any]:
     return {
         "ok": True,
@@ -221,6 +236,7 @@ def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str,
         "skipExisting": bool(args.skip_existing),
         "pdfOnly": bool(args.pdf_only),
         "knownClauseUrlCount": 0,
+        "filteredNonLifeProductCount": 0,
         "pdfDownloadSkippedExistingCount": 0,
         "userDataDir": args.user_data_dir,
         "waitMs": args.wait_ms,
@@ -264,7 +280,15 @@ async def run_queries(args: argparse.Namespace, crawler: Any, queries: list[dict
                     fetch_detail_links=True,
                 )
                 products = result.get("products") if isinstance(result.get("products"), list) else []
-                state["queries"].append(query_metadata(result))
+                raw_product_count = len(products)
+                products = filter_query_products(query, products)
+                filtered_non_life_count = raw_product_count - len(products)
+                state["filteredNonLifeProductCount"] = int(state.get("filteredNonLifeProductCount") or 0) + filtered_non_life_count
+                metadata = query_metadata(result)
+                if filtered_non_life_count:
+                    metadata["rawProductCount"] = raw_product_count
+                    metadata["filteredNonLifeProductCount"] = filtered_non_life_count
+                state["queries"].append(metadata)
                 state["products"].extend(products)
                 if result.get("queryButtonDisabled"):
                     mark_partial(
@@ -300,6 +324,18 @@ def run_details(
             continue
         detail_url = trim(product.get("detailUrl"))
         if not detail_url or detail_url in seen_detail_urls:
+            continue
+        if not is_life_ins_detail_url(detail_url):
+            state["detailResults"].append(
+                {
+                    "ok": True,
+                    "skippedNonLifeProduct": True,
+                    "reason": "non_life_detail_url",
+                    "detailUrl": detail_url,
+                    "productName": trim(product.get("productName")),
+                }
+            )
+            write_checkpoint(args.output, state)
             continue
         seen_detail_urls.add(detail_url)
         fetched += 1
@@ -353,6 +389,7 @@ def compact_summary(output_path: str, state: dict[str, Any]) -> dict[str, Any]:
         "detailFailureCount": state["detailFailureCount"],
         "recordCount": state["recordCount"],
         "responsibilityCount": state["responsibilityCount"],
+        "filteredNonLifeProductCount": state.get("filteredNonLifeProductCount", 0),
         "pdfDownloadSkippedExistingCount": state["pdfDownloadSkippedExistingCount"],
         "pdfArchiveDir": state["pdfArchiveDir"],
         "dbPath": state["dbPath"],
