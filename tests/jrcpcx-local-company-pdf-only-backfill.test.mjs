@@ -108,3 +108,56 @@ test('buildLocalCompanyInventory counts JRCPCX clause URL after non-JRCPCX sourc
   assert.equal(inventory[0].included, true);
   assert.equal(inventory[0].localJrcpcxClauseUrlCount, 1);
 });
+
+test('property product evidence overrides human words in company names', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 6,
+      company: '中国人寿财产保险股份有限公司',
+      productName: '机动车商业保险',
+      productType: '财产保险类',
+      pageText: '保险责任包括车辆损失保险责任。',
+    },
+  ]);
+
+  assert.deepEqual(
+    inventory.map((row) => [row.company, row.included, row.excludeReason]),
+    [['中国人寿财产保险股份有限公司', false, 'property_insurance_only']],
+  );
+  assert.deepEqual(buildLocalCompanyQueries(inventory), []);
+});
+
+test('buildLocalCompanyInventory preserves local and submitted company names from rows', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 7,
+      company: '友邦保险有限公司上海分公司',
+      localCompanyName: '友邦上海本地名称',
+      submittedDeptName: '友邦人寿保险有限公司',
+      productName: '友邦附加意外伤害保险',
+      productType: '人身保险类',
+    },
+  ]);
+
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].company, '友邦保险有限公司上海分公司');
+  assert.equal(inventory[0].localCompanyName, '友邦上海本地名称');
+  assert.equal(inventory[0].submittedDeptName, '友邦人寿保险有限公司');
+});
+
+test('generic responsibility text alone does not create human-insurance evidence', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 8,
+      company: '某保险股份有限公司',
+      productName: '综合保障计划',
+      productType: '',
+      pageText: '保险责任包括合同约定的保障责任。',
+    },
+  ]);
+
+  assert.deepEqual(
+    inventory.map((row) => [row.company, row.included, row.excludeReason]),
+    [['某保险股份有限公司', false, 'no_human_insurance_evidence']],
+  );
+});

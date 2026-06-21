@@ -45,28 +45,36 @@ function companyOf(row = {}) {
   return trim(row.company || row.issuerFullName || row.payload?.company || row.payload?.issuerFullName);
 }
 
+function localCompanyNameOf(row = {}) {
+  return trim(row.localCompanyName || row.local_company_name || row.payload?.localCompanyName || row.payload?.local_company_name);
+}
+
+function submittedDeptNameOf(row = {}) {
+  return trim(row.submittedDeptName || row.submitted_dept_name || row.payload?.submittedDeptName || row.payload?.submitted_dept_name);
+}
+
 const STRONG_HUMAN_INSURANCE_RE = /人身保险|人寿|寿险|健康保险|疾病保险|医疗保险|意外|年金|养老|两全|终身寿|定期寿|护理|重疾|少儿|教育金/iu;
-const GENERIC_RESPONSIBILITY_RE = /保险责任/iu;
 const PROPERTY_INSURANCE_RE = /财产保险|财险|车险|机动车|责任保险|保证保险|信用保险|农业保险|货运|船舶|工程保险|企业财产/iu;
 
 function evidenceTextOf(row = {}) {
   return [companyOf(row), productNameOf(row), productTypeOf(row), pageTextOf(row)].filter(Boolean).join(' ');
 }
 
-function humanSignalTextOf(row = {}) {
-  return [companyOf(row), productNameOf(row), productTypeOf(row)].filter(Boolean).join(' ');
+function materialSignalTextOf(row = {}) {
+  return [productNameOf(row), productTypeOf(row), pageTextOf(row)].filter(Boolean).join(' ');
 }
 
 function hasPropertyInsuranceEvidence(row = {}) {
-  return PROPERTY_INSURANCE_RE.test(evidenceTextOf(row));
+  return PROPERTY_INSURANCE_RE.test(materialSignalTextOf(row));
 }
 
 export function isHumanInsuranceEvidence(row = {}) {
   const text = evidenceTextOf(row);
   if (!text) return false;
-  if (STRONG_HUMAN_INSURANCE_RE.test(humanSignalTextOf(row))) return true;
-  if (hasPropertyInsuranceEvidence(row)) return false;
-  return GENERIC_RESPONSIBILITY_RE.test(pageTextOf(row));
+  const materialText = materialSignalTextOf(row);
+  const hasStrongHumanEvidence = STRONG_HUMAN_INSURANCE_RE.test(materialText);
+  if (hasPropertyInsuranceEvidence(row) && !hasStrongHumanEvidence) return false;
+  return hasStrongHumanEvidence;
 }
 
 function jrcpcxClauseUrlOf(row = {}) {
@@ -83,10 +91,12 @@ function companySummaryFromRows(company, rows = []) {
   const localHumanInsuranceEvidenceCount = rows.filter((row) => isHumanInsuranceEvidence(row)).length;
   const hasPropertyOnlyEvidence = rows.length > 0 && localHumanInsuranceEvidenceCount === 0 && rows.every((row) => hasPropertyInsuranceEvidence(row));
   const included = localHumanInsuranceEvidenceCount > 0;
+  const localCompanyName = rows.map((row) => localCompanyNameOf(row)).find(Boolean) || company;
+  const submittedDeptName = rows.map((row) => submittedDeptNameOf(row)).find(Boolean) || company;
   return {
     company,
-    localCompanyName: company,
-    submittedDeptName: company,
+    localCompanyName,
+    submittedDeptName,
     localKnowledgeRecordCount: rows.length,
     localHumanInsuranceEvidenceCount,
     localJrcpcxClauseUrlCount,
