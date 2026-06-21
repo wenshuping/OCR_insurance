@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import {
@@ -532,6 +533,56 @@ test('buildPdfOnlyReport separates skipped-existing reasons and blocked rows', (
   assert.equal(report.blocked[0].reason, 'JRCPCX_CLAUSE_PDF_FETCH_FAILED');
 });
 
+test('buildPdfOnlyReport enriches skipped-existing rows with local PDF manifest records', () => {
+  const pdfPath = ensurePdfFixture();
+  const pdfSha256 = sha256File(pdfPath);
+  const report = buildPdfOnlyReport({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    localPdfRecords: [
+      {
+        id: 514164,
+        company: '中国人寿保险股份有限公司',
+        productName: '国寿附加旅行综合医疗保险',
+        url: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=life-medical&t=111',
+        pdfLocalPath: pdfPath,
+        pdfSha256,
+        pdfBytes: fs.statSync(pdfPath).size,
+        pdfOriginalUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=life-medical&t=111',
+        pdfContentType: 'application/pdf',
+        pdfArchivedAt: '2026-06-18T12:05:30Z',
+      },
+    ],
+    crawlResult: {
+      records: [
+        {
+          company: '中国人寿保险股份有限公司',
+          productName: '国寿附加旅行综合医疗保险',
+          productType: '健康保险-医疗保险',
+          salesStatus: '在售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=life-medical',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=222&info=life-medical',
+          clauseFileName: 'life_medical_TERMS.PDF',
+          skippedExisting: true,
+          skippedReason: 'existing_url',
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.summary.skippedExistingCount, 1);
+  assert.equal(report.summary.existingPdfManifestCount, 1);
+  assert.equal(report.summary.existingPdfPathExistsCount, 1);
+  assert.equal(report.summary.missingExistingPdfPathCount, 0);
+  assert.equal(report.summary.missingExistingPdfFileCount, 0);
+  assert.equal(report.summary.existingPdfSha256MismatchCount, 0);
+  assert.equal(report.summary.byCompany.existingPdfManifest['中国人寿保险股份有限公司'], 1);
+  assert.equal(report.existingPdfManifest[0].pdfLocalPath, pdfPath);
+  assert.equal(report.existingPdfManifest[0].pdfFileName, path.basename(pdfPath));
+  assert.equal(report.existingPdfManifest[0].pdfSha256, pdfSha256);
+  assert.equal(report.existingPdfManifest[0].pdfSha256MatchesFile, true);
+  assert.equal(report.existingPdfManifest[0].sourceKnowledgeRecordId, 514164);
+});
+
 test('validatePdfOnlyReport verifies PDF signature, sha256, and required metadata', () => {
   const pdfPath = ensurePdfFixture();
   const nonPdfPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-non-pdf-')), 'not-pdf.pdf');
@@ -700,9 +751,12 @@ test('writePdfOnlyArtifacts writes aggregate and per-company JSON and CSV files'
   assert.equal(fs.existsSync(files.aggregate.catalogJson), true);
   assert.equal(fs.existsSync(files.aggregate.catalogCsv), true);
   assert.equal(fs.existsSync(files.aggregate.downloadedCsv), true);
+  assert.equal(fs.existsSync(files.aggregate.existingPdfManifestJson), true);
+  assert.equal(fs.existsSync(files.aggregate.existingPdfManifestCsv), true);
   assert.equal(fs.existsSync(files.byCompany['太平人寿保险有限公司'].catalogJson), true);
   assert.equal(fs.existsSync(files.byCompany['太平人寿保险有限公司'].catalogCsv), true);
   assert.equal(fs.existsSync(files.byCompany['太平人寿保险有限公司'].downloadedJson), true);
+  assert.equal(fs.existsSync(files.byCompany['太平人寿保险有限公司'].existingPdfManifestJson), true);
   assert.equal(JSON.parse(fs.readFileSync(files.byCompany['太平人寿保险有限公司'].summaryJson, 'utf8')).representedHashCount, 1);
   assert.match(fs.readFileSync(files.aggregate.downloadedCsv, 'utf8'), /太平团体年金保险/u);
   assert.match(fs.readFileSync(files.aggregate.catalogCsv, 'utf8'), /taiping_TERMS\.PDF/u);
@@ -750,4 +804,89 @@ test('CLI pdf-only mode writes artifact output without touching SQLite', () => {
   assert.equal(output.validation.ok, true);
   assert.equal(fs.existsSync(output.files.aggregate.summaryJson), true);
   assert.equal(fs.existsSync(output.files.aggregate.downloadedCsv), true);
+});
+
+test('CLI pdf-only mode enriches skipped-existing manifest from read-only SQLite', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-pdf-only-cli-db-'));
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const inputPath = path.join(dir, 'crawl.json');
+  const pdfPath = path.join(dir, 'existing.pdf');
+  fs.writeFileSync(pdfPath, '%PDF-1.4\n% existing fixture\n');
+  const pdfSha256 = sha256File(pdfPath);
+  const clauseUrl = 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=cli-db-existing&t=111';
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE knowledge_records (
+        id INTEGER PRIMARY KEY,
+        company TEXT,
+        product_name TEXT,
+        url TEXT,
+        payload TEXT NOT NULL
+      );
+    `);
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(1, '中国人寿保险股份有限公司', '国寿附加旅行综合医疗保险', clauseUrl, JSON.stringify({
+        company: '中国人寿保险股份有限公司',
+        productName: '国寿附加旅行综合医疗保险',
+        url: clauseUrl,
+        pdfLocalPath: pdfPath,
+        pdfSha256,
+        pdfBytes: fs.statSync(pdfPath).size,
+        pdfOriginalUrl: clauseUrl,
+        pdfContentType: 'application/pdf',
+        pdfArchivedAt: '2026-06-18T12:05:30Z',
+      }));
+  } finally {
+    db.close();
+  }
+
+  fs.writeFileSync(inputPath, `${JSON.stringify({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    records: [
+      {
+        company: '中国人寿保险股份有限公司',
+        productName: '国寿附加旅行综合医疗保险',
+        productType: '健康保险-医疗保险',
+        salesStatus: '在售',
+        industryCode: '中国人寿〔2026〕医疗保险39号',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=cli-db-existing',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=222&info=cli-db-existing',
+        clauseFileName: 'cli_db_existing_TERMS.PDF',
+        skippedExisting: true,
+        skippedReason: 'existing_url',
+      },
+    ],
+  })}\n`);
+
+  const result = spawnSync(process.execPath, [
+    'scripts/jrcpcx-major-company-gap-backfill.mjs',
+    '--mode=pdf-only',
+    `--input=${inputPath}`,
+    `--output-dir=${dir}`,
+    '--batch-name=jrcpcx-major-company-pdf-only-cli-db-test',
+    `--db-path=${dbPath}`,
+    '--pretty',
+  ], {
+    cwd: path.resolve('.'),
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.summary.skippedExistingCount, 1);
+  assert.equal(output.summary.existingPdfManifestCount, 1);
+  assert.equal(output.summary.existingPdfPathExistsCount, 1);
+  assert.equal(output.summary.missingExistingPdfPathCount, 0);
+  assert.equal(output.validation.ok, true);
+  const manifest = JSON.parse(fs.readFileSync(output.files.aggregate.existingPdfManifestJson, 'utf8'));
+  assert.equal(manifest[0].pdfLocalPath, pdfPath);
+  assert.equal(manifest[0].pdfSha256, pdfSha256);
+  assert.equal(manifest[0].sourceKnowledgeRecordId, 1);
+  const readOnlyDb = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(readOnlyDb.prepare('SELECT COUNT(*) AS count FROM knowledge_records').get().count, 1);
+  } finally {
+    readOnlyDb.close();
+  }
 });

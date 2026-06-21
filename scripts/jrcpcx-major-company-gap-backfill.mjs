@@ -366,6 +366,90 @@ function pdfOnlyRowsFromCrawl(crawlResult = {}) {
   return { downloaded, skippedExisting, blocked };
 }
 
+function pdfKnowledgeUrlCandidates(row = {}) {
+  return [
+    row.url,
+    row.clauseUrl,
+    row.normalizedClauseUrl,
+    row.pdfOriginalUrl,
+    row.sourceKnowledgeUrl,
+  ];
+}
+
+function pdfKnowledgeEntry(row = {}) {
+  const pdfLocalPath = pdfLocalPathOf(row);
+  const pdfSha256 = pdfSha256Of(row);
+  return {
+    sourceKnowledgeRecordId: row.id || row.sourceKnowledgeRecordId || '',
+    sourceKnowledgeCompany: trim(row.company || row.sourceKnowledgeCompany || row.issuerFullName),
+    sourceKnowledgeProductName: trim(row.productName || row.product_name || row.sourceKnowledgeProductName),
+    sourceKnowledgeUrl: trim(row.url || row.sourceKnowledgeUrl),
+    pdfOriginalUrl: trim(row.pdfOriginalUrl || row.url),
+    pdfLocalPath,
+    pdfFileName: pdfLocalPath ? path.basename(pdfLocalPath) : '',
+    pdfSha256,
+    pdfBytes: pdfBytesOf(row),
+    pdfContentType: pdfContentTypeOf(row),
+    pdfArchivedAt: trim(row.pdfArchivedAt),
+  };
+}
+
+function buildKnownPdfByClauseUrl(localPdfRecords = []) {
+  const known = new Map();
+  for (const row of Array.isArray(localPdfRecords) ? localPdfRecords : []) {
+    const entry = pdfKnowledgeEntry(row);
+    for (const value of pdfKnowledgeUrlCandidates(row)) {
+      const normalized = normalizeClauseUrl(value);
+      if (!normalized) continue;
+      const existing = known.get(normalized);
+      if (!existing || (!existing.pdfLocalPath && entry.pdfLocalPath)) known.set(normalized, entry);
+    }
+  }
+  return known;
+}
+
+function enrichSkippedExistingRows(skippedExisting = [], localPdfRecords = []) {
+  const knownByClauseUrl = buildKnownPdfByClauseUrl(localPdfRecords);
+  return skippedExisting.map((row) => {
+    const normalizedClauseUrl = normalizeClauseUrl(row.normalizedClauseUrl || row.clauseUrl || row.pdfOriginalUrl);
+    const known = knownByClauseUrl.get(normalizedClauseUrl) || {};
+    const pdfLocalPath = pdfLocalPathOf(known) || pdfLocalPathOf(row);
+    const pdfSha256 = pdfSha256Of(known) || pdfSha256Of(row);
+    let actualPdfSha256 = '';
+    let actualPdfBytes = 0;
+    let existingPdfPathExists = false;
+    if (pdfLocalPath) {
+      try {
+        const bytes = fs.readFileSync(pdfLocalPath);
+        existingPdfPathExists = true;
+        actualPdfBytes = bytes.length;
+        actualPdfSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      } catch {
+        existingPdfPathExists = false;
+      }
+    }
+    return {
+      ...row,
+      normalizedClauseUrl: normalizedClauseUrl || row.normalizedClauseUrl,
+      pdfOriginalUrl: trim(known.pdfOriginalUrl || row.pdfOriginalUrl),
+      pdfLocalPath,
+      pdfFileName: trim(known.pdfFileName || row.pdfFileName || (pdfLocalPath ? path.basename(pdfLocalPath) : '')),
+      pdfSha256,
+      pdfBytes: Number(known.pdfBytes || row.pdfBytes || actualPdfBytes || 0) || 0,
+      pdfContentType: trim(known.pdfContentType || row.pdfContentType),
+      pdfArchivedAt: trim(known.pdfArchivedAt || row.pdfArchivedAt),
+      existingPdfPathExists,
+      actualPdfSha256,
+      actualPdfBytes,
+      pdfSha256MatchesFile: Boolean(pdfSha256 && actualPdfSha256 && pdfSha256 === actualPdfSha256),
+      sourceKnowledgeRecordId: known.sourceKnowledgeRecordId || row.sourceKnowledgeRecordId || '',
+      sourceKnowledgeCompany: known.sourceKnowledgeCompany || row.sourceKnowledgeCompany || '',
+      sourceKnowledgeProductName: known.sourceKnowledgeProductName || row.sourceKnowledgeProductName || '',
+      sourceKnowledgeUrl: known.sourceKnowledgeUrl || row.sourceKnowledgeUrl || '',
+    };
+  });
+}
+
 function candidateMaterialKey(row = {}) {
   const identityUrl = detailUrlOf(row) || trim(row.detailUrl) || clauseUrlOf(row) || trim(row.normalizedClauseUrl);
   const key = [
@@ -434,8 +518,11 @@ function unresolvedTruncatedShardsFrom(crawlResult = {}) {
 export function buildPdfOnlyReport({
   crawlResult = {},
   generatedAt = new Date().toISOString(),
+  localPdfRecords = [],
 } = {}) {
-  const { downloaded, skippedExisting, blocked } = pdfOnlyRowsFromCrawl(crawlResult);
+  const { downloaded, skippedExisting: rawSkippedExisting, blocked } = pdfOnlyRowsFromCrawl(crawlResult);
+  const skippedExisting = enrichSkippedExistingRows(rawSkippedExisting, localPdfRecords);
+  const existingPdfManifest = skippedExisting.filter((row) => trim(row.pdfLocalPath));
   const catalogRows = Array.isArray(crawlResult.products) ? crawlResult.products : [];
   const candidateRows = [...catalogRows, ...downloaded, ...skippedExisting, ...blocked];
   const urlRepresented = skippedExisting.filter(isUrlRepresentedRow);
@@ -444,6 +531,9 @@ export function buildPdfOnlyReport({
     ...downloaded.filter((row) => !trim(row.pdfLocalPath)),
     ...blocked.filter((row) => trim(row.reason) === 'missing_pdf_local_path'),
   ];
+  const missingExistingPdfPathRows = skippedExisting.filter((row) => !trim(row.pdfLocalPath));
+  const missingExistingPdfFileRows = skippedExisting.filter((row) => trim(row.pdfLocalPath) && row.existingPdfPathExists === false);
+  const existingPdfSha256MismatchRows = skippedExisting.filter((row) => trim(row.pdfSha256) && trim(row.actualPdfSha256) && trim(row.pdfSha256) !== trim(row.actualPdfSha256));
   const unresolvedTruncatedShards = unresolvedTruncatedShardsFrom(crawlResult);
   const fallbackUnresolvedTruncatedShardCount = Number(crawlResult.summary?.unresolvedTruncatedShardCount || 0) || 0;
   return {
@@ -461,6 +551,11 @@ export function buildPdfOnlyReport({
       representedUrlCount: urlRepresented.length,
       representedHashCount: hashRepresented.length,
       missingPdfPathCount: missingPdfPathRows.length,
+      existingPdfManifestCount: existingPdfManifest.length,
+      existingPdfPathExistsCount: existingPdfManifest.filter((row) => row.existingPdfPathExists === true).length,
+      missingExistingPdfPathCount: missingExistingPdfPathRows.length,
+      missingExistingPdfFileCount: missingExistingPdfFileRows.length,
+      existingPdfSha256MismatchCount: existingPdfSha256MismatchRows.length,
       unresolvedTruncatedShardCount: unresolvedTruncatedShards.length || fallbackUnresolvedTruncatedShardCount,
       byCompany: {
         catalog: countByCompany(catalogRows),
@@ -472,12 +567,17 @@ export function buildPdfOnlyReport({
         representedUrl: countByCompany(urlRepresented),
         representedHash: countByCompany(hashRepresented),
         missingPdfPath: countByCompany(missingPdfPathRows),
+        existingPdfManifest: countByCompany(existingPdfManifest),
+        missingExistingPdfPath: countByCompany(missingExistingPdfPathRows),
+        missingExistingPdfFile: countByCompany(missingExistingPdfFileRows),
+        existingPdfSha256Mismatch: countByCompany(existingPdfSha256MismatchRows),
         unresolvedTruncatedShards: countByCompany(unresolvedTruncatedShards),
       },
     },
     catalog: catalogRows,
     downloaded,
     skippedExisting,
+    existingPdfManifest,
     blocked,
     unresolvedTruncatedShards,
   };
@@ -485,7 +585,11 @@ export function buildPdfOnlyReport({
 
 export function validatePdfOnlyReport(report = {}, existsFn = fs.existsSync) {
   const issues = [];
-  for (const row of Array.isArray(report.downloaded) ? report.downloaded : []) {
+  const rowsToValidate = [
+    ...(Array.isArray(report.downloaded) ? report.downloaded : []),
+    ...(Array.isArray(report.existingPdfManifest) ? report.existingPdfManifest : []),
+  ];
+  for (const row of rowsToValidate) {
     const pdfLocalPath = trim(row.pdfLocalPath);
     const expectedSha256 = trim(row.pdfSha256).toLowerCase();
     let fileBytes = null;
@@ -804,6 +908,18 @@ const PDF_ONLY_CATALOG_CSV_HEADERS = Object.freeze([
   'materialIdentityKey',
 ]);
 
+const EXISTING_PDF_MANIFEST_CSV_HEADERS = Object.freeze([
+  ...PDF_ONLY_CSV_HEADERS,
+  'existingPdfPathExists',
+  'pdfSha256MatchesFile',
+  'actualPdfSha256',
+  'actualPdfBytes',
+  'sourceKnowledgeRecordId',
+  'sourceKnowledgeCompany',
+  'sourceKnowledgeProductName',
+  'sourceKnowledgeUrl',
+]);
+
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
@@ -843,6 +959,32 @@ async function openReadOnlyKnowledgeSnapshot(dbPath) {
         .all()
         .map((row) => trim(row.url))
         .filter(Boolean);
+    },
+    allKnownJrcpcxPdfRecords() {
+      return db
+        .prepare(`
+          SELECT id, company, product_name, url, payload
+          FROM knowledge_records
+          WHERE url LIKE 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo%'
+             OR payload LIKE '%inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo%'
+          ORDER BY id ASC
+        `)
+        .all()
+        .map((row) => {
+          let payload = {};
+          try {
+            payload = row.payload ? JSON.parse(row.payload) : {};
+          } catch {
+            payload = {};
+          }
+          return {
+            ...payload,
+            id: row.id,
+            company: row.company || payload.company,
+            productName: row.product_name || payload.productName,
+            url: row.url || payload.url,
+          };
+        });
     },
     close() {
       db.close();
@@ -971,17 +1113,21 @@ export function writePdfOnlyArtifacts({
     downloadedCsv: path.join(outputDir, `${batchName}-downloaded.csv`),
     skippedExistingJson: path.join(outputDir, `${batchName}-skipped-existing.json`),
     skippedExistingCsv: path.join(outputDir, `${batchName}-skipped-existing.csv`),
+    existingPdfManifestJson: path.join(outputDir, `${batchName}-existing-pdf-manifest.json`),
+    existingPdfManifestCsv: path.join(outputDir, `${batchName}-existing-pdf-manifest.csv`),
     blockedJson: path.join(outputDir, `${batchName}-blocked.json`),
     blockedCsv: path.join(outputDir, `${batchName}-blocked.csv`),
   };
 
-  writeJsonFile(aggregate.summaryJson, { ...report, catalog: undefined, downloaded: undefined, skippedExisting: undefined, blocked: undefined }, pretty);
+  writeJsonFile(aggregate.summaryJson, { ...report, catalog: undefined, downloaded: undefined, skippedExisting: undefined, existingPdfManifest: undefined, blocked: undefined }, pretty);
   writeJsonFile(aggregate.catalogJson, report.catalog || [], pretty);
   writeCsvFile(aggregate.catalogCsv, (report.catalog || []).map(catalogCsvRow), PDF_ONLY_CATALOG_CSV_HEADERS);
   writeJsonFile(aggregate.downloadedJson, report.downloaded || [], pretty);
   writeCsvFile(aggregate.downloadedCsv, report.downloaded || [], PDF_ONLY_CSV_HEADERS);
   writeJsonFile(aggregate.skippedExistingJson, report.skippedExisting || [], pretty);
   writeCsvFile(aggregate.skippedExistingCsv, report.skippedExisting || [], PDF_ONLY_CSV_HEADERS);
+  writeJsonFile(aggregate.existingPdfManifestJson, report.existingPdfManifest || [], pretty);
+  writeCsvFile(aggregate.existingPdfManifestCsv, report.existingPdfManifest || [], EXISTING_PDF_MANIFEST_CSV_HEADERS);
   writeJsonFile(aggregate.blockedJson, report.blocked || [], pretty);
   writeCsvFile(aggregate.blockedCsv, report.blocked || [], PDF_ONLY_CSV_HEADERS);
 
@@ -996,12 +1142,15 @@ export function writePdfOnlyArtifacts({
       catalogCsv: `${prefix}-catalog.csv`,
       skippedExistingJson: `${prefix}-skipped-existing.json`,
       skippedExistingCsv: `${prefix}-skipped-existing.csv`,
+      existingPdfManifestJson: `${prefix}-existing-pdf-manifest.json`,
+      existingPdfManifestCsv: `${prefix}-existing-pdf-manifest.csv`,
       blockedJson: `${prefix}-blocked.json`,
       blockedCsv: `${prefix}-blocked.csv`,
       summaryJson: `${prefix}-summary.json`,
     };
     const downloaded = rowsForCompany(report.downloaded || [], config.issuerFullName);
     const skippedExisting = rowsForCompany(report.skippedExisting || [], config.issuerFullName);
+    const existingPdfManifest = rowsForCompany(report.existingPdfManifest || [], config.issuerFullName);
     const blocked = rowsForCompany(report.blocked || [], config.issuerFullName);
     const catalog = rowsForCompany(report.catalog || [], config.issuerFullName);
     writeJsonFile(companyFiles.downloadedJson, downloaded, pretty);
@@ -1010,6 +1159,8 @@ export function writePdfOnlyArtifacts({
     writeCsvFile(companyFiles.catalogCsv, catalog.map(catalogCsvRow), PDF_ONLY_CATALOG_CSV_HEADERS);
     writeJsonFile(companyFiles.skippedExistingJson, skippedExisting, pretty);
     writeCsvFile(companyFiles.skippedExistingCsv, skippedExisting, PDF_ONLY_CSV_HEADERS);
+    writeJsonFile(companyFiles.existingPdfManifestJson, existingPdfManifest, pretty);
+    writeCsvFile(companyFiles.existingPdfManifestCsv, existingPdfManifest, EXISTING_PDF_MANIFEST_CSV_HEADERS);
     writeJsonFile(companyFiles.blockedJson, blocked, pretty);
     writeCsvFile(companyFiles.blockedCsv, blocked, PDF_ONLY_CSV_HEADERS);
     writeJsonFile(companyFiles.summaryJson, {
@@ -1023,6 +1174,10 @@ export function writePdfOnlyArtifacts({
       representedUrlCount: countFromCompanyMap(report.summary?.byCompany?.representedUrl, config.issuerFullName),
       representedHashCount: countFromCompanyMap(report.summary?.byCompany?.representedHash, config.issuerFullName),
       missingPdfPathCount: countFromCompanyMap(report.summary?.byCompany?.missingPdfPath, config.issuerFullName),
+      existingPdfManifestCount: existingPdfManifest.length,
+      missingExistingPdfPathCount: countFromCompanyMap(report.summary?.byCompany?.missingExistingPdfPath, config.issuerFullName),
+      missingExistingPdfFileCount: countFromCompanyMap(report.summary?.byCompany?.missingExistingPdfFile, config.issuerFullName),
+      existingPdfSha256MismatchCount: countFromCompanyMap(report.summary?.byCompany?.existingPdfSha256Mismatch, config.issuerFullName),
       unresolvedTruncatedShardCount: countFromCompanyMap(report.summary?.byCompany?.unresolvedTruncatedShards, config.issuerFullName),
     }, pretty);
     byCompany[config.issuerFullName] = companyFiles;
@@ -1090,21 +1245,32 @@ async function runPdfOnlyCli(args) {
   if (!args.input) throw new Error('Missing --input <json>');
   const inputPath = path.resolve(args.input);
   const input = readJsonFile(inputPath);
-  const report = buildPdfOnlyReport({
-    crawlResult: { ...input, sourceCrawlPath: inputPath },
-    generatedAt: input.generatedAt || generatedAt,
-  });
-  const validation = validatePdfOnlyReport(report);
-  const outputDir = path.resolve(args['output-dir'] || runtimeDir);
-  const batchName = trim(args['batch-name']) || `jrcpcx-major-company-pdf-only-${timestampStamp(report.generatedAt)}`;
-  const files = writePdfOnlyArtifacts({
-    report: { ...report, validation },
-    outputDir,
-    batchName,
-    pretty: Boolean(args.pretty),
-  });
-  process.stdout.write(`${JSON.stringify({ summary: report.summary, validation, files }, null, 2)}\n`);
-  return { report, validation, files };
+  let knowledgeSnapshot = null;
+  let localPdfRecords = [];
+  try {
+    if (args['db-path']) {
+      knowledgeSnapshot = await openReadOnlyKnowledgeSnapshot(path.resolve(args['db-path']));
+      localPdfRecords = knowledgeSnapshot.allKnownJrcpcxPdfRecords();
+    }
+    const report = buildPdfOnlyReport({
+      crawlResult: { ...input, sourceCrawlPath: inputPath },
+      generatedAt: input.generatedAt || generatedAt,
+      localPdfRecords,
+    });
+    const validation = validatePdfOnlyReport(report);
+    const outputDir = path.resolve(args['output-dir'] || runtimeDir);
+    const batchName = trim(args['batch-name']) || `jrcpcx-major-company-pdf-only-${timestampStamp(report.generatedAt)}`;
+    const files = writePdfOnlyArtifacts({
+      report: { ...report, validation },
+      outputDir,
+      batchName,
+      pretty: Boolean(args.pretty),
+    });
+    process.stdout.write(`${JSON.stringify({ summary: report.summary, validation, files }, null, 2)}\n`);
+    return { report, validation, files };
+  } finally {
+    if (knowledgeSnapshot) knowledgeSnapshot.close();
+  }
 }
 
 async function runCli(argv = process.argv.slice(2)) {
