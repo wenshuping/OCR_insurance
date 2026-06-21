@@ -537,3 +537,99 @@ test('CLI query-file mode writes inventory and queries from read-only SQLite', (
     readOnlyDb.close();
   }
 });
+
+test('CLI pdf-only mode writes dynamic manifests and leaves SQLite unchanged', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-local-company-pdf-cli-'));
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const inputPath = path.join(dir, 'crawl.json');
+  const inventoryPath = path.join(dir, 'inventory.json');
+  const pdfPath = path.join(dir, 'existing.pdf');
+  fs.writeFileSync(pdfPath, '%PDF-1.4\n% existing local company pdf\n');
+  const pdfSha256 = sha256File(pdfPath);
+  const clauseUrl = 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=local-cli&t=1';
+
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE knowledge_records (
+        id INTEGER PRIMARY KEY,
+        company TEXT,
+        product_name TEXT,
+        url TEXT,
+        payload TEXT NOT NULL
+      );
+    `);
+    db.prepare('INSERT INTO knowledge_records (id, company, product_name, url, payload) VALUES (?, ?, ?, ?, ?)')
+      .run(1, '阳光人寿保险股份有限公司', '阳光人寿重大疾病保险', clauseUrl, JSON.stringify({
+        company: '阳光人寿保险股份有限公司',
+        productName: '阳光人寿重大疾病保险',
+        productType: '健康保险-疾病保险',
+        url: clauseUrl,
+        pdfLocalPath: pdfPath,
+        pdfSha256,
+        pdfBytes: fs.statSync(pdfPath).size,
+        pdfContentType: 'application/pdf',
+        pdfArchivedAt: '2026-06-18T12:00:00Z',
+      }));
+  } finally {
+    db.close();
+  }
+
+  fs.writeFileSync(inventoryPath, `${JSON.stringify({
+    inventory: [
+      {
+        company: '阳光人寿保险股份有限公司',
+        localCompanyName: '阳光人寿保险股份有限公司',
+        submittedDeptName: '阳光人寿保险股份有限公司',
+        included: true,
+      },
+    ],
+  })}\n`);
+
+  fs.writeFileSync(inputPath, `${JSON.stringify({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    records: [
+      {
+        company: '阳光人寿保险股份有限公司',
+        productName: '阳光人寿重大疾病保险',
+        productType: '健康保险-疾病保险',
+        productState: '停售',
+        industryCode: '阳光人寿〔2020〕疾病保险001号',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=local-cli',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=local-cli&t=2',
+        clauseFileName: 'local_cli_TERMS.PDF',
+        skippedExisting: true,
+        skippedReason: 'existing_url',
+      },
+    ],
+  })}\n`);
+
+  const result = spawnSync(process.execPath, [
+    'scripts/jrcpcx-local-company-pdf-only-backfill.mjs',
+    '--mode=pdf-only',
+    `--input=${inputPath}`,
+    `--inventory=${inventoryPath}`,
+    `--db-path=${dbPath}`,
+    `--output-dir=${dir}`,
+    '--batch-name=jrcpcx-local-company-pdf-only-cli-test',
+    '--pretty',
+  ], {
+    cwd: path.resolve('.'),
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.summary.existingPdfManifestCount, 1);
+  assert.equal(output.validation.ok, true);
+  assert.equal(fs.existsSync(output.files.aggregate.existingPdfManifestJson), true);
+  const manifest = JSON.parse(fs.readFileSync(output.files.aggregate.existingPdfManifestJson, 'utf8'));
+  assert.equal(manifest[0].pdfLocalPath, pdfPath);
+
+  const readOnlyDb = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.equal(readOnlyDb.prepare('SELECT COUNT(*) AS count FROM knowledge_records').get().count, 1);
+  } finally {
+    readOnlyDb.close();
+  }
+});

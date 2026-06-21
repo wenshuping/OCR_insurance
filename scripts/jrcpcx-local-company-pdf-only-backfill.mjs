@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildPdfOnlyReport,
   normalizeClauseUrl,
+  validatePdfOnlyReport,
 } from './jrcpcx-major-company-gap-backfill.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -126,6 +127,17 @@ export function csvCell(value) {
 export function writeJsonFile(filePath, value, pretty = false) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, pretty ? 2 : 0)}\n`);
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function inventoryFromArtifact(filePath) {
+  const input = readJsonFile(filePath);
+  if (Array.isArray(input)) return input;
+  if (Array.isArray(input.inventory)) return input.inventory;
+  throw new Error(`Inventory file must contain an inventory array: ${filePath}`);
 }
 
 export function writeCsvFile(filePath, rows = [], headers = []) {
@@ -557,6 +569,11 @@ export async function readKnowledgeRecordsReadOnly(dbPath) {
   }
 }
 
+async function readKnownJrcpcxPdfRecords(dbPath) {
+  const records = await readKnowledgeRecordsReadOnly(dbPath);
+  return records.filter((row) => jrcpcxClauseUrlsOf(row).length > 0);
+}
+
 export function writeLocalCompanyQueryArtifacts({
   inventory = [],
   queries = [],
@@ -622,10 +639,40 @@ async function runQueryFileCli(args) {
   return { summary, files, inventory, queries };
 }
 
+async function runPdfOnlyCli(args) {
+  const generatedAt = new Date().toISOString();
+  if (!args.input) throw new Error('Missing --input <json>');
+  if (!args.inventory) throw new Error('Missing --inventory <json>');
+  const dbPath = path.resolve(args['db-path'] || process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH);
+  const inputPath = path.resolve(args.input);
+  const inventoryPath = path.resolve(args.inventory);
+  const outputDir = path.resolve(args['output-dir'] || runtimeDir);
+  const input = readJsonFile(inputPath);
+  const inventory = inventoryFromArtifact(inventoryPath);
+  const localPdfRecords = await readKnownJrcpcxPdfRecords(dbPath);
+  const report = buildLocalCompanyPdfOnlyReport({
+    crawlResult: { ...input, sourceCrawlPath: inputPath },
+    inventory,
+    localPdfRecords,
+    generatedAt: input.generatedAt || generatedAt,
+  });
+  const validation = validatePdfOnlyReport(report);
+  const batchName = trim(args['batch-name']) || `jrcpcx-local-company-pdf-only-${timestampStamp(report.generatedAt)}`;
+  const files = writeLocalCompanyPdfOnlyArtifacts({
+    report: { ...report, validation },
+    outputDir,
+    batchName,
+    pretty: Boolean(args.pretty),
+  });
+  process.stdout.write(`${JSON.stringify({ summary: report.summary, validation, files }, null, args.pretty ? 2 : 0)}\n`);
+  return { report, validation, files };
+}
+
 export async function runCli(argv = process.argv.slice(2)) {
   const args = parseCliArgs(argv);
   if (args.mode === 'query-file') return runQueryFileCli(args);
-  throw new Error(`Unsupported --mode ${args.mode || '(missing)'}. Use query-file.`);
+  if (args.mode === 'pdf-only') return runPdfOnlyCli(args);
+  throw new Error(`Unsupported --mode ${args.mode || '(missing)'}. Use query-file or pdf-only.`);
 }
 
 if (process.argv[1] && __filename === fs.realpathSync(process.argv[1])) {
