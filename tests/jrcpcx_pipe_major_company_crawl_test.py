@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -45,6 +47,41 @@ class JrcpcxPipeMajorCompanyCrawlTest(unittest.TestCase):
         ]
 
         self.assertEqual(self.module.filter_query_products({"productTypeLabel": "财产保险类"}, products), products)
+
+    def test_load_products_accepts_saved_crawl_products(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            product_file = Path(temp_dir) / "crawl.json"
+            product_file.write_text(
+                json.dumps({"products": [{"productName": "寿险产品", "detailUrl": "https://example.test/lifeIns/detail"}]}),
+                encoding="utf-8",
+            )
+
+            products = self.module.load_products(str(product_file))
+
+        self.assertEqual(products[0]["productName"], "寿险产品")
+
+    def test_load_excluded_detail_urls_reads_detail_results_and_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            crawl_file = Path(temp_dir) / "crawl.json"
+            crawl_file.write_text(
+                json.dumps(
+                    {
+                        "detailResults": [{"detailUrl": "https://example.test/lifeIns/detail?data=detail"}],
+                        "records": [{"detailUrl": "https://example.test/lifeIns/detail?data=record"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            urls = self.module.load_excluded_detail_urls([str(crawl_file)])
+
+        self.assertEqual(
+            urls,
+            {
+                "https://example.test/lifeIns/detail?data=detail",
+                "https://example.test/lifeIns/detail?data=record",
+            },
+        )
 
 
 if __name__ == "__main__":

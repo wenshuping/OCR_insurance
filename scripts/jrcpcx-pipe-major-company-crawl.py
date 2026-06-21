@@ -46,7 +46,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a visible JRCPCX major-company crawl with checkpointed JSON output."
     )
-    parser.add_argument("--query-file", required=True)
+    parser.add_argument("--query-file")
+    parser.add_argument(
+        "--product-file",
+        help="Optional saved crawl JSON or product array. When set, skip query stage and fetch details from products.",
+    )
+    parser.add_argument(
+        "--exclude-detail-file",
+        action="append",
+        default=[],
+        help="Optional saved crawl JSON whose detail URLs should be skipped during product-file detail runs.",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--pdf-archive-dir",
@@ -66,7 +76,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true", default=False)
     parser.add_argument("--pdf-only", dest="pdf_only", action="store_true", default=False)
     args = parser.parse_args()
-    args.query_file = resolve_path(args.query_file)
+    if not args.query_file and not args.product_file:
+        parser.error("one of --query-file or --product-file is required")
+    args.query_file = resolve_path(args.query_file) if args.query_file else ""
+    args.product_file = resolve_path(args.product_file) if args.product_file else ""
+    args.exclude_detail_file = [resolve_path(value) for value in args.exclude_detail_file]
     args.output = resolve_path(args.output)
     args.pdf_archive_dir = resolve_path(args.pdf_archive_dir)
     args.user_data_dir = resolve_path(args.user_data_dir)
@@ -129,6 +143,57 @@ def load_queries(query_file: str) -> list[dict[str, Any]]:
             )
         normalized.append(normalize_query(query))
     return normalized
+
+
+def load_products(product_file: str) -> list[dict[str, Any]]:
+    with open(product_file, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    products = data if isinstance(data, list) else data.get("products") if isinstance(data, dict) else None
+    if not isinstance(products, list):
+        raise InputError(
+            "INVALID_PRODUCT_FILE",
+            "Product file must contain a JSON array or an object with a products array.",
+            productFile=product_file,
+        )
+    if not products:
+        raise InputError("EMPTY_PRODUCT_FILE", "Product file contains no products.", productFile=product_file)
+    normalized: list[dict[str, Any]] = []
+    for index, product in enumerate(products):
+        if not isinstance(product, dict):
+            raise InputError(
+                "INVALID_PRODUCT_FILE",
+                f"Product at index {index} must be an object.",
+                productFile=product_file,
+                index=index,
+            )
+        normalized.append(product)
+    return normalized
+
+
+def collect_detail_urls_from_saved_crawl(path: str) -> set[str]:
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        return set()
+    urls: set[str] = set()
+    for section in ("detailResults", "records"):
+        values = data.get(section)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            detail_url = trim(value.get("detailUrl"))
+            if detail_url:
+                urls.add(detail_url)
+    return urls
+
+
+def load_excluded_detail_urls(paths: list[str]) -> set[str]:
+    urls: set[str] = set()
+    for path in paths:
+        urls.update(collect_detail_urls_from_saved_crawl(path))
+    return urls
 
 
 def load_crawler_module() -> Any:
@@ -224,6 +289,7 @@ def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str,
         "source": SOURCE,
         "sourceLevel": SOURCE_LEVEL,
         "queryFile": args.query_file,
+        "productFile": args.product_file,
         "queryCount": query_count,
         "pageSize": args.page_size,
         "maxPages": args.max_pages,
@@ -238,6 +304,7 @@ def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str,
         "knownClauseUrlCount": 0,
         "filteredNonLifeProductCount": 0,
         "pdfDownloadSkippedExistingCount": 0,
+        "excludedDetailUrlCount": 0,
         "userDataDir": args.user_data_dir,
         "waitMs": args.wait_ms,
         "maxDetailProducts": args.max_detail_products,
@@ -314,8 +381,9 @@ def run_details(
     crawler: Any,
     state: dict[str, Any],
     known_clause_urls: set[str],
+    excluded_detail_urls: set[str] | None = None,
 ) -> None:
-    seen_detail_urls: set[str] = set()
+    seen_detail_urls: set[str] = set(excluded_detail_urls or set())
     fetched = 0
     for product in state.get("products") or []:
         if fetched >= args.max_detail_products:
@@ -382,6 +450,7 @@ def compact_summary(output_path: str, state: dict[str, Any]) -> dict[str, Any]:
         "message": state["message"],
         "output": output_path,
         "queryFile": state["queryFile"],
+        "productFile": state.get("productFile", ""),
         "queryCount": state["queryCount"],
         "completedQueryCount": len(state["queries"]),
         "productCount": state["productCount"],
@@ -391,6 +460,7 @@ def compact_summary(output_path: str, state: dict[str, Any]) -> dict[str, Any]:
         "responsibilityCount": state["responsibilityCount"],
         "filteredNonLifeProductCount": state.get("filteredNonLifeProductCount", 0),
         "pdfDownloadSkippedExistingCount": state["pdfDownloadSkippedExistingCount"],
+        "excludedDetailUrlCount": state.get("excludedDetailUrlCount", 0),
         "pdfArchiveDir": state["pdfArchiveDir"],
         "dbPath": state["dbPath"],
         "skipExisting": state["skipExisting"],
@@ -402,10 +472,22 @@ def compact_summary(output_path: str, state: dict[str, Any]) -> dict[str, Any]:
 
 async def run_async() -> dict[str, Any]:
     args = parse_args()
-    queries = load_queries(args.query_file)
     crawler = load_crawler_module()
-    state = build_initial_state(args, len(queries))
     known_clause_urls = load_known_clause_urls(args.db_path, crawler, args.skip_existing)
+    if args.product_file:
+        products = load_products(args.product_file)
+        excluded_detail_urls = load_excluded_detail_urls(args.exclude_detail_file)
+        state = build_initial_state(args, 0)
+        state["products"] = products
+        state["excludedDetailUrlCount"] = len(excluded_detail_urls)
+        state["knownClauseUrlCount"] = len(known_clause_urls)
+        write_checkpoint(args.output, state)
+        run_details(args, crawler, state, known_clause_urls, excluded_detail_urls)
+        write_checkpoint(args.output, state)
+        return compact_summary(args.output, state)
+
+    queries = load_queries(args.query_file)
+    state = build_initial_state(args, len(queries))
     state["knownClauseUrlCount"] = len(known_clause_urls)
     write_checkpoint(args.output, state)
     await run_queries(args, crawler, queries, state)
