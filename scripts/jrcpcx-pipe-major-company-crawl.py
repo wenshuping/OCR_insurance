@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,12 +60,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--page-size", type=int, choices=SUPPORTED_PAGE_SIZES, default=50)
     parser.add_argument("--max-pages", type=int, default=2)
     parser.add_argument("--max-detail-products", type=int, default=180)
+    parser.add_argument("--db-path", default=".runtime/policy-ocr.sqlite")
+    parser.add_argument("--skip-existing", dest="skip_existing", action="store_true", default=True)
+    parser.add_argument("--no-skip-existing", dest="skip_existing", action="store_false")
     parser.add_argument("--headless", action="store_true", default=False)
     args = parser.parse_args()
     args.query_file = resolve_path(args.query_file)
     args.output = resolve_path(args.output)
     args.pdf_archive_dir = resolve_path(args.pdf_archive_dir)
     args.user_data_dir = resolve_path(args.user_data_dir)
+    args.db_path = resolve_path(args.db_path)
     args.wait_ms = max(1, args.wait_ms)
     args.max_pages = max(1, args.max_pages)
     args.max_detail_products = max(0, args.max_detail_products)
@@ -135,6 +140,24 @@ def load_crawler_module() -> Any:
     return module
 
 
+def load_known_clause_urls(db_path: str, crawler: Any, enabled: bool) -> set[str]:
+    if not enabled or not os.path.exists(db_path):
+        return set()
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT url FROM knowledge_records WHERE TRIM(COALESCE(url, '')) <> ''"
+        ).fetchall()
+    finally:
+        connection.close()
+    normalized: set[str] = set()
+    for (url,) in rows:
+        value = crawler.normalize_jrcpcx_clause_url(trim(url))
+        if value:
+            normalized.add(value)
+    return normalized
+
+
 def refresh_counts(state: dict[str, Any]) -> None:
     records = state.get("records") if isinstance(state.get("records"), list) else []
     products = state.get("products") if isinstance(state.get("products"), list) else []
@@ -142,6 +165,9 @@ def refresh_counts(state: dict[str, Any]) -> None:
     state["productCount"] = len(products)
     state["recordCount"] = len(records)
     state["responsibilityCount"] = sum(1 for record in records if trim(record.get("pageText")))
+    state["pdfDownloadSkippedExistingCount"] = sum(
+        1 for result in detail_results if isinstance(result, dict) and result.get("skippedExisting")
+    )
     state["detailFailureCount"] = sum(
         1 for result in detail_results if isinstance(result, dict) and result.get("ok") is False
     )
@@ -190,6 +216,10 @@ def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str,
         "responsibilityCount": 0,
         "detailFailureCount": 0,
         "pdfArchiveDir": args.pdf_archive_dir,
+        "dbPath": args.db_path,
+        "skipExisting": bool(args.skip_existing),
+        "knownClauseUrlCount": 0,
+        "pdfDownloadSkippedExistingCount": 0,
         "userDataDir": args.user_data_dir,
         "waitMs": args.wait_ms,
         "maxDetailProducts": args.max_detail_products,
@@ -253,7 +283,12 @@ async def run_queries(args: argparse.Namespace, crawler: Any, queries: list[dict
             await context.close()
 
 
-def run_details(args: argparse.Namespace, crawler: Any, state: dict[str, Any]) -> None:
+def run_details(
+    args: argparse.Namespace,
+    crawler: Any,
+    state: dict[str, Any],
+    known_clause_urls: set[str],
+) -> None:
     seen_detail_urls: set[str] = set()
     fetched = 0
     for product in state.get("products") or []:
@@ -267,7 +302,11 @@ def run_details(args: argparse.Namespace, crawler: Any, state: dict[str, Any]) -
         seen_detail_urls.add(detail_url)
         fetched += 1
         try:
-            detail_result = crawler.jrcpcx_fetch_life_ins_detail(product, args.pdf_archive_dir)
+            detail_result = crawler.jrcpcx_fetch_life_ins_detail(
+                product,
+                args.pdf_archive_dir,
+                skip_clause_urls=known_clause_urls,
+            )
         except Exception as error:
             detail_result = {
                 "ok": False,
@@ -311,7 +350,11 @@ def compact_summary(output_path: str, state: dict[str, Any]) -> dict[str, Any]:
         "detailFailureCount": state["detailFailureCount"],
         "recordCount": state["recordCount"],
         "responsibilityCount": state["responsibilityCount"],
+        "pdfDownloadSkippedExistingCount": state["pdfDownloadSkippedExistingCount"],
         "pdfArchiveDir": state["pdfArchiveDir"],
+        "dbPath": state["dbPath"],
+        "skipExisting": state["skipExisting"],
+        "knownClauseUrlCount": state["knownClauseUrlCount"],
         "userDataDir": state["userDataDir"],
     }
 
@@ -321,9 +364,11 @@ async def run_async() -> dict[str, Any]:
     queries = load_queries(args.query_file)
     crawler = load_crawler_module()
     state = build_initial_state(args, len(queries))
+    known_clause_urls = load_known_clause_urls(args.db_path, crawler, args.skip_existing)
+    state["knownClauseUrlCount"] = len(known_clause_urls)
     write_checkpoint(args.output, state)
     await run_queries(args, crawler, queries, state)
-    run_details(args, crawler, state)
+    run_details(args, crawler, state, known_clause_urls)
     write_checkpoint(args.output, state)
     return compact_summary(args.output, state)
 

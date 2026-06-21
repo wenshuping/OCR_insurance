@@ -2740,7 +2740,28 @@ def jrcpcx_detail_data_map(data_list: list[dict[str, Any]]) -> dict[str, str]:
     return mapped
 
 
-def jrcpcx_fetch_life_ins_detail(product: dict[str, Any], pdf_archive_dir: str = "") -> dict[str, Any]:
+def normalize_jrcpcx_clause_url(value: str) -> str:
+    url = trim(value)
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if parts.netloc != "inspdinfo.iachina.cn" or not parts.path.endswith("/prod-api/lifeIns/clauseInfo"):
+        return ""
+    params = []
+    for key, values in parse_qs(parts.query, keep_blank_values=True).items():
+        if key == "t":
+            continue
+        for item in values:
+            params.append((key, item))
+    params.sort()
+    return urlunsplit((parts.scheme or "https", parts.netloc, parts.path, urlencode(params), ""))
+
+
+def jrcpcx_fetch_life_ins_detail(
+    product: dict[str, Any],
+    pdf_archive_dir: str = "",
+    skip_clause_urls: set[str] | None = None,
+) -> dict[str, Any]:
     detail_url = trim(product.get("detailUrl"))
     if not detail_url:
         return {"ok": False, "code": "JRCPCX_DETAIL_URL_MISSING", "productName": trim(product.get("productName"))}
@@ -2778,6 +2799,41 @@ def jrcpcx_fetch_life_ins_detail(product: dict[str, Any], pdf_archive_dir: str =
     fields = jrcpcx_detail_data_map(data_list if isinstance(data_list, list) else [])
     info = jrcpcx_detail_aes_encrypt(json.dumps({"fileName": file_name, "pageSize": 1, "fileType": "01", "clientType": "02"}, ensure_ascii=False))
     clause_url = f"{JRCPCX_DETAIL_BASE_URL}/prod-api/lifeIns/clauseInfo?{urlencode({'info': info, 't': str(int(time.time() * 1000))})}"
+    product_name = trim(fields.get("产品名称")) or trim(product.get("productName"))
+    company = trim(fields.get("公司名称")) or trim(product.get("deptName"))
+    if normalize_jrcpcx_clause_url(clause_url) in (skip_clause_urls or set()):
+        record = {
+            "company": company,
+            "productName": product_name,
+            "productType": trim(fields.get("产品类别")) or trim(product.get("productType")),
+            "salesStatus": trim(fields.get("产品销售状态")) or trim(product.get("productState")),
+            "title": f"{product_name}条款" if product_name else "保险条款",
+            "url": detail_url,
+            "source": detail_url,
+            "sourceUrl": detail_url,
+            "sourceLevel": "regulatory_industry_terms",
+            "officialDomain": "inspdinfo.iachina.cn",
+            "materialType": "terms",
+            "parser": "jrcpcx_life_ins_detail",
+            "pageText": "",
+            "qualityStatus": "represented_local_url",
+            "snippet": "本地库已存在同一 JRCPCX 条款 URL，跳过重复 PDF 下载。",
+            "detailUrl": detail_url,
+            "detailApiUrl": detail_api_url,
+            "clauseFileName": trim(file_name),
+            "clauseUrl": clause_url,
+            "detailFields": fields,
+        }
+        return {
+            "ok": True,
+            "skippedExisting": True,
+            "productName": product_name,
+            "company": company,
+            "detailUrl": detail_url,
+            "fields": fields,
+            "fileName": file_name,
+            "record": record,
+        }
     pdf_status, pdf_content_type, pdf_bytes = jrcpcx_detail_request(clause_url)
     if pdf_status < 200 or pdf_status >= 300 or not pdf_bytes.startswith(b"%PDF"):
         return {
@@ -2792,8 +2848,6 @@ def jrcpcx_fetch_life_ins_detail(product: dict[str, Any], pdf_archive_dir: str =
     extracted = extract_pdf_text_with_system_python(pdf_bytes)
     page_text = focused_responsibility_excerpt(extracted.get("text", ""))
     archive = archive_pdf_bytes(pdf_bytes, pdf_archive_dir, clause_url) if pdf_archive_dir else {}
-    product_name = trim(fields.get("产品名称")) or trim(product.get("productName"))
-    company = trim(fields.get("公司名称")) or trim(product.get("deptName"))
     record = {
         "company": company,
         "productName": product_name,
