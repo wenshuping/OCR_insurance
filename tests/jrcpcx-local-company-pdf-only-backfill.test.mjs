@@ -9,8 +9,14 @@ import test from 'node:test';
 
 import {
   buildLocalCompanyInventory,
+  buildLocalCompanyPdfOnlyReport,
   buildLocalCompanyQueries,
+  writeLocalCompanyPdfOnlyArtifacts,
 } from '../scripts/jrcpcx-local-company-pdf-only-backfill.mjs';
+
+function sha256File(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
 
 test('buildLocalCompanyInventory includes local human-insurance companies and excludes property-only companies', () => {
   const records = [
@@ -259,6 +265,110 @@ test('buildLocalCompanyInventory counts every supported JRCPCX URL candidate var
     assert.equal(inventory.length, 1, candidate.label);
     assert.equal(inventory[0].localJrcpcxClauseUrlCount, 1, candidate.label);
   }
+});
+
+test('buildLocalCompanyPdfOnlyReport writes dynamic company PDF manifests', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-local-company-report-'));
+  const pdfPath = path.join(dir, 'existing.pdf');
+  fs.writeFileSync(pdfPath, '%PDF-1.4\n% local company existing pdf\n');
+  const pdfSha256 = sha256File(pdfPath);
+  const inventory = [
+    {
+      company: '阳光人寿保险股份有限公司',
+      localCompanyName: '阳光人寿保险股份有限公司',
+      submittedDeptName: '阳光人寿保险股份有限公司',
+      included: true,
+    },
+  ];
+
+  const report = buildLocalCompanyPdfOnlyReport({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    inventory,
+    crawlResult: {
+      products: [
+        {
+          company: '阳光人寿保险股份有限公司',
+          productName: '阳光人寿重大疾病保险',
+          productType: '健康保险-疾病保险',
+          productState: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=sunshine',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=sunshine',
+          clauseFileName: 'sunshine_TERMS.PDF',
+        },
+      ],
+      records: [
+        {
+          company: '阳光人寿保险股份有限公司',
+          productName: '阳光人寿重大疾病保险',
+          productType: '健康保险-疾病保险',
+          salesStatus: '停售',
+          industryCode: '阳光人寿〔2020〕疾病保险001号',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=sunshine',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=sunshine&t=2',
+          clauseFileName: 'sunshine_TERMS.PDF',
+          skippedExisting: true,
+          skippedReason: 'existing_url',
+        },
+      ],
+    },
+    localPdfRecords: [
+      {
+        id: 101,
+        company: '阳光人寿保险股份有限公司',
+        productName: '阳光人寿重大疾病保险',
+        url: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=sunshine&t=1',
+        pdfLocalPath: pdfPath,
+        pdfSha256,
+        pdfBytes: fs.statSync(pdfPath).size,
+        pdfContentType: 'application/pdf',
+        pdfArchivedAt: '2026-06-18T12:00:00Z',
+      },
+    ],
+  });
+
+  assert.equal(report.schemaVersion, 'jrcpcx-local-company-pdf-only/v1');
+  assert.equal(report.summary.localCompanyCount, 1);
+  assert.equal(report.summary.existingPdfManifestCount, 1);
+  assert.equal(report.existingPdfManifest[0].localCompanyName, '阳光人寿保险股份有限公司');
+  assert.equal(report.existingPdfManifest[0].submittedDeptName, '阳光人寿保险股份有限公司');
+  assert.equal(report.existingPdfManifest[0].pdfLocalPath, pdfPath);
+});
+
+test('writeLocalCompanyPdfOnlyArtifacts writes aggregate and dynamic per-company files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-local-company-artifacts-'));
+  const report = {
+    schemaVersion: 'jrcpcx-local-company-pdf-only/v1',
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    companyInventory: [
+      { company: '阳光人寿保险股份有限公司', included: true },
+    ],
+    summary: {
+      localCompanyCount: 1,
+      includedCompanyCount: 1,
+      excludedCompanyCount: 0,
+      catalogRowCount: 0,
+      downloadedCount: 0,
+      existingPdfManifestCount: 0,
+      blockedCount: 0,
+      byCompany: {},
+    },
+    catalog: [],
+    downloaded: [],
+    skippedExisting: [],
+    existingPdfManifest: [],
+    blocked: [],
+  };
+
+  const files = writeLocalCompanyPdfOnlyArtifacts({
+    report,
+    outputDir: dir,
+    batchName: 'jrcpcx-local-company-pdf-only-test',
+    pretty: true,
+  });
+
+  assert.equal(fs.existsSync(files.aggregate.summaryJson), true);
+  assert.equal(fs.existsSync(files.aggregate.existingPdfManifestCsv), true);
+  assert.equal(fs.existsSync(files.byCompany['阳光人寿保险股份有限公司'].summaryJson), true);
 });
 
 test('CLI query-file mode writes inventory and queries from read-only SQLite', () => {

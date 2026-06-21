@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  buildPdfOnlyReport,
   normalizeClauseUrl,
 } from './jrcpcx-major-company-gap-backfill.mjs';
 
@@ -29,6 +30,50 @@ const QUERY_CSV_HEADERS = Object.freeze([
   'productTypeLabel',
   'productTermLabel',
   'productStateLabel',
+]);
+const PDF_ONLY_HEADERS = Object.freeze([
+  'status',
+  'reason',
+  'localCompanyName',
+  'submittedDeptName',
+  'issuerFullName',
+  'productName',
+  'productType',
+  'productState',
+  'industryCode',
+  'detailUrl',
+  'clauseUrl',
+  'normalizedClauseUrl',
+  'clauseFileName',
+  'pdfOriginalUrl',
+  'pdfLocalPath',
+  'pdfFileName',
+  'pdfSha256',
+  'pdfBytes',
+  'pdfContentType',
+  'pdfArchivedAt',
+  'suggestedReadableName',
+  'futureExtractionStatus',
+  'responsibilityDeferred',
+  'existingPdfPathExists',
+  'pdfSha256MatchesFile',
+  'sourceKnowledgeRecordId',
+  'sourceKnowledgeCompany',
+  'sourceKnowledgeProductName',
+  'sourceKnowledgeUrl',
+]);
+const CATALOG_HEADERS = Object.freeze([
+  'localCompanyName',
+  'submittedDeptName',
+  'issuerFullName',
+  'productName',
+  'productType',
+  'productState',
+  'industryCode',
+  'detailUrl',
+  'clauseUrl',
+  'normalizedClauseUrl',
+  'clauseFileName',
 ]);
 
 function trim(value = '') {
@@ -217,6 +262,180 @@ export function buildLocalCompanyQueries(inventory = [], statusLabels = DEFAULT_
     }
   }
   return queries;
+}
+
+function companyKey(value = '') {
+  return trim(value).replace(/\s+/gu, '');
+}
+
+function companySlug(value = '') {
+  return trim(value)
+    .replace(/[\\/:*?"<>|]+/gu, '_')
+    .replace(/\s+/gu, '')
+    .slice(0, 80) || 'unknown-company';
+}
+
+function inventoryMaps(inventory = []) {
+  const bySubmitted = new Map();
+  const byLocal = new Map();
+  for (const row of Array.isArray(inventory) ? inventory : []) {
+    if (row.submittedDeptName) bySubmitted.set(companyKey(row.submittedDeptName), row);
+    if (row.company) byLocal.set(companyKey(row.company), row);
+    if (row.localCompanyName) byLocal.set(companyKey(row.localCompanyName), row);
+  }
+  return { bySubmitted, byLocal };
+}
+
+function attachLocalCompanyMetadata(rows = [], inventory = []) {
+  const { bySubmitted, byLocal } = inventoryMaps(inventory);
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const issuerFullName = trim(row.issuerFullName || row.company);
+    const inventoryRow = bySubmitted.get(companyKey(issuerFullName)) || byLocal.get(companyKey(issuerFullName)) || {};
+    return {
+      ...row,
+      issuerFullName,
+      localCompanyName: trim(inventoryRow.localCompanyName || inventoryRow.company || issuerFullName),
+      submittedDeptName: trim(inventoryRow.submittedDeptName || issuerFullName),
+    };
+  });
+}
+
+function countByLocalCompany(rows = []) {
+  const counts = {};
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const company = trim(row.localCompanyName || row.issuerFullName || row.company) || '未知机构';
+    counts[company] = (counts[company] || 0) + 1;
+  }
+  return counts;
+}
+
+export function buildLocalCompanyPdfOnlyReport({
+  crawlResult = {},
+  inventory = [],
+  localPdfRecords = [],
+  generatedAt = new Date().toISOString(),
+} = {}) {
+  const baseReport = buildPdfOnlyReport({
+    crawlResult,
+    generatedAt,
+    localPdfRecords,
+  });
+  const catalog = attachLocalCompanyMetadata(baseReport.catalog || [], inventory);
+  const downloaded = attachLocalCompanyMetadata(baseReport.downloaded || [], inventory);
+  const skippedExisting = attachLocalCompanyMetadata(baseReport.skippedExisting || [], inventory);
+  const existingPdfManifest = attachLocalCompanyMetadata(baseReport.existingPdfManifest || [], inventory);
+  const blocked = attachLocalCompanyMetadata(baseReport.blocked || [], inventory);
+  const includedCompanyCount = inventory.filter((row) => row.included).length;
+  const excludedCompanyCount = inventory.filter((row) => !row.included).length;
+  return {
+    ...baseReport,
+    schemaVersion: 'jrcpcx-local-company-pdf-only/v1',
+    companyInventory: inventory,
+    summary: {
+      ...baseReport.summary,
+      localCompanyCount: inventory.length,
+      includedCompanyCount,
+      excludedCompanyCount,
+      byCompany: {
+        ...baseReport.summary.byCompany,
+        catalog: countByLocalCompany(catalog),
+        downloaded: countByLocalCompany(downloaded),
+        skippedExisting: countByLocalCompany(skippedExisting),
+        existingPdfManifest: countByLocalCompany(existingPdfManifest),
+        blocked: countByLocalCompany(blocked),
+      },
+    },
+    catalog,
+    downloaded,
+    skippedExisting,
+    existingPdfManifest,
+    blocked,
+  };
+}
+
+function rowsForLocalCompany(rows = [], company = '') {
+  const wanted = companyKey(company);
+  return (Array.isArray(rows) ? rows : []).filter((row) => companyKey(row.localCompanyName || row.issuerFullName || row.company) === wanted);
+}
+
+export function writeLocalCompanyPdfOnlyArtifacts({
+  report,
+  outputDir = runtimeDir,
+  batchName = `jrcpcx-local-company-pdf-only-${timestampStamp(report?.generatedAt || new Date().toISOString())}`,
+  pretty = false,
+} = {}) {
+  const aggregate = {
+    summaryJson: path.join(outputDir, `${batchName}-summary.json`),
+    catalogJson: path.join(outputDir, `${batchName}-catalog.json`),
+    catalogCsv: path.join(outputDir, `${batchName}-catalog.csv`),
+    downloadedJson: path.join(outputDir, `${batchName}-downloaded.json`),
+    downloadedCsv: path.join(outputDir, `${batchName}-downloaded.csv`),
+    existingPdfManifestJson: path.join(outputDir, `${batchName}-existing-pdf-manifest.json`),
+    existingPdfManifestCsv: path.join(outputDir, `${batchName}-existing-pdf-manifest.csv`),
+    skippedExistingJson: path.join(outputDir, `${batchName}-skipped-existing.json`),
+    skippedExistingCsv: path.join(outputDir, `${batchName}-skipped-existing.csv`),
+    blockedJson: path.join(outputDir, `${batchName}-blocked.json`),
+    blockedCsv: path.join(outputDir, `${batchName}-blocked.csv`),
+  };
+
+  writeJsonFile(aggregate.summaryJson, { ...report, catalog: undefined, downloaded: undefined, existingPdfManifest: undefined, skippedExisting: undefined, blocked: undefined }, pretty);
+  writeJsonFile(aggregate.catalogJson, report.catalog || [], pretty);
+  writeCsvFile(aggregate.catalogCsv, report.catalog || [], CATALOG_HEADERS);
+  writeJsonFile(aggregate.downloadedJson, report.downloaded || [], pretty);
+  writeCsvFile(aggregate.downloadedCsv, report.downloaded || [], PDF_ONLY_HEADERS);
+  writeJsonFile(aggregate.existingPdfManifestJson, report.existingPdfManifest || [], pretty);
+  writeCsvFile(aggregate.existingPdfManifestCsv, report.existingPdfManifest || [], PDF_ONLY_HEADERS);
+  writeJsonFile(aggregate.skippedExistingJson, report.skippedExisting || [], pretty);
+  writeCsvFile(aggregate.skippedExistingCsv, report.skippedExisting || [], PDF_ONLY_HEADERS);
+  writeJsonFile(aggregate.blockedJson, report.blocked || [], pretty);
+  writeCsvFile(aggregate.blockedCsv, report.blocked || [], PDF_ONLY_HEADERS);
+
+  const byCompany = {};
+  for (const company of report.companyInventory || []) {
+    const name = trim(company.localCompanyName || company.company);
+    if (!name) continue;
+    const prefix = path.join(outputDir, `${batchName}-${companySlug(name)}`);
+    const companyFiles = {
+      summaryJson: `${prefix}-summary.json`,
+      catalogJson: `${prefix}-catalog.json`,
+      catalogCsv: `${prefix}-catalog.csv`,
+      downloadedJson: `${prefix}-downloaded.json`,
+      downloadedCsv: `${prefix}-downloaded.csv`,
+      existingPdfManifestJson: `${prefix}-existing-pdf-manifest.json`,
+      existingPdfManifestCsv: `${prefix}-existing-pdf-manifest.csv`,
+      skippedExistingJson: `${prefix}-skipped-existing.json`,
+      skippedExistingCsv: `${prefix}-skipped-existing.csv`,
+      blockedJson: `${prefix}-blocked.json`,
+      blockedCsv: `${prefix}-blocked.csv`,
+    };
+    const catalog = rowsForLocalCompany(report.catalog || [], name);
+    const downloaded = rowsForLocalCompany(report.downloaded || [], name);
+    const existingPdfManifest = rowsForLocalCompany(report.existingPdfManifest || [], name);
+    const skippedExisting = rowsForLocalCompany(report.skippedExisting || [], name);
+    const blocked = rowsForLocalCompany(report.blocked || [], name);
+    writeJsonFile(companyFiles.summaryJson, {
+      company: name,
+      included: Boolean(company.included),
+      excludeReason: trim(company.excludeReason),
+      catalogRowCount: catalog.length,
+      downloadedCount: downloaded.length,
+      existingPdfManifestCount: existingPdfManifest.length,
+      skippedExistingCount: skippedExisting.length,
+      blockedCount: blocked.length,
+    }, pretty);
+    writeJsonFile(companyFiles.catalogJson, catalog, pretty);
+    writeCsvFile(companyFiles.catalogCsv, catalog, CATALOG_HEADERS);
+    writeJsonFile(companyFiles.downloadedJson, downloaded, pretty);
+    writeCsvFile(companyFiles.downloadedCsv, downloaded, PDF_ONLY_HEADERS);
+    writeJsonFile(companyFiles.existingPdfManifestJson, existingPdfManifest, pretty);
+    writeCsvFile(companyFiles.existingPdfManifestCsv, existingPdfManifest, PDF_ONLY_HEADERS);
+    writeJsonFile(companyFiles.skippedExistingJson, skippedExisting, pretty);
+    writeCsvFile(companyFiles.skippedExistingCsv, skippedExisting, PDF_ONLY_HEADERS);
+    writeJsonFile(companyFiles.blockedJson, blocked, pretty);
+    writeCsvFile(companyFiles.blockedCsv, blocked, PDF_ONLY_HEADERS);
+    byCompany[name] = companyFiles;
+  }
+  return { aggregate, byCompany };
 }
 
 export async function readKnowledgeRecordsReadOnly(dbPath) {
