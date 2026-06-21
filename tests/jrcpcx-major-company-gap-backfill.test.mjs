@@ -27,10 +27,16 @@ function ensurePdfFixture() {
   return pdfFixturePath;
 }
 
-test('target company config maps 阳光 and 人保 to Feishu configs', () => {
-  assert.equal(TARGET_COMPANIES.length, 2);
+test('target company config maps major life insurers to Feishu configs', () => {
+  assert.equal(TARGET_COMPANIES.length, 8);
+  assert.equal(companyConfigForIssuer('中国人寿保险股份有限公司').localCompany, '中国人寿');
+  assert.equal(companyConfigForIssuer('泰康人寿保险有限责任公司').localCompany, '泰康人寿');
+  assert.equal(companyConfigForIssuer('新华人寿保险股份有限公司').localCompany, '新华保险');
   assert.equal(companyConfigForIssuer('阳光人寿保险股份有限公司').localCompany, '阳光人寿');
   assert.equal(companyConfigForIssuer('中国人民人寿保险股份有限公司').localCompany, '人保寿险');
+  assert.equal(companyConfigForIssuer('友邦人寿保险有限公司').localCompany, '友邦人寿');
+  assert.equal(companyConfigForIssuer('中国太平洋人寿保险股份有限公司').localCompany, '太保寿险');
+  assert.equal(companyConfigForIssuer('太平人寿保险有限公司').localCompany, '中国太平');
   assert.equal(companyConfigForIssuer('中国平安人寿保险股份有限公司'), null);
 });
 
@@ -47,6 +53,42 @@ test('buildJrcpcxQueriesFromGap keeps only target human-insurance candidates', (
         queryDeptName: '中国人民人寿保险股份有限公司',
         productName: '人保寿险康乐年华两全保险',
         productState: '在售',
+        productType: '人身保险类',
+      },
+      {
+        queryDeptName: '中国人寿保险股份有限公司',
+        productName: '国寿养老年金保险',
+        productState: '停售',
+        productType: '人身保险类',
+      },
+      {
+        queryDeptName: '泰康人寿保险有限责任公司',
+        productName: '泰康健康人生重大疾病保险',
+        productState: '停售',
+        productType: '人身保险类',
+      },
+      {
+        queryDeptName: '新华人寿保险股份有限公司',
+        productName: '新华吉庆有余两全保险',
+        productState: '停售',
+        productType: '人身保险类',
+      },
+      {
+        queryDeptName: '友邦人寿保险有限公司',
+        productName: '友邦附加意外伤害保险',
+        productState: '停售',
+        productType: '人身保险类',
+      },
+      {
+        queryDeptName: '中国太平洋人寿保险股份有限公司',
+        productName: '太保寿险附加住院补贴医疗保险',
+        productState: '停售',
+        productType: '人身保险类',
+      },
+      {
+        queryDeptName: '太平人寿保险有限公司',
+        productName: '太平团体年金保险',
+        productState: '停售',
         productType: '人身保险类',
       },
       {
@@ -69,6 +111,12 @@ test('buildJrcpcxQueriesFromGap keeps only target human-insurance candidates', (
     [
       ['阳光人寿保险股份有限公司', '阳光人寿附加意外伤害保险', '停用'],
       ['中国人民人寿保险股份有限公司', '人保寿险康乐年华两全保险', '在售'],
+      ['中国人寿保险股份有限公司', '国寿养老年金保险', '停售'],
+      ['泰康人寿保险有限责任公司', '泰康健康人生重大疾病保险', '停售'],
+      ['新华人寿保险股份有限公司', '新华吉庆有余两全保险', '停售'],
+      ['友邦人寿保险有限公司', '友邦附加意外伤害保险', '停售'],
+      ['中国太平洋人寿保险股份有限公司', '太保寿险附加住院补贴医疗保险', '停售'],
+      ['太平人寿保险有限公司', '太平团体年金保险', '停售'],
     ],
   );
 });

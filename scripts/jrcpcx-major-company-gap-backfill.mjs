@@ -30,6 +30,24 @@ export { normalizeClauseUrl };
 
 export const TARGET_COMPANIES = Object.freeze([
   Object.freeze({
+    issuerFullName: '中国人寿保险股份有限公司',
+    localCompany: '中国人寿',
+    feishuConfigPath: '.runtime/feishu-knowledge-china-life.json',
+    tableName: '中国人寿',
+  }),
+  Object.freeze({
+    issuerFullName: '泰康人寿保险有限责任公司',
+    localCompany: '泰康人寿',
+    feishuConfigPath: '.runtime/feishu-knowledge-taikang.json',
+    tableName: '泰康',
+  }),
+  Object.freeze({
+    issuerFullName: '新华人寿保险股份有限公司',
+    localCompany: '新华保险',
+    feishuConfigPath: '.runtime/feishu-knowledge.json',
+    tableName: '新华保险',
+  }),
+  Object.freeze({
     issuerFullName: '阳光人寿保险股份有限公司',
     localCompany: '阳光人寿',
     feishuConfigPath: '.runtime/feishu-knowledge-sunshine-life.json',
@@ -40,6 +58,24 @@ export const TARGET_COMPANIES = Object.freeze([
     localCompany: '人保寿险',
     feishuConfigPath: '.runtime/feishu-knowledge-picc-life.json',
     tableName: '人保寿险',
+  }),
+  Object.freeze({
+    issuerFullName: '友邦人寿保险有限公司',
+    localCompany: '友邦人寿',
+    feishuConfigPath: '.runtime/feishu-knowledge-aia.json',
+    tableName: '友邦',
+  }),
+  Object.freeze({
+    issuerFullName: '中国太平洋人寿保险股份有限公司',
+    localCompany: '太保寿险',
+    feishuConfigPath: '.runtime/feishu-knowledge-cpic-life.json',
+    tableName: '太保寿险',
+  }),
+  Object.freeze({
+    issuerFullName: '太平人寿保险有限公司',
+    localCompany: '中国太平',
+    feishuConfigPath: '.runtime/feishu-knowledge-china-taiping.json',
+    tableName: '中国太平',
   }),
 ]);
 
