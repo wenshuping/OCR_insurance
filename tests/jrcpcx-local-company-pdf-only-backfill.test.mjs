@@ -18,6 +18,15 @@ function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+function parseSimpleCsv(filePath) {
+  const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n');
+  const headers = lines[0].replace(/^\ufeff/u, '').split(',');
+  return lines.slice(1).map((line) => {
+    const values = line.split(',');
+    return Object.fromEntries(headers.map((header, index) => [header, values[index] || '']));
+  });
+}
+
 test('buildLocalCompanyInventory includes local human-insurance companies and excludes property-only companies', () => {
   const records = [
     {
@@ -334,6 +343,55 @@ test('buildLocalCompanyPdfOnlyReport writes dynamic company PDF manifests', () =
   assert.equal(report.existingPdfManifest[0].pdfLocalPath, pdfPath);
 });
 
+test('buildLocalCompanyPdfOnlyReport uses localCompanyName keys for every byCompany map', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-local-company-summary-'));
+  const pdfPath = path.join(dir, 'downloaded.pdf');
+  fs.writeFileSync(pdfPath, '%PDF-1.4\n% local company downloaded pdf\n');
+  const report = buildLocalCompanyPdfOnlyReport({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    inventory: [
+      {
+        company: '友邦保险有限公司上海分公司',
+        localCompanyName: '友邦上海本地名称',
+        submittedDeptName: '友邦人寿保险有限公司',
+        included: true,
+      },
+    ],
+    crawlResult: {
+      products: [
+        {
+          company: '友邦人寿保险有限公司',
+          productName: '友邦终身寿险',
+          productType: '人身保险类',
+          salesStatus: '在售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=aia-local',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-local&t=1',
+        },
+      ],
+      records: [
+        {
+          company: '友邦人寿保险有限公司',
+          productName: '友邦终身寿险',
+          productType: '人身保险类',
+          salesStatus: '在售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=aia-local',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-local&t=1',
+          pdfLocalPath: pdfPath,
+          pdfSha256: sha256File(pdfPath),
+          pdfBytes: fs.statSync(pdfPath).size,
+        },
+      ],
+    },
+  });
+
+  for (const map of Object.values(report.summary.byCompany)) {
+    assert.equal(Object.hasOwn(map, '友邦人寿保险有限公司'), false);
+  }
+  assert.equal(report.summary.byCompany.catalog['友邦上海本地名称'], 1);
+  assert.equal(report.summary.byCompany.downloaded['友邦上海本地名称'], 1);
+  assert.equal(report.summary.byCompany.uniqueCandidateMaterials['友邦上海本地名称'], 1);
+});
+
 test('writeLocalCompanyPdfOnlyArtifacts writes aggregate and dynamic per-company files', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-local-company-artifacts-'));
   const report = {
@@ -352,10 +410,44 @@ test('writeLocalCompanyPdfOnlyArtifacts writes aggregate and dynamic per-company
       blockedCount: 0,
       byCompany: {},
     },
-    catalog: [],
+    catalog: [
+      {
+        localCompanyName: '阳光人寿保险股份有限公司',
+        submittedDeptName: '阳光人寿保险股份有限公司',
+        company: '阳光人寿保险股份有限公司',
+        productName: '阳光人寿重大疾病保险',
+        productType: '健康保险-疾病保险',
+        salesStatus: '停售',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=sunshine-csv',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=sunshine-csv&t=9',
+        clauseFileName: 'sunshine_csv_TERMS.PDF',
+      },
+    ],
     downloaded: [],
-    skippedExisting: [],
-    existingPdfManifest: [],
+    skippedExisting: [
+      {
+        status: 'skipped_existing',
+        reason: 'existing_url',
+        localCompanyName: '阳光人寿保险股份有限公司',
+        submittedDeptName: '阳光人寿保险股份有限公司',
+        issuerFullName: '阳光人寿保险股份有限公司',
+        productName: '阳光人寿重大疾病保险',
+        existingUrl: 'https://local.example/knowledge/sunshine',
+        actualPdfSha256: 'actual-sha256',
+      },
+    ],
+    existingPdfManifest: [
+      {
+        status: 'skipped_existing',
+        reason: 'existing_url',
+        localCompanyName: '阳光人寿保险股份有限公司',
+        submittedDeptName: '阳光人寿保险股份有限公司',
+        issuerFullName: '阳光人寿保险股份有限公司',
+        productName: '阳光人寿重大疾病保险',
+        existingUrl: 'https://local.example/knowledge/sunshine',
+        actualPdfSha256: 'actual-sha256',
+      },
+    ],
     blocked: [],
   };
 
@@ -369,6 +461,15 @@ test('writeLocalCompanyPdfOnlyArtifacts writes aggregate and dynamic per-company
   assert.equal(fs.existsSync(files.aggregate.summaryJson), true);
   assert.equal(fs.existsSync(files.aggregate.existingPdfManifestCsv), true);
   assert.equal(fs.existsSync(files.byCompany['阳光人寿保险股份有限公司'].summaryJson), true);
+
+  const catalogRows = parseSimpleCsv(files.aggregate.catalogCsv);
+  assert.equal(catalogRows[0].issuerFullName, '阳光人寿保险股份有限公司');
+  assert.equal(catalogRows[0].productState, '停售');
+  assert.equal(catalogRows[0].normalizedClauseUrl, 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=sunshine-csv');
+
+  const manifestRows = parseSimpleCsv(files.aggregate.existingPdfManifestCsv);
+  assert.equal(manifestRows[0].existingUrl, 'https://local.example/knowledge/sunshine');
+  assert.equal(manifestRows[0].actualPdfSha256, 'actual-sha256');
 });
 
 test('CLI query-file mode writes inventory and queries from read-only SQLite', () => {

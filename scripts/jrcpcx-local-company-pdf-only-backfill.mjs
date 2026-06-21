@@ -55,7 +55,14 @@ const PDF_ONLY_HEADERS = Object.freeze([
   'suggestedReadableName',
   'futureExtractionStatus',
   'responsibilityDeferred',
+  'sourceAttemptFile',
+  'skipEvidence',
+  'existingUrl',
+  'existingHash',
+  'duplicateOf',
   'existingPdfPathExists',
+  'actualPdfSha256',
+  'actualPdfBytes',
   'pdfSha256MatchesFile',
   'sourceKnowledgeRecordId',
   'sourceKnowledgeCompany',
@@ -134,6 +141,14 @@ function productNameOf(row = {}) {
 
 function productTypeOf(row = {}) {
   return trim(row.productType || row.product_type || row.payload?.productType || row.detailFields?.产品类别 || row.detailFields?.产品类型);
+}
+
+function productStateOf(row = {}) {
+  return trim(row.productState || row.product_state || row.salesStatus || row.payload?.productState || row.payload?.salesStatus || row.detailFields?.销售状态 || row.detailFields?.产品状态);
+}
+
+function industryCodeOf(row = {}) {
+  return trim(row.industryCode || row.industry_code || row.versionNo || row.payload?.industryCode || row.payload?.versionNo || row.detailFields?.产品条款文字编码 || row.detailFields?.条款文字编码);
 }
 
 function pageTextOf(row = {}) {
@@ -309,6 +324,73 @@ function countByLocalCompany(rows = []) {
   return counts;
 }
 
+function localCandidateMaterialKey(row = {}) {
+  return [
+    trim(row.detailUrl),
+    normalizeClauseUrl(row.normalizedClauseUrl || row.clauseUrl || row.pdfOriginalUrl),
+    trim(row.productName),
+    trim(row.industryCode),
+  ].filter(Boolean).join('\u001f');
+}
+
+function countUniqueCandidateMaterialsByLocalCompany(rows = []) {
+  const keysByCompany = {};
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const company = trim(row.localCompanyName || row.issuerFullName || row.company) || '未知机构';
+    const key = localCandidateMaterialKey(row);
+    if (!key) continue;
+    if (!keysByCompany[company]) keysByCompany[company] = new Set();
+    keysByCompany[company].add(key);
+  }
+  const counts = {};
+  for (const [company, keys] of Object.entries(keysByCompany)) counts[company] = keys.size;
+  return counts;
+}
+
+function isUrlRepresentedRow(row = {}) {
+  return ['existing_url', 'represented_url', 'represented_local_url'].includes(trim(row.reason));
+}
+
+function isHashRepresentedRow(row = {}) {
+  return /hash/iu.test(trim(row.reason));
+}
+
+function buildLocalByCompanySummary({
+  catalog = [],
+  downloaded = [],
+  skippedExisting = [],
+  existingPdfManifest = [],
+  blocked = [],
+  unresolvedTruncatedShards = [],
+} = {}) {
+  const candidateRows = [...catalog, ...downloaded, ...skippedExisting, ...blocked];
+  const representedUrl = skippedExisting.filter(isUrlRepresentedRow);
+  const representedHash = skippedExisting.filter(isHashRepresentedRow);
+  const missingPdfPath = [
+    ...downloaded.filter((row) => !trim(row.pdfLocalPath)),
+    ...blocked.filter((row) => trim(row.reason) === 'missing_pdf_local_path'),
+  ];
+  const missingExistingPdfPath = skippedExisting.filter((row) => !trim(row.pdfLocalPath));
+  const missingExistingPdfFile = skippedExisting.filter((row) => trim(row.pdfLocalPath) && row.existingPdfPathExists === false);
+  const existingPdfSha256Mismatch = skippedExisting.filter((row) => trim(row.pdfSha256) && trim(row.actualPdfSha256) && trim(row.pdfSha256) !== trim(row.actualPdfSha256));
+  return {
+    catalog: countByLocalCompany(catalog),
+    uniqueCandidateMaterials: countUniqueCandidateMaterialsByLocalCompany(candidateRows),
+    downloaded: countByLocalCompany(downloaded),
+    skippedExisting: countByLocalCompany(skippedExisting),
+    blocked: countByLocalCompany(blocked),
+    failed: countByLocalCompany(blocked),
+    representedUrl: countByLocalCompany(representedUrl),
+    representedHash: countByLocalCompany(representedHash),
+    missingPdfPath: countByLocalCompany(missingPdfPath),
+    existingPdfManifest: countByLocalCompany(existingPdfManifest),
+    missingExistingPdfPath: countByLocalCompany(missingExistingPdfPath),
+    missingExistingPdfFile: countByLocalCompany(missingExistingPdfFile),
+    existingPdfSha256Mismatch: countByLocalCompany(existingPdfSha256Mismatch),
+    unresolvedTruncatedShards: countByLocalCompany(unresolvedTruncatedShards),
+  };
+}
+
 export function buildLocalCompanyPdfOnlyReport({
   crawlResult = {},
   inventory = [],
@@ -325,6 +407,7 @@ export function buildLocalCompanyPdfOnlyReport({
   const skippedExisting = attachLocalCompanyMetadata(baseReport.skippedExisting || [], inventory);
   const existingPdfManifest = attachLocalCompanyMetadata(baseReport.existingPdfManifest || [], inventory);
   const blocked = attachLocalCompanyMetadata(baseReport.blocked || [], inventory);
+  const unresolvedTruncatedShards = attachLocalCompanyMetadata(baseReport.unresolvedTruncatedShards || [], inventory);
   const includedCompanyCount = inventory.filter((row) => row.included).length;
   const excludedCompanyCount = inventory.filter((row) => !row.included).length;
   return {
@@ -336,20 +419,32 @@ export function buildLocalCompanyPdfOnlyReport({
       localCompanyCount: inventory.length,
       includedCompanyCount,
       excludedCompanyCount,
-      byCompany: {
-        ...baseReport.summary.byCompany,
-        catalog: countByLocalCompany(catalog),
-        downloaded: countByLocalCompany(downloaded),
-        skippedExisting: countByLocalCompany(skippedExisting),
-        existingPdfManifest: countByLocalCompany(existingPdfManifest),
-        blocked: countByLocalCompany(blocked),
-      },
+      byCompany: buildLocalByCompanySummary({ catalog, downloaded, skippedExisting, existingPdfManifest, blocked, unresolvedTruncatedShards }),
     },
     catalog,
     downloaded,
     skippedExisting,
     existingPdfManifest,
     blocked,
+    unresolvedTruncatedShards,
+  };
+}
+
+function catalogCsvRow(row = {}) {
+  const clauseUrl = normalizeClauseUrl(row.clauseUrl || row.normalizedClauseUrl || row.pdfOriginalUrl);
+  return {
+    ...row,
+    localCompanyName: trim(row.localCompanyName),
+    submittedDeptName: trim(row.submittedDeptName),
+    issuerFullName: trim(row.issuerFullName || row.company),
+    productName: productNameOf(row),
+    productType: productTypeOf(row),
+    productState: productStateOf(row),
+    industryCode: industryCodeOf(row),
+    detailUrl: trim(row.detailUrl),
+    clauseUrl: clauseUrl || trim(row.clauseUrl),
+    normalizedClauseUrl: clauseUrl || trim(row.normalizedClauseUrl),
+    clauseFileName: trim(row.clauseFileName || row.fileName),
   };
 }
 
@@ -380,7 +475,7 @@ export function writeLocalCompanyPdfOnlyArtifacts({
 
   writeJsonFile(aggregate.summaryJson, { ...report, catalog: undefined, downloaded: undefined, existingPdfManifest: undefined, skippedExisting: undefined, blocked: undefined }, pretty);
   writeJsonFile(aggregate.catalogJson, report.catalog || [], pretty);
-  writeCsvFile(aggregate.catalogCsv, report.catalog || [], CATALOG_HEADERS);
+  writeCsvFile(aggregate.catalogCsv, (report.catalog || []).map(catalogCsvRow), CATALOG_HEADERS);
   writeJsonFile(aggregate.downloadedJson, report.downloaded || [], pretty);
   writeCsvFile(aggregate.downloadedCsv, report.downloaded || [], PDF_ONLY_HEADERS);
   writeJsonFile(aggregate.existingPdfManifestJson, report.existingPdfManifest || [], pretty);
@@ -424,7 +519,7 @@ export function writeLocalCompanyPdfOnlyArtifacts({
       blockedCount: blocked.length,
     }, pretty);
     writeJsonFile(companyFiles.catalogJson, catalog, pretty);
-    writeCsvFile(companyFiles.catalogCsv, catalog, CATALOG_HEADERS);
+    writeCsvFile(companyFiles.catalogCsv, catalog.map(catalogCsvRow), CATALOG_HEADERS);
     writeJsonFile(companyFiles.downloadedJson, downloaded, pretty);
     writeCsvFile(companyFiles.downloadedCsv, downloaded, PDF_ONLY_HEADERS);
     writeJsonFile(companyFiles.existingPdfManifestJson, existingPdfManifest, pretty);
