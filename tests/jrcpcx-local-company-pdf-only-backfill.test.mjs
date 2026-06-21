@@ -220,3 +220,43 @@ test('buildLocalCompanyInventory counts unique JRCPCX clause URLs across all row
   assert.equal(inventory.length, 1);
   assert.equal(inventory[0].localJrcpcxClauseUrlCount, 3);
 });
+
+test('buildLocalCompanyInventory counts every supported JRCPCX URL candidate variant', () => {
+  const cases = [
+    { label: 'top-level url', field: 'url' },
+    { label: 'top-level clauseUrl', field: 'clauseUrl' },
+    { label: 'top-level clause_url', field: 'clause_url' },
+    { label: 'top-level normalizedClauseUrl', field: 'normalizedClauseUrl' },
+    { label: 'top-level normalized_clause_url', field: 'normalized_clause_url' },
+    { label: 'top-level pdfOriginalUrl', field: 'pdfOriginalUrl' },
+    { label: 'top-level pdf_original_url', field: 'pdf_original_url' },
+    { label: 'top-level sourceKnowledgeUrl', field: 'sourceKnowledgeUrl' },
+    { label: 'top-level source_knowledge_url', field: 'source_knowledge_url' },
+    { label: 'payload url', payloadField: 'url' },
+    { label: 'payload clauseUrl', payloadField: 'clauseUrl' },
+    { label: 'payload clause_url', payloadField: 'clause_url' },
+    { label: 'payload normalizedClauseUrl', payloadField: 'normalizedClauseUrl' },
+    { label: 'payload normalized_clause_url', payloadField: 'normalized_clause_url' },
+    { label: 'payload pdfOriginalUrl', payloadField: 'pdfOriginalUrl' },
+    { label: 'payload pdf_original_url', payloadField: 'pdf_original_url' },
+    { label: 'payload sourceKnowledgeUrl', payloadField: 'sourceKnowledgeUrl' },
+    { label: 'payload source_knowledge_url', payloadField: 'source_knowledge_url' },
+  ];
+
+  for (const [index, candidate] of cases.entries()) {
+    const url = `https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=url-candidate-${index}&t=1`;
+    const row = {
+      id: 100 + index,
+      company: '友邦人寿保险有限公司',
+      productName: '友邦终身寿险',
+      productType: '人身保险类',
+    };
+    if (candidate.field) row[candidate.field] = url;
+    if (candidate.payloadField) row.payload = { [candidate.payloadField]: url };
+
+    const inventory = buildLocalCompanyInventory([row]);
+
+    assert.equal(inventory.length, 1, candidate.label);
+    assert.equal(inventory[0].localJrcpcxClauseUrlCount, 1, candidate.label);
+  }
+});
