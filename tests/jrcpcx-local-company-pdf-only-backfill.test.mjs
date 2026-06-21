@@ -73,3 +73,38 @@ test('buildLocalCompanyQueries creates human-insurance status shards for include
     ],
   );
 });
+
+test('property-only rows with generic responsibility text are excluded from inventory and queries', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 4,
+      company: '某财产保险股份有限公司',
+      productName: '机动车商业保险',
+      productType: '财产保险类',
+      pageText: '保险责任包括车辆损失保险责任。',
+    },
+  ]);
+
+  assert.deepEqual(
+    inventory.map((row) => [row.company, row.included, row.excludeReason]),
+    [['某财产保险股份有限公司', false, 'property_insurance_only']],
+  );
+  assert.deepEqual(buildLocalCompanyQueries(inventory), []);
+});
+
+test('buildLocalCompanyInventory counts JRCPCX clause URL after non-JRCPCX source URL candidates', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 5,
+      company: '友邦人寿保险有限公司',
+      productName: '友邦终身寿险',
+      productType: '人身保险类',
+      url: 'https://example.test/non-jrcpcx-detail',
+      pdfOriginalUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-clause&t=1',
+    },
+  ]);
+
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].included, true);
+  assert.equal(inventory[0].localJrcpcxClauseUrlCount, 1);
+});

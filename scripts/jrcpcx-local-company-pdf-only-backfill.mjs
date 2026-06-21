@@ -45,21 +45,43 @@ function companyOf(row = {}) {
   return trim(row.company || row.issuerFullName || row.payload?.company || row.payload?.issuerFullName);
 }
 
-const HUMAN_INSURANCE_RE = /人寿|寿险|健康保险|疾病保险|医疗保险|意外|年金|养老|两全|终身寿|定期寿|护理|重疾|少儿|教育金|保险责任/iu;
+const STRONG_HUMAN_INSURANCE_RE = /人身保险|人寿|寿险|健康保险|疾病保险|医疗保险|意外|年金|养老|两全|终身寿|定期寿|护理|重疾|少儿|教育金/iu;
+const GENERIC_RESPONSIBILITY_RE = /保险责任/iu;
 const PROPERTY_INSURANCE_RE = /财产保险|财险|车险|机动车|责任保险|保证保险|信用保险|农业保险|货运|船舶|工程保险|企业财产/iu;
 
+function evidenceTextOf(row = {}) {
+  return [companyOf(row), productNameOf(row), productTypeOf(row), pageTextOf(row)].filter(Boolean).join(' ');
+}
+
+function humanSignalTextOf(row = {}) {
+  return [companyOf(row), productNameOf(row), productTypeOf(row)].filter(Boolean).join(' ');
+}
+
+function hasPropertyInsuranceEvidence(row = {}) {
+  return PROPERTY_INSURANCE_RE.test(evidenceTextOf(row));
+}
+
 export function isHumanInsuranceEvidence(row = {}) {
-  const text = [companyOf(row), productNameOf(row), productTypeOf(row), pageTextOf(row)].filter(Boolean).join(' ');
+  const text = evidenceTextOf(row);
   if (!text) return false;
-  if (PROPERTY_INSURANCE_RE.test(text) && !HUMAN_INSURANCE_RE.test(text)) return false;
-  return HUMAN_INSURANCE_RE.test(text);
+  if (STRONG_HUMAN_INSURANCE_RE.test(humanSignalTextOf(row))) return true;
+  if (hasPropertyInsuranceEvidence(row)) return false;
+  return GENERIC_RESPONSIBILITY_RE.test(pageTextOf(row));
+}
+
+function jrcpcxClauseUrlOf(row = {}) {
+  for (const value of [row.url, row.payload?.url, row.pdfOriginalUrl, row.payload?.pdfOriginalUrl]) {
+    const normalized = normalizeClauseUrl(value);
+    if (normalized) return normalized;
+  }
+  return '';
 }
 
 function companySummaryFromRows(company, rows = []) {
-  const localJrcpcxClauseUrlCount = rows.filter((row) => normalizeClauseUrl(row.url || row.payload?.url || row.pdfOriginalUrl || row.payload?.pdfOriginalUrl)).length;
+  const localJrcpcxClauseUrlCount = rows.filter((row) => jrcpcxClauseUrlOf(row)).length;
   const localPdfPathCount = rows.filter((row) => pdfLocalPathOf(row)).length;
   const localHumanInsuranceEvidenceCount = rows.filter((row) => isHumanInsuranceEvidence(row)).length;
-  const hasPropertyOnlyEvidence = rows.length > 0 && localHumanInsuranceEvidenceCount === 0 && rows.every((row) => PROPERTY_INSURANCE_RE.test([productNameOf(row), productTypeOf(row), pageTextOf(row)].join(' ')));
+  const hasPropertyOnlyEvidence = rows.length > 0 && localHumanInsuranceEvidenceCount === 0 && rows.every((row) => hasPropertyInsuranceEvidence(row));
   const included = localHumanInsuranceEvidenceCount > 0;
   return {
     company,
