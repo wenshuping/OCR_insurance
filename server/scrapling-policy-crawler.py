@@ -2761,6 +2761,7 @@ def jrcpcx_fetch_life_ins_detail(
     product: dict[str, Any],
     pdf_archive_dir: str = "",
     skip_clause_urls: set[str] | None = None,
+    extract_responsibility: bool = True,
 ) -> dict[str, Any]:
     detail_url = trim(product.get("detailUrl"))
     if not detail_url:
@@ -2845,8 +2846,17 @@ def jrcpcx_fetch_life_ins_detail(
             "detailUrl": detail_url,
             "fields": fields,
         }
-    extracted = extract_pdf_text_with_system_python(pdf_bytes)
-    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if extract_responsibility:
+        extracted = extract_pdf_text_with_system_python(pdf_bytes)
+        page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+        quality_status = "valid_complete" if page_text else "invalid_empty"
+        snippet = "金融产品查询平台/中国保险行业协会条款 PDF，已截取保险责任正文段。" if page_text else ""
+        pages = extracted.get("pages", 0)
+    else:
+        page_text = ""
+        quality_status = "pdf_only_deferred"
+        snippet = "金融产品查询平台/中国保险行业协会条款 PDF，PDF 已归档，保险责任待后续抽取。"
+        pages = 0
     archive = archive_pdf_bytes(pdf_bytes, pdf_archive_dir, clause_url) if pdf_archive_dir else {}
     record = {
         "company": company,
@@ -2862,18 +2872,21 @@ def jrcpcx_fetch_life_ins_detail(
         "materialType": "terms",
         "parser": "jrcpcx_life_ins_detail",
         "pageText": page_text,
-        "qualityStatus": "valid_complete" if page_text else "invalid_empty",
-        "snippet": "金融产品查询平台/中国保险行业协会条款 PDF，已截取保险责任正文段。" if page_text else "",
+        "qualityStatus": quality_status,
+        "snippet": snippet,
         "detailUrl": detail_url,
         "detailApiUrl": detail_api_url,
         "clauseFileName": trim(file_name),
         "clauseUrl": clause_url,
-        "pages": extracted.get("pages", 0),
+        "pages": pages,
         "bytes": len(pdf_bytes),
         "contentType": pdf_content_type,
         "detailFields": fields,
         **archive,
     }
+    if not extract_responsibility:
+        record["futureExtractionStatus"] = "pending"
+        record["responsibilityDeferred"] = True
     return {
         "ok": True,
         "productName": product_name,

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,14 +11,18 @@ import {
   backupSqliteFile,
   buildCoverageGapReport,
   buildDefaultArtifactPath,
+  buildPdfOnlyReport,
   buildInsertReport,
   buildInsertPlan,
   buildJrcpcxQueriesFromGap,
   buildKnowledgeRecordFromJrcpcx,
+  buildSuggestedReadableName,
   buildSqliteBackupPath,
   companyConfigForIssuer,
   eligibleForAutoInsert,
   normalizeClauseUrl,
+  validatePdfOnlyReport,
+  writePdfOnlyArtifacts,
 } from '../scripts/jrcpcx-major-company-gap-backfill.mjs';
 
 const pdfFixturePath = path.join(os.tmpdir(), 'jrcpcx-major-company-gap-fixture.pdf');
@@ -25,6 +30,10 @@ const pdfFixturePath = path.join(os.tmpdir(), 'jrcpcx-major-company-gap-fixture.
 function ensurePdfFixture() {
   fs.writeFileSync(pdfFixturePath, '%PDF-1.4\n% test fixture\n');
   return pdfFixturePath;
+}
+
+function sha256File(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
 test('target company config maps major life insurers to Feishu configs', () => {
@@ -358,4 +367,387 @@ test('normalizeClauseUrl removes volatile t parameter and sorts params', () => {
     normalizeClauseUrl('https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=2&info=abc&data=1'),
     'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?data=1&info=abc',
   );
+});
+
+test('buildSuggestedReadableName removes unsafe filename characters', () => {
+  assert.equal(
+    buildSuggestedReadableName({
+      company: '阳光人寿保险股份有限公司',
+      productName: '阳光/附加:意外?伤害保险',
+      detailFields: { 产品条款文字编码: '阳光人寿〔2020〕意外伤害保险001号' },
+    }),
+    '阳光人寿保险股份有限公司__阳光_附加_意外_伤害保险__阳光人寿〔2020〕意外伤害保险001号.pdf',
+  );
+});
+
+test('buildPdfOnlyReport records downloaded PDF metadata for later extraction', () => {
+  const pdfPath = ensurePdfFixture();
+  const pdfSha256 = sha256File(pdfPath);
+  const report = buildPdfOnlyReport({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    crawlResult: {
+      records: [
+        {
+          company: '阳光人寿保险股份有限公司',
+          productName: '阳光人寿附加意外伤害保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=1',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=1&info=abc',
+          clauseFileName: 'abc_TERMS.PDF',
+          pdfOriginalUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?t=1&info=abc',
+          pdfLocalPath: pdfPath,
+          pdfSha256,
+          pdfBytes: fs.statSync(pdfPath).size,
+          pdfContentType: 'application/pdf',
+          pdfArchivedAt: '2026-06-21T08:00:01Z',
+          detailFields: { 产品条款文字编码: '阳光人寿〔2020〕意外伤害保险001号' },
+          responsibilityDeferred: true,
+          futureExtractionStatus: 'pending',
+        },
+      ],
+      detailResults: [],
+    },
+  });
+
+  assert.equal(report.summary.downloadedCount, 1);
+  assert.equal(report.summary.skippedExistingCount, 0);
+  assert.equal(report.summary.blockedCount, 0);
+  assert.equal(report.summary.byCompany.downloaded['阳光人寿保险股份有限公司'], 1);
+  assert.equal(report.downloaded[0].issuerFullName, '阳光人寿保险股份有限公司');
+  assert.equal(report.downloaded[0].normalizedClauseUrl, 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc');
+  assert.equal(report.downloaded[0].pdfFileName, path.basename(pdfPath));
+  assert.equal(report.downloaded[0].clauseFileName, 'abc_TERMS.PDF');
+  assert.equal(report.downloaded[0].futureExtractionStatus, 'pending');
+  assert.equal(report.downloaded[0].responsibilityDeferred, true);
+  assert.match(report.downloaded[0].suggestedReadableName, /阳光人寿保险股份有限公司__阳光人寿附加意外伤害保险/u);
+});
+
+test('buildPdfOnlyReport dedupes catalog and downloaded variants for same detail material', () => {
+  const pdfPath = ensurePdfFixture();
+  const detailUrl = 'https://inspdinfo.iachina.cn/lifeIns/detail?data=dedupe';
+  const report = buildPdfOnlyReport({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    crawlResult: {
+      products: [
+        {
+          company: '太平人寿保险有限公司',
+          productName: '太平团体年金保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl,
+          detailFields: { 产品条款文字编码: '太平人寿〔2020〕团体年金保险001号' },
+        },
+      ],
+      records: [
+        {
+          company: '太平人寿保险有限公司',
+          productName: '太平团体年金保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl,
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=taiping-dedupe',
+          clauseFileName: 'taiping_dedupe_TERMS.PDF',
+          pdfLocalPath: pdfPath,
+          pdfSha256: sha256File(pdfPath),
+          pdfBytes: fs.statSync(pdfPath).size,
+          pdfContentType: 'application/pdf',
+          pdfArchivedAt: '2026-06-21T08:00:01Z',
+          detailFields: { 产品条款文字编码: '太平人寿〔2020〕团体年金保险001号' },
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.summary.uniqueCandidateMaterialCount, 1);
+  assert.equal(report.summary.byCompany.uniqueCandidateMaterials['太平人寿保险有限公司'], 1);
+});
+
+test('buildPdfOnlyReport separates skipped-existing reasons and blocked rows', () => {
+  const report = buildPdfOnlyReport({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    crawlResult: {
+      records: [
+        {
+          company: '中国人民人寿保险股份有限公司',
+          productName: '人保寿险示例年金保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old',
+          clauseFileName: 'old_TERMS.PDF',
+          existingUrl: 'https://local.example/knowledge/old',
+          qualityStatus: 'represented_local_url',
+        },
+        {
+          company: '中国人民人寿保险股份有限公司',
+          productName: '人保寿险示例年金保险哈希重复',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2-hash',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old-hash',
+          clauseFileName: 'old_hash_TERMS.PDF',
+          skippedExisting: true,
+          skippedReason: 'existing_hash',
+          existingHash: 'hash123',
+          skippedExistingEvidence: { pdfSha256: 'hash123' },
+        },
+        {
+          company: '中国人民人寿保险股份有限公司',
+          productName: '人保寿险示例年金保险批内重复',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=2-dup',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old-dup',
+          clauseFileName: 'old_dup_TERMS.PDF',
+          skipReason: 'duplicate_plan_url',
+          duplicateOf: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old',
+        },
+      ],
+      detailResults: [
+        {
+          ok: false,
+          code: 'JRCPCX_CLAUSE_PDF_FETCH_FAILED',
+          message: 'html response',
+          productName: '人保寿险失败示例',
+          company: '中国人民人寿保险股份有限公司',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=3',
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.summary.downloadedCount, 0);
+  assert.equal(report.summary.skippedExistingCount, 3);
+  assert.equal(report.summary.blockedCount, 1);
+  assert.equal(report.summary.representedUrlCount, 1);
+  assert.equal(report.summary.representedHashCount, 1);
+  assert.equal(report.summary.byCompany.skippedExisting['中国人民人寿保险股份有限公司'], 3);
+  assert.equal(report.summary.byCompany.blocked['中国人民人寿保险股份有限公司'], 1);
+  assert.deepEqual(report.skippedExisting.map((row) => row.reason), ['existing_url', 'existing_hash', 'duplicate_plan_url']);
+  assert.equal(report.skippedExisting[0].existingUrl, 'https://local.example/knowledge/old');
+  assert.deepEqual(report.skippedExisting[1].skipEvidence, { pdfSha256: 'hash123' });
+  assert.equal(report.skippedExisting[1].existingHash, 'hash123');
+  assert.equal(report.skippedExisting[2].duplicateOf, 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=old');
+  assert.equal(report.blocked[0].reason, 'JRCPCX_CLAUSE_PDF_FETCH_FAILED');
+});
+
+test('validatePdfOnlyReport verifies PDF signature, sha256, and required metadata', () => {
+  const pdfPath = ensurePdfFixture();
+  const nonPdfPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-non-pdf-')), 'not-pdf.pdf');
+  fs.writeFileSync(nonPdfPath, 'not a pdf\n');
+  const validRow = buildPdfOnlyReport({
+    crawlResult: {
+      records: [
+        {
+          company: '阳光人寿保险股份有限公司',
+          productName: '阳光人寿附加意外伤害保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=7',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=valid',
+          clauseFileName: 'valid_TERMS.PDF',
+          pdfLocalPath: pdfPath,
+          pdfSha256: sha256File(pdfPath),
+          pdfBytes: fs.statSync(pdfPath).size,
+          pdfContentType: 'application/pdf',
+          pdfArchivedAt: '2026-06-21T08:00:01Z',
+          detailFields: { 产品条款文字编码: '阳光人寿〔2020〕意外伤害保险007号' },
+        },
+      ],
+    },
+  }).downloaded[0];
+  const invalidMetadataRow = {
+    ...validRow,
+    pdfSha256: 'badsha',
+    clauseFileName: '',
+    pdfContentType: '',
+    pdfArchivedAt: '',
+    productType: '',
+    productState: '',
+    industryCode: '',
+    detailUrl: '',
+    normalizedClauseUrl: '',
+    pdfOriginalUrl: '',
+    suggestedReadableName: '',
+    responsibilityDeferred: false,
+  };
+  const nonPdfRow = {
+    ...validRow,
+    productName: '阳光人寿非 PDF 示例',
+    pdfLocalPath: nonPdfPath,
+    pdfSha256: sha256File(nonPdfPath),
+    pdfBytes: fs.statSync(nonPdfPath).size,
+  };
+
+  const validation = validatePdfOnlyReport({ downloaded: [invalidMetadataRow, nonPdfRow] });
+  const reasons = validation.issues.map((issue) => issue.reason);
+
+  assert.equal(validation.ok, false);
+  assert.match(reasons.join(','), /pdf_sha256_mismatch/u);
+  assert.match(reasons.join(','), /missing_product_type/u);
+  assert.match(reasons.join(','), /missing_product_state/u);
+  assert.match(reasons.join(','), /missing_industry_code/u);
+  assert.match(reasons.join(','), /missing_detail_url/u);
+  assert.match(reasons.join(','), /missing_clause_file_name/u);
+  assert.match(reasons.join(','), /missing_pdf_original_url/u);
+  assert.match(reasons.join(','), /missing_pdf_content_type/u);
+  assert.match(reasons.join(','), /missing_pdf_archived_at/u);
+  assert.match(reasons.join(','), /missing_suggested_readable_name/u);
+  assert.match(reasons.join(','), /missing_normalized_clause_url/u);
+  assert.match(reasons.join(','), /responsibility_not_deferred/u);
+  assert.match(reasons.join(','), /pdf_file_signature_mismatch/u);
+});
+
+test('validatePdfOnlyReport catches missing PDF files', () => {
+  const missingPdfPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-missing-pdf-')), 'missing.pdf');
+  const report = buildPdfOnlyReport({
+    crawlResult: {
+      records: [
+        {
+          company: '友邦人寿保险有限公司',
+          productName: '友邦附加意外伤害保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=4',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=missing',
+          clauseFileName: 'missing_TERMS.PDF',
+          pdfLocalPath: missingPdfPath,
+          pdfSha256: 'missing123',
+          pdfBytes: 10,
+        },
+      ],
+    },
+  });
+
+  const validation = validatePdfOnlyReport(report);
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.missingPdfPathCount, 1);
+  assert.match(validation.issues[0].reason, /pdf_file_not_found/u);
+});
+
+test('writePdfOnlyArtifacts writes aggregate and per-company JSON and CSV files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-pdf-only-artifacts-'));
+  const pdfPath = ensurePdfFixture();
+  const pdfSha256 = sha256File(pdfPath);
+  const report = buildPdfOnlyReport({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    crawlResult: {
+      products: [
+        {
+          company: '太平人寿保险有限公司',
+          productName: '太平团体年金保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=5',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=taiping',
+          clauseFileName: 'taiping_TERMS.PDF',
+        },
+      ],
+      records: [
+        {
+          company: '太平人寿保险有限公司',
+          productName: '太平团体年金保险',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=5',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=taiping',
+          clauseFileName: 'taiping_TERMS.PDF',
+          pdfLocalPath: pdfPath,
+          pdfSha256,
+          pdfBytes: fs.statSync(pdfPath).size,
+          pdfContentType: 'application/pdf',
+          pdfArchivedAt: '2026-06-21T08:00:01Z',
+        },
+        {
+          company: '太平人寿保险有限公司',
+          productName: '太平团体年金保险哈希已存在',
+          productType: '人身保险类',
+          salesStatus: '停售',
+          detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=5-hash',
+          clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=taiping-hash',
+          clauseFileName: 'taiping_hash_TERMS.PDF',
+          skippedExisting: true,
+          reason: 'existing_hash',
+          existingHash: pdfSha256,
+        },
+      ],
+      unresolvedTruncatedShards: [
+        {
+          company: '太平人寿保险有限公司',
+          productName: '太平截断示例',
+          reason: 'truncated_catalog_shard',
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.summary.catalogRowCount, 1);
+  assert.equal(report.summary.uniqueCandidateMaterialCount, 2);
+  assert.equal(report.summary.representedHashCount, 1);
+  assert.equal(report.summary.unresolvedTruncatedShardCount, 1);
+  assert.equal(report.summary.byCompany.uniqueCandidateMaterials['太平人寿保险有限公司'], 2);
+  assert.equal(report.summary.byCompany.unresolvedTruncatedShards['太平人寿保险有限公司'], 1);
+
+  const files = writePdfOnlyArtifacts({
+    report,
+    outputDir: dir,
+    batchName: 'jrcpcx-major-company-pdf-only-test',
+  });
+
+  assert.equal(fs.existsSync(files.aggregate.summaryJson), true);
+  assert.equal(fs.existsSync(files.aggregate.catalogJson), true);
+  assert.equal(fs.existsSync(files.aggregate.catalogCsv), true);
+  assert.equal(fs.existsSync(files.aggregate.downloadedCsv), true);
+  assert.equal(fs.existsSync(files.byCompany['太平人寿保险有限公司'].catalogJson), true);
+  assert.equal(fs.existsSync(files.byCompany['太平人寿保险有限公司'].catalogCsv), true);
+  assert.equal(fs.existsSync(files.byCompany['太平人寿保险有限公司'].downloadedJson), true);
+  assert.equal(JSON.parse(fs.readFileSync(files.byCompany['太平人寿保险有限公司'].summaryJson, 'utf8')).representedHashCount, 1);
+  assert.match(fs.readFileSync(files.aggregate.downloadedCsv, 'utf8'), /太平团体年金保险/u);
+  assert.match(fs.readFileSync(files.aggregate.catalogCsv, 'utf8'), /taiping_TERMS\.PDF/u);
+});
+
+test('CLI pdf-only mode writes artifact output without touching SQLite', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jrcpcx-pdf-only-cli-'));
+  const inputPath = path.join(dir, 'crawl.json');
+  fs.writeFileSync(inputPath, `${JSON.stringify({
+    generatedAt: '2026-06-21T08:00:00.000Z',
+    records: [
+      {
+        company: '太平人寿保险有限公司',
+        productName: '太平团体年金保险',
+        productType: '人身保险类',
+        salesStatus: '停售',
+        detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=6',
+        clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=taiping-cli',
+        clauseFileName: 'taiping_cli_TERMS.PDF',
+        pdfLocalPath: ensurePdfFixture(),
+        pdfSha256: sha256File(pdfFixturePath),
+        pdfBytes: fs.statSync(pdfFixturePath).size,
+        pdfContentType: 'application/pdf',
+        pdfArchivedAt: '2026-06-21T08:00:01Z',
+        detailFields: { 产品条款文字编码: '太平人寿〔2020〕团体年金保险006号' },
+      },
+    ],
+  })}\n`);
+
+  const result = spawnSync(process.execPath, [
+    'scripts/jrcpcx-major-company-gap-backfill.mjs',
+    '--mode=pdf-only',
+    `--input=${inputPath}`,
+    `--output-dir=${dir}`,
+    '--batch-name=jrcpcx-major-company-pdf-only-cli-test',
+    '--pretty',
+  ], {
+    cwd: path.resolve('.'),
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.summary.downloadedCount, 1);
+  assert.equal(output.validation.ok, true);
+  assert.equal(fs.existsSync(output.files.aggregate.summaryJson), true);
+  assert.equal(fs.existsSync(output.files.aggregate.downloadedCsv), true);
 });

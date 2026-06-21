@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-existing", dest="skip_existing", action="store_true", default=True)
     parser.add_argument("--no-skip-existing", dest="skip_existing", action="store_false")
     parser.add_argument("--headless", action="store_true", default=False)
+    parser.add_argument("--pdf-only", dest="pdf_only", action="store_true", default=False)
     args = parser.parse_args()
     args.query_file = resolve_path(args.query_file)
     args.output = resolve_path(args.output)
@@ -218,6 +219,7 @@ def build_initial_state(args: argparse.Namespace, query_count: int) -> dict[str,
         "pdfArchiveDir": args.pdf_archive_dir,
         "dbPath": args.db_path,
         "skipExisting": bool(args.skip_existing),
+        "pdfOnly": bool(args.pdf_only),
         "knownClauseUrlCount": 0,
         "pdfDownloadSkippedExistingCount": 0,
         "userDataDir": args.user_data_dir,
@@ -306,6 +308,7 @@ def run_details(
                 product,
                 args.pdf_archive_dir,
                 skip_clause_urls=known_clause_urls,
+                extract_responsibility=not args.pdf_only,
             )
         except Exception as error:
             detail_result = {
@@ -354,6 +357,7 @@ def compact_summary(output_path: str, state: dict[str, Any]) -> dict[str, Any]:
         "pdfArchiveDir": state["pdfArchiveDir"],
         "dbPath": state["dbPath"],
         "skipExisting": state["skipExisting"],
+        "pdfOnly": state.get("pdfOnly"),
         "knownClauseUrlCount": state["knownClauseUrlCount"],
         "userDataDir": state["userDataDir"],
     }

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -269,6 +270,267 @@ function skippedCoverageRow(item = {}, reasons = []) {
   };
 }
 
+function compactFileNamePart(value = '') {
+  return trim(value)
+    .replace(/[\\/:*?"<>|]+/gu, '_')
+    .replace(/\s+/gu, '')
+    .slice(0, 80);
+}
+
+export function buildSuggestedReadableName(row = {}) {
+  const issuer = compactFileNamePart(issuerFullNameOf(row)) || '未知机构';
+  const product = compactFileNamePart(productNameOf(row)) || '未知产品';
+  const code = compactFileNamePart(termsTextCodeOf(row));
+  return [issuer, product, code || '条款'].filter(Boolean).join('__') + '.pdf';
+}
+
+function pdfFileNameOf(row = {}) {
+  const localPath = pdfLocalPathOf(row);
+  return localPath ? path.basename(localPath) : '';
+}
+
+function pdfBytesOf(row = {}) {
+  return Number(row.pdfBytes || row.bytes || 0) || 0;
+}
+
+function pdfContentTypeOf(row = {}) {
+  return trim(row.pdfContentType || row.contentType);
+}
+
+function skipReasonOf(row = {}) {
+  return trim(row.reason || row.skipReason || row.skippedReason || row.skippedExistingReason);
+}
+
+function pdfOnlyBaseRow(row = {}, status, reason = '') {
+  const clauseUrl = clauseUrlOf(row);
+  return {
+    status,
+    reason,
+    issuerFullName: issuerFullNameOf(row),
+    productName: productNameOf(row),
+    productType: productTypeOf(row),
+    productState: productStateOf(row),
+    industryCode: termsTextCodeOf(row),
+    detailUrl: detailUrlOf(row) || trim(row.detailUrl),
+    clauseUrl,
+    normalizedClauseUrl: clauseUrl,
+    clauseFileName: trim(row.clauseFileName || row.fileName),
+    pdfOriginalUrl: trim(row.pdfOriginalUrl || row.clauseUrl),
+    pdfLocalPath: pdfLocalPathOf(row),
+    pdfFileName: pdfFileNameOf(row),
+    pdfSha256: pdfSha256Of(row),
+    pdfBytes: pdfBytesOf(row),
+    pdfContentType: pdfContentTypeOf(row),
+    pdfArchivedAt: trim(row.pdfArchivedAt),
+    suggestedReadableName: buildSuggestedReadableName(row),
+    futureExtractionStatus: 'pending',
+    responsibilityDeferred: true,
+    sourceAttemptFile: trim(row.sourceAttemptFile),
+    skipEvidence: row.skipEvidence || row.skippedExistingEvidence || null,
+    existingUrl: trim(row.existingUrl || row.representedUrl || row.localUrl),
+    existingHash: trim(row.existingHash || row.representedHash || row.localHash),
+    duplicateOf: trim(row.duplicateOf || row.duplicatePlanUrl || row.duplicateClauseUrl),
+    detailFields: row.detailFields || row.fields || {},
+  };
+}
+
+function isSkippedExistingRecord(row = {}) {
+  const reason = skipReasonOf(row);
+  return Boolean(row.skippedExisting)
+    || trim(row.qualityStatus) === 'represented_local_url'
+    || /existing|represented|duplicate/iu.test(reason);
+}
+
+function pdfOnlyRowsFromCrawl(crawlResult = {}) {
+  const records = rowsOf(crawlResult.records ? { rows: crawlResult.records } : crawlResult);
+  const downloaded = [];
+  const skippedExisting = [];
+  const blocked = [];
+
+  for (const row of records) {
+    if (isSkippedExistingRecord(row)) {
+      skippedExisting.push(pdfOnlyBaseRow(row, 'skipped_existing', skipReasonOf(row) || 'existing_url'));
+    } else if (pdfLocalPathOf(row)) {
+      downloaded.push(pdfOnlyBaseRow(row, 'downloaded'));
+    } else if (detailUrlOf(row) || trim(row.detailUrl)) {
+      blocked.push(pdfOnlyBaseRow(row, 'blocked', 'missing_pdf_local_path'));
+    }
+  }
+
+  for (const result of Array.isArray(crawlResult.detailResults) ? crawlResult.detailResults : []) {
+    if (result && result.ok === false) {
+      blocked.push(pdfOnlyBaseRow(result, 'blocked', trim(result.code) || 'detail_failed'));
+    }
+  }
+
+  return { downloaded, skippedExisting, blocked };
+}
+
+function candidateMaterialKey(row = {}) {
+  const identityUrl = detailUrlOf(row) || trim(row.detailUrl) || clauseUrlOf(row) || trim(row.normalizedClauseUrl);
+  const key = [
+    issuerFullNameOf(row),
+    productNameOf(row),
+    termsTextCodeOf(row),
+    identityUrl,
+  ].map(trim).filter(Boolean).join('\u001f');
+  return key || materialIdentityKey(row);
+}
+
+function countUniqueCandidateMaterials(rows = []) {
+  const keys = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const key = candidateMaterialKey(row);
+    if (key) keys.add(key);
+  }
+  return keys.size;
+}
+
+function countByCompany(rows = []) {
+  const counts = {};
+  for (const row of rows) {
+    const company = issuerFullNameOf(row) || trim(row.issuerFullName) || '未知机构';
+    counts[company] = (counts[company] || 0) + 1;
+  }
+  return counts;
+}
+
+function countUniqueCandidateMaterialsByCompany(rows = []) {
+  const keysByCompany = {};
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const company = issuerFullNameOf(row) || trim(row.issuerFullName) || '未知机构';
+    const key = candidateMaterialKey(row);
+    if (!key) continue;
+    if (!keysByCompany[company]) keysByCompany[company] = new Set();
+    keysByCompany[company].add(key);
+  }
+  const counts = {};
+  for (const [company, keys] of Object.entries(keysByCompany)) counts[company] = keys.size;
+  return counts;
+}
+
+function isUrlRepresentedRow(row = {}) {
+  return ['existing_url', 'represented_url', 'represented_local_url'].includes(trim(row.reason));
+}
+
+function isHashRepresentedRow(row = {}) {
+  return /hash/iu.test(trim(row.reason));
+}
+
+function unresolvedTruncatedShardsFrom(crawlResult = {}) {
+  if (Array.isArray(crawlResult.unresolvedTruncatedShards)) return crawlResult.unresolvedTruncatedShards;
+  const shards = Array.isArray(crawlResult.unresolvedShards)
+    ? crawlResult.unresolvedShards
+    : (Array.isArray(crawlResult.summary?.unresolvedShards) ? crawlResult.summary.unresolvedShards : []);
+  return shards.filter((row) => /truncated/iu.test([
+    row.reason,
+    row.status,
+    row.code,
+    row.message,
+    row.qualityStatus,
+  ].map(trim).filter(Boolean).join(' ')));
+}
+
+export function buildPdfOnlyReport({
+  crawlResult = {},
+  generatedAt = new Date().toISOString(),
+} = {}) {
+  const { downloaded, skippedExisting, blocked } = pdfOnlyRowsFromCrawl(crawlResult);
+  const catalogRows = Array.isArray(crawlResult.products) ? crawlResult.products : [];
+  const candidateRows = [...catalogRows, ...downloaded, ...skippedExisting, ...blocked];
+  const urlRepresented = skippedExisting.filter(isUrlRepresentedRow);
+  const hashRepresented = skippedExisting.filter(isHashRepresentedRow);
+  const missingPdfPathRows = [
+    ...downloaded.filter((row) => !trim(row.pdfLocalPath)),
+    ...blocked.filter((row) => trim(row.reason) === 'missing_pdf_local_path'),
+  ];
+  const unresolvedTruncatedShards = unresolvedTruncatedShardsFrom(crawlResult);
+  const fallbackUnresolvedTruncatedShardCount = Number(crawlResult.summary?.unresolvedTruncatedShardCount || 0) || 0;
+  return {
+    schemaVersion: 'jrcpcx-major-company-pdf-only/v1',
+    generatedAt,
+    sourceCrawlPath: trim(crawlResult.sourceCrawlPath),
+    targetCompanies: targetCompanySummaries(),
+    summary: {
+      catalogRowCount: catalogRows.length,
+      uniqueCandidateMaterialCount: countUniqueCandidateMaterials(candidateRows),
+      downloadedCount: downloaded.length,
+      skippedExistingCount: skippedExisting.length,
+      blockedCount: blocked.length,
+      failedCount: blocked.length,
+      representedUrlCount: urlRepresented.length,
+      representedHashCount: hashRepresented.length,
+      missingPdfPathCount: missingPdfPathRows.length,
+      unresolvedTruncatedShardCount: unresolvedTruncatedShards.length || fallbackUnresolvedTruncatedShardCount,
+      byCompany: {
+        catalog: countByCompany(catalogRows),
+        uniqueCandidateMaterials: countUniqueCandidateMaterialsByCompany(candidateRows),
+        downloaded: countByCompany(downloaded),
+        skippedExisting: countByCompany(skippedExisting),
+        blocked: countByCompany(blocked),
+        failed: countByCompany(blocked),
+        representedUrl: countByCompany(urlRepresented),
+        representedHash: countByCompany(hashRepresented),
+        missingPdfPath: countByCompany(missingPdfPathRows),
+        unresolvedTruncatedShards: countByCompany(unresolvedTruncatedShards),
+      },
+    },
+    catalog: catalogRows,
+    downloaded,
+    skippedExisting,
+    blocked,
+    unresolvedTruncatedShards,
+  };
+}
+
+export function validatePdfOnlyReport(report = {}, existsFn = fs.existsSync) {
+  const issues = [];
+  for (const row of Array.isArray(report.downloaded) ? report.downloaded : []) {
+    const pdfLocalPath = trim(row.pdfLocalPath);
+    const expectedSha256 = trim(row.pdfSha256).toLowerCase();
+    let fileBytes = null;
+    if (!pdfLocalPath) {
+      issues.push({ row, reason: 'missing_pdf_local_path' });
+    } else if (!existsFn(pdfLocalPath)) {
+      issues.push({ row, reason: 'pdf_file_not_found' });
+    } else {
+      try {
+        fileBytes = fs.readFileSync(pdfLocalPath);
+        if (fileBytes.subarray(0, 4).toString('latin1') !== '%PDF') issues.push({ row, reason: 'pdf_file_signature_mismatch' });
+      } catch (error) {
+        issues.push({ row, reason: 'pdf_file_read_failed', message: error.message });
+      }
+    }
+    if (!expectedSha256) issues.push({ row, reason: 'missing_pdf_sha256' });
+    else if (fileBytes) {
+      const actualSha256 = crypto.createHash('sha256').update(fileBytes).digest('hex');
+      if (actualSha256 !== expectedSha256) issues.push({ row, reason: 'pdf_sha256_mismatch', expected: expectedSha256, actual: actualSha256 });
+    }
+    if (Number(row.pdfBytes || 0) <= 0) issues.push({ row, reason: 'invalid_pdf_bytes' });
+    if (!trim(row.productName)) issues.push({ row, reason: 'missing_product_name' });
+    if (!trim(row.productType)) issues.push({ row, reason: 'missing_product_type' });
+    if (!trim(row.productState)) issues.push({ row, reason: 'missing_product_state' });
+    if (!trim(row.industryCode)) issues.push({ row, reason: 'missing_industry_code' });
+    if (!trim(row.issuerFullName)) issues.push({ row, reason: 'missing_issuer_full_name' });
+    if (!trim(row.detailUrl)) issues.push({ row, reason: 'missing_detail_url' });
+    if (!trim(row.clauseUrl)) issues.push({ row, reason: 'missing_clause_url' });
+    if (!trim(row.normalizedClauseUrl)) issues.push({ row, reason: 'missing_normalized_clause_url' });
+    if (!trim(row.clauseFileName)) issues.push({ row, reason: 'missing_clause_file_name' });
+    if (!trim(row.pdfOriginalUrl)) issues.push({ row, reason: 'missing_pdf_original_url' });
+    if (!trim(row.pdfContentType)) issues.push({ row, reason: 'missing_pdf_content_type' });
+    if (!trim(row.pdfArchivedAt)) issues.push({ row, reason: 'missing_pdf_archived_at' });
+    if (!trim(row.suggestedReadableName)) issues.push({ row, reason: 'missing_suggested_readable_name' });
+    if (row.responsibilityDeferred !== true) issues.push({ row, reason: 'responsibility_not_deferred' });
+    if (row.futureExtractionStatus !== 'pending') issues.push({ row, reason: 'future_extraction_status_not_pending' });
+  }
+  return {
+    ok: issues.length === 0,
+    issueCount: issues.length,
+    missingPdfPathCount: issues.filter((issue) => ['missing_pdf_local_path', 'pdf_file_not_found'].includes(issue.reason)).length,
+    issues,
+  };
+}
+
 function isOutOfScopeEligibility(reasons = []) {
   return reasons.includes('issuer_not_target') || reasons.includes('not_human_insurance');
 }
@@ -488,6 +750,60 @@ function writeJsonFile(filePath, value, pretty = false) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, pretty ? 2 : 0)}\n`);
 }
 
+function csvCell(value) {
+  if (value === undefined || value === null) return '';
+  const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  return /[",\n\r]/u.test(text) ? `"${text.replace(/"/gu, '""')}"` : text;
+}
+
+function writeCsvFile(filePath, rows = [], headers = []) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const lines = ['\ufeff' + headers.join(',')];
+  for (const row of rows) lines.push(headers.map((header) => csvCell(row[header])).join(','));
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`);
+}
+
+const PDF_ONLY_CSV_HEADERS = Object.freeze([
+  'status',
+  'reason',
+  'skipEvidence',
+  'existingUrl',
+  'existingHash',
+  'duplicateOf',
+  'issuerFullName',
+  'productName',
+  'productType',
+  'productState',
+  'industryCode',
+  'detailUrl',
+  'clauseUrl',
+  'normalizedClauseUrl',
+  'clauseFileName',
+  'pdfOriginalUrl',
+  'pdfLocalPath',
+  'pdfFileName',
+  'pdfSha256',
+  'pdfBytes',
+  'pdfContentType',
+  'pdfArchivedAt',
+  'suggestedReadableName',
+  'futureExtractionStatus',
+  'responsibilityDeferred',
+]);
+
+const PDF_ONLY_CATALOG_CSV_HEADERS = Object.freeze([
+  'issuerFullName',
+  'productName',
+  'productType',
+  'productState',
+  'industryCode',
+  'detailUrl',
+  'clauseUrl',
+  'normalizedClauseUrl',
+  'clauseFileName',
+  'materialIdentityKey',
+]);
+
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
@@ -611,6 +927,110 @@ async function buildInsertReportFromStore({ coverage, dbPath, dbBackupPath = '',
   }
 }
 
+function companySlug(value = '') {
+  const config = companyConfigForIssuer(value);
+  if (config?.localCompany) return compactFileNamePart(config.localCompany);
+  return compactFileNamePart(value) || 'unknown-company';
+}
+
+function rowsForCompany(rows = [], company = '') {
+  return rows.filter((row) => normalizeIssuerName(issuerFullNameOf(row)) === normalizeIssuerName(company));
+}
+
+function countFromCompanyMap(map = {}, company = '') {
+  return Number(map?.[company] || 0) || 0;
+}
+
+function catalogCsvRow(row = {}) {
+  const clauseUrl = clauseUrlOf(row);
+  return {
+    issuerFullName: issuerFullNameOf(row),
+    productName: productNameOf(row),
+    productType: productTypeOf(row),
+    productState: productStateOf(row),
+    industryCode: termsTextCodeOf(row),
+    detailUrl: detailUrlOf(row) || trim(row.detailUrl),
+    clauseUrl,
+    normalizedClauseUrl: clauseUrl,
+    clauseFileName: trim(row.clauseFileName || row.fileName),
+    materialIdentityKey: materialIdentityKey(row),
+  };
+}
+
+export function writePdfOnlyArtifacts({
+  report,
+  outputDir = runtimeDir,
+  batchName = `jrcpcx-major-company-pdf-only-${timestampStamp(report?.generatedAt || new Date().toISOString())}`,
+  pretty = true,
+} = {}) {
+  const aggregate = {
+    summaryJson: path.join(outputDir, `${batchName}-summary.json`),
+    catalogJson: path.join(outputDir, `${batchName}-catalog.json`),
+    catalogCsv: path.join(outputDir, `${batchName}-catalog.csv`),
+    downloadedJson: path.join(outputDir, `${batchName}-downloaded.json`),
+    downloadedCsv: path.join(outputDir, `${batchName}-downloaded.csv`),
+    skippedExistingJson: path.join(outputDir, `${batchName}-skipped-existing.json`),
+    skippedExistingCsv: path.join(outputDir, `${batchName}-skipped-existing.csv`),
+    blockedJson: path.join(outputDir, `${batchName}-blocked.json`),
+    blockedCsv: path.join(outputDir, `${batchName}-blocked.csv`),
+  };
+
+  writeJsonFile(aggregate.summaryJson, { ...report, catalog: undefined, downloaded: undefined, skippedExisting: undefined, blocked: undefined }, pretty);
+  writeJsonFile(aggregate.catalogJson, report.catalog || [], pretty);
+  writeCsvFile(aggregate.catalogCsv, (report.catalog || []).map(catalogCsvRow), PDF_ONLY_CATALOG_CSV_HEADERS);
+  writeJsonFile(aggregate.downloadedJson, report.downloaded || [], pretty);
+  writeCsvFile(aggregate.downloadedCsv, report.downloaded || [], PDF_ONLY_CSV_HEADERS);
+  writeJsonFile(aggregate.skippedExistingJson, report.skippedExisting || [], pretty);
+  writeCsvFile(aggregate.skippedExistingCsv, report.skippedExisting || [], PDF_ONLY_CSV_HEADERS);
+  writeJsonFile(aggregate.blockedJson, report.blocked || [], pretty);
+  writeCsvFile(aggregate.blockedCsv, report.blocked || [], PDF_ONLY_CSV_HEADERS);
+
+  const byCompany = {};
+  for (const config of TARGET_COMPANIES) {
+    const slug = companySlug(config.issuerFullName);
+    const prefix = path.join(outputDir, `${batchName}-${slug}`);
+    const companyFiles = {
+      downloadedJson: `${prefix}-downloaded.json`,
+      downloadedCsv: `${prefix}-downloaded.csv`,
+      catalogJson: `${prefix}-catalog.json`,
+      catalogCsv: `${prefix}-catalog.csv`,
+      skippedExistingJson: `${prefix}-skipped-existing.json`,
+      skippedExistingCsv: `${prefix}-skipped-existing.csv`,
+      blockedJson: `${prefix}-blocked.json`,
+      blockedCsv: `${prefix}-blocked.csv`,
+      summaryJson: `${prefix}-summary.json`,
+    };
+    const downloaded = rowsForCompany(report.downloaded || [], config.issuerFullName);
+    const skippedExisting = rowsForCompany(report.skippedExisting || [], config.issuerFullName);
+    const blocked = rowsForCompany(report.blocked || [], config.issuerFullName);
+    const catalog = rowsForCompany(report.catalog || [], config.issuerFullName);
+    writeJsonFile(companyFiles.downloadedJson, downloaded, pretty);
+    writeCsvFile(companyFiles.downloadedCsv, downloaded, PDF_ONLY_CSV_HEADERS);
+    writeJsonFile(companyFiles.catalogJson, catalog, pretty);
+    writeCsvFile(companyFiles.catalogCsv, catalog.map(catalogCsvRow), PDF_ONLY_CATALOG_CSV_HEADERS);
+    writeJsonFile(companyFiles.skippedExistingJson, skippedExisting, pretty);
+    writeCsvFile(companyFiles.skippedExistingCsv, skippedExisting, PDF_ONLY_CSV_HEADERS);
+    writeJsonFile(companyFiles.blockedJson, blocked, pretty);
+    writeCsvFile(companyFiles.blockedCsv, blocked, PDF_ONLY_CSV_HEADERS);
+    writeJsonFile(companyFiles.summaryJson, {
+      issuerFullName: config.issuerFullName,
+      catalogRowCount: catalog.length,
+      uniqueCandidateMaterialCount: countFromCompanyMap(report.summary?.byCompany?.uniqueCandidateMaterials, config.issuerFullName),
+      downloadedCount: downloaded.length,
+      skippedExistingCount: skippedExisting.length,
+      blockedCount: blocked.length,
+      failedCount: countFromCompanyMap(report.summary?.byCompany?.failed, config.issuerFullName),
+      representedUrlCount: countFromCompanyMap(report.summary?.byCompany?.representedUrl, config.issuerFullName),
+      representedHashCount: countFromCompanyMap(report.summary?.byCompany?.representedHash, config.issuerFullName),
+      missingPdfPathCount: countFromCompanyMap(report.summary?.byCompany?.missingPdfPath, config.issuerFullName),
+      unresolvedTruncatedShardCount: countFromCompanyMap(report.summary?.byCompany?.unresolvedTruncatedShards, config.issuerFullName),
+    }, pretty);
+    byCompany[config.issuerFullName] = companyFiles;
+  }
+
+  return { aggregate, byCompany };
+}
+
 async function runQueryFileCli(args) {
   const generatedAt = new Date().toISOString();
   const gapArg = args['gap-path'] || args.input;
@@ -665,12 +1085,35 @@ async function runInsertCli(args) {
   return artifact;
 }
 
+async function runPdfOnlyCli(args) {
+  const generatedAt = new Date().toISOString();
+  if (!args.input) throw new Error('Missing --input <json>');
+  const inputPath = path.resolve(args.input);
+  const input = readJsonFile(inputPath);
+  const report = buildPdfOnlyReport({
+    crawlResult: { ...input, sourceCrawlPath: inputPath },
+    generatedAt: input.generatedAt || generatedAt,
+  });
+  const validation = validatePdfOnlyReport(report);
+  const outputDir = path.resolve(args['output-dir'] || runtimeDir);
+  const batchName = trim(args['batch-name']) || `jrcpcx-major-company-pdf-only-${timestampStamp(report.generatedAt)}`;
+  const files = writePdfOnlyArtifacts({
+    report: { ...report, validation },
+    outputDir,
+    batchName,
+    pretty: Boolean(args.pretty),
+  });
+  process.stdout.write(`${JSON.stringify({ summary: report.summary, validation, files }, null, 2)}\n`);
+  return { report, validation, files };
+}
+
 async function runCli(argv = process.argv.slice(2)) {
   const args = parseCliArgs(argv);
   if (args.mode === 'query-file') return runQueryFileCli(args);
   if (args.mode === 'coverage') return runCoverageCli(args);
   if (args.mode === 'insert') return runInsertCli(args);
-  throw new Error(`Unsupported --mode ${args.mode || '(missing)'}. Use query-file, coverage, or insert.`);
+  if (args.mode === 'pdf-only') return runPdfOnlyCli(args);
+  throw new Error(`Unsupported --mode ${args.mode || '(missing)'}. Use query-file, coverage, insert, or pdf-only.`);
 }
 
 if (process.argv[1] && __filename === fs.realpathSync(process.argv[1])) {
