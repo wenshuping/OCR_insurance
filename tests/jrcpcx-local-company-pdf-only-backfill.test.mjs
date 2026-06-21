@@ -161,3 +161,42 @@ test('generic responsibility text alone does not create human-insurance evidence
     [['某保险股份有限公司', false, 'no_human_insurance_evidence']],
   );
 });
+
+test('buildLocalCompanyInventory counts JRCPCX clause URL from clauseUrl candidate', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 9,
+      company: '友邦人寿保险有限公司',
+      productName: '友邦终身寿险',
+      productType: '人身保险类',
+      clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-clause-url&t=1',
+    },
+  ]);
+
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].localJrcpcxClauseUrlCount, 1);
+});
+
+test('buildLocalCompanyInventory counts JRCPCX clause URL from normalized and source candidates', () => {
+  const inventory = buildLocalCompanyInventory([
+    {
+      id: 10,
+      company: '友邦人寿保险有限公司',
+      productName: '友邦终身寿险',
+      productType: '人身保险类',
+      normalizedClauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-normalized',
+    },
+    {
+      id: 11,
+      company: '友邦人寿保险有限公司',
+      productName: '友邦定期寿险',
+      productType: '人身保险类',
+      payload: {
+        source_knowledge_url: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=aia-source&t=1',
+      },
+    },
+  ]);
+
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].localJrcpcxClauseUrlCount, 2);
+});

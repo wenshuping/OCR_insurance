@@ -78,7 +78,26 @@ export function isHumanInsuranceEvidence(row = {}) {
 }
 
 function jrcpcxClauseUrlOf(row = {}) {
-  for (const value of [row.url, row.payload?.url, row.pdfOriginalUrl, row.payload?.pdfOriginalUrl]) {
+  for (const value of [
+    row.clauseUrl,
+    row.payload?.clauseUrl,
+    row.clause_url,
+    row.payload?.clause_url,
+    row.normalizedClauseUrl,
+    row.payload?.normalizedClauseUrl,
+    row.normalized_clause_url,
+    row.payload?.normalized_clause_url,
+    row.pdfOriginalUrl,
+    row.payload?.pdfOriginalUrl,
+    row.pdf_original_url,
+    row.payload?.pdf_original_url,
+    row.url,
+    row.payload?.url,
+    row.sourceKnowledgeUrl,
+    row.payload?.sourceKnowledgeUrl,
+    row.source_knowledge_url,
+    row.payload?.source_knowledge_url,
+  ]) {
     const normalized = normalizeClauseUrl(value);
     if (normalized) return normalized;
   }
