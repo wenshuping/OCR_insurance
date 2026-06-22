@@ -63,15 +63,12 @@ export function buildPolicyDerivedResult({
     knowledgeRecords,
     optionalResponsibilityRecords,
   );
-  const cardOptionalResponsibilityRecords = Array.isArray(optionalResponsibilityRecords) && optionalResponsibilityRecords.length
-    ? optionalResponsibilityRecords
-    : attached.optionalResponsibilities;
   const responsibilityCards = buildResponsibilityCardsForPolicy({
     policy: attached,
     responsibilities: policy?.responsibilities,
     coverageIndicators: attached.coverageIndicators,
     knowledgeRecords,
-    optionalResponsibilityRecords: cardOptionalResponsibilityRecords,
+    optionalResponsibilityRecords: attached.optionalResponsibilities,
   });
   const versionByKey = new Map((Array.isArray(productIndicatorVersions) ? productIndicatorVersions : []).map((row) => [
     String(row.productKey || row.product_key || '').trim(),

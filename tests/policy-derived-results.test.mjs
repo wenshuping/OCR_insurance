@@ -114,6 +114,40 @@ test('buildPolicyDerivedResult stores responsibility cards and verifies existing
   assert.equal(row.responsibilityCards[0].indicators[0].basisKey, 'first_basic_responsibility_premium');
 });
 
+test('buildPolicyDerivedResult does not emit unrelated optional responsibility records as cards', () => {
+  const row = buildPolicyDerivedResult({
+    policy: {
+      id: 10,
+      company: '新华保险',
+      name: '尊享人生年金保险（分红型）',
+    },
+    indicatorRecords: [],
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [
+      {
+        id: 'opt_matching',
+        company: '新华保险',
+        productName: '尊享人生年金保险（分红型）',
+        coverageType: '可选责任',
+        liability: '附加关爱年金',
+      },
+      {
+        id: 'opt_unrelated',
+        company: '平安人寿',
+        productName: '平安福',
+        coverageType: '可选责任',
+        liability: '无关住院津贴',
+      },
+    ],
+    productIndicatorVersions: [],
+    now: '2026-06-22T00:00:00.000Z',
+  });
+
+  const cardTitles = row.responsibilityCards.map((card) => card.title);
+  assert.ok(cardTitles.includes('附加关爱年金'));
+  assert.equal(cardTitles.includes('无关住院津贴'), false);
+});
+
 test('mergePolicyDerivedResult attaches persisted payload and derived status without recomputing', () => {
   const policy = { id: 10, company: '新华保险', name: '多倍保障重大疾病保险' };
   const merged = mergePolicyDerivedResult(policy, {
