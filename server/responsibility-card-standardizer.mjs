@@ -91,6 +91,13 @@ function hasBlockedCalculationDependency(meta = {}) {
   return BLOCKED_CALCULATION_KEYS.has(meta.calculationKey) || BLOCKED_BASIS_KEYS.has(meta.basisKey);
 }
 
+function needsTableForCalculation(value = {}) {
+  return (
+    ['cash_value', 'account_value', 'schedule_or_policy_table', 'medical_formula', 'daily_allowance', 'manual_formula'].includes(value.calculationKey)
+    || ['cash_value', 'account_value', 'schedule_or_policy_table', 'medical_expense', 'daily_allowance'].includes(value.basisKey)
+  );
+}
+
 function semanticCalculationMeta(indicator = {}, meta = {}) {
   const target = joinedText(
     indicator.coverageType,
@@ -150,12 +157,15 @@ function cashflowTreatmentFor(indicator = {}, meta = {}) {
   return 'not_cashflow';
 }
 
-function calculationStatusFor({ calculationEligible, cashflowTreatment, calculationReason }) {
-  if (calculationEligible && cashflowTreatment === 'scheduled_cashflow') return 'calculable';
-  if (calculationEligible) return 'amount_calculable';
-  if (cashflowTreatment === 'claim_contingent') return 'claim_contingent';
+function calculationStatusFor({ calculationEligible, cashflowTreatment, calculationReason, calculationKey, basisKey }) {
   if (cashflowTreatment === 'waiver_only') return 'waiver_only';
-  if (calculationReason) return 'not_calculable';
+  if (calculationEligible && cashflowTreatment === 'scheduled_cashflow') return 'calculable';
+  if (calculationEligible && cashflowTreatment === 'claim_contingent') return 'claim_contingent';
+  if (needsTableForCalculation({ calculationKey, basisKey })) return 'needs_table';
+  if (cashflowTreatment === 'not_cashflow') {
+    return calculationReason ? 'needs_review' : 'not_cashflow';
+  }
+  if (cashflowTreatment === 'claim_contingent') return 'claim_contingent';
   return 'needs_review';
 }
 
@@ -262,6 +272,11 @@ function cardIdFor({ policy = {}, title = '', index = 0 }) {
   return `responsibility_card_${company || 'policy'}_${productName || 'product'}_${cardTitle || index}`.slice(0, 180);
 }
 
+function cardKeyFor({ policy = {}, indicator = {}, responsibility = {}, title = '' }) {
+  const productName = firstNonEmpty(indicator.productName, policy.productName, policy.name);
+  return `${compact(productName)}:${compact(title || indicator.liability || responsibility.title || '保险责任')}`;
+}
+
 function plainSummaryFor({ title, triggerCondition, payoutSummary }) {
   return [title, triggerCondition, payoutSummary].map(text).filter(Boolean).join('：').slice(0, 280);
 }
@@ -278,10 +293,13 @@ function cardStatus(indicators = []) {
   if (indicators.some((indicator) => indicator.calculationEligible && indicator.cashflowTreatment === 'scheduled_cashflow')) {
     return 'calculable';
   }
-  if (indicators.some((indicator) => indicator.calculationEligible)) return 'amount_calculable';
+  if (indicators.some((indicator) => indicator.calculationEligible && indicator.cashflowTreatment === 'claim_contingent')) {
+    return 'claim_contingent';
+  }
+  if (indicators.some(needsTableForCalculation)) return 'needs_table';
   if (indicators.some((indicator) => indicator.cashflowTreatment === 'claim_contingent')) return 'claim_contingent';
   if (indicators.some((indicator) => indicator.cashflowTreatment === 'waiver_only')) return 'waiver_only';
-  if (indicators.length) return 'not_calculable';
+  if (indicators.some((indicator) => indicator.cashflowTreatment === 'not_cashflow' && !indicator.calculationReason)) return 'not_cashflow';
   return 'needs_review';
 }
 
@@ -318,6 +336,24 @@ function createIndicatorCard({ indicator, responsibility, knowledge, policy, ind
     cashflowTreatment: indicator.cashflowTreatment,
     indicators,
   };
+}
+
+function mergeIndicatorCard(card, indicator, responsibility, knowledge) {
+  card.indicators.push(indicator);
+  card.calculationStatus = cardStatus(card.indicators);
+  card.cashflowTreatment = cardTreatment(card.indicators);
+  if (!card.calculationReason && indicator.calculationReason) card.calculationReason = indicator.calculationReason;
+  if (!card.triggerCondition) card.triggerCondition = firstNonEmpty(indicator.triggerCondition, responsibility?.scenario);
+  if (!card.payoutSummary) card.payoutSummary = firstNonEmpty(indicator.payoutSummary, responsibility?.payout, indicator.basis);
+  const source = cardSource({ indicator, responsibility, knowledge });
+  if (!card.sourceUrl) card.sourceUrl = source.sourceUrl;
+  if (!card.sourceTitle) card.sourceTitle = source.sourceTitle;
+  if (!card.sourceExcerpt) card.sourceExcerpt = source.sourceExcerpt;
+  card.plainSummary = plainSummaryFor({
+    title: card.title,
+    triggerCondition: card.triggerCondition,
+    payoutSummary: card.payoutSummary,
+  });
 }
 
 function createResponsibilityCard({ responsibility, knowledge, policy, index }) {
@@ -365,28 +401,42 @@ export function buildResponsibilityCardsForPolicy({
     .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }));
   const knowledge = bestKnowledgeRecord(knowledgeRecords);
   const matchedResponsibilities = new Set();
+  const cardsByKey = new Map();
   const cards = [];
 
   normalizedIndicators.forEach((indicator) => {
     const responsibility = normalizedResponsibilities.find((candidate) => responsibilityMatchesIndicator(candidate, indicator));
     if (responsibility) matchedResponsibilities.add(responsibility);
-    cards.push(createIndicatorCard({
+    const title = firstNonEmpty(indicator.liability, responsibility?.title, '保险责任');
+    const key = cardKeyFor({ policy, indicator, responsibility, title });
+    const existing = cardsByKey.get(key);
+    if (existing) {
+      mergeIndicatorCard(existing, indicator, responsibility, knowledge);
+      return;
+    }
+    const card = createIndicatorCard({
       indicator,
       responsibility,
       knowledge,
       policy,
       index: cards.length,
-    }));
+    });
+    cardsByKey.set(key, card);
+    cards.push(card);
   });
 
   normalizedResponsibilities.forEach((responsibility) => {
     if (matchedResponsibilities.has(responsibility)) return;
-    cards.push(createResponsibilityCard({
+    const key = cardKeyFor({ policy, responsibility, title: responsibility.title });
+    if (cardsByKey.has(key)) return;
+    const card = createResponsibilityCard({
       responsibility,
       knowledge,
       policy,
       index: cards.length,
-    }));
+    });
+    cardsByKey.set(key, card);
+    cards.push(card);
   });
 
   return cards;

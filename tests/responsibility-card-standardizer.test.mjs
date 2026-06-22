@@ -76,6 +76,7 @@ test('standardizeResponsibilityIndicator classifies claim-trigger benefits as cl
 
   assert.equal(result.calculationEligible, true);
   assert.equal(result.cashflowTreatment, 'claim_contingent');
+  assert.equal(result.calculationStatus, 'claim_contingent');
   assert.equal(result.calculationKey, 'percent_of_basic_amount');
 });
 
@@ -93,6 +94,7 @@ test('standardizeResponsibilityIndicator blocks table and expense dependent indi
 
   assert.equal(medical.calculationEligible, false);
   assert.equal(medical.cashflowTreatment, 'claim_contingent');
+  assert.equal(medical.calculationStatus, 'needs_table');
   assert.equal(medical.calculationKey, 'medical_formula');
 
   const cashValue = standardizeResponsibilityIndicator({
@@ -108,6 +110,7 @@ test('standardizeResponsibilityIndicator blocks table and expense dependent indi
 
   assert.equal(cashValue.calculationEligible, false);
   assert.equal(cashValue.cashflowTreatment, 'claim_contingent');
+  assert.equal(cashValue.calculationStatus, 'needs_table');
   assert.equal(cashValue.calculationKey, 'manual_formula');
 });
 
@@ -142,6 +145,50 @@ test('buildResponsibilityCardsForPolicy writes readable cards and re-checks exis
   assert.equal(cards[0].title, '关爱年金');
   assert.equal(cards[0].category, '现金流');
   assert.equal(cards[0].cashflowTreatment, 'scheduled_cashflow');
+  assert.equal(cards[0].calculationStatus, 'calculable');
   assert.equal(cards[0].indicators.length, 1);
   assert.equal(cards[0].indicators[0].basisKey, 'first_basic_responsibility_premium');
+});
+
+test('buildResponsibilityCardsForPolicy merges same product and responsibility indicators into one card', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: basePolicy,
+    coverageIndicators: [{
+      id: 'ind_annuity_first_premium',
+      company: '新华保险',
+      productName: '尊享人生年金保险（分红型）',
+      coverageType: '现金流',
+      liability: '关爱年金',
+      value: 1,
+      unit: '%',
+      basis: '首次交纳的基本责任的保险费',
+      formulaText: '关爱年金 = 首次交纳的基本责任的保险费 × 1%',
+      condition: '每年保单生效对应日生存',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+      sourceExcerpt: '被保险人每年保单生效对应日生存，本公司按首次交纳的基本责任的保险费的1%给付关爱年金。',
+    }, {
+      id: 'ind_annuity_basic_amount',
+      company: '新华保险',
+      productName: '尊享人生年金保险（分红型）',
+      coverageType: '现金流',
+      liability: '关爱年金',
+      value: 2,
+      unit: '%',
+      basis: '基本保险金额',
+      formulaText: '关爱年金 = 基本保险金额 × 2%',
+      condition: '每年保单生效对应日生存',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+      sourceExcerpt: '被保险人每年保单生效对应日生存，本公司按基本保险金额的2%给付关爱年金。',
+    }],
+  });
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].title, '关爱年金');
+  assert.equal(cards[0].calculationStatus, 'calculable');
+  assert.equal(cards[0].cashflowTreatment, 'scheduled_cashflow');
+  assert.equal(cards[0].indicators.length, 2);
+  assert.deepEqual(cards[0].indicators.map((indicator) => indicator.id), [
+    'ind_annuity_first_premium',
+    'ind_annuity_basic_amount',
+  ]);
 });
