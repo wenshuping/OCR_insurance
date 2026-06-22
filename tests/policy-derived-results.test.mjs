@@ -76,6 +76,44 @@ test('buildPolicyDerivedResult stores attached indicators and status metadata', 
   assert.deepEqual(row.indicatorVersions, { 'company_product:新华保险:多倍保障重大疾病保险': 3 });
 });
 
+test('buildPolicyDerivedResult stores responsibility cards and verifies existing indicators', () => {
+  const policy = {
+    id: 10,
+    company: '新华保险',
+    name: '尊享人生年金保险（分红型）',
+    amount: 100000,
+    firstPremium: 12000,
+  };
+  const indicator = {
+    id: 'ind_annuity_1',
+    company: '新华保险',
+    productName: '尊享人生年金保险（分红型）',
+    coverageType: '现金流',
+    liability: '关爱年金',
+    value: 1,
+    unit: '%',
+    basis: '首次交纳的基本责任的保险费',
+    formulaText: '关爱年金 = 首次交纳的基本责任的保险费 × 1%',
+    condition: '生存',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+    sourceExcerpt: '关爱年金如被保险人生存，本公司按首次交纳的基本责任的保险费的1%给付。',
+  };
+
+  const row = buildPolicyDerivedResult({
+    policy,
+    indicatorRecords: [indicator],
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [],
+    productIndicatorVersions: [],
+    now: '2026-06-22T00:00:00.000Z',
+  });
+
+  assert.equal(row.responsibilityCards.length, 1);
+  assert.equal(row.responsibilityCards[0].title, '关爱年金');
+  assert.equal(row.responsibilityCards[0].indicators[0].calculationEligible, true);
+  assert.equal(row.responsibilityCards[0].indicators[0].basisKey, 'first_basic_responsibility_premium');
+});
+
 test('mergePolicyDerivedResult attaches persisted payload and derived status without recomputing', () => {
   const policy = { id: 10, company: '新华保险', name: '多倍保障重大疾病保险' };
   const merged = mergePolicyDerivedResult(policy, {
@@ -84,10 +122,23 @@ test('mergePolicyDerivedResult attaches persisted payload and derived status wit
     staleReason: '',
     coverageIndicators: [{ id: 'ind_1' }],
     optionalResponsibilities: [{ id: 'opt_1' }],
+    responsibilityCards: [{ id: 'card_1', title: '关爱年金', indicators: [] }],
     generatedAt: '2026-06-15T00:00:00.000Z',
   });
 
   assert.deepEqual(merged.coverageIndicators, [{ id: 'ind_1' }]);
   assert.deepEqual(merged.optionalResponsibilities, [{ id: 'opt_1' }]);
+  assert.deepEqual(merged.responsibilityCards, [{ id: 'card_1', title: '关爱年金', indicators: [] }]);
   assert.equal(merged.derivedStatus, 'ready');
+});
+
+test('mergePolicyDerivedResult keeps existing responsibility cards when derived row is missing', () => {
+  const cards = [{ id: 'card_1', title: '关爱年金', indicators: [] }];
+  const withCards = mergePolicyDerivedResult({ id: 10, responsibilityCards: cards }, null);
+  const withoutCards = mergePolicyDerivedResult({ id: 11 }, null);
+
+  assert.deepEqual(withCards.responsibilityCards, cards);
+  assert.deepEqual(withoutCards.responsibilityCards, []);
+  assert.equal(withCards.derivedStatus, 'stale');
+  assert.equal(withCards.derivedStaleReason, 'missing');
 });

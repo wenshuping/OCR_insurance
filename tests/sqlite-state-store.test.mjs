@@ -748,6 +748,7 @@ test('sqlite state store persists and reloads policy derived results', async () 
       productKeys: ['company_product:新华保险:多倍保障重大疾病保险'],
       coverageIndicators: [{ id: 'ind_1' }],
       optionalResponsibilities: [{ id: 'opt_1' }],
+      responsibilityCards: [{ id: 'card_1', title: '关爱年金', indicators: [{ id: 'ind_1' }] }],
       indicatorVersions: { 'company_product:新华保险:多倍保障重大疾病保险': 2 },
       knowledgeVersion: 0,
       status: 'ready',
@@ -762,6 +763,7 @@ test('sqlite state store persists and reloads policy derived results', async () 
     assert.equal(reloaded.policyDerivedResults.length, 1);
     assert.equal(reloaded.policyDerivedResults[0].policyId, 101);
     assert.deepEqual(reloaded.policyDerivedResults[0].coverageIndicators, [{ id: 'ind_1' }]);
+    assert.deepEqual(reloaded.policyDerivedResults[0].responsibilityCards, [{ id: 'card_1', title: '关爱年金', indicators: [{ id: 'ind_1' }] }]);
     assert.deepEqual(state.policyDerivedResults, reloaded.policyDerivedResults);
   } finally {
     store.close();

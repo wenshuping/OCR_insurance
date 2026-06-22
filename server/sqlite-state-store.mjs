@@ -112,6 +112,7 @@ function normalizePolicyDerivedResult(row = {}) {
     productKeys: normalizeStringArray(row.productKeys || row.product_keys),
     coverageIndicators: normalizeArray(row.coverageIndicators),
     optionalResponsibilities: normalizeArray(row.optionalResponsibilities),
+    responsibilityCards: normalizeArray(row.responsibilityCards),
     indicatorVersions: row.indicatorVersions && typeof row.indicatorVersions === 'object' && !Array.isArray(row.indicatorVersions)
       ? row.indicatorVersions
       : {},

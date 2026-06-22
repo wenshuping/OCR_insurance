@@ -1,4 +1,5 @@
 import { attachPolicyCoverageIndicators } from './policy-ocr.domain.mjs';
+import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 
 function normalizeKeyPart(value) {
   return String(value || '').trim().replace(/\s+/gu, '');
@@ -62,6 +63,16 @@ export function buildPolicyDerivedResult({
     knowledgeRecords,
     optionalResponsibilityRecords,
   );
+  const cardOptionalResponsibilityRecords = Array.isArray(optionalResponsibilityRecords) && optionalResponsibilityRecords.length
+    ? optionalResponsibilityRecords
+    : attached.optionalResponsibilities;
+  const responsibilityCards = buildResponsibilityCardsForPolicy({
+    policy: attached,
+    responsibilities: policy?.responsibilities,
+    coverageIndicators: attached.coverageIndicators,
+    knowledgeRecords,
+    optionalResponsibilityRecords: cardOptionalResponsibilityRecords,
+  });
   const versionByKey = new Map((Array.isArray(productIndicatorVersions) ? productIndicatorVersions : []).map((row) => [
     String(row.productKey || row.product_key || '').trim(),
     Number(row.version || 0) || 0,
@@ -73,6 +84,7 @@ export function buildPolicyDerivedResult({
     productKeys,
     coverageIndicators: Array.isArray(attached.coverageIndicators) ? attached.coverageIndicators : [],
     optionalResponsibilities: Array.isArray(attached.optionalResponsibilities) ? attached.optionalResponsibilities : [],
+    responsibilityCards,
     indicatorVersions,
     knowledgeVersion: 0,
     status: 'ready',
@@ -88,6 +100,7 @@ export function mergePolicyDerivedResult(policy = {}, derived = null) {
       ...policy,
       coverageIndicators: Array.isArray(policy.coverageIndicators) ? policy.coverageIndicators : [],
       optionalResponsibilities: Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [],
+      responsibilityCards: Array.isArray(policy.responsibilityCards) ? policy.responsibilityCards : [],
       derivedStatus: 'stale',
       derivedStaleReason: 'missing',
     };
@@ -96,6 +109,7 @@ export function mergePolicyDerivedResult(policy = {}, derived = null) {
     ...policy,
     coverageIndicators: Array.isArray(derived.coverageIndicators) ? derived.coverageIndicators : [],
     optionalResponsibilities: Array.isArray(derived.optionalResponsibilities) ? derived.optionalResponsibilities : [],
+    responsibilityCards: Array.isArray(derived.responsibilityCards) ? derived.responsibilityCards : [],
     derivedStatus: String(derived.status || 'stale'),
     derivedStaleReason: String(derived.staleReason || ''),
     derivedGeneratedAt: String(derived.generatedAt || ''),
