@@ -43,6 +43,7 @@ export function createPolicyRoutes(context) {
     recognizePolicyInput,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    buildKnowledgeSearchArtifacts,
     buildRawUploadSnapshot,
     storeGuestPendingScan,
     resolvePolicyScanInput,
@@ -136,6 +137,15 @@ export function createPolicyRoutes(context) {
       productIndicatorVersions: state.productIndicatorVersions,
       now: typeof nowIso === 'function' ? nowIso() : new Date().toISOString(),
     });
+  }
+
+  function filteredKnowledgeRecordsForPolicy(policyDraft) {
+    if (typeof buildKnowledgeSearchArtifacts !== 'function') return [];
+    return buildKnowledgeSearchArtifacts({
+      policy: policyDraft,
+      records: state.knowledgeRecords || [],
+      officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+    }).records || [];
   }
 
   function attachStoredPolicyDerivedResult(policy, derivedResult = findPolicyDerivedResult(policy?.id)) {
@@ -300,7 +310,7 @@ export function createPolicyRoutes(context) {
               policy: policyDraftWithOptionalResponsibilities,
               responsibilities: analysis?.coverageTable,
               coverageIndicators,
-              knowledgeRecords: state.knowledgeRecords,
+              knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraftWithOptionalResponsibilities),
               optionalResponsibilityRecords: optionalResponsibilities,
             })
           : [],
@@ -366,6 +376,11 @@ export function createPolicyRoutes(context) {
         });
       }
       const providedAnalysis = normalizeProvidedAnalysis(req.body?.analysis);
+      const providedAnalysisHasReportResult = Boolean(
+        providedAnalysis?.report ||
+          providedAnalysis?.coverageTable?.length ||
+          providedAnalysis?.optionalResponsibilities?.length
+      );
       if (providedAnalysis) {
         logPerformance(performanceLogger, 'policy.scan.analysis', {
           route: '/api/policies/scan',
@@ -425,7 +440,7 @@ export function createPolicyRoutes(context) {
       }
       await archiveGeneratedFamilyReportsForPolicy(policy);
 
-      if (!providedAnalysis) {
+      if (!providedAnalysisHasReportResult) {
         startPolicyReportGeneration({
           state,
           policy,

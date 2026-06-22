@@ -7962,6 +7962,85 @@ test('responsibility assistant queries coverage by company and product without s
   }
 });
 
+test('responsibility assistant cards do not use unrelated knowledge fallback sources', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      ...createInitialState(),
+      officialDomainProfiles: [
+        {
+          id: 'leak-life',
+          company: '泄漏保险',
+          aliases: ['泄漏保险'],
+          siteDomains: ['leak.example.test'],
+          officialDomains: ['leak.example.test'],
+        },
+        {
+          id: 'example-life',
+          company: '测试保险',
+          aliases: ['测试保险'],
+          siteDomains: ['official.example-life.test'],
+          officialDomains: ['official.example-life.test'],
+        },
+      ],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '泄漏保险',
+          productName: '泄漏产品',
+          title: '泄漏产品条款',
+          url: 'https://leak.example.test/leak.pdf',
+          pageText: '泄漏产品责任正文。',
+          official: true,
+          sourceType: 'pdf',
+          materialType: 'terms',
+        },
+        {
+          id: 2,
+          company: '测试保险',
+          productName: '安心一号',
+          title: '安心一号条款',
+          url: 'https://official.example-life.test/anxin-one.pdf',
+          pageText: '安心一号责任正文。',
+          official: true,
+          sourceType: 'pdf',
+          materialType: 'terms',
+        },
+      ],
+    },
+    assistantAnalyzer: async () => ({
+      coverageTable: [
+        {
+          coverageType: '身故保险金',
+          scenario: '',
+          payout: '',
+          note: '',
+        },
+      ],
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const queried = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '安心一号',
+      }),
+    });
+
+    assert.equal(queried.response.status, 200);
+    const card = queried.payload.analysis.responsibilityCards[0];
+    assert.equal(card.sourceUrl, 'https://official.example-life.test/anxin-one.pdf');
+    assert.equal(card.sourceTitle, '安心一号条款');
+    assert.match(card.sourceExcerpt, /安心一号责任正文/u);
+    assert.doesNotMatch(card.sourceUrl, /leak/u);
+    assert.doesNotMatch(card.sourceExcerpt, /泄漏产品/u);
+  } finally {
+    await server.close();
+  }
+});
+
 test('responsibility assistant returns fuzzy local product matches before analysis', async () => {
   const app = createPolicyOcrApp({
     state: {
@@ -10492,6 +10571,94 @@ test('policy analyze returns responsibility cards that verify matching existing 
   }
 });
 
+test('policy analyze cards use only matching knowledge fallback sources', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-22T00:00:00.000Z', updatedAt: '2026-06-22T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-22T00:00:00.000Z' }],
+    officialDomainProfiles: [
+      {
+        id: 'leak-life',
+        company: '泄漏保险',
+        aliases: ['泄漏保险'],
+        siteDomains: ['leak.example.test'],
+        officialDomains: ['leak.example.test'],
+      },
+      {
+        id: 'example-life',
+        company: '测试保险',
+        aliases: ['测试保险'],
+        siteDomains: ['official.example-life.test'],
+        officialDomains: ['official.example-life.test'],
+      },
+    ],
+    knowledgeRecords: [
+      {
+        id: 1,
+        company: '泄漏保险',
+        productName: '泄漏产品',
+        title: '泄漏产品条款',
+        url: 'https://leak.example.test/leak.pdf',
+        pageText: '泄漏产品责任正文。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+      {
+        id: 2,
+        company: '测试保险',
+        productName: '安心一号',
+        title: '安心一号条款',
+        url: 'https://official.example-life.test/anxin-one.pdf',
+        pageText: '安心一号责任正文。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+  };
+  const app = createPolicyOcrApp({
+    state,
+    analyzer: async () => ({
+      report: '责任分析',
+      coverageTable: [
+        {
+          coverageType: '身故保险金',
+          scenario: '',
+          payout: '',
+        },
+      ],
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const analyzed = await jsonFetch(server.baseUrl, '/api/policies/analyze', {
+      method: 'POST',
+      headers: { authorization: 'Bearer user-token' },
+      body: JSON.stringify({
+        scan: {
+          ocrText: '测试保险 安心一号',
+          data: {
+            company: '测试保险',
+            name: '安心一号',
+          },
+        },
+      }),
+    });
+
+    assert.equal(analyzed.response.status, 200);
+    const card = analyzed.payload.analysis.responsibilityCards[0];
+    assert.equal(card.sourceUrl, 'https://official.example-life.test/anxin-one.pdf');
+    assert.equal(card.sourceTitle, '安心一号条款');
+    assert.match(card.sourceExcerpt, /安心一号责任正文/u);
+    assert.doesNotMatch(card.sourceUrl, /leak/u);
+    assert.doesNotMatch(card.sourceExcerpt, /泄漏产品/u);
+  } finally {
+    await server.close();
+  }
+});
+
 test('scan endpoint preserves confirmed optional responsibilities when draft has no coverage table', async () => {
   const state = createInitialState();
   const app = createPolicyOcrApp({
@@ -10540,6 +10707,64 @@ test('scan endpoint preserves confirmed optional responsibilities when draft has
     assert.ok(Array.isArray(saved.payload.policy.responsibilityCards));
     assert.ok(saved.payload.policy.responsibilityCards.some((card) => card.title === '可选责任一'));
     assert.equal(saved.payload.policy.reportStatus, 'ready');
+  } finally {
+    await server.close();
+  }
+});
+
+test('scan endpoint starts background analysis when provided analysis only has responsibility cards', async () => {
+  const state = createInitialState();
+  let analyzerCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    analyzer: async () => {
+      analyzerCalls += 1;
+      return {
+        report: '后台生成报告',
+        coverageTable: [
+          {
+            coverageType: '身故保险金',
+            scenario: '被保险人身故',
+            payout: '按合同约定给付',
+          },
+        ],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-card-only-analysis',
+        scan: {
+          ocrText: '测试保险 安心一号',
+          data: {
+            company: '测试保险',
+            name: '安心一号',
+          },
+        },
+        analysis: {
+          responsibilityCards: [
+            {
+              id: 'card_only_death',
+              title: '身故保险金',
+              indicators: [],
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(saved.response.status, 201);
+    await waitUntil(() => {
+      const policy = state.policies.find((row) => Number(row.id) === Number(saved.payload.policy.id));
+      assert.equal(analyzerCalls, 1);
+      assert.equal(policy.reportStatus, 'ready');
+      assert.equal(policy.responsibilities[0].coverageType, '身故保险金');
+    });
   } finally {
     await server.close();
   }

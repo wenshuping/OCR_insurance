@@ -2154,6 +2154,7 @@ export function createPolicyOcrApp(options = {}) {
     buildOptionalResponsibilityReview,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    buildKnowledgeSearchArtifacts,
     buildRawUploadSnapshot,
     findPolicyForReportRequest,
     policyProductIdentity,

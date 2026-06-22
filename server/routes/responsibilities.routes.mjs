@@ -38,12 +38,22 @@ export function createResponsibilityRoutes(context) {
     normalizeOptionalResponsibilities,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    buildKnowledgeSearchArtifacts,
     buildResponsibilityCardsForPolicy,
     findPolicyCoverageIndicators,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
   } = context;
+
+  function filteredKnowledgeRecordsForPolicy(policyDraft) {
+    if (typeof buildKnowledgeSearchArtifacts !== 'function') return [];
+    return buildKnowledgeSearchArtifacts({
+      policy: policyDraft,
+      records: state?.knowledgeRecords || [],
+      officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+    }).records || [];
+  }
 
   function attachResponsibilityCards(analysis, policyDraft, optionalResponsibilityRecords = state?.optionalResponsibilityRecords) {
     if (!analysis || typeof analysis !== 'object') return analysis;
@@ -56,7 +66,7 @@ export function createResponsibilityRoutes(context) {
           policy: policyDraft,
           responsibilities: analysis.coverageTable,
           coverageIndicators,
-          knowledgeRecords: state?.knowledgeRecords || [],
+          knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraft),
           optionalResponsibilityRecords: optionalResponsibilityRecords || [],
         })
       : [];
