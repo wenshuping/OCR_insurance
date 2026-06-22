@@ -120,9 +120,7 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   let calculationEligible = true;
   let calculationReason = '';
 
-  if (value !== null && /^(?:元|圆)$/u.test(normalizedUnit)) {
-    calculationKey = 'fixed_amount';
-  } else if (/(?:max|较大者|较高者|最大者|取大|两者|三者)/iu.test(formulaSignalText || text)) {
+  if (/(?:max|较大者|较高者|最大者|取大|两者|三者)/iu.test(formulaSignalText || text)) {
     calculationKey = 'manual_formula';
     calculationEligible = false;
     calculationReason = '包含较大者/多基准比较，需要现金价值或条款表后才能计算';
@@ -142,6 +140,8 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationKey = 'daily_allowance';
     calculationEligible = false;
     calculationReason = '津贴型责任依赖实际天数或保险单位数';
+  } else if (value !== null && /^(?:元|圆)$/u.test(normalizedUnit)) {
+    calculationKey = 'fixed_amount';
   } else if (basisKey === 'basic_amount' && value !== null && normalizedUnit === '%') {
     calculationKey = 'percent_of_basic_amount';
   } else if (basisKey === 'basic_amount' && value !== null && normalizedUnit === '倍') {

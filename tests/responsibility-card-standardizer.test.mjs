@@ -114,6 +114,78 @@ test('standardizeResponsibilityIndicator blocks table and expense dependent indi
   assert.equal(cashValue.calculationKey, 'manual_formula');
 });
 
+test('standardizeResponsibilityIndicator blocks yuan values that depend on account, schedule, or daily data', () => {
+  const accountValue = standardizeResponsibilityIndicator({
+    company: '测试保险',
+    productName: '测试万能险',
+    coverageType: '现金流',
+    liability: '部分领取金额',
+    value: 1000,
+    unit: '元',
+    basis: '账户价值',
+    formulaText: '部分领取金额 = 账户价值中保单载明的可领取金额1000元',
+    sourceUrl: 'https://example.com/account.pdf',
+    sourceExcerpt: '部分领取金额以个人账户价值中保单载明的可领取金额为准。',
+  }, { policy: basePolicy });
+
+  assert.equal(accountValue.calculationEligible, false);
+  assert.equal(accountValue.calculationStatus, 'needs_table');
+  assert.equal(accountValue.calculationKey, 'account_value');
+
+  const dailyAllowance = standardizeResponsibilityIndicator({
+    company: '测试保险',
+    productName: '测试医疗保险',
+    coverageType: '医疗保障',
+    liability: '住院日津贴保险金',
+    value: 100,
+    unit: '元',
+    basis: '日津贴额',
+    formulaText: '住院日津贴保险金 = 日津贴额100元 × 给付天数',
+    sourceUrl: 'https://example.com/daily.pdf',
+    sourceExcerpt: '本公司按日津贴额100元乘以实际给付天数给付住院日津贴保险金。',
+  }, { policy: basePolicy });
+
+  assert.equal(dailyAllowance.calculationEligible, false);
+  assert.equal(dailyAllowance.calculationStatus, 'needs_table');
+  assert.equal(dailyAllowance.calculationKey, 'daily_allowance');
+
+  const scheduleAmount = standardizeResponsibilityIndicator({
+    company: '测试保险',
+    productName: '测试年金保险',
+    coverageType: '现金流',
+    liability: '养老年金',
+    value: 2000,
+    unit: '元',
+    basis: '保单载明金额',
+    formulaText: '养老年金 = 保单载明金额2000元，按领取计划表给付',
+    sourceUrl: 'https://example.com/schedule.pdf',
+    sourceExcerpt: '养老年金金额以保险单载明金额和领取计划表为准。',
+  }, { policy: basePolicy });
+
+  assert.equal(scheduleAmount.calculationEligible, false);
+  assert.equal(scheduleAmount.calculationStatus, 'needs_table');
+  assert.equal(scheduleAmount.calculationKey, 'schedule_or_policy_table');
+});
+
+test('standardizeResponsibilityIndicator keeps truly fixed yuan benefits calculable', () => {
+  const fixedBenefit = standardizeResponsibilityIndicator({
+    company: '测试保险',
+    productName: '测试固定给付保险',
+    coverageType: '其他',
+    liability: '固定给付金',
+    value: 500,
+    unit: '元',
+    basis: '固定金额',
+    formulaText: '固定给付金 = 500元',
+    sourceUrl: 'https://example.com/fixed.pdf',
+    sourceExcerpt: '固定给付金为500元。',
+  }, { policy: basePolicy });
+
+  assert.equal(fixedBenefit.calculationEligible, true);
+  assert.equal(fixedBenefit.calculationKey, 'fixed_amount');
+  assert.notEqual(fixedBenefit.calculationStatus, 'needs_table');
+});
+
 test('buildResponsibilityCardsForPolicy writes readable cards and re-checks existing indicators', () => {
   const cards = buildResponsibilityCardsForPolicy({
     policy: basePolicy,

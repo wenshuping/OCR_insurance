@@ -159,9 +159,9 @@ function cashflowTreatmentFor(indicator = {}, meta = {}) {
 
 function calculationStatusFor({ calculationEligible, cashflowTreatment, calculationReason, calculationKey, basisKey }) {
   if (cashflowTreatment === 'waiver_only') return 'waiver_only';
+  if (needsTableForCalculation({ calculationKey, basisKey })) return 'needs_table';
   if (calculationEligible && cashflowTreatment === 'scheduled_cashflow') return 'calculable';
   if (calculationEligible && cashflowTreatment === 'claim_contingent') return 'claim_contingent';
-  if (needsTableForCalculation({ calculationKey, basisKey })) return 'needs_table';
   if (cashflowTreatment === 'not_cashflow') {
     return calculationReason ? 'needs_review' : 'not_cashflow';
   }
@@ -290,13 +290,13 @@ function cardSource({ indicator = {}, responsibility = {}, knowledge = {} }) {
 }
 
 function cardStatus(indicators = []) {
+  if (indicators.some(needsTableForCalculation)) return 'needs_table';
   if (indicators.some((indicator) => indicator.calculationEligible && indicator.cashflowTreatment === 'scheduled_cashflow')) {
     return 'calculable';
   }
   if (indicators.some((indicator) => indicator.calculationEligible && indicator.cashflowTreatment === 'claim_contingent')) {
     return 'claim_contingent';
   }
-  if (indicators.some(needsTableForCalculation)) return 'needs_table';
   if (indicators.some((indicator) => indicator.cashflowTreatment === 'claim_contingent')) return 'claim_contingent';
   if (indicators.some((indicator) => indicator.cashflowTreatment === 'waiver_only')) return 'waiver_only';
   if (indicators.some((indicator) => indicator.cashflowTreatment === 'not_cashflow' && !indicator.calculationReason)) return 'not_cashflow';
