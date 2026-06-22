@@ -37,6 +37,7 @@ import {
 import {
   MetricBox,
   ReportText,
+  ResponsibilityCardList,
   buildPolicyReportTitle,
   formatSourceUrlHost,
   getPolicyResponsibilitySourceLinks,
@@ -96,6 +97,7 @@ export function PolicyDetailSheet({
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
   const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
+  const responsibilityCards = Array.isArray(policy.responsibilityCards) ? policy.responsibilityCards : [];
   const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
@@ -333,7 +335,12 @@ export function PolicyDetailSheet({
               </div>
             </div>
           ) : null}
-          {responsibilities.length ? (
+          {responsibilityCards.length ? (
+            <ResponsibilityCardList
+              cards={responsibilityCards}
+              optionalResponsibilities={optionalResponsibilities}
+            />
+          ) : responsibilities.length ? (
             responsibilities.map((row, index) => (
               <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
                 <div className="flex items-start gap-3">

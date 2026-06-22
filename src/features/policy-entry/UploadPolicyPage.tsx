@@ -43,7 +43,9 @@ import {
 } from '../../shared/formatters';
 import {
   ReportText,
+  ResponsibilityCardList,
   buildDraftReportTitle,
+  getVisibleResponsibilityCards,
 } from '../../shared/policy-report-ui';
 import {
   FAMILY_MEMBER_RELATION_OPTIONS,
@@ -806,6 +808,10 @@ export function AnalysisReportPage(props: {
   const reportRef = useRef<HTMLElement | null>(null);
   const { analysis, canSave, formData, loading, message, onBack, onSave, onUpdateOptionalResponsibility } = props;
   const responsibilities = Array.isArray(analysis.coverageTable) ? analysis.coverageTable : [];
+  const responsibilityCards = Array.isArray(analysis.responsibilityCards) ? analysis.responsibilityCards : [];
+  const optionalResponsibilities = Array.isArray(analysis.optionalResponsibilities) ? analysis.optionalResponsibilities : [];
+  const visibleResponsibilityCards = getVisibleResponsibilityCards(responsibilityCards, optionalResponsibilities);
+  const responsibilityCount = responsibilityCards.length ? visibleResponsibilityCards.length : responsibilities.length;
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const exportTitle = buildDraftReportTitle(formData);
   const exportControlText = getReportExportControlText();
@@ -849,7 +855,7 @@ export function AnalysisReportPage(props: {
             </div>
             <div className="rounded-2xl bg-white/15 px-4 py-3">
               <p className="text-xs text-white/70">责任项</p>
-              <p className="mt-1 text-base font-black">{responsibilities.length} 项</p>
+              <p className="mt-1 text-base font-black">{responsibilityCount} 项</p>
             </div>
           </div>
         </section>
@@ -885,7 +891,7 @@ export function AnalysisReportPage(props: {
         />
 
         <OptionalResponsibilityReview
-          items={analysis.optionalResponsibilities}
+          items={optionalResponsibilities}
           disabled={loading}
           onChange={onUpdateOptionalResponsibility}
         />
@@ -906,10 +912,15 @@ export function AnalysisReportPage(props: {
               <h3 className="text-base font-black text-slate-950">保险责任</h3>
               <p className="mt-1 text-xs text-slate-500">保存后请在家庭档案中确认。</p>
             </div>
-            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">{responsibilities.length} 项</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">{responsibilityCount} 项</span>
           </div>
 
-          {responsibilities.map((row, index) => (
+          {responsibilityCards.length ? (
+            <ResponsibilityCardList
+              cards={responsibilityCards}
+              optionalResponsibilities={optionalResponsibilities}
+            />
+          ) : responsibilities.map((row, index) => (
             <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
               <div className="flex items-start gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] bg-[#EEF6FF] text-sm font-black text-blue-600">
