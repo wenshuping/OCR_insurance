@@ -15,6 +15,7 @@ const familyCreateDialogSource = fs.readFileSync(new URL('../src/features/family
 const policyEntrySource = fs.readFileSync(new URL('../src/features/policy-entry/UploadPolicyPage.tsx', import.meta.url), 'utf8');
 const policyDetailSource = fs.readFileSync(new URL('../src/features/policy-detail/PolicyDetailSheet.tsx', import.meta.url), 'utf8');
 const responsibilityAssistantSource = fs.readFileSync(new URL('../src/features/responsibility-assistant/ResponsibilityAssistant.tsx', import.meta.url), 'utf8');
+const policyApiSource = fs.readFileSync(new URL('../src/api/contracts/policy.ts', import.meta.url), 'utf8');
 const responsibilityApiSource = fs.readFileSync(new URL('../src/api/contracts/responsibility.ts', import.meta.url), 'utf8');
 const poptonicComposeSource = fs.readFileSync(new URL('../docker-compose.poptonic.yml', import.meta.url), 'utf8');
 
@@ -1001,8 +1002,18 @@ test('customer policy detail displays responsibility official urls', () => {
 
   assert.match(apiSource, /sourceUrl\?: string/);
   assert.match(apiSource, /sourceTitle\?: string/);
+  assert.match(policyApiSource, /responsibilityCards\?: ResponsibilityCard\[\]/);
+  assert.match(responsibilityApiSource, /export type ResponsibilityCard/u);
+  assert.match(responsibilityApiSource, /export type ResponsibilityCardCategory/u);
+  assert.match(responsibilityApiSource, /export type CalculationStatus/u);
+  assert.match(responsibilityApiSource, /export type CashflowTreatment/u);
+  assert.match(responsibilityApiSource, /export type QuantifiedIndicator/u);
   assert.match(sharedReportUiSource, /function getPolicyResponsibilitySourceLinks\(policy: Policy\)/);
   assert.match(sharedReportUiSource, /policy\.sources/);
+  assert.match(sharedReportUiSource, /policy\.responsibilityCards/);
+  assert.match(sharedReportUiSource, /card\.sourceUrl/);
+  assert.match(sharedReportUiSource, /card\.sourceExcerpt/);
+  assert.match(sharedReportUiSource, /indicator\.sourceExcerpt/);
   assert.match(sharedReportUiSource, /policy\.coverageIndicators/);
   assert.match(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
   assert.match(detailSource, /官网地址/);

@@ -5,6 +5,7 @@ export type ResponsibilitySourceLink = {
   url: string;
   official: boolean;
   sourceType?: string;
+  sourceExcerpt?: string;
 };
 
 export function formatSourceUrlHost(url: string) {
@@ -18,7 +19,7 @@ export function formatSourceUrlHost(url: string) {
 export function getPolicyResponsibilitySourceLinks(policy: Policy): ResponsibilitySourceLink[] {
   const links: ResponsibilitySourceLink[] = [];
   const seenUrls = new Set<string>();
-  const pushLink = (source: { title?: string; url?: string; official?: boolean; evidenceLevel?: string; sourceType?: string; liability?: string; productName?: string } | null | undefined) => {
+  const pushLink = (source: { title?: string; url?: string; official?: boolean; evidenceLevel?: string; sourceType?: string; sourceExcerpt?: string; liability?: string; productName?: string } | null | undefined) => {
     const url = String(source?.url || '').trim();
     if (!url || seenUrls.has(url)) return;
     seenUrls.add(url);
@@ -27,16 +28,36 @@ export function getPolicyResponsibilitySourceLinks(policy: Policy): Responsibili
       url,
       official: Boolean(source?.official) || String(source?.evidenceLevel || '') === 'insurer_official',
       sourceType: source?.sourceType,
+      sourceExcerpt: source?.sourceExcerpt,
     });
   };
 
   (policy.sources || []).forEach(pushLink);
+  (policy.responsibilityCards || []).forEach((card) => {
+    pushLink({
+      title: card.sourceTitle || card.title,
+      url: card.sourceUrl,
+      official: true,
+      evidenceLevel: 'insurer_official',
+      sourceExcerpt: card.sourceExcerpt,
+    });
+    (card.indicators || []).forEach((indicator) => {
+      pushLink({
+        title: indicator.liability || card.title,
+        url: indicator.sourceUrl,
+        official: true,
+        evidenceLevel: 'insurer_official',
+        sourceExcerpt: indicator.sourceExcerpt,
+      });
+    });
+  });
   (policy.coverageIndicators || []).forEach((indicator) => {
     pushLink({
       title: indicator.liability || indicator.productName,
       url: indicator.sourceUrl,
       official: true,
       evidenceLevel: 'insurer_official',
+      sourceExcerpt: indicator.sourceExcerpt,
     });
   });
   (policy.responsibilities || []).forEach((responsibility) => {

@@ -1,5 +1,5 @@
 import type { CashflowEntry, CashValueRow, ScenarioEntry } from './cashflow';
-import type { CoverageIndicator, OptionalResponsibility, Responsibility } from './responsibility';
+import type { CoverageIndicator, OptionalResponsibility, Responsibility, ResponsibilityCard } from './responsibility';
 import { authQuery, request } from '../client';
 
 export type PolicySource = {
@@ -36,6 +36,7 @@ export type Policy = {
   ocrText: string;
   responsibilities: Responsibility[];
   coverageIndicators?: CoverageIndicator[];
+  responsibilityCards?: ResponsibilityCard[];
   optionalResponsibilities?: OptionalResponsibility[];
   report: string;
   sources?: PolicySource[];
@@ -201,6 +202,7 @@ export type PolicyScanResult = {
 export type PolicyAnalysisResult = {
   report: string;
   coverageTable: Responsibility[];
+  responsibilityCards?: ResponsibilityCard[];
   optionalResponsibilities?: OptionalResponsibility[];
   notes?: string[];
   sources?: PolicySource[];

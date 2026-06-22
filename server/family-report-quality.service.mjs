@@ -40,6 +40,12 @@ function finiteNumberAllowZero(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function booleanOrNull(value) {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return null;
+}
+
 function normalizeLookupText(value) {
   return trim(value).normalize('NFKC').replace(/\s+/gu, '').toLowerCase();
 }
@@ -151,6 +157,7 @@ function buildPolicyContext(policies = [], memberContext = {}) {
         coveragePeriod: trim(plan?.coveragePeriod),
       })),
       coverageIndicators: take(policy.coverageIndicators, 20).map(indicatorSummary),
+      responsibilityCards: take(policy.responsibilityCards, 16).map(responsibilityCardSummary),
       optionalResponsibilities: take(policy.optionalResponsibilities, 12).map(optionalResponsibilitySummary),
       cashflowEntries: take(policy.cashflowEntries, 40).map(cashflowEntrySummary),
       responsibilities: take(policy.responsibilities, 16).map((item) => ({
@@ -168,12 +175,47 @@ function indicatorSummary(record = {}) {
   return {
     coverageType: trim(record.coverageType || record.coverage_type || record.category),
     liability: trim(record.liability || record.name || record.title),
+    basis: trim(record.basis),
     formulaText: trim(record.formulaText || record.formula || record.calcText),
     value: record.value ?? '',
     unit: trim(record.unit),
+    basisKey: trim(record.basisKey),
+    calculationKey: trim(record.calculationKey),
+    calculationEligible: booleanOrNull(record.calculationEligible),
+    calculationReason: trim(record.calculationReason),
+    cashflowTreatment: trim(record.cashflowTreatment),
     responsibilityScope: trim(record.responsibilityScope || record.scope),
     quantificationStatus: trim(record.quantificationStatus),
     sourceUrl: trim(record.sourceUrl || record.officialUrl || record.url),
+  };
+}
+
+function responsibilityCardIndicatorSummary(record = {}) {
+  const summary = indicatorSummary(record);
+  return {
+    liability: summary.liability,
+    basis: summary.basis,
+    formulaText: summary.formulaText,
+    value: summary.value,
+    unit: summary.unit,
+    basisKey: summary.basisKey,
+    calculationKey: summary.calculationKey,
+    calculationEligible: summary.calculationEligible,
+    calculationReason: summary.calculationReason,
+    cashflowTreatment: summary.cashflowTreatment,
+  };
+}
+
+function responsibilityCardSummary(record = {}) {
+  return {
+    title: trim(record.title),
+    category: trim(record.category),
+    calculationStatus: trim(record.calculationStatus),
+    cashflowTreatment: trim(record.cashflowTreatment),
+    calculationReason: trim(record.calculationReason),
+    sourceUrl: trim(record.sourceUrl || record.officialUrl || record.url),
+    sourceExcerpt: excerpt(record.sourceExcerpt || record.excerpt, 400),
+    indicators: take(record.indicators, 12).map(responsibilityCardIndicatorSummary),
   };
 }
 
@@ -220,6 +262,9 @@ function officialEvidenceForPolicy(policy, { knowledgeRecords = [], indicatorRec
       pageText: excerpt(record.pageText || record.text || record.content || record.sourceExcerpt, 1600),
     }));
   const indicators = [
+    ...(Array.isArray(policy.responsibilityCards)
+      ? policy.responsibilityCards.flatMap((card) => Array.isArray(card?.indicators) ? card.indicators : [])
+      : []),
     ...(Array.isArray(policy.coverageIndicators) ? policy.coverageIndicators : []),
     ...(Array.isArray(indicatorRecords) ? indicatorRecords.filter((record) => recordMatchesPolicy(policy, record)) : []),
   ].slice(0, 40).map(indicatorSummary);

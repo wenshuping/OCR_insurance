@@ -11,6 +11,15 @@ import {
   generateFamilyReportQualityIssuesWithLlmWikiEvidence,
 } from '../server/family-report-rag-quality.service.mjs';
 
+function qualityInputFromRequestBody(body = {}) {
+  const userMessage = (Array.isArray(body.messages) ? body.messages : []).find((message) => message?.role === 'user');
+  const content = String(userMessage?.content || '');
+  const marker = '输入 JSON：\n';
+  const markerIndex = content.indexOf(marker);
+  assert.notEqual(markerIndex, -1);
+  return JSON.parse(content.slice(markerIndex + marker.length));
+}
+
 test('family report quality service skips DeepSeek when api key is not configured', async () => {
   assert.equal(isFamilyReportQualityConfigured({}), false);
   let called = false;
@@ -42,6 +51,31 @@ test('family report quality service requests structured DeepSeek issues with red
       insuredMemberName: '张三',
       amount: 60000,
       coverageIndicators: [{ coverageType: '身故', liability: '身故保险金', formulaText: '身故保险金=有效保险金额' }],
+      responsibilityCards: [{
+        id: 'card_death',
+        title: '身故保险金',
+        category: '人寿保障',
+        calculationStatus: 'claim_contingent',
+        cashflowTreatment: 'claim_contingent',
+        calculationReason: '',
+        sourceUrl: 'https://official.example-life.test/death.pdf',
+        sourceTitle: '福如东海条款',
+        sourceExcerpt: '身故保险金按有效保险金额给付。',
+        indicators: [{
+          id: 'ind_death',
+          coverageType: '人寿保障',
+          liability: '身故保险金',
+          basis: '有效保险金额',
+          formulaText: '身故保险金=有效保险金额',
+          basisKey: 'basic_amount',
+          calculationKey: 'basic_amount',
+          calculationEligible: true,
+          calculationReason: '',
+          cashflowTreatment: 'claim_contingent',
+          sourceUrl: 'https://official.example-life.test/death.pdf',
+          sourceExcerpt: '身故保险金按有效保险金额给付。',
+        }],
+      }],
     }],
     report: {
       summary: { memberCount: 2, policyCount: 1 },
@@ -105,6 +139,26 @@ test('family report quality service requests structured DeepSeek issues with red
   assert.deepEqual(requestBody.thinking, { type: 'enabled' });
   assert.equal(requestBody.response_format.type, 'json_object');
   assert.doesNotMatch(JSON.stringify(requestBody), /张三|李四|张三家庭/u);
+  const qualityInput = qualityInputFromRequestBody(requestBody);
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].title, '身故保险金');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].category, '人寿保障');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].calculationStatus, 'claim_contingent');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].cashflowTreatment, 'claim_contingent');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].sourceUrl, 'https://official.example-life.test/death.pdf');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].sourceExcerpt, '身故保险金按有效保险金额给付。');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].indicators[0].basisKey, 'basic_amount');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].indicators[0].calculationKey, 'basic_amount');
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].indicators[0].calculationEligible, true);
+  assert.equal(qualityInput.policies[0].responsibilityCards[0].indicators[0].cashflowTreatment, 'claim_contingent');
+  assert.equal(
+    qualityInput.officialEvidence[0].indicators.some((indicator) => (
+      indicator.liability === '身故保险金'
+      && indicator.basisKey === 'basic_amount'
+      && indicator.calculationEligible === true
+      && indicator.cashflowTreatment === 'claim_contingent'
+    )),
+    true,
+  );
   const issues = result.issues;
   const corrections = result.corrections;
   assert.equal(issues.length, 1);

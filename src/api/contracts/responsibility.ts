@@ -16,6 +16,26 @@ export type QuantificationStatus = 'quantified' | 'pending_review' | 'not_quanti
 
 export type ResponsibilityScope = 'basic' | 'optional' | 'rider' | 'plan' | string;
 
+export type CashflowTreatment = 'scheduled_cashflow' | 'claim_contingent' | 'waiver_only' | 'not_cashflow';
+
+export type ResponsibilityCardCategory =
+  | '现金流'
+  | '人寿保障'
+  | '疾病保障'
+  | '医疗保障'
+  | '意外保障'
+  | '豁免'
+  | '规则参数'
+  | '其他';
+
+export type CalculationStatus =
+  | 'calculable'
+  | 'needs_table'
+  | 'claim_contingent'
+  | 'waiver_only'
+  | 'not_cashflow'
+  | 'needs_review';
+
 export type OptionalResponsibility = {
   id: string;
   company?: string;
@@ -56,6 +76,41 @@ export type CoverageIndicator = {
   selectionEvidence?: string;
   quantificationStatus?: QuantificationStatus;
   optionalResponsibilityId?: string;
+};
+
+export type QuantifiedIndicator = CoverageIndicator & {
+  category?: ResponsibilityCardCategory;
+  triggerCondition?: string;
+  payoutSummary?: string;
+  sourceTitle?: string;
+  confidence?: 'high' | 'medium' | 'low';
+  calculationStatus?: CalculationStatus;
+  basisKey: string;
+  calculationKey: string;
+  calculationEligible: boolean;
+  calculationReason: string;
+  cashflowTreatment: CashflowTreatment;
+  sourceUrl: string;
+  sourceExcerpt: string;
+};
+
+export type ResponsibilityCard = {
+  id: string;
+  company: string;
+  productName: string;
+  title: string;
+  category: ResponsibilityCardCategory;
+  plainSummary: string;
+  triggerCondition: string;
+  payoutSummary: string;
+  sourceUrl: string;
+  sourceTitle: string;
+  sourceExcerpt: string;
+  confidence: 'high' | 'medium' | 'low';
+  calculationStatus: CalculationStatus;
+  calculationReason: string;
+  cashflowTreatment: CashflowTreatment;
+  indicators: QuantifiedIndicator[];
 };
 
 export type PolicyCompanySuggestion = {
