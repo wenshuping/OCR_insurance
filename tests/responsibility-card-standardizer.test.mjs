@@ -80,6 +80,25 @@ test('standardizeResponsibilityIndicator classifies claim-trigger benefits as cl
   assert.equal(result.calculationKey, 'percent_of_basic_amount');
 });
 
+test('standardizeResponsibilityIndicator does not let waiver text in source excerpt override benefit liability', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '复星联合健康保险',
+    productName: '复星联合妈咪保贝（星耀版）少儿重大疾病保险',
+    coverageType: '可选责任',
+    liability: '轻度疾病保险金',
+    value: 30,
+    unit: '%',
+    basis: '基本保险金额',
+    formulaText: '轻度疾病保险金 = 基本保险金额 × 30%',
+    sourceUrl: 'https://www.fosun-uhi.com/upload/pdf/mamibaby.pdf',
+    sourceExcerpt: '轻度疾病保险金按基本保险金额的30%给付；中度疾病或轻度疾病豁免保险费责任可选。',
+  }, { policy: { ...basePolicy, company: '复星联合健康保险', name: '复星联合妈咪保贝（星耀版）少儿重大疾病保险' } });
+
+  assert.equal(result.category, '疾病保障');
+  assert.equal(result.cashflowTreatment, 'claim_contingent');
+  assert.equal(result.calculationStatus, 'claim_contingent');
+});
+
 test('standardizeResponsibilityIndicator blocks table and expense dependent indicators from direct calculation', () => {
   const medical = standardizeResponsibilityIndicator({
     company: '测试保险',

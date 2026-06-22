@@ -137,8 +137,8 @@ function categoryFromText(value = '') {
   return '其他';
 }
 
-function cashflowTreatmentFor(indicator = {}, meta = {}) {
-  const target = joinedText(
+function categoryFromIndicator(indicator = {}, sourceExcerpt = '') {
+  const coreCategory = categoryFromText([
     indicator.coverageType,
     indicator.category,
     indicator.liability,
@@ -148,11 +148,30 @@ function cashflowTreatmentFor(indicator = {}, meta = {}) {
     indicator.triggerCondition,
     indicator.formulaText,
     indicator.basis,
+  ].join(' '));
+  if (coreCategory !== '其他') return coreCategory;
+  return categoryFromText(sourceExcerpt);
+}
+
+function cashflowTreatmentFor(indicator = {}, meta = {}) {
+  const coreTarget = joinedText(
+    indicator.coverageType,
+    indicator.category,
+    indicator.liability,
+    indicator.responsibilityName,
+    indicator.title,
+    indicator.condition,
+    indicator.triggerCondition,
+    indicator.formulaText,
+    indicator.basis,
+  );
+  const target = joinedText(
+    coreTarget,
     indicator.sourceExcerpt,
   );
 
-  if (isWaiverText(target)) return 'waiver_only';
-  if (isRuleParameterText(target)) return 'not_cashflow';
+  if (isWaiverText(coreTarget)) return 'waiver_only';
+  if (isRuleParameterText(coreTarget)) return 'not_cashflow';
   if (isClaimContingentText(target)) return 'claim_contingent';
   if (isScheduledCashflowText(target)) {
     if (meta.calculationEligible && !hasBlockedCalculationDependency(meta)) return 'scheduled_cashflow';
@@ -197,13 +216,7 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
     productName: firstNonEmpty(indicator.productName, policy.productName, policy.name),
     coverageType: text(indicator.coverageType),
     liability,
-    category: categoryFromText([
-      indicator.coverageType,
-      indicator.liability,
-      indicator.condition,
-      indicator.formulaText,
-      sourceExcerpt,
-    ].join(' ')),
+    category: categoryFromIndicator(indicator, sourceExcerpt),
     triggerCondition: firstNonEmpty(indicator.triggerCondition, indicator.condition),
     payoutSummary: firstNonEmpty(indicator.payoutSummary, indicator.formulaText, indicator.basis),
     basis: text(indicator.basis),
