@@ -1008,6 +1008,10 @@ test('customer policy detail displays responsibility official urls', () => {
   assert.match(responsibilityApiSource, /export type CalculationStatus/u);
   assert.match(responsibilityApiSource, /export type CashflowTreatment/u);
   assert.match(responsibilityApiSource, /export type QuantifiedIndicator/u);
+  assert.match(responsibilityApiSource, /export type QuantifiedIndicator = Partial<CoverageIndicator>/u);
+  assert.match(responsibilityApiSource, /category\?: ResponsibilityCardCategory/u);
+  assert.match(responsibilityApiSource, /cashflowTreatment\?: CashflowTreatment/u);
+  assert.match(responsibilityApiSource, /indicators\?: QuantifiedIndicator\[\]/u);
   assert.match(sharedReportUiSource, /function getPolicyResponsibilitySourceLinks\(policy: Policy\)/);
   assert.match(sharedReportUiSource, /policy\.sources/);
   assert.match(sharedReportUiSource, /policy\.responsibilityCards/);

@@ -78,39 +78,39 @@ export type CoverageIndicator = {
   optionalResponsibilityId?: string;
 };
 
-export type QuantifiedIndicator = CoverageIndicator & {
+export type QuantifiedIndicator = Partial<CoverageIndicator> & {
   category?: ResponsibilityCardCategory;
   triggerCondition?: string;
   payoutSummary?: string;
   sourceTitle?: string;
   confidence?: 'high' | 'medium' | 'low';
   calculationStatus?: CalculationStatus;
-  basisKey: string;
-  calculationKey: string;
-  calculationEligible: boolean;
-  calculationReason: string;
-  cashflowTreatment: CashflowTreatment;
-  sourceUrl: string;
-  sourceExcerpt: string;
+  basisKey?: string;
+  calculationKey?: string;
+  calculationEligible?: boolean;
+  calculationReason?: string;
+  cashflowTreatment?: CashflowTreatment;
+  sourceUrl?: string;
+  sourceExcerpt?: string;
 };
 
 export type ResponsibilityCard = {
-  id: string;
-  company: string;
-  productName: string;
-  title: string;
-  category: ResponsibilityCardCategory;
-  plainSummary: string;
-  triggerCondition: string;
-  payoutSummary: string;
-  sourceUrl: string;
-  sourceTitle: string;
-  sourceExcerpt: string;
-  confidence: 'high' | 'medium' | 'low';
-  calculationStatus: CalculationStatus;
-  calculationReason: string;
-  cashflowTreatment: CashflowTreatment;
-  indicators: QuantifiedIndicator[];
+  id?: string;
+  company?: string;
+  productName?: string;
+  title?: string;
+  category?: ResponsibilityCardCategory;
+  plainSummary?: string;
+  triggerCondition?: string;
+  payoutSummary?: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  sourceExcerpt?: string;
+  confidence?: 'high' | 'medium' | 'low';
+  calculationStatus?: CalculationStatus;
+  calculationReason?: string;
+  cashflowTreatment?: CashflowTreatment;
+  indicators?: QuantifiedIndicator[];
 };
 
 export type PolicyCompanySuggestion = {
