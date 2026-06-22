@@ -63,6 +63,7 @@ export function createPolicyRoutes(context) {
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
     mergePolicyDerivedResult,
+    buildResponsibilityCardsForPolicy,
     attachPolicyFamilyDisplay,
     selectedCoverageIndicators,
     computeScenarioEntries,
@@ -280,14 +281,29 @@ export function createPolicyRoutes(context) {
         responsibilities: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [],
         optionalResponsibilities: normalizeOptionalResponsibilities(analysis?.optionalResponsibilities),
       };
+      const optionalResponsibilities = buildOptionalResponsibilityReview(
+        policyDraft,
+        findPolicyCoverageIndicators(policyDraft, state.insuranceIndicatorRecords),
+        state.knowledgeRecords,
+        state.optionalResponsibilityRecords,
+      );
+      const policyDraftWithOptionalResponsibilities = {
+        ...policyDraft,
+        optionalResponsibilities,
+      };
+      const coverageIndicators = findPolicyCoverageIndicators(policyDraftWithOptionalResponsibilities, state.insuranceIndicatorRecords);
       const analysisWithOptionalResponsibilities = {
         ...analysis,
-        optionalResponsibilities: buildOptionalResponsibilityReview(
-          policyDraft,
-          findPolicyCoverageIndicators(policyDraft, state.insuranceIndicatorRecords),
-          state.knowledgeRecords,
-          state.optionalResponsibilityRecords,
-        ),
+        optionalResponsibilities,
+        responsibilityCards: typeof buildResponsibilityCardsForPolicy === 'function'
+          ? buildResponsibilityCardsForPolicy({
+              policy: policyDraftWithOptionalResponsibilities,
+              responsibilities: analysis?.coverageTable,
+              coverageIndicators,
+              knowledgeRecords: state.knowledgeRecords,
+              optionalResponsibilityRecords: optionalResponsibilities,
+            })
+          : [],
       };
       logPerformance(performanceLogger, 'policy.analyze.analysis', {
         route: '/api/policies/analyze',

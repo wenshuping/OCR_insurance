@@ -7888,6 +7888,24 @@ test('responsibility assistant queries coverage by company and product without s
         },
       ],
       pendingScans: [],
+      knowledgeRecords: [],
+      insuranceIndicatorRecords: [
+        {
+          id: 'ind_anxin_death',
+          company: '测试保险',
+          productName: '安心一号',
+          coverageType: '人寿保障',
+          liability: '身故保险金',
+          value: 100,
+          unit: '%',
+          basis: '基本保险金额',
+          formulaText: '按基本保险金额给付',
+          condition: '被保险人身故',
+          sourceUrl: 'https://official.example-life.test/anxin-one.pdf',
+          sourceExcerpt: '被保险人身故，按合同约定给付身故保险金。',
+        },
+      ],
+      optionalResponsibilityRecords: [],
       nextId: 2,
     },
     policyResponsibilityQuery: async ({ policy, ocrText }) => {
@@ -7926,6 +7944,13 @@ test('responsibility assistant queries coverage by company and product without s
     });
     assert.equal(queried.response.status, 200);
     assert.equal(queried.payload.analysis.coverageTable[0].coverageType, '身故保险金');
+    assert.ok(Array.isArray(queried.payload.analysis.responsibilityCards));
+    assert.equal(queried.payload.analysis.responsibilityCards[0].title, '身故保险金');
+    assert.equal(queried.payload.analysis.responsibilityCards[0].indicators[0].id, 'ind_anxin_death');
+    assert.equal(
+      queried.payload.analysis.responsibilityCards[0].indicators.every((item) => item.sourceUrl && item.sourceExcerpt),
+      true,
+    );
     assert.equal(queried.payload.analysis.sources[0].url, 'https://official.example-life.test/anxin-one.pdf');
     assert.equal(responsibilityQueries.length, 1);
     assert.equal(responsibilityQueries[0].policy.company, '测试保险');
@@ -10337,6 +10362,8 @@ test('local responsibility draft endpoint returns optional responsibilities for 
     assert.equal(drafted.response.status, 200);
     assert.ok(drafted.payload.analysis.optionalResponsibilities.some((item) => item.liability === '可选责任一'));
     assert.ok(drafted.payload.analysis.optionalResponsibilities.some((item) => item.liability === '可选责任二'));
+    assert.ok(Array.isArray(drafted.payload.analysis.responsibilityCards));
+    assert.ok(drafted.payload.analysis.responsibilityCards.some((card) => card.title === '可选责任一'));
 
     const optionOne = drafted.payload.analysis.optionalResponsibilities.find((item) => item.liability === '可选责任一');
     const redrafted = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/local-draft', {
@@ -10396,6 +10423,75 @@ test('local responsibility draft endpoint returns optional responsibilities for 
   }
 });
 
+test('policy analyze returns responsibility cards that verify matching existing indicators', async () => {
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-22T00:00:00.000Z', updatedAt: '2026-06-22T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-22T00:00:00.000Z' }],
+    insuranceIndicatorRecords: [
+      {
+        id: 'ind_annuity_1',
+        company: '新华保险',
+        productName: '尊享人生年金保险（分红型）',
+        coverageType: '现金流',
+        liability: '关爱年金',
+        value: 1,
+        unit: '%',
+        basis: '首次交纳的基本责任的保险费',
+        formulaText: '关爱年金 = 首次交纳的基本责任的保险费 × 1%',
+        condition: '生存',
+        sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+        sourceExcerpt: '关爱年金如被保险人生存，本公司按首次交纳的基本责任的保险费的1%给付。',
+      },
+    ],
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [],
+  };
+  const app = createPolicyOcrApp({
+    state,
+    analyzer: async () => ({
+      report: '责任分析',
+      coverageTable: [
+        {
+          coverageType: '关爱年金',
+          scenario: '被保险人生存',
+          payout: '按首次交纳的基本责任的保险费的1%给付',
+        },
+      ],
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const analyzed = await jsonFetch(server.baseUrl, '/api/policies/analyze', {
+      method: 'POST',
+      headers: { authorization: 'Bearer user-token' },
+      body: JSON.stringify({
+        scan: {
+          ocrText: '新华保险 尊享人生年金保险（分红型） 关爱年金',
+          data: {
+            company: '新华保险',
+            name: '尊享人生年金保险（分红型）',
+            amount: 100000,
+            firstPremium: 12000,
+          },
+        },
+      }),
+    });
+
+    assert.equal(analyzed.response.status, 200);
+    assert.equal(analyzed.payload.analysis.coverageTable[0].coverageType, '关爱年金');
+    assert.ok(Array.isArray(analyzed.payload.analysis.responsibilityCards));
+    const card = analyzed.payload.analysis.responsibilityCards.find((item) => item.title === '关爱年金');
+    assert.ok(card);
+    assert.equal(card.indicators[0].id, 'ind_annuity_1');
+    assert.equal(card.indicators[0].basisKey, 'first_basic_responsibility_premium');
+    assert.equal(card.indicators[0].sourceUrl, 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf');
+  } finally {
+    await server.close();
+  }
+});
+
 test('scan endpoint preserves confirmed optional responsibilities when draft has no coverage table', async () => {
   const state = createInitialState();
   const app = createPolicyOcrApp({
@@ -10441,6 +10537,8 @@ test('scan endpoint preserves confirmed optional responsibilities when draft has
     assert.equal(saved.payload.policy.responsibilities.length, 0);
     assert.equal(saved.payload.policy.optionalResponsibilities.length, 1);
     assert.equal(saved.payload.policy.optionalResponsibilities[0].selectionStatus, 'selected');
+    assert.ok(Array.isArray(saved.payload.policy.responsibilityCards));
+    assert.ok(saved.payload.policy.responsibilityCards.some((card) => card.title === '可选责任一'));
     assert.equal(saved.payload.policy.reportStatus, 'ready');
   } finally {
     await server.close();

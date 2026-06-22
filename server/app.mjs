@@ -76,6 +76,7 @@ import {
   buildPolicyDerivedResult,
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
+import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 import {
   buildOptionalResponsibilityGaps,
   rebuildOptionalResponsibilityGovernance,
@@ -1494,6 +1495,7 @@ async function resolvePolicyScanInput({ scanner, body, state }) {
 function normalizeProvidedAnalysis(value) {
   if (!value || typeof value !== 'object') return null;
   const optionalResponsibilities = normalizeOptionalResponsibilities(value.optionalResponsibilities);
+  const responsibilityCards = Array.isArray(value.responsibilityCards) ? value.responsibilityCards : [];
   const coverageTable = Array.isArray(value.coverageTable)
     ? value.coverageTable
         .map((row) => ({
@@ -1507,13 +1509,14 @@ function normalizeProvidedAnalysis(value) {
         .filter((row) => row.coverageType || row.scenario || row.payout || row.note)
     : [];
   const report = String(value.report || '').trim();
-  if (!report && !coverageTable.length && !optionalResponsibilities.length) return null;
+  if (!report && !coverageTable.length && !optionalResponsibilities.length && !responsibilityCards.length) return null;
   return {
     ...value,
     report,
     coverageTable,
     sources: normalizePolicySources(value.sources),
     optionalResponsibilities,
+    responsibilityCards,
   };
 }
 
@@ -1679,6 +1682,7 @@ function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfile
     notes: [],
     sources: knowledgeArtifacts.sources || [],
   };
+  const coverageTable = Array.isArray(localAnalysis.coverageTable) ? localAnalysis.coverageTable : [];
   const optionalResponsibilities = buildDraftOptionalResponsibilitiesByPlan({
     basePolicy: policyDraft,
     primaryPolicy: primaryOptionalPolicyDraft,
@@ -1687,11 +1691,20 @@ function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfile
     knowledgeRecords: state?.knowledgeRecords || [],
     optionalResponsibilityRecords: state?.optionalResponsibilityRecords || [],
   });
-  if (!localAnalysis.coverageTable?.length && !optionalResponsibilities.length) return null;
+  const coverageIndicators = findPolicyCoverageIndicators(primaryOptionalPolicyDraft, state?.insuranceIndicatorRecords || []);
+  const responsibilityCards = buildResponsibilityCardsForPolicy({
+    policy: primaryOptionalPolicyDraft,
+    responsibilities: coverageTable,
+    coverageIndicators,
+    knowledgeRecords: knowledgeArtifacts.records || [],
+    optionalResponsibilityRecords: optionalResponsibilities,
+  });
+  if (!coverageTable.length && !optionalResponsibilities.length && !responsibilityCards.length) return null;
   return {
     ...localAnalysis,
-    coverageTable: Array.isArray(localAnalysis.coverageTable) ? localAnalysis.coverageTable : [],
+    coverageTable,
     optionalResponsibilities,
+    responsibilityCards,
     notes: Array.isArray(localAnalysis.notes) ? localAnalysis.notes : [],
     sources: Array.isArray(localAnalysis.sources) ? localAnalysis.sources : knowledgeArtifacts.sources || [],
   };
@@ -2126,6 +2139,7 @@ export function createPolicyOcrApp(options = {}) {
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
     mergePolicyDerivedResult,
+    buildResponsibilityCardsForPolicy,
     attachPolicyFamilyDisplay,
     selectedCoverageIndicators,
     computeScenarioEntries,

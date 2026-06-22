@@ -38,10 +38,33 @@ export function createResponsibilityRoutes(context) {
     normalizeOptionalResponsibilities,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    buildResponsibilityCardsForPolicy,
+    findPolicyCoverageIndicators,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
   } = context;
+
+  function attachResponsibilityCards(analysis, policyDraft, optionalResponsibilityRecords = state?.optionalResponsibilityRecords) {
+    if (!analysis || typeof analysis !== 'object') return analysis;
+    if (Array.isArray(analysis.responsibilityCards)) return analysis;
+    const coverageIndicators = typeof findPolicyCoverageIndicators === 'function'
+      ? findPolicyCoverageIndicators(policyDraft, state?.insuranceIndicatorRecords || [])
+      : [];
+    const responsibilityCards = typeof buildResponsibilityCardsForPolicy === 'function'
+      ? buildResponsibilityCardsForPolicy({
+          policy: policyDraft,
+          responsibilities: analysis.coverageTable,
+          coverageIndicators,
+          knowledgeRecords: state?.knowledgeRecords || [],
+          optionalResponsibilityRecords: optionalResponsibilityRecords || [],
+        })
+      : [];
+    return {
+      ...analysis,
+      responsibilityCards,
+    };
+  }
 
   router.post('/query', async (req, res) => {
     const routeStartedAt = nowMs();
@@ -54,6 +77,10 @@ export function createResponsibilityRoutes(context) {
       const preferLocalKnowledgeAnswer = req.body?.preferLocalKnowledgeAnswer !== false;
       const analysisStartedAt = nowMs();
       const analysis = await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer });
+      const analysisWithCards = attachResponsibilityCards(analysis, {
+        company: input.company,
+        name: input.name,
+      });
       logPerformance(performanceLogger, 'policy.responsibility.assistant.analysis', {
         route: '/api/policy-responsibilities/query',
         durationMs: elapsedMs(analysisStartedAt),
@@ -66,7 +93,7 @@ export function createResponsibilityRoutes(context) {
         durationMs: elapsedMs(routeStartedAt),
         inputOcrChars: scan.ocrText.length,
       });
-      res.json({ ok: true, analysis });
+      res.json({ ok: true, analysis: analysisWithCards });
     } catch (error) {
       sendError(res, error, 400);
     }
@@ -89,7 +116,14 @@ export function createResponsibilityRoutes(context) {
         scan,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       });
-      res.json({ ok: true, analysis });
+      res.json({
+        ok: true,
+        analysis: attachResponsibilityCards(
+          analysis,
+          { ...data, plans: scan.data.plans },
+          analysis?.optionalResponsibilities,
+        ),
+      });
     } catch (error) {
       sendError(res, error, 400);
     }
