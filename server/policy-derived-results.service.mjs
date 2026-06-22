@@ -1,4 +1,5 @@
 import { attachPolicyCoverageIndicators } from './policy-ocr.domain.mjs';
+import { findKnowledgeRecordsForPolicy } from './policy-knowledge.service.mjs';
 import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 
 function normalizeKeyPart(value) {
@@ -33,6 +34,13 @@ export function deriveIndicatorProductKeys(indicator = {}) {
   ]);
 }
 
+function deriveKnowledgeRecordProductKeys(record = {}) {
+  return unique([
+    productKeyFromParts({ canonicalProductId: record.canonicalProductId }),
+    productKeyFromParts({ company: record.company, productName: record.productName || record.name }),
+  ]);
+}
+
 export function derivePolicyProductKeys(policy = {}) {
   const keys = [
     productKeyFromParts({ canonicalProductId: policy.canonicalProductId }),
@@ -48,10 +56,45 @@ export function derivePolicyProductKeys(policy = {}) {
   return unique(keys);
 }
 
+function knowledgeRecordIdentity(record = {}) {
+  return [
+    record?.id,
+    record?.url,
+    record?.company,
+    record?.productName || record?.name,
+    record?.title,
+  ].map((value) => String(value || '').trim()).join('\u001f');
+}
+
+function filteredKnowledgeRecordsForPolicy({ policy = {}, knowledgeRecords = [], officialDomainProfiles = [] } = {}) {
+  const records = Array.isArray(knowledgeRecords) ? knowledgeRecords : [];
+  if (!records.length) return [];
+  const productKeys = new Set(derivePolicyProductKeys(policy));
+  const exactRecords = productKeys.size
+    ? records.filter((record) => deriveKnowledgeRecordProductKeys(record).some((key) => productKeys.has(key)))
+    : [];
+  const matchedRecords = findKnowledgeRecordsForPolicy({
+    policy,
+    records,
+    officialDomainProfiles,
+    maxResults: records.length,
+  });
+  const seen = new Set();
+  const result = [];
+  for (const record of [...matchedRecords, ...exactRecords]) {
+    const key = knowledgeRecordIdentity(record);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(record);
+  }
+  return result;
+}
+
 export function buildPolicyDerivedResult({
   policy,
   indicatorRecords = [],
   knowledgeRecords = [],
+  officialDomainProfiles = [],
   optionalResponsibilityRecords = [],
   productIndicatorVersions = [],
   now = new Date().toISOString(),
@@ -63,11 +106,16 @@ export function buildPolicyDerivedResult({
     knowledgeRecords,
     optionalResponsibilityRecords,
   );
+  const responsibilityCardKnowledgeRecords = filteredKnowledgeRecordsForPolicy({
+    policy: attached,
+    knowledgeRecords,
+    officialDomainProfiles,
+  });
   const responsibilityCards = buildResponsibilityCardsForPolicy({
     policy: attached,
     responsibilities: policy?.responsibilities,
     coverageIndicators: attached.coverageIndicators,
-    knowledgeRecords,
+    knowledgeRecords: responsibilityCardKnowledgeRecords,
     optionalResponsibilityRecords: attached.optionalResponsibilities,
   });
   const versionByKey = new Map((Array.isArray(productIndicatorVersions) ? productIndicatorVersions : []).map((row) => [

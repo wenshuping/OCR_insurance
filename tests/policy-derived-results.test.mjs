@@ -114,6 +114,75 @@ test('buildPolicyDerivedResult stores responsibility cards and verifies existing
   assert.equal(row.responsibilityCards[0].indicators[0].basisKey, 'first_basic_responsibility_premium');
 });
 
+test('buildPolicyDerivedResult filters knowledge fallback sources for responsibility cards', () => {
+  const row = buildPolicyDerivedResult({
+    policy: {
+      id: 10,
+      company: '测试保险',
+      name: '安心一号',
+      responsibilities: [
+        {
+          coverageType: '身故保险金',
+          scenario: '',
+          payout: '',
+        },
+      ],
+    },
+    indicatorRecords: [],
+    knowledgeRecords: [
+      {
+        id: 1,
+        company: '泄漏保险',
+        productName: '泄漏产品',
+        title: '泄漏产品条款',
+        url: 'https://leak.example.test/leak.pdf',
+        pageText: '泄漏产品责任正文。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+      {
+        id: 2,
+        company: '测试保险',
+        productName: '安心一号',
+        title: '安心一号条款',
+        url: 'https://official.example-life.test/anxin-one.pdf',
+        pageText: '安心一号责任正文。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+    officialDomainProfiles: [
+      {
+        id: 'leak-life',
+        company: '泄漏保险',
+        aliases: ['泄漏保险'],
+        siteDomains: ['leak.example.test'],
+        officialDomains: ['leak.example.test'],
+      },
+      {
+        id: 'example-life',
+        company: '测试保险',
+        aliases: ['测试保险'],
+        siteDomains: ['official.example-life.test'],
+        officialDomains: ['official.example-life.test'],
+      },
+    ],
+    optionalResponsibilityRecords: [],
+    productIndicatorVersions: [],
+    now: '2026-06-22T00:00:00.000Z',
+  });
+
+  assert.equal(row.responsibilityCards.length, 1);
+  const card = row.responsibilityCards[0];
+  assert.equal(card.sourceUrl, 'https://official.example-life.test/anxin-one.pdf');
+  assert.equal(card.sourceTitle, '安心一号条款');
+  assert.match(card.sourceExcerpt, /安心一号责任正文/u);
+  assert.doesNotMatch(card.sourceUrl, /leak/u);
+  assert.doesNotMatch(card.sourceExcerpt, /泄漏产品/u);
+});
+
 test('buildPolicyDerivedResult does not emit unrelated optional responsibility records as cards', () => {
   const row = buildPolicyDerivedResult({
     policy: {

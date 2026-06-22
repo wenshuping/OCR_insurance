@@ -133,6 +133,7 @@ export function createPolicyRoutes(context) {
       policy,
       indicatorRecords: state.insuranceIndicatorRecords,
       knowledgeRecords: state.knowledgeRecords,
+      officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       optionalResponsibilityRecords: state.optionalResponsibilityRecords,
       productIndicatorVersions: state.productIndicatorVersions,
       now: typeof nowIso === 'function' ? nowIso() : new Date().toISOString(),
