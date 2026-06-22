@@ -83,6 +83,24 @@ class JrcpcxPipeMajorCompanyCrawlTest(unittest.TestCase):
             },
         )
 
+    def test_detail_rate_limit_detection_matches_jrcpcx_message(self):
+        self.assertTrue(
+            self.module.is_detail_rate_limited(
+                {
+                    "code": "JRCPCX_DETAIL_API_FAILED",
+                    "message": "由于您短时间内访问过于频繁，被系统诊断为异常行为，您的访问请求暂时受限，请稍后重试。",
+                }
+            )
+        )
+        self.assertFalse(
+            self.module.is_detail_rate_limited(
+                {
+                    "code": "JRCPCX_DETAIL_API_FAILED",
+                    "message": "普通详情接口失败。",
+                }
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

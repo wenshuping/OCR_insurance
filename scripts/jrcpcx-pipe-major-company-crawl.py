@@ -264,6 +264,13 @@ def detail_metadata(result: Any) -> dict[str, Any]:
     return {key: value for key, value in result.items() if key != "record"}
 
 
+def is_detail_rate_limited(result: dict[str, Any]) -> bool:
+    if result.get("code") != "JRCPCX_DETAIL_API_FAILED":
+        return False
+    message = trim(result.get("message"))
+    return any(token in message for token in ("访问过于频繁", "暂时受限", "异常行为"))
+
+
 def is_life_ins_detail_url(value: str) -> bool:
     return "/lifeIns/" in trim(value)
 
@@ -430,11 +437,20 @@ def run_details(
         metadata = detail_metadata(detail_result)
         state["detailResults"].append(metadata)
         if metadata.get("ok") is False:
-            mark_partial(
-                state,
-                "JRCPCX_DETAIL_FETCH_INCOMPLETE",
-                "One or more detail fetches failed; inspect detailResults and retry if needed.",
-            )
+            if is_detail_rate_limited(metadata):
+                mark_partial(
+                    state,
+                    "JRCPCX_DETAIL_RATE_LIMITED",
+                    "JRCPCX detail API is rate limited; stop and retry later.",
+                )
+                write_checkpoint(args.output, state)
+                break
+            else:
+                mark_partial(
+                    state,
+                    "JRCPCX_DETAIL_FETCH_INCOMPLETE",
+                    "One or more detail fetches failed; inspect detailResults and retry if needed.",
+                )
         record = detail_result.get("record") if isinstance(detail_result, dict) else None
         if isinstance(record, dict):
             state["records"].append(record)
