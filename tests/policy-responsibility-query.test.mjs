@@ -312,6 +312,51 @@ test('responsibility assistant returns local responsibility text as one raw row 
   assert.equal(result.rawAnalysis.generatedBy, 'local_knowledge_fast_path');
 });
 
+test('responsibility query does not fast-path unrelated local knowledge', async () => {
+  const calls = [];
+  const result = await queryPolicyResponsibilities({
+    scan: {
+      ocrText: '测试保险 安心一号 身故保险金',
+      data: {
+        company: '测试保险',
+        name: '安心一号',
+      },
+    },
+    preferLocalKnowledgeAnswer: true,
+    knowledgeRecords: [
+      {
+        company: '泄漏保险',
+        productName: '泄漏产品',
+        title: '泄漏产品条款',
+        url: 'https://leak.example.test/leak.pdf',
+        pageText: '泄漏产品保险责任正文。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+    query: async (input) => {
+      calls.push(input);
+      return {
+        coverageTable: [
+          {
+            coverageType: '身故保险金',
+            scenario: '被保险人身故',
+            payout: '按合同约定给付',
+          },
+        ],
+        sources: [],
+      };
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].knowledgeRecords, []);
+  assert.notEqual(result.rawAnalysis.generatedBy, 'local_knowledge_fast_path');
+  assert.equal(result.coverageTable[0].coverageType, '身故保险金');
+  assert.equal(result.sources.some((source) => source.url === 'https://leak.example.test/leak.pdf'), false);
+});
+
 test('multi-plan responsibility query tags local knowledge sources with each plan product', async () => {
   let modelCalled = false;
   const mainProductName = '新华人寿保险股份有限公司盛世恒盈年金保险（分红型）';

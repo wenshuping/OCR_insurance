@@ -326,7 +326,7 @@ async function resolveKnowledgeRecordsForResponsibilityQuery({
     officialDomainProfiles,
   });
   if (localArtifacts.sources.length) return localArtifacts.records;
-  if (typeof resolveFeishuKnowledgeRecords !== 'function') return localRecords;
+  if (typeof resolveFeishuKnowledgeRecords !== 'function') return [];
   try {
     const feishuRecords = await resolveFeishuKnowledgeRecords({ policy, officialDomainProfiles });
     const feishuArtifacts = buildKnowledgeSearchArtifacts({
@@ -336,9 +336,9 @@ async function resolveKnowledgeRecordsForResponsibilityQuery({
     });
     if (feishuArtifacts.sources.length) return feishuArtifacts.records;
   } catch {
-    return localRecords;
+    return [];
   }
-  return localRecords;
+  return [];
 }
 
 export async function queryPolicyResponsibilities({
