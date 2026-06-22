@@ -99,6 +99,23 @@ test('standardizeResponsibilityIndicator does not let waiver text in source exce
   assert.equal(result.calculationStatus, 'claim_contingent');
 });
 
+test('standardizeResponsibilityIndicator does not let waiver formula override non-waiver benefit liability', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '复星联合健康保险',
+    productName: '复星联合妈咪保贝（星耀版）少儿重大疾病保险',
+    coverageType: '疾病保障',
+    liability: '重大疾病多次给付保险金',
+    basis: '后续保险费',
+    formulaText: '豁免后续应交保险费',
+    sourceUrl: 'https://www.fosun-uhi.com/upload/pdf/mamibaby.pdf',
+    sourceExcerpt: '被保险人确诊本合同约定重大疾病，本公司按基本保险金额给付重大疾病多次给付保险金。',
+  }, { policy: { ...basePolicy, company: '复星联合健康保险', name: '复星联合妈咪保贝（星耀版）少儿重大疾病保险' } });
+
+  assert.equal(result.category, '疾病保障');
+  assert.equal(result.cashflowTreatment, 'claim_contingent');
+  assert.equal(result.calculationStatus, 'claim_contingent');
+});
+
 test('standardizeResponsibilityIndicator blocks table and expense dependent indicators from direct calculation', () => {
   const medical = standardizeResponsibilityIndicator({
     company: '测试保险',
@@ -323,6 +340,165 @@ test('buildResponsibilityCardsForPolicy merges same product and responsibility i
     'ind_annuity_first_premium',
     'ind_annuity_basic_amount',
   ]);
+});
+
+test('buildResponsibilityCardsForPolicy derives responsibility cards from official numbered clauses', () => {
+  const productName = '新华人寿保险股份有限公司美利金生终身年金保险（分红型）';
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '新华保险',
+      name: productName,
+    },
+    knowledgeRecords: [{
+      company: '新华保险',
+      productName,
+      title: `${productName}产品说明书`,
+      url: 'https://static-cdn.newchinalife.com/ncl/pdf/meilijinsheng.pdf',
+      official: true,
+      sourceType: 'pdf',
+      materialType: 'product_manual',
+      pageText: [
+        '保险责任：',
+        '1.关爱金 被保险人于本合同生效满一年的首个保单生效对应日零时生存，本公司按首次交纳的保险费的20%给付关爱金。',
+        '2.生存保险金 被保险人于本合同生效满一年起至64周岁保单生效对应日期间，在每一保单生效对应日零时生存，本公司按基本保险金额的20%给付生存保险金。',
+        '3.养老年金 被保险人于65周岁保单生效对应日起，在每一保单生效对应日零时生存，本公司按基本保险金额的25%给付养老年金。',
+        '4.祝寿金 被保险人于65周岁保单生效对应日零时生存，本公司按基本保险金额给付祝寿金。',
+        '5.长寿金 被保险人于85周岁保单生效对应日零时生存，本公司按本保险实际交纳的保险费给付长寿金。',
+        '6.身故保险金 被保险人身故，本公司按本保险实际交纳的保险费与现金价值二者之较大者给付身故保险金。',
+        '7.投保人意外伤害身故或意外伤害身体全残豁免保险费 除另有约定外，投保人因意外伤害身故或身体全残，本公司视同续期保险费已经交纳。',
+      ].join('\n'),
+    }],
+    coverageIndicators: [{
+      company: '新华保险',
+      productName,
+      coverageType: '现金流',
+      liability: '教育/养老金/两全等返还',
+      value: 20,
+      unit: '%',
+      basis: '条款载明基准',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/meilijinsheng.pdf',
+      sourceExcerpt: '保险责任包括关爱金、生存保险金、养老年金、祝寿金、长寿金和身故保险金。',
+    }, {
+      company: '新华保险',
+      productName,
+      coverageType: '现金流',
+      liability: '领取起始年龄',
+      value: 65,
+      unit: '周岁',
+      basis: '年金/养老金领取年龄',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/meilijinsheng.pdf',
+      sourceExcerpt: '养老年金被保险人于65周岁保单生效对应日起给付。',
+    }, {
+      company: '新华保险',
+      productName,
+      coverageType: '规则参数',
+      liability: '赔付方式',
+      valueText: '定额给付型',
+      unit: '方式',
+      basis: '保险责任赔付机制',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/meilijinsheng.pdf',
+      sourceExcerpt: '保险责任按条款约定定额给付。',
+    }],
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), [
+    '关爱金',
+    '生存保险金',
+    '养老年金',
+    '祝寿金',
+    '长寿金',
+    '身故保险金',
+    '投保人意外伤害身故或意外伤害身体全残豁免保险费',
+  ]);
+  assert.equal(cards.some((card) => card.title === '教育/养老金/两全等返还'), false);
+  assert.equal(cards.some((card) => card.title === '领取起始年龄'), false);
+  assert.equal(cards.some((card) => card.title === '赔付方式'), false);
+  assert.equal(cards.find((card) => card.title === '身故保险金').cashflowTreatment, 'claim_contingent');
+  assert.equal(cards.find((card) => card.title.includes('豁免保险费')).cashflowTreatment, 'waiver_only');
+});
+
+test('buildResponsibilityCardsForPolicy does not over-derive clauses when structured indicators are already rich', () => {
+  const productName = '复星联合妈咪保贝（星耀版）少儿重大疾病保险';
+  const indicator = (liability) => ({
+    company: '复星联合健康保险',
+    productName,
+    coverageType: '疾病保障',
+    liability,
+    value: 100,
+    unit: '%',
+    basis: '基本保险金额',
+    formulaText: `${liability} = 基本保险金额 × 100%`,
+    sourceUrl: 'https://www.fosun-uhi.com/upload/pdf/mamibaby.pdf',
+    sourceExcerpt: `${liability}按基本保险金额给付；相邻责任可能包含豁免保险费。`,
+  });
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '复星联合健康保险',
+      name: productName,
+    },
+    knowledgeRecords: [{
+      company: '复星联合健康保险',
+      productName,
+      title: `${productName}条款`,
+      url: 'https://www.fosun-uhi.com/upload/pdf/mamibaby.pdf',
+      official: true,
+      sourceType: 'pdf',
+      materialType: 'terms',
+      pageText: [
+        '3.2.1 首次重大疾病保险金 被保险人确诊本合同约定重大疾病，本公司按基本保险金额给付首次重大疾病保险金。',
+        '3.3.4 轻度疾病保险金 被保险人确诊本合同约定轻度疾病，本公司按基本保险金额的30%给付轻度疾病保险金。',
+        '首次重大疾病豁免保险费 本公司视同后续保险费已经交纳。',
+      ].join('\n'),
+    }],
+    coverageIndicators: [
+      indicator('首次重大疾病保险金'),
+      indicator('轻度疾病保险金'),
+      indicator('中度疾病保险金'),
+      indicator('少儿特定疾病保险金'),
+      indicator('身故保险金'),
+      indicator('新生儿暖箱津贴'),
+    ],
+  });
+
+  assert.equal(cards.length, 6);
+  assert.equal(cards.some((card) => /^3[.．]/u.test(card.title)), false);
+  assert.equal(cards.find((card) => card.title === '轻度疾病保险金').cashflowTreatment, 'claim_contingent');
+});
+
+test('buildResponsibilityCardsForPolicy filters exclusion and waiting-period fragments from responsibility cards', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '测试保险',
+      name: '测试重疾险',
+    },
+    optionalResponsibilityRecords: [{
+      company: '测试保险',
+      productName: '测试重疾险',
+      coverageType: '可选责任',
+      liability: '本公司不承担且不再承担给付该种中度疾病的中度疾病保险金',
+      sourceUrl: 'https://official.example-life.test/ci.pdf',
+      sourceExcerpt: '等待期内本公司不承担且不再承担给付该种中度疾病的中度疾病保险金。',
+    }, {
+      company: '测试保险',
+      productName: '测试重疾险',
+      coverageType: '可选责任',
+      liability: '轻度疾病保险金',
+      scenario: '被保险人确诊轻度疾病，本公司按基本保险金额给付轻度疾病保险金。',
+      sourceUrl: 'https://official.example-life.test/ci.pdf',
+      sourceExcerpt: '被保险人确诊轻度疾病，本公司按基本保险金额给付轻度疾病保险金。',
+    }],
+    coverageIndicators: [{
+      company: '测试保险',
+      productName: '测试重疾险',
+      coverageType: '疾病保障',
+      liability: '本公司不承担给付该种轻度疾病的轻度疾病保险金',
+      basis: '基本保险金额',
+      sourceUrl: 'https://official.example-life.test/ci.pdf',
+      sourceExcerpt: '等待期内本公司不承担给付该种轻度疾病的轻度疾病保险金。',
+    }],
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), ['轻度疾病保险金']);
 });
 
 test('buildResponsibilityCardsForPolicy keeps rider responsibility-only cards separate by product', () => {

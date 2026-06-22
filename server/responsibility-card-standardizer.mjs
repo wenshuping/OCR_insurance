@@ -146,14 +146,23 @@ function categoryFromIndicator(indicator = {}, sourceExcerpt = '') {
     indicator.title,
     indicator.condition,
     indicator.triggerCondition,
-    indicator.formulaText,
-    indicator.basis,
   ].join(' '));
   if (coreCategory !== '其他') return coreCategory;
-  return categoryFromText(sourceExcerpt);
+  return categoryFromText([
+    indicator.formulaText,
+    indicator.basis,
+    sourceExcerpt,
+  ].join(' '));
 }
 
 function cashflowTreatmentFor(indicator = {}, meta = {}) {
+  const waiverTarget = joinedText(
+    indicator.coverageType,
+    indicator.category,
+    indicator.liability,
+    indicator.responsibilityName,
+    indicator.title,
+  );
   const coreTarget = joinedText(
     indicator.coverageType,
     indicator.category,
@@ -170,7 +179,7 @@ function cashflowTreatmentFor(indicator = {}, meta = {}) {
     indicator.sourceExcerpt,
   );
 
-  if (isWaiverText(coreTarget)) return 'waiver_only';
+  if (isWaiverText(waiverTarget)) return 'waiver_only';
   if (isRuleParameterText(coreTarget)) return 'not_cashflow';
   if (isClaimContingentText(target)) return 'claim_contingent';
   if (isScheduledCashflowText(target)) {
@@ -268,6 +277,103 @@ function normalizeResponsibility(row = {}) {
   };
 }
 
+function isInvalidResponsibilityTitle(value = '') {
+  return /^(?:本公司|我们)?不(?:再)?承担|不再承担给付|责任免除|等待期/u.test(compact(value));
+}
+
+function knowledgeMatchesPolicy(record = {}, policy = {}) {
+  const recordCompany = compact(record.company);
+  const policyCompany = compact(policy.company);
+  if (recordCompany && policyCompany && recordCompany !== policyCompany) return false;
+  const recordProductName = compact(record.productName || record.product_name || record.name);
+  const policyProductName = compact(policy.productName || policy.name);
+  if (recordProductName && policyProductName && recordProductName !== policyProductName) return false;
+  return true;
+}
+
+function responsibilityClauseTitle(value = '') {
+  const cleaned = text(value);
+  const boundary = cleaned.match(/^(.{2,60}?)(?=\s*(?:被保险人|受益人|本公司|除另有约定|若|如))/u);
+  if (boundary && /(?:豁免保险费|保险金|年金|生存金|教育金|养老金|满期金|祝寿金|长寿金|关爱金|津贴|豁免|金)$/u.test(boundary[1])) {
+    return cleanClauseTitle(boundary[1]);
+  }
+  const match = cleaned.match(/^(.{2,52}?(?:豁免保险费|保险金|年金|生存金|教育金|养老金|满期金|祝寿金|长寿金|关爱金|津贴|豁免))/u);
+  return match ? cleanClauseTitle(match[1]) : '';
+}
+
+function cleanClauseTitle(value = '') {
+  const title = text(value)
+    .replace(/^(?:\d+[.．])+\d*\s*/u, '')
+    .replace(/[：:，,。；;、\s]+$/u, '');
+  if (/\d+[.．]\d/u.test(title)) return '';
+  return title;
+}
+
+function isResponsibilityClause(value = '') {
+  const target = compact(value);
+  return /(?:本公司|我们).{0,100}(?:给付|赔偿|赔付|报销|补偿|承担|免交|豁免|视同)|(?:给付|赔偿|赔付|报销|补偿|免交|豁免).{0,30}(?:保险金|保险费|年金|津贴|费用)/u.test(target);
+}
+
+function numberedResponsibilitiesFromKnowledge(record = {}, policy = {}) {
+  if (!record || typeof record !== 'object') return [];
+  if (record.official === false || record.qualityStatus === 'invalid_responsibility') return [];
+  if (!knowledgeMatchesPolicy(record, policy)) return [];
+  const sourceUrl = sourceUrlFrom(record);
+  const sourceText = firstNonEmpty(record.pageText, record.sourceExcerpt, record.excerpt, record.sourceText);
+  if (!sourceUrl || !sourceText) return [];
+
+  const normalized = text(sourceText).normalize('NFKC').replace(/\r/gu, '').replace(/\s+/gu, ' ');
+  const markers = [...normalized.matchAll(/(^|[\s。；;])(\d{1,2})[.．、]\s*/gu)]
+    .map((match) => ({
+      markerStart: match.index + match[1].length,
+      bodyStart: match.index + match[0].length,
+    }));
+  const responsibilities = [];
+
+  markers.forEach((marker, index) => {
+    const next = markers[index + 1];
+    const clause = text(normalized.slice(marker.bodyStart, next ? next.markerStart : normalized.length));
+    const title = responsibilityClauseTitle(clause);
+    if (!title || isWeakLiabilityName(title) || !isResponsibilityClause(clause)) return;
+    responsibilities.push({
+      company: firstNonEmpty(record.company, policy.company),
+      productName: firstNonEmpty(record.productName, record.product_name, record.name, policy.productName, policy.name),
+      coverageType: '保险责任',
+      liability: title,
+      scenario: clause,
+      sourceUrl,
+      sourceTitle: firstNonEmpty(record.title, record.sourceTitle),
+      sourceExcerpt: clause,
+    });
+  });
+
+  return responsibilities;
+}
+
+function knowledgeResponsibilities(records = [], policy = {}) {
+  const seen = new Set();
+  const responsibilities = [];
+  objectRows(records).forEach((record) => {
+    numberedResponsibilitiesFromKnowledge(record, policy).forEach((responsibility) => {
+      const key = cardKeyFor({ policy, responsibility, title: responsibility.liability });
+      if (seen.has(key)) return;
+      seen.add(key);
+      responsibilities.push(responsibility);
+    });
+  });
+  return responsibilities;
+}
+
+function shouldUseKnowledgeResponsibilities({
+  responsibilities = [],
+  coverageIndicators = [],
+  optionalResponsibilityRecords = [],
+} = {}) {
+  if (objectRows(responsibilities).length >= 3) return false;
+  if (objectRows(optionalResponsibilityRecords).length >= 3) return false;
+  return objectRows(coverageIndicators).length <= 5;
+}
+
 function responsibilityMatchesIndicator(responsibility = {}, indicator = {}) {
   const responsibilityCompany = compact(responsibility.company);
   const indicatorCompany = compact(indicator.company);
@@ -292,6 +398,20 @@ function responsibilityMatchesIndicator(responsibility = {}, indicator = {}) {
 
 function bestKnowledgeRecord(records = []) {
   return objectRows(records).find((record) => sourceUrlFrom(record) || sourceExcerptFrom(record)) || {};
+}
+
+function isAggregateLiabilityName(value = '') {
+  const target = compact(value);
+  return /[\/／、]|等|综合|汇总|返还/u.test(target);
+}
+
+function shouldCreateIndicatorCard(indicator = {}, { responsibility = null, hasKnowledgeResponsibilities = false } = {}) {
+  if (isInvalidResponsibilityTitle(indicator.liability)) return false;
+  if (responsibility) return true;
+  if (!hasKnowledgeResponsibilities) return true;
+  if (isRuleParameterText(joinedText(indicator.coverageType, indicator.liability))) return false;
+  if (isAggregateLiabilityName(indicator.liability)) return false;
+  return true;
 }
 
 function cardIdFor({ policy = {}, company = '', productName = '', title = '', index = 0 }) {
@@ -344,6 +464,7 @@ function cardTreatment(indicators = [], fallbackText = '') {
   const target = compact(fallbackText);
   if (isWaiverText(target)) return 'waiver_only';
   if (isClaimContingentText(target)) return 'claim_contingent';
+  if (isScheduledCashflowText(target)) return 'scheduled_cashflow';
   return 'not_cashflow';
 }
 
@@ -431,10 +552,20 @@ export function buildResponsibilityCardsForPolicy({
   knowledgeRecords = [],
   optionalResponsibilityRecords = [],
 } = {}) {
+  const derivedKnowledgeResponsibilities = shouldUseKnowledgeResponsibilities({
+    responsibilities,
+    coverageIndicators,
+    optionalResponsibilityRecords,
+  })
+    ? knowledgeResponsibilities(knowledgeRecords, policy)
+    : [];
   const normalizedResponsibilities = [
+    ...derivedKnowledgeResponsibilities,
     ...objectRows(responsibilities),
     ...objectRows(optionalResponsibilityRecords),
-  ].map(normalizeResponsibility);
+  ]
+    .map(normalizeResponsibility)
+    .filter((responsibility) => !isInvalidResponsibilityTitle(responsibility.title));
   const normalizedIndicators = objectRows(coverageIndicators)
     .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }));
   const knowledge = bestKnowledgeRecord(knowledgeRecords);
@@ -445,6 +576,10 @@ export function buildResponsibilityCardsForPolicy({
   normalizedIndicators.forEach((indicator) => {
     const responsibility = normalizedResponsibilities.find((candidate) => responsibilityMatchesIndicator(candidate, indicator));
     if (responsibility) matchedResponsibilities.add(responsibility);
+    if (!shouldCreateIndicatorCard(indicator, {
+      responsibility,
+      hasKnowledgeResponsibilities: derivedKnowledgeResponsibilities.length > 0,
+    })) return;
     const title = firstNonEmpty(indicator.liability, responsibility?.title, '保险责任');
     const key = cardKeyFor({ policy, indicator, responsibility, title });
     const existing = cardsByKey.get(key);
