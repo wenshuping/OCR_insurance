@@ -241,6 +241,9 @@ function responsibilityTitle(row = {}) {
 
 function normalizeResponsibility(row = {}) {
   return {
+    company: firstNonEmpty(row.company, row.companyName, row.insurer),
+    productName: firstNonEmpty(row.productName, row.product_name, row.matchedProductName, row.policyName),
+    canonicalProductId: firstNonEmpty(row.canonicalProductId, row.canonical_product_id),
     title: responsibilityTitle(row),
     coverageType: text(row.coverageType),
     scenario: text(row.scenario || row.description || row.desc || row.content),
@@ -253,6 +256,15 @@ function normalizeResponsibility(row = {}) {
 }
 
 function responsibilityMatchesIndicator(responsibility = {}, indicator = {}) {
+  const responsibilityCompany = compact(responsibility.company);
+  const indicatorCompany = compact(indicator.company);
+  if (responsibilityCompany && indicatorCompany && responsibilityCompany !== indicatorCompany) return false;
+  const responsibilityCanonicalId = compact(responsibility.canonicalProductId);
+  const indicatorCanonicalId = compact(indicator.canonicalProductId);
+  if (responsibilityCanonicalId && indicatorCanonicalId && responsibilityCanonicalId !== indicatorCanonicalId) return false;
+  const responsibilityProductName = compact(responsibility.productName);
+  const indicatorProductName = compact(indicator.productName);
+  if (responsibilityProductName && indicatorProductName && responsibilityProductName !== indicatorProductName) return false;
   const indicatorTitle = compact(indicator.liability);
   if (!indicatorTitle || isWeakLiabilityName(indicatorTitle)) return false;
   const target = joinedText(
@@ -269,16 +281,21 @@ function bestKnowledgeRecord(records = []) {
   return objectRows(records).find((record) => sourceUrlFrom(record) || sourceExcerptFrom(record)) || {};
 }
 
-function cardIdFor({ policy = {}, title = '', index = 0 }) {
-  const company = compact(policy.company);
-  const productName = compact(policy.productName || policy.name);
+function cardIdFor({ policy = {}, company = '', productName = '', title = '', index = 0 }) {
+  const resolvedCompany = compact(company || policy.company);
+  const resolvedProductName = compact(productName || policy.productName || policy.name);
   const cardTitle = compact(title || '保险责任');
-  return `responsibility_card_${company || 'policy'}_${productName || 'product'}_${cardTitle || index}`.slice(0, 180);
+  return `responsibility_card_${resolvedCompany || 'policy'}_${resolvedProductName || 'product'}_${cardTitle || index}`.slice(0, 180);
 }
 
 function cardKeyFor({ policy = {}, indicator = {}, responsibility = {}, title = '' }) {
-  const productName = firstNonEmpty(indicator.productName, policy.productName, policy.name);
-  return `${compact(productName)}:${compact(title || indicator.liability || responsibility.title || '保险责任')}`;
+  const canonicalProductId = firstNonEmpty(indicator.canonicalProductId, responsibility.canonicalProductId, policy.canonicalProductId);
+  const company = firstNonEmpty(indicator.company, responsibility.company, policy.company);
+  const productName = firstNonEmpty(indicator.productName, responsibility.productName, policy.productName, policy.name);
+  const productKey = canonicalProductId
+    ? `canonical:${compact(canonicalProductId)}`
+    : `${compact(company)}:${compact(productName)}`;
+  return `${productKey}:${compact(title || indicator.liability || responsibility.title || '保险责任')}`;
 }
 
 function plainSummaryFor({ title, triggerCondition, payoutSummary }) {
@@ -322,12 +339,14 @@ function createIndicatorCard({ indicator, responsibility, knowledge, policy, ind
   const triggerCondition = firstNonEmpty(indicator.triggerCondition, responsibility?.scenario);
   const payoutSummary = firstNonEmpty(indicator.payoutSummary, responsibility?.payout, indicator.basis);
   const source = cardSource({ indicator, responsibility, knowledge });
+  const company = firstNonEmpty(indicator.company, responsibility?.company, policy.company);
+  const productName = firstNonEmpty(indicator.productName, responsibility?.productName, policy.productName, policy.name);
   const indicators = [indicator];
 
   return {
-    id: cardIdFor({ policy, title, index }),
-    company: firstNonEmpty(policy.company, indicator.company),
-    productName: firstNonEmpty(policy.productName, policy.name, indicator.productName),
+    id: cardIdFor({ policy, company, productName, title, index }),
+    company,
+    productName,
     title,
     category: categoryFromText(firstNonEmpty(indicator.coverageType, indicator.category, responsibility?.coverageType, title)),
     plainSummary: plainSummaryFor({ title, triggerCondition, payoutSummary }),
@@ -365,6 +384,8 @@ function createResponsibilityCard({ responsibility, knowledge, policy, index }) 
   const triggerCondition = responsibility.scenario;
   const payoutSummary = responsibility.payout;
   const source = cardSource({ responsibility, knowledge });
+  const company = firstNonEmpty(responsibility.company, policy.company);
+  const productName = firstNonEmpty(responsibility.productName, policy.productName, policy.name);
   const treatment = cardTreatment([], [
     title,
     responsibility.coverageType,
@@ -373,9 +394,9 @@ function createResponsibilityCard({ responsibility, knowledge, policy, index }) 
   ].join(' '));
 
   return {
-    id: cardIdFor({ policy, title, index }),
-    company: text(policy.company),
-    productName: firstNonEmpty(policy.productName, policy.name),
+    id: cardIdFor({ policy, company, productName, title, index }),
+    company,
+    productName,
     title,
     category: categoryFromText([responsibility.coverageType, title, triggerCondition, payoutSummary].join(' ')),
     plainSummary: plainSummaryFor({ title, triggerCondition, payoutSummary }),

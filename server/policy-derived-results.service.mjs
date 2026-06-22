@@ -1,5 +1,6 @@
 import { attachPolicyCoverageIndicators } from './policy-ocr.domain.mjs';
-import { findKnowledgeRecordsForPolicy } from './policy-knowledge.service.mjs';
+import { isPolicyOfficialSourceUrl } from './c-policy-analysis.service.mjs';
+import { findKnowledgeRecordsForPolicy, normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 
 function normalizeKeyPart(value) {
@@ -66,12 +67,29 @@ function knowledgeRecordIdentity(record = {}) {
   ].map((value) => String(value || '').trim()).join('\u001f');
 }
 
+function isUsableOfficialKnowledgeRecord(record = {}, { policy = {}, officialDomainProfiles = [] } = {}) {
+  const normalized = normalizeKnowledgeRecord(record, { officialDomainProfiles });
+  if (!normalized?.official || !normalized.pageText || normalized.qualityStatus === 'invalid_responsibility') {
+    return false;
+  }
+  return isPolicyOfficialSourceUrl(
+    normalized.url,
+    {
+      company: normalized.company || policy.company,
+      name: normalized.productName || normalized.name || policy.name || policy.productName,
+    },
+    officialDomainProfiles,
+  );
+}
+
 function filteredKnowledgeRecordsForPolicy({ policy = {}, knowledgeRecords = [], officialDomainProfiles = [] } = {}) {
   const records = Array.isArray(knowledgeRecords) ? knowledgeRecords : [];
   if (!records.length) return [];
   const productKeys = new Set(derivePolicyProductKeys(policy));
   const exactRecords = productKeys.size
-    ? records.filter((record) => deriveKnowledgeRecordProductKeys(record).some((key) => productKeys.has(key)))
+    ? records
+        .filter((record) => deriveKnowledgeRecordProductKeys(record).some((key) => productKeys.has(key)))
+        .filter((record) => isUsableOfficialKnowledgeRecord(record, { policy, officialDomainProfiles }))
     : [];
   const matchedRecords = findKnowledgeRecordsForPolicy({
     policy,

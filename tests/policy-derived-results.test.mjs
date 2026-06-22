@@ -183,6 +183,54 @@ test('buildPolicyDerivedResult filters knowledge fallback sources for responsibi
   assert.doesNotMatch(card.sourceExcerpt, /泄漏产品/u);
 });
 
+test('buildPolicyDerivedResult rejects exact product fallback records without usable official responsibility text', () => {
+  const row = buildPolicyDerivedResult({
+    policy: {
+      id: 10,
+      company: '测试保险',
+      name: '安心一号',
+      responsibilities: [
+        {
+          coverageType: '身故保险金',
+          scenario: '',
+          payout: '',
+        },
+      ],
+    },
+    indicatorRecords: [],
+    knowledgeRecords: [
+      {
+        id: 1,
+        company: '测试保险',
+        productName: '安心一号',
+        title: '安心一号错误来源',
+        url: 'https://third-party.example.test/anxin-one.pdf',
+        pageText: '第三方错误责任正文。',
+        official: false,
+        qualityStatus: 'invalid_responsibility',
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+    officialDomainProfiles: [
+      {
+        id: 'example-life',
+        company: '测试保险',
+        aliases: ['测试保险'],
+        siteDomains: ['official.example-life.test'],
+        officialDomains: ['official.example-life.test'],
+      },
+    ],
+    optionalResponsibilityRecords: [],
+    productIndicatorVersions: [],
+    now: '2026-06-22T00:00:00.000Z',
+  });
+
+  assert.equal(row.responsibilityCards.length, 1);
+  assert.equal(row.responsibilityCards[0].sourceUrl, '');
+  assert.doesNotMatch(row.responsibilityCards[0].sourceExcerpt, /第三方错误责任正文/u);
+});
+
 test('buildPolicyDerivedResult does not emit unrelated optional responsibility records as cards', () => {
   const row = buildPolicyDerivedResult({
     policy: {

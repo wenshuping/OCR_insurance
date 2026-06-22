@@ -305,3 +305,38 @@ test('buildResponsibilityCardsForPolicy merges same product and responsibility i
     'ind_annuity_basic_amount',
   ]);
 });
+
+test('buildResponsibilityCardsForPolicy keeps rider responsibility-only cards separate by product', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '测试保险',
+      name: '主险产品',
+    },
+    optionalResponsibilityRecords: [{
+      company: '测试保险',
+      productName: '主险产品',
+      coverageType: '可选责任',
+      liability: '可选责任一',
+      scenario: '主险可选责任一按主险条款给付。',
+      sourceUrl: 'https://official.example-life.test/main.pdf',
+      sourceExcerpt: '主险可选责任一按主险条款给付。',
+    }, {
+      company: '测试保险',
+      productName: '附加险产品',
+      coverageType: '可选责任',
+      liability: '可选责任一',
+      scenario: '附加险可选责任一按附加险条款给付。',
+      sourceUrl: 'https://official.example-life.test/rider.pdf',
+      sourceExcerpt: '附加险可选责任一按附加险条款给付。',
+    }],
+  });
+
+  assert.equal(cards.length, 2);
+  assert.deepEqual(
+    cards.map((card) => [card.productName, card.title, card.sourceUrl]),
+    [
+      ['主险产品', '可选责任一', 'https://official.example-life.test/main.pdf'],
+      ['附加险产品', '可选责任一', 'https://official.example-life.test/rider.pdf'],
+    ],
+  );
+});
