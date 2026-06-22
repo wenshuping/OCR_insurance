@@ -40,6 +40,10 @@ function rows(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function objectRows(value) {
+  return rows(value).filter((row) => row && typeof row === 'object' && !Array.isArray(row));
+}
+
 function joinedText(...values) {
   return compact(values.flat().filter(Boolean).join(' '));
 }
@@ -262,7 +266,7 @@ function responsibilityMatchesIndicator(responsibility = {}, indicator = {}) {
 }
 
 function bestKnowledgeRecord(records = []) {
-  return rows(records).find((record) => sourceUrlFrom(record) || sourceExcerptFrom(record)) || {};
+  return objectRows(records).find((record) => sourceUrlFrom(record) || sourceExcerptFrom(record)) || {};
 }
 
 function cardIdFor({ policy = {}, title = '', index = 0 }) {
@@ -394,10 +398,10 @@ export function buildResponsibilityCardsForPolicy({
   optionalResponsibilityRecords = [],
 } = {}) {
   const normalizedResponsibilities = [
-    ...rows(responsibilities),
-    ...rows(optionalResponsibilityRecords),
+    ...objectRows(responsibilities),
+    ...objectRows(optionalResponsibilityRecords),
   ].map(normalizeResponsibility);
-  const normalizedIndicators = rows(coverageIndicators)
+  const normalizedIndicators = objectRows(coverageIndicators)
     .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }));
   const knowledge = bestKnowledgeRecord(knowledgeRecords);
   const matchedResponsibilities = new Set();

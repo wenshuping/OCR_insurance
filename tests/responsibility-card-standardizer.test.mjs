@@ -222,6 +222,47 @@ test('buildResponsibilityCardsForPolicy writes readable cards and re-checks exis
   assert.equal(cards[0].indicators[0].basisKey, 'first_basic_responsibility_premium');
 });
 
+test('buildResponsibilityCardsForPolicy ignores malformed rows and still builds valid cards', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: basePolicy,
+    responsibilities: [
+      null,
+      'bad responsibility row',
+      {
+        coverageType: '保险责任',
+        scenario: '关爱年金 如被保险人每年保单生效对应日生存，本公司给付关爱年金。',
+        payout: '按首次交纳的基本责任的保险费的1%给付',
+        sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+        sourceTitle: '尊享人生年金保险（分红型）条款',
+      },
+    ],
+    optionalResponsibilityRecords: [undefined, 42],
+    coverageIndicators: [
+      null,
+      'bad indicator row',
+      {
+        id: 'ind_annuity_1',
+        company: '新华保险',
+        productName: '尊享人生年金保险（分红型）',
+        coverageType: '现金流',
+        liability: '关爱年金',
+        value: 1,
+        unit: '%',
+        basis: '首次交纳的基本责任的保险费',
+        formulaText: '关爱年金 = 首次交纳的基本责任的保险费 × 1%',
+        condition: '每年保单生效对应日生存',
+        sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+        sourceExcerpt: '被保险人每年保单生效对应日生存，本公司按首次交纳的基本责任的保险费的1%给付关爱年金。',
+      },
+    ],
+  });
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].title, '关爱年金');
+  assert.equal(cards[0].indicators.length, 1);
+  assert.equal(cards[0].indicators[0].id, 'ind_annuity_1');
+});
+
 test('buildResponsibilityCardsForPolicy merges same product and responsibility indicators into one card', () => {
   const cards = buildResponsibilityCardsForPolicy({
     policy: basePolicy,
