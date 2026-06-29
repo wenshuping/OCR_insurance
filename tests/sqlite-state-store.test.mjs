@@ -770,6 +770,68 @@ test('sqlite state store persists and reloads policy derived results', async () 
   }
 });
 
+test('sqlite state store persists and reloads product customer responsibility summaries', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    const summary = {
+      id: 'customer_summary:company_product:新华保险:盛世荣耀:v1',
+      productKey: 'company_product:新华保险:盛世荣耀',
+      company: '新华保险',
+      productName: '盛世荣耀',
+      summaryVersion: 'customer-summary-v1',
+      status: 'ready',
+      headline: '这是一份以身故或身体全残保障为主的终身寿险。',
+      summaryJson: {
+        company: '新华保险',
+        productName: '盛世荣耀',
+        headline: '这是一份以身故或身体全残保障为主的终身寿险。',
+        mainResponsibilities: [
+          {
+            title: '身故或身体全残保险金',
+            plainText: '发生身故或身体全残时，保险公司按条款约定给付保险金。',
+            howItPays: '金额需要结合保单信息计算。',
+            requiredPolicyFields: ['基本保险金额', '已交保险费'],
+          },
+        ],
+        notices: ['具体金额需要结合保单信息计算。'],
+        requiredPolicyFields: ['基本保险金额', '已交保险费'],
+        sourceUrls: ['https://example.test/terms.pdf'],
+      },
+      sourceUrls: ['https://example.test/terms.pdf'],
+      sourceDigest: 'digest-1',
+      modelProvider: 'deepseek',
+      modelName: 'deepseek-v4-flash',
+      generatedAt: '2026-06-29T00:00:00.000Z',
+      updatedAt: '2026-06-29T00:00:00.000Z',
+      payload: {
+        productKey: 'company_product:新华保险:盛世荣耀',
+        source: 'generated',
+      },
+    };
+
+    await store.persistProductCustomerResponsibilitySummary({ state, summary });
+
+    const reloaded = await store.load();
+    assert.equal(reloaded.productCustomerResponsibilitySummaries.length, 1);
+    assert.equal(reloaded.productCustomerResponsibilitySummaries[0].productKey, summary.productKey);
+    assert.equal(reloaded.productCustomerResponsibilitySummaries[0].status, 'ready');
+    assert.equal(reloaded.productCustomerResponsibilitySummaries[0].summaryJson.headline, summary.summaryJson.headline);
+
+    const read = await store.findProductCustomerResponsibilitySummary({
+      productKey: summary.productKey,
+      summaryVersion: summary.summaryVersion,
+      sourceDigest: summary.sourceDigest,
+    });
+    assert.equal(read?.summaryJson?.mainResponsibilities?.[0]?.title, '身故或身体全残保险金');
+    assert.deepEqual(state.productCustomerResponsibilitySummaries, reloaded.productCustomerResponsibilitySummaries);
+  } finally {
+    store.close();
+  }
+});
+
 test('sqlite state store marks derived results stale by changed product keys', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');

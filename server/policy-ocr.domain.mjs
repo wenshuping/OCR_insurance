@@ -27,6 +27,7 @@ export function createInitialState() {
     knowledgeRecords: [],
     insuranceIndicatorRecords: [],
     optionalResponsibilityRecords: [],
+    productCustomerResponsibilitySummaries: [],
     officialDomainProfiles: [],
     familyProfiles: [],
     familyMembers: [],

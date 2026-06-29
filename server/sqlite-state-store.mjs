@@ -18,6 +18,7 @@ const DB_OWNED_KEYS = new Set([
   'knowledgeRecords',
   'insuranceIndicatorRecords',
   'optionalResponsibilityRecords',
+  'productCustomerResponsibilitySummaries',
   'policyDerivedResults',
   'productIndicatorVersions',
   'indicatorUpdateBatches',
@@ -70,6 +71,31 @@ function normalizeStringArray(value) {
     result.push(text);
   }
   return result;
+}
+
+function normalizeJsonStringArray(value) {
+  return normalizeStringArray(typeof value === 'string' ? parseJson(value, []) : value);
+}
+
+function normalizeCustomerSummaryJson(value) {
+  const parsed = typeof value === 'string' ? parseJson(value, {}) : value;
+  const row = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  return {
+    company: String(row.company || '').trim(),
+    productName: String(row.productName || row.product_name || '').trim(),
+    headline: String(row.headline || '').trim(),
+    mainResponsibilities: normalizeArray(row.mainResponsibilities || row.main_responsibilities)
+      .map((item) => ({
+        title: String(item?.title || '').trim(),
+        plainText: String(item?.plainText || item?.plain_text || '').trim(),
+        howItPays: String(item?.howItPays || item?.how_it_pays || '').trim(),
+        requiredPolicyFields: normalizeStringArray(item?.requiredPolicyFields || item?.required_policy_fields),
+      }))
+      .filter((item) => item.title || item.plainText || item.howItPays || item.requiredPolicyFields.length),
+    notices: normalizeStringArray(row.notices),
+    requiredPolicyFields: normalizeStringArray(row.requiredPolicyFields || row.required_policy_fields),
+    sourceUrls: normalizeStringArray(row.sourceUrls || row.source_urls),
+  };
 }
 
 function maxNumericId(rows) {
@@ -148,6 +174,37 @@ function normalizeIndicatorUpdateBatch(row = {}) {
     changedProductKeyCount: Number(row.changedProductKeyCount ?? row.changed_product_key_count ?? productKeys.length) || 0,
     affectedPolicyCount: Number(row.affectedPolicyCount ?? row.affected_policy_count ?? 0) || 0,
     createdAt: String(row.createdAt || row.created_at || ''),
+  };
+}
+
+function normalizeProductCustomerResponsibilitySummary(row = {}) {
+  const parsedPayload = typeof row.payload === 'string' ? parseJson(row.payload, {}) : row.payload;
+  const payload = parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload) ? parsedPayload : {};
+  const source = { ...payload, ...row };
+  const productKey = String(source.productKey || source.product_key || '').trim();
+  const summaryVersion = String(source.summaryVersion || source.summary_version || '').trim();
+  if (!productKey || !summaryVersion) return null;
+  const summaryJson = normalizeCustomerSummaryJson(source.summaryJson || source.summary_json);
+  const sourceUrls = normalizeStringArray(source.sourceUrls || source.source_urls);
+  const dbSourceUrls = normalizeJsonStringArray(source.source_urls_json);
+  const normalizedSourceUrls = sourceUrls.length ? sourceUrls : dbSourceUrls.length ? dbSourceUrls : summaryJson.sourceUrls;
+  const id = String(source.id || '').trim() || `customer_summary:${productKey}:${summaryVersion}`;
+  return {
+    id,
+    productKey,
+    company: String(source.company || '').trim(),
+    productName: String(source.productName || source.product_name || '').trim(),
+    summaryVersion,
+    status: String(source.status || '').trim(),
+    headline: String(source.headline || summaryJson.headline || '').trim(),
+    summaryJson,
+    sourceUrls: normalizedSourceUrls,
+    sourceDigest: String(source.sourceDigest || source.source_digest || '').trim(),
+    modelProvider: String(source.modelProvider || source.model_provider || '').trim(),
+    modelName: String(source.modelName || source.model_name || '').trim(),
+    generatedAt: String(source.generatedAt || source.generated_at || '').trim(),
+    updatedAt: String(source.updatedAt || source.updated_at || '').trim(),
+    payload: payload && Object.keys(payload).length ? payload : {},
   };
 }
 
@@ -271,6 +328,30 @@ function createSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_company ON optional_responsibility_records(company);
     CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_product_name ON optional_responsibility_records(product_name);
+
+    CREATE TABLE IF NOT EXISTS product_customer_responsibility_summaries (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      summary_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      headline TEXT,
+      summary_json TEXT NOT NULL,
+      source_urls_json TEXT NOT NULL DEFAULT '[]',
+      source_digest TEXT,
+      model_provider TEXT,
+      model_name TEXT,
+      generated_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_product_customer_responsibility_summaries_product_version
+      ON product_customer_responsibility_summaries(product_key, summary_version);
+    CREATE INDEX IF NOT EXISTS idx_product_customer_responsibility_summaries_company_product
+      ON product_customer_responsibility_summaries(company, product_name);
+    CREATE INDEX IF NOT EXISTS idx_product_customer_responsibility_summaries_status
+      ON product_customer_responsibility_summaries(status);
 
     CREATE TABLE IF NOT EXISTS policy_derived_results (
       policy_id INTEGER PRIMARY KEY,
@@ -629,6 +710,48 @@ function insertRows(db, state) {
       String(record.productName || ''),
       String(record.liability || ''),
       jsonPayload(record),
+    );
+  }
+
+  const insertProductCustomerResponsibilitySummary = db.prepare(`
+    INSERT INTO product_customer_responsibility_summaries (
+      id,
+      product_key,
+      company,
+      product_name,
+      summary_version,
+      status,
+      headline,
+      summary_json,
+      source_urls_json,
+      source_digest,
+      model_provider,
+      model_name,
+      generated_at,
+      updated_at,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of normalizeArray(state.productCustomerResponsibilitySummaries)) {
+    const summary = normalizeProductCustomerResponsibilitySummary(row);
+    if (!summary || summary.status !== 'ready') continue;
+    insertProductCustomerResponsibilitySummary.run(
+      summary.id,
+      summary.productKey,
+      summary.company,
+      summary.productName,
+      summary.summaryVersion,
+      summary.status,
+      summary.headline,
+      JSON.stringify(summary.summaryJson),
+      JSON.stringify(summary.sourceUrls),
+      summary.sourceDigest,
+      summary.modelProvider,
+      summary.modelName,
+      summary.generatedAt,
+      summary.updatedAt,
+      jsonPayload(summary),
     );
   }
 
@@ -1055,6 +1178,62 @@ function upsertPolicyDerivedResultRow(db, row = {}) {
   return derived;
 }
 
+function upsertProductCustomerResponsibilitySummaryRow(db, row = {}) {
+  const summary = normalizeProductCustomerResponsibilitySummary(row);
+  if (!summary || summary.status !== 'ready') return null;
+  db.prepare(`
+    INSERT INTO product_customer_responsibility_summaries (
+      id,
+      product_key,
+      company,
+      product_name,
+      summary_version,
+      status,
+      headline,
+      summary_json,
+      source_urls_json,
+      source_digest,
+      model_provider,
+      model_name,
+      generated_at,
+      updated_at,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(product_key, summary_version) DO UPDATE SET
+      id = excluded.id,
+      company = excluded.company,
+      product_name = excluded.product_name,
+      status = excluded.status,
+      headline = excluded.headline,
+      summary_json = excluded.summary_json,
+      source_urls_json = excluded.source_urls_json,
+      source_digest = excluded.source_digest,
+      model_provider = excluded.model_provider,
+      model_name = excluded.model_name,
+      generated_at = excluded.generated_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    summary.id,
+    summary.productKey,
+    summary.company,
+    summary.productName,
+    summary.summaryVersion,
+    summary.status,
+    summary.headline,
+    JSON.stringify(summary.summaryJson),
+    JSON.stringify(summary.sourceUrls),
+    summary.sourceDigest,
+    summary.modelProvider,
+    summary.modelName,
+    summary.generatedAt,
+    summary.updatedAt,
+    jsonPayload(summary),
+  );
+  return summary;
+}
+
 function upsertProductIndicatorVersionRow(db, row = {}) {
   const version = normalizeProductIndicatorVersion(row);
   if (!version) return null;
@@ -1438,6 +1617,7 @@ function clearDbOwnedTables(db) {
     DELETE FROM knowledge_records;
     DELETE FROM insurance_indicator_records;
     DELETE FROM optional_responsibility_records;
+    DELETE FROM product_customer_responsibility_summaries;
     DELETE FROM policy_derived_results;
     DELETE FROM product_indicator_versions;
     DELETE FROM indicator_update_batches;
@@ -1470,6 +1650,7 @@ function loadDbOwnedState(db) {
     knowledgeRecords: loadPayloadRows(db, 'knowledge_records', 'id ASC'),
     insuranceIndicatorRecords: loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC'),
     optionalResponsibilityRecords: loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC'),
+    productCustomerResponsibilitySummaries: loadPayloadRows(db, 'product_customer_responsibility_summaries', 'product_name ASC, summary_version ASC, id ASC'),
     policyDerivedResults: loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC'),
     productIndicatorVersions: loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC'),
     indicatorUpdateBatches: loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC'),
@@ -1494,6 +1675,9 @@ function loadDbOwnedState(db) {
   state.policyDerivedResults = state.policyDerivedResults
     .map((row) => normalizePolicyDerivedResult(row))
     .filter(Boolean);
+  state.productCustomerResponsibilitySummaries = state.productCustomerResponsibilitySummaries
+    .map((row) => normalizeProductCustomerResponsibilitySummary(row))
+    .filter((row) => row && row.status === 'ready');
   state.productIndicatorVersions = state.productIndicatorVersions
     .map((row) => normalizeProductIndicatorVersion(row))
     .filter(Boolean);
@@ -1836,6 +2020,57 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return row;
   }
 
+  async function persistProductCustomerResponsibilitySummary({ state, summary = null } = {}) {
+    const target = normalizeProductCustomerResponsibilitySummary(summary || {});
+    if (!target || target.status !== 'ready') return null;
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    const row = { ...target, updatedAt: target.updatedAt || now };
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      upsertProductCustomerResponsibilitySummaryRow(db, row);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') {
+      state.productCustomerResponsibilitySummaries = loadPayloadRows(
+        db,
+        'product_customer_responsibility_summaries',
+        'product_name ASC, summary_version ASC, id ASC',
+      )
+        .map((item) => normalizeProductCustomerResponsibilitySummary(item))
+        .filter((item) => item && item.status === 'ready');
+    }
+    return row;
+  }
+
+  async function findProductCustomerResponsibilitySummary({
+    productKey = '',
+    summaryVersion = '',
+    sourceDigest = '',
+  } = {}) {
+    const key = String(productKey || '').trim();
+    const version = String(summaryVersion || '').trim();
+    if (!key || !version) return null;
+    const row = db.prepare(`
+      SELECT payload
+      FROM product_customer_responsibility_summaries
+      WHERE product_key = ?
+        AND summary_version = ?
+        AND status = 'ready'
+      LIMIT 1
+    `).get(key, version);
+    const summary = normalizeProductCustomerResponsibilitySummary(parseJson(row?.payload, null) || {});
+    if (!summary) return null;
+    const digest = String(sourceDigest || '').trim();
+    if (digest && summary.sourceDigest !== digest) return null;
+    return summary;
+  }
+
   async function markPolicyDerivedResultsStaleByProductKeys({
     state,
     productKeys = [],
@@ -1973,6 +2208,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistFamilyState,
     persistFamilyReportState,
     persistPolicyDerivedResult,
+    persistProductCustomerResponsibilitySummary,
+    findProductCustomerResponsibilitySummary,
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
     recordIndicatorUpdateBatch,
