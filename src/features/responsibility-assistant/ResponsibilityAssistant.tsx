@@ -11,9 +11,11 @@ import type {
   PolicyKnowledgeMatch,
 } from '../../api/contracts/policy';
 import type {
+  CustomerResponsibilitySummary,
   PolicyCompanySuggestion,
   PolicyProductSuggestion,
 } from '../../api/contracts/responsibility';
+import { CustomerResponsibilitySummaryCard } from '../../shared/CustomerResponsibilitySummaryCard';
 import {
   normalizeSuggestionQuery,
   renderHighlightedSuggestion,
@@ -25,6 +27,9 @@ export function ResponsibilityAssistant(props: {
   company: string;
   companySuggestionLoading: boolean;
   companySuggestions: PolicyCompanySuggestion[];
+  customerSummary: CustomerResponsibilitySummary | null;
+  customerSummaryLoading: boolean;
+  customerSummaryMessage: string;
   localSearched: boolean;
   loading: boolean;
   matches: PolicyKnowledgeMatch[];
@@ -49,6 +54,9 @@ export function ResponsibilityAssistant(props: {
     company,
     companySuggestionLoading,
     companySuggestions,
+    customerSummary,
+    customerSummaryLoading,
+    customerSummaryMessage,
     localSearched,
     loading,
     matches,
@@ -70,12 +78,28 @@ export function ResponsibilityAssistant(props: {
   const [companyFocused, setCompanyFocused] = useState(false);
   const [productFocused, setProductFocused] = useState(false);
   const responsibilities = Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [];
+  const displayedResponsibilityCount = customerSummary?.mainResponsibilities?.length || responsibilities.length;
   const sources = Array.isArray(analysis?.sources) ? analysis.sources : [];
   const productMatches = Array.isArray(matches) ? matches : [];
   const canQuery = Boolean(company.trim() && name.trim() && !loading);
   const canSearchMore = Boolean(localSearched && company.trim() && name.trim() && !responsibilities.length);
   const companyQuery = company.trim();
   const productQuery = name.trim();
+  const responsibilityRows = responsibilities.map((row, index) => (
+    <article key={`${row.coverageType}-${index}`} className="rounded-[18px] border border-[#DDE8F5] bg-[#F8FBFF] p-3.5">
+      <div className="flex items-start gap-3">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white text-xs font-black text-blue-600 ring-1 ring-blue-100">
+          {index + 1}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h4 className="break-words text-sm font-black leading-6 text-slate-950">{row.coverageType || '保险责任'}</h4>
+          {row.scenario ? <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">{row.scenario}</p> : null}
+          {row.payout ? <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700">{row.payout}</p> : null}
+          {row.note ? <p className="mt-2 break-words text-xs font-medium leading-5 text-slate-500">{row.note}</p> : null}
+        </div>
+      </div>
+    </article>
+  ));
   const visibleCompanySuggestions = useMemo(() => {
     const normalizedQuery = normalizeSuggestionQuery(companyQuery);
     if (!normalizedQuery) return [];
@@ -294,27 +318,31 @@ export function ResponsibilityAssistant(props: {
             <section className="mt-4">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <h3 className="text-sm font-black text-slate-950">保险责任</h3>
-                {responsibilities.length ? (
-                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{responsibilities.length} 项</span>
+                {displayedResponsibilityCount ? (
+                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{displayedResponsibilityCount} 项</span>
                 ) : null}
               </div>
               <div className="space-y-2.5">
-                {responsibilities.length ? (
-                  responsibilities.map((row, index) => (
-                    <article key={`${row.coverageType}-${index}`} className="rounded-[18px] border border-[#DDE8F5] bg-[#F8FBFF] p-3.5">
-                      <div className="flex items-start gap-3">
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white text-xs font-black text-blue-600 ring-1 ring-blue-100">
-                          {index + 1}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <h4 className="break-words text-sm font-black leading-6 text-slate-950">{row.coverageType || '保险责任'}</h4>
-                          {row.scenario ? <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">{row.scenario}</p> : null}
-                          {row.payout ? <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700">{row.payout}</p> : null}
-                          {row.note ? <p className="mt-2 break-words text-xs font-medium leading-5 text-slate-500">{row.note}</p> : null}
-                        </div>
-                      </div>
-                    </article>
-                  ))
+                {customerSummaryLoading ? (
+                  <div className="flex items-center justify-center gap-2 rounded-[18px] border border-blue-100 bg-blue-50/50 px-4 py-6 text-sm font-black text-blue-600">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    正在生成客户可读摘要
+                  </div>
+                ) : customerSummary ? (
+                  <CustomerResponsibilitySummaryCard summary={customerSummary} />
+                ) : customerSummaryMessage && responsibilities.length ? (
+                  <>
+                    <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-center text-xs font-bold text-slate-400">
+                      {customerSummaryMessage}
+                    </div>
+                    {responsibilityRows}
+                  </>
+                ) : responsibilities.length ? (
+                  responsibilityRows
+                ) : customerSummaryMessage ? (
+                  <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
+                    {customerSummaryMessage}
+                  </div>
                 ) : productMatches.length ? (
                   <div className="rounded-[18px] border border-dashed border-blue-100 bg-blue-50/50 px-4 py-6 text-center text-sm font-bold text-blue-500">
                     点击上方产品后输出保险责任

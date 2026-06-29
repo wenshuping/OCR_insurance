@@ -53,6 +53,7 @@ import {
   getHealthStatus,
   getLocalPolicyAnalysisDraft,
   getPolicy,
+  getProductCustomerResponsibilitySummary,
   listPolicies,
   listFamilyProfiles,
   listPolicyResponsibilityCompanySuggestions,
@@ -73,6 +74,7 @@ import {
   updateFamilyMember,
   updateFamilyMemberRelation,
   updatePolicy,
+  CustomerResponsibilitySummary,
 } from '../../api';
 import {
   FamilyReportPage,
@@ -538,6 +540,9 @@ export function CustomerApp() {
   const [assistantCompany, setAssistantCompany] = useState('');
   const [assistantName, setAssistantName] = useState('');
   const [assistantAnalysis, setAssistantAnalysis] = useState<PolicyAnalysisResult | null>(null);
+  const [assistantCustomerSummary, setAssistantCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
+  const [assistantCustomerSummaryLoading, setAssistantCustomerSummaryLoading] = useState(false);
+  const [assistantCustomerSummaryMessage, setAssistantCustomerSummaryMessage] = useState('');
   const [assistantMatches, setAssistantMatches] = useState<PolicyKnowledgeMatch[]>([]);
   const [assistantCompanySuggestions, setAssistantCompanySuggestions] = useState<PolicyCompanySuggestion[]>([]);
   const [assistantCompanySuggestionLoading, setAssistantCompanySuggestionLoading] = useState(false);
@@ -2121,6 +2126,12 @@ export function CustomerApp() {
     setAssistantOpen(true);
   }
 
+  function resetAssistantCustomerSummary(message = '') {
+    setAssistantCustomerSummary(null);
+    setAssistantCustomerSummaryLoading(false);
+    setAssistantCustomerSummaryMessage(message);
+  }
+
   async function handleAssistantQuery() {
     const company = assistantCompany.trim();
     const name = assistantName.trim();
@@ -2131,6 +2142,7 @@ export function CustomerApp() {
     const startedAt = clientPerfNow();
     setAssistantLoading(true);
     setAssistantAnalysis(null);
+    resetAssistantCustomerSummary('');
     setAssistantMatches([]);
     setAssistantLocalSearched(false);
     setAssistantMessage('正在匹配本地产品');
@@ -2191,6 +2203,27 @@ export function CustomerApp() {
     setAssistantLocalSearched(false);
     const responsibilityCount = payload.analysis?.coverageTable?.length || 0;
     setAssistantMessage(responsibilityCount ? `已找到 ${responsibilityCount} 项责任` : '未查询到责任明细');
+    setAssistantCustomerSummaryLoading(true);
+    setAssistantCustomerSummary(null);
+    setAssistantCustomerSummaryMessage('');
+    try {
+      const summaryPayload = await getProductCustomerResponsibilitySummary({
+        company: input.company,
+        name: input.name,
+      });
+      if (summaryPayload.ok) {
+        setAssistantCustomerSummary(summaryPayload.summary);
+        setAssistantCustomerSummaryMessage('');
+      } else {
+        setAssistantCustomerSummary(null);
+        setAssistantCustomerSummaryMessage(summaryPayload.message || '这个产品还需要补充保险责任资料');
+      }
+    } catch (error) {
+      setAssistantCustomerSummary(null);
+      setAssistantCustomerSummaryMessage(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
+    } finally {
+      setAssistantCustomerSummaryLoading(false);
+    }
     reportClientPerformance('client.responsibility.assistant.request', {
       durationMs: clientElapsedMs(input.startedAt),
       requestMs: clientElapsedMs(input.startedAt),
@@ -2209,6 +2242,7 @@ export function CustomerApp() {
     setAssistantCompany(company);
     setAssistantName(name);
     setAssistantAnalysis(null);
+    resetAssistantCustomerSummary('');
     setAssistantMatches([]);
     setAssistantLoading(true);
     setAssistantMessage('正在查询所选产品');
@@ -2216,6 +2250,7 @@ export function CustomerApp() {
       await loadAssistantResponsibilities({ company, name, startedAt });
     } catch (error) {
       setAssistantAnalysis(null);
+      resetAssistantCustomerSummary(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
       setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
       reportClientPerformance('client.responsibility.assistant.error', {
         durationMs: clientElapsedMs(startedAt),
@@ -2239,6 +2274,7 @@ export function CustomerApp() {
     const startedAt = clientPerfNow();
     setAssistantLoading(true);
     setAssistantAnalysis(null);
+    resetAssistantCustomerSummary('');
     setAssistantMessage('正在联网查询官方资料');
     try {
       await loadAssistantResponsibilities({
@@ -2249,6 +2285,7 @@ export function CustomerApp() {
       });
     } catch (error) {
       setAssistantAnalysis(null);
+      resetAssistantCustomerSummary(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
       setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
       reportClientPerformance('client.responsibility.assistant.error', {
         durationMs: clientElapsedMs(startedAt),
@@ -3225,6 +3262,9 @@ export function CustomerApp() {
       company={assistantCompany}
       companySuggestionLoading={assistantCompanySuggestionLoading}
       companySuggestions={assistantCompanySuggestions}
+      customerSummary={assistantCustomerSummary}
+      customerSummaryLoading={assistantCustomerSummaryLoading}
+      customerSummaryMessage={assistantCustomerSummaryMessage}
       localSearched={assistantLocalSearched}
       loading={assistantLoading}
       matches={assistantMatches}
@@ -3235,6 +3275,7 @@ export function CustomerApp() {
       onChangeCompany={(value) => {
         setAssistantCompany(value);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
@@ -3242,6 +3283,7 @@ export function CustomerApp() {
       onChangeName={(value) => {
         setAssistantName(value);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
@@ -3253,6 +3295,7 @@ export function CustomerApp() {
       onSelectCompany={(company) => {
         setAssistantCompany(company);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
@@ -3262,6 +3305,7 @@ export function CustomerApp() {
         setAssistantCompany(suggestion.company);
         setAssistantName(suggestion.productName);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
