@@ -113,6 +113,35 @@ export type ResponsibilityCard = {
   indicators?: QuantifiedIndicator[];
 };
 
+export type CustomerResponsibilitySummaryItem = {
+  title: string;
+  plainText: string;
+  howItPays: string;
+  requiredPolicyFields: string[];
+};
+
+export type CustomerResponsibilitySummary = {
+  company: string;
+  productName: string;
+  headline: string;
+  mainResponsibilities: CustomerResponsibilitySummaryItem[];
+  notices: string[];
+  requiredPolicyFields: string[];
+  sourceUrls: string[];
+};
+
+export type CustomerResponsibilitySummaryResponse =
+  | {
+      ok: true;
+      source: 'database' | 'generated';
+      summary: CustomerResponsibilitySummary;
+    }
+  | {
+      ok: false;
+      status: 'needs_source_review' | string;
+      message: string;
+    };
+
 export type PolicyCompanySuggestion = {
   company: string;
   recordCount: number;
@@ -185,6 +214,15 @@ export function matchPolicyResponsibilities(input: { company: string; name: stri
       name: input.name,
       limit: input.limit,
       minScore: input.minScore,
+    },
+  });
+}
+
+export function getProductCustomerResponsibilitySummary(input: { company: string; name: string }) {
+  return requestResponsibility<CustomerResponsibilitySummaryResponse>('/api/policy-responsibilities/customer-summary', {
+    body: {
+      company: input.company,
+      name: input.name,
     },
   });
 }
