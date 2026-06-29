@@ -5273,6 +5273,138 @@ test('public responsibility lookup remains available without phone verification'
   }
 });
 
+test('customer responsibility summary generates once and then reads from database', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (
+      id INTEGER PRIMARY KEY
+    );
+    CREATE TABLE product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      source_url TEXT,
+      payload TEXT NOT NULL
+    )
+  `);
+  db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id,
+      product_key,
+      company,
+      product_name,
+      title,
+      category,
+      source_url,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'card_customer_summary_1',
+    'company_product:新华保险:盛世荣耀',
+    '新华保险',
+    '盛世荣耀',
+    '身故或身体全残保险金',
+    '人寿保障',
+    'https://example.test/terms.pdf',
+    JSON.stringify({
+      id: 'card_customer_summary_1',
+      productKey: 'company_product:新华保险:盛世荣耀',
+      company: '新华保险',
+      productName: '盛世荣耀',
+      title: '身故或身体全残保险金',
+      category: '人寿保障',
+      plainSummary: '发生身故或身体全残时给付保险金。',
+      payoutSummary: '金额结合已交保险费、基本保险金额和保单年度计算。',
+      sourceUrl: 'https://example.test/terms.pdf',
+      sourceExcerpt: '保险责任包括身故或身体全残保险金。',
+    }),
+  );
+  const state = {
+    ...createInitialState(),
+    knowledgeRecords: [{
+      id: 1,
+      company: '新华保险',
+      productName: '盛世荣耀',
+      title: '盛世荣耀条款',
+      url: 'https://example.test/terms.pdf',
+      pageText: '保险责任包括身故或身体全残保险金。',
+      official: true,
+    }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_customer_summary_1',
+      company: '新华保险',
+      productName: '盛世荣耀',
+      liability: '身故或身体全残保险金',
+      formulaText: '身故或身体全残保险金按条款计算。',
+      sourceUrl: 'https://example.test/terms.pdf',
+    }],
+  };
+  const persistedSummaries = new Map();
+  let modelCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    db,
+    recomputeCashflowOnStartup: false,
+    findProductCustomerResponsibilitySummary: async ({ productKey, summaryVersion, sourceDigest }) => {
+      const row = persistedSummaries.get(`${productKey}:${summaryVersion}`);
+      return row && row.sourceDigest === sourceDigest ? row : null;
+    },
+    persistProductCustomerResponsibilitySummary: async ({ summary }) => {
+      persistedSummaries.set(`${summary.productKey}:${summary.summaryVersion}`, summary);
+      state.productCustomerResponsibilitySummaries = [...persistedSummaries.values()];
+      return summary;
+    },
+    generateProductCustomerResponsibilitySummaryWithDeepSeek: async () => {
+      modelCalls += 1;
+      return {
+        company: '新华保险',
+        productName: '盛世荣耀',
+        headline: '这是一份以身故或身体全残保障为主的终身寿险。',
+        mainResponsibilities: [{
+          title: '身故或身体全残保险金',
+          plainText: '发生身故或身体全残时，保险公司按条款约定给付保险金。',
+          howItPays: '金额需要结合保单信息计算。',
+          requiredPolicyFields: ['基本保险金额', '已交保险费'],
+        }],
+        notices: ['具体金额以条款和保单为准。'],
+        requiredPolicyFields: ['基本保险金额', '已交保险费'],
+        sourceUrls: ['https://example.test/terms.pdf'],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const first = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      body: JSON.stringify({ company: '新华保险', name: '盛世荣耀' }),
+    });
+    assert.equal(first.response.status, 200);
+    assert.equal(first.payload.ok, true);
+    assert.equal(first.payload.source, 'generated');
+    assert.equal(first.payload.summary.headline, '这是一份以身故或身体全残保障为主的终身寿险。');
+    assert.equal(modelCalls, 1);
+    assert.equal(persistedSummaries.size, 1);
+
+    const second = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      body: JSON.stringify({ company: '新华保险', name: '盛世荣耀' }),
+    });
+    assert.equal(second.response.status, 200);
+    assert.equal(second.payload.ok, true);
+    assert.equal(second.payload.source, 'database');
+    assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(modelCalls, 1);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('register can defer policy payload loading', async () => {
   const state = {
     ...createInitialState(),

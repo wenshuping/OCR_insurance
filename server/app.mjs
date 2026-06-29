@@ -76,6 +76,10 @@ import {
   buildPolicyDerivedResult,
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
+import {
+  callDeepSeekForCustomerResponsibilitySummary,
+  generateProductCustomerResponsibilitySummary,
+} from './product-customer-responsibility-summary.service.mjs';
 import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 import {
   buildOptionalResponsibilityGaps,
@@ -1987,6 +1991,14 @@ export function createPolicyOcrApp(options = {}) {
   const recordIndicatorUpdateBatch = typeof options.recordIndicatorUpdateBatch === 'function'
     ? (input = {}) => options.recordIndicatorUpdateBatch({ state, ...input })
     : null;
+  const findProductCustomerResponsibilitySummary = typeof options.findProductCustomerResponsibilitySummary === 'function'
+    ? (input = {}) => options.findProductCustomerResponsibilitySummary(input)
+    : null;
+  const persistProductCustomerResponsibilitySummary = typeof options.persistProductCustomerResponsibilitySummary === 'function'
+    ? (summary) => options.persistProductCustomerResponsibilitySummary({ state, summary })
+    : null;
+  const generateProductCustomerResponsibilitySummaryWithDeepSeek =
+    options.generateProductCustomerResponsibilitySummaryWithDeepSeek || callDeepSeekForCustomerResponsibilitySummary;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
 
@@ -2067,6 +2079,7 @@ export function createPolicyOcrApp(options = {}) {
 
   const routeContext = createRouteContext({
     state,
+    db: options.db || null,
     persist,
     persistPolicyScanSave,
     persistPendingScan,
@@ -2085,6 +2098,10 @@ export function createPolicyOcrApp(options = {}) {
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
     recordIndicatorUpdateBatch,
+    findProductCustomerResponsibilitySummary,
+    persistProductCustomerResponsibilitySummary,
+    generateProductCustomerResponsibilitySummary,
+    generateProductCustomerResponsibilitySummaryWithDeepSeek,
     scanner,
     analyzer,
     adminPassword,

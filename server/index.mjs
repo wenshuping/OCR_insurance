@@ -92,6 +92,8 @@ const app = createPolicyOcrApp({
   persistMembershipState: store.persistMembershipState,
   persistOfficialDomainProfiles: store.persistOfficialDomainProfiles,
   persistPolicyDerivedResult: store.persistPolicyDerivedResult,
+  persistProductCustomerResponsibilitySummary: store.persistProductCustomerResponsibilitySummary,
+  findProductCustomerResponsibilitySummary: store.findProductCustomerResponsibilitySummary,
   markPolicyDerivedResultsStaleByProductKeys: store.markPolicyDerivedResultsStaleByProductKeys,
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,

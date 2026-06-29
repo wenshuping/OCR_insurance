@@ -44,6 +44,11 @@ export function createResponsibilityRoutes(context) {
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
+    db,
+    findProductCustomerResponsibilitySummary,
+    persistProductCustomerResponsibilitySummary,
+    generateProductCustomerResponsibilitySummary,
+    generateProductCustomerResponsibilitySummaryWithDeepSeek,
   } = context;
 
   function filteredKnowledgeRecordsForPolicy(policyDraft) {
@@ -160,6 +165,29 @@ export function createResponsibilityRoutes(context) {
         maxResults: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 12,
       }),
     });
+  });
+
+  router.post('/customer-summary', async (req, res) => {
+    const routeStartedAt = nowMs();
+    try {
+      const input = normalizeResponsibilityQueryInput(req.body);
+      const result = await generateProductCustomerResponsibilitySummary({
+        state,
+        db,
+        input,
+        findSummary: findProductCustomerResponsibilitySummary,
+        persistSummary: persistProductCustomerResponsibilitySummary,
+        generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
+      });
+      logPerformance(performanceLogger, 'policy.responsibility.customer_summary.complete', {
+        route: '/api/policy-responsibilities/customer-summary',
+        durationMs: elapsedMs(routeStartedAt),
+        source: result?.source || result?.status || '',
+      });
+      res.json(result);
+    } catch (error) {
+      sendError(res, error, 400);
+    }
   });
 
   router.post('/matches', async (req, res) => {
