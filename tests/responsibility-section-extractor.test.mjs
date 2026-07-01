@@ -47,6 +47,25 @@ test('extractStructuredResponsibilitySections flags missing responsibility chapt
   assert.deepEqual(result.quality.warnings, ['responsibility_chapter_missing']);
 });
 
+test('extractStructuredResponsibilitySections accepts official bare responsibility title on same line', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'incremental_whole_life',
+    records: [{
+      title: '荣耀鑫享赢家版条款',
+      pageText: [
+        '保险责任 在本合同保险期间内，我们按下列规定承担保险责任： 身故或身体全残保险金',
+        '被保险人身故或身体全残时，按已交保险费×给付系数、现金价值、基本保险金额×（1+3%）（n-1）三者最大者给付。',
+        '上述给付系数为18-41周岁1.6，41-61周岁1.4，61周岁以上1.2。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /保险责任|身故或身体全残保险金/u);
+  assert.match(result.mainResponsibilityText, /1\+3%/u);
+  assert.match(result.mainResponsibilityText, /给付系数/u);
+});
+
 test('extractStructuredResponsibilitySections bounds decimal responsibility chapter', () => {
   const result = extractStructuredResponsibilitySections({
     records: [{

@@ -1997,6 +1997,9 @@ export function createPolicyOcrApp(options = {}) {
   const persistProductCustomerResponsibilitySummary = typeof options.persistProductCustomerResponsibilitySummary === 'function'
     ? (summary) => options.persistProductCustomerResponsibilitySummary({ state, summary })
     : null;
+  const persistProductCustomerSummaryGenerationRun = typeof options.persistProductCustomerSummaryGenerationRun === 'function'
+    ? (input = {}) => options.persistProductCustomerSummaryGenerationRun({ state, ...input })
+    : null;
   const generateProductCustomerResponsibilitySummaryWithDeepSeek =
     options.generateProductCustomerResponsibilitySummaryWithDeepSeek || callDeepSeekForCustomerResponsibilitySummary;
   const adminPassword = resolveAdminPassword(options);
@@ -2100,6 +2103,7 @@ export function createPolicyOcrApp(options = {}) {
     recordIndicatorUpdateBatch,
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
+    persistProductCustomerSummaryGenerationRun,
     generateProductCustomerResponsibilitySummary,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
     scanner,

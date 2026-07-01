@@ -146,6 +146,13 @@ function findBareLineHeading(source, title, from = 0) {
   return from + match.index + match[0].search(new RegExp(escapeRegExp(title), 'u'));
 }
 
+function findInlineBareResponsibilityHeading(source, from = 0) {
+  const slice = source.slice(from);
+  const match = /(^|\n)\s*保险责任(?:\s+|[:：])(?=在本合同|[^。\n]{0,120}(?:承担保险责任|保险金))/u.exec(slice);
+  if (!match) return -1;
+  return from + match.index + match[0].search(/保险责任/u);
+}
+
 function headingStartFromMatch(matchText) {
   const articleStart = matchText.search(new RegExp(`${LINE_HEADING_PREFIX}`, 'u'));
   if (articleStart >= 0) return articleStart;
@@ -203,6 +210,9 @@ function extractResponsibilityChapter(source) {
 
   const bareStart = findBareLineHeading(normalized, '保险责任');
   if (bareStart >= 0) return boundedSection(normalized, bareStart, 3000);
+
+  const inlineBareStart = findInlineBareResponsibilityHeading(normalized);
+  if (inlineBareStart >= 0) return boundedSection(normalized, inlineBareStart, 3000);
 
   const looseStart = findLooseHeading(normalized, '保险责任');
   if (looseStart >= 0) return boundedSection(normalized, looseStart, 3000);
