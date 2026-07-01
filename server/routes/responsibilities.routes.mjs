@@ -39,7 +39,11 @@ export function createResponsibilityRoutes(context) {
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
     buildKnowledgeSearchArtifacts,
+    buildResponsibilitySummaryReportFromCards,
     buildResponsibilityCardsForPolicy,
+    isGeneratedResponsibilityCountReport,
+    mergeCoverageTableWithCheckedRows,
+    responsibilityRowsFromCards,
     findPolicyCoverageIndicators,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
@@ -47,9 +51,22 @@ export function createResponsibilityRoutes(context) {
     db,
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
+    persistProductCustomerSummaryGenerationRun,
     generateProductCustomerResponsibilitySummary,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
   } = context;
+
+  function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
+    const existing = String(current || '').trim();
+    if (existing && !(typeof isGeneratedResponsibilityCountReport === 'function' && isGeneratedResponsibilityCountReport(existing))) {
+      return existing;
+    }
+    const cardReport = typeof buildResponsibilitySummaryReportFromCards === 'function'
+      ? buildResponsibilitySummaryReportFromCards(cards, { optionalResponsibilities })
+      : '';
+    if (cardReport) return cardReport;
+    return rows.length ? `已整理 ${rows.length} 项保险责任。` : existing;
+  }
 
   function filteredKnowledgeRecordsForPolicy(policyDraft) {
     if (typeof buildKnowledgeSearchArtifacts !== 'function') return [];
@@ -75,8 +92,21 @@ export function createResponsibilityRoutes(context) {
           optionalResponsibilityRecords: optionalResponsibilityRecords || [],
         })
       : [];
+    const checkedCoverageTable = typeof responsibilityRowsFromCards === 'function'
+      ? responsibilityRowsFromCards(responsibilityCards, { optionalResponsibilities: analysis.optionalResponsibilities || [] })
+      : [];
+    const effectiveCoverageTable = typeof mergeCoverageTableWithCheckedRows === 'function'
+      ? mergeCoverageTableWithCheckedRows(analysis.coverageTable, checkedCoverageTable)
+      : (checkedCoverageTable.length ? checkedCoverageTable : analysis.coverageTable);
     return {
       ...analysis,
+      report: responsibilityReportFor({
+        current: analysis.report,
+        rows: checkedCoverageTable,
+        cards: responsibilityCards,
+        optionalResponsibilities: analysis.optionalResponsibilities || [],
+      }),
+      coverageTable: effectiveCoverageTable,
       responsibilityCards,
     };
   }
@@ -177,7 +207,17 @@ export function createResponsibilityRoutes(context) {
         input,
         findSummary: findProductCustomerResponsibilitySummary,
         persistSummary: persistProductCustomerResponsibilitySummary,
+        persistGenerationRun: typeof persistProductCustomerSummaryGenerationRun === 'function'
+          ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
+          : undefined,
         generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
+        generateOfficialAnalysis: async ({ company, productName }) => assistantAnalyzer({
+          scan: {
+            ocrText: `${company} ${productName}`,
+            data: { company, name: productName },
+          },
+          preferLocalKnowledgeAnswer: false,
+        }),
       });
       logPerformance(performanceLogger, 'policy.responsibility.customer_summary.complete', {
         route: '/api/policy-responsibilities/customer-summary',
