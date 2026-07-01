@@ -35,7 +35,6 @@ const URL_FIELDS = [
   'file_url',
 ];
 
-const MIN_CONTAINS_MATCH_LENGTH = 4;
 const GENERIC_PRODUCT_SUFFIXES = [
   '意外险',
   '寿险',
@@ -73,7 +72,6 @@ function productNameMatches(candidate, query) {
   const right = comparable(query);
   if (!left || !right) return false;
   if (left === right) return true;
-  if (left.length < MIN_CONTAINS_MATCH_LENGTH || right.length < MIN_CONTAINS_MATCH_LENGTH) return false;
   if (isGenericProductQuery(left) || isGenericProductQuery(right)) return false;
   return left.includes(right) || right.includes(left);
 }

@@ -277,6 +277,44 @@ test('resolveOfficialResponsibilitySources avoids overmatching short generic pro
   assert.equal(result.records[0].productName, '寿险');
 });
 
+test('resolveOfficialResponsibilitySources allows short concrete product aliases', () => {
+  const xinrongyao = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '鑫荣耀',
+    records: [
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf',
+        pageText: '保险责任 身故保险金给付。',
+      },
+    ],
+  });
+
+  assert.equal(xinrongyao.status, 'ready');
+  assert.equal(xinrongyao.records.length, 1);
+  assert.equal(xinrongyao.productName, '新华人寿保险股份有限公司鑫荣耀终身寿险');
+
+  const kangning = resolveOfficialResponsibilitySources({
+    company: '中国人寿',
+    productName: '康宁',
+    records: [
+      {
+        company: '中国人寿',
+        productName: '国寿康宁终身保险',
+        official: true,
+        url: 'https://www.chinalife.com/kangning-terms.pdf',
+        pageText: '保险责任 身故保险金给付。',
+      },
+    ],
+  });
+
+  assert.equal(kangning.status, 'ready');
+  assert.equal(kangning.records.length, 1);
+  assert.equal(kangning.productName, '国寿康宁终身保险');
+});
+
 test('resolveOfficialResponsibilitySources does not match generic categories by contains', () => {
   const result = resolveOfficialResponsibilitySources({
     company: '新华保险',
