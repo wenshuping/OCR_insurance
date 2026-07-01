@@ -1298,6 +1298,122 @@ test('generateProductCustomerResponsibilitySummary keeps flash model for simple 
   assert.equal(runRows.at(-1)?.modelTier, 'flash');
 });
 
+test('generateProductCustomerResponsibilitySummary seed product prompts include required category terms', async () => {
+  const cases = [
+    {
+      product: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+      pageText: [
+        '第五条 保险责任',
+        '身故或身体全残保险金 被保险人身故或身体全残时按已交保险费×给付系数、现金价值、基本保险金额×(1+3.5%)^(n-1)三者最大者给付。',
+        '特定公共交通工具意外伤害身故或身体全残保险金，额外给付基本保险金额的1.5倍。',
+        '第六条 责任免除',
+      ].join('\n'),
+      expectedPromptTerms: [/增额终身寿险模板/u, /复利递增/u, /交通意外额外给付/u],
+      expectedCategory: 'incremental_whole_life',
+      response: {
+        productCategory: 'incremental_whole_life',
+        categoryLabel: '增额终身寿险',
+        headline: '这是一款以身故或身体全残保障为主、给付基准按条款递增的终身寿险。',
+        responsibilities: [
+          {
+            title: '身故或身体全残保险金',
+            plainText: '18周岁后按已交保险费×给付系数、现金价值、基本保险金额×(1+3.5%)^(n-1)三者最大者给付，其中给付基准按每年3.5%复利递增。',
+            triggerCondition: '被保险人身故或身体全残。',
+            paymentRule: '按年龄和交费期间分情形比较给付，基本保险金额×(1+3.5%)^(n-1)表示每年3.5%复利递增的给付基准。',
+            calculationStatus: 'claim_contingent',
+          },
+          {
+            title: '特定公共交通工具意外伤害身故或身体全残保险金',
+            plainText: '符合特定公共交通工具意外伤害条件时，在身故或身体全残保险金之外额外给付。',
+            triggerCondition: '以乘客身份乘坐特定公共交通工具期间遭受意外伤害并导致身故或身体全残。',
+            paymentRule: '额外给付基本保险金额的1.5倍。',
+            calculationStatus: 'claim_contingent',
+          },
+        ],
+        productFunctions: [],
+        importantNotes: ['复利递增是保险责任给付基准递增，不等于现金价值增长或保证收益率。'],
+        missingOrUnclear: [],
+      },
+    },
+    {
+      product: '新华人寿保险股份有限公司尊贵人生年金保险(分红型)',
+      pageText: [
+        '第五条 保险责任',
+        '关爱年金 生存保险金 身故保险金。',
+        '第六条 可选责任',
+        '投保人可以选择祝寿金责任。',
+        '第七条 保单分红',
+        '年度分红以增加保险金额的方式进行分配，红利不保证。',
+        '第八条 责任免除',
+      ].join('\n'),
+      expectedPromptTerms: [/年金保险模板/u, /领取时间\/领取日/u, /可选责任/u],
+      expectedCategory: 'annuity',
+      response: {
+        productCategory: 'annuity',
+        categoryLabel: '年金保险（分红型）',
+        headline: '这是一款提供生存领取、身故保障并可选择祝寿金责任的分红型年金保险。',
+        responsibilities: [
+          {
+            title: '关爱年金',
+            plainText: '关爱年金属于生存保险金，被保险人生存至约定领取日时按合同约定领取。',
+            triggerCondition: '被保险人在约定领取日生存。',
+            paymentRule: '领取时间、领取频率和金额以合同约定为准。',
+            calculationStatus: 'scheduled_cashflow',
+          },
+          {
+            title: '身故保险金',
+            plainText: '被保险人身故时，按合同约定给付身故保险金。',
+            triggerCondition: '被保险人身故。',
+            paymentRule: '按条款约定的金额来源给付。',
+            calculationStatus: 'claim_contingent',
+          },
+          {
+            title: '可选责任：祝寿金',
+            plainText: '投保人选择该可选责任后，被保险人生存至约定时间可领取祝寿金。',
+            triggerCondition: '已选择祝寿金责任，且被保险人生存至约定领取时间。',
+            paymentRule: '领取时间、领取频率和金额以合同约定为准。',
+            calculationStatus: 'scheduled_cashflow',
+          },
+        ],
+        productFunctions: ['年度分红以增加保险金额的方式进行分配。'],
+        importantNotes: ['红利不保证，实际分红以保险公司分配结果为准。'],
+        missingOrUnclear: [],
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const result = await generateProductCustomerResponsibilitySummary({
+      state: {
+        knowledgeRecords: [{
+          company,
+          productName: item.product,
+          title: `${item.product}条款`,
+          official: true,
+          url: sourceUrl,
+          pageText: item.pageText,
+        }],
+        insuranceIndicatorRecords: [],
+      },
+      db: dbWithCards([]),
+      input: { company, name: item.product },
+      findSummary: async () => null,
+      persistSummary: async (row) => row,
+      persistGenerationRun: async (run) => run,
+      generateWithDeepSeek: async ({ prompt }) => {
+        for (const term of item.expectedPromptTerms) assert.match(prompt, term);
+        const payload = structuredPromptPayload(prompt);
+        assert.equal(payload.routing.productCategory, item.expectedCategory);
+        return item.response;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.summary.productName, item.product);
+    assert.ok(result.summary.mainResponsibilities.length >= 1);
+  }
+});
+
 test('official analysis with third-party source returns needs_source_review without ready summary', async () => {
   const savedRows = [];
   const runRows = [];

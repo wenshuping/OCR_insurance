@@ -158,6 +158,56 @@ test('extractStructuredResponsibilitySections keeps participating dividend suppl
   assert.match(result.supplementSections[0].text, /红利不保证/u);
 });
 
+test('extractStructuredResponsibilitySections seed product keeps Xinrongyao formula and traffic extra', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'incremental_whole_life',
+    records: [{
+      title: '鑫荣耀条款',
+      pageText: [
+        '第五条 保险责任',
+        '身故或身体全残保险金 基本保险金额×(1+3.5%)^(n-1)，其中n为被保险人身故或身体全残时的保单年度数。',
+        '特定公共交通工具意外伤害身故或身体全残保险金，额外给付基本保险金额的1.5倍。',
+        '第六条 责任免除',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /3\.5%/u);
+  assert.match(result.mainResponsibilityText, /基本保险金额×\(1\+3\.5%\)\^\(n-1\)/u);
+  assert.match(result.mainResponsibilityText, /特定公共交通工具/u);
+  assert.match(result.mainResponsibilityText, /1\.5倍/u);
+});
+
+test('extractStructuredResponsibilitySections seed product keeps 尊贵人生 annuity optional and dividend text', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      title: '尊贵人生条款',
+      pageText: [
+        '第五条 保险责任',
+        '关爱年金 生存保险金 身故保险金。',
+        '第六条 可选责任',
+        '投保人可以选择祝寿金责任。',
+        '第七条 保单分红',
+        '本合同为分红保险，年度分红以增加保险金额的方式进行分配，红利分配是不确定的，红利不保证。',
+        '第八条 责任免除',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /关爱年金/u);
+  const optionalSupplement = result.supplementSections.find((section) => section.type === 'optional_responsibility');
+  assert.ok(optionalSupplement);
+  assert.match(optionalSupplement.text, /可选责任/u);
+  assert.match(optionalSupplement.text, /祝寿金/u);
+  const dividendSupplement = result.supplementSections.find((section) => section.type === 'dividend');
+  assert.ok(dividendSupplement);
+  assert.match(dividendSupplement.text, /年度分红/u);
+  assert.match(dividendSupplement.text, /红利不保证/u);
+});
+
 test('extractStructuredResponsibilitySections keeps universal account rate fee risk supplement', () => {
   const result = extractStructuredResponsibilitySections({
     productCategory: 'universal_life',
