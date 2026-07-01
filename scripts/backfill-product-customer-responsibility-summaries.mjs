@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import fs from 'node:fs/promises';
+
 import { generateProductCustomerResponsibilitySummary } from '../server/product-customer-responsibility-summary.service.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
@@ -24,7 +26,30 @@ function parseLimit(value) {
 
 function resolveSummaryVersion(value) {
   const version = text(value);
-  return version === 'v22' ? V22_SUMMARY_VERSION : version || V22_SUMMARY_VERSION;
+  if (!version || version === 'v22' || version === V22_SUMMARY_VERSION) return V22_SUMMARY_VERSION;
+  throw new Error(`Only ${V22_SUMMARY_VERSION} is supported`);
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function categoryMatches(record, category) {
+  const filter = text(category).toLowerCase();
+  if (!filter) return true;
+  const values = [
+    record?.productCategory,
+    record?.product_category,
+    record?.category,
+    record?.productType,
+    record?.product_type,
+  ].map((value) => text(value).toLowerCase()).filter(Boolean);
+  return values.some((value) => value === filter || value.includes(filter));
 }
 
 export function parseBackfillArgs(argv = process.argv.slice(2)) {
@@ -62,7 +87,7 @@ export function parseBackfillArgs(argv = process.argv.slice(2)) {
   return args;
 }
 
-export function selectBackfillProducts({ knowledgeRecords = [], company = '', limit = 50 } = {}) {
+export function selectBackfillProducts({ knowledgeRecords = [], company = '', category = '', limit = 50 } = {}) {
   const companyFilter = text(company);
   const maxRows = parseLimit(limit);
   const seen = new Set();
@@ -75,6 +100,7 @@ export function selectBackfillProducts({ knowledgeRecords = [], company = '', li
     };
     if (!row.company || !row.productName) continue;
     if (companyFilter && row.company !== companyFilter) continue;
+    if (!categoryMatches(record, category)) continue;
 
     const key = `${row.company}\n${row.productName}`;
     if (seen.has(key)) continue;
@@ -96,19 +122,38 @@ export async function backfillProductCustomerResponsibilitySummaries({
   storeFactory = createSqliteStateStore,
   generateSummary = generateProductCustomerResponsibilitySummary,
 } = {}) {
+  const resolvedSummaryVersion = resolveSummaryVersion(summaryVersion);
+  if (dryRun && !(await fileExists(dbPath))) {
+    return {
+      dbPath,
+      summaryVersion: resolvedSummaryVersion,
+      category,
+      dryRun: true,
+      databaseMissing: true,
+      total: 0,
+      generated: 0,
+      failed: 0,
+      skippedDryRun: 0,
+      products: [],
+      failures: [],
+    };
+  }
+
   const store = await storeFactory({ dbPath });
   try {
     const state = await store.load();
     const products = selectBackfillProducts({
       knowledgeRecords: state.knowledgeRecords,
       company,
+      category,
       limit,
     });
     const report = {
       dbPath,
-      summaryVersion,
+      summaryVersion: resolvedSummaryVersion,
       category,
       dryRun: Boolean(dryRun),
+      databaseMissing: false,
       total: products.length,
       generated: 0,
       failed: 0,

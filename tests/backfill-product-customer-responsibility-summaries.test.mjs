@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -30,6 +33,21 @@ test('parseBackfillArgs resolves v22 alias and options', () => {
   assert.equal(args.dryRun, true);
 });
 
+test('parseBackfillArgs rejects unsupported summary versions', () => {
+  assert.throws(
+    () => parseBackfillArgs(['--version', 'v21']),
+    /Only customer-summary-v22-structured-rag is supported/,
+  );
+  assert.throws(
+    () => parseBackfillArgs(['--version', 'customer-summary-v21']),
+    /Only customer-summary-v22-structured-rag is supported/,
+  );
+  assert.equal(
+    parseBackfillArgs(['--version', 'customer-summary-v22-structured-rag']).summaryVersion,
+    'customer-summary-v22-structured-rag',
+  );
+});
+
 test('selectBackfillProducts deduplicates by company and product name', () => {
   const products = selectBackfillProducts({
     knowledgeRecords: [
@@ -46,6 +64,23 @@ test('selectBackfillProducts deduplicates by company and product name', () => {
   assert.deepEqual(products, [
     { company: '新华保险', productName: '产品A' },
     { company: '新华保险', productName: '产品B' },
+  ]);
+});
+
+test('selectBackfillProducts filters by category fields', () => {
+  const products = selectBackfillProducts({
+    knowledgeRecords: [
+      { company: '新华保险', productName: '产品A', productCategory: 'incremental_whole_life' },
+      { company: '新华保险', productName: '产品B', product_type: 'critical_illness' },
+      { company: '新华保险', productName: '产品C', category: 'annuity' },
+      { company: '新华保险', productName: '产品D' },
+    ],
+    category: 'whole_life',
+    limit: 10,
+  });
+
+  assert.deepEqual(products, [
+    { company: '新华保险', productName: '产品A' },
   ]);
 });
 
@@ -66,8 +101,31 @@ test('selectBackfillProducts filters by company and supports fallback product fi
   ]);
 });
 
+test('backfill dry-run returns empty report when database is missing without opening store', async () => {
+  let storeFactoryCalls = 0;
+  const missingDbPath = path.join(os.tmpdir(), `missing-policy-ocr-${Date.now()}`, 'policy-ocr.sqlite');
+
+  const report = await backfillProductCustomerResponsibilitySummaries({
+    dbPath: missingDbPath,
+    dryRun: true,
+    storeFactory: async () => {
+      storeFactoryCalls += 1;
+      throw new Error('storeFactory should not be called');
+    },
+  });
+
+  assert.equal(storeFactoryCalls, 0);
+  assert.equal(report.databaseMissing, true);
+  assert.equal(report.total, 0);
+  assert.deepEqual(report.products, []);
+  await assert.rejects(fs.stat(missingDbPath), /ENOENT/);
+});
+
 test('backfill dry-run reports candidates without calling generator', async () => {
   let generateCalls = 0;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'customer-summary-backfill-'));
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  await fs.writeFile(dbPath, '');
   const store = {
     async load() {
       return {
@@ -80,23 +138,27 @@ test('backfill dry-run reports candidates without calling generator', async () =
     close() {},
   };
 
-  const report = await backfillProductCustomerResponsibilitySummaries({
-    storeFactory: async () => store,
-    dbPath: '/tmp/test.sqlite',
-    dryRun: true,
-    limit: 1,
-    generateSummary: async () => {
-      generateCalls += 1;
-      return { ok: true };
-    },
-  });
+  try {
+    const report = await backfillProductCustomerResponsibilitySummaries({
+      storeFactory: async () => store,
+      dbPath,
+      dryRun: true,
+      limit: 1,
+      generateSummary: async () => {
+        generateCalls += 1;
+        return { ok: true };
+      },
+    });
 
-  assert.equal(generateCalls, 0);
-  assert.equal(report.dbPath, '/tmp/test.sqlite');
-  assert.equal(report.dryRun, true);
-  assert.equal(report.total, 1);
-  assert.equal(report.generated, 0);
-  assert.equal(report.failed, 0);
-  assert.equal(report.skippedDryRun, 1);
-  assert.deepEqual(report.products, [{ company: '新华保险', productName: '产品A' }]);
+    assert.equal(generateCalls, 0);
+    assert.equal(report.dbPath, dbPath);
+    assert.equal(report.dryRun, true);
+    assert.equal(report.total, 1);
+    assert.equal(report.generated, 0);
+    assert.equal(report.failed, 0);
+    assert.equal(report.skippedDryRun, 1);
+    assert.deepEqual(report.products, [{ company: '新华保险', productName: '产品A' }]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
