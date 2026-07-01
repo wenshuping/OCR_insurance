@@ -1026,6 +1026,56 @@ test('callDeepSeekForCustomerResponsibilitySummary logs raw response shape witho
   assert.doesNotMatch(serializedLogs, /test-secret-key/u);
 });
 
+test('callDeepSeekForCustomerResponsibilitySummary uses model override without logging API key', async () => {
+  const originalInfo = console.info;
+  const logs = [];
+  let requestBody = null;
+  console.info = (...args) => {
+    logs.push(args);
+  };
+  try {
+    const result = await callDeepSeekForCustomerResponsibilitySummary({
+      prompt: '摘要',
+      company,
+      productName,
+      modelNameOverride: 'deepseek-v4-pro',
+      env: {
+        DEEPSEEK_API_KEY: 'test-secret-key',
+        DEEPSEEK_MODEL: 'deepseek-v4-flash',
+      },
+      fetchImpl: async (url, options) => {
+        assert.match(String(url), /\/chat\/completions$/u);
+        requestBody = JSON.parse(options.body);
+        assert.equal(options.headers.authorization, 'Bearer test-secret-key');
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_override',
+          choices: [{
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                headline: 'Pro 模型摘要。',
+                mainResponsibilities: [{ title: '主要保险责任', plainText: '保险责任。' }],
+              }),
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+
+    assert.equal(result.headline, 'Pro 模型摘要。');
+  } finally {
+    console.info = originalInfo;
+  }
+
+  assert.equal(requestBody?.model, 'deepseek-v4-pro');
+  const serializedLogs = JSON.stringify(logs);
+  assert.match(serializedLogs, /deepseek-v4-pro/u);
+  assert.doesNotMatch(serializedLogs, /test-secret-key/u);
+});
+
 test('generateProductCustomerResponsibilitySummary returns needs_source_review when source cards are missing', async () => {
   const result = await generateProductCustomerResponsibilitySummary({
     state: { knowledgeRecords: [], insuranceIndicatorRecords: [] },
@@ -1147,6 +1197,105 @@ test('structured critical illness context produces prompt, ready v22 metadata, a
   assert.equal(result.summary.company, company);
   assert.equal(result.summary.productName, product);
   assert.equal(result.summary.productCategory, undefined);
+});
+
+test('generateProductCustomerResponsibilitySummary uses pro model for critical illness model routing', async () => {
+  const product = '新华人寿保险股份有限公司多倍保障少儿重大疾病保险（超越版）';
+  const calls = [];
+  const savedRows = [];
+  const runRows = [];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: {
+      knowledgeRecords: [{
+        company,
+        productName: product,
+        productType: '重疾险',
+        official: true,
+        url: sourceUrl,
+        pageText: [
+          '第五条 保险责任',
+          '等待期 90日。',
+          '轻度疾病保险金 按基本保险金额20%给付。',
+          '中度疾病保险金 按基本保险金额50%给付。',
+          '重度疾病保险金 按基本保险金额100%给付。',
+          '身故保险金 按合同约定给付。',
+          '豁免保险费 按合同约定豁免。',
+          '第六条 本合同保障的疾病列表',
+        ].join('\n'),
+      }],
+      insuranceIndicatorRecords: [],
+    },
+    db: dbWithCards([]),
+    input: { company, name: product },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      savedRows.push(row);
+      return row;
+    },
+    persistGenerationRun: async (run) => {
+      runRows.push(run);
+      return run;
+    },
+    generateWithDeepSeek: async (args) => {
+      calls.push(args);
+      return {
+        productCategory: 'critical_illness',
+        categoryLabel: '重大疾病保险',
+        headline: '重疾摘要。',
+        responsibilities: [
+          { title: '等待期', plainText: '90日。', triggerCondition: '等待期内', paymentRule: '按条款约定', calculationStatus: 'not_calculable' },
+          { title: '轻度疾病保险金', plainText: '轻度疾病保险金。', triggerCondition: '确诊轻度疾病', paymentRule: '基本保险金额20%', calculationStatus: 'claim_contingent' },
+          { title: '中度疾病保险金', plainText: '中度疾病保险金。', triggerCondition: '确诊中度疾病', paymentRule: '基本保险金额50%', calculationStatus: 'claim_contingent' },
+          { title: '重度疾病保险金', plainText: '重度疾病保险金。', triggerCondition: '确诊重度疾病', paymentRule: '基本保险金额100%', calculationStatus: 'claim_contingent' },
+          { title: '身故保险金', plainText: '身故保险金。', triggerCondition: '身故', paymentRule: '按合同约定', calculationStatus: 'claim_contingent' },
+          { title: '豁免保险费', plainText: '豁免保险费。', triggerCondition: '符合豁免条件', paymentRule: '豁免后续保险费', calculationStatus: 'waiver_only' },
+        ],
+        productFunctions: [],
+        importantNotes: ['疾病定义以条款为准。'],
+        missingOrUnclear: [],
+      };
+    },
+    modelName: 'deepseek-v4-flash',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[0]?.modelNameOverride, 'deepseek-v4-pro');
+  assert.equal(savedRows[0]?.modelName, 'deepseek-v4-pro');
+  assert.equal(savedRows[0]?.payload?.modelTier, 'pro');
+  assert.equal(runRows.at(-1)?.modelName, 'deepseek-v4-pro');
+  assert.equal(runRows.at(-1)?.modelTier, 'pro');
+});
+
+test('generateProductCustomerResponsibilitySummary keeps flash model for simple whole life model routing', async () => {
+  const calls = [];
+  const savedRows = [];
+  const runRows = [];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db: dbWithCards([]),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      savedRows.push(row);
+      return row;
+    },
+    persistGenerationRun: async (run) => {
+      runRows.push(run);
+      return run;
+    },
+    generateWithDeepSeek: async (args) => {
+      calls.push(args);
+      return structuredLifeSummary();
+    },
+    modelName: 'deepseek-v4-flash',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[0]?.modelNameOverride, 'deepseek-v4-flash');
+  assert.equal(savedRows[0]?.modelName, 'deepseek-v4-flash');
+  assert.equal(savedRows[0]?.payload?.modelTier, 'flash');
+  assert.equal(runRows.at(-1)?.modelName, 'deepseek-v4-flash');
+  assert.equal(runRows.at(-1)?.modelTier, 'flash');
 });
 
 test('official analysis with third-party source returns needs_source_review without ready summary', async () => {

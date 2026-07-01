@@ -10,6 +10,7 @@ export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v22-str
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
+const PRO_MODEL = 'deepseek-v4-pro';
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEEPSEEK_LOG_PREVIEW_LIMIT = 3000;
 const OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT = 6500;
@@ -667,10 +668,12 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
   prompt,
   company = '',
   productName = '',
+  modelNameOverride = '',
   env = process.env,
   fetchImpl = fetch,
 } = {}) {
   const config = resolveDeepSeekConfig(env);
+  const requestedModel = text(modelNameOverride) || config.model;
   if (!config.apiKey) {
     const error = new Error('DeepSeek API key is not configured');
     error.code = 'DEEPSEEK_API_KEY_MISSING';
@@ -690,7 +693,7 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: config.model,
+          model: requestedModel,
           messages: [
             { role: 'system', content: '你是保险责任摘要助手，只输出合法 JSON。' },
             { role: 'user', content: prompt },
@@ -713,7 +716,7 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
     logDeepSeekCustomerSummary('DeepSeek raw response', {
       company: text(company),
       productName: text(productName),
-      model: config.model,
+      model: requestedModel,
       status: response.status,
       responseId: text(payload?.id),
       finishReason: text(payload?.choices?.[0]?.finish_reason),
@@ -725,7 +728,7 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
     logDeepSeekCustomerSummary('DeepSeek parsed response shape', {
       company: text(company),
       productName: text(productName),
-      model: config.model,
+      model: requestedModel,
       parsed: Boolean(parsed),
       ...responseShapeForLog(parsed),
     });
@@ -1334,6 +1337,7 @@ export async function generateProductCustomerResponsibilitySummary({
     cards,
     sourceSections,
   });
+  const routedModelName = routing.modelTier === 'pro' ? PRO_MODEL : resolvedModelName;
   const prompt = buildStructuredResponsibilityPrompt({
     product: { company, productName },
     routing,
@@ -1350,6 +1354,7 @@ export async function generateProductCustomerResponsibilitySummary({
       cards,
       indicators,
       records: sourceRecords,
+      modelNameOverride: routedModelName,
     });
   } catch (error) {
     const qualityIssues = [{
@@ -1366,7 +1371,7 @@ export async function generateProductCustomerResponsibilitySummary({
       sourceSections,
       qualityIssues,
       rawPreview: text(error?.message),
-      modelName: resolvedModelName,
+      modelName: routedModelName,
       modelTier: routing.modelTier,
       now: structuredNow,
     }));
@@ -1392,7 +1397,7 @@ export async function generateProductCustomerResponsibilitySummary({
       sourceSections,
       qualityIssues: quality.issues,
       rawPreview: JSON.stringify(rawSummary),
-      modelName: resolvedModelName,
+      modelName: routedModelName,
       modelTier: routing.modelTier,
       now: structuredNow,
     }));
@@ -1424,7 +1429,7 @@ export async function generateProductCustomerResponsibilitySummary({
     sourceUrls: summaryJson.sourceUrls,
     sourceDigest,
     modelProvider: 'deepseek',
-    modelName: resolvedModelName,
+    modelName: routedModelName,
     generatedAt: now,
     updatedAt: now,
     payload: {
@@ -1458,7 +1463,7 @@ export async function generateProductCustomerResponsibilitySummary({
     sourceSections,
     qualityIssues: [],
     rawPreview: JSON.stringify(rawSummary),
-    modelName: resolvedModelName,
+    modelName: routedModelName,
     modelTier: routing.modelTier,
     now,
   }));
@@ -1468,7 +1473,7 @@ export async function generateProductCustomerResponsibilitySummary({
       company,
       productName,
       summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
-      modelName: resolvedModelName,
+      modelName: routedModelName,
       sourceDigest,
       responsibilityCount: normalizeArray(summaryJson.mainResponsibilities).length,
       responsibilityTitles: normalizeArray(summaryJson.mainResponsibilities)
