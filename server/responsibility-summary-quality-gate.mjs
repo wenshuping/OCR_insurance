@@ -56,19 +56,8 @@ function summaryFunctionAndNoteText(summary = {}) {
   ].map(text).filter(Boolean).join(' ');
 }
 
-function missingText(summary = {}) {
-  return collectText(summary.missingOrUnclear).map(text).filter(Boolean).join(' ');
-}
-
 function sourceText(sourceSections = {}) {
   return joinedText(sourceSections);
-}
-
-function hasAcceptableMissingExplanation(summary, keyword, aliases = []) {
-  const content = missingText(summary);
-  if (!content) return false;
-  const mentioned = [keyword, ...aliases].some((alias) => includesLoose(content, alias));
-  return mentioned && /不明|缺失|未载明|无法|不能确定|需要|待核|来源|条款|表/u.test(content);
 }
 
 function pushMissingIssue(issues, keyword) {
@@ -110,23 +99,41 @@ const OPTIONAL_RESPONSIBILITY_RULES = {
   ],
 };
 
-const PRODUCT_FUNCTION_TITLE_TERMS = [
-  '保单贷款',
-  '减保',
-  '指定受益人',
-  '受益人指定',
-  '红利',
-  '分红',
-  '现金价值管理',
-  '账户价值',
-  '结算利率',
-  '投资账户',
-  '保证利率',
-  '费用',
-  '投资风险',
+const PRODUCT_FUNCTION_TITLE_RULES = [
+  { term: '保单贷款', pattern: /保单贷款/u },
+  { term: '减保', pattern: /^减保$|减额交清/u },
+  { term: '指定受益人', pattern: /指定受益人|受益人指定/u },
+  { term: '红利', pattern: /红利|分红/u },
+  { term: '现金价值管理', pattern: /现金价值管理/u },
+  { term: '账户价值', pattern: /账户价值/u },
+  { term: '结算利率', pattern: /结算利率/u },
+  { term: '投资账户', pattern: /投资账户/u },
+  { term: '保证利率', pattern: /保证利率/u },
+  { term: '费用', pattern: /费用收取|初始费用|保单管理费|风险保险费|手续费|退保费用/u },
+  { term: '投资风险', pattern: /投资风险/u },
 ];
 
 const UNSUPPORTED_RESPONSIBILITY_RULES = [
+  {
+    keyword: '满期保险金',
+    claimPatterns: ['满期保险金'],
+    sourcePatterns: ['满期保险金', '满期给付', '满期时'],
+  },
+  {
+    keyword: '住院医疗保险金',
+    claimPatterns: ['住院医疗保险金', '住院医疗费用保险金'],
+    sourcePatterns: ['住院医疗保险金', '住院医疗费用保险金', '住院医疗'],
+  },
+  {
+    keyword: '意外身故保险金',
+    claimPatterns: ['意外身故保险金', '意外身故'],
+    sourcePatterns: ['意外身故保险金', '意外身故'],
+  },
+  {
+    keyword: '豁免保险费',
+    claimPatterns: ['豁免保险费', '保费豁免'],
+    sourcePatterns: ['豁免保险费', '保费豁免'],
+  },
   {
     keyword: '交通意外额外给付',
     claimPatterns: ['交通意外额外给付', '公共交通工具意外', '特定公共交通工具', '航空意外', '驾乘意外'],
@@ -153,6 +160,11 @@ function validateSchema(summary, issues) {
     issues.push({ code: 'invalid_responsibilities_shape', message: 'Summary responsibilities must be an array.' });
     return false;
   }
+  for (const field of ['productFunctions', 'importantNotes', 'missingOrUnclear']) {
+    if (!Array.isArray(summary[field])) {
+      issues.push({ code: 'invalid_summary_array_field', field, message: `Summary ${field} must be an array.` });
+    }
+  }
 
   let renderableCount = 0;
   summary.responsibilities.forEach((item, index) => {
@@ -175,22 +187,18 @@ function validateSchema(summary, issues) {
 
 function evaluateCoverage({ category, source, summary, issues }) {
   const responsibilityText = summaryResponsibilityText(summary);
-  const missing = missingText(summary);
   const rules = categoryKeywordRules(category);
   const required = rules.responsibility || [];
 
   for (const keyword of required) {
     if (!includesLoose(source, keyword)) continue;
     if (includesLoose(responsibilityText, keyword)) continue;
-    if (hasAcceptableMissingExplanation(summary, keyword)) continue;
     pushMissingIssue(issues, keyword);
   }
 
   for (const rule of OPTIONAL_RESPONSIBILITY_RULES[category] || []) {
     if (!includesAny(source, rule.sourcePatterns)) continue;
     if (includesAny(responsibilityText, rule.summaryPatterns)) continue;
-    if (hasAcceptableMissingExplanation(summary, rule.keyword, rule.summaryPatterns)) continue;
-    if (includesAny(missing, rule.summaryPatterns) && hasAcceptableMissingExplanation(summary, rule.keyword, rule.summaryPatterns)) continue;
     pushMissingIssue(issues, rule.keyword);
   }
 }
@@ -199,9 +207,9 @@ function evaluateSeparation({ source, summary, issues }) {
   for (const [index, item] of normalizeArray(summary.responsibilities).entries()) {
     const title = text(item?.title);
     if (!title) continue;
-    const term = PRODUCT_FUNCTION_TITLE_TERMS.find((candidate) => includesLoose(title, candidate));
-    if (term) {
-      issues.push({ code: 'function_mixed_into_responsibilities', index, title, term });
+    const rule = PRODUCT_FUNCTION_TITLE_RULES.find((candidate) => candidate.pattern.test(title));
+    if (rule) {
+      issues.push({ code: 'function_mixed_into_responsibilities', index, title, term: rule.term });
     }
   }
 
@@ -217,22 +225,47 @@ function evaluateSeparation({ source, summary, issues }) {
 
   const allSummary = joinedText(summary);
   const saysGuaranteedDividend = /(?:保证(?:给付|获得|领取|分配)?红利|红利(?:保证|确定|固定)|确定(?:给付|获得|领取|分配)?红利)/u.test(allSummary)
-    && !/(?:红利不保证|红利并不保证|红利非保证|红利是不确定|红利分配是不确定)/u.test(allSummary);
+    && !/(?:红利不保证|红利并不保证|红利非保证|红利是不确定|红利不确定|红利分配是不确定|不能保证.{0,8}红利)/u.test(allSummary);
   if (saysGuaranteedDividend) {
     issues.push({ code: 'unsupported_guaranteed_dividend', keyword: '红利' });
   }
 }
 
-function hasCompoundFormula(source) {
-  return /(?:基本保险金额|基本保额|有效保险金额)?[×xX*]\s*(?:[（(]\s*1\s*[+＋]\s*3\.5%\s*[）)]|1\.035)\s*\^\s*[（(]?\s*n\s*-\s*1\s*[）)]?/u.test(compact(source));
+function formatRate(value) {
+  const rounded = Math.round(value * 10000) / 10000;
+  return String(rounded).replace(/\.0+$/u, '').replace(/(\.\d*?)0+$/u, '$1');
+}
+
+function compoundFormulaRates(source) {
+  const content = compact(source);
+  const rates = [];
+  const formula = /[×xX*](?:[（(]1[+＋]([0-9]+(?:\.[0-9]+)?)%[）)]|1\.(\d+))\^\(?n-1\)?/gu;
+  for (const match of content.matchAll(formula)) {
+    if (match[1]) {
+      rates.push(formatRate(Number(match[1])));
+      continue;
+    }
+    if (match[2]) {
+      const scalar = Number(`1.${match[2]}`);
+      if (Number.isFinite(scalar) && scalar > 1) rates.push(formatRate((scalar - 1) * 100));
+    }
+  }
+  return [...new Set(rates)];
+}
+
+function escapeRegExp(value) {
+  return text(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function evaluateIncrementalFormula({ category, source, summary, issues }) {
-  if (category !== 'incremental_whole_life' || !hasCompoundFormula(source)) return;
+  const rates = compoundFormulaRates(source);
+  if (category !== 'incremental_whole_life' || !rates.length) return;
 
   const allSummary = joinedText(summary);
-  if (!/(?:3\.5%|1\.035)/u.test(allSummary)) {
-    issues.push({ code: 'compound_growth_rate_missing', keyword: '3.5%' });
+  for (const rate of rates) {
+    if (!new RegExp(`${escapeRegExp(rate)}%`, 'u').test(allSummary)) {
+      issues.push({ code: 'compound_growth_rate_missing', keyword: `${rate}%` });
+    }
   }
   if (!/(?:复利|递增|逐年增长)/u.test(allSummary)) {
     issues.push({ code: 'compound_growth_not_explained', keyword: '复利递增' });
@@ -241,7 +274,9 @@ function evaluateIncrementalFormula({ category, source, summary, issues }) {
     issues.push({ code: 'compound_growth_basis_missing', keyword: '有效保险金额' });
   }
 
-  const confusedWithCashValue = /(?:现金价值|收益|回报|收益率).{0,12}(?:3\.5%|复利|递增)|(?:3\.5%|复利|递增).{0,12}(?:现金价值|收益|回报|收益率)/u.test(allSummary)
+  const ratePattern = rates.map(escapeRegExp).join('|');
+  const growthPattern = `(?:${ratePattern}%|复利|递增)`;
+  const confusedWithCashValue = new RegExp(`(?:现金价值|收益|回报|收益率).{0,12}${growthPattern}|${growthPattern}.{0,12}(?:现金价值|收益|回报|收益率)`, 'u').test(allSummary)
     && !/(?:不等于|不是|不代表|并非|非收益|非保证收益|不保证收益|不等同)/u.test(allSummary);
   if (confusedWithCashValue) {
     issues.push({ code: 'compound_growth_confused_with_cash_value_or_return', keyword: '复利递增' });
@@ -249,14 +284,13 @@ function evaluateIncrementalFormula({ category, source, summary, issues }) {
 }
 
 function evaluateUnsupportedClaims({ source, summary, issues }) {
-  const missing = missingText(summary);
   for (const item of normalizeArray(summary.responsibilities)) {
-    const claimText = [item?.title, item?.plainText, item?.triggerCondition, item?.paymentRule].map(text).join(' ');
+    const title = text(item?.title);
+    const claimText = [title, item?.plainText, item?.triggerCondition, item?.paymentRule].map(text).join(' ');
     if (!claimText) continue;
     for (const rule of UNSUPPORTED_RESPONSIBILITY_RULES) {
       if (!includesAny(claimText, rule.claimPatterns)) continue;
       if (includesAny(source, rule.sourcePatterns)) continue;
-      if (includesAny(missing, rule.claimPatterns)) continue;
       issues.push({ code: 'unsupported_responsibility_claim', keyword: rule.keyword, title: text(item?.title) });
     }
   }
