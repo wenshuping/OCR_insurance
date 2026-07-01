@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import {
@@ -46,6 +47,12 @@ test('parseBackfillArgs rejects unsupported summary versions', () => {
     parseBackfillArgs(['--version', 'customer-summary-v22-structured-rag']).summaryVersion,
     'customer-summary-v22-structured-rag',
   );
+});
+
+test('parseBackfillArgs rejects invalid limits', () => {
+  assert.throws(() => parseBackfillArgs(['--limit', '0']), /--limit must be a positive integer/);
+  assert.throws(() => parseBackfillArgs(['--limit', '-1']), /--limit must be a positive integer/);
+  assert.throws(() => parseBackfillArgs(['--limit', 'abc']), /--limit must be a positive integer/);
 });
 
 test('selectBackfillProducts deduplicates by company and product name', () => {
@@ -121,11 +128,48 @@ test('backfill dry-run returns empty report when database is missing without ope
   await assert.rejects(fs.stat(missingDbPath), /ENOENT/);
 });
 
+test('backfill dry-run does not initialize an existing empty database file', async () => {
+  let storeFactoryCalls = 0;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'customer-summary-empty-db-'));
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  await fs.writeFile(dbPath, '');
+
+  try {
+    const before = await fs.stat(dbPath);
+    const report = await backfillProductCustomerResponsibilitySummaries({
+      dbPath,
+      dryRun: true,
+      storeFactory: async () => {
+        storeFactoryCalls += 1;
+        throw new Error('storeFactory should not be called');
+      },
+    });
+    const after = await fs.stat(dbPath);
+
+    assert.equal(storeFactoryCalls, 0);
+    assert.equal(report.databaseUninitialized, true);
+    assert.equal(report.total, 0);
+    assert.equal(before.size, 0);
+    assert.equal(after.size, 0);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('backfill dry-run reports candidates without calling generator', async () => {
   let generateCalls = 0;
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'customer-summary-backfill-'));
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
-  await fs.writeFile(dbPath, '');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE app_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT INTO app_meta (key, value)
+    VALUES ('state_initialized_at', '2026-07-01T00:00:00.000Z');
+  `);
+  db.close();
   const store = {
     async load() {
       return {

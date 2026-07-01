@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 
 import { generateProductCustomerResponsibilitySummary } from '../server/product-customer-responsibility-summary.service.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
@@ -19,9 +20,10 @@ function readValue(argv, index, flag) {
   return value;
 }
 
-function parseLimit(value) {
+function parseLimit(value, flag = 'limit') {
   const limit = Number(value);
-  return Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 50;
+  if (Number.isInteger(limit) && limit > 0) return limit;
+  throw new Error(`${flag} must be a positive integer`);
 }
 
 function resolveSummaryVersion(value) {
@@ -36,6 +38,32 @@ async function fileExists(filePath) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function inspectDryRunDatabase(dbPath) {
+  if (!(await fileExists(dbPath))) return { ok: false, databaseMissing: true };
+  let db = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const hasAppMeta = db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'app_meta'
+      LIMIT 1
+    `).get();
+    if (!hasAppMeta) return { ok: false, databaseUninitialized: true };
+    const initialized = db.prepare(`
+      SELECT value
+      FROM app_meta
+      WHERE key = 'state_initialized_at'
+      LIMIT 1
+    `).get()?.value;
+    return text(initialized) ? { ok: true } : { ok: false, databaseUninitialized: true };
+  } catch {
+    return { ok: false, databaseUninitialized: true };
+  } finally {
+    if (db) db.close();
   }
 }
 
@@ -68,7 +96,7 @@ export function parseBackfillArgs(argv = process.argv.slice(2)) {
       args.summaryVersion = resolveSummaryVersion(readValue(argv, index, arg));
       index += 1;
     } else if (arg === '--limit') {
-      args.limit = parseLimit(readValue(argv, index, arg));
+      args.limit = parseLimit(readValue(argv, index, arg), arg);
       index += 1;
     } else if (arg === '--company') {
       args.company = text(readValue(argv, index, arg));
@@ -123,13 +151,15 @@ export async function backfillProductCustomerResponsibilitySummaries({
   generateSummary = generateProductCustomerResponsibilitySummary,
 } = {}) {
   const resolvedSummaryVersion = resolveSummaryVersion(summaryVersion);
-  if (dryRun && !(await fileExists(dbPath))) {
+  const dryRunDatabase = dryRun ? await inspectDryRunDatabase(dbPath) : { ok: true };
+  if (dryRun && !dryRunDatabase.ok) {
     return {
       dbPath,
       summaryVersion: resolvedSummaryVersion,
       category,
       dryRun: true,
-      databaseMissing: true,
+      databaseMissing: Boolean(dryRunDatabase.databaseMissing),
+      databaseUninitialized: Boolean(dryRunDatabase.databaseUninitialized),
       total: 0,
       generated: 0,
       failed: 0,
@@ -154,6 +184,7 @@ export async function backfillProductCustomerResponsibilitySummaries({
       category,
       dryRun: Boolean(dryRun),
       databaseMissing: false,
+      databaseUninitialized: false,
       total: products.length,
       generated: 0,
       failed: 0,
