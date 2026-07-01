@@ -65,6 +65,7 @@ function normalizeText(value) {
     .normalize('NFKC')
     .replace(/\r\n?/gu, '\n')
     .replace(/[\u00a0\u3000]+/gu, ' ')
+    .replace(/第\s*([一二三四五六七八九十百千万零〇两\d]+)\s*条/gu, '第$1条')
     .replace(/[ \t]+/gu, ' ')
     .replace(new RegExp(`([。；;])\\s*(${LINE_HEADING_PREFIX}${HEADING_JOINER}(?:保险责任|${NEXT_HEADING_TITLES.join('|')}))`, 'gu'), '$1\n$2')
     .replace(/\n[ \t]+/gu, '\n')
@@ -148,7 +149,7 @@ function findBareLineHeading(source, title, from = 0) {
 
 function findInlineBareResponsibilityHeading(source, from = 0) {
   const slice = source.slice(from);
-  const match = /(^|\n)\s*保险责任(?:\s+|[:：])(?=在本合同|[^。\n]{0,120}(?:承担保险责任|保险金))/u.exec(slice);
+  const match = /(^|\n)\s*保险责任(?:\s+|[:：])(?=在\s*本\s*合同|在\s*保险合同|[（(]?[一二三四五六七八九十\d]+[）)、.．]\s*|本合同(?:的)?保险责任\s*分[^。\n]{0,30}责任|投保人[^。\n]{0,100}选择[^。\n]{0,80}保险责任|[^。\n]{0,120}选择投保(?:以下)?一项或多项[^。\n]{0,20}保险责任|[^。\n]{0,220}在\s*(?:本\s*)?(?:合同|保险合同)[^。\n]{0,120}承担[^。\n]{0,20}保险责任|[^。\n]{0,120}(?:承担保险责任|保险金))/u.exec(slice);
   if (!match) return -1;
   return from + match.index + match[0].search(/保险责任/u);
 }

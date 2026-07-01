@@ -51,7 +51,7 @@ test('extractStructuredResponsibilitySections accepts official bare responsibili
   const result = extractStructuredResponsibilitySections({
     productCategory: 'incremental_whole_life',
     records: [{
-      title: '荣耀鑫享赢家版条款',
+      title: '官方终身寿险条款',
       pageText: [
         '保险责任 在本合同保险期间内，我们按下列规定承担保险责任： 身故或身体全残保险金',
         '被保险人身故或身体全残时，按已交保险费×给付系数、现金价值、基本保险金额×（1+3%）（n-1）三者最大者给付。',
@@ -64,6 +64,104 @@ test('extractStructuredResponsibilitySections accepts official bare responsibili
   assert.match(result.mainResponsibilityText, /保险责任|身故或身体全残保险金/u);
   assert.match(result.mainResponsibilityText, /1\+3%/u);
   assert.match(result.mainResponsibilityText, /给付系数/u);
+});
+
+test('extractStructuredResponsibilitySections accepts official responsibility title before responsibility groups', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      title: '官方分层责任条款',
+      pageText: [
+        '保险责任 本合同的保险责任分为基本责任和可选责任。',
+        '在本合同保险期间内，我们根据您的选择承担下列保险责任：',
+        '1.基本责任',
+        '关爱金 被保险人于约定保单周年日生存，我们按基本保险金额给付关爱金。',
+        '身故保险金 被保险人身故，我们按约定给付身故保险金。',
+        '2.可选责任',
+        '祝寿金 被保险人于约定年龄生存，我们按约定给付祝寿金。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /基本责任/u);
+  assert.match(result.mainResponsibilityText, /可选责任/u);
+  assert.match(result.mainResponsibilityText, /关爱金/u);
+  assert.match(result.mainResponsibilityText, /祝寿金/u);
+});
+
+test('extractStructuredResponsibilitySections accepts spaced official article heading', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'medical',
+    records: [{
+      title: '官方医疗险条款',
+      pageText: [
+        '第五条 保险金额',
+        '保险责任的保险金额按约定计算。',
+        '第 六 条 保险责任',
+        '本合同保险责任分为基本责任和可选责任。',
+        '在本合同保险期间内，我们根据您的选择按下列规定承担相应保险责任：',
+        '（一）等待期 首次投保时设有等待期。',
+        '（二）医疗费用保险金 按约定给付医疗费用保险金。',
+        '第七条 责任免除',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /第六条 保险责任/u);
+  assert.match(result.mainResponsibilityText, /医疗费用保险金/u);
+  assert.doesNotMatch(result.mainResponsibilityText, /责任免除/u);
+});
+
+test('extractStructuredResponsibilitySections accepts inline responsibility title before selectable duties', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'nursing',
+    records: [{
+      title: '官方护理险条款',
+      pageText: [
+        '保险责任 投保人可选择投保一项或多项保险责任。',
+        '在本合同保险期间内，本公司根据投保人的选择，按下列规定承担相应保险责任：',
+        '1.护理津贴保险金 被保险人达到护理状态，本公司按护理天数给付护理津贴保险金。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /护理津贴保险金/u);
+});
+
+test('extractStructuredResponsibilitySections accepts inline responsibility title before numbered duties', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'medical',
+    records: [{
+      title: '官方专项医疗险条款',
+      pageText: [
+        '保险责任 1.等待期 自本合同生效之日起30日为等待期。',
+        '2.特定医疗保险金 被保险人在等待期后确诊并接受治疗，本公司按约定给付特定医疗保险金。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /等待期/u);
+  assert.match(result.mainResponsibilityText, /特定医疗保险金/u);
+});
+
+test('extractStructuredResponsibilitySections accepts inline responsibility title before insurance contract period', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'medical',
+    records: [{
+      title: '官方医疗费用条款',
+      pageText: [
+        '保险责任 在保险合同保险期间内，被保险人在定点医疗机构诊疗，保险公司可依下列约定承担保险责任：',
+        '1.住院医疗保险责任 对合规住院医疗费用按约定给付。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /住院医疗保险责任/u);
 });
 
 test('extractStructuredResponsibilitySections bounds decimal responsibility chapter', () => {
