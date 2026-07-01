@@ -28,6 +28,7 @@ const URL_FIELDS = [
 const ARTICLE_NUMBER = '第[一二三四五六七八九十百千万零〇两\\d]+条';
 const DECIMAL_NUMBER = '\\d+(?:\\.\\d+)+';
 const LINE_HEADING_PREFIX = `(?:${ARTICLE_NUMBER}|${DECIMAL_NUMBER})`;
+const HEADING_JOINER = '\\s*[、:：.]?\\s*';
 const NEXT_HEADING_TITLES = [
   '责任免除',
   '本合同保障的疾病列表',
@@ -65,7 +66,7 @@ function normalizeText(value) {
     .replace(/\r\n?/gu, '\n')
     .replace(/[\u00a0\u3000]+/gu, ' ')
     .replace(/[ \t]+/gu, ' ')
-    .replace(new RegExp(`([^\\n])\\s*(${LINE_HEADING_PREFIX}\\s*(?:保险责任|${NEXT_HEADING_TITLES.join('|')}))`, 'gu'), '$1\n$2')
+    .replace(new RegExp(`([。；;])\\s*(${LINE_HEADING_PREFIX}${HEADING_JOINER}(?:保险责任|${NEXT_HEADING_TITLES.join('|')}))`, 'gu'), '$1\n$2')
     .replace(/\n[ \t]+/gu, '\n')
     .replace(/[ \t]+\n/gu, '\n')
     .replace(/\n{3,}/gu, '\n\n')
@@ -111,12 +112,17 @@ function buildRecordSources(records) {
 
 function headingRegex(title) {
   const escapedTitle = escapeRegExp(title);
-  return new RegExp(`(^|\\n)\\s*(?:${LINE_HEADING_PREFIX})\\s*${escapedTitle}\\s*(?:[:：]?\\s*)(?=\\n|$|[^。；;，,]{0,40})`, 'u');
+  return new RegExp(`(^|\\n)\\s*(?:${LINE_HEADING_PREFIX})${HEADING_JOINER}${escapedTitle}\\s*(?:[:：]?\\s*)(?=\\n|$|[^。；;，,]{0,40})`, 'u');
 }
 
 function looseHeadingRegex(title) {
   const escapedTitle = escapeRegExp(title);
-  return new RegExp(`(^|\\n)\\s*${escapedTitle}\\s*[:：]\\s*`, 'u');
+  return new RegExp(`(?:^|\\n|[。；;])\\s*${escapedTitle}\\s*[:：]\\s*`, 'u');
+}
+
+function bareLineHeadingRegex(title) {
+  const escapedTitle = escapeRegExp(title);
+  return new RegExp(`(^|\\n)\\s*${escapedTitle}\\s*$`, 'mu');
 }
 
 function findHeading(source, title, from = 0) {
@@ -133,6 +139,13 @@ function findLooseHeading(source, title, from = 0) {
   return from + match.index + match[0].search(new RegExp(escapeRegExp(title), 'u'));
 }
 
+function findBareLineHeading(source, title, from = 0) {
+  const slice = source.slice(from);
+  const match = bareLineHeadingRegex(title).exec(slice);
+  if (!match) return -1;
+  return from + match.index + match[0].search(new RegExp(escapeRegExp(title), 'u'));
+}
+
 function headingStartFromMatch(matchText) {
   const articleStart = matchText.search(new RegExp(`${LINE_HEADING_PREFIX}`, 'u'));
   if (articleStart >= 0) return articleStart;
@@ -141,16 +154,28 @@ function headingStartFromMatch(matchText) {
 
 function findNextHeading(source, from) {
   const titleAlternation = NEXT_HEADING_TITLES.map(escapeRegExp).join('|');
-  const regex = new RegExp(`(^|\\n)\\s*(?:(?:${LINE_HEADING_PREFIX})\\s*(?:${titleAlternation})|(?:责任免除|释义|保险金申请)\\s*[:：])`, 'u');
+  const regex = new RegExp(`(^|\\n)\\s*(?:(?:${LINE_HEADING_PREFIX})(?:${HEADING_JOINER})(?:[^\\n]{1,30})|(?:${titleAlternation})\\s*[:：])`, 'u');
   const slice = source.slice(from);
   const match = regex.exec(slice);
   if (!match) return -1;
   return from + match.index + headingStartFromMatch(match[0]);
 }
 
+function findLooseBoundary(source, from) {
+  const titleAlternation = NEXT_HEADING_TITLES.map(escapeRegExp).join('|');
+  const regex = new RegExp(`[。；;]\\s*(?:${titleAlternation})\\s*[:：]`, 'u');
+  const slice = source.slice(from);
+  const match = regex.exec(slice);
+  if (!match) return -1;
+  return from + match.index + match[0].search(new RegExp(`(?:${titleAlternation})`, 'u'));
+}
+
 function boundedSection(source, start, maxLength = 3000) {
   if (start < 0) return '';
-  const end = findNextHeading(source, start + 4);
+  const nextHeading = findNextHeading(source, start + 4);
+  const looseBoundary = findLooseBoundary(source, start + 4);
+  const candidates = [nextHeading, looseBoundary].filter((index) => index > start);
+  const end = candidates.length ? Math.min(...candidates) : -1;
   return compact(end > start ? source.slice(start, end) : source.slice(start, start + maxLength));
 }
 
@@ -160,6 +185,9 @@ function extractResponsibilityChapter(source) {
 
   const formalStart = findHeading(normalized, '保险责任');
   if (formalStart >= 0) return boundedSection(normalized, formalStart, 6000);
+
+  const bareStart = findBareLineHeading(normalized, '保险责任');
+  if (bareStart >= 0) return boundedSection(normalized, bareStart, 3000);
 
   const looseStart = findLooseHeading(normalized, '保险责任');
   if (looseStart >= 0) return boundedSection(normalized, looseStart, 3000);
@@ -177,6 +205,18 @@ function extractNamedSection(source, titles, maxLength = 1800) {
     if (looseStart >= 0) return boundedSection(normalized, looseStart, maxLength);
   }
   return '';
+}
+
+function extractNamedSections(source, titles, maxLength = 1800) {
+  const sections = [];
+  const normalized = normalizeText(source);
+  for (const title of titles) {
+    const section = extractNamedSection(normalized, [title], maxLength);
+    if (!section) continue;
+    if (sections.some((existing) => existing === section || existing.includes(section))) continue;
+    sections.push(section);
+  }
+  return sections;
 }
 
 function extractKeywordWindow(source, pattern, maxLength = 1200) {
@@ -210,8 +250,8 @@ function extractDiseaseListOverview(source) {
 }
 
 function extractOptionalResponsibility(source) {
-  return extractNamedSection(source, ['可选责任', '选择责任', '附加责任', '基本责任'], 2200)
-    || extractKeywordWindow(source, /可选责任|选择责任|附加责任|基本责任/u, 1600);
+  return extractNamedSection(source, ['可选责任', '选择责任', '附加责任'], 2200)
+    || extractKeywordWindow(source, /可选责任|选择责任|附加责任/u, 1600);
 }
 
 function extractDividendSection(source) {
@@ -220,8 +260,13 @@ function extractDividendSection(source) {
 }
 
 function extractAccountSection(source) {
-  return extractNamedSection(source, ['账户价值', '投资账户价值', '保单账户价值', '费用', '投资风险'], 2600)
-    || extractKeywordWindow(source, /账户价值|结算利率|最低保证利率|保证利率|初始费用|保单管理费|风险/u, 2200);
+  const sections = extractNamedSections(
+    source,
+    ['账户价值', '投资账户价值', '保单账户价值', '结算利率', '最低保证利率', '保证利率', '费用', '投资风险', '风险'],
+    1600,
+  );
+  if (sections.length) return sections.join('\n\n');
+  return extractKeywordWindow(source, /账户价值|结算利率|最低保证利率|保证利率|初始费用|保单管理费|风险/u, 2200);
 }
 
 function addSupplement(supplementSections, type, value) {

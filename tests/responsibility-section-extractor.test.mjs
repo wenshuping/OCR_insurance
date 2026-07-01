@@ -157,3 +157,140 @@ test('extractStructuredResponsibilitySections keeps universal account rate fee r
   assert.match(result.supplementSections[0].text, /费用/u);
   assert.match(result.supplementSections[0].text, /风险/u);
 });
+
+test('extractStructuredResponsibilitySections supports inline loose responsibility clause', () => {
+  const result = extractStructuredResponsibilitySections({
+    records: [{
+      title: '产品简介',
+      pageText: '产品简介。保险责任：本公司承担身故保险金责任。责任免除：既往症不承担责任。',
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /身故保险金/u);
+  assert.doesNotMatch(result.mainResponsibilityText, /既往症/u);
+});
+
+test('extractStructuredResponsibilitySections rejects prose references to article responsibility', () => {
+  const result = extractStructuredResponsibilitySections({
+    records: [{
+      pageText: '产品简介。本产品保障详见本合同第五条保险责任约定，具体以条款为准。',
+    }],
+  });
+
+  assert.equal(result.quality.status, 'needs_extraction_review');
+  assert.equal(result.mainResponsibilityText, '');
+  assert.deepEqual(result.quality.warnings, ['responsibility_chapter_missing']);
+});
+
+test('extractStructuredResponsibilitySections stops at unknown article headings', () => {
+  const result = extractStructuredResponsibilitySections({
+    records: [{
+      pageText: [
+        '第五条 保险责任',
+        '本公司承担身故保险金责任。',
+        '第六条 保险期间',
+        '本合同保险期间为终身。',
+        '第七条 责任免除',
+        '免责内容。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /身故保险金/u);
+  assert.doesNotMatch(result.mainResponsibilityText, /保险期间/u);
+});
+
+test('extractStructuredResponsibilitySections supports bare and punctuated OCR headings', () => {
+  const bare = extractStructuredResponsibilitySections({
+    records: [{
+      pageText: [
+        '保险责任',
+        '本公司承担满期保险金责任。',
+        '责任免除：免责内容。',
+      ].join('\n'),
+    }],
+  });
+  const punctuated = extractStructuredResponsibilitySections({
+    records: [{
+      pageText: [
+        '第六条、保险责任',
+        '本公司承担年金给付责任。',
+        '第七条：责任免除',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(bare.quality.status, 'complete');
+  assert.match(bare.mainResponsibilityText, /满期保险金/u);
+  assert.doesNotMatch(bare.mainResponsibilityText, /免责内容/u);
+  assert.equal(punctuated.quality.status, 'complete');
+  assert.match(punctuated.mainResponsibilityText, /年金给付/u);
+  assert.doesNotMatch(punctuated.mainResponsibilityText, /责任免除/u);
+});
+
+test('extractStructuredResponsibilitySections combines separate universal fee and risk chapters', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'investment_linked',
+    records: [{
+      pageText: [
+        '第五条 保险责任',
+        '本公司承担身故保险金责任。',
+        '第六条 账户价值',
+        '投资账户价值按资产评估结果计算。',
+        '第七条 结算利率',
+        '本产品不承诺最低保证利率。',
+        '第八条 费用',
+        '本公司收取初始费用、保单管理费和退保费用。',
+        '第九条 投资风险',
+        '投资账户收益存在波动风险，投保人承担投资风险。',
+        '第十条 责任免除',
+      ].join('\n'),
+    }],
+  });
+
+  const accountSupplement = result.supplementSections.find((section) => section.type === 'account_value');
+  assert.ok(accountSupplement);
+  assert.match(accountSupplement.text, /账户价值/u);
+  assert.match(accountSupplement.text, /结算利率/u);
+  assert.match(accountSupplement.text, /初始费用/u);
+  assert.match(accountSupplement.text, /投资风险/u);
+});
+
+test('extractStructuredResponsibilitySections skips annuity optional supplement without optional sections', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      pageText: [
+        '第五条 保险责任',
+        '本合同基本责任包括养老年金和身故保险金。',
+        '第六条 责任免除',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.equal(result.supplementSections.some((section) => section.type === 'optional_responsibility'), false);
+});
+
+test('extractStructuredResponsibilitySections returns deterministic source digest', () => {
+  const input = {
+    productCategory: 'participating_life',
+    records: [{
+      title: '分红险条款',
+      url: 'https://example.test/terms.pdf',
+      pageText: [
+        '第五条 保险责任',
+        '本公司承担身故保险金责任。',
+        '第六条 保单分红',
+        '红利分配是不确定的，红利不保证。',
+      ].join('\n'),
+    }],
+  };
+
+  const first = extractStructuredResponsibilitySections(input);
+  const second = extractStructuredResponsibilitySections(input);
+
+  assert.equal(first.sourceSectionsDigest, second.sourceSectionsDigest);
+});
