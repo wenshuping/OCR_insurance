@@ -394,10 +394,7 @@ export function buildCustomerResponsibilitySourceDigest({ cards = [], indicators
   return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
-export function validateCustomerResponsibilitySummaryJson(
-  summary,
-  { allowedTitles = new Set(), allowedSourceUrls = new Set(), allowOfficialText = false } = {},
-) {
+export function validateCustomerResponsibilitySummaryJson(summary) {
   const sourceSummary = summary?.summary || summary?.result || summary?.data || summary;
   const responsibilities = normalizeArray(sourceSummary?.mainResponsibilities)
     .concat(normalizeArray(sourceSummary?.responsibilities))
@@ -493,6 +490,7 @@ function officialSummaryPromptItem(record = {}) {
 function officialAnalysisSources(analysis = {}) {
   return normalizeArray(analysis.sources)
     .map((source) => ({
+      source,
       title: text(source?.title || source?.name || source?.url),
       url: sourceUrlFrom(source),
       snippet: text(source?.snippet || source?.evidenceLabel || source?.description),
@@ -501,19 +499,50 @@ function officialAnalysisSources(analysis = {}) {
     .slice(0, 6);
 }
 
+const OFFICIAL_ANALYSIS_DOMAINS = [
+  'newchinalife.com',
+  'pingan.com',
+  'chinalife.com',
+  'cpic.com',
+  'picc.com',
+];
+
+function hasOfficialAnalysisDomain(value) {
+  const url = text(value);
+  if (!url) return false;
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return OFFICIAL_ANALYSIS_DOMAINS.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
+
+function isOfficialAnalysisSource(source = {}) {
+  const evidenceLevel = text(source.evidenceLevel || source.evidence_level).toLowerCase();
+  const sourceType = text(source.sourceType || source.source_type || source.type).toLowerCase();
+  return source.official === true
+    || evidenceLevel === 'insurer_official'
+    || sourceType === 'insurer_official'
+    || sourceType === 'official'
+    || hasOfficialAnalysisDomain(sourceUrlFrom(source));
+}
+
 function sourceRecordsFromOfficialAnalysis(analysis = {}, { company, productName } = {}) {
   const coverageText = normalizeArray(analysis.coverageTable)
     .map((row) => [row?.coverageType, row?.scenario, row?.payout, row?.note].map(text).filter(Boolean).join('：'))
     .filter(Boolean)
     .join('\n');
-  return officialAnalysisSources(analysis).map((source) => ({
-    company,
-    productName,
-    title: source.title || productName,
-    url: source.url,
-    pageText: ['第五条 保险责任', source.snippet, coverageText].filter(Boolean).join('\n'),
-    official: true,
-  }));
+  return officialAnalysisSources(analysis)
+    .filter((source) => isOfficialAnalysisSource(source.source))
+    .map((source) => ({
+      company,
+      productName,
+      title: source.title || productName,
+      url: source.url,
+      pageText: ['第五条 保险责任', source.snippet, coverageText].filter(Boolean).join('\n'),
+      official: true,
+    }));
 }
 
 function responsibilityCardsFromOfficialAnalysis(analysis = {}, { company, productName } = {}) {
@@ -722,22 +751,6 @@ function safeCustomerSummary(row = {}) {
     requiredPolicyFields: uniqueStrings(summary.requiredPolicyFields),
     sourceUrls: uniqueStrings(summary.sourceUrls),
   };
-}
-
-function sourceUrlSet({ cards, records, indicators }) {
-  return new Set([
-    ...normalizeArray(cards).map(sourceUrlFrom),
-    ...normalizeArray(records).map(sourceUrlFrom),
-    ...normalizeArray(indicators).map(sourceUrlFrom),
-  ].filter(Boolean));
-}
-
-function titleSet(cards, indicators, records = []) {
-  return new Set([
-    ...normalizeArray(cards).map((card) => text(card.title)),
-    ...normalizeArray(indicators).map((indicator) => text(indicator.liability || indicator.title || indicator.name)),
-    ...officialResponsibilityClausesFromRecords(records).map((clause) => text(clause.title)),
-  ].filter(Boolean));
 }
 
 function requiredFieldsFromText(value) {
@@ -1074,85 +1087,6 @@ function noticesFromOfficialRecords(records, items) {
     notices.push('理赔类责任需要结合实际出险原因、出险日期和条款约定判断。');
   }
   return uniqueStrings(notices);
-}
-
-function buildFallbackSummaryFromOfficialText({ company, productName, records = [] }) {
-  const officialTexts = officialResponsibilityTextsFromRecords(records);
-  const officialText = officialTexts.join('\n\n');
-  const mainResponsibilities = officialText ? [{
-    title: '保险责任正文',
-    plainText: truncateText(officialText, OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT),
-    howItPays: '',
-    requiredPolicyFields: requiredFieldsFromText(officialText),
-  }] : [];
-  return {
-    company,
-    productName,
-    headline: '',
-    mainResponsibilities,
-    notices: noticesFromOfficialRecords(records, mainResponsibilities),
-    requiredPolicyFields: uniqueStrings(mainResponsibilities.flatMap((item) => item.requiredPolicyFields)),
-    sourceUrls: uniqueStrings([
-      ...normalizeArray(records).map(sourceUrlFrom),
-    ]),
-  };
-}
-
-async function generateValidatedCustomerSummaryWithRetry({
-  generateWithDeepSeek,
-  prompt,
-  company,
-  productName,
-  cards,
-  indicators,
-  records,
-  attempts = 2,
-}) {
-  let lastError = null;
-  const maxAttempts = Math.max(1, attempts);
-  const logRealDeepSeekCall = generateWithDeepSeek === callDeepSeekForCustomerResponsibilitySummary;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const rawSummary = await generateWithDeepSeek({ prompt, company, productName, cards, indicators, records });
-      const normalizedSummary = enrichSummaryWithCompoundGrowth(validateCustomerResponsibilitySummaryJson(rawSummary, {
-        allowedTitles: titleSet(cards, indicators, records),
-        allowedSourceUrls: sourceUrlSet({ cards, records, indicators }),
-      }), { cards, indicators, records });
-      if (logRealDeepSeekCall) {
-        logDeepSeekCustomerSummary('DeepSeek validated summary shape', {
-          company,
-          productName,
-          attempt,
-          headlineChars: text(normalizedSummary.headline).length,
-          responsibilityCount: normalizeArray(normalizedSummary.mainResponsibilities).length,
-          responsibilityTitles: normalizeArray(normalizedSummary.mainResponsibilities)
-            .map((item) => text(item?.title))
-            .filter(Boolean)
-            .slice(0, 20),
-          noticeCount: normalizeArray(normalizedSummary.notices).length,
-          sourceUrlCount: normalizeArray(normalizedSummary.sourceUrls).length,
-        });
-      }
-      if (!hasCustomerSummaryContent(normalizedSummary)) {
-        const error = new Error('DeepSeek returned an empty customer summary');
-        error.code = 'CUSTOMER_SUMMARY_EMPTY';
-        error.status = 422;
-        throw error;
-      }
-      return normalizedSummary;
-    } catch (error) {
-      lastError = error;
-      if (attempt >= maxAttempts) break;
-      console.warn('[customer-responsibility-summary] DeepSeek request failed; retrying customer summary generation', {
-        company,
-        productName,
-        attempt,
-        code: text(error?.code) || 'CUSTOMER_SUMMARY_RETRY',
-        message: text(error?.message),
-      });
-    }
-  }
-  throw lastError;
 }
 
 function buildSummaryContext({ productKey, company, productName, cards, indicators, records }) {
@@ -1523,6 +1457,7 @@ export async function generateProductCustomerResponsibilitySummary({
     sourceDigest,
     sourceSections,
     qualityIssues: [],
+    rawPreview: JSON.stringify(rawSummary),
     modelName: resolvedModelName,
     modelTier: routing.modelTier,
     now,

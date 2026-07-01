@@ -353,7 +353,7 @@ test('generateProductCustomerResponsibilitySummary does not cache incomplete Dee
   assert.equal(runs.at(-1)?.status, 'needs_model_review');
 });
 
-test.skip('generateProductCustomerResponsibilitySummary accepts Chinese section JSON from DeepSeek', async () => {
+test('generateProductCustomerResponsibilitySummary accepts structured Chinese responsibility text in v22 schema', async () => {
   let saved = null;
   const result = await generateProductCustomerResponsibilitySummary({
     state: baseState(),
@@ -365,36 +365,32 @@ test.skip('generateProductCustomerResponsibilitySummary accepts Chinese section 
       return row;
     },
     generateWithDeepSeek: async () => ({
-      产品定位: '这是一款年金保险，主要提供生存领取和身故保障。',
-      主要保险责任: [
-        {
-          责任名称: '关爱年金',
-          内容: '被保险人生存至约定日期时，保险公司按条款给付关爱年金。',
-          给付方式: '首次按基本责任保险费的 10% 给付，之后按 1% 给付。',
-        },
-        {
-          名称: '生存保险金',
-          说明: '被保险人生存至约定日期时，保险公司按基本责任保险金额的 9% 给付。',
-        },
-      ],
-      主要功能: ['提供长期生存领取'],
-      适合解决的问题: ['养老现金流规划'],
-      不适合解决的问题: ['医疗费用报销'],
-      免责或风险提示: ['分红不保证'],
-      来源链接: [sourceUrl],
+      productCategory: 'ordinary_whole_life',
+      categoryLabel: '终身寿险',
+      headline: '这是一份以身故或身体全残保障为主的终身寿险。',
+      responsibilities: [{
+        title: '身故或身体全残保险金',
+        plainText: '被保险人身故或身体全残时，保险公司按条款约定给付保险金。',
+        triggerCondition: '身故或身体全残。',
+        paymentRule: '金额需要结合已交保险费、基本保险金额、出险年龄和保单年度计算。',
+        calculationStatus: 'claim_contingent',
+      }],
+      productFunctions: [],
+      importantNotes: ['具体金额以条款和保单为准。'],
+      missingOrUnclear: [],
     }),
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.source, 'generated');
   assert.equal(saved?.modelProvider, 'deepseek');
-  assert.equal(result.summary.headline, '这是一款年金保险，主要提供生存领取和身故保障。');
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['关爱年金', '生存保险金']);
-  assert.match(result.summary.mainResponsibilities[0].howItPays, /10%/u);
-  assert.match(result.summary.notices.join('\n'), /分红不保证/u);
+  assert.equal(result.summary.headline, '这是一份以身故或身体全残保障为主的终身寿险。');
+  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
+  assert.match(result.summary.mainResponsibilities[0].howItPays, /已交保险费/u);
+  assert.match(result.summary.notices.join('\n'), /条款和保单/u);
 });
 
-test.skip('generateProductCustomerResponsibilitySummary flattens nested Chinese responsibility sections from DeepSeek', async () => {
+test('generateProductCustomerResponsibilitySummary accepts English-keyed structured v22 JSON', async () => {
   const result = await generateProductCustomerResponsibilitySummary({
     state: baseState(),
     db: dbWithCards(),
@@ -402,94 +398,94 @@ test.skip('generateProductCustomerResponsibilitySummary flattens nested Chinese 
     findSummary: async () => null,
     persistSummary: async (row) => row,
     generateWithDeepSeek: async () => ({
-      产品定位: '这是一款分红型年金保险，主要提供长期生存领取。',
-      主要保险责任: {
-        基本责任: {
-          关爱年金: '犹豫期结束次日给付首次保费的10%；之后每年给付首次保费的1%。',
-          生存保险金: '约定期间按基本责任保险金额的9%给付。',
-        },
-        可选责任: {
-          祝寿金: '60岁生存时给付可选责任保险金额。',
-        },
-      },
-      免责或风险提示: '分红是不确定利益，可能为零。',
+      productCategory: 'ordinary_whole_life',
+      categoryLabel: '终身寿险',
+      headline: '终身寿险，提供身故或身体全残保障。',
+      responsibilities: [{
+        title: '身故或身体全残保险金',
+        plainText: '被保险人在保险期间内身故或身体全残，按约定给付保险金。',
+        triggerCondition: '身故或身体全残。',
+        paymentRule: '结合已交保险费、基本保险金额、出险年龄和保单年度计算。',
+        calculationStatus: 'claim_contingent',
+      }],
+      productFunctions: [],
+      importantNotes: ['具体金额以正式保险合同为准。'],
+      missingOrUnclear: [],
     }),
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['关爱年金', '生存保险金', '祝寿金']);
-  assert.match(result.summary.mainResponsibilities[0].plainText, /10%/u);
-  assert.match(result.summary.notices.join('\n'), /分红/u);
+  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
+  assert.match(result.summary.mainResponsibilities[0].plainText, /保险期间/u);
 });
 
-test.skip('generateProductCustomerResponsibilitySummary extracts titles from grouped Chinese responsibility text', async () => {
+test('generateProductCustomerResponsibilitySummary preserves structured age condition details', async () => {
+  let saved = null;
+  const state = baseState();
+  state.knowledgeRecords = [{
+    ...state.knowledgeRecords[0],
+    pageText: [
+      '第五条 保险责任',
+      '身故或身体全残保险金 被保险人身故或身体全残时，18周岁前给付已交保险费，18周岁后按基本保险金额、已交保险费和现金价值约定规则给付。',
+    ].join(' '),
+  }];
   const result = await generateProductCustomerResponsibilitySummary({
-    state: baseState(),
+    state,
     db: dbWithCards(),
     input: { company, name: productName },
     findSummary: async () => null,
-    persistSummary: async (row) => row,
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
+    },
     generateWithDeepSeek: async () => ({
-      产品定位: '这是一款分红型年金保险，主要提供长期生存领取。',
-      主要保险责任: {
-        基本责任: [
-          '关爱年金：犹豫期结束次日给付首次保费的10%；之后每年给付首次保费的1%。',
-          '生存保险金：约定期间按基本责任保险金额的9%给付。',
-        ],
-        可选责任: [
-          '祝寿金：60岁生存时给付可选责任保险金额。',
-        ],
-      },
+      productCategory: 'ordinary_whole_life',
+      categoryLabel: '终身寿险',
+      headline: '终身寿险，提供身故或身体全残保障。',
+      responsibilities: [{
+        title: '身故或身体全残保险金',
+        plainText: '18周岁前给付已交保险费；18周岁后按基本保险金额、已交保险费和现金价值约定规则给付。',
+        triggerCondition: '被保险人身故或身体全残。',
+        paymentRule: '按年龄段和保单信息分情形计算。',
+        calculationStatus: 'claim_contingent',
+      }],
+      productFunctions: [],
+      importantNotes: [],
+      missingOrUnclear: [],
     }),
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['关爱年金', '生存保险金', '祝寿金']);
-  assert.match(result.summary.mainResponsibilities[0].plainText, /10%/u);
+  assert.equal(result.source, 'generated');
+  assert.equal(saved?.modelProvider, 'deepseek');
+  assert.match(result.summary.mainResponsibilities[0].plainText, /18周岁前/u);
 });
 
-test.skip('generateProductCustomerResponsibilitySummary extracts titles when DeepSeek uses category as item title', async () => {
+test('generateProductCustomerResponsibilitySummary rejects loose legacy Chinese responsibility shapes in v22', async () => {
+  const runs = [];
   const result = await generateProductCustomerResponsibilitySummary({
     state: baseState(),
     db: dbWithCards(),
     input: { company, name: productName },
     findSummary: async () => null,
-    persistSummary: async (row) => row,
+    persistSummary: async () => {
+      throw new Error('legacy loose output should not persist ready summary');
+    },
+    persistGenerationRun: async (run) => {
+      runs.push(run);
+      return run;
+    },
     generateWithDeepSeek: async () => ({
-      产品定位: '这是一款分红型年金保险，主要提供长期生存领取。',
-      主要保险责任: [
-        { 标题: '基本责任', 内容: '关爱年金：犹豫期结束次日给付首次保费的10%；之后每年给付首次保费的1%。' },
-        { 标题: '基本责任', 内容: '生存保险金：约定期间按基本责任保险金额的9%给付。' },
-        { 标题: '可选责任', 内容: '祝寿金：60岁生存时给付可选责任保险金额。' },
-      ],
-    }),
-  });
-
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['关爱年金', '生存保险金', '祝寿金']);
-  assert.match(result.summary.mainResponsibilities[0].plainText, /10%/u);
-});
-
-test.skip('generateProductCustomerResponsibilitySummary extracts titles from main responsibility category items', async () => {
-  const result = await generateProductCustomerResponsibilitySummary({
-    state: baseState(),
-    db: dbWithCards(),
-    input: { company, name: productName },
-    findSummary: async () => null,
-    persistSummary: async (row) => row,
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险，提供身故或身体全残保障。',
+      产品定位: '终身寿险。',
       主要保险责任: [
         { 标题: '主要保险责任', 内容: '身故或身体全残保险金：按条款约定给付。' },
-        { 标题: '主要保险责任', 内容: '特定公共交通工具意外伤害身故或身体全残保险金：额外给付基本保额。' },
       ],
     }),
   });
 
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), [
-    '身故或身体全残保险金',
-    '特定公共交通工具意外伤害身故或身体全残保险金',
-  ]);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'needs_model_review');
+  assert.equal(runs.at(-1)?.status, 'needs_model_review');
 });
 
 test('generateProductCustomerResponsibilitySummary returns model review when DeepSeek returns empty', async () => {
@@ -566,208 +562,6 @@ test('generateProductCustomerResponsibilitySummary returns model review when Dee
   assert.equal(result.status, 'needs_model_review');
   assert.equal(saved, null);
   assert.equal(runs.at(-1)?.status, 'needs_model_review');
-});
-
-test.skip('generateProductCustomerResponsibilitySummary preserves DeepSeek age condition titles', async () => {
-  let saved = null;
-  const state = baseState();
-  state.knowledgeRecords = [{
-    ...state.knowledgeRecords[0],
-    pageText: [
-      '第五条 保险责任',
-      '1.身故保险金 18周岁前返还已交保险费；18周岁后给付基本保险金额。',
-      '2.身体全残保险金 18周岁前返还已交保险费；18周岁后给付基本保险金额。',
-    ].join(' '),
-  }];
-  const result = await generateProductCustomerResponsibilitySummary({
-    state,
-    db: dbWithCards(),
-    input: { company, name: productName },
-    findSummary: async () => null,
-    persistSummary: async (row) => {
-      saved = row;
-      return row;
-    },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险，主要提供身故或身体全残保障。',
-      主要保险责任: [
-        { 标题: '18周岁前', 内容: '返还已交保险费' },
-        { 标题: '18周岁后', 内容: '基本保险金额' },
-        { 标题: '不确定利益', 内容: '分红不保证，可能为零。' },
-      ],
-    }),
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.source, 'generated');
-  assert.equal(saved?.modelProvider, 'deepseek');
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['18周岁前', '18周岁后', '不确定利益']);
-});
-
-test.skip('generateProductCustomerResponsibilitySummary preserves DeepSeek policy-anniversary condition titles', async () => {
-  let saved = null;
-  const state = baseState();
-  state.knowledgeRecords = [{
-    ...state.knowledgeRecords[0],
-    pageText: [
-      '第五条 保险责任',
-      '身故或身体全残保险金 被保险人身故或身体全残，我们按合同约定给付身故或身体全残保险金。',
-    ].join(' '),
-  }];
-  const result = await generateProductCustomerResponsibilitySummary({
-    state,
-    db: dbWithCards(),
-    input: { company, name: productName },
-    findSummary: async () => null,
-    persistSummary: async (row) => {
-      saved = row;
-      return row;
-    },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险，提供身故或身体全残保障。',
-      主要保险责任: [
-        { 标题: '180日内因疾病', 内容: '给付已交保险费。' },
-        { 标题: '18周岁保单周年日前', 内容: '已交保险费与现金价值二者较大者。' },
-        { 标题: '18周岁保单周年日后且交费期间届满后', 内容: '三者较大者。' },
-        { 标题: '给付系数', 内容: '按年龄确定。' },
-      ],
-    }),
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.source, 'generated');
-  assert.equal(saved?.modelProvider, 'deepseek');
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), [
-    '180日内因疾病',
-    '18周岁保单周年日前',
-    '18周岁保单周年日后且交费期间届满后',
-    '给付系数',
-  ]);
-});
-
-test.skip('generateProductCustomerResponsibilitySummary preserves DeepSeek generic responsibility labels', async () => {
-  let saved = null;
-  const state = baseState();
-  state.knowledgeRecords = [{
-    ...state.knowledgeRecords[0],
-    pageText: [
-      '第五条 保险责任',
-      '身故或身体全残保险金 被保险人身故或身体全残，我们按合同约定给付身故或身体全残保险金。',
-    ].join(' '),
-  }];
-  const result = await generateProductCustomerResponsibilitySummary({
-    state,
-    db: dbWithCards(),
-    input: { company, name: productName },
-    findSummary: async () => null,
-    persistSummary: async (row) => {
-      saved = row;
-      return row;
-    },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险，提供身故或身体全残保障。',
-      主要保险责任: [
-        { 标题: '描述', 内容: '被保险人在保险期间内身故或身体全残，按约定给付保险金。' },
-        { 标题: '说明', 内容: '分红不保证。' },
-      ],
-    }),
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.source, 'generated');
-  assert.equal(saved?.modelProvider, 'deepseek');
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['描述', '说明']);
-});
-
-test.skip('generateProductCustomerResponsibilitySummary preserves DeepSeek responsibility string', async () => {
-  let saved = null;
-  const state = baseState();
-  state.knowledgeRecords = [{
-    ...state.knowledgeRecords[0],
-    pageText: [
-      '第五条 保险责任',
-      '身故或身体全残保险金 被保险人身故或身体全残，我们按合同约定给付身故或身体全残保险金。',
-    ].join(' '),
-  }];
-  const result = await generateProductCustomerResponsibilitySummary({
-    state,
-    db: dbWithCards(),
-    input: { company, name: productName },
-    findSummary: async () => null,
-    persistSummary: async (row) => {
-      saved = row;
-      return row;
-    },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险，提供身故或身体全残保障。',
-      主要保险责任: '被保险人身故或身体全残时，保险公司按合同约定给付身故或身体全残保险金。',
-    }),
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.source, 'generated');
-  assert.equal(saved?.modelProvider, 'deepseek');
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['主要保险责任']);
-  assert.match(result.summary.mainResponsibilities[0].plainText, /身故或身体全残/u);
-});
-
-test.skip('generateProductCustomerResponsibilitySummary preserves DeepSeek condition titles', async () => {
-  let saved = null;
-  const state = baseState();
-  state.knowledgeRecords = [{
-    ...state.knowledgeRecords[0],
-    pageText: [
-      '第五条 保险责任',
-      '身故或身体全残保险金 被保险人身故或身体全残，我们按合同约定给付身故或身体全残保险金。',
-    ].join(' '),
-  }];
-  const result = await generateProductCustomerResponsibilitySummary({
-    state,
-    db: dbWithCards(),
-    input: { company, name: productName },
-    findSummary: async () => null,
-    persistSummary: async (row) => {
-      saved = row;
-      return row;
-    },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险，提供身故或身体全残保障。',
-      主要保险责任: [
-        { 标题: '条件', 内容: '合同生效180天内因疾病身故或全残：退已交保费，合同终止。' },
-        { 标题: '条件2', 内容: '合同生效180天内因意外，或180天后因任何原因身故或全残：按以下分情形给付，合同终止。' },
-      ],
-    }),
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.source, 'generated');
-  assert.equal(saved?.modelProvider, 'deepseek');
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['条件', '条件2']);
-});
-
-test.skip('generateProductCustomerResponsibilitySummary preserves DeepSeek titles without semantic filtering', async () => {
-  let saved = null;
-  const result = await generateProductCustomerResponsibilitySummary({
-    state: baseState(),
-    db: dbWithCards(),
-    input: { company, name: productName },
-    findSummary: async () => null,
-    persistSummary: async (row) => {
-      saved = row;
-      return row;
-    },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险。',
-      主要保险责任: [
-        { 标题: '产品定位', 内容: 'DeepSeek 若把这个作为责任标题，解析层也只负责展示。' },
-      ],
-    }),
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.source, 'generated');
-  assert.equal(saved?.modelProvider, 'deepseek');
-  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['产品定位']);
 });
 
 test('customer summary records model review when DeepSeek throws', async () => {
@@ -1059,7 +853,7 @@ test('validateCustomerResponsibilitySummaryJson does not reject DeepSeek interna
     notices: [],
     requiredPolicyFields: [],
     sourceUrls: [sourceUrl],
-  }, { allowedTitles: new Set(['身故保险金']), allowedSourceUrls: new Set([sourceUrl]) });
+  });
 
   assert.equal(result.headline, '内部字段不应导致摘要失败。');
   assert.equal(result.mainResponsibilities[0].title, '身故保险金');
@@ -1082,9 +876,6 @@ test('validateCustomerResponsibilitySummaryJson allows DeepSeek to summarize res
     notices: [],
     requiredPolicyFields: [],
     sourceUrls: ['https://model.example/free-summary'],
-  }, {
-    allowedTitles: new Set(['身故或身体全残保险金']),
-    allowedSourceUrls: new Set([sourceUrl]),
   });
 
   assert.equal(result.mainResponsibilities[0].title, '保证责任');
@@ -1351,10 +1142,56 @@ test('structured critical illness context produces prompt, ready v22 metadata, a
   assert.equal(savedRows[0]?.payload?.productCategory, 'critical_illness');
   assert.equal(savedRows[0]?.payload?.qualityGate?.status, 'passed');
   assert.equal(runRows.at(-1)?.status, 'passed');
+  assert.match(runRows.at(-1)?.rawPreview || '', /少儿重疾保障/u);
   assert.ok(result.summary.mainResponsibilities.some((item) => item.title === '少儿前10年关爱保险金'));
   assert.equal(result.summary.company, company);
   assert.equal(result.summary.productName, product);
   assert.equal(result.summary.productCategory, undefined);
+});
+
+test('official analysis with third-party source returns needs_source_review without ready summary', async () => {
+  const savedRows = [];
+  const runRows = [];
+  let officialAnalysisCalls = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: { knowledgeRecords: [], insuranceIndicatorRecords: [] },
+    db: dbWithCards([]),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      savedRows.push(row);
+      return row;
+    },
+    persistGenerationRun: async (run) => {
+      runRows.push(run);
+      return run;
+    },
+    generateOfficialAnalysis: async () => {
+      officialAnalysisCalls += 1;
+      return {
+        coverageTable: [{
+          coverageType: '身故或身体全残保险金',
+          scenario: '第三方介绍称被保险人身故或身体全残时承担保险责任。',
+          payout: '按合同约定给付身故或身体全残保险金。',
+        }],
+        sources: [{
+          title: '保险经纪文章',
+          url: 'https://broker.example/article',
+          official: false,
+          evidenceLevel: 'third_party',
+        }],
+      };
+    },
+    generateWithDeepSeek: async () => {
+      throw new Error('model should not run for third-party official analysis sources');
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'needs_source_review');
+  assert.equal(officialAnalysisCalls, 1);
+  assert.equal(savedRows.length, 0);
+  assert.equal(runRows.at(-1)?.status, 'needs_source_review');
 });
 
 test('quality gate failure persists needs_model_review run without ready summary', async () => {

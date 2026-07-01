@@ -5331,7 +5331,12 @@ test('customer responsibility summary generates once and then reads from databas
       productName: '盛世荣耀',
       title: '盛世荣耀条款',
       url: 'https://example.test/terms.pdf',
-      pageText: '保险责任包括身故或身体全残保险金。',
+      pageText: [
+        '第五条 保险责任',
+        '身故或身体全残保险金 被保险人身故或身体全残时，保险公司按条款约定给付身故或身体全残保险金。',
+        '给付金额结合已交保险费、基本保险金额和保单年度计算。',
+        '第六条 责任免除',
+      ].join('\n'),
       official: true,
     }],
     insuranceIndicatorRecords: [{
@@ -5361,18 +5366,19 @@ test('customer responsibility summary generates once and then reads from databas
     generateProductCustomerResponsibilitySummaryWithDeepSeek: async () => {
       modelCalls += 1;
       return {
-        company: '新华保险',
-        productName: '盛世荣耀',
+        productCategory: 'ordinary_whole_life',
+        categoryLabel: '终身寿险',
         headline: '这是一份以身故或身体全残保障为主的终身寿险。',
-        mainResponsibilities: [{
+        responsibilities: [{
           title: '身故或身体全残保险金',
           plainText: '发生身故或身体全残时，保险公司按条款约定给付保险金。',
-          howItPays: '金额需要结合保单信息计算。',
-          requiredPolicyFields: ['基本保险金额', '已交保险费'],
+          triggerCondition: '身故或身体全残。',
+          paymentRule: '金额需要结合已交保险费、基本保险金额和保单年度计算。',
+          calculationStatus: 'claim_contingent',
         }],
-        notices: ['具体金额以条款和保单为准。'],
-        requiredPolicyFields: ['基本保险金额', '已交保险费'],
-        sourceUrls: ['https://example.test/terms.pdf'],
+        productFunctions: [],
+        importantNotes: ['具体金额以条款和保单为准。'],
+        missingOrUnclear: [],
       };
     },
   });
@@ -5398,6 +5404,102 @@ test('customer responsibility summary generates once and then reads from databas
     assert.equal(second.payload.ok, true);
     assert.equal(second.payload.source, 'database');
     assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(modelCalls, 1);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
+test('customer responsibility summary uses official analysis when local source cards are missing', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (
+      id INTEGER PRIMARY KEY
+    )
+  `);
+  const state = {
+    ...createInitialState(),
+    knowledgeRecords: [],
+    insuranceIndicatorRecords: [],
+  };
+  const persistedSummaries = new Map();
+  let officialAnalysisCalls = 0;
+  let modelCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    db,
+    recomputeCashflowOnStartup: false,
+    assistantAnalyzer: async ({ scan, preferLocalKnowledgeAnswer }) => {
+      officialAnalysisCalls += 1;
+      assert.equal(preferLocalKnowledgeAnswer, false);
+      assert.equal(scan.data.company, '新华保险');
+      assert.equal(scan.data.name, '荣耀鑫享智享版终身寿险');
+      return {
+        coverageTable: [{
+          coverageType: '身故或身体全残保险金',
+          scenario: '官网条款显示：被保险人身故或身体全残时承担保险责任。',
+          payout: '按合同实际交纳的保险费给付身故或身体全残保险金。',
+          note: '本合同终止。',
+        }],
+        sources: [{
+          title: '官网条款PDF',
+          url: 'https://example.test/new-china-terms.pdf',
+          official: true,
+        }],
+      };
+    },
+    findProductCustomerResponsibilitySummary: async ({ productKey, summaryVersion }) => (
+      persistedSummaries.get(`${productKey}:${summaryVersion}`) || null
+    ),
+    persistProductCustomerResponsibilitySummary: async ({ summary }) => {
+      persistedSummaries.set(`${summary.productKey}:${summary.summaryVersion}`, summary);
+      state.productCustomerResponsibilitySummaries = [...persistedSummaries.values()];
+      return summary;
+    },
+    generateProductCustomerResponsibilitySummaryWithDeepSeek: async ({ prompt }) => {
+      modelCalls += 1;
+      assert.match(prompt, /官网条款显示/u);
+      assert.doesNotMatch(prompt, /疾病全残 =/u);
+      return {
+        productCategory: 'ordinary_whole_life',
+        categoryLabel: '终身寿险',
+        headline: '这是一款主要提供身故或身体全残保障的保险。',
+        responsibilities: [{
+          title: '身故或身体全残保险金',
+          plainText: '被保险人身故或身体全残时，保险公司按条款承担保险责任。',
+          triggerCondition: '身故或身体全残。',
+          paymentRule: '通常需要结合已交保险费等保单信息确定给付金额。',
+          calculationStatus: 'claim_contingent',
+        }],
+        productFunctions: [],
+        importantNotes: ['具体金额以条款和保单载明信息为准。'],
+        missingOrUnclear: [],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const first = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      body: JSON.stringify({ company: '新华保险', name: '荣耀鑫享智享版终身寿险' }),
+    });
+    assert.equal(first.response.status, 200);
+    assert.equal(first.payload.ok, true);
+    assert.equal(first.payload.source, 'generated');
+    assert.equal(first.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(officialAnalysisCalls, 1);
+    assert.equal(modelCalls, 1);
+
+    const second = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      body: JSON.stringify({ company: '新华保险', name: '荣耀鑫享智享版终身寿险' }),
+    });
+    assert.equal(second.response.status, 200);
+    assert.equal(second.payload.ok, true);
+    assert.equal(second.payload.source, 'database');
+    assert.equal(officialAnalysisCalls, 1);
     assert.equal(modelCalls, 1);
   } finally {
     await server.close();
