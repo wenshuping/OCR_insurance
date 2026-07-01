@@ -182,6 +182,34 @@ test('resolveOfficialResponsibilitySources ranks official terms pdfs before manu
   assert.equal(result.records[0].url, 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf');
 });
 
+test('resolveOfficialResponsibilitySources ranks sparse official pdf sources before manuals', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '鑫荣耀终身寿险',
+    records: [
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+        title: '产品说明书',
+        materialType: 'product_manual',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/xinrongyao-manual.pdf',
+        pageText: '保险责任 产品说明书责任正文',
+      },
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 2);
+  assert.equal(result.records[0].url, 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf');
+});
+
 test('resolveOfficialResponsibilitySources combines project text fields when detecting responsibility text', () => {
   const result = resolveOfficialResponsibilitySources({
     company: '太保寿险',

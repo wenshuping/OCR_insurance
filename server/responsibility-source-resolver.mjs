@@ -96,8 +96,8 @@ function materialRank(record = {}) {
   const title = text(record.title);
   const url = firstUrl(record);
   if (materialType === 'terms' || /条款/u.test(title)) return 0;
-  if (materialType === 'product_manual' || /说明书/u.test(title)) return 1;
-  if (/\.pdf(?:$|\?)/iu.test(url)) return 2;
+  if (materialType === 'product_manual' || /说明书/u.test(title)) return 2;
+  if (/\.pdf(?:$|\?)/iu.test(url)) return 1;
   return 3;
 }
 
