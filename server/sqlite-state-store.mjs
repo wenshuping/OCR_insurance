@@ -213,28 +213,34 @@ function normalizeProductCustomerSummaryGenerationRun(row = {}) {
   const parsedPayload = typeof row.payload === 'string' ? parseJson(row.payload, {}) : row.payload;
   const payload = parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload) ? parsedPayload : {};
   const source = { ...payload, ...row };
-  const productKey = String(source.productKey || source.product_key || '').trim();
-  const summaryVersion = String(source.summaryVersion || source.summary_version || '').trim();
+  const productKey = String(source.product_key || source.productKey || '').trim();
+  const summaryVersion = String(source.summary_version || source.summaryVersion || '').trim();
   const id = String(source.id || '').trim();
   if (!id || !productKey || !summaryVersion) return null;
+  const preservedPayload = payload.payload && typeof payload.payload === 'object' && !Array.isArray(payload.payload)
+    ? payload.payload
+    : payload;
+  const qualityIssues = row.quality_issues_json !== undefined
+    ? normalizeArray(parseJson(row.quality_issues_json, []))
+    : normalizeArray(source.qualityIssues || source.quality_issues || parseJson(source.quality_issues_json, []));
   return {
     id,
     productKey,
     company: String(source.company || '').trim(),
-    productName: String(source.productName || source.product_name || '').trim(),
+    productName: String(source.product_name || source.productName || '').trim(),
     summaryVersion,
     status: String(source.status || '').trim() || 'failed',
-    productCategory: String(source.productCategory || source.product_category || '').trim(),
-    categoryLabel: String(source.categoryLabel || source.category_label || '').trim(),
-    modelProvider: String(source.modelProvider || source.model_provider || '').trim(),
-    modelName: String(source.modelName || source.model_name || '').trim(),
-    modelTier: String(source.modelTier || source.model_tier || '').trim(),
-    sourceDigest: String(source.sourceDigest || source.source_digest || '').trim(),
-    sourceSectionsDigest: String(source.sourceSectionsDigest || source.source_sections_digest || '').trim(),
-    qualityIssues: normalizeArray(source.qualityIssues || source.quality_issues || parseJson(source.quality_issues_json, [])),
-    rawPreview: String(source.rawPreview || source.raw_preview || '').trim(),
-    createdAt: String(source.createdAt || source.created_at || '').trim(),
-    payload,
+    productCategory: String(source.product_category || source.productCategory || '').trim(),
+    categoryLabel: String(source.category_label || source.categoryLabel || '').trim(),
+    modelProvider: String(source.model_provider || source.modelProvider || '').trim(),
+    modelName: String(source.model_name || source.modelName || '').trim(),
+    modelTier: String(source.model_tier || source.modelTier || '').trim(),
+    sourceDigest: String(source.source_digest || source.sourceDigest || '').trim(),
+    sourceSectionsDigest: String(source.source_sections_digest || source.sourceSectionsDigest || '').trim(),
+    qualityIssues,
+    rawPreview: String(source.raw_preview || source.rawPreview || '').trim(),
+    createdAt: String(source.created_at || source.createdAt || '').trim(),
+    payload: preservedPayload,
   };
 }
 
@@ -1802,6 +1808,34 @@ function loadPayloadRows(db, table, orderBy) {
     .filter(Boolean);
 }
 
+function loadProductCustomerSummaryGenerationRuns(db) {
+  return db.prepare(`
+    SELECT
+      id,
+      product_key,
+      company,
+      product_name,
+      summary_version,
+      status,
+      product_category,
+      category_label,
+      model_provider,
+      model_name,
+      model_tier,
+      source_digest,
+      source_sections_digest,
+      quality_issues_json,
+      raw_preview,
+      created_at,
+      payload
+    FROM product_customer_summary_generation_runs
+    ORDER BY created_at DESC, id ASC
+  `)
+    .all()
+    .map((row) => normalizeProductCustomerSummaryGenerationRun(row))
+    .filter(Boolean);
+}
+
 function loadDbOwnedState(db) {
   const state = {
     users: loadPayloadRows(db, 'users', 'id ASC'),
@@ -1815,7 +1849,7 @@ function loadDbOwnedState(db) {
     insuranceIndicatorRecords: loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC'),
     optionalResponsibilityRecords: loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC'),
     productCustomerResponsibilitySummaries: loadPayloadRows(db, 'product_customer_responsibility_summaries', 'product_name ASC, summary_version ASC, id ASC'),
-    productCustomerSummaryGenerationRuns: loadPayloadRows(db, 'product_customer_summary_generation_runs', 'created_at DESC, id ASC'),
+    productCustomerSummaryGenerationRuns: loadProductCustomerSummaryGenerationRuns(db),
     policyDerivedResults: loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC'),
     productIndicatorVersions: loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC'),
     indicatorUpdateBatches: loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC'),
@@ -1843,9 +1877,6 @@ function loadDbOwnedState(db) {
   state.productCustomerResponsibilitySummaries = state.productCustomerResponsibilitySummaries
     .map((row) => normalizeProductCustomerResponsibilitySummary(row))
     .filter((row) => row && row.status === 'ready');
-  state.productCustomerSummaryGenerationRuns = state.productCustomerSummaryGenerationRuns
-    .map((row) => normalizeProductCustomerSummaryGenerationRun(row))
-    .filter(Boolean);
   state.productIndicatorVersions = state.productIndicatorVersions
     .map((row) => normalizeProductIndicatorVersion(row))
     .filter(Boolean);
@@ -2234,13 +2265,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       throw error;
     }
     if (state && typeof state === 'object') {
-      state.productCustomerSummaryGenerationRuns = loadPayloadRows(
-        db,
-        'product_customer_summary_generation_runs',
-        'created_at DESC, id ASC',
-      )
-        .map((item) => normalizeProductCustomerSummaryGenerationRun(item))
-        .filter(Boolean);
+      state.productCustomerSummaryGenerationRuns = loadProductCustomerSummaryGenerationRuns(db);
     }
     return target;
   }

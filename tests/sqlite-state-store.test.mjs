@@ -832,6 +832,18 @@ test('sqlite state store persists and reloads product customer responsibility su
   }
 });
 
+test('sqlite state store fresh load exposes empty product customer summary generation runs', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    assert.deepEqual(state.productCustomerSummaryGenerationRuns, []);
+  } finally {
+    store.close();
+  }
+});
+
 test('sqlite state store persists product customer summary generation runs', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
@@ -870,6 +882,79 @@ test('sqlite state store persists product customer summary generation runs', asy
     assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].rawPreview, '{"headline":"..."}');
     assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].payload.attempt, 1);
     assert.deepEqual(state.productCustomerSummaryGenerationRuns, reloaded.productCustomerSummaryGenerationRuns);
+  } finally {
+    store.close();
+  }
+});
+
+test('sqlite state store reloads product customer summary generation runs from db columns', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    await store.persistProductCustomerSummaryGenerationRun({
+      state,
+      run: {
+        id: 'customer_summary_run:company_product:新华保险:鑫荣耀:v22:columns-a',
+        productKey: 'company_product:新华保险:鑫荣耀',
+        company: '新华保险',
+        productName: '鑫荣耀',
+        summaryVersion: 'customer-summary-v22-structured-rag',
+        status: 'needs_model_review',
+        modelName: 'deepseek-v4-flash',
+        qualityIssues: [{ code: 'stale_payload_issue' }],
+        rawPreview: 'stale-preview-a',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        payload: { marker: 'stale-a' },
+      },
+    });
+    await store.persistProductCustomerSummaryGenerationRun({
+      state,
+      run: {
+        id: 'customer_summary_run:company_product:新华保险:鑫荣耀:v22:columns-b',
+        productKey: 'company_product:新华保险:鑫荣耀',
+        company: '新华保险',
+        productName: '鑫荣耀',
+        summaryVersion: 'customer-summary-v22-structured-rag',
+        status: 'failed',
+        modelName: 'deepseek-v4-pro',
+        qualityIssues: [{ code: 'other_issue' }],
+        rawPreview: 'preview-b',
+        createdAt: '2026-07-01T00:02:00.000Z',
+        payload: { marker: 'b' },
+      },
+    });
+    store.db.prepare(`
+      UPDATE product_customer_summary_generation_runs
+      SET status = ?,
+        quality_issues_json = ?,
+        raw_preview = ?,
+        created_at = ?
+      WHERE id = ?
+    `).run(
+      'needs_source_review',
+      JSON.stringify([{ code: 'db_column_issue', keyword: '官方条款' }]),
+      'db-column-preview',
+      '2026-07-01T00:03:00.000Z',
+      'customer_summary_run:company_product:新华保险:鑫荣耀:v22:columns-a',
+    );
+
+    const reloaded = await store.load();
+    assert.deepEqual(
+      reloaded.productCustomerSummaryGenerationRuns.map((run) => run.id),
+      [
+        'customer_summary_run:company_product:新华保险:鑫荣耀:v22:columns-a',
+        'customer_summary_run:company_product:新华保险:鑫荣耀:v22:columns-b',
+      ],
+    );
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].status, 'needs_source_review');
+    assert.deepEqual(reloaded.productCustomerSummaryGenerationRuns[0].qualityIssues, [
+      { code: 'db_column_issue', keyword: '官方条款' },
+    ]);
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].rawPreview, 'db-column-preview');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].createdAt, '2026-07-01T00:03:00.000Z');
+    assert.deepEqual(reloaded.productCustomerSummaryGenerationRuns[0].payload, { marker: 'stale-a' });
   } finally {
     store.close();
   }

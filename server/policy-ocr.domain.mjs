@@ -28,6 +28,7 @@ export function createInitialState() {
     insuranceIndicatorRecords: [],
     optionalResponsibilityRecords: [],
     productCustomerResponsibilitySummaries: [],
+    productCustomerSummaryGenerationRuns: [],
     officialDomainProfiles: [],
     familyProfiles: [],
     familyMembers: [],
