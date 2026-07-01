@@ -237,6 +237,7 @@ test('generateProductCustomerResponsibilitySummary generates, validates, saves, 
 
 test('generateProductCustomerResponsibilitySummary explains compound growth formulas from official sources', async () => {
   const state = baseState();
+  state.insuranceIndicatorRecords = [];
   state.knowledgeRecords = [{
     ...state.knowledgeRecords[0],
     pageText: [
@@ -312,7 +313,7 @@ test('generateProductCustomerResponsibilitySummary reuses the official product n
   assert.equal(result.summary.productName, officialProductName);
 });
 
-test('generateProductCustomerResponsibilitySummary does not cache incomplete DeepSeek summaries', async () => {
+test('generateProductCustomerResponsibilitySummary falls back to official text for incomplete DeepSeek summaries', async () => {
   let saved = null;
   const runs = [];
   const state = baseState();
@@ -347,10 +348,11 @@ test('generateProductCustomerResponsibilitySummary does not cache incomplete Dee
     }),
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, 'needs_model_review');
-  assert.equal(saved, null);
-  assert.equal(runs.at(-1)?.status, 'needs_model_review');
+  assert.equal(result.ok, true);
+  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(saved?.modelName, 'official-source-fallback');
+  assert.equal(runs.at(-1)?.status, 'passed');
+  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
 });
 
 test('generateProductCustomerResponsibilitySummary accepts structured Chinese responsibility text in v22 schema', async () => {
@@ -461,15 +463,17 @@ test('generateProductCustomerResponsibilitySummary preserves structured age cond
   assert.match(result.summary.mainResponsibilities[0].plainText, /18周岁前/u);
 });
 
-test('generateProductCustomerResponsibilitySummary rejects loose legacy Chinese responsibility shapes in v22', async () => {
+test('generateProductCustomerResponsibilitySummary falls back when DeepSeek returns loose legacy Chinese responsibility shape', async () => {
   const runs = [];
+  let saved = null;
   const result = await generateProductCustomerResponsibilitySummary({
     state: baseState(),
     db: dbWithCards(),
     input: { company, name: productName },
     findSummary: async () => null,
-    persistSummary: async () => {
-      throw new Error('legacy loose output should not persist ready summary');
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
     },
     persistGenerationRun: async (run) => {
       runs.push(run);
@@ -483,12 +487,12 @@ test('generateProductCustomerResponsibilitySummary rejects loose legacy Chinese 
     }),
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, 'needs_model_review');
-  assert.equal(runs.at(-1)?.status, 'needs_model_review');
+  assert.equal(result.ok, true);
+  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(runs.at(-1)?.status, 'passed');
 });
 
-test('generateProductCustomerResponsibilitySummary returns model review when DeepSeek returns empty', async () => {
+test('generateProductCustomerResponsibilitySummary falls back to official text when DeepSeek returns empty', async () => {
   let modelCalls = 0;
   let saved = null;
   const runs = [];
@@ -521,14 +525,14 @@ test('generateProductCustomerResponsibilitySummary returns model review when Dee
     },
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, 'needs_model_review');
+  assert.equal(result.ok, true);
   assert.equal(modelCalls, 1);
-  assert.equal(saved, null);
-  assert.equal(runs.at(-1)?.status, 'needs_model_review');
+  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(runs.at(-1)?.status, 'passed');
+  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
 });
 
-test('generateProductCustomerResponsibilitySummary returns model review when DeepSeek returns headline only', async () => {
+test('generateProductCustomerResponsibilitySummary falls back to official text when DeepSeek returns headline only', async () => {
   let saved = null;
   const runs = [];
   const state = baseState();
@@ -558,13 +562,38 @@ test('generateProductCustomerResponsibilitySummary returns model review when Dee
     }),
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, 'needs_model_review');
-  assert.equal(saved, null);
-  assert.equal(runs.at(-1)?.status, 'needs_model_review');
+  assert.equal(result.ok, true);
+  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(runs.at(-1)?.status, 'passed');
+  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
 });
 
-test('customer summary records model review when DeepSeek throws', async () => {
+test('local official fallback filters sentence fragments from responsibility titles', async () => {
+  const state = baseState();
+  state.insuranceIndicatorRecords = [];
+  state.knowledgeRecords = [{
+    ...state.knowledgeRecords[0],
+    pageText: [
+      '第五条 保险责任',
+      '1.发生上述第1项情形导致被保险人身故的，本合同终止，本公司向身故保险金受益人退还保险单的现金价值。',
+      '2.身故保险金 被保险人身故，本公司按合同约定给付身故保险金。',
+      '3.满期保险金 被保险人生存至保险期间届满，本公司按合同约定给付满期保险金。',
+    ].join(' '),
+  }];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards([]),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async () => null,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故保险金', '满期保险金']);
+});
+
+test('customer summary falls back to official text when DeepSeek throws', async () => {
   let saved = null;
   const runs = [];
   const state = baseState();
@@ -602,11 +631,11 @@ test('customer summary records model review when DeepSeek throws', async () => {
     },
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, 'needs_model_review');
-  assert.equal(saved, null);
-  assert.equal(runs.at(-1)?.status, 'needs_model_review');
-  assert.match(runs.at(-1)?.qualityIssues?.[0]?.code || '', /DEEPSEEK_REQUEST_FAILED/u);
+  assert.equal(result.ok, true);
+  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(runs.at(-1)?.status, 'passed');
+  assert.match(saved?.summaryJson?.mainResponsibilities?.[0]?.title || '', /身故保险金/u);
+  assert.doesNotMatch(saved?.summaryJson?.mainResponsibilities?.[0]?.title || '', /错误卡片责任/u);
 });
 
 test('fallback customer summary does not use responsibility cards when DeepSeek throws and official summary is missing', async () => {
@@ -1459,7 +1488,7 @@ test('official analysis with third-party source returns needs_source_review with
   assert.equal(runRows.at(-1)?.status, 'needs_source_review');
 });
 
-test('quality gate failure persists needs_model_review run without ready summary', async () => {
+test('quality gate failure falls back to official responsibility text', async () => {
   const savedRows = [];
   const runRows = [];
   const result = await generateProductCustomerResponsibilitySummary({
@@ -1486,10 +1515,11 @@ test('quality gate failure persists needs_model_review run without ready summary
     }),
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, 'needs_model_review');
-  assert.equal(savedRows.length, 0);
-  assert.equal(runRows.at(-1)?.status, 'needs_model_review');
+  assert.equal(result.ok, true);
+  assert.equal(savedRows.length, 1);
+  assert.equal(savedRows[0]?.modelProvider, 'local');
+  assert.equal(savedRows[0]?.modelName, 'official-source-fallback');
+  assert.equal(runRows.at(-1)?.status, 'passed');
   assert.ok(runRows.at(-1)?.qualityIssues?.length > 0);
 });
 

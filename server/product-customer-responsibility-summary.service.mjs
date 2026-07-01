@@ -189,11 +189,11 @@ function normalizeResponsibilityTitle(value) {
 function isUsefulResponsibilityTitle(value) {
   const title = normalizeResponsibilityTitle(value);
   return title.length >= 4
-    && title.length <= 60
+    && title.length <= 42
     && RESPONSIBILITY_TITLE_SUFFIX_PATTERN.test(title)
     && !/^(?:保险金|给付金|年金)$/u.test(title)
-    && !/^(?:若|则|其|被保险人|本公司|我们)/u.test(title)
-    && !/(?:处于|二者之较大|三者之最大|金额为|根据以下不同情形)/u.test(title)
+    && !/^(?:若|则|其|被保险人|本公司|我们|发生上述)/u.test(title)
+    && !/(?:处于|二者之较大|三者之最大|金额为|根据以下不同情形|合同终止|减去|累计已给付|条规定|赔付方式)/u.test(title)
     && !/(?:责任免除|保险金申请|释义|保单贷款|现金价值权益|受益人|争议处理)/u.test(title);
 }
 
@@ -1136,6 +1136,63 @@ function normalizeStructuredSummaryToCustomerSummary(raw = {}, { company, produc
   };
 }
 
+function uniqueSummaryItems(items = []) {
+  const byTitle = new Map();
+  for (const item of normalizeArray(items)) {
+    const title = text(item?.title);
+    if (!title) continue;
+    const normalized = normalizeResponsibilityTitle(title);
+    if (!normalized || !isUsefulResponsibilityTitle(normalized)) continue;
+    const current = byTitle.get(normalized);
+    if (!current || JSON.stringify(item).length > JSON.stringify(current).length) {
+      byTitle.set(normalized, item);
+    }
+  }
+  return [...byTitle.values()];
+}
+
+function buildLocalCustomerSummaryFromOfficialSources({
+  company = '',
+  productName = '',
+  sourceSections = {},
+  cards = [],
+  indicators = [],
+  records = [],
+} = {}) {
+  const sectionRecord = sourceSections.mainResponsibilityText
+    ? [{
+        productName,
+        title: sourceSections.sourceTitle || productName,
+        url: sourceSections.sourceUrl,
+        pageText: sourceSections.mainResponsibilityText,
+      }]
+    : [];
+  const clauses = officialResponsibilityClausesFromRecords([
+    ...sectionRecord,
+    ...normalizeArray(records),
+  ]);
+  const items = uniqueSummaryItems([
+    ...clauses.map(summaryItemFromOfficialClause),
+    ...normalizeArray(indicators).map(summaryItemFromIndicator),
+  ]);
+  const summary = {
+    company,
+    productName,
+    headline: inferHeadline(productName, items),
+    mainResponsibilities: items,
+    notices: uniqueStrings([
+      ...noticesFromOfficialRecords([...sectionRecord, ...normalizeArray(records)], items),
+      '本摘要由系统依据官方条款正文自动整理；如需理赔或投保决策，请以正式保险合同和保险公司解释为准。',
+    ]),
+    requiredPolicyFields: uniqueStrings(items.flatMap((item) => normalizeArray(item.requiredPolicyFields))),
+    sourceUrls: uniqueStrings([
+      sourceSections.sourceUrl,
+      ...normalizeArray(records).map(sourceUrlFrom),
+    ]),
+  };
+  return hasCustomerSummaryContent(summary) ? summary : null;
+}
+
 function buildGenerationRun({
   productKey,
   company,
@@ -1178,6 +1235,77 @@ function buildGenerationRun({
 async function persistGenerationReviewRun(persistGenerationRun, run) {
   if (typeof persistGenerationRun !== 'function') return null;
   return persistGenerationRun(run);
+}
+
+async function persistReadyCustomerSummary({
+  persistSummary,
+  persistGenerationRun,
+  productKey,
+  company,
+  productName,
+  sourceDigest,
+  sourceSections,
+  routing,
+  summaryJson,
+  summaryContext,
+  rawPreview = '',
+  modelProvider = '',
+  modelName = '',
+  modelTier = '',
+  qualityGate = { status: 'passed', issues: [] },
+  now,
+} = {}) {
+  const row = {
+    id: `customer_summary:${productKey}:${CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION}`,
+    productKey,
+    company,
+    productName,
+    summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+    status: 'ready',
+    headline: summaryJson.headline,
+    summaryJson,
+    sourceUrls: summaryJson.sourceUrls,
+    sourceDigest,
+    modelProvider,
+    modelName,
+    generatedAt: now,
+    updatedAt: now,
+    payload: {
+      productKey,
+      company,
+      productName,
+      summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+      sourceDigest,
+      summaryJson,
+      sourceUrls: summaryJson.sourceUrls,
+      summaryContext,
+      productCategory: routing.productCategory,
+      categoryLabel: routing.categoryLabel,
+      featureTags: routing.featureTags,
+      sourceSectionsDigest: sourceSections.sourceSectionsDigest,
+      sourceSections,
+      sourceSectionsQuality: sourceSections.quality,
+      modelTier: text(modelTier || routing.modelTier),
+      qualityGate,
+      routing,
+    },
+  };
+  const saved = typeof persistSummary === 'function' ? await persistSummary(row) : row;
+  await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
+    productKey,
+    company,
+    productName,
+    status: 'passed',
+    routing,
+    sourceDigest,
+    sourceSections,
+    qualityIssues: normalizeArray(qualityGate.issues),
+    rawPreview,
+    modelName,
+    modelTier: modelTier || routing.modelTier,
+    now,
+  }));
+  return saved;
 }
 
 export async function generateProductCustomerResponsibilitySummary({
@@ -1361,6 +1489,40 @@ export async function generateProductCustomerResponsibilitySummary({
       code: text(error?.code) || 'model_generation_failed',
       message: text(error?.message),
     }];
+    const fallbackSummary = buildLocalCustomerSummaryFromOfficialSources({
+      company,
+      productName,
+      sourceSections,
+      cards,
+      indicators,
+      records: sourceRecords,
+    });
+    if (fallbackSummary) {
+      const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
+      const saved = await persistReadyCustomerSummary({
+        persistSummary,
+        persistGenerationRun,
+        productKey,
+        company,
+        productName,
+        sourceDigest,
+        sourceSections,
+        routing,
+        summaryJson: fallbackSummary,
+        summaryContext,
+        rawPreview: text(error?.message),
+        modelProvider: 'local',
+        modelName: 'official-source-fallback',
+        modelTier: routing.modelTier,
+        qualityGate: { status: 'fallback_after_model_error', issues: qualityIssues },
+        now: structuredNow,
+      });
+      return {
+        ok: true,
+        source: 'generated',
+        summary: safeCustomerSummary(saved),
+      };
+    }
     await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
       productKey,
       company,
@@ -1387,6 +1549,40 @@ export async function generateProductCustomerResponsibilitySummary({
     summary: rawSummary,
   });
   if (quality.status !== 'passed') {
+    const fallbackSummary = buildLocalCustomerSummaryFromOfficialSources({
+      company,
+      productName,
+      sourceSections,
+      cards,
+      indicators,
+      records: sourceRecords,
+    });
+    if (fallbackSummary) {
+      const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
+      const saved = await persistReadyCustomerSummary({
+        persistSummary,
+        persistGenerationRun,
+        productKey,
+        company,
+        productName,
+        sourceDigest,
+        sourceSections,
+        routing,
+        summaryJson: fallbackSummary,
+        summaryContext,
+        rawPreview: JSON.stringify(rawSummary),
+        modelProvider: 'local',
+        modelName: 'official-source-fallback',
+        modelTier: routing.modelTier,
+        qualityGate: { status: 'fallback_after_model_quality_failure', issues: quality.issues },
+        now: structuredNow,
+      });
+      return {
+        ok: true,
+        source: 'generated',
+        summary: safeCustomerSummary(saved),
+      };
+    }
     await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
       productKey,
       company,
@@ -1417,56 +1613,23 @@ export async function generateProductCustomerResponsibilitySummary({
   );
   const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
   const now = structuredNow;
-  const row = {
-    id: `customer_summary:${productKey}:${CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION}`,
+  const saved = await persistReadyCustomerSummary({
+    persistSummary,
+    persistGenerationRun,
     productKey,
     company,
     productName,
-    summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
-    status: 'ready',
-    headline: summaryJson.headline,
-    summaryJson,
-    sourceUrls: summaryJson.sourceUrls,
-    sourceDigest,
-    modelProvider: 'deepseek',
-    modelName: routedModelName,
-    generatedAt: now,
-    updatedAt: now,
-    payload: {
-      productKey,
-      company,
-      productName,
-      summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
-      sourceDigest,
-      summaryJson,
-      sourceUrls: summaryJson.sourceUrls,
-      summaryContext,
-      productCategory: routing.productCategory,
-      categoryLabel: routing.categoryLabel,
-      featureTags: routing.featureTags,
-      sourceSectionsDigest: sourceSections.sourceSectionsDigest,
-      sourceSections,
-      sourceSectionsQuality: sourceSections.quality,
-      modelTier: routing.modelTier,
-      qualityGate: { status: 'passed', issues: [] },
-      routing,
-    },
-  };
-  const saved = typeof persistSummary === 'function' ? await persistSummary(row) : row;
-  await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
-    productKey,
-    company,
-    productName,
-    status: 'passed',
-    routing,
     sourceDigest,
     sourceSections,
-    qualityIssues: [],
+    routing,
+    summaryJson,
+    summaryContext,
     rawPreview: JSON.stringify(rawSummary),
+    modelProvider: 'deepseek',
     modelName: routedModelName,
     modelTier: routing.modelTier,
     now,
-  }));
+  });
   if (generateWithDeepSeek === callDeepSeekForCustomerResponsibilitySummary) {
     logDeepSeekCustomerSummary('DeepSeek summary cached', {
       productKey,

@@ -164,6 +164,42 @@ test('extractStructuredResponsibilitySections accepts inline responsibility titl
   assert.match(result.mainResponsibilityText, /住院医疗保险责任/u);
 });
 
+test('extractStructuredResponsibilitySections accepts glued inline responsibility title', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      title: '官方年金险条款',
+      pageText: [
+        '保险责任在本合同有效期内，我们承担如下保险责任：',
+        '年金 若被保险人在约定保单周年日生存，我们按基本保险金额给付年金。',
+        '身故保险金 被保险人身故，我们按现金价值给付身故保险金。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /年金/u);
+  assert.match(result.mainResponsibilityText, /身故保险金/u);
+});
+
+test('extractStructuredResponsibilitySections does not treat responsibility start date as responsibility chapter', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'endowment',
+    records: [{
+      title: '官方两全险条款',
+      pageText: [
+        '第六条 保险责任的开始',
+        '本公司对本合同应负的保险责任自投保人缴付首期保险费后开始。',
+        '第七条 保险费的缴付',
+        '投保人应按约定缴费。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'needs_extraction_review');
+  assert.deepEqual(result.quality.warnings, ['responsibility_chapter_missing']);
+});
+
 test('extractStructuredResponsibilitySections bounds decimal responsibility chapter', () => {
   const result = extractStructuredResponsibilitySections({
     records: [{
