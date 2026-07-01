@@ -36,15 +36,12 @@ const URL_FIELDS = [
 ];
 
 const MIN_CONTAINS_MATCH_LENGTH = 4;
-const GENERIC_PRODUCT_NAMES = new Set([
+const GENERIC_PRODUCT_MAX_LENGTH = 6;
+const GENERIC_PRODUCT_SUFFIXES = [
+  '保险',
   '寿险',
-  '终身寿险',
-  '年金保险',
-  '重大疾病保险',
-  '医疗保险',
   '意外险',
-  '两全保险',
-]);
+];
 
 function text(value) {
   return String(value ?? '').trim();
@@ -64,8 +61,13 @@ function productNameMatches(candidate, query) {
   if (!left || !right) return false;
   if (left === right) return true;
   if (left.length < MIN_CONTAINS_MATCH_LENGTH || right.length < MIN_CONTAINS_MATCH_LENGTH) return false;
-  if (GENERIC_PRODUCT_NAMES.has(left) || GENERIC_PRODUCT_NAMES.has(right)) return false;
+  if (isGenericProductQuery(left) || isGenericProductQuery(right)) return false;
   return left.includes(right) || right.includes(left);
+}
+
+function isGenericProductQuery(value) {
+  return value.length <= GENERIC_PRODUCT_MAX_LENGTH
+    && GENERIC_PRODUCT_SUFFIXES.some((suffix) => value.endsWith(suffix));
 }
 
 function productKeyFor(company, productName) {
@@ -140,16 +142,17 @@ export function resolveOfficialResponsibilitySources({
     .filter((record) => productNameMatches(record.productName || record.product_name || record.title, inputProductName))
     .filter((record) => isOfficial(record))
     .filter((record) => firstUrl(record) || hasResponsibilityText(record))
-    .sort((left, right) => materialRank(left) - materialRank(right) || responsibilityText(right).length - responsibilityText(left).length);
+    .sort((left, right) => Number(hasResponsibilityText(right)) - Number(hasResponsibilityText(left))
+      || materialRank(left) - materialRank(right)
+      || responsibilityText(right).length - responsibilityText(left).length);
 
-  const recordsWithResponsibility = matched.filter(hasResponsibilityText);
   const resolvedProductName = preferredProductName({ inputProductName, records: matched });
 
   return {
     productKey: productKeyFor(resolvedCompany, resolvedProductName),
     company: resolvedCompany,
     productName: resolvedProductName,
-    records: recordsWithResponsibility,
-    status: recordsWithResponsibility.length ? 'ready' : 'needs_source_review',
+    records: matched,
+    status: matched.length ? 'ready' : 'needs_source_review',
   };
 }

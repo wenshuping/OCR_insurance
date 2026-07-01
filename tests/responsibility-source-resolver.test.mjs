@@ -130,6 +130,27 @@ test('resolveOfficialResponsibilitySources accepts file URL fields from official
   assert.equal(result.records.length, 2);
 });
 
+test('resolveOfficialResponsibilitySources retains official terms pdfs without extracted text', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '鑫荣耀终身寿险',
+    records: [
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+        title: '保险条款',
+        materialType: 'terms',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].url, 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf');
+});
+
 test('resolveOfficialResponsibilitySources combines project text fields when detecting responsibility text', () => {
   const result = resolveOfficialResponsibilitySources({
     company: '太保寿险',
@@ -142,6 +163,26 @@ test('resolveOfficialResponsibilitySources combines project text fields when det
         url: 'https://www.cpic.com/terms.pdf',
         source_excerpt: '保险责任',
         summary: '重大疾病保险金给付。',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 1);
+});
+
+test('resolveOfficialResponsibilitySources combines text fields instead of stopping at first truthy text', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '太保寿险',
+    productName: '金生无忧重大疾病保险',
+    records: [
+      {
+        company: '太保寿险',
+        productName: '太保金生无忧重大疾病保险',
+        official: true,
+        url: 'https://www.cpic.com/jinshengwuyou.pdf',
+        pageText: '目录/投保规则/犹豫期说明。',
+        responsibilityText: '保险责任 重大疾病保险金给付。',
       },
     ],
   });
@@ -194,6 +235,37 @@ test('resolveOfficialResponsibilitySources does not match generic categories by 
 
   assert.equal(result.records.length, 0);
   assert.equal(result.status, 'needs_source_review');
+});
+
+test('resolveOfficialResponsibilitySources blocks broad category names from concrete contains matches', () => {
+  const genericQueries = [
+    '养老保险',
+    '商业养老保险',
+    '健康保险',
+    '护理保险',
+    '定期寿险',
+    '终身保险',
+    '终身寿险',
+  ];
+
+  for (const productName of genericQueries) {
+    const result = resolveOfficialResponsibilitySources({
+      company: '新华保险',
+      productName,
+      records: [
+        {
+          company: '新华保险',
+          productName: `新华人寿保险股份有限公司鑫荣耀${productName}`,
+          official: true,
+          url: 'https://static-cdn.newchinalife.com/concrete-terms.pdf',
+          pageText: '保险责任 身故保险金给付。',
+        },
+      ],
+    });
+
+    assert.equal(result.records.length, 0, productName);
+    assert.equal(result.status, 'needs_source_review', productName);
+  }
 });
 
 test('resolveOfficialResponsibilitySources still accepts exact normalized generic matches', () => {
