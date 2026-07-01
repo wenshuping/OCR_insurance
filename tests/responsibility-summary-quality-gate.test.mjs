@@ -323,6 +323,21 @@ test('participating summary fails if dividends are described as guaranteed', () 
   assertFailedWith(result, 'unsupported_guaranteed_dividend');
 });
 
+test('participating summary fails contradictory guaranteed dividend wording despite uncertainty phrase', () => {
+  const result = evaluate({
+    routing: { productCategory: 'participating_life', featureTags: ['participating'] },
+    sourceSections: { mainResponsibilityText: '本合同为分红型保险，身故保险金，红利分配是不确定的。' },
+    summary: {
+      responsibilities: [{ title: '身故保险金', plainText: '按条款给付。' }],
+      productFunctions: ['红利分配'],
+      importantNotes: ['保证获得红利，红利不确定。'],
+      missingOrUnclear: [],
+    },
+  });
+
+  assertFailedWith(result, 'unsupported_guaranteed_dividend');
+});
+
 test('participating summary passes safe negated dividend guarantee wording', () => {
   const result = evaluate({
     routing: { productCategory: 'participating_life', featureTags: ['participating'] },
@@ -530,4 +545,40 @@ test('invented standard responsibility titles fail when absent from source', () 
     },
   });
   assertFailedWith(inpatient, 'unsupported_responsibility_claim', (issue) => issue.keyword === '住院医疗保险金');
+});
+
+test('concrete responsibility title support rejects unsupported nursing benefit', () => {
+  const result = evaluate({
+    routing: { productCategory: 'medical' },
+    sourceSections: { mainResponsibilityText: '门诊医疗保险金。' },
+    summary: {
+      responsibilities: [
+        { title: '门诊医疗保险金', plainText: '按约定赔付门诊医疗费用。' },
+        { title: '护理保险金', plainText: '达到护理状态后给付。' },
+      ],
+      productFunctions: [],
+      importantNotes: [],
+      missingOrUnclear: [],
+    },
+  });
+
+  assertFailedWith(result, 'unsupported_responsibility_claim', (issue) => issue.keyword === '护理保险金');
+});
+
+test('concrete responsibility title support allows merged death and total disability title', () => {
+  const result = evaluate({
+    routing: { productCategory: 'ordinary_whole_life' },
+    sourceSections: { mainResponsibilityText: '身故 身体全残保险金 基本保险金额。' },
+    summary: {
+      responsibilities: [
+        { title: '身故或身体全残保险金', plainText: '按基本保险金额给付。' },
+      ],
+      productFunctions: [],
+      importantNotes: [],
+      missingOrUnclear: [],
+    },
+  });
+
+  assert.equal(result.status, 'passed');
+  assert.deepEqual(result.issues, []);
 });

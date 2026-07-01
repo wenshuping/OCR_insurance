@@ -151,6 +151,14 @@ const UNSUPPORTED_RESPONSIBILITY_RULES = [
   },
 ];
 
+const GENERIC_RESPONSIBILITY_TITLES = new Set([
+  '主要保险责任',
+  '保险责任',
+  '核心保障',
+  '主要保障',
+  '保障责任',
+]);
+
 function validateSchema(summary, issues) {
   if (!isPlainObject(summary)) {
     issues.push({ code: 'invalid_summary_shape', message: 'Summary must be an object.' });
@@ -203,6 +211,16 @@ function evaluateCoverage({ category, source, summary, issues }) {
   }
 }
 
+function hasUnsupportedGuaranteedDividend(content) {
+  const pattern = /保证(?:给付|获得|领取|分配)?红利|红利(?:保证|确定|固定)|确定(?:给付|获得|领取|分配)?红利/gu;
+  for (const match of text(content).matchAll(pattern)) {
+    const prefix = text(content).slice(Math.max(0, match.index - 6), match.index);
+    if (/(?:不|未|无|非|难以|不能|无法|不得|不会|并不|不可)$|不保证$/u.test(prefix)) continue;
+    return true;
+  }
+  return false;
+}
+
 function evaluateSeparation({ source, summary, issues }) {
   for (const [index, item] of normalizeArray(summary.responsibilities).entries()) {
     const title = text(item?.title);
@@ -224,9 +242,7 @@ function evaluateSeparation({ source, summary, issues }) {
   }
 
   const allSummary = joinedText(summary);
-  const saysGuaranteedDividend = /(?:保证(?:给付|获得|领取|分配)?红利|红利(?:保证|确定|固定)|确定(?:给付|获得|领取|分配)?红利)/u.test(allSummary)
-    && !/(?:红利不保证|红利并不保证|红利非保证|红利是不确定|红利不确定|红利分配是不确定|不能保证.{0,8}红利)/u.test(allSummary);
-  if (saysGuaranteedDividend) {
+  if (hasUnsupportedGuaranteedDividend(allSummary)) {
     issues.push({ code: 'unsupported_guaranteed_dividend', keyword: '红利' });
   }
 }
@@ -296,6 +312,33 @@ function evaluateUnsupportedClaims({ source, summary, issues }) {
   }
 }
 
+function isConcreteResponsibilityTitle(title) {
+  const normalized = compact(title);
+  if (!normalized || GENERIC_RESPONSIBILITY_TITLES.has(normalized)) return false;
+  return /(?:保险金|年金|津贴|豁免保险费)$/u.test(normalized);
+}
+
+function titleSupportedBySource(title, source) {
+  if (includesLoose(source, title)) return true;
+  const normalizedTitle = compact(title);
+  if (/(?:身故|死亡).*(?:全残|身体全残)|(?:全残|身体全残).*(?:身故|死亡)/u.test(normalizedTitle)) {
+    return /身故|死亡/u.test(source) && /全残|身体全残/u.test(source);
+  }
+  if (includesLoose(title, '保费豁免') || includesLoose(title, '豁免保险费')) {
+    return /保费豁免|豁免保险费/u.test(source);
+  }
+  return false;
+}
+
+function evaluateTitleSourceSupport({ source, summary, issues }) {
+  for (const item of normalizeArray(summary.responsibilities)) {
+    const title = text(item?.title);
+    if (!isConcreteResponsibilityTitle(title)) continue;
+    if (titleSupportedBySource(title, source)) continue;
+    issues.push({ code: 'unsupported_responsibility_claim', keyword: title, title });
+  }
+}
+
 export function evaluateResponsibilitySummaryQuality({
   routing = {},
   sourceSections = {},
@@ -314,6 +357,7 @@ export function evaluateResponsibilitySummaryQuality({
   evaluateSeparation({ source, summary, issues });
   evaluateIncrementalFormula({ category, source, summary, issues });
   evaluateUnsupportedClaims({ source, summary, issues });
+  evaluateTitleSourceSupport({ source, summary, issues });
 
   return {
     status: issues.length ? 'failed' : 'passed',
