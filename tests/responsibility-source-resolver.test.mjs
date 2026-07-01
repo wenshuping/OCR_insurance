@@ -106,6 +106,30 @@ test('resolveOfficialResponsibilitySources accepts official and source URL field
   assert.equal(result.records.length, 2);
 });
 
+test('resolveOfficialResponsibilitySources accepts file URL fields from official domains', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '人保寿险',
+    productName: '福寿年年专属商业养老保险',
+    records: [
+      {
+        company: '人保寿险',
+        productName: '人保寿险福寿年年专属商业养老保险',
+        fileUrl: 'https://www.picc.com/terms/fushouniannian.pdf',
+        pageText: '保险责任 年金给付规则。',
+      },
+      {
+        company: '人保寿险',
+        productName: '人保寿险福寿年年专属商业养老保险',
+        file_url: 'https://static.picc.com/manual/fushouniannian.pdf',
+        pageText: '保险责任 身故保险金给付规则。',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 2);
+});
+
 test('resolveOfficialResponsibilitySources combines project text fields when detecting responsibility text', () => {
   const result = resolveOfficialResponsibilitySources({
     company: '太保寿险',
@@ -151,4 +175,43 @@ test('resolveOfficialResponsibilitySources avoids overmatching short generic pro
   assert.equal(result.status, 'ready');
   assert.equal(result.records.length, 1);
   assert.equal(result.records[0].productName, '寿险');
+});
+
+test('resolveOfficialResponsibilitySources does not match generic categories by contains', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '终身寿险',
+    records: [
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/terms.pdf',
+        pageText: '保险责任 身故保险金给付。',
+      },
+    ],
+  });
+
+  assert.equal(result.records.length, 0);
+  assert.equal(result.status, 'needs_source_review');
+});
+
+test('resolveOfficialResponsibilitySources still accepts exact normalized generic matches', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '终身寿险',
+    records: [
+      {
+        company: '新华保险',
+        productName: '终身寿险',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/generic-terms.pdf',
+        pageText: '保险责任 身故保险金给付。',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 1);
+  assert.equal(result.productName, '终身寿险');
 });

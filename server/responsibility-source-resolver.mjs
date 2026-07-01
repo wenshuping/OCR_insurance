@@ -31,9 +31,20 @@ const URL_FIELDS = [
   'official_url',
   'sourceUrl',
   'source_url',
+  'fileUrl',
+  'file_url',
 ];
 
 const MIN_CONTAINS_MATCH_LENGTH = 4;
+const GENERIC_PRODUCT_NAMES = new Set([
+  '寿险',
+  '终身寿险',
+  '年金保险',
+  '重大疾病保险',
+  '医疗保险',
+  '意外险',
+  '两全保险',
+]);
 
 function text(value) {
   return String(value ?? '').trim();
@@ -53,6 +64,7 @@ function productNameMatches(candidate, query) {
   if (!left || !right) return false;
   if (left === right) return true;
   if (left.length < MIN_CONTAINS_MATCH_LENGTH || right.length < MIN_CONTAINS_MATCH_LENGTH) return false;
+  if (GENERIC_PRODUCT_NAMES.has(left) || GENERIC_PRODUCT_NAMES.has(right)) return false;
   return left.includes(right) || right.includes(left);
 }
 
