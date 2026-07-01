@@ -151,6 +151,37 @@ test('resolveOfficialResponsibilitySources retains official terms pdfs without e
   assert.equal(result.records[0].url, 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf');
 });
 
+test('resolveOfficialResponsibilitySources ranks official terms pdfs before manuals with extracted text', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '鑫荣耀终身寿险',
+    records: [
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+        title: '产品说明书',
+        materialType: 'product_manual',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/xinrongyao-manual.pdf',
+        pageText: '保险责任 产品说明书责任正文',
+      },
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
+        title: '保险条款',
+        materialType: 'terms',
+        official: true,
+        url: 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 2);
+  assert.equal(result.records[0].materialType, 'terms');
+  assert.equal(result.records[0].url, 'https://static-cdn.newchinalife.com/xinrongyao-terms.pdf');
+});
+
 test('resolveOfficialResponsibilitySources combines project text fields when detecting responsibility text', () => {
   const result = resolveOfficialResponsibilitySources({
     company: '太保寿险',
@@ -181,8 +212,8 @@ test('resolveOfficialResponsibilitySources combines text fields instead of stopp
         productName: '太保金生无忧重大疾病保险',
         official: true,
         url: 'https://www.cpic.com/jinshengwuyou.pdf',
-        pageText: '目录/投保规则/犹豫期说明。',
-        responsibilityText: '保险责任 重大疾病保险金给付。',
+        responsibilityText: '目录/投保规则/犹豫期说明。',
+        pageText: '保险责任 重大疾病保险金给付。',
       },
     ],
   });
@@ -266,6 +297,26 @@ test('resolveOfficialResponsibilitySources blocks broad category names from conc
     assert.equal(result.records.length, 0, productName);
     assert.equal(result.status, 'needs_source_review', productName);
   }
+});
+
+test('resolveOfficialResponsibilitySources allows concrete product queries with category suffixes', () => {
+  const result = resolveOfficialResponsibilitySources({
+    company: '中国人寿',
+    productName: '康宁终身保险',
+    records: [
+      {
+        company: '中国人寿',
+        productName: '国寿康宁终身保险',
+        official: true,
+        url: 'https://www.chinalife.com/kangning-terms.pdf',
+        pageText: '保险责任 身故保险金给付。',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 1);
+  assert.equal(result.productName, '国寿康宁终身保险');
 });
 
 test('resolveOfficialResponsibilitySources still accepts exact normalized generic matches', () => {

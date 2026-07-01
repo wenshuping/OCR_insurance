@@ -36,12 +36,25 @@ const URL_FIELDS = [
 ];
 
 const MIN_CONTAINS_MATCH_LENGTH = 4;
-const GENERIC_PRODUCT_MAX_LENGTH = 6;
 const GENERIC_PRODUCT_SUFFIXES = [
-  '保险',
-  '寿险',
   '意外险',
+  '寿险',
+  '保险',
 ];
+const GENERIC_PRODUCT_BASES = new Set([
+  '',
+  '商业',
+  '养老',
+  '商业养老',
+  '健康',
+  '护理',
+  '定期',
+  '终身',
+  '年金',
+  '重大疾病',
+  '医疗',
+  '两全',
+]);
 
 function text(value) {
   return String(value ?? '').trim();
@@ -66,8 +79,12 @@ function productNameMatches(candidate, query) {
 }
 
 function isGenericProductQuery(value) {
-  return value.length <= GENERIC_PRODUCT_MAX_LENGTH
-    && GENERIC_PRODUCT_SUFFIXES.some((suffix) => value.endsWith(suffix));
+  for (const suffix of GENERIC_PRODUCT_SUFFIXES) {
+    if (!value.endsWith(suffix)) continue;
+    const base = value.slice(0, -suffix.length);
+    if (GENERIC_PRODUCT_BASES.has(base)) return true;
+  }
+  return false;
 }
 
 function productKeyFor(company, productName) {
@@ -142,8 +159,9 @@ export function resolveOfficialResponsibilitySources({
     .filter((record) => productNameMatches(record.productName || record.product_name || record.title, inputProductName))
     .filter((record) => isOfficial(record))
     .filter((record) => firstUrl(record) || hasResponsibilityText(record))
-    .sort((left, right) => Number(hasResponsibilityText(right)) - Number(hasResponsibilityText(left))
-      || materialRank(left) - materialRank(right)
+    .sort((left, right) => materialRank(left) - materialRank(right)
+      || Number(hasResponsibilityText(right)) - Number(hasResponsibilityText(left))
+      || Number(Boolean(firstUrl(right))) - Number(Boolean(firstUrl(left)))
       || responsibilityText(right).length - responsibilityText(left).length);
 
   const resolvedProductName = preferredProductName({ inputProductName, records: matched });
