@@ -152,13 +152,28 @@ function headingStartFromMatch(matchText) {
   return matchText.search(/[^\s\n]/u);
 }
 
-function findNextHeading(source, from) {
+function headingTokenAt(source, start) {
+  const match = new RegExp(`^\\s*(${LINE_HEADING_PREFIX})`, 'u').exec(source.slice(start));
+  return match?.[1] || '';
+}
+
+function isDecimalChildHeading(parentToken, candidateToken) {
+  return /^\d+(?:\.\d+)+$/u.test(parentToken)
+    && /^\d+(?:\.\d+)+$/u.test(candidateToken)
+    && candidateToken.startsWith(`${parentToken}.`);
+}
+
+function findNextHeading(source, from, parentToken = '') {
   const titleAlternation = NEXT_HEADING_TITLES.map(escapeRegExp).join('|');
-  const regex = new RegExp(`(^|\\n)\\s*(?:(?:${LINE_HEADING_PREFIX})(?:${HEADING_JOINER})(?:[^\\n]{1,30})|(?:${titleAlternation})\\s*[:：])`, 'u');
+  const regex = new RegExp(`(^|\\n)\\s*(?:(?:${LINE_HEADING_PREFIX})(?:${HEADING_JOINER})(?:[^\\n]{1,30})|(?:${titleAlternation})\\s*[:：])`, 'gu');
   const slice = source.slice(from);
-  const match = regex.exec(slice);
-  if (!match) return -1;
-  return from + match.index + headingStartFromMatch(match[0]);
+  for (const match of slice.matchAll(regex)) {
+    const candidateStart = from + match.index + headingStartFromMatch(match[0]);
+    const candidateToken = headingTokenAt(source, candidateStart);
+    if (isDecimalChildHeading(parentToken, candidateToken)) continue;
+    return candidateStart;
+  }
+  return -1;
 }
 
 function findLooseBoundary(source, from) {
@@ -172,7 +187,7 @@ function findLooseBoundary(source, from) {
 
 function boundedSection(source, start, maxLength = 3000) {
   if (start < 0) return '';
-  const nextHeading = findNextHeading(source, start + 4);
+  const nextHeading = findNextHeading(source, start + 4, headingTokenAt(source, start));
   const looseBoundary = findLooseBoundary(source, start + 4);
   const candidates = [nextHeading, looseBoundary].filter((index) => index > start);
   const end = candidates.length ? Math.min(...candidates) : -1;

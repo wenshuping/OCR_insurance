@@ -66,6 +66,30 @@ test('extractStructuredResponsibilitySections bounds decimal responsibility chap
   assert.doesNotMatch(result.mainResponsibilityText, /责任免除/u);
 });
 
+test('extractStructuredResponsibilitySections keeps decimal subclauses inside parent responsibility chapter', () => {
+  const result = extractStructuredResponsibilitySections({
+    records: [{
+      title: '条款',
+      pageText: [
+        '2.2 投保范围',
+        '2.3 保险责任',
+        '2.3.1 身故保险金',
+        '本公司按约定给付身故保险金。',
+        '2.3.2 满期保险金',
+        '本公司按约定给付满期保险金。',
+        '2.4 责任免除',
+        '因下列情形导致的保险事故，本公司不承担给付责任。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /2\.3\.1 身故保险金/u);
+  assert.match(result.mainResponsibilityText, /按约定给付身故保险金/u);
+  assert.match(result.mainResponsibilityText, /2\.3\.2 满期保险金/u);
+  assert.doesNotMatch(result.mainResponsibilityText, /2\.4 责任免除/u);
+});
+
 test('extractStructuredResponsibilitySections combines useful text fields after full text', () => {
   const result = extractStructuredResponsibilitySections({
     productCategory: 'critical_illness',
@@ -221,6 +245,15 @@ test('extractStructuredResponsibilitySections supports bare and punctuated OCR h
       ].join('\n'),
     }],
   });
+  const colon = extractStructuredResponsibilitySections({
+    records: [{
+      pageText: [
+        '第六条：保险责任',
+        '本公司承担住院津贴保险金责任。',
+        '第七条：责任免除',
+      ].join('\n'),
+    }],
+  });
 
   assert.equal(bare.quality.status, 'complete');
   assert.match(bare.mainResponsibilityText, /满期保险金/u);
@@ -228,6 +261,9 @@ test('extractStructuredResponsibilitySections supports bare and punctuated OCR h
   assert.equal(punctuated.quality.status, 'complete');
   assert.match(punctuated.mainResponsibilityText, /年金给付/u);
   assert.doesNotMatch(punctuated.mainResponsibilityText, /责任免除/u);
+  assert.equal(colon.quality.status, 'complete');
+  assert.match(colon.mainResponsibilityText, /住院津贴保险金/u);
+  assert.doesNotMatch(colon.mainResponsibilityText, /责任免除/u);
 });
 
 test('extractStructuredResponsibilitySections combines separate universal fee and risk chapters', () => {
