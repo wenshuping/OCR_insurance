@@ -66,7 +66,7 @@ test('routeInsuranceProductCategory keeps participating incremental whole life o
   assert.ok(result.featureTags.includes('participating'));
 });
 
-test('routeInsuranceProductCategory routes ordinary participating life as participating life', () => {
+test('routeInsuranceProductCategory routes ordinary participating whole life as ordinary whole life', () => {
   const result = routeInsuranceProductCategory({
     productName: '福禄终身寿险（分红型）',
     records: [{ productType: '终身寿险' }],
@@ -75,10 +75,24 @@ test('routeInsuranceProductCategory routes ordinary participating life as partic
     },
   });
 
+  assert.equal(result.productCategory, 'ordinary_whole_life');
+  assert.equal(result.categoryLabel, '终身寿险（分红型）');
+  assert.equal(result.modelTier, 'pro');
+  assert.deepEqual(result.featureTags, ['participating']);
+});
+
+test('routeInsuranceProductCategory keeps participating life generic only when specific life identity is unclear', () => {
+  const result = routeInsuranceProductCategory({
+    productName: '福满人生寿险（分红型）',
+    records: [{ productType: '寿险' }],
+    sourceSections: {
+      mainResponsibilityText: '本合同为分红保险，红利分配是不确定的。本公司承担身故保险金责任。',
+    },
+  });
+
   assert.equal(result.productCategory, 'participating_life');
   assert.equal(result.categoryLabel, '人寿保险（分红型）');
   assert.equal(result.modelTier, 'pro');
-  assert.deepEqual(result.featureTags, ['participating']);
 });
 
 test('routeInsuranceProductCategory routes medical and accident examples correctly', () => {
@@ -176,4 +190,58 @@ test('routeInsuranceProductCategory keeps tags unique across repeated signals', 
   });
 
   assert.equal(result.featureTags.filter((tag) => tag === 'participating').length, 1);
+});
+
+test('routeInsuranceProductCategory lets whole-life identity outrank incidental annuity conversion wording', () => {
+  const result = routeInsuranceProductCategory({
+    productName: '传世荣耀终身寿险',
+    records: [{ productType: '终身寿险' }],
+    indicators: [{ productType: '增额终身寿险' }],
+    sourceSections: {
+      mainResponsibilityText: '本合同承担身故保险金，可申请年金转换权益。',
+    },
+  });
+
+  assert.equal(result.productCategory, 'incremental_whole_life');
+  assert.equal(result.categoryLabel, '增额终身寿险');
+});
+
+test('routeInsuranceProductCategory lets medical identity outrank critical illness medical wording', () => {
+  const result = routeInsuranceProductCategory({
+    productName: '安心百万医疗保险',
+    records: [{ productType: '医疗险' }],
+    sourceSections: {
+      mainResponsibilityText: '重大疾病医疗保险金按约定补偿住院医疗费用。',
+    },
+  });
+
+  assert.equal(result.productCategory, 'medical');
+  assert.equal(result.categoryLabel, '医疗保险');
+});
+
+test('routeInsuranceProductCategory lets accident identity outrank generic medical expense wording', () => {
+  const result = routeInsuranceProductCategory({
+    productName: '综合意外伤害保险',
+    records: [{ productType: '意外险' }],
+    sourceSections: {
+      mainResponsibilityText: '住院津贴 医疗费用补偿 身故保险金。',
+    },
+  });
+
+  assert.equal(result.productCategory, 'accident');
+  assert.equal(result.categoryLabel, '意外伤害保险');
+});
+
+test('routeInsuranceProductCategory detects scalar compound-growth formulas', () => {
+  const result = routeInsuranceProductCategory({
+    productName: '鑫未来终身寿险',
+    records: [{ productType: '终身寿险' }],
+    sourceSections: {
+      mainResponsibilityText: '第n个保单年度的保险金额为基本保险金额×1.035^(n-1)。',
+    },
+  });
+
+  assert.equal(result.productCategory, 'incremental_whole_life');
+  assert.equal(result.categoryLabel, '增额终身寿险');
+  assert.ok(result.featureTags.includes('compound_growth'));
 });

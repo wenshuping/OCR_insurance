@@ -24,6 +24,26 @@ function sourceSectionText(sourceSections = {}) {
   ];
 }
 
+function identityText({
+  productName = '',
+  records = [],
+  indicators = [],
+} = {}) {
+  return [
+    productName,
+    ...normalizeArray(records).flatMap((record) => partsFromObject(record, [
+      'productType',
+      'product_type',
+      'insuranceType',
+      'insurance_type',
+    ])),
+    ...normalizeArray(indicators).flatMap((indicator) => partsFromObject(indicator, [
+      'productType',
+      'product_type',
+    ])),
+  ].map(text).filter(Boolean).join(' ').normalize('NFKC');
+}
+
 function allText({
   productName = '',
   records = [],
@@ -82,6 +102,7 @@ function addTag(tags, tag, enabled = true) {
 
 function hasCompoundGrowth(content) {
   return includes(content, /(?:基本保险金额|基本保额)\s*[×xX*]\s*[（(]\s*1\s*[+＋]\s*\d+(?:\.\d+)?\s*%\s*[）)]\s*(?:\^|的第?)?\s*(?:[（(]?\s*n\s*[-－]\s*1\s*[）)]?|n-1)?/u)
+    || includes(content, /(?:基本保险金额|基本保额)\s*[×xX*]\s*1\.\d+\s*(?:\^|的第?)\s*(?:[（(]?\s*n\s*[-－]\s*1\s*[）)]?|n-1)/u)
     || includes(content, /有效保险金额/u)
     || includes(content, /(?:年复利|复利递增|按年复利|年度复利|每年按.{0,8}(?:递增|增长))/u);
 }
@@ -105,10 +126,33 @@ function categoryLabelFor(category, participating) {
   return labels[category] || labels.other;
 }
 
-function routeCategory(content, productName, participating, compoundGrowth) {
-  const lifeName = includes(productName, /终身寿|寿险|定期寿|增额/u);
-  const lifeProductSignal = lifeName || includes(content, /终身寿险|终身寿|增额终身|定期寿险|定期人寿|普通寿险/u);
+function routeCategory(content, identity, participating, compoundGrowth) {
+  const incrementalIdentity = includes(identity, /增额终身寿|增额寿/u);
+  const wholeLifeIdentity = includes(identity, /终身寿|终身保险/u);
+  const termLifeIdentity = includes(identity, /定期寿|定期人寿/u);
+  const accidentIdentity = includes(identity, /意外险|意外伤害保险/u);
+  const medicalIdentity = includes(identity, /医疗险|医疗保险/u);
+  const criticalIllnessIdentity = includes(identity, /重大疾病|重疾/u);
+  const annuityIdentity = includes(identity, /年金|养老金|养老保险/u);
+  const endowmentIdentity = includes(identity, /两全/u);
+  const universalIdentity = includes(identity, /万能/u);
+  const investmentLinkedIdentity = includes(identity, /投资连结|投连/u);
+  const longTermCareIdentity = includes(identity, /长期护理|护理保险/u);
+  const lifeProductSignal = includes(identity, /终身寿|寿险|定期寿|增额|人寿保险/u)
+    || includes(content, /终身寿险|终身寿|增额终身|定期寿险|定期人寿|普通寿险/u);
   const wholeLifeSignal = includes(content, /终身寿|终身保险|身故保险金|全残保险金/u);
+
+  if (incrementalIdentity || (compoundGrowth && lifeProductSignal)) return 'incremental_whole_life';
+  if (investmentLinkedIdentity) return 'investment_linked';
+  if (universalIdentity) return 'universal_life';
+  if (longTermCareIdentity) return 'long_term_care';
+  if (accidentIdentity) return 'accident';
+  if (medicalIdentity) return 'medical';
+  if (criticalIllnessIdentity) return 'critical_illness';
+  if (termLifeIdentity) return 'term_life';
+  if (wholeLifeIdentity) return 'ordinary_whole_life';
+  if (annuityIdentity) return 'annuity';
+  if (endowmentIdentity) return 'endowment';
 
   if (includes(content, /重大疾病|重疾|轻度疾病|中度疾病|重度疾病|特定疾病/u)) return 'critical_illness';
   if (includes(content, /(?:投资连结|投连险|投资账户|单位价格|买入价|卖出价)/u)) return 'investment_linked';
@@ -121,7 +165,7 @@ function routeCategory(content, productName, participating, compoundGrowth) {
   if (compoundGrowth || includes(content, /增额终身寿|增额寿|保额递增/u)) return 'incremental_whole_life';
   if (includes(content, /(?:定期寿险|定期人寿|保险期间.{0,20}(?:年|岁).*身故|身故.{0,20}保险期间.{0,20}(?:年|岁))/u)) return 'term_life';
   if (includes(content, /(?:意外伤害保险|意外身故|意外伤残|意外医疗|交通意外)/u) && !lifeProductSignal) return 'accident';
-  if (participating && wholeLifeSignal) return 'participating_life';
+  if (participating && includes(identity, /寿险|人寿保险/u)) return 'participating_life';
   if (lifeProductSignal || wholeLifeSignal) return 'ordinary_whole_life';
   if (includes(content, /(?:医疗保险|医疗险)/u)) return 'medical';
   return 'other';
@@ -146,12 +190,12 @@ function modelTierFor(category, content, participating) {
 
 export function routeInsuranceProductCategory(input = {}) {
   const content = allText(input);
-  const productName = text(input.productName).normalize('NFKC');
+  const identity = identityText(input);
   const featureTags = [];
 
   const participating = includes(content, /(?:分红型|分红保险|红利|累积红利保险金额|保单红利|红利分配)/u);
   const compoundGrowth = hasCompoundGrowth(content);
-  const category = routeCategory(content, productName, participating, compoundGrowth);
+  const category = routeCategory(content, identity, participating, compoundGrowth);
 
   addTag(featureTags, 'compound_growth', compoundGrowth);
   addTag(featureTags, 'traffic_accident_extra', includes(content, /(?:交通工具意外|交通意外|公共交通|航空意外|驾乘意外|自驾车意外)/u));
