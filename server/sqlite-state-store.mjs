@@ -19,6 +19,7 @@ const DB_OWNED_KEYS = new Set([
   'insuranceIndicatorRecords',
   'optionalResponsibilityRecords',
   'productCustomerResponsibilitySummaries',
+  'productCustomerSummaryGenerationRuns',
   'policyDerivedResults',
   'productIndicatorVersions',
   'indicatorUpdateBatches',
@@ -208,6 +209,35 @@ function normalizeProductCustomerResponsibilitySummary(row = {}) {
   };
 }
 
+function normalizeProductCustomerSummaryGenerationRun(row = {}) {
+  const parsedPayload = typeof row.payload === 'string' ? parseJson(row.payload, {}) : row.payload;
+  const payload = parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload) ? parsedPayload : {};
+  const source = { ...payload, ...row };
+  const productKey = String(source.productKey || source.product_key || '').trim();
+  const summaryVersion = String(source.summaryVersion || source.summary_version || '').trim();
+  const id = String(source.id || '').trim();
+  if (!id || !productKey || !summaryVersion) return null;
+  return {
+    id,
+    productKey,
+    company: String(source.company || '').trim(),
+    productName: String(source.productName || source.product_name || '').trim(),
+    summaryVersion,
+    status: String(source.status || '').trim() || 'failed',
+    productCategory: String(source.productCategory || source.product_category || '').trim(),
+    categoryLabel: String(source.categoryLabel || source.category_label || '').trim(),
+    modelProvider: String(source.modelProvider || source.model_provider || '').trim(),
+    modelName: String(source.modelName || source.model_name || '').trim(),
+    modelTier: String(source.modelTier || source.model_tier || '').trim(),
+    sourceDigest: String(source.sourceDigest || source.source_digest || '').trim(),
+    sourceSectionsDigest: String(source.sourceSectionsDigest || source.source_sections_digest || '').trim(),
+    qualityIssues: normalizeArray(source.qualityIssues || source.quality_issues || parseJson(source.quality_issues_json, [])),
+    rawPreview: String(source.rawPreview || source.raw_preview || '').trim(),
+    createdAt: String(source.createdAt || source.created_at || '').trim(),
+    payload,
+  };
+}
+
 function getMeta(db, key) {
   return db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value || '';
 }
@@ -352,6 +382,30 @@ function createSchema(db) {
       ON product_customer_responsibility_summaries(company, product_name);
     CREATE INDEX IF NOT EXISTS idx_product_customer_responsibility_summaries_status
       ON product_customer_responsibility_summaries(status);
+
+    CREATE TABLE IF NOT EXISTS product_customer_summary_generation_runs (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      summary_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      product_category TEXT,
+      category_label TEXT,
+      model_provider TEXT,
+      model_name TEXT,
+      model_tier TEXT,
+      source_digest TEXT,
+      source_sections_digest TEXT,
+      quality_issues_json TEXT NOT NULL DEFAULT '[]',
+      raw_preview TEXT,
+      created_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_customer_summary_generation_runs_product_version
+      ON product_customer_summary_generation_runs(product_key, summary_version);
+    CREATE INDEX IF NOT EXISTS idx_product_customer_summary_generation_runs_status
+      ON product_customer_summary_generation_runs(status);
 
     CREATE TABLE IF NOT EXISTS policy_derived_results (
       policy_id INTEGER PRIMARY KEY,
@@ -752,6 +806,52 @@ function insertRows(db, state) {
       summary.generatedAt,
       summary.updatedAt,
       jsonPayload(summary),
+    );
+  }
+
+  const insertProductCustomerSummaryGenerationRun = db.prepare(`
+    INSERT INTO product_customer_summary_generation_runs (
+      id,
+      product_key,
+      company,
+      product_name,
+      summary_version,
+      status,
+      product_category,
+      category_label,
+      model_provider,
+      model_name,
+      model_tier,
+      source_digest,
+      source_sections_digest,
+      quality_issues_json,
+      raw_preview,
+      created_at,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of normalizeArray(state.productCustomerSummaryGenerationRuns)) {
+    const run = normalizeProductCustomerSummaryGenerationRun(row);
+    if (!run) continue;
+    insertProductCustomerSummaryGenerationRun.run(
+      run.id,
+      run.productKey,
+      run.company,
+      run.productName,
+      run.summaryVersion,
+      run.status,
+      run.productCategory,
+      run.categoryLabel,
+      run.modelProvider,
+      run.modelName,
+      run.modelTier,
+      run.sourceDigest,
+      run.sourceSectionsDigest,
+      JSON.stringify(run.qualityIssues),
+      run.rawPreview,
+      run.createdAt,
+      jsonPayload(run),
     );
   }
 
@@ -1234,6 +1334,69 @@ function upsertProductCustomerResponsibilitySummaryRow(db, row = {}) {
   return summary;
 }
 
+function upsertProductCustomerSummaryGenerationRunRow(db, row = {}) {
+  const run = normalizeProductCustomerSummaryGenerationRun(row);
+  if (!run) return null;
+  db.prepare(`
+    INSERT INTO product_customer_summary_generation_runs (
+      id,
+      product_key,
+      company,
+      product_name,
+      summary_version,
+      status,
+      product_category,
+      category_label,
+      model_provider,
+      model_name,
+      model_tier,
+      source_digest,
+      source_sections_digest,
+      quality_issues_json,
+      raw_preview,
+      created_at,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      product_key = excluded.product_key,
+      company = excluded.company,
+      product_name = excluded.product_name,
+      summary_version = excluded.summary_version,
+      status = excluded.status,
+      product_category = excluded.product_category,
+      category_label = excluded.category_label,
+      model_provider = excluded.model_provider,
+      model_name = excluded.model_name,
+      model_tier = excluded.model_tier,
+      source_digest = excluded.source_digest,
+      source_sections_digest = excluded.source_sections_digest,
+      quality_issues_json = excluded.quality_issues_json,
+      raw_preview = excluded.raw_preview,
+      created_at = excluded.created_at,
+      payload = excluded.payload
+  `).run(
+    run.id,
+    run.productKey,
+    run.company,
+    run.productName,
+    run.summaryVersion,
+    run.status,
+    run.productCategory,
+    run.categoryLabel,
+    run.modelProvider,
+    run.modelName,
+    run.modelTier,
+    run.sourceDigest,
+    run.sourceSectionsDigest,
+    JSON.stringify(run.qualityIssues),
+    run.rawPreview,
+    run.createdAt,
+    jsonPayload(run),
+  );
+  return run;
+}
+
 function upsertProductIndicatorVersionRow(db, row = {}) {
   const version = normalizeProductIndicatorVersion(row);
   if (!version) return null;
@@ -1618,6 +1781,7 @@ function clearDbOwnedTables(db) {
     DELETE FROM insurance_indicator_records;
     DELETE FROM optional_responsibility_records;
     DELETE FROM product_customer_responsibility_summaries;
+    DELETE FROM product_customer_summary_generation_runs;
     DELETE FROM policy_derived_results;
     DELETE FROM product_indicator_versions;
     DELETE FROM indicator_update_batches;
@@ -1651,6 +1815,7 @@ function loadDbOwnedState(db) {
     insuranceIndicatorRecords: loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC'),
     optionalResponsibilityRecords: loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC'),
     productCustomerResponsibilitySummaries: loadPayloadRows(db, 'product_customer_responsibility_summaries', 'product_name ASC, summary_version ASC, id ASC'),
+    productCustomerSummaryGenerationRuns: loadPayloadRows(db, 'product_customer_summary_generation_runs', 'created_at DESC, id ASC'),
     policyDerivedResults: loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC'),
     productIndicatorVersions: loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC'),
     indicatorUpdateBatches: loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC'),
@@ -1678,6 +1843,9 @@ function loadDbOwnedState(db) {
   state.productCustomerResponsibilitySummaries = state.productCustomerResponsibilitySummaries
     .map((row) => normalizeProductCustomerResponsibilitySummary(row))
     .filter((row) => row && row.status === 'ready');
+  state.productCustomerSummaryGenerationRuns = state.productCustomerSummaryGenerationRuns
+    .map((row) => normalizeProductCustomerSummaryGenerationRun(row))
+    .filter(Boolean);
   state.productIndicatorVersions = state.productIndicatorVersions
     .map((row) => normalizeProductIndicatorVersion(row))
     .filter(Boolean);
@@ -2048,6 +2216,35 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return row;
   }
 
+  async function persistProductCustomerSummaryGenerationRun({ state, run = null } = {}) {
+    const now = new Date().toISOString();
+    const target = normalizeProductCustomerSummaryGenerationRun({ ...(run || {}), createdAt: run?.createdAt || now });
+    if (!target) {
+      throw new Error('Product customer summary generation run requires id, productKey, and summaryVersion');
+    }
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      upsertProductCustomerSummaryGenerationRunRow(db, target);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') {
+      state.productCustomerSummaryGenerationRuns = loadPayloadRows(
+        db,
+        'product_customer_summary_generation_runs',
+        'created_at DESC, id ASC',
+      )
+        .map((item) => normalizeProductCustomerSummaryGenerationRun(item))
+        .filter(Boolean);
+    }
+    return target;
+  }
+
   async function findProductCustomerResponsibilitySummary({
     productKey = '',
     summaryVersion = '',
@@ -2209,6 +2406,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistFamilyReportState,
     persistPolicyDerivedResult,
     persistProductCustomerResponsibilitySummary,
+    persistProductCustomerSummaryGenerationRun,
     findProductCustomerResponsibilitySummary,
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,

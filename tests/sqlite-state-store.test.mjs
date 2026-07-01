@@ -832,6 +832,107 @@ test('sqlite state store persists and reloads product customer responsibility su
   }
 });
 
+test('sqlite state store persists product customer summary generation runs', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    const run = {
+      id: 'customer_summary_run:company_product:新华保险:鑫荣耀:v22:1',
+      productKey: 'company_product:新华保险:鑫荣耀',
+      company: '新华保险',
+      productName: '鑫荣耀',
+      summaryVersion: 'customer-summary-v22-structured-rag',
+      status: 'needs_model_review',
+      productCategory: 'incremental_whole_life',
+      categoryLabel: '增额终身寿险',
+      modelProvider: 'deepseek',
+      modelName: 'deepseek-v4-pro',
+      modelTier: 'pro',
+      sourceDigest: 'source-digest',
+      sourceSectionsDigest: 'sections-digest',
+      qualityIssues: [{ code: 'missing_required_keyword', keyword: '复利递增' }],
+      rawPreview: '{"headline":"..."}',
+      createdAt: '2026-07-01T00:00:00.000Z',
+      payload: { attempt: 1 },
+    };
+
+    await store.persistProductCustomerSummaryGenerationRun({ state, run });
+
+    const reloaded = await store.load();
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns.length, 1);
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].id, run.id);
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].status, 'needs_model_review');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].productCategory, 'incremental_whole_life');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].modelName, 'deepseek-v4-pro');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].qualityIssues[0].keyword, '复利递增');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].rawPreview, '{"headline":"..."}');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].payload.attempt, 1);
+    assert.deepEqual(state.productCustomerSummaryGenerationRuns, reloaded.productCustomerSummaryGenerationRuns);
+  } finally {
+    store.close();
+  }
+});
+
+test('sqlite state store upserts product customer summary generation runs', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    const run = {
+      id: 'customer_summary_run:company_product:新华保险:鑫荣耀:v22:retry',
+      productKey: 'company_product:新华保险:鑫荣耀',
+      company: '新华保险',
+      productName: '鑫荣耀',
+      summaryVersion: 'customer-summary-v22-structured-rag',
+      status: 'needs_model_review',
+      productCategory: 'incremental_whole_life',
+      categoryLabel: '增额终身寿险',
+      modelProvider: 'deepseek',
+      modelName: 'deepseek-v4-flash',
+      modelTier: 'flash',
+      sourceDigest: 'source-digest-1',
+      sourceSectionsDigest: 'sections-digest-1',
+      qualityIssues: [{ code: 'missing_formula', keyword: '有效保险金额' }],
+      rawPreview: '{"headline":"first"}',
+      createdAt: '2026-07-01T00:00:00.000Z',
+      payload: { attempt: 1 },
+    };
+
+    await store.persistProductCustomerSummaryGenerationRun({ state, run });
+    await store.persistProductCustomerSummaryGenerationRun({
+      state,
+      run: {
+        ...run,
+        status: 'failed',
+        modelName: 'deepseek-v4-pro',
+        modelTier: 'pro',
+        sourceDigest: 'source-digest-2',
+        sourceSectionsDigest: 'sections-digest-2',
+        qualityIssues: [{ code: 'model_error', detail: 'timeout' }],
+        rawPreview: '{"headline":"second"}',
+        createdAt: '2026-07-01T00:01:00.000Z',
+        payload: { attempt: 2, refreshed: true },
+      },
+    });
+
+    const reloaded = await store.load();
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns.length, 1);
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].status, 'failed');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].modelName, 'deepseek-v4-pro');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].modelTier, 'pro');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].sourceDigest, 'source-digest-2');
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].sourceSectionsDigest, 'sections-digest-2');
+    assert.deepEqual(reloaded.productCustomerSummaryGenerationRuns[0].qualityIssues, [{ code: 'model_error', detail: 'timeout' }]);
+    assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].rawPreview, '{"headline":"second"}');
+    assert.deepEqual(reloaded.productCustomerSummaryGenerationRuns[0].payload, { attempt: 2, refreshed: true });
+  } finally {
+    store.close();
+  }
+});
+
 test('sqlite state store marks derived results stale by changed product keys', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
