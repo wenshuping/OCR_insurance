@@ -71,6 +71,26 @@ RESPONSIBILITY_PLANNER_MODE=auto|all|off
 RESPONSIBILITY_PLANNER_MODEL=deepseek-v4-flash
 ```
 
+For interactive testing, the customer summary endpoint should also accept a request-level override:
+
+```json
+{
+  "company": "新华保险",
+  "name": "产品名",
+  "plannerMode": "auto"
+}
+```
+
+The request override is only for generation/debugging. It should be persisted in run records and payload metadata so results can be compared later. If the requested mode is invalid, the service should fall back to the configured default.
+
+The responsibility assistant UI may expose a small test switch with three choices:
+
+- 自动
+- 所有产品走 Planner
+- 不走 Planner
+
+This switch only controls the next customer-summary request. It does not implement the future admin editing system and does not change cached summaries outside the current summary version/digest behavior.
+
 All model calls in this feature use DeepSeek. The Planner defaults to `deepseek-v4-flash` because it only produces structured planning metadata. The final summary keeps existing routing: Flash for simple products, Pro for complex products.
 
 For manual testing, generation run payloads should record:
@@ -313,6 +333,8 @@ Focused tests should cover:
 - Critical illness with disease grouping calls Planner.
 - `plannerMode=all` calls Planner for a simple product.
 - `plannerMode=off` never calls Planner.
+- Request-level `plannerMode` overrides the configured default for that customer-summary call.
+- Responsibility assistant sends the selected Planner mode in the customer-summary request.
 - Planner failure falls back to local routing and still generates if final DeepSeek succeeds.
 - Planner output is stored in payload/run records.
 - New block structure is persisted while old customer summary fields remain available.
