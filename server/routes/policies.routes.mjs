@@ -64,7 +64,11 @@ export function createPolicyRoutes(context) {
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
     mergePolicyDerivedResult,
+    buildResponsibilitySummaryReportFromCards,
     buildResponsibilityCardsForPolicy,
+    isGeneratedResponsibilityCountReport,
+    mergeCoverageTableWithCheckedRows,
+    responsibilityRowsFromCards,
     attachPolicyFamilyDisplay,
     selectedCoverageIndicators,
     computeScenarioEntries,
@@ -82,6 +86,18 @@ export function createPolicyRoutes(context) {
     nowIso,
   } = context;
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
+
+  function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
+    const existing = String(current || '').trim();
+    if (existing && !(typeof isGeneratedResponsibilityCountReport === 'function' && isGeneratedResponsibilityCountReport(existing))) {
+      return existing;
+    }
+    const cardReport = typeof buildResponsibilitySummaryReportFromCards === 'function'
+      ? buildResponsibilitySummaryReportFromCards(cards, { optionalResponsibilities })
+      : '';
+    if (cardReport) return cardReport;
+    return rows.length ? `已整理 ${rows.length} 项保险责任。` : existing;
+  }
 
   function archivedFamilyReportArtifactsChanged(result = {}) {
     return Boolean(
@@ -303,18 +319,32 @@ export function createPolicyRoutes(context) {
         optionalResponsibilities,
       };
       const coverageIndicators = findPolicyCoverageIndicators(policyDraftWithOptionalResponsibilities, state.insuranceIndicatorRecords);
+      const responsibilityCards = typeof buildResponsibilityCardsForPolicy === 'function'
+        ? buildResponsibilityCardsForPolicy({
+            policy: policyDraftWithOptionalResponsibilities,
+            responsibilities: analysis?.coverageTable,
+            coverageIndicators,
+            knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraftWithOptionalResponsibilities),
+            optionalResponsibilityRecords: optionalResponsibilities,
+          })
+        : [];
+      const checkedCoverageTable = typeof responsibilityRowsFromCards === 'function'
+        ? responsibilityRowsFromCards(responsibilityCards, { optionalResponsibilities })
+        : [];
+      const effectiveCoverageTable = typeof mergeCoverageTableWithCheckedRows === 'function'
+        ? mergeCoverageTableWithCheckedRows(analysis?.coverageTable, checkedCoverageTable)
+        : (checkedCoverageTable.length ? checkedCoverageTable : (Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : []));
       const analysisWithOptionalResponsibilities = {
         ...analysis,
+        report: responsibilityReportFor({
+          current: analysis?.report,
+          rows: checkedCoverageTable,
+          cards: responsibilityCards,
+          optionalResponsibilities,
+        }),
+        coverageTable: effectiveCoverageTable,
         optionalResponsibilities,
-        responsibilityCards: typeof buildResponsibilityCardsForPolicy === 'function'
-          ? buildResponsibilityCardsForPolicy({
-              policy: policyDraftWithOptionalResponsibilities,
-              responsibilities: analysis?.coverageTable,
-              coverageIndicators,
-              knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraftWithOptionalResponsibilities),
-              optionalResponsibilityRecords: optionalResponsibilities,
-            })
-          : [],
+        responsibilityCards,
       };
       logPerformance(performanceLogger, 'policy.analyze.analysis', {
         route: '/api/policies/analyze',

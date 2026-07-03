@@ -17,12 +17,48 @@ import {
   FAMILY_MEMBER_RELATION_OPTIONS,
 } from '../../shared/customer-policy-form';
 import type { FamilyMemberPolicyReference } from '../../api/contracts/family';
+import type { FamilyPlanningProfile } from '../../family-report-engine.mjs';
 
 type MemberProfileDraft = {
   name: string;
   birthday: string;
   relationLabel: string;
 };
+
+const responsibilityFields: Array<{ key: keyof FamilyPlanningProfile; label: string; required?: boolean }> = [
+  { key: 'annualIncome', label: '家庭年收入', required: true },
+  { key: 'annualExpense', label: '家庭年必要支出', required: true },
+  { key: 'debt', label: '家庭总负债', required: true },
+  { key: 'educationGoal', label: '子女教育责任', required: true },
+  { key: 'parentSupportGoal', label: '父母赡养责任', required: true },
+  { key: 'availableAssets', label: '家庭现金储备' },
+  { key: 'premiumBudget', label: '可接受年保费预算' },
+];
+
+function normalizePlanningProfile(profile?: FamilyPlanningProfile | null): FamilyPlanningProfile {
+  return {
+    annualIncome: Math.max(0, Number(profile?.annualIncome) || 0),
+    annualExpense: Math.max(0, Number(profile?.annualExpense) || 0),
+    debt: Math.max(0, Number(profile?.debt) || 0),
+    educationGoal: Math.max(0, Number(profile?.educationGoal) || 0),
+    parentSupportGoal: Math.max(0, Number(profile?.parentSupportGoal) || 0),
+    retirementGoal: Math.max(0, Number(profile?.retirementGoal) || 0),
+    availableAssets: Math.max(0, Number(profile?.availableAssets) || 0),
+    premiumBudget: Math.max(0, Number(profile?.premiumBudget) || 0),
+  };
+}
+
+function planningValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
+  const value = Number(profile[key] || 0);
+  return value > 0 ? String(Number((value / 10000).toFixed(2))) : '';
+}
+
+function planningWithWanValue(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile, value: string) {
+  return {
+    ...profile,
+    [key]: Math.max(0, Number(value) || 0) * 10000,
+  };
+}
 
 export function FamilyProfileManager({
   familyProfiles,
@@ -52,7 +88,7 @@ export function FamilyProfileManager({
   onSelectFamily: (familyId: number) => void;
   onCreateFamily: () => void;
   onCreateFamilyMember: (family: FamilyProfile, input: { name: string; relationLabel: string; birthday?: string; notes?: string; setAsCore?: boolean }) => Promise<FamilyMember | null>;
-  onUpdateFamily: (family: FamilyProfile, input: { familyName: string; notes?: string }) => Promise<FamilyProfile>;
+  onUpdateFamily: (family: FamilyProfile, input: { familyName: string; notes?: string; planningProfile?: FamilyPlanningProfile | null }) => Promise<FamilyProfile>;
   onDeleteFamily: (family: FamilyProfile) => Promise<void>;
   onSetCoreMember: (family: FamilyProfile, member: FamilyMember) => Promise<FamilyProfile>;
   onUpdateFamilyMember: (family: FamilyProfile, member: FamilyMember, input: { name: string; birthday?: string; relationLabel?: string; notes?: string; syncBoundPolicies?: boolean }) => Promise<FamilyProfile>;
@@ -67,6 +103,7 @@ export function FamilyProfileManager({
   const [editingFamilyId, setEditingFamilyId] = useState<number | null>(null);
   const [familyNameDraft, setFamilyNameDraft] = useState('');
   const [familyNotesDraft, setFamilyNotesDraft] = useState('');
+  const [familyPlanningDraft, setFamilyPlanningDraft] = useState<FamilyPlanningProfile>({});
   const [deleteConfirmFamilyId, setDeleteConfirmFamilyId] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState('');
   const [editingBusy, setEditingBusy] = useState(false);
@@ -169,6 +206,7 @@ export function FamilyProfileManager({
     onSelectFamily(family.id);
     setFamilyNameDraft(family.familyName || `家庭 ${family.id}`);
     setFamilyNotesDraft(family.notes || '');
+    setFamilyPlanningDraft(normalizePlanningProfile(family.planningProfile));
     setMemberNoteDrafts(memberNotesFromFamily(family));
     setMemberProfileDrafts(memberProfilesFromFamily(family));
     setEditingFamilyId(nextEditing);
@@ -192,9 +230,11 @@ export function FamilyProfileManager({
       const nextFamily = await onUpdateFamily(family, {
         familyName: nextName,
         notes: familyNotesDraft,
+        planningProfile: familyPlanningDraft,
       });
       setFamilyNameDraft(nextFamily.familyName || nextName);
       setFamilyNotesDraft(nextFamily.notes || '');
+      setFamilyPlanningDraft(normalizePlanningProfile(nextFamily.planningProfile));
       setEditingMessage('家庭档案已保存');
     } catch (error) {
       setEditingMessage(error instanceof Error ? error.message : '保存家庭档案失败');
@@ -494,6 +534,39 @@ export function FamilyProfileManager({
                       className="mt-2 min-h-24 w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-5 text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
                       placeholder="工作、收入、喜好、家庭目标、沟通记录"
                     />
+                    <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50/40 p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-black text-blue-500">编辑家庭责任</p>
+                          <h4 className="mt-1 text-sm font-black text-slate-900">家庭责任信息</h4>
+                          <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                            保障分析报告和销售建议共用这些信息；未填写时，报告会把对应缺口标记为待补充核实。
+                          </p>
+                        </div>
+                        <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-blue-600 ring-1 ring-blue-100">
+                          已填 {responsibilityFields.filter((field) => Number(familyPlanningDraft[field.key] || 0) > 0).length}/{responsibilityFields.length}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {responsibilityFields.map((field) => (
+                          <label key={field.key} className="block rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+                            <span className="text-[11px] font-black text-slate-400">
+                              {field.label}(万元){field.required ? <span className="text-blue-500"> *</span> : null}
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              inputMode="decimal"
+                              value={planningValueInWan(familyPlanningDraft, field.key)}
+                              disabled={editingBusy}
+                              onChange={(event) => setFamilyPlanningDraft((current) => planningWithWanValue(current, field.key, event.target.value))}
+                              className="mt-1 h-8 w-full bg-transparent text-sm font-black text-slate-900 outline-none disabled:opacity-50"
+                              placeholder="0"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
                     <div className="mt-2 flex justify-end">
                       <button
                         type="button"

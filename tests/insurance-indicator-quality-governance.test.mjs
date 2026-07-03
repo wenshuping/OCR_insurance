@@ -242,6 +242,81 @@ test('annuity lane recognizes broader return-money liability names', () => {
   }
 });
 
+test('governance writes numbered child education cashflow candidates after boundary cleanup', () => {
+  const { dir, dbPath } = makeTempDb();
+  const db = new DatabaseSync(dbPath);
+  try {
+    insertKnowledge(db, {
+      id: 3100,
+      company: '新华保险',
+      productName: '成长阳光少儿两全保险(A款)（分红型）',
+      productType: '两全保险',
+      pageText: [
+        '保险责任 在本合同保险期间内，本公司按下列规定承担保险责任：',
+        '（一） 被保险人 生存保险金',
+        '1、大学教育金 被保险人生存至十八——二十一周岁生效对应日，本公司分别按该保单在每一生效对应日有效保险金额的20%给付大学教育金，本项保险责任终止，其他保险责任继续有效；',
+        '2、深造金 被保险人生存至二十二周岁生效对应日，本公司按该保单生效对应日有效保险金额的60%给付深造金，本项保险责任终止，其他保险责任继续有效；',
+        '3、立业金 被保险人生存至二十五周岁生效对应日，本公司按该保单生效对应日有效保险金额的80%给付立业金，本项保险责任终止，其他保险责任继续有效；',
+        '4、婚嫁金 被保险人生存至二十八周岁生效对应日，本公司按该保单生效对应日有效保险金额的80%给付婚嫁金，本合同效力即行终止。',
+        '（二） 被保险人 身故保险金 被保险人于十八周岁生效对应日前身故，本公司按约定给付身故保险金。',
+      ].join(' '),
+    });
+
+    const result = auditInsuranceIndicatorQuality({
+      dbPath,
+      knowledgeIds: [3100],
+      includeExistingProducts: true,
+      sampleLimit: 20,
+    });
+
+    const writeAllowed = result.candidates
+      .filter((candidate) => candidate.writeAllowed)
+      .map((candidate) => candidate.proposedIndicator);
+    assert.deepEqual(writeAllowed.map((indicator) => indicator.liability), ['大学教育金', '深造金', '立业金', '婚嫁金']);
+    assert.deepEqual(writeAllowed.map((indicator) => indicator.formulaText), [
+      '大学教育金 = 有效保险金额 × 20%',
+      '深造金 = 有效保险金额 × 60%',
+      '立业金 = 有效保险金额 × 80%',
+      '婚嫁金 = 有效保险金额 × 80%',
+    ]);
+    assert.equal(result.summary.byLane.cashflow_annuity.writeAllowedCandidates, 4);
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('governance blocks dirty annuity titles and account-value formulas from auto-write', () => {
+  const { dir, dbPath } = makeTempDb();
+  const db = new DatabaseSync(dbPath);
+  try {
+    insertKnowledge(db, {
+      id: 3200,
+      company: '测试人寿',
+      productName: '测试脏标题年金保险',
+      productType: '年金保险',
+      pageText: [
+        '保险责任 保证领取期间内每年给付的养老年金 被保险人生存，我们按基本保险金额的10%给付每年给付的养老年金。',
+        '年金后个人账户价值按已给付的年金 被保险人生存，我们按个人账户价值给付年金后个人账户价值按已给付的年金。',
+      ].join(' '),
+    });
+
+    const result = auditInsuranceIndicatorQuality({
+      dbPath,
+      knowledgeIds: [3200],
+      includeExistingProducts: true,
+      sampleLimit: 20,
+    });
+
+    assert.ok(result.candidates.some((candidate) => candidate.lane === 'cashflow_annuity'));
+    assert.equal(result.summary.byLane.cashflow_annuity.writeAllowedCandidates, 0);
+    assert.ok(result.candidates.every((candidate) => candidate.writeAllowed === false));
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('governance treats basic annuity clauses as writable and suppresses equivalent existing formulas', () => {
   const { dir, dbPath } = makeTempDb();
   const db = new DatabaseSync(dbPath);

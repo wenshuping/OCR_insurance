@@ -47,6 +47,29 @@ async function seedDatabase(dbPath) {
   cashValueStore.replaceValues(2, [{ policyYear: 1, age: 30, cashValue: 1000, source: 'ocr' }]);
   const cashflowStore = createCashflowStore(store.db);
   cashflowStore.replaceEntries(2, [{ year: 2026, age: 30, amount: 100, cumulative: 100, liability: '生存金', calcText: '第1年给付' }]);
+  store.db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id,
+      product_key,
+      company,
+      product_name,
+      title,
+      category,
+      cashflow_treatment,
+      calculation_status,
+      payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'product-card-1',
+    'company_product:新华保险:福如东海A款终身寿险（分红型）',
+    '新华保险',
+    '福如东海A款终身寿险（分红型）',
+    '身故保险金',
+    '人寿保障',
+    'claim_contingent',
+    'claim_contingent',
+    JSON.stringify({ title: '身故保险金' }),
+  );
   store.close();
 }
 
@@ -81,6 +104,7 @@ function replaceKnowledgeRows(dbPath, label) {
       db.prepare('DELETE FROM knowledge_records').run();
       db.prepare('DELETE FROM insurance_indicator_records').run();
       db.prepare('DELETE FROM optional_responsibility_records').run();
+      db.prepare('DELETE FROM product_responsibility_cards').run();
       db.prepare('DELETE FROM official_domain_profiles').run();
       db.prepare("DELETE FROM state_documents WHERE key = 'insuranceIndicatorSnapshot'").run();
       db.prepare(`
@@ -95,6 +119,29 @@ function replaceKnowledgeRows(dbPath, label) {
         INSERT INTO optional_responsibility_records (id, company, product_name, liability, payload)
         VALUES (?, ?, ?, ?, ?)
       `).run(`optional-${label}`, '中国人寿', `知识-${label}`, '万能账户', JSON.stringify({ id: `optional-${label}`, company: '中国人寿', productName: `知识-${label}`, liability: '万能账户' }));
+      db.prepare(`
+        INSERT INTO product_responsibility_cards (
+          id,
+          product_key,
+          company,
+          product_name,
+          title,
+          category,
+          cashflow_treatment,
+          calculation_status,
+          payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        `product-card-${label}`,
+        `company_product:中国人寿:知识-${label}`,
+        '中国人寿',
+        `知识-${label}`,
+        '养老年金',
+        '现金流',
+        'scheduled_cashflow',
+        'calculable',
+        JSON.stringify({ title: '养老年金', label }),
+      );
       db.prepare(`
         INSERT INTO official_domain_profiles (id, payload)
         VALUES (?, ?)
@@ -133,6 +180,7 @@ test('production data bundle preserves policies families knowledge indicators an
   assert.equal(bundle.snapshot.coreCounts.knowledge_records, 1);
   assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
   assert.equal(bundle.snapshot.coreCounts.optional_responsibility_records, 1);
+  assert.equal(bundle.snapshot.coreCounts.product_responsibility_cards, 1);
   assert.equal(bundle.snapshot.coreCounts.policy_cash_values, 1);
   assert.equal(bundle.snapshot.coreCounts.policy_cashflows, 1);
 
@@ -153,6 +201,7 @@ test('production data bundle preserves policies families knowledge indicators an
   assert.equal(targetSummary.coreCounts.family_report_corrections, 1);
   assert.equal(targetSummary.coreCounts.family_sales_reviews, 1);
   assert.equal(targetSummary.coreCounts.knowledge_records, 1);
+  assert.equal(targetSummary.coreCounts.product_responsibility_cards, 1);
   assert.equal(targetSummary.coreCounts.policy_cashflows, 1);
 });
 
@@ -245,6 +294,7 @@ test('knowledge data install updates knowledge tables without replacing user pol
   assert.equal(bundle.snapshot.coreCounts.knowledge_records, 1);
   assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
   assert.equal(bundle.snapshot.coreCounts.optional_responsibility_records, 1);
+  assert.equal(bundle.snapshot.coreCounts.product_responsibility_cards, 1);
   const manifest = JSON.parse(await fs.readFile(bundle.manifestPath, 'utf8'));
   assert.equal(manifest.sourceDbPath, undefined);
   assert.equal(manifest.bundlePath, undefined);
@@ -254,6 +304,7 @@ test('knowledge data install updates knowledge tables without replacing user pol
   assert.equal(manifest.source.knowledgeCounts.users, undefined);
   assert.equal(manifest.source.knowledgeCounts.policies, undefined);
   assert.equal(manifest.source.knowledgeCounts.knowledge_records, 1);
+  assert.equal(manifest.source.knowledgeCounts.product_responsibility_cards, 1);
   assert.equal(manifest.snapshot.nonEmptyGuardTotal, undefined);
   assert.equal(manifest.snapshot.counts.users, undefined);
   assert.equal(manifest.snapshot.counts.policies, undefined);
@@ -279,11 +330,14 @@ test('knowledge data install updates knowledge tables without replacing user pol
   assert.equal(installed.after.coreCounts.users, 2);
   assert.equal(installed.after.coreCounts.policies, 2);
   assert.equal(installed.after.coreCounts.knowledge_records, 1);
+  assert.equal(installed.after.coreCounts.product_responsibility_cards, 1);
 
   withDb(targetDbPath, (db) => {
     assert.equal(db.prepare('SELECT count(*) AS count FROM policies WHERE id = 21').get().count, 1);
     assert.equal(db.prepare("SELECT count(*) AS count FROM knowledge_records WHERE product_name = '知识-source'").get().count, 1);
     assert.equal(db.prepare("SELECT count(*) AS count FROM knowledge_records WHERE product_name = '知识-target'").get().count, 0);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_cards WHERE product_name = '知识-source'").get().count, 1);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_cards WHERE product_name = '知识-target'").get().count, 0);
     assert.equal(db.prepare("SELECT count(*) AS count FROM pending_scans WHERE guest_id = 'guest-1'").get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM policy_cashflows WHERE policy_id = 2').get().count, 1);
     assert.equal(JSON.parse(db.prepare("SELECT payload FROM state_documents WHERE key = 'insuranceIndicatorSnapshot'").get().payload).label, 'source');

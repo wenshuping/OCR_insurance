@@ -67,6 +67,21 @@ test('normalizeKnowledgeRecord preserves archived PDF metadata', () => {
   assert.equal(record?.pdfArchivedAt, '2026-06-18T00:00:00Z');
 });
 
+test('normalizeKnowledgeRecord preserves extraction method audit metadata', () => {
+  const record = normalizeKnowledgeRecord({
+    company: '新华保险',
+    productName: '新华人寿保险股份有限公司健乐增额终身重大疾病保险（分红型）',
+    title: '健乐增额终身重大疾病保险（分红型）条款',
+    url: 'https://static-cdn.newchinalife.com/ncl/pdf/20240423/29e90f47-6d61-445a-a48f-1e0441821df3.pdf',
+    pageText: '保险责任 被保险人初次患重大疾病，本公司按有效保险金额给付重大疾病保险金。',
+    sourceType: 'pdf',
+    parser: 'scrapling_new_china_disclosure',
+    extractionMethod: 'macos_vision',
+  });
+
+  assert.equal(record?.extractionMethod, 'macos_vision');
+});
+
 test('normalizeKnowledgeProductType keeps specific disease insurance separate from critical illness', () => {
   assert.equal(
     normalizeKnowledgeProductType({

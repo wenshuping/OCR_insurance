@@ -116,7 +116,13 @@ function laneForIndicator(indicator = {}) {
 function isHighConfidenceAnnuityCandidate(indicator = {}) {
   const liability = normalizeSpaces(indicator.liability);
   const excerpt = normalizeSpaces(indicator.sourceExcerpt);
+  const liabilityCompact = compactText(liability);
+  const formulaCompact = compactText(`${indicator.formulaText || ''} ${indicator.basis || ''}`);
   if (!isAnnuityLiability(liability)) return false;
+  if (liability.length > 18) return false;
+  if (/责任|描述|类型|申请|剩余期间|未给付|给付的|已给付|对应日|保单年度|年交|趸交|期交|财富嘉\d*号|个人账户|公共账户/u.test(liabilityCompact)) return false;
+  if (/保险金.+保险金/u.test(liabilityCompact)) return false;
+  if (/现金价值|账户价值|个人账户|公共账户|领取金额|约定领取比例|领取计划|领取频率/u.test(formulaCompact)) return false;
   if (!hasAnnuityTrigger(excerpt)) return false;
   if (hasDisallowedCashflowContext(`${liability} ${excerpt}`)) return false;
   if (hasMultipleDistinctPayoutRates(excerpt)) return false;

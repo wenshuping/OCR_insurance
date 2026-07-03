@@ -5,7 +5,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
-import { backfillKnowledgeResponsibilityIndicators } from '../scripts/backfill-knowledge-responsibility-indicators.mjs';
+import {
+  backfillKnowledgeResponsibilityIndicators,
+  buildIndicatorsForProduct,
+} from '../scripts/backfill-knowledge-responsibility-indicators.mjs';
 
 function makeTempDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'knowledge-indicators-'));
@@ -71,6 +74,727 @@ function insertKnowledge(db, row) {
   }));
 }
 
+test('buildIndicatorsForProduct splits numbered child education cashflows with effective amount basis', () => {
+  const productName = '成长阳光少儿两全保险(A款)（分红型）';
+  const sourceText = [
+    '保险责任 在本合同保险期间内，本公司按下列规定承担保险责任：',
+    '（一） 被保险人 生存保险金',
+    '1、大学教育金 被保险人生存至十八——二十一周岁生效对应日，本公司分别按该保单在每一生效对应日有效保险金额的20%给付大学教育金，本项保险责任终止，其他保险责任继续有效；',
+    '2、深造金 被保险人生存至二十二周岁生效对应日，本公司按该保单生效对应日有效保险金额的60%给付深造金，本项保险责任终止，其他保险责任继续有效；',
+    '3、立业金 被保险人生存至二十五周岁生效对应日，本公司按该保单生效对应日有效保险金额的80%给付立业金，本项保险责任终止，其他保险责任继续有效；',
+    '4、婚嫁金 被保险人生存至二十八周岁生效对应日，本公司按该保单生效对应日有效保险金额的80%给付婚嫁金，本合同效力即行终止。',
+    '（二） 被保险人 身故保险金 被保险人于十八周岁生效对应日前身故，本公司按约定给付身故保险金。',
+    '（三） 投保人豁免保险费 投保人因意外伤害身故或身体全残，可免交剩余的期交保险费。',
+  ].join('\n');
+
+  const indicators = buildIndicatorsForProduct({
+    company: '新华保险',
+    productName,
+    productType: '两全保险',
+    salesStatus: '停售',
+    sourceRecordId: '1201',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/chengzhang-yangguang.pdf',
+    sourceTitle: `${productName}条款`,
+    sourceText,
+  }, '2026-06-22T00:00:00.000Z');
+
+  const formulasByLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.deepEqual(
+    [...formulasByLiability.keys()].filter((liability) => /教育金|深造金|立业金|婚嫁金/u.test(liability)),
+    ['大学教育金', '深造金', '立业金', '婚嫁金'],
+  );
+  assert.equal(formulasByLiability.get('大学教育金')?.formulaText, '大学教育金 = 有效保险金额 × 20%');
+  assert.equal(formulasByLiability.get('深造金')?.formulaText, '深造金 = 有效保险金额 × 60%');
+  assert.equal(formulasByLiability.get('立业金')?.formulaText, '立业金 = 有效保险金额 × 80%');
+  assert.equal(formulasByLiability.get('婚嫁金')?.formulaText, '婚嫁金 = 有效保险金额 × 80%');
+  assert.equal(formulasByLiability.get('深造金')?.coverageType, '现金流');
+  assert.doesNotMatch(formulasByLiability.get('婚嫁金')?.sourceExcerpt || '', /身故保险金/u);
+  assert.equal(formulasByLiability.has('被保险人身故保险金'), false);
+
+  const brochureIndicators = buildIndicatorsForProduct({
+    company: '新华保险',
+    productName,
+    productType: '两全保险',
+    salesStatus: '停售',
+    sourceRecordId: '1202',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/chengzhang-yangguang-brochure.pdf',
+    sourceTitle: `${productName}说明书`,
+    sourceText: [
+      '保险责任终止，其他保险责任继续有效；',
+      '（2）深造金：被保险人于22 周岁保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的60%给付深造金，本项保险责任终止，其他保险责任继续有效；',
+      '（3）立业金：被保险人于25 周岁保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的80%给付立业金，本项保险责任终止，其他保险责任继续有效；',
+      '（4）婚嫁金：被保险人于28 周岁保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的80%给付婚嫁金，本合同终止。',
+    ].join('\n'),
+  }, '2026-06-22T00:00:00.000Z');
+  assert.deepEqual(
+    brochureIndicators.map((indicator) => indicator.formulaText),
+    [
+      '深造金 = 有效保险金额 × 60%',
+      '立业金 = 有效保险金额 × 80%',
+      '婚嫁金 = 有效保险金额 × 80%',
+    ],
+  );
+});
+
+test('buildIndicatorsForProduct extracts hospitalization 给付金 day-count formulas', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦抗疫无忧住院给付医疗保险',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_flu_1',
+    sourceUrl: 'https://www.aia.com.cn/example/flu.pdf',
+    sourceTitle: '友邦抗疫无忧住院给付医疗保险条款',
+    sourceText: [
+      '保险责任 特定流感住院给付金 被保险人因特定流感住院治疗的，本公司给付特定流感住院给付金，其金额等于本合同的基本保险金额乘以住院日 数。',
+      '特定流感重病监护给付金 被保险人因特定流感入住重病监护病房治疗的，本公司按本合同基本保险金额乘以实际入住重病监护病房日数给付特定流感重病监护给付金。',
+      '住院补偿金 被保险人因意外事故入住医院治疗，本公司按本附加合同的保险金额乘以住院日数给付住院补偿金。',
+      '重病监护补偿金 被保险人入住医院重病监护病房治疗，本公司按本附加合同的保险金额乘以入住重病监护病房日数给付重病监护补偿金。',
+      '意外住院收入保险金 被保险人因意外事故需入住医院治疗，本公司按保险凭证所载的意外住院收入保险金的住院津贴日额乘以住院日数给付补偿金。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.get('特定流感住院给付金')?.formulaText, '特定流感住院给付金 = 给付天数 × 基本保险金额');
+  assert.equal(byLiability.get('特定流感重病监护给付金')?.formulaText, '特定流感重病监护给付金 = 给付天数 × 基本保险金额');
+  assert.equal(byLiability.get('住院补偿金')?.formulaText, '住院补偿金 = 给付天数 × 保险金额');
+  assert.equal(byLiability.get('重病监护补偿金')?.formulaText, '重病监护补偿金 = 给付天数 × 保险金额');
+  assert.equal(byLiability.get('意外住院收入保险金')?.formulaText, '意外住院收入保险金 = 给付天数 × 住院津贴日额');
+  assert.equal(byLiability.get('特定流感住院给付金')?.coverageType, '医疗保障');
+});
+
+test('buildIndicatorsForProduct splits AIA compensation subheads into concrete liabilities', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加住院及手术II医疗保险',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_his_1',
+    sourceUrl: 'https://www.aia.com.cn/example/his.pdf',
+    sourceTitle: '友邦附加住院及手术II医疗保险条款',
+    sourceText: [
+      '第二条 保险责任 二、补偿金',
+      '(1)每日住院给付:在本附加合同有效期内,若被保险人在等待期后入住医院治疗,本公司按保险单或批注上所载的本附加合同的每日住院给付基本保险金额乘以住院日数给付补偿金予被保险人。',
+      '(2)手术费补偿:在本附加合同有效期内,若被保险人在等待期后进行手术治疗,本公司按已支出的、必须且合理的实际手术费给付补偿金予被保险人。每次疾病或意外事故的手术费补偿,最高以保险单或批注上所载的本附加合同的手术费基本保险金额为限。',
+    ].join(' '),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.has('补偿金'), false);
+  assert.equal(
+    byLiability.get('每日住院给付补偿金')?.formulaText,
+    '每日住院给付补偿金 = 给付天数 × 每日住院给付基本保险金额',
+  );
+  assert.equal(
+    byLiability.get('手术费补偿金')?.formulaText,
+    '手术费补偿金 = min(实际合理手术费 - 已获补偿, 手术费基本保险金额)',
+  );
+});
+
+test('buildIndicatorsForProduct infers AIA hospitalization expense compensation liability', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加住院费用补偿II医疗保险',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_nhr_1',
+    sourceUrl: 'https://www.aia.com.cn/example/nhr.pdf',
+    sourceTitle: '友邦附加住院费用补偿II医疗保险条款',
+    sourceText: '第二条 保险责任 二、补偿金 在本附加合同有效期内,若被保险人在等待期后入住医院治疗,本公司按已支出的、必须且合理的实际住院费用给付补偿金予被保险人。同一住院原因给付的住院费用补偿,最高以保险单或批注上所载的本附加合同的基本保险金额为限。若被保险人从公费医疗及社会医疗保险等取得补偿,本公司仅给付剩余的部分。',
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.has('补偿金'), false);
+  assert.equal(
+    byLiability.get('住院费用补偿金')?.formulaText,
+    '住院费用补偿金 = min(实际合理住院费用 - 已获补偿, 基本保险金额)',
+  );
+});
+
+test('buildIndicatorsForProduct keeps positive AIA waiver after negative waiting-period wording', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加全佑轻无忧豁免保险费疾病保险',
+    productType: '疾病保险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_waiver_1',
+    sourceUrl: 'https://www.aia.com.cn/example/waiver.pdf',
+    sourceTitle: '友邦附加全佑轻无忧豁免保险费疾病保险条款',
+    sourceText: [
+      '保险责任 一、等待期 若被保险人被确诊患有第一类重大疾病，则本公司不承担豁免保险费的保险责任。',
+      '二、若在等待期后发生保险事故，则本公司按照下列约定承担保险责任。',
+      '豁免保险费 在本附加合同有效期内，若被保险人于等待期后就诊并被专科医生首次确诊患有第一类重大疾病，则本公司将自该确诊日后的首个保险单周年日开始，豁免批注合同之应付未付保险费，获豁免的保险费视为已支付。',
+    ].join(' '),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('重大疾病豁免保险费')?.formulaText,
+    '重大疾病豁免保险费 = 豁免后续应交保险费',
+  );
+  assert.equal(byLiability.has('豁免保险费'), false);
+});
+
+test('buildIndicatorsForProduct infers untitled AIA accident hospitalization payment', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加意外住院给付B款团体医疗保险',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_acc_hosp_1',
+    sourceUrl: 'https://www.aia.com.cn/example/acc-hosp.pdf',
+    sourceTitle: '友邦附加意外住院给付B款团体医疗保险条款',
+    sourceText: '第二条 保险责任 在本附加合同有效期内，被保险人因遭受意外事故，且自该事故发生之日起一百八十日内入住医院治疗，本公司按如下规则计算和支付保险金：对于每次意外事故，当住院日数大于同一意外事故的免赔日数时，保险金 = （住院日数 - 免赔日数）× 基本保险金额。同一意外事故的给付，最高以一百八十日为限。',
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('意外住院津贴保险金')?.formulaText,
+    '意外住院津贴保险金 = (住院日数 - 免赔日数) × 基本保险金额',
+  );
+});
+
+test('buildIndicatorsForProduct handles AIA legacy amount-backed payout clauses', () => {
+  const accidentalDeath = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加特别加惠身故给付意外伤害保险',
+    productType: '意外险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_legacy_death',
+    sourceUrl: 'https://www.aia.com.cn/example/legacy-death.pdf',
+    sourceTitle: '友邦附加特别加惠身故给付意外伤害保险条款',
+    sourceText: '第二条 保险责任 在本附加合同有效期内，若被保险人因遭受本附加合同所附加于的意外伤害保险主合同所定义的意外事故，且自该事故发生之日起一百八十日内身故（不包括猝死），则本公司给付等值于本附加合同的基本保险金额的意外身故保险金予健在的身故保险金受益人。',
+  }, '2026-06-26T00:00:00.000Z');
+  const accidentalDeathByLiability = new Map(accidentalDeath.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    accidentalDeathByLiability.get('意外身故保险金')?.formulaText,
+    '意外身故保险金 = 基本保险金额 × 100%',
+  );
+
+  const monthlyDisability = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加保薪乐每月给付意外伤害保险',
+    productType: '意外险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_legacy_monthly_disability',
+    sourceUrl: 'https://www.aia.com.cn/example/monthly-disability.pdf',
+    sourceTitle: '友邦附加保薪乐每月给付意外伤害保险条款',
+    sourceText: '第二条 保险责任 若被保险人于本附加合同有效期内，因遭受本附加合同所附加于的意外伤害保险主合同所约定的意外事故，且自该事故发生之日起一百八十日内导致全残，则本公司将在确认其全残后的首个保险单月度开始，每月给付等值于本附加合同基本保险金额的月度意外全残保险金予被保险人。',
+  }, '2026-06-26T00:00:00.000Z');
+  const monthlyByLiability = new Map(monthlyDisability.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    monthlyByLiability.get('月度意外全残保险金')?.formulaText,
+    '月度意外全残保险金 = 基本保险金额 × 100%',
+  );
+
+  const mortgage = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦安居宝抵押贷款定期寿险',
+    productType: '定期寿险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_mortgage',
+    sourceUrl: 'https://www.aia.com.cn/example/mortgage.pdf',
+    sourceTitle: '友邦安居宝抵押贷款定期寿险条款',
+    sourceText: '第四章 保险责任 第十一条 身故保险金给付 在本合同有效期内，若被保险人身故，本公司所应给付的身故保险金等值于身故时该保险单年度的保险金额。第十二条 残废保险金给付 在本合同有效期内，若被保险人在年满六十周岁以前发生本合同所约定的残废，本公司所应给付的残废保险金等值于残废发生时该保险单年度的保险金额。',
+  }, '2026-06-26T00:00:00.000Z');
+  const mortgageByLiability = new Map(mortgage.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    mortgageByLiability.get('身故保险金')?.formulaText,
+    '身故保险金 = 保险单年度保险金额 × 100%',
+  );
+  assert.equal(
+    mortgageByLiability.get('残废保险金')?.formulaText,
+    '残废保险金 = 保险单年度保险金额 × 100%',
+  );
+
+  const expenseCompensation = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加意外住院费用补偿医疗保险',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_legacy_expense_comp',
+    sourceUrl: 'https://www.aia.com.cn/example/expense-compensation.pdf',
+    sourceTitle: '友邦附加意外住院费用补偿医疗保险条款',
+    sourceText: '第二条 保险责任 一、特定意外伤害住院费用补偿。在本附加合同有效期内，被保险人因遭受主合同所约定的意外事故导致本附加合同第七条第一款的特定意外伤害而需入住医院治疗，本公司按已支出的、必须且合理的实际住院费用给付特定意外伤害住院费用补偿予被保险人。每次意外事故的住院费用补偿以投保单上所载的本附加合同特定意外伤害住院费用补偿金额为最高限额。',
+  }, '2026-06-26T00:00:00.000Z');
+  const expenseByLiability = new Map(expenseCompensation.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    expenseByLiability.get('特定意外伤害住院费用补偿金')?.formulaText,
+    '特定意外伤害住院费用补偿金 = min(实际合理住院费用 - 已获补偿, 基本保险金额)',
+  );
+
+  const educationBenefit = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦附加合家安特别教育金意外伤害保险',
+    productType: '意外险',
+    salesStatus: '停售',
+    sourceRecordId: 'aia_legacy_education',
+    sourceUrl: 'https://www.aia.com.cn/example/education.pdf',
+    sourceTitle: '友邦附加合家安特别教育金意外伤害保险条款',
+    sourceText: '保险责任 若被保险人因该意外伤害事故导致身故，则本公司给付等值于本附加合同基本保险金额的特别教育金予健在的身故保险金受益人。',
+  }, '2026-06-26T00:00:00.000Z');
+  const educationByLiability = new Map(educationBenefit.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(educationByLiability.has('特别教育金予健在的身故保险金'), false);
+  assert.equal(
+    educationByLiability.get('特别教育金')?.formulaText,
+    '特别教育金 = 基本保险金额 × 100%',
+  );
+});
+
+test('buildIndicatorsForProduct keeps early/late critical illness payouts conditional', () => {
+  const productName = '新华人寿保险股份有限公司健乐增额终身重大疾病保险（分红型）';
+  const sourceText = [
+    '第二条保险责任在本合同有效期内，本公司承担下列保险责任：',
+    '一、被保险人于合同生效（或复效）一年内因疾病导致身故或身体全残，本公司按本合同初始基本保险金额的10%给付身故或全残保险金，并无息返还所交保险费，本合同终止；被保险人因意外伤害或者合同生效（或复效）一年后因疾病导致身故或身体全残，本公司按有效保险金额给付身故或全残保险金，本合同终止。',
+    '二、被保险人于合同生效（或复效）一年内初次患本合同所指的重大疾病或初次实施本合同所指手术，本公司按本合同初始基本保险金额的10%给付重大疾病保险金，并无息返还所交保险费，本合同终止；被保险人于合同生效（或复效）一年后初次患本合同所指的重大疾病或初次实施本合同所指手术，本公司按有效保险金额给付重大疾病保险金，本合同终止。',
+  ].join('\n');
+
+  const indicators = buildIndicatorsForProduct({
+    company: '新华保险',
+    productName,
+    productType: '重疾险',
+    salesStatus: '停售',
+    sourceRecordId: '509400',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/20240423/29e90f47-6d61-445a-a48f-1e0441821df3.pdf',
+    sourceTitle: `${productName}条款`,
+    sourceText,
+  }, '2026-06-22T00:00:00.000Z');
+
+  const formulasByLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator.formulaText]));
+  assert.equal(
+    formulasByLiability.get('身故或全残保险金'),
+    '身故或全残保险金 = 条件给付（早期约定情形：初始基本保险金额 × 10% + 无息返还所交保险费；后续/意外约定情形：有效保险金额）',
+  );
+  assert.equal(
+    formulasByLiability.get('重大疾病保险金'),
+    '重大疾病保险金 = 条件给付（早期约定情形：初始基本保险金额 × 10% + 无息返还所交保险费；后续/意外约定情形：有效保险金额）',
+  );
+});
+
+test('buildIndicatorsForProduct cleans quantity prefixes from payout-derived names', () => {
+  const productName = '测试年金保险';
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName,
+    productType: '年金保险',
+    salesStatus: '停售',
+    sourceRecordId: '150',
+    sourceUrl: 'https://official.example-life.test/annuity.pdf',
+    sourceTitle: `${productName}条款`,
+    sourceText: '保险责任 生存保险金 本合同生存保险金包括以下两项：生存金 若被保险人于第5个保单周年日生存，我们按已交保险费的20%给付一笔生存金；自第6个保单周年日起，若被保险人生存，我们每年按基本保险金额的33%给付一笔生存金。',
+  }, '2026-06-26T00:00:00.000Z');
+
+  assert.equal(indicators.some((indicator) => indicator.liability === '一笔生存金'), false);
+  assert.equal(indicators.some((indicator) => indicator.liability === '生存金'), true);
+});
+
+test('buildIndicatorsForProduct derives generic benefit clauses without explicit liability title', () => {
+  const lifeIndicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试万能寿险',
+    productType: '终身寿险',
+    salesStatus: '停售',
+    sourceRecordId: '151',
+    sourceUrl: 'https://official.example-life.test/universal.pdf',
+    sourceTitle: '测试万能寿险条款',
+    sourceText: '保险责任 被保险人身故，我们按被保险人身故之日保单账户价值的120%给付保险金，本合同终止。被保险人因其他情形身故，我们按保险金额给付保险金。',
+  }, '2026-06-26T00:00:00.000Z');
+
+  const accountDeath = lifeIndicators.find((indicator) => indicator.formulaText === '身故保险金 = 保单账户价值 × 120%');
+  assert.equal(accountDeath?.liability, '身故保险金');
+
+  const diseaseIndicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试特定疾病保险',
+    productType: '疾病险',
+    salesStatus: '停售',
+    sourceRecordId: '152',
+    sourceUrl: 'https://official.example-life.test/disease.pdf',
+    sourceTitle: '测试特定疾病保险条款',
+    sourceText: '保险责任 被保险人初次发生并经专科医生明确诊断患保险单载明的特定疾病，本公司按保险单载明的保险金额给付保险金，本合同终止。',
+  }, '2026-06-26T00:00:00.000Z');
+
+  assert.equal(diseaseIndicators.length, 1);
+  assert.equal(diseaseIndicators[0].liability, '特定疾病保险金');
+  assert.equal(diseaseIndicators[0].coverageType, '重大疾病保障');
+  assert.equal(diseaseIndicators[0].formulaText, '特定疾病保险金 = 保险金额 × 100%');
+});
+
+test('buildIndicatorsForProduct covers remaining official wording variants', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试剩余漏网责任',
+    productType: '综合保险',
+    salesStatus: '停售',
+    sourceRecordId: '153',
+    sourceUrl: 'https://official.example-life.test/remaining.pdf',
+    sourceTitle: '测试剩余漏网责任条款',
+    sourceText: [
+      '第十条 保险责任 一、住院费用保险金 若被保险人经诊断必须接受住院治疗的，我们将按照本附加合同约定的给付比例，给付符合下列约定条件的住院费用保险金：住院治疗期间实际发生的、符合当地社会基本医疗保险支付范围的住院医疗费用。',
+      '二、身故保险金 被保险人在年金开始领取日前身故的，本公司按其个人账户资金余额给付身故保险金，本合同对该被保险人的保险责任终止。',
+      '三、大学教育年金 在本附加合同有效期间内，若被保险人仍然生存，本公司将分别在被保险人年满十八周岁、十九周岁、二十周岁和二十一周岁后的首个保险合同周年日给付等值于本附加合同保险金额的大学教育年金。',
+      '四、重大疾病豁免保险费 若被保险人确诊首次患有重大疾病，我们将豁免自被保险人重大疾病确诊之日起主合同及该主合同项下其他的保险期间超过1年的附加合同的续期保险费。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('住院费用保险金')?.formulaText,
+    '住院费用保险金 = (实际合理医疗费用 - 已获补偿/给付 - 免赔额) × 约定给付比例',
+  );
+  assert.equal(byLiability.has('符合下列约定条件的住院费用保险金'), false);
+  assert.equal(byLiability.get('身故保险金')?.formulaText, '身故保险金 = 个人账户资金余额');
+  assert.equal(byLiability.get('大学教育年金')?.formulaText, '大学教育年金 = 保险金额 × 100%');
+  assert.equal(byLiability.get('重大疾病豁免保险费')?.formulaText, '重大疾病豁免保险费 = 豁免后续应交保险费');
+});
+
+test('buildIndicatorsForProduct covers remaining table and premium formulas', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试剩余表格责任',
+    productType: '综合保险',
+    salesStatus: '停售',
+    sourceRecordId: '154',
+    sourceUrl: 'https://official.example-life.test/table-formulas.pdf',
+    sourceTitle: '测试剩余表格责任条款',
+    sourceText: [
+      '保险责任 身故保险金 被保险人在本合同约定的等待期内因疾病身故，本合同终止，本公司按已经交付的保险费（不计利息）给付保险金。',
+      '烧伤保险金 被保险人遭受意外伤害，并因该意外伤害导致III度烧伤，本公司根据《烧伤程度与保险金给付比例表》的规定，每次按本合同约定的保险金额乘以该项烧伤所对应的给付比例给付烧伤保险金。',
+      '高中教育金 自被保险人年满十五周岁的年生效对应日起，本公司每年按下列约定给付高中教育金：高中教育金=本合同基本保险金额×高中教育金比例；其中，高中教育金比例按下表规定。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('身故保险金')?.formulaText,
+    '身故保险金 = 条件给付（等待期/早期约定情形：退还已交保险费）',
+  );
+  assert.equal(byLiability.get('烧伤保险金')?.formulaText, '烧伤保险金 = 保险金额 × 烧伤给付比例');
+  assert.equal(byLiability.get('高中教育金')?.formulaText, '高中教育金 = 基本保险金额 × 高中教育金比例');
+});
+
+test('buildIndicatorsForProduct handles OCR spacing inside insurance benefit titles', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试断词意外险',
+    productType: '意外险',
+    salesStatus: '停售',
+    sourceRecordId: '155',
+    sourceUrl: 'https://official.example-life.test/spaced-benefit.pdf',
+    sourceTitle: '测试断词意外险条款',
+    sourceText: '保险责任 一、被保险人因意外伤害导致身故，本公司按本合同约定的保险金额扣除已给付伤残保险金和烧伤保险金后的余额给付身故保险 金。二、被保险人因意外伤害导致身体伤残，本公司根据伤残等级给付比例乘以保险金额给付伤残保险 金。三、被保险人遭受意外伤害导致III度烧伤，本公司根据烧伤程度与保险金给付比例表，每次按保险金额乘以该项烧伤所对应的给付比例给付烧伤保险 金。',
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.get('身故保险金')?.formulaText, '身故保险金 = 保险金额 - 已给付伤残保险金');
+  assert.equal(byLiability.get('伤残保险金')?.formulaText, '伤残保险金 = 保险金额 × 伤残/残疾等级给付比例');
+});
+
+test('buildIndicatorsForProduct cleans formula prefixes and rejects pronoun benefit names', () => {
+  const tableIndicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试比例表两全保险',
+    productType: '两全保险',
+    salesStatus: '停售',
+    sourceRecordId: '156',
+    sourceUrl: 'https://official.example-life.test/table-prefix.pdf',
+    sourceTitle: '测试比例表两全保险条款',
+    sourceText: '保险责任 按下表所示比例给付身故或全残保险金 被保险人身故或全残，本公司按保险金额给付身故或全残保险金。',
+  }, '2026-06-26T00:00:00.000Z');
+  const tableLiabilities = tableIndicators.map((indicator) => indicator.liability);
+  assert.ok(tableLiabilities.includes('身故或全残保险金'));
+  assert.equal(tableLiabilities.includes('按下表所示比例给付身故或全残保险金'), false);
+
+  const pronounIndicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试本项保险金定期寿险',
+    productType: '定期寿险',
+    salesStatus: '停售',
+    sourceRecordId: '157',
+    sourceUrl: 'https://official.example-life.test/pronoun-benefit.pdf',
+    sourceTitle: '测试本项保险金定期寿险条款',
+    sourceText: '保险责任 附属被保险人在分娩过程中身故或在分娩结束之日起7日内身故，本公司按附属被保险人身故保险金额给付附属被保险人身故保险金。无论附属被保险人人数多少，我们按实际身故人数给付本项保险金。',
+  }, '2026-06-26T00:00:00.000Z');
+  assert.equal(pronounIndicators.some((indicator) => indicator.liability === '本项保险金'), false);
+});
+
+test('buildIndicatorsForProduct infers untitled medical allowance and nursing clauses', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试无标题健康保险',
+    productType: '健康险',
+    salesStatus: '停售',
+    sourceRecordId: '158',
+    sourceUrl: 'https://official.example-life.test/untitled-health.pdf',
+    sourceTitle: '测试无标题健康保险条款',
+    sourceText: [
+      '保险责任 在本合同保险期间内，被保险人因疾病在医院诊疗，对实际支出的符合基本医疗保险支付范围的医疗费用，本公司每次在扣除已补偿部分及免赔额后，对其余额按本合同约定给付比例给付医疗保险金。',
+      '在本附加合同保险期间内，被保险人遭受意外伤害，并因该意外伤害在医院住院治疗，本公司按本附加合同约定的住院日定额给付金额乘以实际住院日数给付保险金。',
+      '被保险人因疾病、意外伤害、高龄等原因引发日常生活能力障碍且失能等级达到合同约定，并接受护理服务的，本公司按照本合同的约定给付各项护理保险金。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('疾病医疗保险金')?.formulaText,
+    '疾病医疗保险金 = (实际合理医疗费用 - 已获补偿/给付 - 免赔额) × 约定给付比例',
+  );
+  assert.equal(
+    byLiability.get('意外伤害住院津贴保险金')?.formulaText,
+    '意外伤害住院津贴保险金 = 给付天数 × 日津贴额',
+  );
+  assert.equal(
+    byLiability.get('护理保险金')?.formulaText,
+    '护理保险金 = 条款约定给付',
+  );
+});
+
+test('buildIndicatorsForProduct handles China Life medical and table-dependent clauses', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试国寿补充责任保险',
+    productType: '健康险',
+    salesStatus: '停售',
+    sourceRecordId: '1580',
+    sourceUrl: 'https://official.example-life.test/china-life-medical.pdf',
+    sourceTitle: '测试国寿补充责任保险条款',
+    sourceText: [
+      '保险责任 对被保险人实际支出的、符合当地社会基本医疗保险支付范围的住院医疗费用，本公司在扣除住院医疗免赔额后，按住院医疗给付比例给付住院医疗保险金。',
+      '对被保险人实际支出的、符合当地社会基本医疗保险支付范围的门(急)诊医疗费用，本公司在扣除门(急)诊医疗免赔额后，按门(急)诊医疗给付比例给付门(急)诊医疗保险金。',
+      '被保险人因工伤致残并被鉴定为五至十级的，本公司按照本人工资、统筹地区上年度职工月平均工资和给付倍数给付一次性工伤补助金。',
+      '被保险人实施节育手术导致节育并发症的，本公司按本合同约定的保险金额乘以该节育并发症等级所对应的给付比例给付保险金。',
+      '被保险人达到本合同约定的护理条件并接受护理服务的，本公司对其实际发生并支出的、符合本合同约定认可的合理且必须的护理费用，依本合同的约定给付各项护理保险金。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('住院医疗保险金')?.formulaText,
+    '住院医疗保险金 = (实际合理医疗费用 - 已获补偿/给付 - 免赔额) × 约定给付比例',
+  );
+  assert.equal(
+    byLiability.get('门(急)诊医疗保险金')?.formulaText,
+    '门(急)诊医疗保险金 = (实际合理医疗费用 - 已获补偿/给付 - 免赔额) × 约定给付比例',
+  );
+  assert.equal(
+    byLiability.get('工伤补助金')?.formulaText,
+    '工伤补助金 = 条件给付（按工伤等级、本人工资/职工月平均工资与给付倍数确定）',
+  );
+  assert.equal(
+    byLiability.get('节育并发症保险金')?.formulaText,
+    '节育并发症保险金 = 保险金额 × 节育并发症等级对应给付比例',
+  );
+  assert.equal(
+    byLiability.get('护理保险金')?.formulaText,
+    '护理保险金 = 条款约定给付',
+  );
+});
+
+test('buildIndicatorsForProduct handles China Life remaining short official clauses', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试国寿短责任保险',
+    productType: '健康险',
+    salesStatus: '停售',
+    sourceRecordId: '15801',
+    sourceUrl: 'https://official.example-life.test/china-life-short.pdf',
+    sourceTitle: '测试国寿短责任保险条款',
+    sourceText: [
+      '保险责任 被保险人因疾病住院诊疗，对被保险人实际支出的、符合当地基本医疗保险支付范围的住院医疗费用，本公司按约定的均一给付方案或分段给付方案给付保险金。',
+      '被保险人入住重症监护病房治疗，本公司按重症监护日定额给付金额乘以实际入住日数给付保险金。',
+      '被保险人住院治疗的，本公司按生活津贴给付日数乘以日生活津贴标准计算给付保险金。',
+      '被保险人达到本合同约定的护理条件并接受护理服务的，本公司对其实际发生的、符合本合同约定认可的合理且必须的护理服务行为，依本合同的约定给付各项护理保险金。',
+      '被保险人因前述以外情形身故或身体高度残疾，本公司豁免被保险人身故日或身体高度残疾确认日以后的主合同及本附加合同的保险费。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('住院医疗保险金')?.formulaText,
+    '住院医疗保险金 = 实际合理医疗费用按约定均一/分段给付方案给付',
+  );
+  assert.equal(
+    byLiability.get('重症监护津贴保险金')?.formulaText,
+    '重症监护津贴保险金 = 给付天数 × 日津贴额',
+  );
+  assert.equal(
+    byLiability.get('生活津贴保险金')?.formulaText,
+    '生活津贴保险金 = 给付天数 × 日生活津贴标准',
+  );
+  assert.equal(
+    byLiability.get('护理保险金')?.formulaText,
+    '护理保险金 = 条款约定给付',
+  );
+  assert.equal(
+    byLiability.get('身故或身体高度残疾豁免保险费')?.formulaText,
+    '身故或身体高度残疾豁免保险费 = 豁免后续应交保险费',
+  );
+});
+
+test('buildIndicatorsForProduct handles Chinese numbered standalone liability names', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试中文序号年金保险',
+    productType: '年金保险',
+    salesStatus: '停售',
+    sourceRecordId: '1581',
+    sourceUrl: 'https://official.example-life.test/chinese-numbered-annuity.pdf',
+    sourceTitle: '测试中文序号年金保险条款',
+    sourceText: [
+      '第五条 保险责任 在本合同保险期间内，本公司承担以下保险责任：',
+      '一、年金 自本合同约定的年金开始领取日起，若被保险人生存，本公司于本合同每年或每月的生效对应日按保险合同载明的领取金额给付年金。',
+      '二、身故保险金 被保险人身故，本公司按被保险人身故当时下列两者的较大值给付身故保险金，本合同终止：1.本合同所交保险费；2.本合同现金价值。',
+      '国寿松鹤颐年年金保险（分红型）产品说明书',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.get('年金')?.formulaText, '年金 = 保险合同载明的领取金额');
+  assert.equal(byLiability.get('年金')?.coverageType, '现金流');
+  assert.equal(byLiability.get('身故保险金')?.formulaText, '身故保险金 = max(现金价值, 已交保险费)');
+  assert.equal(byLiability.has('本合同现金价值'), false);
+});
+
+test('buildIndicatorsForProduct handles give-day-count daily allowance wording', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试给付日数津贴保险',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: '1582',
+    sourceUrl: 'https://official.example-life.test/give-days-allowance.pdf',
+    sourceTitle: '测试给付日数津贴保险条款',
+    sourceText: '保险责任 住院津贴保险金 被保险人住院治疗的，本公司按住院日定额给付金额乘以给付日数给付住院津贴保险金。',
+  }, '2026-06-26T00:00:00.000Z');
+
+  const allowance = indicators.find((indicator) => indicator.liability === '住院津贴保险金');
+  assert.equal(allowance?.formulaText, '住院津贴保险金 = 给付天数 × 日津贴额');
+  assert.equal(allowance?.coverageType, '津贴保障');
+});
+
+test('buildIndicatorsForProduct infers untitled daily allowance variants', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试无标题住院日额保险',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: '1583',
+    sourceUrl: 'https://official.example-life.test/untitled-daily-allowance.pdf',
+    sourceTitle: '测试无标题住院日额保险条款',
+    sourceText: [
+      '保险责任 被保险人因意外伤害或者等待期后因疾病在医院住院诊疗，本公司按投保人在投保时与本公司约定的日定额给付标准与被保险人住院日数的乘积给付住院津贴保险金。',
+      '被保险人入住重症监护病房治疗，本公司按本附加合同约定的重症监护日定额给付金额乘以实际入住重症监护病房日数给付保险金。',
+      '被保险人住院期间，本公司按照本附加合同约定的伙食补偿金额给付伙食补偿金，最高给付以一百八十日为限。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.get('住院津贴保险金')?.formulaText, '住院津贴保险金 = 给付天数 × 日津贴额');
+  assert.equal(byLiability.get('重症监护津贴保险金')?.formulaText, '重症监护津贴保险金 = 给付天数 × 日津贴额');
+  assert.equal(byLiability.get('伙食补偿金')?.formulaText, '伙食补偿金 = 约定补偿金额');
+});
+
+test('buildIndicatorsForProduct handles amount-equals benefit formulas', () => {
+  const diseaseIndicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试金额等于疾病保险',
+    productType: '重疾险',
+    salesStatus: '停售',
+    sourceRecordId: '159',
+    sourceUrl: 'https://official.example-life.test/amount-equals-disease.pdf',
+    sourceTitle: '测试金额等于疾病保险条款',
+    sourceText: [
+      '保险责任 身故保险金 在本合同有效期内，若被保险人身故，则本公司将给付身故保险金予受益人，其金额等于被保险人身故时本合同的保险金额。',
+      '疾病终末期阶段保险金 若被保险人被认定达到疾病终末期阶段，则本公司将给付疾病终末期阶段保险金予被保险人，其金额等于本合同的基本保险金额。',
+      '重大疾病保险金 若被保险人首次确诊重大疾病，则本公司将给付重大疾病保险金予被保险人，其金额等于该重大疾病确诊时本合同的保险金额。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+  const diseaseByLiability = new Map(diseaseIndicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(diseaseByLiability.get('身故保险金')?.formulaText, '身故保险金 = 保险金额 × 100%');
+  assert.equal(diseaseByLiability.get('疾病终末期阶段保险金')?.formulaText, '疾病终末期阶段保险金 = 基本保险金额 × 100%');
+  assert.equal(diseaseByLiability.get('重大疾病保险金')?.formulaText, '重大疾病保险金 = 保险金额 × 100%');
+
+  const tieredIndicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试年龄分档重疾保险',
+    productType: '重疾险',
+    salesStatus: '停售',
+    sourceRecordId: '160',
+    sourceUrl: 'https://official.example-life.test/tiered-amount-equals.pdf',
+    sourceTitle: '测试年龄分档重疾保险条款',
+    sourceText: '保险责任 重大疾病保险金 被保险人初次患有重大疾病，本公司支付重大疾病保险金：1.若被保险人确诊时未满50周岁，重大疾病保险金的金额等于本附加合同保险金额；2.若被保险人确诊时已满50周岁，重大疾病保险金的金额等于本附加合同保险金额的百分之三十。',
+  }, '2026-06-26T00:00:00.000Z');
+  assert.equal(
+    tieredIndicators[0]?.formulaText,
+    '重大疾病保险金 = 条件给付（未满50周岁：保险金额 × 100%；已满50周岁：保险金额 × 30%）',
+  );
+
+  const accidentIndicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试交通意外保险',
+    productType: '意外险',
+    salesStatus: '停售',
+    sourceRecordId: '161',
+    sourceUrl: 'https://official.example-life.test/traffic-accident.pdf',
+    sourceTitle: '测试交通意外保险条款',
+    sourceText: '保险责任 营运汽车意外保险金 若被保险人遭受营运汽车意外事故身故或全残，本公司给付营运汽车意外保险金，其金额等于该事故发生时本合同的基本保险金额。轨道交通及轮船意外保险金 若被保险人遭受轨道交通及轮船意外事故身故或全残，本公司给付轨道交通及轮船意外保险金，其金额等于该事故发生时本合同基本保险金额的二倍。航空意外保险金 若被保险人遭受航空意外事故身故或全残，本公司给付航空意外保险金，其金额等于该事故发生时本合同基本保险金额的六倍。',
+  }, '2026-06-26T00:00:00.000Z');
+  const accidentByLiability = new Map(accidentIndicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(accidentByLiability.get('营运汽车意外保险金')?.formulaText, '营运汽车意外保险金 = 基本保险金额 × 100%');
+  assert.equal(accidentByLiability.get('轨道交通及轮船意外保险金')?.formulaText, '轨道交通及轮船意外保险金 = 基本保险金额 × 2');
+  assert.equal(accidentByLiability.get('航空意外保险金')?.formulaText, '航空意外保险金 = 基本保险金额 × 6');
+});
+
+test('buildIndicatorsForProduct handles waived premium collection wording', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试免予收取豁免保险',
+    productType: '豁免险',
+    salesStatus: '停售',
+    sourceRecordId: '162',
+    sourceUrl: 'https://official.example-life.test/waiver-collection.pdf',
+    sourceTitle: '测试免予收取豁免保险条款',
+    sourceText: [
+      '保险责任 重大疾病豁免保险费 被保险人于本附加合同生效之日起一百八十日内因疾病确诊重大疾病，本附加合同终止，本公司退还本附加合同所交保险费；被保险人于本附加合同生效之日起一百八十日后确诊重大疾病，本附加合同终止，本公司自被保险人重大疾病确诊日起，于主合同及本公司认可的其他人身保险合同每个保单年度的各保险费交付日期免予收取主合同及本公司认可的其他人身保险合同的当期应付保险费。',
+      '身故豁免保险费 被保险人因前述以外情形身故，本附加合同终止，本公司自被保险人身故日起，于主合同每个保单年度的各保险费交付日期免予收取主合同的当期应付保险费。',
+      '本附加合同的重大疾病豁免保险费、身故豁免保险费和身体高度残疾豁免保险费，本公司仅承担一项。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.get('重大疾病豁免保险费')?.formulaText, '重大疾病豁免保险费 = 豁免后续应交保险费');
+  assert.equal(byLiability.get('重大疾病豁免保险费')?.basis, '主合同及符合约定附加合同后续应交保险费');
+  assert.equal(byLiability.get('身故豁免保险费')?.formulaText, '身故豁免保险费 = 豁免后续应交保险费');
+  assert.equal(byLiability.get('身故豁免保险费')?.basis, '主合同后续应交保险费');
+  assert.equal(byLiability.has('保险费和身体高度残疾豁免保险费'), false);
+});
+
+test('buildIndicatorsForProduct rejects table limit fragments as liability names', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试表格限制责任',
+    productType: '医疗险',
+    salesStatus: '停售',
+    sourceRecordId: '163',
+    sourceUrl: 'https://official.example-life.test/table-limit.pdf',
+    sourceTitle: '测试表格限制责任条款',
+    sourceText: [
+      '给付本附加合同各项保险金后，主合同保险金额等于主合同基本保额减去已给付的与主合同保险金。',
+      '各项医疗费用 每项医疗费用的最高给付限制 住院医疗保险金 (1)床位费 全额理赔。',
+      '体检费 每年一次 (2)疫苗接种费 全额理赔 牙科医疗保险金 (3)基础牙科治疗费 给付比例80%。',
+      '保险责任 轻度疾病豁免保险费 投保人确诊轻度疾病后，本公司将豁免主合同以后各期应交保险费。',
+      '本公司承担保险费及轻度疾病豁免保险费。',
+    ].join('\n'),
+  }, '2026-06-26T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.has('与主合同保险金'), false);
+  assert.equal(byLiability.has('限制住院医疗保险金'), false);
+  assert.equal(byLiability.has('体检费每年一次(2)疫苗接种费全额理赔牙科医疗保险金'), false);
+  assert.equal(byLiability.has('保险费及轻度疾病豁免保险费'), false);
+  assert.equal(byLiability.get('轻度疾病豁免保险费')?.formulaText, '轻度疾病豁免保险费 = 豁免后续应交保险费');
+});
+
 test('backfill reports changed product keys and marks matching derived results stale', () => {
   const { dir, dbPath } = makeTempDb();
   const db = new DatabaseSync(dbPath);
@@ -130,6 +854,93 @@ test('backfill reports changed product keys and marks matching derived results s
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM indicator_update_batches').get().count, 1);
   } finally {
     db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('backfill orders duplicate knowledge pages by productive responsibility text', () => {
+  const { dir, dbPath } = makeTempDb();
+  const db = new DatabaseSync(dbPath);
+  try {
+    insertKnowledge(db, {
+      id: 201,
+      company: '测试人寿',
+      productName: '测试分页寿险',
+      productType: '寿险',
+      pageText: '保险责任 在本主险合同保险期间内，若被保险人因意外伤害或等待期后因意外伤害以外的原因导致身故或全残的，我们将按本主险合同该被保险人的基本保险金额对该被保险人给付',
+    });
+    insertKnowledge(db, {
+      id: 202,
+      company: '测试人寿',
+      productName: '测试分页寿险',
+      productType: '寿险',
+      pageText: '身故或全残保险金，本主险合同对该被保险人的保险责任终止。',
+    });
+    insertKnowledge(db, {
+      id: 211,
+      company: '测试人寿',
+      productName: '测试重复续页医疗保险',
+      productType: '医疗险',
+      pageText: '同产品官方资料已存在保险责任正文。每次门急诊医疗保险金=（每次门急诊医疗费用-每次门急诊起付标准）×赔付比例。',
+    });
+    insertKnowledge(db, {
+      id: 212,
+      company: '测试人寿',
+      productName: '测试重复续页医疗保险',
+      productType: '医疗险',
+      pageText: '保险责任 在本合同保险期间内，被保险人发生门急诊医疗费用，本公司对于约定的起付标准以上的医疗费用中需要被保险人个人负担的部分，按约定的赔付比例给付门急诊医疗保险金。',
+    });
+  } finally {
+    db.close();
+  }
+
+  try {
+    const dryRun = backfillKnowledgeResponsibilityIndicators({
+      dbPath,
+      knowledgeIds: [201, 202],
+      sampleLimit: 5,
+    });
+    assert.equal(dryRun.candidateProducts, 1);
+    assert.equal(dryRun.productsWithIndicators, 1);
+    assert.equal(dryRun.indicatorUpserts, 1);
+    assert.equal(dryRun.samples[0].liability, '身故或全残保险金');
+    assert.equal(dryRun.samples[0].formulaText, '身故或全残保险金 = 基本保险金额 × 100%');
+
+    const continuationDryRun = backfillKnowledgeResponsibilityIndicators({
+      dbPath,
+      knowledgeIds: [211, 212],
+      sampleLimit: 5,
+    });
+    assert.equal(continuationDryRun.candidateProducts, 1);
+    assert.equal(continuationDryRun.productsWithIndicators, 1);
+    assert.equal(continuationDryRun.indicatorUpserts, 1);
+    assert.equal(continuationDryRun.samples[0].liability, '门急诊医疗保险金');
+    assert.equal(
+      continuationDryRun.samples[0].formulaText,
+      '门急诊医疗保险金 = (实际合理医疗费用 - 已获补偿/给付 - 免赔额) × 约定给付比例',
+    );
+
+    const write = backfillKnowledgeResponsibilityIndicators({
+      dbPath,
+      knowledgeIds: [201, 202],
+      write: true,
+    });
+    assert.equal(write.indicatorUpserts, 1);
+
+    const readDb = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const row = readDb.prepare(`
+        SELECT payload
+          FROM insurance_indicator_records
+         WHERE liability = ?
+      `).get('身故或全残保险金');
+      const payload = JSON.parse(row.payload);
+      assert.equal(payload.sourceRecordId, '201');
+      assert.match(payload.sourceExcerpt, /^保险责任/u);
+    } finally {
+      readDb.close();
+    }
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -391,6 +1202,37 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       pageText: '保险责任 关爱年金如被保险人于犹豫期结束的次日、每年保单生效对应日生存，本公司按首次交纳的基本责任的保险费的1%给付关爱年金。生存保险金被保险人于本合同生效后每满两周年的保单生效对应日生存，本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
     });
     insertKnowledge(db, {
+      id: 144,
+      company: '测试人寿',
+      productName: '测试参数化医疗津贴保险',
+      productType: '医疗险',
+      pageText: [
+        '保险责任 一、目录内医疗费用保险金 被保险人实际发生基本医疗保险支付范围内的医疗费用，本公司在扣除已获补偿后，对其余额按本合同的约定给付目录内医疗费用保险金。',
+        '二、住院津贴保险责任 被保险人住院治疗的，本公司按照被保险人的实际住院天数乘以本合同约定的日住院津贴计算并给付住院津贴保险金。',
+      ].join(' '),
+    });
+    insertKnowledge(db, {
+      id: 145,
+      company: '测试人寿',
+      productName: '测试条件重疾提前给付保险',
+      productType: '重疾险',
+      pageText: '保险责任 一、重大疾病保险金 被保险人初次确诊重大疾病，本公司按下列规定给付重大疾病保险金。一次性交付保险费的，重大疾病保险金=基本保险金额；分期交付保险费的，重大疾病保险金=基本保险金额×明确诊断患重大疾病时的交费年度数。二、身故保险金 在本附加合同保险期间内，被保险人于本附加合同生效之日起至年满十八周岁的年生效对应日前身故并且未给付重大疾病保险金的，本公司按本附加合同所交保险费给付身故保险金。',
+    });
+    insertKnowledge(db, {
+      id: 146,
+      company: '测试人寿',
+      productName: '测试失能收入损失保险',
+      productType: '失能收入损失保险',
+      pageText: '保险责任 失能收入损失保险金 被保险人丧失职业能力的，本公司按月给付失能收入损失保险金，月给付金额=月给付标准×给付比例；不足一个月的，月给付金额=月给付标准×给付比例×当月丧失职业运动能力的实际日数/30。',
+    });
+    insertKnowledge(db, {
+      id: 147,
+      company: '测试人寿',
+      productName: '测试输血感染疾病保险',
+      productType: '疾病保险',
+      pageText: '保险责任 被保险人接受输血，并自该次输血之日起一百八十日内感染本合同所指病原体，本公司按保险单载明的病原体对应的保险金额给付保险金。',
+    });
+    insertKnowledge(db, {
       id: 106,
       company: '测试人寿',
       productName: '测试后续年金保险',
@@ -444,9 +1286,9 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
   try {
     const dryRun = backfillKnowledgeResponsibilityIndicators({ dbPath, minKnowledgeId: 100, sampleLimit: 10 });
     assert.equal(dryRun.dryRun, true);
-    assert.equal(dryRun.candidateProducts, 43);
-    assert.equal(dryRun.productsWithIndicators, 37);
-    assert.equal(dryRun.indicatorUpserts, 56);
+    assert.equal(dryRun.candidateProducts, 47);
+    assert.equal(dryRun.productsWithIndicators, 41);
+    assert.equal(dryRun.indicatorUpserts, 63);
     assert.equal(dryRun.skippedProducts, 6);
 
     const includeExisting = backfillKnowledgeResponsibilityIndicators({
@@ -455,9 +1297,9 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       includeExistingProducts: true,
       sampleLimit: 10,
     });
-    assert.equal(includeExisting.candidateProducts, 44);
-    assert.equal(includeExisting.productsWithIndicators, 38);
-    assert.equal(includeExisting.indicatorUpserts, 57);
+    assert.equal(includeExisting.candidateProducts, 48);
+    assert.equal(includeExisting.productsWithIndicators, 42);
+    assert.equal(includeExisting.indicatorUpserts, 64);
 
     const targeted = backfillKnowledgeResponsibilityIndicators({
       dbPath,
@@ -484,7 +1326,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
     );
 
     const write = backfillKnowledgeResponsibilityIndicators({ dbPath, write: true, minKnowledgeId: 100, sampleLimit: 10 });
-    assert.equal(write.indicatorUpserts, 56);
+    assert.equal(write.indicatorUpserts, 63);
 
     const readDb = new DatabaseSync(dbPath, { readOnly: true });
     try {
@@ -494,7 +1336,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
          WHERE id LIKE 'ind_knowledge_auto_%'
          ORDER BY liability
       `).all();
-      assert.equal(rows.length, 56);
+      assert.equal(rows.length, 63);
       assert.ok(rows.some((row) => row.liability === '身故保险金'));
       assert.ok(rows.some((row) => row.liability === '住院医疗保险金'));
       assert.ok(rows.some((row) => row.liability === '后续年金'));
@@ -529,6 +1371,9 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.ok(rows.some((row) => row.liability === '公共综合医疗保险金'));
       assert.ok(rows.some((row) => row.liability === '关爱年金'));
       assert.ok(rows.some((row) => row.liability === '生存保险金'));
+      assert.ok(rows.some((row) => row.liability === '目录内医疗费用保险金'));
+      assert.ok(rows.some((row) => row.liability === '失能收入损失保险金'));
+      assert.ok(rows.some((row) => row.liability === '病原体感染保险金'));
       assert.ok(!rows.some((row) => row.liability === '其中一项保险金'));
       assert.ok(!rows.some((row) => row.liability === '后该种轻症疾病保险金'));
       assert.ok(!rows.some((row) => row.liability === '期内应给付的养老保险金'));
@@ -602,7 +1447,10 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.equal(parameterizedMedicalPayload.formulaText, '住院医疗保险金 = (实际合理医疗费用 - 已获补偿/给付 - 免赔额) × 约定给付比例');
       assert.equal(parameterizedMedicalPayload.unit, '公式');
       assert.equal(parameterizedMedicalPayload.basis, '实际合理医疗费用、已获补偿/给付、免赔额、约定给付比例');
-      const allowancePayload = JSON.parse(rows.find((row) => row.liability === '住院津贴保险金').payload);
+      const allowancePayload = JSON.parse(rows.find((row) => (
+        row.liability === '住院津贴保险金'
+        && JSON.parse(row.payload).sourceRecordId === '108'
+      )).payload);
       assert.ok(
         [
           '住院津贴保险金 = 给付天数 × 日津贴额 200 元',
@@ -749,6 +1597,28 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       const survivalPayload = JSON.parse(rows.find((row) => row.liability === '生存保险金').payload);
       assert.equal(survivalPayload.formulaText, '生存保险金 = 基本责任保险金额 × 9%');
       assert.equal(survivalPayload.coverageType, '现金流');
+      const directoryMedicalPayload = JSON.parse(rows.find((row) => row.liability === '目录内医疗费用保险金').payload);
+      assert.equal(directoryMedicalPayload.formulaText, '目录内医疗费用保险金 = 实际合理医疗费用扣除已获补偿后按合同约定给付');
+      assert.equal(directoryMedicalPayload.basis, '实际合理医疗费用、已获补偿/给付、合同约定给付规则');
+      const contractedAllowancePayload = JSON.parse(rows.find((row) => (
+        row.liability === '住院津贴保险金'
+        && JSON.parse(row.payload).sourceRecordId === '144'
+      )).payload);
+      assert.equal(contractedAllowancePayload.formulaText, '住院津贴保险金 = 给付天数 × 日住院津贴');
+      const conditionalCriticalPayload = JSON.parse(rows.find((row) => (
+        row.liability === '重大疾病保险金'
+        && JSON.parse(row.payload).sourceRecordId === '145'
+      )).payload);
+      assert.equal(conditionalCriticalPayload.formulaText, '重大疾病保险金 = 条件给付（一次性交费：基本保险金额；分期交费：基本保险金额 × 确诊时交费年度数）');
+      const childDeathPayload = JSON.parse(rows.find((row) => (
+        row.liability === '身故保险金'
+        && JSON.parse(row.payload).sourceRecordId === '145'
+      )).payload);
+      assert.equal(childDeathPayload.formulaText, '身故保险金 = 条件给付（未满18周岁且未给付重大疾病保险金：已交保险费）');
+      const disabilityIncomePayload = JSON.parse(rows.find((row) => row.liability === '失能收入损失保险金').payload);
+      assert.equal(disabilityIncomePayload.formulaText, '失能收入损失保险金 = 月给付标准 × 给付比例 × 给付月数/实际日数');
+      const pathogenPayload = JSON.parse(rows.find((row) => row.liability === '病原体感染保险金').payload);
+      assert.equal(pathogenPayload.formulaText, '病原体感染保险金 = 保险金额 × 100%');
       const diseasePayload = JSON.parse(rows.find((row) => row.liability === '首次重大疾病保险金').payload);
       assert.equal(diseasePayload.formulaText, '首次重大疾病保险金 = 基本保险金额 × 100%');
       const fixedDailyPayload = JSON.parse(rows.find((row) => row.liability === '重症监护室津贴保险金').payload);
@@ -796,7 +1666,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.equal(icuDailyPayload.formulaText, '重症监护日额津贴保险金 = 给付天数 × 日津贴额');
       assert.equal(icuDailyPayload.responsibilityScope, 'optional');
       const total = readDb.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count;
-      assert.equal(total, 57);
+      assert.equal(total, 64);
     } finally {
       readDb.close();
     }

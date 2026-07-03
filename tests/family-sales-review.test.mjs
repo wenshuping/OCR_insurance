@@ -5,6 +5,10 @@ import {
   buildFamilySalesReviewMessages,
   generateFamilySalesReview,
 } from '../server/family-sales-review.service.mjs';
+import {
+  buildFamilySalesChatMessages,
+  generateFamilySalesChatReply,
+} from '../server/family-sales-chat.service.mjs';
 
 test('family sales review input keeps members without policies and official evidence', () => {
   const family = { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active', notes: '家庭年收入约80万，偏好稳健方案，张三身份证110101198606141234仅本地核验' };
@@ -103,6 +107,66 @@ test('family sales review input keeps members without policies and official evid
   assert.match(prompt, /https:\/\/official\.example-life\.test\/ssry\.pdf/);
 });
 
+test('family sales review prompt combines sales skills into executable advisor workflow', () => {
+  const input = buildFamilySalesReviewInput({
+    family: {
+      id: 1,
+      familyName: '张三家庭',
+      coreMemberId: 10,
+      status: 'active',
+      notes: '客户偏好先看结论，再看预算方案',
+      planningProfile: {
+        annualIncome: 800000,
+        annualExpense: 360000,
+        debt: 1200000,
+        educationGoal: 500000,
+        parentSupportGoal: 300000,
+        availableAssets: 200000,
+        premiumBudget: 60000,
+      },
+    },
+    members: [
+      { id: 10, familyId: 1, name: '张三', relationLabel: '本人', relationToCore: 'self', role: 'core', birthday: '1986-06-14', status: 'active' },
+      { id: 11, familyId: 1, name: '李四', relationLabel: '配偶', relationToCore: 'spouse', role: 'adult', birthday: '1988-12-01', status: 'active' },
+    ],
+    policies: [{
+      id: 101,
+      familyId: 1,
+      company: '新华保险',
+      name: '测试终身寿险',
+      applicantMemberId: 10,
+      applicantMemberName: '张三',
+      insuredMemberId: 10,
+      insuredMemberName: '张三',
+      amount: 300000,
+      firstPremium: 20000,
+      coveragePeriod: '终身',
+      paymentPeriod: '10年',
+    }],
+    familyReport: {
+      summary: { policyCount: 1, annualPremium: 20000 },
+      radar: { family: { scores: [] }, members: [] },
+      policyInventory: { insuredGroups: [] },
+    },
+    generatedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  const prompt = buildFamilySalesReviewMessages(input).map((message) => message.content).join('\n');
+  assert.match(prompt, /交叉销售机会/u);
+  assert.match(prompt, /客户复盘会议策略/u);
+  assert.match(prompt, /年金、寿险、养老\/教育金机会/u);
+  assert.match(prompt, /家庭财务规划视角/u);
+  assert.match(prompt, /保险重整|保险重整建议|保单重整/u);
+  assert.match(prompt, /会前.*会中.*会后|会前准备|会后跟进/u);
+  assert.match(prompt, /P1|P2|P3/u);
+  assert.match(prompt, /成功概率|机会优先级/u);
+  assert.match(prompt, /基础方案.*标准方案.*完善方案/us);
+  assert.match(prompt, /收入、支出、负债、现金储备和保费预算/u);
+  assert.match(prompt, /不得承诺收益/u);
+  assert.match(prompt, /"annualIncome": 800000/u);
+  assert.match(prompt, /"premiumBudget": 60000/u);
+});
+
 test('family sales review requests DeepSeek pro by default with thinking enabled', async () => {
   let requestBody = null;
   const input = buildFamilySalesReviewInput({
@@ -152,6 +216,88 @@ test('family sales review requests DeepSeek pro by default with thinking enabled
   assert.match(review.content, /身份证号已脱敏/);
   assert.doesNotMatch(review.content, /110101198606141234|110101198812016543|\{\{id_number_1\}\}/);
   assert.equal(review.inputSummary.familyId, null);
+});
+
+test('family sales chat prompt uses privacy-safe context and restores display names', async () => {
+  const requestBodies = [];
+  const input = buildFamilySalesReviewInput({
+    family: { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active', notes: '张三身份证110101198606141234仅本地核验' },
+    members: [
+      { id: 10, familyId: 1, name: '张三', relationLabel: '本人', relationToCore: 'self', role: 'core', birthday: '1986-06-14', idNumber: '110101198606141234', status: 'active' },
+      { id: 11, familyId: 1, name: '李四', relationLabel: '配偶', relationToCore: 'spouse', role: 'adult', birthday: '1988-12-01', identityNumber: '110101198812016543', status: 'active' },
+    ],
+    policies: [{
+      id: 101,
+      familyId: 1,
+      company: '新华保险',
+      name: '测试保单',
+      applicantMemberId: 10,
+      applicantMemberName: '张三',
+      insuredMemberId: 11,
+      insuredMemberName: '李四',
+      insuredIdNumber: '110101198812016543',
+    }],
+    generatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  const context = {
+    sourceUpdated: true,
+    familyInput: input,
+    latestSalesReview: {
+      id: 9,
+      content: '建议先联系{{member_1}}，再补充{{member_2}}资料。',
+    },
+  };
+  const prompt = buildFamilySalesChatMessages({
+    context,
+    history: [{ role: 'user', content: '客户说预算不够怎么办？', createdAt: '2026-06-15T00:01:00.000Z' }],
+    question: '帮我改成微信话术',
+  }).map((message) => message.content).join('\n');
+
+  assert.match(prompt, /sourceUpdated=true/);
+  assert.match(prompt, /客户说预算不够怎么办/);
+  assert.match(prompt, /帮我改成微信话术/);
+  assert.doesNotMatch(prompt, /张三|李四|张三家庭|110101198606141234|110101198812016543/);
+  assert.match(prompt, /\{\{member_1\}\}/);
+  assert.match(prompt, /\{\{id_number_1\}\}/);
+
+  const reply = await generateFamilySalesChatReply({
+    context,
+    history: [{ role: 'user', content: '客户说预算不够怎么办？', createdAt: '2026-06-15T00:01:00.000Z' }],
+    question: '帮我改成微信话术',
+    env: {
+      DEEPSEEK_API_KEY: 'test-key',
+      DEEPSEEK_BASE_URL: 'https://deepseek.test',
+    },
+    fetchImpl: async (_url, options = {}) => {
+      const body = JSON.parse(options.body);
+      requestBodies.push(body);
+      return {
+        ok: true,
+        json: async () => ({
+          model: body.max_tokens === 300 ? 'deepseek-v4-flash' : 'deepseek-v4-pro',
+          choices: [{
+            message: {
+              content: body.max_tokens === 300
+                ? JSON.stringify({ intent: 'sales_script', skills: ['sales_script', 'objection_handling'], reason: '微信话术' })
+                : '可以对{{member_1}}说：“我们先核实预算，再拆基础方案。” {{id_number_1}}',
+            },
+          }],
+        }),
+      };
+    },
+  });
+
+  assert.equal(requestBodies.length, 2);
+  assert.equal(requestBodies[0].model, 'deepseek-v4-flash');
+  assert.match(JSON.stringify(requestBodies[0]), /sales_script/);
+  assert.equal(requestBodies[1].model, 'deepseek-v4-pro');
+  assert.deepEqual(requestBodies[1].thinking, { type: 'enabled' });
+  assert.match(JSON.stringify(requestBodies[1]), /DeepSeek skill router 选择/);
+  assert.match(JSON.stringify(requestBodies[1]), /客户异议处理/);
+  assert.doesNotMatch(JSON.stringify(requestBodies[1]), /张三|李四|张三家庭|110101198606141234|110101198812016543/);
+  assert.match(reply.content, /张三/);
+  assert.match(reply.content, /身份证号已脱敏/);
+  assert.doesNotMatch(reply.content, /\{\{member_1\}\}|\{\{id_number_1\}\}|110101198606141234/);
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {

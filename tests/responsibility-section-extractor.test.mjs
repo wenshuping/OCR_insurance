@@ -164,6 +164,55 @@ test('extractStructuredResponsibilitySections accepts inline responsibility titl
   assert.match(result.mainResponsibilityText, /住院医疗保险责任/u);
 });
 
+test('extractStructuredResponsibilitySections accepts official product manual benefit coverage heading', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      title: '尊享人生年金保险（分红型）',
+      sourceType: 'product_manual',
+      official: true,
+      pageText: [
+        '本保险提供的利益保障 1.关爱年金如被保险人于犹豫期结束的次日、每年保单生效对应日生存，本公司按首次交纳的基本责任的保险费的1%给付关爱年金。',
+        '2.生存保险金被保险人于本合同生效后至60周岁保单生效对应日之前每满两周年的保单生效对应日生存，本公司按基本责任的保险金额的9%给付生存保险金。',
+        '3.身故或身体全残保险金被保险人身故或身体全残，本公司按约定给付身故或身体全残保险金。',
+        '4.投保人意外伤害身故或意外伤害身体全残豁免保险费除另有约定外，可免交基本责任的续期保险费。',
+        '5.祝寿金被保险人于年满60周岁保单生效对应日生存，本公司按可选责任的保险金额给付祝寿金。',
+        '上述1-4条为基本责任，第5条为可选责任。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /本保险提供的利益保障/u);
+  assert.match(result.mainResponsibilityText, /关爱年金/u);
+  assert.match(result.mainResponsibilityText, /生存保险金/u);
+  assert.match(result.mainResponsibilityText, /祝寿金/u);
+});
+
+test('extractStructuredResponsibilitySections uses refilled responsibility text directly from knowledge record', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      title: '尊享人生年金保险（分红型）',
+      official: true,
+      qualityStatus: 'valid_responsibility_refilled',
+      snippet: '新华保险官网资料，已重新抽取保险责任正文段。',
+      parser: 'scrapling_responsibility_refill',
+      pageText: [
+        '1.关爱年金 被保险人于每年保单生效对应日生存，本公司按首次交纳的基本责任保险费的1%给付关爱年金。',
+        '2.生存保险金 被保险人于约定期间生存，本公司按基本责任保险金额的9%给付生存保险金。',
+        '3.身故或身体全残保险金 被保险人身故或身体全残，本公司按约定给付。',
+        '4.祝寿金 被保险人于年满60周岁保单生效对应日生存，本公司按可选责任保险金额给付祝寿金。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /^1\.关爱年金/u);
+  assert.match(result.mainResponsibilityText, /生存保险金/u);
+  assert.match(result.mainResponsibilityText, /祝寿金/u);
+});
+
 test('extractStructuredResponsibilitySections accepts glued inline responsibility title', () => {
   const result = extractStructuredResponsibilitySections({
     productCategory: 'annuity',
@@ -330,6 +379,34 @@ test('extractStructuredResponsibilitySections seed product keeps Xinrongyao form
   assert.match(result.mainResponsibilityText, /基本保险金额×\(1\+3\.5%\)\^\(n-1\)/u);
   assert.match(result.mainResponsibilityText, /特定公共交通工具/u);
   assert.match(result.mainResponsibilityText, /1\.5倍/u);
+  assert.deepEqual(result.sourceInventory.map((source) => [source.sourceId, source.title]), [['src_1', '鑫荣耀条款']]);
+  assert.equal(result.coverageSections[0].sourceRefs[0].sourceRefId, 'src_1#保险责任');
+  assert.deepEqual(result.responsibilityItems, []);
+});
+
+test('extractStructuredResponsibilitySections keeps numbered responsibility item after colon heading', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'incremental_whole_life',
+    records: [{
+      title: '荣耀鑫享条款',
+      pageText: [
+        '保险责任 在本合同保险期间内，本公司按下列规定承担保险责任： 1.身故或身体全残保险金',
+        '若身故或身体全残时被保险人处于交费期间届满后的首个保单生效对应日（含）之后，则其身故或身体全残保险金金额为以下三者之最大者：',
+        '①本保险实际交纳的保险费×给付系数；②现金价值；③基本保险金额×（1+3%）（n-1）。',
+        '上述给付系数根据以下不同情形确定：18周岁后、41周岁前给付系数为1.6；41周岁后、61周岁前给付系数为1.4；61周岁后给付系数为1.2。',
+        '2.特定公共交通工具意外伤害身故或身体全残保险金 额外给付基本保险金额的1.5倍。',
+        '责任免除 不承担保险责任。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.deepEqual(result.responsibilityItems, []);
+  assert.match(result.mainResponsibilityText, /身故或身体全残保险金/u);
+  assert.match(result.mainResponsibilityText, /基本保险金额×\(1\+3%\)\(n-1\)/u);
+  assert.match(result.mainResponsibilityText, /1\.6/u);
+  assert.match(result.mainResponsibilityText, /1\.4/u);
+  assert.match(result.mainResponsibilityText, /1\.2/u);
+  assert.ok(result.gaps.some((gap) => gap.type === 'cash_value_table_needed'));
 });
 
 test('extractStructuredResponsibilitySections seed product keeps 尊贵人生 annuity optional and dividend text', () => {

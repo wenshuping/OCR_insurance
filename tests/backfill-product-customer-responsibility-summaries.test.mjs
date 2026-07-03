@@ -11,10 +11,10 @@ import {
   selectBackfillProducts,
 } from '../scripts/backfill-product-customer-responsibility-summaries.mjs';
 
-test('parseBackfillArgs resolves v22 alias and options', () => {
+test('parseBackfillArgs resolves v24 alias and options', () => {
   const args = parseBackfillArgs([
     '--version',
-    'v22',
+    'v24',
     '--limit',
     '10',
     '--company',
@@ -26,7 +26,7 @@ test('parseBackfillArgs resolves v22 alias and options', () => {
     '--dry-run',
   ]);
 
-  assert.equal(args.summaryVersion, 'customer-summary-v22-structured-rag');
+  assert.equal(args.summaryVersion, 'customer-summary-v24-planner-blocks');
   assert.equal(args.limit, 10);
   assert.equal(args.company, '新华保险');
   assert.equal(args.dbPath, '/tmp/policy-ocr.sqlite');
@@ -37,15 +37,15 @@ test('parseBackfillArgs resolves v22 alias and options', () => {
 test('parseBackfillArgs rejects unsupported summary versions', () => {
   assert.throws(
     () => parseBackfillArgs(['--version', 'v21']),
-    /Only customer-summary-v22-structured-rag is supported/,
+    /Only customer-summary-v24-planner-blocks is supported/,
   );
   assert.throws(
     () => parseBackfillArgs(['--version', 'customer-summary-v21']),
-    /Only customer-summary-v22-structured-rag is supported/,
+    /Only customer-summary-v24-planner-blocks is supported/,
   );
   assert.equal(
-    parseBackfillArgs(['--version', 'customer-summary-v22-structured-rag']).summaryVersion,
-    'customer-summary-v22-structured-rag',
+    parseBackfillArgs(['--version', 'customer-summary-v24-planner-blocks']).summaryVersion,
+    'customer-summary-v24-planner-blocks',
   );
 });
 

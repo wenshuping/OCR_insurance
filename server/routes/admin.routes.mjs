@@ -292,6 +292,52 @@ export function createAdminRoutes(context) {
       ))[0] || null;
   }
 
+  function adminSalesChatThreads(familyId) {
+    return (Array.isArray(state.familySalesChatThreads) ? state.familySalesChatThreads : [])
+      .filter((thread) => (
+        Number(thread?.familyId || 0) === Number(familyId || 0) &&
+        String(thread?.status || 'active') === 'active'
+      ))
+      .sort((left, right) => (
+        String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')) ||
+        Number(right.id || 0) - Number(left.id || 0)
+      ));
+  }
+
+  function adminSalesChatMessages(threadId) {
+    return (Array.isArray(state.familySalesChatMessages) ? state.familySalesChatMessages : [])
+      .filter((message) => Number(message?.threadId || 0) === Number(threadId || 0))
+      .sort((left, right) => (
+        String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
+        Number(left.id || 0) - Number(right.id || 0)
+      ));
+  }
+
+  function clientSalesChatThread(thread = null) {
+    if (!thread) return null;
+    const messages = adminSalesChatMessages(thread.id);
+    return {
+      id: Number(thread.id || 0),
+      familyId: Number(thread.familyId || 0),
+      status: String(thread.status || 'active'),
+      title: String(thread.title || ''),
+      createdAt: thread.createdAt || '',
+      updatedAt: thread.updatedAt || thread.createdAt || '',
+      messageCount: messages.length,
+      latestMessageAt: messages[messages.length - 1]?.createdAt || '',
+      messages: messages.map((message) => ({
+        id: Number(message.id || 0),
+        threadId: Number(message.threadId || 0),
+        familyId: Number(message.familyId || 0),
+        role: String(message.role || ''),
+        content: String(message.content || ''),
+        status: String(message.status || 'complete'),
+        createdAt: message.createdAt || '',
+        error: message.error || '',
+      })),
+    };
+  }
+
   function latestAdminFamilyReport(familyId) {
     return (Array.isArray(state.familyReports) ? state.familyReports : [])
       .filter((report) => (
@@ -415,6 +461,18 @@ export function createAdminRoutes(context) {
       return res.status(404).json({ ok: false, code: 'ADMIN_FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
     return res.json({ ok: true, review: clientSalesReview(latestAdminFamilySalesReview(familyId)) });
+  });
+
+  router.get('/families/:familyId/sales-chat/threads', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    const familyId = Number(req.params.familyId || 0);
+    const family = (Array.isArray(state.familyProfiles) ? state.familyProfiles : [])
+      .find((row) => Number(row?.id || 0) === familyId && String(row?.status || 'active') === 'active') || null;
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'ADMIN_FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    return res.json({ ok: true, threads: adminSalesChatThreads(familyId).map(clientSalesChatThread) });
   });
 
   router.get('/families/:familyId/report', async (req, res) => {

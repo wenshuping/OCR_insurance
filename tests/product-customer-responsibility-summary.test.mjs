@@ -13,7 +13,7 @@ const company = '新华保险';
 const productName = '盛世荣耀';
 const productKey = `company_product:${company}:${productName}`;
 const sourceUrl = 'https://example.test/terms.pdf';
-const currentSummaryVersion = 'customer-summary-v22-structured-rag';
+const currentSummaryVersion = 'customer-summary-v24-planner-blocks';
 
 function baseState() {
   return {
@@ -69,8 +69,24 @@ function structuredLifeSummary(overrides = {}) {
   };
 }
 
+function validCustomerSummaryBlocks() {
+  return [
+    { blockKey: 'productPurpose', title: '产品主要做什么', enabled: true, editable: true, order: 1, content: '主要提供长期保障。' },
+    { blockKey: 'responsibilities', title: '主要保险责任', enabled: true, editable: true, order: 2, content: '包含身故或身体全残保险金。' },
+    { blockKey: 'productFunctions', title: '产品功能/权益', enabled: false, editable: true, order: 3, content: '官方资料明确支持保单贷款。' },
+    { blockKey: 'attentionNotes', title: '注意事项', enabled: true, editable: true, order: 4, content: '现金价值需结合合同表。' },
+  ];
+}
+
 function structuredPromptPayload(prompt) {
   const marker = '输入资料 JSON：';
+  const index = prompt.indexOf(marker);
+  assert.notEqual(index, -1);
+  return JSON.parse(prompt.slice(index + marker.length).trim());
+}
+
+function officialRetryPromptPayload(prompt) {
+  const marker = '官方责任正文 JSON：';
   const index = prompt.indexOf(marker);
   assert.notEqual(index, -1);
   return JSON.parse(prompt.slice(index + marker.length).trim());
@@ -137,6 +153,10 @@ test('generateProductCustomerResponsibilitySummary returns an existing database 
       notices: [],
       requiredPolicyFields: [],
       sourceUrls: [sourceUrl],
+      contentBlocks: [
+        { blockKey: 'productPurpose', title: '产品主要做什么', enabled: true, editable: true, order: 1, content: '数据库已有摘要。' },
+        { blockKey: 'responsibilities', title: '主要保险责任', enabled: true, editable: true, order: 2, content: '旧缓存里的粗略责任文案。' },
+      ],
     },
     sourceUrls: [sourceUrl],
     sourceDigest: '',
@@ -144,7 +164,13 @@ test('generateProductCustomerResponsibilitySummary returns an existing database 
     modelName: 'deepseek-v4-pro',
     generatedAt: '2026-06-29T00:00:00.000Z',
     updatedAt: '2026-06-29T00:00:00.000Z',
-    payload: {},
+    payload: {
+      payload: {
+        sourceSections: {
+          mainResponsibilityText: '第五条 保险责任\n身故或身体全残保险金 数据库条款正文。',
+        },
+      },
+    },
   };
 
   const result = await generateProductCustomerResponsibilitySummary({
@@ -173,11 +199,19 @@ test('generateProductCustomerResponsibilitySummary returns an existing database 
     'notices',
     'requiredPolicyFields',
     'sourceUrls',
+    'officialResponsibilityText',
+    'contentBlocks',
   ]);
+  assert.match(result.summary.officialResponsibilityText, /数据库条款正文/u);
+  const responsibilityBlock = result.summary.contentBlocks.find((block) => block.blockKey === 'responsibilities')?.content || '';
+  assert.match(responsibilityBlock, /旧缓存里的粗略责任文案/u);
+  assert.doesNotMatch(responsibilityBlock, /数据库中的客户摘要/u);
   assert.deepEqual(Object.keys(result.summary.mainResponsibilities[0]), [
     'title',
     'plainText',
+    'triggerCondition',
     'howItPays',
+    'calculationStatus',
     'requiredPolicyFields',
   ]);
   assert.equal(result.summary.mainResponsibilities[0].calculationKey, undefined);
@@ -233,6 +267,8 @@ test('generateProductCustomerResponsibilitySummary generates, validates, saves, 
   assert.equal(saved?.summaryJson?.mainResponsibilities?.[0]?.title, '身故或身体全残保险金');
   assert.equal(saved?.payload?.summaryContext?.productKey, productKey);
   assert.equal(result.summary.headline, saved.summaryJson.headline);
+  assert.match(result.summary.officialResponsibilityText, /第五条 保险责任/u);
+  assert.match(result.summary.officialResponsibilityText, /身故或身体全残保险金/u);
 });
 
 test('generateProductCustomerResponsibilitySummary explains compound growth formulas from official sources', async () => {
@@ -313,9 +349,10 @@ test('generateProductCustomerResponsibilitySummary reuses the official product n
   assert.equal(result.summary.productName, officialProductName);
 });
 
-test('generateProductCustomerResponsibilitySummary falls back to official text for incomplete DeepSeek summaries', async () => {
+test('generateProductCustomerResponsibilitySummary retries with structured official RAG when DeepSeek is incomplete', async () => {
   let saved = null;
   const runs = [];
+  const prompts = [];
   const state = baseState();
   state.knowledgeRecords = [{
     ...state.knowledgeRecords[0],
@@ -337,20 +374,30 @@ test('generateProductCustomerResponsibilitySummary falls back to official text f
       runs.push(run);
       return run;
     },
-    generateWithDeepSeek: async () => ({
-      company,
-      productName,
-      headline: '模型输出不完整。',
-      mainResponsibilities: [{ title: '', plainText: '' }],
-      notices: [],
-      requiredPolicyFields: [],
-      sourceUrls: [sourceUrl],
-    }),
+    generateWithDeepSeek: async ({ prompt }) => {
+      prompts.push(prompt);
+      if (prompts.length === 1) {
+        return {
+          company,
+          productName,
+          headline: '模型输出不完整。',
+          mainResponsibilities: [{ title: '', plainText: '' }],
+          notices: [],
+          requiredPolicyFields: [],
+          sourceUrls: [sourceUrl],
+        };
+      }
+      const payload = officialRetryPromptPayload(prompt);
+      assert.deepEqual(payload.sourceSections.responsibilityItems, []);
+      assert.match(payload.sourceSections.mainResponsibilityText, /身故或身体全残保险金/u);
+      return structuredLifeSummary({ headline: '官方责任正文重写后的摘要。' });
+    },
   });
 
   assert.equal(result.ok, true);
-  assert.equal(saved?.modelProvider, 'local');
-  assert.equal(saved?.modelName, 'official-source-fallback');
+  assert.equal(prompts.length, 2);
+  assert.equal(saved?.modelProvider, 'deepseek');
+  assert.equal(saved?.payload?.qualityGate?.status, 'passed_after_official_retry');
   assert.equal(runs.at(-1)?.status, 'passed');
   assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
 });
@@ -463,9 +510,10 @@ test('generateProductCustomerResponsibilitySummary preserves structured age cond
   assert.match(result.summary.mainResponsibilities[0].plainText, /18周岁前/u);
 });
 
-test('generateProductCustomerResponsibilitySummary falls back when DeepSeek returns loose legacy Chinese responsibility shape', async () => {
+test('generateProductCustomerResponsibilitySummary retries when DeepSeek returns loose legacy Chinese responsibility shape', async () => {
   const runs = [];
   let saved = null;
+  let calls = 0;
   const result = await generateProductCustomerResponsibilitySummary({
     state: baseState(),
     db: dbWithCards(),
@@ -479,20 +527,28 @@ test('generateProductCustomerResponsibilitySummary falls back when DeepSeek retu
       runs.push(run);
       return run;
     },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险。',
-      主要保险责任: [
-        { 标题: '主要保险责任', 内容: '身故或身体全残保险金：按条款约定给付。' },
-      ],
-    }),
+    generateWithDeepSeek: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          产品定位: '终身寿险。',
+          主要保险责任: [
+            { 标题: '主要保险责任', 内容: '身故或身体全残保险金：按条款约定给付。' },
+          ],
+        };
+      }
+      return structuredLifeSummary({ headline: '按官方责任正文重写。' });
+    },
   });
 
   assert.equal(result.ok, true);
-  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(calls, 2);
+  assert.equal(saved?.modelProvider, 'deepseek');
+  assert.equal(saved?.payload?.qualityGate?.status, 'passed_after_official_retry');
   assert.equal(runs.at(-1)?.status, 'passed');
 });
 
-test('generateProductCustomerResponsibilitySummary falls back to official text when DeepSeek returns empty', async () => {
+test('generateProductCustomerResponsibilitySummary retries with official RAG when DeepSeek returns empty', async () => {
   let modelCalls = 0;
   let saved = null;
   const runs = [];
@@ -517,8 +573,13 @@ test('generateProductCustomerResponsibilitySummary falls back to official text w
       runs.push(run);
       return run;
     },
-    generateWithDeepSeek: async () => {
+    generateWithDeepSeek: async ({ prompt }) => {
       modelCalls += 1;
+      if (modelCalls === 2) {
+        const payload = officialRetryPromptPayload(prompt);
+        assert.match(payload.sourceSections.mainResponsibilityText, /身故或身体全残保险金/u);
+        return structuredLifeSummary({ headline: '官方责任正文重写后的摘要。' });
+      }
       return {
         summary: '',
       };
@@ -526,15 +587,17 @@ test('generateProductCustomerResponsibilitySummary falls back to official text w
   });
 
   assert.equal(result.ok, true);
-  assert.equal(modelCalls, 1);
-  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(modelCalls, 2);
+  assert.equal(saved?.modelProvider, 'deepseek');
+  assert.equal(saved?.payload?.qualityGate?.status, 'passed_after_official_retry');
   assert.equal(runs.at(-1)?.status, 'passed');
   assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
 });
 
-test('generateProductCustomerResponsibilitySummary falls back to official text when DeepSeek returns headline only', async () => {
+test('generateProductCustomerResponsibilitySummary retries with official RAG when DeepSeek returns headline only', async () => {
   let saved = null;
   const runs = [];
+  let calls = 0;
   const state = baseState();
   state.knowledgeRecords = [{
     ...state.knowledgeRecords[0],
@@ -556,19 +619,26 @@ test('generateProductCustomerResponsibilitySummary falls back to official text w
       runs.push(run);
       return run;
     },
-    generateWithDeepSeek: async () => ({
-      产品定位: '终身寿险，主要提供身故或全残保障，保额随时间增长。',
-      主要保险责任: [],
-    }),
+    generateWithDeepSeek: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          产品定位: '终身寿险，主要提供身故或全残保障，保额随时间增长。',
+          主要保险责任: [],
+        };
+      }
+      return structuredLifeSummary({ headline: '官方责任正文重写后的摘要。' });
+    },
   });
 
   assert.equal(result.ok, true);
-  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(calls, 2);
+  assert.equal(saved?.modelProvider, 'deepseek');
   assert.equal(runs.at(-1)?.status, 'passed');
   assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
 });
 
-test('local official fallback filters sentence fragments from responsibility titles', async () => {
+test('structured RAG responsibility items filter sentence fragments from responsibility titles', async () => {
   const state = baseState();
   state.insuranceIndicatorRecords = [];
   state.knowledgeRecords = [{
@@ -586,16 +656,34 @@ test('local official fallback filters sentence fragments from responsibility tit
     input: { company, name: productName },
     findSummary: async () => null,
     persistSummary: async (row) => row,
-    generateWithDeepSeek: async () => null,
+    generateWithDeepSeek: async ({ prompt }) => {
+      const payload = structuredPromptPayload(prompt);
+      assert.deepEqual(payload.sourceSections.responsibilityItems, []);
+      assert.match(payload.sourceSections.mainResponsibilityText, /身故保险金/u);
+      assert.match(payload.sourceSections.mainResponsibilityText, /满期保险金/u);
+      return {
+        productCategory: 'endowment',
+        categoryLabel: '两全保险',
+        headline: '两全保险，包含身故和满期责任。',
+        responsibilities: [
+          { title: '身故保险金', plainText: '被保险人身故时给付。', triggerCondition: '身故。', paymentRule: '按合同约定给付。', calculationStatus: 'claim_contingent' },
+          { title: '满期保险金', plainText: '满期生存时给付。', triggerCondition: '生存至保险期间届满。', paymentRule: '按合同约定给付。', calculationStatus: 'scheduled_cashflow' },
+        ],
+        productFunctions: [],
+        importantNotes: [],
+        missingOrUnclear: [],
+      };
+    },
   });
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故保险金', '满期保险金']);
 });
 
-test('customer summary falls back to official text when DeepSeek throws', async () => {
+test('customer summary retries official RAG when DeepSeek throws', async () => {
   let saved = null;
   const runs = [];
+  let calls = 0;
   const state = baseState();
   state.knowledgeRecords = [{
     ...state.knowledgeRecords[0],
@@ -624,15 +712,37 @@ test('customer summary falls back to official text when DeepSeek throws', async 
       runs.push(run);
       return run;
     },
-    generateWithDeepSeek: async () => {
-      const error = new Error('DeepSeek unavailable');
-      error.code = 'DEEPSEEK_REQUEST_FAILED';
-      throw error;
+    generateWithDeepSeek: async ({ prompt }) => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('DeepSeek unavailable');
+        error.code = 'DEEPSEEK_REQUEST_FAILED';
+        throw error;
+      }
+      const payload = officialRetryPromptPayload(prompt);
+      assert.deepEqual(payload.sourceSections.responsibilityItems, []);
+      assert.match(payload.sourceSections.mainResponsibilityText, /身故保险金/u);
+      return {
+        productCategory: 'ordinary_whole_life',
+        categoryLabel: '终身寿险',
+        headline: '主要提供身故保障。',
+        responsibilities: [{
+          title: '身故保险金',
+          plainText: '被保险人身故时，按保险责任正文约定给付身故保险金。',
+          triggerCondition: '被保险人身故。',
+          paymentRule: '按合同约定给付身故保险金。',
+          calculationStatus: 'claim_contingent',
+        }],
+        productFunctions: [],
+        importantNotes: [],
+        missingOrUnclear: [],
+      };
     },
   });
 
   assert.equal(result.ok, true);
-  assert.equal(saved?.modelProvider, 'local');
+  assert.equal(calls, 2);
+  assert.equal(saved?.modelProvider, 'deepseek');
   assert.equal(runs.at(-1)?.status, 'passed');
   assert.match(saved?.summaryJson?.mainResponsibilities?.[0]?.title || '', /身故保险金/u);
   assert.doesNotMatch(saved?.summaryJson?.mainResponsibilities?.[0]?.title || '', /错误卡片责任/u);
@@ -861,8 +971,11 @@ test('generateProductCustomerResponsibilitySummary preserves long official respo
   });
 
   assert.equal(result.ok, true);
+  assert.ok((promptContext?.sourceSections?.mainResponsibilityText || '').length > 600);
+  assert.deepEqual(promptContext?.sourceSections?.responsibilityItems, []);
+  assert.match(promptContext?.sourceSections?.mainResponsibilityText || '', /轻度疾病保险金/u);
   assert.match(promptContext?.sourceSections?.mainResponsibilityText || '', /身故保险金/u);
-  assert.doesNotMatch(promptContext?.sourceSections?.mainResponsibilityText || '', /责任免除/u);
+  assert.doesNotMatch(JSON.stringify(promptContext?.sourceSections || {}), /责任免除/u);
 });
 
 test('validateCustomerResponsibilitySummaryJson does not reject DeepSeek internal metadata fields', () => {
@@ -1053,6 +1166,43 @@ test('callDeepSeekForCustomerResponsibilitySummary logs raw response shape witho
   assert.match(serializedLogs, /DeepSeek parsed response shape/u);
   assert.match(serializedLogs, /主要保险责任/u);
   assert.doesNotMatch(serializedLogs, /test-secret-key/u);
+});
+
+test('callDeepSeekForCustomerResponsibilitySummary reports empty model content with response metadata', async () => {
+  await assert.rejects(
+    () => callDeepSeekForCustomerResponsibilitySummary({
+      prompt: '摘要',
+      company,
+      productName,
+      env: {
+        DEEPSEEK_API_KEY: 'test-secret-key',
+        DEEPSEEK_MODEL: 'deepseek-test-model',
+      },
+      fetchImpl: async () => new Response(JSON.stringify({
+        id: 'chatcmpl_empty',
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: '' },
+        }],
+        usage: {
+          prompt_tokens: 900,
+          completion_tokens: 0,
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    }),
+    (error) => {
+      assert.equal(error.code, 'empty_model_content');
+      assert.equal(error.status, 200);
+      assert.equal(error.responseId, 'chatcmpl_empty');
+      assert.equal(error.finishReason, 'stop');
+      assert.equal(error.rawChars, 0);
+      assert.deepEqual(error.usage, { prompt_tokens: 900, completion_tokens: 0 });
+      return true;
+    },
+  );
 });
 
 test('callDeepSeekForCustomerResponsibilitySummary uses model override without logging API key', async () => {
@@ -1327,6 +1477,429 @@ test('generateProductCustomerResponsibilitySummary keeps flash model for simple 
   assert.equal(runRows.at(-1)?.modelTier, 'flash');
 });
 
+test('generateProductCustomerResponsibilitySummary skips Planner for simple products in auto mode', async () => {
+  let plannerCalls = 0;
+  let saved = null;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db: dbWithCards([]),
+    input: { company, name: productName, plannerMode: 'auto' },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      assert.doesNotMatch(prompt, /Planner 结果/u);
+      return structuredLifeSummary();
+    },
+    generatePlannerWithDeepSeek: async () => {
+      plannerCalls += 1;
+      return '{}';
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(plannerCalls, 0);
+  assert.equal(saved?.payload?.plannerMode, 'auto');
+  assert.equal(saved?.payload?.plannerUsed, false);
+  assert.equal(saved?.payload?.plannerReason, 'simple_product');
+  assert.equal(saved?.payload?.summaryContext?.plannerUsed, false);
+});
+
+test('generateProductCustomerResponsibilitySummary calls Planner for complex products in auto mode and persists blocks', async () => {
+  const annuityProductName = '尊贵人生年金保险（分红型）';
+  const plannerPrompts = [];
+  let saved = null;
+  const state = baseState();
+  state.knowledgeRecords = state.knowledgeRecords.map((record) => ({
+    ...record,
+    productName: annuityProductName,
+    pageText: '第五条 保险责任 年金 自约定领取日起按合同领取。身故保险金按现金价值给付。红利分配是不保证的。第六条 责任免除',
+  }));
+  state.insuranceIndicatorRecords = [];
+
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards([]),
+    input: { company, name: annuityProductName, plannerMode: 'auto' },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      assert.match(prompt, /Planner 结果/u);
+      assert.match(prompt, /长期领取年金/u);
+      return structuredLifeSummary({
+        productCategory: 'annuity',
+        categoryLabel: '年金保险',
+        headline: '这是一款长期领取年金并兼顾身故保障的保险。',
+        responsibilities: [{
+          title: '年金',
+          plainText: '按合同约定领取年金。',
+          triggerCondition: '到达约定领取日。',
+          paymentRule: '领取金额以合同约定为准。',
+          calculationStatus: 'scheduled_cashflow',
+        }],
+        productFunctions: ['红利分配'],
+        importantNotes: ['红利分配是不保证的。'],
+        contentBlocks: validCustomerSummaryBlocks(),
+      });
+    },
+    generatePlannerWithDeepSeek: async ({ prompt }) => {
+      plannerPrompts.push(prompt);
+      return JSON.stringify({
+        productCategory: 'annuity',
+        categoryLabel: '年金保险（分红型）',
+        confidence: 'high',
+        recommendedTemplate: 'annuity_participating',
+        productPurposeFocus: ['长期领取年金'],
+        responsibilityFocus: ['年金领取规则', '身故保险金'],
+        functionFocus: ['红利'],
+        attentionFocus: ['红利不保证'],
+        evidenceNeeds: ['保险责任正文'],
+        missingOrUnclear: [],
+        notesForFinalPrompt: ['红利写入注意事项'],
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(plannerPrompts.length, 1);
+  assert.equal(saved?.payload?.plannerUsed, true);
+  assert.equal(saved?.payload?.plannerOutput?.productCategory, 'annuity');
+  assert.equal(saved?.summaryJson?.contentBlocks?.length, 4);
+  assert.equal(saved?.payload?.contentBlocks?.length, 4);
+  assert.equal(saved?.summaryJson?.contentBlocks?.find((block) => block.blockKey === 'productFunctions')?.enabled, false);
+  assert.equal(result.summary.contentBlocks.length, 4);
+  assert.equal(result.summary.contentBlocks.some((block) => block.blockKey === 'productFunctions'), true);
+});
+
+test('generateProductCustomerResponsibilitySummary honors plannerMode all and off', async () => {
+  let allCalls = 0;
+  await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db: dbWithCards([]),
+    input: { company, name: productName, plannerMode: 'all' },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async ({ prompt }) => {
+      assert.match(prompt, /Planner 结果/u);
+      return structuredLifeSummary();
+    },
+    generatePlannerWithDeepSeek: async () => {
+      allCalls += 1;
+      return JSON.stringify({ productPurposeFocus: ['终身保障'], responsibilityFocus: ['身故保险金'] });
+    },
+  });
+  assert.equal(allCalls, 1);
+
+  let offCalls = 0;
+  let offSaved = null;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db: dbWithCards([]),
+    input: { company, name: productName, plannerMode: 'off' },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      offSaved = row;
+      return row;
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      assert.doesNotMatch(prompt, /Planner 结果/u);
+      return structuredLifeSummary();
+    },
+    generatePlannerWithDeepSeek: async () => {
+      offCalls += 1;
+      return '{}';
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(offCalls, 0);
+  assert.equal(offSaved?.payload?.plannerMode, 'off');
+  assert.equal(offSaved?.payload?.plannerUsed, false);
+  assert.equal(offSaved?.payload?.plannerReason, 'disabled');
+});
+
+test('generateProductCustomerResponsibilitySummary falls back when Planner fails and records failure metadata', async () => {
+  let saved = null;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db: dbWithCards([]),
+    input: { company, name: productName, plannerMode: 'all' },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      assert.doesNotMatch(prompt, /Planner 结果如下/u);
+      return structuredLifeSummary();
+    },
+    generatePlannerWithDeepSeek: async () => 'not json',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(saved?.payload?.plannerUsed, false);
+  assert.equal(saved?.payload?.plannerReason, 'planner_failed');
+  assert.match(saved?.payload?.plannerError, /JSON/u);
+});
+
+test('generateProductCustomerResponsibilitySummary falls back from pro to flash on empty model response', async () => {
+  const product = '新华人寿保险股份有限公司荣耀鑫享终身寿险';
+  const calls = [];
+  const savedRows = [];
+  const runRows = [];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: {
+      knowledgeRecords: [{
+        company,
+        productName: product,
+        title: `${product}条款`,
+        official: true,
+        url: sourceUrl,
+        pageText: [
+          '第五条 保险责任',
+          '身故或身体全残保险金 被保险人身故或身体全残时，按实际交纳的保险费×给付系数、现金价值、基本保险金额×(1+3%)^(n-1)以下三者最大者给付。',
+          '特定公共交通工具意外伤害身故或身体全残保险金，额外给付基本保险金额的1.5倍。',
+          '第六条 责任免除',
+        ].join('\n'),
+      }],
+      insuranceIndicatorRecords: [],
+    },
+    db: dbWithCards([]),
+    input: { company, name: product },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      savedRows.push(row);
+      return row;
+    },
+    persistGenerationRun: async (run) => {
+      runRows.push(run);
+      return run;
+    },
+    generateWithDeepSeek: async (args) => {
+      calls.push(args);
+      if (args.modelNameOverride === 'deepseek-v4-pro') {
+        const error = new Error('DeepSeek returned empty message content');
+        error.code = 'empty_model_content';
+        error.status = 200;
+        error.responseId = 'chatcmpl_empty';
+        error.finishReason = 'stop';
+        error.rawChars = 0;
+        throw error;
+      }
+      return {
+        productCategory: 'incremental_whole_life',
+        categoryLabel: '增额终身寿险',
+        headline: '终身保障，身故或全残给付基准每年3%复利递增，并含特定公共交通意外额外给付。',
+        responsibilities: [{
+          title: '身故或身体全残保险金',
+          plainText: '被保险人身故或身体全残时按条款给付，给付基准包含每年3%复利递增项。',
+          triggerCondition: '被保险人身故或身体全残。',
+          paymentRule: '按实际交纳的保险费×给付系数、现金价值、基本保险金额×(1+3%)^(n-1)三者最大者给付。',
+          calculationStatus: 'claim_contingent',
+        }, {
+          title: '特定公共交通工具意外伤害身故或身体全残保险金',
+          plainText: '符合特定公共交通工具意外条件时额外给付。',
+          triggerCondition: '乘坐特定公共交通工具期间因交通事故导致身故或身体全残。',
+          paymentRule: '额外给付基本保险金额的1.5倍。',
+          calculationStatus: 'claim_contingent',
+        }],
+        productFunctions: [],
+        importantNotes: ['3%复利递增是保险责任给付基准递增，不等于现金价值增长或保证收益率。'],
+        missingOrUnclear: [],
+      };
+    },
+    modelName: 'deepseek-v4-flash',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.map((call) => call.modelNameOverride), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+  assert.equal(savedRows[0]?.modelName, 'deepseek-v4-flash');
+  assert.equal(savedRows[0]?.payload?.modelTier, 'pro');
+  assert.equal(savedRows[0]?.payload?.qualityGate?.status, 'passed_after_model_fallback');
+  assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.code, 'empty_model_content');
+  assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.responseId, 'chatcmpl_empty');
+  assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.stage, 'primary');
+  assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.modelName, 'deepseek-v4-pro');
+  assert.equal(runRows.at(-1)?.status, 'passed');
+});
+
+test('generateProductCustomerResponsibilitySummary displays every structured accident endowment responsibility', async () => {
+  const product = '新华人寿保险股份有限公司畅行万里智赢版两全保险';
+  const responsibilities = [
+    ['满期生存保险金', '被保险人生存至保险期间届满，按实际交纳的保险费给付。', '实际交纳的保险费'],
+    ['疾病身故或身体全残保险金', '被保险人因疾病身故或身体全残，按年龄段给付对应倍数。', '41周岁前1.6倍；41至61周岁1.4倍；61周岁后1.2倍'],
+    ['一般意外伤害身故或身体全残保险金', '因一般意外伤害导致身故或身体全残。', '基本保险金额10倍'],
+    ['步行及骑行交通意外伤害身故或身体全残保险金', '步行或骑行期间被机动车碰撞导致身故或身体全残。', '基本保险金额15倍'],
+    ['驾乘意外伤害身故或身体全残保险金', '驾驶或乘坐指定车辆期间发生交通事故。', '基本保险金额20倍'],
+    ['高空坠物抛物意外伤害身故或身体全残保险金', '因高空坠物或高空抛物事故导致身故或身体全残。', '基本保险金额20倍'],
+    ['客运轮船及客运汽车意外伤害身故或身体全残保险金', '乘坐客运轮船或客运汽车期间发生交通事故。', '基本保险金额30倍'],
+    ['电梯意外伤害身故或身体全残保险金', '因电梯意外事故导致身故或身体全残。', '基本保险金额30倍'],
+    ['公共场所特定事故意外伤害身故或身体全残保险金', '在公共场所因火灾、爆炸或踩踏事故导致身故或身体全残。', '基本保险金额40倍'],
+    ['重大自然灾害意外伤害身故或身体全残保险金', '因约定重大自然灾害导致身故或身体全残。', '基本保险金额40倍'],
+    ['客运列车及航空意外伤害身故或身体全残保险金', '乘坐客运列车或民航班机期间发生交通事故。', '基本保险金额60倍'],
+  ].map(([title, plainText, paymentRule]) => ({
+    title,
+    plainText,
+    triggerCondition: plainText,
+    paymentRule,
+    calculationStatus: 'claim_contingent',
+  }));
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: {
+      knowledgeRecords: [{
+        company,
+        productName: product,
+        productType: '两全保险',
+        official: true,
+        url: sourceUrl,
+        title: `${product}条款`,
+        pageText: [
+          '第五条 保险责任',
+          ...responsibilities.map((item) => `${item.title} ${item.plainText} ${item.paymentRule}`),
+          '第六条 责任免除',
+        ].join('\n'),
+      }],
+      insuranceIndicatorRecords: [],
+    },
+    db: dbWithCards([]),
+    input: { company, name: product, plannerMode: 'off' },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async () => ({
+      productCategory: 'endowment',
+      categoryLabel: '两全保险',
+      headline: '畅行万里智赢版两全保险保险责任摘要',
+      responsibilities,
+      productFunctions: [],
+      importantNotes: [],
+      missingOrUnclear: [],
+      contentBlocks: [
+        { blockKey: 'productPurpose', title: '产品主要做什么', enabled: true, editable: true, order: 1, content: '畅行万里智赢版两全保险保险责任摘要' },
+        {
+          blockKey: 'responsibilities',
+          title: '主要保险责任',
+          enabled: true,
+          editable: true,
+          order: 2,
+          content: responsibilities.map((item) => `${item.title}：${item.plainText}：${item.paymentRule}`).join('\n'),
+        },
+        { blockKey: 'productFunctions', title: '产品功能/权益', enabled: true, editable: true, order: 3, content: '' },
+        { blockKey: 'attentionNotes', title: '注意事项', enabled: true, editable: true, order: 4, content: '' },
+      ],
+    }),
+    modelName: 'deepseek-v4-flash',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.mainResponsibilities.length, 11);
+  const purpose = result.summary.contentBlocks.find((block) => block.blockKey === 'productPurpose')?.content || '';
+  const responsibilityBlock = result.summary.contentBlocks.find((block) => block.blockKey === 'responsibilities')?.content || '';
+  assert.match(purpose, /意外保障型两全保险/u);
+  assert.match(purpose, /交通及特定意外高倍/u);
+  for (const item of responsibilities) {
+    assert.match(responsibilityBlock, new RegExp(item.title, 'u'));
+    assert.match(responsibilityBlock, new RegExp(item.paymentRule, 'u'));
+  }
+  assert.doesNotMatch(responsibilityBlock, /可概括为/u);
+  assert.doesNotMatch(responsibilityBlock, /等11项/u);
+  assert.equal(result.summary.contentBlocks.some((block) => block.blockKey === 'productFunctions'), true);
+});
+
+test('generateProductCustomerResponsibilitySummary rebuilds annuity display responsibilities from structured items', async () => {
+  const product = '新华人寿保险股份有限公司尊贵人生年金保险(分红型)';
+  const responsibilities = [
+    {
+      title: '关爱年金（基本责任）',
+      plainText: '被保险人于犹豫期结束的次日零时生存，给付首次交纳的基本责任保险费的10%；60周岁前每一保单生效对应日生存，给付首次交纳的基本责任保险费的1%。',
+      triggerCondition: '被保险人在约定日期生存。',
+      paymentRule: '首次交纳基本责任保险费×10%；60周岁前每年为首次交纳基本责任保险费×1%。',
+      calculationStatus: 'scheduled_cashflow',
+    },
+    {
+      title: '生存保险金（基本责任）',
+      plainText: '60周岁前每满两周年的保单生效对应日生存，按基本责任保险金额的9%给付；60周岁至80周岁期间每年生存，按基本责任保险金额的9%给付。',
+      triggerCondition: '被保险人在约定保单生效对应日生存。',
+      paymentRule: '基本责任保险金额×9%。',
+      calculationStatus: 'scheduled_cashflow',
+    },
+    {
+      title: '身故保险金（基本责任）',
+      plainText: '被保险人身故时，给付基本责任的基本保险金额对应现金价值与基本责任的累积红利保险金额对应现金价值之和。',
+      triggerCondition: '被保险人身故。',
+      paymentRule: '基本责任基本保险金额对应现金价值 + 基本责任累积红利保险金额对应现金价值。',
+      calculationStatus: 'claim_contingent',
+    },
+    {
+      title: '投保人意外伤害身故或意外伤害身体全残豁免保险费（基本责任）',
+      plainText: '投保人因意外伤害身故或身体全残，且年龄介于18周岁至60周岁之间，可免交基本责任续期保险费。',
+      triggerCondition: '投保人18至60周岁之间因意外身故或身体全残。',
+      paymentRule: '豁免基本责任续期保险费，合同继续有效。',
+      calculationStatus: 'not_calculable',
+    },
+    {
+      title: '祝寿金（可选责任）',
+      plainText: '被保险人于年满60周岁保单生效对应日零时生存，按该保单生效对应日可选责任的保险金额给付祝寿金。',
+      triggerCondition: '已选择可选责任，且被保险人60周岁生存。',
+      paymentRule: '给付可选责任保险金额，可选责任终止。',
+      calculationStatus: 'scheduled_cashflow',
+    },
+  ];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: {
+      knowledgeRecords: [{
+        company,
+        productName: product,
+        title: `${product}条款`,
+        official: true,
+        url: sourceUrl,
+        pageText: [
+          '第五条 保险责任',
+          '关爱年金 首次交纳的基本责任保险费的10%，60周岁前每年1%。',
+          '生存保险金 基本责任保险金额的9%。',
+          '身故保险金 现金价值之和。',
+          '可选责任 祝寿金 可选责任保险金额。',
+          '第六条 责任免除',
+        ].join('\n'),
+      }],
+      insuranceIndicatorRecords: [],
+    },
+    db: dbWithCards([]),
+    input: { company, name: product, plannerMode: 'off' },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async () => ({
+      productCategory: 'annuity',
+      categoryLabel: '年金保险（分红型）',
+      headline: '这是一款提供生存领取、身故保障和可选祝寿金责任的分红型年金保险。',
+      responsibilities,
+      productFunctions: [],
+      importantNotes: ['红利分配不确定，实际红利可能为零。'],
+      missingOrUnclear: [],
+      contentBlocks: [
+        { blockKey: 'productPurpose', title: '产品主要做什么', enabled: true, editable: true, order: 1, content: '尊贵人生年金保险（分红型）是一款年金保险。' },
+        { blockKey: 'responsibilities', title: '主要保险责任', enabled: true, editable: true, order: 2, content: '基本责任包括关爱年金、生存保险金、身故保险金以及投保人意外豁免保费。可选责任包括祝寿金和身故或全残保险金。所有金额均需参考现金价值相关金额，祝寿金给付保额。' },
+        { blockKey: 'productFunctions', title: '产品功能/权益', enabled: true, editable: true, order: 3, content: '' },
+        { blockKey: 'attentionNotes', title: '注意事项', enabled: true, editable: true, order: 4, content: '红利分配不确定。' },
+      ],
+    }),
+    modelName: 'deepseek-v4-flash',
+  });
+
+  assert.equal(result.ok, true);
+  const survivalResponsibility = result.summary.mainResponsibilities.find((item) => item.title.includes('生存保险金'));
+  assert.equal(survivalResponsibility?.triggerCondition, '被保险人在约定保单生效对应日生存。');
+  assert.equal(survivalResponsibility?.howItPays, '基本责任保险金额×9%。');
+  const responsibilityBlock = result.summary.contentBlocks.find((block) => block.blockKey === 'responsibilities')?.content || '';
+  assert.match(responsibilityBlock, /所有金额均需参考现金价值相关金额/u);
+  assert.match(responsibilityBlock, /祝寿金给付保额/u);
+  assert.doesNotMatch(responsibilityBlock, /触发条件：投保人18至60周岁之间因意外身故或身体全残/u);
+});
+
 test('generateProductCustomerResponsibilitySummary seed product prompts include required category terms', async () => {
   const cases = [
     {
@@ -1339,6 +1912,11 @@ test('generateProductCustomerResponsibilitySummary seed product prompts include 
       ].join('\n'),
       expectedPromptTerms: [/增额终身寿险模板/u, /复利递增/u, /交通意外额外给付/u],
       expectedCategory: 'incremental_whole_life',
+      expectedRagTitles: [
+        '身故或身体全残保险金',
+        '特定公共交通工具意外伤害身故或身体全残保险金',
+      ],
+      expectedRagFacts: [/3\.5%/u, /1\.5倍/u],
       response: {
         productCategory: 'incremental_whole_life',
         categoryLabel: '增额终身寿险',
@@ -1377,6 +1955,8 @@ test('generateProductCustomerResponsibilitySummary seed product prompts include 
       ].join('\n'),
       expectedPromptTerms: [/年金保险模板/u, /领取时间\/领取日/u, /可选责任/u],
       expectedCategory: 'annuity',
+      expectedRagTitles: ['关爱年金', '生存保险金', '身故保险金'],
+      expectedSupplementTypes: ['optional_responsibility', 'dividend'],
       response: {
         productCategory: 'annuity',
         categoryLabel: '年金保险（分红型）',
@@ -1433,6 +2013,16 @@ test('generateProductCustomerResponsibilitySummary seed product prompts include 
         for (const term of item.expectedPromptTerms) assert.match(prompt, term);
         const payload = structuredPromptPayload(prompt);
         assert.equal(payload.routing.productCategory, item.expectedCategory);
+        assert.deepEqual(payload.sourceSections.responsibilityItems, []);
+        for (const title of item.expectedRagTitles || []) {
+          assert.match(payload.sourceSections.mainResponsibilityText, new RegExp(title, 'u'));
+        }
+        for (const factPattern of item.expectedRagFacts || []) {
+          assert.match(payload.sourceSections.mainResponsibilityText, factPattern);
+        }
+        for (const supplementType of item.expectedSupplementTypes || []) {
+          assert.ok(payload.sourceSections.supplementSections.some((section) => section.type === supplementType));
+        }
         return item.response;
       },
     });
@@ -1488,9 +2078,10 @@ test('official analysis with third-party source returns needs_source_review with
   assert.equal(runRows.at(-1)?.status, 'needs_source_review');
 });
 
-test('quality gate failure falls back to official responsibility text', async () => {
+test('quality gate failure retries with structured official RAG', async () => {
   const savedRows = [];
   const runRows = [];
+  let calls = 0;
   const result = await generateProductCustomerResponsibilitySummary({
     state: baseState(),
     db: dbWithCards([]),
@@ -1504,21 +2095,31 @@ test('quality gate failure falls back to official responsibility text', async ()
       runRows.push(run);
       return run;
     },
-    generateWithDeepSeek: async () => ({
-      productCategory: 'ordinary_whole_life',
-      categoryLabel: '终身寿险',
-      headline: '缺少责任。',
-      responsibilities: [],
-      productFunctions: [],
-      importantNotes: [],
-      missingOrUnclear: [],
-    }),
+    generateWithDeepSeek: async ({ prompt }) => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          productCategory: 'ordinary_whole_life',
+          categoryLabel: '终身寿险',
+          headline: '缺少责任。',
+          responsibilities: [],
+          productFunctions: [],
+          importantNotes: [],
+          missingOrUnclear: [],
+        };
+      }
+      const payload = officialRetryPromptPayload(prompt);
+      assert.deepEqual(payload.sourceSections.responsibilityItems, []);
+      assert.match(payload.sourceSections.mainResponsibilityText, /身故或身体全残保险金/u);
+      return structuredLifeSummary({ headline: '官方责任正文重写后的摘要。' });
+    },
   });
 
   assert.equal(result.ok, true);
+  assert.equal(calls, 2);
   assert.equal(savedRows.length, 1);
-  assert.equal(savedRows[0]?.modelProvider, 'local');
-  assert.equal(savedRows[0]?.modelName, 'official-source-fallback');
+  assert.equal(savedRows[0]?.modelProvider, 'deepseek');
+  assert.equal(savedRows[0]?.payload?.qualityGate?.status, 'passed_after_official_retry');
   assert.equal(runRows.at(-1)?.status, 'passed');
   assert.ok(runRows.at(-1)?.qualityIssues?.length > 0);
 });

@@ -1,6 +1,10 @@
 // server/cashflow-compute.mjs
 // Server-side cashflow computation engine.
 // Migrated from src/cashflow-engine.mjs with new template-based computation.
+import {
+  normalizeIndicatorCalculation,
+  resolveIndicatorAmountFromCalculation,
+} from '../src/indicator-calculation.mjs';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Migrated helpers (from src/cashflow-engine.mjs)
@@ -213,9 +217,22 @@ function ageAtCoverageEnd(policy) {
 }
 
 /** Resolve amount from indicator. */
+function indicatorCalculationInputs(policy) {
+  const premium = Number(policy.firstPremium || policy.premium || 0) || 0;
+  const years = parsePaymentYearsFromText(policy.paymentPeriod) || 1;
+  return {
+    baseAmount: Number(policy.amount || 0) || 0,
+    firstPremium: premium,
+    paymentYears: years,
+  };
+}
+
 function resolveIndicatorAmountForCashflow(indicator, policy) {
   if (shouldSkipCashflowIndicator(indicator)) return 0;
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
+  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
+  if (structured.resolved) return structured.amount;
+  if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false) return 0;
   const text = `${indicator.formulaText || ''} ${indicator.basis || ''} ${indicator.liability || ''}`;
   if (/实际交纳|已交保费|所交保费/.test(text)) {
     const premium = Number(scopedPolicy.firstPremium || scopedPolicy.premium || 0);
@@ -235,6 +252,8 @@ function resolveIndicatorAmountForCashflow(indicator, policy) {
 /** Format calculation text for an indicator. */
 function formatCashflowCalculation(indicator, policy, amount) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
+  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
+  if (structured.resolved && Math.abs(structured.amount - Number(amount || 0)) < 0.01) return structured.calculationText;
   const text = `${indicator.formulaText || ''} ${indicator.basis || ''}`;
   if (/实际交纳|已交保费/.test(text)) {
     const premium = Number(scopedPolicy.firstPremium || scopedPolicy.premium || 0);
@@ -297,6 +316,8 @@ function expandCashflowIndicator(indicator, policy, pensionStartAge = 0) {
 /** Resolve scenario amount for non-cashflow indicators. */
 function resolveScenarioAmount(indicator, policy) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
+  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
+  if (structured.resolved) return structured.amount;
   const value = Number(indicator.value);
   const amount = Number(scopedPolicy.amount || 0);
 
@@ -772,6 +793,8 @@ function indicatorUsesPaidPremium(indicator = {}) {
 }
 
 function indicatorHasUncertainValue(indicator = {}) {
+  const calculation = normalizeIndicatorCalculation(indicator);
+  if (['cash_value', 'account_value', 'schedule_or_policy_table', 'medical_formula', 'daily_allowance'].includes(calculation.calculationKey)) return true;
   const text = normalizeCashflowLookupText(indicatorQuantificationText(indicator));
   return /账户价值|现金价值|保单账户价值|个人账户价值/u.test(text) && !/现金价值不展示/u.test(text);
 }

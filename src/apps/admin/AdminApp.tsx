@@ -14,6 +14,7 @@ import {
   AdminUserFamiliesResponse,
   ApiError,
   FamilyReportRecord,
+  FamilySalesChatThread,
   FamilySalesReview,
   KnowledgeRecord,
   OptionalResponsibilityGap,
@@ -28,6 +29,7 @@ import {
   getAdminMembershipConfig,
   getAdminOverview,
   getAdminFamilySalesReview,
+  getAdminFamilySalesChatThreads,
   getAdminFamilyReport,
   getAdminReportIssueDetail,
   getAdminReportIssues,
@@ -88,6 +90,7 @@ export function AdminApp() {
   const [familyReportGenerating, setFamilyReportGenerating] = useState(false);
   const [selectedSalesReview, setSelectedSalesReview] = useState<FamilySalesReview | null>(null);
   const [selectedSalesReviewFamilyName, setSelectedSalesReviewFamilyName] = useState('');
+  const [selectedSalesChatThreads, setSelectedSalesChatThreads] = useState<FamilySalesChatThread[]>([]);
   const [salesReviewLoading, setSalesReviewLoading] = useState(false);
   const [message, setMessage] = useState('输入后台密码进入平台只读管理台');
   const [loading, setLoading] = useState(false);
@@ -130,6 +133,7 @@ export function AdminApp() {
     setSelectedFamilyReportFamilyName('');
     setSelectedSalesReview(null);
     setSelectedSalesReviewFamilyName('');
+    setSelectedSalesChatThreads([]);
     setReportIssueReports([]);
     setSelectedReportIssueReport(null);
     setSelectedReportIssues([]);
@@ -288,9 +292,14 @@ export function AdminApp() {
     if (!token || !familyId) return;
     setSalesReviewLoading(true);
     setSelectedSalesReview(null);
+    setSelectedSalesChatThreads([]);
     try {
-      const payload = await getAdminFamilySalesReview(token, familyId);
+      const [payload, chatPayload] = await Promise.all([
+        getAdminFamilySalesReview(token, familyId),
+        getAdminFamilySalesChatThreads(token, familyId),
+      ]);
       setSelectedSalesReview(payload.review || null);
+      setSelectedSalesChatThreads(chatPayload.threads || []);
       setMessage(payload.review?.content ? '销售建议已加载' : '暂无已保存销售建议');
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
@@ -763,6 +772,7 @@ export function AdminApp() {
         return (
           <AdminSalesReviewPage
             review={selectedSalesReview}
+            chatThreads={selectedSalesChatThreads}
             familyName={selectedSalesReviewFamilyName}
             loading={salesReviewLoading}
             onBack={() => changeAdminPage('users')}

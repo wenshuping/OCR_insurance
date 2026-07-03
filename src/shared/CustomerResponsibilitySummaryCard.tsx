@@ -11,6 +11,10 @@ function cleanStrings(values: string[] | undefined) {
   return Array.isArray(values) ? values.map((value) => String(value || '').trim()).filter(Boolean) : [];
 }
 
+function cleanText(value: unknown) {
+  return String(value ?? '').trim();
+}
+
 function hostFromUrl(url: string) {
   try {
     return new URL(url).hostname || url;
@@ -24,7 +28,27 @@ export function CustomerResponsibilitySummaryCard({
 }: {
   summary: CustomerResponsibilitySummary;
 }) {
-  const responsibilities = Array.isArray(summary.mainResponsibilities) ? summary.mainResponsibilities : [];
+  const blocks = (Array.isArray(summary.contentBlocks) ? summary.contentBlocks : [])
+    .map((block) => ({
+      blockKey: cleanText(block?.blockKey),
+      title: cleanText(block?.title),
+      enabled: block?.enabled !== false,
+      content: cleanText(block?.content),
+      order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
+    }))
+    .filter((block) => block.enabled && (block.title || block.content))
+    .sort((left, right) => left.order - right.order);
+  const responsibilities = (Array.isArray(summary.mainResponsibilities) ? summary.mainResponsibilities : [])
+    .map((item) => ({
+      title: cleanText(item?.title),
+      plainText: cleanText(item?.plainText),
+      triggerCondition: cleanText(item?.triggerCondition),
+      howItPays: cleanText(item?.howItPays),
+      calculationStatus: cleanText(item?.calculationStatus),
+      requiredPolicyFields: cleanStrings(item?.requiredPolicyFields),
+      sourceRefs: cleanStrings(item?.sourceRefs),
+    }))
+    .filter((item) => item.title || item.plainText || item.triggerCondition || item.howItPays || item.calculationStatus || item.sourceRefs.length);
   const notices = cleanStrings(summary.notices);
   const requiredPolicyFields = cleanStrings(summary.requiredPolicyFields);
   const sourceUrls = cleanStrings(summary.sourceUrls);
@@ -46,10 +70,24 @@ export function CustomerResponsibilitySummaryCard({
         </div>
       </div>
 
+      {blocks.length ? (
+        <div className="mt-4 space-y-3">
+          {blocks.map((block) => (
+            <section key={block.blockKey || block.title} className="rounded-[16px] bg-slate-50 px-3 py-3 ring-1 ring-slate-100">
+              {block.title ? <h4 className="text-xs font-black text-slate-950">{block.title}</h4> : null}
+              {block.content ? <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{block.content}</p> : null}
+            </section>
+          ))}
+        </div>
+      ) : null}
+
       {responsibilities.length ? (
         <div className="mt-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="text-xs font-black text-slate-950">责任明细</h4>
+            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{responsibilities.length} 项</span>
+          </div>
           {responsibilities.map((item, index) => {
-            const fields = cleanStrings(item.requiredPolicyFields);
             return (
               <article key={`${item.title}-${index}`} className="rounded-[16px] border border-slate-100 bg-slate-50 p-3">
                 <div className="flex items-start gap-3">
@@ -59,10 +97,19 @@ export function CustomerResponsibilitySummaryCard({
                   <div className="min-w-0 flex-1">
                     <h4 className="break-words text-sm font-black leading-6 text-slate-950">{item.title || '保险责任'}</h4>
                     {item.plainText ? <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{item.plainText}</p> : null}
+                    {item.triggerCondition ? <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">触发条件：{item.triggerCondition}</p> : null}
                     {item.howItPays ? <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700 ring-1 ring-slate-100">{item.howItPays}</p> : null}
-                    {fields.length ? (
+                    {item.calculationStatus ? <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">calculationStatus: {item.calculationStatus}</p> : null}
+                    {item.sourceRefs.length ? (
                       <div className="mt-2 flex flex-wrap gap-1.5">
-                        {fields.map((field) => (
+                        {item.sourceRefs.map((sourceRef) => (
+                          <span key={sourceRef} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">{sourceRef}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {item.requiredPolicyFields.length ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {item.requiredPolicyFields.map((field) => (
                           <span key={field} className="rounded-full bg-white px-2 py-1 text-[11px] font-black text-slate-500 ring-1 ring-slate-200">{field}</span>
                         ))}
                       </div>

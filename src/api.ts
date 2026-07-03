@@ -237,7 +237,7 @@ export function getFamilySalesReview(input: { token?: string; guestId?: string; 
   return getFamilySalesReviewContract(input);
 }
 
-export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number; userRefresh?: boolean }) {
+export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number; userRefresh?: boolean; salesChatMessageIds?: number[] }) {
   return createFamilySalesReviewContract(input);
 }
 

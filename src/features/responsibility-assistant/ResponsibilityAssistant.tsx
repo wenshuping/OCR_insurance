@@ -14,12 +14,34 @@ import type {
   CustomerResponsibilitySummary,
   PolicyCompanySuggestion,
   PolicyProductSuggestion,
+  ResponsibilityPlannerMode,
 } from '../../api/contracts/responsibility';
-import { CustomerResponsibilitySummaryCard } from '../../shared/CustomerResponsibilitySummaryCard';
 import {
   normalizeSuggestionQuery,
   renderHighlightedSuggestion,
 } from '../../shared/customer-policy-components';
+
+function cleanSummaryText(value: string | undefined) {
+  return String(value || '').trim();
+}
+
+function cleanSummaryList(values: string[] | undefined) {
+  return Array.isArray(values) ? values.map((value) => cleanSummaryText(value)).filter(Boolean) : [];
+}
+
+function hostFromUrl(url: string) {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
+  }
+}
+
+const plannerModeOptions: Array<{ value: ResponsibilityPlannerMode; label: string }> = [
+  { value: 'auto', label: '自动' },
+  { value: 'all', label: '全部Planner' },
+  { value: 'off', label: '关闭Planner' },
+];
 
 export function ResponsibilityAssistant(props: {
   analysis: PolicyAnalysisResult | null;
@@ -35,10 +57,12 @@ export function ResponsibilityAssistant(props: {
   matches: PolicyKnowledgeMatch[];
   message: string;
   name: string;
+  plannerMode: ResponsibilityPlannerMode;
   productSuggestionLoading: boolean;
   productSuggestions: PolicyProductSuggestion[];
   onChangeCompany: (value: string) => void;
   onChangeName: (value: string) => void;
+  onChangePlannerMode: (mode: ResponsibilityPlannerMode) => void;
   onClose: () => void;
   onOpen: () => void;
   onQuery: () => void;
@@ -62,10 +86,12 @@ export function ResponsibilityAssistant(props: {
     matches,
     message,
     name,
+    plannerMode,
     productSuggestionLoading,
     productSuggestions,
     onChangeCompany,
     onChangeName,
+    onChangePlannerMode,
     onClose,
     onOpen,
     onQuery,
@@ -78,7 +104,48 @@ export function ResponsibilityAssistant(props: {
   const [companyFocused, setCompanyFocused] = useState(false);
   const [productFocused, setProductFocused] = useState(false);
   const responsibilities = Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [];
-  const displayedResponsibilityCount = customerSummary?.mainResponsibilities?.length || responsibilities.length;
+  const customerSummaryResponsibilities = Array.isArray(customerSummary?.mainResponsibilities)
+    ? customerSummary.mainResponsibilities
+    : [];
+  const officialResponsibilityText = cleanSummaryText(customerSummary?.officialResponsibilityText);
+  const customerSummaryBlocks = (Array.isArray(customerSummary?.contentBlocks)
+    ? customerSummary.contentBlocks
+    : [])
+    .map((block) => ({
+      blockKey: cleanSummaryText(block?.blockKey),
+      title: cleanSummaryText(block?.title),
+      enabled: block?.enabled !== false,
+      content: cleanSummaryText(block?.content),
+      order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
+    }))
+    .filter((block) => block.enabled && (block.title || block.content))
+    .sort((left, right) => left.order - right.order);
+  const customerSummaryHasBlocks = customerSummaryBlocks.some((block) => block.content);
+  const customerSummaryHasContent = Boolean(
+    customerSummary?.headline?.trim()
+      || customerSummaryHasBlocks
+      || customerSummaryResponsibilities.some((item) => item?.title?.trim() || item?.plainText?.trim() || item?.howItPays?.trim()),
+  );
+  const customerSummaryRows = customerSummaryResponsibilities
+    .map((item) => ({
+      title: cleanSummaryText(item?.title),
+      plainText: cleanSummaryText(item?.plainText),
+      triggerCondition: cleanSummaryText(item?.triggerCondition),
+      howItPays: cleanSummaryText(item?.howItPays),
+      calculationStatus: cleanSummaryText(item?.calculationStatus),
+      requiredPolicyFields: cleanSummaryList(item?.requiredPolicyFields),
+      sourceRefs: cleanSummaryList(item?.sourceRefs),
+    }))
+    .filter((item) => item.title || item.plainText || item.triggerCondition || item.howItPays || item.calculationStatus || item.sourceRefs.length);
+  const customerSummaryNotices = cleanSummaryList(customerSummary?.notices);
+  const customerSummaryRequiredPolicyFields = cleanSummaryList(customerSummary?.requiredPolicyFields);
+  const customerSummarySourceUrls = cleanSummaryList(customerSummary?.sourceUrls);
+  const shouldShowResponsibilityRows = !customerSummaryLoading && !customerSummary && !customerSummaryMessage && responsibilities.length > 0;
+  const displayedResponsibilityCount = customerSummaryHasContent
+    ? customerSummaryRows.length || customerSummaryBlocks.length
+    : shouldShowResponsibilityRows
+      ? responsibilities.length
+      : 0;
   const sources = Array.isArray(analysis?.sources) ? analysis.sources : [];
   const productMatches = Array.isArray(matches) ? matches : [];
   const canQuery = Boolean(company.trim() && name.trim() && !loading);
@@ -250,6 +317,21 @@ export function ResponsibilityAssistant(props: {
                   </div>
                 ) : null}
               </label>
+              <div className="flex rounded-[8px] border border-slate-200 bg-slate-50 p-1 text-[12px] font-semibold text-slate-500">
+                {plannerModeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={[
+                      'h-8 flex-1 rounded-[6px] px-2 transition',
+                      plannerMode === option.value ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500',
+                    ].join(' ')}
+                    onClick={() => onChangePlannerMode(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
               <button
                 type="button"
                 disabled={!canQuery}
@@ -328,21 +410,104 @@ export function ResponsibilityAssistant(props: {
                     <Loader2 className="h-4 w-4 animate-spin" />
                     正在生成客户可读摘要
                   </div>
-                ) : customerSummary ? (
-                  <CustomerResponsibilitySummaryCard summary={customerSummary} />
-                ) : customerSummaryMessage && responsibilities.length ? (
-                  <>
-                    <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-center text-xs font-bold text-slate-400">
-                      {customerSummaryMessage}
+                ) : customerSummary && customerSummaryHasContent ? (
+                  <div className="space-y-4">
+                    <div className="space-y-3 text-sm leading-6 text-slate-700">
+                      {customerSummaryHasBlocks ? (
+                        customerSummaryBlocks.map((block, index) => (
+                          <section key={`${block.blockKey}-${index}`} className="space-y-1">
+                            {block.title ? <h4 className="break-words font-black text-slate-950">{block.title}</h4> : null}
+                            {block.content ? <p className="whitespace-pre-wrap break-words font-semibold text-slate-600">{block.content}</p> : null}
+                          </section>
+                        ))
+                      ) : cleanSummaryText(customerSummary.headline) ? (
+                        <p className="whitespace-pre-wrap break-words font-black text-blue-700">{cleanSummaryText(customerSummary.headline)}</p>
+                      ) : null}
                     </div>
-                    {responsibilityRows}
-                  </>
-                ) : responsibilities.length ? (
-                  responsibilityRows
+
+                    {customerSummaryRows.length ? (
+                      <section className="space-y-2.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <h4 className="text-sm font-black text-slate-950">责任明细</h4>
+                          <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{customerSummaryRows.length} 项</span>
+                        </div>
+                        {customerSummaryRows.map((item, index) => (
+                          <article key={`${item.title}-${index}`} className="rounded-[18px] border border-[#DDE8F5] bg-[#F8FBFF] p-3.5">
+                            <div className="flex items-start gap-3">
+                              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white text-xs font-black text-blue-600 ring-1 ring-blue-100">
+                                {index + 1}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                {item.title ? <h5 className="break-words text-sm font-black leading-6 text-slate-950">{item.title}</h5> : null}
+                                {item.plainText ? <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{item.plainText}</p> : null}
+                                {item.triggerCondition ? <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">触发条件：{item.triggerCondition}</p> : null}
+                                {item.howItPays ? <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700">{item.howItPays}</p> : null}
+                                {item.calculationStatus ? <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">calculationStatus: {item.calculationStatus}</p> : null}
+                                {item.sourceRefs.length ? (
+                                  <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {item.sourceRefs.map((sourceRef) => (
+                                      <span key={sourceRef} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">{sourceRef}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {item.requiredPolicyFields.length ? (
+                                  <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {item.requiredPolicyFields.map((field) => (
+                                      <span key={field} className="rounded-full bg-white px-2 py-1 text-[11px] font-black text-slate-500 ring-1 ring-slate-200">{field}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                      </section>
+                    ) : null}
+
+                    {customerSummaryRequiredPolicyFields.length ? (
+                      <section className="rounded-[18px] border border-amber-100 bg-amber-50 px-3 py-3">
+                        <h4 className="text-xs font-black text-amber-700">计算金额需要这些保单信息</h4>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {customerSummaryRequiredPolicyFields.map((field) => (
+                            <span key={field} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-amber-700 ring-1 ring-amber-100">{field}</span>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+
+                    {customerSummaryNotices.length ? (
+                      <section className="space-y-1.5">
+                        <h4 className="text-xs font-black text-slate-950">注意事项</h4>
+                        {customerSummaryNotices.map((notice) => (
+                          <p key={notice} className="break-words text-xs font-semibold leading-5 text-slate-500">{notice}</p>
+                        ))}
+                      </section>
+                    ) : null}
+
+                    {customerSummarySourceUrls.length ? (
+                      <section className="space-y-2">
+                        <h4 className="text-xs font-black text-slate-950">引用来源</h4>
+                        {customerSummarySourceUrls.slice(0, 3).map((url) => (
+                          <a
+                            key={url}
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-500 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                          >
+                            <span className="block truncate">{hostFromUrl(url)}</span>
+                            <span className="mt-1 block truncate font-medium text-slate-400">{url}</span>
+                          </a>
+                        ))}
+                      </section>
+                    ) : null}
+                  </div>
                 ) : customerSummaryMessage ? (
                   <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
                     {customerSummaryMessage}
                   </div>
+                ) : shouldShowResponsibilityRows ? (
+                  responsibilityRows
                 ) : productMatches.length ? (
                   <div className="rounded-[18px] border border-dashed border-blue-100 bg-blue-50/50 px-4 py-6 text-center text-sm font-bold text-blue-500">
                     点击上方产品后输出保险责任
@@ -358,6 +523,25 @@ export function ResponsibilityAssistant(props: {
                 )}
               </div>
             </section>
+
+            {officialResponsibilityText ? (
+              <section className="mt-4">
+                <details className="group rounded-[18px] border border-slate-200 bg-slate-50">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 text-sm font-black text-slate-950 [&::-webkit-details-marker]:hidden">
+                    <span>保险责任条款</span>
+                    <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">
+                      <span className="group-open:hidden">展开</span>
+                      <span className="hidden group-open:inline">收起</span>
+                    </span>
+                  </summary>
+                  <div className="border-t border-slate-200 px-3 py-3">
+                    <p className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">
+                      {officialResponsibilityText}
+                    </p>
+                  </div>
+                </details>
+              </section>
+            ) : null}
 
             {sources.length ? (
               <section className="mt-4">

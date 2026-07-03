@@ -1,4 +1,5 @@
 import { resolvePolicyValidityStatus } from './policy-validity.mjs';
+import { resolveIndicatorAmountFromCalculation } from './indicator-calculation.mjs';
 
 function asNumber(value) {
   const number = Number(value);
@@ -681,6 +682,22 @@ function indicatorBaseAmount(indicator, policy) {
   return asNumber(policy?.amount);
 }
 
+function indicatorCalculationInputs(indicator, policy) {
+  const plan = findPlanForIndicator(policy, indicator);
+  const premium = [
+    plan?.premium,
+    plan?.firstPremium,
+    plan?.annualPremium,
+    policy?.firstPremium,
+  ].map(finiteNumber).find((value) => value !== null && value > 0) || 0;
+  const paymentYears = parsePaymentYears(plan?.paymentPeriod || plan?.paymentMode || policy?.paymentPeriod) || 1;
+  return {
+    baseAmount: indicatorBaseAmount(indicator, policy),
+    firstPremium: premium,
+    paymentYears,
+  };
+}
+
 function classifyByDefinitions(text, definitions) {
   const normalized = String(text || '').normalize('NFKC');
   return definitions.find((definition) => definition.patterns.some((pattern) => pattern.test(normalized))) || null;
@@ -734,6 +751,10 @@ function medicalIndicatorCannotContributeFixedAmount(indicator = {}) {
 }
 
 function resolveIndicatorAmount(indicator, policy) {
+  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
+  if (structured.resolved) return structured.amount;
+  if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false) return 0;
+
   const value = finiteNumber(indicator?.value);
   const unit = String(indicator?.unit || '').normalize('NFKC');
   const basis = String(indicator?.basis || '').normalize('NFKC');
@@ -774,6 +795,9 @@ function resolveIndicatorAmount(indicator, policy) {
 }
 
 function indicatorAmountCalculationText(indicator, policy, amount) {
+  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
+  if (structured.resolved && Math.abs(structured.amount - asNumber(amount)) < 0.01) return structured.calculationText;
+
   const numericAmount = asNumber(amount);
   const value = finiteNumber(indicator?.value);
   const unit = String(indicator?.unit || '').normalize('NFKC').trim();
@@ -2154,11 +2178,14 @@ function planningNumber(value) {
 
 function normalizeFamilyPlanningProfile(profile = {}) {
   return {
+    annualIncome: planningNumber(profile?.annualIncome),
     annualExpense: planningNumber(profile?.annualExpense),
     debt: planningNumber(profile?.debt),
     educationGoal: planningNumber(profile?.educationGoal),
+    parentSupportGoal: planningNumber(profile?.parentSupportGoal),
     retirementGoal: planningNumber(profile?.retirementGoal),
     availableAssets: planningNumber(profile?.availableAssets),
+    premiumBudget: planningNumber(profile?.premiumBudget),
   };
 }
 
@@ -2200,6 +2227,7 @@ function familyPlanningTargets(profile = {}) {
   const annualExpense = normalized.annualExpense;
   const debt = normalized.debt;
   const educationGoal = normalized.educationGoal;
+  const parentSupportGoal = normalized.parentSupportGoal;
   const retirementGoal = normalized.retirementGoal;
   const availableAssets = normalized.availableAssets;
 
@@ -2212,7 +2240,7 @@ function familyPlanningTargets(profile = {}) {
       0,
     ),
     life: Math.max(
-      debt + educationGoal + annualExpense * FAMILY_PLANNING_DEFAULTS.lifeExpenseYears - availableAssets,
+      debt + educationGoal + parentSupportGoal + annualExpense * FAMILY_PLANNING_DEFAULTS.lifeExpenseYears - availableAssets,
       0,
     ),
     wealth: Math.max(educationGoal + retirementGoal, 0),

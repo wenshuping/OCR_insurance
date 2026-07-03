@@ -924,6 +924,7 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     evidenceLevel: trimString(record.evidenceLevel) || 'insurer_official',
     officialDomain: trimString(record.officialDomain) || resolveOfficialDomain(url, officialDomainProfiles),
     parser: trimString(record.parser),
+    extractionMethod: trimString(record.extractionMethod),
     planCode: trimString(record.planCode),
     versionNo: trimString(record.versionNo),
     catalogStatus: trimString(record.catalogStatus),
@@ -970,6 +971,7 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
       existing.evidenceLevel = record.evidenceLevel || existing.evidenceLevel;
       existing.officialDomain = record.officialDomain || existing.officialDomain;
       existing.parser = record.parser || existing.parser;
+      existing.extractionMethod = record.extractionMethod || existing.extractionMethod;
       existing.planCode = record.planCode || existing.planCode;
       existing.versionNo = record.versionNo || existing.versionNo;
       existing.catalogStatus = record.catalogStatus || existing.catalogStatus;
@@ -1071,8 +1073,10 @@ export function findKnowledgeProductCandidates({
     if (score < minScore) continue;
     const key = `${record.company}\n${record.productName}`;
     const existing = grouped.get(key);
+    const strictExact = strictProductNameMatches(productName, record.productName, company)
+      || strictProductNameMatches(productName, record.title, company);
     const sourceWeight = Number(record.sourceType === 'pdf') * 0.03 + Number(record.materialType === 'terms') * 0.02;
-    const rankingScore = score + sourceWeight;
+    const rankingScore = score + Number(strictExact) * 0.2 + sourceWeight;
     if (!existing) {
       grouped.set(key, {
         company: record.company,

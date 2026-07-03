@@ -11,6 +11,13 @@ function assertIncludesAll(actual, expected) {
   for (const item of expected) assert.ok(actual.includes(item), `expected ${JSON.stringify(actual)} to include ${item}`);
 }
 
+function structuredPromptPayload(prompt) {
+  const marker = '输入资料 JSON：';
+  const index = prompt.indexOf(marker);
+  assert.notEqual(index, -1);
+  return JSON.parse(prompt.slice(index + marker.length).trim());
+}
+
 test('critical illness prompt includes complete checklist and disease expansion warning', () => {
   const prompt = buildStructuredResponsibilityPrompt({
     product: { company: '新华保险', productName: '多倍保障少儿重大疾病保险（超越版）' },
@@ -58,6 +65,45 @@ test('participating annuity prompt separates dividends from responsibilities and
   assert.deepEqual(requiredKeywordsForCategory('annuity').slice(0, 3), ['年金', '生存保险金', '身故保险金']);
 });
 
+test('endowment traffic prompt requires composite positioning and grouped display', () => {
+  const prompt = buildStructuredResponsibilityPrompt({
+    product: { company: '新华保险', productName: '畅行万里智赢版两全保险' },
+    routing: { productCategory: 'endowment', categoryLabel: '两全保险', featureTags: ['traffic_accident_extra'] },
+    sourceSections: {
+      mainResponsibilityText: [
+        '满期生存保险金 按实际交纳保险费给付。',
+        '一般意外伤害身故或身体全残保险金 按基本保险金额10倍给付。',
+        '客运列车及航空意外伤害身故或身体全残保险金 按基本保险金额60倍给付。',
+        '电梯意外伤害身故或身体全残保险金 按基本保险金额30倍给付。',
+      ].join('\n'),
+    },
+    plannerResult: {
+      plannerUsed: true,
+      plannerMode: 'all',
+      plannerReason: 'forced_all',
+      plannerModel: 'deepseek-v4-flash',
+      planner: {
+        productCategory: 'endowment',
+        categoryLabel: '意外保障型两全保险',
+        confidence: 'high',
+        recommendedTemplate: 'endowment_accident',
+        positioningFocus: ['两全保险', '交通/特定意外高倍保障'],
+        productPurposeFocus: ['满期返还', '交通及特定意外高倍保障'],
+        responsibilityFocus: ['满期生存保险金', '特定意外高倍给付'],
+        functionFocus: [],
+        attentionFocus: [],
+        missingOrUnclear: [],
+        notesForFinalPrompt: ['先归纳再分组列责任'],
+      },
+    },
+  });
+
+  assert.match(prompt, /两全保险 \+ 交通\/特定意外高倍保障/u);
+  assert.match(prompt, /先归纳保障结构，再按满期\/疾病身故全残\/一般意外\/交通意外\/特定场景意外分组列责任/u);
+  assert.match(prompt, /不得机械逐条堆叠/u);
+  assert.match(prompt, /positioningFocus/u);
+});
+
 test('prompt requires JSON only and contains expected schema keys', () => {
   const prompt = buildStructuredResponsibilityPrompt({
     routing: { productCategory: 'medical', categoryLabel: '医疗保险' },
@@ -85,6 +131,74 @@ test('prompt requires JSON only and contains expected schema keys', () => {
   assert.match(prompt, /claim_contingent\|scheduled_cashflow\|needs_table\|waiver_only\|not_calculable/u);
 });
 
+test('buildStructuredResponsibilityPrompt includes Planner advice when supplied', () => {
+  const prompt = buildStructuredResponsibilityPrompt({
+    product: { company: '新华保险', productName: '尊贵人生年金保险（分红型）' },
+    routing: {
+      productCategory: 'annuity',
+      categoryLabel: '年金保险',
+      featureTags: ['participating'],
+      modelTier: 'pro',
+    },
+    sourceSections: {
+      quality: { status: 'complete' },
+      responsibilityItems: [{ title: '年金', body: '按合同约定领取年金。' }],
+      supplementSections: [{ title: '红利', body: '红利分配是不保证的。' }],
+    },
+    plannerResult: {
+      plannerUsed: true,
+      plannerMode: 'auto',
+      plannerReason: 'pro_model_routing',
+      plannerModel: 'deepseek-v4-flash',
+      planner: {
+        productCategory: 'annuity',
+        categoryLabel: '年金保险（分红型）',
+        confidence: 'high',
+        recommendedTemplate: 'annuity_participating',
+        productPurposeFocus: ['长期领取年金', '参与红利分配但红利不保证'],
+        responsibilityFocus: ['年金领取规则', '身故保险金'],
+        functionFocus: ['红利', '保单贷款'],
+        attentionFocus: ['红利不保证'],
+        missingOrUnclear: ['具体领取金额需结合合同'],
+        notesForFinalPrompt: ['不要把红利写成确定保险责任'],
+      },
+    },
+  });
+
+  assert.match(prompt, /Planner 结果/u);
+  assert.match(prompt, /长期领取年金/u);
+  assert.match(prompt, /不要把红利写成确定保险责任/u);
+});
+
+test('buildStructuredResponsibilityPrompt requires contentBlocks while preserving old fields', () => {
+  const prompt = buildStructuredResponsibilityPrompt({
+    product: { company: '新华保险', productName: '鑫荣耀终身寿险' },
+    routing: {
+      productCategory: 'incremental_whole_life',
+      categoryLabel: '增额终身寿险',
+      featureTags: ['compound_growth'],
+      modelTier: 'flash',
+    },
+    sourceSections: {
+      quality: { status: 'complete' },
+      responsibilityItems: [{ title: '身故或身体全残保险金', body: '有效保险金额每年3.5%复利递增。' }],
+    },
+  });
+
+  assert.match(prompt, /contentBlocks/u);
+  assert.match(prompt, /固定返回四块/u);
+  assert.match(prompt, /productPurpose/u);
+  assert.match(prompt, /responsibilities/u);
+  assert.match(prompt, /productFunctions/u);
+  assert.match(prompt, /productFunctions 使用已有开关关闭/u);
+  assert.match(prompt, /enabled 必须为 false/u);
+  assert.match(prompt, /attentionNotes/u);
+  assert.match(prompt, /enabled/u);
+  assert.match(prompt, /editable/u);
+  assert.match(prompt, /headline/u);
+  assert.match(prompt, /mainResponsibilities/u);
+});
+
 test('unknown category gets generic instruction separating responsibilities and functions', () => {
   const prompt = buildStructuredResponsibilityPrompt({
     routing: { productCategory: 'other', categoryLabel: '其他' },
@@ -99,7 +213,18 @@ test('prompt includes sourceSections, cards, and indicators payload', () => {
   const prompt = buildStructuredResponsibilityPrompt({
     product: { company: '测试保险', productName: '测试医疗保险' },
     routing: { productCategory: 'medical', categoryLabel: '医疗保险' },
-    sourceSections: { mainResponsibilityText: '住院医疗保险金 免赔额 赔付比例 年度限额' },
+    sourceSections: {
+      sourceInventory: [{ sourceId: 'src_1', title: '测试医疗保险条款', url: 'https://example.test/terms.pdf', sourceType: 'terms_pdf', official: true }],
+      mainResponsibilityText: '住院医疗保险金 免赔额 赔付比例 年度限额',
+      responsibilityItems: [{
+        itemId: 'resp_1',
+        title: '住院医疗保险金',
+        excerpt: '住院医疗保险金 免赔额 赔付比例 年度限额',
+        keyFacts: ['年度限额100万元'],
+        sourceRefs: [{ sourceRefId: 'src_1#resp_1', sourceId: 'src_1', quote: '住院医疗保险金 免赔额 赔付比例 年度限额' }],
+      }],
+      gaps: [{ type: 'medical_invoice_needed', message: '具体赔付需结合医疗费用票据核验。' }],
+    },
     cards: [{ title: '住院医疗保险金', sourceExcerpt: '按约定赔付' }],
     indicators: [{ coverageType: '医疗', formulaText: '年度限额100万元' }],
   });
@@ -107,8 +232,40 @@ test('prompt includes sourceSections, cards, and indicators payload', () => {
   assert.match(prompt, /"sourceSections"/u);
   assert.match(prompt, /"cards"/u);
   assert.match(prompt, /"indicators"/u);
+  assert.match(prompt, /"sourceInventory"/u);
+  assert.match(prompt, /"sourceRefs"/u);
+  assert.match(prompt, /src_1#resp_1/u);
+  assert.match(prompt, /medical_invoice_needed/u);
   assert.match(prompt, /住院医疗保险金/u);
   assert.match(prompt, /年度限额100万元/u);
+});
+
+test('prompt keeps full responsibility text while removing duplicate coverage text', () => {
+  const officialText = [
+    '第五条 保险责任',
+    '满期生存保险金 按实际交纳的保险费给付。',
+    '电梯意外伤害身故或身体全残保险金 按基本保险金额的30倍给付。',
+    '客运列车及航空意外伤害身故或身体全残保险金 按基本保险金额的60倍给付。',
+  ].join(' ');
+  const prompt = buildStructuredResponsibilityPrompt({
+    product: { company: '新华保险', productName: '畅行万里智赢版两全保险' },
+    routing: { productCategory: 'endowment', categoryLabel: '两全保险' },
+    sourceSections: {
+      mainResponsibilityText: officialText,
+      coverageSections: [{
+        sectionId: 'coverage_1',
+        title: '保险责任',
+        text: officialText,
+        sourceRefs: [{ sourceRefId: 'src_1#保险责任', sourceId: 'src_1', quote: '电梯意外30倍' }],
+      }],
+    },
+  });
+  const payload = structuredPromptPayload(prompt);
+
+  assert.match(payload.sourceSections.mainResponsibilityText, /电梯意外伤害身故或身体全残保险金/u);
+  assert.match(payload.sourceSections.mainResponsibilityText, /30倍/u);
+  assert.equal(payload.sourceSections.coverageSections[0].text, '');
+  assert.equal(payload.sourceSections.coverageSections[0].sourceRefs[0].sourceRefId, 'src_1#保险责任');
 });
 
 test('required keyword arrays include spec quality keywords', () => {

@@ -31,6 +31,8 @@ const DB_OWNED_KEYS = new Set([
   'familyReportCorrections',
   'familyReportShares',
   'familySalesReviews',
+  'familySalesChatThreads',
+  'familySalesChatMessages',
   'reportRefreshEvents',
   'membershipConfig',
   'membershipOrders',
@@ -81,6 +83,16 @@ function normalizeJsonStringArray(value) {
 function normalizeCustomerSummaryJson(value) {
   const parsed = typeof value === 'string' ? parseJson(value, {}) : value;
   const row = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  const contentBlocks = normalizeArray(row.contentBlocks || row.content_blocks)
+    .map((block) => ({
+      blockKey: String(block?.blockKey || block?.block_key || '').trim(),
+      title: String(block?.title || '').trim(),
+      enabled: block?.enabled !== false,
+      editable: block?.editable !== false,
+      order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
+      content: String(block?.content || '').trim(),
+    }))
+    .filter((block) => block.blockKey || block.title || block.content);
   return {
     company: String(row.company || '').trim(),
     productName: String(row.productName || row.product_name || '').trim(),
@@ -89,14 +101,32 @@ function normalizeCustomerSummaryJson(value) {
       .map((item) => ({
         title: String(item?.title || '').trim(),
         plainText: String(item?.plainText || item?.plain_text || '').trim(),
+        triggerCondition: String(item?.triggerCondition || item?.trigger_condition || '').trim(),
         howItPays: String(item?.howItPays || item?.how_it_pays || '').trim(),
+        calculationStatus: String(item?.calculationStatus || item?.calculation_status || '').trim(),
         requiredPolicyFields: normalizeStringArray(item?.requiredPolicyFields || item?.required_policy_fields),
+        sourceRefs: normalizeStringArray(item?.sourceRefs || item?.source_refs),
       }))
-      .filter((item) => item.title || item.plainText || item.howItPays || item.requiredPolicyFields.length),
+      .filter((item) => item.title || item.plainText || item.triggerCondition || item.howItPays || item.calculationStatus || item.requiredPolicyFields.length || item.sourceRefs.length),
     notices: normalizeStringArray(row.notices),
     requiredPolicyFields: normalizeStringArray(row.requiredPolicyFields || row.required_policy_fields),
     sourceUrls: normalizeStringArray(row.sourceUrls || row.source_urls),
+    contentBlocks,
   };
+}
+
+function hasCustomerSummaryContent(summaryJson = {}) {
+  return Boolean(
+    String(summaryJson.headline || '').trim()
+      || normalizeArray(summaryJson.mainResponsibilities).some((item) =>
+        String(item?.title || '').trim()
+          || String(item?.plainText || '').trim()
+          || String(item?.howItPays || '').trim(),
+      )
+      || normalizeArray(summaryJson.contentBlocks).some((block) =>
+        String(block?.title || '').trim() || String(block?.content || '').trim(),
+      ),
+  );
 }
 
 function maxNumericId(rows) {
@@ -120,6 +150,8 @@ function resolveNextId(state) {
     maxNumericId(state.familyReportCorrections),
     maxNumericId(state.familyReportShares),
     maxNumericId(state.familySalesReviews),
+    maxNumericId(state.familySalesChatThreads),
+    maxNumericId(state.familySalesChatMessages),
     maxNumericId(state.reportRefreshEvents),
     maxNumericId(state.membershipOrders),
   );
@@ -365,6 +397,27 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_company ON optional_responsibility_records(company);
     CREATE INDEX IF NOT EXISTS idx_optional_responsibility_records_product_name ON optional_responsibility_records(product_name);
 
+    CREATE TABLE IF NOT EXISTS product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      cashflow_treatment TEXT,
+      calculation_status TEXT,
+      calculation_reason TEXT,
+      responsibility_scope TEXT,
+      selection_status TEXT,
+      source_url TEXT,
+      generated_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_responsibility_cards_product_key ON product_responsibility_cards(product_key);
+    CREATE INDEX IF NOT EXISTS idx_product_responsibility_cards_company_product ON product_responsibility_cards(company, product_name);
+    CREATE INDEX IF NOT EXISTS idx_product_responsibility_cards_status ON product_responsibility_cards(calculation_status);
+
     CREATE TABLE IF NOT EXISTS product_customer_responsibility_summaries (
       id TEXT PRIMARY KEY,
       product_key TEXT NOT NULL,
@@ -563,6 +616,34 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_owner_user_id ON family_sales_reviews(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_owner_guest_id ON family_sales_reviews(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_reviews_generated_at ON family_sales_reviews(generated_at);
+
+    CREATE TABLE IF NOT EXISTS family_sales_chat_threads (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      status TEXT,
+      title TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_sales_chat_threads_family_id ON family_sales_chat_threads(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_chat_threads_owner_user_id ON family_sales_chat_threads(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_chat_threads_owner_guest_id ON family_sales_chat_threads(owner_guest_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_chat_threads_updated_at ON family_sales_chat_threads(updated_at);
+
+    CREATE TABLE IF NOT EXISTS family_sales_chat_messages (
+      id INTEGER PRIMARY KEY,
+      thread_id INTEGER,
+      family_id INTEGER,
+      role TEXT,
+      created_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_sales_chat_messages_thread_id ON family_sales_chat_messages(thread_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_chat_messages_family_id ON family_sales_chat_messages(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_chat_messages_created_at ON family_sales_chat_messages(created_at);
 
     CREATE TABLE IF NOT EXISTS report_refresh_events (
       id INTEGER PRIMARY KEY,
@@ -1057,6 +1138,39 @@ function insertRows(db, state) {
     );
   }
 
+  const insertFamilySalesChatThread = db.prepare(`
+    INSERT INTO family_sales_chat_threads (id, family_id, owner_user_id, owner_guest_id, status, title, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const thread of normalizeArray(state.familySalesChatThreads)) {
+    insertFamilySalesChatThread.run(
+      Number(thread.id),
+      Number(thread.familyId || 0) || null,
+      Number(thread.ownerUserId || 0) || null,
+      String(thread.ownerGuestId || ''),
+      String(thread.status || ''),
+      String(thread.title || ''),
+      String(thread.createdAt || ''),
+      String(thread.updatedAt || ''),
+      jsonPayload(thread),
+    );
+  }
+
+  const insertFamilySalesChatMessage = db.prepare(`
+    INSERT INTO family_sales_chat_messages (id, thread_id, family_id, role, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const message of normalizeArray(state.familySalesChatMessages)) {
+    insertFamilySalesChatMessage.run(
+      Number(message.id),
+      Number(message.threadId || 0) || null,
+      Number(message.familyId || 0) || null,
+      String(message.role || ''),
+      String(message.createdAt || ''),
+      jsonPayload(message),
+    );
+  }
+
   const insertReportRefreshEvent = db.prepare(`
     INSERT INTO report_refresh_events (id, kind, family_id, report_id, owner_user_id, owner_guest_id, created_at, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1287,6 +1401,7 @@ function upsertPolicyDerivedResultRow(db, row = {}) {
 function upsertProductCustomerResponsibilitySummaryRow(db, row = {}) {
   const summary = normalizeProductCustomerResponsibilitySummary(row);
   if (!summary || summary.status !== 'ready') return null;
+  if (!hasCustomerSummaryContent(summary.summaryJson)) return null;
   db.prepare(`
     INSERT INTO product_customer_responsibility_summaries (
       id,
@@ -1727,6 +1842,42 @@ function replaceFamilySalesReviews(db, state) {
   }
 }
 
+function replaceFamilySalesChats(db, state) {
+  db.prepare('DELETE FROM family_sales_chat_messages').run();
+  db.prepare('DELETE FROM family_sales_chat_threads').run();
+  const insertThread = db.prepare(`
+    INSERT INTO family_sales_chat_threads (id, family_id, owner_user_id, owner_guest_id, status, title, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const thread of normalizeArray(state.familySalesChatThreads)) {
+    insertThread.run(
+      Number(thread.id),
+      Number(thread.familyId || 0) || null,
+      Number(thread.ownerUserId || 0) || null,
+      String(thread.ownerGuestId || ''),
+      String(thread.status || ''),
+      String(thread.title || ''),
+      String(thread.createdAt || ''),
+      String(thread.updatedAt || ''),
+      jsonPayload(thread),
+    );
+  }
+  const insertMessage = db.prepare(`
+    INSERT INTO family_sales_chat_messages (id, thread_id, family_id, role, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const message of normalizeArray(state.familySalesChatMessages)) {
+    insertMessage.run(
+      Number(message.id),
+      Number(message.threadId || 0) || null,
+      Number(message.familyId || 0) || null,
+      String(message.role || ''),
+      String(message.createdAt || ''),
+      jsonPayload(message),
+    );
+  }
+}
+
 function replaceReportRefreshEvents(db, state) {
   db.prepare('DELETE FROM report_refresh_events').run();
   const insertReportRefreshEvent = db.prepare(`
@@ -1771,6 +1922,8 @@ function clearDbOwnedTables(db) {
     DELETE FROM family_report_issues;
     DELETE FROM family_report_corrections;
     DELETE FROM family_reports;
+    DELETE FROM family_sales_chat_messages;
+    DELETE FROM family_sales_chat_threads;
     DELETE FROM family_sales_reviews;
     DELETE FROM report_refresh_events;
     DELETE FROM family_report_shares;
@@ -1861,6 +2014,8 @@ function loadDbOwnedState(db) {
     familyReportCorrections: loadPayloadRows(db, 'family_report_corrections', 'created_at ASC, id ASC'),
     familyReportShares: loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
     familySalesReviews: loadPayloadRows(db, 'family_sales_reviews', 'generated_at ASC, id ASC'),
+    familySalesChatThreads: loadPayloadRows(db, 'family_sales_chat_threads', 'updated_at ASC, id ASC'),
+    familySalesChatMessages: loadPayloadRows(db, 'family_sales_chat_messages', 'created_at ASC, id ASC'),
     reportRefreshEvents: loadPayloadRows(db, 'report_refresh_events', 'created_at ASC, id ASC'),
     membershipConfig: parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null),
     membershipOrders: loadPayloadRows(db, 'membership_orders', 'id ASC'),
@@ -2165,6 +2320,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       replaceFamilyReports(db, nextState);
       replaceFamilyReportShares(db, nextState);
       replaceFamilySalesReviews(db, nextState);
+      replaceFamilySalesChats(db, nextState);
       replaceReportRefreshEvents(db, nextState);
       if (includePolicies) {
         for (const policy of normalizeArray(nextState.policies)) {
@@ -2288,6 +2444,13 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     `).get(key, version);
     const summary = normalizeProductCustomerResponsibilitySummary(parseJson(row?.payload, null) || {});
     if (!summary) return null;
+    const hasSummaryContent = Boolean(
+      summary.summaryJson?.headline
+        || normalizeArray(summary.summaryJson?.mainResponsibilities).some((item) =>
+          item?.title || item?.plainText || item?.howItPays,
+        ),
+    );
+    if (!hasSummaryContent) return null;
     const digest = String(sourceDigest || '').trim();
     if (digest && summary.sourceDigest !== digest) return null;
     return summary;

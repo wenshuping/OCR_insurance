@@ -8,6 +8,10 @@ import {
   policyCanonicalProductIds,
   policyProductIndicatorKeys,
 } from './policy-ocr.domain.mjs';
+import {
+  selectAgentSkillPrompt,
+  selectAgentSkillPromptWithDeepSeek,
+} from './agent-skill-router.service.mjs';
 import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -36,6 +40,11 @@ function finiteNumber(value) {
   if (value === null || value === undefined || trim(value) === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function numberOrDefault(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function parseDate(value) {
@@ -159,6 +168,20 @@ function privacySafeInputJson(input = {}) {
 
 function removeSensitiveTokens(text = '') {
   return String(text || '').replace(ID_NUMBER_TOKEN_PATTERN, '身份证号已脱敏');
+}
+
+export function privacySafeFamilySalesReviewInputJson(input = {}) {
+  return privacySafeInputJson(input);
+}
+
+export function restoreFamilySalesReviewDisplayText(text = '', input = {}) {
+  return removeSensitiveTokens(
+    applyTextReplacements(
+      text,
+      displayReplacementsForInput(input),
+      'tokenToName',
+    ),
+  );
 }
 
 function displayReplacementsForInput(input = {}) {
@@ -850,6 +873,7 @@ export function buildFamilySalesReviewInput({
   members = [],
   policies = [],
   familyReport = {},
+  planningProfile = null,
   knowledgeRecords = [],
   indicatorRecords = [],
   optionalResponsibilityRecords = [],
@@ -878,6 +902,15 @@ export function buildFamilySalesReviewInput({
       coreMemberRef: topPillarMemberRef,
       topPillarMemberRef,
       notes: trim(family.notes),
+      planningProfile: {
+        annualIncome: asNumber(planningProfile?.annualIncome || family.planningProfile?.annualIncome),
+        annualExpense: asNumber(planningProfile?.annualExpense || family.planningProfile?.annualExpense),
+        debt: asNumber(planningProfile?.debt || family.planningProfile?.debt),
+        educationGoal: asNumber(planningProfile?.educationGoal || family.planningProfile?.educationGoal),
+        parentSupportGoal: asNumber(planningProfile?.parentSupportGoal || family.planningProfile?.parentSupportGoal),
+        availableAssets: asNumber(planningProfile?.availableAssets || family.planningProfile?.availableAssets),
+        premiumBudget: asNumber(planningProfile?.premiumBudget || family.planningProfile?.premiumBudget),
+      },
       status: trim(family.status || 'active'),
     },
     members: summarizedMembers,
@@ -908,13 +941,20 @@ export function buildFamilySalesReviewInput({
   return input;
 }
 
-export function buildFamilySalesReviewMessages(input = {}) {
+export function buildFamilySalesReviewMessages(input = {}, { skillPrompt = null } = {}) {
   const inputJson = privacySafeInputJson(input);
+  const resolvedSkillPrompt = skillPrompt || (input?.salesChatContext
+    ? selectAgentSkillPrompt({ scene: 'family_sales_review', question: '重新生成销售建议报告', salesChatContext: input.salesChatContext })
+    : null);
   return [
     {
       role: 'system',
       content: [
         '你是一名资深寿险/健康险销售赋能顾问，任务是基于结构化家庭成员、家庭保单报告、保单明细和官网条款证据，输出给销售使用的下一步建议。',
+        ...(resolvedSkillPrompt ? [
+          resolvedSkillPrompt.promptHint,
+          `本轮启用 skills：${resolvedSkillPrompt.skills.map((skill) => skill.label).join('、')}`,
+        ] : []),
         '必须遵守：',
         '1. 只使用输入中的事实；金额、责任、现金价值、分红、领取利益没有证据时必须写“待核实”，不能编造。',
         '2. 官网证据与保单派生分类冲突时，优先参考官网产品名称、官网链接和指标；仍不确定就标为“待核实”。',
@@ -929,6 +969,19 @@ export function buildFamilySalesReviewMessages(input = {}) {
         '11. family.notes 是整个家庭层面的备注，不属于某个具体成员；members[].notes 才是成员个人备注。两类备注都是客户工作、收入、喜好、沟通记录等销售线索；必须结合这些备注优化面谈重点，但备注没有写明的事实不能自行补充。',
         '12. family.topPillarMemberRef 明确表示家庭顶梁柱；涉及收入中断、重疾、定寿、家庭责任和优先面谈对象时必须优先参考该成员。',
         '13. {{id_number_1}} 这类证件号码变量只表示本地已脱敏隐私，不得在报告正文中输出、解释或要求销售复述。',
+        '14. family.planningProfile 是客户已填写的家庭责任信息，包含家庭年收入、必要支出、总负债、子女教育、父母赡养、现金储备和保费预算；涉及保障缺口、定寿、重疾、失能和预算建议时必须优先使用这些字段。',
+        '15. 本次请求只提供结构化保单摘要、RAG/官网证据摘要和家庭责任信息，不提供原始 OCR 全文；不得假装读过未提供的条款原文。',
+        '16. 必须融合以下销售分析框架：交叉销售机会、客户复盘会议策略、年金、寿险、养老/教育金机会、家庭财务规划视角和保险重整建议。',
+        '17. 交叉销售机会必须按 P1/P2/P3 标注机会优先级，并说明成功概率、客户痛点、触发依据、切入产品方向和下一步动作。',
+        '18. 客户复盘会议策略必须覆盖会前准备、会中展示顺序和会后跟进动作；会中顺序为先核实数据，再讲保障缺口，再讲保单重整，再展开三档方案。',
+        '19. 年金、寿险、养老/教育金机会只能基于客户责任、预算、现金流、现有现金价值或官网证据提出；不得承诺收益、分红、利率或理赔结果。',
+        '20. 家庭财务规划视角必须结合收入、支出、负债、现金储备和保费预算，判断保障型、储蓄型、养老/教育金安排的先后顺序。',
+        '21. 如果输入包含 salesChatContext，表示顾问围绕上一版销售建议的追问、补充想法和客户异议；必须把这些对话内容融入新版销售建议，尤其是话术风格、异议处理、方案排序和下一步动作。',
+        ...(resolvedSkillPrompt ? [
+          '',
+          '本轮 skill 规则：',
+          ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),
+        ] : []),
       ].join('\n'),
     },
     {
@@ -939,22 +992,30 @@ export function buildFamilySalesReviewMessages(input = {}) {
         '## 二、必须先核实的数据风险',
         '## 三、成员级保障缺口',
         '## 四、理财险/财富传承销售机会',
-        '## 五、已有产品逐项切入建议',
-        '## 六、销售方案展开',
-        '## 七、邀约面谈与销售话术',
-        '## 八、下一步销售动作清单',
+        '## 五、交叉销售机会与保单重整建议',
+        '## 六、已有产品逐项切入建议',
+        '## 七、客户复盘会议策略',
+        '## 八、销售方案展开',
+        '## 九、邀约面谈与销售话术',
+        '## 十、下一步销售动作清单',
         '',
         '要求：',
         '- “成员级保障缺口”按家庭成员逐个写，包含无保单成员；每个成员标题必须包含 memberRef 变量和 relationLabel。',
         '- “理财险/财富传承销售机会”至少写现有财富类/年金/终身寿/两全/护理险现金价值线索、可补充方案、需要补资料。',
+        '- “交叉销售机会与保单重整建议”必须输出 P1/P2/P3 机会清单；每条包含机会优先级、成功概率、客户痛点、依据、建议产品方向、面谈切入话术和下一步动作。',
+        '- “客户复盘会议策略”必须按会前、会中、会后三段写；会前列资料清单，会中按“数据核实 → 缺口展示 → 保险重整 → 方案选择”展开，会后列跟进任务。',
         '- “销售方案展开”至少输出 3 个方案；每个方案必须按“适合对象、客户痛点、推荐方向、预算/保额口径、销售话术、需补资料、下一步动作”展开。预算和保额只能基于输入数据给区间或“待核实”，不得编造客户收入。',
+        '- 三档方案必须分别命名为基础方案、标准方案、完善方案；基础方案优先医疗/意外底座，标准方案增加重疾/定寿，完善方案再考虑养老、教育金、年金或财富传承。',
         '- “邀约面谈与销售话术”必须输出 5 组可直接照读的话术：见面开场、风险洞察提问、保障缺口切入、理财险/养老教育金切入、促成面谈/二次沟通。每组至少 2 句，其中至少 1 句用引号写成销售可直接说出口的话。',
         '- 邀约面谈要写清楚切入顺序：先核实数据，再展示保障缺口，再展开方案，再约客户补资料或二次面谈。',
         '- 需要包含常见异议处理话术，至少覆盖“已经买过很多保险”“暂时不想增加预算”“理财险收益不确定”三类。',
         '- 对疑似重复、失效、产品类型冲突、责任缺少官网指标的保单要放到核实清单。',
         '- 每条建议尽量说明依据来自“家庭报告/保单字段/官网证据/现金价值或现金流”。',
+        '- 预算建议必须引用 family.planningProfile 中的收入、支出、负债、现金储备和保费预算；缺失时写“待核实”，不得自行补数。',
+        '- 如果 salesChatContext 中出现顾问补充的客户关注点、异议或想要的表达方式，新版报告必须吸收这些内容，并在相应章节中体现。',
         '- 报告正文要像销售经理可直接阅读的策略简报，少用源码字段、ID 堆叠和原始 JSON 字段名。',
         '- 不要把“邀约面谈”和“销售方案”压缩成几个短句；这两节必须展开，优先保证可执行和可复制话术。',
+        '- 输入 JSON 已是压缩后的结构化保单摘要、RAG/官网证据摘要和家庭责任信息；不要要求原始 OCR 全文，不要编造未提供的条款细节。',
         '',
         '以下是分析输入 JSON：',
         inputJson,
@@ -976,11 +1037,25 @@ export async function generateFamilySalesReview({
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
+    const skillPrompt = input?.salesChatContext
+      ? await selectAgentSkillPromptWithDeepSeek({
+        scene: 'family_sales_review',
+        question: '根据顾问选择的续聊内容重新生成销售建议报告',
+        salesChatContext: input.salesChatContext,
+        fetchImpl,
+        config: {
+          apiKey: config.apiKey,
+          baseUrl: config.baseUrl,
+          model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
+          timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
+        },
+      })
+      : null;
     const url = new URL('/chat/completions', config.baseUrl);
     const body = {
       model: config.model,
       max_tokens: config.maxTokens,
-      messages: buildFamilySalesReviewMessages(input),
+      messages: buildFamilySalesReviewMessages(input, { skillPrompt }),
     };
     if (isDeepSeekV4Model(config.model)) {
       body.thinking = { type: 'enabled' };
@@ -1014,12 +1089,9 @@ export async function generateFamilySalesReview({
     if (!upstreamContent) {
       throw withCode(new Error('FAMILY_SALES_REVIEW_EMPTY_RESPONSE'), 'FAMILY_SALES_REVIEW_EMPTY_RESPONSE', 502);
     }
-    const content = removeSensitiveTokens(
-      applyTextReplacements(
-        ensureFamilySalesReviewSalesEnablement(upstreamContent, input),
-        displayReplacementsForInput(input),
-        'tokenToName',
-      ),
+    const content = restoreFamilySalesReviewDisplayText(
+      ensureFamilySalesReviewSalesEnablement(upstreamContent, input),
+      input,
     );
     return {
       content,

@@ -159,6 +159,8 @@ function optionalResponsibilityMatchesCard(item: OptionalResponsibility, card: R
   return Boolean(cardTitle && itemTitle && (cardTitle === itemTitle || cardTitle.includes(itemTitle) || itemTitle.includes(cardTitle)));
 }
 
+type CardSelectionStatusSource = ResponsibilityCard & { selectionStatus?: string };
+
 function responsibilityCardSelectionStatus(card: ResponsibilityCard, optionalResponsibilities: OptionalResponsibility[] = []) {
   const indicatorStatuses = (card.indicators || [])
     .map((indicator) => String(indicator.selectionStatus || '').trim())
@@ -168,7 +170,8 @@ function responsibilityCardSelectionStatus(card: ResponsibilityCard, optionalRes
   if (indicatorStatuses.includes('unknown')) return 'unknown';
 
   const matched = optionalResponsibilities.find((item) => optionalResponsibilityMatchesCard(item, card));
-  return matched?.selectionStatus || '';
+  if (matched?.selectionStatus) return matched.selectionStatus;
+  return String((card as CardSelectionStatusSource).selectionStatus || '').trim();
 }
 
 export function getVisibleResponsibilityCards(
@@ -179,15 +182,6 @@ export function getVisibleResponsibilityCards(
     const status = responsibilityCardSelectionStatus(card, optionalResponsibilities);
     return !status || status === 'selected';
   });
-}
-
-function calculationStatusLabel(status?: string) {
-  if (status === 'calculable') return '可量化';
-  if (status === 'needs_table') return '需表格';
-  if (status === 'claim_contingent') return '理赔触发';
-  if (status === 'waiver_only') return '豁免';
-  if (status === 'not_cashflow') return '非现金流';
-  return '待核对';
 }
 
 export function ResponsibilityCardList({
@@ -219,13 +213,9 @@ export function ResponsibilityCardList({
                     <h4 className="break-words text-lg font-black leading-7 text-slate-950">{title}</h4>
                     {meta ? <p className="mt-0.5 text-xs font-bold leading-5 text-slate-500">{meta}</p> : null}
                   </div>
-                  <span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">
-                    {calculationStatusLabel(card.calculationStatus)}
-                  </span>
                 </div>
                 {summary ? <p className="mt-2 whitespace-pre-wrap text-base leading-7 text-slate-500">{summary}</p> : null}
                 {payout ? <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{payout}</p> : null}
-                {card.calculationReason ? <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{card.calculationReason}</p> : null}
               </div>
             </div>
           </article>

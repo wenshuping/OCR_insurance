@@ -2,12 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronLeft,
   Download,
-  ExternalLink,
   Loader2,
   Pencil,
   RefreshCw,
   Save,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -16,11 +14,13 @@ import type {
   PolicyFormData,
 } from '../../api/contracts/policy';
 import type {
+  CustomerResponsibilitySummary,
   OptionalResponsibility,
   PolicyCompanySuggestion,
   PolicyProductSuggestion,
 } from '../../api/contracts/responsibility';
 import {
+  getProductCustomerResponsibilitySummary,
   listPolicyResponsibilityCompanySuggestions,
   listPolicyResponsibilityProductSuggestions,
 } from '../../api/contracts/responsibility';
@@ -37,10 +37,7 @@ import {
 import {
   MetricBox,
   ReportText,
-  ResponsibilityCardList,
   buildPolicyReportTitle,
-  formatSourceUrlHost,
-  getPolicyResponsibilitySourceLinks,
   getReportPlaceholder,
   isPolicyReportFailed,
   isPolicyReportGenerating,
@@ -54,6 +51,7 @@ import {
 import {
   summarizeCashValues,
 } from '../../shared/customer-cash-value';
+import { CustomerResponsibilitySummaryCard } from '../../shared/CustomerResponsibilitySummaryCard';
 import {
   CoveragePeriodField,
   PaymentPeriodField,
@@ -92,16 +90,49 @@ export function PolicyDetailSheet({
   const reportRef = useRef<HTMLElement | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [customerSummary, setCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
+  const [customerSummaryLoading, setCustomerSummaryLoading] = useState(false);
+  const [customerSummaryMessage, setCustomerSummaryMessage] = useState('');
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const exportTitle = buildPolicyReportTitle(policy);
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
-  const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
-  const responsibilityCards = Array.isArray(policy.responsibilityCards) ? policy.responsibilityCards : [];
   const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
-  const responsibilitySourceLinks = getPolicyResponsibilitySourceLinks(policy);
+
+  useEffect(() => {
+    let cancelled = false;
+    const company = String(policy.company || '').trim();
+    const name = String(policy.name || '').trim();
+    setCustomerSummary(null);
+    setCustomerSummaryMessage('');
+    if (!company || !name) {
+      setCustomerSummaryLoading(false);
+      setCustomerSummaryMessage('缺少保险公司或产品名称，暂无法生成客户版保险责任摘要。');
+      return () => {
+        cancelled = true;
+      };
+    }
+    setCustomerSummaryLoading(true);
+    getProductCustomerResponsibilitySummary({ company, name, plannerMode: 'auto' })
+      .then((payload) => {
+        if (cancelled) return;
+        setCustomerSummary(payload.ok ? payload.summary : null);
+        setCustomerSummaryMessage(payload.ok ? '' : (payload.message || '客户版保险责任摘要暂未生成，请稍后重试。'));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCustomerSummary(null);
+        setCustomerSummaryMessage('客户版保险责任摘要生成失败，请稍后重试。');
+      })
+      .finally(() => {
+        if (!cancelled) setCustomerSummaryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [policy.company, policy.id, policy.name]);
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
@@ -311,54 +342,17 @@ export function PolicyDetailSheet({
         <section className="mt-4 space-y-3">
           <div>
             <h3 className="text-base font-bold text-slate-900">保险责任</h3>
-            <p className="mt-1 text-xs text-slate-500">以下内容来自本次 OCR 识别和责任解析。</p>
+            <p className="mt-1 text-xs text-slate-500">以下内容来自官网保险责任摘要。</p>
           </div>
-          {responsibilitySourceLinks.length ? (
-            <div className="rounded-[18px] border border-blue-100 bg-blue-50/70 px-3 py-3">
-              <p className="text-xs font-black text-blue-700">官网地址</p>
-              <div className="mt-2 space-y-2">
-                {responsibilitySourceLinks.map((source) => (
-                  <a
-                    key={`${source.title}-${source.url}`}
-                    href={source.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-start gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-blue-700 ring-1 ring-blue-100"
-                  >
-                    <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0">
-                      <span className="block truncate font-black">{source.title || formatSourceUrlHost(source.url)}</span>
-                      <span className="block break-all text-blue-500">{source.url}</span>
-                    </span>
-                  </a>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {responsibilityCards.length ? (
-            <ResponsibilityCardList
-              cards={responsibilityCards}
-              optionalResponsibilities={optionalResponsibilities}
-            />
-          ) : responsibilities.length ? (
-            responsibilities.map((row, index) => (
-              <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] bg-blue-50 text-blue-600">
-                    <Sparkles className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-lg font-bold leading-7 text-slate-900">{row.coverageType}</h4>
-                    <p className="mt-1 whitespace-pre-wrap text-base leading-7 text-slate-500">{row.scenario}</p>
-                    <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{row.payout}</p>
-                    {row.note ? <p className="mt-2 text-base leading-7 text-slate-500">{row.note}</p> : null}
-                  </div>
-                </div>
-              </article>
-            ))
+          {customerSummaryLoading ? (
+            <article className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 text-sm font-semibold leading-6 text-slate-500">
+              正在生成客户可读保险责任摘要...
+            </article>
+          ) : customerSummary ? (
+            <CustomerResponsibilitySummaryCard summary={customerSummary} />
           ) : (
             <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">
-              {reportGenerating ? '正在生成完整保险责任解析，请稍后。' : '暂无保险责任解析。'}
+              {customerSummaryMessage || (reportGenerating ? '正在生成客户可读保险责任摘要，请稍后。' : '暂无客户版保险责任摘要。')}
             </article>
           )}
         </section>

@@ -927,7 +927,7 @@ export function AnalysisReportPage(props: {
                   {index + 1}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h4 className="text-lg font-black leading-7 text-slate-950">{row.coverageType || '保险责任'}</h4>
+                  <h4 className="text-lg font-black leading-7 text-slate-950">{[row.productName, row.coverageType || '保险责任'].filter(Boolean).join(' · ')}</h4>
                   {row.scenario ? <p className="mt-1 whitespace-pre-wrap text-base leading-7 text-slate-500">{row.scenario}</p> : null}
                   {row.payout ? <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{row.payout}</p> : null}
                   {row.note ? <p className="mt-2 text-base leading-7 text-slate-500">{row.note}</p> : null}

@@ -549,6 +549,23 @@ export function updateFamilyProfileName(family, input = {}) {
       changed = true;
     }
   }
+  if (hasOwn(input, 'planningProfile')) {
+    const source = input.planningProfile && typeof input.planningProfile === 'object' ? input.planningProfile : {};
+    const nextPlanningProfile = {
+      annualIncome: Math.max(0, Number(source.annualIncome) || 0),
+      annualExpense: Math.max(0, Number(source.annualExpense) || 0),
+      debt: Math.max(0, Number(source.debt) || 0),
+      educationGoal: Math.max(0, Number(source.educationGoal) || 0),
+      parentSupportGoal: Math.max(0, Number(source.parentSupportGoal) || 0),
+      retirementGoal: Math.max(0, Number(source.retirementGoal) || 0),
+      availableAssets: Math.max(0, Number(source.availableAssets) || 0),
+      premiumBudget: Math.max(0, Number(source.premiumBudget) || 0),
+    };
+    if (JSON.stringify(family.planningProfile || {}) !== JSON.stringify(nextPlanningProfile)) {
+      family.planningProfile = nextPlanningProfile;
+      changed = true;
+    }
+  }
   if (changed) family.updatedAt = new Date().toISOString();
   return family;
 }

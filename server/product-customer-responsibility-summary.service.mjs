@@ -1,12 +1,20 @@
 import crypto from 'node:crypto';
 
 import { routeInsuranceProductCategory } from './insurance-product-category-router.mjs';
+import {
+  callDeepSeekForResponsibilityPlanner,
+  normalizeResponsibilityPlannerMode,
+  runResponsibilityPlanner,
+} from './responsibility-planner.service.mjs';
 import { resolveOfficialResponsibilitySources } from './responsibility-source-resolver.mjs';
 import { extractStructuredResponsibilitySections } from './responsibility-section-extractor.mjs';
-import { buildStructuredResponsibilityPrompt } from './responsibility-summary-templates.mjs';
+import {
+  buildOfficialResponsibilityRetryPrompt,
+  buildStructuredResponsibilityPrompt,
+} from './responsibility-summary-templates.mjs';
 import { evaluateResponsibilitySummaryQuality } from './responsibility-summary-quality-gate.mjs';
 
-export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v22-structured-rag';
+export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v24-planner-blocks';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -15,15 +23,22 @@ const DEFAULT_TIMEOUT_MS = 45_000;
 const DEEPSEEK_LOG_PREVIEW_LIMIT = 3000;
 const OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT = 6500;
 const PROMPT_RESPONSIBILITY_EXCERPT_LIMIT = 6500;
-const RESPONSIBILITY_TITLE_SUFFIX_PATTERN = /(?:保险金|给付金|年金|养老金|生存金|祝寿金|满期金|豁免保险费|豁免保费)/u;
-const RESPONSIBILITY_NUMBERED_TITLE_PATTERN = /(?:^|[\s。；;])(?:\d+[.．、]|[（(][一二三四五六七八九十]+[）)]|[一二三四五六七八九十]+[、.．])\s*([^。；;：:\n]{2,90}?(?:保险金|给付金|年金|养老金|生存金|祝寿金|满期金|豁免保险费|豁免保费))/gu;
 
 function text(value) {
   return String(value ?? '').trim();
 }
 
+function firstText(...values) {
+  return values.map(text).find(Boolean) || '';
+}
+
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function plainObject(value) {
+  const candidate = typeof value === 'string' ? parseJson(value, null) : value;
+  return candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
 }
 
 function excerpt(value, limit) {
@@ -51,6 +66,13 @@ function uniqueStrings(values) {
     result.push(item);
   }
   return result;
+}
+
+function sourceRefIdsFromValue(value) {
+  return uniqueStrings(normalizeArray(value).map((item) => {
+    if (typeof item === 'string' || typeof item === 'number') return item;
+    return item?.sourceRefId || item?.sourceId || item?.id;
+  }));
 }
 
 function valuesFromKeys(source = {}, keys = []) {
@@ -178,32 +200,6 @@ function sourceTextFrom(row = {}) {
   return text(officialResponsibilitySummaryTextFrom(row) || officialResponsibilitySourceTextFrom(row));
 }
 
-function normalizeResponsibilityTitle(value) {
-  return text(value)
-    .replace(/^保险责任(?:包括|含|为|是)?/u, '')
-    .replace(/^[\s\d一二三四五六七八九十().（）．.、:：;；-]+/u, '')
-    .replace(/\s+/gu, '')
-    .trim();
-}
-
-function isUsefulResponsibilityTitle(value) {
-  const title = normalizeResponsibilityTitle(value);
-  return title.length >= 4
-    && title.length <= 42
-    && RESPONSIBILITY_TITLE_SUFFIX_PATTERN.test(title)
-    && !/^(?:保险金|给付金|年金)$/u.test(title)
-    && !/^(?:若|则|其|被保险人|本公司|我们|发生上述)/u.test(title)
-    && !/(?:处于|二者之较大|三者之最大|金额为|根据以下不同情形|合同终止|减去|累计已给付|条规定|赔付方式)/u.test(title)
-    && !/(?:责任免除|保险金申请|释义|保单贷款|现金价值权益|受益人|争议处理)/u.test(title);
-}
-
-function cleanResponsibilityClauseExcerpt(value) {
-  return text(value)
-    .replace(/^\s*(?:\d+[.．、]|[（(][一二三四五六七八九十]+[）)]|[一二三四五六七八九十]+[、.．])\s*/u, '')
-    .replace(/\s+/gu, ' ')
-    .trim();
-}
-
 function productNameFrom(row = {}) {
   return text(row.productName || row.product_name || row.name || row.title);
 }
@@ -288,50 +284,6 @@ function extractOfficialResponsibilityText(value = '', limit = OFFICIAL_RESPONSI
   const stop = fromMarker.search(/(?:^|[\s。；;])(?:责任免除|保险金申请|释义|合同解除|犹豫期|现金价值|保单贷款|受益人|争议处理)(?:[\s：:。；;]|$)/u);
   const responsibilityText = stop > 20 ? fromMarker.slice(0, stop) : fromMarker;
   return excerpt(responsibilityText, limit);
-}
-
-function officialResponsibilityClausesFromRecord(record = {}) {
-  const officialExcerpt = extractOfficialResponsibilityText(officialResponsibilitySourceTextFrom(record), OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT);
-  if (!officialExcerpt) return [];
-  const matches = [...officialExcerpt.matchAll(RESPONSIBILITY_NUMBERED_TITLE_PATTERN)]
-    .filter((match) => isUsefulResponsibilityTitle(match[1]));
-  const sourceUrl = sourceUrlFrom(record);
-  const sourceTitle = text(record.title || record.sourceTitle || record.productName || record.name);
-  if (!matches.length) {
-    const fallbackMatch = officialExcerpt.match(/(?:^|[\s：:])([^。；;：:\n]{2,90}?(?:保险金|给付金|年金|养老金|生存金|祝寿金|满期金|豁免保险费|豁免保费))/u);
-    const title = normalizeResponsibilityTitle(fallbackMatch?.[1]);
-    if (!isUsefulResponsibilityTitle(title)) return [];
-    return [{
-      title,
-      excerpt: cleanResponsibilityClauseExcerpt(officialExcerpt),
-      sourceUrl,
-      sourceTitle,
-    }];
-  }
-  return matches.map((match, index) => {
-    const title = normalizeResponsibilityTitle(match[1]);
-    const start = match.index || 0;
-    const end = matches[index + 1]?.index ?? officialExcerpt.length;
-    return {
-      title,
-      excerpt: cleanResponsibilityClauseExcerpt(officialExcerpt.slice(start, end)),
-      sourceUrl,
-      sourceTitle,
-    };
-  }).filter((clause) => clause.title && clause.excerpt);
-}
-
-function officialResponsibilityClausesFromRecords(records = []) {
-  const byTitle = new Map();
-  for (const record of normalizeArray(records)) {
-    for (const clause of officialResponsibilityClausesFromRecord(record)) {
-      const current = byTitle.get(clause.title);
-      if (!current || clause.excerpt.length > current.excerpt.length) {
-        byTitle.set(clause.title, clause);
-      }
-    }
-  }
-  return [...byTitle.values()];
 }
 
 function indicatorsForProduct(records, product) {
@@ -420,13 +372,18 @@ export function validateCustomerResponsibilitySummaryJson(summary) {
     const rawTitle = text(item?.title || item?.name || item?.coverageType || item?.liability || item?.责任名称 || item?.名称 || item?.标题);
     const rawPlainText = text(item?.plainText || item?.summary || item?.description || item?.scenario || item?.payout || item?.内容 || item?.说明);
     const split = isResponsibilityCategoryTitle(rawTitle) ? splitLeadingResponsibilityTitle(rawPlainText) : null;
-    return {
+    const sourceRefs = sourceRefIdsFromValue(item?.sourceRefs || item?.source_refs || item?.sources);
+    const normalized = {
       title: split?.title || rawTitle,
       plainText: split?.plainText || rawPlainText,
+      triggerCondition: text(item?.triggerCondition || item?.trigger || item?.触发条件 || item?.给付条件),
       howItPays: text(item?.howItPays || item?.给付方式 || item?.给付规则 || item?.赔付方式),
+      calculationStatus: text(item?.calculationStatus || item?.calculation_status || item?.计算状态),
       requiredPolicyFields: uniqueStrings(item?.requiredPolicyFields || item?.所需字段 || item?.需要字段),
     };
-  }).filter((item) => item.title || item.plainText || item.howItPays);
+    if (sourceRefs.length) normalized.sourceRefs = sourceRefs;
+    return normalized;
+  }).filter((item) => item.title || item.plainText || item.triggerCondition || item.howItPays || item.calculationStatus || item.requiredPolicyFields.length || item.sourceRefs?.length);
   const normalized = {
     company: text(sourceSummary?.company || sourceSummary?.保险公司),
     productName: text(sourceSummary?.productName || sourceSummary?.产品名称),
@@ -664,6 +621,22 @@ function logDeepSeekCustomerSummary(event, detail = {}) {
   console.info(`[customer-responsibility-summary] ${event}`, detail);
 }
 
+function modelGenerationIssueFromError(error, fallbackCode) {
+  const issue = {
+    code: text(error?.code) || fallbackCode,
+    message: text(error?.message),
+  };
+  for (const key of ['responseId', 'finishReason', 'rawPreview', 'modelName']) {
+    const value = text(error?.[key]);
+    if (value) issue[key] = value;
+  }
+  for (const key of ['status', 'rawChars']) {
+    if (Number.isFinite(Number(error?.[key]))) issue[key] = Number(error[key]);
+  }
+  if (error?.usage && typeof error.usage === 'object') issue.usage = error.usage;
+  return issue;
+}
+
 export async function callDeepSeekForCustomerResponsibilitySummary({
   prompt,
   company = '',
@@ -724,6 +697,18 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
       rawPreview: previewForLog(content),
       usage: payload?.usage && typeof payload.usage === 'object' ? payload.usage : undefined,
     });
+    if (!content) {
+      const error = new Error('DeepSeek returned empty message content');
+      error.code = 'empty_model_content';
+      error.status = response.status;
+      error.responseId = text(payload?.id);
+      error.finishReason = text(payload?.choices?.[0]?.finish_reason);
+      error.rawChars = 0;
+      error.rawPreview = '';
+      error.modelName = requestedModel;
+      error.usage = payload?.usage && typeof payload.usage === 'object' ? payload.usage : undefined;
+      throw error;
+    }
     const parsed = parseJson(content, null);
     logDeepSeekCustomerSummary('DeepSeek parsed response shape', {
       company: text(company),
@@ -740,19 +725,66 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
 
 function safeCustomerSummary(row = {}) {
   const summary = row.summaryJson || row.summary_json || row;
+  const payload = plainObject(row.payload);
+  const nestedPayload = plainObject(payload.payload);
+  const sourceSections = plainObject(payload.sourceSections);
+  const nestedSourceSections = plainObject(nestedPayload.sourceSections);
+  const routing = plainObject(payload.routing || nestedPayload.routing || payload.summaryContext?.routing || nestedPayload.summaryContext?.routing);
+  const normalizedContentBlocks = normalizeCustomerSummaryContentBlocks(
+    summary.contentBlocks,
+    summary,
+    {
+      ...payload,
+      ...nestedPayload,
+      sourceSections: Object.keys(nestedSourceSections).length ? nestedSourceSections : sourceSections,
+    },
+    { routing },
+  );
   return {
     company: text(summary.company),
     productName: text(summary.productName),
     headline: text(summary.headline),
-    mainResponsibilities: normalizeArray(summary.mainResponsibilities).map((item) => ({
-      title: text(item?.title),
-      plainText: text(item?.plainText),
-      howItPays: text(item?.howItPays),
-      requiredPolicyFields: uniqueStrings(item?.requiredPolicyFields),
-    })),
+    mainResponsibilities: normalizeArray(summary.mainResponsibilities).map((item) => {
+      const sourceRefs = sourceRefIdsFromValue(item?.sourceRefs);
+      const normalized = {
+        title: text(item?.title),
+        plainText: text(item?.plainText),
+        triggerCondition: text(item?.triggerCondition),
+        howItPays: text(item?.howItPays),
+        calculationStatus: text(item?.calculationStatus),
+        requiredPolicyFields: uniqueStrings(item?.requiredPolicyFields),
+      };
+      if (sourceRefs.length) normalized.sourceRefs = sourceRefs;
+      return normalized;
+    }),
     notices: uniqueStrings(summary.notices),
     requiredPolicyFields: uniqueStrings(summary.requiredPolicyFields),
     sourceUrls: uniqueStrings(summary.sourceUrls),
+    officialResponsibilityText: text(
+      summary.officialResponsibilityText
+        || summary.official_responsibility_text
+        || payload.officialResponsibilityText
+        || payload.official_responsibility_text
+        || sourceSections.mainResponsibilityText
+        || sourceSections.main_responsibility_text
+        || nestedPayload.officialResponsibilityText
+        || nestedPayload.official_responsibility_text
+        || nestedSourceSections.mainResponsibilityText
+        || nestedSourceSections.main_responsibility_text,
+    ),
+    contentBlocks: normalizeArray(normalizedContentBlocks)
+      .map((block) => {
+        const blockKey = text(block?.blockKey);
+        return {
+          blockKey,
+          title: text(block?.title),
+          enabled: block?.enabled !== false,
+          editable: block?.editable !== false,
+          order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
+          content: text(block?.content),
+        };
+      })
+      .filter((block) => block.blockKey || block.title || block.content),
   };
 }
 
@@ -880,218 +912,6 @@ function enrichCardsWithOfficialRecords(cards = [], records = []) {
   });
 }
 
-function cleanOfficialResponsibilityText(card = {}) {
-  const title = text(card.title);
-  let content = text(card.sourceExcerpt).replace(/\s+/gu, ' ');
-  if (!content) return '';
-  content = content
-    .replace(/^保险责任在本合同保险期间内[，,。；;：:\s]*我们按下列规定承担保险责任[：:\s]*/u, '')
-    .replace(/[（(]\s*详见释义\s*[）)]/gu, '')
-    .replace(/\s+/gu, ' ')
-    .trim();
-  const originalContent = content;
-  if (title) {
-    const index = content.indexOf(title);
-    if (index >= 0) {
-      const afterTitle = content.slice(index + title.length).trim();
-      if (afterTitle.replace(/[。；;，,\s]/gu, '').length >= 8) content = afterTitle;
-    }
-  }
-  if (!content) return '';
-  if (content.replace(/[。；;，,\s]/gu, '').length < 8) content = originalContent;
-  return content;
-}
-
-function deathOrDisabilityOfficialSummary(card = {}) {
-  const title = text(card.title);
-  const content = cleanOfficialResponsibilityText(card);
-  const target = `${title} ${content}`;
-  if (!/(?:身故|死亡).{0,8}(?:身体)?全残|(?:身体)?全残.{0,8}(?:身故|死亡)/u.test(target)) return null;
-  if (!/(?:现金价值|给付系数|基本保险金额|18\s*周岁|180\s*日)/u.test(target)) return null;
-  if (/特定公共交通工具/u.test(target)) {
-    return {
-      plainText: truncateText('被保险人以乘客身份乘坐特定公共交通工具期间，在工具内因交通事故遭受意外伤害，并在约定期间内因此身故或身体全残且符合年龄条件时，保险公司承担本项额外给付责任', 260),
-      howItPays: truncateText('在按身故或身体全残保险金给付的同时，另行给付特定公共交通工具意外伤害身故或身体全残保险金，金额为基本保险金额的 1.5 倍，合同终止', 300),
-      fieldBasis: target,
-    };
-  }
-  const plainParts = [];
-  if (/180\s*日/u.test(target) && /疾病/u.test(target)) {
-    plainParts.push('疾病原因在合同生效 180 日内身故或身体全残，保险公司按已交保险费给付，合同终止');
-  }
-  if (/意外/u.test(target) || /180\s*日/u.test(target)) {
-    plainParts.push('意外原因或合同生效 180 日后身故或身体全残，按出险年龄、交费阶段和保单价值规则确定给付金额');
-  }
-  const howParts = [];
-  if (/18\s*周岁/u.test(target) && /实际交纳|已交|保险费/u.test(target) && /现金价值/u.test(target)) {
-    howParts.push('18 周岁前按已交保险费与现金价值二者较大者给付');
-  }
-  if (/交费期间届满后的首个保单周年日/u.test(target) && /二者之较大|二者较大|二者之最大|二者最大/u.test(target)) {
-    howParts.push('18 周岁后且交费期届满前，按已交保险费乘以给付系数与现金价值二者较大者给付');
-  }
-  if (/三者之最大|三者最大/u.test(target) && /基本保险金额/u.test(target)) {
-    howParts.push('交费期届满后，按已交保险费乘以给付系数、现金价值、基本保险金额按约定递增后的金额三者较大者给付');
-  }
-  if (/1\.6|1\.4|1\.2/u.test(target) && /给付系数/u.test(target)) {
-    howParts.push('给付系数按出险年龄区间确定，条款列明 18 至 40 周岁、41 至 60 周岁、61 周岁及以后分别适用不同系数');
-  }
-  return {
-    plainText: truncateText(plainParts.length ? plainParts.join('；') : `被保险人身故或身体全残时，保险公司按官网条款约定给付${title}。`, 260),
-    howItPays: truncateText(howParts.length ? howParts.join('；') : payoutTextFromOfficialExcerpt(content), 300),
-    fieldBasis: target,
-  };
-}
-
-function customerExcerptFromCard(card = {}) {
-  const specialSummary = deathOrDisabilityOfficialSummary(card);
-  if (specialSummary) return specialSummary.plainText;
-  const content = cleanOfficialResponsibilityText(card);
-  if (!content) return '';
-  const sentenceEnd = content.search(/[。；;]/u);
-  const excerptText = sentenceEnd > 35 ? content.slice(0, sentenceEnd + 1) : content;
-  return truncateText(`官网条款摘录显示：${excerptText}`, 220);
-}
-
-function payoutTextFromOfficialExcerpt(value) {
-  const content = text(value)
-    .replace(/^官网条款摘录显示：/u, '')
-    .replace(/[（(]\s*详见释义\s*[）)]/gu, '')
-    .replace(/\s+/gu, ' ');
-  const match = content.match(/(?:按|按照)[^。；;]{2,120}?给付[^。；;]{0,80}/u);
-  if (match?.[0]) return truncateText(match[0], 180);
-  return '';
-}
-
-function summaryItemFromCard(card = {}) {
-  const title = text(card.title);
-  const specialSummary = deathOrDisabilityOfficialSummary(card);
-  const officialText = customerExcerptFromCard(card);
-  const body = officialText
-    || safeCustomerText(card.plainSummary)
-    || safeCustomerText(card.payoutSummary)
-    || `${title}按保险合同约定承担保险责任。`;
-  const condition = text(card.triggerCondition);
-  const payout = specialSummary?.howItPays
-    || payoutTextFromOfficialExcerpt(officialText)
-    || safeCustomerText(card.payoutSummary || card.howItPays);
-  const indicatorText = normalizeArray(card.indicators)
-    .map((indicator) => safeCustomerText(indicator.payoutSummary || indicator.basis || indicator.formulaText))
-    .filter(Boolean)
-    .join(' ');
-  const plainText = truncateText(
-    body || [condition, payout].filter(Boolean).join('：') || `${title}按保险合同约定承担保险责任。`,
-    180,
-  );
-  const howItPays = truncateText(
-    payout || indicatorText || `${title}的给付金额和给付条件以保险合同及保单载明信息为准。`,
-    180,
-  );
-  const fieldBasis = specialSummary?.fieldBasis
-    || (officialText ? `${officialText} ${condition} ${payout}` : `${body} ${condition} ${payout} ${indicatorText}`);
-  return {
-    title,
-    plainText,
-    howItPays,
-    requiredPolicyFields: uniqueStrings([
-      ...requiredFieldsFromText(fieldBasis),
-      ...(officialText ? [] : normalizeArray(card.indicators).flatMap((indicator) =>
-        requiredFieldsFromText(`${indicator.payoutSummary || ''} ${indicator.basis || ''} ${indicator.formulaText || ''}`),
-      )),
-    ]),
-  };
-}
-
-function summaryItemFromOfficialClause(clause = {}) {
-  const title = text(clause.title);
-  const cardLike = {
-    title,
-    sourceExcerpt: clause.excerpt,
-    sourceUrl: clause.sourceUrl,
-    sourceTitle: clause.sourceTitle,
-  };
-  const specialSummary = deathOrDisabilityOfficialSummary(cardLike);
-  const plainText = specialSummary?.plainText || customerExcerptFromCard(cardLike);
-  const howItPays = specialSummary?.howItPays || payoutTextFromOfficialExcerpt(clause.excerpt);
-  return {
-    title,
-    plainText: truncateText(plainText || `${title}按官网保险责任正文约定承担保险责任。`, 260),
-    howItPays: truncateText(howItPays || `${title}的给付条件和给付金额以官网条款及保单载明信息为准。`, 300),
-    requiredPolicyFields: requiredFieldsFromText(`${specialSummary?.fieldBasis || ''} ${clause.excerpt}`),
-  };
-}
-
-function summaryItemFromIndicator(indicator = {}) {
-  const title = text(indicator.liability || indicator.title || indicator.name);
-  const body = safeCustomerText(indicator.payoutSummary || indicator.basis || indicator.formulaText);
-  return {
-    title,
-    plainText: truncateText(body || `${title}按保险合同约定承担保险责任。`, 180),
-    howItPays: truncateText(safeCustomerText(indicator.basis || indicator.payoutSummary) || `${title}的金额以保单信息和条款约定为准。`, 180),
-    requiredPolicyFields: requiredFieldsFromText(`${body} ${indicator.basis || ''}`),
-  };
-}
-
-function inferHeadline(productName, items) {
-  const titles = items.map((item) => item.title).join('、');
-  if (/两全/u.test(productName) || (/身故|全残/u.test(titles) && /满期|生存/u.test(titles))) {
-    return '这是一款兼有身故或全残保障和满期给付的保险。';
-  }
-  if (/年金|养老/u.test(productName) || /年金|养老金|生存金|祝寿/u.test(titles)) {
-    return '这款产品主要按合同约定提供生存领取或养老年金。';
-  }
-  if (/重疾|重大疾病/u.test(productName) || /重疾|重大疾病|轻症|中症/u.test(titles)) {
-    return '这款产品主要围绕重大疾病等疾病风险提供保障。';
-  }
-  if (/医疗/u.test(productName) || /医疗|住院|门诊|报销/u.test(titles)) {
-    return '这款产品主要按合同约定报销或给付医疗相关费用。';
-  }
-  if (/身故|全残|寿险/u.test(productName) || /身故|全残|寿险/u.test(titles)) {
-    return '这款产品主要提供身故或全残等人身保障。';
-  }
-  const preview = items.slice(0, 3).map((item) => item.title).join('、');
-  return preview ? `这款产品主要提供${preview}等保险责任。` : '这款产品的保险责任以合同条款和保单载明信息为准。';
-}
-
-function noticesFromCards(cards, items) {
-  const content = normalizeArray(cards)
-    .map((card) => `${card.title || ''} ${card.plainSummary || ''} ${card.payoutSummary || ''} ${card.sourceExcerpt || ''}`)
-    .join(' ');
-  const notices = ['具体金额以正式保险合同、保单载明信息和条款表格为准。'];
-  if (/红利|分红/u.test(content)) {
-    notices.push('分红或累积红利金额不是固定保证值，应以保险公司实际公布和保单记录为准。');
-  }
-  if (items.some((item) => item.requiredPolicyFields.includes('出险原因和出险日期'))) {
-    notices.push('理赔类责任需要结合实际出险原因、出险日期和条款约定判断。');
-  }
-  return uniqueStrings(notices);
-}
-
-function hasCustomerSummaryContent(summary = {}) {
-  return normalizeArray(summary.mainResponsibilities).some((item) =>
-    text(item?.title) || text(item?.plainText) || text(item?.howItPays),
-  );
-}
-
-function officialResponsibilityTextsFromRecords(records = []) {
-  return uniqueStrings(
-    normalizeArray(records)
-      .map((record) => extractOfficialResponsibilityText(officialResponsibilitySourceTextFrom(record), OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT))
-      .filter(Boolean),
-  );
-}
-
-function noticesFromOfficialRecords(records, items) {
-  const content = officialResponsibilityTextsFromRecords(records).join(' ');
-  const notices = ['具体金额以正式保险合同、保单载明信息和条款表格为准。'];
-  if (/红利|分红|累积红利/u.test(content)) {
-    notices.push('分红或累积红利金额不是固定保证值，应以保险公司实际公布和保单记录为准。');
-  }
-  if (items.some((item) => normalizeArray(item.requiredPolicyFields).includes('出险原因和出险日期'))) {
-    notices.push('理赔类责任需要结合实际出险原因、出险日期和条款约定判断。');
-  }
-  return uniqueStrings(notices);
-}
-
 function buildSummaryContext({ productKey, company, productName, cards, indicators, records }) {
   return {
     productKey,
@@ -1102,21 +922,160 @@ function buildSummaryContext({ productKey, company, productName, cards, indicato
   };
 }
 
-function normalizeStructuredSummaryToCustomerSummary(raw = {}, { company, productName, sourceUrls = [] } = {}) {
+const CUSTOMER_SUMMARY_BLOCK_DEFINITIONS = [
+  { blockKey: 'productPurpose', title: '产品主要做什么', order: 1 },
+  { blockKey: 'responsibilities', title: '主要保险责任', order: 2 },
+  { blockKey: 'productFunctions', title: '产品功能/权益', order: 3 },
+  { blockKey: 'attentionNotes', title: '注意事项', order: 4 },
+];
+
+function linesToText(lines = []) {
+  return normalizeArray(lines).map(text).filter(Boolean).join('\n');
+}
+
+function productFunctionTextFrom(item) {
+  if (typeof item === 'string') return text(item);
+  return firstText(item?.title, item?.name, item?.plainText, item?.summary, item?.description);
+}
+
+function responsibilitySearchText(item = {}) {
+  return [
+    item.title,
+    item.plainText,
+    item.howItPays,
+  ].map(text).filter(Boolean).join(' ');
+}
+
+function hasCompositeEndowmentAccidentProfile(summary = {}, routing = {}) {
+  const responsibilities = normalizeArray(summary.mainResponsibilities);
+  const content = responsibilities.map(responsibilitySearchText).join(' ');
+  const category = text(routing.productCategory || summary.productCategory);
+  return category === 'endowment'
+    && /意外/u.test(content)
+    && /交通|航空|列车|客运|轮船|汽车|驾乘|步行|骑行|电梯|高空|公共场所|自然灾害|(?:10|15|20|30|40|60)\s*倍/u.test(content);
+}
+
+function sourceResponsibilityText(source = {}) {
+  const directSource = plainObject(source);
+  const nestedPayload = plainObject(directSource.payload);
+  const sourceSections = plainObject(directSource.sourceSections);
+  const nestedSourceSections = plainObject(nestedPayload.sourceSections);
+  return text(
+    directSource.officialResponsibilityText
+      || directSource.official_responsibility_text
+      || sourceSections.mainResponsibilityText
+      || sourceSections.main_responsibility_text
+      || nestedPayload.officialResponsibilityText
+      || nestedPayload.official_responsibility_text
+      || nestedSourceSections.mainResponsibilityText
+      || nestedSourceSections.main_responsibility_text,
+  );
+}
+
+function responsibilityDisplayLine(item = {}) {
+  const title = text(item.title) || '保险责任';
+  const plainText = text(item.plainText);
+  const triggerCondition = text(item.triggerCondition);
+  const howItPays = text(item.howItPays);
+  const cleanPart = (value) => text(value).replace(/\s+/gu, ' ').replace(/[。；;]+$/u, '');
+  const detailParts = [cleanPart(plainText)];
+  if (triggerCondition && !plainText.includes(triggerCondition)) detailParts.push(`触发条件：${cleanPart(triggerCondition)}`);
+  if (howItPays && !plainText.includes(howItPays)) detailParts.push(`给付规则：${cleanPart(howItPays)}`);
+  const details = detailParts.filter(Boolean).join('；');
+  return details ? `${title}：${details}。` : title;
+}
+
+function buildStructuredResponsibilitiesContent(summary = {}) {
+  const responsibilities = normalizeArray(summary.mainResponsibilities);
+  if (!responsibilities.length) return '';
+  const hasBasicOptionalSplit = responsibilities.some((item) =>
+    /基本责任|可选责任/u.test(`${item?.title || ''} ${item?.plainText || ''} ${item?.howItPays || ''}`),
+  );
+  const opening = hasBasicOptionalSplit ? '本产品保险责任分为基本责任和可选责任，具体责任如下。' : '';
+  return linesToText([
+    opening,
+    ...responsibilities.map(responsibilityDisplayLine),
+  ]);
+}
+
+function normalizeCompositeDisplayBlocks(blocks = [], summary = {}, routing = {}) {
+  const responsibilities = normalizeArray(summary.mainResponsibilities);
+  const composite = hasCompositeEndowmentAccidentProfile(summary, routing);
+  const hasCompositePurpose = (content) => /两全/u.test(content)
+    && /意外/u.test(content)
+    && /交通|特定|高倍/u.test(content);
+  return blocks.map((block) => {
+    if (block.blockKey === 'productPurpose' && composite && !hasCompositePurpose(block.content)) {
+      return {
+        ...block,
+        content: linesToText([
+          '这是一款意外保障型两全保险：既保留满期返还/生存给付属性，也突出交通及特定意外高倍身故/全残保障。',
+          block.content,
+        ]),
+      };
+    }
+    return block;
+  });
+}
+
+function defaultCustomerSummaryBlocks(summary = {}, source = {}) {
+  const responsibilities = normalizeArray(summary.mainResponsibilities);
+  const productFunctions = normalizeArray(source.productFunctions).map(productFunctionTextFrom).filter(Boolean);
+  return [
+    { blockKey: 'productPurpose', content: text(summary.headline) },
+    {
+      blockKey: 'responsibilities',
+      content: linesToText(responsibilities.map((item) =>
+        [text(item?.title) || '保险责任', text(item?.plainText), text(item?.howItPays)].filter(Boolean).join('：'),
+      )),
+    },
+    { blockKey: 'productFunctions', content: linesToText(productFunctions) },
+    { blockKey: 'attentionNotes', content: linesToText(summary.notices) },
+  ];
+}
+
+function normalizeCustomerSummaryContentBlocks(rawBlocks, summary = {}, source = {}, context = {}) {
+  const sourceBlocks = Array.isArray(rawBlocks) && rawBlocks.length
+    ? rawBlocks
+    : defaultCustomerSummaryBlocks(summary, source);
+  const rawByKey = new Map(sourceBlocks
+    .filter((block) => block && typeof block === 'object')
+    .map((block) => [text(block.blockKey), block]));
+  const blocks = CUSTOMER_SUMMARY_BLOCK_DEFINITIONS.map((definition) => {
+    const raw = rawByKey.get(definition.blockKey) || {};
+    return {
+      blockKey: definition.blockKey,
+      title: text(raw.title) || definition.title,
+      enabled: raw.enabled !== false,
+      editable: raw.editable !== false,
+      order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : definition.order,
+      content: text(raw.content),
+    };
+  });
+  return normalizeCompositeDisplayBlocks(blocks, summary, context.routing || {});
+}
+
+function normalizeStructuredSummaryToCustomerSummary(raw = {}, { company, productName, sourceUrls = [], routing = {}, sourceSections = {} } = {}) {
   const source = raw?.summary || raw?.result || raw?.data || raw;
   const responsibilities = normalizeArray(source?.responsibilities)
     .concat(normalizeArray(source?.mainResponsibilities))
     .map((item) => {
       const body = text(item?.plainText || item?.summary || item?.description || item?.内容);
       const paymentRule = text(item?.paymentRule || item?.howItPays || item?.给付规则 || item?.赔付方式);
-      return {
+      const triggerCondition = text(item?.triggerCondition || item?.trigger || item?.触发条件 || item?.给付条件);
+      const sourceRefs = sourceRefIdsFromValue(item?.sourceRefs || item?.source_refs || item?.sources);
+      const normalized = {
         title: text(item?.title || item?.name || item?.责任名称),
         plainText: body,
+        triggerCondition,
         howItPays: paymentRule,
-        requiredPolicyFields: requiredFieldsFromText(`${body} ${paymentRule} ${item?.triggerCondition || ''}`),
+        calculationStatus: text(item?.calculationStatus || item?.calculation_status || item?.计算状态),
+        requiredPolicyFields: requiredFieldsFromText(`${body} ${paymentRule} ${triggerCondition}`),
       };
+      if (sourceRefs.length) normalized.sourceRefs = sourceRefs;
+      return normalized;
     })
-    .filter((item) => item.title || item.plainText || item.howItPays);
+    .filter((item) => item.title || item.plainText || item.triggerCondition || item.howItPays || item.calculationStatus || item.requiredPolicyFields.length || item.sourceRefs?.length);
   const notices = uniqueStrings([
     ...normalizeArray(source?.importantNotes).map(text),
     ...normalizeArray(source?.notices).map(text),
@@ -1125,7 +1084,7 @@ function normalizeStructuredSummaryToCustomerSummary(raw = {}, { company, produc
       return content ? `需核验：${content}` : '';
     }),
   ]);
-  return {
+  const summary = {
     company,
     productName,
     headline: text(source?.headline || source?.productSummary || source?.summary),
@@ -1133,64 +1092,10 @@ function normalizeStructuredSummaryToCustomerSummary(raw = {}, { company, produc
     notices,
     requiredPolicyFields: uniqueStrings(responsibilities.flatMap((item) => item.requiredPolicyFields)),
     sourceUrls: uniqueStrings(source?.sourceUrls || sourceUrls),
+    officialResponsibilityText: sourceResponsibilityText(source) || sourceResponsibilityText({ sourceSections }),
   };
-}
-
-function uniqueSummaryItems(items = []) {
-  const byTitle = new Map();
-  for (const item of normalizeArray(items)) {
-    const title = text(item?.title);
-    if (!title) continue;
-    const normalized = normalizeResponsibilityTitle(title);
-    if (!normalized || !isUsefulResponsibilityTitle(normalized)) continue;
-    const current = byTitle.get(normalized);
-    if (!current || JSON.stringify(item).length > JSON.stringify(current).length) {
-      byTitle.set(normalized, item);
-    }
-  }
-  return [...byTitle.values()];
-}
-
-function buildLocalCustomerSummaryFromOfficialSources({
-  company = '',
-  productName = '',
-  sourceSections = {},
-  cards = [],
-  indicators = [],
-  records = [],
-} = {}) {
-  const sectionRecord = sourceSections.mainResponsibilityText
-    ? [{
-        productName,
-        title: sourceSections.sourceTitle || productName,
-        url: sourceSections.sourceUrl,
-        pageText: sourceSections.mainResponsibilityText,
-      }]
-    : [];
-  const clauses = officialResponsibilityClausesFromRecords([
-    ...sectionRecord,
-    ...normalizeArray(records),
-  ]);
-  const items = uniqueSummaryItems([
-    ...clauses.map(summaryItemFromOfficialClause),
-    ...normalizeArray(indicators).map(summaryItemFromIndicator),
-  ]);
-  const summary = {
-    company,
-    productName,
-    headline: inferHeadline(productName, items),
-    mainResponsibilities: items,
-    notices: uniqueStrings([
-      ...noticesFromOfficialRecords([...sectionRecord, ...normalizeArray(records)], items),
-      '本摘要由系统依据官方条款正文自动整理；如需理赔或投保决策，请以正式保险合同和保险公司解释为准。',
-    ]),
-    requiredPolicyFields: uniqueStrings(items.flatMap((item) => normalizeArray(item.requiredPolicyFields))),
-    sourceUrls: uniqueStrings([
-      sourceSections.sourceUrl,
-      ...normalizeArray(records).map(sourceUrlFrom),
-    ]),
-  };
-  return hasCustomerSummaryContent(summary) ? summary : null;
+  summary.contentBlocks = normalizeCustomerSummaryContentBlocks(source?.contentBlocks, summary, { ...source, sourceSections }, { routing });
+  return summary;
 }
 
 function buildGenerationRun({
@@ -1205,6 +1110,7 @@ function buildGenerationRun({
   rawPreview = '',
   modelName = '',
   modelTier = '',
+  plannerResult = null,
   now = new Date().toISOString(),
 } = {}) {
   return {
@@ -1228,8 +1134,29 @@ function buildGenerationRun({
       routing,
       sourceSectionsQuality: sourceSections.quality,
       qualityIssues: normalizeArray(qualityIssues),
+      planner: plannerResult
+        ? {
+            plannerMode: plannerResult.plannerMode,
+            plannerUsed: plannerResult.plannerUsed,
+            plannerReason: plannerResult.plannerReason,
+            plannerModel: plannerResult.plannerModel,
+            plannerOutput: plannerResult.planner,
+            plannerError: plannerResult.plannerError,
+            plannerPromptPreview: plannerResult.plannerPrompt ? previewForLog(plannerResult.plannerPrompt, 2000) : null,
+          }
+        : null,
     },
   };
+}
+
+function qualityIssuesFromGenerationAttempts(generationAttempts = []) {
+  return normalizeArray(generationAttempts).flatMap((attempt) =>
+    normalizeArray(attempt.quality?.issues).map((issue) => ({
+      ...issue,
+      stage: attempt.stage,
+      modelName: attempt.modelName,
+    })),
+  );
 }
 
 async function persistGenerationReviewRun(persistGenerationRun, run) {
@@ -1252,6 +1179,7 @@ async function persistReadyCustomerSummary({
   modelProvider = '',
   modelName = '',
   modelTier = '',
+  plannerResult = null,
   qualityGate = { status: 'passed', issues: [] },
   now,
 } = {}) {
@@ -1279,6 +1207,13 @@ async function persistReadyCustomerSummary({
       summaryJson,
       sourceUrls: summaryJson.sourceUrls,
       summaryContext,
+      plannerMode: summaryContext?.plannerMode,
+      plannerUsed: summaryContext?.plannerUsed,
+      plannerReason: summaryContext?.plannerReason,
+      plannerModel: summaryContext?.plannerModel,
+      plannerOutput: summaryContext?.plannerOutput,
+      plannerError: summaryContext?.plannerError,
+      contentBlocks: summaryJson.contentBlocks,
       productCategory: routing.productCategory,
       categoryLabel: routing.categoryLabel,
       featureTags: routing.featureTags,
@@ -1303,6 +1238,7 @@ async function persistReadyCustomerSummary({
     rawPreview,
     modelName,
     modelTier: modelTier || routing.modelTier,
+    plannerResult,
     now,
   }));
   return saved;
@@ -1316,9 +1252,11 @@ export async function generateProductCustomerResponsibilitySummary({
   persistSummary,
   persistGenerationRun,
   generateWithDeepSeek = callDeepSeekForCustomerResponsibilitySummary,
+  generatePlannerWithDeepSeek,
   generateOfficialAnalysis,
   modelName = resolveDeepSeekConfig().model,
   nowIso = () => new Date().toISOString(),
+  logger = console,
 } = {}) {
   const company = text(input.company).slice(0, 80);
   const inputProductName = text(input.name || input.productName).slice(0, 160);
@@ -1465,6 +1403,28 @@ export async function generateProductCustomerResponsibilitySummary({
     cards,
     sourceSections,
   });
+  const plannerMode = normalizeResponsibilityPlannerMode(
+    input?.plannerMode,
+    process.env.RESPONSIBILITY_PLANNER_MODE || 'auto',
+  );
+  const resolvedGeneratePlannerWithDeepSeek = typeof generatePlannerWithDeepSeek === 'function'
+    ? generatePlannerWithDeepSeek
+    : generateWithDeepSeek === callDeepSeekForCustomerResponsibilitySummary
+      ? callDeepSeekForResponsibilityPlanner
+      : async () => {
+          throw new Error('Responsibility Planner generator is not configured for mocked summary generation');
+        };
+  const plannerResult = await runResponsibilityPlanner({
+    mode: plannerMode,
+    model: process.env.RESPONSIBILITY_PLANNER_MODEL || 'deepseek-v4-flash',
+    product: { company, productName },
+    routing,
+    sourceSections,
+    cards: normalizeArray(cards).map(cardPromptItem),
+    indicators: normalizeArray(indicators).map(indicatorPromptItem),
+    generateWithDeepSeek: resolvedGeneratePlannerWithDeepSeek,
+    logger,
+  });
   const routedModelName = routing.modelTier === 'pro' ? PRO_MODEL : resolvedModelName;
   const prompt = buildStructuredResponsibilityPrompt({
     product: { company, productName },
@@ -1472,135 +1432,141 @@ export async function generateProductCustomerResponsibilitySummary({
     sourceSections,
     cards: normalizeArray(cards).map(cardPromptItem),
     indicators: normalizeArray(indicators).map(indicatorPromptItem),
+    plannerResult,
   });
-  let rawSummary = null;
-  try {
-    rawSummary = await generateWithDeepSeek({
-      prompt,
-      company,
-      productName,
-      cards,
-      indicators,
-      records: sourceRecords,
-      modelNameOverride: routedModelName,
-    });
-  } catch (error) {
-    const qualityIssues = [{
-      code: text(error?.code) || 'model_generation_failed',
-      message: text(error?.message),
-    }];
-    const fallbackSummary = buildLocalCustomerSummaryFromOfficialSources({
-      company,
-      productName,
-      sourceSections,
-      cards,
-      indicators,
-      records: sourceRecords,
-    });
-    if (fallbackSummary) {
-      const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
-      const saved = await persistReadyCustomerSummary({
-        persistSummary,
-        persistGenerationRun,
-        productKey,
-        company,
-        productName,
-        sourceDigest,
-        sourceSections,
-        routing,
-        summaryJson: fallbackSummary,
-        summaryContext,
-        rawPreview: text(error?.message),
-        modelProvider: 'local',
-        modelName: 'official-source-fallback',
-        modelTier: routing.modelTier,
-        qualityGate: { status: 'fallback_after_model_error', issues: qualityIssues },
-        now: structuredNow,
-      });
-      return {
-        ok: true,
-        source: 'generated',
-        summary: safeCustomerSummary(saved),
-      };
-    }
-    await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
-      productKey,
-      company,
-      productName,
-      status: 'needs_model_review',
-      routing,
-      sourceDigest,
-      sourceSections,
-      qualityIssues,
-      rawPreview: text(error?.message),
-      modelName: routedModelName,
-      modelTier: routing.modelTier,
-      now: structuredNow,
-    }));
-    return {
-      ok: false,
-      status: 'needs_model_review',
-      message: '这个产品的保险责任资料需要进一步核验，请稍后再试。',
-    };
-  }
-  const quality = evaluateResponsibilitySummaryQuality({
+  const officialRetryPrompt = buildOfficialResponsibilityRetryPrompt({
+    product: { company, productName },
     routing,
     sourceSections,
-    summary: rawSummary,
   });
-  if (quality.status !== 'passed') {
-    const fallbackSummary = buildLocalCustomerSummaryFromOfficialSources({
-      company,
-      productName,
-      sourceSections,
-      cards,
-      indicators,
-      records: sourceRecords,
+  let rawSummary = null;
+  let quality = { status: 'failed', issues: [] };
+  let usedModelName = routedModelName;
+  const modelCandidates = uniqueStrings([
+    routedModelName,
+    routedModelName === PRO_MODEL ? resolvedModelName : '',
+  ]);
+  const generationAttempts = [];
+  for (const candidateModelName of modelCandidates) {
+    let candidateSummary = null;
+    let candidateIssues = [];
+    try {
+      candidateSummary = await generateWithDeepSeek({
+        prompt,
+        company,
+        productName,
+        cards,
+        indicators,
+        records: sourceRecords,
+        modelNameOverride: candidateModelName,
+      });
+    } catch (error) {
+      candidateIssues = [modelGenerationIssueFromError(error, 'model_generation_failed')];
+    }
+    const candidateQuality = candidateIssues.length
+      ? { status: 'failed', issues: candidateIssues }
+      : evaluateResponsibilitySummaryQuality({
+          routing,
+          sourceSections,
+          summary: candidateSummary,
+        });
+    generationAttempts.push({
+      stage: 'primary',
+      modelName: candidateModelName,
+      quality: candidateQuality,
+      summary: candidateSummary,
     });
-    if (fallbackSummary) {
-      const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
-      const saved = await persistReadyCustomerSummary({
-        persistSummary,
-        persistGenerationRun,
+    if (candidateQuality.status === 'passed') {
+      rawSummary = candidateSummary;
+      quality = candidateQuality;
+      usedModelName = candidateModelName;
+      break;
+    }
+  }
+  let qualityGateStatus = 'passed';
+  if (quality.status === 'passed' && usedModelName !== routedModelName) {
+    qualityGateStatus = 'passed_after_model_fallback';
+    quality = {
+      ...quality,
+      issues: qualityIssuesFromGenerationAttempts(generationAttempts),
+    };
+  }
+  if (quality.status !== 'passed') {
+    let retryRawSummary = null;
+    let retryQuality = { status: 'failed', issues: [] };
+    let retryModelName = routedModelName;
+    for (const candidateModelName of modelCandidates) {
+      let candidateSummary = null;
+      let candidateIssues = [];
+      try {
+        candidateSummary = await generateWithDeepSeek({
+          prompt: officialRetryPrompt,
+          company,
+          productName,
+          cards: [],
+          indicators: [],
+          records: sourceRecords,
+          modelNameOverride: candidateModelName,
+        });
+      } catch (error) {
+        candidateIssues = [modelGenerationIssueFromError(error, 'official_retry_generation_failed')];
+      }
+      const candidateQuality = candidateIssues.length
+        ? { status: 'failed', issues: candidateIssues }
+        : evaluateResponsibilitySummaryQuality({
+            routing,
+            sourceSections,
+            summary: candidateSummary,
+          });
+      generationAttempts.push({
+        stage: 'official_retry',
+        modelName: candidateModelName,
+        quality: candidateQuality,
+        summary: candidateSummary,
+      });
+      if (candidateQuality.status === 'passed') {
+        retryRawSummary = candidateSummary;
+        retryQuality = candidateQuality;
+        retryModelName = candidateModelName;
+        break;
+      }
+    }
+    if (retryQuality.status !== 'passed') {
+      const qualityIssues = qualityIssuesFromGenerationAttempts(generationAttempts);
+      await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
         productKey,
         company,
         productName,
+        status: 'needs_model_review',
+        routing,
         sourceDigest,
         sourceSections,
-        routing,
-        summaryJson: fallbackSummary,
-        summaryContext,
-        rawPreview: JSON.stringify(rawSummary),
-        modelProvider: 'local',
-        modelName: 'official-source-fallback',
+        qualityIssues,
+        rawPreview: JSON.stringify(generationAttempts.map((attempt) => ({
+          stage: attempt.stage,
+          modelName: attempt.modelName,
+          quality: attempt.quality,
+          summary: attempt.summary,
+        }))),
+        modelName: modelCandidates.at(-1) || routedModelName,
         modelTier: routing.modelTier,
-        qualityGate: { status: 'fallback_after_model_quality_failure', issues: quality.issues },
+        plannerResult,
         now: structuredNow,
-      });
+      }));
       return {
-        ok: true,
-        source: 'generated',
-        summary: safeCustomerSummary(saved),
+        ok: false,
+        status: 'needs_model_review',
+        message: '这个产品的保险责任资料需要进一步核验，请稍后再试。',
       };
     }
-    await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
-      productKey,
-      company,
-      productName,
-      status: 'needs_model_review',
-      routing,
-      sourceDigest,
-      sourceSections,
-      qualityIssues: quality.issues,
-      rawPreview: JSON.stringify(rawSummary),
-      modelName: routedModelName,
-      modelTier: routing.modelTier,
-      now: structuredNow,
-    }));
-    return {
-      ok: false,
-      status: 'needs_model_review',
-      message: '这个产品的保险责任资料需要进一步核验，请稍后再试。',
+    rawSummary = retryRawSummary;
+    usedModelName = retryModelName;
+    qualityGateStatus = retryModelName === routedModelName
+      ? 'passed_after_official_retry'
+      : 'passed_after_official_retry_model_fallback';
+    quality = {
+      status: 'passed',
+      issues: qualityIssuesFromGenerationAttempts(generationAttempts),
     };
   }
   const summaryJson = enrichSummaryWithCompoundGrowth(
@@ -1608,10 +1574,20 @@ export async function generateProductCustomerResponsibilitySummary({
       company,
       productName,
       sourceUrls: uniqueStrings(sourceRecords.map(sourceUrlFrom)),
+      routing,
+      sourceSections,
     }),
     { cards, indicators, records: sourceRecords },
   );
   const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
+  Object.assign(summaryContext, {
+    plannerMode: plannerResult.plannerMode,
+    plannerUsed: plannerResult.plannerUsed,
+    plannerReason: plannerResult.plannerReason,
+    plannerModel: plannerResult.plannerModel,
+    plannerOutput: plannerResult.planner,
+    plannerError: plannerResult.plannerError,
+  });
   const now = structuredNow;
   const saved = await persistReadyCustomerSummary({
     persistSummary,
@@ -1626,8 +1602,10 @@ export async function generateProductCustomerResponsibilitySummary({
     summaryContext,
     rawPreview: JSON.stringify(rawSummary),
     modelProvider: 'deepseek',
-    modelName: routedModelName,
+    modelName: usedModelName,
     modelTier: routing.modelTier,
+    plannerResult,
+    qualityGate: { status: qualityGateStatus, issues: quality.issues },
     now,
   });
   if (generateWithDeepSeek === callDeepSeekForCustomerResponsibilitySummary) {
@@ -1636,7 +1614,7 @@ export async function generateProductCustomerResponsibilitySummary({
       company,
       productName,
       summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
-      modelName: routedModelName,
+      modelName: usedModelName,
       sourceDigest,
       responsibilityCount: normalizeArray(summaryJson.mainResponsibilities).length,
       responsibilityTitles: normalizeArray(summaryJson.mainResponsibilities)
@@ -1649,6 +1627,6 @@ export async function generateProductCustomerResponsibilitySummary({
   return {
     ok: true,
     source: 'generated',
-    summary: safeCustomerSummary(saved || row),
+    summary: safeCustomerSummary(saved),
   };
 }

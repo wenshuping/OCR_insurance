@@ -88,6 +88,20 @@ test('sqlite state store imports JSON once and keeps database as the source of t
       updatedAt: '2026-05-01T00:11:00.000Z',
       inputSummary: { familyId: 8, memberCount: 1, policyCount: 1 },
     }],
+    familySalesChatThreads: [{
+      id: 30,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      status: 'active',
+      title: '微信话术',
+      createdAt: '2026-05-01T00:11:10.000Z',
+      updatedAt: '2026-05-01T00:11:20.000Z',
+    }],
+    familySalesChatMessages: [
+      { id: 31, threadId: 30, familyId: 8, role: 'user', content: '帮我改成微信话术', status: 'complete', createdAt: '2026-05-01T00:11:10.000Z' },
+      { id: 32, threadId: 30, familyId: 8, role: 'assistant', content: '可以这样发客户', status: 'complete', createdAt: '2026-05-01T00:11:20.000Z' },
+    ],
     familyReports: [{
       id: 12,
       familyId: 8,
@@ -154,6 +168,10 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familySalesReviews.length, 1);
   assert.equal(imported.familySalesReviews[0].familyId, 8);
   assert.equal(imported.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(imported.familySalesChatThreads.length, 1);
+  assert.equal(imported.familySalesChatThreads[0].title, '微信话术');
+  assert.equal(imported.familySalesChatMessages.length, 2);
+  assert.equal(imported.familySalesChatMessages[1].content, '可以这样发客户');
   assert.equal(imported.familyReports.length, 1);
   assert.equal(imported.familyReports[0].summary.issueCount, 1);
   assert.equal(imported.familyReportIssues.length, 1);
@@ -161,7 +179,7 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familyReportCorrections.length, 1);
   assert.equal(imported.familyReportCorrections[0].status, 'auto_applied');
   assert.deepEqual(imported.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:05:00.000Z', count: 1 });
-  assert.equal(imported.nextId, 15);
+  assert.equal(imported.nextId, 33);
 
   imported.users.push({ id: 6, mobile: '13900000000', createdAt: '2026-05-01T00:06:00.000Z', updatedAt: '2026-05-01T00:06:00.000Z' });
   imported.policies.push({ id: 7, userId: 6, guestId: '', company: '平安人寿', name: '平安福', insured: '张三', createdAt: '2026-05-01T00:07:00.000Z', updatedAt: '2026-05-01T00:07:00.000Z' });
@@ -188,6 +206,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_corrections').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_shares').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_reviews').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_chat_threads').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_chat_messages').get().count, 2);
     assert.equal(
       JSON.parse(db.prepare('SELECT payload FROM insurance_indicator_records WHERE id = ?').get('ind_2').payload).formulaText,
       '重疾(首次给付) = 基本保险金额',
@@ -219,6 +239,10 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloaded.familyReportShares[0].token, 'share-token-1');
   assert.equal(reloaded.familySalesReviews.length, 1);
   assert.equal(reloaded.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(reloaded.familySalesChatThreads.length, 1);
+  assert.equal(reloaded.familySalesChatThreads[0].title, '微信话术');
+  assert.equal(reloaded.familySalesChatMessages.length, 2);
+  assert.equal(reloaded.familySalesChatMessages[1].content, '可以这样发客户');
   assert.equal(reloaded.familyReports.length, 1);
   assert.equal(reloaded.familyReports[0].summary.issueCount, 1);
   assert.equal(reloaded.familyReportIssues.length, 1);
@@ -230,7 +254,7 @@ test('sqlite state store imports JSON once and keeps database as the source of t
     '重疾(首次给付) = 基本保险金额',
   );
   assert.deepEqual(reloaded.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
-  assert.equal(reloaded.nextId, 15);
+  assert.equal(reloaded.nextId, 33);
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath, seedStatePath });
@@ -248,6 +272,10 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familyReportShares[0].token, 'share-token-1');
   assert.equal(reloadedAfterRestart.familySalesReviews.length, 1);
   assert.equal(reloadedAfterRestart.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(reloadedAfterRestart.familySalesChatThreads.length, 1);
+  assert.equal(reloadedAfterRestart.familySalesChatThreads[0].title, '微信话术');
+  assert.equal(reloadedAfterRestart.familySalesChatMessages.length, 2);
+  assert.equal(reloadedAfterRestart.familySalesChatMessages[1].content, '可以这样发客户');
   assert.equal(reloadedAfterRestart.familyReports.length, 1);
   assert.equal(reloadedAfterRestart.familyReports[0].summary.issueCount, 1);
   assert.equal(reloadedAfterRestart.familyReportIssues.length, 1);
@@ -560,9 +588,22 @@ test('sqlite state store incrementally persists family state without rewriting k
     updatedAt: '2026-06-08T00:02:00.000Z',
     inputSummary: { familyId: 8, memberCount: 1, policyCount: 1 },
   });
+  state.familySalesChatThreads.push({
+    id: 23,
+    familyId: 8,
+    ownerGuestId: 'guest-family',
+    status: 'active',
+    title: '预算异议',
+    createdAt: '2026-06-08T00:03:00.000Z',
+    updatedAt: '2026-06-08T00:04:00.000Z',
+  });
+  state.familySalesChatMessages.push(
+    { id: 24, threadId: 23, familyId: 8, role: 'user', content: '预算不够怎么办', status: 'complete', createdAt: '2026-06-08T00:03:00.000Z' },
+    { id: 25, threadId: 23, familyId: 8, role: 'assistant', content: '先拆基础方案', status: 'complete', createdAt: '2026-06-08T00:04:00.000Z' },
+  );
   state.policies[0].familyId = 8;
   state.policies[0].insuredMemberId = 20;
-  state.nextId = 23;
+  state.nextId = 26;
 
   await store.persistFamilyState({ state, includePolicies: true });
 
@@ -573,11 +614,14 @@ test('sqlite state store incrementally persists family state without rewriting k
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_report_shares WHERE token = ?').get('family-share-token').count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_reviews WHERE family_id = ?').get(8).count, 1);
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_sales_reviews WHERE id = ?').get(22).payload).content, '家庭销售建议已保存');
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_chat_threads WHERE family_id = ?').get(8).count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_chat_messages WHERE thread_id = ?').get(23).count, 2);
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_sales_chat_messages WHERE id = ?').get(25).payload).content, '先拆基础方案');
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM policies WHERE id = ?').get(3).payload).insuredMemberId, 20);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM insurance_indicator_records').get().count, 1);
-    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '23');
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key = 'next_id'").get().value, '26');
   } finally {
     db.close();
     store.close();
@@ -799,6 +843,24 @@ test('sqlite state store persists and reloads product customer responsibility su
         notices: ['具体金额需要结合保单信息计算。'],
         requiredPolicyFields: ['基本保险金额', '已交保险费'],
         sourceUrls: ['https://example.test/terms.pdf'],
+        contentBlocks: [
+          {
+            blockKey: 'productPurpose',
+            title: '产品主要做什么',
+            enabled: true,
+            editable: true,
+            order: 1,
+            content: '这是一份以身故或身体全残保障为主的终身寿险。',
+          },
+          {
+            blockKey: 'attentionNotes',
+            title: '注意事项',
+            enabled: true,
+            editable: true,
+            order: 4,
+            content: '具体金额需要结合保单信息计算。',
+          },
+        ],
       },
       sourceUrls: ['https://example.test/terms.pdf'],
       sourceDigest: 'digest-1',
@@ -819,6 +881,8 @@ test('sqlite state store persists and reloads product customer responsibility su
     assert.equal(reloaded.productCustomerResponsibilitySummaries[0].productKey, summary.productKey);
     assert.equal(reloaded.productCustomerResponsibilitySummaries[0].status, 'ready');
     assert.equal(reloaded.productCustomerResponsibilitySummaries[0].summaryJson.headline, summary.summaryJson.headline);
+    assert.equal(reloaded.productCustomerResponsibilitySummaries[0].summaryJson.contentBlocks.length, 2);
+    assert.equal(reloaded.productCustomerResponsibilitySummaries[0].summaryJson.contentBlocks[0].title, '产品主要做什么');
 
     const read = await store.findProductCustomerResponsibilitySummary({
       productKey: summary.productKey,
@@ -826,6 +890,7 @@ test('sqlite state store persists and reloads product customer responsibility su
       sourceDigest: summary.sourceDigest,
     });
     assert.equal(read?.summaryJson?.mainResponsibilities?.[0]?.title, '身故或身体全残保险金');
+    assert.equal(read?.summaryJson?.contentBlocks?.[1]?.title, '注意事项');
     assert.deepEqual(state.productCustomerResponsibilitySummaries, reloaded.productCustomerResponsibilitySummaries);
   } finally {
     store.close();
@@ -1013,6 +1078,58 @@ test('sqlite state store upserts product customer summary generation runs', asyn
     assert.deepEqual(reloaded.productCustomerSummaryGenerationRuns[0].qualityIssues, [{ code: 'model_error', detail: 'timeout' }]);
     assert.equal(reloaded.productCustomerSummaryGenerationRuns[0].rawPreview, '{"headline":"second"}');
     assert.deepEqual(reloaded.productCustomerSummaryGenerationRuns[0].payload, { attempt: 2, refreshed: true });
+  } finally {
+    store.close();
+  }
+});
+
+test('sqlite state store ignores empty cached product customer responsibility summaries', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    const summary = {
+      id: 'customer_summary:company_product:新华保险:吉祥至尊两全保险（分红型）:v1',
+      productKey: 'company_product:新华保险:吉祥至尊两全保险（分红型）',
+      company: '新华保险',
+      productName: '吉祥至尊两全保险（分红型）',
+      summaryVersion: 'customer-summary-v1',
+      status: 'ready',
+      headline: '',
+      summaryJson: {
+        company: '',
+        productName: '',
+        headline: '',
+        mainResponsibilities: [],
+        notices: [],
+        requiredPolicyFields: [],
+        sourceUrls: [],
+      },
+      sourceUrls: ['https://example.test/terms.pdf'],
+      sourceDigest: 'digest-empty',
+      modelProvider: 'deepseek',
+      modelName: 'deepseek-v4-pro',
+      generatedAt: '2026-06-30T00:00:00.000Z',
+      updatedAt: '2026-06-30T00:00:00.000Z',
+      payload: {
+        productKey: 'company_product:新华保险:吉祥至尊两全保险（分红型）',
+        source: 'generated',
+      },
+    };
+
+    await store.persistProductCustomerResponsibilitySummary({ state, summary });
+
+    const reloaded = await store.load();
+    assert.equal(reloaded.productCustomerResponsibilitySummaries.length, 0);
+    assert.equal(state.productCustomerResponsibilitySummaries.length, 0);
+
+    const read = await store.findProductCustomerResponsibilitySummary({
+      productKey: summary.productKey,
+      summaryVersion: summary.summaryVersion,
+      sourceDigest: summary.sourceDigest,
+    });
+    assert.equal(read, null);
   } finally {
     store.close();
   }

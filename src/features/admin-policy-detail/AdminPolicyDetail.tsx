@@ -146,7 +146,7 @@ export function AdminPolicyDetail({
               {responsibilities.length ? (
                 responsibilities.map((row, index) => (
                   <article key={`${row.coverageType}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <h4 className="font-black">{row.coverageType}</h4>
+                    <h4 className="font-black">{[row.productName, row.coverageType].filter(Boolean).join(' · ')}</h4>
                     <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-600">{row.scenario}</p>
                     <p className="mt-2 rounded-xl bg-white px-3 py-2 text-sm font-bold text-blue-700">{row.payout}</p>
                     {row.note ? <p className="mt-2 text-xs text-slate-500">{row.note}</p> : null}

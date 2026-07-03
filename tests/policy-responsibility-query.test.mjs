@@ -215,6 +215,55 @@ test('knowledge product candidates fuzzy match similar local official products',
   assert.notEqual(zunxiang.canonicalProductId, zunshang.canonicalProductId);
 });
 
+test('knowledge product candidates rank strict exact product version before loose normalized variants', () => {
+  const matches = findKnowledgeProductCandidates({
+    policy: { company: '友邦人寿', name: '友邦附加安益意外医药补偿（2020）医疗保险' },
+    officialDomainProfiles: [
+      {
+        company: '友邦人寿',
+        aliases: ['友邦人寿'],
+        siteDomains: ['aia.com.cn'],
+        officialDomains: ['aia.com.cn'],
+      },
+    ],
+    records: [
+      {
+        company: '友邦人寿',
+        productName: '友邦附加安益意外医药补偿医疗保险',
+        title: '友邦附加安益意外医药补偿医疗保险产品条款',
+        url: 'https://www.aia.com.cn/public/unversioned-terms-a.pdf',
+        pageText: '第二条保险责任 本公司给付意外医药费用补偿金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+      {
+        company: '友邦人寿',
+        productName: '友邦附加安益意外医药补偿医疗保险',
+        title: '友邦附加安益意外医药补偿医疗保险产品说明书',
+        url: 'https://www.aia.com.cn/public/unversioned-manual.pdf',
+        pageText: '保险责任 包括意外医药费用补偿金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'product_manual',
+      },
+      {
+        company: '友邦人寿',
+        productName: '友邦附加安益意外医药补偿（2020）医疗保险',
+        title: '友邦附加安益意外医药补偿（2020）医疗保险产品条款',
+        url: 'https://www.aia.com.cn/public/versioned-terms.pdf',
+        pageText: '第二条保险责任 本公司支付意外医药费用补偿金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+  });
+
+  assert.equal(matches[0].productName, '友邦附加安益意外医药补偿（2020）医疗保险');
+  assert.equal(matches[0].bestSource.url, 'https://www.aia.com.cn/public/versioned-terms.pdf');
+});
+
 test('knowledge search keeps exact product version before similar New China variants', () => {
   const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
   const artifacts = buildKnowledgeSearchArtifacts({

@@ -10,7 +10,10 @@ import {
   BrainCircuit,
   CheckCircle2,
   CircleUserRound,
+  Copy,
   Download,
+  MessageSquareText,
+  SendHorizontal,
   Shield,
   ShieldCheck,
   Sparkles,
@@ -33,6 +36,8 @@ import {
   FamilyPolicyAnalysisReport,
   FamilyProfile,
   FamilyReportRecord,
+  FamilySalesChatMessage,
+  FamilySalesChatThread,
   FamilySalesReview,
   PolicyFormData,
   PolicyKnowledgeMatch,
@@ -46,6 +51,7 @@ import {
   createFamilyPolicyAnalysisReport,
   createFamilyProfile,
   createFamilyReportShare,
+  createFamilySalesChatThread,
   createFamilySalesReview,
   deleteFamilyMember,
   deleteFamilyProfile,
@@ -53,6 +59,7 @@ import {
   getFamilyPolicyAnalysisReport,
   getFamilyReportRecord,
   getFamilySalesReview,
+  listFamilySalesChatThreads,
   getHealthStatus,
   getLocalPolicyAnalysisDraft,
   getPolicy,
@@ -72,6 +79,7 @@ import {
   scanCashValue,
   scanPolicy,
   sendCode,
+  sendFamilySalesChatMessage,
   setFamilyCoreMember,
   updateFamilyProfile,
   updateFamilyMember,
@@ -588,6 +596,13 @@ export function CustomerApp() {
   const familySalesReviewLoadingRef = useRef(false);
   const [familySalesReviewProgress, setFamilySalesReviewProgress] = useState(0);
   const [familySalesReviewMessage, setFamilySalesReviewMessage] = useState('');
+  const [familySalesChatThreads, setFamilySalesChatThreads] = useState<FamilySalesChatThread[]>([]);
+  const [familySalesChatThread, setFamilySalesChatThread] = useState<FamilySalesChatThread | null>(null);
+  const [familySalesChatMessages, setFamilySalesChatMessages] = useState<FamilySalesChatMessage[]>([]);
+  const [familySalesChatInput, setFamilySalesChatInput] = useState('');
+  const [familySalesChatLoading, setFamilySalesChatLoading] = useState(false);
+  const [familySalesChatMessage, setFamilySalesChatMessage] = useState('');
+  const [familySalesChatReviewMessageIds, setFamilySalesChatReviewMessageIds] = useState<number[]>([]);
   const [familyPlanningProfile, setFamilyPlanningProfile] = useState<FamilyPlanningProfile>(readFamilyPlanningProfile);
 
   // Cash value upload dialog state
@@ -1633,6 +1648,12 @@ export function CustomerApp() {
     setFamilySalesReviewFamilyId(familyId);
     setFamilySalesReviewOpen(true);
     setFamilySalesReview(null);
+    setFamilySalesChatThreads([]);
+    setFamilySalesChatThread(null);
+    setFamilySalesChatMessages([]);
+    setFamilySalesChatInput('');
+    setFamilySalesChatMessage('');
+    setFamilySalesChatReviewMessageIds([]);
     setFamilySalesReviewBusy(true);
     setFamilySalesReviewMessage('正在读取已保存的专家报告');
     try {
@@ -1645,12 +1666,14 @@ export function CustomerApp() {
       if (saved.review?.content) {
         setFamilySalesReview(saved.review);
         setFamilySalesReviewMessage('已读取最近一次专家研判');
+        await loadFamilySalesChatThreads(familyId);
         return;
       }
       setFamilySalesReviewMessage('首次生成专家研判中，完成后会自动保存');
       const generated = await createFamilySalesReview(authInput);
       setFamilySalesReview(generated.review);
       setFamilySalesReviewMessage('专家研判已完成并保存');
+      await loadFamilySalesChatThreads(familyId);
     } catch (error) {
       setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
     } finally {
@@ -1675,14 +1698,102 @@ export function CustomerApp() {
         guestId: token ? undefined : guestId,
         familyId: familySalesReviewFamilyId,
         userRefresh: true,
+        salesChatMessageIds: familySalesChatReviewMessageIds,
       });
       setFamilySalesReview(payload.review);
-      setFamilySalesReviewMessage('专家研判已完成并保存');
+      setFamilySalesReviewMessage(familySalesChatReviewMessageIds.length ? '专家研判已按所选续聊内容重算并保存' : '专家研判已完成并保存');
+      await loadFamilySalesChatThreads(familySalesReviewFamilyId);
     } catch (error) {
       setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
     } finally {
       setFamilySalesReviewBusy(false);
     }
+  }
+
+  async function loadFamilySalesChatThreads(familyId: number) {
+    try {
+      const payload = await listFamilySalesChatThreads({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      });
+      setFamilySalesChatThreads(payload.threads || []);
+      const latestThread = (payload.threads || [])[0] || null;
+      setFamilySalesChatThread(latestThread);
+      setFamilySalesChatMessages(Array.isArray(latestThread?.messages) ? latestThread.messages : []);
+      setFamilySalesChatReviewMessageIds([]);
+      setFamilySalesChatMessage(latestThread ? '已读取最近一次续聊' : '可以围绕这份销售建议继续追问');
+    } catch (error) {
+      setFamilySalesChatThreads([]);
+      setFamilySalesChatThread(null);
+      setFamilySalesChatMessages([]);
+      setFamilySalesChatReviewMessageIds([]);
+      setFamilySalesChatMessage(error instanceof Error ? error.message : '续聊记录读取失败');
+    }
+  }
+
+  async function submitFamilySalesChat(messageText = familySalesChatInput) {
+    const content = messageText.trim();
+    if (!content || !familySalesReviewFamilyId || familySalesChatLoading) return;
+    setFamilySalesChatLoading(true);
+    setFamilySalesChatMessage('正在生成续聊回复');
+    setFamilySalesChatInput('');
+    try {
+      const authInput = {
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: familySalesReviewFamilyId,
+      };
+      const payload = familySalesChatThread?.id
+        ? await sendFamilySalesChatMessage({
+          ...authInput,
+          threadId: familySalesChatThread.id,
+          message: content,
+        })
+        : await createFamilySalesChatThread({
+          ...authInput,
+          message: content,
+        });
+      setFamilySalesChatThread(payload.thread);
+      setFamilySalesChatMessages((current) => {
+        const byId = new Map(current.map((item) => [Number(item.id), item]));
+        for (const item of payload.messages || []) byId.set(Number(item.id), item);
+        return Array.from(byId.values()).sort((left, right) => (
+          String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
+          Number(left.id || 0) - Number(right.id || 0)
+        ));
+      });
+      setFamilySalesChatThreads((current) => {
+        const next = [payload.thread, ...current.filter((thread) => Number(thread.id) !== Number(payload.thread.id))];
+        return next.sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+      });
+      setFamilySalesChatMessage('续聊回复已生成');
+    } catch (error) {
+      setFamilySalesChatInput(content);
+      setFamilySalesChatMessage(error instanceof Error ? error.message : '续聊生成失败');
+    } finally {
+      setFamilySalesChatLoading(false);
+    }
+  }
+
+  async function copyFamilySalesChatMessage(content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setFamilySalesChatMessage('已复制续聊内容');
+    } catch {
+      setFamilySalesChatMessage('复制失败，请手动选择文本复制');
+    }
+  }
+
+  function toggleFamilySalesChatReviewMessage(messageId: number) {
+    setFamilySalesChatReviewMessageIds((current) => {
+      if (current.includes(messageId)) return current.filter((id) => id !== messageId);
+      if (current.length >= 6) {
+        setFamilySalesChatMessage('最多选择 6 条续聊内容用于重算');
+        return current;
+      }
+      return [...current, messageId];
+    });
   }
 
   async function createFamilyProfileByName(familyName: string) {
@@ -3023,6 +3134,12 @@ export function CustomerApp() {
     { label: '识别缺口', threshold: 68 },
     { label: '生成报告', threshold: 90 },
   ];
+  const familySalesChatQuickPrompts = [
+    '帮我改成微信话术',
+    '客户说预算不够怎么回应',
+    '这份方案优先讲哪三点',
+    '生成二次面谈提纲',
+  ];
 
   const familySalesReviewPage = familySalesReviewOpen ? (
     <div className="family-report-shell min-h-screen bg-[#EEF3F7] pb-10 text-[#102033]">
@@ -3066,7 +3183,7 @@ export function CustomerApp() {
                   onClick={() => void regenerateFamilySalesReview()}
                 >
                   <Sparkles className={familySalesReviewLoading ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
-                  <span>{familySalesReviewLoading ? '生成中' : familySalesReview?.content ? '重算' : '生成'}</span>
+                  <span>{familySalesReviewLoading ? '生成中' : familySalesReview?.content ? (familySalesChatReviewMessageIds.length ? `按${familySalesChatReviewMessageIds.length}条续聊重算` : '重算') : '生成'}</span>
                 </button>
             </div>
           </div>
@@ -3128,6 +3245,142 @@ export function CustomerApp() {
                   <FamilySalesReviewMarkdown content={familySalesReview.content} />
                 </article>
               </div>
+            </section>
+          ) : null}
+          {familySalesReview?.content ? (
+            <section className="no-print mt-4 rounded-[24px] border border-[#D7E2EA] bg-white p-4 shadow-[0_18px_48px_-36px_rgba(15,23,42,0.28)] md:p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-700 ring-1 ring-blue-100">
+                    <MessageSquareText size={20} />
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="text-base font-black text-[#102033]">继续追问销售建议</h3>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-[#72849A]">
+                      基于当前家庭、保单、家庭报告和这份销售建议继续生成话术、面谈提纲和异议处理。
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-full bg-slate-50 px-3 py-1.5 text-[11px] font-black text-slate-500 ring-1 ring-slate-200">
+                  {familySalesChatThread ? `会话 ${familySalesChatThread.id}` : '新会话'}
+                  {familySalesChatThreads.length > 1 ? ` · ${familySalesChatThreads.length} 组记录` : ''}
+                </div>
+              </div>
+              {familySalesChatMessage ? (
+                <p className={`mt-3 rounded-2xl px-3 py-2 text-xs font-black ${
+                  familySalesChatLoading ? 'bg-blue-50 text-blue-700' : 'bg-slate-50 text-slate-500'
+                }`}
+                >
+                  {familySalesChatMessage}
+                </p>
+              ) : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {familySalesChatQuickPrompts.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    disabled={familySalesChatLoading}
+                    className="rounded-full bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 ring-1 ring-blue-100 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void submitFamilySalesChat(prompt)}
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-col gap-2 rounded-2xl bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500 ring-1 ring-slate-100 sm:flex-row sm:items-center sm:justify-between">
+                <span>重算报告默认不带入聊天，勾选关键消息后再点击上方重算。</span>
+                <span className="shrink-0 font-black text-slate-700">已选 {familySalesChatReviewMessageIds.length}/6 条</span>
+              </div>
+              <div className="mt-4 max-h-[520px] space-y-3 overflow-y-auto rounded-[18px] bg-slate-50 p-3 ring-1 ring-slate-100">
+                {familySalesChatMessages.length ? (
+                  familySalesChatMessages.map((chatMessage) => {
+                    const fromUser = chatMessage.role === 'user';
+                    const selectedForReview = familySalesChatReviewMessageIds.includes(Number(chatMessage.id));
+                    return (
+                      <article
+                        key={chatMessage.id}
+                        className={`max-w-[92%] rounded-[18px] px-3 py-3 text-sm leading-6 shadow-sm ring-1 ${
+                          fromUser
+                            ? 'ml-auto bg-blue-600 text-white ring-blue-600'
+                            : 'mr-auto bg-white text-slate-700 ring-slate-200'
+                        }`}
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`text-[11px] font-black ${fromUser ? 'text-blue-100' : 'text-slate-400'}`}>
+                              {fromUser ? '顾问追问' : '续聊 Agent'}
+                            </span>
+                            <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-black ring-1 ${
+                              fromUser
+                                ? 'bg-white/10 text-blue-50 ring-white/20'
+                                : selectedForReview
+                                  ? 'bg-blue-50 text-blue-700 ring-blue-100'
+                                  : 'bg-slate-50 text-slate-500 ring-slate-200'
+                            }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 accent-blue-600"
+                                checked={selectedForReview}
+                                onChange={() => toggleFamilySalesChatReviewMessage(Number(chatMessage.id))}
+                              />
+                              用于重算
+                            </label>
+                          </div>
+                          {!fromUser ? (
+                            <button
+                              type="button"
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-50 text-slate-500 ring-1 ring-slate-200 transition hover:bg-slate-100"
+                              aria-label="复制续聊回复"
+                              title="复制续聊回复"
+                              onClick={() => void copyFamilySalesChatMessage(chatMessage.content)}
+                            >
+                              <Copy size={14} />
+                            </button>
+                          ) : null}
+                        </div>
+                        <p className="whitespace-pre-wrap break-words font-semibold">{chatMessage.content}</p>
+                        {chatMessage.status === 'failed' && chatMessage.error ? (
+                          <p className={fromUser ? 'mt-2 text-xs font-black text-blue-100' : 'mt-2 text-xs font-black text-rose-600'}>{chatMessage.error}</p>
+                        ) : null}
+                      </article>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[16px] border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm font-bold text-slate-400">
+                    暂无续聊记录，可以从上方快捷问题开始。
+                  </div>
+                )}
+                {familySalesChatLoading ? (
+                  <div className="mr-auto rounded-[18px] bg-white px-3 py-3 text-sm font-black text-blue-700 ring-1 ring-blue-100">
+                    <Sparkles className="mr-2 inline h-4 w-4 animate-pulse" />
+                    正在整理回复
+                  </div>
+                ) : null}
+              </div>
+              <form
+                className="mt-3 flex flex-col gap-2 sm:flex-row"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void submitFamilySalesChat();
+                }}
+              >
+                <textarea
+                  value={familySalesChatInput}
+                  onChange={(event) => setFamilySalesChatInput(event.target.value)}
+                  placeholder="继续追问，例如：帮我把这段建议改成更温和的微信话术"
+                  rows={2}
+                  className="min-h-[52px] flex-1 resize-none rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold leading-5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                />
+                <button
+                  type="submit"
+                  disabled={!familySalesChatInput.trim() || familySalesChatLoading}
+                  className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 text-sm font-black text-white shadow-sm shadow-blue-900/15 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-55 sm:h-auto"
+                >
+                  <SendHorizontal size={17} />
+                  <span>{familySalesChatLoading ? '生成中' : '发送'}</span>
+                </button>
+              </form>
             </section>
           ) : (
             <div className={familySalesReviewLoading ? 'overflow-hidden rounded-[24px] bg-slate-950 text-white shadow-xl shadow-cyan-950/20 ring-1 ring-cyan-200/30' : 'rounded-[22px] bg-white p-4 ring-1 ring-slate-200'}>

@@ -11,6 +11,7 @@ const customerCashValueSource = fs.readFileSync(new URL('../src/shared/customer-
 const customerPolicyComponentsSource = fs.readFileSync(new URL('../src/shared/customer-policy-components.tsx', import.meta.url), 'utf8');
 const customerPolicyListSource = fs.readFileSync(new URL('../src/shared/customer-policy-list.tsx', import.meta.url), 'utf8');
 const familyProfileSource = fs.readFileSync(new URL('../src/features/family-profile/FamilyProfileManager.tsx', import.meta.url), 'utf8');
+const familyApiSource = fs.readFileSync(new URL('../src/api/contracts/family.ts', import.meta.url), 'utf8');
 const familyCreateDialogSource = fs.readFileSync(new URL('../src/features/family-profile/CreateFamilyProfileDialog.tsx', import.meta.url), 'utf8');
 const policyEntrySource = fs.readFileSync(new URL('../src/features/policy-entry/UploadPolicyPage.tsx', import.meta.url), 'utf8');
 const policyDetailSource = fs.readFileSync(new URL('../src/features/policy-detail/PolicyDetailSheet.tsx', import.meta.url), 'utf8');
@@ -425,37 +426,39 @@ test('customer app exposes family profile management surface', () => {
   assert.match(familySalesReviewMarkdownSource, /family-sales-review-table-wrap/);
   assert.match(customerSource, /familySalesReviewLoadingRef/);
   assert.match(customerSource, /setFamilySalesReviewBusy/);
-  assert.match(customerSource, /家庭保障策略简报/);
-  assert.match(customerSource, /公司专家分析系统/);
-  assert.match(customerSource, /专家研判报告/);
-  assert.match(customerSource, /下载销售建议报告/);
-  assert.match(customerSource, /downloadReportImage\(familySalesReviewReportRef\.current,\s*familySalesReviewExportTitle\)/);
-  assert.match(customerSource, /print-policy-report space-y-3 bg-slate-50/);
-  assert.match(customerSource, /正在读取已保存的专家报告/);
-  assert.match(customerSource, /暂无已保存报告，正在生成专家研判/);
-  assert.match(customerSource, /专家系统仍在生成中，完成后会自动保存/);
-  assert.match(customerSource, /专家研判已完成并保存/);
-  assert.match(customerSource, /重新生成专家报告/);
-  assert.match(customerSource, /正在生成专家报告/);
-  assert.match(customerSource, /专家研判控制台/);
-  assert.match(customerSource, /实时生成中/);
-  assert.match(customerSource, /策略生成进度/);
-  assert.match(customerSource, /familySalesReviewProgress/);
-  assert.match(customerSource, /报告生成进度条/);
-  assert.match(customerSource, /aria-label="专家报告生成进度"/);
-  assert.match(customerSource, /role="progressbar"/);
-  assert.match(customerSource, /pendingLabel: '扫描中'/);
-  assert.match(customerSource, /pendingLabel: '校验中'/);
-  assert.match(customerSource, /animate-spin/);
-  assert.match(customerSource, /animate-bounce/);
-  assert.match(customerSource, /研判信号矩阵/);
-  assert.match(customerSource, /自动保存报告/);
-  assert.match(customerSource, /机会建模/);
-  assert.match(customerSource, /aria-busy=\{familySalesReviewLoading\}/);
-  assert.doesNotMatch(customerSource, /aria-disabled=\{familySalesReviewLoading \|\| !familySalesReviewFamilyId\}/);
-  assert.doesNotMatch(customerSource, /\n\s+disabled=\{familySalesReviewLoading \|\| !familySalesReviewFamilyId\}/);
-  assert.doesNotMatch(customerSource, /\n\s+disabled=\{familySalesReviewLoading\}/);
-  assert.match(customerSource, /返回家庭档案/);
+  assert.match(normalizedCustomerAppSource, /家庭保障策略简报/);
+  assert.match(normalizedCustomerAppSource, /公司专家分析系统/);
+  assert.match(normalizedCustomerAppSource, /面向销售跟进的保障缺口、财富机会与下一步沟通建议/);
+  assert.match(normalizedCustomerAppSource, /下载销售建议报告/);
+  assert.match(normalizedCustomerAppSource, /downloadReportImage\(familySalesReviewReportRef\.current,\s*familySalesReviewExportTitle\)/);
+  assert.match(normalizedCustomerAppSource, /familySalesReviewReportRef/);
+  assert.match(normalizedCustomerAppSource, /正在读取已保存的专家报告/);
+  assert.match(normalizedCustomerAppSource, /首次生成专家研判中，完成后会自动保存/);
+  assert.match(normalizedCustomerAppSource, /首次进入会自动生成/);
+  assert.match(normalizedCustomerAppSource, /专家系统仍在生成中，完成后会自动保存/);
+  assert.match(normalizedCustomerAppSource, /专家研判已完成并保存/);
+  assert.match(normalizedCustomerAppSource, /立即生成专家报告/);
+  assert.match(normalizedCustomerAppSource, /重新生成专家报告/);
+  assert.match(normalizedCustomerAppSource, /正在请求专家系统生成策略简报/);
+  assert.match(normalizedCustomerAppSource, /专家研判控制台/);
+  assert.match(normalizedCustomerAppSource, /实时生成中/);
+  assert.match(normalizedCustomerAppSource, /策略生成进度/);
+  assert.match(normalizedCustomerAppSource, /familySalesReviewProgress/);
+  assert.match(normalizedCustomerAppSource, /报告生成进度条/);
+  assert.match(normalizedCustomerAppSource, /aria-label="专家报告生成进度"/);
+  assert.match(normalizedCustomerAppSource, /role="progressbar"/);
+  assert.match(normalizedCustomerAppSource, /pendingLabel: '扫描中'/);
+  assert.match(normalizedCustomerAppSource, /pendingLabel: '校验中'/);
+  assert.match(normalizedCustomerAppSource, /animate-spin/);
+  assert.match(normalizedCustomerAppSource, /animate-bounce/);
+  assert.match(normalizedCustomerAppSource, /研判信号矩阵/);
+  assert.match(normalizedCustomerAppSource, /自动保存报告/);
+  assert.match(normalizedCustomerAppSource, /机会建模/);
+  assert.match(normalizedCustomerAppSource, /aria-busy=\{familySalesReviewLoading\}/);
+  assert.doesNotMatch(normalizedCustomerAppSource, /aria-disabled=\{familySalesReviewLoading \|\| !familySalesReviewFamilyId\}/);
+  assert.doesNotMatch(normalizedCustomerAppSource, /\n\s+disabled=\{familySalesReviewLoading \|\| !familySalesReviewFamilyId\}/);
+  assert.doesNotMatch(normalizedCustomerAppSource, /\n\s+disabled=\{familySalesReviewLoading\}/);
+  assert.match(normalizedCustomerAppSource, /返回家庭档案/);
   assert.doesNotMatch(customerSource, /正在等待 DeepSeek 返回/);
   assert.doesNotMatch(customerSource, /familySalesReview\?\.model \?/);
   assert.doesNotMatch(customerSource, /role="dialog" aria-modal="true" aria-label="家庭专家研判"/);
@@ -515,7 +518,11 @@ test('customer app exposes family profile management surface', () => {
   assert.match(familySource, /删除家庭/);
   assert.match(familySource, /确认删除/);
   assert.match(familySource, /familyPolicyCounts/);
-  assert.match(familySource, /const policyCount = Number\(familyPolicyCounts\[Number\(family\.id\)\] \|\| 0\)/);
+  assert.match(familyApiSource, /policyCount\?: number/);
+  assert.match(customerSource, /policiesLoaded/);
+  assert.match(customerSource, /hasFamilyPolicySummaries/);
+  assert.match(customerSource, /if \(!policiesLoaded && hasFamilyPolicySummaries\) \{\n      return counts;\n    \}/);
+  assert.match(customerSource, /Number\(family\.policyCount \|\| 0\)/);
   assert.match(familySource, /暂无家庭保单，可先维护成员或录入保单/);
   assert.match(familySource, /coreMember\?\.name \|\| '待设置'/);
   assert.doesNotMatch(familySource, /members\[0\]\?\.name \|\| '待设置'/);
@@ -869,6 +876,67 @@ test('responsibility assistant floats at the bottom right of the screen', () => 
   assert.doesNotMatch(source, /bottom-28|sm:bottom-6/);
 });
 
+test('responsibility assistant shows DeepSeek summary blocks and structured responsibility rows', () => {
+  const source = componentSource('ResponsibilityAssistant', null);
+  assert.match(source, /customerSummaryHasContent/);
+  assert.match(source, /customerSummary && customerSummaryHasContent \? \(/);
+  assert.match(source, /customerSummaryRows\.length \|\| customerSummaryBlocks\.length/);
+  assert.doesNotMatch(source, /blockKey\) !== 'responsibilities'/);
+  assert.match(source, /shouldShowResponsibilityRows/);
+  assert.match(source, /shouldShowResponsibilityRows \? \(/);
+  assert.doesNotMatch(source, /customerSummaryMessage && responsibilities\.length \? \(/);
+  assert.match(source, /const responsibilityRows = responsibilities\.map/);
+  const summaryBranch = source.slice(
+    source.indexOf('customerSummary && customerSummaryHasContent ? ('),
+    source.indexOf(') : customerSummaryMessage ? ('),
+  );
+  assert.match(summaryBranch, /customerSummaryBlocks\.map/);
+  assert.match(source, /enabled: block\?\.enabled !== false/);
+  assert.match(source, /\.filter\(\(block\) => block\.enabled && \(block\.title \|\| block\.content\)\)/);
+  assert.match(summaryBranch, /customerSummaryRows\.map/);
+  assert.match(summaryBranch, /责任明细/);
+  assert.match(summaryBranch, /触发条件：/);
+  assert.match(summaryBranch, /calculationStatus:/);
+  assert.match(summaryBranch, /sourceRefs\.map/);
+  assert.match(summaryBranch, /customerSummaryNotices\.map/);
+  assert.match(summaryBranch, /customerSummarySourceUrls\.slice/);
+  const messageBranch = source.slice(
+    source.indexOf(') : customerSummaryMessage ? ('),
+    source.indexOf(') : shouldShowResponsibilityRows ? ('),
+  );
+  assert.doesNotMatch(messageBranch, /responsibilityRows/);
+  assert.doesNotMatch(source, /CustomerResponsibilitySummaryCard/);
+});
+
+test('ResponsibilityAssistant exposes planner mode switch labels', () => {
+  const source = normalizedResponsibilityAssistantSource;
+  assert.match(source, /plannerMode/);
+  assert.match(source, /自动/);
+  assert.match(source, /全部Planner/);
+  assert.match(source, /关闭Planner/);
+});
+
+test('ResponsibilityAssistant renders customer summary content blocks when present', () => {
+  const source = normalizedResponsibilityAssistantSource;
+  assert.match(source, /customerSummaryBlocks/);
+  assert.match(source, /customerSummaryHasBlocks/);
+  assert.match(source, /customerSummary\.contentBlocks/);
+  assert.match(source, /block\.content/);
+});
+
+test('ResponsibilityAssistant shows official responsibility clauses collapsed above sources', () => {
+  const source = normalizedResponsibilityAssistantSource;
+  assert.match(source, /officialResponsibilityText/);
+  assert.match(source, /保险责任条款/);
+  assert.match(source, /<details/);
+  assert.ok(source.indexOf('保险责任条款') < source.indexOf('资料来源'));
+});
+
+test('CustomerApp sends selected plannerMode to customer summary API', () => {
+  assert.match(normalizedCustomerAppSource, /assistantPlannerMode/);
+  assert.match(normalizedCustomerAppSource, /plannerMode:\s*assistantPlannerMode/);
+});
+
 test('pdf export uses a dedicated A4 report layout instead of mobile card cloning', () => {
   const reportSource = functionSource(reportExportSource, 'createPrintableReportNode', 'createPdfRenderTarget');
   const renderSource = functionSource(reportExportSource, 'createPdfRenderTarget', 'escapeHtml');
@@ -995,10 +1063,11 @@ test('customer policy summary falls back to top-level periods for the main plan'
   assert.match(detailSource, /coveragePeriod=\{policy\.coveragePeriod\}/);
 });
 
-test('customer policy detail displays responsibility official urls', () => {
+test('customer policy detail uses customer responsibility summary instead of legacy cards', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
   const adminDetailSource = componentSource('AdminPolicyDetail', null);
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const customerSummaryCardSource = fs.readFileSync(new URL('../src/shared/CustomerResponsibilitySummaryCard.tsx', import.meta.url), 'utf8');
 
   assert.match(apiSource, /sourceUrl\?: string/);
   assert.match(apiSource, /sourceTitle\?: string/);
@@ -1019,11 +1088,15 @@ test('customer policy detail displays responsibility official urls', () => {
   assert.match(sharedReportUiSource, /card\.sourceExcerpt/);
   assert.match(sharedReportUiSource, /indicator\.sourceExcerpt/);
   assert.match(sharedReportUiSource, /policy\.coverageIndicators/);
-  assert.match(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
-  assert.match(detailSource, /官网地址/);
-  assert.match(detailSource, /href=\{source\.url\}/);
-  assert.match(detailSource, /target="_blank"/);
-  assert.match(detailSource, /ExternalLink/);
+  assert.match(detailSource, /getProductCustomerResponsibilitySummary\(\{ company, name, plannerMode: 'auto' \}\)/);
+  assert.match(detailSource, /<CustomerResponsibilitySummaryCard summary=\{customerSummary\} \/>/);
+  assert.doesNotMatch(detailSource, /ResponsibilityCardList/);
+  assert.doesNotMatch(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
+  assert.doesNotMatch(detailSource, /官网地址/);
+  assert.match(customerSummaryCardSource, /enabled: block\?\.enabled !== false/);
+  assert.match(customerSummaryCardSource, /触发条件：/);
+  assert.match(customerSummaryCardSource, /calculationStatus:/);
+  assert.match(customerSummaryCardSource, /sourceRefs\.map/);
   assert.match(adminDetailSource, /官网地址/);
 });
 

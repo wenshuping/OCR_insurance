@@ -2,6 +2,7 @@ import type { PolicyAnalysisResult, PolicyFormData, PolicyKnowledgeMatch } from 
 import { ApiError, request } from '../client';
 
 export type Responsibility = {
+  productName?: string;
   coverageType: string;
   scenario: string;
   payout: string;
@@ -65,6 +66,10 @@ export type CoverageIndicator = {
   valueText?: string;
   unit?: string;
   basis?: string;
+  basisKey?: string;
+  calculationKey?: string;
+  calculationEligible?: boolean;
+  calculationReason?: string;
   formulaText?: string;
   condition?: string;
   extractionMethod?: string;
@@ -116,8 +121,22 @@ export type ResponsibilityCard = {
 export type CustomerResponsibilitySummaryItem = {
   title: string;
   plainText: string;
+  triggerCondition?: string;
   howItPays: string;
+  calculationStatus?: string;
   requiredPolicyFields: string[];
+  sourceRefs?: string[];
+};
+
+export type ResponsibilityPlannerMode = 'auto' | 'all' | 'off';
+
+export type CustomerResponsibilitySummaryBlock = {
+  blockKey: 'productPurpose' | 'responsibilities' | 'productFunctions' | 'attentionNotes' | string;
+  title: string;
+  enabled: boolean;
+  editable: boolean;
+  order: number;
+  content: string;
 };
 
 export type CustomerResponsibilitySummary = {
@@ -128,6 +147,8 @@ export type CustomerResponsibilitySummary = {
   notices: string[];
   requiredPolicyFields: string[];
   sourceUrls: string[];
+  officialResponsibilityText?: string;
+  contentBlocks?: CustomerResponsibilitySummaryBlock[];
 };
 
 export type CustomerResponsibilitySummaryResponse =
@@ -218,11 +239,16 @@ export function matchPolicyResponsibilities(input: { company: string; name: stri
   });
 }
 
-export function getProductCustomerResponsibilitySummary(input: { company: string; name: string }) {
+export function getProductCustomerResponsibilitySummary(input: {
+  company: string;
+  name: string;
+  plannerMode?: ResponsibilityPlannerMode;
+}) {
   return requestResponsibility<CustomerResponsibilitySummaryResponse>('/api/policy-responsibilities/customer-summary', {
     body: {
       company: input.company,
       name: input.name,
+      ...(input.plannerMode ? { plannerMode: input.plannerMode } : {}),
     },
   });
 }

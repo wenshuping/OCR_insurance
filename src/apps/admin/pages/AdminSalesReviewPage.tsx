@@ -1,15 +1,17 @@
-import { ArrowLeft, FileSearch } from 'lucide-react';
-import type { FamilySalesReview } from '../../../api';
+import { ArrowLeft, FileSearch, MessageSquareText } from 'lucide-react';
+import type { FamilySalesChatThread, FamilySalesReview } from '../../../api';
 import { FamilySalesReviewMarkdown } from '../../../features/family-report/FamilySalesReviewMarkdown';
 import { formatDateLabel } from '../../../shared/formatters';
 
 export function AdminSalesReviewPage({
   review,
+  chatThreads,
   familyName,
   loading,
   onBack,
 }: {
   review: FamilySalesReview | null;
+  chatThreads: FamilySalesChatThread[];
   familyName: string;
   loading: boolean;
   onBack: () => void;
@@ -64,6 +66,50 @@ export function AdminSalesReviewPage({
                 </div>
               </div>
               <FamilySalesReviewMarkdown content={review.content} />
+            </article>
+            <article className="rounded-[22px] bg-white p-4 ring-1 ring-slate-200">
+              <div className="mb-3 flex items-center gap-2 border-b border-slate-100 pb-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100">
+                  <MessageSquareText size={18} />
+                </span>
+                <div>
+                  <h3 className="text-sm font-black text-slate-950">续聊记录</h3>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500">只读查看顾问围绕销售建议的追问</p>
+                </div>
+              </div>
+              {chatThreads.length ? (
+                <div className="space-y-4">
+                  {chatThreads.map((thread) => (
+                    <section key={thread.id} className="rounded-[18px] border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-sm font-black text-slate-950">{thread.title || `会话 ${thread.id}`}</h4>
+                        <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-500 ring-1 ring-slate-200">
+                          {thread.messageCount || thread.messages?.length || 0} 条
+                        </span>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {(thread.messages || []).map((message) => (
+                          <div
+                            key={message.id}
+                            className={`rounded-2xl px-3 py-2.5 text-xs font-semibold leading-5 ${
+                              message.role === 'user'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-white text-slate-600 ring-1 ring-slate-200'
+                            }`}
+                          >
+                            <p className={message.role === 'user' ? 'mb-1 font-black text-blue-100' : 'mb-1 font-black text-slate-400'}>
+                              {message.role === 'user' ? '顾问追问' : '续聊 Agent'}
+                            </p>
+                            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-2xl bg-slate-50 px-4 py-8 text-center text-sm font-black text-slate-400 ring-1 ring-slate-200">暂无续聊记录</p>
+              )}
             </article>
           </div>
         ) : (

@@ -5411,6 +5411,96 @@ test('customer responsibility summary generates once and then reads from databas
   }
 });
 
+test('customer summary endpoint forwards plannerMode override to Planner', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE policies (id INTEGER PRIMARY KEY)');
+  const state = {
+    ...createInitialState(),
+    knowledgeRecords: [{
+      id: 1,
+      company: '新华保险',
+      productName: '盛世荣耀',
+      title: '盛世荣耀条款',
+      url: 'https://example.test/terms.pdf',
+      pageText: '第五条 保险责任 身故或身体全残保险金 按合同约定给付。第六条 责任免除',
+      official: true,
+    }],
+    insuranceIndicatorRecords: [],
+  };
+  const persistedSummaries = new Map();
+  let plannerCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    db,
+    recomputeCashflowOnStartup: false,
+    findProductCustomerResponsibilitySummary: async ({ productKey, summaryVersion, sourceDigest }) => {
+      const row = persistedSummaries.get(`${productKey}:${summaryVersion}`);
+      return row && row.sourceDigest === sourceDigest ? row : null;
+    },
+    persistProductCustomerResponsibilitySummary: async ({ summary }) => {
+      persistedSummaries.set(`${summary.productKey}:${summary.summaryVersion}`, summary);
+      state.productCustomerResponsibilitySummaries = [...persistedSummaries.values()];
+      return summary;
+    },
+    generateProductCustomerResponsibilitySummaryWithDeepSeek: async ({ prompt }) => {
+      assert.match(prompt, /Planner 结果/u);
+      return {
+        productCategory: 'ordinary_whole_life',
+        categoryLabel: '终身寿险',
+        headline: '这是一份以身故或身体全残保障为主的终身寿险。',
+        responsibilities: [{
+          title: '身故或身体全残保险金',
+          plainText: '发生身故或身体全残时按合同约定给付。',
+          triggerCondition: '身故或身体全残。',
+          paymentRule: '金额以合同约定为准。',
+          calculationStatus: 'claim_contingent',
+        }],
+        productFunctions: [],
+        importantNotes: [],
+        missingOrUnclear: [],
+        contentBlocks: [
+          { blockKey: 'productPurpose', title: '产品主要做什么', enabled: true, editable: true, order: 1, content: '主要提供终身保障。' },
+          { blockKey: 'responsibilities', title: '主要保险责任', enabled: true, editable: true, order: 2, content: '包含身故或身体全残保险金。' },
+          { blockKey: 'productFunctions', title: '产品功能/权益', enabled: true, editable: true, order: 3, content: '' },
+          { blockKey: 'attentionNotes', title: '注意事项', enabled: true, editable: true, order: 4, content: '具体金额以合同为准。' },
+        ],
+      };
+    },
+    generateProductCustomerResponsibilityPlannerWithDeepSeek: async ({ prompt }) => {
+      plannerCalls += 1;
+      assert.match(prompt, /盛世荣耀/u);
+      return JSON.stringify({
+        productCategory: 'ordinary_whole_life',
+        categoryLabel: '终身寿险',
+        confidence: 'high',
+        productPurposeFocus: ['终身身故或全残保障'],
+        responsibilityFocus: ['身故或身体全残保险金'],
+        functionFocus: [],
+        attentionFocus: ['具体金额以合同为准'],
+        evidenceNeeds: ['保险责任正文'],
+        missingOrUnclear: [],
+        notesForFinalPrompt: ['按官方责任正文写'],
+      });
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const response = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      body: JSON.stringify({ company: '新华保险', name: '盛世荣耀', plannerMode: 'all' }),
+    });
+    assert.equal(response.response.status, 200);
+    assert.equal(response.payload.ok, true);
+    assert.equal(plannerCalls, 1);
+    assert.equal(response.payload.summary.contentBlocks.length, 4);
+    assert.equal(response.payload.summary.contentBlocks.some((block) => block.blockKey === 'productFunctions'), true);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer responsibility summary uses official analysis when local source cards are missing', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
@@ -10946,7 +11036,7 @@ test('scan endpoint preserves confirmed optional responsibilities when draft has
   }
 });
 
-test('scan endpoint starts background analysis when provided analysis only has responsibility cards', async () => {
+test('scan endpoint uses checked responsibility cards as policy summary rows', async () => {
   const state = createInitialState();
   let analyzerCalls = 0;
   const app = createPolicyOcrApp({
@@ -10985,6 +11075,72 @@ test('scan endpoint starts background analysis when provided analysis only has r
             {
               id: 'card_only_death',
               title: '身故保险金',
+              indicators: [],
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(saved.response.status, 201);
+    const policy = state.policies.find((row) => Number(row.id) === Number(saved.payload.policy.id));
+    assert.equal(analyzerCalls, 0);
+    assert.equal(policy.reportStatus, 'ready');
+    assert.match(policy.report, /本产品主要提供合同约定保险责任/u);
+    assert.match(policy.report, /保障类责任包括：身故保险金/u);
+    assert.equal(policy.responsibilities[0].coverageType, '身故保险金');
+    assert.equal(policy.responsibilities[0].payout, '以正式条款为准');
+  } finally {
+    await server.close();
+  }
+});
+
+test('scan endpoint keeps unknown optional responsibility cards out of policy summary rows', async () => {
+  const state = createInitialState();
+  let analyzerCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    analyzer: async () => {
+      analyzerCalls += 1;
+      return {
+        report: '后台生成报告',
+        coverageTable: [
+          {
+            coverageType: '身故保险金',
+            scenario: '被保险人身故',
+            payout: '按合同约定给付',
+          },
+        ],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-card-only-unknown-optional',
+        scan: {
+          ocrText: '新华保险 尊享人生年金保险（分红型）',
+          data: {
+            company: '新华保险',
+            name: '尊享人生年金保险（分红型）',
+          },
+        },
+        analysis: {
+          responsibilityCards: [
+            {
+              id: 'card_optional_birthday',
+              productName: '尊享人生年金保险（分红型）',
+              title: '祝寿金',
+              category: '现金流',
+              cashflowTreatment: 'scheduled_cashflow',
+              calculationStatus: 'calculable',
+              responsibilityScope: 'optional',
+              selectionStatus: 'unknown',
+              payoutSummary: '祝寿金 = 该保单生效对应日可选责任的保险金额',
               indicators: [],
             },
           ],
@@ -11313,6 +11469,244 @@ test('family sales review daily refresh limit only counts explicit user refreshe
     assert.equal(rejected.response.status, 429);
     assert.equal(rejected.payload.code, 'FAMILY_SALES_REVIEW_DAILY_REFRESH_LIMIT_EXCEEDED');
     assert.equal(state.reportRefreshEvents.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family sales chat creates threads continues with history and enforces owner', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerUserId: null,
+    ownerGuestId: 'guest-sales-chat',
+    familyName: '续聊家庭',
+    coreMemberId: 9,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 9,
+    familyId: 8,
+    name: '张三',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    birthday: '1988-01-01',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 11,
+    guestId: 'guest-sales-chat',
+    familyId: 8,
+    company: '新华保险',
+    name: '测试终身寿',
+    applicant: '张三',
+    insured: '张三',
+    applicantMemberId: 9,
+    insuredMemberId: 9,
+    amount: 100000,
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+  state.familySalesReviews.push({
+    id: 12,
+    familyId: 8,
+    ownerGuestId: 'guest-sales-chat',
+    status: 'active',
+    content: '## 销售建议\n先和{{member_1}}核实预算。',
+    generatedAt: '2026-06-15T00:03:00.000Z',
+    createdAt: '2026-06-15T00:03:00.000Z',
+    updatedAt: '2026-06-15T00:03:00.000Z',
+  });
+  state.nextId = 20;
+  const generationCalls = [];
+  const persistCalls = [];
+  const app = createPolicyOcrApp({
+    state,
+    now: () => '2026-06-15T08:00:00.000Z',
+    persistFamilyState: async (input) => {
+      persistCalls.push(input);
+    },
+    generateFamilySalesChatReply: async ({ context, history, question }) => {
+      generationCalls.push({ context, history, question });
+      return {
+        content: `回复 ${generationCalls.length}: ${question}`,
+        model: 'test-chat',
+        generatedAt: `2026-06-15T08:0${generationCalls.length}:00.000Z`,
+      };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const created = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat', {
+      method: 'POST',
+      body: JSON.stringify({ message: '帮我改成微信话术' }),
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.payload.thread.id, 20);
+    assert.equal(created.payload.messages.length, 2);
+    assert.equal(created.payload.messages[0].role, 'user');
+    assert.equal(created.payload.messages[1].role, 'assistant');
+    assert.equal(state.familySalesChatThreads.length, 1);
+    assert.equal(state.familySalesChatMessages.length, 2);
+    assert.equal(state.familySalesChatThreads[0].ownerGuestId, 'guest-sales-chat');
+    assert.equal(generationCalls[0].question, '帮我改成微信话术');
+    assert.equal(generationCalls[0].context.latestSalesReview.id, 12);
+    assert.equal(generationCalls[0].history.length, 0);
+    assert.deepEqual(persistCalls.map((call) => call.includePolicies), [false]);
+
+    const continued = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages?guestId=guest-sales-chat', {
+      method: 'POST',
+      body: JSON.stringify({ message: '客户说预算不够怎么回应' }),
+    });
+    assert.equal(continued.response.status, 200);
+    assert.equal(continued.payload.messages.length, 2);
+    assert.equal(generationCalls[1].question, '客户说预算不够怎么回应');
+    assert.equal(generationCalls[1].history.length, 2);
+    assert.equal(state.familySalesChatMessages.length, 4);
+
+    const listed = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat');
+    assert.equal(listed.response.status, 200);
+    assert.equal(listed.payload.threads.length, 1);
+    assert.equal(listed.payload.threads[0].messageCount, 4);
+
+    const otherOwner = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-other');
+    assert.equal(otherOwner.response.status, 404);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family sales chat keeps failed user message without empty assistant reply', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 18,
+    ownerGuestId: 'guest-sales-chat-fail',
+    familyName: '续聊失败家庭',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 19,
+    guestId: 'guest-sales-chat-fail',
+    familyId: 18,
+    company: '测试保险',
+    name: '测试保单',
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.nextId = 30;
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilySalesChatReply: async () => {
+      const error = new Error('provider failed');
+      error.code = 'FAMILY_SALES_CHAT_UPSTREAM_FAILED';
+      error.status = 502;
+      throw error;
+    },
+  });
+  const server = await listen(app);
+  try {
+    const failed = await jsonFetch(server.baseUrl, '/api/family-profiles/18/sales-chat/threads?guestId=guest-sales-chat-fail', {
+      method: 'POST',
+      body: JSON.stringify({ message: '生成二次面谈提纲' }),
+    });
+    assert.equal(failed.response.status, 502);
+    assert.equal(state.familySalesChatThreads.length, 1);
+    assert.equal(state.familySalesChatMessages.length, 1);
+    assert.equal(state.familySalesChatMessages[0].role, 'user');
+    assert.equal(state.familySalesChatMessages[0].status, 'failed');
+    assert.equal(state.familySalesChatMessages.some((message) => message.role === 'assistant'), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family sales review regeneration only includes selected sales chat context', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 28,
+    ownerGuestId: 'guest-sales-review-chat',
+    familyName: '续聊重算家庭',
+    coreMemberId: 29,
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyMembers.push({
+    id: 29,
+    familyId: 28,
+    name: '张三',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.policies.push({
+    id: 30,
+    guestId: 'guest-sales-review-chat',
+    familyId: 28,
+    company: '新华保险',
+    name: '测试终身寿',
+    applicantMemberId: 29,
+    insuredMemberId: 29,
+    amount: 100000,
+    createdAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  state.familySalesChatThreads.push({
+    id: 31,
+    familyId: 28,
+    ownerGuestId: 'guest-sales-review-chat',
+    status: 'active',
+    title: '客户预算异议',
+    createdAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:04:00.000Z',
+  });
+  state.familySalesChatMessages.push(
+    { id: 32, threadId: 31, familyId: 28, role: 'user', content: '客户说预算不够，希望先看基础方案', status: 'complete', createdAt: '2026-06-15T00:03:00.000Z' },
+    { id: 33, threadId: 31, familyId: 28, role: 'assistant', content: '新版建议应先讲基础保障，再约二次面谈。', status: 'complete', createdAt: '2026-06-15T00:04:00.000Z' },
+  );
+  state.nextId = 40;
+  let reviewInput = null;
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilySalesReview: async ({ input }) => {
+      reviewInput = input;
+      return {
+        content: '已按续聊重算销售建议',
+        model: 'test',
+        generatedAt: '2026-06-15T08:00:00.000Z',
+      };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const generatedWithoutSelection = await jsonFetch(server.baseUrl, '/api/family-profiles/28/sales-review?guestId=guest-sales-review-chat', {
+      method: 'POST',
+      body: JSON.stringify({ userRefresh: true }),
+    });
+    assert.equal(generatedWithoutSelection.response.status, 200);
+    assert.equal(reviewInput.salesChatContext, undefined);
+
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/28/sales-review?guestId=guest-sales-review-chat', {
+      method: 'POST',
+      body: JSON.stringify({ userRefresh: true, salesChatMessageIds: [33, 32] }),
+    });
+    assert.equal(generated.response.status, 200);
+    assert.equal(reviewInput.salesChatContext.selectedMessageCount, 2);
+    assert.equal(reviewInput.salesChatContext.recentMessages.length, 2);
+    assert.match(reviewInput.salesChatContext.recentMessages[0].content, /预算不够/);
+    assert.match(reviewInput.salesChatContext.usageHint, /明确选择/);
+    assert.equal(state.familySalesReviews.find((review) => review.status === 'active').content, '已按续聊重算销售建议');
   } finally {
     await server.close();
   }
@@ -14501,6 +14895,48 @@ test('family list does not rebind orphan policies when active families already e
     assert.deepEqual(state.familyMembers.map((member) => member.id), [11]);
     assert.equal(state.nextId, 40);
     assert.equal(persisted.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('customer family list includes owner policy counts without loading policy details', async () => {
+  const state = createInitialState();
+  state.users = [
+    { id: 1, mobile: '18616135811', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' },
+    { id: 2, mobile: '18616135812', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' },
+  ];
+  state.sessions = [{ token: 'token-1', userId: 1, createdAt: '2026-06-14T00:00:00.000Z' }];
+  state.familyProfiles = [
+    { id: 10, ownerUserId: 1, ownerGuestId: '', familyName: '主家庭', coreMemberId: 11, status: 'active', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' },
+    { id: 20, ownerUserId: 1, ownerGuestId: '', familyName: '空家庭', coreMemberId: null, status: 'active', createdAt: '2026-06-14T00:01:00.000Z', updatedAt: '2026-06-14T00:01:00.000Z' },
+  ];
+  state.familyMembers = [
+    { id: 11, familyId: 10, name: '温舒萍', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' },
+  ];
+  state.policies = [
+    { id: 30, userId: 1, guestId: '', familyId: 10, company: '中国人寿', name: '客户家庭保单', applicant: '温舒萍', insured: '温舒萍', responsibilities: [], coverageIndicators: [], createdAt: '2026-06-14T00:02:00.000Z', updatedAt: '2026-06-14T00:02:00.000Z' },
+    { id: 31, userId: 2, guestId: '', familyId: 10, company: '中国人寿', name: '其他用户保单', applicant: '其他人', insured: '其他人', responsibilities: [], coverageIndicators: [], createdAt: '2026-06-14T00:03:00.000Z', updatedAt: '2026-06-14T00:03:00.000Z' },
+  ];
+  let persistCount = 0;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {
+      persistCount += 1;
+    },
+  });
+  const server = await listen(app);
+  try {
+    const families = await jsonFetch(server.baseUrl, '/api/family-profiles', {
+      headers: { authorization: 'Bearer token-1' },
+    });
+
+    assert.equal(families.response.status, 200);
+    assert.deepEqual(families.payload.families.map((family) => [family.id, family.policyCount]), [
+      [10, 1],
+      [20, 0],
+    ]);
+    assert.equal(persistCount, 0);
   } finally {
     await server.close();
   }

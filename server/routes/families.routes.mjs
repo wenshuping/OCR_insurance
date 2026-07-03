@@ -6,6 +6,10 @@ import {
   generateFamilySalesReview,
 } from '../family-sales-review.service.mjs';
 import {
+  buildFamilySalesChatContext,
+  generateFamilySalesChatReply,
+} from '../family-sales-chat.service.mjs';
+import {
   buildFamilyPolicyAnalysisInput,
   generateFamilyPolicyAnalysisReport,
 } from '../family-policy-analysis-report.service.mjs';
@@ -67,6 +71,7 @@ export function createFamilyRoutes(context) {
     updateFamilyReportRecordReport,
     recordUserReportRefresh,
     generateFamilySalesReview: generateFamilySalesReviewImpl = generateFamilySalesReview,
+    generateFamilySalesChatReply: generateFamilySalesChatReplyImpl = generateFamilySalesChatReply,
     generateFamilyPolicyAnalysisReport: generateFamilyPolicyAnalysisReportImpl = generateFamilyPolicyAnalysisReport,
     nowIso = () => new Date().toISOString(),
   } = context;
@@ -345,6 +350,182 @@ export function createFamilyRoutes(context) {
       createdAt: review.createdAt || '',
       updatedAt: review.updatedAt || '',
     };
+  }
+
+  function salesChatThreadMatchesOwner(thread = {}, owner = {}) {
+    if (owner.userId) return Number(thread.ownerUserId || 0) === Number(owner.userId);
+    if (owner.guestId) return normalizeGuestId(thread.ownerGuestId) === owner.guestId && !Number(thread.ownerUserId || 0);
+    return false;
+  }
+
+  function clientSalesChatThread(thread = null, messages = []) {
+    if (!thread) return null;
+    const threadMessages = (Array.isArray(messages) ? messages : [])
+      .filter((message) => Number(message?.threadId || 0) === Number(thread.id || 0));
+    const latestMessage = threadMessages
+      .slice()
+      .sort((left, right) => (
+        String(right.createdAt || '').localeCompare(String(left.createdAt || '')) ||
+        Number(right.id || 0) - Number(left.id || 0)
+      ))[0] || null;
+    return {
+      id: Number(thread.id || 0),
+      familyId: Number(thread.familyId || 0),
+      status: String(thread.status || 'active'),
+      title: String(thread.title || ''),
+      createdAt: thread.createdAt || '',
+      updatedAt: thread.updatedAt || thread.createdAt || '',
+      messageCount: threadMessages.length,
+      latestMessageAt: latestMessage?.createdAt || '',
+    };
+  }
+
+  function clientSalesChatMessage(message = null) {
+    if (!message) return null;
+    return {
+      id: Number(message.id || 0),
+      threadId: Number(message.threadId || 0),
+      familyId: Number(message.familyId || 0),
+      role: String(message.role || ''),
+      content: String(message.content || ''),
+      status: String(message.status || 'complete'),
+      createdAt: message.createdAt || '',
+      error: message.error || '',
+    };
+  }
+
+  function salesChatThreadsForFamily(familyId, owner) {
+    return (Array.isArray(state.familySalesChatThreads) ? state.familySalesChatThreads : [])
+      .filter((thread) => (
+        Number(thread?.familyId || 0) === Number(familyId || 0) &&
+        String(thread?.status || 'active') === 'active' &&
+        salesChatThreadMatchesOwner(thread, owner)
+      ))
+      .sort((left, right) => (
+        String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')) ||
+        Number(right.id || 0) - Number(left.id || 0)
+      ));
+  }
+
+  function salesChatMessagesForThread(threadId) {
+    return (Array.isArray(state.familySalesChatMessages) ? state.familySalesChatMessages : [])
+      .filter((message) => Number(message?.threadId || 0) === Number(threadId || 0))
+      .sort((left, right) => (
+        String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
+        Number(left.id || 0) - Number(right.id || 0)
+      ));
+  }
+
+  function findSalesChatThread({ familyId, threadId, owner }) {
+    return salesChatThreadsForFamily(familyId, owner)
+      .find((thread) => Number(thread.id || 0) === Number(threadId || 0)) || null;
+  }
+
+  function salesChatTitleFromQuestion(question = '') {
+    const title = String(question || '').trim().replace(/\s+/gu, ' ');
+    return title ? title.slice(0, 32) : '销售建议续聊';
+  }
+
+  function selectedSalesChatMessageIdsForSalesReview(req) {
+    const rawIds = Array.isArray(req.body?.salesChatMessageIds) ? req.body.salesChatMessageIds : [];
+    const ids = rawIds
+      .map((id) => Number(id || 0))
+      .filter((id) => Number.isSafeInteger(id) && id > 0);
+    return Array.from(new Set(ids)).slice(0, 6);
+  }
+
+  function salesChatContextForSalesReview(familyId, owner, messageIds = []) {
+    const selectedIds = Array.isArray(messageIds) ? messageIds : [];
+    if (!selectedIds.length) return null;
+    const allowedThreads = new Set(salesChatThreadsForFamily(familyId, owner).map((thread) => Number(thread.id || 0)));
+    if (!allowedThreads.size) return null;
+    const selectedIdSet = new Set(selectedIds.map((id) => Number(id || 0)));
+    const messages = (Array.isArray(state.familySalesChatMessages) ? state.familySalesChatMessages : [])
+      .filter((message) => (
+        selectedIdSet.has(Number(message?.id || 0)) &&
+        Number(message?.familyId || 0) === Number(familyId || 0) &&
+        allowedThreads.has(Number(message?.threadId || 0)) &&
+        String(message?.status || 'complete') === 'complete'
+      ))
+      .sort((left, right) => (
+        String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
+        Number(left.id || 0) - Number(right.id || 0)
+      ))
+      .slice(0, 6)
+      .map((message) => ({
+        role: String(message.role || ''),
+        content: String(message.content || '').slice(0, 800),
+        status: String(message.status || 'complete'),
+        createdAt: message.createdAt || '',
+      }))
+      .filter((message) => message.content);
+    if (!messages.length) return null;
+    return {
+      selectedMessageCount: messages.length,
+      recentMessages: messages,
+      usageHint: '这些是顾问明确选择用于重新生成销售建议的续聊内容。只吸收其中的客户异议、表达偏好、方案排序和下一步动作，不要把未选择的聊天内容写入新版报告。',
+    };
+  }
+
+  function appendSalesChatMessage({ thread, role, content, status = 'complete', error = '', model = '', createdAt = nowIso() }) {
+    const message = {
+      id: allocateId(state),
+      threadId: Number(thread.id),
+      familyId: Number(thread.familyId),
+      role,
+      content,
+      status,
+      error,
+      model,
+      createdAt,
+    };
+    state.familySalesChatMessages = Array.isArray(state.familySalesChatMessages) ? state.familySalesChatMessages : [];
+    state.familySalesChatMessages.push(message);
+    thread.updatedAt = createdAt;
+    return message;
+  }
+
+  function buildSalesChatRuntimeContext({ family, owner }) {
+    const members = listFamilyMembers(state, family.id);
+    const policies = policiesForFamilyReport(family, owner);
+    const planningProfile = family.planningProfile || null;
+    const familyReport = buildFamilyReport(policies, planningProfile, { familyId: family.id });
+    const input = buildFamilySalesReviewInput({
+      family,
+      members,
+      policies,
+      familyReport,
+      planningProfile,
+      knowledgeRecords: state.knowledgeRecords || [],
+      indicatorRecords: state.insuranceIndicatorRecords || [],
+      optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
+      generatedAt: nowIso(),
+    });
+    return buildFamilySalesChatContext({
+      input,
+      family,
+      members,
+      policies,
+      familyReports: state.familyReports || [],
+      familySalesReviews: state.familySalesReviews || [],
+      generatedAt: nowIso(),
+    });
+  }
+
+  async function generateAndAppendSalesChatReply({ thread, family, owner, question, history }) {
+    const chatContext = buildSalesChatRuntimeContext({ family, owner });
+    const reply = await generateFamilySalesChatReplyImpl({
+      context: chatContext,
+      history,
+      question,
+    });
+    return appendSalesChatMessage({
+      thread,
+      role: 'assistant',
+      content: reply.content,
+      model: reply.model,
+      createdAt: reply.generatedAt || nowIso(),
+    });
   }
 
   function clientFamilyPolicyAnalysisReport(record = null) {
@@ -853,6 +1034,12 @@ export function createFamilyRoutes(context) {
         indicatorRecords: state.insuranceIndicatorRecords || [],
         optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
       });
+      const salesChatContext = salesChatContextForSalesReview(
+        family.id,
+        owner,
+        selectedSalesChatMessageIdsForSalesReview(req),
+      );
+      if (salesChatContext) input.salesChatContext = salesChatContext;
       const review = await generateFamilySalesReviewImpl({ input });
       const reviewOwner = ownerFields(owner);
       const reviewRecord = {
@@ -885,6 +1072,133 @@ export function createFamilyRoutes(context) {
       await saveFamilyState();
       return res.json({ ok: true, review: clientSalesReview(reviewRecord) });
     } catch (error) {
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
+  router.get('/family-profiles/:id/sales-chat/threads', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const messages = state.familySalesChatMessages || [];
+    return res.json({
+      ok: true,
+      threads: salesChatThreadsForFamily(family.id, owner).map((thread) => clientSalesChatThread(thread, messages)),
+    });
+  });
+
+  router.post('/family-profiles/:id/sales-chat/threads', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    await repairFamilyMembersBeforeReview(family);
+    const now = nowIso();
+    const ownerInfo = ownerFields(owner);
+    const question = String(req.body?.message || req.body?.content || '').trim();
+    const thread = {
+      id: allocateId(state),
+      familyId: Number(family.id),
+      ownerUserId: ownerInfo.ownerUserId,
+      ownerGuestId: ownerInfo.ownerGuestId,
+      status: 'active',
+      title: salesChatTitleFromQuestion(question),
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.familySalesChatThreads = Array.isArray(state.familySalesChatThreads) ? state.familySalesChatThreads : [];
+    state.familySalesChatThreads.push(thread);
+    const createdMessages = [];
+    try {
+      if (question) {
+        const userMessage = appendSalesChatMessage({ thread, role: 'user', content: question, createdAt: now });
+        createdMessages.push(userMessage);
+        const assistantMessage = await generateAndAppendSalesChatReply({
+          thread,
+          family,
+          owner,
+          question,
+          history: [],
+        });
+        createdMessages.push(assistantMessage);
+      }
+      await saveFamilyState();
+      return res.status(201).json({
+        ok: true,
+        thread: clientSalesChatThread(thread, state.familySalesChatMessages),
+        messages: salesChatMessagesForThread(thread.id).map(clientSalesChatMessage),
+      });
+    } catch (error) {
+      const failedUserMessage = createdMessages.find((message) => message.role === 'user');
+      if (failedUserMessage) {
+        failedUserMessage.status = 'failed';
+        failedUserMessage.error = error instanceof Error ? error.message : '续聊生成失败';
+      }
+      await saveFamilyState();
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
+  router.get('/family-profiles/:id/sales-chat/threads/:threadId', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const thread = findSalesChatThread({ familyId: family.id, threadId: req.params.threadId, owner });
+    if (!thread) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_SALES_CHAT_THREAD_NOT_FOUND', message: '续聊会话不存在' });
+    }
+    return res.json({
+      ok: true,
+      thread: clientSalesChatThread(thread, state.familySalesChatMessages),
+      messages: salesChatMessagesForThread(thread.id).map(clientSalesChatMessage),
+    });
+  });
+
+  router.post('/family-profiles/:id/sales-chat/threads/:threadId/messages', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const thread = findSalesChatThread({ familyId: family.id, threadId: req.params.threadId, owner });
+    if (!thread) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_SALES_CHAT_THREAD_NOT_FOUND', message: '续聊会话不存在' });
+    }
+    const question = String(req.body?.message || req.body?.content || '').trim();
+    if (!question) {
+      return res.status(400).json({ ok: false, code: 'FAMILY_SALES_CHAT_EMPTY_MESSAGE', message: '请输入要追问的内容' });
+    }
+    await repairFamilyMembersBeforeReview(family);
+    const now = nowIso();
+    const historyBeforeUserMessage = salesChatMessagesForThread(thread.id);
+    const userMessage = appendSalesChatMessage({ thread, role: 'user', content: question, createdAt: now });
+    try {
+      const assistantMessage = await generateAndAppendSalesChatReply({
+        thread,
+        family,
+        owner,
+        question,
+        history: historyBeforeUserMessage,
+      });
+      await saveFamilyState();
+      return res.json({
+        ok: true,
+        thread: clientSalesChatThread(thread, state.familySalesChatMessages),
+        messages: [userMessage, assistantMessage].map(clientSalesChatMessage),
+      });
+    } catch (error) {
+      userMessage.status = 'failed';
+      userMessage.error = error instanceof Error ? error.message : '续聊生成失败';
+      await saveFamilyState();
       return sendError(res, error, error?.status || 500);
     }
   });

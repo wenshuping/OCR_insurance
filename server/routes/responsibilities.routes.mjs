@@ -54,6 +54,7 @@ export function createResponsibilityRoutes(context) {
     persistProductCustomerSummaryGenerationRun,
     generateProductCustomerResponsibilitySummary,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
+    generateProductCustomerResponsibilityPlannerWithDeepSeek,
   } = context;
 
   function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
@@ -211,6 +212,7 @@ export function createResponsibilityRoutes(context) {
           ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
           : undefined,
         generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
+        generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,
         generateOfficialAnalysis: async ({ company, productName }) => assistantAnalyzer({
           scan: {
             ocrText: `${company} ${productName}`,

@@ -20,6 +20,7 @@ const KNOWLEDGE_TABLES = [
   'knowledge_records',
   'insurance_indicator_records',
   'optional_responsibility_records',
+  'product_responsibility_cards',
   'official_domain_profiles',
   'indicator_definitions',
 ];
@@ -64,6 +65,7 @@ const CORE_TABLES = [
   'knowledge_records',
   'insurance_indicator_records',
   'optional_responsibility_records',
+  'product_responsibility_cards',
   'official_domain_profiles',
   'source_records',
   'policy_cashflows',
@@ -600,13 +602,23 @@ export async function installKnowledgeDataBundle({
           keys: KNOWLEDGE_STATE_DOCUMENT_KEYS,
         }));
         targetDb.exec(`
+          CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+          )
+        `);
+        targetDb.exec(`
           INSERT INTO app_meta (key, value)
           VALUES ('updated_at', ${sqlString(new Date().toISOString())})
           ON CONFLICT(key) DO UPDATE SET value = excluded.value
         `);
         targetDb.exec('COMMIT');
       } catch (error) {
-        targetDb.exec('ROLLBACK');
+        try {
+          targetDb.exec('ROLLBACK');
+        } catch (rollbackError) {
+          error.rollbackError = rollbackError?.message || String(rollbackError);
+        }
         throw error;
       }
       return {

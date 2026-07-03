@@ -41,6 +41,7 @@ test('family sales review markdown parser preserves report structure and inline 
     '| 方案 | 下一步 |',
     '| --- | --- |',
     '| **顶梁柱收入保护** | 核实 `plans` |',
+    '| 基础版<br>（风险止血） | 先补住院<br/>再补意外 |',
   ].join('\n'));
 
   assert.deepEqual(blocks, [
@@ -50,7 +51,10 @@ test('family sales review markdown parser preserves report structure and inline 
     {
       type: 'table',
       headers: ['方案', '下一步'],
-      rows: [['**顶梁柱收入保护**', '核实 险种明细']],
+      rows: [
+        ['**顶梁柱收入保护**', '核实 险种明细'],
+        ['基础版\n（风险止血）', '先补住院\n再补意外'],
+      ],
     },
   ]);
 });

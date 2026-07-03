@@ -37,6 +37,8 @@ export function createInitialState() {
     familyReportCorrections: [],
     familyReportShares: [],
     familySalesReviews: [],
+    familySalesChatThreads: [],
+    familySalesChatMessages: [],
     reportRefreshEvents: [],
     membershipConfig: null,
     membershipOrders: [],
@@ -1044,6 +1046,7 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
   const hasAnalysis = Boolean(analysis?.report || analysis?.coverageTable?.length || analysis?.optionalResponsibilities?.length);
   const responsibilities = Array.isArray(analysis?.coverageTable)
     ? analysis.coverageTable.map((row) => ({
+        productName: String(row.productName || '').trim(),
         coverageType: String(row.coverageType || '').trim() || '保险责任',
         scenario: String(row.scenario || '').trim() || '以条款约定为准',
         payout: String(row.payout || '').trim() || '以正式条款为准',

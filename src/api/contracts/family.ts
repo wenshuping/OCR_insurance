@@ -112,6 +112,29 @@ export type FamilySalesReview = {
   };
 };
 
+export type FamilySalesChatMessage = {
+  id: number;
+  threadId: number;
+  familyId: number;
+  role: 'user' | 'assistant' | string;
+  content: string;
+  status: 'complete' | 'failed' | string;
+  createdAt: string;
+  error?: string;
+};
+
+export type FamilySalesChatThread = {
+  id: number;
+  familyId: number;
+  status: 'active' | 'archived' | string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  latestMessageAt?: string;
+  messages?: FamilySalesChatMessage[];
+};
+
 export type FamilyMemberPolicyReference = {
   id: number;
   company: string;
@@ -290,11 +313,49 @@ export function getFamilySalesReview(input: { token?: string; guestId?: string; 
   });
 }
 
-export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number; userRefresh?: boolean }) {
+export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number; userRefresh?: boolean; salesChatMessageIds?: number[] }) {
   return request<{ ok: true; review: FamilySalesReview }>(`/api/family-profiles/${input.familyId}/sales-review${authQuery(input)}`, {
     token: input.token,
-    body: { userRefresh: input.userRefresh === true },
+    body: {
+      userRefresh: input.userRefresh === true,
+      salesChatMessageIds: Array.isArray(input.salesChatMessageIds) ? input.salesChatMessageIds : [],
+    },
   });
+}
+
+export function listFamilySalesChatThreads(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; threads: FamilySalesChatThread[] }>(`/api/family-profiles/${input.familyId}/sales-chat/threads${authQuery(input)}`, {
+    token: input.token,
+  });
+}
+
+export function createFamilySalesChatThread(input: { token?: string; guestId?: string; familyId: number; message?: string }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads${authQuery(input)}`,
+    {
+      token: input.token,
+      body: { message: input.message || '' },
+    },
+  );
+}
+
+export function getFamilySalesChatThread(input: { token?: string; guestId?: string; familyId: number; threadId: number }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads/${input.threadId}${authQuery(input)}`,
+    {
+      token: input.token,
+    },
+  );
+}
+
+export function sendFamilySalesChatMessage(input: { token?: string; guestId?: string; familyId: number; threadId: number; message: string }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads/${input.threadId}/messages${authQuery(input)}`,
+    {
+      token: input.token,
+      body: { message: input.message },
+    },
+  );
 }
 
 export function getFamilyReportShare(shareToken: string) {

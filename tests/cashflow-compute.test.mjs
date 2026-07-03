@@ -142,6 +142,36 @@ test('computePolicyCashflow: indicator maturity uses exact coverage end age befo
   assert.equal(entries[0].amount, 32960);
 });
 
+test('computePolicyCashflow: first premium cashflow basis uses first premium, not total paid premium or amount', () => {
+  const policy = {
+    id: 600001,
+    name: '尊享人生年金保险（分红型）',
+    company: '新华保险',
+    amount: 100000,
+    premium: 12000,
+    date: '2025-01-01',
+    insuredBirthday: '1980-01-01',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至2035年01月01日',
+  };
+  const indicators = [
+    {
+      coverageType: '现金流',
+      liability: '关爱年金',
+      value: 1,
+      unit: '%',
+      basis: '首次交纳的基本责任的保险费',
+      formulaText: '关爱年金 = 首次交纳的基本责任的保险费 × 1%',
+      condition: '生效满1年',
+    },
+  ];
+
+  const entries = computePolicyCashflow(policy, null, indicators);
+  assert.ok(entries.length > 0);
+  assert.equal(entries[0].amount, 120);
+  assert.match(entries[0].calcText, /首期\/首年保费12,000元 × 1% = 120元/u);
+});
+
 // ── 4. Template with pointList timing ──
 
 test('computePolicyCashflow: template pointList timing → entries at specific ages', () => {

@@ -25,6 +25,10 @@ function indicatorCoreText(indicator = {}) {
   ].filter(Boolean).join(' ');
 }
 
+function isExpenseReimbursementText(value = '') {
+  return /医疗费用|实际合理医疗费用|实际合理[^。；;，,]{0,20}费用|实际[^。；;，,]{0,20}费用|免赔额|报销|补偿/u.test(value);
+}
+
 function numericSpec(indicator = {}) {
   const value = finiteNumber(indicator.value);
   const unit = displayText(indicator.unit);
@@ -55,7 +59,10 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   const coverageType = displayText(indicator.coverageType);
   const liability = displayText(indicator.liability);
   const hasGeneratedCalculationMetadata = Boolean(displayText(indicator.calculationMetadataVersion));
-  const explicitlyMarkedNotCalculable = indicator.calculationEligible === false && !hasGeneratedCalculationMetadata;
+  const hasStructuredCalculationMetadata = Boolean(displayText(indicator.basisKey) || displayText(indicator.calculationKey));
+  const explicitlyMarkedNotCalculable = indicator.calculationEligible === false
+    && !hasGeneratedCalculationMetadata
+    && !hasStructuredCalculationMetadata;
   const statusText = normalizeText([
     indicator.quantificationStatus,
     indicator.qualityStatus,
@@ -85,15 +92,19 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   let basisKey = '';
   if (/现金价值|现价/u.test(formulaSignalText)) {
     basisKey = 'cash_value';
-  } else if (/账户价值|账户余额|个人账户|公共账户/u.test(formulaSignalText)) {
+  } else if (/账户价值|账户余额|个人账户|公共账户|账户|帐户/u.test(formulaSignalText)) {
     basisKey = 'account_value';
   } else if (/首次.{0,20}(?:保险费|保费)|首期.{0,20}(?:保险费|保费)|首年.{0,20}(?:保险费|保费)/u.test(formulaSignalText)) {
     basisKey = /基本责任/u.test(formulaSignalText) ? 'first_basic_responsibility_premium' : 'first_premium';
   } else if (/已交|已支付|所交|实际交纳|累计.{0,8}(?:保险费|保费)|(?:保险费|保费)之和/u.test(formulaSignalText)) {
     basisKey = 'total_paid_premium';
+  } else if (isExpenseReimbursementText(formulaSignalText)) {
+    basisKey = 'medical_expense';
+  } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(formulaSignalText)) {
+    basisKey = 'daily_allowance';
   } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(formulaSignalText)) {
     basisKey = 'basic_amount';
-  } else if (/条款载明|保险单载明|保单载明|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|比例表|领取年龄/u.test(formulaSignalText || basis)) {
+  } else if (/条款载明|条款表|保险单载明|保单载明|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(formulaSignalText || basis)) {
     basisKey = 'schedule_or_policy_table';
   } else if (/首次.{0,20}(?:保险费|保费)|首期.{0,20}(?:保险费|保费)|首年.{0,20}(?:保险费|保费)/u.test(text)) {
     basisKey = /基本责任/u.test(text) ? 'first_basic_responsibility_premium' : 'first_premium';
@@ -103,15 +114,19 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'total_paid_premium';
   } else if (/现金价值|现价/u.test(text)) {
     basisKey = 'cash_value';
-  } else if (/账户价值|账户余额|个人账户|公共账户/u.test(text)) {
+  } else if (/账户价值|账户余额|个人账户|公共账户|账户|帐户/u.test(text)) {
     basisKey = 'account_value';
+  } else if (isExpenseReimbursementText(text)) {
+    basisKey = 'medical_expense';
+  } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(basis || formulaText)) {
+    basisKey = 'daily_allowance';
   } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(basis || formulaText)) {
     basisKey = 'basic_amount';
-  } else if (/条款载明|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|比例表|领取年龄/u.test(text)) {
+  } else if (/条款载明|条款表|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(text)) {
     basisKey = 'schedule_or_policy_table';
-  } else if (/医疗费用|实际合理医疗费用|免赔额|报销|补偿/u.test(text)) {
+  } else if (isExpenseReimbursementText(text)) {
     basisKey = 'medical_expense';
-  } else if (/给付天数|日津贴额|住院日额|保险单位数/u.test(text)) {
+  } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(text)) {
     basisKey = 'daily_allowance';
   }
 
@@ -120,10 +135,12 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   let calculationEligible = true;
   let calculationReason = '';
 
-  if (/(?:max|较大者|较高者|最大者|取大|两者|三者)/iu.test(formulaSignalText || text)) {
+  if (/(?:max|较大者|较高者|最大者|取大|两者|三者|条件给付|约定情形)/iu.test(formulaSignalText || text)) {
     calculationKey = 'manual_formula';
     calculationEligible = false;
-    calculationReason = '包含较大者/多基准比较，需要现金价值或条款表后才能计算';
+    calculationReason = /条件给付|约定情形/u.test(formulaSignalText || text)
+      ? '包含条件化给付，需要结合事故原因、合同生效时间或条款条件判断'
+      : '包含较大者/多基准比较，需要现金价值或条款表后才能计算';
   } else if (basisKey === 'cash_value' || basisKey === 'account_value') {
     calculationKey = basisKey;
     calculationEligible = false;

@@ -87,6 +87,118 @@ LIAN_LIFE_MATERIAL_TYPES = {
     "tk": {"label": "产品条款", "materialType": "terms"},
     "sms": {"label": "产品说明书", "materialType": "product_manual"},
 }
+CIGNA_CMB_LIFE_OFFICIAL_BASE_URL = "https://www.cignacmb.com/"
+CIGNA_CMB_LIFE_OFFICIAL_DOMAIN = "www.cignacmb.com"
+CIGNA_CMB_LIFE_OFFICIAL_DOMAINS = {"cignacmb.com", "www.cignacmb.com"}
+CIGNA_CMB_LIFE_PRODUCT_PAGES = {
+    "terms_stopped": {
+        "url": "https://www.cignacmb.com/xinxi/jibenxinxi/tingshou/",
+        "label": "停售保险产品目录及条款",
+        "salesStatus": "停售",
+        "materialType": "terms",
+        "materialLabel": "产品条款",
+    },
+    "manual_sale_new": {
+        "url": "https://www.cignacmb.com/xinxi/jibenxinxi/zssm/",
+        "label": "在售人身保险新型产品说明书",
+        "salesStatus": "在售",
+        "materialType": "product_manual",
+        "materialLabel": "产品说明书",
+    },
+    "manual_stopped_new": {
+        "url": "https://www.cignacmb.com/xinxi/jibenxinxi/tssm/",
+        "label": "停售人身保险新型产品说明书",
+        "salesStatus": "停售",
+        "materialType": "product_manual",
+        "materialLabel": "产品说明书",
+    },
+}
+HENGANSL_LIFE_OFFICIAL_BASE_URL = "https://www.hengansl.com/"
+HENGANSL_LIFE_OFFICIAL_DOMAIN = "www.hengansl.com"
+HENGANSL_LIFE_OFFICIAL_DOMAINS = {"hengansl.com", "www.hengansl.com"}
+HENGANSL_LIFE_PRODUCT_PAGES = {
+    "individual_sale": {
+        "url": "https://www.hengansl.com/hengan/gkxxpl/jbxx/cpjbxx/gxcptk/index.html",
+        "pageId": "fd7f30aecad4487fa73366e84d98d134",
+        "moduleId": "39a638b124ba4941ae8e10e28dbd84c6",
+        "label": "个人保险在售产品",
+        "productCategory": "个人保险",
+        "salesStatus": "在售",
+    },
+    "individual_stopped": {
+        "url": "https://www.hengansl.com/hengan/gkxxpl/jbxx/cpjbxx/gxcptk/index.html",
+        "pageId": "fd7f30aecad4487fa73366e84d98d134",
+        "moduleId": "59617c279dc64887bba910b3db147aba",
+        "label": "个人保险停售产品",
+        "productCategory": "个人保险",
+        "salesStatus": "停售",
+    },
+    "group_sale": {
+        "url": "https://www.hengansl.com/hengan/gkxxpl/jbxx/cpjbxx/txcptk/index.html",
+        "pageId": "8a0efe5707bf4ea49344b108351163c6",
+        "moduleId": "e46b9ef3a8a94dc98bb73d682e8cdb06",
+        "label": "团体保险在售产品",
+        "productCategory": "团体保险",
+        "salesStatus": "在售",
+    },
+    "group_stopped": {
+        "url": "https://www.hengansl.com/hengan/gkxxpl/jbxx/cpjbxx/txcptk/index.html",
+        "pageId": "8a0efe5707bf4ea49344b108351163c6",
+        "moduleId": "788b2819e4904ec89d0dd068fd34cf53",
+        "label": "团体保险停售产品",
+        "productCategory": "团体保险",
+        "salesStatus": "停售",
+    },
+}
+PEARL_RIVER_LIFE_OFFICIAL_BASE_URL = "https://www.prlife.com.cn/"
+PEARL_RIVER_LIFE_PRODUCT_INFO_URL = "https://www.prlife.com.cn/page/message/base/product/list/product_help_list.shtml"
+PEARL_RIVER_LIFE_PRODUCT_LIST_ENDPOINT = "https://eservice.prlife.com.cn/ebiz/website/aboutAndMessage.action"
+PEARL_RIVER_LIFE_OFFICIAL_DOMAIN = "www.prlife.com.cn"
+PEARL_RIVER_LIFE_OFFICIAL_DOMAINS = {
+    "prlife.com.cn",
+    "www.prlife.com.cn",
+    "eservice.prlife.com.cn",
+    "static.prlife.com.cn",
+    "guanwang-prod.oss-cn-hangzhou.aliyuncs.com",
+}
+PEARL_RIVER_LIFE_PRODUCT_STATUSES = {
+    "in_sale": {"isOnSale": "1", "salesStatus": "在售", "label": "在售保险产品"},
+    "stopped": {"isOnSale": "0", "salesStatus": "停售", "label": "停售保险产品"},
+}
+HETAI_LIFE_OFFICIAL_BASE_URL = "https://www.htlic.com/"
+HETAI_LIFE_PRODUCT_INFO_URL = "https://www.htlic.com/info/base/product"
+HETAI_LIFE_PRODUCT_LIST_ENDPOINT = "https://www.htlic.com/owmsProxy/api/clause/getProductClauseList"
+HETAI_LIFE_OFFICIAL_DOMAIN = "www.htlic.com"
+HETAI_LIFE_OFFICIAL_DOMAINS = {
+    "htlic.com",
+    "www.htlic.com",
+    "internet-public-prd-sh-v5-1251979869.cos.ap-shanghai-fsi.myqcloud.com",
+}
+HETAI_LIFE_PRODUCT_STATUSES = {
+    "in_sale": {"ifSelling": "T", "salesStatus": "在售", "label": "在售产品"},
+    "stopped": {"ifSelling": "F", "salesStatus": "停售", "label": "停售产品"},
+}
+FUNDE_LIFE_OFFICIAL_BASE_URL = "https://www.sino-life.com/"
+FUNDE_LIFE_PRODUCT_INFO_URL = "https://www.sino-life.com/publicinfo/jbxx/cpjbxx/jycp/"
+FUNDE_LIFE_PRODUCT_LIST_URL = "https://www.sino-life.com/global/ProductList.js"
+FUNDE_LIFE_OFFICIAL_DOMAIN = "www.sino-life.com"
+FUNDE_LIFE_OFFICIAL_DOMAINS = {"sino-life.com", "www.sino-life.com"}
+DAJIA_LIFE_OFFICIAL_BASE_URL = "https://life.djbx.com/"
+DAJIA_LIFE_PRODUCT_INFO_URL = "https://life.djbx.com/col/col1185/index.html"
+DAJIA_LIFE_OFFICIAL_DOMAIN = "life.djbx.com"
+DAJIA_LIFE_OFFICIAL_DOMAINS = {"life.djbx.com"}
+DAJIA_LIFE_PRODUCT_PAGES = {
+    "in_sale": {
+        "url": "https://life.djbx.com/col/col1186/index.html",
+        "salesStatus": "在售",
+        "label": "在售产品",
+    },
+    "stopped": {
+        "url": "https://life.djbx.com/col/col1187/index.html",
+        "salesStatus": "停售",
+        "label": "停售产品",
+    },
+}
 GUOLIAN_LIFE_OFFICIAL_BASE_URL = "https://www.guolian-life.com/"
 GUOLIAN_LIFE_WEB_BASE_URL = "https://www.guolian-life.com/web/"
 GUOLIAN_LIFE_PRODUCT_PAGE_URL = "https://www.guolian-life.com/web/#/relatedTransaction.html"
@@ -1254,6 +1366,18 @@ def normalize_link_title(title: str, product_name: str) -> str:
     return product_name
 
 
+def extract_new_china_pdf_responsibility(data: bytes) -> tuple[dict[str, Any], str, str]:
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if page_text:
+        return extracted, page_text, "pypdf"
+    vision_extracted = extract_pdf_text_with_local_vision(data)
+    vision_page_text = focused_responsibility_excerpt(vision_extracted.get("text", ""))
+    if vision_page_text:
+        return vision_extracted, vision_page_text, "macos_vision"
+    return extracted, "", "pypdf"
+
+
 def crawl_new_china_row(
     *,
     company: str,
@@ -1307,8 +1431,7 @@ def crawl_new_china_row(
             pdf_status, data = fetch_bytes(url)
             if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES:
                 continue
-            extracted = extract_pdf_text_with_system_python(data)
-            page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+            extracted, page_text, extraction_method = extract_new_china_pdf_responsibility(data)
             if not page_text:
                 continue
             records.append(
@@ -1326,6 +1449,7 @@ def crawl_new_china_row(
                     "official": True,
                     "officialDomain": "static-cdn.newchinalife.com",
                     "parser": "scrapling_new_china_disclosure",
+                    "extractionMethod": extraction_method,
                     "pages": extracted.get("pages", 0),
                     "bytes": len(data),
                 }
@@ -9204,6 +9328,2054 @@ def crawl_lian_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "products": products,
         "materialTaskCount": len(tasks),
         "records": records,
+    }
+
+
+def cigna_cmb_life_source_filter(value: str) -> set[str]:
+    selected = {item.strip().lower() for item in re.split(r"[,，\s]+", trim(value)) if item.strip()}
+    if not selected or "all" in selected or "全部" in selected:
+        return set(CIGNA_CMB_LIFE_PRODUCT_PAGES.keys())
+    aliases = {
+        "terms": "terms_stopped",
+        "clause": "terms_stopped",
+        "clauses": "terms_stopped",
+        "条款": "terms_stopped",
+        "停售条款": "terms_stopped",
+        "manual": "manual_sale_new",
+        "manual-sale": "manual_sale_new",
+        "sale-manual": "manual_sale_new",
+        "在售说明书": "manual_sale_new",
+        "manual-stopped": "manual_stopped_new",
+        "stopped-manual": "manual_stopped_new",
+        "停售说明书": "manual_stopped_new",
+    }
+    return {aliases.get(item, item) for item in selected if aliases.get(item, item) in CIGNA_CMB_LIFE_PRODUCT_PAGES}
+
+
+def cigna_cmb_life_is_official_url(url: str) -> bool:
+    hostname = trim(urlsplit(url).hostname).lower()
+    return hostname in CIGNA_CMB_LIFE_OFFICIAL_DOMAINS
+
+
+def cigna_cmb_life_pdf_url(href: str, page_url: str) -> str:
+    material_url = urljoin(page_url, trim(href))
+    parts = urlsplit(material_url)
+    if "Healthbenefits/viewPDF" in parts.path:
+        query = parse_qs(parts.query)
+        wrapped = trim((query.get("url") or [""])[0])
+        if not wrapped:
+            return ""
+        material_url = urljoin(CIGNA_CMB_LIFE_OFFICIAL_BASE_URL, unquote(wrapped))
+    return material_url
+
+
+def cigna_cmb_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    labels: list[str] = []
+    if "医疗" in name or "住院" in name or "高端" in name:
+        labels.append("医疗险")
+    if "重大疾病" in name or "重疾" in name or "恶性肿瘤" in name or "疾病" in name:
+        labels.append("重疾险")
+    if "意外" in name:
+        labels.append("意外险")
+    if "护理" in name:
+        labels.append("护理险")
+    if "年金" in name or "养老" in name or "教育" in name:
+        labels.append("年金险")
+    if "两全" in name:
+        labels.append("两全保险")
+    if "定期寿险" in name:
+        labels.append("定期寿险")
+    if "万能" in name:
+        labels.append("万能账户")
+    if "投连" in name or "投资连结" in name:
+        labels.append("投连险")
+    if "增额" in name and "终身寿险" in name:
+        labels.append("增额终身寿险")
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def cigna_cmb_life_products_from_page(
+    company: str,
+    profile_key: str,
+    html: str,
+    page_url: str,
+) -> list[dict[str, Any]]:
+    profile = CIGNA_CMB_LIFE_PRODUCT_PAGES[profile_key]
+    soup = BeautifulSoup(html, "html.parser")
+    products: list[dict[str, Any]] = []
+    for item in soup.select("li"):
+        name_node = item.select_one(".name")
+        product_name = clean_text(name_node.get_text(" ", strip=True) if name_node else "")
+        if not product_name or "招商信诺" not in product_name:
+            continue
+        materials: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for anchor in item.find_all("a", href=True):
+            material_url = cigna_cmb_life_pdf_url(trim(anchor.get("href")), page_url)
+            if not material_url or ".pdf" not in material_url.lower():
+                continue
+            if not cigna_cmb_life_is_official_url(material_url) or material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            version_label = clean_text(anchor.get_text(" ", strip=True))
+            materials.append(
+                {
+                    "label": profile["materialLabel"],
+                    "materialType": profile["materialType"],
+                    "url": material_url,
+                    "versionLabel": version_label,
+                }
+            )
+        if not materials:
+            continue
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": cigna_cmb_life_product_type(product_name),
+                "salesStatus": profile["salesStatus"],
+                "sourcePage": page_url,
+                "sourceList": profile_key,
+                "sourceLabel": profile["label"],
+                "materials": materials,
+            }
+        )
+    return products
+
+
+def crawl_cigna_cmb_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not cigna_cmb_life_is_official_url(material_url):
+        return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or CIGNA_CMB_LIFE_OFFICIAL_BASE_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or not has_actual_responsibility_text(page_text):
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "产品条款"
+    return {
+        "company": trim(task.get("company")) or "招商信诺",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"招商信诺官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": CIGNA_CMB_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_cigna_cmb_life_product_info",
+        "qualityStatus": "valid_complete",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "sourceLabel": trim(task.get("sourceLabel")),
+        "versionLabel": trim(task.get("versionLabel")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
+    }
+
+
+def crawl_cigna_cmb_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_cigna_cmb_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_cigna_cmb_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_cigna_cmb_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "招商信诺"
+    source_keys = cigna_cmb_life_source_filter(trim(payload.get("source") or payload.get("sourcePage") or "all"))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    seen_products: set[str] = set()
+    seen_task_urls: set[str] = set()
+    skipped_products = 0
+    selected_count = 0
+    total_candidate_products = 0
+
+    for source_key, profile in CIGNA_CMB_LIFE_PRODUCT_PAGES.items():
+        if source_key not in source_keys:
+            continue
+        page_url = profile["url"]
+        status, html = fetch_html_direct(page_url, referer=CIGNA_CMB_LIFE_OFFICIAL_BASE_URL)
+        page_products = cigna_cmb_life_products_from_page(company, source_key, html, page_url) if status >= 200 and status < 300 else []
+        total_candidate_products += len(page_products)
+        page_meta = {
+            "url": page_url,
+            "status": status,
+            "sourceList": source_key,
+            "label": profile["label"],
+            "salesStatus": profile["salesStatus"],
+            "productCount": 0,
+            "materialTaskCount": 0,
+            "recordCount": 0,
+        }
+        for product in page_products:
+            product_key = f"{source_key}|{product['productName']}"
+            if product_key in seen_products:
+                continue
+            seen_products.add(product_key)
+            if skipped_products < offset:
+                skipped_products += 1
+                continue
+            if max_products and selected_count >= max_products:
+                continue
+            selected_count += 1
+            page_meta["productCount"] += 1
+            products.append({key: value for key, value in product.items() if key != "materials"})
+            for material in product.get("materials", []):
+                material_url = trim(material.get("url"))
+                if not material_url or material_url in seen_task_urls:
+                    continue
+                seen_task_urls.add(material_url)
+                page_meta["materialTaskCount"] += 1
+                tasks.append(
+                    {
+                        "company": company,
+                        "productName": trim(product.get("productName")),
+                        "productType": trim(product.get("productType")),
+                        "salesStatus": trim(product.get("salesStatus")),
+                        "label": trim(material.get("label")),
+                        "materialType": trim(material.get("materialType")),
+                        "url": material_url,
+                        "sourcePage": page_url,
+                        "sourceList": source_key,
+                        "sourceLabel": profile["label"],
+                        "versionLabel": trim(material.get("versionLabel")),
+                        "pdfArchiveDir": pdf_archive_dir,
+                    }
+                )
+        pages.append(page_meta)
+
+    records = crawl_cigna_cmb_life_material_records(tasks, max_workers=max_workers)
+    count_by_source: dict[str, int] = {}
+    task_source_by_url = {trim(task.get("url")): trim(task.get("sourceList")) for task in tasks}
+    for record in records:
+        source_key = task_source_by_url.get(trim(record.get("url")))
+        if source_key:
+            count_by_source[source_key] = count_by_source.get(source_key, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = count_by_source.get(trim(page_meta.get("sourceList")), 0)
+
+    return {
+        "ok": True,
+        "company": company,
+        "source": ", ".join(CIGNA_CMB_LIFE_PRODUCT_PAGES[key]["url"] for key in CIGNA_CMB_LIFE_PRODUCT_PAGES if key in source_keys),
+        "officialDomain": CIGNA_CMB_LIFE_OFFICIAL_DOMAIN,
+        "sourceKeys": sorted(source_keys),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+}
+
+
+def hengansl_life_source_filter(value: str) -> set[str]:
+    selected = {item.strip().lower() for item in re.split(r"[,，\s]+", trim(value)) if item.strip()}
+    if not selected or "all" in selected or "全部" in selected:
+        return set(HENGANSL_LIFE_PRODUCT_PAGES.keys())
+    aliases = {
+        "individual": "individual_sale",
+        "individual-sale": "individual_sale",
+        "sale": "individual_sale",
+        "in_sale": "individual_sale",
+        "在售": "individual_sale",
+        "个人": "individual_sale",
+        "个人在售": "individual_sale",
+        "individual-stopped": "individual_stopped",
+        "stopped": "individual_stopped",
+        "停售": "individual_stopped",
+        "个人停售": "individual_stopped",
+        "group": "group_sale",
+        "group-sale": "group_sale",
+        "团体": "group_sale",
+        "团体在售": "group_sale",
+        "group-stopped": "group_stopped",
+        "团体停售": "group_stopped",
+    }
+    return {aliases.get(item, item) for item in selected if aliases.get(item, item) in HENGANSL_LIFE_PRODUCT_PAGES}
+
+
+def hengansl_life_is_official_url(url: str) -> bool:
+    hostname = trim(urlsplit(url).hostname).lower()
+    return hostname in HENGANSL_LIFE_OFFICIAL_DOMAINS
+
+
+def hengansl_life_page_url(profile: dict[str, str], page_number: int) -> str:
+    if page_number <= 1:
+        return trim(profile.get("url"))
+    query = urlencode(
+        {
+            "pageId": trim(profile.get("pageId")),
+            "currentPage": str(page_number),
+            "moduleId": trim(profile.get("moduleId")),
+            "staticRequest": "yes",
+        }
+    )
+    return urljoin(HENGANSL_LIFE_OFFICIAL_BASE_URL, f"eportal/ui?{query}")
+
+
+def hengansl_life_material_url(href: str, page_url: str) -> str:
+    material_url = urljoin(page_url, trim(href))
+    parts = urlsplit(material_url)
+    query = parse_qs(parts.query)
+    wrapped = trim((query.get("file") or [""])[0])
+    if wrapped and "viewer.html" in parts.path:
+        material_url = urljoin(HENGANSL_LIFE_OFFICIAL_BASE_URL, unquote(wrapped))
+    return material_url
+
+
+def hengansl_life_material_from_label(label: str) -> dict[str, str] | None:
+    clean_label = clean_text(label).replace(".pdf", "")
+    if "费率" in clean_label or "现金价值" in clean_label or "分类分级" in clean_label:
+        return None
+    if "条款" in clean_label:
+        return {"label": "产品条款", "materialType": "terms"}
+    if "说明书" in clean_label or "说明" in clean_label:
+        return {"label": "产品说明书", "materialType": "product_manual"}
+    return None
+
+
+def hengansl_life_product_type(product_name: str, product_category: str = "") -> str:
+    name = trim(product_name)
+    labels: list[str] = []
+    if "团体" in name or "团体" in product_category:
+        labels.append("团体保险")
+    if "医疗" in name or "住院" in name:
+        labels.append("医疗险")
+    if "重大疾病" in name or "重疾" in name or "恶性肿瘤" in name or "疾病" in name:
+        labels.append("重疾险")
+    if "意外" in name:
+        labels.append("意外险")
+    if "护理" in name:
+        labels.append("护理险")
+    if "年金" in name or "养老" in name or "教育金" in name:
+        labels.append("年金险")
+    if "两全" in name:
+        labels.append("两全保险")
+    if "定期寿险" in name:
+        labels.append("定期寿险")
+    if "终身寿险" in name:
+        labels.append("终身寿险")
+    if "万能" in name:
+        labels.append("万能账户")
+    if "投连" in name or "投资连结" in name:
+        labels.append("投连险")
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def hengansl_life_clean_date(value: str) -> str:
+    text = clean_text(value)
+    if not text or text == "-":
+        return ""
+    match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    return match.group(0) if match else text
+
+
+def hengansl_life_module_from_html(html: str, module_id: str) -> BeautifulSoup:
+    soup = BeautifulSoup(html, "html.parser")
+    module = soup.find(id=module_id)
+    return BeautifulSoup(str(module), "html.parser") if module else soup
+
+
+def hengansl_life_total_pages(html: str, module_id: str) -> int:
+    module = hengansl_life_module_from_html(html, module_id)
+    paging = module.find("input", attrs={"name": "article_paging_list_hidden"})
+    if paging:
+        total = trim(paging.get("totalpage"))
+        if total.isdigit():
+            return max(1, int(total))
+    return 1
+
+
+def hengansl_life_products_from_page(
+    company: str,
+    profile_key: str,
+    html: str,
+    page_url: str,
+    page_number: int,
+) -> list[dict[str, Any]]:
+    profile = HENGANSL_LIFE_PRODUCT_PAGES[profile_key]
+    module = hengansl_life_module_from_html(html, trim(profile.get("moduleId")))
+    products: list[dict[str, Any]] = []
+    for row in module.select(".chaxun_tr"):
+        name_node = row.select_one(".sale.w35 p")
+        product_name = clean_text(name_node.get_text(" ", strip=True) if name_node else "")
+        if not product_name or "恒安标准" not in product_name:
+            continue
+        grade_node = row.select_one(".flfj")
+        effective_node = row.select_one(".dtst")
+        discontinued_node = next(
+            (
+                node
+                for node in row.select(".dts")
+                if "flfj" not in {trim(item) for item in node.get("class", [])}
+            ),
+            None,
+        )
+        product_grade = clean_text(grade_node.get_text(" ", strip=True) if grade_node else "")
+        effective_date = hengansl_life_clean_date(effective_node.get_text(" ", strip=True) if effective_node else "")
+        discontinued_date = hengansl_life_clean_date(discontinued_node.get_text(" ", strip=True) if discontinued_node else "")
+        materials: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for anchor in row.select(".buy a[href]"):
+            material = hengansl_life_material_from_label(anchor.get_text(" ", strip=True))
+            if not material:
+                continue
+            material_url = hengansl_life_material_url(trim(anchor.get("href")), page_url)
+            if not material_url or ".pdf" not in material_url.lower():
+                continue
+            if not hengansl_life_is_official_url(material_url) or material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            materials.append(
+                {
+                    "label": material["label"],
+                    "materialType": material["materialType"],
+                    "url": material_url,
+                    "versionLabel": clean_text(anchor.get_text(" ", strip=True)),
+                }
+            )
+        if not materials:
+            continue
+        product_category = trim(profile.get("productCategory"))
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": hengansl_life_product_type(product_name, product_category),
+                "productCategory": product_category,
+                "salesStatus": trim(profile.get("salesStatus")),
+                "sourcePage": page_url,
+                "sourceList": profile_key,
+                "sourceLabel": trim(profile.get("label")),
+                "sourcePageNumber": page_number,
+                "productGrade": product_grade,
+                "effectiveDate": effective_date,
+                "discontinuedDate": discontinued_date,
+                "materials": materials,
+            }
+        )
+    return products
+
+
+def crawl_hengansl_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not hengansl_life_is_official_url(material_url):
+        return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or HENGANSL_LIFE_OFFICIAL_BASE_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    if not page_text or not has_actual_responsibility_text(page_text):
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "产品条款"
+    return {
+        "company": trim(task.get("company")) or "恒安标准",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "productCategory": trim(task.get("productCategory")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"恒安标准官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": HENGANSL_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_hengansl_life_product_info",
+        "qualityStatus": "valid_complete",
+        "responsibilityQualityStatus": "valid_complete",
+        "responsibilityQualityIssue": "",
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "sourceLabel": trim(task.get("sourceLabel")),
+        "sourcePageNumber": int(task.get("sourcePageNumber") or 0),
+        "versionLabel": trim(task.get("versionLabel")),
+        "productGrade": trim(task.get("productGrade")),
+        "effectiveDate": trim(task.get("effectiveDate")),
+        "discontinuedDate": trim(task.get("discontinuedDate")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
+    }
+
+
+def crawl_hengansl_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_hengansl_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_hengansl_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_hengansl_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "恒安标准"
+    source_keys = hengansl_life_source_filter(trim(payload.get("source") or payload.get("sourcePage") or "all"))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_pages = max(0, int(payload.get("maxPages") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    failed_pages: list[dict[str, Any]] = []
+    seen_products: set[str] = set()
+    seen_task_urls: set[str] = set()
+    skipped_products = 0
+    selected_count = 0
+    total_candidate_products = 0
+
+    for source_key, profile in HENGANSL_LIFE_PRODUCT_PAGES.items():
+        if source_key not in source_keys:
+            continue
+        first_page_url = hengansl_life_page_url(profile, 1)
+        first_status, first_html = fetch_html_direct(first_page_url, referer=trim(profile.get("url")))
+        total_pages = (
+            hengansl_life_total_pages(first_html, trim(profile.get("moduleId")))
+            if first_status >= 200 and first_status < 300
+            else 1
+        )
+        if max_pages:
+            total_pages = min(total_pages, max_pages)
+        for page_number in range(1, total_pages + 1):
+            page_url = first_page_url if page_number == 1 else hengansl_life_page_url(profile, page_number)
+            status, html = (first_status, first_html) if page_number == 1 else fetch_html_direct(page_url, referer=trim(profile.get("url")))
+            page_products = (
+                hengansl_life_products_from_page(company, source_key, html, page_url, page_number)
+                if status >= 200 and status < 300
+                else []
+            )
+            total_candidate_products += len(page_products)
+            page_meta = {
+                "url": page_url,
+                "status": status,
+                "sourceList": source_key,
+                "label": trim(profile.get("label")),
+                "productCategory": trim(profile.get("productCategory")),
+                "salesStatus": trim(profile.get("salesStatus")),
+                "pageNumber": page_number,
+                "totalPages": total_pages,
+                "productCount": 0,
+                "materialTaskCount": 0,
+                "recordCount": 0,
+            }
+            if status < 200 or status >= 300:
+                failed_pages.append(page_meta)
+                pages.append(page_meta)
+                continue
+            for product in page_products:
+                product_key = f"{source_key}|{product['productName']}|{product.get('effectiveDate')}|{product.get('discontinuedDate')}"
+                if product_key in seen_products:
+                    continue
+                seen_products.add(product_key)
+                if skipped_products < offset:
+                    skipped_products += 1
+                    continue
+                if max_products and selected_count >= max_products:
+                    continue
+                selected_count += 1
+                page_meta["productCount"] += 1
+                products.append({key: value for key, value in product.items() if key != "materials"})
+                for material in product.get("materials", []):
+                    material_url = trim(material.get("url"))
+                    if not material_url or material_url in seen_task_urls:
+                        continue
+                    seen_task_urls.add(material_url)
+                    page_meta["materialTaskCount"] += 1
+                    tasks.append(
+                        {
+                            "company": company,
+                            "productName": trim(product.get("productName")),
+                            "productType": trim(product.get("productType")),
+                            "productCategory": trim(product.get("productCategory")),
+                            "salesStatus": trim(product.get("salesStatus")),
+                            "label": trim(material.get("label")),
+                            "materialType": trim(material.get("materialType")),
+                            "url": material_url,
+                            "sourcePage": page_url,
+                            "sourceList": source_key,
+                            "sourceLabel": trim(profile.get("label")),
+                            "sourcePageNumber": str(page_number),
+                            "versionLabel": trim(material.get("versionLabel")),
+                            "productGrade": trim(product.get("productGrade")),
+                            "effectiveDate": trim(product.get("effectiveDate")),
+                            "discontinuedDate": trim(product.get("discontinuedDate")),
+                            "pdfArchiveDir": pdf_archive_dir,
+                        }
+                    )
+            pages.append(page_meta)
+
+    records = crawl_hengansl_life_material_records(tasks, max_workers=max_workers)
+    task_source_by_url = {trim(task.get("url")): trim(task.get("sourceList")) for task in tasks}
+    task_page_by_url = {trim(task.get("url")): int(task.get("sourcePageNumber") or 0) for task in tasks}
+    count_by_source_page: dict[str, int] = {}
+    for record in records:
+        material_url = trim(record.get("url"))
+        source_key = task_source_by_url.get(material_url)
+        page_number = task_page_by_url.get(material_url)
+        if source_key and page_number:
+            key = f"{source_key}|{page_number}"
+            count_by_source_page[key] = count_by_source_page.get(key, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = count_by_source_page.get(f"{page_meta.get('sourceList')}|{page_meta.get('pageNumber')}", 0)
+
+    return {
+        "ok": not failed_pages,
+        "code": "" if not failed_pages else "HENGANSL_LIFE_PAGE_FAILED",
+        "company": company,
+        "source": ", ".join(HENGANSL_LIFE_PRODUCT_PAGES[key]["url"] for key in HENGANSL_LIFE_PRODUCT_PAGES if key in source_keys),
+        "officialDomain": HENGANSL_LIFE_OFFICIAL_DOMAIN,
+        "sourceKeys": sorted(source_keys),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxPages": max_pages,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "failedPages": failed_pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+    }
+
+
+def pearl_river_life_source_filter(value: str) -> set[str]:
+    selected = {item.strip().lower() for item in re.split(r"[,，\s]+", trim(value)) if item.strip()}
+    if not selected or "all" in selected or "全部" in selected:
+        return set(PEARL_RIVER_LIFE_PRODUCT_STATUSES.keys())
+    aliases = {
+        "sale": "in_sale",
+        "sales": "in_sale",
+        "in-sale": "in_sale",
+        "in_sale": "in_sale",
+        "active": "in_sale",
+        "在售": "in_sale",
+        "stopped": "stopped",
+        "stop": "stopped",
+        "discontinued": "stopped",
+        "停售": "stopped",
+    }
+    return {aliases.get(item, item) for item in selected if aliases.get(item, item) in PEARL_RIVER_LIFE_PRODUCT_STATUSES}
+
+
+def pearl_river_life_is_official_url(url: str) -> bool:
+    hostname = trim(urlsplit(url).hostname).lower()
+    return hostname in PEARL_RIVER_LIFE_OFFICIAL_DOMAINS
+
+
+def pearl_river_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    labels: list[str] = []
+    if "医疗" in name or "住院" in name or "津贴" in name:
+        labels.append("医疗险")
+    if "重大疾病" in name or "重疾" in name or "恶性肿瘤" in name or "防癌" in name:
+        labels.append("重疾险")
+    if "意外" in name or "交通工具" in name or "乘客" in name:
+        labels.append("意外险")
+    if "护理" in name:
+        labels.append("护理险")
+    if "年金" in name or "养老" in name or "教育" in name:
+        labels.append("年金险")
+    if "两全" in name:
+        labels.append("两全保险")
+    if "定期寿险" in name or "一年定期" in name:
+        labels.append("定期寿险")
+    if "万能" in name:
+        labels.append("万能账户")
+    if "投连" in name or "投资连结" in name:
+        labels.append("投连险")
+    if ("增额" in name or "增多多" in name) and "终身寿" in name:
+        labels.append("增额终身寿险")
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def pearl_river_life_material_url(value: str) -> str:
+    raw = trim(value)
+    if not raw:
+        return ""
+    return urljoin(PEARL_RIVER_LIFE_OFFICIAL_BASE_URL, raw)
+
+
+def pearl_river_life_material_type(label: str) -> str:
+    text = trim(label)
+    if "说明书" in text or "产品说明" in text:
+        return "product_manual"
+    if "条款" in text:
+        return "terms"
+    return ""
+
+
+def pearl_river_life_keep_material(label: str, material_url: str) -> bool:
+    text = trim(label)
+    lower_url = trim(material_url).lower()
+    if not text or ".pdf" not in lower_url:
+        return False
+    if not pearl_river_life_is_official_url(material_url):
+        return False
+    ignored_keywords = [
+        "费率",
+        "现金价值",
+        "保险金额表",
+        "基本保险金额",
+        "利益演示",
+        "报告",
+        "公告",
+        "清单",
+        "声明",
+    ]
+    if any(keyword in text for keyword in ignored_keywords):
+        return False
+    return pearl_river_life_material_type(text) in {"terms", "product_manual"}
+
+
+def pearl_river_life_normalize_material_label(label: str, material_type: str) -> str:
+    text = trim(label)
+    if material_type == "product_manual":
+        return text if "说明书" in text else "产品说明书"
+    if text in {"条款", "保险条款"}:
+        return "保险条款"
+    return text or "保险条款"
+
+
+def pearl_river_life_parse_jsonp(text: str) -> dict[str, Any]:
+    raw = trim(text)
+    match = re.match(r"^[A-Za-z_$][\w$]*\((.*)\)\s*;?\s*$", raw, re.S)
+    if match:
+        raw = match.group(1)
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def pearl_river_life_api_url(profile: dict[str, str], page_number: int, page_size: int) -> str:
+    query = urlencode(
+        {
+            "action": "initMsg",
+            "currentPage": str(page_number),
+            "pageSize": str(page_size),
+            "type": "22",
+            "isOnSale": trim(profile.get("isOnSale")),
+            "jsoncallback": "policyProducts",
+        }
+    )
+    return f"{PEARL_RIVER_LIFE_PRODUCT_LIST_ENDPOINT}?{query}"
+
+
+def pearl_river_life_fetch_product_page(
+    status_key: str,
+    page_number: int,
+    page_size: int,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    profile = PEARL_RIVER_LIFE_PRODUCT_STATUSES[status_key]
+    api_url = pearl_river_life_api_url(profile, page_number, page_size)
+    status, text = fetch_html_direct(api_url, referer=PEARL_RIVER_LIFE_PRODUCT_INFO_URL)
+    parsed = pearl_river_life_parse_jsonp(text) if status >= 200 and status < 300 else {}
+    rows = parsed.get("data") if isinstance(parsed.get("data"), list) else []
+    total_pages = int(parsed.get("total") or 0)
+    records = int(parsed.get("records") or len(rows))
+    page_meta = {
+        "url": api_url,
+        "status": status,
+        "sourceList": status_key,
+        "label": trim(profile.get("label")),
+        "salesStatus": trim(profile.get("salesStatus")),
+        "pageNumber": page_number,
+        "pageSize": page_size,
+        "totalPages": total_pages,
+        "totalRecords": records,
+        "productCount": 0,
+        "materialTaskCount": 0,
+        "recordCount": 0,
+    }
+    return parsed, page_meta, rows
+
+
+def pearl_river_life_products_from_rows(
+    company: str,
+    status_key: str,
+    rows: list[dict[str, Any]],
+    page_number: int,
+) -> list[dict[str, Any]]:
+    profile = PEARL_RIVER_LIFE_PRODUCT_STATUSES[status_key]
+    products: list[dict[str, Any]] = []
+    for row_index, item in enumerate(rows, 1):
+        product_name = clean_text(str(item.get("newsName") or ""))
+        if not product_name:
+            continue
+        file_names = [clean_text(part) for part in re.split(r"[,，]", str(item.get("fileNames") or ""))]
+        file_paths = [trim(part) for part in re.split(r"[,，]", str(item.get("filePaths") or ""))]
+        materials: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for index in range(max(len(file_names), len(file_paths))):
+            label = file_names[index] if index < len(file_names) else ""
+            material_url = pearl_river_life_material_url(file_paths[index] if index < len(file_paths) else "")
+            if not pearl_river_life_keep_material(label, material_url):
+                continue
+            if material_url in seen_urls:
+                continue
+            seen_urls.add(material_url)
+            material_type = pearl_river_life_material_type(label)
+            materials.append(
+                {
+                    "label": pearl_river_life_normalize_material_label(label, material_type),
+                    "materialType": material_type,
+                    "url": material_url,
+                    "sourceLabel": label,
+                }
+            )
+        if not materials:
+            continue
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": pearl_river_life_product_type(product_name),
+                "salesStatus": trim(profile.get("salesStatus")),
+                "sourcePage": PEARL_RIVER_LIFE_PRODUCT_INFO_URL,
+                "sourceList": status_key,
+                "sourceLabel": trim(profile.get("label")),
+                "sourcePageNumber": page_number,
+                "sourceIndex": row_index,
+                "materials": materials,
+            }
+        )
+    return products
+
+
+def pearl_river_life_responsibility_quality(page_text: str) -> tuple[str, str]:
+    text = trim(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_extraction_failed"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_benefit_trigger_or_payment"
+    if re.match(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def crawl_pearl_river_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not pearl_river_life_is_official_url(material_url):
+        return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or PEARL_RIVER_LIFE_PRODUCT_INFO_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = pearl_river_life_responsibility_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    hostname = trim(urlsplit(material_url).hostname).lower()
+    return {
+        "company": trim(task.get("company")) or "珠江人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"珠江人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": hostname or PEARL_RIVER_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_pearl_river_life_product_info",
+        "qualityStatus": quality_status,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "sourceLabel": trim(task.get("sourceLabel")),
+        "sourcePageNumber": int(task.get("sourcePageNumber") or 0),
+        "sourceIndex": int(task.get("sourceIndex") or 0),
+        "rawMaterialLabel": trim(task.get("rawMaterialLabel")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
+    }
+
+
+def crawl_pearl_river_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_pearl_river_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_pearl_river_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_pearl_river_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "珠江人寿"
+    source_keys = pearl_river_life_source_filter(trim(payload.get("source") or payload.get("sourcePage") or "all"))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_pages = max(0, int(payload.get("maxPages") or 0))
+    page_size = max(1, min(500, int(payload.get("pageSize") or 500)))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    failed_pages: list[dict[str, Any]] = []
+    seen_task_urls: set[str] = set()
+    skipped_products = 0
+    selected_count = 0
+    total_candidate_products = 0
+
+    for source_key in sorted(source_keys):
+        page_number = 1
+        while True:
+            if max_pages and page_number > max_pages:
+                break
+            parsed, page_meta, rows = pearl_river_life_fetch_product_page(source_key, page_number, page_size)
+            if page_meta["status"] < 200 or page_meta["status"] >= 300 or not parsed:
+                failed_pages.append(page_meta)
+                pages.append(page_meta)
+                break
+            if not rows:
+                break
+            page_products = pearl_river_life_products_from_rows(company, source_key, rows, page_number)
+            total_candidate_products += len(page_products)
+            for product in page_products:
+                if skipped_products < offset:
+                    skipped_products += 1
+                    continue
+                if max_products and selected_count >= max_products:
+                    continue
+                selected_count += 1
+                page_meta["productCount"] += 1
+                products.append({key: value for key, value in product.items() if key != "materials"})
+                for material in product.get("materials", []):
+                    material_url = trim(material.get("url"))
+                    if not material_url or material_url in seen_task_urls:
+                        continue
+                    seen_task_urls.add(material_url)
+                    page_meta["materialTaskCount"] += 1
+                    tasks.append(
+                        {
+                            "company": company,
+                            "productName": trim(product.get("productName")),
+                            "productType": trim(product.get("productType")),
+                            "salesStatus": trim(product.get("salesStatus")),
+                            "label": trim(material.get("label")),
+                            "materialType": trim(material.get("materialType")),
+                            "url": material_url,
+                            "sourcePage": trim(product.get("sourcePage")),
+                            "sourceList": source_key,
+                            "sourceLabel": trim(product.get("sourceLabel")),
+                            "sourcePageNumber": str(product.get("sourcePageNumber") or 0),
+                            "sourceIndex": str(product.get("sourceIndex") or 0),
+                            "rawMaterialLabel": trim(material.get("sourceLabel")),
+                            "pdfArchiveDir": pdf_archive_dir,
+                        }
+                    )
+            pages.append(page_meta)
+            total_pages = int(page_meta.get("totalPages") or 0)
+            if total_pages <= page_number:
+                break
+            if max_products and selected_count >= max_products:
+                break
+            page_number += 1
+
+    records = crawl_pearl_river_life_material_records(tasks, max_workers=max_workers)
+    task_source_by_url = {trim(task.get("url")): trim(task.get("sourceList")) for task in tasks}
+    task_page_by_url = {trim(task.get("url")): int(task.get("sourcePageNumber") or 0) for task in tasks}
+    count_by_source_page: dict[str, int] = {}
+    quality_split: dict[str, int] = {}
+    for record in records:
+        material_url = trim(record.get("url"))
+        source_key = task_source_by_url.get(material_url)
+        page_number = task_page_by_url.get(material_url)
+        if source_key and page_number:
+            key = f"{source_key}|{page_number}"
+            count_by_source_page[key] = count_by_source_page.get(key, 0) + 1
+        quality = trim(record.get("responsibilityQualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = count_by_source_page.get(f"{page_meta.get('sourceList')}|{page_meta.get('pageNumber')}", 0)
+
+    return {
+        "ok": not failed_pages,
+        "code": "" if not failed_pages else "PEARL_RIVER_LIFE_PAGE_FAILED",
+        "company": company,
+        "source": PEARL_RIVER_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": PEARL_RIVER_LIFE_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(PEARL_RIVER_LIFE_OFFICIAL_DOMAINS),
+        "sourceKeys": sorted(source_keys),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxPages": max_pages,
+        "pageSize": page_size,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "failedPages": failed_pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "qualitySplit": quality_split,
+        "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+    }
+
+
+def hetai_life_source_filter(value: str) -> set[str]:
+    selected = {item.strip().lower() for item in re.split(r"[,，\s]+", trim(value)) if item.strip()}
+    if not selected or "all" in selected or "全部" in selected:
+        return set(HETAI_LIFE_PRODUCT_STATUSES.keys())
+    aliases = {
+        "sale": "in_sale",
+        "sales": "in_sale",
+        "in-sale": "in_sale",
+        "in_sale": "in_sale",
+        "active": "in_sale",
+        "在售": "in_sale",
+        "stopped": "stopped",
+        "stop": "stopped",
+        "discontinued": "stopped",
+        "停售": "stopped",
+    }
+    return {aliases.get(item, item) for item in selected if aliases.get(item, item) in HETAI_LIFE_PRODUCT_STATUSES}
+
+
+def hetai_life_is_official_url(url: str) -> bool:
+    hostname = trim(urlsplit(url).hostname).lower()
+    return hostname in HETAI_LIFE_OFFICIAL_DOMAINS
+
+
+def hetai_life_material_url(value: str) -> str:
+    raw = trim(value)
+    if not raw:
+        return ""
+    if raw.startswith("//"):
+        return f"https:{raw}"
+    return urljoin(HETAI_LIFE_OFFICIAL_BASE_URL, raw)
+
+
+def hetai_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    labels: list[str] = []
+    if "医疗" in name or "住院" in name or "津贴" in name:
+        labels.append("医疗险")
+    if "重大疾病" in name or "重疾" in name or "恶性肿瘤" in name or "特定疾病" in name or "防癌" in name:
+        labels.append("重疾险")
+    if "意外" in name or "交通工具" in name:
+        labels.append("意外险")
+    if "护理" in name:
+        labels.append("护理险")
+    if "年金" in name or "养老" in name or "教育" in name:
+        labels.append("年金险")
+    if "两全" in name:
+        labels.append("两全保险")
+    if "定期寿险" in name:
+        labels.append("定期寿险")
+    if "万能" in name:
+        labels.append("万能账户")
+    if "投连" in name or "投资连结" in name:
+        labels.append("投连险")
+    if ("增额" in name or "增多多" in name) and "终身寿" in name:
+        labels.append("增额终身寿险")
+    return "、".join(dict.fromkeys(labels)) or "其他"
+
+
+def hetai_life_fetch_product_page(
+    status_key: str,
+    page_number: int,
+    page_size: int,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    profile = HETAI_LIFE_PRODUCT_STATUSES[status_key]
+    request_payload = {
+        "ifWebView": "T",
+        "ifSelling": trim(profile.get("ifSelling")),
+        "showHead": "T",
+        "page": page_number,
+        "pageSize": page_size,
+    }
+    request = urllib.request.Request(
+        HETAI_LIFE_PRODUCT_LIST_ENDPOINT,
+        data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": HETAI_LIFE_PRODUCT_INFO_URL,
+            "Content-Type": "application/json;charset=UTF-8",
+        },
+        method="POST",
+    )
+    status = 0
+    parsed: dict[str, Any] = {}
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status = int(getattr(response, "status", 0) or 0)
+            parsed = json.loads(response.read().decode("utf-8", "ignore"))
+    except Exception:
+        parsed = {}
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else {}
+    rows = data.get("pageData") if isinstance(data.get("pageData"), list) else []
+    total_records = int(data.get("rowTotal") or len(rows))
+    total_pages = max(1, (total_records + page_size - 1) // page_size) if total_records else 0
+    page_meta = {
+        "url": HETAI_LIFE_PRODUCT_LIST_ENDPOINT,
+        "status": status,
+        "sourceList": status_key,
+        "label": trim(profile.get("label")),
+        "salesStatus": trim(profile.get("salesStatus")),
+        "pageNumber": page_number,
+        "pageSize": page_size,
+        "totalPages": total_pages,
+        "totalRecords": total_records,
+        "productCount": 0,
+        "materialTaskCount": 0,
+        "recordCount": 0,
+    }
+    return parsed, page_meta, rows
+
+
+def hetai_life_materials_from_row(row: dict[str, Any]) -> list[dict[str, str]]:
+    materials: list[dict[str, str]] = []
+    license_file = row.get("licenseFile") if isinstance(row.get("licenseFile"), dict) else {}
+    license_url = hetai_life_material_url(license_file.get("link"))
+    if license_url and ".pdf" in license_url.lower() and hetai_life_is_official_url(license_url):
+        materials.append(
+            {
+                "label": "保险条款",
+                "materialType": "terms",
+                "url": license_url,
+                "fileId": trim(license_file.get("fileId")),
+            }
+        )
+    instruction_book = row.get("instructionBook") if isinstance(row.get("instructionBook"), dict) else {}
+    instruction_url = hetai_life_material_url(instruction_book.get("link"))
+    if instruction_url and ".pdf" in instruction_url.lower() and hetai_life_is_official_url(instruction_url):
+        materials.append(
+            {
+                "label": "产品说明书",
+                "materialType": "product_manual",
+                "url": instruction_url,
+                "fileId": trim(instruction_book.get("fileId")),
+            }
+        )
+    return materials
+
+
+def hetai_life_products_from_rows(
+    company: str,
+    status_key: str,
+    rows: list[dict[str, Any]],
+    page_number: int,
+) -> list[dict[str, Any]]:
+    profile = HETAI_LIFE_PRODUCT_STATUSES[status_key]
+    products: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows, 1):
+        product_name = clean_text(str(row.get("productName") or ""))
+        materials = hetai_life_materials_from_row(row)
+        if not product_name or not materials:
+            continue
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": hetai_life_product_type(product_name),
+                "salesStatus": trim(profile.get("salesStatus")),
+                "sourcePage": HETAI_LIFE_PRODUCT_INFO_URL,
+                "sourceList": status_key,
+                "sourceLabel": trim(profile.get("label")),
+                "sourcePageNumber": page_number,
+                "sourceIndex": row_index,
+                "sourceProductId": trim(row.get("id")),
+                "identifyNo": trim(row.get("identifyNo")),
+                "licenseNo": trim(row.get("licenseNo")),
+                "riskLevel": trim(row.get("riskLevel")),
+                "stopSaleTime": trim(row.get("stopSaleTime")),
+                "stopSaleReason": trim(row.get("stopSaleReason")),
+                "reportNo": trim(row.get("reportNo")),
+                "materials": materials,
+            }
+        )
+    return products
+
+
+def hetai_life_responsibility_quality(page_text: str) -> tuple[str, str]:
+    text = trim(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_extraction_failed"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_benefit_trigger_or_payment"
+    if re.match(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def crawl_hetai_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not hetai_life_is_official_url(material_url):
+        return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or HETAI_LIFE_PRODUCT_INFO_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = hetai_life_responsibility_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    hostname = trim(urlsplit(material_url).hostname).lower()
+    return {
+        "company": trim(task.get("company")) or "和泰人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"和泰人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": hostname or HETAI_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_hetai_life_product_clause",
+        "qualityStatus": quality_status,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "sourceLabel": trim(task.get("sourceLabel")),
+        "sourcePageNumber": int(task.get("sourcePageNumber") or 0),
+        "sourceIndex": int(task.get("sourceIndex") or 0),
+        "sourceProductId": trim(task.get("sourceProductId")),
+        "identifyNo": trim(task.get("identifyNo")),
+        "licenseNo": trim(task.get("licenseNo")),
+        "riskLevel": trim(task.get("riskLevel")),
+        "stopSaleTime": trim(task.get("stopSaleTime")),
+        "stopSaleReason": trim(task.get("stopSaleReason")),
+        "reportNo": trim(task.get("reportNo")),
+        "fileId": trim(task.get("fileId")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
+    }
+
+
+def crawl_hetai_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_hetai_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_hetai_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_hetai_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "和泰人寿"
+    source_keys = hetai_life_source_filter(trim(payload.get("source") or payload.get("sourcePage") or "all"))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_pages = max(0, int(payload.get("maxPages") or 0))
+    page_size = max(1, min(500, int(payload.get("pageSize") or 500)))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    failed_pages: list[dict[str, Any]] = []
+    seen_task_urls: set[str] = set()
+    skipped_products = 0
+    selected_count = 0
+    total_candidate_products = 0
+
+    for source_key in sorted(source_keys):
+        page_number = 1
+        while True:
+            if max_pages and page_number > max_pages:
+                break
+            parsed, page_meta, rows = hetai_life_fetch_product_page(source_key, page_number, page_size)
+            if page_meta["status"] < 200 or page_meta["status"] >= 300 or str(parsed.get("rt_code")) != "0":
+                failed_pages.append(page_meta)
+                pages.append(page_meta)
+                break
+            if not rows:
+                break
+            page_products = hetai_life_products_from_rows(company, source_key, rows, page_number)
+            total_candidate_products += len(page_products)
+            for product in page_products:
+                if skipped_products < offset:
+                    skipped_products += 1
+                    continue
+                if max_products and selected_count >= max_products:
+                    continue
+                selected_count += 1
+                page_meta["productCount"] += 1
+                products.append({key: value for key, value in product.items() if key != "materials"})
+                for material in product.get("materials", []):
+                    material_url = trim(material.get("url"))
+                    if not material_url or material_url in seen_task_urls:
+                        continue
+                    seen_task_urls.add(material_url)
+                    page_meta["materialTaskCount"] += 1
+                    tasks.append(
+                        {
+                            "company": company,
+                            "productName": trim(product.get("productName")),
+                            "productType": trim(product.get("productType")),
+                            "salesStatus": trim(product.get("salesStatus")),
+                            "label": trim(material.get("label")),
+                            "materialType": trim(material.get("materialType")),
+                            "url": material_url,
+                            "sourcePage": trim(product.get("sourcePage")),
+                            "sourceList": source_key,
+                            "sourceLabel": trim(product.get("sourceLabel")),
+                            "sourcePageNumber": str(product.get("sourcePageNumber") or 0),
+                            "sourceIndex": str(product.get("sourceIndex") or 0),
+                            "sourceProductId": trim(product.get("sourceProductId")),
+                            "identifyNo": trim(product.get("identifyNo")),
+                            "licenseNo": trim(product.get("licenseNo")),
+                            "riskLevel": trim(product.get("riskLevel")),
+                            "stopSaleTime": trim(product.get("stopSaleTime")),
+                            "stopSaleReason": trim(product.get("stopSaleReason")),
+                            "reportNo": trim(product.get("reportNo")),
+                            "fileId": trim(material.get("fileId")),
+                            "pdfArchiveDir": pdf_archive_dir,
+                        }
+                    )
+            pages.append(page_meta)
+            total_pages = int(page_meta.get("totalPages") or 0)
+            if total_pages <= page_number:
+                break
+            if max_products and selected_count >= max_products:
+                break
+            page_number += 1
+
+    records = crawl_hetai_life_material_records(tasks, max_workers=max_workers)
+    task_source_by_url = {trim(task.get("url")): trim(task.get("sourceList")) for task in tasks}
+    task_page_by_url = {trim(task.get("url")): int(task.get("sourcePageNumber") or 0) for task in tasks}
+    count_by_source_page: dict[str, int] = {}
+    quality_split: dict[str, int] = {}
+    for record in records:
+        material_url = trim(record.get("url"))
+        source_key = task_source_by_url.get(material_url)
+        page_number = task_page_by_url.get(material_url)
+        if source_key and page_number:
+            key = f"{source_key}|{page_number}"
+            count_by_source_page[key] = count_by_source_page.get(key, 0) + 1
+        quality = trim(record.get("responsibilityQualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = count_by_source_page.get(f"{page_meta.get('sourceList')}|{page_meta.get('pageNumber')}", 0)
+
+    return {
+        "ok": not failed_pages,
+        "code": "" if not failed_pages else "HETAI_LIFE_PAGE_FAILED",
+        "company": company,
+        "source": HETAI_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": HETAI_LIFE_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(HETAI_LIFE_OFFICIAL_DOMAINS),
+        "sourceKeys": sorted(source_keys),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxPages": max_pages,
+        "pageSize": page_size,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "failedPages": failed_pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "qualitySplit": quality_split,
+        "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+    }
+
+
+def funde_life_source_filter(value: str) -> set[str]:
+    selected = {item.strip().lower() for item in re.split(r"[,，\s]+", trim(value)) if item.strip()}
+    if not selected or "all" in selected or "全部" in selected:
+        return {"product_list"}
+    aliases = {
+        "product": "product_list",
+        "products": "product_list",
+        "product-list": "product_list",
+        "product_list": "product_list",
+        "main": "product_list",
+        "jycp": "product_list",
+        "在售": "product_list",
+        "停售": "product_list",
+        "产品": "product_list",
+    }
+    return {aliases.get(item, item) for item in selected if aliases.get(item, item) == "product_list"}
+
+
+def funde_life_is_official_url(url: str) -> bool:
+    hostname = trim(urlsplit(url).hostname).lower()
+    return hostname in FUNDE_LIFE_OFFICIAL_DOMAINS
+
+
+def funde_life_material_url(value: str) -> str:
+    raw = trim(value)
+    if not raw:
+        return ""
+    if raw.startswith("//"):
+        return f"https:{raw}"
+    return urljoin(FUNDE_LIFE_OFFICIAL_BASE_URL, raw)
+
+
+def funde_life_product_type(product_name: str) -> str:
+    return hetai_life_product_type(product_name)
+
+
+def funde_life_fetch_product_list() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    status = 0
+    text = ""
+    request = urllib.request.Request(
+        FUNDE_LIFE_PRODUCT_LIST_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": FUNDE_LIFE_PRODUCT_INFO_URL,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status = int(getattr(response, "status", 0) or 0)
+            text = response.read().decode("utf-8", "ignore")
+    except Exception:
+        status, text = fetch_html_direct(FUNDE_LIFE_PRODUCT_LIST_URL, referer=FUNDE_LIFE_PRODUCT_INFO_URL)
+    rows: list[dict[str, Any]] = []
+    try:
+        parsed = json.loads(text.lstrip("\ufeff"))
+        if isinstance(parsed, list):
+            rows = [row for row in parsed if isinstance(row, dict)]
+    except Exception:
+        rows = []
+    page_meta = {
+        "url": FUNDE_LIFE_PRODUCT_LIST_URL,
+        "status": status,
+        "sourceList": "product_list",
+        "label": "在售/停售产品及变更信息",
+        "salesStatus": "混合",
+        "pageNumber": 1,
+        "pageSize": len(rows),
+        "totalPages": 1 if rows else 0,
+        "totalRecords": len(rows),
+        "productCount": 0,
+        "materialTaskCount": 0,
+        "recordCount": 0,
+    }
+    return page_meta, rows
+
+
+def funde_life_add_material(
+    materials: list[dict[str, str]],
+    row: dict[str, Any],
+    key: str,
+    label: str,
+    material_type: str,
+) -> None:
+    material_url = funde_life_material_url(str(row.get(key) or ""))
+    if not material_url or ".pdf" not in material_url.lower() or not funde_life_is_official_url(material_url):
+        return
+    materials.append(
+        {
+            "label": label,
+            "materialType": material_type,
+            "url": material_url,
+            "sourceMaterialKey": key,
+        }
+    )
+
+
+def funde_life_materials_from_row(row: dict[str, Any]) -> list[dict[str, str]]:
+    materials: list[dict[str, str]] = []
+    funde_life_add_material(materials, row, "tk", "保险条款", "terms")
+    for index in range(1, 5):
+        key = f"tk{index}"
+        version_time = trim(row.get(f"{key}_time"))
+        label = f"保险条款（{version_time}版本）" if version_time else f"保险条款（版本{index}）"
+        funde_life_add_material(materials, row, key, label, "terms")
+    funde_life_add_material(materials, row, "cpsm", "产品说明", "product_manual")
+    funde_life_add_material(materials, row, "cpsms", "产品说明书", "product_manual")
+    for index in range(1, 5):
+        funde_life_add_material(materials, row, f"cpsm{index}", f"产品说明（版本{index}）", "product_manual")
+        funde_life_add_material(materials, row, f"cpsms{index}", f"产品说明书（版本{index}）", "product_manual")
+    return materials
+
+
+def funde_life_products_from_rows(company: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    products: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows, 1):
+        product_name = clean_text(str(row.get("title") or row.get("tit") or ""))
+        materials = funde_life_materials_from_row(row)
+        if not product_name or not materials:
+            continue
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": funde_life_product_type(product_name),
+                "salesStatus": trim(row.get("status")) or "未知",
+                "sourcePage": FUNDE_LIFE_PRODUCT_INFO_URL,
+                "sourceList": "product_list",
+                "sourceLabel": "在售/停售产品及变更信息",
+                "sourcePageNumber": 1,
+                "sourceIndex": row_index,
+                "listingTime": trim(row.get("time")),
+                "riskGrade": trim(row.get("grade")),
+                "materials": materials,
+            }
+        )
+    return products
+
+
+def funde_life_responsibility_quality(page_text: str) -> tuple[str, str]:
+    text = trim(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_extraction_failed"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_benefit_trigger_or_payment"
+    if re.match(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def crawl_funde_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not funde_life_is_official_url(material_url):
+        return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or FUNDE_LIFE_PRODUCT_INFO_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = funde_life_responsibility_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    hostname = trim(urlsplit(material_url).hostname).lower()
+    return {
+        "company": trim(task.get("company")) or "富德生命",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"富德生命官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": hostname or FUNDE_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_funde_life_product_list",
+        "qualityStatus": quality_status,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "sourceLabel": trim(task.get("sourceLabel")),
+        "sourcePageNumber": int(task.get("sourcePageNumber") or 0),
+        "sourceIndex": int(task.get("sourceIndex") or 0),
+        "sourceMaterialKey": trim(task.get("sourceMaterialKey")),
+        "listingTime": trim(task.get("listingTime")),
+        "riskGrade": trim(task.get("riskGrade")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
+    }
+
+
+def crawl_funde_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_funde_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_funde_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_funde_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "富德生命"
+    source_keys = funde_life_source_filter(trim(payload.get("source") or payload.get("sourcePage") or "all"))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    failed_pages: list[dict[str, Any]] = []
+    seen_task_urls: set[str] = set()
+    skipped_products = 0
+    selected_count = 0
+    total_candidate_products = 0
+
+    if "product_list" in source_keys:
+        page_meta, rows = funde_life_fetch_product_list()
+        if page_meta["status"] < 200 or page_meta["status"] >= 300 or not rows:
+            failed_pages.append(page_meta)
+            pages.append(page_meta)
+        else:
+            page_products = funde_life_products_from_rows(company, rows)
+            total_candidate_products += len(page_products)
+            for product in page_products:
+                if skipped_products < offset:
+                    skipped_products += 1
+                    continue
+                if max_products and selected_count >= max_products:
+                    continue
+                selected_count += 1
+                page_meta["productCount"] += 1
+                products.append({key: value for key, value in product.items() if key != "materials"})
+                for material in product.get("materials", []):
+                    material_url = trim(material.get("url"))
+                    if not material_url or material_url in seen_task_urls:
+                        continue
+                    seen_task_urls.add(material_url)
+                    page_meta["materialTaskCount"] += 1
+                    tasks.append(
+                        {
+                            "company": company,
+                            "productName": trim(product.get("productName")),
+                            "productType": trim(product.get("productType")),
+                            "salesStatus": trim(product.get("salesStatus")),
+                            "label": trim(material.get("label")),
+                            "materialType": trim(material.get("materialType")),
+                            "url": material_url,
+                            "sourcePage": trim(product.get("sourcePage")),
+                            "sourceList": trim(product.get("sourceList")),
+                            "sourceLabel": trim(product.get("sourceLabel")),
+                            "sourcePageNumber": str(product.get("sourcePageNumber") or 0),
+                            "sourceIndex": str(product.get("sourceIndex") or 0),
+                            "sourceMaterialKey": trim(material.get("sourceMaterialKey")),
+                            "listingTime": trim(product.get("listingTime")),
+                            "riskGrade": trim(product.get("riskGrade")),
+                            "pdfArchiveDir": pdf_archive_dir,
+                        }
+                    )
+            pages.append(page_meta)
+
+    records = crawl_funde_life_material_records(tasks, max_workers=max_workers)
+    quality_split: dict[str, int] = {}
+    for record in records:
+        quality = trim(record.get("responsibilityQualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = len(records) if page_meta.get("sourceList") == "product_list" else 0
+
+    return {
+        "ok": not failed_pages,
+        "code": "" if not failed_pages else "FUNDE_LIFE_PAGE_FAILED",
+        "company": company,
+        "source": FUNDE_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": FUNDE_LIFE_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(FUNDE_LIFE_OFFICIAL_DOMAINS),
+        "sourceKeys": sorted(source_keys),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "failedPages": failed_pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "qualitySplit": quality_split,
+        "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
+    }
+
+
+def dajia_life_source_filter(value: str) -> set[str]:
+    selected = {item.strip().lower() for item in re.split(r"[,，\s]+", trim(value)) if item.strip()}
+    if not selected or "all" in selected or "全部" in selected:
+        return set(DAJIA_LIFE_PRODUCT_PAGES.keys())
+    aliases = {
+        "sale": "in_sale",
+        "sales": "in_sale",
+        "in-sale": "in_sale",
+        "in_sale": "in_sale",
+        "active": "in_sale",
+        "在售": "in_sale",
+        "stopped": "stopped",
+        "stop": "stopped",
+        "discontinued": "stopped",
+        "停售": "stopped",
+    }
+    return {aliases.get(item, item) for item in selected if aliases.get(item, item) in DAJIA_LIFE_PRODUCT_PAGES}
+
+
+def dajia_life_is_official_url(url: str) -> bool:
+    hostname = trim(urlsplit(url).hostname).lower()
+    return hostname in DAJIA_LIFE_OFFICIAL_DOMAINS
+
+
+def dajia_life_material_url(value: str, page_url: str) -> str:
+    raw = trim(value)
+    if not raw:
+        return ""
+    material_url = urljoin(page_url, raw)
+    if "downfile.jsp" not in material_url:
+        return material_url
+    query = parse_qs(urlsplit(material_url).query)
+    filename = trim((query.get("filename") or [""])[0])
+    if not filename:
+        return material_url
+    return urljoin(page_url, f"/attach/0/{filename}")
+
+
+def dajia_life_product_type(product_name: str) -> str:
+    return hetai_life_product_type(product_name)
+
+
+def dajia_life_material_type(label: str) -> str:
+    if "说明" in label:
+        return "product_manual"
+    if "条款" in label:
+        return "terms"
+    return ""
+
+
+def dajia_life_fetch_product_page(source_key: str) -> tuple[dict[str, Any], str]:
+    profile = DAJIA_LIFE_PRODUCT_PAGES[source_key]
+    status, html = fetch_html_direct(profile["url"], referer=DAJIA_LIFE_PRODUCT_INFO_URL)
+    if (status < 200 or status >= 300 or not html) and not html:
+        try:
+            status, html = fetch_html(profile["url"])
+        except Exception:
+            status, html = 0, ""
+    page_meta = {
+        "url": profile["url"],
+        "status": status,
+        "sourceList": source_key,
+        "label": profile["label"],
+        "salesStatus": profile["salesStatus"],
+        "pageNumber": 1,
+        "pageSize": 0,
+        "totalPages": 1 if html else 0,
+        "totalRecords": 0,
+        "productCount": 0,
+        "materialTaskCount": 0,
+        "recordCount": 0,
+    }
+    return page_meta, html
+
+
+def dajia_life_products_from_html(
+    company: str,
+    source_key: str,
+    html: str,
+) -> list[dict[str, Any]]:
+    profile = DAJIA_LIFE_PRODUCT_PAGES[source_key]
+    products: list[dict[str, Any]] = []
+    page_url = profile["url"]
+    row_pattern = re.compile(r"<tr>\s*<td[^>]*>\s*(\d+)\s*</td>(?P<body>.*?)(?:</tr>|(?=\s*<tr>))", re.S)
+    seen_rows: set[str] = set()
+    for match in row_pattern.finditer(html):
+        row_html = f"<tr><td>{match.group(1)}</td>{match.group('body')}</tr>"
+        soup = BeautifulSoup(row_html, "html.parser")
+        cells = soup.find_all("td")
+        values = [clean_text(cell.get_text(" ", strip=True)) for cell in cells]
+        if len(values) < 3:
+            continue
+        seq = trim(values[0])
+        product_name = clean_text(values[1])
+        sales_status = trim(values[2])
+        if not re.fullmatch(r"\d+", seq) or sales_status not in {"在售", "停售"} or not product_name:
+            continue
+        row_key = f"{seq}|{product_name}|{sales_status}"
+        if row_key in seen_rows:
+            continue
+        seen_rows.add(row_key)
+        materials: list[dict[str, str]] = []
+        seen_material_urls: set[str] = set()
+        for anchor in soup.find_all("a", href=True):
+            label = clean_text(anchor.get_text(" ", strip=True))
+            material_type = dajia_life_material_type(label)
+            if not material_type:
+                continue
+            material_url = dajia_life_material_url(trim(anchor.get("href")), page_url)
+            if not material_url or ".pdf" not in material_url.lower() or not dajia_life_is_official_url(material_url):
+                continue
+            if material_url in seen_material_urls:
+                continue
+            seen_material_urls.add(material_url)
+            materials.append({"label": label, "materialType": material_type, "url": material_url})
+        if not materials:
+            continue
+        products.append(
+            {
+                "company": company,
+                "productName": product_name,
+                "productType": dajia_life_product_type(product_name),
+                "salesStatus": sales_status,
+                "sourcePage": page_url,
+                "sourceList": source_key,
+                "sourceLabel": profile["label"],
+                "sourcePageNumber": 1,
+                "sourceIndex": int(seq),
+                "riskGrade": trim(values[-1]),
+                "materials": materials,
+            }
+        )
+    return products
+
+
+def dajia_life_responsibility_quality(page_text: str) -> tuple[str, str]:
+    text = trim(page_text)
+    if not text:
+        return "invalid_empty", "blank_or_extraction_failed"
+    if not has_actual_responsibility_text(text):
+        return "invalid_non_responsibility", "no_benefit_trigger_or_payment"
+    if re.match(r"^(保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外)", text):
+        return "valid_partial", "starts_mid_clause"
+    return "valid_complete", ""
+
+
+def crawl_dajia_life_material_record(task: dict[str, str]) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    if not material_url or not dajia_life_is_official_url(material_url):
+        return None
+    pdf_archive_dir = trim(task.get("pdfArchiveDir"))
+    pdf_status, content_type, data = fetch_binary_direct(
+        material_url,
+        referer=trim(task.get("sourcePage")) or DAJIA_LIFE_PRODUCT_INFO_URL,
+    )
+    if pdf_status < 200 or pdf_status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_issue = dajia_life_responsibility_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "保险条款"
+    hostname = trim(urlsplit(material_url).hostname).lower()
+    return {
+        "company": trim(task.get("company")) or "大家人寿",
+        "productName": product_name,
+        "productType": trim(task.get("productType")),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"大家人寿官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")),
+        "official": True,
+        "officialDomain": hostname or DAJIA_LIFE_OFFICIAL_DOMAIN,
+        "parser": "scrapling_dajia_life_product_directory",
+        "qualityStatus": quality_status,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_issue,
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+        "contentType": content_type,
+        "sourcePage": trim(task.get("sourcePage")),
+        "sourceList": trim(task.get("sourceList")),
+        "sourceLabel": trim(task.get("sourceLabel")),
+        "sourcePageNumber": int(task.get("sourcePageNumber") or 0),
+        "sourceIndex": int(task.get("sourceIndex") or 0),
+        "riskGrade": trim(task.get("riskGrade")),
+        **archive_pdf_bytes(data, pdf_archive_dir, material_url),
+    }
+
+
+def crawl_dajia_life_material_records(tasks: list[dict[str, str]], max_workers: int) -> list[dict[str, Any]]:
+    if not tasks:
+        return []
+    if max_workers <= 1:
+        return [record for record in (crawl_dajia_life_material_record(task) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(crawl_dajia_life_material_record, task) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return sorted(records, key=lambda record: trim(record.get("url")))
+
+
+def crawl_dajia_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "大家人寿"
+    source_keys = dajia_life_source_filter(trim(payload.get("source") or payload.get("sourcePage") or "all"))
+    offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    pdf_archive_dir = resolve_pdf_archive_dir(payload)
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    failed_pages: list[dict[str, Any]] = []
+    seen_task_urls: set[str] = set()
+    skipped_products = 0
+    selected_count = 0
+    total_candidate_products = 0
+
+    for source_key in sorted(source_keys):
+        page_meta, html = dajia_life_fetch_product_page(source_key)
+        if page_meta["status"] < 200 or page_meta["status"] >= 300 or not html:
+            failed_pages.append(page_meta)
+            pages.append(page_meta)
+            continue
+        page_products = dajia_life_products_from_html(company, source_key, html)
+        page_meta["totalRecords"] = len(page_products)
+        page_meta["pageSize"] = len(page_products)
+        total_candidate_products += len(page_products)
+        for product in page_products:
+            if skipped_products < offset:
+                skipped_products += 1
+                continue
+            if max_products and selected_count >= max_products:
+                continue
+            selected_count += 1
+            page_meta["productCount"] += 1
+            products.append({key: value for key, value in product.items() if key != "materials"})
+            for material in product.get("materials", []):
+                material_url = trim(material.get("url"))
+                if not material_url or material_url in seen_task_urls:
+                    continue
+                seen_task_urls.add(material_url)
+                page_meta["materialTaskCount"] += 1
+                tasks.append(
+                    {
+                        "company": company,
+                        "productName": trim(product.get("productName")),
+                        "productType": trim(product.get("productType")),
+                        "salesStatus": trim(product.get("salesStatus")),
+                        "label": trim(material.get("label")),
+                        "materialType": trim(material.get("materialType")),
+                        "url": material_url,
+                        "sourcePage": trim(product.get("sourcePage")),
+                        "sourceList": trim(product.get("sourceList")),
+                        "sourceLabel": trim(product.get("sourceLabel")),
+                        "sourcePageNumber": str(product.get("sourcePageNumber") or 0),
+                        "sourceIndex": str(product.get("sourceIndex") or 0),
+                        "riskGrade": trim(product.get("riskGrade")),
+                        "pdfArchiveDir": pdf_archive_dir,
+                    }
+                )
+        pages.append(page_meta)
+
+    records = crawl_dajia_life_material_records(tasks, max_workers=max_workers)
+    task_source_by_url = {trim(task.get("url")): trim(task.get("sourceList")) for task in tasks}
+    count_by_source: dict[str, int] = {}
+    quality_split: dict[str, int] = {}
+    for record in records:
+        source_key = task_source_by_url.get(trim(record.get("url")))
+        if source_key:
+            count_by_source[source_key] = count_by_source.get(source_key, 0) + 1
+        quality = trim(record.get("responsibilityQualityStatus")) or "unknown"
+        quality_split[quality] = quality_split.get(quality, 0) + 1
+    for page_meta in pages:
+        page_meta["recordCount"] = count_by_source.get(trim(page_meta.get("sourceList")), 0)
+
+    return {
+        "ok": not failed_pages,
+        "code": "" if not failed_pages else "DAJIA_LIFE_PAGE_FAILED",
+        "company": company,
+        "source": DAJIA_LIFE_PRODUCT_INFO_URL,
+        "officialDomain": DAJIA_LIFE_OFFICIAL_DOMAIN,
+        "officialDomains": sorted(DAJIA_LIFE_OFFICIAL_DOMAINS),
+        "sourceKeys": sorted(source_keys),
+        "offset": offset,
+        "maxProducts": max_products,
+        "maxWorkers": max_workers,
+        "totalCandidateProductCount": total_candidate_products,
+        "pages": pages,
+        "failedPages": failed_pages,
+        "products": products,
+        "materialTaskCount": len(tasks),
+        "qualitySplit": quality_split,
+        "records": records,
+        "pdfArchiveDir": pdf_archive_dir,
+        "archivedPdfCount": sum(1 for record in records if trim(record.get("pdfLocalPath"))),
     }
 
 
@@ -20854,6 +23026,18 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_guolian_life_pages(payload)
     if trim(payload.get("mode")) == "lian_life_pages":
         return crawl_lian_life_pages(payload)
+    if trim(payload.get("mode")) == "cigna_cmb_life_pages":
+        return crawl_cigna_cmb_life_pages(payload)
+    if trim(payload.get("mode")) == "hengansl_life_pages":
+        return crawl_hengansl_life_pages(payload)
+    if trim(payload.get("mode")) == "pearl_river_life_pages":
+        return crawl_pearl_river_life_pages(payload)
+    if trim(payload.get("mode")) == "hetai_life_pages":
+        return crawl_hetai_life_pages(payload)
+    if trim(payload.get("mode")) == "funde_life_pages":
+        return crawl_funde_life_pages(payload)
+    if trim(payload.get("mode")) == "dajia_life_pages":
+        return crawl_dajia_life_pages(payload)
     company = trim(payload.get("company"))
     product_name = trim(payload.get("name") or payload.get("productName"))
     if not company or not product_name:

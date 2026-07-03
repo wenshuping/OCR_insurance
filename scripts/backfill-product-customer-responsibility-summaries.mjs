@@ -2,11 +2,14 @@
 import fs from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 
-import { generateProductCustomerResponsibilitySummary } from '../server/product-customer-responsibility-summary.service.mjs';
+import {
+  CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+  generateProductCustomerResponsibilitySummary,
+} from '../server/product-customer-responsibility-summary.service.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
 const DEFAULT_DB_PATH = '.runtime/local/policy-ocr.sqlite';
-const V22_SUMMARY_VERSION = 'customer-summary-v22-structured-rag';
+const SUPPORTED_SUMMARY_VERSION = CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION;
 
 function text(value) {
   return String(value ?? '').trim();
@@ -28,8 +31,8 @@ function parseLimit(value, flag = 'limit') {
 
 function resolveSummaryVersion(value) {
   const version = text(value);
-  if (!version || version === 'v22' || version === V22_SUMMARY_VERSION) return V22_SUMMARY_VERSION;
-  throw new Error(`Only ${V22_SUMMARY_VERSION} is supported`);
+  if (!version || version === 'v24' || version === SUPPORTED_SUMMARY_VERSION) return SUPPORTED_SUMMARY_VERSION;
+  throw new Error(`Only ${SUPPORTED_SUMMARY_VERSION} is supported`);
 }
 
 async function fileExists(filePath) {
@@ -82,7 +85,7 @@ function categoryMatches(record, category) {
 
 export function parseBackfillArgs(argv = process.argv.slice(2)) {
   const args = {
-    summaryVersion: V22_SUMMARY_VERSION,
+    summaryVersion: SUPPORTED_SUMMARY_VERSION,
     limit: 50,
     company: '',
     category: '',
@@ -142,7 +145,7 @@ export function selectBackfillProducts({ knowledgeRecords = [], company = '', ca
 
 export async function backfillProductCustomerResponsibilitySummaries({
   dbPath = DEFAULT_DB_PATH,
-  summaryVersion = V22_SUMMARY_VERSION,
+  summaryVersion = SUPPORTED_SUMMARY_VERSION,
   limit = 50,
   company = '',
   category = '',

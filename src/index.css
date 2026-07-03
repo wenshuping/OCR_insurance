@@ -107,11 +107,10 @@ body {
 }
 
 .family-sales-review-markdown h2 {
-  margin-top: 1.75rem;
-  padding: 0.875rem 1rem;
-  border: 1px solid var(--sales-review-rule);
-  border-radius: 0.75rem;
-  background: #f7fafc;
+  position: relative;
+  margin-top: 2rem;
+  padding: 0 0 0.75rem 1rem;
+  border-bottom: 1px solid var(--sales-review-rule);
   font-size: 1.25rem;
 }
 
@@ -119,8 +118,21 @@ body {
   margin-top: 0;
 }
 
+.family-sales-review-markdown h2::before {
+  content: "";
+  position: absolute;
+  top: 0.1rem;
+  left: 0;
+  width: 0.28rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: #0b72b9;
+}
+
 .family-sales-review-markdown h3 {
-  margin-top: 1.25rem;
+  margin-top: 1.35rem;
+  padding-left: 0.75rem;
+  border-left: 3px solid #cfe2f2;
   font-size: 1.0625rem;
 }
 
@@ -164,22 +176,19 @@ body {
 
 .family-sales-review-markdown li {
   position: relative;
-  border: 1px solid #e0e8f0;
-  border-radius: 0.75rem;
-  background: #fbfdff;
   color: #273548;
   font-size: 0.96875rem;
   font-weight: 560;
   line-height: 1.65;
   overflow-wrap: anywhere;
-  padding: 0.75rem 0.875rem 0.75rem 2.25rem;
+  padding: 0 0 0 1.6rem;
 }
 
 .family-sales-review-markdown ul li::before {
   content: "";
   position: absolute;
-  top: 1.35rem;
-  left: 1rem;
+  top: 0.7rem;
+  left: 0.35rem;
   width: 0.45rem;
   height: 0.45rem;
   border-radius: 999px;
@@ -197,8 +206,8 @@ body {
 .family-sales-review-markdown ol li::before {
   content: counter(sales-review-list);
   position: absolute;
-  top: 0.78rem;
-  left: 0.75rem;
+  top: 0.25rem;
+  left: 0;
   display: inline-grid;
   width: 1.15rem;
   height: 1.15rem;
@@ -216,7 +225,7 @@ body {
   margin: 1rem 0 0;
   border: 1px solid #dce6f0;
   border-radius: 0.875rem;
-  background: #f8faf5;
+  background: #f7fbff;
   color: #304154;
   font-size: 1rem;
   font-weight: 600;
@@ -276,6 +285,40 @@ body {
 
 .family-sales-review-markdown :is(td, th) {
   font-variant-numeric: tabular-nums;
+}
+
+.family-policy-analysis-document .family-sales-review-markdown {
+  width: min(100%, 76ch);
+  font-size: 1.015rem;
+}
+
+.family-policy-analysis-document .family-sales-review-markdown h2 {
+  margin-left: -0.25rem;
+}
+
+.family-policy-analysis-document .family-sales-review-markdown > p:first-of-type {
+  border: 1px solid #d7e8f6;
+  border-radius: 0.875rem;
+  background: #f7fbff;
+  color: #1e3448;
+  font-weight: 650;
+  padding: 0.95rem 1rem;
+}
+
+@media (max-width: 640px) {
+  .family-sales-review-markdown {
+    font-size: 0.96875rem;
+    line-height: 1.62;
+  }
+
+  .family-sales-review-markdown h2 {
+    font-size: 1.125rem;
+    padding-bottom: 0.65rem;
+  }
+
+  .family-sales-review-markdown p {
+    font-size: 0.96875rem;
+  }
 }
 
 @theme {

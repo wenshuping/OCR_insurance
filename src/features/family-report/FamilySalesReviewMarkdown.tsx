@@ -20,6 +20,7 @@ function salesReviewDisplayTerm(value: string) {
 
 function normalizeSalesReviewMarkdownText(value: string) {
   return String(value || '')
+    .replace(/<br\s*\/?>/giu, '\n')
     .replace(/`([^`]+)`/gu, (match, token) => salesReviewDisplayTerm(String(token || '')) || match)
     .replace(/\bduplicatePolicyHints\b/giu, '重复保单提示')
     .replace(/\bevidenceWarnings\b/giu, '条款证据冲突')
@@ -249,7 +250,7 @@ export function FamilySalesReviewMarkdown({ content }: { content: string }) {
                     <tr key={`${key}-row-${rowIndex}`}>
                       {block.headers.map((_header, cellIndex) => (
                         <td key={`${key}-row-${rowIndex}-cell-${cellIndex}`}>
-                          {renderInlineMarkdown(row[cellIndex] || '', `${key}-row-${rowIndex}-cell-${cellIndex}`)}
+                          {renderParagraphText(row[cellIndex] || '', `${key}-row-${rowIndex}-cell-${cellIndex}`)}
                         </td>
                       ))}
                     </tr>

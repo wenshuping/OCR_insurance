@@ -1,5 +1,5 @@
 import type { User } from '../client';
-import type { FamilyMember, FamilyProfile, FamilyReportRecord, FamilySalesReview } from './family';
+import type { FamilyMember, FamilyProfile, FamilyReportRecord, FamilySalesChatThread, FamilySalesReview } from './family';
 import type { KnowledgeRecord, Policy, SourceRecord } from './policy';
 import type { OptionalResponsibility, QuantificationStatus } from './responsibility';
 import { request } from '../client';
@@ -213,6 +213,10 @@ export function createAdminFamilyReport(token: string, familyId: number) {
 
 export function getAdminFamilySalesReview(token: string, familyId: number) {
   return request<{ ok: true; review: FamilySalesReview | null }>(`/api/admin/families/${encodeURIComponent(String(familyId))}/sales-review`, { token });
+}
+
+export function getAdminFamilySalesChatThreads(token: string, familyId: number) {
+  return request<{ ok: true; threads: FamilySalesChatThread[] }>(`/api/admin/families/${encodeURIComponent(String(familyId))}/sales-chat/threads`, { token });
 }
 
 export function getAdminReportIssues(token: string) {

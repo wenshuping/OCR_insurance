@@ -1812,6 +1812,8 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.familyReportIssues)) state.familyReportIssues = [];
   if (!Array.isArray(state.familyReportShares)) state.familyReportShares = [];
   if (!Array.isArray(state.familySalesReviews)) state.familySalesReviews = [];
+  if (!Array.isArray(state.familySalesChatThreads)) state.familySalesChatThreads = [];
+  if (!Array.isArray(state.familySalesChatMessages)) state.familySalesChatMessages = [];
   if (!state.membershipConfig) state.membershipConfig = null;
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
   if (!Array.isArray(state.memberships)) state.memberships = [];
@@ -2027,6 +2029,7 @@ export function createPolicyOcrApp(options = {}) {
     computeAndStoreCashflow,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
+    generateFamilySalesChatReply: options.generateFamilySalesChatReply,
     generateFamilyPolicyAnalysisReport: options.generateFamilyPolicyAnalysisReport,
     generateFamilyReportQualityIssues: options.generateFamilyReportQualityIssues || generateFamilyReportQualityIssues,
     buildFamilyReport,
