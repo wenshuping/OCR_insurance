@@ -17,6 +17,7 @@ COPY server ./server
 COPY scripts ./scripts
 COPY ocr-service ./ocr-service
 COPY src/family-report-engine.mjs ./src/family-report-engine.mjs
+COPY src/indicator-calculation.mjs ./src/indicator-calculation.mjs
 COPY src/policy-plan-filter.mjs ./src/policy-plan-filter.mjs
 COPY src/policy-validity.mjs ./src/policy-validity.mjs
 RUN mkdir -p /data
