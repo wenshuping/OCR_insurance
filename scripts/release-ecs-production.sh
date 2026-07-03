@@ -250,9 +250,25 @@ check_production_config() {
 import { isFamilySalesReviewConfigured } from './server/family-sales-review.service.mjs';
 import { resolveWechatPayConfig } from './server/wechat-pay.service.mjs';
 
-const pay = resolveWechatPayConfig();
 const adminPasswordConfigured = Boolean(process.env.POLICY_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD);
 const deepseekApiKeyConfigured = Boolean(process.env.DEEPSEEK_API_KEY);
+let pay = null;
+let payConfigError = null;
+try {
+  pay = resolveWechatPayConfig();
+} catch (error) {
+  payConfigError = {
+    message: error?.message || String(error),
+    code: error?.code || '',
+    path: error?.path || '',
+  };
+  pay = {
+    mode: process.env.WECHAT_PAY_MODE || 'disabled',
+    nodeEnv: process.env.NODE_ENV || '',
+    ready: false,
+    notifyUrl: process.env.WECHAT_PAY_NOTIFY_URL || '',
+  };
+}
 const summary = {
   adminPasswordConfigured,
   ai: {
@@ -271,6 +287,7 @@ const summary = {
     platformPublicKey: Boolean(pay.platformPublicKey),
     platformPublicKeyId: Boolean(pay.platformPublicKeyId),
     notifyUrl: pay.notifyUrl,
+    configError: payConfigError,
   },
 };
 console.log(JSON.stringify(summary, null, 2));
@@ -281,6 +298,9 @@ if (!adminPasswordConfigured) {
 } else if (!deepseekApiKeyConfigured) {
   console.error('DEEPSEEK_API_KEY_NOT_CONFIGURED');
   process.exitCode = 5;
+} else if (payConfigError) {
+  console.error('WECHAT_PAY_CONFIG_ERROR');
+  process.exitCode = 4;
 } else if (pay.nodeEnv === 'production' && pay.mode !== 'live') {
   console.error('WECHAT_PAY_MODE_NOT_LIVE');
   process.exitCode = 3;
