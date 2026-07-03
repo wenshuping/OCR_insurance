@@ -246,11 +246,14 @@ export type FamilyRadarAmountDetail = {
 };
 
 export type FamilyPlanningProfile = {
+  annualIncome?: number;
   annualExpense?: number;
   debt?: number;
   educationGoal?: number;
+  parentSupportGoal?: number;
   retirementGoal?: number;
   availableAssets?: number;
+  premiumBudget?: number;
 };
 
 export type FamilyPlanningAssumptions = {
@@ -316,6 +319,13 @@ export type FamilyReport = {
   accident: FamilySectionReport;
   wealth: FamilyWealthReport;
   radar: FamilyRadarReport;
+  familyPolicyAnalysisReport?: {
+    status?: string;
+    content?: string;
+    model?: string;
+    generatedAt?: string;
+    error?: string;
+  };
   appendix: { policies: Array<{ policyId: number; productName: string; ocrText: string }> };
 };
 

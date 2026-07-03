@@ -4,12 +4,14 @@ import {
 } from './api/contracts/cashflow';
 import {
   createFamilyMember as createFamilyMemberContract,
+  createFamilyPolicyAnalysisReport as createFamilyPolicyAnalysisReportContract,
   createFamilyProfile as createFamilyProfileContract,
   createFamilyReportShare as createFamilyReportShareContract,
   createFamilySalesReview as createFamilySalesReviewContract,
   deleteFamilyMember as deleteFamilyMemberContract,
   deleteFamilyProfile as deleteFamilyProfileContract,
   ensureDefaultFamilyProfile as ensureDefaultFamilyProfileContract,
+  getFamilyPolicyAnalysisReport as getFamilyPolicyAnalysisReportContract,
   getFamilySalesReview as getFamilySalesReviewContract,
   getFamilyReportShare as getFamilyReportShareContract,
   listFamilyProfiles as listFamilyProfilesContract,
@@ -35,6 +37,7 @@ import type { OptionalResponsibilityGap as OptionalResponsibilityGapContract } f
 import type {
   FamilyMember as FamilyMemberContract,
   FamilyMemberPolicyReference as FamilyMemberPolicyReferenceContract,
+  FamilyPolicyAnalysisReport as FamilyPolicyAnalysisReportContract,
   FamilyProfile as FamilyProfileContract,
   FamilyRelationToCore as FamilyRelationToCoreContract,
   FamilyReportRecord as FamilyReportRecordContract,
@@ -118,6 +121,8 @@ export type FamilyReportShare = FamilyReportShareContract;
 
 export type FamilyReportSharePayload = FamilyReportSharePayloadContract;
 
+export type FamilyPolicyAnalysisReport = FamilyPolicyAnalysisReportContract;
+
 export type FamilySalesReview = FamilySalesReviewContract;
 
 export function listPolicies(input: { token?: string; guestId?: string } = {}) {
@@ -159,7 +164,7 @@ export function createFamilyProfile(input: { token?: string; guestId?: string; f
   return createFamilyProfileContract(input);
 }
 
-export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string }) {
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string; planningProfile?: FamilyPlanningProfile | null }) {
   return updateFamilyProfileContract(input);
 }
 
@@ -218,6 +223,14 @@ export function createFamilyReportShare(input: { token?: string; guestId?: strin
 
 export function regenerateFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null; userRefresh?: boolean }) {
   return regenerateFamilyReportRecordContract(input);
+}
+
+export function getFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number }) {
+  return getFamilyPolicyAnalysisReportContract(input);
+}
+
+export function createFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null }) {
+  return createFamilyPolicyAnalysisReportContract(input);
 }
 
 export function getFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {

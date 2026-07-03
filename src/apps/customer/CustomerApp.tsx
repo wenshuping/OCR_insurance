@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   CircleUserRound,
   Download,
-  FileSearch,
   Shield,
   ShieldCheck,
   Sparkles,
@@ -27,9 +26,11 @@ import {
   Policy,
   PolicyAnalysisResult,
   PolicyCompanySuggestion,
+  ResponsibilityPlannerMode,
   CoverageIndicator,
   FamilyMember,
   FamilyMemberPolicyReference,
+  FamilyPolicyAnalysisReport,
   FamilyProfile,
   FamilyReportRecord,
   FamilySalesReview,
@@ -42,12 +43,14 @@ import {
   analyzePolicy,
   confirmCashValue,
   createFamilyMember,
+  createFamilyPolicyAnalysisReport,
   createFamilyProfile,
   createFamilyReportShare,
   createFamilySalesReview,
   deleteFamilyMember,
   deleteFamilyProfile,
   deletePolicy,
+  getFamilyPolicyAnalysisReport,
   getFamilyReportRecord,
   getFamilySalesReview,
   getHealthStatus,
@@ -192,6 +195,14 @@ function currentClientAssetPath() {
 
 function clientAssetPathFromHtml(html: string) {
   return html.match(/\/assets\/index-[^"']+\.js/u)?.[0] || '';
+}
+
+function reloadOnceForClientAsset(latestAssetPath: string) {
+  const marker = `policy-ocr-app.reload:${latestAssetPath}`;
+  if (sessionStorage.getItem(marker)) return false;
+  sessionStorage.setItem(marker, '1');
+  window.location.reload();
+  return true;
 }
 
 function productSuggestionToKnowledgeMatch(
@@ -513,6 +524,7 @@ export function CustomerApp() {
   const [analysisDraft, setAnalysisDraft] = useState<PolicyAnalysisResult | null>(null);
   const [showAnalysisReport, setShowAnalysisReport] = useState(false);
   const [policies, setPolicies] = useState<Policy[]>([]);
+  const [policiesLoaded, setPoliciesLoaded] = useState(false);
   const [familyProfiles, setFamilyProfiles] = useState<FamilyProfile[]>([]);
   const [familyCreateDialogOpen, setFamilyCreateDialogOpen] = useState(false);
   const [familyCreateLoading, setFamilyCreateLoading] = useState(false);
@@ -539,6 +551,7 @@ export function CustomerApp() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantCompany, setAssistantCompany] = useState('');
   const [assistantName, setAssistantName] = useState('');
+  const [assistantPlannerMode, setAssistantPlannerMode] = useState<ResponsibilityPlannerMode>('auto');
   const [assistantAnalysis, setAssistantAnalysis] = useState<PolicyAnalysisResult | null>(null);
   const [assistantCustomerSummary, setAssistantCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
   const [assistantCustomerSummaryLoading, setAssistantCustomerSummaryLoading] = useState(false);
@@ -566,6 +579,8 @@ export function CustomerApp() {
   const [showFamilyReport, setShowFamilyReport] = useState(false);
   const [savedFamilyReportRecord, setSavedFamilyReportRecord] = useState<FamilyReportRecord | null>(null);
   const [familyReportLoading, setFamilyReportLoading] = useState(false);
+  const [familyPolicyAnalysisReport, setFamilyPolicyAnalysisReport] = useState<FamilyPolicyAnalysisReport | null>(null);
+  const [familyPolicyAnalysisLoading, setFamilyPolicyAnalysisLoading] = useState(false);
   const [familySalesReviewOpen, setFamilySalesReviewOpen] = useState(false);
   const [familySalesReviewFamilyId, setFamilySalesReviewFamilyId] = useState<number | null>(null);
   const [familySalesReview, setFamilySalesReview] = useState<FamilySalesReview | null>(null);
@@ -607,9 +622,14 @@ export function CustomerApp() {
     () => familyProfiles.find((family) => Number(family.id) === Number(familySalesReviewFamilyId)) || null,
     [familyProfiles, familySalesReviewFamilyId],
   );
+  useEffect(() => {
+    if (!selectedFamily?.planningProfile) return;
+    setFamilyPlanningProfile(saveFamilyPlanningProfile(selectedFamily.planningProfile));
+  }, [selectedFamily?.planningProfile]);
+
   function familyReportGenerationMessage(reportRecord: FamilyReportRecord, actionText: string) {
     return String(reportRecord?.source || '').includes('deepseek')
-      ? `家庭保障分析报告已${actionText}，DeepSeek质检已完成`
+      ? `家庭保障分析报告已${actionText}，报告校验已完成`
       : `家庭保障分析报告已${actionText}，当前为本地规则结果`;
   }
 
@@ -620,13 +640,22 @@ export function CustomerApp() {
   );
   const familyPolicyCounts = useMemo(() => {
     const counts: Record<number, number> = {};
+    const hasFamilyPolicySummaries = familyProfiles.some((family) => typeof family.policyCount === 'number');
+    for (const family of familyProfiles) {
+      const familyId = Number(family.id || 0);
+      if (!familyId) continue;
+      counts[familyId] = (!policiesLoaded && hasFamilyPolicySummaries) ? Number(family.policyCount || 0) : 0;
+    }
+    if (!policiesLoaded && hasFamilyPolicySummaries) {
+      return counts;
+    }
     for (const policy of policies) {
       const familyId = Number(policy.familyId || 0);
       if (!familyId) continue;
       counts[familyId] = (counts[familyId] || 0) + 1;
     }
     return counts;
-  }, [policies]);
+  }, [familyProfiles, policies, policiesLoaded]);
   const familyPolicyMemberIds = useMemo(() => {
     const memberIds: Record<number, number[]> = {};
     for (const policy of policies) {
@@ -744,6 +773,7 @@ export function CustomerApp() {
   async function refreshPolicies(nextToken = token) {
     const payload = await listPolicies({ token: nextToken || undefined, guestId: nextToken ? undefined : guestId });
     setPolicies(payload.policies);
+    setPoliciesLoaded(true);
     setSelectedPolicy((current) => {
       if (!current) return current;
       return payload.policies.find((policy) => Number(policy.id) === Number(current.id)) || current;
@@ -851,6 +881,7 @@ export function CustomerApp() {
     setMembershipMessage('');
     setSelectedPolicy(null);
     setPolicies([]);
+    setPoliciesLoaded(false);
     setFamilyProfiles([]);
     setSelectedFamilyId(null);
     setMessage(nextMessage);
@@ -868,6 +899,7 @@ export function CustomerApp() {
   }
 
   useEffect(() => {
+    setPoliciesLoaded(false);
     Promise.all([refreshPolicies(), refreshFamilyProfiles(), refreshMembershipStatus()]).catch((error) => {
       if (error instanceof ApiError && error.status === 401) {
         clearCustomerSession('登录已失效，请重新验证手机号');
@@ -923,6 +955,7 @@ export function CustomerApp() {
           const latestAssetPath = clientAssetPathFromHtml(await response.text());
           if (cancelled) return;
           if (latestAssetPath && latestAssetPath !== CURRENT_CLIENT_ASSET_PATH) {
+            if (reloadOnceForClientAsset(latestAssetPath)) return;
             setStaleClientHealth({ ok: true, service: 'policy-ocr-app', startedAt: CLIENT_BOOTED_AT });
             return;
           }
@@ -1443,6 +1476,11 @@ export function CustomerApp() {
   function handleSelectFamily(familyId: number | null) {
     setSelectedFamilyId(familyId);
     setSavedFamilyReportRecord(null);
+    setFamilyPolicyAnalysisReport(null);
+    const family = familyProfiles.find((item) => Number(item.id) === Number(familyId || 0));
+    if (family?.planningProfile) {
+      setFamilyPlanningProfile(saveFamilyPlanningProfile(family.planningProfile));
+    }
     setFormData((current) => ({
       ...current,
       familyId,
@@ -1467,9 +1505,16 @@ export function CustomerApp() {
         return;
       }
       setSavedFamilyReportRecord(loaded.reportRecord);
+      const analysis = await getFamilyPolicyAnalysisReport({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      });
+      setFamilyPolicyAnalysisReport(analysis.analysisReport);
       setMessage(familyReportGenerationMessage(loaded.reportRecord, '加载'));
     } catch (error) {
       setSavedFamilyReportRecord(null);
+      setFamilyPolicyAnalysisReport(null);
       setMessage(error instanceof Error ? error.message : '家庭报告加载失败，已展示本地预览');
     } finally {
       setFamilyReportLoading(false);
@@ -1493,11 +1538,44 @@ export function CustomerApp() {
         userRefresh: true,
       });
       setSavedFamilyReportRecord(generated.reportRecord);
+      setFamilyPolicyAnalysisReport(null);
       setMessage(familyReportGenerationMessage(generated.reportRecord, '重新生成'));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '家庭报告重新生成失败');
     } finally {
       setFamilyReportLoading(false);
+    }
+  }
+
+  async function generateFamilyPolicyAnalysisReport() {
+    if (!selectedFamilyId) {
+      setMessage('请先选择家庭档案');
+      return;
+    }
+    if (familyPolicyAnalysisLoading) return;
+    setFamilyPolicyAnalysisLoading(true);
+    setMessage('正在生成家庭保单分析报告');
+    try {
+      setFamilyPolicyAnalysisReport(null);
+      const generated = await createFamilyPolicyAnalysisReport({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: selectedFamilyId,
+        planningProfile: familyPlanningProfile,
+      });
+      setFamilyPolicyAnalysisReport(generated.analysisReport);
+      setMessage('家庭保单分析报告已生成');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '家庭保单分析报告生成失败';
+      setFamilyPolicyAnalysisReport({
+        status: 'failed',
+        content: '',
+        generatedAt: new Date().toISOString(),
+        error: errorMessage,
+      });
+      setMessage(errorMessage);
+    } finally {
+      setFamilyPolicyAnalysisLoading(false);
     }
   }
 
@@ -1531,7 +1609,7 @@ export function CustomerApp() {
       return '专家分析服务暂不可用，请联系管理员完成专家系统配置';
     }
     if (/timeout|超时/iu.test(text)) return '专家研判耗时较长，请稍后重试';
-    return '专家分析暂时未完成，请稍后重试';
+    return text ? `专家分析暂时未完成：${text}` : '专家分析暂时未完成，请稍后重试';
   }
 
   function setFamilySalesReviewBusy(loading: boolean) {
@@ -1569,7 +1647,7 @@ export function CustomerApp() {
         setFamilySalesReviewMessage('已读取最近一次专家研判');
         return;
       }
-      setFamilySalesReviewMessage('暂无已保存报告，正在生成专家研判');
+      setFamilySalesReviewMessage('首次生成专家研判中，完成后会自动保存');
       const generated = await createFamilySalesReview(authInput);
       setFamilySalesReview(generated.review);
       setFamilySalesReviewMessage('专家研判已完成并保存');
@@ -1590,7 +1668,7 @@ export function CustomerApp() {
       return;
     }
     setFamilySalesReviewBusy(true);
-    setFamilySalesReviewMessage('专家系统正在重新生成策略简报');
+    setFamilySalesReviewMessage('正在请求专家系统生成策略简报');
     try {
       const payload = await createFamilySalesReview({
         token: token || undefined,
@@ -1801,14 +1879,20 @@ export function CustomerApp() {
     return replaceFamilyProfile(payload.family, payload.members);
   }
 
-  async function updateFamilyForFamily(family: FamilyProfile, input: { familyName: string; notes?: string }) {
+  async function updateFamilyForFamily(family: FamilyProfile, input: { familyName: string; notes?: string; planningProfile?: FamilyPlanningProfile | null }) {
     const payload = await updateFamilyProfile({
       token: token || undefined,
       guestId: token ? undefined : guestId,
       familyId: family.id,
       familyName: input.familyName,
       notes: input.notes,
+      planningProfile: input.planningProfile,
     });
+    if (Number(payload.family.id) === Number(selectedFamilyId || 0)) {
+      setFamilyPlanningProfile(saveFamilyPlanningProfile(payload.family.planningProfile || {}));
+      setSavedFamilyReportRecord(null);
+      setFamilyPolicyAnalysisReport(null);
+    }
     setMessage(`已保存家庭档案：${payload.family.familyName}`);
     return replaceFamilyProfile(payload.family, payload.members);
   }
@@ -2004,6 +2088,9 @@ export function CustomerApp() {
       setMobile(payload.user.mobile);
       if (!payload.policiesDeferred) {
         setPolicies([...payload.policies].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))));
+        setPoliciesLoaded(true);
+      } else {
+        setPoliciesLoaded(false);
       }
       void refreshMembershipStatus(payload.token).catch(() => undefined);
       setAuthCode('');
@@ -2202,7 +2289,7 @@ export function CustomerApp() {
     setAssistantMatches([]);
     setAssistantLocalSearched(false);
     const responsibilityCount = payload.analysis?.coverageTable?.length || 0;
-    setAssistantMessage(responsibilityCount ? `已找到 ${responsibilityCount} 项责任` : '未查询到责任明细');
+    setAssistantMessage('正在生成客户可读摘要');
     setAssistantCustomerSummaryLoading(true);
     setAssistantCustomerSummary(null);
     setAssistantCustomerSummaryMessage('');
@@ -2210,17 +2297,24 @@ export function CustomerApp() {
       const summaryPayload = await getProductCustomerResponsibilitySummary({
         company: input.company,
         name: input.name,
+        plannerMode: assistantPlannerMode,
       });
       if (summaryPayload.ok) {
         setAssistantCustomerSummary(summaryPayload.summary);
         setAssistantCustomerSummaryMessage('');
+        const summaryCount = Array.isArray(summaryPayload.summary.mainResponsibilities)
+          ? summaryPayload.summary.mainResponsibilities.filter((item) => item?.title || item?.plainText || item?.howItPays).length
+          : 0;
+        setAssistantMessage(summaryCount ? `已生成 ${summaryCount} 项责任摘要` : '已生成客户可读摘要');
       } else {
         setAssistantCustomerSummary(null);
         setAssistantCustomerSummaryMessage(summaryPayload.message || '这个产品还需要补充保险责任资料');
+        setAssistantMessage(summaryPayload.message || '客户摘要生成失败，请稍后重试');
       }
     } catch (error) {
       setAssistantCustomerSummary(null);
       setAssistantCustomerSummaryMessage(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
+      setAssistantMessage(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
     } finally {
       setAssistantCustomerSummaryLoading(false);
     }
@@ -2931,66 +3025,54 @@ export function CustomerApp() {
   ];
 
   const familySalesReviewPage = familySalesReviewOpen ? (
-    <div className="min-h-screen bg-slate-50">
-      <section className="mx-auto flex min-h-screen max-w-5xl flex-col overflow-hidden bg-white shadow-sm shadow-slate-950/5">
-        <header className="relative overflow-hidden border-b border-cyan-100 bg-slate-950 px-4 py-5 text-white">
-          <div className="pointer-events-none absolute inset-0 opacity-35 [background-image:linear-gradient(rgba(34,211,238,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.18)_1px,transparent_1px)] [background-size:22px_22px]" />
-          <div className="relative flex flex-col gap-4">
+    <div className="family-report-shell min-h-screen bg-[#EEF3F7] pb-10 text-[#102033]">
+      <section className="min-h-screen">
+        <header className="no-print fixed inset-x-0 top-0 z-30 border-b border-[#DDE6EE] bg-white/95 backdrop-blur">
+          <div className="family-report-content grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3">
             <button
               type="button"
-              className="flex w-fit items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-black text-cyan-100 ring-1 ring-white/15 transition hover:bg-white/15"
+              className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full text-[#42566B] active:bg-[#EEF3F7]"
               onClick={() => setFamilySalesReviewOpen(false)}
               aria-label="返回家庭档案"
+              title="返回家庭档案"
             >
-              <ArrowLeft size={16} />
-              <span>返回家庭档案</span>
+              <ArrowLeft size={22} />
             </button>
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-300/35">
-                  <BrainCircuit size={24} />
-                </span>
-                <div className="min-w-0">
-                  <p className="text-[11px] font-black uppercase text-cyan-200">Expert Intelligence</p>
-                  <h2 className="mt-1 text-xl font-black leading-tight">家庭保障策略简报</h2>
-                  <p className="mt-1 truncate text-xs font-semibold text-slate-300">
-                    {familySalesReviewFamily?.familyName || '当前家庭'}
-                    <span className="mx-1 text-cyan-300">·</span>
-                    公司专家分析系统
-                  </p>
-                </div>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {familySalesReview?.content ? (
-                  <button
-                    type="button"
-                    className="flex h-11 items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 text-sm font-black text-cyan-100 ring-1 ring-white/15 transition hover:bg-white/15"
-                    aria-label="下载销售建议报告"
-                    title="下载销售建议报告"
-                    onClick={() => void downloadReportImage(familySalesReviewReportRef.current, familySalesReviewExportTitle)}
-                  >
-                    <Download size={16} />
-                    <span>下载报告</span>
-                  </button>
-                ) : null}
+            <div className="min-w-0 text-center">
+              <h1 className="family-report-heading truncate text-lg font-black text-[#102033]">家庭保障策略简报</h1>
+              <p className="family-report-kicker mt-0.5 hidden text-[11px] text-[#72849A] sm:block">Expert Intelligence</p>
+            </div>
+            <div className="flex shrink-0 items-center justify-end gap-2">
+              {familySalesReview?.content ? (
                 <button
                   type="button"
-                  className={`flex h-11 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-black shadow-lg shadow-cyan-950/20 transition ${
+                  className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-[#0B72B9] active:bg-blue-100"
+                  aria-label="下载销售建议报告"
+                  title="下载销售建议报告"
+                  onClick={() => void downloadReportImage(familySalesReviewReportRef.current, familySalesReviewExportTitle)}
+                >
+                  <Download size={18} />
+                  <span>图片</span>
+                </button>
+              ) : null}
+                <button
+                  type="button"
+                  className={`flex h-10 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-black transition ${
                     familySalesReviewLoading
-                      ? 'cursor-wait bg-cyan-100 text-cyan-950 ring-1 ring-cyan-200'
-                      : 'bg-cyan-300 text-slate-950 hover:bg-cyan-200'
+                      ? 'cursor-wait bg-blue-50 text-[#0B72B9] ring-1 ring-blue-100'
+                      : 'bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-500 text-white shadow-sm shadow-sky-900/20 active:opacity-90'
                   }`}
                   aria-busy={familySalesReviewLoading}
                   onClick={() => void regenerateFamilySalesReview()}
                 >
                   <Sparkles className={familySalesReviewLoading ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
-                  <span>{familySalesReviewLoading ? '正在生成专家报告' : '重新生成专家报告'}</span>
+                  <span>{familySalesReviewLoading ? '生成中' : familySalesReview?.content ? '重算' : '生成'}</span>
                 </button>
-              </div>
             </div>
           </div>
         </header>
-        <div className="flex-1 bg-slate-50 px-4 py-4 sm:px-6">
+        <div className="no-print h-[65px]" aria-hidden="true" />
+        <div className="family-report-content py-4 md:py-5">
           {familySalesReviewMessage ? (
             <div className={`mb-3 flex items-center gap-2 rounded-2xl px-3 py-2.5 text-xs font-black ring-1 ${
               familySalesReviewLoading
@@ -3005,40 +3087,48 @@ export function CustomerApp() {
             </div>
           ) : null}
           {familySalesReview?.content ? (
-            <div ref={familySalesReviewReportRef} className="print-policy-report space-y-3 bg-slate-50">
-              {familySalesReview.inputSummary ? (
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">家庭成员</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.memberCount ?? 0}</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">有效样本</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.policyCount ?? 0}</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">待覆盖成员</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.membersWithoutPolicyCount ?? 0}</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">条款证据</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.officialProductCount ?? 0}</p>
+            <section ref={familySalesReviewReportRef} className="print-policy-report overflow-hidden rounded-[24px] border border-[#D7E2EA] bg-[#F8FBFE] shadow-[0_18px_48px_-36px_rgba(15,23,42,0.38)]">
+              <div className="border-b border-[#BDE2F5] bg-gradient-to-br from-blue-600 via-sky-500 to-cyan-500 px-4 py-4 text-white md:px-6 md:py-5">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="h-8 w-1.5 shrink-0 rounded-full bg-white/75" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="family-report-kicker text-[11px] uppercase text-white/72">Expert Intelligence</p>
+                    <h2 className="family-report-heading min-w-0 break-words text-xl font-black leading-tight text-white">家庭保障策略简报</h2>
+                    <p className="mt-1 truncate text-xs font-semibold text-white/72">
+                      {familySalesReviewFamily?.familyName || '当前家庭'} · 公司专家分析系统
+                    </p>
                   </div>
                 </div>
-              ) : null}
-              <article className="rounded-[22px] bg-white p-4 ring-1 ring-slate-200">
-                <div className="mb-3 flex items-center gap-2 border-b border-slate-100 pb-3">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100">
-                    <FileSearch size={18} />
-                  </span>
-                  <div>
-                    <h3 className="text-sm font-black text-slate-950">专家研判报告</h3>
-                    <p className="mt-0.5 text-xs font-semibold text-slate-500">面向销售跟进的保障缺口与财富机会建议</p>
+                <p className="mt-3 max-w-3xl text-sm font-semibold leading-6 text-white/78">
+                  面向销售跟进的保障缺口、财富机会与下一步沟通建议。
+                </p>
+                {familySalesReview.inputSummary ? (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-4">
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">家庭成员</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.memberCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">有效样本</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.policyCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">待覆盖成员</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.membersWithoutPolicyCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">条款证据</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.officialProductCount ?? 0}</p>
+                    </div>
                   </div>
-                </div>
-                <FamilySalesReviewMarkdown content={familySalesReview.content} />
-              </article>
-            </div>
+                ) : null}
+              </div>
+              <div className="px-4 py-4 md:px-6 md:py-5">
+                <article className="family-policy-analysis-document mx-auto max-w-[980px] rounded-[18px] border border-[#DCE7F1] bg-white px-4 py-4 shadow-[0_16px_36px_-30px_rgba(15,23,42,0.3)] md:px-7 md:py-6">
+                  <FamilySalesReviewMarkdown content={familySalesReview.content} />
+                </article>
+              </div>
+            </section>
           ) : (
             <div className={familySalesReviewLoading ? 'overflow-hidden rounded-[24px] bg-slate-950 text-white shadow-xl shadow-cyan-950/20 ring-1 ring-cyan-200/30' : 'rounded-[22px] bg-white p-4 ring-1 ring-slate-200'}>
               {familySalesReviewLoading ? (
@@ -3191,7 +3281,18 @@ export function CustomerApp() {
                 </div>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
-                  <p className="text-sm font-black text-slate-900">暂无专家研判内容</p>
+                  <p className="text-sm font-black text-slate-900">专家报告尚未生成</p>
+                  <p className="mx-auto mt-2 max-w-md text-xs font-semibold leading-5 text-slate-500">
+                    首次进入会自动生成；后续进入直接展示已保存报告，需要更新时点击“重新生成专家报告”。
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-cyan-300 px-5 text-sm font-black text-slate-950 shadow-lg shadow-cyan-950/10 transition hover:bg-cyan-200"
+                    onClick={() => void regenerateFamilySalesReview()}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    <span>立即生成专家报告</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -3272,6 +3373,7 @@ export function CustomerApp() {
       name={assistantName}
       productSuggestionLoading={assistantProductSuggestionLoading}
       productSuggestions={assistantProductSuggestions}
+      plannerMode={assistantPlannerMode}
       onChangeCompany={(value) => {
         setAssistantCompany(value);
         setAssistantAnalysis(null);
@@ -3289,6 +3391,7 @@ export function CustomerApp() {
         setAssistantMessage('输入保司和产品名称');
       }}
       onClose={() => setAssistantOpen(false)}
+      onChangePlannerMode={setAssistantPlannerMode}
       onOpen={openResponsibilityAssistant}
       onQuery={() => void handleAssistantQuery()}
       onSearchMore={() => void handleAssistantSearchMore()}
@@ -3335,15 +3438,18 @@ export function CustomerApp() {
         <FamilyReportPage
           report={displayFamilyReport}
           planningProfile={familyPlanningProfile}
+          policyAnalysisReport={familyPolicyAnalysisReport}
+          policyAnalysisLoading={familyPolicyAnalysisLoading}
           onPlanningProfileChange={handleFamilyPlanningProfileChange}
           onBack={() => setShowFamilyReport(false)}
           onExport={(target, title) => void downloadReportImage(target, title)}
           onRegenerate={regenerateFamilyReport}
+          onGeneratePolicyAnalysisReport={generateFamilyPolicyAnalysisReport}
           regenerating={familyReportLoading}
         />
-        {familyReportLoading ? (
+        {familyReportLoading || familyPolicyAnalysisLoading ? (
           <div className="no-print fixed bottom-40 right-4 z-30 rounded-full bg-white px-4 py-2 text-xs font-black text-slate-600 shadow-lg shadow-slate-950/10">
-            报告加载中...
+            {familyPolicyAnalysisLoading ? '保单分析报告生成中...' : '报告加载中...'}
           </div>
         ) : null}
         {authDialog}

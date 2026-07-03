@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Calculator,
@@ -7,7 +7,6 @@ import {
   FileText,
   RotateCcw,
   ShieldCheck,
-  Target,
   TrendingUp,
   Users,
   Wallet,
@@ -20,16 +19,27 @@ import type {
   FamilyWealthAggregateRow,
   FamilyWealthPolicyReport,
 } from './family-report-engine.mjs';
+import { FamilySalesReviewMarkdown } from './features/family-report/FamilySalesReviewMarkdown';
 
 type FamilyReportPageProps = {
   report: FamilyReport;
   planningProfile: FamilyPlanningProfile;
+  policyAnalysisReport?: FamilyPolicyAnalysisReport | null;
+  policyAnalysisLoading?: boolean;
   onPlanningProfileChange: (profile: FamilyPlanningProfile) => void;
   onBack: () => void;
   onExport: (target: HTMLElement | null, title: string) => void | Promise<void>;
   onRegenerate?: () => void | Promise<void>;
+  onGeneratePolicyAnalysisReport?: () => void | Promise<void>;
   regenerating?: boolean;
   readOnly?: boolean;
+};
+
+type FamilyPolicyAnalysisReport = {
+  status?: string;
+  content?: string;
+  generatedAt?: string;
+  error?: string;
 };
 
 type OptionalResponsibilityGap = {
@@ -425,23 +435,6 @@ function RadarCalculationDetails({
   );
 }
 
-function profileValueInWan(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile) {
-  const value = Number(profile[key] || 0);
-  return value > 0 ? String(Number((value / 10000).toFixed(2))) : '';
-}
-
-function profileWithWanValue(profile: FamilyPlanningProfile, key: keyof FamilyPlanningProfile, value: string) {
-  const amount = Math.max(0, Number(value) || 0) * 10000;
-  return {
-    ...profile,
-    [key]: amount,
-  };
-}
-
-function profileHasValue(profile: FamilyPlanningProfile) {
-  return Object.values(profile).some((value) => Number(value || 0) > 0);
-}
-
 const thClassName = 'bg-blue-500 px-3 py-2.5 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 const compactThClassName = 'bg-blue-500 px-2 py-1.5 text-center text-xs font-black text-white';
@@ -510,14 +503,6 @@ function OptionalResponsibilityGapSection({ gaps = [] }: { gaps?: OptionalRespon
   );
 }
 
-const planningFields: Array<{ key: keyof FamilyPlanningProfile; label: string }> = [
-  { key: 'annualExpense', label: '家庭年支出' },
-  { key: 'debt', label: '家庭负债' },
-  { key: 'educationGoal', label: '子女教育目标' },
-  { key: 'retirementGoal', label: '养老/财富目标' },
-  { key: 'availableAssets', label: '可用资产' },
-];
-
 const reportSurfaceClassName = 'rounded-[24px] border border-[#D7E2EA] bg-white shadow-[0_18px_48px_-36px_rgba(15,23,42,0.38)]';
 const reportMutedSurfaceClassName = 'rounded-[20px] border border-[#E1E8EF] bg-[#F7FAFC]';
 
@@ -545,84 +530,6 @@ function MetricTile({ label, value, dark = false }: { label: string; value: stri
       <p className={`family-report-kicker text-[11px] uppercase ${dark ? 'text-white/62' : 'text-[#72849A]'}`}>{label}</p>
       <p className={`family-report-number mt-1 break-words text-base font-black leading-tight md:text-lg ${dark ? 'text-white' : 'text-[#0F172A]'}`}>{value}</p>
     </div>
-  );
-}
-
-function FamilyPlanningProfilePanel({
-  profile,
-  onChange,
-}: {
-  profile: FamilyPlanningProfile;
-  onChange: (profile: FamilyPlanningProfile) => void;
-}) {
-  const enabled = profileHasValue(profile);
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <section className="family-report-content no-print mt-4">
-      <div className={`${reportSurfaceClassName} overflow-hidden p-3 md:p-4`}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-[#0B72B9]">
-              <Target size={19} />
-            </span>
-            <div className="min-w-0">
-              <p className="family-report-kicker text-[11px] uppercase text-[#72849A]">雷达模型</p>
-              <h2 className="family-report-heading break-words text-base font-black leading-tight text-[#102033]">{enabled ? '保障规划版' : '保额结构版'}</h2>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setExpanded((current) => !current)}
-              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-blue-500 px-3 text-xs font-black text-white active:bg-blue-600"
-              aria-expanded={expanded}
-              aria-label={expanded ? '收起保障目标' : '调整保障目标'}
-              title={expanded ? '收起保障目标' : '调整保障目标'}
-            >
-              <Target size={14} />
-              <span>{expanded ? '收起' : '调整目标'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onChange({})}
-              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-700 active:bg-blue-100"
-              aria-label="清空保障目标"
-              title="清空保障目标"
-            >
-              <RotateCcw size={14} />
-              <span>清空</span>
-            </button>
-          </div>
-        </div>
-        <div className="family-report-goals-scroll mt-3 flex gap-2 overflow-x-auto pb-1 md:grid md:grid-cols-5 md:overflow-visible md:pb-0">
-          {planningFields.map((field) => (
-            <div key={field.key} className="min-w-[136px] rounded-[16px] border border-[#E1E8EF] bg-[#F8FAFC] px-3 py-2 md:min-w-0">
-              <p className="text-[11px] font-bold text-[#72849A]">{field.label}</p>
-              <p className="family-report-number mt-1 text-base font-black leading-tight text-[#102033]">{profileValueInWan(profile, field.key) || '0'}万</p>
-            </div>
-          ))}
-        </div>
-        {expanded ? (
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-            {planningFields.map((field) => (
-              <label key={field.key} className="block rounded-[16px] border border-[#D7E2EA] bg-white px-3 py-2.5">
-                <span className="text-[11px] font-bold text-[#72849A]">{field.label}(万元)</span>
-                <input
-                  type="number"
-                  min="0"
-                  inputMode="decimal"
-                  value={profileValueInWan(profile, field.key)}
-                  onChange={(event) => onChange(profileWithWanValue(profile, field.key, event.target.value))}
-                  className="mt-1 w-full bg-transparent text-sm font-black text-[#102033] outline-none"
-                  placeholder="0"
-                />
-              </label>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    </section>
   );
 }
 
@@ -2058,21 +1965,43 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
 export function FamilyReportPage({
   report,
   planningProfile,
+  policyAnalysisReport,
+  policyAnalysisLoading = false,
   onPlanningProfileChange,
   onBack,
   onExport,
   onRegenerate,
+  onGeneratePolicyAnalysisReport,
   regenerating = false,
   readOnly = false,
 }: FamilyReportPageProps) {
-  const reportRef = useRef<HTMLElement | null>(null);
-  const exportTitle = '家庭保障分析报告';
+  const activeReportRef = useRef<HTMLDivElement | null>(null);
+  const autoPolicyAnalysisRequestedRef = useRef(false);
+  const [activeReportTab, setActiveReportTab] = useState<'analysis' | 'policyReport'>('analysis');
+  const exportTitle = activeReportTab === 'policyReport' ? '家庭保单分析报告' : '家庭保障分析报告';
+  const pageTitle = activeReportTab === 'policyReport' ? '家庭保单分析报告' : '家庭保障分析报告';
   const attentionItems = getFamilyAttentionItems(report);
   const reportWithOptionalGaps = report as FamilyReportWithOptionalGaps;
+  const hasPolicyAnalysisContent = Boolean(policyAnalysisReport?.content?.trim());
+  const policyAnalysisFailed = policyAnalysisReport?.status === 'failed' || Boolean(policyAnalysisReport?.error);
+
+  useEffect(() => {
+    if (activeReportTab !== 'policyReport') return;
+    if (!onGeneratePolicyAnalysisReport || policyAnalysisLoading || hasPolicyAnalysisContent || policyAnalysisFailed) return;
+    if (autoPolicyAnalysisRequestedRef.current) return;
+    autoPolicyAnalysisRequestedRef.current = true;
+    void onGeneratePolicyAnalysisReport();
+  }, [
+    activeReportTab,
+    hasPolicyAnalysisContent,
+    onGeneratePolicyAnalysisReport,
+    policyAnalysisFailed,
+    policyAnalysisLoading,
+  ]);
 
   return (
     <div className="family-report-shell min-h-screen bg-[#EEF3F7] pb-10 text-[#102033]">
-      <header className="no-print sticky top-0 z-20 border-b border-[#DDE6EE] bg-white/95 backdrop-blur">
+      <header className="no-print fixed inset-x-0 top-0 z-30 border-b border-[#DDE6EE] bg-white/95 backdrop-blur">
         <div className="family-report-content grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3">
           <button
             type="button"
@@ -2084,7 +2013,7 @@ export function FamilyReportPage({
             <ChevronLeft size={24} />
           </button>
           <div className="min-w-0 text-center">
-            <h1 className="family-report-heading truncate text-lg font-black text-[#102033]">家庭保障分析报告</h1>
+            <h1 className="family-report-heading truncate text-lg font-black text-[#102033]">{pageTitle}</h1>
             <p className="family-report-kicker mt-0.5 hidden text-[11px] text-[#72849A] sm:block">Family Policy Dossier</p>
           </div>
           <div className="flex items-center justify-end gap-2">
@@ -2104,7 +2033,7 @@ export function FamilyReportPage({
             ) : null}
             <button
               type="button"
-              onClick={() => void onExport(reportRef.current, exportTitle)}
+              onClick={() => void onExport(activeReportRef.current, exportTitle)}
               className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-[#0B72B9] active:bg-blue-100"
               aria-label="下载报告图片"
               title="下载报告图片"
@@ -2116,21 +2045,158 @@ export function FamilyReportPage({
         </div>
       </header>
 
-      {readOnly ? null : <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} />}
+      <div className="no-print fixed inset-x-0 top-[65px] z-20 border-b border-[#DDE6EE] bg-[#EEF3F7]/95 py-3 backdrop-blur">
+        <div className="family-report-content grid grid-cols-2 gap-2 rounded-[18px] border border-[#DDE6EE] bg-white p-1 shadow-sm shadow-slate-950/5">
+          <button
+            type="button"
+            onClick={() => setActiveReportTab('analysis')}
+            className={`min-h-10 rounded-[14px] px-3 text-sm font-black transition ${
+              activeReportTab === 'analysis'
+                ? 'bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-500 text-white shadow-sm shadow-sky-900/20'
+                : 'text-[#42566B] active:bg-[#EEF3F7]'
+            }`}
+          >
+            保障分析
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveReportTab('policyReport')}
+            className={`min-h-10 rounded-[14px] px-3 text-sm font-black transition ${
+              activeReportTab === 'policyReport'
+                ? 'bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-500 text-white shadow-sm shadow-sky-900/20'
+                : 'text-[#42566B] active:bg-[#EEF3F7]'
+            }`}
+          >
+            保单分析报告
+          </button>
+        </div>
+      </div>
 
-      <main ref={reportRef} className="family-report-content print-policy-report space-y-4 py-4 md:space-y-5 md:py-5">
-        <ReportHero report={report} attentionItems={attentionItems} />
-        <FamilyRadarSection report={report} />
-        <AttentionSection attentionItems={attentionItems} />
-        <OptionalResponsibilityGapSection gaps={reportWithOptionalGaps.optionalResponsibilityGaps} />
-        <InventorySection rows={report.policyInventory.rows} />
-        <MemberRadarSection report={report} />
-        <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
-        <ProtectionSection title="重疾分析" members={report.criticalIllness.members} />
-        <ProtectionSection title="意外分析" members={report.accident.members} />
-        <WealthSection report={report} />
+      <div className="no-print h-[149px]" aria-hidden="true" />
+
+      <main className="family-report-content py-4 md:py-5">
+        {activeReportTab === 'analysis' ? (
+          <div ref={activeReportRef} className="print-policy-report space-y-4 md:space-y-5">
+            <ReportHero report={report} attentionItems={attentionItems} />
+            <FamilyRadarSection report={report} />
+            <AttentionSection attentionItems={attentionItems} />
+            <OptionalResponsibilityGapSection gaps={reportWithOptionalGaps.optionalResponsibilityGaps} />
+            <InventorySection rows={report.policyInventory.rows} />
+            <MemberRadarSection report={report} />
+            <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
+            <ProtectionSection title="重疾分析" members={report.criticalIllness.members} />
+            <ProtectionSection title="意外分析" members={report.accident.members} />
+            <WealthSection report={report} />
+          </div>
+        ) : (
+          <div ref={activeReportRef} className="print-policy-report">
+            <FamilyPolicyAnalysisReportSection
+              report={policyAnalysisReport}
+              loading={policyAnalysisLoading}
+              onGenerate={onGeneratePolicyAnalysisReport}
+            />
+          </div>
+        )}
       </main>
     </div>
+  );
+}
+
+function FamilyPolicyAnalysisReportSection({
+  report,
+  loading,
+  onGenerate,
+}: {
+  report?: FamilyPolicyAnalysisReport | null;
+  loading: boolean;
+  onGenerate?: () => void | Promise<void>;
+}) {
+  const hasContent = Boolean(report?.content?.trim());
+  const failed = report?.status === 'failed' || Boolean(report?.error);
+  const statusText = loading ? '生成中' : failed ? '生成失败' : hasContent ? '已生成' : '待生成';
+
+  return (
+    <section className={`${reportSurfaceClassName} overflow-hidden bg-[#F8FBFE]`}>
+      <div className="border-b border-[#BDE2F5] bg-gradient-to-br from-blue-600 via-sky-500 to-cyan-500 px-4 py-4 text-white md:px-6 md:py-5">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="h-8 w-1.5 shrink-0 rounded-full bg-white/75" aria-hidden="true" />
+              <div className="min-w-0">
+                <p className="family-report-kicker text-[11px] uppercase text-white/72">Policy Analysis Report</p>
+                <h2 className="family-report-heading min-w-0 break-words text-xl font-black leading-tight text-white">家庭保单分析报告</h2>
+              </div>
+            </div>
+            <p className="mt-3 max-w-3xl text-sm font-semibold leading-6 text-white/78">
+              综合家庭成员、现有保单、责任结构和保障缺口生成，适合给客户单独阅读。
+            </p>
+          </div>
+          {onGenerate ? (
+            <button
+              type="button"
+              onClick={() => void onGenerate()}
+              disabled={loading}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white px-4 text-sm font-black text-[#0B72B9] shadow-[0_16px_32px_-20px_rgba(15,23,42,0.45)] active:bg-blue-50 disabled:opacity-60"
+              aria-busy={loading}
+            >
+              <FileText className={loading ? 'h-[18px] w-[18px] animate-pulse' : 'h-[18px] w-[18px]'} />
+              <span>{loading ? '生成中' : hasContent ? '重新生成' : '生成报告'}</span>
+            </button>
+          ) : null}
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+            <p className="text-[11px] font-bold text-white/68">报告状态</p>
+            <p className="mt-1 text-sm font-black text-white">{statusText}</p>
+          </div>
+          <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+            <p className="text-[11px] font-bold text-white/68">阅读对象</p>
+            <p className="mt-1 text-sm font-black text-white">客户单独阅读</p>
+          </div>
+          <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+            <p className="text-[11px] font-bold text-white/68">分析重点</p>
+            <p className="mt-1 text-sm font-black text-white">缺口与优先级</p>
+          </div>
+        </div>
+      </div>
+
+      {hasContent ? (
+        <div className="px-4 py-4 md:px-6 md:py-5">
+          <article
+            className="family-policy-analysis-document mx-auto max-w-[980px] rounded-[18px] border border-[#DCE7F1] bg-white px-4 py-4 shadow-[0_16px_36px_-30px_rgba(15,23,42,0.3)] md:px-7 md:py-6"
+            aria-label="家庭保单分析报告正文"
+          >
+            <FamilySalesReviewMarkdown content={report?.content || ''} />
+          </article>
+        </div>
+      ) : loading ? (
+        <div className="m-4 rounded-[18px] border border-[#D6E6F4] bg-blue-50 px-4 py-8 text-center md:m-6">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-[#0B72B9] shadow-sm shadow-blue-900/10">
+            <FileText className="h-6 w-6 animate-pulse" />
+          </div>
+          <p className="mt-3 text-base font-black text-[#102033]">正在生成家庭保单分析报告</p>
+          <p className="mx-auto mt-2 max-w-2xl text-sm font-semibold leading-6 text-[#72849A]">
+            正在综合家庭成员、现有保单、责任结构和保障缺口，完成后会自动显示在这里。
+          </p>
+        </div>
+      ) : (
+        <div className="m-4 rounded-[18px] border border-dashed border-[#CBD7E1] bg-white px-4 py-8 text-center md:m-6">
+          <p className="text-base font-black text-[#102033]">{failed ? '家庭保单分析报告生成失败' : '暂无已生成的家庭保单分析报告'}</p>
+          <p className="mx-auto mt-2 max-w-2xl text-sm font-semibold leading-6 text-[#72849A]">
+            {failed
+              ? report?.error || '请稍后重试，或检查报告生成服务配置。'
+              : '这份报告会单独分析全家保单结构，并重点展开保障缺口、风险影响和补强优先级；生成时间可能较长，不影响左侧保障分析报告。'}
+          </p>
+        </div>
+      )}
+
+      {failed ? (
+        <div className="mx-4 mb-4 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 md:mx-6 md:mb-6">
+          {report?.error || '报告生成失败，请稍后重试。'}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

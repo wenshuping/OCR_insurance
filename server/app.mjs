@@ -80,7 +80,13 @@ import {
   callDeepSeekForCustomerResponsibilitySummary,
   generateProductCustomerResponsibilitySummary,
 } from './product-customer-responsibility-summary.service.mjs';
-import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
+import {
+  buildResponsibilitySummaryReportFromCards,
+  buildResponsibilityCardsForPolicy,
+  isGeneratedResponsibilityCountReport,
+  mergeCoverageTableWithCheckedRows,
+  responsibilityRowsFromCards,
+} from './responsibility-card-standardizer.mjs';
 import {
   buildOptionalResponsibilityGaps,
   rebuildOptionalResponsibilityGovernance,
@@ -963,13 +969,18 @@ function clearPolicyReportForRegeneration(state, policy) {
 function normalizeResponsibilityQueryInput(value = {}) {
   const company = trim(value?.company).slice(0, 80);
   const name = trim(value?.name).slice(0, 160);
+  const plannerMode = trim(value?.plannerMode);
   if (!company || !name) {
     const error = new Error('请输入保险公司和保险名称');
     error.code = 'POLICY_RESPONSIBILITY_QUERY_INPUT_REQUIRED';
     error.status = 400;
     throw error;
   }
-  return { company, name };
+  return {
+    company,
+    name,
+    ...(plannerMode ? { plannerMode } : {}),
+  };
 }
 
 function policyInputMetrics(body = {}) {
@@ -1496,13 +1507,61 @@ async function resolvePolicyScanInput({ scanner, body, state }) {
   return recognizePolicyInput({ scanner, body, state });
 }
 
+function summaryReportForCheckedRows(rows = [], cards = [], optionalResponsibilities = []) {
+  const cardReport = typeof buildResponsibilitySummaryReportFromCards === 'function'
+    ? buildResponsibilitySummaryReportFromCards(cards, { optionalResponsibilities })
+    : '';
+  if (cardReport) return cardReport;
+  const count = Array.isArray(rows) ? rows.length : 0;
+  return count ? `已整理 ${count} 项保险责任。` : '';
+}
+
+function preferredResponsibilityReport(current = '', rows = [], cards = [], optionalResponsibilities = []) {
+  const existing = String(current || '').trim();
+  if (existing && !isGeneratedResponsibilityCountReport(existing)) return existing;
+  return summaryReportForCheckedRows(rows, cards, optionalResponsibilities) || existing;
+}
+
+function checkedCoverageTableFromCards(cards = [], optionalResponsibilities = []) {
+  return typeof responsibilityRowsFromCards === 'function'
+    ? responsibilityRowsFromCards(cards, { optionalResponsibilities })
+    : [];
+}
+
+function mergeCheckedCoverageTable(coverageTable = [], checkedRows = []) {
+  return typeof mergeCoverageTableWithCheckedRows === 'function'
+    ? mergeCoverageTableWithCheckedRows(coverageTable, checkedRows)
+    : (Array.isArray(coverageTable) && coverageTable.length ? coverageTable : checkedRows);
+}
+
+function analysisWithCheckedResponsibilityRows(analysis = {}) {
+  if (!analysis || typeof analysis !== 'object') return analysis;
+  const optionalResponsibilities = normalizeOptionalResponsibilities(analysis.optionalResponsibilities);
+  const responsibilityCards = Array.isArray(analysis.responsibilityCards) ? analysis.responsibilityCards : [];
+  const checkedRows = checkedCoverageTableFromCards(responsibilityCards, optionalResponsibilities);
+  const coverageTable = mergeCheckedCoverageTable(analysis.coverageTable, checkedRows);
+  if (!coverageTable.length && !checkedRows.length) return {
+    ...analysis,
+    optionalResponsibilities,
+    responsibilityCards,
+  };
+  return {
+    ...analysis,
+    report: preferredResponsibilityReport(analysis.report, checkedRows, responsibilityCards, optionalResponsibilities),
+    coverageTable,
+    optionalResponsibilities,
+    responsibilityCards,
+  };
+}
+
 function normalizeProvidedAnalysis(value) {
   if (!value || typeof value !== 'object') return null;
   const optionalResponsibilities = normalizeOptionalResponsibilities(value.optionalResponsibilities);
   const responsibilityCards = Array.isArray(value.responsibilityCards) ? value.responsibilityCards : [];
-  const coverageTable = Array.isArray(value.coverageTable)
+  const providedCoverageTable = Array.isArray(value.coverageTable)
     ? value.coverageTable
         .map((row) => ({
+          productName: String(row?.productName || '').trim(),
           coverageType: String(row?.coverageType || '').trim(),
           scenario: String(row?.scenario || '').trim(),
           payout: String(row?.payout || '').trim(),
@@ -1512,7 +1571,9 @@ function normalizeProvidedAnalysis(value) {
         }))
         .filter((row) => row.coverageType || row.scenario || row.payout || row.note)
     : [];
-  const report = String(value.report || '').trim();
+  const checkedRows = checkedCoverageTableFromCards(responsibilityCards, optionalResponsibilities);
+  const coverageTable = mergeCheckedCoverageTable(providedCoverageTable, checkedRows);
+  const report = preferredResponsibilityReport(value.report, checkedRows, responsibilityCards, optionalResponsibilities);
   if (!report && !coverageTable.length && !optionalResponsibilities.length && !responsibilityCards.length) return null;
   return {
     ...value,
@@ -1622,6 +1683,7 @@ function applyAnalysisToPolicy(policy, analysis) {
   const normalized = normalizeProvidedAnalysis(analysis);
   if (!policy || !normalized) return false;
   policy.responsibilities = normalized.coverageTable.map((row) => ({
+    productName: String(row.productName || '').trim(),
     coverageType: String(row.coverageType || '').trim() || '保险责任',
     scenario: String(row.scenario || '').trim() || '以条款约定为准',
     payout: String(row.payout || '').trim() || '以正式条款为准',
@@ -1703,10 +1765,13 @@ function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfile
     knowledgeRecords: knowledgeArtifacts.records || [],
     optionalResponsibilityRecords: optionalResponsibilities,
   });
-  if (!coverageTable.length && !optionalResponsibilities.length && !responsibilityCards.length) return null;
+  const checkedCoverageTable = checkedCoverageTableFromCards(responsibilityCards, optionalResponsibilities);
+  const effectiveCoverageTable = mergeCheckedCoverageTable(coverageTable, checkedCoverageTable);
+  if (!effectiveCoverageTable.length && !optionalResponsibilities.length && !responsibilityCards.length) return null;
   return {
     ...localAnalysis,
-    coverageTable,
+    report: preferredResponsibilityReport(localAnalysis.report, checkedCoverageTable, responsibilityCards, optionalResponsibilities),
+    coverageTable: effectiveCoverageTable,
     optionalResponsibilities,
     responsibilityCards,
     notes: Array.isArray(localAnalysis.notes) ? localAnalysis.notes : [],
@@ -1772,23 +1837,56 @@ function markPolicyReportFailed(policy, error) {
   policy.updatedAt = new Date().toISOString();
 }
 
+function buildCheckedAnalysisForPolicy({ state, policy, analysis } = {}) {
+  const normalized = normalizeProvidedAnalysis(analysis);
+  if (!normalized) return analysis;
+  if (Array.isArray(normalized.responsibilityCards) && normalized.responsibilityCards.length) {
+    return analysisWithCheckedResponsibilityRows(normalized);
+  }
+  const optionalResponsibilities = normalizeOptionalResponsibilities(normalized.optionalResponsibilities);
+  const policyDraft = {
+    ...policy,
+    responsibilities: normalized.coverageTable,
+    optionalResponsibilities,
+  };
+  const coverageIndicators = findPolicyCoverageIndicators(policyDraft, state?.insuranceIndicatorRecords || []);
+  const knowledgeArtifacts = buildKnowledgeSearchArtifacts({
+    policy: policyDraft,
+    records: state?.knowledgeRecords || [],
+    officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+  });
+  const responsibilityCards = buildResponsibilityCardsForPolicy({
+    policy: policyDraft,
+    responsibilities: normalized.coverageTable,
+    coverageIndicators,
+    knowledgeRecords: knowledgeArtifacts.records || [],
+    optionalResponsibilityRecords: optionalResponsibilities,
+  });
+  return analysisWithCheckedResponsibilityRows({
+    ...normalized,
+    optionalResponsibilities,
+    responsibilityCards,
+  });
+}
+
 function startPolicyReportGeneration({ state, policy, scan, analyzer, persist, performanceLogger, requestMetrics = {} }) {
   if (!policy || policy.reportStatus === 'ready') return;
   void (async () => {
     const analysisStartedAt = nowMs();
     try {
       const analysis = await analyzer({ scan });
-      if (!applyAnalysisToPolicy(policy, analysis)) {
+      const checkedAnalysis = buildCheckedAnalysisForPolicy({ state, policy, analysis });
+      if (!applyAnalysisToPolicy(policy, checkedAnalysis)) {
         throw new Error('报告生成结果为空');
       }
-      recordPolicySourceRecords(state, policy, analysis);
+      recordPolicySourceRecords(state, policy, checkedAnalysis);
       await persist();
       logPerformance(performanceLogger, 'policy.report.background.analysis', {
         route: 'background',
         durationMs: elapsedMs(analysisStartedAt),
         ...requestMetrics,
         outputOcrChars: String(scan?.ocrText || '').length,
-        responsibilityCount: Array.isArray(analysis?.coverageTable) ? analysis.coverageTable.length : 0,
+        responsibilityCount: Array.isArray(checkedAnalysis?.coverageTable) ? checkedAnalysis.coverageTable.length : 0,
         policyId: policy.id,
       });
     } catch (error) {
@@ -2002,6 +2100,8 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const generateProductCustomerResponsibilitySummaryWithDeepSeek =
     options.generateProductCustomerResponsibilitySummaryWithDeepSeek || callDeepSeekForCustomerResponsibilitySummary;
+  const generateProductCustomerResponsibilityPlannerWithDeepSeek =
+    options.generateProductCustomerResponsibilityPlannerWithDeepSeek;
   const adminPassword = resolveAdminPassword(options);
   const performanceLogger = createPerformanceLogger(options);
 
@@ -2106,6 +2206,7 @@ export function createPolicyOcrApp(options = {}) {
     persistProductCustomerSummaryGenerationRun,
     generateProductCustomerResponsibilitySummary,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
+    generateProductCustomerResponsibilityPlannerWithDeepSeek,
     scanner,
     analyzer,
     adminPassword,
@@ -2121,6 +2222,7 @@ export function createPolicyOcrApp(options = {}) {
     computeAndStoreCashflow,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
+    generateFamilyPolicyAnalysisReport: options.generateFamilyPolicyAnalysisReport,
     generateFamilyReportQualityIssues: options.generateFamilyReportQualityIssues || generateFamilyReportQualityIssues,
     buildFamilyReport,
     createWechatJsSdkSignature,
@@ -2160,7 +2262,11 @@ export function createPolicyOcrApp(options = {}) {
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
     mergePolicyDerivedResult,
+    buildResponsibilitySummaryReportFromCards,
     buildResponsibilityCardsForPolicy,
+    isGeneratedResponsibilityCountReport,
+    mergeCoverageTableWithCheckedRows,
+    responsibilityRowsFromCards,
     attachPolicyFamilyDisplay,
     selectedCoverageIndicators,
     computeScenarioEntries,

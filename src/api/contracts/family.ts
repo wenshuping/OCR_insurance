@@ -55,6 +55,8 @@ export type FamilyProfile = {
   createdAt: string;
   updatedAt: string;
   members?: FamilyMember[];
+  policyCount?: number;
+  planningProfile?: FamilyPlanningProfile;
 };
 
 export type FamilyReportShare = {
@@ -82,6 +84,14 @@ export type FamilyReportRecord = {
   updatedAt?: string;
   summary?: FamilyReport['summary'] & { issueCount?: number };
   report: FamilyReport;
+};
+
+export type FamilyPolicyAnalysisReport = {
+  status: 'complete' | 'failed' | 'empty' | string;
+  content: string;
+  model?: string;
+  generatedAt: string;
+  error?: string;
 };
 
 export type FamilySalesReview = {
@@ -133,11 +143,11 @@ export function createFamilyProfile(input: { token?: string; guestId?: string; f
   });
 }
 
-export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string }) {
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string; planningProfile?: FamilyPlanningProfile | null }) {
   return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles/${input.familyId}${authQuery(input)}`, {
     token: input.token,
     method: 'PATCH',
-    body: { familyName: input.familyName, notes: input.notes },
+    body: { familyName: input.familyName, notes: input.notes, planningProfile: input.planningProfile },
   });
 }
 
@@ -259,6 +269,19 @@ export function createFamilyReportRecord(input: { token?: string; guestId?: stri
 
 export function regenerateFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null; userRefresh?: boolean }) {
   return createFamilyReportRecord(input);
+}
+
+export function getFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; analysisReport: FamilyPolicyAnalysisReport | null }>(`/api/family-profiles/${input.familyId}/policy-analysis-report${authQuery(input)}`, {
+    token: input.token,
+  });
+}
+
+export function createFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null }) {
+  return request<{ ok: true; analysisReport: FamilyPolicyAnalysisReport }>(`/api/family-profiles/${input.familyId}/policy-analysis-report${authQuery(input)}`, {
+    token: input.token,
+    body: { planningProfile: input.planningProfile || null },
+  });
 }
 
 export function getFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {

@@ -766,7 +766,11 @@ export function updateFamilyReportCorrectionStatus(state = {}, correctionId, sta
 
 export function updateFamilyReportRecordReport({ record, report, members = [], policies = [] } = {}) {
   if (!record || !report) return null;
+  const familyPolicyAnalysisReport = record.report?.familyPolicyAnalysisReport;
   const finalReport = addMissingMemberReports(structuredClone(report), members, policies);
+  if (familyPolicyAnalysisReport && !finalReport.familyPolicyAnalysisReport) {
+    finalReport.familyPolicyAnalysisReport = familyPolicyAnalysisReport;
+  }
   const openIssueCount = Number(record.summary?.issueCount || 0);
   const correctionCount = Number(record.summary?.correctionCount || 0);
   const autoAppliedCorrectionCount = Number(record.summary?.autoAppliedCorrectionCount || 0);
