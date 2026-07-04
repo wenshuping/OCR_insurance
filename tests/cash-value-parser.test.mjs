@@ -163,6 +163,26 @@ describe('cash-value-parser', () => {
       assert.ok(result.confidence > 0);
     });
 
+    it('treats zero box confidence as unknown when rows are structurally valid', () => {
+      const boxes = [
+        { text: '保单年度末', box: [[100, 50], [180, 50], [180, 70], [100, 70]], confidence: 0 },
+        { text: '现金价值表', box: [[250, 50], [360, 50], [360, 70], [250, 70]], confidence: 0 },
+        ...Array.from({ length: 5 }, (_, index) => {
+          const y = 90 + index * 35;
+          return [
+            { text: `${index + 1}`, box: [[120, y], [150, y], [150, y + 20], [120, y + 20]], confidence: 0 },
+            { text: `${10000 + index * 1000}.00`, box: [[260, y], [360, y], [360, y + 20], [260, y + 20]], confidence: 0 },
+          ];
+        }).flat(),
+      ];
+
+      const result = parseCashValueTable(boxes);
+      assert.equal(result.ok, true);
+      assert.equal(result.rows.length, 5);
+      assert.equal(result.rows[4].cashValue, 14000);
+      assert.ok(result.confidence >= 0.7);
+    });
+
     it('returns failure when boxes are empty', () => {
       const result = parseCashValueTable([]);
       assert.equal(result.ok, false);

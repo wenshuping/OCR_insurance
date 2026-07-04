@@ -656,8 +656,8 @@ function validateAndScore(rows, boxes) {
 
   // OCR average confidence
   const confidences = boxes
-    .filter((b) => typeof b.confidence === 'number')
-    .map((b) => b.confidence);
+    .map((b) => Number(b.confidence))
+    .filter((confidence) => Number.isFinite(confidence) && confidence > 0);
   const avgConfidence = confidences.length > 0
     ? confidences.reduce((a, b) => a + b, 0) / confidences.length
     : 0.8;
