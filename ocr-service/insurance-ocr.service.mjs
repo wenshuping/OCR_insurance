@@ -7091,8 +7091,7 @@ async function scanCashValueTableWithDeepSeekOcr({ uploadItem }, dependencies = 
     const attempts = [];
     if (Array.isArray(deepSeekResult?.boxes) && deepSeekResult.boxes.length) {
       const parsedBoxes = parseCashValueTable(deepSeekResult.boxes);
-      if (parsedBoxes.ok) return { ...parsedBoxes, source: 'deepseek_ocr' };
-      attempts.push(parsedBoxes);
+      attempts.push(parsedBoxes.ok ? { ...parsedBoxes, source: 'deepseek_ocr' } : parsedBoxes);
     }
 
     const textCandidates = [
@@ -7102,8 +7101,15 @@ async function scanCashValueTableWithDeepSeekOcr({ uploadItem }, dependencies = 
 
     for (const textCandidate of textCandidates) {
       const parsedText = parseCashValueText(textCandidate, { source: 'deepseek_ocr' });
-      if (parsedText.ok) return parsedText;
       attempts.push(parsedText);
+    }
+
+    const successfulAttempts = attempts.filter((item) => item?.ok);
+    if (successfulAttempts.length) {
+      return successfulAttempts.sort((a, b) => (
+        (b.rows?.length || 0) - (a.rows?.length || 0)
+        || (Number(b.confidence) || 0) - (Number(a.confidence) || 0)
+      ))[0];
     }
 
     const bestAttempt = attempts.find((item) => Array.isArray(item?.rows) && item.rows.length)

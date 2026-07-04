@@ -19,6 +19,21 @@ const VISION_TEXT = [
   '300.00',
 ].join('\n');
 
+const LONG_VISION_TEXT = [
+  '保单年度末',
+  '现金价值（元）',
+  '1年末',
+  '100.00',
+  '2年末',
+  '200.00',
+  '3年末',
+  '300.00',
+  '4年末',
+  '400.00',
+  '5年末',
+  '500.00',
+].join('\n');
+
 const PADDLE_STDOUT = JSON.stringify({
   ok: true,
   boxes: [
@@ -119,6 +134,39 @@ describe('cash value OCR scan order', () => {
       assert.equal(calls.length, 1);
       assert.equal(calls[0].options.env.POLICY_OCR_DEEPSEEK_OCR_MODEL, 'deepseek-ai/DeepSeek-OCR');
       assert.equal(result.rows[0].cashValue, 100);
+    });
+  });
+
+  it('chooses the DeepSeek parse with the most valid cash value rows', async () => {
+    await withOcrProvider('deepseek_ocr_vllm', async () => {
+      const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, {
+        env: {
+          POLICY_OCR_DEEPSEEK_OCR_BASE_URL: 'http://127.0.0.1:6008',
+        },
+        recognizeDeepSeekOcrUpload: async () => ({
+          ocrText: LONG_VISION_TEXT,
+          markdown: '',
+          boxes: [
+            { text: '保单年度', box: [[100, 50], [180, 50], [180, 70], [100, 70]], confidence: 0 },
+            { text: '现金价值', box: [[220, 50], [320, 50], [320, 70], [220, 70]], confidence: 0 },
+            { text: '1', box: [[120, 90], [140, 90], [140, 110], [120, 110]], confidence: 0 },
+            { text: '900', box: [[240, 90], [290, 90], [290, 110], [240, 110]], confidence: 0 },
+            { text: '2', box: [[120, 130], [140, 130], [140, 150], [120, 150]], confidence: 0 },
+            { text: '1000', box: [[240, 130], [290, 130], [290, 150], [240, 150]], confidence: 0 },
+            { text: '3', box: [[120, 170], [140, 170], [140, 190], [120, 190]], confidence: 0 },
+            { text: '1100', box: [[240, 170], [290, 170], [290, 190], [240, 190]], confidence: 0 },
+          ],
+          tables: [],
+        }),
+        execFile: async () => {
+          throw new Error('PaddleOCR should not be called for DeepSeek cash value scans');
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.source, 'deepseek_ocr');
+      assert.equal(result.rowCount, 5);
+      assert.equal(result.rows[4].cashValue, 500);
     });
   });
 
