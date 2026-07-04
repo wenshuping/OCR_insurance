@@ -48,32 +48,102 @@ function testDependencies(execFile) {
   };
 }
 
+async function withOcrProvider(provider, fn) {
+  const previousProvider = process.env.POLICY_OCR_PROVIDER;
+  process.env.POLICY_OCR_PROVIDER = provider;
+  try {
+    return await fn();
+  } finally {
+    if (previousProvider === undefined) delete process.env.POLICY_OCR_PROVIDER;
+    else process.env.POLICY_OCR_PROVIDER = previousProvider;
+  }
+}
+
 describe('cash value OCR scan order', () => {
   it('uses PaddleOCR before macOS Vision and skips Vision when PaddleOCR succeeds', async () => {
-    const calls = [];
-    const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, testDependencies(async (command, args) => {
-      calls.push({ command, args });
-      if (command === 'swift') return { stdout: VISION_TEXT, stderr: '' };
-      return { stdout: PADDLE_STDOUT, stderr: '' };
-    }));
+    await withOcrProvider('paddle_local', async () => {
+      const calls = [];
+      const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, testDependencies(async (command, args) => {
+        calls.push({ command, args });
+        if (command === 'swift') return { stdout: VISION_TEXT, stderr: '' };
+        return { stdout: PADDLE_STDOUT, stderr: '' };
+      }));
 
-    assert.equal(result.ok, true);
-    assert.equal(calls[0]?.command, 'python3');
-    assert.equal(calls.some((call) => call.command === 'swift'), false);
-    assert.equal(result.rows[0].cashValue, 900);
+      assert.equal(result.ok, true);
+      assert.equal(calls[0]?.command, 'python3');
+      assert.equal(calls.some((call) => call.command === 'swift'), false);
+      assert.equal(result.rows[0].cashValue, 900);
+    });
   });
 
   it('falls back to macOS Vision when PaddleOCR text is not parseable', async () => {
-    const calls = [];
-    const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, testDependencies(async (command, args) => {
-      calls.push({ command, args });
-      if (command === 'swift') return { stdout: VISION_TEXT, stderr: '' };
-      return { stdout: JSON.stringify({ ok: true, boxes: [] }), stderr: '' };
-    }));
+    await withOcrProvider('paddle_local', async () => {
+      const calls = [];
+      const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, testDependencies(async (command, args) => {
+        calls.push({ command, args });
+        if (command === 'swift') return { stdout: VISION_TEXT, stderr: '' };
+        return { stdout: JSON.stringify({ ok: true, boxes: [] }), stderr: '' };
+      }));
 
-    assert.equal(result.ok, true);
-    assert.equal(result.source, 'macos_vision');
-    assert.deepEqual(calls.map((call) => call.command), ['python3', 'swift']);
-    assert.equal(result.rows[0].cashValue, 100);
+      assert.equal(result.ok, true);
+      assert.equal(result.source, 'macos_vision');
+      assert.deepEqual(calls.map((call) => call.command), ['python3', 'swift']);
+      assert.equal(result.rows[0].cashValue, 100);
+    });
+  });
+
+  it('uses DeepSeek-OCR for cash value scans when DeepSeek is the configured OCR provider', async () => {
+    await withOcrProvider('deepseek_ocr_vllm', async () => {
+      const calls = [];
+      const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, {
+        env: {
+          POLICY_OCR_DEEPSEEK_OCR_BASE_URL: 'http://127.0.0.1:6008',
+          POLICY_OCR_DEEPSEEK_OCR_MODEL: 'deepseek-ai/DeepSeek-OCR',
+        },
+        recognizeDeepSeekOcrUpload: async (uploadItem, options) => {
+          calls.push({ uploadItem, options });
+          return {
+            ocrText: VISION_TEXT,
+            markdown: VISION_TEXT,
+            boxes: [],
+            tables: [],
+          };
+        },
+        execFile: async () => {
+          throw new Error('PaddleOCR should not be called for DeepSeek cash value scans');
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.source, 'deepseek_ocr');
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].options.env.POLICY_OCR_DEEPSEEK_OCR_MODEL, 'deepseek-ai/DeepSeek-OCR');
+      assert.equal(result.rows[0].cashValue, 100);
+    });
+  });
+
+  it('does not fall back to PaddleOCR when DeepSeek-OCR cannot parse cash value text', async () => {
+    await withOcrProvider('deepseek_ocr_vllm', async () => {
+      let paddleCalled = false;
+      const result = await scanCashValueTable({ uploadItem: UPLOAD_ITEM }, {
+        env: {
+          POLICY_OCR_DEEPSEEK_OCR_BASE_URL: 'http://127.0.0.1:6008',
+        },
+        recognizeDeepSeekOcrUpload: async () => ({
+          ocrText: '没有现金价值表',
+          markdown: '没有现金价值表',
+          boxes: [],
+          tables: [],
+        }),
+        execFile: async () => {
+          paddleCalled = true;
+          return { stdout: PADDLE_STDOUT, stderr: '' };
+        },
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(paddleCalled, false);
+      assert.match(result.message, /DeepSeek-OCR/u);
+    });
   });
 });

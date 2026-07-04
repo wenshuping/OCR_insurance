@@ -1159,7 +1159,7 @@ test('customer policy detail can open manual cash value entry', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
-  assert.match(apiSource, /source\?: 'ocr' \| 'macos_vision' \| 'vision_llm' \| 'manual'/);
+  assert.match(apiSource, /source\?: 'ocr' \| 'deepseek_ocr' \| 'macos_vision' \| 'vision_llm' \| 'manual'/);
   assert.match(customerSource, /openManualCashValueEditor/);
   assert.match(customerSource, /startManualCashValueEntry/);
   assert.match(customerSource, /handleAddCashValueRow/);

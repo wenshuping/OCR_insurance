@@ -125,7 +125,7 @@ export function CashValueDialog(props: {
                 {scanResult.source === 'manual' ? '录入现金价值' : '现金价值表识别结果'}
               </h3>
               <span className="text-xs text-slate-400">
-                {scanResult.source === 'manual' ? '手动录入' : scanResult.source === 'macos_vision' ? '本机Vision' : scanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
+                {scanResult.source === 'manual' ? '手动录入' : scanResult.source === 'deepseek_ocr' ? 'DeepSeek-OCR' : scanResult.source === 'macos_vision' ? '本机Vision' : scanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
                 {scanResult.confidence != null && ` · 置信度 ${Math.round(scanResult.confidence * 100)}%`}
               </span>
             </div>
