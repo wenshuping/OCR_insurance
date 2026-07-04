@@ -35,6 +35,26 @@ export const FAMILY_MEMBER_RELATION_OPTIONS = [
 export const POLICY_RELATION_OPTIONS = ['本人', '子女', '父母', '夫妻'];
 export const POLICY_PERSON_RELATION_OPTIONS = FAMILY_MEMBER_RELATION_OPTIONS;
 
+function normalizeProductCode(value: unknown) {
+  const text = String(value || '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function planProductCode(plan: NonNullable<PolicyFormData['plans']>[number]) {
+  const directCode = normalizeProductCode(plan.productCode);
+  if (directCode) return directCode;
+  if (Array.isArray(plan.productCodes)) {
+    const code = plan.productCodes.map(normalizeProductCode).find(Boolean);
+    if (code) return code;
+  }
+  const reasonCode = String(plan.matchReason || '').match(/产品代码\s*([A-Za-z0-9][A-Za-z0-9_-]{1,23})/u)?.[1];
+  return normalizeProductCode(reasonCode);
+}
+
 function isValidDateInputParts(year: string, month: string, day: string) {
   const parsedYear = Number(year);
   const parsedMonth = Number(month);
@@ -54,6 +74,51 @@ export function normalizeDateInputValue(value: unknown) {
   const month = matched[2].padStart(2, '0');
   const day = matched[3].padStart(2, '0');
   return isValidDateInputParts(year, month, day) ? `${year}-${month}-${day}` : '';
+}
+
+type PolicyPersonBirthdayField = 'applicantBirthday' | 'insuredBirthday' | 'beneficiaryBirthday';
+
+function shareBirthdayForSameName(
+  data: PolicyFormData,
+  leftName: string,
+  leftField: PolicyPersonBirthdayField,
+  rightName: string,
+  rightField: PolicyPersonBirthdayField,
+) {
+  if (!leftName || !rightName || leftName !== rightName) return;
+  const birthday = String(data[leftField] || data[rightField] || '').trim();
+  if (!birthday) return;
+  if (!String(data[leftField] || '').trim()) data[leftField] = birthday;
+  if (!String(data[rightField] || '').trim()) data[rightField] = birthday;
+}
+
+function shareBeneficiaryRelationForSameName(
+  data: PolicyFormData,
+  personName: string,
+  beneficiaryName: string,
+  relationValue: unknown,
+) {
+  if (!personName || !beneficiaryName || personName !== beneficiaryName) return;
+  if (String(data.beneficiaryRelation || '').trim()) return;
+  const relation = String(relationValue || '').trim();
+  if (relation && relation !== '待确认') data.beneficiaryRelation = relation;
+}
+
+export function sharePolicyPersonInfo(data: PolicyFormData): PolicyFormData {
+  const next = { ...data };
+  const applicantName = String(next.applicant || '').trim();
+  const insuredName = String(next.insured || '').trim();
+  const beneficiaryName = normalizeBeneficiaryValue(next.beneficiary);
+  const namedBeneficiary = beneficiaryName && beneficiaryName !== '法定' ? beneficiaryName : '';
+  const applicantRelation = String(next.applicantRelationLabel || next.applicantRelation || '').trim();
+  const insuredRelation = String(next.insuredRelationLabel || next.insuredRelation || '').trim();
+  next.beneficiary = beneficiaryName;
+  shareBirthdayForSameName(next, applicantName, 'applicantBirthday', insuredName, 'insuredBirthday');
+  shareBirthdayForSameName(next, applicantName, 'applicantBirthday', namedBeneficiary, 'beneficiaryBirthday');
+  shareBirthdayForSameName(next, insuredName, 'insuredBirthday', namedBeneficiary, 'beneficiaryBirthday');
+  shareBeneficiaryRelationForSameName(next, applicantName, namedBeneficiary, applicantRelation);
+  shareBeneficiaryRelationForSameName(next, insuredName, namedBeneficiary, insuredRelation);
+  return next;
 }
 
 export function normalizePolicyPlanListWithIndex(
@@ -92,6 +157,8 @@ export function normalizePolicyPlanListWithIndex(
       name: name || matchedProductName,
       matchedProductName,
       canonicalProductId: String(plan?.canonicalProductId || '').trim(),
+      productCode: normalizeProductCode(plan?.productCode),
+      productCodes: Array.isArray(plan?.productCodes) ? plan.productCodes.map(normalizeProductCode).filter(Boolean) : [],
       productType: String(plan?.productType || '').trim(),
       amount: plan?.amount ? String(plan.amount) : '',
       coveragePeriod: String(plan?.coveragePeriod || ''),
@@ -115,6 +182,32 @@ export function normalizePolicyPlanList(
 ) {
   return normalizePolicyPlanListWithIndex(plans, company, options)
     .map(({ __originalIndex, ...plan }) => plan) as NonNullable<PolicyFormData['plans']>;
+}
+
+type MainPolicyPlanFieldSync = Partial<Pick<PolicyFormData, 'amount' | 'firstPremium' | 'coveragePeriod' | 'paymentPeriod'>>;
+
+export function syncMainPolicyPlanFields(
+  plans: PolicyFormData['plans'] = [],
+  company = '',
+  fields: MainPolicyPlanFieldSync = {},
+) {
+  const normalizedPlans = normalizePolicyPlanList(plans, company, { keepEmpty: true });
+  let updatedMain = false;
+  return normalizedPlans.map((plan, index) => {
+    const role = String(plan.role || (index === 0 ? 'main' : 'rider'));
+    if (updatedMain || (role !== 'main' && index !== 0)) return plan;
+    updatedMain = true;
+    const nextPlan = { ...plan };
+    if (Object.prototype.hasOwnProperty.call(fields, 'amount')) nextPlan.amount = fields.amount ?? '';
+    if (Object.prototype.hasOwnProperty.call(fields, 'firstPremium')) nextPlan.premium = fields.firstPremium ?? '';
+    if (Object.prototype.hasOwnProperty.call(fields, 'coveragePeriod')) nextPlan.coveragePeriod = fields.coveragePeriod ?? '';
+    if (Object.prototype.hasOwnProperty.call(fields, 'paymentPeriod')) nextPlan.paymentPeriod = fields.paymentPeriod ?? '';
+    return nextPlan;
+  });
+}
+
+export function syncMainPolicyPlanAmount(plans: PolicyFormData['plans'] = [], company = '', amount = '') {
+  return syncMainPolicyPlanFields(plans, company, { amount });
 }
 
 function primaryPlanFromPolicyForm(form: PolicyFormData) {
@@ -172,7 +265,11 @@ export function setMainPolicyPlanProduct(plans: PolicyFormData['plans'], company
 }
 
 export function planProductDisplayName(plan: NonNullable<PolicyFormData['plans']>[number]) {
-  return String(plan.matchedProductName || plan.name || '未命名险种');
+  const name = String(plan.matchedProductName || plan.name || '未命名险种');
+  const code = planProductCode(plan);
+  if (!name || !code) return name;
+  if (new RegExp(`[（(]\\s*${escapeRegExp(code)}\\s*[)）]`, 'u').test(name)) return name;
+  return `${name}（${code}）`;
 }
 
 export function policyToForm(policy: Policy): PolicyFormData {
@@ -216,23 +313,34 @@ export function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): Pol
   const date = normalizeDateInputValue(data.date) || data.date.trim();
   const companyChanged = nextCompany !== String(policy.company || '').trim();
   const productChanged = nextName !== String(policy.name || '').trim();
-  const plans = normalizePolicyPlanList(data.plans, nextCompany).map((plan, index) => {
-    const role = String(plan.role || (index === 0 ? 'main' : 'rider'));
-    if (role === 'main' || index === 0) {
+  const plans = syncMainPolicyPlanFields(
+    normalizePolicyPlanList(data.plans, nextCompany).map((plan, index) => {
+      const role = String(plan.role || (index === 0 ? 'main' : 'rider'));
+      if (role === 'main' || index === 0) {
+        return {
+          ...plan,
+          company: nextCompany,
+          name: productChanged ? nextName : plan.name,
+          matchedProductName: productChanged ? '' : plan.matchedProductName,
+          canonicalProductId: productChanged ? '' : plan.canonicalProductId,
+          productCode: productChanged ? '' : plan.productCode,
+          productCodes: productChanged ? [] : plan.productCodes,
+        };
+      }
       return {
         ...plan,
-        company: nextCompany,
-        name: productChanged ? nextName : plan.name,
-        matchedProductName: productChanged ? '' : plan.matchedProductName,
-        canonicalProductId: productChanged ? '' : plan.canonicalProductId,
+        company: companyChanged ? nextCompany : plan.company || nextCompany,
       };
-    }
-    return {
-      ...plan,
-      company: companyChanged ? nextCompany : plan.company || nextCompany,
-    };
-  });
-  return {
+    }),
+    nextCompany,
+    {
+      amount: data.amount,
+      firstPremium: data.firstPremium,
+      coveragePeriod: data.coveragePeriod,
+      paymentPeriod: data.paymentPeriod,
+    },
+  );
+  return sharePolicyPersonInfo({
     ...data,
     company: nextCompany,
     name: nextName,
@@ -243,13 +351,13 @@ export function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): Pol
     insuredBirthday,
     date,
     plans,
-  };
+  });
 }
 
 export function scanToForm(scan: PolicyScanResult): PolicyFormData {
   const data = scan.data || {};
   const familyData = data as Partial<PolicyFormData>;
-  return {
+  return sharePolicyPersonInfo({
     company: String(data.company || ''),
     name: String(data.name || ''),
     canonicalProductId: String(data.canonicalProductId || ''),
@@ -272,7 +380,7 @@ export function scanToForm(scan: PolicyScanResult): PolicyFormData {
     familyId: familyData.familyId ?? null,
     applicantMemberId: familyData.applicantMemberId ?? null,
     insuredMemberId: familyData.insuredMemberId ?? null,
-  };
+  });
 }
 
 function canReuseParticipantValue(nextName: string, currentName: string) {
@@ -299,7 +407,7 @@ export function mergeScanToForm(scan: PolicyScanResult, current: PolicyFormData)
   const next = scanToForm(scan);
   const reuseApplicantFields = canReuseParticipantValue(next.applicant, current.applicant);
   const reuseInsuredFields = canReuseParticipantValue(next.insured, current.insured);
-  return {
+  return sharePolicyPersonInfo({
     ...next,
     beneficiary: next.beneficiary || current.beneficiary,
     beneficiaryRelation: next.beneficiaryRelation || current.beneficiaryRelation,
@@ -330,7 +438,7 @@ export function mergeScanToForm(scan: PolicyScanResult, current: PolicyFormData)
         ? current.insuredMemberId ?? null
         : null
     ),
-  };
+  });
 }
 
 export function sanitizeAmount(value: string) {

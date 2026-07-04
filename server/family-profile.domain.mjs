@@ -156,12 +156,7 @@ function hasPersonIdentity(person) {
 }
 
 function peopleAreCompatible(left, right) {
-  if (normalizeName(left?.name) !== normalizeName(right?.name)) return false;
-  const leftIdentity = personIdentityParts(left);
-  const rightIdentity = personIdentityParts(right);
-  if (leftIdentity.birthday && rightIdentity.birthday && leftIdentity.birthday !== rightIdentity.birthday) return false;
-  if (leftIdentity.idNumberTail && rightIdentity.idNumberTail && leftIdentity.idNumberTail !== rightIdentity.idNumberTail) return false;
-  return true;
+  return Boolean(normalizeName(left?.name) && normalizeName(left?.name) === normalizeName(right?.name));
 }
 
 export function enrichFamilyMemberIdentity(member, person = {}) {
@@ -391,7 +386,7 @@ export function upsertFamilyMember(state, family, input = {}) {
   const existing = matchFamilyMemberByPerson(listFamilyMembers(state, family.id), memberInput);
   if (!existing) return createFamilyMember(state, family.id, input);
 
-  enrichFamilyMemberIdentity(existing, memberInput);
+  syncFamilyMemberFromPolicyPerson(existing, memberInput);
   if (hasOwn(input, 'notes') && !String(existing.notes || '').trim()) {
     updateFamilyMemberNotes(existing, input.notes);
   }
@@ -653,7 +648,7 @@ export function matchFamilyMemberByPerson(members = [], person = {}) {
     if (exact) return exact;
   }
 
-  return candidates[0] || null;
+  return chooseMergedFamilyMember({ coreMemberId: 0 }, candidates) || null;
 }
 
 export function setFamilyCoreMember(state, family, nextCoreMember) {
@@ -838,8 +833,8 @@ export function ensureDefaultFamilyProfileForPrincipal(state, owner = {}) {
     const insured = policyPerson(policy, 'insured');
     const applicantMember = matchFamilyMemberByPerson(updatedMembers, applicant) || coreMember;
     const insuredMember = matchFamilyMemberByPerson(updatedMembers, insured) || applicantMember || coreMember;
-    enrichFamilyMemberIdentity(applicantMember, applicant);
-    enrichFamilyMemberIdentity(insuredMember, insured);
+    syncFamilyMemberFromPolicyPerson(applicantMember, applicant);
+    syncFamilyMemberFromPolicyPerson(insuredMember, insured);
     policy.familyId = family.id;
     policy.applicantMemberId = applicantMember?.id || null;
     policy.insuredMemberId = insuredMember?.id || null;

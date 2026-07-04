@@ -14,6 +14,10 @@ import {
   normalizeQuantificationStatus,
   normalizeSelectionStatus,
 } from './optional-responsibility-governance.mjs';
+import {
+  evidenceVerificationFields,
+  isFormalResponsibilityEvidence,
+} from './evidence-classification.service.mjs';
 
 export function createInitialState() {
   return {
@@ -244,8 +248,12 @@ export function normalizePolicyPlans(plans = [], company = '') {
         matchReason: String(plan?.matchReason || '').trim(),
       };
       const canonicalProductId = String(plan?.canonicalProductId || '').trim();
+      const productCode = String(plan?.productCode || '').trim();
+      const productCodes = Array.isArray(plan?.productCodes) ? plan.productCodes.map((code) => String(code || '').trim()).filter(Boolean) : [];
       const benefitRows = normalizePolicyPlanBenefitRows(plan?.benefitRows);
       if (canonicalProductId) normalized.canonicalProductId = canonicalProductId;
+      if (productCode) normalized.productCode = productCode;
+      if (productCodes.length) normalized.productCodes = productCodes;
       if (benefitRows.length) normalized.benefitRows = benefitRows;
       return normalized;
     })
@@ -265,7 +273,7 @@ const OPTIONAL_RESPONSIBILITY_PATTERN =
 const OPTIONAL_RESPONSIBILITY_NEGATIVE_PATTERN =
   /不含可选(?:保险)?责任|未选择投保可选(?:保险)?责任|未投保可选(?:保险)?责任|不投保可选(?:保险)?责任|不包含.{0,30}可选(?:保险)?责任/u;
 const OPTIONAL_RESPONSIBILITY_SELECTED_PATTERN =
-  /含可选(?:保险)?责任|包含.{0,30}可选(?:保险)?责任|选择投保可选(?:保险)?责任|已投保可选(?:保险)?责任|投保可选(?:保险)?责任/u;
+  /含可选(?:保险)?责任|包含.{0,30}可选(?:保险)?责任|选择投保可选(?:保险)?责任|已选择可选(?:保险)?责任|已投保可选(?:保险)?责任|投保可选(?:保险)?责任/u;
 const OPTIONAL_RESPONSIBILITY_SECTION_PATTERN = /可选(?:保险)?责任\s*([一二三四五六七八九十\d]*)/gu;
 
 function normalizeResponsibilitySelectionStatus(value, fallback = 'unknown') {
@@ -471,7 +479,7 @@ function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = 
   if (hasSpecificOptionalResponsibilityEvidence(evidenceText, suffix, '不含|不包含|未选择投保|未投保|不投保')) {
     return { selectionStatus: 'not_selected', selectionEvidence: 'policy_ocr' };
   }
-  if (hasSpecificOptionalResponsibilityEvidence(evidenceText, suffix, '含|包含|选择投保|已投保|投保')) {
+  if (hasSpecificOptionalResponsibilityEvidence(evidenceText, suffix, '含|包含|选择投保|已选择|已投保|投保')) {
     return { selectionStatus: 'selected', selectionEvidence: 'policy_ocr' };
   }
   if (OPTIONAL_RESPONSIBILITY_NEGATIVE_PATTERN.test(evidenceText)) {
@@ -983,6 +991,7 @@ export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = [])
   if (!keys.size && !canonicalIds.size) return [];
   return dedupePolicyIndicatorRows(
     (Array.isArray(indicatorRecords) ? indicatorRecords : []).filter((record) => {
+      if (!isFormalResponsibilityEvidence(record)) return false;
       const recordCanonicalProductId = explicitCanonicalProductId(record);
       if (canonicalIds.size && recordCanonicalProductId) return canonicalIds.has(recordCanonicalProductId);
       return keys.has(`${normalizeLookupText(resolveRecordCompany(record))}\u001f${normalizeLookupText(resolveRecordProductName(record))}`);
@@ -1011,17 +1020,28 @@ export function attachPoliciesCoverageIndicators(policies = [], indicatorRecords
 
 export function normalizePolicySources(sources = []) {
   return (Array.isArray(sources) ? sources : [])
-    .map((source) => ({
-      company: String(source?.company || '').trim(),
-      productName: String(source?.productName || source?.name || '').trim(),
-      title: String(source?.title || '').trim(),
-      url: String(source?.url || '').trim(),
-      snippet: String(source?.snippet || '').trim(),
-      evidenceLabel: String(source?.evidenceLabel || '').trim(),
-      evidenceLevel: String(source?.evidenceLevel || '').trim(),
-      official: Boolean(source?.official),
-      sourceType: String(source?.sourceType || '').trim(),
-    }))
+    .map((source) => {
+      const normalized = {
+        company: String(source?.company || '').trim(),
+        productName: String(source?.productName || source?.name || '').trim(),
+        title: String(source?.title || '').trim(),
+        url: String(source?.url || '').trim(),
+        snippet: String(source?.snippet || '').trim(),
+        evidenceLabel: String(source?.evidenceLabel || '').trim(),
+        evidenceLevel: String(source?.evidenceLevel || source?.sourceLevel || '').trim(),
+        sourceKind: String(source?.sourceKind || '').trim(),
+        official: Boolean(source?.official),
+        sourceType: String(source?.sourceType || '').trim(),
+        materialType: String(source?.materialType || '').trim(),
+        sourceExcerpt: String(source?.sourceExcerpt || source?.excerpt || '').trim(),
+        responsibilityDeferred: source?.responsibilityDeferred === true,
+        referenceOnly: source?.referenceOnly === true,
+      };
+      return {
+        ...normalized,
+        ...evidenceVerificationFields(normalized),
+      };
+    })
     .filter((source) => source.url)
     .slice(0, 12);
 }
@@ -1043,17 +1063,30 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     });
   }
   const now = new Date().toISOString();
-  const hasAnalysis = Boolean(analysis?.report || analysis?.coverageTable?.length || analysis?.optionalResponsibilities?.length);
+  const hasAnalysis = Boolean(analysis?.report || analysis?.coverageTable?.length || analysis?.responsibilityCards?.length);
   const responsibilities = Array.isArray(analysis?.coverageTable)
-    ? analysis.coverageTable.map((row) => ({
-        productName: String(row.productName || '').trim(),
-        coverageType: String(row.coverageType || '').trim() || '保险责任',
-        scenario: String(row.scenario || '').trim() || '以条款约定为准',
-        payout: String(row.payout || '').trim() || '以正式条款为准',
-        note: String(row.note || '').trim(),
-        sourceUrl: String(row.sourceUrl || '').trim(),
-        sourceTitle: String(row.sourceTitle || '').trim(),
-      }))
+    ? analysis.coverageTable.map((row) => {
+        const normalized = {
+          productName: String(row.productName || '').trim(),
+          coverageType: String(row.coverageType || '').trim() || '保险责任',
+          scenario: String(row.scenario || '').trim() || '以条款约定为准',
+          payout: String(row.payout || '').trim() || '以正式条款为准',
+          note: String(row.note || '').trim(),
+          sourceUrl: String(row.sourceUrl || '').trim(),
+          sourceTitle: String(row.sourceTitle || '').trim(),
+          sourceExcerpt: String(row.sourceExcerpt || '').trim(),
+          sourceKind: String(row.sourceKind || '').trim(),
+          evidenceLabel: String(row.evidenceLabel || '').trim(),
+          evidenceLevel: String(row.evidenceLevel || row.sourceLevel || '').trim(),
+          official: row.official === true,
+          responsibilityDeferred: row.responsibilityDeferred === true,
+          referenceOnly: row.referenceOnly === true,
+        };
+        return {
+          ...normalized,
+          ...evidenceVerificationFields(normalized),
+        };
+      })
     : [];
   const optionalResponsibilities = normalizeOptionalResponsibilities(analysis?.optionalResponsibilities);
   const useFamilyRelationLabels = String(familyBinding?.familyBindingSource || '').trim() === 'explicit';
@@ -1069,6 +1102,8 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
       familyBinding?.insuredRelationLabel ||
       '',
   ).trim();
+  const familyBeneficiaryRelation = normalizePolicyRelation(familyBinding?.beneficiaryRelationLabel);
+  const beneficiaryRelation = data.beneficiaryRelation || (familyBeneficiaryRelation !== '待确认' ? familyBeneficiaryRelation : '');
 
   return {
     id: allocateId(state),
@@ -1079,7 +1114,7 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     applicant: data.applicant,
     applicantBirthday: data.applicantBirthday,
     beneficiary: data.beneficiary,
-    beneficiaryRelation: data.beneficiaryRelation,
+    beneficiaryRelation,
     beneficiaryBirthday: data.beneficiaryBirthday,
     applicantRelation,
     insured: data.insured,

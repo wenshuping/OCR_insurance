@@ -13,10 +13,56 @@ const DEFAULT_DISCOVERY_MAX_TOKENS = 1000;
 const DEFAULT_POLICY_ANALYSIS_SMART_SEARCH_ENABLED = true;
 const DEFAULT_POLICY_ANALYSIS_SMART_SEARCH_TIMEOUT_MS = 25_000;
 const DEFAULT_POLICY_ANALYSIS_SMART_SEARCH_MAX_RESULTS = 5;
+const DEFAULT_SKILL_ROUTER_MAX_TOKENS = 900;
 const DEFAULT_DISCLAIMER = '本分析基于保单摘录和OCR识别结果生成，不替代完整条款、投保须知、健康告知及正式理赔审核结论。';
 const MAX_OCR_PROMPT_CHARS = 4000;
 const MAX_SEARCH_PAGE_TEXT_CHARS = 2600;
 const MAX_SEARCH_PDF_BYTES = 1_500_000;
+const POLICY_ANALYSIS_SKILLS = {
+  responsibility_extraction: {
+    label: '保险责任拆解',
+    routerDescription: '从保险责任、条款、利益页中逐条拆出保险金/给付/赔付/报销责任。',
+    promptRule:
+      '逐条拆分保险责任；不同触发条件、阶段给付、额外给付、豁免责任不得合并成一行。',
+  },
+  indicator_quantification: {
+    label: '指标量化',
+    routerDescription: '把责任拆成可计算指标字段、公式、计算基准、比例/倍数和缺失输入。',
+    promptRule:
+      '每条责任必须尽量补齐 liability、triggerCondition、formulaText、basis、value、unit、cashflowTreatment、requiredInputs、calculationEligible、calculationReason。',
+  },
+  uploaded_ocr_fallback: {
+    label: '上传OCR兜底',
+    routerDescription: '产品名或RAG未命中时，仍基于用户上传OCR保守提炼责任。',
+    promptRule:
+      '若上传OCR中能看到责任名称、触发条件、给付规则、比例、倍数、等待期或领取条件，即使未命中官方RAG，也要基于OCR先生成责任和指标候选，并用 sourceExcerpt 摘录OCR证据。',
+  },
+  official_rag_grounding: {
+    label: '官方RAG核对',
+    routerDescription: '用保险公司官方资料核对产品责任和条款口径。',
+    promptRule:
+      '产品资料为保险公司官方或本地官方知识库时，用其核对责任名称和条款口径；个单保额、保费、缴费期、保险期间仍以结构化保单字段和上传OCR为准。',
+  },
+  external_reference_review: {
+    label: '非官方资料审慎核验',
+    routerDescription: '只有外部辅助资料时保守解析，并提示需保险公司确认。',
+    promptRule:
+      '只有非官方或外部辅助资料时，不推断金额、比例、等待期、领取年龄；note 必须说明需保险公司或正式合同确认。',
+  },
+  benefit_schedule: {
+    label: '利益/领取计划拆解',
+    routerDescription: '识别年金、生存金、满期金、祝寿金、养老金等领取型责任。',
+    promptRule:
+      '年金、生存金、满期金、祝寿金、养老金等领取责任要写明领取年龄/保单年度、领取频率、领取公式和需要的领取计划表输入。',
+  },
+  cash_value_reference: {
+    label: '现金价值资料识别',
+    routerDescription: '识别现金价值、减保、保单贷款等机制，但避免误作保险责任。',
+    promptRule:
+      '现金价值、减保、保单贷款、自动垫交等仅作为责任公式或客户参考资料，不得单独作为 coverageTable 责任行；若某责任公式依赖现金价值，写入 basis 和 requiredInputs。',
+  },
+};
+const POLICY_ANALYSIS_SKILL_KEYS = Object.keys(POLICY_ANALYSIS_SKILLS);
 const NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
   'https://www.newchinalife.com/info/4596',
   'https://www.newchinalife.com/info/3279_23',
@@ -563,7 +609,7 @@ const analysisResponseSchema = z.object({
         scenario: z.string().trim().min(1),
         payout: z.string().trim().min(1),
         note: z.string().trim().min(1),
-      }),
+      }).passthrough(),
     )
     .default([]),
   notes: z.array(z.string().trim().min(1)).default([]),
@@ -1028,6 +1074,73 @@ function normalizeCoverageNoteText(note, { scenario = '', payout = '' } = {}) {
   return text;
 }
 
+function normalizedCoverageRowExtras(item = {}) {
+  const valueNumber = Number(item.value);
+  const extras = {
+    liability: trimString(item.liability || item.responsibilityName || item.benefitName),
+    responsibilityName: trimString(item.responsibilityName),
+    benefitName: trimString(item.benefitName),
+    triggerCondition: trimString(item.triggerCondition || item.condition),
+    condition: trimString(item.condition),
+    formulaText: trimString(item.formulaText || item.formula || item.calculationFormula),
+    basis: trimString(item.basis || item.calculationBasis),
+    basisKey: trimString(item.basisKey),
+    calculationKey: trimString(item.calculationKey),
+    value: Number.isFinite(valueNumber) ? valueNumber : undefined,
+    valueText: trimString(item.valueText),
+    unit: trimString(item.unit),
+    requiredInputs: Array.isArray(item.requiredInputs) ? item.requiredInputs.map(trimString).filter(Boolean) : undefined,
+    cashflowTreatment: trimString(item.cashflowTreatment),
+    calculationStatus: trimString(item.calculationStatus),
+    calculationEligible: typeof item.calculationEligible === 'boolean' ? item.calculationEligible : undefined,
+    calculationReason: trimString(item.calculationReason),
+    sourceExcerpt: trimString(item.sourceExcerpt || item.sourceText || item.evidenceExcerpt),
+    responsibilityScope: trimString(item.responsibilityScope),
+    selectionStatus: trimString(item.selectionStatus),
+    selectionEvidence: trimString(item.selectionEvidence),
+  };
+  return Object.fromEntries(
+    Object.entries(extras).filter(([, value]) => value !== undefined && value !== ''),
+  );
+}
+
+function sanitizeModelCoverageRow(row = {}, sensitiveTerms = []) {
+  const cleanText = (value) => removeSourceDisclosureText(redactSensitiveAnalysisText(value, sensitiveTerms));
+  const output = {
+    coverageType: cleanText(row.coverageType),
+    scenario: cleanText(row.scenario),
+    payout: cleanText(row.payout),
+    note: cleanText(row.note),
+  };
+  for (const key of [
+    'liability',
+    'responsibilityName',
+    'benefitName',
+    'triggerCondition',
+    'condition',
+    'formulaText',
+    'basis',
+    'basisKey',
+    'calculationKey',
+    'valueText',
+    'unit',
+    'cashflowTreatment',
+    'calculationStatus',
+    'calculationReason',
+    'sourceExcerpt',
+    'responsibilityScope',
+    'selectionStatus',
+    'selectionEvidence',
+  ]) {
+    const value = trimString(row[key]);
+    if (value) output[key] = cleanText(value);
+  }
+  if (typeof row.value === 'number' && Number.isFinite(row.value)) output.value = row.value;
+  if (Array.isArray(row.requiredInputs)) output.requiredInputs = row.requiredInputs.map(trimString).filter(Boolean);
+  if (typeof row.calculationEligible === 'boolean') output.calculationEligible = row.calculationEligible;
+  return output;
+}
+
 function normalizeCoverageTable(items = [], { preferDirectContractLanguage = false } = {}) {
   if (!Array.isArray(items)) return [];
   return items
@@ -1052,6 +1165,7 @@ function normalizeCoverageTable(items = [], { preferDirectContractLanguage = fal
         scenario,
         payout,
       });
+      const extras = normalizedCoverageRowExtras(item);
       if (!coverageType && !detail) return null;
       return {
         coverageType: coverageType || '责任项',
@@ -1061,6 +1175,7 @@ function normalizeCoverageTable(items = [], { preferDirectContractLanguage = fal
           note ||
           detail ||
           (preferDirectContractLanguage ? '基于已上传条款页OCR整理，缺失字段已按未完整识别处理。' : '需以正式条款核对。'),
+        ...extras,
       };
     })
     .filter(Boolean);
@@ -1112,7 +1227,7 @@ function buildCoverageRefinementMessages({ policy, analysisInput, analysis }) {
     {
       role: 'system',
       content:
-        '你是保险条款责任提炼助手。你只能基于用户提供的条款页/OCR文本，对已有责任表进行二次细化。不要重写产品概览，不要输出注意事项，只输出 JSON。JSON 只能包含 coverageTable 一个字段。coverageTable 只能写发生保险事故、达到领取条件或满足合同约定触发条件后的保险金/给付/赔付/报销责任，每行必须包含 coverageType、scenario、payout、note。分红、红利领取方式、现金价值、减保、保单贷款、自动垫交等产品利益机制不要作为 coverageTable 独立行；若有效保额递增或给付比例属于某条保险责任的计算公式，则写进该责任的 payout。若 OCR 中能明确识别责任触发情形、给付规则、给付比例、满期返还条件、赔付倍数，就直接写明，不要再用“需以正式条款核对”兜底。note 必须用面向客户的解释性中文，不要只写“合同终止”“责任终止”“合同中止”这种术语标签，必须把它解释成这对客户意味着什么。只有在 OCR 文本确实没有给出该责任的关键内容时，才保留核对提醒。',
+        '你是保险条款责任提炼助手。你只能基于用户提供的条款页/OCR文本，对已有责任表进行二次细化。不要重写产品概览，不要输出注意事项，只输出 JSON。JSON 只能包含 coverageTable 一个字段。coverageTable 只能写发生保险事故、达到领取条件或满足合同约定触发条件后的保险金/给付/赔付/报销责任，每行必须包含 coverageType、scenario、payout、note，并尽量补充指标拆解字段：liability、triggerCondition、formulaText、basis、value、unit、cashflowTreatment、calculationReason、requiredInputs、sourceExcerpt。所有保险责任都可以拆成指标候选，但字段名必须统一；依赖现金价值表、领取计划表、伤残比例表、实际医疗费用、实际住院天数或人工判断的责任，也要写出公式口径和 requiredInputs，并写 calculationEligible=false 与 calculationReason。sourceExcerpt 必须摘录能支持该责任和公式的原文短句，不得编造。分红、红利领取方式、现金价值、减保、保单贷款、自动垫交等产品利益机制不要作为 coverageTable 独立行；若有效保额递增或给付比例属于某条保险责任的计算公式，则写进该责任的 payout 和 formulaText。若 OCR 中能明确识别责任触发情形、给付规则、给付比例、满期返还条件、赔付倍数，就直接写明，不要再用“需以正式条款核对”兜底。note 必须用面向客户的解释性中文，不要只写“合同终止”“责任终止”“合同中止”这种术语标签，必须把它解释成这对客户意味着什么。只有在 OCR 文本确实没有给出该责任的关键内容时，才保留核对提醒。',
     },
     {
       role: 'user',
@@ -1140,6 +1255,7 @@ function mergeRefinedCoverageRows(baseRows = [], refinedRows = []) {
       scenario: scenario || trimString(row.scenario),
       payout: payout || trimString(row.payout),
       note: note || trimString(row.note),
+      ...normalizedCoverageRowExtras(refined),
     };
   });
 }
@@ -1162,12 +1278,7 @@ function normalizeAnalysis(payload, model, options = {}) {
     report: '',
     productOverview: '',
     coreFeature: '',
-    coverageTable: parsed.coverageTable.slice(0, 12).map((row) => ({
-      coverageType: removeSourceDisclosureText(redactSensitiveAnalysisText(row.coverageType, sensitiveTerms)),
-      scenario: removeSourceDisclosureText(redactSensitiveAnalysisText(row.scenario, sensitiveTerms)),
-      payout: removeSourceDisclosureText(redactSensitiveAnalysisText(row.payout, sensitiveTerms)),
-      note: removeSourceDisclosureText(redactSensitiveAnalysisText(row.note, sensitiveTerms)),
-    })),
+    coverageTable: parsed.coverageTable.slice(0, 12).map((row) => sanitizeModelCoverageRow(row, sensitiveTerms)),
     notes: [],
     purchaseAdvice: '',
     disclaimer: '',
@@ -1948,6 +2059,187 @@ function hasOfficialSearchSource(sources = []) {
   );
 }
 
+function hasExternalReviewSource(sources = []) {
+  return (Array.isArray(sources) ? sources : []).some((source) => {
+    const level = trimString(source?.evidenceLevel);
+    const kind = trimString(source?.sourceKind);
+    return level === 'external_legacy_reference' || kind === 'legacy_external_reference' || kind === 'open_web_reference';
+  });
+}
+
+function normalizePolicyAnalysisSkillKeys(skills = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(skills) ? skills : [])
+        .map(trimString)
+        .filter((skill) => POLICY_ANALYSIS_SKILL_KEYS.includes(skill)),
+    ),
+  );
+}
+
+function inferPolicyAnalysisDocumentType(analysisInput = {}) {
+  const ocrText = trimString(analysisInput.ocrText);
+  if (/现金价值|退保金|保单年度|现金价值表/u.test(ocrText)) return 'cash_value_or_benefit_page';
+  if (/保险责任|基本责任|可选责任|责任免除|保险金|给付|赔付|报销|豁免/u.test(ocrText)) return 'responsibility_page';
+  if (/投保人|被保险人|保险期间|缴费期间|交费期间|基本保险金额|首期保险费/u.test(ocrText)) return 'policy_basic_page';
+  return 'unknown';
+}
+
+function buildLocalPolicyAnalysisSkillPlan({ analysisInput = {}, searchArtifacts = {}, hasOfficialSource = false, hasExternalSource = false } = {}) {
+  const ocrText = trimString(analysisInput.ocrText);
+  const documentType = inferPolicyAnalysisDocumentType(analysisInput);
+  const skills = ['responsibility_extraction', 'indicator_quantification'];
+  if (hasOfficialSource) skills.push('official_rag_grounding');
+  if (hasExternalSource && !hasOfficialSource) skills.push('external_reference_review');
+  if (ocrText && (analysisInput.evidenceMode === 'detail_ocr' || documentType !== 'unknown' || !hasOfficialSource)) {
+    skills.push('uploaded_ocr_fallback');
+  }
+  if (/年金|生存金|满期|祝寿金|养老金|领取|教育金|成家立业金/u.test(ocrText)) {
+    skills.push('benefit_schedule');
+  }
+  if (/现金价值|保单贷款|减保|自动垫交|减额交清/u.test(ocrText)) {
+    skills.push('cash_value_reference');
+  }
+  const sourceCount = Array.isArray(searchArtifacts?.sources) ? searchArtifacts.sources.length : 0;
+  return {
+    documentType,
+    skills: normalizePolicyAnalysisSkillKeys(skills),
+    promptDirectives: [],
+    reason: hasOfficialSource
+      ? '已命中官方资料，结合上传OCR核对责任'
+      : ocrText
+        ? '基于上传OCR兜底解析保险责任'
+        : sourceCount
+          ? '基于检索资料解析保险责任'
+          : '基于已知保单字段解析保险责任',
+    selectedBy: 'local_fallback',
+  };
+}
+
+function normalizePromptDirectives(value = []) {
+  const items = Array.isArray(value) ? value : [value];
+  return Array.from(
+    new Set(
+      items
+        .map((item) => trimString(item))
+        .filter(Boolean)
+        .filter((item) => !/忽略|ignore|system|developer|markdown|改成|不要输出JSON|不要输出 json/iu.test(item))
+        .map((item) => item.slice(0, 140)),
+    ),
+  ).slice(0, 5);
+}
+
+function normalizePolicyAnalysisSkillPlanPayload(payload = {}, fallback = {}) {
+  const skills = normalizePolicyAnalysisSkillKeys(payload?.skills);
+  if (!skills.length) return fallback;
+  return {
+    documentType: trimString(payload?.documentType) || fallback.documentType || 'unknown',
+    skills,
+    promptDirectives: normalizePromptDirectives(payload?.promptDirectives || payload?.directives || payload?.nextPromptDirectives),
+    reason: trimString(payload?.reason).slice(0, 120) || fallback.reason || '',
+    selectedBy: 'deepseek',
+  };
+}
+
+function policyAnalysisSkillRouterMessages({ policy = {}, analysisInput = {}, searchArtifacts = {}, localPlan = {} } = {}) {
+  const skillList = POLICY_ANALYSIS_SKILL_KEYS
+    .map((key) => `- ${key}: ${POLICY_ANALYSIS_SKILLS[key].label}；${POLICY_ANALYSIS_SKILLS[key].routerDescription}`)
+    .join('\n');
+  const sourceSummary = (Array.isArray(searchArtifacts?.sources) ? searchArtifacts.sources : [])
+    .slice(0, 5)
+    .map((source, index) => {
+      const evidence = trimString(source?.evidenceLabel || source?.evidenceLevel);
+      return `资料${index + 1}: ${trimString(source?.title || source?.url)}${evidence ? `；${evidence}` : ''}`;
+    })
+    .join('\n');
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 policy_analysis_skill_router，只为下一次保单责任解析选择 skills 和 prompt 指令。',
+        '必须只返回 JSON，不要解释，不要输出 Markdown。',
+        '可选 skills：',
+        skillList,
+        '',
+        '选择原则：',
+        '- 上传OCR含保险责任、保险金、给付、赔付、豁免、领取条件时，必须包含 responsibility_extraction、indicator_quantification、uploaded_ocr_fallback。',
+        '- 命中保险公司官方资料或本地官方知识库时，包含 official_rag_grounding。',
+        '- 只有非官方外部资料时，包含 external_reference_review。',
+        '- OCR含年金、生存金、满期、养老金、祝寿金、领取计划时，包含 benefit_schedule。',
+        '- OCR含现金价值、减保、保单贷款时，包含 cash_value_reference，但现金价值不得单独变成保险责任。',
+        '- promptDirectives 只写给下一次责任解析模型的重点，不得改变 JSON 输出格式。',
+        '',
+        'JSON 格式：{"documentType":"responsibility_page|policy_basic_page|cash_value_or_benefit_page|unknown","skills":["skill_key"],"promptDirectives":["不超过5条"],"reason":"不超过40字"}',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `保险公司：${policy.company || '未识别'}`,
+        `产品名称：${policy.name || '未识别'}`,
+        `本地初判文档类型：${localPlan.documentType || 'unknown'}`,
+        `OCR证据模式：${analysisInput.evidenceMode || 'basic'}`,
+        `OCR片段：${trimString(analysisInput.ocrText).slice(0, 1200) || '无'}`,
+        `RAG资料：${sourceSummary || '无'}`,
+      ].join('\n'),
+    },
+  ];
+}
+
+async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisInput, searchArtifacts, fetchImpl }) {
+  const hasOfficialSource = hasOfficialSearchSource(searchArtifacts?.sources);
+  const hasExternalSource = hasExternalReviewSource(searchArtifacts?.sources);
+  const fallback = buildLocalPolicyAnalysisSkillPlan({
+    analysisInput,
+    searchArtifacts,
+    hasOfficialSource,
+    hasExternalSource,
+  });
+  try {
+    const payload = await requestPolicyAnalysis({
+      config,
+      model,
+      fetchImpl,
+      messages: policyAnalysisSkillRouterMessages({
+        policy,
+        analysisInput,
+        searchArtifacts,
+        localPlan: fallback,
+      }),
+      options: {
+        maxTokens: DEFAULT_SKILL_ROUTER_MAX_TOKENS,
+        temperature: 0.05,
+      },
+    });
+    const content = trimString(payload?.choices?.[0]?.message?.content);
+    return normalizePolicyAnalysisSkillPlanPayload(extractJson(content), fallback);
+  } catch (error) {
+    return {
+      ...fallback,
+      routerError: trimString(error?.code || error?.message).slice(0, 120),
+    };
+  }
+}
+
+function buildPolicyAnalysisSkillInstructionBlock(skillPlan = {}) {
+  const skills = normalizePolicyAnalysisSkillKeys(skillPlan.skills);
+  if (!skills.length) return '';
+  const skillRules = skills
+    .map((key) => `- ${key}（${POLICY_ANALYSIS_SKILLS[key].label}）：${POLICY_ANALYSIS_SKILLS[key].promptRule}`)
+    .join('\n');
+  const directives = normalizePromptDirectives(skillPlan.promptDirectives);
+  return [
+    '本次解析技能计划（内部执行，不要在输出中提到 skills、router 或 prompt）：',
+    `文档类型：${trimString(skillPlan.documentType) || 'unknown'}`,
+    `选择来源：${trimString(skillPlan.selectedBy) || 'local_fallback'}`,
+    trimString(skillPlan.reason) ? `选择原因：${trimString(skillPlan.reason)}` : '',
+    '启用 skills：',
+    skillRules,
+    directives.length ? 'Router 生成的下一步解析重点（不得改变输出 JSON 格式）：' : '',
+    directives.length ? directives.map((item) => `- ${item}`).join('\n') : '',
+  ].filter(Boolean).join('\n');
+}
+
 function normalizeDiscoveredSourcePayload(payload = {}) {
   const sourceRows = Array.isArray(payload?.sources) ? payload.sources : [];
   const officialDomains = normalizeOfficialDomains(payload?.companyOfficialDomainHints || payload?.officialDomains || []);
@@ -2087,7 +2379,7 @@ async function fetchPolicySearchContext({ config, policy, fetchImpl, officialDom
   return (await fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialDomainProfiles })).context;
 }
 
-function buildMessages({ policy, analysisInput }) {
+function buildMessages({ policy, analysisInput, externalReviewMode = false, skillPlan = null }) {
   const contextLines = [];
   if (analysisInput.searchContext) {
     contextLines.push(`产品资料（后端搜索获得）：\n${analysisInput.searchContext}`);
@@ -2098,6 +2390,7 @@ function buildMessages({ policy, analysisInput }) {
   const contextBlock = contextLines.length
     ? `\n\n内部上下文只用于核对保险责任。上下文来源已明确区分为“产品资料（后端搜索获得）”和“保单详情OCR（客户上传识别）”：产品资料用于核对公开保险责任和条款口径，OCR用于核对这张客户保单的关系信息、保费、保额、缴费期和保险期间等个单信息；客户姓名、身份证号、手机号等敏感信息不得出现在上下文或输出中。\n\n${contextLines.join('\n\n')}`
     : '';
+  const skillBlock = buildPolicyAnalysisSkillInstructionBlock(skillPlan);
   const messages = [
     {
       role: 'system',
@@ -2106,10 +2399,14 @@ function buildMessages({ policy, analysisInput }) {
 输出要求：
 1. 最终只输出保险责任，不要输出保单概览、注意事项、免责声明、产品利益说明、资料来源说明，也不要提到“联网”“搜索”“网页”“检索”“资料摘要”“内部上下文”“外部资料”等来源字样。
 2. 优先输出严格 JSON，不要包裹 markdown 代码块。JSON 字段只包含：coverageTable。coverageTable 是对象数组，不要输出 report、notes、summary、overview、disclaimer 等其他字段。
-3. coverageTable 是保险责任表，只能写保险公司在“发生保险事故、达到领取条件或满足合同约定触发条件”后承担的给付/赔付/报销责任。每一条保险责任都要单独写入 coverageTable 的一行；分阶段给付、额外给付、不同领取条件也要拆成独立行，不要把多项责任合并成一行。每行必须包含 coverageType、scenario、payout、note。给付比例、等待期、领取年龄、赔付倍数、保额递增公式等如果属于该责任的给付计算口径，必须写明。
-4. 分红、红利领取方式、现金价值、减保、保单贷款、自动垫交、转换年金等属于产品利益机制或保全权益，不要作为 coverageTable 的独立行；若有效保额递增、现金价值或给付比例属于某条保险责任的计算公式，则只写进该责任的 payout。
-5. 上下文没有明确证据的内容不要编造；不要输出“本产品未明确提及某某责任”来凑内容。若产品资料和 OCR 不一致，保险责任以正式条款口径为主，个单金额、保费、期间以 OCR 或结构化保单字段为主。
+3. coverageTable 是保险责任表，只能写保险公司在“发生保险事故、达到领取条件或满足合同约定触发条件”后承担的给付/赔付/报销责任。每一条保险责任都要单独写入 coverageTable 的一行；分阶段给付、额外给付、不同领取条件也要拆成独立行，不要把多项责任合并成一行。每行必须包含 coverageType、scenario、payout、note，并尽量补充指标拆解字段 liability、triggerCondition、formulaText、basis、value、unit、cashflowTreatment、calculationReason、requiredInputs、sourceExcerpt。
+4. 指标拆解规则：liability 写具体责任名称；triggerCondition 写触发条件；formulaText 写可执行的给付公式或条款口径；basis 写计算基准，例如基本保险金额、已交保险费、现金价值、账户价值、实际医疗费用、领取计划/比例表、伤残等级比例表；value 和 unit 只在条款明确百分比、倍数或固定金额时填写；cashflowTreatment 只能取 scheduled_cashflow、claim_contingent、waiver_only、not_cashflow；sourceExcerpt 必须摘录支持该责任和公式的原文短句，不得编造。
+5. 计算字段统一规则：所有可拆解责任都可以作为指标候选。能直接用保单基础字段计算的，formulaText/basis/value/unit 要写完整；暂时需要额外输入的，也要写完整公式口径，并用 requiredInputs 写需要的输入字段，例如 cashValue、accountValue、policyScheduleTable、policyYearOrAge、disabilityGrade、actualMedicalExpense、deductible、reimbursementRate、thirdPartyPaid、liabilityLimit、actualDays、dailyAmount、dayLimit。凡是需要额外输入才能算出具体金额的责任，标记 calculationEligible=false，并在 calculationReason 写明缺哪些输入。
+6. 分红、红利领取方式、现金价值、减保、保单贷款、自动垫交、转换年金等属于产品利益机制或保全权益，不要作为 coverageTable 的独立行；若有效保额递增、现金价值或给付比例属于某条保险责任的计算公式，则只写进该责任的 payout 和 formulaText。
+7. 上下文没有明确证据的内容不要编造；不要输出“本产品未明确提及某某责任”来凑内容。若产品资料和 OCR 不一致，保险责任以正式条款口径为主，个单金额、保费、期间以 OCR 或结构化保单字段为主。
+${externalReviewMode ? '8. 当前只有非官方公开资料线索，必须更保守：只提炼资料中明确出现的保险责任；不要推断金额、比例、等待期、领取年龄；note 字段必须写“非官方资料待保险公司确认”。' : ''}
 
+${skillBlock ? `${skillBlock}\n` : ''}
 ${contextBlock}`,
     },
   ];
@@ -2252,6 +2549,7 @@ export async function analyzeInsurancePolicyResponsibilities({
   fetchImpl = fetch,
   officialDomainProfiles: customOfficialDomainProfiles = [],
   knowledgeRecords = [],
+  allowExternalReferences = false,
 }) {
   const normalizedPolicy = normalizePolicyForPrompt(policy);
   const externalPolicy = stripSensitivePolicyForLlm(normalizedPolicy);
@@ -2272,8 +2570,9 @@ export async function analyzeInsurancePolicyResponsibilities({
     records: knowledgeRecords,
     officialDomainProfiles,
     maxResults: config.smartSearchMaxResults,
+    includeExternalReferences: allowExternalReferences,
   });
-  const searchArtifacts = hasOfficialSearchSource(knowledgeArtifacts.sources)
+  const searchArtifacts = hasOfficialSearchSource(knowledgeArtifacts.sources) || (allowExternalReferences && hasExternalReviewSource(knowledgeArtifacts.sources))
     ? knowledgeArtifacts
     : await fetchPolicySearchArtifacts({
         config,
@@ -2281,7 +2580,16 @@ export async function analyzeInsurancePolicyResponsibilities({
         fetchImpl,
         officialDomainProfiles,
       });
-  if (config.smartSearchEnabled && searchQuery && !hasOfficialSearchSource(searchArtifacts.sources)) {
+  const hasOfficialSource = hasOfficialSearchSource(searchArtifacts.sources);
+  const hasExternalSource = allowExternalReferences && hasExternalReviewSource(searchArtifacts.sources);
+  const localSkillPlan = buildLocalPolicyAnalysisSkillPlan({
+    analysisInput,
+    searchArtifacts,
+    hasOfficialSource,
+    hasExternalSource,
+  });
+  const canUseUploadedOcrFallback = localSkillPlan.skills.includes('uploaded_ocr_fallback');
+  if (config.smartSearchEnabled && searchQuery && !hasOfficialSource && !hasExternalSource && !canUseUploadedOcrFallback) {
     throw withCode(
       new Error('POLICY_ANALYSIS_OFFICIAL_SOURCE_NOT_FOUND'),
       'POLICY_ANALYSIS_OFFICIAL_SOURCE_NOT_FOUND',
@@ -2295,6 +2603,14 @@ export async function analyzeInsurancePolicyResponsibilities({
   let lastError = null;
   for (const model of modelChain) {
     try {
+      const skillPlan = await selectPolicyAnalysisSkillPlan({
+        config,
+        model,
+        policy: externalPolicy,
+        analysisInput: enrichedAnalysisInput,
+        searchArtifacts,
+        fetchImpl,
+      });
       const payload = await requestPolicyAnalysis({
         config,
         model,
@@ -2302,6 +2618,8 @@ export async function analyzeInsurancePolicyResponsibilities({
         messages: buildMessages({
           policy: externalPolicy,
           analysisInput: enrichedAnalysisInput,
+          externalReviewMode: hasExternalSource && !hasOfficialSource,
+          skillPlan,
         }),
       });
       const content = trimString(payload?.choices?.[0]?.message?.content);
@@ -2320,6 +2638,7 @@ export async function analyzeInsurancePolicyResponsibilities({
         rawText: redactSensitiveAnalysisText(content, analysisInput.sensitiveTerms),
         refinementModel: '',
         refinementRawText: '',
+        skillPlan,
       };
       const result = {
         analysis: normalized,

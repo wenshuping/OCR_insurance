@@ -50,9 +50,17 @@ import {
 } from './policy-responsibility-query.mjs';
 import { searchFeishuKnowledgeRecords } from './feishu-knowledge.service.mjs';
 import {
+  crawlJrcpcxProductCandidateRecords,
+  crawlOpenWebProductReferenceRecords,
   crawlOfficialKnowledge,
   buildKnowledgeSearchArtifacts,
   findKnowledgeProductCandidates,
+  LEGACY_EXTERNAL_REFERENCE_LEVEL,
+  legacyExternalProductReferenceRecords,
+  isExternalReferenceSourceKind,
+  sourceKindForKnowledgeRecord,
+  productIdentityCodesFromRecord,
+  withPolicyProductMatchStatus,
   companiesMatch,
   normalizeKnowledgeRecord,
   scoreCompanySuggestionMatch,
@@ -73,6 +81,14 @@ import {
   buildPolicyDerivedResult,
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
+import { generateProductCustomerResponsibilitySummary } from './product-customer-responsibility-summary.service.mjs';
+import {
+  buildResponsibilityCardsForPolicy,
+  buildResponsibilitySummaryReportFromCards,
+  isGeneratedResponsibilityCountReport,
+  mergeCoverageTableWithCheckedRows,
+  responsibilityRowsFromCards,
+} from './responsibility-card-standardizer.mjs';
 import {
   buildOptionalResponsibilityGaps,
   rebuildOptionalResponsibilityGovernance,
@@ -139,6 +155,7 @@ import {
   verifyWechatPaySignature,
 } from './wechat-pay.service.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+import { evidenceVerificationFields } from './evidence-classification.service.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -450,6 +467,37 @@ function normalizeSmsSendError(error) {
   return error;
 }
 
+function namedPolicyPerson(value) {
+  const name = trim(value);
+  return name && normalizeBeneficiary(name) !== '法定' ? name : '';
+}
+
+function sharePolicyPersonInfo(data = {}) {
+  const next = { ...(data || {}) };
+  const applicantName = namedPolicyPerson(next.applicant);
+  const insuredName = namedPolicyPerson(next.insured);
+  const beneficiaryName = namedPolicyPerson(next.beneficiary);
+  const shareBirthday = (leftName, leftKey, rightName, rightKey) => {
+    if (!leftName || !rightName || leftName !== rightName) return;
+    const birthday = trim(next[leftKey] || next[rightKey]);
+    if (!birthday) return;
+    if (!trim(next[leftKey])) next[leftKey] = birthday;
+    if (!trim(next[rightKey])) next[rightKey] = birthday;
+  };
+  const shareBeneficiaryRelation = (personName, relationValue) => {
+    if (!personName || !beneficiaryName || personName !== beneficiaryName) return;
+    if (trim(next.beneficiaryRelation)) return;
+    const relation = normalizePolicyRelation(relationValue);
+    if (relation && relation !== '待确认') next.beneficiaryRelation = relation;
+  };
+  shareBirthday(applicantName, 'applicantBirthday', insuredName, 'insuredBirthday');
+  shareBirthday(applicantName, 'applicantBirthday', beneficiaryName, 'beneficiaryBirthday');
+  shareBirthday(insuredName, 'insuredBirthday', beneficiaryName, 'beneficiaryBirthday');
+  shareBeneficiaryRelation(applicantName, next.applicantRelationLabel || next.applicantRelation);
+  shareBeneficiaryRelation(insuredName, next.insuredRelationLabel || next.insuredRelation);
+  return next;
+}
+
 function normalizeManualPolicyData(value) {
   if (!value || typeof value !== 'object') return {};
   const data = {};
@@ -488,6 +536,8 @@ function normalizeManualPolicyData(value) {
           role: trim(plan?.role),
           name: trim(plan?.name || plan?.productName),
           matchedProductName: trim(plan?.matchedProductName),
+          productCode: trim(plan?.productCode),
+          productCodes: Array.isArray(plan?.productCodes) ? plan.productCodes.map(trim).filter(Boolean) : [],
           productType: trim(plan?.productType),
           amount: Number(plan?.amount || 0) || 0,
           coveragePeriod: trim(plan?.coveragePeriod),
@@ -507,7 +557,7 @@ function normalizeManualPolicyData(value) {
   }
   const canonicalProductId = trim(value.canonicalProductId);
   if (canonicalProductId) data.canonicalProductId = canonicalProductId;
-  return data;
+  return sharePolicyPersonInfo(data);
 }
 
 function normalizedPlanIdentity(plan = {}, fallbackCompany = '') {
@@ -561,6 +611,25 @@ function mergeManualPlansIntoScan(scanPlans = [], manualPlans = [], fallbackComp
     return manualPlan;
   });
   return mergedPlans;
+}
+
+function syncSubmittedMainPlanFields(plans = [], fields = {}) {
+  const submittedAmount = hasOwn(fields, 'amount') ? Number(fields.amount || 0) : null;
+  const submittedPremium = hasOwn(fields, 'firstPremium') ? Number(fields.firstPremium || 0) : null;
+  if (submittedAmount !== null && (!Number.isFinite(submittedAmount) || submittedAmount < 0)) return plans;
+  if (submittedPremium !== null && (!Number.isFinite(submittedPremium) || submittedPremium < 0)) return plans;
+  let updatedMain = false;
+  return plans.map((plan, index) => {
+    const role = trim(plan?.role || (index === 0 ? 'main' : 'rider'));
+    if (updatedMain || (role !== 'main' && index !== 0)) return plan;
+    updatedMain = true;
+    const nextPlan = { ...plan };
+    if (submittedAmount !== null) nextPlan.amount = submittedAmount;
+    if (submittedPremium !== null) nextPlan.premium = submittedPremium;
+    if (hasOwn(fields, 'coveragePeriod')) nextPlan.coveragePeriod = trim(fields.coveragePeriod);
+    if (hasOwn(fields, 'paymentPeriod')) nextPlan.paymentPeriod = trim(fields.paymentPeriod);
+    return nextPlan;
+  });
 }
 
 function preserveMappedCanonicalIdsInManualData(manualData = {}, scanData = {}) {
@@ -646,20 +715,57 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
   if (hasOwn(input, 'plans')) {
     data.plans = normalizePolicyPlans(input.plans, data.company || existingPolicy.company || '');
   }
+  const sharedPersonData = sharePolicyPersonInfo({
+    applicant: hasOwn(data, 'applicant') ? data.applicant : existingPolicy.applicant,
+    applicantBirthday: hasOwn(data, 'applicantBirthday') ? data.applicantBirthday : existingPolicy.applicantBirthday,
+    applicantRelation: hasOwn(data, 'applicantRelation') ? data.applicantRelation : existingPolicy.applicantRelation,
+    applicantRelationLabel: hasOwn(input, 'applicantRelationLabel') ? normalizePolicyRelation(input.applicantRelationLabel) : existingPolicy.applicantRelationLabel,
+    beneficiary: hasOwn(data, 'beneficiary') ? data.beneficiary : existingPolicy.beneficiary,
+    beneficiaryRelation: hasOwn(data, 'beneficiaryRelation') ? data.beneficiaryRelation : existingPolicy.beneficiaryRelation,
+    beneficiaryBirthday: hasOwn(data, 'beneficiaryBirthday') ? data.beneficiaryBirthday : existingPolicy.beneficiaryBirthday,
+    insured: hasOwn(data, 'insured') ? data.insured : existingPolicy.insured,
+    insuredRelation: hasOwn(data, 'insuredRelation') ? data.insuredRelation : existingPolicy.insuredRelation,
+    insuredRelationLabel: hasOwn(input, 'insuredRelationLabel') ? normalizePolicyRelation(input.insuredRelationLabel) : existingPolicy.insuredRelationLabel,
+    insuredBirthday: hasOwn(data, 'insuredBirthday') ? data.insuredBirthday : existingPolicy.insuredBirthday,
+  });
+  if (!hasOwn(data, 'applicantBirthday') && trim(sharedPersonData.applicantBirthday) !== trim(existingPolicy.applicantBirthday)) {
+    data.applicantBirthday = sharedPersonData.applicantBirthday;
+  }
+  if (!hasOwn(data, 'insuredBirthday') && trim(sharedPersonData.insuredBirthday) !== trim(existingPolicy.insuredBirthday)) {
+    data.insuredBirthday = sharedPersonData.insuredBirthday;
+  }
+  if (!hasOwn(data, 'beneficiaryBirthday') && trim(sharedPersonData.beneficiaryBirthday) !== trim(existingPolicy.beneficiaryBirthday)) {
+    data.beneficiaryBirthday = sharedPersonData.beneficiaryBirthday;
+  }
+  if (!hasOwn(data, 'beneficiaryRelation') && trim(sharedPersonData.beneficiaryRelation) !== trim(existingPolicy.beneficiaryRelation)) {
+    data.beneficiaryRelation = sharedPersonData.beneficiaryRelation;
+  }
+  const submittedMainPlanFields = {
+    ...(hasOwn(input, 'amount') && hasOwn(data, 'amount') ? { amount: data.amount } : {}),
+    ...(hasOwn(input, 'firstPremium') && hasOwn(data, 'firstPremium') ? { firstPremium: data.firstPremium } : {}),
+    ...(hasOwn(input, 'coveragePeriod') && hasOwn(data, 'coveragePeriod') ? { coveragePeriod: data.coveragePeriod } : {}),
+    ...(hasOwn(input, 'paymentPeriod') && hasOwn(data, 'paymentPeriod') ? { paymentPeriod: data.paymentPeriod } : {}),
+  };
+  if (!hasOwn(input, 'plans') && Object.keys(submittedMainPlanFields).length && Array.isArray(existingPolicy.plans) && existingPolicy.plans.length) {
+    data.plans = normalizePolicyPlans(existingPolicy.plans, data.company || existingPolicy.company || '');
+  }
   if (Array.isArray(data.plans) && data.plans.length) {
     const amountToSync = data.amount || existingPolicy.amount || 0;
     const premiumToSync = data.firstPremium || existingPolicy.firstPremium || 0;
+    const hasSubmittedAmount = hasOwn(input, 'amount') && hasOwn(data, 'amount');
+    const hasSubmittedPremium = hasOwn(input, 'firstPremium') && hasOwn(data, 'firstPremium');
     if (amountToSync || premiumToSync) {
       data.plans = data.plans.map((plan, index) => {
         const isMain = plan.role === 'main' || index === 0;
         if (!isMain) return plan;
         return {
           ...plan,
-          amount: plan.amount || amountToSync || 0,
-          premium: plan.premium || premiumToSync || 0,
+          amount: hasSubmittedAmount ? data.amount : plan.amount || amountToSync || 0,
+          premium: hasSubmittedPremium ? data.firstPremium : plan.premium || premiumToSync || 0,
         };
       });
     }
+    data.plans = syncSubmittedMainPlanFields(data.plans, submittedMainPlanFields);
     if (!hasCanonicalProductIdInput && !data.canonicalProductId) {
       const mainPlan = data.plans.find((plan) => plan.role === 'main') || data.plans[0];
       data.canonicalProductId = trim(mainPlan?.canonicalProductId);
@@ -741,6 +847,10 @@ function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}
   const insured = members.find((row) => Number(row.id) === Number(normalizedInput.insuredMemberId));
   const applicantPerson = familyPersonFromPolicyData(personData, 'applicant');
   const insuredPerson = familyPersonFromPolicyData(personData, 'insured');
+  const beneficiaryName = namedPolicyPerson(personData.beneficiary);
+  const beneficiaryMember = beneficiaryName
+    ? members.find((row) => String(row.status || 'active') === 'active' && trim(row.name) === beneficiaryName)
+    : null;
   for (const { member, relationLabel } of [
     { member: applicant, relationLabel: normalizedInput.applicantRelationLabel },
     { member: insured, relationLabel: normalizedInput.insuredRelationLabel },
@@ -793,6 +903,7 @@ function buildPolicyFamilyBinding(state, input = {}, owner = {}, personData = {}
     applicantRelationLabel: trim(applicant?.relationLabel),
     insuredMemberName: trim(insured?.name),
     insuredRelationLabel: trim(insured?.relationLabel),
+    beneficiaryRelationLabel: trim(beneficiaryMember?.relationLabel),
   };
 }
 
@@ -1007,6 +1118,8 @@ function sanitizeClientPerformancePayload(body = {}) {
 
 function buildAdminOverview(state) {
   const usersById = new Map((state.users || []).map((user) => [Number(user.id), user]));
+  const familyRows = (Array.isArray(state.familyProfiles) ? state.familyProfiles : [])
+    .filter((family) => String(family?.status || 'active') === 'active');
   const sourceRecords = (state.sourceRecords || [])
     .map((record) => ({ ...record }))
     .sort((a, b) => String(b.lastUsedAt || b.discoveredAt || '').localeCompare(String(a.lastUsedAt || a.discoveredAt || '')));
@@ -1036,11 +1149,17 @@ function buildAdminOverview(state) {
   const users = (state.users || [])
     .map((user) => {
       const policies = policyRows.filter((policy) => Number(policy.userId) === Number(user.id));
+      const policyFamilyIds = new Set(policies.map((policy) => Number(policy.familyId || 0)).filter(Boolean));
+      const familyCount = familyRows.filter((family) => (
+        Number(family?.ownerUserId || 0) === Number(user.id) ||
+        (!Number(family?.ownerUserId || 0) && policyFamilyIds.has(Number(family?.id || 0)))
+      )).length;
       const insuredNames = new Set(policies.map((policy) => String(policy.insured || '').trim() || '未识别被保人'));
       return {
         id: Number(user.id),
         mobile: String(user.mobile || ''),
         createdAt: user.createdAt,
+        familyCount,
         policyCount: policies.length,
         insuredCount: insuredNames.size,
         totalCoverage: policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0),
@@ -1072,12 +1191,17 @@ function buildAdminOverview(state) {
   return {
     users,
     insureds: [...insuredMap.values()].sort((a, b) => b.policyCount - a.policyCount || a.insured.localeCompare(b.insured)),
-    policies: attachPoliciesCoverageIndicators(
-      policyRows.map((policy) => attachPolicyFamilyDisplay(policy, state)),
-      state.insuranceIndicatorRecords,
-      state.knowledgeRecords,
-      state.optionalResponsibilityRecords,
-    ),
+    policies: policyRows.map((policy) => {
+      const {
+        ocrText,
+        coverageIndicators,
+        optionalResponsibilities,
+        responsibilityCards,
+        responsibilities,
+        ...summaryPolicy
+      } = attachPolicyFamilyDisplay(policy, state);
+      return summaryPolicy;
+    }),
     sourceRecords,
     optionalResponsibilityGaps: buildOptionalResponsibilityGaps({
       optionalResponsibilityRecords: state.optionalResponsibilityRecords,
@@ -1087,6 +1211,7 @@ function buildAdminOverview(state) {
       userCount: users.length,
       insuredCount: insuredMap.size,
       policyCount: policyRows.length,
+      familyCount: familyRows.length,
       sourceRecordCount: sourceRecords.length,
       knowledgeRecordCount: Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0,
       optionalResponsibilityGapCount: buildOptionalResponsibilityGaps({
@@ -1208,62 +1333,102 @@ function buildResponsibilityCompanySuggestions(state, query = '', maxResults = 1
     .map(({ company, recordCount, matchType }) => ({ company, recordCount, matchType }));
 }
 
+function isProductSuggestionKnowledgeRecord(record = {}) {
+  const productName = trim(record.productName || record.name);
+  if (!productName) return false;
+  const sourceKind = sourceKindForKnowledgeRecord(record);
+  const parser = trim(record.parser);
+  const qualityStatus = trim(record.qualityStatus);
+  const evidenceLevel = trim(record.evidenceLevel || record.sourceLevel);
+  const materialType = trim(record.materialType);
+  return (
+    !isExternalReferenceSourceKind(sourceKind) &&
+    record.responsibilityDeferred !== true &&
+    evidenceLevel !== LEGACY_EXTERNAL_REFERENCE_LEVEL &&
+    materialType !== 'external_reference' &&
+    qualityStatus !== 'external_reference_only' &&
+    !['deepseek_planned_open_web_search', 'legacy_external_reference_seed', 'external_review_query_source'].includes(parser)
+  );
+}
+
 function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults = 12 } = {}) {
   if (!normalizeSuggestionText(company)) return [];
   const normalizedQuery = normalizeSuggestionText(query);
   const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
   const stats = new Map();
-  const addProduct = (recordCompany, productName, weight = 1, { official = false } = {}) => {
+  const addProduct = (recordCompany, productName, weight = 1, { official = false, productCodes = [] } = {}) => {
     const sourceCompany = trim(recordCompany);
     const name = trim(productName);
     if (!sourceCompany || !name) return;
     const companyMatches = companiesMatch(company, sourceCompany, officialDomainProfiles);
     if (!companyMatches) return;
     const key = `${sourceCompany}\u001f${name}`;
-    const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId: '', recordCount: 0 };
+    const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId: '', productCodes: new Set(), recordCount: 0 };
     if (official && !current.canonicalProductId) {
       current.canonicalProductId = canonicalProductIdFromOfficialProduct({
         company: sourceCompany,
         productName: name,
       });
     }
+    for (const code of productCodes) {
+      const normalizedCode = trim(code).normalize('NFKC').replace(/\s+/gu, '').toUpperCase();
+      if (/^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(normalizedCode)) current.productCodes.add(normalizedCode);
+    }
     current.recordCount += weight;
     stats.set(key, current);
   };
-  for (const record of state.knowledgeRecords || []) addProduct(record.company, record.productName, 1, { official: record.official === true });
-  for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1, { official: false });
+  for (const record of state.knowledgeRecords || []) {
+    if (!isProductSuggestionKnowledgeRecord(record)) continue;
+    addProduct(record.company, record.productName, 1, {
+      official: record.official === true,
+      productCodes: productIdentityCodesFromRecord(record),
+    });
+  }
 
   return [...stats.values()]
     .map((item) => {
       const normalizedProduct = normalizeSuggestionText(item.productName);
+      const normalizedCodes = [...item.productCodes].map(normalizeSuggestionText).filter(Boolean);
       const matchIndex = normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0;
+      const codeMatchIndex = normalizedQuery
+        ? normalizedCodes.findIndex((code) => code === normalizedQuery || code.startsWith(normalizedQuery) || code.includes(normalizedQuery))
+        : -1;
       const fuzzyScore = normalizedQuery ? scoreProductNameMatch(query, item.productName, company) : 1;
       return {
         ...item,
         fuzzyScore,
         matchIndex,
+        effectiveMatchIndex: matchIndex >= 0 ? matchIndex : codeMatchIndex >= 0 ? 0 : 9999,
         exact: Boolean(normalizedQuery && normalizedProduct === normalizedQuery),
+        codeExact: Boolean(normalizedQuery && normalizedCodes.includes(normalizedQuery)),
         startsWith: Boolean(normalizedQuery && normalizedProduct.startsWith(normalizedQuery)),
+        codeStartsWith: Boolean(normalizedQuery && normalizedCodes.some((code) => code.startsWith(normalizedQuery))),
+        codeMatched: codeMatchIndex >= 0,
       };
     })
-    .filter((item) => !normalizedQuery || item.matchIndex >= 0 || item.fuzzyScore >= 0.1)
+    .filter((item) => !normalizedQuery || item.matchIndex >= 0 || item.codeMatched || item.fuzzyScore >= 0.1)
     .sort(
       (left, right) =>
-        Number(right.exact) - Number(left.exact) ||
-        Number(right.startsWith) - Number(left.startsWith) ||
-        Number(right.matchIndex >= 0) - Number(left.matchIndex >= 0) ||
-        left.matchIndex - right.matchIndex ||
+        Number(right.exact || right.codeExact) - Number(left.exact || left.codeExact) ||
+        Number(right.startsWith || right.codeStartsWith) - Number(left.startsWith || left.codeStartsWith) ||
+        Number(right.matchIndex >= 0 || right.codeMatched) - Number(left.matchIndex >= 0 || left.codeMatched) ||
+        left.effectiveMatchIndex - right.effectiveMatchIndex ||
         right.fuzzyScore - left.fuzzyScore ||
         right.recordCount - left.recordCount ||
         left.productName.localeCompare(right.productName, 'zh-CN'),
     )
     .slice(0, maxResults)
-    .map(({ company: itemCompany, productName, canonicalProductId, recordCount }) => ({
-      company: itemCompany,
-      productName,
-      canonicalProductId: canonicalProductId || undefined,
-      recordCount,
-    }));
+    .map(({ company: itemCompany, productName, canonicalProductId, productCodes, recordCount }) => {
+      const resolvedProductCodes = [...productCodes];
+      return {
+        company: itemCompany,
+        productName,
+        canonicalProductId: canonicalProductId || undefined,
+        productCode: resolvedProductCodes[0] || undefined,
+        productCodes: resolvedProductCodes,
+        recordCount,
+	      };
+	    });
 }
 
 function assertUploadItemSize(uploadItem) {
@@ -1369,12 +1534,21 @@ function mergeManualPolicyDataIntoScan(scan, body) {
   if (Array.isArray(manualData.plans) || Array.isArray(scan?.data?.plans)) {
     mergedManualData.plans = mergeManualPlansIntoScan(scan?.data?.plans, mergedManualData.plans, mergedManualData.company || scan?.data?.company || '');
   }
+  if (Array.isArray(mergedManualData.plans)) {
+    const mainPlanFields = {};
+    for (const key of ['amount', 'firstPremium', 'coveragePeriod', 'paymentPeriod']) {
+      if (hasOwn(manualData, key) && hasOwn(mergedManualData, key)) mainPlanFields[key] = mergedManualData[key];
+    }
+    if (Object.keys(mainPlanFields).length) {
+      mergedManualData.plans = syncSubmittedMainPlanFields(mergedManualData.plans, mainPlanFields);
+    }
+  }
   return {
     ...scan,
-    data: {
+    data: sharePolicyPersonInfo({
       ...(scan?.data || {}),
       ...mergedManualData,
-    },
+    }),
   };
 }
 
@@ -1434,26 +1608,44 @@ async function resolvePolicyScanInput({ scanner, body, state }) {
 function normalizeProvidedAnalysis(value) {
   if (!value || typeof value !== 'object') return null;
   const optionalResponsibilities = normalizeOptionalResponsibilities(value.optionalResponsibilities);
+  const responsibilityCards = Array.isArray(value.responsibilityCards)
+    ? value.responsibilityCards.filter((card) => card && typeof card === 'object')
+    : [];
   const coverageTable = Array.isArray(value.coverageTable)
     ? value.coverageTable
-        .map((row) => ({
-          coverageType: String(row?.coverageType || '').trim(),
-          scenario: String(row?.scenario || '').trim(),
-          payout: String(row?.payout || '').trim(),
-          note: String(row?.note || '').trim(),
-          sourceUrl: String(row?.sourceUrl || '').trim(),
-          sourceTitle: String(row?.sourceTitle || row?.source || '').trim(),
-        }))
+        .map((row) => {
+          const normalized = {
+            productName: String(row?.productName || '').trim(),
+            coverageType: String(row?.coverageType || '').trim(),
+            scenario: String(row?.scenario || '').trim(),
+            payout: String(row?.payout || '').trim(),
+            note: String(row?.note || '').trim(),
+            sourceUrl: String(row?.sourceUrl || '').trim(),
+            sourceTitle: String(row?.sourceTitle || row?.source || '').trim(),
+            sourceExcerpt: String(row?.sourceExcerpt || '').trim(),
+            sourceKind: String(row?.sourceKind || '').trim(),
+            evidenceLabel: String(row?.evidenceLabel || '').trim(),
+            evidenceLevel: String(row?.evidenceLevel || row?.sourceLevel || '').trim(),
+            official: row?.official === true,
+            responsibilityDeferred: row?.responsibilityDeferred === true,
+            referenceOnly: row?.referenceOnly === true,
+          };
+          return {
+            ...normalized,
+            ...evidenceVerificationFields(normalized),
+          };
+        })
         .filter((row) => row.coverageType || row.scenario || row.payout || row.note)
     : [];
   const report = String(value.report || '').trim();
-  if (!report && !coverageTable.length && !optionalResponsibilities.length) return null;
+  if (!report && !coverageTable.length && !optionalResponsibilities.length && !responsibilityCards.length) return null;
   return {
     ...value,
     report,
     coverageTable,
     sources: normalizePolicySources(value.sources),
     optionalResponsibilities,
+    responsibilityCards,
   };
 }
 
@@ -1463,6 +1655,8 @@ function recordPolicySourceRecords(state, policy, analysis) {
   if (!Array.isArray(state.sourceRecords)) state.sourceRecords = [];
   const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
   const acceptedSources = sources.filter((source) => {
+    const customerPolicyTerms = String(source.sourceKind || '') === 'customer_policy_terms' || String(source.evidenceLevel || '') === 'customer_policy_terms';
+    if (customerPolicyTerms) return true;
     const claimsInsurerOfficial = Boolean(source.official) || String(source.evidenceLevel || '') === 'insurer_official';
     if (!claimsInsurerOfficial) return true;
     return isPolicyOfficialSourceUrl(
@@ -1487,6 +1681,12 @@ function recordPolicySourceRecords(state, policy, analysis) {
       existing.snippet = source.snippet || existing.snippet;
       existing.evidenceLabel = source.evidenceLabel || existing.evidenceLabel;
       existing.evidenceLevel = source.evidenceLevel || existing.evidenceLevel;
+      existing.verificationStatus = source.verificationStatus || existing.verificationStatus;
+      existing.verificationLabel = source.verificationLabel || existing.verificationLabel;
+      existing.referenceOnly = source.referenceOnly === true;
+      existing.sourceKind = source.sourceKind || existing.sourceKind;
+      existing.materialType = source.materialType || existing.materialType;
+      existing.sourceExcerpt = source.sourceExcerpt || existing.sourceExcerpt;
       existing.official = Boolean(source.official);
       existing.sourceType = source.sourceType || existing.sourceType;
       existing.company = sourceCompany || existing.company;
@@ -1505,6 +1705,12 @@ function recordPolicySourceRecords(state, policy, analysis) {
       snippet: source.snippet,
       evidenceLabel: source.evidenceLabel,
       evidenceLevel: source.evidenceLevel,
+      verificationStatus: source.verificationStatus,
+      verificationLabel: source.verificationLabel,
+      referenceOnly: source.referenceOnly === true,
+      sourceKind: source.sourceKind,
+      materialType: source.materialType,
+      sourceExcerpt: source.sourceExcerpt,
       official: Boolean(source.official),
       sourceType: source.sourceType,
       discoveredAt: now,
@@ -1519,13 +1725,15 @@ function recordPolicySourceRecords(state, policy, analysis) {
         (source) => {
           const sourceCompany = String(source.company || policy.company || '').trim();
           const sourceProductName = String(source.productName || policy.name || '').trim();
+          const customerPolicyTerms = String(source.sourceKind || '') === 'customer_policy_terms' || String(source.evidenceLevel || '') === 'customer_policy_terms';
           return (
-            (Boolean(source.official) || String(source.evidenceLevel || '') === 'insurer_official') &&
+            customerPolicyTerms ||
+            ((Boolean(source.official) || String(source.evidenceLevel || '') === 'insurer_official') &&
             isPolicyOfficialSourceUrl(
               source.url,
               { company: sourceCompany, name: sourceProductName },
               officialDomainProfiles,
-            )
+            ))
           );
         },
       )
@@ -1536,10 +1744,15 @@ function recordPolicySourceRecords(state, policy, analysis) {
         url: source.url,
         snippet: source.snippet,
         sourceType: source.sourceType,
-        materialType: source.sourceType === 'pdf' ? 'pdf' : '',
+        materialType: source.materialType || (source.sourceType === 'pdf' ? 'pdf' : ''),
         official: true,
         evidenceLabel: source.evidenceLabel || '保险公司官方资料',
         evidenceLevel: source.evidenceLevel || 'insurer_official',
+        sourceKind: source.sourceKind,
+        verificationStatus: source.verificationStatus,
+        verificationLabel: source.verificationLabel,
+        referenceOnly: source.referenceOnly === true,
+        sourceExcerpt: source.sourceExcerpt,
         parser: 'analysis_source',
         lastUsedAt: new Date().toISOString(),
         useCount: 1,
@@ -1555,16 +1768,25 @@ function applyAnalysisToPolicy(policy, analysis) {
   const normalized = normalizeProvidedAnalysis(analysis);
   if (!policy || !normalized) return false;
   policy.responsibilities = normalized.coverageTable.map((row) => ({
+    productName: String(row.productName || '').trim(),
     coverageType: String(row.coverageType || '').trim() || '保险责任',
     scenario: String(row.scenario || '').trim() || '以条款约定为准',
     payout: String(row.payout || '').trim() || '以正式条款为准',
     note: String(row.note || '').trim(),
     sourceUrl: String(row.sourceUrl || '').trim(),
     sourceTitle: String(row.sourceTitle || '').trim(),
+    sourceExcerpt: String(row.sourceExcerpt || '').trim(),
+    sourceKind: String(row.sourceKind || '').trim(),
+    evidenceLabel: String(row.evidenceLabel || '').trim(),
+    evidenceLevel: String(row.evidenceLevel || '').trim(),
+    verificationStatus: String(row.verificationStatus || '').trim(),
+    verificationLabel: String(row.verificationLabel || '').trim(),
+    referenceOnly: row.referenceOnly === true,
+    official: row.official === true,
   }));
   policy.report = String(normalized.report || '').trim();
   policy.sources = normalizePolicySources(normalized.sources);
-  if (Array.isArray(normalized.optionalResponsibilities)) {
+  if (Array.isArray(normalized.optionalResponsibilities) && normalized.optionalResponsibilities.length) {
     policy.optionalResponsibilities = normalized.optionalResponsibilities;
   }
   policy.reportStatus = 'ready';
@@ -1695,7 +1917,7 @@ function markPolicyReportFailed(policy, error) {
   policy.updatedAt = new Date().toISOString();
 }
 
-function startPolicyReportGeneration({ state, policy, scan, analyzer, persist, performanceLogger, requestMetrics = {} }) {
+function startPolicyReportGeneration({ state, policy, scan, analyzer, persist, afterApply, performanceLogger, requestMetrics = {} }) {
   if (!policy || policy.reportStatus === 'ready') return;
   void (async () => {
     const analysisStartedAt = nowMs();
@@ -1705,6 +1927,7 @@ function startPolicyReportGeneration({ state, policy, scan, analyzer, persist, p
         throw new Error('报告生成结果为空');
       }
       recordPolicySourceRecords(state, policy, analysis);
+      if (typeof afterApply === 'function') await afterApply({ policy, analysis });
       await persist();
       logPerformance(performanceLogger, 'policy.report.background.analysis', {
         route: 'background',
@@ -1849,6 +2072,7 @@ export function createPolicyOcrApp(options = {}) {
         knowledgeRecords: state.knowledgeRecords || [],
         resolveFeishuKnowledgeRecords,
         preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer !== false,
+        allowExternalReferences: Boolean(input.allowExternalReferences),
         maxAttempts: input.preferLocalKnowledgeAnswer === false ? 1 : 2,
       }));
   const codeGenerator = options.codeGenerator || defaultCodeGenerator;
@@ -1857,6 +2081,9 @@ export function createPolicyOcrApp(options = {}) {
     (options.codeGenerator ? localSmsDeliveryPlanResolver(codeGenerator) : resolveSmsDeliveryPlan);
   const smsDeliverer = options.smsDeliverer || deliverSmsCode;
   const knowledgeFetchImpl = options.knowledgeFetchImpl || fetch;
+  const officialKnowledgeCrawler = options.crawlOfficialKnowledge || crawlOfficialKnowledge;
+  const onlineResponsibilityProductMatcher = options.onlineResponsibilityProductMatcher || crawlJrcpcxProductCandidateRecords;
+  const externalReferenceProductMatcher = options.externalReferenceProductMatcher || crawlOpenWebProductReferenceRecords;
   const rawPersist = typeof options.persist === 'function' ? options.persist : async () => undefined;
   const optionalResponsibilityGovernanceRebuilder = options.optionalResponsibilityGovernanceRebuilder || rebuildOptionalResponsibilityGovernance;
   const persist = async (nextState = state, persistOptions = {}) => {
@@ -1906,6 +2133,24 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistPolicyDerivedResult = typeof options.persistPolicyDerivedResult === 'function'
     ? (input = {}) => options.persistPolicyDerivedResult({ state, ...input })
+    : null;
+  const persistResponsibilityLookupArtifacts = typeof options.persistResponsibilityLookupArtifacts === 'function'
+    ? (input = {}) => options.persistResponsibilityLookupArtifacts({ state, ...input })
+    : null;
+  const persistProductCustomerResponsibilitySummary = typeof options.persistProductCustomerResponsibilitySummary === 'function'
+    ? (input = {}) => options.persistProductCustomerResponsibilitySummary({
+        state,
+        summary: input?.summary || input,
+      })
+    : null;
+  const persistProductCustomerSummaryGenerationRun = typeof options.persistProductCustomerSummaryGenerationRun === 'function'
+    ? (input = {}) => options.persistProductCustomerSummaryGenerationRun({
+        state,
+        run: input?.run || input,
+      })
+    : null;
+  const findProductCustomerResponsibilitySummary = typeof options.findProductCustomerResponsibilitySummary === 'function'
+    ? (input = {}) => options.findProductCustomerResponsibilitySummary(input)
     : null;
   const markPolicyDerivedResultsStaleByProductKeys = typeof options.markPolicyDerivedResultsStaleByProductKeys === 'function'
     ? (input = {}) => options.markPolicyDerivedResultsStaleByProductKeys({ state, ...input })
@@ -2010,6 +2255,7 @@ export function createPolicyOcrApp(options = {}) {
     persistMembershipConfig,
     persistMembershipState,
     persistOfficialDomainProfiles,
+    persistResponsibilityLookupArtifacts,
     persistPolicyDerivedResult,
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
@@ -2085,6 +2331,11 @@ export function createPolicyOcrApp(options = {}) {
     buildOptionalResponsibilityReview,
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
+    buildResponsibilitySummaryReportFromCards,
+    buildResponsibilityCardsForPolicy,
+    isGeneratedResponsibilityCountReport,
+    mergeCoverageTableWithCheckedRows,
+    responsibilityRowsFromCards,
     buildRawUploadSnapshot,
     findPolicyForReportRequest,
     policyProductIdentity,
@@ -2124,6 +2375,14 @@ export function createPolicyOcrApp(options = {}) {
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     findKnowledgeProductCandidates,
+    legacyExternalProductReferenceRecords,
+    withPolicyProductMatchStatus,
+    generateProductCustomerResponsibilitySummary,
+    generateProductCustomerResponsibilitySummaryWithDeepSeek: options.generateProductCustomerResponsibilitySummaryWithDeepSeek,
+    generateProductCustomerResponsibilityPlannerWithDeepSeek: options.generateProductCustomerResponsibilityPlannerWithDeepSeek,
+    findProductCustomerResponsibilitySummary,
+    persistProductCustomerResponsibilitySummary,
+    persistProductCustomerSummaryGenerationRun,
     buildAdminOverview,
     buildOptionalResponsibilityGaps,
     buildAdminReportIssueDetail,
@@ -2140,10 +2399,13 @@ export function createPolicyOcrApp(options = {}) {
     normalizeAdminOfficialDomainProfileInput,
     buildAdminKnowledgeRecords,
     normalizeAdminKnowledgeCrawlInput,
-    crawlOfficialKnowledge,
+    crawlOfficialKnowledge: officialKnowledgeCrawler,
+    onlineResponsibilityProductMatcher,
+    externalReferenceProductMatcher,
     knowledgeFetchImpl,
     archiveFamilyMember,
     upsertKnowledgeRecords,
+    persistResponsibilityLookupArtifacts,
     createFamilyMember,
     createFamilyProfile,
     archiveFamilyGeneratedReports,

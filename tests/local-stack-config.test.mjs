@@ -11,6 +11,8 @@ test('local production stack lets runtime OCR env override the default provider'
   assert.match(localStackSource, /'POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES'/u);
   assert.match(localStackSource, /'POLICY_OCR_REMOTE_VISION_MAX_IMAGE_DIMENSION'/u);
   assert.match(localStackSource, /'POLICY_OCR_REMOTE_VISION_MAX_TOKENS'/u);
+  assert.match(localStackSource, /'POLICY_OCR_SERVICE_URL'/u);
+  assert.match(localStackSource, /'POLICY_OCR_SERVICE_TOKEN'/u);
   assert.match(localStackSource, /'POLICY_OCR_HUAWEI_PROJECT_ID'/u);
   assert.match(localStackSource, /'POLICY_OCR_HUAWEI_X_AUTH_TOKEN'/u);
   assert.match(localStackSource, /'POLICY_OCR_HUAWEI_AK'/u);

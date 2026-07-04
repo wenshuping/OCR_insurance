@@ -78,6 +78,7 @@ import {
   recognizePolicy,
   scanCashValue,
   scanPolicy,
+  scanPolicyProductKnowledge,
   sendCode,
   sendFamilySalesChatMessage,
   setFamilyCoreMember,
@@ -112,6 +113,7 @@ import {
 } from '../../shared/errors';
 import {
   MAX_POLICY_UPLOAD_BYTES,
+  buildUploadItemOrientationAttempts,
   type ClientPerformanceTimings,
   clientElapsedMs,
   clientPerfNow,
@@ -171,6 +173,8 @@ import {
   sanitizeAmount,
   scanToForm,
   setMainPolicyPlanProduct,
+  sharePolicyPersonInfo,
+  syncMainPolicyPlanFields,
   updateOptionalResponsibilityItems,
   validatePolicyEntryForm,
 } from '../../shared/customer-policy-form';
@@ -189,6 +193,7 @@ const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
 const CLIENT_BOOTED_AT = new Date().toISOString();
 const CURRENT_CLIENT_ASSET_PATH = currentClientAssetPath();
 const SHOULD_CHECK_STALE_CLIENT = Boolean(CURRENT_CLIENT_ASSET_PATH) || window.location.port === '3014';
+const CASH_VALUE_ROTATION_RETRY_ERRORS = new Set(['CASH_VALUE_TABLE_NOT_DETECTED', 'PARSE_FAILED', 'POLICY_OCR_EMPTY']);
 
 declare global {
   interface Window {
@@ -213,6 +218,42 @@ function reloadOnceForClientAsset(latestAssetPath: string) {
   return true;
 }
 
+function shouldRetryCashValueScanWithRotatedImage(result: CashValueScanResult | null) {
+  if (!result || result.ok) return false;
+  const error = String(result.error || '');
+  const message = String(result.message || '');
+  return CASH_VALUE_ROTATION_RETRY_ERRORS.has(error)
+    || /未检测到现金价值表表头|解析结果不可靠|未识别到有效行|POLICY_OCR_EMPTY/u.test(message);
+}
+
+function normalizeProductCode(value: unknown) {
+  const text = String(value || '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function appendProductCodeDisplayName(name: string, code: string) {
+  const normalizedName = String(name || '').trim();
+  const normalizedCode = normalizeProductCode(code);
+  if (!normalizedName || !normalizedCode) return normalizedName;
+  if (new RegExp(`[（(]\\s*${escapeRegExp(normalizedCode)}\\s*[)）]`, 'u').test(normalizedName)) return normalizedName;
+  return `${normalizedName}（${normalizedCode}）`;
+}
+
+function productSuggestionDisplayName(suggestion: PolicyProductSuggestion) {
+  return appendProductCodeDisplayName(suggestion.productName, suggestion.productCode || suggestion.productCodes?.[0] || '');
+}
+
+function policyKnowledgeMatchDisplayName(match: PolicyKnowledgeMatch) {
+  return appendProductCodeDisplayName(
+    match.resolvedProductName || match.productName,
+    match.productCode || match.productCodes?.[0] || match.bestSource?.productCode || match.bestSource?.productCodes?.[0] || '',
+  );
+}
+
 function productSuggestionToKnowledgeMatch(
   suggestion: PolicyProductSuggestion,
   queryName: string,
@@ -225,6 +266,8 @@ function productSuggestionToKnowledgeMatch(
     company: suggestion.company.trim(),
     productName,
     canonicalProductId: suggestion.canonicalProductId,
+    productCode: suggestion.productCode,
+    productCodes: suggestion.productCodes,
     title: productName,
     score: exactNameMatch ? 1 : Math.max(0.5, 0.72 - index * 0.04),
     matchReason: exactNameMatch ? '产品名称高度匹配' : '本地产品候选',
@@ -232,8 +275,34 @@ function productSuggestionToKnowledgeMatch(
     sourceCount: recordCount > 0 ? recordCount : 1,
     bestSource: {
       title: '本地产品资料',
+      productCode: suggestion.productCode,
+      productCodes: suggestion.productCodes,
     },
   };
+}
+
+function isExternalResponsibilityReference(match: PolicyKnowledgeMatch) {
+  return Boolean(
+    match.responsibilityDeferred ||
+      match.referenceOnly ||
+      match.bestSource?.responsibilityDeferred ||
+      match.bestSource?.referenceOnly ||
+      match.verificationStatus === 'pending_review' ||
+      match.bestSource?.verificationStatus === 'pending_review' ||
+      match.evidenceLevel === 'external_legacy_reference' ||
+      match.bestSource?.evidenceLevel === 'external_legacy_reference' ||
+      match.sourceKind === 'legacy_external_reference' ||
+      match.sourceKind === 'open_web_reference',
+  );
+}
+
+function assistantMatchKey(match: PolicyKnowledgeMatch) {
+  return [
+    match.company.trim(),
+    (match.resolvedProductName || match.productName).trim(),
+    match.sourceKind || '',
+    match.bestSource?.url || '',
+  ].join('\u001f');
 }
 
 const emptyForm: PolicyFormData = {
@@ -260,6 +329,24 @@ const emptyForm: PolicyFormData = {
   applicantMemberId: null,
   insuredMemberId: null,
 };
+
+function chooseFamilyMemberByName(members: FamilyMember[], name: string, coreMemberId?: number | null) {
+  const normalizedName = name.trim();
+  if (!normalizedName) return null;
+  const matches = (Array.isArray(members) ? members : []).filter((member) => (
+    member.status === 'active' &&
+    areSameParticipantName(member.name, normalizedName)
+  ));
+  return matches.sort((left, right) => (
+    (Number(right.id) === Number(coreMemberId || 0) ? 1 : 0) -
+      (Number(left.id) === Number(coreMemberId || 0) ? 1 : 0) ||
+    (right.relationLabel && right.relationLabel !== '待确认' ? 1 : 0) -
+      (left.relationLabel && left.relationLabel !== '待确认' ? 1 : 0) ||
+    (right.birthday ? 1 : 0) - (left.birthday ? 1 : 0) ||
+    (right.idNumberTail ? 1 : 0) - (left.idNumberTail ? 1 : 0) ||
+    Number(left.id || 0) - Number(right.id || 0)
+  ))[0] || null;
+}
 
 function createGuestId() {
   if (crypto.randomUUID) return `guest-${crypto.randomUUID()}`;
@@ -518,6 +605,8 @@ function reportClientPerformance(event: string, payload: Record<string, unknown>
 
 export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const productKnowledgeFileInputRef = useRef<HTMLInputElement | null>(null);
+  const productKnowledgeReplaceIndexRef = useRef<number | null>(null);
   const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
   const membershipStatusRequestRef = useRef(0);
@@ -565,6 +654,7 @@ export function CustomerApp() {
   const [assistantCustomerSummaryLoading, setAssistantCustomerSummaryLoading] = useState(false);
   const [assistantCustomerSummaryMessage, setAssistantCustomerSummaryMessage] = useState('');
   const [assistantMatches, setAssistantMatches] = useState<PolicyKnowledgeMatch[]>([]);
+  const [assistantSelectedMatchKey, setAssistantSelectedMatchKey] = useState('');
   const [assistantCompanySuggestions, setAssistantCompanySuggestions] = useState<PolicyCompanySuggestion[]>([]);
   const [assistantCompanySuggestionLoading, setAssistantCompanySuggestionLoading] = useState(false);
   const [assistantProductSuggestions, setAssistantProductSuggestions] = useState<PolicyProductSuggestion[]>([]);
@@ -582,6 +672,12 @@ export function CustomerApp() {
   const [formProductMatches, setFormProductMatches] = useState<PolicyKnowledgeMatch[]>([]);
   const [formProductMatchLoading, setFormProductMatchLoading] = useState(false);
   const [formProductMatchMessage, setFormProductMatchMessage] = useState('');
+  const [formProductMatchStatus, setFormProductMatchStatus] = useState<'exact' | 'candidates' | 'not_found' | 'source_review_required' | ''>('');
+  const [productKnowledgeUploading, setProductKnowledgeUploading] = useState(false);
+  const [productKnowledgeUploadCount, setProductKnowledgeUploadCount] = useState(0);
+  const [productKnowledgeUploadItems, setProductKnowledgeUploadItems] = useState<UploadItem[]>([]);
+  const [baseScanResult, setBaseScanResult] = useState<PolicyScanResult | null>(null);
+  const [baseAnalysisDraft, setBaseAnalysisDraft] = useState<PolicyAnalysisResult | null>(null);
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
   const [cashflowMember, setCashflowMember] = useState<string | null>(null);
   const [showFamilyReport, setShowFamilyReport] = useState(false);
@@ -644,7 +740,7 @@ export function CustomerApp() {
 
   function familyReportGenerationMessage(reportRecord: FamilyReportRecord, actionText: string) {
     return String(reportRecord?.source || '').includes('deepseek')
-      ? `家庭保障分析报告已${actionText}，报告校验已完成`
+      ? `家庭保障分析报告已${actionText}，DeepSeek质检已完成`
       : `家庭保障分析报告已${actionText}，当前为本地规则结果`;
   }
 
@@ -1159,6 +1255,7 @@ export function CustomerApp() {
       setFormProductMatches([]);
       setFormProductMatchLoading(false);
       setFormProductMatchMessage('');
+      setFormProductMatchStatus('');
       return;
     }
 
@@ -1170,6 +1267,7 @@ export function CustomerApp() {
         const payload = await matchPolicyResponsibilities({ company, name });
         if (cancelled) return;
         let matches = Array.isArray(payload.matches) ? payload.matches : [];
+        const matchStatus = payload.status || (matches.length ? 'candidates' : 'not_found');
         if (!matches.length) {
           const suggestionPayload = await listPolicyResponsibilityProductSuggestions({ company, q: name, limit: 3 });
           if (cancelled) return;
@@ -1178,10 +1276,12 @@ export function CustomerApp() {
             .map((suggestion, index) => productSuggestionToKnowledgeMatch(suggestion, name, index));
         }
         setFormProductMatches(matches);
+        setFormProductMatchStatus(matchStatus);
         setFormProductMatchMessage(matches.length ? '' : '本地暂无匹配候选，生成时将继续查找官方资料');
       } catch (error) {
         if (cancelled) return;
         setFormProductMatches([]);
+        setFormProductMatchStatus('');
         setFormProductMatchMessage(error instanceof Error ? error.message : '本地产品匹配失败');
       } finally {
         if (!cancelled) setFormProductMatchLoading(false);
@@ -1243,7 +1343,21 @@ export function CustomerApp() {
       setConfirmedProductMatchKey('');
     }
     setFormData((current) => {
-      if (key !== 'company' && key !== 'name') return { ...current, [key]: value };
+      if (['amount', 'firstPremium', 'coveragePeriod', 'paymentPeriod'].includes(key)) {
+        const nextValue = key === 'amount' || key === 'firstPremium' ? sanitizeAmount(String(value || '')) : String(value || '');
+        return {
+          ...current,
+          [key]: nextValue,
+          plans: syncMainPolicyPlanFields(current.plans, current.company, { [key]: nextValue }),
+        };
+      }
+      if (key !== 'company' && key !== 'name') {
+        const next = { ...current, [key]: value };
+        if (['applicant', 'insured', 'beneficiary', 'applicantBirthday', 'insuredBirthday', 'beneficiaryBirthday', 'insuredIdNumber'].includes(key)) {
+          return autoBindEntryMembersByName(next);
+        }
+        return next;
+      }
       const nextCompany = key === 'company' ? String(value || '') : current.company;
       const nextName = key === 'name' ? String(value || '') : current.name;
       const plans = normalizePolicyPlanList(current.plans, nextCompany, { keepEmpty: true }).map((plan, index) => {
@@ -1269,14 +1383,14 @@ export function CustomerApp() {
     const plans = normalizePolicyPlanList(formData.plans, formData.company, { keepEmpty: true });
     const existing = plans[index];
     if (!existing) return;
-    const nextPlans = plans.map((plan, planIndex) => {
-      if (planIndex !== index) return plan;
-      return {
-        ...plan,
-        [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
-        ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
-      };
-    });
+	    const nextPlans = plans.map((plan, planIndex) => {
+	      if (planIndex !== index) return plan;
+	      return {
+	        ...plan,
+	        [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
+	        ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '', productCode: '', productCodes: [] } : {}),
+	      };
+	    });
     const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
     const totalPremium = nextPlans.reduce((sum, plan) => sum + Number(plan.premium || 0), 0);
     const nextData = {
@@ -1304,6 +1418,8 @@ export function CustomerApp() {
     const company = suggestion.company.trim();
     const name = suggestion.productName.trim();
     const canonicalProductId = String(suggestion.canonicalProductId || '').trim();
+    const productCode = normalizeProductCode(suggestion.productCode || suggestion.productCodes?.[0] || '');
+    const productCodes = Array.isArray(suggestion.productCodes) ? suggestion.productCodes.map(normalizeProductCode).filter(Boolean) : [];
     if (!company || !name) return;
     setShowAnalysisReport(false);
     setFormPlanProductQuery({ index: null, company: '', q: '' });
@@ -1319,6 +1435,8 @@ export function CustomerApp() {
         name,
         matchedProductName: name,
         canonicalProductId,
+        productCode,
+        productCodes: productCodes.length ? productCodes : productCode ? [productCode] : [],
       };
     });
     const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
@@ -1415,6 +1533,7 @@ export function CustomerApp() {
     setConfirmedProductMatchKey(productLookupKey(company, name));
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
     const nextData = {
       ...formData,
       company,
@@ -1832,10 +1951,7 @@ export function CustomerApp() {
   }
 
   function findFamilyMemberByName(name: string) {
-    const normalizedName = name.trim();
-    if (!normalizedName) return null;
-    const matches = entrySelectedFamilyMembers.filter((member) => member.status === 'active' && areSameParticipantName(member.name, normalizedName));
-    return matches.length === 1 ? matches[0] : null;
+    return chooseFamilyMemberByName(entrySelectedFamilyMembers, name, entrySelectedFamily?.coreMemberId);
   }
 
   function relationLabelForEntryMember(member: FamilyMember) {
@@ -1843,25 +1959,89 @@ export function CustomerApp() {
     return member.relationLabel || '待确认';
   }
 
+  function namedPolicyPerson(value: unknown) {
+    const name = String(value || '').trim();
+    return name && name !== '法定' ? name : '';
+  }
+
+  function entryPersonInfoByName(familyId: number) {
+    const people = new Map<string, { birthday?: string; insuredIdNumber?: string; relationLabel?: string }>();
+    const remember = (nameValue: unknown, info: { birthday?: unknown; insuredIdNumber?: unknown; relationLabel?: unknown } = {}) => {
+      const name = namedPolicyPerson(nameValue);
+      if (!name) return;
+      const existing = people.get(name) || {};
+      const birthday = String(info.birthday || '').trim();
+      const insuredIdNumber = String(info.insuredIdNumber || '').trim();
+      const relationLabel = String(info.relationLabel || '').trim();
+      if (birthday && !existing.birthday) existing.birthday = birthday;
+      if (insuredIdNumber && !existing.insuredIdNumber) existing.insuredIdNumber = insuredIdNumber;
+      if (relationLabel && relationLabel !== '待确认' && !existing.relationLabel) existing.relationLabel = relationLabel;
+      people.set(name, existing);
+    };
+
+    for (const member of entrySelectedFamilyMembers) {
+      if (member.status !== 'active') continue;
+      remember(member.name, { birthday: member.birthday, relationLabel: relationLabelForEntryMember(member) });
+    }
+    for (const policy of policies) {
+      if (Number(policy.familyId || 0) !== Number(familyId)) continue;
+      remember(policy.applicant, {
+        birthday: policy.applicantBirthday,
+        relationLabel: policy.applicantRelationLabel || policy.applicantRelation,
+      });
+      remember(policy.insured, {
+        birthday: policy.insuredBirthday,
+        insuredIdNumber: policy.insuredIdNumber,
+        relationLabel: policy.insuredRelationLabel || policy.insuredRelation,
+      });
+      remember(policy.beneficiary, {
+        birthday: policy.beneficiaryBirthday,
+        relationLabel: policy.beneficiaryRelation,
+      });
+    }
+    return people;
+  }
+
+  function fillEntryPersonInfo(data: PolicyFormData): PolicyFormData {
+    const familyId = Number(data.familyId || entryFamilyId || 0);
+    const next = sharePolicyPersonInfo(data);
+    if (!familyId) return next;
+    const people = entryPersonInfoByName(familyId);
+    const applicantInfo = people.get(namedPolicyPerson(next.applicant));
+    const insuredInfo = people.get(namedPolicyPerson(next.insured));
+    const beneficiaryInfo = people.get(namedPolicyPerson(next.beneficiary));
+    if (!String(next.applicantBirthday || '').trim() && applicantInfo?.birthday) next.applicantBirthday = applicantInfo.birthday;
+    if (!String(next.insuredBirthday || '').trim() && insuredInfo?.birthday) next.insuredBirthday = insuredInfo.birthday;
+    if (!String(next.insuredIdNumber || '').trim() && insuredInfo?.insuredIdNumber) next.insuredIdNumber = insuredInfo.insuredIdNumber;
+    if (!String(next.beneficiaryBirthday || '').trim() && beneficiaryInfo?.birthday) next.beneficiaryBirthday = beneficiaryInfo.birthday;
+    if (!String(next.beneficiaryRelation || '').trim() && beneficiaryInfo?.relationLabel) next.beneficiaryRelation = beneficiaryInfo.relationLabel;
+    return sharePolicyPersonInfo(next);
+  }
+
   function autoBindEntryMembersByName(data: PolicyFormData): PolicyFormData {
     const familyId = Number(data.familyId || entryFamilyId || 0);
-    if (!familyId || Number(entrySelectedFamily?.id || 0) !== familyId) return data;
-    const applicantMember = findFamilyMemberByName(data.applicant || '');
-    const insuredMember = findFamilyMemberByName(data.insured || '');
+    const syncedData = fillEntryPersonInfo(data);
+    if (!familyId || Number(entrySelectedFamily?.id || 0) !== familyId) return syncedData;
+    const applicantMember = findFamilyMemberByName(syncedData.applicant || '');
+    const insuredMember = findFamilyMemberByName(syncedData.insured || '');
+    const sameParticipant = areSameParticipantName(syncedData.applicant || '', syncedData.insured || '');
+    const sharedMember = sameParticipant ? applicantMember || insuredMember : null;
+    const finalApplicantMember = sharedMember || applicantMember;
+    const finalInsuredMember = sharedMember || insuredMember;
     return {
-      ...data,
+      ...syncedData,
       familyId,
-      ...(applicantMember ? {
-        applicantMemberId: applicantMember.id,
-        applicantRelation: relationLabelForEntryMember(applicantMember),
-        applicantRelationLabel: relationLabelForEntryMember(applicantMember),
-        applicantBirthday: data.applicantBirthday || applicantMember.birthday || '',
+      ...(finalApplicantMember ? {
+        applicantMemberId: finalApplicantMember.id,
+        applicantRelation: relationLabelForEntryMember(finalApplicantMember),
+        applicantRelationLabel: relationLabelForEntryMember(finalApplicantMember),
+        applicantBirthday: syncedData.applicantBirthday || finalApplicantMember.birthday || '',
       } : {}),
-      ...(insuredMember ? {
-        insuredMemberId: insuredMember.id,
-        insuredRelation: relationLabelForEntryMember(insuredMember),
-        insuredRelationLabel: relationLabelForEntryMember(insuredMember),
-        insuredBirthday: data.insuredBirthday || insuredMember.birthday || '',
+      ...(finalInsuredMember ? {
+        insuredMemberId: finalInsuredMember.id,
+        insuredRelation: relationLabelForEntryMember(finalInsuredMember),
+        insuredRelationLabel: relationLabelForEntryMember(finalInsuredMember),
+        insuredBirthday: syncedData.insuredBirthday || finalInsuredMember.birthday || '',
       } : {}),
     };
   }
@@ -2107,6 +2287,7 @@ export function CustomerApp() {
   }) {
     const { item, originalBytes, flowStartedAt, source } = input;
     clearOptionalResponsibilitySelections();
+    productKnowledgeReplaceIndexRef.current = null;
     setUploadItem(item);
     setScanResult(null);
     setAnalysisDraft(null);
@@ -2114,6 +2295,11 @@ export function CustomerApp() {
     setConfirmedProductMatchKey('');
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
+    setProductKnowledgeUploadItems([]);
+    setProductKnowledgeUploadCount(0);
+    setBaseScanResult(null);
+    setBaseAnalysisDraft(null);
     setMessage('正在上传并 OCR 识别保单信息');
     const recognizeStartedAt = clientPerfNow();
     const payload = await recognizePolicy({
@@ -2135,15 +2321,19 @@ export function CustomerApp() {
     setFormData((current) => autoBindEntryMembersByName(mergeScanToForm(payload.scan, current)));
     setOcrText(payload.scan.ocrText || '');
     setScanResult(payload.scan);
+    setBaseScanResult(payload.scan);
     const recognizedAnalysis = payload.analysis || null;
     if (hasAnalysisResult(recognizedAnalysis)) {
-      setAnalysisDraft(withRememberedOptionalResponsibilitySelections(recognizedAnalysis));
+      const nextAnalysis = withRememberedOptionalResponsibilitySelections(recognizedAnalysis);
+      setAnalysisDraft(nextAnalysis);
+      setBaseAnalysisDraft(nextAnalysis);
       setShowAnalysisReport(false);
       const reviewSuffix = scanReviewMessageSuffix(payload.scan);
       setMessage(recognizedAnalysis?.optionalResponsibilities?.length
         ? `OCR 已完成，已匹配本地保险责任${reviewSuffix}，请确认可选责任后保存`
         : `OCR 已完成，已匹配本地保险责任${reviewSuffix}，请确认后保存`);
     } else {
+      setBaseAnalysisDraft(null);
       setMessage(`OCR 已完成${scanReviewMessageSuffix(payload.scan)}，可生成保险责任或直接保存`);
     }
     reportClientPerformance('client.recognize.complete', {
@@ -2159,6 +2349,135 @@ export function CustomerApp() {
   function handleScanClick() {
     if (blockPolicyEntryIfUnauthenticated('上传保单照片前需要先验证手机号')) return;
     fileInputRef.current?.click();
+  }
+
+  function handleProductKnowledgeScanClick() {
+    if (blockPolicyEntryIfUnauthenticated('上传补充产品页前需要先验证手机号')) return;
+    if (!uploadItem || !baseScanResult) {
+      setMessage('请先上传保单基本信息页照片');
+      return;
+    }
+    productKnowledgeReplaceIndexRef.current = null;
+    productKnowledgeFileInputRef.current?.click();
+  }
+
+  function handleReplaceProductKnowledgeUpload(index: number) {
+    if (productKnowledgeUploading) return;
+    if (!productKnowledgeUploadItems[index]) return;
+    productKnowledgeReplaceIndexRef.current = index;
+    productKnowledgeFileInputRef.current?.click();
+  }
+
+  async function rescanProductKnowledgeUploads(input: {
+    items: UploadItem[];
+    startedAt: number;
+    originalBytes: number;
+    successMessage: string;
+  }) {
+    const { items, startedAt, originalBytes, successMessage } = input;
+    if (!baseScanResult) {
+      setMessage('请先上传保单基本信息页照片');
+      return;
+    }
+    if (!items.length) {
+      setProductKnowledgeUploadItems([]);
+      setProductKnowledgeUploadCount(0);
+      setScanResult(baseScanResult);
+      setOcrText(baseScanResult.ocrText || '');
+      setAnalysisDraft(baseAnalysisDraft);
+      setShowAnalysisReport(false);
+      setFormProductMatches([]);
+      setFormProductMatchStatus('');
+      setFormProductMatchMessage('');
+      setMessage('已删除补充照片，已恢复保单基本页 OCR');
+      return;
+    }
+    setProductKnowledgeUploading(true);
+    try {
+      const payload = await scanPolicyProductKnowledge({
+        token,
+        guestId,
+        company: formData.company,
+        name: formData.name,
+        manualData: formData,
+        scan: baseScanResult,
+        uploadItems: items,
+      });
+      setProductKnowledgeUploadItems(items);
+      setProductKnowledgeUploadCount(items.length);
+      setScanResult(payload.scan);
+      setOcrText(payload.scan.ocrText || '');
+      setFormProductMatches(Array.isArray(payload.matches) ? payload.matches : []);
+      setFormProductMatchStatus(payload.status || '');
+      setFormProductMatchMessage(payload.message || '');
+      setShowAnalysisReport(false);
+      if (Array.isArray(payload.optionalResponsibilities) && payload.optionalResponsibilities.length) {
+        setAnalysisDraft((current) => withRememberedOptionalResponsibilitySelections({
+          ...(current || baseAnalysisDraft || { report: '', coverageTable: [] }),
+          optionalResponsibilities: payload.optionalResponsibilities,
+        }));
+      } else {
+        setAnalysisDraft(baseAnalysisDraft);
+      }
+      reportClientPerformance('client.product_knowledge_scan.complete', {
+        durationMs: clientElapsedMs(startedAt),
+        requestMs: clientElapsedMs(startedAt),
+        originalBytes,
+        uploadBytes: items.reduce((sum, item) => sum + item.size, 0),
+        hasUpload: true,
+        outputOcrChars: String(payload.scan?.ocrText || '').length,
+      });
+      setMessage(payload.message || successMessage);
+    } catch (error) {
+      reportClientPerformance('client.product_knowledge_scan.error', {
+        durationMs: clientElapsedMs(startedAt),
+        hasUpload: true,
+        errorCode: getErrorCode(error),
+        errorMessage: getErrorMessage(error),
+      });
+      if (handleRegistrationRequiredError(error)) return;
+      setMessage(error instanceof Error ? error.message : '补充产品页识别失败，请稍后重试');
+    } finally {
+      setProductKnowledgeUploading(false);
+    }
+  }
+
+  async function handleDeleteProductKnowledgeUpload(index: number) {
+    if (productKnowledgeUploading) return;
+    const nextItems = productKnowledgeUploadItems.filter((_, itemIndex) => itemIndex !== index);
+    if (nextItems.length === productKnowledgeUploadItems.length) return;
+    const startedAt = clientPerfNow();
+    await rescanProductKnowledgeUploads({
+      items: nextItems,
+      startedAt,
+      originalBytes: 0,
+      successMessage: '已删除补充照片并重新整理 OCR',
+    });
+  }
+
+  function handleDeleteBaseUpload() {
+    if (loading || productKnowledgeUploading) return;
+    const nextFamilyId = entryFamilyId;
+    productKnowledgeReplaceIndexRef.current = null;
+    setFormData({
+      ...emptyForm,
+      familyId: nextFamilyId,
+    });
+    setOcrText('');
+    setUploadItem(null);
+    setBaseScanResult(null);
+    setBaseAnalysisDraft(null);
+    setScanResult(null);
+    setAnalysisDraft(null);
+    setProductKnowledgeUploadItems([]);
+    setProductKnowledgeUploadCount(0);
+    clearOptionalResponsibilitySelections();
+    setShowAnalysisReport(false);
+    setConfirmedProductMatchKey('');
+    setFormProductMatches([]);
+    setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
+    setMessage('已删除保单基本页，请重新上传保单基本信息页');
   }
 
   async function handleSendAuthCode() {
@@ -2263,6 +2582,67 @@ export function CustomerApp() {
     }
   }
 
+  async function handleProductKnowledgeFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length || productKnowledgeUploading) return;
+    if (blockPolicyEntryIfUnauthenticated('上传补充产品页前需要先验证手机号')) {
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+      return;
+    }
+    if (!uploadItem || !baseScanResult) {
+      setMessage('请先上传保单基本信息页照片');
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+      return;
+    }
+    const replaceIndex = productKnowledgeReplaceIndexRef.current;
+    const isReplacing = replaceIndex !== null;
+    const remaining = isReplacing ? 1 : Math.max(0, 5 - productKnowledgeUploadItems.length);
+    const selectedFiles = files.slice(0, remaining);
+    if (!selectedFiles.length) {
+      setMessage('补充照片最多上传 5 张保险产品页面');
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+      return;
+    }
+    const startedAt = clientPerfNow();
+    setProductKnowledgeUploading(true);
+    setMessage(isReplacing ? '正在替换并识别补充产品页' : '正在识别补充产品页');
+    try {
+      const preparedItems: UploadItem[] = [];
+      let originalBytes = 0;
+      const timings: ClientPerformanceTimings = {};
+      for (const file of selectedFiles) {
+        originalBytes += file.size;
+        const item = await fileToUploadItem(file, timings);
+        if (item.size > MAX_POLICY_UPLOAD_BYTES) {
+          throw createCodedError('图片太大，请压缩到 12MB 以内后重新上传', 'UPLOAD_TOO_LARGE');
+        }
+        preparedItems.push(item);
+      }
+      const nextItems = isReplacing
+        ? productKnowledgeUploadItems.map((item, index) => (index === replaceIndex ? preparedItems[0] : item))
+        : [...productKnowledgeUploadItems, ...preparedItems];
+      await rescanProductKnowledgeUploads({
+        items: nextItems,
+        startedAt,
+        originalBytes,
+        successMessage: isReplacing ? '补充照片已替换并重新识别' : '补充产品页已识别，知识线索待后台审核',
+      });
+    } catch (error) {
+      reportClientPerformance('client.product_knowledge_scan.error', {
+        durationMs: clientElapsedMs(startedAt),
+        hasUpload: true,
+        errorCode: getErrorCode(error),
+        errorMessage: getErrorMessage(error),
+      });
+      if (handleRegistrationRequiredError(error)) return;
+      setMessage(error instanceof Error ? error.message : '补充产品页识别失败，请稍后重试');
+    } finally {
+      productKnowledgeReplaceIndexRef.current = null;
+      setProductKnowledgeUploading(false);
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+    }
+  }
+
   async function handleGenerateAnalysis() {
     if (!canSubmit || loading) return;
     if (blockPolicyEntryIfUnauthenticated()) return;
@@ -2342,6 +2722,7 @@ export function CustomerApp() {
     setAssistantAnalysis(null);
     resetAssistantCustomerSummary('');
     setAssistantMatches([]);
+    setAssistantSelectedMatchKey('');
     setAssistantLocalSearched(false);
     setAssistantMessage('正在匹配本地产品');
     try {
@@ -2353,9 +2734,22 @@ export function CustomerApp() {
       });
       const matches = Array.isArray(matched.matches) ? matched.matches : [];
       setAssistantLocalSearched(true);
+      const exactMatch = matched.status === 'exact'
+        ? matches.find((match) => match.needsConfirmation === false) || matches[0]
+        : null;
+      if (exactMatch && exactMatch.needsConfirmation === false) {
+        const resolvedCompany = exactMatch.company.trim();
+        const resolvedName = (exactMatch.resolvedProductName || exactMatch.productName).trim();
+        const displayName = policyKnowledgeMatchDisplayName(exactMatch) || resolvedName;
+        setAssistantCompany(resolvedCompany);
+        setAssistantName(displayName);
+        setAssistantMessage(`已按官方名称校正为：${displayName}`);
+        await loadAssistantResponsibilities({ company: resolvedCompany, name: resolvedName, startedAt });
+        return;
+      }
       if (matches.length) {
         setAssistantMatches(matches);
-        setAssistantMessage(`本地找到 ${matches.length} 个相近产品`);
+        setAssistantMessage(matched.message || `本地找到 ${matches.length} 个相近产品，请选择确认`);
         reportClientPerformance('client.responsibility.assistant.match', {
           durationMs: clientElapsedMs(startedAt),
           requestMs: clientElapsedMs(startedAt),
@@ -2365,7 +2759,7 @@ export function CustomerApp() {
         });
         return;
       }
-      setAssistantMessage('本地库未找到匹配产品');
+      setAssistantMessage(matched.message || '本地库未找到匹配产品');
       reportClientPerformance('client.responsibility.assistant.match', {
         durationMs: clientElapsedMs(startedAt),
         requestMs: clientElapsedMs(startedAt),
@@ -2376,6 +2770,7 @@ export function CustomerApp() {
     } catch (error) {
       setAssistantAnalysis(null);
       setAssistantMatches([]);
+      setAssistantSelectedMatchKey('');
       setAssistantLocalSearched(false);
       setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
       reportClientPerformance('client.responsibility.assistant.error', {
@@ -2390,16 +2785,40 @@ export function CustomerApp() {
     }
   }
 
-  async function loadAssistantResponsibilities(input: { company: string; name: string; startedAt: number; preferLocalKnowledgeAnswer?: boolean }) {
+  async function loadAssistantResponsibilities(input: {
+    company: string;
+    name: string;
+    startedAt: number;
+    preferLocalKnowledgeAnswer?: boolean;
+    allowExternalReferences?: boolean;
+    keepMatches?: boolean;
+    selectedMatchKey?: string;
+  }) {
     const payload = await queryPolicyResponsibilities({
       company: input.company,
       name: input.name,
       preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer,
+      allowExternalReferences: input.allowExternalReferences,
     });
     setAssistantAnalysis(payload.analysis);
-    setAssistantMatches([]);
+    if (!input.keepMatches) setAssistantMatches([]);
+    setAssistantSelectedMatchKey(input.keepMatches ? input.selectedMatchKey || '' : '');
     setAssistantLocalSearched(false);
     const responsibilityCount = payload.analysis?.coverageTable?.length || 0;
+    if (input.allowExternalReferences) {
+      setAssistantCustomerSummary(null);
+      setAssistantCustomerSummaryLoading(false);
+      setAssistantCustomerSummaryMessage('');
+      setAssistantMessage(responsibilityCount ? `已生成 ${responsibilityCount} 项待核实责任` : '外部线索未提取到责任明细');
+      reportClientPerformance('client.responsibility.assistant.request', {
+        durationMs: clientElapsedMs(input.startedAt),
+        requestMs: clientElapsedMs(input.startedAt),
+        hasUpload: false,
+        inputOcrChars: `${input.company} ${input.name}`.length,
+        responsibilityCount,
+      });
+      return;
+    }
     setAssistantMessage('正在生成客户可读摘要');
     setAssistantCustomerSummaryLoading(true);
     setAssistantCustomerSummary(null);
@@ -2441,12 +2860,50 @@ export function CustomerApp() {
   async function handleAssistantSelectMatch(match: PolicyKnowledgeMatch) {
     if (assistantLoading) return;
     const company = match.company.trim();
-    const name = match.productName.trim();
+    const name = (match.resolvedProductName || match.productName).trim();
+    const displayName = policyKnowledgeMatchDisplayName(match) || name;
     if (!company || !name) return;
+    if (isExternalResponsibilityReference(match)) {
+      const startedAt = clientPerfNow();
+      const selectedKey = assistantMatchKey(match);
+      setAssistantCompany(company);
+      setAssistantName(displayName);
+      setAssistantAnalysis(null);
+      setAssistantSelectedMatchKey(selectedKey);
+      resetAssistantCustomerSummary('');
+      setAssistantLoading(true);
+      setAssistantMessage('正在基于外部线索生成待核实责任');
+      try {
+        await loadAssistantResponsibilities({
+          company,
+          name,
+          startedAt,
+          preferLocalKnowledgeAnswer: false,
+          allowExternalReferences: true,
+          keepMatches: true,
+          selectedMatchKey: selectedKey,
+        });
+      } catch (error) {
+        setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('外部资料未提取到可展示责任；请通过客服、寿险APP或柜面核实。');
+        setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
+        reportClientPerformance('client.responsibility.assistant.error', {
+          durationMs: clientElapsedMs(startedAt),
+          hasUpload: false,
+          inputOcrChars: `${company} ${name}`.length,
+          errorCode: getErrorCode(error),
+          errorMessage: getErrorMessage(error),
+        });
+      } finally {
+        setAssistantLoading(false);
+      }
+      return;
+    }
     const startedAt = clientPerfNow();
     setAssistantCompany(company);
-    setAssistantName(name);
+    setAssistantName(displayName);
     setAssistantAnalysis(null);
+    setAssistantSelectedMatchKey('');
     resetAssistantCustomerSummary('');
     setAssistantMatches([]);
     setAssistantLoading(true);
@@ -2480,17 +2937,52 @@ export function CustomerApp() {
     setAssistantLoading(true);
     setAssistantAnalysis(null);
     resetAssistantCustomerSummary('');
-    setAssistantMessage('正在联网查询官方资料');
+    setAssistantMatches([]);
+    setAssistantSelectedMatchKey('');
+    setAssistantLocalSearched(true);
+    setAssistantMessage('正在联网查找候选产品');
     try {
-      await loadAssistantResponsibilities({
+      const matched = await matchPolicyResponsibilities({
         company,
         name,
-        startedAt,
-        preferLocalKnowledgeAnswer: false,
+        limit: 20,
+        minScore: 0.1,
+        includeOnline: true,
       });
+      const matches = Array.isArray(matched.matches) ? matched.matches : [];
+      const exactMatch = matched.status === 'exact'
+        ? matches.find((match) => match.needsConfirmation === false) || matches[0]
+        : null;
+      if (exactMatch && exactMatch.needsConfirmation === false) {
+        const resolvedCompany = exactMatch.company.trim();
+        const resolvedName = (exactMatch.resolvedProductName || exactMatch.productName).trim();
+        setAssistantCompany(resolvedCompany);
+        setAssistantName(resolvedName);
+        setAssistantMessage(`已按官方名称校正为：${resolvedName}`);
+        await loadAssistantResponsibilities({
+          company: resolvedCompany,
+          name: resolvedName,
+          startedAt,
+          preferLocalKnowledgeAnswer: false,
+        });
+        return;
+      }
+      if (matches.length) {
+        setAssistantMatches(matches);
+        setAssistantMessage(matched.message || `联网找到 ${matches.length} 个候选产品，请选择确认`);
+        reportClientPerformance('client.responsibility.assistant.match_online', {
+          durationMs: clientElapsedMs(startedAt),
+          requestMs: clientElapsedMs(startedAt),
+          hasUpload: false,
+          inputOcrChars: `${company} ${name}`.length,
+          responsibilityCount: 0,
+        });
+        return;
+      }
+      setAssistantMessage(matched.message || '未找到匹配产品，请核对合同条款名称或上传条款页');
     } catch (error) {
       setAssistantAnalysis(null);
-      resetAssistantCustomerSummary(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
+      resetAssistantCustomerSummary('');
       setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
       reportClientPerformance('client.responsibility.assistant.error', {
         durationMs: clientElapsedMs(startedAt),
@@ -2507,7 +2999,7 @@ export function CustomerApp() {
   async function handleSubmit() {
     if (loading) return;
     if (blockPolicyEntryIfUnauthenticated('保存保单前需要先验证手机号')) return;
-    const submitBaseData = Number(entryFamilyId || 0) && Number(formData.familyId || 0) !== Number(entryFamilyId)
+    const familyAlignedData = Number(entryFamilyId || 0) && Number(formData.familyId || 0) !== Number(entryFamilyId)
       ? {
           ...formData,
           familyId: entryFamilyId,
@@ -2515,6 +3007,7 @@ export function CustomerApp() {
           insuredMemberId: null,
         }
       : formData;
+    const submitBaseData = autoBindEntryMembersByName(familyAlignedData);
     if (submitBaseData !== formData) setFormData(submitBaseData);
     const mustSelectExistingFamily = familyProfiles.some((family) => String(family.status || 'active') === 'active');
     const familyHasCoreMember = Boolean(entrySelectedFamily?.coreMemberId);
@@ -2540,12 +3033,8 @@ export function CustomerApp() {
       let submitFamilyMembers = Array.isArray(submitFamily.members) ? [...submitFamily.members] : [...entrySelectedFamilyMembers];
       const findActiveMemberById = (id: number | null | undefined) =>
         submitFamilyMembers.find((member) => member.status === 'active' && Number(member.id) === Number(id || 0)) || null;
-      const findActiveSingleMemberByName = (name: string) => {
-        const normalizedName = name.trim();
-        if (!normalizedName) return null;
-        const matches = submitFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
-        return matches.length === 1 ? matches[0] : null;
-      };
+      const findActiveMemberByName = (name: string) =>
+        chooseFamilyMemberByName(submitFamilyMembers, name, submitFamily.coreMemberId);
       const createSubmitMember = async (input: { name: string; relationLabel: string; birthday?: string; setAsCore?: boolean }) => {
         const member = await createFamilyMemberForFamily(submitFamily, input);
         if (member) {
@@ -2568,7 +3057,7 @@ export function CustomerApp() {
           if (selectedMember && areSameParticipantName(selectedMember.name, normalizedName)) return selectedMember;
         }
         const exactMember =
-          findActiveSingleMemberByName(normalizedName) ||
+          findActiveMemberByName(normalizedName) ||
           (Number(submitFamily.id) === Number(selectedFamilyId) ? findFamilyMemberByName(normalizedName) : null);
         if (exactMember) return exactMember;
         return createSubmitMember({
@@ -2621,13 +3110,15 @@ export function CustomerApp() {
         refreshSubmitFamilyMembers();
         return findSubmitMemberById(member.id) || member;
       };
-      let insuredMember = await resolveSubmitMember({
-        name: insuredName,
-        memberId: submitBaseData.insuredMemberId,
-        relationLabel: insuredRelationForSubmit,
-        birthday: insuredBirthday,
-        setAsCoreOnCreate: insuredShouldBeCore && !submitFamily.coreMemberId,
-      });
+      let insuredMember = participantNamesMatch
+        ? applicantMember
+        : await resolveSubmitMember({
+          name: insuredName,
+          memberId: submitBaseData.insuredMemberId,
+          relationLabel: insuredRelationForSubmit,
+          birthday: insuredBirthday,
+          setAsCoreOnCreate: insuredShouldBeCore && !submitFamily.coreMemberId,
+        });
       if (!insuredMember) {
         window.alert('被保险人姓名未找到可绑定的家庭成员，请先检查被保险人姓名');
         setMessage('请先补全必录项后再保存');
@@ -2680,19 +3171,25 @@ export function CustomerApp() {
         outputOcrChars: String(payload.policy?.ocrText || '').length,
         responsibilityCount: payload.policy?.responsibilities?.length || 0,
       });
+      setSelectedFamilyId(submitFamily.id);
       setFormData({
         ...emptyForm,
         familyId: submitFamily.id,
       });
       setOcrText('');
       setUploadItem(null);
+      setBaseScanResult(null);
+      setBaseAnalysisDraft(null);
       setScanResult(null);
       setAnalysisDraft(null);
+      setProductKnowledgeUploadItems([]);
+      setProductKnowledgeUploadCount(0);
       clearOptionalResponsibilitySelections();
       setShowAnalysisReport(false);
       setConfirmedProductMatchKey('');
       setFormProductMatches([]);
       setFormProductMatchMessage('');
+      setFormProductMatchStatus('');
       setPolicies((current) => {
         const withoutDuplicate = current.filter((policy) => policy.id !== payload.policy.id);
         return [payload.policy, ...withoutDuplicate];
@@ -2741,12 +3238,26 @@ export function CustomerApp() {
 
     try {
       const uploadItem = await fileToUploadItem(file);
-      const result = await scanCashValue({
-        token,
-        guestId,
-        policyId: cashValuePolicyId,
-        uploadItem,
-      });
+      const uploadAttempts = await buildUploadItemOrientationAttempts(uploadItem);
+      let result: CashValueScanResult = { ok: false, rows: [], error: 'PARSE_FAILED' };
+      let usedRotatedImage = false;
+      for (let attemptIndex = 0; attemptIndex < uploadAttempts.length; attemptIndex++) {
+        const attemptUploadItem = uploadAttempts[attemptIndex];
+        if (attemptIndex > 0) {
+          setCashValueMessage(`正在尝试第 ${attemptIndex + 1} 个图片方向...`);
+        }
+        result = await scanCashValue({
+          token,
+          guestId,
+          policyId: cashValuePolicyId,
+          uploadItem: attemptUploadItem,
+        });
+        if (result.ok && result.rows?.length) {
+          usedRotatedImage = attemptIndex > 0;
+          break;
+        }
+        if (!shouldRetryCashValueScanWithRotatedImage(result)) break;
+      }
 
       if (result.ok && result.rows?.length) {
         const nextRows = mode === 'append'
@@ -2763,9 +3274,19 @@ export function CustomerApp() {
           rowCount: nextRows.length,
         });
         setCashValueEditRows(nextRows);
-        setCashValueMessage(mode === 'append' ? `已追加 ${appendedCount} 行现金价值，请确认后保存` : '');
+        setCashValueMessage(
+          mode === 'append'
+            ? `已追加 ${appendedCount} 行现金价值，请确认后保存`
+            : usedRotatedImage
+              ? '已自动校正图片方向，请确认后保存'
+              : '',
+        );
       } else {
-        setCashValueMessage(result.message || '未能识别现金价值表，请确保照片清晰且包含完整表格');
+        const noCashValueHeader = result.error === 'CASH_VALUE_TABLE_NOT_DETECTED'
+          || /未检测到现金价值表表头/u.test(String(result.message || ''));
+        setCashValueMessage(noCashValueHeader
+          ? '未检测到现金价值列，请上传包含“现金价值/现金价值表”的页面；保单利益摘要、生存金/身故利益表不会录入为现金价值'
+          : result.message || '未能识别现金价值表，请确保照片清晰且包含完整表格');
         if (mode !== 'append') {
           setCashValueScanResult(null);
           setCashValueEditRows([]);
@@ -2831,8 +3352,24 @@ export function CustomerApp() {
     });
   }
 
-  function handleAddCashValueRow() {
-    setCashValueEditRows((prev) => [...prev, nextManualCashValueRow(prev)]);
+  function handleAddCashValueRow(afterRowIndex?: number) {
+    setCashValueEditRows((prev) => {
+      if (afterRowIndex === undefined || afterRowIndex < 0 || afterRowIndex >= prev.length) {
+        return [...prev, nextManualCashValueRow(prev)];
+      }
+
+      const baseRow = prev[afterRowIndex];
+      const basePolicyYear = parseNumericInput(baseRow?.policyYear);
+      const baseAge = baseRow?.age === null || baseRow?.age === undefined ? null : parseNumericInput(baseRow.age);
+      const insertedRow = basePolicyYear === null
+        ? nextManualCashValueRow(prev)
+        : makeManualCashValueRow(basePolicyYear + 1, baseAge === null ? null : baseAge + 1);
+      return [
+        ...prev.slice(0, afterRowIndex + 1),
+        insertedRow,
+        ...prev.slice(afterRowIndex + 1),
+      ];
+    });
   }
 
   function handleRemoveCashValueRow(rowIndex: number) {
@@ -3010,13 +3547,18 @@ export function CustomerApp() {
     });
     setOcrText('');
     setUploadItem(null);
+    setBaseScanResult(null);
+    setBaseAnalysisDraft(null);
     setScanResult(null);
     setAnalysisDraft(null);
+    setProductKnowledgeUploadItems([]);
+    setProductKnowledgeUploadCount(0);
     clearOptionalResponsibilitySelections();
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey('');
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
     setActiveTab('entry');
     setMessage('可以继续录入保单');
   }
@@ -3627,11 +4169,13 @@ export function CustomerApp() {
       productSuggestionLoading={assistantProductSuggestionLoading}
       productSuggestions={assistantProductSuggestions}
       plannerMode={assistantPlannerMode}
+      selectedMatchKey={assistantSelectedMatchKey}
       onChangeCompany={(value) => {
         setAssistantCompany(value);
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
@@ -3640,6 +4184,7 @@ export function CustomerApp() {
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
@@ -3653,16 +4198,18 @@ export function CustomerApp() {
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
       onSelectMatch={(match) => void handleAssistantSelectMatch(match)}
-      onSelectProduct={(suggestion) => {
+      onSelectProduct={(suggestion, displayName) => {
         setAssistantCompany(suggestion.company);
-        setAssistantName(suggestion.productName);
+        setAssistantName(displayName || productSuggestionDisplayName(suggestion) || suggestion.productName);
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
@@ -3758,13 +4305,23 @@ export function CustomerApp() {
           productMatchLoading={formProductMatchLoading}
           productMatchMessage={formProductMatchMessage}
           productMatches={formProductMatches}
+          productKnowledgeUploading={productKnowledgeUploading}
+          productKnowledgeUploadCount={productKnowledgeUploadCount}
+          productKnowledgeUploadItems={productKnowledgeUploadItems}
+          showProductKnowledgeSupplement={formProductMatchStatus === 'not_found' || formProductMatchStatus === 'source_review_required'}
           optionalResponsibilities={analysisDraft?.optionalResponsibilities || []}
           selectedFamilyId={entryFamilyId}
           selectedFamilyMembers={Array.isArray(entrySelectedFamily?.members) ? entrySelectedFamily.members : []}
           onFileChange={handleFileChange}
+          onProductKnowledgeFileChange={handleProductKnowledgeFileChange}
+          onDeleteBaseUpload={handleDeleteBaseUpload}
+          onDeleteProductKnowledgeUpload={(index) => void handleDeleteProductKnowledgeUpload(index)}
+          onReplaceBaseUpload={handleScanClick}
+          onReplaceProductKnowledgeUpload={handleReplaceProductKnowledgeUpload}
           onCreateFamily={openFamilyCreateDialog}
           onOcrTextChange={handleOcrTextChange}
           onScanClick={handleScanClick}
+          onProductKnowledgeScanClick={handleProductKnowledgeScanClick}
           onSelectFamily={handleSelectFamily}
           onSelectFormCompany={(company) => updateForm('company', company)}
           onSelectFormProduct={(suggestion) => selectFormProductSuggestion(suggestion)}
@@ -3783,6 +4340,7 @@ export function CustomerApp() {
           onOpenFamilies={() => setActiveTab('families')}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
+          productKnowledgeFileInputRef={productKnowledgeFileInputRef}
           staleClientDetected={Boolean(staleClientHealth)}
           onReloadForLatestVersion={() => window.location.reload()}
         />

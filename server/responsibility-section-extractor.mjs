@@ -255,9 +255,17 @@ function findBareLineHeading(source, title, from = 0) {
 
 function findInlineBareResponsibilityHeading(source, from = 0) {
   const slice = source.slice(from);
-  const match = /(^|\n)\s*保险责任(?:\s+|[:：])?(?=在\s*本\s*合同|在\s*保险合同|[（(]?[一二三四五六七八九十\d]+[）)、.．]\s*|本合同(?:的)?保险责任\s*分[^。\n]{0,30}责任|投保人[^。\n]{0,100}选择[^。\n]{0,80}保险责任|[^。\n]{0,120}选择投保(?:以下)?一项或多项[^。\n]{0,20}保险责任|[^。\n]{0,220}在\s*(?:本\s*)?(?:合同|保险合同)[^。\n]{0,120}承担[^。\n]{0,20}保险责任|[^。\n]{0,120}(?:承担保险责任|保险金))/u.exec(slice);
-  if (!match) return -1;
-  return from + match.index + match[0].search(/保险责任/u);
+  const regex = /(^|\n)\s*保险责任(?=(?:\s+|[:：]|在\s*(?:本\s*)?(?:合同|保险合同)|[（(]?[一二三四五六七八九十\d]+[）)、.．]\s*|本合同))/gu;
+  for (const match of slice.matchAll(regex)) {
+    const start = from + match.index + match[0].search(/保险责任/u);
+    const candidate = boundedSection(source, start, 3000);
+    if (responsibilityItemTitleCount(candidate) >= 1
+      || /(?:承担|给付|赔付|豁免)[^。\n]{0,40}(?:保险责任|保险金|年金|生存金|满期金|保费)/u.test(candidate)
+      || /(?:投保人|保障计划|基本部分|可选部分|等待期)[^。\n]{0,180}(?:保险责任|保险金|年金|给付|豁免)/u.test(candidate)) {
+      return start;
+    }
+  }
+  return -1;
 }
 
 function responsibilityItemTitleCount(value) {
@@ -296,6 +304,15 @@ function headingTokenAt(source, start) {
   return match?.[1] || '';
 }
 
+function inferDecimalParentToken(source, from) {
+  const match = /(^|\n)\s*(\d+(?:\.\d+)+)\s+/u.exec(source.slice(from));
+  const token = match?.[2] || '';
+  if (!token) return '';
+  const parts = token.split('.');
+  if (parts.length <= 2) return token;
+  return parts.slice(0, -1).join('.');
+}
+
 function isDecimalChildHeading(parentToken, candidateToken) {
   return /^\d+(?:\.\d+)+$/u.test(parentToken)
     && /^\d+(?:\.\d+)+$/u.test(candidateToken)
@@ -317,6 +334,9 @@ function findNextHeading(source, from, parentToken = '') {
 
 function findLooseBoundary(source, from) {
   const titleAlternation = NEXT_HEADING_TITLES.map(escapeRegExp).join('|');
+  const bareHeadingRegex = new RegExp(`\\n[ \\t]*(?:${titleAlternation})[ \\t]*(?:[:：][ \\t]*)?(?=\\n|$)`, 'u');
+  const bareMatch = bareHeadingRegex.exec(source.slice(from));
+  if (bareMatch) return from + bareMatch.index + bareMatch[0].search(new RegExp(`(?:${titleAlternation})`, 'u'));
   const regex = new RegExp(`[。；;]\\s*(?:${titleAlternation})\\s*[:：]`, 'u');
   const slice = source.slice(from);
   const match = regex.exec(slice);
@@ -326,7 +346,8 @@ function findLooseBoundary(source, from) {
 
 function boundedSection(source, start, maxLength = 3000) {
   if (start < 0) return '';
-  const nextHeading = findNextHeading(source, start + 4, headingTokenAt(source, start));
+  const parentToken = headingTokenAt(source, start) || inferDecimalParentToken(source, start + 4);
+  const nextHeading = findNextHeading(source, start + 4, parentToken);
   const looseBoundary = findLooseBoundary(source, start + 4);
   const candidates = [nextHeading, looseBoundary].filter((index) => index > start);
   const end = candidates.length ? Math.min(...candidates) : -1;

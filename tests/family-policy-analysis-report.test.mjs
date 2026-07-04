@@ -25,7 +25,16 @@ test('family policy analysis prompt asks for full customer report with emphasize
       company: '示例人寿',
       productName: '重疾险',
       title: '重疾险官方条款',
+      sourceKind: 'insurer_official',
+      evidenceLevel: 'insurer_official',
       sourceExcerpt: '等待期后确诊重大疾病，按基本保险金额给付。',
+    }, {
+      company: '示例人寿',
+      productName: '重疾险',
+      title: '第三方网页线索',
+      sourceKind: 'open_web_reference',
+      evidenceLevel: 'external_legacy_reference',
+      sourceExcerpt: '第三方网页提到额外责任，待核实。',
     }],
     indicatorRecords: [{
       company: '示例人寿',
@@ -53,7 +62,10 @@ test('family policy analysis prompt asks for full customer report with emphasize
   assert.equal(input.planningProfile.annualIncome, 300000);
   assert.equal(input.planningProfile.parentSupportGoal, 300000);
   assert.equal(input.policies[0].productName, '重疾险');
-  assert.equal(input.policies[0].evidence.knowledgeEvidence.length, 1);
+  assert.equal(input.policies[0].evidence.knowledgeEvidence.length, 2);
+  assert.equal(input.policies[0].evidence.knowledgeEvidence[0].verificationStatus, 'verified');
+  assert.equal(input.policies[0].evidence.knowledgeEvidence[1].referenceOnly, true);
+  assert.equal(input.policies[0].evidence.knowledgeEvidence[1].verificationLabel, '非官方资料，待保险公司确认');
   assert.equal(input.policies[0].evidence.indicatorEvidence.length, 1);
 
   const messages = buildFamilyPolicyAnalysisMessages(input);
@@ -69,6 +81,8 @@ test('family policy analysis prompt asks for full customer report with emphasize
   assert.match(prompt, /重点保障缺口分析/u);
   assert.match(prompt, /医疗、意外、重疾、寿险\/身故责任、收入中断\/失能/u);
   assert.match(prompt, /不能出现“AI”/u);
+  assert.match(prompt, /referenceOnly=true/u);
+  assert.match(prompt, /待核实参考/u);
 });
 
 test('family report refresh preserves generated policy analysis report', () => {

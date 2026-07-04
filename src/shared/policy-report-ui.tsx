@@ -6,6 +6,12 @@ export type ResponsibilitySourceLink = {
   official: boolean;
   sourceType?: string;
   sourceExcerpt?: string;
+  sourceKind?: string;
+  evidenceLabel?: string;
+  evidenceLevel?: string;
+  verificationStatus?: string;
+  verificationLabel?: string;
+  referenceOnly?: boolean;
 };
 
 export function formatSourceUrlHost(url: string) {
@@ -19,16 +25,24 @@ export function formatSourceUrlHost(url: string) {
 export function getPolicyResponsibilitySourceLinks(policy: Policy): ResponsibilitySourceLink[] {
   const links: ResponsibilitySourceLink[] = [];
   const seenUrls = new Set<string>();
-  const pushLink = (source: { title?: string; url?: string; official?: boolean; evidenceLevel?: string; sourceType?: string; sourceExcerpt?: string; liability?: string; productName?: string } | null | undefined) => {
+  const pushLink = (source: { title?: string; url?: string; official?: boolean; evidenceLabel?: string; evidenceLevel?: string; sourceKind?: string; verificationStatus?: string; verificationLabel?: string; referenceOnly?: boolean; sourceType?: string; sourceExcerpt?: string; liability?: string; productName?: string } | null | undefined) => {
     const url = String(source?.url || '').trim();
     if (!url || seenUrls.has(url)) return;
     seenUrls.add(url);
+    const referenceOnly = source?.referenceOnly === true || String(source?.verificationStatus || '') === 'pending_review';
+    const official = !referenceOnly && (Boolean(source?.official) || String(source?.evidenceLevel || '') === 'insurer_official' || String(source?.sourceKind || '') === 'customer_policy_terms');
     links.push({
       title: String(source?.title || source?.liability || source?.productName || formatSourceUrlHost(url)).trim(),
       url,
-      official: Boolean(source?.official) || String(source?.evidenceLevel || '') === 'insurer_official',
+      official,
       sourceType: source?.sourceType,
       sourceExcerpt: source?.sourceExcerpt,
+      sourceKind: source?.sourceKind,
+      evidenceLabel: source?.verificationLabel || source?.evidenceLabel,
+      evidenceLevel: source?.evidenceLevel,
+      verificationStatus: source?.verificationStatus,
+      verificationLabel: source?.verificationLabel,
+      referenceOnly,
     });
   };
 
@@ -37,16 +51,26 @@ export function getPolicyResponsibilitySourceLinks(policy: Policy): Responsibili
     pushLink({
       title: card.sourceTitle || card.title,
       url: card.sourceUrl,
-      official: true,
-      evidenceLevel: 'insurer_official',
+      official: card.official,
+      sourceKind: card.sourceKind,
+      evidenceLabel: card.evidenceLabel,
+      evidenceLevel: card.evidenceLevel,
+      verificationStatus: card.verificationStatus,
+      verificationLabel: card.verificationLabel,
+      referenceOnly: card.referenceOnly,
       sourceExcerpt: card.sourceExcerpt,
     });
     (card.indicators || []).forEach((indicator) => {
       pushLink({
         title: indicator.liability || card.title,
         url: indicator.sourceUrl,
-        official: true,
-        evidenceLevel: 'insurer_official',
+        official: indicator.official,
+        sourceKind: indicator.sourceKind,
+        evidenceLabel: indicator.evidenceLabel,
+        evidenceLevel: indicator.evidenceLevel,
+        verificationStatus: indicator.verificationStatus,
+        verificationLabel: indicator.verificationLabel,
+        referenceOnly: indicator.referenceOnly,
         sourceExcerpt: indicator.sourceExcerpt,
       });
     });
@@ -55,8 +79,13 @@ export function getPolicyResponsibilitySourceLinks(policy: Policy): Responsibili
     pushLink({
       title: indicator.liability || indicator.productName,
       url: indicator.sourceUrl,
-      official: true,
-      evidenceLevel: 'insurer_official',
+      official: indicator.official,
+      sourceKind: indicator.sourceKind,
+      evidenceLabel: indicator.evidenceLabel,
+      evidenceLevel: indicator.evidenceLevel,
+      verificationStatus: indicator.verificationStatus,
+      verificationLabel: indicator.verificationLabel,
+      referenceOnly: indicator.referenceOnly,
       sourceExcerpt: indicator.sourceExcerpt,
     });
   });
@@ -64,8 +93,13 @@ export function getPolicyResponsibilitySourceLinks(policy: Policy): Responsibili
     pushLink({
       title: responsibility.sourceTitle || responsibility.coverageType,
       url: responsibility.sourceUrl,
-      official: true,
-      evidenceLevel: 'insurer_official',
+      official: responsibility.official,
+      sourceKind: responsibility.sourceKind,
+      evidenceLabel: responsibility.evidenceLabel,
+      evidenceLevel: responsibility.evidenceLevel,
+      verificationStatus: responsibility.verificationStatus,
+      verificationLabel: responsibility.verificationLabel,
+      referenceOnly: responsibility.referenceOnly,
     });
   });
 
@@ -146,6 +180,13 @@ function responsibilityCardProductName(card: ResponsibilityCard) {
   return String(card.productName || '').trim();
 }
 
+function responsibilityCardVerificationLabel(card: ResponsibilityCard) {
+  if (card.referenceOnly || card.verificationStatus === 'pending_review') return card.verificationLabel || '待核实参考';
+  if (card.sourceKind === 'customer_policy_terms') return card.verificationLabel || '客户上传保单责任页/合同页';
+  if (card.verificationLabel) return card.verificationLabel;
+  return '';
+}
+
 function optionalResponsibilityTitle(item: OptionalResponsibility) {
   return String(item.liability || item.title || item.coverageType || '').trim();
 }
@@ -201,6 +242,7 @@ export function ResponsibilityCardList({
         const meta = [card.productName, card.category].filter(Boolean).join(' · ');
         const summary = String(card.plainSummary || card.triggerCondition || '').trim();
         const payout = String(card.payoutSummary || '').trim();
+        const verificationLabel = responsibilityCardVerificationLabel(card);
         return (
           <article key={card.id || `${title}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
             <div className="flex items-start gap-3">
@@ -213,6 +255,17 @@ export function ResponsibilityCardList({
                     <h4 className="break-words text-lg font-black leading-7 text-slate-950">{title}</h4>
                     {meta ? <p className="mt-0.5 text-xs font-bold leading-5 text-slate-500">{meta}</p> : null}
                   </div>
+                  {verificationLabel ? (
+                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black ${
+                      card.referenceOnly || card.verificationStatus === 'pending_review'
+                        ? 'bg-amber-50 text-amber-700'
+                        : card.sourceKind === 'customer_policy_terms'
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-blue-50 text-blue-700'
+                    }`}>
+                      {verificationLabel}
+                    </span>
+                  ) : null}
                 </div>
                 {summary ? <p className="mt-2 whitespace-pre-wrap text-base leading-7 text-slate-500">{summary}</p> : null}
                 {payout ? <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{payout}</p> : null}

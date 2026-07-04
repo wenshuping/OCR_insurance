@@ -123,7 +123,7 @@ export function AdminPolicyDetail({
             <div className="space-y-3">
               {responsibilitySourceLinks.length ? (
                 <div className="rounded-2xl border border-blue-100 bg-blue-50 px-3 py-3">
-                  <p className="text-xs font-black text-blue-700">官网地址</p>
+                  <p className="text-xs font-black text-blue-700">责任资料来源</p>
                   <div className="mt-2 space-y-2">
                     {responsibilitySourceLinks.map((source) => (
                       <a
@@ -161,7 +161,7 @@ export function AdminPolicyDetail({
           </section>
           {policySources.length ? (
             <section className="no-print">
-              <h3 className="mb-3 text-sm font-black">资料来源</h3>
+              <h3 className="mb-3 text-sm font-black">官网地址</h3>
               <div className="space-y-2">
                 {policySources.map((source, index) => (
                   <a
@@ -173,8 +173,16 @@ export function AdminPolicyDetail({
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="min-w-0 truncate font-black text-slate-800">{source.title || source.url}</span>
-                      <span className={source.official ? 'shrink-0 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700' : 'shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500'}>
-                        {source.official ? '官方' : source.evidenceLabel || '辅助'}
+                      <span className={
+                        source.referenceOnly || source.verificationStatus === 'pending_review'
+                          ? 'shrink-0 rounded-full bg-amber-50 px-2 py-1 text-[11px] font-black text-amber-700'
+                          : source.sourceKind === 'customer_policy_terms'
+                            ? 'shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-black text-emerald-700'
+                            : source.official
+                              ? 'shrink-0 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700'
+                              : 'shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500'
+                      }>
+                        {source.verificationLabel || (source.official ? '官方' : source.evidenceLabel || '辅助')}
                       </span>
                     </div>
                     <p className="mt-1 truncate text-xs text-slate-500">{source.url}</p>

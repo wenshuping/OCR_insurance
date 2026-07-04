@@ -39,6 +39,7 @@ import {
   markOptionalResponsibilityNotQuantifiable,
   regeneratePolicyReport,
   reextractOptionalResponsibilities,
+  reviewAdminKnowledgeRecord,
   updateAdminMembershipConfig,
   updateAdminOfficialDomainProfile,
 } from '../../api';
@@ -497,6 +498,21 @@ export function AdminApp() {
     }
   }
 
+  async function reviewKnowledgeRecord(record: KnowledgeRecord, action: 'approved' | 'rejected') {
+    if (!adminToken || loading) return;
+    setLoading(true);
+    setMessage(action === 'approved' ? '正在通过客户照片线索' : '正在驳回客户照片线索');
+    try {
+      const payload = await reviewAdminKnowledgeRecord(adminToken, { id: record.id, action });
+      setKnowledgeRecords(payload.records);
+      setMessage(action === 'approved' ? '客户照片线索已通过，后续可作为非官方候选' : '客户照片线索已驳回');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '客户照片线索审核失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleMarkOptionalNotQuantifiable(gap: OptionalResponsibilityGap) {
     if (!adminToken || loading) return;
     setLoading(true);
@@ -736,6 +752,7 @@ export function AdminApp() {
             onChange={setKnowledgeCrawlForm}
             onRefresh={() => void loadKnowledgeRecords()}
             onCrawl={() => void crawlKnowledgeRecords()}
+            onReview={(record, action) => void reviewKnowledgeRecord(record, action)}
           />
         );
       case 'officialDomains':

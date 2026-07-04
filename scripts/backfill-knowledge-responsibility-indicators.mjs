@@ -270,6 +270,21 @@ function parameterizedMedicalFormulaFromText(text) {
   const normalized = normalizeSpaces(text);
   const compact = normalized.replace(/\s+/gu, '');
   if (/未在[^。；]{0,60}(?:指定|约定)[^。；]{0,60}(?:机构|医院|药店)[^。；]{0,80}(?:\d+(?:\.\d+)?[％%]|百分之[一二三四五六七八九十百\d.]+)/u.test(compact)) return null;
+  if (
+    !/(?:给付比例|赔付比例|免赔额|起付金额|起付标准|按(?:本合同)?(?:的)?约定给付|依照(?:本合同)?(?:的)?(?:有关)?约定给付)/u.test(compact)
+    && (
+      /(?:不得|不应|不超过)[^。；]{0,80}实际[^。；]{0,80}(?:医疗费用|药品费用|费用)[^。；]{0,120}(?:扣除|减去)[^。；]{0,80}(?:补偿|赔偿|给付)[^。；]{0,40}余额/u.test(compact)
+      || /实际[^。；]{0,80}(?:医疗费用|药品费用|费用)[^。；]{0,120}(?:扣除|减去)[^。；]{0,80}(?:补偿|赔偿|给付)[^。；]{0,40}余额/u.test(compact)
+    )
+  ) {
+    return {
+      value: null,
+      valueText: '',
+      unit: '公式',
+      basis: '实际合理医疗费用、已获补偿/赔偿、合同约定给付限额',
+      formulaText: '医疗费用保险金 = min(合同约定应给付金额, 实际合理医疗费用 - 已获补偿/赔偿)',
+    };
+  }
   const hasRatio = /(?:本合同)?约定的?(?:给付比例|赔付比例|比例)|(?:给付比例|赔付比例)[^。；，,]{0,8}另有约定|[×xX*]\s*(?:给付比例|赔付比例)|(?:住院医疗|门\s*[（(]?\s*急\s*[）)]?\s*诊医疗|普通门诊|特定门诊|医疗)?(?:给付比例|赔付比例)/u.test(normalized);
   const hasContractRule = /(?:余额|剩余部分|剩余金额)[^。；]{0,24}按(?:本合同)?(?:的)?约定给付|按(?:本合同)?(?:的)?约定给付|依照(?:本合同)?(?:的)?(?:有关)?约定给付/u.test(compact);
   const hasPlanRule = /均一给付方案|分段给付方案/u.test(normalized);
@@ -1044,9 +1059,23 @@ export function formulaFor(liability, sectionText) {
     }
     return null;
   }
-  if (/补偿金/u.test(liability)
+  if (/补偿(?:保险)?金/u.test(liability)
     && /补偿金额[^。；]{0,40}给付|给付[^。；]{0,40}补偿(?:金)?|住院费用补偿|医疗费用补偿|医药费用补偿/u.test(text)) {
     const compact = text.replace(/\s+/gu, '');
+    const conditionalMedicalPercentEntries = [...compact.matchAll(/(?:扣除[^。；]{0,90}(?:补偿|赔偿)[^。；]{0,80}后|再扣除[^。；]{0,20}\d+(?:\.\d+)?元?)[^。；]{0,80}按(?:剩余部分|余额)?(?:的)?(\d+(?:\.\d+)?)[％%]给付/gu)]
+      .map((match) => match[1]);
+    if (/住院费用补偿保险金/u.test(liability) && conditionalMedicalPercentEntries.length) {
+      const rates = [...new Set(conditionalMedicalPercentEntries)];
+      return {
+        value: rates.length === 1 ? Number(rates[0]) : null,
+        valueText: rates.length === 1 ? rates[0] : '',
+        unit: rates.length === 1 ? '%' : '公式',
+        basis: '实际合理住院费用、已获补偿/赔偿、社保/公费医疗身份、免赔额',
+        formulaText: rates.length === 1
+          ? `${liability} = (实际合理住院费用 - 已获补偿/赔偿 - 免赔额) × ${rates[0]}%`
+          : `${liability} = 条件给付（${rates.map((rate) => `剩余部分 × ${rate}%`).join('；')}）`,
+      };
+    }
     if (/每日住院给付补偿金/u.test(liability)
       && /每日住院给付基本保险金额[^。；]{0,80}(?:乘以|×|x|X|\*)[^。；]{0,40}住院日数|住院日数[^。；]{0,80}(?:乘以|×|x|X|\*)[^。；]{0,40}每日住院给付基本保险金额/u.test(compact)) {
       return {
@@ -1112,12 +1141,14 @@ export function formulaFor(liability, sectionText) {
   if (
     /身故/u.test(liability)
     && /意外/u.test(text)
-    && /给付限额|保险金额|基本保险金额|基本保额/u.test(text)
-    && /扣除[^。；]{0,60}已给付[^。；]{0,60}(?:伤残|残疾)保险金[^。；]{0,60}余额/u.test(text)
+    && /给付限额|保险金额|保险金金额|基本保险金额|基本保额/u.test(text)
+    && /扣除[^。；]{0,60}已给付[^。；]{0,60}(?:伤残|残疾)保险金(?:[^。；]{0,60}余额)?/u.test(text)
   ) {
     const basis = /基本保险金额|基本保额/u.test(text) ? '基本保险金额'
-      : /保险金额/u.test(text) ? '保险金额'
-        : '给付限额';
+      : /意外身故保险金金额/u.test(text) ? '意外身故保险金金额'
+        : /保险金金额/u.test(text) ? '保险金金额'
+          : /保险金额/u.test(text) ? '保险金额'
+            : '给付限额';
     return {
       value: null,
       valueText: '',
@@ -1131,7 +1162,22 @@ export function formulaFor(liability, sectionText) {
     const maxWindow = maxIndex >= 0 ? text.slice(maxIndex, maxIndex + 520) : text;
     const footnoteIndex = maxWindow.search(/。\s*\d+(?:保单年度|本合同|现金价值|保险费|周岁|累计已给付)/u);
     const maxText = footnoteIndex > 60 ? maxWindow.slice(0, footnoteIndex + 1) : maxWindow;
-    if (/累积红利|红利基本保险金额|保单红利|分红[^）)]{0,80}(?:现金价值|保险金额|给付|较大|较高)/u.test(maxText)) return null;
+    if (/累积红利|红利基本保险金额|保单红利|分红[^）)]{0,80}(?:现金价值|保险金额|给付|较大|较高)/u.test(maxText)) {
+      if (/身故|全残/u.test(liability)
+        && /基本保险金额对应/u.test(text)
+        && /累积红利保险金额对应/u.test(text)
+        && /现金价值/u.test(text)
+        && /已交|所应交|保险费/u.test(text)) {
+        return {
+          value: null,
+          valueText: '',
+          unit: '公式',
+          basis: '基本保险金额、累积红利保险金额、已交保险费、现金价值、到达年龄比例',
+          formulaText: `${liability} = 基本保险金额对应身故或全残保险金 + 累积红利保险金额对应身故或全残保险金（按年龄、已交保险费、基本保险金额/累积红利保险金额、现金价值取较大或最大）`,
+        };
+      }
+      return null;
+    }
     const paidPremiumPercentInMax = maxText.match(/(?:已支付|已交|已交纳)(?:的)?(?:保险费|保费)[^。；，,]{0,16}?(\d+(?:\.\d+)?)\s*[％%]/u);
     if (paidPremiumPercentInMax?.[1] && /现金价值/u.test(maxText) && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
       const percentValue = Number(paidPremiumPercentInMax[1]);
@@ -1178,12 +1224,14 @@ export function formulaFor(liability, sectionText) {
     /伤残|残疾|骨折|烧伤|烧烫伤|脱位/u.test(liability)
     && !/高残|高度残疾/u.test(liability)
     && /给付\s*比例|比例表|伤残等级|残疾等级|残疾程度|评定标准/u.test(injuryText)
-    && /基本保险金额|基本保额|保险金额|意外伤害基本保险金额|意外身故基本保险金额/u.test(injuryText)
+    && /基本保险金额|基本保额|保险金额|保险金金额|意外伤害基本保险金额|意外身故基本保险金额/u.test(injuryText)
   ) {
     const amountBasis = /意外身故基本保险金额/u.test(injuryText) ? '意外身故基本保险金额'
       : /意外伤害基本保险金额/u.test(injuryText) ? '意外伤害基本保险金额'
-        : /基本保险金额|基本保额/u.test(injuryText) ? '基本保险金额'
-          : '保险金额';
+        : /意外身故保险金金额/u.test(injuryText) ? '意外身故保险金金额'
+          : /保险金金额/u.test(injuryText) ? '保险金金额'
+            : /基本保险金额|基本保额/u.test(injuryText) ? '基本保险金额'
+              : '保险金额';
     const multiple = injuryText.match(/(?:基本保险金额|基本保额|保险金额)[^。；，,]{0,8}?(\d+(?:\.\d+)?)\s*倍/u);
     const basis = multiple?.[1] ? `${amountBasis} × ${multiple[1]}` : amountBasis;
     const ratioBasis = /烧伤|烧烫伤/u.test(liability) ? '烧伤给付比例'

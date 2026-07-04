@@ -4577,7 +4577,7 @@ function buildPolicyVisionExtractionPrompt(ocrContext = {}) {
     'role 规则：主合同用 main；名称或说明含“万能型/万能账户/最低保证利率/账户价值”的账户类险种用 linked_account；只有名称明确含“附加”的才用 rider；不能把第二行默认当附加险。',
     'productType 可填“增额终身寿险、年金险、万能账户、医疗险、意外险、重疾险、寿险”等。',
     '扁平字段 name/paymentPeriod/coveragePeriod/amount 以 main 行为准；firstPremium 优先取首期保险费合计，没有合计时取 plans 保费合计。',
-    '不要输出 ocrText 或整页 OCR 原文；完整 OCR 原文由 Paddle OCR 保存。',
+    '不要输出 ocrText 或整页 OCR 原文；完整 OCR 原文由 OCR 服务保存。',
     'fieldEvidence 只输出字段附近短证据，每个字段不超过80字；plans[].evidence 不超过120字。',
     ...buildPolicyVisionContextPromptLines(ocrContext),
   ].join('\n');
@@ -4662,7 +4662,7 @@ function buildFocusedPolicyVisionExtractionPrompt(ocrContext = {}, focus = {}) {
     ...POLICY_VISION_FIELD_ALIGNMENT_RULES,
     '禁止映射：证件号码/身份证号/客户号/保单号/电话不能作为 amount 或 premium；日期、年龄、每期交费日不能作为金额；字段标签和字段值不能作为险种名称。',
     ...planRules,
-    '不要输出 ocrText 或整页 OCR 原文；完整 OCR 原文由 Paddle OCR 保存。',
+    '不要输出 ocrText 或整页 OCR 原文；完整 OCR 原文由 OCR 服务保存。',
     'fieldEvidence 只输出当前区域字段附近短证据，每个字段不超过80字；plans[].evidence 不超过120字。',
     ...buildPolicyVisionContextPromptLines(ocrContext),
   ].filter(Boolean).join('\n');
@@ -6993,38 +6993,15 @@ export async function scanInsurancePolicyLocal({
         bestOcrText = merged.ocrText;
         handledLayout = true;
       } else if (provider === OCR_PROVIDER_DEEPSEEK_OCR_VLLM) {
-        try {
-          const merged = await scanPolicyWithDeepSeekOcrLayout(uploadItem);
-          data = merged.data;
-          scanFieldConfidence = merged.fieldConfidence || {};
-          scanFieldEvidence = merged.fieldEvidence || {};
-          scanFieldAttribution = merged.data?.fieldAttribution || {};
-          scanOcrWarnings = merged.ocrWarnings || [];
-          scanVisionDebug = merged.deepSeekOcr ? { deepSeekOcr: merged.deepSeekOcr } : null;
-          bestOcrText = merged.ocrText;
-          handledLayout = true;
-        } catch (error) {
-          if (!shouldFallbackToPaddleForImages()) throw error;
-          const code = String(error?.code || error?.message || '');
-          if (
-            code !== 'POLICY_OCR_EMPTY'
-            && code !== 'POLICY_OCR_FAILED'
-            && code !== 'POLICY_OCR_UPSTREAM_TIMEOUT'
-          ) {
-            throw error;
-          }
-          const merged = await scanPolicyWithPaddleLayout(uploadItem);
-          data = merged.data;
-          scanFieldConfidence = merged.fieldConfidence || {};
-          scanFieldEvidence = merged.fieldEvidence || {};
-          scanFieldAttribution = merged.data?.fieldAttribution || {};
-          scanOcrWarnings = [
-            ...(merged.ocrWarnings || []),
-            'DeepSeek-OCR 未返回可用结果，已使用 PaddleOCR 兜底；请核对识别字段',
-          ];
-          bestOcrText = merged.ocrText;
-          handledLayout = true;
-        }
+        const merged = await scanPolicyWithDeepSeekOcrLayout(uploadItem);
+        data = merged.data;
+        scanFieldConfidence = merged.fieldConfidence || {};
+        scanFieldEvidence = merged.fieldEvidence || {};
+        scanFieldAttribution = merged.data?.fieldAttribution || {};
+        scanOcrWarnings = merged.ocrWarnings || [];
+        scanVisionDebug = merged.deepSeekOcr ? { deepSeekOcr: merged.deepSeekOcr } : null;
+        bestOcrText = merged.ocrText;
+        handledLayout = true;
       } else if (provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) {
         const pdfExtractKitText = await recognizeTextWithPdfExtractKit(uploadItem);
         candidates.push(pdfExtractKitText);
@@ -7097,13 +7074,76 @@ export async function scanInsurancePolicyLocal({
 }
 
 /**
- * Scan a cash value table image using local OCR.
- * PaddleOCR runs first because table coordinates are more reliable for cash value grids;
- * macOS Vision remains the fast text-only fallback when PaddleOCR is unavailable.
+ * Scan a cash value table image using the configured DeepSeek-OCR provider.
+ * DeepSeek-OCR returns Markdown plus optional layout boxes; the existing cash
+ * value parser still owns table validation and row normalization.
+ */
+async function scanCashValueTableWithDeepSeekOcr({ uploadItem }, dependencies = {}) {
+  const env = dependencies.env || process.env;
+  const recognizeDeepSeek = dependencies.recognizeDeepSeekOcrUpload || recognizeDeepSeekOcrUpload;
+
+  try {
+    const deepSeekResult = await recognizeDeepSeek(uploadItem, {
+      env,
+      fetchImpl: dependencies.fetchImpl || fetch,
+    });
+
+    const attempts = [];
+    if (Array.isArray(deepSeekResult?.boxes) && deepSeekResult.boxes.length) {
+      const parsedBoxes = parseCashValueTable(deepSeekResult.boxes);
+      attempts.push(parsedBoxes.ok ? { ...parsedBoxes, source: 'deepseek_ocr' } : parsedBoxes);
+    }
+
+    const textCandidates = [
+      deepSeekResult?.ocrText,
+      deepSeekResult?.markdown,
+    ].map((item) => String(item || '').trim()).filter(Boolean);
+
+    for (const textCandidate of textCandidates) {
+      const parsedText = parseCashValueText(textCandidate, { source: 'deepseek_ocr' });
+      attempts.push(parsedText);
+    }
+
+    const successfulAttempts = attempts.filter((item) => item?.ok);
+    if (successfulAttempts.length) {
+      return successfulAttempts.sort((a, b) => (
+        (b.rows?.length || 0) - (a.rows?.length || 0)
+        || (Number(b.confidence) || 0) - (Number(a.confidence) || 0)
+      ))[0];
+    }
+
+    const bestAttempt = attempts.find((item) => Array.isArray(item?.rows) && item.rows.length)
+      || attempts[0]
+      || { error: 'PARSE_FAILED', message: 'DeepSeek-OCR 未返回可解析的现金价值表' };
+    return {
+      ...bestAttempt,
+      ok: false,
+      error: bestAttempt.error || 'PARSE_FAILED',
+      message: `DeepSeek-OCR 现金价值表解析失败：${bestAttempt.message || bestAttempt.error || '未识别到有效行'}`,
+    };
+  } catch (error) {
+    const code = String(error?.message || error?.code || 'POLICY_OCR_FAILED');
+    return {
+      ok: false,
+      error: code,
+      message: `DeepSeek-OCR 现金价值表识别失败: ${code}`,
+    };
+  }
+}
+
+/**
+ * Scan a cash value table image.
+ * When DeepSeek-OCR is the configured OCR provider, cash value OCR uses the same
+ * provider and does not fall back to PaddleOCR.
  */
 export async function scanCashValueTable({ uploadItem }, dependencies = {}) {
   if (!uploadItem?.dataUrl) {
     return { ok: false, error: 'CASH_VALUE_TABLE_NOT_DETECTED', message: '缺少图片数据' };
+  }
+
+  const envBase = dependencies.env || process.env;
+  if (getConfiguredOcrProvider() === OCR_PROVIDER_DEEPSEEK_OCR_VLLM) {
+    return scanCashValueTableWithDeepSeekOcr({ uploadItem }, { ...dependencies, env: envBase });
   }
 
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'cash-value-ocr-'));
@@ -7112,7 +7152,6 @@ export async function scanCashValueTable({ uploadItem }, dependencies = {}) {
   let paddleError = null;
   const execFileImpl = dependencies.execFile || execFileAsync;
   const platform = dependencies.platform || process.platform;
-  const envBase = dependencies.env || process.env;
   const warmupPaddle = dependencies.warmupPaddle || warmupPaddleLocalIfNeeded;
   const resolveScriptPaths = dependencies.resolveScriptPaths || resolveLocalOcrScriptPaths;
   const assertScriptExists = dependencies.assertScriptExists || assertOcrScriptExists;

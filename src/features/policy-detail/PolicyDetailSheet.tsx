@@ -47,6 +47,7 @@ import {
   normalizePolicyPlanList,
   policyToForm,
   sanitizeAmount,
+  syncMainPolicyPlanFields,
 } from '../../shared/customer-policy-form';
 import {
   summarizeCashValues,
@@ -63,6 +64,11 @@ import {
   normalizeSuggestionQuery,
   renderHighlightedSuggestion,
 } from '../../shared/customer-policy-components';
+
+function normalizeProductCode(value: unknown) {
+  const text = String(value || '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
 
 export function PolicyDetailSheet({
   policy,
@@ -97,6 +103,11 @@ export function PolicyDetailSheet({
   const exportTitle = buildPolicyReportTitle(policy);
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
+  const reportReadyWithoutContent = !reportGenerating && !reportFailed && !(
+    policy.report?.trim() ||
+      policy.responsibilities?.length ||
+      policy.responsibilityCards?.length
+  );
   const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
@@ -225,18 +236,22 @@ export function PolicyDetailSheet({
           </section>
         ) : null}
 
-        {reportGenerating || reportFailed ? (
+        {reportGenerating || reportFailed || reportReadyWithoutContent ? (
           <section className={`mt-4 rounded-[22px] border px-4 py-3 ${
             reportFailed ? 'border-red-100 bg-red-50 text-red-700' : 'border-orange-100 bg-orange-50 text-orange-700'
           }`}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-black">{reportFailed ? '报告生成失败' : '报告正在后台生成'}</p>
+                <p className="text-sm font-black">{reportFailed ? '报告生成失败' : reportReadyWithoutContent ? '保险责任未生成' : '报告正在后台生成'}</p>
                 <p className="mt-1 text-xs font-medium leading-5">
-                  {reportFailed ? policy.reportError || '可以稍后刷新查看，或重新生成报告。' : '保单信息已经保存，完整保险责任生成后会自动刷新。'}
+                  {reportFailed
+                    ? policy.reportError || '可以稍后刷新查看，或重新生成报告。'
+                    : reportReadyWithoutContent
+                      ? '已保存保单基本信息，但还没有生成保险责任和指标。'
+                      : '保单信息已经保存，完整保险责任生成后会自动刷新。'}
                 </p>
               </div>
-              {reportFailed && onRetryReport ? (
+              {(reportFailed || reportReadyWithoutContent) && onRetryReport ? (
                 <button
                   className="flex shrink-0 items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white shadow-sm disabled:opacity-60"
                   type="button"
@@ -325,6 +340,8 @@ export function PolicyDetailSheet({
           insuredBirthday={policy.insuredBirthday}
           paymentPeriod={policy.paymentPeriod}
           coveragePeriod={policy.coveragePeriod}
+          amount={policy.amount}
+          firstPremium={policy.firstPremium}
         />
 
         {optionalResponsibilities.length ? (
@@ -415,22 +432,28 @@ function PolicyEditDialog({
     q: '',
   });
   const updateDraft = (key: keyof PolicyFormData, value: string) => {
-    setDraft((current) => ({ ...current, [key]: key === 'amount' || key === 'firstPremium' ? sanitizeAmount(value) : value }));
+    const nextValue = key === 'amount' || key === 'firstPremium' ? sanitizeAmount(value) : value;
+    const shouldSyncMainPlan = key === 'amount' || key === 'firstPremium' || key === 'coveragePeriod' || key === 'paymentPeriod';
+    setDraft((current) => ({
+      ...current,
+      [key]: nextValue,
+      ...(shouldSyncMainPlan ? { plans: syncMainPolicyPlanFields(current.plans, current.company, { [key]: nextValue }) } : {}),
+    }));
   };
   const updateDraftPlan = (index: number, key: string, value: string) => {
     setDraft((current) => {
       const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
       const existing = plans[index];
       if (!existing) return current;
-      const nextPlans = plans.map((plan, planIndex) => (
-        planIndex === index
-          ? {
-              ...plan,
-              [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
-              ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
-            }
-          : plan
-      ));
+	      const nextPlans = plans.map((plan, planIndex) => (
+	        planIndex === index
+	          ? {
+	              ...plan,
+	              [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
+	              ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '', productCode: '', productCodes: [] } : {}),
+	            }
+	          : plan
+	      ));
       return { ...current, plans: nextPlans };
     });
   };
@@ -466,6 +489,8 @@ function PolicyEditDialog({
     setEditPlanProductQuery((current) => (current.index === index ? { index: null, company: '', q: '' } : current));
   };
   const selectDraftPlanProduct = (index: number, suggestion: PolicyProductSuggestion) => {
+    const productCode = normalizeProductCode(suggestion.productCode || suggestion.productCodes?.[0] || '');
+    const productCodes = Array.isArray(suggestion.productCodes) ? suggestion.productCodes.map(normalizeProductCode).filter(Boolean) : [];
     setDraft((current) => {
       const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
       const existing = plans[index];
@@ -478,6 +503,8 @@ function PolicyEditDialog({
               name: suggestion.productName.trim(),
               matchedProductName: suggestion.productName.trim(),
               canonicalProductId: String(suggestion.canonicalProductId || '').trim(),
+              productCode,
+              productCodes: productCodes.length ? productCodes : productCode ? [productCode] : [],
             }
           : plan
       ));
@@ -727,11 +754,8 @@ function PolicyEditDialog({
             <SelectField label="投保人与顶梁柱关系" value={draft.applicantRelation} onChange={(value) => updateDraft('applicantRelation', value)} options={POLICY_PERSON_RELATION_OPTIONS} />
             <SelectField label="被保人与顶梁柱关系" value={draft.insuredRelation} onChange={(value) => updateDraft('insuredRelation', value)} options={POLICY_PERSON_RELATION_OPTIONS} />
           </div>
-          <div className="grid grid-cols-1 gap-3">
-            <TextField label="身份证号" value={draft.insuredIdNumber || ''} onChange={(value) => updateDraft('insuredIdNumber', value)} placeholder="被保人证件号" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label="生效日期" type="date" value={draft.date} onChange={(value) => updateDraft('date', value)} />
+	          <div className="grid grid-cols-2 gap-3">
+	            <TextField label="生效日期" type="date" value={draft.date} onChange={(value) => updateDraft('date', value)} />
             <CoveragePeriodField label="保障期间" value={draft.coveragePeriod} onChange={(value) => updateDraft('coveragePeriod', value)} placeholder="如 终身、30年、至70岁" />
           </div>
           <div className="grid grid-cols-2 gap-3">

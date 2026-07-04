@@ -312,9 +312,30 @@ export type FamilyRadarReport = {
   hiddenMembers: FamilyRadarSeries[];
 };
 
+export type FamilyPendingVerificationItem = {
+  policyId?: number | string | null;
+  company: string;
+  productName: string;
+  title: string;
+  sourceKind: string;
+  verificationStatus: string;
+  verificationLabel: string;
+  url: string;
+  excerpt: string;
+};
+
 export type FamilyReport = {
   summary: FamilyReportSummary;
   policyInventory: FamilyPolicyInventory;
+  optionalResponsibilityGaps?: Array<{
+    member?: string;
+    policyId?: number | string | null;
+    productName?: string;
+    liability?: string;
+    quantificationStatus?: string;
+    quantificationReason?: string;
+  }>;
+  pendingVerificationItems?: FamilyPendingVerificationItem[];
   criticalIllness: FamilySectionReport;
   accident: FamilySectionReport;
   wealth: FamilyWealthReport;

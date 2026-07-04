@@ -4,11 +4,36 @@ import { ApiError, request } from '../client';
 export type Responsibility = {
   productName?: string;
   coverageType: string;
+  liability?: string;
+  responsibilityName?: string;
+  benefitName?: string;
   scenario: string;
   payout: string;
   note: string;
+  triggerCondition?: string;
+  condition?: string;
+  formulaText?: string;
+  basis?: string;
+  basisKey?: string;
+  calculationKey?: string;
+  requiredInputs?: string[];
+  calculationInputSchemaVersion?: string;
+  value?: number | null;
+  valueText?: string;
+  unit?: string;
+  calculationEligible?: boolean;
+  calculationReason?: string;
+  cashflowTreatment?: CashflowTreatment;
   sourceUrl?: string;
   sourceTitle?: string;
+  sourceExcerpt?: string;
+  sourceKind?: string;
+  evidenceLabel?: string;
+  evidenceLevel?: string;
+  verificationStatus?: string;
+  verificationLabel?: string;
+  referenceOnly?: boolean;
+  official?: boolean;
 };
 
 export type ResponsibilitySelectionStatus = 'selected' | 'not_selected' | 'unknown';
@@ -68,6 +93,8 @@ export type CoverageIndicator = {
   basis?: string;
   basisKey?: string;
   calculationKey?: string;
+  requiredInputs?: string[];
+  calculationInputSchemaVersion?: string;
   calculationEligible?: boolean;
   calculationReason?: string;
   formulaText?: string;
@@ -76,6 +103,13 @@ export type CoverageIndicator = {
   sourceRecordId?: string;
   sourceUrl?: string;
   sourceExcerpt?: string;
+  sourceKind?: string;
+  evidenceLabel?: string;
+  evidenceLevel?: string;
+  verificationStatus?: string;
+  verificationLabel?: string;
+  referenceOnly?: boolean;
+  official?: boolean;
   responsibilityScope?: ResponsibilityScope;
   selectionStatus?: ResponsibilitySelectionStatus;
   selectionEvidence?: string;
@@ -92,11 +126,20 @@ export type QuantifiedIndicator = Partial<CoverageIndicator> & {
   calculationStatus?: CalculationStatus;
   basisKey?: string;
   calculationKey?: string;
+  requiredInputs?: string[];
+  calculationInputSchemaVersion?: string;
   calculationEligible?: boolean;
   calculationReason?: string;
   cashflowTreatment?: CashflowTreatment;
   sourceUrl?: string;
   sourceExcerpt?: string;
+  sourceKind?: string;
+  evidenceLabel?: string;
+  evidenceLevel?: string;
+  verificationStatus?: string;
+  verificationLabel?: string;
+  referenceOnly?: boolean;
+  official?: boolean;
 };
 
 export type ResponsibilityCard = {
@@ -111,9 +154,20 @@ export type ResponsibilityCard = {
   sourceUrl?: string;
   sourceTitle?: string;
   sourceExcerpt?: string;
+  sourceKind?: string;
+  evidenceLabel?: string;
+  evidenceLevel?: string;
+  verificationStatus?: string;
+  verificationLabel?: string;
+  referenceOnly?: boolean;
+  official?: boolean;
   confidence?: 'high' | 'medium' | 'low';
   calculationStatus?: CalculationStatus;
   calculationReason?: string;
+  basisKey?: string;
+  calculationKey?: string;
+  requiredInputs?: string[];
+  calculationInputSchemaVersion?: string;
   cashflowTreatment?: CashflowTreatment;
   indicators?: QuantifiedIndicator[];
 };
@@ -173,6 +227,8 @@ export type PolicyProductSuggestion = {
   company: string;
   productName: string;
   canonicalProductId?: string;
+  productCode?: string;
+  productCodes?: string[];
   recordCount: number;
   matchType: string;
 };
@@ -200,7 +256,12 @@ async function requestResponsibility<T>(path: string, options: Parameters<typeof
   throw lastError;
 }
 
-export function queryPolicyResponsibilities(input: { company: string; name: string; preferLocalKnowledgeAnswer?: boolean }) {
+export function queryPolicyResponsibilities(input: {
+  company: string;
+  name: string;
+  preferLocalKnowledgeAnswer?: boolean;
+  allowExternalReferences?: boolean;
+}) {
   return request<{
     ok: true;
     analysis: PolicyAnalysisResult;
@@ -209,6 +270,7 @@ export function queryPolicyResponsibilities(input: { company: string; name: stri
       company: input.company,
       name: input.name,
       preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer,
+      allowExternalReferences: input.allowExternalReferences,
     },
   });
 }
@@ -225,16 +287,20 @@ export function getLocalPolicyAnalysisDraft(input: { manualData: Partial<PolicyF
   });
 }
 
-export function matchPolicyResponsibilities(input: { company: string; name: string; limit?: number; minScore?: number }) {
+export function matchPolicyResponsibilities(input: { company: string; name: string; limit?: number; minScore?: number; includeOnline?: boolean }) {
   return requestResponsibility<{
     ok: true;
+    status: 'exact' | 'candidates' | 'not_found' | 'source_review_required';
     matches: PolicyKnowledgeMatch[];
+    message?: string;
+    savedRecordCount?: number;
   }>('/api/policy-responsibilities/matches', {
     body: {
       company: input.company,
       name: input.name,
       limit: input.limit,
       minScore: input.minScore,
+      includeOnline: input.includeOnline,
     },
   });
 }

@@ -12,6 +12,7 @@ import {
   selectAgentSkillPrompt,
   selectAgentSkillPromptWithDeepSeek,
 } from './agent-skill-router.service.mjs';
+import { evidenceVerificationFields } from './evidence-classification.service.mjs';
 import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -239,6 +240,7 @@ function sourceUrl(record = {}) {
 }
 
 function knowledgeSummary(record = {}) {
+  const evidence = evidenceVerificationFields(record);
   return {
     id: record.id ?? '',
     company: trim(record.company || resolveRecordCompany(record)),
@@ -246,11 +248,17 @@ function knowledgeSummary(record = {}) {
     productType: trim(record.productType || record.category || record.productCategory),
     title: trim(record.title || record.sourceTitle || record.name),
     official: record.official === true,
+    sourceKind: trim(record.sourceKind),
+    evidenceLevel: trim(record.evidenceLevel || record.sourceLevel),
+    verificationStatus: evidence.verificationStatus,
+    verificationLabel: evidence.verificationLabel,
+    referenceOnly: evidence.referenceOnly,
     url: sourceUrl(record),
   };
 }
 
 function indicatorSummary(record = {}) {
+  const evidence = evidenceVerificationFields(record);
   return {
     id: record.id ?? '',
     company: trim(record.company || resolveRecordCompany(record)),
@@ -263,17 +271,28 @@ function indicatorSummary(record = {}) {
     responsibilityScope: trim(record.responsibilityScope || record.scope),
     selectionStatus: trim(record.selectionStatus),
     quantificationStatus: trim(record.quantificationStatus),
+    sourceKind: trim(record.sourceKind),
+    evidenceLevel: trim(record.evidenceLevel || record.sourceLevel),
+    verificationStatus: evidence.verificationStatus,
+    verificationLabel: evidence.verificationLabel,
+    referenceOnly: evidence.referenceOnly,
     sourceUrl: sourceUrl(record),
   };
 }
 
 function optionalResponsibilitySummary(record = {}) {
+  const evidence = evidenceVerificationFields(record);
   return {
     id: record.id ?? '',
     company: trim(record.company || resolveRecordCompany(record)),
     productName: trim(record.productName || resolveRecordProductName(record)),
     liability: trim(record.liability || record.name || record.title),
     quantificationStatus: trim(record.quantificationStatus),
+    sourceKind: trim(record.sourceKind),
+    evidenceLevel: trim(record.evidenceLevel || record.sourceLevel),
+    verificationStatus: evidence.verificationStatus,
+    verificationLabel: evidence.verificationLabel,
+    referenceOnly: evidence.referenceOnly,
     sourceExcerpt: trim(record.sourceExcerpt || record.excerpt),
     sourceUrl: sourceUrl(record),
   };
@@ -294,7 +313,9 @@ function buildOfficialEvidence({ policies = [], knowledgeRecords = [], indicator
       productName: trim(policy.name),
       canonicalProductIds: [],
       relatedPolicyIds: [],
+      allSources: [],
       officialSources: [],
+      referenceSources: [],
       officialIndicators: [],
       optionalResponsibilities: [],
       evidenceWarnings: [],
@@ -302,9 +323,18 @@ function buildOfficialEvidence({ policies = [], knowledgeRecords = [], indicator
 
     existing.relatedPolicyIds = unique([...existing.relatedPolicyIds, String(policy.id || '')]);
     existing.canonicalProductIds = unique([...existing.canonicalProductIds, ...policyCanonicalProductIds(policy)]);
+    const knowledgeSummaries = knowledge.map(knowledgeSummary);
+    existing.allSources = [
+      ...existing.allSources,
+      ...knowledgeSummaries,
+    ];
     existing.officialSources = [
       ...existing.officialSources,
-      ...knowledge.map(knowledgeSummary),
+      ...knowledgeSummaries.filter((record) => record.referenceOnly !== true),
+    ];
+    existing.referenceSources = [
+      ...existing.referenceSources,
+      ...knowledgeSummaries.filter((record) => record.referenceOnly === true),
     ];
     existing.officialIndicators = [
       ...existing.officialIndicators,
@@ -328,7 +358,9 @@ function buildOfficialEvidence({ policies = [], knowledgeRecords = [], indicator
 
   return Array.from(products.values()).map((product) => ({
     ...product,
+    allSources: dedupeObjects(product.allSources, (record) => `${record.url}\u001f${record.productType}\u001f${record.productName}\u001f${record.verificationStatus}`).slice(0, 8),
     officialSources: dedupeObjects(product.officialSources, (record) => `${record.url}\u001f${record.productType}\u001f${record.productName}`).slice(0, 5),
+    referenceSources: dedupeObjects(product.referenceSources, (record) => `${record.url}\u001f${record.productType}\u001f${record.productName}`).slice(0, 5),
     officialIndicators: dedupeObjects(product.officialIndicators, (record) => `${record.coverageType}\u001f${record.liability}\u001f${record.formulaText}`).slice(0, 40),
     optionalResponsibilities: dedupeObjects(product.optionalResponsibilities, (record) => `${record.liability}\u001f${record.sourceExcerpt}`).slice(0, 30),
   }));
@@ -472,6 +504,22 @@ function policySummary(policy = {}, memberContext = {}, generatedAt = new Date()
       paymentPeriod: trim(plan?.paymentPeriod),
       coveragePeriod: trim(plan?.coveragePeriod),
     })),
+    sources: take(policy.sources, 12).map(knowledgeSummary),
+    responsibilities: take(policy.responsibilities, 20).map((item) => {
+      const evidence = evidenceVerificationFields(item);
+      return {
+        productName: trim(item?.productName),
+        coverageType: trim(item?.coverageType || item?.title || item?.liability),
+        scenario: trim(item?.scenario || item?.condition || item?.description),
+        payout: trim(item?.payout),
+        note: trim(item?.note),
+        sourceKind: trim(item?.sourceKind),
+        evidenceLevel: trim(item?.evidenceLevel || item?.sourceLevel),
+        verificationStatus: evidence.verificationStatus,
+        verificationLabel: evidence.verificationLabel,
+        referenceOnly: evidence.referenceOnly,
+      };
+    }),
     coverageIndicators: take(policy.coverageIndicators, 30).map(indicatorSummary),
     optionalResponsibilities: take(policy.optionalResponsibilities, 20).map(optionalResponsibilitySummary),
     cashValue: {
@@ -950,33 +998,36 @@ export function buildFamilySalesReviewMessages(input = {}, { skillPrompt = null 
     {
       role: 'system',
       content: [
-        '你是一名资深寿险/健康险销售赋能顾问，任务是基于结构化家庭成员、家庭保单报告、保单明细和官网条款证据，输出给销售使用的下一步建议。',
+        '你是一名资深寿险/健康险销售赋能顾问，任务是基于结构化家庭成员、家庭保单报告、保单明细和分层证据，输出给销售使用的下一步建议。',
         ...(resolvedSkillPrompt ? [
           resolvedSkillPrompt.promptHint,
           `本轮启用 skills：${resolvedSkillPrompt.skills.map((skill) => skill.label).join('、')}`,
         ] : []),
         '必须遵守：',
         '1. 只使用输入中的事实；金额、责任、现金价值、分红、领取利益没有证据时必须写“待核实”，不能编造。',
-        '2. 官网证据与保单派生分类冲突时，优先参考官网产品名称、官网链接和指标；仍不确定就标为“待核实”。',
+        '2. 保险公司官方资料、客户上传保单责任页/合同页与保单派生分类冲突时，优先参考已核实来源的产品名称、链接和指标；仍不确定就标为“待核实”。',
         '3. 家庭成员清单是完整录入口径，必须覆盖没有保单的成员，并明确他们对应的销售机会或资料缺口。',
         '4. 保障缺口和理财险/财富类销售机会都必须输出；理财险建议不能承诺收益、分红或确定利率。',
         '5. 输出给销售看，语言要直接、可执行，避免给客户看的营销话术泛泛而谈。',
         '6. 成员字段 memberRef 是本地变量，输出中提到家庭成员时必须原样使用 memberRef，例如 {{member_1}}（本人），不要只写关系。',
         '7. 不提供医疗、法律、税务、投资确定收益承诺；涉及核保、既往症、保全、分红实现率、税务传承时提示进一步核实。',
-        '8. 不要直接输出输入 JSON 的英文内部字段名或技术标识，例如 duplicatePolicyHints、evidenceWarnings、canonical:product_*、plans；必须改写为“重复保单提示”“官网条款证据冲突”“险种明细”等中文业务描述。',
+        '8. 不要直接输出输入 JSON 的英文内部字段名或技术标识，例如 duplicatePolicyHints、evidenceWarnings、canonical:product_*、plans；必须改写为“重复保单提示”“条款证据冲突”“险种明细”等中文业务描述。',
         '9. 必须给出可直接复制给销售使用的邀约面谈话术和销售话术；不要只写“建议沟通”“引导客户重视”这类空泛句。',
         '10. 销售方案必须展开成完整方案包，不能只写一句方案名称；每个方案必须说明适合对象、客户痛点、推荐方向、预算/保额口径、面谈话术、需补资料和下一步动作。',
         '11. family.notes 是整个家庭层面的备注，不属于某个具体成员；members[].notes 才是成员个人备注。两类备注都是客户工作、收入、喜好、沟通记录等销售线索；必须结合这些备注优化面谈重点，但备注没有写明的事实不能自行补充。',
         '12. family.topPillarMemberRef 明确表示家庭顶梁柱；涉及收入中断、重疾、定寿、家庭责任和优先面谈对象时必须优先参考该成员。',
         '13. {{id_number_1}} 这类证件号码变量只表示本地已脱敏隐私，不得在报告正文中输出、解释或要求销售复述。',
         '14. family.planningProfile 是客户已填写的家庭责任信息，包含家庭年收入、必要支出、总负债、子女教育、父母赡养、现金储备和保费预算；涉及保障缺口、定寿、重疾、失能和预算建议时必须优先使用这些字段。',
-        '15. 本次请求只提供结构化保单摘要、RAG/官网证据摘要和家庭责任信息，不提供原始 OCR 全文；不得假装读过未提供的条款原文。',
+        '15. 本次请求只提供结构化保单摘要、分层证据摘要和家庭责任信息，不提供原始 OCR 全文；不得假装读过未提供的条款原文。',
         '16. 必须融合以下销售分析框架：交叉销售机会、客户复盘会议策略、年金、寿险、养老/教育金机会、家庭财务规划视角和保险重整建议。',
         '17. 交叉销售机会必须按 P1/P2/P3 标注机会优先级，并说明成功概率、客户痛点、触发依据、切入产品方向和下一步动作。',
         '18. 客户复盘会议策略必须覆盖会前准备、会中展示顺序和会后跟进动作；会中顺序为先核实数据，再讲保障缺口，再讲保单重整，再展开三档方案。',
         '19. 年金、寿险、养老/教育金机会只能基于客户责任、预算、现金流、现有现金价值或官网证据提出；不得承诺收益、分红、利率或理赔结果。',
         '20. 家庭财务规划视角必须结合收入、支出、负债、现金储备和保费预算，判断保障型、储蓄型、养老/教育金安排的先后顺序。',
         '21. 如果输入包含 salesChatContext，表示顾问围绕上一版销售建议的追问、补充想法和客户异议；必须把这些对话内容融入新版销售建议，尤其是话术风格、异议处理、方案排序和下一步动作。',
+        '22. evidence 中 verificationStatus=verified 且 sourceKind/evidenceLevel 为 insurer_official 或 customer_policy_terms 的内容，可以作为已核实责任依据。',
+        '23. regulatory_industry_terms 只能表述为“行业条款来源/中国保险行业协会条款线索”，不得写成保险公司官网资料。',
+        '24. referenceOnly=true 或 verificationStatus=pending_review 的第三方网页、开放网页搜索、老产品非官方资料，只能作为“待核实参考/需保险公司确认”的销售沟通线索，不得计入已确认保障、保障合计、缺口抵扣或确定性销售承诺。',
         ...(resolvedSkillPrompt ? [
           '',
           '本轮 skill 规则：',

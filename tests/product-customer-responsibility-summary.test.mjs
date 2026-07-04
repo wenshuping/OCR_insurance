@@ -1168,6 +1168,42 @@ test('callDeepSeekForCustomerResponsibilitySummary logs raw response shape witho
   assert.doesNotMatch(serializedLogs, /test-secret-key/u);
 });
 
+test('callDeepSeekForCustomerResponsibilitySummary repairs malformed JSON content', async () => {
+  const result = await callDeepSeekForCustomerResponsibilitySummary({
+    prompt: '摘要',
+    company,
+    productName,
+    env: {
+      DEEPSEEK_API_KEY: 'test-secret-key',
+      DEEPSEEK_MODEL: 'deepseek-test-model',
+    },
+    fetchImpl: async () => new Response(JSON.stringify({
+      id: 'chatcmpl_repair',
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: [
+            '```json',
+            '{',
+            '  headline: "可修复摘要",',
+            '  responsibilities: [',
+            '    { title: "身故保险金", plainText: "被保险人身故，按约定给付。" },',
+            '  ],',
+            '}',
+            '```',
+          ].join('\n'),
+        },
+      }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  assert.equal(result.headline, '可修复摘要');
+  assert.equal(result.responsibilities[0].title, '身故保险金');
+});
+
 test('callDeepSeekForCustomerResponsibilitySummary reports empty model content with response metadata', async () => {
   await assert.rejects(
     () => callDeepSeekForCustomerResponsibilitySummary({

@@ -94,6 +94,7 @@ const app = createPolicyOcrApp({
   persistPolicyDerivedResult: store.persistPolicyDerivedResult,
   persistProductCustomerResponsibilitySummary: store.persistProductCustomerResponsibilitySummary,
   persistProductCustomerSummaryGenerationRun: store.persistProductCustomerSummaryGenerationRun,
+  persistResponsibilityLookupArtifacts: store.persistResponsibilityLookupArtifacts,
   findProductCustomerResponsibilitySummary: store.findProductCustomerResponsibilitySummary,
   markPolicyDerivedResultsStaleByProductKeys: store.markPolicyDerivedResultsStaleByProductKeys,
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,

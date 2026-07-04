@@ -1,4 +1,12 @@
-import { normalizeIndicatorCalculation } from '../src/indicator-calculation.mjs';
+import {
+  CALCULATION_INPUT_SCHEMA_VERSION,
+  normalizeIndicatorCalculation,
+  requiredCalculationInputsForMeta,
+} from '../src/indicator-calculation.mjs';
+import {
+  evidenceVerificationFields,
+  isFormalResponsibilityEvidence,
+} from './evidence-classification.service.mjs';
 
 const MISSING_OFFICIAL_EXCERPT_REASON = '缺少官方来源片段，不能进入计算';
 
@@ -427,6 +435,7 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
   const liability = displayLiabilityName(indicator, sourceExcerpt);
   const selectionFields = indicatorSelectionFields(indicator);
   const reviewedReason = hasReviewedIndicatorMetadata(indicator) ? text(indicator.calculationReason) : '';
+  const evidenceFields = evidenceVerificationFields(indicator);
   const normalized = {
     id: text(indicator.id),
     company: firstNonEmpty(indicator.company, policy.company),
@@ -443,6 +452,10 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
     unit: firstNonEmpty(meta.unit, indicator.unit),
     basisKey: meta.basisKey,
     calculationKey: meta.calculationKey,
+    requiredInputs: Array.isArray(indicator.requiredInputs) && indicator.requiredInputs.length
+      ? indicator.requiredInputs.map(text).filter(Boolean)
+      : requiredCalculationInputsForMeta(meta),
+    calculationInputSchemaVersion: text(indicator.calculationInputSchemaVersion) || CALCULATION_INPUT_SCHEMA_VERSION,
     calculationEligible,
     calculationReason: reviewedReason || (calculationEligible ? '' : calculationReason),
     calculationMetadataVersion: text(indicator.calculationMetadataVersion),
@@ -453,6 +466,13 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
     sourceUrl,
     sourceTitle: text(indicator.sourceTitle),
     sourceExcerpt,
+    sourceKind: text(indicator.sourceKind),
+    evidenceLabel: text(indicator.evidenceLabel),
+    evidenceLevel: text(indicator.evidenceLevel || indicator.sourceLevel),
+    verificationStatus: evidenceFields.verificationStatus,
+    verificationLabel: evidenceFields.verificationLabel,
+    referenceOnly: evidenceFields.referenceOnly,
+    official: typeof indicator.official === 'boolean' ? indicator.official : undefined,
     confidence: sourceUrl && sourceExcerpt ? 'high' : 'low',
     ...selectionFields,
   };
@@ -475,6 +495,7 @@ function responsibilityTitle(row = {}) {
 }
 
 function normalizeResponsibility(row = {}) {
+  const evidenceFields = evidenceVerificationFields(row);
   return {
     company: firstNonEmpty(row.company, row.companyName, row.insurer),
     productName: firstNonEmpty(row.productName, row.product_name, row.matchedProductName, row.policyName),
@@ -484,9 +505,29 @@ function normalizeResponsibility(row = {}) {
     scenario: text(row.scenario || row.description || row.desc || row.content),
     payout: text(row.payout || row.limit || row.amount || row.formulaText),
     note: text(row.note || row.remark),
+    triggerCondition: firstNonEmpty(row.triggerCondition, row.condition),
+    formulaText: text(row.formulaText),
+    basis: text(row.basis),
+    basisKey: text(row.basisKey),
+    calculationKey: text(row.calculationKey),
+    requiredInputs: Array.isArray(row.requiredInputs) ? row.requiredInputs.map(text).filter(Boolean) : [],
+    value: row.value ?? null,
+    valueText: text(row.valueText),
+    unit: text(row.unit),
+    calculationStatus: text(row.calculationStatus),
+    calculationEligible: typeof row.calculationEligible === 'boolean' ? row.calculationEligible : undefined,
+    calculationReason: text(row.calculationReason),
+    cashflowTreatment: text(row.cashflowTreatment),
     sourceUrl: sourceUrlFrom(row),
     sourceTitle: firstNonEmpty(row.sourceTitle, row.title),
     sourceExcerpt: sourceExcerptFrom(row) || text(row.scenario || row.description || row.desc || row.content),
+    sourceKind: text(row.sourceKind),
+    evidenceLabel: text(row.evidenceLabel),
+    evidenceLevel: text(row.evidenceLevel || row.sourceLevel),
+    verificationStatus: evidenceFields.verificationStatus,
+    verificationLabel: evidenceFields.verificationLabel,
+    referenceOnly: evidenceFields.referenceOnly,
+    official: typeof row.official === 'boolean' ? row.official : undefined,
     responsibilityScope: text(row.responsibilityScope),
     selectionStatus: text(row.selectionStatus),
     selectionEvidence: text(row.selectionEvidence),
@@ -530,8 +571,7 @@ function cleanClauseTitle(value = '') {
     .replace(/^\d+\s+(?=[\p{Script=Han}])/u, '')
     .replace(/^[.．、\s]+/u, '')
     .replace(/^[（(]\s*[一二三四五六七八九十\d]+\s*[）)]\s*/u, '')
-    .replace(/^[“"‘'「『【]+/u, '')
-    .replace(/[”"’'」』】]+$/u, '')
+    .replace(/^[“"‘'「『【]+(.+)[”"’'」』】]+$/u, '$1')
     .replace(/身敀/u, '身故')
     .replace(/^被保险人(?=(?:身故|生存|满期|疾病|意外|重大疾病|轻症|中症))/u, '')
     .replace(/^本公司(?:按月)?给付(?=.+(?:保险金|豁免保险费)$)/u, '')
@@ -916,10 +956,32 @@ function cardSource({ indicator = {}, responsibility = {}, knowledge = {} }) {
   const preferredExcerpt = responsibilityExcerpt.length > indicatorExcerpt.length + 80
     ? responsibilityExcerpt
     : indicatorExcerpt;
+  const sourceMeta = {
+    sourceKind: firstNonEmpty(indicator.sourceKind, responsibility.sourceKind, knowledge.sourceKind),
+    evidenceLabel: firstNonEmpty(indicator.evidenceLabel, responsibility.evidenceLabel, knowledge.evidenceLabel),
+    evidenceLevel: firstNonEmpty(indicator.evidenceLevel, responsibility.evidenceLevel, knowledge.evidenceLevel, knowledge.sourceLevel),
+    verificationStatus: firstNonEmpty(indicator.verificationStatus, responsibility.verificationStatus, knowledge.verificationStatus),
+    verificationLabel: firstNonEmpty(indicator.verificationLabel, responsibility.verificationLabel, knowledge.verificationLabel),
+    referenceOnly: indicator.referenceOnly === true || responsibility.referenceOnly === true || knowledge.referenceOnly === true,
+    responsibilityDeferred: indicator.responsibilityDeferred === true || responsibility.responsibilityDeferred === true || knowledge.responsibilityDeferred === true,
+    official: indicator.official === true || responsibility.official === true || knowledge.official === true
+      ? true
+      : [indicator.official, responsibility.official, knowledge.official].includes(false)
+        ? false
+        : undefined,
+  };
+  const evidenceFields = evidenceVerificationFields(sourceMeta);
   return {
     sourceUrl: firstNonEmpty(indicator.sourceUrl, responsibility.sourceUrl, sourceUrlFrom(knowledge)),
     sourceTitle: firstNonEmpty(responsibility.sourceTitle, indicator.sourceTitle, knowledge.title),
     sourceExcerpt: firstNonEmpty(preferredExcerpt, responsibilityExcerpt, knowledgeExcerpt),
+    sourceKind: sourceMeta.sourceKind,
+    evidenceLabel: sourceMeta.evidenceLabel,
+    evidenceLevel: sourceMeta.evidenceLevel,
+    verificationStatus: evidenceFields.verificationStatus,
+    verificationLabel: evidenceFields.verificationLabel,
+    referenceOnly: evidenceFields.referenceOnly,
+    official: sourceMeta.official,
   };
 }
 
@@ -1228,6 +1290,14 @@ function normalizeSummaryRow(row = {}) {
     note: text(row.note),
     sourceUrl: text(row.sourceUrl),
     sourceTitle: text(row.sourceTitle || row.source),
+    sourceExcerpt: sourceExcerptFrom(row),
+    sourceKind: text(row.sourceKind),
+    evidenceLabel: text(row.evidenceLabel),
+    evidenceLevel: text(row.evidenceLevel || row.sourceLevel),
+    verificationStatus: text(row.verificationStatus),
+    verificationLabel: text(row.verificationLabel),
+    referenceOnly: row.referenceOnly === true,
+    official: typeof row.official === 'boolean' ? row.official : undefined,
   };
 }
 
@@ -1325,6 +1395,14 @@ export function responsibilityRowsFromCards(cards = [], { optionalResponsibiliti
       note: responsibilityCardNote(card),
       sourceUrl: text(card.sourceUrl),
       sourceTitle: text(card.sourceTitle),
+      sourceExcerpt: text(card.sourceExcerpt),
+      sourceKind: text(card.sourceKind),
+      evidenceLabel: text(card.evidenceLabel),
+      evidenceLevel: text(card.evidenceLevel),
+      verificationStatus: text(card.verificationStatus),
+      verificationLabel: text(card.verificationLabel),
+      referenceOnly: card.referenceOnly === true,
+      official: typeof card.official === 'boolean' ? card.official : undefined,
     });
   }
   return rows;
@@ -1360,6 +1438,14 @@ export function mergeCoverageTableWithCheckedRows(coverageTable = [], checkedRow
       note: preferCheckedSummaryValue(row.note, checked.note, { fallback: isFallbackSummaryNote }),
       sourceUrl: row.sourceUrl || checked.sourceUrl,
       sourceTitle: row.sourceTitle || checked.sourceTitle,
+      sourceExcerpt: row.sourceExcerpt || checked.sourceExcerpt,
+      sourceKind: row.sourceKind || checked.sourceKind,
+      evidenceLabel: row.evidenceLabel || checked.evidenceLabel,
+      evidenceLevel: row.evidenceLevel || checked.evidenceLevel,
+      verificationStatus: row.verificationStatus || checked.verificationStatus,
+      verificationLabel: row.verificationLabel || checked.verificationLabel,
+      referenceOnly: row.referenceOnly === true || checked.referenceOnly === true,
+      official: row.official === true || checked.official === true,
     };
   });
 
@@ -1424,6 +1510,13 @@ function mergeIndicatorCard(card, indicator, responsibility, knowledge) {
   if (!card.sourceUrl) card.sourceUrl = source.sourceUrl;
   if (!card.sourceTitle) card.sourceTitle = source.sourceTitle;
   if (!card.sourceExcerpt) card.sourceExcerpt = source.sourceExcerpt;
+  if (!card.sourceKind) card.sourceKind = source.sourceKind;
+  if (!card.evidenceLabel) card.evidenceLabel = source.evidenceLabel;
+  if (!card.evidenceLevel) card.evidenceLevel = source.evidenceLevel;
+  if (!card.verificationStatus) card.verificationStatus = source.verificationStatus;
+  if (!card.verificationLabel) card.verificationLabel = source.verificationLabel;
+  card.referenceOnly = card.referenceOnly === true || source.referenceOnly === true;
+  card.official = card.official === true || source.official === true;
   if (!card.responsibilityScope) card.responsibilityScope = firstNonEmpty(indicator.responsibilityScope, responsibility?.responsibilityScope);
   if (!card.selectionStatus) card.selectionStatus = firstNonEmpty(indicator.selectionStatus, responsibility?.selectionStatus);
   if (!card.selectionEvidence) card.selectionEvidence = firstNonEmpty(indicator.selectionEvidence, responsibility?.selectionEvidence);
@@ -1436,20 +1529,25 @@ function mergeIndicatorCard(card, indicator, responsibility, knowledge) {
 
 function createResponsibilityCard({ responsibility, knowledge, policy, index }) {
   const title = responsibility.title || '保险责任';
-  const triggerCondition = responsibility.scenario;
+  const triggerCondition = firstNonEmpty(responsibility.triggerCondition, responsibility.scenario);
   const payoutSummary = firstNonEmpty(
+    responsibility.formulaText,
     responsibility.payout,
     simpleScheduledPayoutSummary({ title, clause: responsibility.scenario }),
   );
   const source = cardSource({ responsibility, knowledge });
   const company = firstNonEmpty(responsibility.company, policy.company);
   const productName = firstNonEmpty(responsibility.productName, policy.productName, policy.name);
-  const treatment = cardTreatment([], [
+  const treatment = firstNonEmpty(responsibility.cashflowTreatment, cardTreatment([], [
     title,
     responsibility.coverageType,
     responsibility.scenario,
     responsibility.payout,
-  ].join(' '));
+  ].join(' ')));
+  const calculationStatus = firstNonEmpty(
+    responsibility.calculationStatus,
+    treatment === 'claim_contingent' ? 'claim_contingent' : (treatment === 'scheduled_cashflow' && payoutSummary ? 'calculable' : 'needs_review'),
+  );
 
   return {
     id: cardIdFor({ policy, company, productName, title, index }),
@@ -1460,10 +1558,19 @@ function createResponsibilityCard({ responsibility, knowledge, policy, index }) 
     plainSummary: plainSummaryFor({ title, triggerCondition, payoutSummary }),
     triggerCondition,
     payoutSummary,
+    basis: responsibility.basis,
+    formulaText: responsibility.formulaText,
+    basisKey: responsibility.basisKey,
+    calculationKey: responsibility.calculationKey,
+    requiredInputs: responsibility.requiredInputs,
+    value: responsibility.value,
+    valueText: responsibility.valueText,
+    unit: responsibility.unit,
     ...source,
     confidence: source.sourceUrl && source.sourceExcerpt ? 'medium' : 'low',
-    calculationStatus: treatment === 'claim_contingent' ? 'claim_contingent' : (treatment === 'scheduled_cashflow' && payoutSummary ? 'calculable' : 'needs_review'),
-    calculationReason: treatment === 'scheduled_cashflow' && payoutSummary ? '' : '以正式保险合同条款为准',
+    calculationStatus,
+    calculationEligible: responsibility.calculationEligible,
+    calculationReason: firstNonEmpty(responsibility.calculationReason, treatment === 'scheduled_cashflow' && payoutSummary ? '' : '以正式保险合同条款为准'),
     cashflowTreatment: treatment,
     responsibilityScope: text(responsibility.responsibilityScope),
     selectionStatus: text(responsibility.selectionStatus),
@@ -1494,7 +1601,8 @@ export function buildResponsibilityCardsForPolicy({
     .map(normalizeResponsibility)
     .filter((responsibility) => !isInvalidResponsibilityTitle(responsibility.title) && !isWeakLiabilityName(responsibility.title) && !isSentenceFragmentTitle(responsibility.title));
   const normalizedIndicators = objectRows(coverageIndicators)
-    .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }));
+    .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }))
+    .filter(isFormalResponsibilityEvidence);
   const knowledge = bestKnowledgeRecord(knowledgeRecords);
   const matchedResponsibilities = new Set();
   const cardsByKey = new Map();

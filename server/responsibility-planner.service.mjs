@@ -1,3 +1,5 @@
+import { jsonrepair } from 'jsonrepair';
+
 const PLANNER_MODE_SET = new Set(['auto', 'all', 'off']);
 const COMPLEX_CATEGORIES = new Set([
   'participating_life',
@@ -81,17 +83,32 @@ function compactSourceSections(sourceSections = {}) {
 function parsePlannerJson(raw) {
   const text = textOf(raw);
   if (!text) throw new Error('Planner returned empty content');
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/iu);
+  const candidates = [
+    text,
+    fenced?.[1] || '',
+    text.includes('{') && text.includes('}') ? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1) : '',
+  ].map(textOf).filter(Boolean);
+  const seen = new Set();
+  let lastError = null;
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+    try {
+      return JSON.parse(jsonrepair(candidate));
+    } catch (error) {
+      lastError = error;
+    }
+  }
   try {
     return JSON.parse(text);
   } catch (error) {
-    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/iu);
-    const candidate = fenced?.[1] || text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-    if (!textOf(candidate)) throw new Error(`Planner JSON parse failed: ${error.message}`);
-    try {
-      return JSON.parse(candidate);
-    } catch (nestedError) {
-      throw new Error(`Planner JSON parse failed: ${nestedError.message}`);
-    }
+    throw new Error(`Planner JSON parse failed: ${(lastError || error).message}`);
   }
 }
 
@@ -216,7 +233,7 @@ function enrichPlannerOutput(planner = {}, routing = {}, sourceSections = {}) {
 export function normalizeResponsibilityPlannerOutput(raw, fallbackRouting = {}) {
   const value = typeof raw === 'string' ? parsePlannerJson(raw) : raw;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Planner output is not an object');
+    throw new Error('Planner JSON output is not an object');
   }
 
   return {

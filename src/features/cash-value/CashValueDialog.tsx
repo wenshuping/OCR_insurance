@@ -5,6 +5,7 @@ import {
 import {
   Loader2,
   Plus,
+  Upload,
   X,
 } from 'lucide-react';
 import type {
@@ -20,7 +21,7 @@ export function CashValueDialog(props: {
   message: string;
   open: boolean;
   scanResult: CashValueScanResult | null;
-  onAddRow: () => void;
+  onAddRow: (afterRowIndex?: number) => void;
   onCancel: () => void;
   onCellEdit: (rowIndex: number, field: 'policyYear' | 'age' | 'cashValue', value: string) => void;
   onConfirm: () => void;
@@ -125,30 +126,35 @@ export function CashValueDialog(props: {
                 {scanResult.source === 'manual' ? '录入现金价值' : '现金价值表识别结果'}
               </h3>
               <span className="text-xs text-slate-400">
-                {scanResult.source === 'manual' ? '手动录入' : scanResult.source === 'macos_vision' ? '本机Vision' : scanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
+                {scanResult.source === 'manual' ? '手动录入' : scanResult.source === 'deepseek_ocr' ? 'DeepSeek-OCR' : scanResult.source === 'macos_vision' ? '本机Vision' : scanResult.source === 'vision_llm' ? 'AI识别' : 'Paddle OCR'}
                 {scanResult.confidence != null && ` · 置信度 ${Math.round(scanResult.confidence * 100)}%`}
               </span>
             </div>
             {message && (
               <p className={`mb-2 text-sm ${messageClassName}`}>{message}</p>
             )}
-            <div className="mb-3 flex justify-end">
+            <div className="mb-3 flex justify-end gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 disabled:opacity-50"
+                disabled={loading}
+                onClick={() => openCashValueUpload('append')}
+                aria-label="上传照片追加现金价值行"
+                title="上传照片追加现金价值行"
+              >
+                <Upload size={14} />
+                追加照片
+              </button>
               <button
                 type="button"
                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 ring-1 ring-emerald-100 disabled:opacity-50"
                 disabled={loading}
-                onClick={() => {
-                  if (scanResult.source === 'manual') {
-                    onAddRow();
-                    return;
-                  }
-                  openCashValueUpload('append');
-                }}
-                aria-label={scanResult.source === 'manual' ? '添加现金价值年度' : '上传剩余现金价值并追加年度'}
-                title={scanResult.source === 'manual' ? '添加现金价值年度' : '上传剩余现金价值并追加年度'}
+                onClick={() => onAddRow()}
+                aria-label="新增现金价值行"
+                title="新增现金价值行"
               >
                 <Plus size={14} />
-                添加年度
+                新增行
               </button>
             </div>
             <div className="max-h-[50vh] overflow-y-auto">
@@ -160,7 +166,7 @@ export function CashValueDialog(props: {
                       <th className="px-2 py-1.5 text-left font-bold text-slate-600">年龄</th>
                     )}
                     <th className="px-2 py-1.5 text-left font-bold text-slate-600">现金价值(元)</th>
-                    <th className="w-10 px-2 py-1.5 text-right font-bold text-slate-600">操作</th>
+                    <th className="w-20 px-2 py-1.5 text-right font-bold text-slate-600">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -168,6 +174,7 @@ export function CashValueDialog(props: {
                     <tr key={i} className="border-b border-slate-50">
                       <td className="px-1 py-0.5">
                         <input
+                          key={`policy-year-${row.policyYear}-${row.age ?? 'none'}-${row.cashValue}`}
                           type="text"
                           className="w-16 rounded border border-slate-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
                           defaultValue={row.policyYear}
@@ -177,6 +184,7 @@ export function CashValueDialog(props: {
                       {scanResult.tableType === 3 && (
                         <td className="px-1 py-0.5">
                           <input
+                            key={`age-${row.policyYear}-${row.age ?? 'none'}-${row.cashValue}`}
                             type="text"
                             className="w-14 rounded border border-slate-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
                             defaultValue={row.age ?? ''}
@@ -186,6 +194,7 @@ export function CashValueDialog(props: {
                       )}
                       <td className="px-1 py-0.5">
                         <input
+                          key={`cash-value-${row.policyYear}-${row.age ?? 'none'}-${row.cashValue}`}
                           type="text"
                           className="w-24 rounded border border-slate-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
                           defaultValue={row.cashValue.toLocaleString('zh-CN')}
@@ -195,9 +204,21 @@ export function CashValueDialog(props: {
                       <td className="px-1 py-0.5 text-right">
                         <button
                           type="button"
+                          className="mr-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 active:bg-emerald-100 disabled:opacity-50"
+                          disabled={loading}
+                          onClick={() => onAddRow(i)}
+                          aria-label={`在第 ${i + 1} 行后插入现金价值行`}
+                          title="插入下一行"
+                        >
+                          <Plus size={14} />
+                        </button>
+                        <button
+                          type="button"
                           className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-50 text-slate-400 active:bg-red-50 active:text-red-500"
+                          disabled={loading}
                           onClick={() => onRemoveRow(i)}
                           aria-label="删除现金价值行"
+                          title="删除"
                         >
                           <X size={14} />
                         </button>

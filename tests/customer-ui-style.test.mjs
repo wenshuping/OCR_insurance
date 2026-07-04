@@ -8,6 +8,7 @@ const adminAppSource = fs.readFileSync(new URL('../src/apps/admin/AdminApp.tsx',
 const sharedReportUiSource = fs.readFileSync(new URL('../src/shared/policy-report-ui.tsx', import.meta.url), 'utf8');
 const customerPolicyFormSource = fs.readFileSync(new URL('../src/shared/customer-policy-form.ts', import.meta.url), 'utf8');
 const customerCashValueSource = fs.readFileSync(new URL('../src/shared/customer-cash-value.ts', import.meta.url), 'utf8');
+const imageUtilsSource = fs.readFileSync(new URL('../src/shared/image-utils.ts', import.meta.url), 'utf8');
 const customerPolicyComponentsSource = fs.readFileSync(new URL('../src/shared/customer-policy-components.tsx', import.meta.url), 'utf8');
 const customerPolicyListSource = fs.readFileSync(new URL('../src/shared/customer-policy-list.tsx', import.meta.url), 'utf8');
 const familyProfileSource = fs.readFileSync(new URL('../src/features/family-profile/FamilyProfileManager.tsx', import.meta.url), 'utf8');
@@ -152,6 +153,32 @@ test('admin sales review page is read-only and reuses customer markdown renderer
   assert.doesNotMatch(adminSalesReviewPageSource, /下载报告/);
 });
 
+test('responsibility assistant online lookup resolves product candidates before responsibility generation', () => {
+  const searchMoreSource = functionSource(customerAppSource, 'handleAssistantSearchMore', 'handleSubmit');
+  assert.match(searchMoreSource, /matchPolicyResponsibilities/);
+  assert.match(searchMoreSource, /includeOnline:\s*true/);
+  assert.ok(searchMoreSource.indexOf('matchPolicyResponsibilities') < searchMoreSource.indexOf('loadAssistantResponsibilities'));
+  const selectMatchSource = functionSource(customerAppSource, 'handleAssistantSelectMatch', 'handleAssistantSearchMore');
+  assert.match(selectMatchSource, /isExternalResponsibilityReference/);
+  assert.ok(selectMatchSource.indexOf('isExternalResponsibilityReference') < selectMatchSource.indexOf('loadAssistantResponsibilities'));
+  const externalBranchStart = selectMatchSource.indexOf('if (isExternalResponsibilityReference');
+  const externalBranchEnd = selectMatchSource.indexOf('      return;\n    }', externalBranchStart);
+  const externalReferenceBranch = selectMatchSource.slice(
+    externalBranchStart,
+    externalBranchEnd + '      return;\n    }'.length,
+  );
+  assert.doesNotMatch(externalReferenceBranch, /setAssistantMatches\(\[\]\)/);
+  assert.match(externalReferenceBranch, /allowExternalReferences:\s*true/);
+  assert.match(externalReferenceBranch, /正在基于外部线索生成待核实责任/);
+  assert.match(customerAppSource, /selectedMatchKey=\{assistantSelectedMatchKey\}/);
+  assert.match(responsibilityAssistantSource, /联网查找候选/);
+  assert.match(responsibilityAssistantSource, /金融产品查询平台\/中国保险行业协会条款 PDF/);
+  assert.match(responsibilityAssistantSource, /历史老产品外部线索/);
+  assert.match(responsibilityAssistantSource, /非官方资料，待保险公司确认/);
+  assert.match(responsibilityAssistantSource, /可生成待核实责任/);
+  assert.match(responsibilityAssistantSource, /已选择为待核实建档线索/);
+});
+
 function functionSource(source, name, nextName) {
   const start = source.indexOf(`function ${name}`);
   const end = nextName ? source.indexOf(`function ${nextName}`, start + 1) : source.length;
@@ -275,6 +302,10 @@ test('entry form exposes local product candidates before responsibility generati
   assert.match(customerSource, /listPolicyResponsibilityProductSuggestions\(\{ company, q: name, limit: 3 \}\)/);
   assert.match(matchPanelSource, /相似产品/);
   assert.match(matchPanelSource, /role="listbox"/);
+  assert.match(matchPanelSource, /productMatchDisplayName/);
+  assert.match(customerPolicyFormSource, /function planProductCode/);
+  assert.match(customerPolicyFormSource, /return `\$\{name\}（\$\{code\}）`/);
+  assert.match(customerPolicyComponentsSource, /匹配：\{planProductDisplayName\(plan\)\}/);
 });
 
 test('poptonic compose persists the production SQLite database in the data volume', () => {
@@ -371,7 +402,8 @@ test('entry form uses the effective family selection for both display and save',
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(customerSource, /const entryFamilyId = formData\.familyId \?\? selectedFamilyId \?\? null/);
   assert.match(customerSource, /const entrySelectedFamilyMembers = useMemo/);
-  assert.match(customerSource, /const submitBaseData = Number\(entryFamilyId \|\| 0\) && Number\(formData\.familyId \|\| 0\) !== Number\(entryFamilyId\)/);
+  assert.match(customerSource, /const familyAlignedData = Number\(entryFamilyId \|\| 0\) && Number\(formData\.familyId \|\| 0\) !== Number\(entryFamilyId\)/);
+  assert.match(customerSource, /const submitBaseData = autoBindEntryMembersByName\(familyAlignedData\)/);
   assert.match(customerSource, /familyId: entryFamilyId,/);
   assert.match(customerSource, /selectedFamilyId=\{entryFamilyId\}/);
   assert.match(customerSource, /if \(entrySelectedFamily\) return entrySelectedFamily/);
@@ -722,13 +754,17 @@ test('entry rider names expose product suggestion selection', () => {
   const entrySource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(editorSource, /productSuggestionTargetIndex/);
   assert.match(editorSource, /aria-label="附加险产品候选"/);
-  assert.match(editorSource, /onSelectProduct\?\.\(plan\.originalIndex, suggestion\)/);
-  assert.match(editorSource, /renderHighlightedSuggestion\(suggestion\.productName, String\(plan\.name \|\| ''\)\)/);
-  assert.match(entrySource, /formPlanProductSuggestionTargetIndex/);
-  assert.match(entrySource, /onUpdateProductQuery=\{onUpdatePlanProductQuery\}/);
-  assert.match(normalizedCustomerAppSource, /function selectPolicyPlanProduct/);
-  assert.match(normalizedCustomerAppSource, /matchedProductName: name/);
-});
+	  assert.match(editorSource, /key=\{`policy-plan-\$\{plan\.originalIndex\}`\}/);
+	  assert.doesNotMatch(editorSource, /key=\{`\$\{plan\.name\}/);
+	  assert.match(editorSource, /onSelectProduct\?\.\(plan\.originalIndex, suggestion\)/);
+	  assert.match(editorSource, /productSuggestionDisplayName\(suggestion\)/);
+	  assert.match(editorSource, /renderHighlightedSuggestion\(displayName, String\(plan\.name \|\| ''\)\)/);
+	  assert.match(entrySource, /formPlanProductSuggestionTargetIndex/);
+	  assert.match(entrySource, /onUpdateProductQuery=\{onUpdatePlanProductQuery\}/);
+	  assert.match(normalizedCustomerAppSource, /function selectPolicyPlanProduct/);
+	  assert.match(normalizedCustomerAppSource, /matchedProductName: name/);
+	  assert.match(normalizedCustomerAppSource, /productCode,\s*productCodes:/);
+	});
 
 test('manual rider editor hides role and product type fields from customers', () => {
   const editorSource = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
@@ -873,6 +909,8 @@ test('responsibility assistant floats at the bottom right of the screen', () => 
   assert.match(source, /保险公司候选/);
   assert.match(source, /保险产品候选/);
   assert.match(source, /renderHighlightedSuggestion/);
+  assert.match(source, /productSuggestionDisplayName/);
+  assert.match(source, /onSelectProduct\(suggestion, displayName\)/);
   assert.doesNotMatch(source, /bottom-28|sm:bottom-6/);
 });
 
@@ -882,13 +920,17 @@ test('responsibility assistant shows DeepSeek summary blocks and structured resp
   assert.match(source, /customerSummary && customerSummaryHasContent \? \(/);
   assert.match(source, /customerSummaryRows\.length \|\| customerSummaryBlocks\.length/);
   assert.doesNotMatch(source, /blockKey\) !== 'responsibilities'/);
+  assert.match(source, /analysis\?\.officialResponsibilityText/);
+  assert.match(source, /shouldShowOfficialResponsibilityTextFallback/);
+  assert.match(source, /保险责任正文/);
   assert.match(source, /shouldShowResponsibilityRows/);
   assert.match(source, /shouldShowResponsibilityRows \? \(/);
-  assert.doesNotMatch(source, /customerSummaryMessage && responsibilities\.length \? \(/);
+  assert.match(source, /!customerSummaryLoading && !customerSummary && Boolean\(officialResponsibilityText\)/);
+  assert.match(source, /!customerSummaryMessage && !shouldShowOfficialResponsibilityTextFallback && responsibilities\.length > 0/);
   assert.match(source, /const responsibilityRows = responsibilities\.map/);
   const summaryBranch = source.slice(
     source.indexOf('customerSummary && customerSummaryHasContent ? ('),
-    source.indexOf(') : customerSummaryMessage ? ('),
+    source.indexOf(') : shouldShowOfficialResponsibilityTextFallback ? ('),
   );
   assert.match(summaryBranch, /customerSummaryBlocks\.map/);
   assert.match(source, /enabled: block\?\.enabled !== false/);
@@ -900,11 +942,19 @@ test('responsibility assistant shows DeepSeek summary blocks and structured resp
   assert.match(summaryBranch, /sourceRefs\.map/);
   assert.match(summaryBranch, /customerSummaryNotices\.map/);
   assert.match(summaryBranch, /customerSummarySourceUrls\.slice/);
+  const officialTextBranch = source.slice(
+    source.indexOf(') : shouldShowOfficialResponsibilityTextFallback ? ('),
+    source.indexOf(') : customerSummaryMessage ? ('),
+  );
+  assert.match(officialTextBranch, /officialResponsibilityText/);
+  assert.doesNotMatch(officialTextBranch, /responsibilityRows/);
   const messageBranch = source.slice(
     source.indexOf(') : customerSummaryMessage ? ('),
     source.indexOf(') : shouldShowResponsibilityRows ? ('),
   );
   assert.doesNotMatch(messageBranch, /responsibilityRows/);
+  assert.ok(source.indexOf(') : shouldShowOfficialResponsibilityTextFallback ? (') < source.indexOf(') : customerSummaryMessage ? ('));
+  assert.ok(source.indexOf(') : customerSummaryMessage ? (') < source.indexOf(') : shouldShowResponsibilityRows ? ('));
   assert.doesNotMatch(source, /CustomerResponsibilitySummaryCard/);
 });
 
@@ -1029,7 +1079,9 @@ test('customer policy detail moves coverage amount into plan details', () => {
   assert.doesNotMatch(infoGridSource, /label="保障额度"/);
   assert.doesNotMatch(infoGridSource, /label="保障期间"/);
   assert.match(summarySource, /险种明细/);
-  assert.match(summarySource, /保额：\{formatCoverageAmount\(Number\(plan\.amount \|\| 0\)\)\}/);
+  assert.match(summarySource, /const fallbackAmount = index === 0 \? amount : ''/);
+  assert.match(summarySource, /const planAmount = fallbackAmount \|\| plan\.amount/);
+  assert.match(summarySource, /保额：\{formatCoverageAmount\(Number\(planAmount \|\| 0\)\)\}/);
 });
 
 test('customer policy cards derive validity status from coverage period', () => {
@@ -1055,12 +1107,16 @@ test('customer policy summary falls back to top-level periods for the main plan'
 
   assert.match(summarySource, /const fallbackCoveragePeriod = index === 0 \? coveragePeriod : ''/);
   assert.match(summarySource, /const fallbackPaymentPeriod = index === 0 \? paymentPeriod : ''/);
+  assert.match(summarySource, /const fallbackAmount = index === 0 \? amount : ''/);
   assert.match(summarySource, /const planCoveragePeriod = plan\.coveragePeriod \|\| fallbackCoveragePeriod/);
   assert.match(summarySource, /const planPaymentPeriod = plan\.paymentPeriod \|\| plan\.paymentMode \|\| fallbackPaymentPeriod/);
+  assert.match(summarySource, /const planAmount = fallbackAmount \|\| plan\.amount/);
   assert.match(policyEntrySource, /paymentPeriod=\{formData\.paymentPeriod\}/);
   assert.match(policyEntrySource, /coveragePeriod=\{formData\.coveragePeriod\}/);
+  assert.match(policyEntrySource, /amount=\{formData\.amount\}/);
   assert.match(detailSource, /paymentPeriod=\{policy\.paymentPeriod\}/);
   assert.match(detailSource, /coveragePeriod=\{policy\.coveragePeriod\}/);
+  assert.match(detailSource, /amount=\{policy\.amount\}/);
 });
 
 test('customer policy detail uses customer responsibility summary instead of legacy cards', () => {
@@ -1139,7 +1195,10 @@ test('ocr recognition stays on entry form while carrying matched responsibility 
   const recognizeSource = normalizedCustomerAppSource.slice(start, end);
 
   assert.match(recognizeSource, /const recognizedAnalysis = payload\.analysis \|\| null/);
-  assert.match(recognizeSource, /setAnalysisDraft\(withRememberedOptionalResponsibilitySelections\(recognizedAnalysis\)\);\s*setShowAnalysisReport\(false\);/);
+  assert.match(recognizeSource, /const nextAnalysis = withRememberedOptionalResponsibilitySelections\(recognizedAnalysis\)/);
+  assert.match(recognizeSource, /setAnalysisDraft\(nextAnalysis\)/);
+  assert.match(recognizeSource, /setBaseAnalysisDraft\(nextAnalysis\)/);
+  assert.match(recognizeSource, /setShowAnalysisReport\(false\)/);
   assert.doesNotMatch(recognizeSource, /setShowAnalysisReport\(true\)/);
   assert.doesNotMatch(recognizeSource, /setShowAnalysisReport\(hasResponsibilityReportResult/);
 });
@@ -1247,19 +1306,26 @@ test('customer policy detail can open manual cash value entry', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 
-  assert.match(apiSource, /source\?: 'ocr' \| 'macos_vision' \| 'vision_llm' \| 'manual'/);
+  assert.match(apiSource, /source\?: 'ocr' \| 'deepseek_ocr' \| 'macos_vision' \| 'vision_llm' \| 'manual'/);
   assert.match(customerSource, /openManualCashValueEditor/);
   assert.match(customerSource, /startManualCashValueEntry/);
   assert.match(customerSource, /handleAddCashValueRow/);
+  assert.match(customerSource, /afterRowIndex\?: number/);
   assert.match(customerSource, /handleRemoveCashValueRow/);
   assert.match(customerSource, /normalizeCashValueRowsForSaving/);
   assert.match(customerSource, /confirmCashValue/);
   assert.match(customerSource, /appendCashValueRowsSequentially/);
   assert.match(customerSource, /mode === 'append'/);
+  assert.match(customerSource, /buildUploadItemOrientationAttempts/);
+  assert.match(customerSource, /shouldRetryCashValueScanWithRotatedImage/);
+  assert.match(customerSource, /未检测到现金价值列/);
+  assert.match(imageUtilsSource, /rotateUploadItemImage/);
+  assert.match(imageUtilsSource, /\[90, 270, 180\]/);
   assert.match(cashValueSource, /手动录入/);
-  assert.match(cashValueSource, /添加年度/);
+  assert.match(cashValueSource, /追加照片/);
+  assert.match(cashValueSource, /新增行/);
   assert.match(cashValueSource, /openCashValueUpload\('append'\)/);
-  assert.match(cashValueSource, /scanResult\.source === 'manual'/);
+  assert.match(cashValueSource, /onAddRow\(i\)/);
   assert.match(cashValueSource, /cashValueInputModeRef\.current/);
   assert.match(detailSource, /onEditCashValue/);
   assert.match(detailSource, /录入现金价值/);
@@ -1272,22 +1338,24 @@ test('policy edit dialog offers insurer and product suggestions', () => {
   assert.match(detailSource, /editProductSuggestions/);
   assert.match(detailSource, /listPolicyResponsibilityCompanySuggestions/);
   assert.match(detailSource, /listPolicyResponsibilityProductSuggestions/);
-  assert.match(detailSource, /aria-label="修改保险公司候选"/);
-  assert.match(detailSource, /aria-label="修改保险产品候选"/);
-  assert.match(detailSource, /renderHighlightedSuggestion/);
-});
+	  assert.match(detailSource, /aria-label="修改保险公司候选"/);
+	  assert.match(detailSource, /aria-label="修改保险产品候选"/);
+	  assert.match(detailSource, /renderHighlightedSuggestion/);
+	  assert.doesNotMatch(detailSource, /label="身份证号"|被保人证件号/);
+	});
 
 test('policy edit dialog includes rider editing controls and plan product suggestions', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
   assert.match(detailSource, /PolicyPlanEditor/);
   assert.match(detailSource, /editPlanProductSuggestions/);
   assert.match(detailSource, /editPlanProductSuggestionLoading/);
-  assert.match(detailSource, /editPlanProductQuery/);
-  assert.match(detailSource, /addDraftPlan/);
-  assert.match(detailSource, /removeDraftPlan/);
-  assert.match(detailSource, /selectDraftPlanProduct/);
-  assert.match(detailSource, /onUpdateProductQuery=\{\(index, company, q\) => setEditPlanProductQuery\(\{ index, company, q \}\)\}/);
-});
+	  assert.match(detailSource, /editPlanProductQuery/);
+	  assert.match(detailSource, /addDraftPlan/);
+	  assert.match(detailSource, /removeDraftPlan/);
+	  assert.match(detailSource, /selectDraftPlanProduct/);
+	  assert.match(detailSource, /productCode,\s*productCodes:/);
+	  assert.match(detailSource, /onUpdateProductQuery=\{\(index, company, q\) => setEditPlanProductQuery\(\{ index, company, q \}\)\}/);
+	});
 
 test('customer app exposes family report from family cards and policy dashboard', () => {
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
@@ -1882,17 +1950,28 @@ test('policy entry auto-links typed or OCR names to existing family members', ()
   const source = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
 
-  assert.match(source, /function findSingleFamilyMemberByName/);
+  assert.match(source, /function findFamilyMemberByName/);
   assert.match(source, /function relationForFamilyMember/);
   assert.match(source, /Number\(member\.id\) === Number\(selectedFamily\?\.coreMemberId \|\| 0\)/);
   assert.match(source, /function applyParticipantMember/);
   assert.match(source, /onUpdateForm\(memberIdKey, member\.id\)/);
   assert.match(source, /applyParticipantRelation\(kind, relationForFamilyMember\(member\)\)/);
-  assert.match(source, /findSingleFamilyMemberByName\(formData\.applicant \|\| ''\)/);
-  assert.match(source, /findSingleFamilyMemberByName\(formData\.insured \|\| ''\)/);
+  assert.match(source, /findFamilyMemberByName\(formData\.applicant \|\| ''\)/);
+  assert.match(source, /findFamilyMemberByName\(formData\.insured \|\| ''\)/);
   assert.match(customerSource, /function autoBindEntryMembersByName/);
   assert.match(customerSource, /relationLabelForEntryMember/);
   assert.match(customerSource, /autoBindEntryMembersByName\(mergeScanToForm\(payload\.scan, current\)\)/);
-  assert.match(customerSource, /applicantMemberId: applicantMember\.id/);
-  assert.match(customerSource, /insuredMemberId: insuredMember\.id/);
+  assert.match(customerSource, /applicantMemberId: finalApplicantMember\.id/);
+  assert.match(customerSource, /insuredMemberId: finalInsuredMember\.id/);
+});
+
+test('policy entry exposes supplement product photo upload when product matching fails', () => {
+  assert.match(policyApiSource, /scanPolicyProductKnowledge/);
+  assert.match(customerAppSource, /productKnowledgeFileInputRef/);
+  assert.match(customerAppSource, /scanPolicyProductKnowledge\(/);
+  assert.match(customerAppSource, /formProductMatchStatus === 'not_found'/);
+  assert.match(policyEntrySource, /上传产品页\/保险利益表照片/);
+  assert.match(policyEntrySource, /已补充 \{Number\(props\.supplementCount \|\| 0\)\}\/5 张/);
+  assert.match(adminKnowledgeSource, /客户补充照片线索/);
+  assert.match(adminKnowledgeSource, /通过为非官方候选/);
 });

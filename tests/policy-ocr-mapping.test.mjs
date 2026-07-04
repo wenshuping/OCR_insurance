@@ -721,6 +721,96 @@ test('OCR mapping gives similar New China product editions different canonical i
   assert.notEqual(xiang.data.canonicalProductId, ying.data.canonicalProductId);
 });
 
+test('OCR mapping uses product-adjacent numeric codes to resolve official product variants', () => {
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state: {
+      policies: [],
+      knowledgeRecords: [
+        {
+          company: '中国平安',
+          productName: '平安尊御人生两全保险（分红型）',
+          productType: '两全保险',
+          url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1140&versionNo=1140-1&attachmentType=1',
+        },
+        {
+          company: '中国平安',
+          productName: '平安附加聚财宝两全保险（万能型）',
+          productType: '万能账户',
+          url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=844&versionNo=844-1&attachmentType=1',
+        },
+        {
+          company: '中国平安',
+          productName: '平安附加聚财宝两全保险（万能型，2015）',
+          productType: '万能账户',
+          url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=848&versionNo=848-1&attachmentType=1',
+        },
+      ],
+    },
+    scan: {
+      ocrText: [
+        '中国平安人寿保险股份有限公司',
+        '保险项目',
+        '投保主险:尊御人生（1140）',
+        '附加长险:聚财宝（844）',
+      ].join('\n'),
+      data: {
+        company: '中国平安',
+        name: '尊御人生（1140）',
+        plans: [
+          { role: 'main', name: '尊御人生（1140）' },
+          { role: 'linked_account', name: '聚财宝（844）' },
+        ],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.name, '平安尊御人生两全保险（分红型）');
+  assert.equal(mapped.data.plans[0].matchedProductName, '平安尊御人生两全保险（分红型）');
+  assert.equal(mapped.data.plans[0].matchReason, '产品代码 1140');
+  assert.equal(mapped.data.plans[0].productCode, '1140');
+  assert.equal(mapped.data.plans[1].matchedProductName, '平安附加聚财宝两全保险（万能型）');
+  assert.equal(mapped.data.plans[1].matchReason, '产品代码 844');
+  assert.equal(mapped.data.plans[1].productCode, '844');
+  assert.match(mapped.data.plans[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.match(mapped.data.plans[1].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  assert.notEqual(mapped.data.plans[0].canonicalProductId, mapped.data.plans[1].canonicalProductId);
+});
+
+test('OCR mapping treats year edition parentheses as product name versions, not product codes', () => {
+  const mapped = enhancePolicyScanWithOcrMapping({
+    state: {
+      policies: [],
+      knowledgeRecords: [
+        {
+          company: '中国人寿',
+          productName: '国寿鑫颐宝两全保险（2024版）',
+          productType: '两全保险',
+        },
+        {
+          company: '中国人寿',
+          productName: '国寿鑫颐宝两全保险（2025版）',
+          productType: '两全保险',
+        },
+      ],
+    },
+    scan: {
+      ocrText: '中国人寿 险种名称:国寿鑫颐宝两全保险（2024版） 单证代码:9996',
+      data: {
+        company: '中国人寿',
+        name: '国寿鑫颐宝两全保险（2024版）',
+        plans: [
+          { role: 'main', name: '国寿鑫颐宝两全保险（2024版）' },
+        ],
+      },
+    },
+  });
+
+  assert.equal(mapped.data.name, '国寿鑫颐宝两全保险（2024版）');
+  assert.equal(mapped.data.plans[0].matchedProductName, '国寿鑫颐宝两全保险（2024版）');
+  assert.equal(mapped.data.plans[0].matchReason, '本地产品名称匹配');
+  assert.notEqual(mapped.data.plans[0].matchedProductName, '国寿鑫颐宝两全保险（2025版）');
+});
+
 test('OCR mapping does not match clause fragments as rider products from full page text', () => {
   const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）';
   const mapped = enhancePolicyScanWithOcrMapping({

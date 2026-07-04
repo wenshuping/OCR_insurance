@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import { jsonrepair } from 'jsonrepair';
+
 import { routeInsuranceProductCategory } from './insurance-product-category-router.mjs';
 import {
   callDeepSeekForResponsibilityPlanner,
@@ -47,12 +49,32 @@ function excerpt(value, limit) {
 }
 
 function parseJson(value, fallback = {}) {
-  try {
-    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
-  } catch {
-    return fallback;
+  if (typeof value !== 'string') {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback;
   }
+  const raw = text(value);
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/iu);
+  const candidates = [
+    raw,
+    fenced?.[1] || '',
+    raw.includes('{') && raw.includes('}') ? raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '',
+  ].map(text).filter(Boolean);
+  const seen = new Set();
+  const parseCandidate = (candidate) => {
+    const parsed = JSON.parse(candidate);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+  };
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      return parseCandidate(candidate);
+    } catch {}
+    try {
+      return parseCandidate(jsonrepair(candidate));
+    } catch {}
+  }
+  return fallback;
 }
 
 function uniqueStrings(values) {

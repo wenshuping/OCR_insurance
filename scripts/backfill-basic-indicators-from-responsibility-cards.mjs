@@ -26,6 +26,10 @@ function compact(value) {
   return text(value).normalize('NFKC').replace(/\s+/gu, '');
 }
 
+function firstNonEmpty(...values) {
+  return values.map(text).find(Boolean) || '';
+}
+
 function parseJson(value, fallback = {}) {
   try {
     const parsed = JSON.parse(String(value || '{}'));
@@ -184,6 +188,8 @@ function inferCashflowTreatment(card = {}, coverageType = '') {
 }
 
 function basisTextFor(card = {}) {
+  const explicit = text(card.basis);
+  if (explicit) return explicit;
   const target = compact([card.payoutSummary, card.sourceExcerpt, card.title].join(' '));
   if (/现金价值/u.test(target)) return '现金价值';
   if (/账户价值|账户余额/u.test(target)) return '账户价值';
@@ -196,6 +202,8 @@ function basisTextFor(card = {}) {
 }
 
 function formulaTextFor(card = {}, coverageType = '') {
+  const explicit = text(card.formulaText);
+  if (explicit) return explicit;
   const payout = text(card.payoutSummary);
   if (payout && compact(payout) !== compact(card.title)) return `${card.title} = ${payout}`.slice(0, 600);
 
@@ -246,9 +254,9 @@ export function buildIndicatorFromResponsibilityCard(card = {}, now = new Date()
     basis: basisTextFor(normalizedCard),
     formulaText: formulaTextFor(normalizedCard, coverageType),
     payoutSummary: text(card.payoutSummary || card.plainSummary || card.sourceExcerpt).slice(0, 600),
-    value: null,
-    valueText: '',
-    unit: '公式',
+    value: card.value ?? null,
+    valueText: text(card.valueText),
+    unit: firstNonEmpty(card.unit, '公式'),
     cashflowTreatment,
     responsibilityScope: text(card.responsibilityScope || 'basic_or_unspecified'),
     selectionStatus: text(card.selectionStatus),

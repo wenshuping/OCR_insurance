@@ -280,9 +280,9 @@ function inferSelectionStatus(policy = {}, liability = '') {
   }
   const suffixPattern = escapeRegExp(suffix);
   if (suffix && new RegExp(`不含.{0,16}可选(?:保险)?责任${suffixPattern}`, 'u').test(text)) return 'not_selected';
-  if (suffix && new RegExp(`(?:包含|含|投保|选择投保).{0,16}可选(?:保险)?责任${suffixPattern}`, 'u').test(text)) return 'selected';
+  if (suffix && new RegExp(`(?:包含|含|投保|选择投保|已选择).{0,16}可选(?:保险)?责任${suffixPattern}`, 'u').test(text)) return 'selected';
   if (/不含可选(?:保险)?责任|未选择投保可选(?:保险)?责任|未投保可选(?:保险)?责任|不投保可选(?:保险)?责任/u.test(text)) return 'not_selected';
-  if (/含可选(?:保险)?责任|包含.{0,30}可选(?:保险)?责任|选择投保可选(?:保险)?责任|已投保可选(?:保险)?责任|投保可选(?:保险)?责任/u.test(text)) return 'selected';
+  if (/含可选(?:保险)?责任|包含.{0,30}可选(?:保险)?责任|选择投保可选(?:保险)?责任|已选择可选(?:保险)?责任|已投保可选(?:保险)?责任|投保可选(?:保险)?责任/u.test(text)) return 'selected';
   return 'unknown';
 }
 

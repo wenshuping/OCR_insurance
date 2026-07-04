@@ -48,6 +48,17 @@ const SKILL_DEFINITIONS = {
       '输出时区分“已确认依据”和“仍需补证据”。',
     ],
   },
+  product_comparison: {
+    label: '产品比对与替换评估',
+    rules: [
+      '只比较已提供的产品资料、保单字段、官网证据和责任指标；不得凭记忆编造产品责任。',
+      '先确认产品是否同类型；不同类型产品不能直接说“谁更好”，只能按客户目标和风险场景拆维度比较。',
+      '比较维度包括保障责任、赔付条件、等待期、免责/除外、缴费期、保障期、保额、保费、现金价值/领取规则、续保或保证续保、健康告知和核保影响。',
+      '涉及替换、退保、换保或转保时必须提示退保损失、等待期重启、重新核保、既往症影响和现金价值损失。',
+      '不得输出“肯定更划算”“一定建议换”等确定性结论；缺少条款、费率、现金价值、健康状况或预算时写“待核实”。',
+      '输出优先采用结论先行、对比表、适合人群、风险点、待核实资料和顾问话术。',
+    ],
+  },
   sales_script: {
     label: '销售话术与面谈设计',
     rules: [
@@ -90,6 +101,9 @@ function routeIntent(question = '', scene = '') {
   if (includesAny(text, [/预算/u, /太贵/u, /买很多/u, /不够/u, /异议/u, /拒绝/u, /回应/u, /怎么回/u])) {
     return 'objection_handling';
   }
+  if (includesAny(text, [/对比/u, /比较/u, /哪个好/u, /哪款/u, /替换/u, /换保/u, /转保/u, /退保/u, /竞品/u, /优劣/u, /差异/u, /产品.*产品/u])) {
+    return 'product_comparison';
+  }
   if (includesAny(text, [/缺口/u, /补哪/u, /优先/u, /保障/u, /重疾/u, /医疗/u, /定寿/u, /意外/u, /失能/u])) {
     return 'coverage_gap';
   }
@@ -114,11 +128,16 @@ function unique(values = []) {
 
 export function selectAgentSkillPrompt({ scene = 'family_sales_chat', question = '', salesChatContext = null } = {}) {
   const primaryIntent = salesChatContext ? 'sales_review_regeneration' : routeIntent(question, scene);
+  const questionText = trim(question);
+  const needsReplacementCaution = primaryIntent === 'product_comparison' && includesAny(questionText, [/替换/u, /换保/u, /转保/u, /退保/u, /旧保单/u, /原来/u]);
   const skillKeys = unique([
     primaryIntent,
     primaryIntent === 'objection_handling' ? 'sales_script' : '',
     primaryIntent === 'coverage_gap' ? 'followup_materials' : '',
     primaryIntent === 'policy_evidence' ? 'followup_materials' : '',
+    primaryIntent === 'product_comparison' ? 'policy_evidence' : '',
+    primaryIntent === 'product_comparison' ? 'sales_script' : '',
+    needsReplacementCaution ? 'followup_materials' : '',
     salesChatContext ? 'sales_script' : '',
   ]);
   const skillRules = skillKeys.flatMap((key) => SKILL_DEFINITIONS[key]?.rules || []);
@@ -154,6 +173,7 @@ function skillSelectionMessages({ scene = '', question = '', salesChatContext = 
         '- 如果是客户异议或预算问题，包含 objection_handling。',
         '- 如果是保障缺口或优先补保障，包含 coverage_gap。',
         '- 如果是责任、条款或官网证据，包含 policy_evidence。',
+        '- 如果是产品对比、竞品差异、哪个好、替换、换保、转保或退保，包含 product_comparison；涉及条款证据时再包含 policy_evidence，涉及替换旧保单时再包含 followup_materials。',
         '- 如果需要微信话术、面谈提纲或邀约，包含 sales_script。',
         '- 如果需要补资料或下一步动作，包含 followup_materials。',
         '',

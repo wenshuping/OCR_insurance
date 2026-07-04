@@ -8,8 +8,14 @@ export type PolicySource = {
   snippet?: string;
   evidenceLabel?: string;
   evidenceLevel?: string;
+  sourceKind?: string;
+  verificationStatus?: string;
+  verificationLabel?: string;
+  referenceOnly?: boolean;
   official?: boolean;
   sourceType?: string;
+  materialType?: string;
+  sourceExcerpt?: string;
 };
 
 export type Policy = {
@@ -70,6 +76,8 @@ export type PolicyPlan = {
   name: string;
   matchedProductName?: string;
   canonicalProductId?: string;
+  productCode?: string;
+  productCodes?: string[];
   productType?: string;
   amount: number | string;
   coveragePeriod: string;
@@ -115,6 +123,12 @@ export type KnowledgeRecord = PolicySource & {
   materialType?: string;
   officialDomain?: string;
   parser?: string;
+  sourceKind?: string;
+  reviewStatus?: 'pending' | 'approved' | 'rejected' | string;
+  globalSearchable?: boolean;
+  ownerUserId?: number;
+  ownerGuestId?: string;
+  uploadNames?: string[];
   discoveredAt?: string;
   lastFetchedAt?: string;
   lastUsedAt?: string;
@@ -206,6 +220,7 @@ export type PolicyAnalysisResult = {
   optionalResponsibilities?: OptionalResponsibility[];
   notes?: string[];
   sources?: PolicySource[];
+  officialResponsibilityText?: string;
   productOverview?: string;
   purchaseAdvice?: string;
   disclaimer?: string;
@@ -217,16 +232,37 @@ export type PolicyKnowledgeMatch = {
   company: string;
   productName: string;
   canonicalProductId?: string;
+  productCode?: string;
+  productCodes?: string[];
   title: string;
   score: number;
   matchReason: string;
   evidenceLabel: string;
+  evidenceLevel?: string;
+  sourceKind?: 'local' | 'insurer_official' | 'jrcpcx' | string;
+  verificationStatus?: string;
+  verificationLabel?: string;
+  referenceOnly?: boolean;
+  inputName?: string;
+  resolvedProductName?: string;
+  needsConfirmation?: boolean;
+  responsibilityDeferred?: boolean;
   sourceCount: number;
   bestSource?: {
     title?: string;
     url?: string;
     sourceType?: string;
     materialType?: string;
+    sourceKind?: string;
+    evidenceLevel?: string;
+    verificationStatus?: string;
+    verificationLabel?: string;
+    referenceOnly?: boolean;
+    detailUrl?: string;
+    clauseUrl?: string;
+    productCode?: string;
+    productCodes?: string[];
+    responsibilityDeferred?: boolean;
   };
 };
 
@@ -312,6 +348,39 @@ export function recognizePolicy(input: {
       ocrText: input.ocrText,
       uploadItem: input.uploadItem,
       manualData: input.manualData,
+    },
+  });
+}
+
+export function scanPolicyProductKnowledge(input: {
+  token?: string;
+  guestId: string;
+  company: string;
+  name: string;
+  manualData?: Partial<PolicyFormData>;
+  scan?: PolicyScanResult | null;
+  uploadItems: UploadItem[];
+}) {
+  return request<{
+    ok: true;
+    scan: PolicyScanResult;
+    supplementOcrText: string;
+    optionalResponsibilities?: OptionalResponsibility[];
+    knowledgeRecordIds: number[];
+    uploadedCount: number;
+    status: 'exact' | 'candidates' | 'not_found' | 'source_review_required';
+    matches: PolicyKnowledgeMatch[];
+    message?: string;
+    savedRecordCount?: number;
+  }>('/api/policies/product-knowledge-scan', {
+    token: input.token,
+    body: {
+      guestId: input.guestId,
+      company: input.company,
+      name: input.name,
+      manualData: input.manualData,
+      scan: input.scan || undefined,
+      uploadItems: input.uploadItems,
     },
   });
 }

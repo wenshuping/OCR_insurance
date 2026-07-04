@@ -37,6 +37,60 @@ function hostFromUrl(url: string) {
   }
 }
 
+function sourceKindLabel(sourceKind: string | undefined) {
+  if (sourceKind === 'jrcpcx') return '金融产品查询平台/中国保险行业协会条款 PDF';
+  if (sourceKind === 'insurer_official') return '保险公司官网';
+  if (sourceKind === 'customer_policy_terms') return '客户上传保单责任页/合同页';
+  if (sourceKind === 'customer_policy_photo') return '客户上传保单照片';
+  if (sourceKind === 'legacy_external_reference') return '历史老产品外部线索';
+  if (sourceKind === 'open_web_reference') return '外部网页线索';
+  return '本地知识库';
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function productMatchDisplayName(match: PolicyKnowledgeMatch) {
+  const name = match.productName || '';
+  const code = String(match.productCode || match.bestSource?.productCode || '').trim();
+  if (!name || !code) return name;
+  if (new RegExp(`[（(]\\s*${escapeRegExp(code)}\\s*[)）]`, 'u').test(name)) return name;
+  return `${name}（${code}）`;
+}
+
+function productSuggestionDisplayName(suggestion: PolicyProductSuggestion) {
+  const name = suggestion.productName || '';
+  const code = String(suggestion.productCode || suggestion.productCodes?.[0] || '').trim();
+  if (!name || !code) return name;
+  if (new RegExp(`[（(]\\s*${escapeRegExp(code)}\\s*[)）]`, 'u').test(name)) return name;
+  return `${name}（${code}）`;
+}
+
+function isExternalReferenceMatch(match: PolicyKnowledgeMatch) {
+  return Boolean(
+      match.responsibilityDeferred ||
+      match.referenceOnly ||
+      match.bestSource?.responsibilityDeferred ||
+      match.bestSource?.referenceOnly ||
+      match.verificationStatus === 'pending_review' ||
+      match.bestSource?.verificationStatus === 'pending_review' ||
+      match.evidenceLevel === 'external_legacy_reference' ||
+      match.bestSource?.evidenceLevel === 'external_legacy_reference' ||
+      match.sourceKind === 'legacy_external_reference' ||
+      match.sourceKind === 'open_web_reference',
+  );
+}
+
+function productMatchKey(match: PolicyKnowledgeMatch) {
+  return [
+    match.company.trim(),
+    (match.resolvedProductName || match.productName).trim(),
+    match.sourceKind || '',
+    match.bestSource?.url || '',
+  ].join('\u001f');
+}
+
 const plannerModeOptions: Array<{ value: ResponsibilityPlannerMode; label: string }> = [
   { value: 'auto', label: '自动' },
   { value: 'all', label: '全部Planner' },
@@ -60,6 +114,7 @@ export function ResponsibilityAssistant(props: {
   plannerMode: ResponsibilityPlannerMode;
   productSuggestionLoading: boolean;
   productSuggestions: PolicyProductSuggestion[];
+  selectedMatchKey: string;
   onChangeCompany: (value: string) => void;
   onChangeName: (value: string) => void;
   onChangePlannerMode: (mode: ResponsibilityPlannerMode) => void;
@@ -69,7 +124,7 @@ export function ResponsibilityAssistant(props: {
   onSearchMore: () => void;
   onSelectCompany: (company: string) => void;
   onSelectMatch: (match: PolicyKnowledgeMatch) => void;
-  onSelectProduct: (suggestion: PolicyProductSuggestion) => void;
+  onSelectProduct: (suggestion: PolicyProductSuggestion, displayName?: string) => void;
   open: boolean;
 }) {
   const {
@@ -89,6 +144,7 @@ export function ResponsibilityAssistant(props: {
     plannerMode,
     productSuggestionLoading,
     productSuggestions,
+    selectedMatchKey,
     onChangeCompany,
     onChangeName,
     onChangePlannerMode,
@@ -107,7 +163,7 @@ export function ResponsibilityAssistant(props: {
   const customerSummaryResponsibilities = Array.isArray(customerSummary?.mainResponsibilities)
     ? customerSummary.mainResponsibilities
     : [];
-  const officialResponsibilityText = cleanSummaryText(customerSummary?.officialResponsibilityText);
+  const officialResponsibilityText = cleanSummaryText(customerSummary?.officialResponsibilityText || analysis?.officialResponsibilityText);
   const customerSummaryBlocks = (Array.isArray(customerSummary?.contentBlocks)
     ? customerSummary.contentBlocks
     : [])
@@ -140,9 +196,12 @@ export function ResponsibilityAssistant(props: {
   const customerSummaryNotices = cleanSummaryList(customerSummary?.notices);
   const customerSummaryRequiredPolicyFields = cleanSummaryList(customerSummary?.requiredPolicyFields);
   const customerSummarySourceUrls = cleanSummaryList(customerSummary?.sourceUrls);
-  const shouldShowResponsibilityRows = !customerSummaryLoading && !customerSummary && !customerSummaryMessage && responsibilities.length > 0;
+  const shouldShowOfficialResponsibilityTextFallback = !customerSummaryLoading && !customerSummary && Boolean(officialResponsibilityText);
+  const shouldShowResponsibilityRows = !customerSummaryLoading && !customerSummary && !customerSummaryMessage && !shouldShowOfficialResponsibilityTextFallback && responsibilities.length > 0;
   const displayedResponsibilityCount = customerSummaryHasContent
     ? customerSummaryRows.length || customerSummaryBlocks.length
+    : shouldShowOfficialResponsibilityTextFallback
+      ? 1
     : shouldShowResponsibilityRows
       ? responsibilities.length
       : 0;
@@ -291,28 +350,31 @@ export function ResponsibilityAssistant(props: {
                         正在加载保险产品
                       </div>
                     ) : (
-                      visibleProductSuggestions.map((suggestion) => (
-                        <button
-                          key={`${suggestion.company}-${suggestion.productName}`}
-                          type="button"
-                          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                          role="option"
-                          aria-selected={false}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            onSelectProduct(suggestion);
-                            setProductFocused(false);
-                          }}
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate">{renderHighlightedSuggestion(suggestion.productName, productQuery)}</span>
-                            {suggestion.company !== companyQuery ? (
-                              <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
-                            ) : null}
-                          </span>
-                          <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                        </button>
-                      ))
+                      visibleProductSuggestions.map((suggestion) => {
+                        const displayName = productSuggestionDisplayName(suggestion);
+                        return (
+                          <button
+                            key={`${suggestion.company}-${suggestion.productName}`}
+                            type="button"
+                            className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
+                            role="option"
+                            aria-selected={false}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              onSelectProduct(suggestion, displayName);
+                              setProductFocused(false);
+                            }}
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate">{renderHighlightedSuggestion(displayName, productQuery)}</span>
+                              {suggestion.company !== companyQuery ? (
+                                <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
+                              ) : null}
+                            </span>
+                            <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
+                          </button>
+                        );
+                      })
                     )}
                   </div>
                 ) : null}
@@ -352,33 +414,63 @@ export function ResponsibilityAssistant(props: {
                   </span>
                 </div>
                 <div className="space-y-2.5">
-                  {productMatches.map((match, index) => (
+                  {productMatches.map((match, index) => {
+                    const selected = Boolean(selectedMatchKey && productMatchKey(match) === selectedMatchKey);
+                    const displayName = productMatchDisplayName(match);
+                    return (
                     <button
                       key={`${match.company}-${match.productName}-${index}`}
                       type="button"
                       disabled={loading}
                       onClick={() => onSelectMatch(match)}
-                      className="block w-full rounded-[18px] border border-[#DDE8F5] bg-white p-3.5 text-left shadow-[0_14px_30px_-28px_rgba(15,23,42,0.35)] transition hover:border-blue-200 hover:bg-[#F8FBFF] active:scale-[0.99] disabled:opacity-60"
+                      className={[
+                        'block w-full rounded-[18px] border p-3.5 text-left shadow-[0_14px_30px_-28px_rgba(15,23,42,0.35)] transition active:scale-[0.99] disabled:opacity-60',
+                        selected
+                          ? 'border-amber-300 bg-amber-50/80 hover:border-amber-300'
+                          : 'border-[#DDE8F5] bg-white hover:border-blue-200 hover:bg-[#F8FBFF]',
+                      ].join(' ')}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-[11px] font-black text-blue-600">{match.company}</p>
-                          <h4 className="mt-1 break-words text-sm font-black leading-6 text-slate-950">{match.productName}</h4>
+                          <h4 className="mt-1 break-words text-sm font-black leading-6 text-slate-950">{displayName}</h4>
                           <p className="mt-1 break-words text-xs font-semibold leading-5 text-slate-500">
                             {match.bestSource?.title || match.title || match.matchReason}
                           </p>
                         </div>
-                        <span className="shrink-0 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700">
-                          {Math.round(match.score * 100)}%
-                        </span>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700">
+                            {Math.round(match.score * 100)}%
+                          </span>
+                          {selected ? (
+                            <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-black text-amber-700">
+                              已选择
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                       <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-black text-slate-400">
                         <span className="rounded-full bg-slate-50 px-2 py-1">{match.matchReason}</span>
-                        <span className="rounded-full bg-slate-50 px-2 py-1">{match.evidenceLabel}</span>
+                        <span className="rounded-full bg-slate-50 px-2 py-1">{sourceKindLabel(match.sourceKind)}</span>
+                        <span className={`rounded-full px-2 py-1 ${
+                          isExternalReferenceMatch(match)
+                            ? 'bg-amber-50 text-amber-700'
+                            : match.sourceKind === 'customer_policy_terms'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-slate-50'
+                        }`}>
+                          {match.verificationLabel || match.bestSource?.verificationLabel || match.evidenceLabel}
+                        </span>
                         <span className="rounded-full bg-slate-50 px-2 py-1">{match.sourceCount} 份资料</span>
                       </div>
+                      {isExternalReferenceMatch(match) ? (
+                        <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-black leading-5 text-amber-700">
+                          {selected ? '已选择为待核实建档线索；' : ''}非官方资料，待保险公司确认；可生成待核实责任，不作为正式理赔依据。
+                        </p>
+                      ) : null}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             ) : null}
@@ -392,7 +484,7 @@ export function ResponsibilityAssistant(props: {
                   className="flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-white text-sm font-black text-blue-700 shadow-sm transition hover:bg-blue-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-55"
                 >
                   {loading ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />}
-                  查找更多保单
+                  联网查找候选
                 </button>
               </section>
             ) : null}
@@ -502,6 +594,13 @@ export function ResponsibilityAssistant(props: {
                       </section>
                     ) : null}
                   </div>
+                ) : shouldShowOfficialResponsibilityTextFallback ? (
+                  <article className="rounded-[18px] border border-[#DDE8F5] bg-[#F8FBFF] p-3.5">
+                    <h4 className="text-sm font-black text-slate-950">保险责任正文</h4>
+                    <p className="mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">
+                      {officialResponsibilityText}
+                    </p>
+                  </article>
                 ) : customerSummaryMessage ? (
                   <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
                     {customerSummaryMessage}
@@ -514,7 +613,7 @@ export function ResponsibilityAssistant(props: {
                   </div>
                 ) : localSearched ? (
                   <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
-                    本地库未找到匹配产品
+                    未找到匹配产品，请核对合同条款名称
                   </div>
                 ) : (
                   <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
@@ -524,7 +623,7 @@ export function ResponsibilityAssistant(props: {
               </div>
             </section>
 
-            {officialResponsibilityText ? (
+            {officialResponsibilityText && !shouldShowOfficialResponsibilityTextFallback ? (
               <section className="mt-4">
                 <details className="group rounded-[18px] border border-slate-200 bg-slate-50">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 text-sm font-black text-slate-950 [&::-webkit-details-marker]:hidden">
@@ -557,7 +656,15 @@ export function ResponsibilityAssistant(props: {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="min-w-0 truncate font-black text-slate-700">{source.title || source.url}</span>
-                        <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 font-black text-blue-700">{source.evidenceLabel || (source.official ? '官方资料' : '资料')}</span>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 font-black ${
+                          source.referenceOnly || source.verificationStatus === 'pending_review'
+                            ? 'bg-amber-50 text-amber-700'
+                            : source.sourceKind === 'customer_policy_terms'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-blue-50 text-blue-700'
+                        }`}>
+                          {source.verificationLabel || source.evidenceLabel || (source.official ? '官方资料' : '资料')}
+                        </span>
                       </div>
                       <p className="mt-1 truncate font-medium text-slate-400">{source.url}</p>
                     </a>

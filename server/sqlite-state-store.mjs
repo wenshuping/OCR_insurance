@@ -1562,6 +1562,131 @@ function upsertIndicatorUpdateBatchRow(db, row = {}) {
   return batch;
 }
 
+function upsertKnowledgeRecordRow(db, row = {}) {
+  const record = normalizeKnowledgeRecord(row);
+  if (!record?.id) return null;
+  db.prepare(`
+    INSERT INTO knowledge_records (id, company, product_name, url, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      company = excluded.company,
+      product_name = excluded.product_name,
+      url = excluded.url,
+      payload = excluded.payload
+  `).run(
+    Number(record.id),
+    String(record.company || ''),
+    String(record.productName || record.title || ''),
+    String(record.url || ''),
+    jsonPayload(record),
+  );
+  return record;
+}
+
+function upsertInsuranceIndicatorRecordRow(db, row = {}) {
+  const id = String(row?.id || '').trim();
+  if (!id) return null;
+  db.prepare(`
+    INSERT INTO insurance_indicator_records (id, company, product_name, coverage_type, liability, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      company = excluded.company,
+      product_name = excluded.product_name,
+      coverage_type = excluded.coverage_type,
+      liability = excluded.liability,
+      payload = excluded.payload
+  `).run(
+    id,
+    String(row.company || ''),
+    String(row.productName || ''),
+    String(row.coverageType || ''),
+    String(row.liability || ''),
+    jsonPayload(row),
+  );
+  return row;
+}
+
+function normalizedProductResponsibilityCardRow(row = {}) {
+  const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload) ? row.payload : row;
+  const id = String(row.id || payload.id || '').trim();
+  const productKey = String(row.productKey || payload.productKey || '').trim();
+  if (!id || !productKey) return null;
+  return {
+    id,
+    productKey,
+    company: String(row.company || payload.company || '').trim(),
+    productName: String(row.productName || payload.productName || payload.product_name || '').trim(),
+    title: String(row.title || payload.title || '').trim(),
+    category: String(row.category || payload.category || '').trim(),
+    cashflowTreatment: String(row.cashflowTreatment || payload.cashflowTreatment || '').trim(),
+    calculationStatus: String(row.calculationStatus || payload.calculationStatus || '').trim(),
+    calculationReason: String(row.calculationReason || payload.calculationReason || '').trim(),
+    responsibilityScope: String(row.responsibilityScope || payload.responsibilityScope || '').trim(),
+    selectionStatus: String(row.selectionStatus || payload.selectionStatus || '').trim(),
+    sourceUrl: String(row.sourceUrl || payload.sourceUrl || '').trim(),
+    generatedAt: String(row.generatedAt || payload.generatedAt || '').trim(),
+    updatedAt: String(row.updatedAt || payload.updatedAt || '').trim(),
+    payload,
+  };
+}
+
+function upsertProductResponsibilityCardRow(db, row = {}) {
+  const card = normalizedProductResponsibilityCardRow(row);
+  if (!card) return null;
+  db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id,
+      product_key,
+      company,
+      product_name,
+      title,
+      category,
+      cashflow_treatment,
+      calculation_status,
+      calculation_reason,
+      responsibility_scope,
+      selection_status,
+      source_url,
+      generated_at,
+      updated_at,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      product_key = excluded.product_key,
+      company = excluded.company,
+      product_name = excluded.product_name,
+      title = excluded.title,
+      category = excluded.category,
+      cashflow_treatment = excluded.cashflow_treatment,
+      calculation_status = excluded.calculation_status,
+      calculation_reason = excluded.calculation_reason,
+      responsibility_scope = excluded.responsibility_scope,
+      selection_status = excluded.selection_status,
+      source_url = excluded.source_url,
+      generated_at = excluded.generated_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(
+    card.id,
+    card.productKey,
+    card.company,
+    card.productName,
+    card.title,
+    card.category,
+    card.cashflowTreatment,
+    card.calculationStatus,
+    card.calculationReason,
+    card.responsibilityScope,
+    card.selectionStatus,
+    card.sourceUrl,
+    card.generatedAt,
+    card.updatedAt,
+    jsonPayload(card.payload),
+  );
+  return card;
+}
+
 function deleteSession(db, token) {
   const value = String(token || '').trim();
   if (!value) return;
@@ -2557,6 +2682,64 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return target;
   }
 
+  async function persistResponsibilityLookupArtifacts({
+    state,
+    knowledgeRecords = [],
+    indicatorRecords = [],
+    responsibilityCards = [],
+  } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    const normalizedKnowledgeRecords = [];
+    for (const rawRecord of normalizeArray(knowledgeRecords)) {
+      const record = normalizeKnowledgeRecord(rawRecord);
+      if (!record) continue;
+      if (!record.id) {
+        record.id = Number(nextState.nextId || 1);
+        nextState.nextId = record.id + 1;
+      }
+      normalizedKnowledgeRecords.push(record);
+    }
+    const normalizedIndicatorRecords = normalizeArray(indicatorRecords)
+      .filter((record) => String(record?.id || '').trim());
+    const normalizedCardRows = normalizeArray(responsibilityCards)
+      .map((row) => normalizedProductResponsibilityCardRow(row))
+      .filter(Boolean);
+    const cardProductKeys = Array.from(new Set(normalizedCardRows.map((row) => row.productKey).filter(Boolean)));
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const record of normalizedKnowledgeRecords) upsertKnowledgeRecordRow(db, record);
+      for (const record of normalizedIndicatorRecords) upsertInsuranceIndicatorRecordRow(db, record);
+      for (const productKey of cardProductKeys) {
+        db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ?').run(productKey);
+      }
+      for (const row of normalizedCardRows) upsertProductResponsibilityCardRow(db, row);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') {
+      state.knowledgeRecords = loadPayloadRows(db, 'knowledge_records', 'id ASC')
+        .map((record) => normalizeKnowledgeRecord(record))
+        .filter(Boolean);
+      state.insuranceIndicatorRecords = loadPayloadRows(
+        db,
+        'insurance_indicator_records',
+        'product_name ASC, coverage_type ASC, liability ASC, id ASC',
+      );
+      state.nextId = resolveNextId({ ...state, nextId: nextState.nextId });
+    }
+    return {
+      knowledgeRecordCount: normalizedKnowledgeRecords.length,
+      indicatorRecordCount: normalizedIndicatorRecords.length,
+      responsibilityCardCount: normalizedCardRows.length,
+      productKeys: cardProductKeys,
+    };
+  }
+
   async function load() {
     if (!getMeta(db, 'state_initialized_at')) {
       const seedState = await loadSeedState();
@@ -2599,6 +2782,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
     recordIndicatorUpdateBatch,
+    persistResponsibilityLookupArtifacts,
     close,
   };
 }

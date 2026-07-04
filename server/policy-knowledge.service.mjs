@@ -3,6 +3,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+import {
+  CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
+  CUSTOMER_POLICY_PHOTO_REVIEWED_EVIDENCE_LEVEL,
+  CUSTOMER_POLICY_PHOTO_SOURCE_KIND,
+  CUSTOMER_POLICY_TERMS_EVIDENCE_LABEL,
+  CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL,
+  CUSTOMER_POLICY_TERMS_SOURCE_KIND,
+  EXTERNAL_REFERENCE_EVIDENCE_LABEL,
+  EXTERNAL_REFERENCE_EVIDENCE_LEVEL,
+  REGULATORY_INDUSTRY_TERMS_EVIDENCE_LABEL,
+  REGULATORY_INDUSTRY_TERMS_EVIDENCE_LEVEL,
+  evidenceVerificationFields,
+  isFormalResponsibilityEvidence,
+  withEvidenceVerificationFields,
+} from './evidence-classification.service.mjs';
 
 const NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
   'https://www.newchinalife.com/info/4596',
@@ -11,10 +26,79 @@ const NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
 const MAX_KNOWLEDGE_PAGE_TEXT_CHARS = 12000;
 const MAX_KNOWLEDGE_PDF_BYTES = 1_500_000;
 const DEFAULT_MAX_KNOWLEDGE_RESULTS = 5;
+const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+const DEFAULT_OPEN_WEB_SEARCH_MODEL = 'deepseek-v4-flash';
+const DEFAULT_OPEN_WEB_SEARCH_TIMEOUT_MS = 12_000;
+export const JRCPCX_TERMS_EVIDENCE_LABEL = REGULATORY_INDUSTRY_TERMS_EVIDENCE_LABEL;
+export const JRCPCX_TERMS_EVIDENCE_LEVEL = REGULATORY_INDUSTRY_TERMS_EVIDENCE_LEVEL;
+export const JRCPCX_OFFICIAL_DOMAIN = 'inspdinfo.iachina.cn';
+export const LEGACY_EXTERNAL_REFERENCE_LABEL = EXTERNAL_REFERENCE_EVIDENCE_LABEL;
+export const LEGACY_EXTERNAL_REFERENCE_LEVEL = EXTERNAL_REFERENCE_EVIDENCE_LEVEL;
+export {
+  CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
+  CUSTOMER_POLICY_PHOTO_REVIEWED_EVIDENCE_LEVEL,
+  CUSTOMER_POLICY_PHOTO_SOURCE_KIND,
+  CUSTOMER_POLICY_TERMS_EVIDENCE_LABEL,
+  CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL,
+  CUSTOMER_POLICY_TERMS_SOURCE_KIND,
+};
+const JRCPCX_QUERY_URL = 'https://www.jrcpcx.cn/#/query';
+const EXTERNAL_REFERENCE_SOURCE_KINDS = new Set(['legacy_external_reference', 'open_web_reference', CUSTOMER_POLICY_PHOTO_SOURCE_KIND]);
+const LEGACY_EXTERNAL_PRODUCT_REFERENCES = [
+  {
+    company: '中国人寿',
+    productName: '潇洒明天（历史老产品）',
+    aliases: ['潇洒明天', '中国人寿潇洒明天', '国寿潇洒明天', '潇洒明天97版', '潇洒明天98版'],
+    sources: [
+      {
+        title: '中国人寿潇洒明天 - 金投网',
+        url: 'https://insurance.cngold.org/jczs/c3246186.html',
+        snippet: '第三方网页称“潇洒明天”是一份增额终身人寿保险：生命保障在基本保额基础上每年按保额5%增长；每3年领取保额10%的生存金直至终身；生存金可选择累积，早期版本累积利率8%，后续版本调整为6点5%。',
+      },
+      {
+        title: '人寿保险潇洒明天险种 - 深蓝保',
+        url: 'https://www.shenlanbao.com/he/1608721',
+        snippet: '第三方保险内容站提及“潇洒明天”相关老产品信息：保障与储蓄并存，包含身故保险金和生存保险金等责任线索；需以保险公司确认或补发合同为准。',
+      },
+    ],
+  },
+];
+const FALLBACK_OPEN_WEB_REFERENCE_DOMAINS = [
+  'e-chinalife.com',
+  'chinalife.com.cn',
+  'jrcpcx.cn',
+  'iachina.cn',
+  'nfra.gov.cn',
+  'insurance.cngold.org',
+  'shenlanbao.com',
+  'xiangrikui.com',
+  'zhihu.com',
+];
 const RESPONSIBILITY_MATERIAL_LABEL_PATTERN = /^(?:条款|保险条款|利益条款|产品说明书|产品说明)$/u;
 const EXCLUDED_MATERIAL_LABEL_PATTERN = /近三年|通知|费率表|现金价值表|账户价值|利益演示/u;
 const MATERIAL_KEYWORD_PATTERN = /保险条款|利益条款|产品说明书|产品说明|保险责任|责任免除|给付规则/u;
 const GENERIC_ENTRY_PATHS = ['', 'products', 'product', 'product-center', 'productService', 'info', 'public', 'disclosure'];
+const PRODUCT_IDENTITY_CODE_FIELDS = [
+  'planCode',
+  'productCode',
+  'product_code',
+  'riskCode',
+  'risk_code',
+  'industryCode',
+  'industry_code',
+];
+const PRODUCT_IDENTITY_URL_FIELDS = ['url', 'sourceUrl', 'detailUrl', 'clauseUrl', 'pdfOriginalUrl'];
+const PRODUCT_IDENTITY_URL_PARAMS = [
+  'planCode',
+  'productCode',
+  'product_code',
+  'riskCode',
+  'risk_code',
+  'industryCode',
+  'industry_code',
+];
+const PRODUCT_IDENTITY_LABEL_PATTERN = /(?:产品|险种|计划|条款|方案)(?:代码|编码|编号|code)[:：]?\s*([A-Za-z0-9][A-Za-z0-9_-]{1,23})/giu;
+const PARENTHETICAL_CODE_PATTERN = /[（(]\s*([A-Za-z0-9][A-Za-z0-9_-]{1,23})\s*[）)]/gu;
 const DEFAULT_SCRAPLING_PROJECT_DIR = '/Users/wenshuping/Documents/Scrapling';
 const DEFAULT_SCRAPLING_PYTHON_BIN = '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
 const SCRAPLING_OUTPUT_MARKER = '__POLICY_KNOWLEDGE_JSON__';
@@ -23,6 +107,114 @@ const SCRAPLING_CRAWLER_SCRIPT = path.join(__dirname, 'scrapling-policy-crawler.
 
 function trimString(value) {
   return String(value || '').trim();
+}
+
+function normalizeProductIdentityCode(value) {
+  const text = trimString(value)
+    .normalize('NFKC')
+    .replace(/\s+/gu, '')
+    .toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
+
+function addProductIdentityCode(codes, value) {
+  const code = normalizeProductIdentityCode(value);
+  if (code) codes.add(code);
+}
+
+function extractProductIdentityCodesFromUrl(urlValue = '') {
+  const codes = new Set();
+  try {
+    const url = new URL(trimString(urlValue));
+    for (const key of PRODUCT_IDENTITY_URL_PARAMS) {
+      addProductIdentityCode(codes, url.searchParams.get(key));
+    }
+  } catch {
+    return [];
+  }
+  return [...codes];
+}
+
+export function productIdentityCodesFromRecord(record = {}) {
+  const codes = new Set();
+  for (const field of PRODUCT_IDENTITY_CODE_FIELDS) {
+    addProductIdentityCode(codes, record?.[field]);
+  }
+  for (const field of PRODUCT_IDENTITY_URL_FIELDS) {
+    for (const code of extractProductIdentityCodesFromUrl(record?.[field])) {
+      codes.add(code);
+    }
+  }
+  return [...codes];
+}
+
+function productIdentityCodesFromText(value = '') {
+  const source = trimString(value).normalize('NFKC');
+  if (!source) return [];
+  const codes = new Set();
+  for (const match of source.matchAll(PRODUCT_IDENTITY_LABEL_PATTERN)) {
+    addProductIdentityCode(codes, match[1]);
+  }
+  for (const match of source.matchAll(PARENTHETICAL_CODE_PATTERN)) {
+    addProductIdentityCode(codes, match[1]);
+  }
+  return [...codes];
+}
+
+function mergeProductIdentityCodes(...groups) {
+  const codes = new Set();
+  for (const group of groups) {
+    for (const code of Array.isArray(group) ? group : []) {
+      addProductIdentityCode(codes, code);
+    }
+  }
+  return [...codes];
+}
+
+function isJrcpcxRecordLike(record = {}) {
+  const level = trimString(record.evidenceLevel || record.sourceLevel);
+  const target = [
+    record.url,
+    record.source,
+    record.sourceUrl,
+    record.detailUrl,
+    record.clauseUrl,
+    record.officialDomain,
+    record.parser,
+  ].map(trimString).join(' ');
+  return (
+    level === JRCPCX_TERMS_EVIDENCE_LEVEL ||
+    /(?:jrcpcx\.cn|inspdinfo\.iachina\.cn|iachina\.cn|jrcpcx_)/iu.test(target)
+  );
+}
+
+function normalizeKnowledgeSourceKind(record = {}) {
+  const value = trimString(record.sourceKind);
+  if (['local', 'insurer_official', 'jrcpcx', CUSTOMER_POLICY_TERMS_SOURCE_KIND, ...EXTERNAL_REFERENCE_SOURCE_KINDS].includes(value)) return value;
+  if (trimString(record.evidenceLevel || record.sourceLevel) === LEGACY_EXTERNAL_REFERENCE_LEVEL) return 'open_web_reference';
+  if (trimString(record.evidenceLevel || record.sourceLevel) === CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL) return CUSTOMER_POLICY_TERMS_SOURCE_KIND;
+  if (isJrcpcxRecordLike(record)) return 'jrcpcx';
+  return '';
+}
+
+export function sourceKindForKnowledgeRecord(record = {}) {
+  return normalizeKnowledgeSourceKind(record) || 'local';
+}
+
+export function isExternalReferenceSourceKind(sourceKind = '') {
+  return EXTERNAL_REFERENCE_SOURCE_KINDS.has(trimString(sourceKind));
+}
+
+function isApprovedCustomerPolicyPhotoRecord(record = {}) {
+  return (
+    trimString(record.sourceKind) === CUSTOMER_POLICY_PHOTO_SOURCE_KIND &&
+    trimString(record.reviewStatus) === 'approved' &&
+    record.globalSearchable === true
+  );
+}
+
+function compactKnowledgeText(value) {
+  return trimString(value).normalize('NFKC').replace(/\s+/gu, '');
 }
 
 function nowIso() {
@@ -288,6 +480,10 @@ function strictProductNameMatches(queryName = '', candidateName = '', company = 
   const candidate = normalizeStrictProductMatchText(candidateName, company);
   if (!query || !candidate) return false;
   return query === candidate;
+}
+
+export function isStrictPolicyProductMatch(queryName = '', candidateName = '', company = '') {
+  return strictProductNameMatches(queryName, candidateName, company);
 }
 
 function toCharSet(value = '') {
@@ -752,6 +948,563 @@ function runScraplingPolicyCrawler({ policy, officialDomainProfiles = [], timeou
   });
 }
 
+function runScraplingCrawlerPayload(payload = {}, { timeoutMs = 45_000 } = {}) {
+  const pythonBin = trimString(process.env.SCRAPLING_PYTHON_BIN) || DEFAULT_SCRAPLING_PYTHON_BIN;
+  const scraplingProjectDir = trimString(process.env.SCRAPLING_PROJECT_DIR) || DEFAULT_SCRAPLING_PROJECT_DIR;
+  return new Promise((resolve) => {
+    const child = spawn(pythonBin, [SCRAPLING_CRAWLER_SCRIPT], {
+      cwd: scraplingProjectDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (result = {}) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve(result && typeof result === 'object' ? result : {});
+    };
+    const timeoutId = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish({
+        ok: false,
+        code: 'SCRAPLING_TIMEOUT',
+        message: '外部查询超时，请稍后重试或人工核对条款名称。',
+      });
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk || '');
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk || '');
+      if (stderr.length > 20_000) stderr = stderr.slice(-20_000);
+    });
+    child.on('error', (error) => {
+      finish({
+        ok: false,
+        code: 'SCRAPLING_START_FAILED',
+        message: error?.message || '外部查询进程启动失败。',
+      });
+    });
+    child.on('close', () => {
+      const line = stdout
+        .split(/\r?\n/u)
+        .reverse()
+        .find((item) => item.includes(SCRAPLING_OUTPUT_MARKER));
+      if (!line) {
+        finish({
+          ok: false,
+          code: 'SCRAPLING_OUTPUT_MISSING',
+          message: stderr || '外部查询未返回可解析结果。',
+        });
+        return;
+      }
+      try {
+        finish(JSON.parse(line.slice(line.indexOf(SCRAPLING_OUTPUT_MARKER) + SCRAPLING_OUTPUT_MARKER.length)));
+      } catch (error) {
+        finish({
+          ok: false,
+          code: 'SCRAPLING_OUTPUT_INVALID',
+          message: error?.message || '外部查询结果解析失败。',
+        });
+      }
+    });
+    child.stdin.end(JSON.stringify(payload || {}));
+  });
+}
+
+function jrcpcxCandidateUrl(product = {}) {
+  const detailUrl = trimString(product.detailUrl);
+  if (detailUrl) return detailUrl;
+  const catalogId = trimString(product.catalogId || product.rowId || product.industryCode || product.productName);
+  if (!catalogId) return JRCPCX_QUERY_URL;
+  return `${JRCPCX_QUERY_URL}?catalogId=${encodeURIComponent(catalogId)}`;
+}
+
+export function jrcpcxProductCandidateRecord(product = {}, policy = {}) {
+  const productName = trimString(product.productName || product.name);
+  const company = trimString(product.deptName || product.company || policy.company);
+  const url = jrcpcxCandidateUrl(product);
+  if (!company || !productName || !url) return null;
+  const now = nowIso();
+  return normalizeKnowledgeRecord({
+    company,
+    productName,
+    productType: trimString(product.productType),
+    salesStatus: trimString(product.productState || product.salesStatus || product.status),
+    title: `${productName}条款`,
+    url,
+    source: trimString(product.source) || JRCPCX_QUERY_URL,
+    sourceUrl: trimString(product.source) || JRCPCX_QUERY_URL,
+    sourceKind: 'jrcpcx',
+    sourceLevel: JRCPCX_TERMS_EVIDENCE_LEVEL,
+    evidenceLabel: JRCPCX_TERMS_EVIDENCE_LABEL,
+    evidenceLevel: JRCPCX_TERMS_EVIDENCE_LEVEL,
+    official: true,
+    officialDomain: JRCPCX_OFFICIAL_DOMAIN,
+    sourceType: 'html',
+    materialType: 'terms',
+    parser: 'jrcpcx_insurance_catalog',
+    pageText: trimString(product.pageText),
+    snippet: trimString(product.snippet) || '金融产品查询平台收录的保险产品目录；需客户确认官方产品或条款名后再生成责任。',
+    industryCode: trimString(product.industryCode),
+    rowId: trimString(product.rowId || product.catalogId),
+    catalogStatus: trimString(product.productState || product.status),
+    qualityStatus: trimString(product.qualityStatus) || (trimString(product.pageText) ? 'valid_complete' : 'catalog_candidate'),
+    detailUrl: trimString(product.detailUrl),
+    clauseUrl: trimString(product.clauseUrl),
+    detailFields: product.detail && typeof product.detail === 'object' && !Array.isArray(product.detail) ? product.detail : undefined,
+    discoveredAt: now,
+    lastFetchedAt: now,
+    updatedAt: now,
+  });
+}
+
+export function jrcpcxSourceReviewMessage(result = {}) {
+  const code = trimString(result.code);
+  const message = trimString(result.message);
+  if (/ECONNREFUSED|connect_over_cdp|Traceback|SCRAPLING_OUTPUT_MISSING|127\.0\.0\.1:9224/iu.test(`${code}\n${message}`)) {
+    return '金融产品查询平台浏览器未连接或需要人工验证，请稍后重试，或核对合同条款名称/上传条款页。';
+  }
+  return message || '金融产品查询平台需要人工验证或暂时不可用，请核对合同条款名称/上传条款页。';
+}
+
+function parseJsonObject(value, fallback = {}) {
+  const raw = trimString(value);
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/u);
+    if (!match) return fallback;
+    try {
+      const parsed = JSON.parse(match[0]);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+}
+
+function uniqueTrimmed(values = [], limit = 8) {
+  const seen = new Set();
+  const result = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const item = trimString(value);
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function fallbackOpenWebSearchPlan(policy = {}) {
+  const company = trimString(policy.company);
+  const productName = trimString(policy.name || policy.productName);
+  const queryBase = [company, productName].filter(Boolean).join(' ');
+  return {
+    queries: uniqueTrimmed([
+      `${queryBase} 保险 条款`,
+      `${queryBase} 产品 责任`,
+      `${queryBase} 老产品`,
+      `${queryBase} 保单`,
+    ], 6),
+    preferredDomains: FALLBACK_OPEN_WEB_REFERENCE_DOMAINS,
+    source: 'fallback',
+  };
+}
+
+function normalizeOpenWebSearchPlan(plan = {}, policy = {}) {
+  const fallback = fallbackOpenWebSearchPlan(policy);
+  const queries = uniqueTrimmed([
+    ...(Array.isArray(plan.queries) ? plan.queries.map((item) => (typeof item === 'string' ? item : item?.query)) : []),
+    ...fallback.queries,
+  ], 8);
+  const preferredDomains = uniqueTrimmed([
+    ...(Array.isArray(plan.preferredDomains) ? plan.preferredDomains : []),
+    ...(Array.isArray(plan.domains) ? plan.domains : []),
+    ...fallback.preferredDomains,
+  ], 12).map(normalizeOfficialDomain).filter(Boolean);
+  return {
+    queries,
+    preferredDomains,
+    source: trimString(plan.source) || 'deepseek',
+  };
+}
+
+export async function callDeepSeekForOpenWebSearchPlan({
+  policy = {},
+  env = process.env,
+  fetchImpl = fetch,
+  timeoutMs = DEFAULT_OPEN_WEB_SEARCH_TIMEOUT_MS,
+} = {}) {
+  const apiKey = trimString(env.DEEPSEEK_API_KEY);
+  if (!apiKey) return fallbackOpenWebSearchPlan(policy);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), Math.max(3000, timeoutMs));
+  try {
+    const baseUrl = trimString(env.DEEPSEEK_BASE_URL) || DEFAULT_DEEPSEEK_BASE_URL;
+    const model = trimString(env.DEEPSEEK_OPEN_WEB_SEARCH_MODEL || env.DEEPSEEK_MODEL) || DEFAULT_OPEN_WEB_SEARCH_MODEL;
+    const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        max_tokens: 700,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              '你是保险产品公开资料搜索规划器，只返回 JSON。',
+              '目标：为后端生成搜索关键词和可优先查看的域名，不要编造搜索结果。',
+              '优先级：保险公司官网/官方披露页、金融产品查询平台或行业协会、监管机构；之后才是第三方保险网站、问答、新闻。',
+              '第三方网页只能作为“非官方资料，待保险公司确认”的线索。',
+              'JSON 格式：{"queries":["..."],"preferredDomains":["..."],"reason":"..."}',
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: `保险公司：${trimString(policy.company)}\n客户输入产品名：${trimString(policy.name || policy.productName)}\n请给 3-6 个中文搜索关键词和 5-10 个优先域名。`,
+          },
+        ],
+      }),
+    });
+    if (!response.ok) return fallbackOpenWebSearchPlan(policy);
+    const payload = await response.json().catch(() => ({}));
+    const content = trimString(payload?.choices?.[0]?.message?.content);
+    return normalizeOpenWebSearchPlan(parseJsonObject(content, {}), policy);
+  } catch {
+    return fallbackOpenWebSearchPlan(policy);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function normalizeSearchResultUrl(href = '') {
+  const raw = decodeHtmlEntities(trimString(href));
+  if (!raw) return '';
+  const absolute = raw.startsWith('//') ? `https:${raw}` : raw;
+  try {
+    const url = new URL(absolute);
+    const redirected = trimString(url.searchParams.get('uddg'));
+    if (/duckduckgo\.com$/u.test(url.hostname) && redirected) return redirected;
+    return url.toString();
+  } catch {
+    return absolute;
+  }
+}
+
+function parseDuckDuckGoResults(html = '', policy = {}, maxResults = 8) {
+  const blocks = Array.from(String(html || '').matchAll(/<div class="result[\s\S]*?(?=<div class="result|<\/body>|$)/gu)).map((match) => match[0]);
+  const productName = normalizeComparableFact(policy.name || policy.productName);
+  const results = [];
+  for (const block of blocks) {
+    const linkMatch = block.match(/<a\s+[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/u)
+      || block.match(/<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/u);
+    if (!linkMatch) continue;
+    const url = normalizeSearchResultUrl(linkMatch[1]);
+    const title = stripHtml(linkMatch[2]);
+    const snippetMatch = block.match(/<a\s+[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/u)
+      || block.match(/<div\s+[^>]*class="[^"]*snippet[^"]*"[^>]*>([\s\S]*?)<\/div>/u);
+    const snippet = stripHtml(snippetMatch?.[1] || title);
+    const relevanceText = normalizeComparableFact(`${title} ${snippet} ${url}`);
+    if (!url || !title || (productName && !relevanceText.includes(productName))) continue;
+    results.push({ title, url, snippet });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
+function parseBaiduResults(html = '', policy = {}, maxResults = 8) {
+  const blocks = Array.from(String(html || '').matchAll(/<div[^>]+(?:result|c-container)[^>]*>[\s\S]*?(?=<div[^>]+(?:result|c-container)|<\/body>|$)/giu)).map((match) => match[0]);
+  const productName = normalizeComparableFact(policy.name || policy.productName);
+  const results = [];
+  for (const block of blocks) {
+    const linkMatch = block.match(/<h3[^>]*>[\s\S]*?<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/iu)
+      || block.match(/<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/iu);
+    if (!linkMatch) continue;
+    const url = normalizeSearchResultUrl(linkMatch[1]);
+    const title = stripHtml(linkMatch[2]);
+    const snippetMatch = block.match(/<(?:div|span)[^>]+class="[^"]*(?:c-abstract|content-right|result-desc)[^"]*"[^>]*>([\s\S]*?)<\/(?:div|span)>/iu);
+    const snippet = stripHtml(snippetMatch?.[1] || title);
+    const relevanceText = normalizeComparableFact(`${title} ${snippet} ${url}`);
+    if (!url || !title || !/^https?:\/\//iu.test(url) || (productName && !relevanceText.includes(productName))) continue;
+    results.push({ title, url, snippet });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
+function searchQueriesFromPlan(plan = {}) {
+  const queries = [];
+  for (const query of plan.queries || []) {
+    queries.push(query);
+    for (const domain of (plan.preferredDomains || []).slice(0, 4)) {
+      queries.push(`${query} site:${domain}`);
+    }
+  }
+  return uniqueTrimmed(queries, 12);
+}
+
+async function fetchOpenWebSearchResults({ plan, policy, fetchImpl = fetch, timeoutMs = DEFAULT_OPEN_WEB_SEARCH_TIMEOUT_MS, maxResults = 8 } = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), Math.max(3000, timeoutMs));
+  const results = [];
+  const seen = new Set();
+  const engines = [
+    { baseUrl: 'https://duckduckgo.com/html/', param: 'q', parse: parseDuckDuckGoResults },
+    { baseUrl: 'https://www.baidu.com/s', param: 'wd', parse: parseBaiduResults },
+  ];
+  try {
+    for (const query of searchQueriesFromPlan(plan)) {
+      for (const engine of engines) {
+        if (results.length >= maxResults) break;
+        try {
+          const url = new URL(engine.baseUrl);
+          url.searchParams.set(engine.param, query);
+          if (engine.param !== 'q') url.searchParams.set('q', query);
+          const response = await fetchImpl(url, {
+            method: 'GET',
+            signal: controller.signal,
+            headers: {
+              'User-Agent': 'Mozilla/5.0',
+              Accept: 'text/html,application/xhtml+xml',
+            },
+          });
+          if (!response.ok) continue;
+          for (const result of engine.parse(await response.text(), policy, maxResults)) {
+            const key = trimString(result.url);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            results.push(result);
+            if (results.length >= maxResults) break;
+          }
+        } catch {
+          continue;
+        }
+      }
+      if (results.length >= maxResults) break;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  return results;
+}
+
+function openWebReferenceRecordFromSearchResult(result = {}, policy = {}, officialDomainProfiles = []) {
+  const url = trimString(result.url);
+  const company = trimString(policy.company);
+  const productName = trimString(policy.name || policy.productName);
+  if (!url || !company || !productName) return null;
+  const sourceKind = isJrcpcxRecordLike({ url }) ? 'jrcpcx' : isOfficialUrl(url, policy, officialDomainProfiles) ? 'insurer_official' : 'open_web_reference';
+  const official = sourceKind !== 'open_web_reference';
+  const jrcpcx = sourceKind === 'jrcpcx';
+  return normalizeKnowledgeRecord({
+    company,
+    productName,
+    title: trimString(result.title) || `${productName}公开网页线索`,
+    url,
+    snippet: trimString(result.snippet) || '公开网页搜索结果；需保险公司确认后再使用责任信息。',
+    pageText: trimString(result.pageText),
+    sourceType: trimString(result.sourceType) || resolveSourceType(url),
+    materialType: official ? classifyMaterialType(`${result.title} ${url}`) : 'external_reference',
+    official,
+    sourceKind,
+    evidenceLabel: jrcpcx ? JRCPCX_TERMS_EVIDENCE_LABEL : official ? '保险公司官方资料' : LEGACY_EXTERNAL_REFERENCE_LABEL,
+    evidenceLevel: jrcpcx ? JRCPCX_TERMS_EVIDENCE_LEVEL : official ? 'insurer_official' : LEGACY_EXTERNAL_REFERENCE_LEVEL,
+    qualityStatus: official ? 'search_candidate' : 'external_reference_only',
+    qualityReason: official ? '开放网页搜索发现的强来源候选。' : '开放网页搜索发现的非官方线索，仅作建档和核实提示。',
+    responsibilityDeferred: !official,
+    parser: 'deepseek_planned_open_web_search',
+  });
+}
+
+export async function crawlOpenWebProductReferenceRecords({
+  policy = {},
+  maxResults = 8,
+  fetchImpl = fetch,
+  officialDomainProfiles = [],
+  searchPlan,
+  timeoutMs = DEFAULT_OPEN_WEB_SEARCH_TIMEOUT_MS,
+} = {}) {
+  const productName = trimString(policy.name || policy.productName);
+  if (!trimString(policy.company) || !productName) return { status: 'not_found', records: [], message: '请补充保险公司和产品名称。' };
+  const plan = normalizeOpenWebSearchPlan(searchPlan || await callDeepSeekForOpenWebSearchPlan({ policy, fetchImpl, timeoutMs }), policy);
+  const results = await fetchOpenWebSearchResults({
+    plan,
+    policy,
+    fetchImpl,
+    timeoutMs,
+    maxResults: Math.max(3, Math.min(20, maxResults * 2)),
+  });
+  const records = [];
+  const seen = new Set();
+  for (const result of results) {
+    const fetched = await fetchMaterialPageText({
+      url: result.url,
+      policy,
+      fetchImpl,
+      signal: undefined,
+    });
+    const record = openWebReferenceRecordFromSearchResult(
+      {
+        ...result,
+        pageText: fetched.pageText,
+        sourceType: fetched.sourceType,
+      },
+      policy,
+      officialDomainProfiles,
+    );
+    if (!record) continue;
+    const key = `${record.company}\u001f${record.productName}\u001f${record.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    records.push(record);
+    if (records.length >= maxResults) break;
+  }
+  if (!records.length) {
+    return {
+      status: 'not_found',
+      records: [],
+      message: '开放网页未找到可建档线索；请尝试合同上的完整条款名称、保单号，或联系保险公司核实。',
+      plan,
+    };
+  }
+  return {
+    status: 'candidates',
+    records,
+    message: records.some((record) => record.sourceKind === 'open_web_reference')
+      ? '已按 DeepSeek 搜索计划找到开放网页线索；非官方资料需保险公司确认后再使用责任信息。'
+      : '已按 DeepSeek 搜索计划找到强来源候选，请确认官方产品或条款名。',
+    plan,
+  };
+}
+
+export function legacyExternalProductReferenceRecords({ policy = {} } = {}) {
+  const inputCompany = trimString(policy.company);
+  const inputName = compactKnowledgeText(policy.name || policy.productName);
+  if (!inputCompany || !inputName) return [];
+  const records = [];
+  for (const item of LEGACY_EXTERNAL_PRODUCT_REFERENCES) {
+    const companyMatchesInput = companiesMatch(inputCompany, item.company, []) || compactKnowledgeText(inputCompany).includes(compactKnowledgeText(item.company));
+    if (!companyMatchesInput) continue;
+    const aliases = [item.productName, ...(Array.isArray(item.aliases) ? item.aliases : [])];
+    const aliasMatched = aliases.some((alias) => {
+      const normalized = compactKnowledgeText(alias);
+      return normalized && (normalized.includes(inputName) || inputName.includes(normalized));
+    });
+    if (!aliasMatched) continue;
+    for (const source of item.sources || []) {
+      const record = normalizeKnowledgeRecord({
+        company: item.company,
+        productName: item.productName,
+        title: trimString(source.title) || `${item.productName}外部线索`,
+        url: trimString(source.url),
+        snippet: trimString(source.snippet) || '第三方公开网页线索；需保险公司确认后再使用责任信息。',
+        pageText: '',
+        sourceType: 'html',
+        materialType: 'external_reference',
+        official: false,
+        sourceKind: 'legacy_external_reference',
+        evidenceLabel: LEGACY_EXTERNAL_REFERENCE_LABEL,
+        evidenceLevel: LEGACY_EXTERNAL_REFERENCE_LEVEL,
+        qualityStatus: 'legacy_reference_only',
+        qualityReason: '历史老产品公开渠道未找到官方条款 PDF，仅作建档线索。',
+        responsibilityDeferred: true,
+        parser: 'legacy_external_reference_seed',
+      });
+      if (record) records.push(record);
+    }
+  }
+  return records;
+}
+
+export async function crawlJrcpcxProductCandidateRecords({ policy = {}, maxResults = 8, timeoutMs = 30_000 } = {}) {
+  const productName = trimString(policy.name || policy.productName);
+  if (!productName) {
+    return {
+      status: 'not_found',
+      records: [],
+      message: '请核对合同条款名称/险种名称，或上传条款页。',
+    };
+  }
+  const pageSize = Math.max(10, Math.min(50, Number(maxResults || 8) * 2));
+  const result = await runScraplingCrawlerPayload(
+    {
+      mode: 'jrcpcx_insurance_catalog_ui',
+      cdpUrl: trimString(process.env.JRCPCX_CDP_URL) || 'http://127.0.0.1:9224',
+      waitMs: Math.max(5000, Math.min(timeoutMs - 1000, 20_000)),
+      pageSize,
+      maxPages: 1,
+      fetchDetailLinks: '1',
+      extractResponsibility: '0',
+      queries: [
+        {
+          productName,
+          productTypeLabel: '全部',
+          productTermLabel: '全部',
+          productStateLabel: '全部',
+        },
+      ],
+    },
+    { timeoutMs: Math.max(8000, timeoutMs) },
+  );
+  const products = Array.isArray(result.products) ? result.products : [];
+  const rawRecords = Array.isArray(result.records) ? result.records : [];
+  const records = [
+    ...rawRecords.map((record) => normalizeKnowledgeRecord({
+      ...record,
+      sourceKind: 'jrcpcx',
+      evidenceLabel: JRCPCX_TERMS_EVIDENCE_LABEL,
+      evidenceLevel: JRCPCX_TERMS_EVIDENCE_LEVEL,
+    })).filter(Boolean),
+    ...products.map((product) => jrcpcxProductCandidateRecord(product, policy)).filter(Boolean),
+  ];
+  const deduped = [];
+  const seen = new Set();
+  for (const record of records) {
+    const key = `${record.company}\u001f${record.productName}\u001f${record.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(record);
+  }
+  if (deduped.length) {
+    return {
+      status: 'candidates',
+      records: deduped,
+      message: '已从金融产品查询平台找到候选产品，请确认官方产品或条款名。',
+      raw: result,
+    };
+  }
+  if (result.ok === false || result.partial || ['JRCPCX_VERIFICATION_REQUIRED', 'JRCPCX_QUERY_BUTTON_DISABLED', 'SCRAPLING_TIMEOUT'].includes(trimString(result.code))) {
+    return {
+      status: 'source_review_required',
+      records: [],
+      code: trimString(result.code) || 'JRCPCX_REVIEW_REQUIRED',
+      message: jrcpcxSourceReviewMessage(result),
+      raw: result,
+    };
+  }
+  return {
+    status: 'not_found',
+    records: [],
+    message: '请核对保险合同上的具体条款名称/险种名称，或上传条款页。',
+    raw: result,
+  };
+}
+
 async function parseNewChinaKnowledge({ policy, officialDomainProfiles, fetchImpl, signal } = {}) {
   if (!isNewChinaPolicy(policy)) return [];
   const productName = trimString(policy.name || policy.productName);
@@ -907,7 +1660,18 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
   if (!url || !company || !productName) return null;
   const now = nowIso();
   const policy = { company, name: productName };
-  return {
+  const jrcpcxRecord = isJrcpcxRecordLike(record);
+  const sourceLevel = trimString(record.sourceLevel);
+  const sourceKind = normalizeKnowledgeSourceKind(record);
+  const customerPolicyPhoto = sourceKind === CUSTOMER_POLICY_PHOTO_SOURCE_KIND;
+  const customerPolicyTerms = sourceKind === CUSTOMER_POLICY_TERMS_SOURCE_KIND;
+  const reviewStatus = trimString(record.reviewStatus) || (customerPolicyPhoto ? 'pending' : customerPolicyTerms ? 'approved' : '');
+  const globalSearchable = customerPolicyPhoto
+    ? record.globalSearchable === true
+    : customerPolicyTerms
+      ? record.globalSearchable !== false
+      : Boolean(record.globalSearchable);
+  const normalized = {
     id: record.id,
     company,
     productName,
@@ -919,14 +1683,21 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     pageText: trimString(record.pageText),
     sourceType: trimString(record.sourceType) || resolveSourceType(url),
     materialType: trimString(record.materialType) || classifyMaterialType(`${record.title} ${url}`),
-    official: record.official === undefined ? isOfficialUrl(url, policy, officialDomainProfiles) : Boolean(record.official),
-    evidenceLabel: trimString(record.evidenceLabel) || '本地知识库官方资料',
-    evidenceLevel: trimString(record.evidenceLevel) || 'insurer_official',
-    officialDomain: trimString(record.officialDomain) || resolveOfficialDomain(url, officialDomainProfiles),
+    official: customerPolicyTerms ? true : (record.official === undefined ? isOfficialUrl(url, policy, officialDomainProfiles) : Boolean(record.official)),
+    evidenceLabel: trimString(record.evidenceLabel) || (customerPolicyTerms ? CUSTOMER_POLICY_TERMS_EVIDENCE_LABEL : customerPolicyPhoto ? '客户上传保单照片（待审核）' : jrcpcxRecord ? JRCPCX_TERMS_EVIDENCE_LABEL : '本地知识库官方资料'),
+    evidenceLevel: trimString(record.evidenceLevel) || sourceLevel || (customerPolicyTerms ? CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL : customerPolicyPhoto ? CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL : jrcpcxRecord ? JRCPCX_TERMS_EVIDENCE_LEVEL : 'insurer_official'),
+    sourceLevel,
+    sourceKind,
+    officialDomain: trimString(record.officialDomain) || (jrcpcxRecord ? JRCPCX_OFFICIAL_DOMAIN : resolveOfficialDomain(url, officialDomainProfiles)),
+    sourceUrl: trimString(record.sourceUrl || record.source),
     parser: trimString(record.parser),
     extractionMethod: trimString(record.extractionMethod),
     planCode: trimString(record.planCode),
+    productCode: trimString(record.productCode || record.product_code),
+    riskCode: trimString(record.riskCode || record.risk_code),
     versionNo: trimString(record.versionNo),
+    industryCode: trimString(record.industryCode),
+    rowId: trimString(record.rowId),
     catalogStatus: trimString(record.catalogStatus),
     seedSource: trimString(record.seedSource),
     seedSourceUrl: trimString(record.seedSourceUrl),
@@ -940,11 +1711,30 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     pdfBytes: Number(record.pdfBytes || 0) || 0,
     pdfOriginalUrl: trimString(record.pdfOriginalUrl),
     pdfArchivedAt: trimString(record.pdfArchivedAt),
+    detailUrl: trimString(record.detailUrl),
+    detailApiUrl: trimString(record.detailApiUrl),
+    clauseFileName: trimString(record.clauseFileName),
+    clauseUrl: trimString(record.clauseUrl),
+    futureExtractionStatus: trimString(record.futureExtractionStatus),
+    responsibilityDeferred: customerPolicyTerms ? false : Boolean(record.responsibilityDeferred),
+    reviewStatus,
+    globalSearchable,
+    reviewedAt: trimString(record.reviewedAt),
+    ownerUserId: Number(record.ownerUserId || 0) || 0,
+    ownerGuestId: trimString(record.ownerGuestId),
+    uploadNames: Array.isArray(record.uploadNames) ? record.uploadNames.map(trimString).filter(Boolean) : [],
+    detailFields: record.detailFields && typeof record.detailFields === 'object' && !Array.isArray(record.detailFields)
+      ? record.detailFields
+      : undefined,
     discoveredAt: trimString(record.discoveredAt) || now,
     lastFetchedAt: trimString(record.lastFetchedAt) || now,
     updatedAt: trimString(record.updatedAt) || now,
     lastUsedAt: trimString(record.lastUsedAt),
     useCount: Number(record.useCount || 0) || 0,
+  };
+  return {
+    ...normalized,
+    ...evidenceVerificationFields(normalized),
   };
 }
 
@@ -969,11 +1759,21 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
       existing.official = Boolean(record.official);
       existing.evidenceLabel = record.evidenceLabel || existing.evidenceLabel;
       existing.evidenceLevel = record.evidenceLevel || existing.evidenceLevel;
+      existing.verificationStatus = record.verificationStatus || existing.verificationStatus;
+      existing.verificationLabel = record.verificationLabel || existing.verificationLabel;
+      existing.referenceOnly = record.referenceOnly === true;
+      existing.sourceLevel = record.sourceLevel || existing.sourceLevel;
+      existing.sourceKind = record.sourceKind || existing.sourceKind;
       existing.officialDomain = record.officialDomain || existing.officialDomain;
+      existing.sourceUrl = record.sourceUrl || existing.sourceUrl;
       existing.parser = record.parser || existing.parser;
       existing.extractionMethod = record.extractionMethod || existing.extractionMethod;
       existing.planCode = record.planCode || existing.planCode;
+      existing.productCode = record.productCode || existing.productCode;
+      existing.riskCode = record.riskCode || existing.riskCode;
       existing.versionNo = record.versionNo || existing.versionNo;
+      existing.industryCode = record.industryCode || existing.industryCode;
+      existing.rowId = record.rowId || existing.rowId;
       existing.catalogStatus = record.catalogStatus || existing.catalogStatus;
       existing.seedSource = record.seedSource || existing.seedSource;
       existing.seedSourceUrl = record.seedSourceUrl || existing.seedSourceUrl;
@@ -987,6 +1787,19 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
       existing.pdfBytes = record.pdfBytes || existing.pdfBytes;
       existing.pdfOriginalUrl = record.pdfOriginalUrl || existing.pdfOriginalUrl;
       existing.pdfArchivedAt = record.pdfArchivedAt || existing.pdfArchivedAt;
+      existing.detailUrl = record.detailUrl || existing.detailUrl;
+      existing.detailApiUrl = record.detailApiUrl || existing.detailApiUrl;
+      existing.clauseFileName = record.clauseFileName || existing.clauseFileName;
+      existing.clauseUrl = record.clauseUrl || existing.clauseUrl;
+      existing.futureExtractionStatus = record.futureExtractionStatus || existing.futureExtractionStatus;
+      existing.responsibilityDeferred = record.responsibilityDeferred || existing.responsibilityDeferred;
+      existing.reviewStatus = record.reviewStatus || existing.reviewStatus;
+      existing.globalSearchable = record.globalSearchable;
+      existing.reviewedAt = record.reviewedAt || existing.reviewedAt;
+      existing.ownerUserId = record.ownerUserId || existing.ownerUserId;
+      existing.ownerGuestId = record.ownerGuestId || existing.ownerGuestId;
+      existing.uploadNames = record.uploadNames?.length ? record.uploadNames : existing.uploadNames;
+      existing.detailFields = record.detailFields || existing.detailFields;
       existing.lastFetchedAt = record.lastFetchedAt || existing.lastFetchedAt;
       existing.updatedAt = nowIso();
       saved.push(existing);
@@ -1002,21 +1815,32 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
   return saved;
 }
 
-export function findKnowledgeRecordsForPolicy({ policy = {}, records = [], officialDomainProfiles = [], maxResults = DEFAULT_MAX_KNOWLEDGE_RESULTS } = {}) {
+export function findKnowledgeRecordsForPolicy({
+  policy = {},
+  records = [],
+  officialDomainProfiles = [],
+  maxResults = DEFAULT_MAX_KNOWLEDGE_RESULTS,
+  includeExternalReferences = false,
+} = {}) {
   const productName = trimString(policy.name || policy.productName);
   const company = trimString(policy.company);
   if (!company || !productName) return [];
   const matched = (Array.isArray(records) ? records : [])
     .map((record) => normalizeKnowledgeRecord(record, { officialDomainProfiles }))
     .filter(Boolean)
-    .filter(
-      (record) =>
+    .filter((record) => {
+      if (record.qualityStatus === 'invalid_responsibility') return false;
+      const sourceKind = sourceKindForKnowledgeRecord(record);
+      const externalReference = includeExternalReferences && isExternalReferenceSourceKind(sourceKind);
+      if (externalReference) return Boolean(record.pageText || record.snippet);
+      if (sourceKind === CUSTOMER_POLICY_TERMS_SOURCE_KIND) return isFormalResponsibilityEvidence(record) && Boolean(record.pageText || record.snippet);
+      return (
         record.official &&
         record.pageText &&
-        record.qualityStatus !== 'invalid_responsibility' &&
         (isOfficialUrl(record.url, policy, officialDomainProfiles) ||
-          domainMatches(resolveUrlHostname(record.url), record.officialDomain)),
-    )
+          domainMatches(resolveUrlHostname(record.url), record.officialDomain))
+      );
+    })
     .filter((record) => {
       const companyMatch = !record.company || companiesMatch(company, record.company, officialDomainProfiles);
       return companyMatch && productMatchesText(productName, record.productName || record.title || record.url);
@@ -1048,17 +1872,35 @@ export function findKnowledgeProductCandidates({
   officialDomainProfiles = [],
   maxResults = 8,
   minScore = 0.32,
+  requirePageText = true,
+  includeExternalReferences = false,
+  includeCustomerPolicyPhotoRecords = false,
 } = {}) {
   const productName = trimString(policy.name || policy.productName);
   const company = trimString(policy.company);
   if (!company || !productName) return [];
+  const queryProductCodes = productIdentityCodesFromText(productName);
   const grouped = new Map();
   for (const rawRecord of Array.isArray(records) ? records : []) {
     const record = normalizeKnowledgeRecord(rawRecord, { officialDomainProfiles });
     if (!record) continue;
-    if (!record.official || !record.pageText || record.qualityStatus === 'invalid_responsibility') continue;
+    const sourceKind = sourceKindForKnowledgeRecord(record);
+    const customerPolicyPhotoReference = (
+      sourceKind === CUSTOMER_POLICY_PHOTO_SOURCE_KIND &&
+      isApprovedCustomerPolicyPhotoRecord(record) &&
+      (includeExternalReferences || includeCustomerPolicyPhotoRecords)
+    );
+    const externalReference = includeExternalReferences && isExternalReferenceSourceKind(sourceKind) && (
+      sourceKind !== CUSTOMER_POLICY_PHOTO_SOURCE_KIND || customerPolicyPhotoReference
+    );
+    const nonOfficialReference = externalReference || customerPolicyPhotoReference;
+    const evidenceFields = evidenceVerificationFields(record);
+    if ((!record.official && !nonOfficialReference) || (requirePageText && !record.pageText && !nonOfficialReference) || record.qualityStatus === 'invalid_responsibility') continue;
     if (
+      !nonOfficialReference &&
       !(
+        sourceKind === CUSTOMER_POLICY_TERMS_SOURCE_KIND ||
+        sourceKind === 'jrcpcx' ||
         isOfficialUrl(record.url, { company: record.company, name: record.productName }, officialDomainProfiles) ||
         domainMatches(resolveUrlHostname(record.url), record.officialDomain)
       )
@@ -1067,16 +1909,21 @@ export function findKnowledgeProductCandidates({
     }
     const companyMatch = !record.company || companiesMatch(company, record.company, officialDomainProfiles);
     if (!companyMatch) continue;
+    const recordProductCodes = productIdentityCodesFromRecord(record);
+    const matchedProductCode = recordProductCodes.find((code) => queryProductCodes.includes(code)) || '';
+    const hasDifferentKnownCode = Boolean(queryProductCodes.length && recordProductCodes.length && !matchedProductCode);
     const productScore = scoreProductNameMatch(productName, record.productName, company);
     const titleScore = scoreProductNameMatch(productName, record.title, company) * 0.96;
-    const score = Math.max(productScore, titleScore);
+    let score = Math.max(productScore, titleScore);
+    if (matchedProductCode) score = Math.max(score, 1);
+    else if (hasDifferentKnownCode) score = Math.min(score, 0.64);
     if (score < minScore) continue;
     const key = `${record.company}\n${record.productName}`;
     const existing = grouped.get(key);
     const strictExact = strictProductNameMatches(productName, record.productName, company)
       || strictProductNameMatches(productName, record.title, company);
     const sourceWeight = Number(record.sourceType === 'pdf') * 0.03 + Number(record.materialType === 'terms') * 0.02;
-    const rankingScore = score + Number(strictExact) * 0.2 + sourceWeight;
+    const rankingScore = score + Number(strictExact) * 0.2 + Number(Boolean(matchedProductCode)) * 0.4 + sourceWeight;
     if (!existing) {
       grouped.set(key, {
         company: record.company,
@@ -1087,30 +1934,69 @@ export function findKnowledgeProductCandidates({
         }),
         title: record.title,
         score,
-        matchReason: knowledgeMatchReason(score),
+        matchReason: matchedProductCode ? `产品代码 ${matchedProductCode}` : knowledgeMatchReason(score),
         evidenceLabel: record.evidenceLabel || '本地知识库官方资料',
+        evidenceLevel: record.evidenceLevel || 'insurer_official',
+        verificationStatus: evidenceFields.verificationStatus,
+        verificationLabel: evidenceFields.verificationLabel,
+        referenceOnly: evidenceFields.referenceOnly,
+        sourceKind,
+        inputName: productName,
+        resolvedProductName: record.productName,
+        productCode: recordProductCodes[0] || '',
+        productCodes: recordProductCodes,
+        needsConfirmation: true,
+        responsibilityDeferred: Boolean(record.responsibilityDeferred),
         sourceCount: 1,
         bestSource: {
           title: record.title,
           url: record.url,
           sourceType: record.sourceType,
           materialType: record.materialType,
+          sourceKind,
+          evidenceLevel: record.evidenceLevel || 'insurer_official',
+          verificationStatus: evidenceFields.verificationStatus,
+          verificationLabel: evidenceFields.verificationLabel,
+          referenceOnly: evidenceFields.referenceOnly,
+          detailUrl: record.detailUrl,
+          clauseUrl: record.clauseUrl,
+          productCode: recordProductCodes[0] || '',
+          productCodes: recordProductCodes,
+          responsibilityDeferred: Boolean(record.responsibilityDeferred),
         },
         rankingScore,
       });
       continue;
     }
     existing.sourceCount += 1;
+    existing.productCodes = mergeProductIdentityCodes(existing.productCodes, recordProductCodes);
+    existing.productCode = existing.productCode || existing.productCodes[0] || '';
     if (rankingScore > existing.rankingScore) {
       existing.title = record.title;
       existing.score = score;
-      existing.matchReason = knowledgeMatchReason(score);
+      existing.matchReason = matchedProductCode ? `产品代码 ${matchedProductCode}` : knowledgeMatchReason(score);
       existing.evidenceLabel = record.evidenceLabel || existing.evidenceLabel;
+      existing.evidenceLevel = record.evidenceLevel || existing.evidenceLevel;
+      existing.verificationStatus = evidenceFields.verificationStatus;
+      existing.verificationLabel = evidenceFields.verificationLabel;
+      existing.referenceOnly = evidenceFields.referenceOnly;
+      existing.sourceKind = sourceKind;
+      existing.responsibilityDeferred = Boolean(record.responsibilityDeferred);
       existing.bestSource = {
         title: record.title,
         url: record.url,
         sourceType: record.sourceType,
         materialType: record.materialType,
+        sourceKind,
+        evidenceLevel: record.evidenceLevel || existing.evidenceLevel,
+        verificationStatus: evidenceFields.verificationStatus,
+        verificationLabel: evidenceFields.verificationLabel,
+        referenceOnly: evidenceFields.referenceOnly,
+        detailUrl: record.detailUrl,
+        clauseUrl: record.clauseUrl,
+        productCode: recordProductCodes[0] || '',
+        productCodes: recordProductCodes,
+        responsibilityDeferred: Boolean(record.responsibilityDeferred),
       };
       existing.rankingScore = rankingScore;
     }
@@ -1124,23 +2010,95 @@ export function findKnowledgeProductCandidates({
     }));
 }
 
-export function buildKnowledgeSearchArtifacts({ policy = {}, records = [], officialDomainProfiles = [], maxResults = DEFAULT_MAX_KNOWLEDGE_RESULTS } = {}) {
-  const matched = findKnowledgeRecordsForPolicy({ policy, records, officialDomainProfiles, maxResults });
-  if (!matched.length) return { context: '', sources: [], records: [] };
-  const sources = matched.map((record) => ({
-    title: record.title || record.url,
-    url: record.url,
-    snippet: record.snippet,
-    evidenceLabel: record.evidenceLabel || '本地知识库官方资料',
-    evidenceLevel: 'insurer_official',
-    official: true,
-    sourceType: record.sourceType,
+export function withPolicyProductMatchStatus({ policy = {}, matches = [] } = {}) {
+  const inputName = trimString(policy.name || policy.productName);
+  const company = trimString(policy.company);
+  const inputProductCodes = productIdentityCodesFromText(inputName);
+  const enriched = (Array.isArray(matches) ? matches : [])
+    .map((match) => {
+      const resolvedProductName = trimString(match.resolvedProductName || match.productName);
+      const sourceKind = match.sourceKind || 'local';
+      const alwaysConfirm = Boolean(match.responsibilityDeferred) || isExternalReferenceSourceKind(sourceKind);
+      const matchProductCodes = mergeProductIdentityCodes(
+        match.productCodes,
+        match.productCode ? [match.productCode] : [],
+        match.bestSource?.productCodes,
+        match.bestSource?.productCode ? [match.bestSource.productCode] : [],
+      );
+      const productCodeExact = !alwaysConfirm && inputProductCodes.some((code) => matchProductCodes.includes(code));
+      const strictExact = !alwaysConfirm && (
+        productCodeExact ||
+        strictProductNameMatches(inputName, resolvedProductName, company)
+          || strictProductNameMatches(inputName, match.title, company)
+      );
+      return {
+        ...match,
+        sourceKind,
+        inputName,
+        resolvedProductName,
+        needsConfirmation: true,
+        evidenceLevel: match.evidenceLevel || match.bestSource?.evidenceLevel || 'insurer_official',
+        strictExact,
+      };
+    })
+    .sort((left, right) =>
+      Number(Boolean(right.strictExact)) - Number(Boolean(left.strictExact)) ||
+      Number(right.score || 0) - Number(left.score || 0) ||
+      String(left.productName || '').localeCompare(String(right.productName || ''), 'zh-Hans-CN'),
+    );
+  const exactCount = enriched.filter((match) => match.strictExact).length;
+  const status = exactCount === 1 ? 'exact' : enriched.length ? 'candidates' : 'not_found';
+  const resolved = enriched.map(({ strictExact, ...match }) => ({
+    ...match,
+    needsConfirmation: status === 'exact' ? !strictExact : true,
   }));
+  return {
+    status,
+    matches: resolved,
+  };
+}
+
+export function buildKnowledgeSearchArtifacts({
+  policy = {},
+  records = [],
+  officialDomainProfiles = [],
+  maxResults = DEFAULT_MAX_KNOWLEDGE_RESULTS,
+  includeExternalReferences = false,
+} = {}) {
+  const matched = findKnowledgeRecordsForPolicy({
+    policy,
+    records,
+    officialDomainProfiles,
+    maxResults,
+    includeExternalReferences,
+  });
+  if (!matched.length) return { context: '', sources: [], records: [] };
+  const sources = matched.map((record) => {
+    const enriched = withEvidenceVerificationFields({
+      ...record,
+      sourceKind: sourceKindForKnowledgeRecord(record),
+    });
+    return {
+      title: record.title || record.url,
+      url: record.url,
+      snippet: record.snippet,
+      evidenceLabel: record.evidenceLabel || '本地知识库官方资料',
+      evidenceLevel: record.evidenceLevel || 'insurer_official',
+      verificationStatus: enriched.verificationStatus,
+      verificationLabel: enriched.verificationLabel,
+      referenceOnly: enriched.referenceOnly,
+      official: !isExternalReferenceSourceKind(sourceKindForKnowledgeRecord(record)) && record.official !== false,
+      sourceType: record.sourceType,
+      sourceKind: sourceKindForKnowledgeRecord(record),
+    };
+  });
   const context = matched
     .map((record, index) =>
       [
         `【资料${index + 1}】${record.title || record.url}`,
         `证据等级：${record.evidenceLabel || '本地知识库官方资料'}`,
+        `核实状态：${record.verificationLabel || evidenceVerificationFields(record).verificationLabel}`,
+        record.referenceOnly ? '用途限制：仅作待核实参考，不得当作已确认保险责任' : '',
         record.snippet ? `摘要：${record.snippet}` : '',
         record.pageText ? `正文：${record.pageText}` : '',
       ]

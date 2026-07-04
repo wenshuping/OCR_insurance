@@ -1213,6 +1213,71 @@ test('sqlite state store records product indicator versions and update batches',
   }
 });
 
+test('sqlite state store persists responsibility lookup artifacts into knowledge, indicator, and card tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    const result = await store.persistResponsibilityLookupArtifacts({
+      state,
+      knowledgeRecords: [
+        {
+          company: '测试保险',
+          productName: '测试重疾保险',
+          title: '测试重疾保险条款',
+          url: 'https://official.example-life.test/terms.pdf',
+          pageText: '保险责任 本公司给付重大疾病保险金。',
+          official: true,
+          sourceKind: 'insurer_official',
+        },
+      ],
+      indicatorRecords: [
+        {
+          id: 'ind_card_basic_test',
+          company: '测试保险',
+          productName: '测试重疾保险',
+          coverageType: '疾病保障',
+          liability: '重大疾病保险金',
+        },
+      ],
+      responsibilityCards: [
+        {
+          id: 'product_responsibility_card:company_product:测试保险:测试重疾保险:0000:重大疾病保险金',
+          productKey: 'company_product:测试保险:测试重疾保险',
+          company: '测试保险',
+          productName: '测试重疾保险',
+          title: '重大疾病保险金',
+          category: '疾病保障',
+          cashflowTreatment: 'claim_contingent',
+          calculationStatus: 'claim_contingent',
+          sourceUrl: 'https://official.example-life.test/terms.pdf',
+          payload: {
+            title: '重大疾病保险金',
+            company: '测试保险',
+            productName: '测试重疾保险',
+          },
+        },
+      ],
+    });
+
+    assert.equal(result.knowledgeRecordCount, 1);
+    assert.equal(result.indicatorRecordCount, 1);
+    assert.equal(result.responsibilityCardCount, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM knowledge_records').get().count, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards').get().count, 1);
+    const cardPayload = JSON.parse(store.db.prepare('SELECT payload FROM product_responsibility_cards LIMIT 1').get().payload);
+    assert.equal(cardPayload.title, '重大疾病保险金');
+
+    const reloaded = await store.load();
+    assert.equal(reloaded.knowledgeRecords[0].productName, '测试重疾保险');
+    assert.equal(reloaded.insuranceIndicatorRecords[0].liability, '重大疾病保险金');
+  } finally {
+    store.close();
+  }
+});
+
 test('sqlite state store incrementally persists auth registration without rewriting knowledge tables', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');

@@ -50,7 +50,19 @@ test('family sales review input keeps members without policies and official evid
       productName,
       productType: '终身寿险',
       official: true,
+      sourceKind: 'insurer_official',
+      evidenceLevel: 'insurer_official',
       url: 'https://official.example-life.test/ssry.pdf',
+    }, {
+      id: 8,
+      company: '新华保险',
+      productName,
+      productType: '终身寿险',
+      title: '第三方网页线索',
+      official: false,
+      sourceKind: 'open_web_reference',
+      evidenceLevel: 'external_legacy_reference',
+      url: 'https://reference.example.test/ssry',
     }],
     indicatorRecords: [{
       id: 'indicator-1',
@@ -77,6 +89,8 @@ test('family sales review input keeps members without policies and official evid
   assert.equal(input.policies[0].insuredAge, 40);
   assert.equal(input.officialEvidence.length, 1);
   assert.equal(input.officialEvidence[0].officialSources[0].url, 'https://official.example-life.test/ssry.pdf');
+  assert.equal(input.officialEvidence[0].referenceSources[0].url, 'https://reference.example.test/ssry');
+  assert.equal(input.officialEvidence[0].referenceSources[0].referenceOnly, true);
   assert.equal(input.officialEvidence[0].officialIndicators[0].coverageType, '身故或身体全残');
 
   const prompt = buildFamilySalesReviewMessages(input).map((message) => message.content).join('\n');
@@ -105,6 +119,8 @@ test('family sales review input keeps members without policies and official evid
   assert.match(prompt, /"applicantAge": 40/);
   assert.doesNotMatch(prompt, /张三|李四|张三家庭|110101198606141234|110101198812016543|123456|654321/);
   assert.match(prompt, /https:\/\/official\.example-life\.test\/ssry\.pdf/);
+  assert.match(prompt, /referenceOnly=true/u);
+  assert.match(prompt, /待核实参考/u);
 });
 
 test('family sales review prompt combines sales skills into executable advisor workflow', () => {

@@ -100,7 +100,7 @@ export type PolicyUpdateInput = PolicyUpdateInputContract;
 export type OptionalResponsibilityGap = OptionalResponsibilityGapContract;
 
 export type CashValueScanResult = CashValueScanResultContract & {
-  source?: 'ocr' | 'macos_vision' | 'vision_llm' | 'manual';
+  source?: 'ocr' | 'deepseek_ocr' | 'macos_vision' | 'vision_llm' | 'manual';
 };
 
 export type CashValueRow = CashValueRowContract;

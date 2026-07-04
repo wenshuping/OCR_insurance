@@ -8,6 +8,7 @@ import {
   resolveRecordCompany,
   resolveRecordProductName,
 } from './canonical-product-id.mjs';
+import { evidenceVerificationFields } from './evidence-classification.service.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -94,18 +95,25 @@ function recordMatchesPolicy(policy = {}, record = {}) {
 }
 
 function knowledgeEvidenceSummary(record = {}) {
+  const evidence = evidenceVerificationFields(record);
   return {
     company: recordCompany(record),
     productName: recordProductName(record),
     productType: trim(record.productType || record.category || record.productCategory),
     title: trim(record.title || record.sourceTitle || record.name),
     official: record.official === true,
+    sourceKind: trim(record.sourceKind),
+    evidenceLevel: trim(record.evidenceLevel || record.sourceLevel),
+    verificationStatus: evidence.verificationStatus,
+    verificationLabel: evidence.verificationLabel,
+    referenceOnly: evidence.referenceOnly,
     url: sourceUrl(record),
     excerpt: textExcerpt(record.sourceExcerpt || record.excerpt || record.summary || record.content || record.text || record.ocrText, 420),
   };
 }
 
 function indicatorEvidenceSummary(record = {}) {
+  const evidence = evidenceVerificationFields(record);
   return {
     coverageType: trim(record.coverageType || record.coverage_type || record.category),
     liability: trim(record.liability || record.name || record.title),
@@ -115,14 +123,25 @@ function indicatorEvidenceSummary(record = {}) {
     responsibilityScope: textExcerpt(record.responsibilityScope || record.scope, 260),
     selectionStatus: trim(record.selectionStatus),
     quantificationStatus: trim(record.quantificationStatus),
+    sourceKind: trim(record.sourceKind),
+    evidenceLevel: trim(record.evidenceLevel || record.sourceLevel),
+    verificationStatus: evidence.verificationStatus,
+    verificationLabel: evidence.verificationLabel,
+    referenceOnly: evidence.referenceOnly,
     sourceUrl: sourceUrl(record),
   };
 }
 
 function optionalResponsibilityEvidenceSummary(record = {}) {
+  const evidence = evidenceVerificationFields(record);
   return {
     liability: trim(record.liability || record.name || record.title),
     quantificationStatus: trim(record.quantificationStatus),
+    sourceKind: trim(record.sourceKind),
+    evidenceLevel: trim(record.evidenceLevel || record.sourceLevel),
+    verificationStatus: evidence.verificationStatus,
+    verificationLabel: evidence.verificationLabel,
+    referenceOnly: evidence.referenceOnly,
     sourceExcerpt: textExcerpt(record.sourceExcerpt || record.excerpt || record.summary, 360),
     sourceUrl: sourceUrl(record),
   };
@@ -147,11 +166,16 @@ function compactPolicyEvidence(policy = {}, {
     .map(optionalResponsibilityEvidenceSummary)
     .filter((record) => record.liability || record.sourceExcerpt)
     .slice(0, 16);
+  const policySourceEvidence = (Array.isArray(policy.sources) ? policy.sources : [])
+    .map(knowledgeEvidenceSummary)
+    .filter((record) => record.title || record.url || record.excerpt)
+    .slice(0, 8);
 
   return {
     knowledgeEvidence,
     indicatorEvidence,
     optionalResponsibilityEvidence,
+    policySourceEvidence,
   };
 }
 
@@ -172,11 +196,20 @@ function policyBrief(policy = {}, evidenceOptions = {}) {
     type: trim(policy.type || policy.category),
     responsibilities: (Array.isArray(policy.responsibilities) ? policy.responsibilities : [])
       .slice(0, 12)
-      .map((item) => ({
-        name: trim(item.name || item.liability || item.title),
-        amount: numberOrZero(item.amount || item.coverageAmount),
-        condition: trim(item.condition || item.description),
-      }))
+      .map((item) => {
+        const evidence = evidenceVerificationFields(item);
+        return {
+          name: trim(item.name || item.liability || item.title || item.coverageType),
+          amount: numberOrZero(item.amount || item.coverageAmount),
+          condition: trim(item.condition || item.description || item.scenario),
+          payout: trim(item.payout),
+          sourceKind: trim(item.sourceKind),
+          evidenceLevel: trim(item.evidenceLevel || item.sourceLevel),
+          verificationStatus: evidence.verificationStatus,
+          verificationLabel: evidence.verificationLabel,
+          referenceOnly: evidence.referenceOnly,
+        };
+      })
       .filter((item) => item.name || item.amount || item.condition),
     evidence,
   };
@@ -273,15 +306,18 @@ export function buildFamilyPolicyAnalysisMessages(input = {}) {
       content: [
         '你是一名面向中国大陆家庭客户的寿险、健康险和家庭保障缺口分析顾问。',
         '任务是同时完成两件事：第一，像保险分析师一样逐张解析家庭现有保单；第二，像保障规划师一样量化识别家庭保障缺口。',
-        '你必须基于输入的家庭成员、现有保单、家庭保障报告、每张保单的 RAG/官网证据和责任指标，输出一份客户可直接阅读的《家庭保单分析报告》。',
+        '你必须基于输入的家庭成员、现有保单、家庭保障报告、每张保单的分层证据和责任指标，输出一份客户可直接阅读的《家庭保单分析报告》。',
         '必须遵守：',
         '1. 全文不能出现“AI”“人工智能”“DeepSeek”“模型”“大模型”等技术来源字样。',
         '2. 不承诺理赔结果，不替代保险合同条款、核保结论、法律或税务意见。',
         '3. 只使用输入中能支持的事实；缺少收入、支出、负债、健康告知等信息时写“待补充核实”。',
-        '4. 每个判断尽量追溯依据，优先使用保单字段、已识别责任、RAG/官网证据、责任指标、家庭保障雷达和成员角色；没有依据时写“待补充核实”。',
+        '4. 每个判断尽量追溯依据，优先使用保单字段、已识别责任、保险公司官方资料、客户上传保单责任页/合同页、责任指标、家庭保障雷达和成员角色；没有依据时写“待补充核实”。',
         '5. 既要分析整个家庭保单结构，也要重点展开保障缺口；缺口分析篇幅不少于全文 40%。',
         '6. 表达要专业、清晰、温和，避免恐吓式措辞；不要写成销售内训话术。',
-        '7. 输入只包含结构化保单摘要、RAG/官网证据摘要、责任指标和家庭责任信息，不包含原始 OCR 全文；不得假装读过未提供的条款原文。',
+        '7. 输入只包含结构化保单摘要、分层证据摘要、责任指标和家庭责任信息，不包含原始 OCR 全文；不得假装读过未提供的条款原文。',
+        '8. evidence 中 verificationStatus=verified 且 sourceKind/evidenceLevel 为 insurer_official 或 customer_policy_terms 的内容，可以作为已核实责任依据。',
+        '9. regulatory_industry_terms 只能表述为“行业条款来源/中国保险行业协会条款线索”，不得写成保险公司官网资料。',
+        '10. referenceOnly=true 或 verificationStatus=pending_review 的第三方网页、开放网页搜索、老产品非官方资料，只能放在“待核实参考/需要补充核实”里，不得计入已确认保障、保障合计或缺口抵扣。',
       ].join('\n'),
     },
     {
@@ -310,7 +346,8 @@ export function buildFamilyPolicyAnalysisMessages(input = {}) {
         '- 对储蓄、养老、教育金、年金或现金价值类保单，只评价其在家庭资产和长期现金流中的作用，不承诺收益。',
         '- 不要只写“建议增加保障”“保障不足”这类空泛结论；每条建议都要说明依据来自保单字段、责任指标、家庭责任或缺口测算。',
         '- 结尾必须包含提示：本报告仅供家庭保障规划参考，具体投保、责任范围、等待期、除外责任、理赔和核保结果以保险合同条款及保险公司结论为准。',
-        '- 输入 JSON 已经做过压缩，只保留分析必要的保单字段、家庭责任信息和 RAG/官网证据摘要；不要要求客户提供原始 OCR 文本，也不要编造未提供的条款细节。',
+        '- 输入 JSON 已经做过压缩，只保留分析必要的保单字段、家庭责任信息和分层证据摘要；不要要求客户提供原始 OCR 文本，也不要编造未提供的条款细节。',
+        '- 如果使用非官方网页或老产品第三方资料，必须显式标注“待核实参考”，并提醒以保险公司确认或补发合同条款为准。',
         '',
         '分析输入 JSON：',
         JSON.stringify(input || {}, null, 2),

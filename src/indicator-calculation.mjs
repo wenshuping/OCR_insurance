@@ -29,6 +29,37 @@ function isExpenseReimbursementText(value = '') {
   return /医疗费用|实际合理医疗费用|实际合理[^。；;，,]{0,20}费用|实际[^。；;，,]{0,20}费用|免赔额|报销|补偿/u.test(value);
 }
 
+export const CALCULATION_INPUT_SCHEMA_VERSION = '2026-07-03-canonical-calculation-inputs';
+
+export function requiredCalculationInputsForMeta(meta = {}) {
+  const calculationKey = displayText(meta.calculationKey);
+  const basisKey = displayText(meta.basisKey);
+  if (calculationKey === 'fixed_amount') return [];
+  if (['basic_amount', 'percent_of_basic_amount', 'multiple_of_basic_amount'].includes(calculationKey) || basisKey === 'basic_amount') {
+    return ['policy.amount'];
+  }
+  if (
+    ['first_premium', 'percent_of_first_premium', 'multiple_of_first_premium'].includes(calculationKey) ||
+    ['first_premium', 'first_basic_responsibility_premium', 'annual_premium'].includes(basisKey)
+  ) {
+    return ['policy.firstPremium'];
+  }
+  if (['total_paid_premium', 'percent_of_total_paid_premium', 'multiple_of_total_paid_premium'].includes(calculationKey) || basisKey === 'total_paid_premium') {
+    return ['policy.firstPremium', 'policy.paymentPeriodYears'];
+  }
+  if (calculationKey === 'cash_value' || basisKey === 'cash_value') return ['cashValue', 'policyYear'];
+  if (calculationKey === 'account_value' || basisKey === 'account_value') return ['accountValue'];
+  if (calculationKey === 'schedule_or_policy_table' || basisKey === 'schedule_or_policy_table') {
+    return ['policyScheduleTable', 'policyYearOrAge'];
+  }
+  if (calculationKey === 'medical_formula' || basisKey === 'medical_expense') {
+    return ['actualMedicalExpense', 'deductible', 'reimbursementRate', 'thirdPartyPaid', 'liabilityLimit'];
+  }
+  if (calculationKey === 'daily_allowance' || basisKey === 'daily_allowance') return ['actualDays', 'dailyAmount', 'dayLimit'];
+  if (calculationKey === 'manual_formula') return ['manualFormulaInputs'];
+  return [];
+}
+
 function numericSpec(indicator = {}) {
   const value = finiteNumber(indicator.value);
   const unit = displayText(indicator.unit);
@@ -270,5 +301,7 @@ export function indicatorCalculationPayloadFields(indicator = {}) {
     calculationKey: meta.calculationKey,
     calculationEligible: meta.calculationEligible,
     calculationReason: meta.calculationReason,
+    requiredInputs: requiredCalculationInputsForMeta(meta),
+    calculationInputSchemaVersion: CALCULATION_INPUT_SCHEMA_VERSION,
   };
 }

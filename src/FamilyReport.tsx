@@ -53,7 +53,26 @@ type OptionalResponsibilityGap = {
 
 type FamilyReportWithOptionalGaps = FamilyReport & {
   optionalResponsibilityGaps?: OptionalResponsibilityGap[];
+  pendingVerificationItems?: Array<{
+    policyId?: number | string | null;
+    company?: string;
+    productName?: string;
+    title?: string;
+    verificationLabel?: string;
+    url?: string;
+    excerpt?: string;
+  }>;
 };
+
+const planningProfileFields: Array<{ key: keyof FamilyPlanningProfile; label: string; placeholder: string }> = [
+  { key: 'annualExpense', label: '家庭年支出', placeholder: '如 300000' },
+  { key: 'debt', label: '家庭负债', placeholder: '如 800000' },
+  { key: 'educationGoal', label: '教育目标', placeholder: '如 500000' },
+  { key: 'parentSupportGoal', label: '父母赡养', placeholder: '如 300000' },
+  { key: 'retirementGoal', label: '养老目标', placeholder: '如 1000000' },
+  { key: 'availableAssets', label: '可用资产', placeholder: '如 200000' },
+  { key: 'premiumBudget', label: '保费预算', placeholder: '如 50000' },
+];
 
 function formatMoney(value: number) {
   return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
@@ -503,6 +522,32 @@ function OptionalResponsibilityGapSection({ gaps = [] }: { gaps?: OptionalRespon
   );
 }
 
+function PendingVerificationSection({ items = [] }: { items?: FamilyReportWithOptionalGaps['pendingVerificationItems'] }) {
+  if (!items?.length) return null;
+
+  return (
+    <Section title="待核实参考线索">
+      <div className="grid gap-2 md:grid-cols-2">
+        {items.map((item, index) => (
+          <article key={`${item.policyId}-${item.title}-${index}`} className="min-w-0 rounded-[16px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2.5 text-xs font-semibold leading-5 text-[#9A4A16]">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <p className="min-w-0 break-words font-black text-[#7C2D12]">
+                {[item.company, item.productName].filter(Boolean).join(' · ') || '待核实保单资料'}
+              </p>
+              <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[11px] font-black text-[#A6531B] ring-1 ring-[#F3D9B4]">
+                {item.verificationLabel || '待核实参考'}
+              </span>
+            </div>
+            <p className="mt-1 break-words font-black">{item.title || '待核实资料'}</p>
+            {item.excerpt ? <p className="mt-1 line-clamp-2 break-words text-[#B45309]">{item.excerpt}</p> : null}
+            {item.url ? <p className="mt-1 truncate text-[11px] text-[#B45309]">{item.url}</p> : null}
+          </article>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 const reportSurfaceClassName = 'rounded-[24px] border border-[#D7E2EA] bg-white shadow-[0_18px_48px_-36px_rgba(15,23,42,0.38)]';
 const reportMutedSurfaceClassName = 'rounded-[20px] border border-[#E1E8EF] bg-[#F7FAFC]';
 
@@ -704,6 +749,57 @@ function RadarChart({
         })}
       </div>
     </div>
+  );
+}
+
+function FamilyPlanningProfilePanel({
+  profile,
+  onChange,
+  readOnly = false,
+}: {
+  profile: FamilyPlanningProfile;
+  onChange: (profile: FamilyPlanningProfile) => void;
+  readOnly?: boolean;
+}) {
+  const hasPlanningProfile = planningProfileFields.some((field) => Number(profile?.[field.key] || 0) > 0);
+
+  function updateProfileValue(key: keyof FamilyPlanningProfile, value: string) {
+    const numericValue = Math.max(0, Number(value || 0) || 0);
+    onChange({ ...(profile || {}), [key]: numericValue });
+  }
+
+  return (
+    <Section title="保障规划设置">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${
+          hasPlanningProfile ? 'bg-blue-50 text-[#0B72B9]' : 'bg-[#EEF3F7] text-[#42566B]'
+        }`}>
+          保障规划版
+        </span>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${
+          hasPlanningProfile ? 'bg-[#EEF3F7] text-[#42566B]' : 'bg-blue-50 text-[#0B72B9]'
+        }`}>
+          保额结构版
+        </span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {planningProfileFields.map((field) => (
+          <label key={field.key} className="min-w-0 rounded-[16px] border border-[#E1E8EF] bg-white px-3 py-2">
+            <span className="block text-[11px] font-black text-[#72849A]">{field.label}</span>
+            <input
+              type="number"
+              min="0"
+              inputMode="decimal"
+              disabled={readOnly}
+              value={profile?.[field.key] || ''}
+              onChange={(event) => updateProfileValue(field.key, event.target.value)}
+              placeholder={field.placeholder}
+              className="mt-1 w-full min-w-0 bg-transparent text-sm font-black text-[#102033] outline-none placeholder:text-[#A7B5C3] disabled:text-[#72849A]"
+            />
+          </label>
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -2074,13 +2170,15 @@ export function FamilyReportPage({
 
       <div className="no-print h-[149px]" aria-hidden="true" />
 
-      <main className="family-report-content py-4 md:py-5">
+      <main className="py-4 md:py-5">
         {activeReportTab === 'analysis' ? (
-          <div ref={activeReportRef} className="print-policy-report space-y-4 md:space-y-5">
+          <div ref={activeReportRef} className="family-report-content print-policy-report space-y-4 md:space-y-5">
             <ReportHero report={report} attentionItems={attentionItems} />
+            <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} readOnly={readOnly} />
             <FamilyRadarSection report={report} />
             <AttentionSection attentionItems={attentionItems} />
             <OptionalResponsibilityGapSection gaps={reportWithOptionalGaps.optionalResponsibilityGaps} />
+            <PendingVerificationSection items={reportWithOptionalGaps.pendingVerificationItems} />
             <InventorySection rows={report.policyInventory.rows} />
             <MemberRadarSection report={report} />
             <InsuredPolicyDetailSection rows={report.policyInventory.rows} />
@@ -2089,7 +2187,7 @@ export function FamilyReportPage({
             <WealthSection report={report} />
           </div>
         ) : (
-          <div ref={activeReportRef} className="print-policy-report">
+          <div ref={activeReportRef} className="family-report-content print-policy-report">
             <FamilyPolicyAnalysisReportSection
               report={policyAnalysisReport}
               loading={policyAnalysisLoading}

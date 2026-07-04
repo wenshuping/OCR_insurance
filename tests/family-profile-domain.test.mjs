@@ -35,7 +35,7 @@ test('ensureDefaultFamilyProfileForPrincipal migrates existing policy participan
   assert.ok(state.policies[0].insuredMemberId);
 });
 
-test('ensureDefaultFamilyProfileForPrincipal keeps same-name insured people distinct by identity', () => {
+test('ensureDefaultFamilyProfileForPrincipal merges same-name insured people by family name', () => {
   const state = {
     ...createInitialState(),
     nextId: 20,
@@ -65,9 +65,9 @@ test('ensureDefaultFamilyProfileForPrincipal keeps same-name insured people dist
   const insuredMembers = state.familyMembers.filter((member) => member.name === '李四');
 
   assert.equal(family.familyName, '默认家庭');
-  assert.equal(insuredMembers.length, 2);
-  assert.notEqual(state.policies[0].insuredMemberId, state.policies[1].insuredMemberId);
-  assert.equal(state.familyMembers.find((member) => member.id === state.policies[0].insuredMemberId)?.birthday, '2010-01-01');
+  assert.equal(insuredMembers.filter((member) => member.status === 'active').length, 1);
+  assert.equal(state.policies[0].insuredMemberId, state.policies[1].insuredMemberId);
+  assert.equal(state.familyMembers.find((member) => member.id === state.policies[0].insuredMemberId)?.birthday, '2012-02-02');
   assert.equal(state.familyMembers.find((member) => member.id === state.policies[1].insuredMemberId)?.idNumberTail, '0033');
 });
 
@@ -163,8 +163,8 @@ test('matchFamilyMemberByPerson prefers exact name and birthday matches', () => 
 
   assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '3333' })?.id, 2);
   assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01' })?.id, 2);
-  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '9999' }), null);
-  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1970-01-01' }), null);
+  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '9999' })?.id, 2);
+  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1970-01-01' })?.id, 1);
 });
 
 test('upsertFamilyMember reuses same-name compatible member instead of duplicating', () => {
@@ -185,6 +185,27 @@ test('upsertFamilyMember reuses same-name compatible member instead of duplicati
   assert.equal(member.id, 11);
   assert.equal(member.birthday, '2018-01-01');
   assert.equal(state.familyMembers.filter((row) => row.status === 'active' && row.name === '翟卿').length, 1);
+});
+
+test('upsertFamilyMember syncs same-name member identity instead of duplicating', () => {
+  const state = {
+    ...createInitialState(),
+    nextId: 30,
+    familyProfiles: [
+      { id: 10, ownerGuestId: 'guest-upsert-member-conflict', familyName: '同名家庭', coreMemberId: null, status: 'active' },
+    ],
+    familyMembers: [
+      { id: 11, familyId: 10, name: '秦国英', birthday: '1969-01-01', idNumberTail: '1111', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active' },
+    ],
+  };
+
+  const family = state.familyProfiles[0];
+  const member = upsertFamilyMember(state, family, { name: '秦国英', relationLabel: '母亲', birthday: '1970-01-06', idNumber: '110101197001060022' });
+
+  assert.equal(member.id, 11);
+  assert.equal(member.birthday, '1970-01-06');
+  assert.equal(member.idNumberTail, '0022');
+  assert.equal(state.familyMembers.filter((row) => row.status === 'active' && row.name === '秦国英').length, 1);
 });
 
 test('repairDuplicateFamilyMembers merges compatible duplicate names and rewires policies', () => {

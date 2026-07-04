@@ -131,6 +131,26 @@ test('extractStructuredResponsibilitySections accepts inline responsibility titl
   assert.match(result.mainResponsibilityText, /护理津贴保险金/u);
 });
 
+test('extractStructuredResponsibilitySections accepts inline responsibility title before selectable plans', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'critical_illness',
+    records: [{
+      title: '官方重疾险条款',
+      pageText: [
+        '保险责任 投保人 可 在 以下 两种保障计划中 选择一 种，投保人选择的保障计划将在保险单上载明。',
+        '在本合同保险期间内，本公司根据投保人选择的保障计划，承担下列保险责任：',
+        '1.保障计划一：重大疾病保险金 被保险人确诊重大疾病，本公司给付重大疾病保险金。',
+        '2.保障计划二：身故保险金 被保险人身故，本公司给付身故保险金。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /保障计划一/u);
+  assert.match(result.mainResponsibilityText, /重大疾病保险金/u);
+  assert.match(result.mainResponsibilityText, /身故保险金/u);
+});
+
 test('extractStructuredResponsibilitySections accepts inline responsibility title before numbered duties', () => {
   const result = extractStructuredResponsibilitySections({
     productCategory: 'medical',
@@ -249,6 +269,26 @@ test('extractStructuredResponsibilitySections does not treat responsibility star
   assert.deepEqual(result.quality.warnings, ['responsibility_chapter_missing']);
 });
 
+test('extractStructuredResponsibilitySections stops at bare responsibility exemption heading', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      title: '官方年金条款',
+      pageText: [
+        '保险责任 在本合同保险期间内，我们按下列规定承担保险责任：',
+        '1.年金 被保险人生存至约定日期，我们给付年金。',
+        '2.身故保险金 被保险人身故，我们给付身故保险金。',
+        '责任免除',
+        '因下列情形之一导致保险事故的，我们不承担保险责任。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /年金/u);
+  assert.doesNotMatch(result.mainResponsibilityText, /因下列情形之一/u);
+});
+
 test('extractStructuredResponsibilitySections bounds decimal responsibility chapter', () => {
   const result = extractStructuredResponsibilitySections({
     records: [{
@@ -290,6 +330,27 @@ test('extractStructuredResponsibilitySections keeps decimal subclauses inside pa
   assert.match(result.mainResponsibilityText, /按约定给付身故保险金/u);
   assert.match(result.mainResponsibilityText, /2\.3\.2 满期保险金/u);
   assert.doesNotMatch(result.mainResponsibilityText, /2\.4 责任免除/u);
+});
+
+test('extractStructuredResponsibilitySections keeps decimal child clauses after bare responsibility title', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records: [{
+      title: '官方年金条款',
+      pageText: [
+        '保险责任 在本合同保险期间内，且本合同有效的前提下，我们按以下约定承担保险责任：',
+        '2.4.1 祝福金 被保险人生存，我们按年交保险费的10%给付祝福金。',
+        '2.4.2 身故保险金 被保险人身故，我们按现金价值给付身故保险金。',
+        '2.5 责任免除',
+        '因下列情形之一导致保险事故的，我们不承担保险责任。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.quality.status, 'complete');
+  assert.match(result.mainResponsibilityText, /2\.4\.1 祝福金/u);
+  assert.match(result.mainResponsibilityText, /2\.4\.2 身故保险金/u);
+  assert.doesNotMatch(result.mainResponsibilityText, /因下列情形之一/u);
 });
 
 test('extractStructuredResponsibilitySections combines useful text fields after full text', () => {

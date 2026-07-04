@@ -381,10 +381,24 @@ function uniqueJoinedText(values = []) {
 }
 
 function isSelectedCoverageIndicator(indicator = {}) {
+  if (indicatorIsReferenceOnly(indicator)) return false;
   const scope = String(indicator?.responsibilityScope || 'basic');
   const status = String(indicator?.selectionStatus || (scope === 'optional' ? 'unknown' : 'selected'));
   const quantificationStatus = String(indicator?.quantificationStatus || 'pending_review');
   return scope !== 'optional' || (status === 'selected' && quantificationStatus === 'quantified');
+}
+
+function indicatorIsReferenceOnly(indicator = {}) {
+  const sourceKind = String(indicator?.sourceKind || '').trim();
+  const evidenceLevel = String(indicator?.evidenceLevel || indicator?.sourceLevel || '').trim();
+  const verificationStatus = String(indicator?.verificationStatus || '').trim();
+  return (
+    indicator?.referenceOnly === true ||
+    indicator?.responsibilityDeferred === true ||
+    verificationStatus === 'pending_review' ||
+    ['legacy_external_reference', 'open_web_reference'].includes(sourceKind) ||
+    evidenceLevel === 'external_legacy_reference'
+  );
 }
 
 function selectedCoverageIndicators(indicators = []) {
@@ -747,19 +761,23 @@ function indicatorCannotContributeRadarAmount(indicator = {}) {
 function medicalIndicatorCannotContributeFixedAmount(indicator = {}) {
   if (indicatorCannotContributeRadarAmount(indicator)) return true;
   const text = indicatorText(indicator).normalize('NFKC');
+  if (/(医疗费用限额|医疗限额|报销限额|费用限额)/u.test(text) && resolveIndicatorAmount(indicator, {}) > 0) return false;
   return /(等待期|赔付方式|床位费|每日|每天|日额|津贴|给付天数|每次住院最长)/u.test(text);
 }
 
 function resolveIndicatorAmount(indicator, policy) {
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
-  if (structured.resolved) return structured.amount;
-  if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false) return 0;
-
   const value = finiteNumber(indicator?.value);
   const unit = String(indicator?.unit || '').normalize('NFKC');
-  const basis = String(indicator?.basis || '').normalize('NFKC');
   const text = indicatorText(indicator).normalize('NFKC');
   const formulaText = String(indicator?.formulaText || '').normalize('NFKC');
+  const explicitYuanLimit = value !== null
+    && /^(?:元|圆)$/u.test(unit)
+    && /(限额|保额|保险金额|医疗费用|费用|给付金|保险金)/u.test(text);
+  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
+  if (structured.resolved) return structured.amount;
+  if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false && !explicitYuanLimit) return 0;
+
+  const basis = String(indicator?.basis || '').normalize('NFKC');
   const baseAmount = indicatorBaseAmount(indicator, policy);
   const baseAmountPattern = /基本(?:保险金额|保额)/u;
   const usesBaseAmountBasis = baseAmountPattern.test(basis) || /^(?:保险金额|本合同保险金额|合同保险金额|保单保险金额)$/u.test(basis);
@@ -920,7 +938,7 @@ function applyIndicatorToRow(row, indicator, policy) {
   const conditionText = String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim();
 
   row.amount += amount;
-  row.amountText = amountDisplay(row.amount, formulaText || '待识别');
+  row.amountText = row.amount > 0 ? amountDisplay(row.amount) : amountDisplay(row.amount, formulaText || '待识别');
   row.countText = value !== null && unit ? `${formatNumberText(value)}${unit}` : formulaText || '-';
   row.status = row.amount > 0 ? 'covered' : 'formula';
   row.conditionText = conditionText || '按识别责任计算';
@@ -1039,7 +1057,7 @@ function markInactiveSourceOnRow(row, policy, liability, options = {}) {
 
 function markInactiveCriticalPolicies(rowMap, memberPolicies) {
   for (const policy of memberPolicies) {
-    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     let matched = false;
     for (const indicator of indicators) {
       if (indicatorCannotContributeRadarAmount(indicator)) continue;
@@ -1434,8 +1452,8 @@ function fallbackPolicyIndicator(policy) {
 
 function markInactiveAccidentPolicies(rowMap, memberPolicies) {
   for (const policy of memberPolicies) {
-    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
-    const responsibilities = Array.isArray(policy?.responsibilities) ? policy.responsibilities : [];
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
+    const responsibilities = (Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).filter((item) => !indicatorIsReferenceOnly(item));
     let matched = false;
 
     for (const indicator of indicators) {
@@ -1510,7 +1528,7 @@ function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
       }
     }
 
-    const responsibilities = Array.isArray(policy?.responsibilities) ? policy.responsibilities : [];
+    const responsibilities = (Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).filter((item) => !indicatorIsReferenceOnly(item));
     for (const responsibility of responsibilities) {
       const indicator = responsibilityToAccidentIndicator(responsibility, policy);
       if (!indicatorImpliesAccident(indicator)) continue;
@@ -2523,13 +2541,13 @@ function accidentRadarAmount(policies, corrections = []) {
 
   for (const policy of policies) {
     const candidates = [];
-    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     for (const indicator of indicators) {
       const part = accidentIndicatorRadarAmount(indicator, policy);
       if (part) candidates.push(part);
     }
 
-    const responsibilities = Array.isArray(policy?.responsibilities) ? policy.responsibilities : [];
+    const responsibilities = (Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).filter((item) => !indicatorIsReferenceOnly(item));
     for (const responsibility of responsibilities) {
       const part = accidentIndicatorRadarAmount(responsibilityToAccidentIndicator(responsibility, policy), policy);
       if (part) candidates.push(part);
@@ -2565,7 +2583,7 @@ function medicalRadarAmount(policies, corrections = []) {
   for (const policy of policies) {
     const excludedByCorrection = correctionExcludesDimensionAmount(policy, 'medical', corrections);
     if (excludedByCorrection) hasExcludedCorrection = true;
-    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     let hasMedicalIndicator = false;
     for (const indicator of indicators) {
       const text = indicatorText(indicator);
@@ -2626,7 +2644,7 @@ function lifeRadarAmount(policies, corrections = []) {
   let hasFormula = false;
   let hasUnquantifiableLife = false;
   for (const policy of policies) {
-    const indicators = Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : [];
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     let hasLifeIndicator = false;
     for (const indicator of indicators) {
       const text = indicatorText(indicator);
@@ -3093,6 +3111,48 @@ function buildOptionalResponsibilityGaps(policies = []) {
   return gaps;
 }
 
+function verificationLabelFor(item = {}) {
+  if (item?.verificationLabel) return String(item.verificationLabel);
+  if (item?.referenceOnly === true || String(item?.verificationStatus || '') === 'pending_review') return '待核实参考';
+  return String(item?.evidenceLabel || '待核实参考');
+}
+
+function buildPendingVerificationItems(policies = []) {
+  const items = [];
+  const pushItem = (policy = {}, item = {}, fallbackTitle = '') => {
+    if (!indicatorIsReferenceOnly(item)) return;
+    const title = String(item.title || item.sourceTitle || item.liability || item.coverageType || fallbackTitle || '待核实资料').trim();
+    const key = [
+      policy?.id,
+      String(policy?.name || ''),
+      title,
+      String(item.url || item.sourceUrl || ''),
+      String(item.sourceExcerpt || item.snippet || '').slice(0, 80),
+    ].join('\u001f');
+    if (items.some((existing) => existing.key === key)) return;
+    items.push({
+      key,
+      policyId: policy?.id,
+      company: String(policy?.company || ''),
+      productName: String(policy?.name || item.productName || ''),
+      title,
+      sourceKind: String(item.sourceKind || ''),
+      verificationStatus: String(item.verificationStatus || 'pending_review'),
+      verificationLabel: verificationLabelFor(item),
+      url: String(item.url || item.sourceUrl || ''),
+      excerpt: String(item.sourceExcerpt || item.snippet || item.note || item.scenario || '').trim().slice(0, 220),
+    });
+  };
+
+  for (const policy of Array.isArray(policies) ? policies : []) {
+    for (const source of Array.isArray(policy?.sources) ? policy.sources : []) pushItem(policy, source, source?.title);
+    for (const responsibility of Array.isArray(policy?.responsibilities) ? policy.responsibilities : []) pushItem(policy, responsibility, responsibility?.coverageType);
+    for (const indicator of Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : []) pushItem(policy, indicator, indicator?.liability);
+    for (const card of Array.isArray(policy?.responsibilityCards) ? policy.responsibilityCards : []) pushItem(policy, card, card?.title);
+  }
+  return items.slice(0, 20).map(({ key, ...item }) => item);
+}
+
 export function buildFamilyReport(policies = [], planningProfile = null, options = {}) {
   const reportPolicies = reportPoliciesForFamily(policies, options);
   const corrections = trustedReportCorrections(options.corrections);
@@ -3100,6 +3160,7 @@ export function buildFamilyReport(policies = [], planningProfile = null, options
     summary: buildFamilyReportSummary(reportPolicies),
     policyInventory: buildPolicyInventory(reportPolicies),
     optionalResponsibilityGaps: buildOptionalResponsibilityGaps(reportPolicies),
+    pendingVerificationItems: buildPendingVerificationItems(reportPolicies),
     criticalIllness: buildCriticalIllnessSection(reportPolicies, corrections),
     accident: buildAccidentSection(reportPolicies),
     wealth: buildWealthSection(reportPolicies),

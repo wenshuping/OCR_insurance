@@ -17,6 +17,34 @@ const COMMON_COMPANY_KEYWORDS = [
   { includes: ['人保寿险'], keywords: ['人保寿险', '中国人保寿险'] },
   { includes: ['中邮保险', '中邮人寿'], keywords: ['中邮保险', '中邮'] },
 ];
+const PRODUCT_IDENTITY_CODE_FIELDS = [
+  'planCode',
+  'productCode',
+  'product_code',
+  'riskCode',
+  'risk_code',
+  'industryCode',
+  'industry_code',
+];
+const PRODUCT_IDENTITY_URL_FIELDS = [
+  'url',
+  'sourceUrl',
+  'detailUrl',
+  'clauseUrl',
+  'pdfOriginalUrl',
+];
+const PRODUCT_IDENTITY_URL_PARAMS = [
+  'planCode',
+  'productCode',
+  'product_code',
+  'riskCode',
+  'risk_code',
+  'industryCode',
+  'industry_code',
+];
+const PRODUCT_IDENTITY_CONTEXT_PATTERN = /投保主险|主险|附加长险|附加险|险种名称|保险项目|产品名称|保险险种|产品计划|保险产品名称|险种计划|险种\/名称|保险|寿险|年金|两全|医疗|疾病|重疾|意外|护理|万能/u;
+const PRODUCT_IDENTITY_LABEL_PATTERN = /(?:产品|险种|计划|条款|方案)(?:代码|编码|编号|code)[:：]?\s*([A-Za-z0-9][A-Za-z0-9_-]{1,23})/giu;
+const PARENTHETICAL_CODE_PATTERN = /[（(]\s*([A-Za-z0-9][A-Za-z0-9_-]{1,23})\s*[）)]/gu;
 
 function trim(value) {
   return String(value || '').trim();
@@ -130,6 +158,63 @@ export function normalizeOcrMappingText(value) {
     .replace(/繳/gu, '缴')
     .replace(/[^\p{L}\p{N}]/gu, '')
     .toLowerCase();
+}
+
+function normalizeProductIdentityCode(value) {
+  const text = trim(value)
+    .normalize('NFKC')
+    .replace(/\s+/gu, '')
+    .toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
+
+function addProductIdentityCode(codes, value) {
+  const code = normalizeProductIdentityCode(value);
+  if (code) codes.add(code);
+}
+
+function extractProductIdentityCodesFromUrl(urlValue = '') {
+  const codes = new Set();
+  try {
+    const url = new URL(trim(urlValue));
+    for (const key of PRODUCT_IDENTITY_URL_PARAMS) {
+      addProductIdentityCode(codes, url.searchParams.get(key));
+    }
+  } catch {
+    return [];
+  }
+  return [...codes];
+}
+
+function productIdentityCodesFromRecord(record = {}) {
+  const codes = new Set();
+  for (const field of PRODUCT_IDENTITY_CODE_FIELDS) {
+    addProductIdentityCode(codes, record?.[field]);
+  }
+  for (const field of PRODUCT_IDENTITY_URL_FIELDS) {
+    for (const code of extractProductIdentityCodesFromUrl(record?.[field])) {
+      codes.add(code);
+    }
+  }
+  return [...codes];
+}
+
+function extractProductIdentityCodeCandidates(value = '') {
+  const source = trim(value).normalize('NFKC');
+  if (!source) return [];
+  const codes = new Set();
+  for (const match of source.matchAll(PRODUCT_IDENTITY_LABEL_PATTERN)) {
+    addProductIdentityCode(codes, match[1]);
+  }
+  const lines = source.split(/\r?\n/u).map(trim).filter(Boolean);
+  const allowUnlabeledSingleLine = lines.length <= 1;
+  for (const line of lines) {
+    if (!allowUnlabeledSingleLine && !PRODUCT_IDENTITY_CONTEXT_PATTERN.test(line)) continue;
+    for (const match of line.matchAll(PARENTHETICAL_CODE_PATTERN)) {
+      addProductIdentityCode(codes, match[1]);
+    }
+  }
+  return [...codes];
 }
 
 function addKeyword(keywords, value) {
@@ -277,6 +362,7 @@ function buildKnownProductStats(state = {}, company = '') {
       productName: name,
       productType: '',
       canonicalProductId: '',
+      productCodes: new Set(),
       recordCount: 0,
       official: false,
     };
@@ -284,6 +370,7 @@ function buildKnownProductStats(state = {}, company = '') {
     current.official = current.official || official;
     if (!current.productType && trim(options.productType)) current.productType = trim(options.productType);
     if (!current.canonicalProductId && canonicalProductId) current.canonicalProductId = canonicalProductId;
+    for (const code of options.productCodes || []) current.productCodes.add(code);
     stats.set(key, current);
   };
 
@@ -291,10 +378,14 @@ function buildKnownProductStats(state = {}, company = '') {
     addProduct(record.company, record.productName || record.title, 1, {
       official: true,
       productType: record.productType,
+      productCodes: productIdentityCodesFromRecord(record),
     });
   }
   for (const policy of state.policies || []) addProduct(policy.company, policy.name, 1, { official: false });
-  return [...stats.values()];
+  return [...stats.values()].map((item) => ({
+    ...item,
+    productCodes: [...item.productCodes],
+  }));
 }
 
 function isNonEmptyObject(value) {
@@ -405,7 +496,22 @@ export function matchInsuranceProductFromOcr(ocrText, state = {}, company = '') 
   if (!normalizedOcr) return null;
 
   const matches = [];
+  const inputCodes = new Set(extractProductIdentityCodeCandidates(ocrText));
   for (const product of buildKnownProductStats(state, company)) {
+    const matchedCode = (product.productCodes || []).find((code) => inputCodes.has(code));
+    if (matchedCode) {
+      matches.push({
+        company: product.company,
+        productName: product.productName,
+        ...(product.productType ? { productType: product.productType } : {}),
+        ...(product.canonicalProductId ? { canonicalProductId: product.canonicalProductId } : {}),
+        productCode: matchedCode,
+        productCodes: product.productCodes || [],
+        keyword: matchedCode,
+        matchReason: `产品代码 ${matchedCode}`,
+        score: 500 + Math.min(product.recordCount, 20) / 10,
+      });
+    }
     for (const keyword of productKeywordCandidates(product.productName)) {
       if (!normalizedOcr.includes(keyword.normalized)) continue;
       matches.push({
@@ -413,6 +519,7 @@ export function matchInsuranceProductFromOcr(ocrText, state = {}, company = '') 
         productName: product.productName,
         ...(product.productType ? { productType: product.productType } : {}),
         ...(product.canonicalProductId ? { canonicalProductId: product.canonicalProductId } : {}),
+        ...(product.productCodes?.length ? { productCode: product.productCodes[0], productCodes: product.productCodes } : {}),
         keyword: keyword.raw,
         score: keyword.normalized.length * 2 + Math.min(product.recordCount, 20) / 10,
       });
@@ -528,6 +635,12 @@ function normalizePolicyPlan(plan = {}, index = 0, company = '') {
     matchReason: trim(plan.matchReason),
     canonicalProductId: trim(plan.canonicalProductId),
   };
+  const productCode = normalizeProductIdentityCode(plan.productCode);
+  const productCodes = Array.isArray(plan.productCodes)
+    ? plan.productCodes.map(normalizeProductIdentityCode).filter(Boolean)
+    : [];
+  if (productCode) normalized.productCode = productCode;
+  if (productCodes.length) normalized.productCodes = productCodes;
   const benefitRows = normalizePlanBenefitRows(plan.benefitRows);
   if (benefitRows.length) normalized.benefitRows = benefitRows;
   return normalized;
@@ -922,14 +1035,20 @@ function attachPlanProductMatches({ plans = [], ocrText = '', state = {}, compan
     if (!match?.productName) return plan;
     const canonicalProductId = plan.canonicalProductId || match.canonicalProductId || '';
     const productType = chooseMatchedProductType(plan.productType, match.productType);
+    const productCode = normalizeProductIdentityCode(match.productCode);
+    const productCodes = Array.isArray(match.productCodes)
+      ? match.productCodes.map(normalizeProductIdentityCode).filter(Boolean)
+      : [];
     return {
       ...plan,
       company: match.company || plan.company || company,
       matchedProductName: match.productName,
       ...(productType ? { productType } : {}),
       matchScore: Number(match.score || 0) || plan.matchScore || 0,
-      matchReason: '本地产品名称匹配',
+      matchReason: match.matchReason || '本地产品名称匹配',
       ...(canonicalProductId ? { canonicalProductId } : {}),
+      ...(productCode ? { productCode } : {}),
+      ...(productCodes.length ? { productCodes } : {}),
     };
   });
 }

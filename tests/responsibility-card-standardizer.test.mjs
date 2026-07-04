@@ -100,6 +100,32 @@ test('standardizeResponsibilityIndicator classifies claim-trigger benefits as cl
   assert.equal(disability.calculationStatus, 'claim_contingent');
 });
 
+test('standardizeResponsibilityIndicator preserves embedded quoted disease liability names', () => {
+  const productName = '友邦爱安康恶性肿瘤（重度）疾病保险';
+  const indicator = {
+    company: '友邦人寿',
+    productName,
+    coverageType: '疾病保障',
+    liability: '“恶性肿瘤——重度”保险金',
+    basis: '基本保险金额',
+    formulaText: '“恶性肿瘤——重度”保险金 = 基本保险金额',
+    condition: '被保险人首次确诊合同约定的“恶性肿瘤——重度”',
+    sourceUrl: 'https://www.aia.com.cn/example/cancer.pdf',
+    sourceExcerpt: '1.“恶性肿瘤——重度”保险金 若被保险人首次确诊患有本合同约定的“恶性肿瘤——重度”，则我们给付“恶性肿瘤——重度”保险金，其金额等于基本保险金额。',
+  };
+
+  const result = standardizeResponsibilityIndicator(indicator, {
+    policy: { company: '友邦人寿', name: productName },
+  });
+  assert.equal(result.liability, '“恶性肿瘤——重度”保险金');
+
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: { company: '友邦人寿', name: productName },
+    coverageIndicators: [indicator],
+  });
+  assert.deepEqual(cards.map((card) => card.title), ['“恶性肿瘤——重度”保险金']);
+});
+
 test('standardizeResponsibilityIndicator does not let waiver text in source excerpt override benefit liability', () => {
   const result = standardizeResponsibilityIndicator({
     company: '复星联合健康保险',

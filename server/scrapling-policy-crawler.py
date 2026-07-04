@@ -22155,12 +22155,20 @@ async def guolian_life_fetch_catalog_pages_async(scopes: list[dict[str, str]], m
                 route_url = f"{GUOLIAN_LIFE_PRODUCT_PAGE_URL}?menuCode={quote(menu_code)}&grade={quote(grade)}"
                 await page.goto(route_url, wait_until="networkidle", timeout=60000)
                 await page.wait_for_timeout(1200)
+                module_path = await page.evaluate(
+                    """() => {
+                      const script = Array.from(document.scripts).find((item) =>
+                        item.type === 'module' && item.src.includes('/web/assets/index-')
+                      );
+                      return script ? new URL(script.src).pathname : '/web/assets/index-DIHm7fd8.js';
+                    }"""
+                )
                 first = await page.evaluate(
-                    """async ({menuCode, grade}) => {
-                      const mod = await import('/web/assets/index-DIHm7fd8.js');
+                    """async ({modulePath, menuCode, grade}) => {
+                      const mod = await import(modulePath);
                       return await mod.ag({menuCode, grade, pageNo: 1});
                     }""",
-                    {"menuCode": menu_code, "grade": grade},
+                    {"modulePath": module_path, "menuCode": menu_code, "grade": grade},
                 )
                 total_pages = int(first.get("totalPage") or 1)
                 limit = min(total_pages, max_pages) if max_pages else total_pages
@@ -22169,11 +22177,11 @@ async def guolian_life_fetch_catalog_pages_async(scopes: list[dict[str, str]], m
                 pages.append(first)
                 for page_no in range(2, limit + 1):
                     data = await page.evaluate(
-                        """async ({menuCode, grade, pageNo}) => {
-                          const mod = await import('/web/assets/index-DIHm7fd8.js');
+                        """async ({modulePath, menuCode, grade, pageNo}) => {
+                          const mod = await import(modulePath);
                           return await mod.ag({menuCode, grade, pageNo});
                         }""",
-                        {"menuCode": menu_code, "grade": grade, "pageNo": page_no},
+                        {"modulePath": module_path, "menuCode": menu_code, "grade": grade, "pageNo": page_no},
                     )
                     data["sourceScope"] = scope
                     data["pageNo"] = page_no
@@ -22546,6 +22554,7 @@ def reextract_responsibility_record(task: dict[str, Any]) -> dict[str, Any]:
     status, content_type, data = 0, "", b""
     archive_entry_name = ""
     host = urlsplit(material_url.split("#", 1)[0]).hostname or ""
+    pdf_path = trim(task.get("pdfPath"))
     if "#entry=" in material_url:
         try:
             status, content_type, data, archive_entry_name = read_archive_entry_pdf(
@@ -22555,6 +22564,34 @@ def reextract_responsibility_record(task: dict[str, Any]) -> dict[str, Any]:
         except Exception as error:
             content_type = f"archive_entry_error:{error}"
             data = b""
+    if not data and pdf_path:
+        try:
+            if os.path.getsize(pdf_path) > MAX_PDF_BYTES:
+                return {
+                    "ok": False,
+                    "id": trim(task.get("id")),
+                    "productName": product_name,
+                    "url": material_url,
+                    "status": 0,
+                    "contentType": "application/pdf",
+                    "bytes": os.path.getsize(pdf_path),
+                    "reason": "pdf_too_large",
+                }
+            with open(pdf_path, "rb") as pdf_file:
+                data = pdf_file.read(MAX_PDF_BYTES + 1)
+            status = 200
+            content_type = trim(task.get("contentType")) or "application/pdf"
+        except Exception as error:
+            return {
+                "ok": False,
+                "id": trim(task.get("id")),
+                "productName": product_name,
+                "url": material_url,
+                "status": 0,
+                "contentType": f"pdf_path_error:{error}",
+                "bytes": 0,
+                "reason": "pdf_unavailable",
+            }
     if not data and "cathaylife.cn" in host:
         cookie_header = read_cathay_life_cookie_header()
         if cookie_header:
@@ -22761,6 +22798,59 @@ def reextract_responsibility_records(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def crawl_cathay_life_filing_zip_path_records(task: dict[str, str]) -> list[dict[str, Any]]:
+    zip_path = trim(task.get("zipPath"))
+    if not zip_path:
+        return []
+    try:
+        if os.path.getsize(zip_path) > MAX_ZIP_BYTES:
+            return []
+        with open(zip_path, "rb") as zip_file:
+            data = zip_file.read(MAX_ZIP_BYTES + 1)
+    except Exception:
+        return []
+    return cathay_life_records_from_filing_zip(task, data, trim(task.get("contentType")) or "application/zip")
+
+
+def reextract_cathay_life_filing_zip_path_records(payload: dict[str, Any]) -> dict[str, Any]:
+    tasks = payload.get("records") if isinstance(payload.get("records"), list) else payload.get("tasks")
+    if not isinstance(tasks, list):
+        tasks = []
+    records: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        try:
+            task_records = crawl_cathay_life_filing_zip_path_records(task)
+        except Exception as error:
+            task_records = []
+            skipped.append(
+                {
+                    "productName": trim(task.get("productName")),
+                    "url": trim(task.get("url")),
+                    "reason": f"exception:{error}",
+                }
+            )
+        records.extend(task_records)
+        if not task_records:
+            skipped.append(
+                {
+                    "productName": trim(task.get("productName")),
+                    "url": trim(task.get("url")),
+                    "reason": "no_extractable_zip_pdf",
+                }
+            )
+    return {
+        "ok": True,
+        "taskCount": len(tasks),
+        "recordCount": len(records),
+        "skippedCount": len(skipped),
+        "records": records,
+        "skipped": skipped,
+    }
+
+
 async def cathay_browser_fetch_material(context: Any, material_url: str) -> tuple[int, str, bytes, str]:
     archive_entry_name = ""
     base_url, entry_ref = (material_url.split("#entry=", 1) + [""])[:2] if "#entry=" in material_url else (material_url, "")
@@ -22882,6 +22972,8 @@ def reextract_cathay_responsibility_records(payload: dict[str, Any]) -> dict[str
 
 
 def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    if trim(payload.get("mode")) == "reextract_cathay_life_filing_zip_paths":
+        return reextract_cathay_life_filing_zip_path_records(payload)
     if trim(payload.get("mode")) == "reextract_cathay_responsibility_records_browser":
         return reextract_cathay_responsibility_records(payload)
     if trim(payload.get("mode")) == "reextract_responsibility_records":

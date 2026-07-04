@@ -9,6 +9,13 @@ import {
   summarizeJrcpcxCatalogResult,
   summarizeJrcpcxShardResults,
 } from '../scripts/crawl-jrcpcx-insurance-catalog.mjs';
+import {
+  JRCPCX_TERMS_EVIDENCE_LABEL,
+  JRCPCX_TERMS_EVIDENCE_LEVEL,
+  jrcpcxProductCandidateRecord,
+  jrcpcxSourceReviewMessage,
+  normalizeKnowledgeRecord,
+} from '../server/policy-knowledge.service.mjs';
 
 test('buildJrcpcxCatalogPayload targets insurance catalog with broad filters by default', () => {
   const payload = buildJrcpcxCatalogPayload({
@@ -143,4 +150,52 @@ test('summarizeJrcpcxCatalogResult keeps samples but not raw detail payloads', (
   assert.equal(Object.hasOwn(summary.samples[0], 'raw'), false);
   assert.equal(Object.hasOwn(summary.samples[0], 'detail'), false);
   assert.equal(Object.hasOwn(summary.recordSamples[0], 'pageText'), false);
+});
+
+test('JRCPCX candidate records keep regulatory industry terms evidence markers', () => {
+  const record = jrcpcxProductCandidateRecord({
+    catalogId: 'jrcpcx_demo',
+    productName: '个人住院医疗保险',
+    deptName: '示例保险公司',
+    productType: '人身保险类',
+    productState: '停售',
+    industryCode: 'ABC123',
+    detailUrl: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=abc',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+  });
+
+  assert.equal(record.sourceKind, 'jrcpcx');
+  assert.equal(record.evidenceLevel, JRCPCX_TERMS_EVIDENCE_LEVEL);
+  assert.equal(record.evidenceLabel, JRCPCX_TERMS_EVIDENCE_LABEL);
+  assert.equal(record.officialDomain, 'inspdinfo.iachina.cn');
+  assert.equal(record.detailUrl, 'https://inspdinfo.iachina.cn/lifeIns/detail?data=abc');
+  assert.equal(record.clauseUrl, 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc');
+});
+
+test('normalizeKnowledgeRecord preserves JRCPCX clause PDF metadata', () => {
+  const record = normalizeKnowledgeRecord({
+    company: '示例保险公司',
+    productName: '个人住院医疗保险',
+    title: '个人住院医疗保险条款',
+    url: 'https://inspdinfo.iachina.cn/lifeIns/detail?data=abc',
+    sourceLevel: JRCPCX_TERMS_EVIDENCE_LEVEL,
+    sourceUrl: 'https://www.jrcpcx.cn/#/query',
+    clauseUrl: 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc',
+    pageText: '保险责任 本公司给付住院医疗保险金。',
+  });
+
+  assert.equal(record.sourceKind, 'jrcpcx');
+  assert.equal(record.evidenceLevel, JRCPCX_TERMS_EVIDENCE_LEVEL);
+  assert.equal(record.evidenceLabel, JRCPCX_TERMS_EVIDENCE_LABEL);
+  assert.equal(record.clauseUrl, 'https://inspdinfo.iachina.cn/prod-api/lifeIns/clauseInfo?info=abc');
+});
+
+test('JRCPCX source review message hides crawler tracebacks', () => {
+  const message = jrcpcxSourceReviewMessage({
+    code: 'SCRAPLING_OUTPUT_MISSING',
+    message: 'Traceback BrowserType.connect_over_cdp: connect ECONNREFUSED 127.0.0.1:9224',
+  });
+
+  assert.match(message, /浏览器未连接|人工验证/u);
+  assert.doesNotMatch(message, /Traceback|ECONNREFUSED|connect_over_cdp/u);
 });

@@ -9,6 +9,7 @@ export function AdminKnowledgePage({
   onChange,
   onRefresh,
   onCrawl,
+  onReview,
 }: {
   records: KnowledgeRecord[];
   form: KnowledgeCrawlForm;
@@ -17,6 +18,7 @@ export function AdminKnowledgePage({
   onChange: (form: KnowledgeCrawlForm) => void;
   onRefresh: () => void;
   onCrawl: () => void;
+  onReview: (record: KnowledgeRecord, action: 'approved' | 'rejected') => void;
 }) {
   return (
     <div className="max-w-5xl">
@@ -28,6 +30,7 @@ export function AdminKnowledgePage({
         onChange={onChange}
         onRefresh={onRefresh}
         onCrawl={onCrawl}
+        onReview={onReview}
       />
     </div>
   );

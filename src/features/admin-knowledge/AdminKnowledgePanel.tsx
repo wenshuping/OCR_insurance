@@ -26,6 +26,7 @@ export function AdminKnowledgePanel({
   onChange,
   onRefresh,
   onCrawl,
+  onReview,
 }: {
   records: KnowledgeRecord[];
   form: KnowledgeCrawlForm;
@@ -34,6 +35,7 @@ export function AdminKnowledgePanel({
   onChange: (form: KnowledgeCrawlForm) => void;
   onRefresh: () => void;
   onCrawl: () => void;
+  onReview: (record: KnowledgeRecord, action: 'approved' | 'rejected') => void;
 }) {
   const officialCount = records.filter((record) => record.official).length;
   const searchListId = useId();
@@ -114,24 +116,59 @@ export function AdminKnowledgePanel({
         <span>每页 {KNOWLEDGE_PAGE_SIZE} 条</span>
       </div>
       <div className="mt-2 space-y-2">
-        {pageRecords.map((record) => (
-          <a
+        {pageRecords.map((record) => {
+          const customerPhoto = record.sourceKind === 'customer_policy_photo';
+          const pendingReview = customerPhoto && record.reviewStatus === 'pending';
+          const Wrapper = record.url?.startsWith('http') ? 'a' : 'div';
+          return (
+          <Wrapper
             key={`${record.id}-${record.url}`}
             className="block rounded-[16px] border border-slate-100 bg-slate-50 px-3 py-2.5 text-sm transition hover:border-blue-100 hover:bg-blue-50"
-            href={record.url}
-            target="_blank"
-            rel="noreferrer"
+            {...(Wrapper === 'a' ? { href: record.url, target: '_blank', rel: 'noreferrer' } : {})}
           >
             <div className="flex items-start justify-between gap-2">
               <p className="min-w-0 truncate font-black text-slate-900">{record.productName || record.title}</p>
               <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-black text-slate-500">
-                {record.sourceType || 'html'}
+                {customerPhoto ? record.reviewStatus || 'pending' : record.sourceType || 'html'}
               </span>
             </div>
             <p className="mt-1 truncate text-xs font-medium text-slate-500">{record.company}</p>
+            {customerPhoto ? (
+              <p className="mt-1 text-xs font-bold text-amber-600">
+                客户补充照片线索，审核通过后才作为全局非官方候选
+              </p>
+            ) : null}
+            {record.pageText && customerPhoto ? (
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{record.pageText}</p>
+            ) : null}
             <p className="mt-1 truncate text-xs text-slate-400">{record.url}</p>
-          </a>
-        ))}
+            {pendingReview ? (
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onReview(record, 'approved');
+                  }}
+                >
+                  通过为非官方候选
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-black text-rose-700 ring-1 ring-rose-100"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onReview(record, 'rejected');
+                  }}
+                >
+                  驳回
+                </button>
+              </div>
+            ) : null}
+          </Wrapper>
+          );
+        })}
         {records.length && !filteredRecords.length ? <p className="rounded-[16px] bg-slate-50 px-3 py-8 text-center text-sm font-bold text-slate-400">没有匹配的知识库资料</p> : null}
         {!records.length ? <p className="rounded-[16px] bg-slate-50 px-3 py-4 text-sm font-bold text-slate-400">暂无本地知识库资料</p> : null}
       </div>
@@ -155,6 +192,8 @@ function getKnowledgeSearchFields(record: KnowledgeRecord) {
     record.url,
     record.sourceType,
     record.materialType,
+    record.sourceKind,
+    record.reviewStatus,
     record.officialDomain,
     record.parser,
   ];

@@ -208,6 +208,32 @@ test('runResponsibilityPlanner calls DeepSeek when trigger allows it', async () 
   assert.deepEqual(result.planner.productPurposeFocus, ['终身身故或全残保障', '有效保险金额递增']);
 });
 
+test('runResponsibilityPlanner repairs malformed JSON from DeepSeek', async () => {
+  const result = await runResponsibilityPlanner({
+    mode: 'all',
+    model: 'deepseek-v4-flash',
+    product: { company: '新华保险', productName: '尊贵人生年金保险（分红型）' },
+    routing: annuityRouting,
+    sourceSections,
+    cards: [],
+    indicators: [],
+    generateWithDeepSeek: async () => [
+      '```json',
+      '{',
+      '  productCategory: "annuity",',
+      '  categoryLabel: "年金保险",',
+      '  confidence: "high",',
+      '  responsibilityFocus: ["年金领取", "身故保险金"],',
+      '}',
+      '```',
+    ].join('\n'),
+  });
+
+  assert.equal(result.plannerUsed, true);
+  assert.equal(result.planner.productCategory, 'annuity');
+  assert.deepEqual(result.planner.responsibilityFocus, ['年金领取', '身故保险金']);
+});
+
 test('runResponsibilityPlanner returns skipped metadata when auto does not need Planner', async () => {
   let called = false;
   const result = await runResponsibilityPlanner({

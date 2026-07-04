@@ -1,5 +1,6 @@
 import express from 'express';
 import { sendError } from '../http/errors.mjs';
+import { approveCustomerPolicyPhotoKnowledgeRecord } from '../customer-policy-photo-knowledge.service.mjs';
 
 export function createAdminRoutes(context) {
   const router = express.Router();
@@ -10,6 +11,7 @@ export function createAdminRoutes(context) {
     persistAdminSession,
     persistMembershipConfig,
     persistOfficialDomainProfiles,
+    persistResponsibilityLookupArtifacts,
     adminPassword,
     adminSessionTtlMs,
     requireAdmin,
@@ -733,6 +735,46 @@ export function createAdminRoutes(context) {
       });
     } catch (error) {
       sendError(res, error, 400);
+    }
+  });
+
+  router.post('/knowledge-records/:id/review', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      const id = Number(req.params.id || 0);
+      const existing = (state.knowledgeRecords || []).find((record) => Number(record?.id || 0) === id) || null;
+      if (!existing) {
+        const error = new Error('知识记录不存在');
+        error.code = 'KNOWLEDGE_RECORD_NOT_FOUND';
+        error.status = 404;
+        throw error;
+      }
+      const action = String(req.body?.action || req.body?.reviewStatus || '').trim();
+      const reviewed = approveCustomerPolicyPhotoKnowledgeRecord(existing, {
+        approved: action !== 'rejected',
+      });
+      if (!reviewed) {
+        const error = new Error('只支持审核客户补充照片线索');
+        error.code = 'KNOWLEDGE_RECORD_REVIEW_UNSUPPORTED';
+        error.status = 400;
+        throw error;
+      }
+      reviewed.id = existing.id;
+      const saved = upsertKnowledgeRecords(state, [reviewed], {
+        allocateId,
+        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+      });
+      if (typeof persistResponsibilityLookupArtifacts === 'function') {
+        await persistResponsibilityLookupArtifacts({ knowledgeRecords: saved });
+      }
+      res.json({
+        ok: true,
+        record: saved[0] || reviewed,
+        records: buildAdminKnowledgeRecords(state),
+      });
+    } catch (error) {
+      sendError(res, error, error?.status || 400);
     }
   });
 

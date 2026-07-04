@@ -12,9 +12,9 @@ function salesReviewDisplayTerm(value: string) {
   const text = String(value || '').trim();
   if (/^duplicatePolicyHints$/iu.test(text)) return '重复保单提示';
   if (/^evidenceWarnings$/iu.test(text)) return '条款证据冲突';
-  if (/^canonical:product_[a-z0-9_-]+$/iu.test(text)) return '官方条款证据';
+  if (/^canonical:product_[a-z0-9_-]+$/iu.test(text)) return '条款证据';
   if (/^plans$/iu.test(text)) return '险种明细';
-  if (/^officialEvidence$/iu.test(text)) return '官网条款证据';
+  if (/^officialEvidence$/iu.test(text)) return '分层条款证据';
   return '';
 }
 
@@ -24,8 +24,8 @@ function normalizeSalesReviewMarkdownText(value: string) {
     .replace(/`([^`]+)`/gu, (match, token) => salesReviewDisplayTerm(String(token || '')) || match)
     .replace(/\bduplicatePolicyHints\b/giu, '重复保单提示')
     .replace(/\bevidenceWarnings\b/giu, '条款证据冲突')
-    .replace(/\bcanonical:product_[a-z0-9_-]+\b/giu, '官方条款证据')
-    .replace(/\bofficialEvidence\b/giu, '官网条款证据')
+    .replace(/\bcanonical:product_[a-z0-9_-]+\b/giu, '条款证据')
+    .replace(/\bofficialEvidence\b/giu, '分层条款证据')
     .replace(/\bplans\b/giu, '险种明细')
     .replace(/[ \t]+/gu, ' ')
     .trim();

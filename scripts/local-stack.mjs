@@ -11,6 +11,8 @@ const cloudflaredWatchdogPidPath = path.join(process.env.HOME || '', 'Library/Ap
 const command = process.argv[2] || 'start';
 const parsedCommand = parseCommand(command);
 const runtimeEnvKeys = new Set([
+  'POLICY_OCR_SERVICE_URL',
+  'POLICY_OCR_SERVICE_TOKEN',
   'POLICY_OCR_PROVIDER',
   'POLICY_OCR_POSTPROCESSOR',
   'POLICY_OCR_OLLAMA_BASE_URL',

@@ -22,6 +22,7 @@ __pycache__/
 
 # Crawl data (generated)
 crawled/
+.firecrawl/
 
 # Outputs (generated reports/files)
 outputs/

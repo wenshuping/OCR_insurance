@@ -289,6 +289,13 @@ export function crawlAdminKnowledge(token: string, input: { company: string; nam
   });
 }
 
+export function reviewAdminKnowledgeRecord(token: string, input: { id: number; action: 'approved' | 'rejected' }) {
+  return request<AdminKnowledgeRecordsResponse & { record: KnowledgeRecord }>(`/api/admin/knowledge-records/${encodeURIComponent(String(input.id))}/review`, {
+    token,
+    body: { action: input.action },
+  });
+}
+
 export function getAdminMembershipConfig(token: string) {
   return request<{ ok: true; config: AdminMembershipConfig }>('/api/admin/membership-config', { token });
 }

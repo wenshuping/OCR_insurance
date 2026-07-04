@@ -136,6 +136,76 @@ test('buildIndicatorsForProduct splits numbered child education cashflows with e
   );
 });
 
+test('buildIndicatorsForProduct handles recent official medical, travel, and dividend life variants', () => {
+  const medicalBalance = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试互联网药品医疗保险',
+    productType: '医疗险',
+    salesStatus: '在售',
+    sourceRecordId: '2001',
+    sourceUrl: 'https://official.example-life.test/internet-medical.pdf',
+    sourceTitle: '测试互联网药品医疗保险条款',
+    sourceText: '保险责任 院外药品费用保险金 被保险人发生属于本合同保险责任范围内的药品费用，本公司给付院外药品费用保险金。若被保险人所发生的属于本合同保险责任范围内的医疗费用已通过其他途径获得了补偿或赔偿，本公司向受益人给付医疗保险金的金额不得超过该被保险人实际发生的医疗费用扣除该被保险人从其他途径获得的补偿或赔偿金额后的余额。',
+  }, '2026-07-03T00:00:00.000Z');
+  const medicalByLiability = new Map(medicalBalance.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    medicalByLiability.get('医疗费用保险金')?.formulaText,
+    '医疗费用保险金 = min(合同约定应给付金额, 实际合理医疗费用 - 已获补偿/赔偿)',
+  );
+
+  const hospitalCompensation = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试附加住院费用医疗保险',
+    productType: '医疗险',
+    salesStatus: '在售',
+    sourceRecordId: '2002',
+    sourceUrl: 'https://official.example-life.test/hospital-compensation.pdf',
+    sourceTitle: '测试附加住院费用医疗保险条款',
+    sourceText: '保险责任 住院费用补偿保险金 被保险人在二级以上公立医院住院治疗，我们就被保险人每次住院实际发生的合理且必要的医疗费用按以下约定承担保险责任：(1)若被保险人以社会基本医疗保险或公费医疗身份住院的，我们在扣除被保险人从其他途径取得的医疗费用补偿或赔偿后，按剩余部分的90%给付住院费用补偿保险金。(2)若被保险人未以社会基本医疗保险或未以公费医疗身份住院的，我们在扣除被保险人从其他途径取得的医疗费用补偿或赔偿后，再扣除人民币120元，按剩余部分的75%给付住院费用补偿保险金。',
+  }, '2026-07-03T00:00:00.000Z');
+  const hospitalByLiability = new Map(hospitalCompensation.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    hospitalByLiability.get('住院费用补偿保险金')?.formulaText,
+    '住院费用补偿保险金 = 条件给付（剩余部分 × 90%；剩余部分 × 75%）',
+  );
+
+  const travelAccident = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试境外旅行意外伤害保险',
+    productType: '意外险',
+    salesStatus: '在售',
+    sourceRecordId: '2003',
+    sourceUrl: 'https://official.example-life.test/travel-accident.pdf',
+    sourceTitle: '测试境外旅行意外伤害保险条款',
+    sourceText: '保险责任 意外身故保险金 被保险人在旅行期间因遭受意外伤害事故，并自意外伤害事故发生之日起一百八十日内身故的，我们按保险合同载明的该被保险人意外身故保险金金额给付意外身故保险金。但若被保险人身故前本合同已给付意外伤残保险金，则我们在给付意外身故保险金时应扣除已给付的意外伤残保险金。意外伤残保险金 被保险人在旅行期间因遭受意外伤害事故，并自意外伤害事故发生之日起一百八十日内导致伤残的，我们根据伤残等级，以保险合同载明的该被保险人意外身故保险金金额乘以对应的保险金给付比例给付意外伤残保险金。',
+  }, '2026-07-03T00:00:00.000Z');
+  const travelByLiability = new Map(travelAccident.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    travelByLiability.get('意外身故保险金')?.formulaText,
+    '意外身故保险金 = 意外身故保险金金额 - 已给付伤残保险金',
+  );
+  assert.equal(
+    travelByLiability.get('意外伤残保险金')?.formulaText,
+    '意外伤残保险金 = 意外身故保险金金额 × 伤残/残疾等级给付比例',
+  );
+
+  const dividendLife = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试分红终身寿险',
+    productType: '寿险',
+    salesStatus: '在售',
+    sourceRecordId: '2004',
+    sourceUrl: 'https://official.example-life.test/dividend-life.pdf',
+    sourceTitle: '测试分红终身寿险条款',
+    sourceText: '保险责任 身故或全残保险金 若被保险人身故或导致本合同全残项目列表所列全残，我们按本合同基本保险金额对应的身故或全残保险金和累积红利保险金额对应的身故或全残保险金之和，给付身故或全残保险金。基本保险金额对应的身故或全残保险金，为下列三项计算方式所计得金额的最大值：（1）以本合同保险单载明的基本保险金额为准，计算自本合同生效日起至被保险人身故或全残日止，所应交保险费总额×给付比例表对应的比例。（2）被保险人身故或全残时，本合同的基本保险金额。（3）被保险人身故或全残时，本合同基本保险金额对应的现金价值。累积红利保险金额对应的身故或全残保险金，为下列两项计算方式所计得金额的较大值：（1）被保险人身故或全残时，本合同的累积红利保险金额。（2）被保险人身故或全残时，本合同累积红利保险金额对应的现金价值。',
+  }, '2026-07-03T00:00:00.000Z');
+  const dividendByLiability = new Map(dividendLife.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    dividendByLiability.get('身故或全残保险金')?.formulaText,
+    '身故或全残保险金 = 基本保险金额对应身故或全残保险金 + 累积红利保险金额对应身故或全残保险金（按年龄、已交保险费、基本保险金额/累积红利保险金额、现金价值取较大或最大）',
+  );
+});
+
 test('buildIndicatorsForProduct extracts hospitalization 给付金 day-count formulas', () => {
   const indicators = buildIndicatorsForProduct({
     company: '友邦人寿',
