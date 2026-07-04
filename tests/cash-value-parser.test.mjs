@@ -183,6 +183,27 @@ describe('cash-value-parser', () => {
       assert.ok(result.confidence >= 0.7);
     });
 
+    it('rejects year-like cash values caused by misaligned DeepSeek boxes', () => {
+      const boxes = [
+        { text: '保单年度末', box: [[100, 50], [180, 50], [180, 70], [100, 70]], confidence: 0 },
+        { text: '现金价值表', box: [[250, 50], [360, 50], [360, 70], [250, 70]], confidence: 0 },
+        { text: '9', box: [[120, 90], [140, 90], [140, 110], [120, 110]], confidence: 0 },
+        { text: '10', box: [[240, 90], [260, 90], [260, 110], [240, 110]], confidence: 0 },
+        { text: '12', box: [[120, 130], [140, 130], [140, 150], [120, 150]], confidence: 0 },
+        { text: '13', box: [[240, 130], [260, 130], [260, 150], [240, 150]], confidence: 0 },
+        { text: '14', box: [[120, 170], [140, 170], [140, 190], [120, 190]], confidence: 0 },
+        { text: '15', box: [[240, 170], [260, 170], [260, 190], [240, 190]], confidence: 0 },
+        { text: '16', box: [[120, 210], [140, 210], [140, 230], [120, 230]], confidence: 0 },
+        { text: '17', box: [[240, 210], [260, 210], [260, 230], [240, 230]], confidence: 0 },
+        { text: '18', box: [[120, 250], [140, 250], [140, 270], [120, 270]], confidence: 0 },
+        { text: '19', box: [[240, 250], [260, 250], [260, 270], [240, 270]], confidence: 0 },
+      ];
+
+      const result = parseCashValueTable(boxes);
+      assert.equal(result.ok, false);
+      assert.equal(result.error, 'PARSE_FAILED');
+    });
+
     it('returns failure when boxes are empty', () => {
       const result = parseCashValueTable([]);
       assert.equal(result.ok, false);
@@ -356,6 +377,44 @@ describe('cash-value-parser', () => {
       assert.deepEqual(result.rows[0], { policyYear: 1, age: null, cashValue: 282 });
       assert.deepEqual(result.rows[4], { policyYear: 11, age: null, cashValue: 29310 });
       assert.deepEqual(result.rows[10], { policyYear: 45, age: null, cashValue: 52440 });
+    });
+
+    it('parses DeepSeek same-line year and cash-value rows from HTML table text', () => {
+      const ocrText = [
+        '现金价值与减额交清保额',
+        '保单年度末保单年度末现金价值表减额交清保额表保单年度末现金价值表币种:人民币减额交清保额',
+        '1 18,228.00 2,064.00 60 102,546.00',
+        '2 42,595.00 4,704.00 上表所列的现金价值不包括因红利分配而产生的',
+        '3 70,514.00 利益。',
+        '4 71,394.00 如有未列年度及事项，详见合同条款。',
+        '5 72,298.00',
+        '6 73,228.00',
+        '7 74,182.00',
+        '8 75,162.00',
+        '9 83,308.00',
+        '10 92,162.00',
+        '11',
+        '12 92,908.00',
+        '13 93,670.00',
+        '14 94,451.00',
+        '15 95,231.00',
+        '16 96,771.00',
+        '17 91,130.00',
+        '18 91,490.00',
+        '19 91,851.00',
+        '20 92,212.00',
+      ].join('\n');
+
+      const result = parseCashValueText(ocrText, { source: 'deepseek_ocr' });
+      assert.equal(result.ok, true);
+      assert.equal(result.source, 'deepseek_ocr');
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 1), { policyYear: 1, age: null, cashValue: 18228 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 2), { policyYear: 2, age: null, cashValue: 42595 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 4), { policyYear: 4, age: null, cashValue: 71394 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 9), { policyYear: 9, age: null, cashValue: 83308 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 10), { policyYear: 10, age: null, cashValue: 92162 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 60), { policyYear: 60, age: null, cashValue: 102546 });
+      assert.equal(result.rows.some((row) => row.policyYear === 11), false);
     });
 
     it('parses macOS Vision interleaved three-column cash value text', () => {

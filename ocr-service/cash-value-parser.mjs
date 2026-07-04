@@ -540,9 +540,32 @@ function parseSequentialYearValueTextRows(lines) {
     if (policyYear === null) continue;
     const nextLine = lines[i + 1];
     if (isYearHeader(nextLine) || isCashValueHeader(nextLine) || parsePolicyYear(nextLine) !== null) continue;
+    if (parseInlineYearValueTextRows([nextLine]).length) continue;
     const cashValue = parseNumericValue(nextLine);
     if (cashValue === null || cashValue < 0) continue;
     rows.push({ policyYear, age: null, cashValue });
+  }
+  return rows;
+}
+
+function looksLikeCashValueToken(text) {
+  return /[,，.．]/u.test(String(text || ''));
+}
+
+function parseInlineYearValueTextRows(lines) {
+  const rows = [];
+  for (const line of lines) {
+    if (isTableStopLine(line)) continue;
+    const tokens = String(line || '').match(/(?<![\d,，.．])(?:\d{1,3}(?:年末|年未|年木|年度末)?|[\d,，]*\d[\d,，]*(?:[.．]\d{2})?)(?![\d,，.．])/gu) || [];
+    for (let i = 0; i < tokens.length - 1; i++) {
+      const policyYear = parsePolicyYear(tokens[i]);
+      if (policyYear === null) continue;
+      const cashToken = tokens[i + 1];
+      if (!looksLikeCashValueToken(cashToken)) continue;
+      const cashValue = parseNumericValue(cashToken);
+      if (cashValue === null || cashValue < 0) continue;
+      rows.push({ policyYear, age: null, cashValue });
+    }
   }
   return rows;
 }
@@ -598,9 +621,11 @@ export function parseCashValueText(input, options = {}) {
   if (current.length) segments.push(current);
 
   const sequentialRows = parseSequentialYearValueTextRows(lines);
+  const inlineRows = parseInlineYearValueTextRows(lines);
   const sequentialYears = new Set(sequentialRows.map((row) => row.policyYear));
   const parsedRows = uniqueRowsByPolicyYear([
     ...sequentialRows,
+    ...inlineRows,
     ...segments.flatMap((segment) => parseCashValueTextSegment(segment, { excludedPolicyYears: sequentialYears })),
   ]);
   const { valid, confidence } = validateAndScore(parsedRows, []);
@@ -640,6 +665,13 @@ function validateAndScore(rows, boxes) {
     if (rows[i].policyYear >= rows[i - 1].policyYear) ascendingCount++;
   }
   const yearOrdered = totalPairs === 0 || ascendingCount / totalPairs >= 0.5;
+  const adjacentYearLikeCashValues = rows.filter((row) => (
+    Number.isInteger(row.cashValue)
+    && row.cashValue >= 1
+    && row.cashValue <= 150
+    && Math.abs(row.cashValue - row.policyYear) <= 1
+  )).length;
+  const mostlyAdjacentYearValues = rows.length >= 5 && adjacentYearLikeCashValues / rows.length >= 0.5;
 
   // Check cash value non-negative (already enforced in parsing)
   // Check age ordering if present
@@ -670,7 +702,7 @@ function validateAndScore(rows, boxes) {
   const confidence = ocrScore * 0.4 + alignmentScore * 0.3 + reasonabilityScore * 0.3;
 
   return {
-    valid: yearOrdered && confidence >= CONFIDENCE_THRESHOLD,
+    valid: yearOrdered && !mostlyAdjacentYearValues && confidence >= CONFIDENCE_THRESHOLD,
     confidence: Math.round(confidence * 100) / 100,
   };
 }
