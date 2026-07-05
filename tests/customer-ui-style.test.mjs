@@ -471,15 +471,14 @@ test('customer app exposes family profile management surface', () => {
   assert.match(normalizedCustomerAppSource, /downloadReportImage\(familySalesReviewReportRef\.current,\s*familySalesReviewExportTitle\)/);
   assert.match(normalizedCustomerAppSource, /familySalesReviewReportRef/);
   assert.match(normalizedCustomerAppSource, /正在读取已保存的专家报告/);
-  assert.match(normalizedCustomerAppSource, /暂无已保存销售建议，正在生成并保存/);
+  assert.match(normalizedCustomerAppSource, /暂无已保存销售建议，可点击生成/);
   assert.match(normalizedCustomerAppSource, /有已保存内容会直接展示/);
-  assert.match(customerSource, /if \(saved\.review\?\.content\) \{[\s\S]*return;[\s\S]*const generated = await createFamilySalesReview\(authInput\)/);
+  assert.doesNotMatch(customerSource, /暂无已保存销售建议[\s\S]{0,300}createFamilySalesReview\(authInput\)/);
   assert.doesNotMatch(normalizedCustomerAppSource, /首次生成专家研判中，完成后会自动保存/);
   assert.doesNotMatch(normalizedCustomerAppSource, /首次进入会自动生成/);
   assert.match(normalizedCustomerAppSource, /专家系统仍在生成中，完成后会自动保存/);
   assert.match(normalizedCustomerAppSource, /专家研判已完成并保存/);
   assert.match(normalizedCustomerAppSource, /生成销售建议/);
-  assert.match(normalizedCustomerAppSource, /生成\/重算/);
   assert.match(normalizedCustomerAppSource, /正在请求专家系统生成策略简报/);
   assert.match(normalizedCustomerAppSource, /专家研判控制台/);
   assert.match(normalizedCustomerAppSource, /实时生成中/);

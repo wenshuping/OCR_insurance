@@ -12494,6 +12494,97 @@ test('family sales review is generated once persisted and returned by latest rep
   }
 });
 
+test('family sales review generation preserves other family and owner reviews', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push(
+    {
+      id: 8,
+      ownerUserId: null,
+      ownerGuestId: 'guest-sales-review-scope',
+      familyName: '当前家庭',
+      coreMemberId: 9,
+      status: 'active',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    {
+      id: 18,
+      ownerUserId: null,
+      ownerGuestId: 'guest-sales-review-scope',
+      familyName: '其他家庭',
+      coreMemberId: 19,
+      status: 'active',
+      createdAt: '2026-06-15T00:01:00.000Z',
+      updatedAt: '2026-06-15T00:01:00.000Z',
+    },
+  );
+  state.familyMembers.push(
+    { id: 9, familyId: 8, name: '张三', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active' },
+    { id: 19, familyId: 18, name: '李四', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active' },
+  );
+  state.policies.push(
+    { id: 11, guestId: 'guest-sales-review-scope', familyId: 8, company: '新华保险', name: '测试寿险', applicant: '张三', insured: '张三' },
+    { id: 21, guestId: 'guest-sales-review-scope', familyId: 18, company: '平安保险', name: '测试重疾', applicant: '李四', insured: '李四' },
+  );
+  state.familySalesReviews.push(
+    {
+      id: 30,
+      familyId: 8,
+      ownerGuestId: 'guest-sales-review-scope',
+      status: 'active',
+      content: '当前家庭旧销售建议',
+      generatedAt: '2026-06-15T00:02:00.000Z',
+      createdAt: '2026-06-15T00:02:00.000Z',
+      updatedAt: '2026-06-15T00:02:00.000Z',
+    },
+    {
+      id: 31,
+      familyId: 18,
+      ownerGuestId: 'guest-sales-review-scope',
+      status: 'active',
+      content: '其他家庭销售建议',
+      generatedAt: '2026-06-15T00:03:00.000Z',
+      createdAt: '2026-06-15T00:03:00.000Z',
+      updatedAt: '2026-06-15T00:03:00.000Z',
+    },
+    {
+      id: 32,
+      familyId: 8,
+      ownerGuestId: 'other-guest-sales-review-scope',
+      status: 'active',
+      content: '其他 owner 销售建议',
+      generatedAt: '2026-06-15T00:04:00.000Z',
+      createdAt: '2026-06-15T00:04:00.000Z',
+      updatedAt: '2026-06-15T00:04:00.000Z',
+    },
+  );
+  state.nextId = 40;
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilySalesReview: async () => ({
+      content: '当前家庭新销售建议',
+      model: 'test',
+      generatedAt: '2026-06-15T00:05:00.000Z',
+      inputSummary: { memberCount: 1, policyCount: 1 },
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review-scope', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(generated.response.status, 200);
+    assert.equal(state.familySalesReviews.find((review) => review.id === 30).status, 'archived');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 31).status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 32).status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 40).status, 'active');
+  } finally {
+    await server.close();
+  }
+});
+
 test('family sales review daily refresh limit only counts explicit user refreshes', async () => {
   const state = createInitialState();
   state.membershipConfig = {

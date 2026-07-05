@@ -109,10 +109,12 @@ export function createFamilyRoutes(context) {
     return req.body?.userRefresh === true;
   }
 
-  function archiveSalesReviewForFamily(familyId) {
+  function archiveSalesReviewForFamily(familyId, owner = {}) {
     state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
+    const shouldMatchOwner = Boolean(owner?.userId || owner?.guestId);
     for (const review of state.familySalesReviews) {
       if (Number(review?.familyId || 0) !== Number(familyId)) continue;
+      if (shouldMatchOwner && !salesReviewMatchesOwner(review, owner)) continue;
       if (String(review?.status || 'active') !== 'active') continue;
       review.status = 'archived';
       review.updatedAt = new Date().toISOString();
@@ -1164,7 +1166,7 @@ export function createFamilyRoutes(context) {
         },
       };
       state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
-      archiveSalesReviewForFamily(family.id);
+      archiveSalesReviewForFamily(family.id, owner);
       state.familySalesReviews.push(reviewRecord);
       if (userRefresh && typeof recordUserReportRefresh === 'function') {
         recordUserReportRefresh(state, owner, 'familySalesReview', {

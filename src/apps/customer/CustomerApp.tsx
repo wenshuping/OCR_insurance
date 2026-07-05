@@ -1825,11 +1825,7 @@ export function CustomerApp() {
         await loadFamilySalesChatThreads(familyId);
         return;
       }
-      setFamilySalesReviewBusy(true);
-      setFamilySalesReviewMessage('暂无已保存销售建议，正在生成并保存');
-      const generated = await createFamilySalesReview(authInput);
-      setFamilySalesReview(generated.review);
-      setFamilySalesReviewMessage('专家研判已完成并保存');
+      setFamilySalesReviewMessage('暂无已保存销售建议，可点击生成');
       await loadFamilySalesChatThreads(familyId);
     } catch (error) {
       setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
@@ -4119,7 +4115,7 @@ export function CustomerApp() {
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
                   <p className="text-sm font-black text-slate-900">销售建议尚未生成</p>
                   <p className="mx-auto mt-2 max-w-md text-xs font-semibold leading-5 text-slate-500">
-                    有已保存内容会直接展示；没有保存内容会自动生成一次，也可点击上方“生成/重算”。
+                    有已保存内容会直接展示；没有保存内容时可点击上方或下方按钮生成。
                   </p>
                   <button
                     type="button"
