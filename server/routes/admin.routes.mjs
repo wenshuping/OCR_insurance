@@ -1,6 +1,11 @@
 import express from 'express';
 import { sendError } from '../http/errors.mjs';
 import { approveCustomerPolicyPhotoKnowledgeRecord } from '../customer-policy-photo-knowledge.service.mjs';
+import {
+  RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY,
+  getResponsibilityGenerationGovernanceConfig,
+  normalizeResponsibilityGenerationGovernanceConfig,
+} from '../responsibility-generation-governance.service.mjs';
 
 export function createAdminRoutes(context) {
   const router = express.Router();
@@ -10,6 +15,7 @@ export function createAdminRoutes(context) {
     persistFamilyReportState,
     persistAdminSession,
     persistMembershipConfig,
+    persistStateDocument,
     persistOfficialDomainProfiles,
     persistResponsibilityLookupArtifacts,
     adminPassword,
@@ -51,6 +57,7 @@ export function createAdminRoutes(context) {
     updateMembershipConfig,
     allocateId,
     archiveFamilyGeneratedReports,
+    nowIso,
   } = context;
 
   function archivedFamilyReportArtifactsChanged(result = {}) {
@@ -775,6 +782,44 @@ export function createAdminRoutes(context) {
       });
     } catch (error) {
       sendError(res, error, error?.status || 400);
+    }
+  });
+
+  router.get('/responsibility-generation-config', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    res.json({
+      ok: true,
+      config: getResponsibilityGenerationGovernanceConfig(state),
+    });
+  });
+
+  router.patch('/responsibility-generation-config', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      const current = getResponsibilityGenerationGovernanceConfig(state);
+      const body = req.body || {};
+      const patch = {};
+      if (Object.hasOwn(body, 'enabled')) patch.enabled = body.enabled === true;
+      if (Object.hasOwn(body, 'promptRules')) patch.promptRules = body.promptRules;
+      if (Object.hasOwn(body, 'blockedResponsibilityTitles')) patch.blockedResponsibilityTitles = body.blockedResponsibilityTitles;
+      if (Object.hasOwn(body, 'failureExamples')) patch.failureExamples = body.failureExamples;
+      if (Object.hasOwn(body, 'fallbackMode')) patch.fallbackMode = body.fallbackMode;
+      if (Object.hasOwn(body, 'plannerMode')) patch.plannerMode = body.plannerMode;
+      const config = normalizeResponsibilityGenerationGovernanceConfig(
+        { ...current, ...patch, updatedAt: typeof nowIso === 'function' ? nowIso() : new Date().toISOString() },
+      );
+      state[RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY] = config;
+      if (typeof persistStateDocument === 'function') {
+        await persistStateDocument({
+          key: RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY,
+          value: config,
+        });
+      }
+      res.json({ ok: true, config });
+    } catch (error) {
+      sendError(res, error, 400);
     }
   });
 

@@ -217,7 +217,7 @@ export function buildAgentSkillPromptFromSelection({ scene = 'family_sales_chat'
       label: SKILL_DEFINITIONS[key]?.label || key,
     })),
     systemRules: unique([...COMMON_INSURANCE_RULES, ...skillRules]),
-    promptHint: `DeepSeek skill router 选择为“${SKILL_DEFINITIONS[intent]?.label || intent}”，请按对应保险业务规则组织输出。`,
+    promptHint: `智能 skill router 选择为“${SKILL_DEFINITIONS[intent]?.label || intent}”，请按对应保险业务规则组织输出。`,
     selectedBy: 'deepseek',
     selectionReason: trim(selection.reason),
   };

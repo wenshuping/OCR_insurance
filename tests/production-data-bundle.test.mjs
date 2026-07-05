@@ -33,6 +33,12 @@ async function seedDatabase(dbPath) {
     familyReportIssues: [{ id: 10, reportId: 9, familyId: 3, ownerUserId: 1, ownerGuestId: '', severity: 'warning', category: 'coverage_gap', status: 'open', source: 'rule', title: '家庭成员未绑定保单', detail: '测试报告问题', createdAt: '2026-06-13T00:04:20.000Z', updatedAt: '2026-06-13T00:04:20.000Z' }],
     familyReportCorrections: [{ id: 11, reportId: 9, familyId: 3, ownerUserId: 1, ownerGuestId: '', policyId: 2, memberId: 4, dimension: 'medical', action: 'mark_unquantifiable', status: 'auto_applied', source: 'deepseek', issueId: 10, reason: '报销型医疗不展示固定保额', createdAt: '2026-06-13T00:04:25.000Z', updatedAt: '2026-06-13T00:04:25.000Z' }],
     familySalesReviews: [{ id: 8, familyId: 3, ownerUserId: 1, ownerGuestId: '', status: 'active', content: '家庭销售建议', model: 'internal-expert', generatedAt: '2026-06-13T00:04:30.000Z', createdAt: '2026-06-13T00:04:30.000Z', updatedAt: '2026-06-13T00:04:30.000Z', inputSummary: { familyId: 3, memberCount: 1, policyCount: 1 } }],
+    familySalesChatThreads: [{ id: 12, familyId: 3, ownerUserId: 1, ownerGuestId: '', status: 'active', title: '预算异议', createdAt: '2026-06-13T00:04:40.000Z', updatedAt: '2026-06-13T00:04:50.000Z' }],
+    familySalesChatMessages: [
+      { id: 13, threadId: 12, familyId: 3, role: 'user', content: '客户担心预算', status: 'complete', createdAt: '2026-06-13T00:04:40.000Z' },
+      { id: 14, threadId: 12, familyId: 3, role: 'assistant', content: '先拆基础方案', status: 'complete', createdAt: '2026-06-13T00:04:50.000Z' },
+    ],
+    familySalesMemories: [{ id: 15, familyId: 3, ownerUserId: 1, ownerGuestId: '', kind: 'objection', content: '客户担心预算，优先基础方案', evidenceMessageIds: [13, 14], sourceThreadId: 12, status: 'active', confidence: 0.9, createdAt: '2026-06-13T00:04:55.000Z', updatedAt: '2026-06-13T00:04:55.000Z' }],
     sourceRecords: [{ id: 6, policyId: 2, company: '新华保险', productName: '福如东海A款终身寿险（分红型）', url: 'https://example.test/source.pdf' }],
     knowledgeRecords: [{ id: 7, company: '新华保险', productName: '福如东海A款终身寿险（分红型）', url: 'https://example.test/terms.pdf', pageText: '保险责任' }],
     insuranceIndicatorRecords: [{ id: 'indicator-1', company: '新华保险', productName: '福如东海A款终身寿险（分红型）', coverageType: '身故', liability: '身故保险金', formulaText: '身故保险金 = 有效保险金额' }],
@@ -40,7 +46,7 @@ async function seedDatabase(dbPath) {
     officialDomainProfiles: [{ id: 'new-china-life', company: '新华保险', officialDomains: ['newchinalife.com'] }],
     pendingScans: [{ guestId: 'guest-1', createdAt: '2026-06-13T00:05:00.000Z', scan: { data: { company: '新华保险' } } }],
     insuranceIndicatorSnapshot: { syncedAt: '2026-06-13T00:06:00.000Z', count: 1 },
-    nextId: 12,
+    nextId: 16,
   };
   await store.persist(state);
   const cashValueStore = createCashValueStore(store.db);
@@ -177,6 +183,9 @@ test('production data bundle preserves policies families knowledge indicators an
   assert.equal(bundle.snapshot.coreCounts.family_report_issues, 1);
   assert.equal(bundle.snapshot.coreCounts.family_report_corrections, 1);
   assert.equal(bundle.snapshot.coreCounts.family_sales_reviews, 1);
+  assert.equal(bundle.snapshot.coreCounts.family_sales_chat_threads, 1);
+  assert.equal(bundle.snapshot.coreCounts.family_sales_chat_messages, 2);
+  assert.equal(bundle.snapshot.coreCounts.family_sales_memories, 1);
   assert.equal(bundle.snapshot.coreCounts.knowledge_records, 1);
   assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
   assert.equal(bundle.snapshot.coreCounts.optional_responsibility_records, 1);
@@ -200,6 +209,9 @@ test('production data bundle preserves policies families knowledge indicators an
   assert.equal(targetSummary.coreCounts.family_report_issues, 1);
   assert.equal(targetSummary.coreCounts.family_report_corrections, 1);
   assert.equal(targetSummary.coreCounts.family_sales_reviews, 1);
+  assert.equal(targetSummary.coreCounts.family_sales_chat_threads, 1);
+  assert.equal(targetSummary.coreCounts.family_sales_chat_messages, 2);
+  assert.equal(targetSummary.coreCounts.family_sales_memories, 1);
   assert.equal(targetSummary.coreCounts.knowledge_records, 1);
   assert.equal(targetSummary.coreCounts.product_responsibility_cards, 1);
   assert.equal(targetSummary.coreCounts.policy_cashflows, 1);

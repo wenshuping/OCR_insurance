@@ -1,4 +1,5 @@
 import {
+  BrainCircuit,
   CircleHelp,
   Database,
   FileText,
@@ -19,6 +20,7 @@ export type AdminPageKey =
   | 'reportIssues'
   | 'optionalResponsibilities'
   | 'knowledge'
+  | 'responsibilityGeneration'
   | 'officialDomains'
   | 'membership'
   | 'salesReview';
@@ -60,6 +62,7 @@ export const ADMIN_PAGE_GROUPS: AdminPageGroup[] = [
     group: '知识配置',
     items: [
       { key: 'knowledge', label: '产品知识库', description: '爬取和查看本地官方资料', icon: Database },
+      { key: 'responsibilityGeneration', label: '保险责任自我修正', description: '维护责任摘要生成、校验和重试规则', icon: BrainCircuit },
       { key: 'officialDomains', label: '官方域名', description: '维护保险公司官网白名单', icon: Globe2 },
     ],
   },

@@ -1,3 +1,5 @@
+import { blockedResponsibilityTitleIssue } from './responsibility-generation-governance.service.mjs';
+
 function text(value) {
   return String(value ?? '').trim();
 }
@@ -10,7 +12,7 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function validateRenderableSummary(summary, issues) {
+function validateRenderableSummary(summary, issues, { generationGovernance = null } = {}) {
   if (!isPlainObject(summary)) {
     issues.push({ code: 'invalid_summary_shape', message: 'Summary must be an object.' });
     return false;
@@ -30,6 +32,8 @@ function validateRenderableSummary(summary, issues) {
     const hasBody = Boolean(text(item.plainText) || text(item.paymentRule) || text(item.triggerCondition));
     if (!title) issues.push({ code: 'missing_responsibility_title', index });
     if (!hasBody) issues.push({ code: 'missing_responsibility_render_text', index, title });
+    const blockedIssue = blockedResponsibilityTitleIssue(title, generationGovernance || {});
+    if (blockedIssue) issues.push({ ...blockedIssue, index });
     if (title && hasBody) renderableCount += 1;
   });
 
@@ -41,9 +45,10 @@ function validateRenderableSummary(summary, issues) {
 
 export function evaluateResponsibilitySummaryQuality({
   summary = {},
+  generationGovernance = null,
 } = {}) {
   const issues = [];
-  const shapeUsable = validateRenderableSummary(summary, issues);
+  const shapeUsable = validateRenderableSummary(summary, issues, { generationGovernance });
   if (!shapeUsable) {
     return { status: 'failed', issues };
   }

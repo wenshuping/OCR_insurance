@@ -15,6 +15,12 @@ import {
   buildStructuredResponsibilityPrompt,
 } from './responsibility-summary-templates.mjs';
 import { evaluateResponsibilitySummaryQuality } from './responsibility-summary-quality-gate.mjs';
+import {
+  RESPONSIBILITY_OFFICIAL_TEXT_FALLBACK_STATUS,
+  buildOfficialTextFallbackCustomerSummary,
+  getResponsibilityGenerationGovernanceConfig,
+  responsibilityGenerationGovernanceDigest,
+} from './responsibility-generation-governance.service.mjs';
 
 export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v24-planner-blocks';
 
@@ -360,11 +366,14 @@ function digestRecord(record = {}) {
   };
 }
 
-export function buildCustomerResponsibilitySourceDigest({ cards = [], indicators = [], records = [] } = {}) {
+export function buildCustomerResponsibilitySourceDigest({ cards = [], indicators = [], records = [], generationGovernance = null } = {}) {
   const payload = {
     cards: normalizeArray(cards).map(digestCard),
     indicators: normalizeArray(indicators).map(digestIndicator),
     records: normalizeArray(records).map(digestRecord),
+    generationGovernanceDigest: generationGovernance
+      ? responsibilityGenerationGovernanceDigest(generationGovernance)
+      : '',
   };
   return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -1202,6 +1211,7 @@ async function persistReadyCustomerSummary({
   modelName = '',
   modelTier = '',
   plannerResult = null,
+  runStatus = 'passed',
   qualityGate = { status: 'passed', issues: [] },
   now,
 } = {}) {
@@ -1252,7 +1262,7 @@ async function persistReadyCustomerSummary({
     productKey,
     company,
     productName,
-    status: 'passed',
+    status: runStatus,
     routing,
     sourceDigest,
     sourceSections,
@@ -1289,6 +1299,8 @@ export async function generateProductCustomerResponsibilitySummary({
     throw error;
   }
 
+  const generationGovernance = getResponsibilityGenerationGovernanceConfig(state);
+  const generationGovernanceEnabled = generationGovernance.enabled === true;
   const inputProductKey = productKeyFor(company, inputProductName);
   const inputProduct = { company, productName: inputProductName, productKey: inputProductKey };
   let cards = loadProductResponsibilityCards(db, inputProduct);
@@ -1347,7 +1359,7 @@ export async function generateProductCustomerResponsibilitySummary({
       cards = enrichCardsWithOfficialRecords(cards, records);
     }
   }
-  const sourceDigest = buildCustomerResponsibilitySourceDigest({ cards, indicators, records });
+  const sourceDigest = buildCustomerResponsibilitySourceDigest({ cards, indicators, records, generationGovernance });
   const existing = typeof findSummary === 'function'
     ? await findSummary({
       productKey,
@@ -1427,7 +1439,7 @@ export async function generateProductCustomerResponsibilitySummary({
   });
   const plannerMode = normalizeResponsibilityPlannerMode(
     input?.plannerMode,
-    process.env.RESPONSIBILITY_PLANNER_MODE || 'auto',
+    generationGovernance.plannerMode || process.env.RESPONSIBILITY_PLANNER_MODE || 'auto',
   );
   const resolvedGeneratePlannerWithDeepSeek = typeof generatePlannerWithDeepSeek === 'function'
     ? generatePlannerWithDeepSeek
@@ -1455,11 +1467,7 @@ export async function generateProductCustomerResponsibilitySummary({
     cards: normalizeArray(cards).map(cardPromptItem),
     indicators: normalizeArray(indicators).map(indicatorPromptItem),
     plannerResult,
-  });
-  const officialRetryPrompt = buildOfficialResponsibilityRetryPrompt({
-    product: { company, productName },
-    routing,
-    sourceSections,
+    generationGovernance,
   });
   let rawSummary = null;
   let quality = { status: 'failed', issues: [] };
@@ -1491,6 +1499,7 @@ export async function generateProductCustomerResponsibilitySummary({
           routing,
           sourceSections,
           summary: candidateSummary,
+          generationGovernance,
         });
     generationAttempts.push({
       stage: 'primary',
@@ -1517,6 +1526,13 @@ export async function generateProductCustomerResponsibilitySummary({
     let retryRawSummary = null;
     let retryQuality = { status: 'failed', issues: [] };
     let retryModelName = routedModelName;
+    const officialRetryPrompt = buildOfficialResponsibilityRetryPrompt({
+      product: { company, productName },
+      routing,
+      sourceSections,
+      generationGovernance,
+      qualityIssues: generationGovernanceEnabled ? qualityIssuesFromGenerationAttempts(generationAttempts) : [],
+    });
     for (const candidateModelName of modelCandidates) {
       let candidateSummary = null;
       let candidateIssues = [];
@@ -1539,6 +1555,7 @@ export async function generateProductCustomerResponsibilitySummary({
             routing,
             sourceSections,
             summary: candidateSummary,
+            generationGovernance,
           });
       generationAttempts.push({
         stage: 'official_retry',
@@ -1555,6 +1572,59 @@ export async function generateProductCustomerResponsibilitySummary({
     }
     if (retryQuality.status !== 'passed') {
       const qualityIssues = qualityIssuesFromGenerationAttempts(generationAttempts);
+      if (generationGovernanceEnabled && generationGovernance.fallbackMode === 'official_text_after_second_failure') {
+        const fallbackSummary = buildOfficialTextFallbackCustomerSummary({
+          company,
+          productName,
+          sourceSections,
+          sourceUrls: uniqueStrings(sourceRecords.map(sourceUrlFrom)),
+        });
+        const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
+        Object.assign(summaryContext, {
+          generationGovernance,
+          fallbackStatus: RESPONSIBILITY_OFFICIAL_TEXT_FALLBACK_STATUS,
+          plannerMode: plannerResult.plannerMode,
+          plannerUsed: plannerResult.plannerUsed,
+          plannerReason: plannerResult.plannerReason,
+          plannerModel: plannerResult.plannerModel,
+          plannerOutput: plannerResult.planner,
+          plannerError: plannerResult.plannerError,
+        });
+        const saved = await persistReadyCustomerSummary({
+          persistSummary,
+          persistGenerationRun,
+          productKey,
+          company,
+          productName,
+          sourceDigest,
+          sourceSections,
+          routing,
+          summaryJson: fallbackSummary,
+          summaryContext,
+          rawPreview: JSON.stringify(generationAttempts.map((attempt) => ({
+            stage: attempt.stage,
+            modelName: attempt.modelName,
+            quality: attempt.quality,
+            summary: attempt.summary,
+          }))),
+          modelProvider: 'official_text_fallback',
+          modelName: modelCandidates.at(-1) || routedModelName,
+          modelTier: routing.modelTier,
+          plannerResult,
+          runStatus: RESPONSIBILITY_OFFICIAL_TEXT_FALLBACK_STATUS,
+          qualityGate: {
+            status: RESPONSIBILITY_OFFICIAL_TEXT_FALLBACK_STATUS,
+            issues: qualityIssues,
+          },
+          now: structuredNow,
+        });
+        return {
+          ok: true,
+          source: 'official_text_fallback',
+          status: RESPONSIBILITY_OFFICIAL_TEXT_FALLBACK_STATUS,
+          summary: safeCustomerSummary(saved),
+        };
+      }
       await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
         productKey,
         company,
@@ -1603,6 +1673,7 @@ export async function generateProductCustomerResponsibilitySummary({
   );
   const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
   Object.assign(summaryContext, {
+    generationGovernance,
     plannerMode: plannerResult.plannerMode,
     plannerUsed: plannerResult.plannerUsed,
     plannerReason: plannerResult.plannerReason,

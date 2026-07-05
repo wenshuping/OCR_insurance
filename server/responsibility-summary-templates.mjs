@@ -1,3 +1,8 @@
+import {
+  qualityIssuesPromptSection,
+  responsibilityGenerationGovernancePromptSection,
+} from './responsibility-generation-governance.service.mjs';
+
 function text(value) {
   return String(value ?? '').trim();
 }
@@ -328,8 +333,10 @@ export function buildStructuredResponsibilityPrompt({
   cards = [],
   indicators = [],
   plannerResult = null,
+  generationGovernance = null,
 } = {}) {
   const plannerPayload = compactPlannerResult(plannerResult);
+  const governancePrompt = responsibilityGenerationGovernancePromptSection(generationGovernance || {});
   const payload = {
     product,
     routing,
@@ -379,6 +386,12 @@ export function buildStructuredResponsibilityPrompt({
     '类别专用指令：',
     categoryInstructions(routing, sourceSections),
     '',
+    ...(governancePrompt
+      ? [
+          governancePrompt,
+          '',
+        ]
+      : []),
     ...(plannerPayload
       ? [
           'Planner 结果如下。它只用于提示写作重点，不能覆盖官方资料：',
@@ -398,7 +411,11 @@ export function buildOfficialResponsibilityRetryPrompt({
   product = {},
   routing = {},
   sourceSections = {},
+  generationGovernance = null,
+  qualityIssues = [],
 } = {}) {
+  const governancePrompt = responsibilityGenerationGovernancePromptSection(generationGovernance || {});
+  const qualityPrompt = qualityIssuesPromptSection(qualityIssues);
   const payload = {
     product,
     routing,
@@ -427,6 +444,18 @@ export function buildOfficialResponsibilityRetryPrompt({
     '类别专用指令：',
     categoryInstructions(routing, sourceSections),
     '',
+    ...(governancePrompt
+      ? [
+          governancePrompt,
+          '',
+        ]
+      : []),
+    ...(qualityPrompt
+      ? [
+          qualityPrompt,
+          '',
+        ]
+      : []),
     '官方责任正文 JSON：',
     JSON.stringify(payload, null, 2),
   ].join('\n');

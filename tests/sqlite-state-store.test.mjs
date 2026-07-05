@@ -102,6 +102,20 @@ test('sqlite state store imports JSON once and keeps database as the source of t
       { id: 31, threadId: 30, familyId: 8, role: 'user', content: '帮我改成微信话术', status: 'complete', createdAt: '2026-05-01T00:11:10.000Z' },
       { id: 32, threadId: 30, familyId: 8, role: 'assistant', content: '可以这样发客户', status: 'complete', createdAt: '2026-05-01T00:11:20.000Z' },
     ],
+    familySalesMemories: [{
+      id: 6,
+      familyId: 8,
+      ownerUserId: 1,
+      ownerGuestId: '',
+      kind: 'objection',
+      content: '客户预算敏感，优先基础方案',
+      evidenceMessageIds: [31, 32],
+      sourceThreadId: 30,
+      status: 'active',
+      confidence: 0.92,
+      createdAt: '2026-05-01T00:11:30.000Z',
+      updatedAt: '2026-05-01T00:11:30.000Z',
+    }],
     familyReports: [{
       id: 12,
       familyId: 8,
@@ -172,6 +186,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familySalesChatThreads[0].title, '微信话术');
   assert.equal(imported.familySalesChatMessages.length, 2);
   assert.equal(imported.familySalesChatMessages[1].content, '可以这样发客户');
+  assert.equal(imported.familySalesMemories.length, 1);
+  assert.equal(imported.familySalesMemories[0].content, '客户预算敏感，优先基础方案');
   assert.equal(imported.familyReports.length, 1);
   assert.equal(imported.familyReports[0].summary.issueCount, 1);
   assert.equal(imported.familyReportIssues.length, 1);
@@ -243,6 +259,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloaded.familySalesChatThreads[0].title, '微信话术');
   assert.equal(reloaded.familySalesChatMessages.length, 2);
   assert.equal(reloaded.familySalesChatMessages[1].content, '可以这样发客户');
+  assert.equal(reloaded.familySalesMemories.length, 1);
+  assert.equal(reloaded.familySalesMemories[0].kind, 'objection');
   assert.equal(reloaded.familyReports.length, 1);
   assert.equal(reloaded.familyReports[0].summary.issueCount, 1);
   assert.equal(reloaded.familyReportIssues.length, 1);
@@ -276,6 +294,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familySalesChatThreads[0].title, '微信话术');
   assert.equal(reloadedAfterRestart.familySalesChatMessages.length, 2);
   assert.equal(reloadedAfterRestart.familySalesChatMessages[1].content, '可以这样发客户');
+  assert.equal(reloadedAfterRestart.familySalesMemories.length, 1);
+  assert.equal(reloadedAfterRestart.familySalesMemories[0].sourceThreadId, 30);
   assert.equal(reloadedAfterRestart.familyReports.length, 1);
   assert.equal(reloadedAfterRestart.familyReports[0].summary.issueCount, 1);
   assert.equal(reloadedAfterRestart.familyReportIssues.length, 1);
@@ -284,6 +304,38 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familyReportCorrections[0].reportId, 12);
   assert.deepEqual(reloadedAfterRestart.insuranceIndicatorSnapshot, { syncedAt: '2026-05-01T00:08:00.000Z', count: 2 });
   reopened.close();
+});
+
+test('sqlite state store persists a single state document without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = await store.load();
+  state.knowledgeRecords.push({ id: 1, company: '测试保险', productName: '测试产品', url: 'https://example.test/terms' });
+  await store.persist(state);
+
+  await store.persistStateDocument({
+    state,
+    key: 'responsibilityGenerationGovernance',
+    value: {
+      enabled: true,
+      promptRules: ['后台规则'],
+      blockedResponsibilityTitles: ['免赔额'],
+      failureExamples: [],
+      fallbackMode: 'official_text_after_second_failure',
+      updatedAt: '2026-07-05T00:00:00.000Z',
+    },
+  });
+
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 1);
+  assert.equal(
+    JSON.parse(store.db.prepare('SELECT payload FROM state_documents WHERE key = ?').get('responsibilityGenerationGovernance').payload).blockedResponsibilityTitles[0],
+    '免赔额',
+  );
+  const reloaded = await store.load();
+  assert.equal(reloaded.knowledgeRecords.length, 1);
+  assert.equal(reloaded.responsibilityGenerationGovernance.promptRules[0], '后台规则');
+  store.close();
 });
 
 test('sqlite state store leaves cash stores untouched across persist and reload', async () => {
@@ -601,6 +653,19 @@ test('sqlite state store incrementally persists family state without rewriting k
     { id: 24, threadId: 23, familyId: 8, role: 'user', content: '预算不够怎么办', status: 'complete', createdAt: '2026-06-08T00:03:00.000Z' },
     { id: 25, threadId: 23, familyId: 8, role: 'assistant', content: '先拆基础方案', status: 'complete', createdAt: '2026-06-08T00:04:00.000Z' },
   );
+  state.familySalesMemories.push({
+    id: 6,
+    familyId: 8,
+    ownerGuestId: 'guest-family',
+    kind: 'strategy',
+    content: '预算异议先拆基础方案',
+    evidenceMessageIds: [24, 25],
+    sourceThreadId: 23,
+    status: 'active',
+    confidence: 0.9,
+    createdAt: '2026-06-08T00:05:00.000Z',
+    updatedAt: '2026-06-08T00:05:00.000Z',
+  });
   state.policies[0].familyId = 8;
   state.policies[0].insuredMemberId = 20;
   state.nextId = 26;
@@ -617,6 +682,8 @@ test('sqlite state store incrementally persists family state without rewriting k
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_chat_threads WHERE family_id = ?').get(8).count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_chat_messages WHERE thread_id = ?').get(23).count, 2);
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_sales_chat_messages WHERE id = ?').get(25).payload).content, '先拆基础方案');
+    assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_memories WHERE family_id = ?').get(8).count, 1);
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_sales_memories WHERE id = ?').get(6).payload).content, '预算异议先拆基础方案');
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM policies WHERE id = ?').get(3).payload).insuredMemberId, 20);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);

@@ -11,6 +11,7 @@ import {
   AdminReportCorrection,
   AdminReportIssue,
   AdminReportIssueSummary,
+  AdminResponsibilityGenerationConfig,
   AdminUserFamiliesResponse,
   ApiError,
   FamilyReportRecord,
@@ -35,6 +36,7 @@ import {
   getAdminReportIssues,
   getAdminOptionalResponsibilityGaps,
   getAdminPolicy,
+  getAdminResponsibilityGenerationConfig,
   getAdminUserFamilies,
   markOptionalResponsibilityNotQuantifiable,
   regeneratePolicyReport,
@@ -42,6 +44,7 @@ import {
   reviewAdminKnowledgeRecord,
   updateAdminMembershipConfig,
   updateAdminOfficialDomainProfile,
+  updateAdminResponsibilityGenerationConfig,
 } from '../../api';
 import { maskMobile } from '../../shared/formatters';
 import {
@@ -66,10 +69,36 @@ import { AdminOptionalResponsibilitiesPage } from './pages/AdminOptionalResponsi
 import { AdminOverviewPage } from './pages/AdminOverviewPage';
 import { AdminPoliciesPage } from './pages/AdminPoliciesPage';
 import { AdminReportIssuesPage } from './pages/AdminReportIssuesPage';
+import { AdminResponsibilityGenerationPage } from './pages/AdminResponsibilityGenerationPage';
 import { AdminSalesReviewPage } from './pages/AdminSalesReviewPage';
 import { AdminUsersPage } from './pages/AdminUsersPage';
 
 const ADMIN_TOKEN_KEY = 'policy-ocr-app.adminToken';
+
+function linesToText(values: string[] = []) {
+  return values.filter(Boolean).join('\n');
+}
+
+function textToLines(value: string) {
+  return value
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function examplesToText(examples: AdminResponsibilityGenerationConfig['failureExamples'] = []) {
+  return examples
+    .map((item) => [item.badOutput, item.reason, item.correction].filter(Boolean).join(' | '))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function textToExamples(value: string): AdminResponsibilityGenerationConfig['failureExamples'] {
+  return textToLines(value).map((line) => {
+    const [badOutput = '', reason = '', correction = ''] = line.split('|').map((part) => part.trim());
+    return { badOutput, reason, correction };
+  });
+}
 
 export function AdminApp() {
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem(ADMIN_TOKEN_KEY) || '');
@@ -100,6 +129,11 @@ export function AdminApp() {
   const [familyReportDailyRefreshLimitInput, setFamilyReportDailyRefreshLimitInput] = useState('3');
   const [familySalesReviewDailyRefreshLimitInput, setFamilySalesReviewDailyRefreshLimitInput] = useState('3');
   const [membershipSaving, setMembershipSaving] = useState(false);
+  const [responsibilityGenerationConfig, setResponsibilityGenerationConfig] = useState<AdminResponsibilityGenerationConfig | null>(null);
+  const [responsibilityRulesText, setResponsibilityRulesText] = useState('');
+  const [responsibilityBlockedTitlesText, setResponsibilityBlockedTitlesText] = useState('');
+  const [responsibilityFailureExamplesText, setResponsibilityFailureExamplesText] = useState('');
+  const [responsibilityGenerationSaving, setResponsibilityGenerationSaving] = useState(false);
   const [officialDomainLoading, setOfficialDomainLoading] = useState(false);
   const [officialDomainSaving, setOfficialDomainSaving] = useState(false);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -122,6 +156,10 @@ export function AdminApp() {
     setMembershipQuotaInput('3');
     setFamilyReportDailyRefreshLimitInput('3');
     setFamilySalesReviewDailyRefreshLimitInput('3');
+    setResponsibilityGenerationConfig(null);
+    setResponsibilityRulesText('');
+    setResponsibilityBlockedTitlesText('');
+    setResponsibilityFailureExamplesText('');
     setOfficialDomainProfiles([]);
     setOfficialDomainForm(emptyOfficialDomainForm);
     setKnowledgeRecords([]);
@@ -179,6 +217,24 @@ export function AdminApp() {
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '会员设置读取失败');
+    }
+  }
+
+  function applyResponsibilityGenerationConfig(config: AdminResponsibilityGenerationConfig) {
+    setResponsibilityGenerationConfig(config);
+    setResponsibilityRulesText(linesToText(config.promptRules));
+    setResponsibilityBlockedTitlesText(linesToText(config.blockedResponsibilityTitles));
+    setResponsibilityFailureExamplesText(examplesToText(config.failureExamples));
+  }
+
+  async function loadResponsibilityGenerationConfig(token = adminToken) {
+    if (!token) return;
+    try {
+      const payload = await getAdminResponsibilityGenerationConfig(token);
+      applyResponsibilityGenerationConfig(payload.config);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '保险责任自我修正设置读取失败');
     }
   }
 
@@ -332,6 +388,7 @@ export function AdminApp() {
   useEffect(() => {
     if (!adminToken) return;
     void loadMembershipConfig(adminToken);
+    void loadResponsibilityGenerationConfig(adminToken);
     void loadOfficialDomainProfiles(adminToken);
     void loadReportIssues(adminToken);
     const overviewTimer = window.setTimeout(() => {
@@ -406,6 +463,29 @@ export function AdminApp() {
       setMessage(error instanceof Error ? error.message : '会员设置保存失败');
     } finally {
       setMembershipSaving(false);
+    }
+  }
+
+  async function handleSaveResponsibilityGenerationConfig() {
+    if (!adminToken || !responsibilityGenerationConfig || responsibilityGenerationSaving) return;
+    setResponsibilityGenerationSaving(true);
+    setMessage('正在保存保险责任自我修正设置');
+    try {
+      const payload = await updateAdminResponsibilityGenerationConfig(adminToken, {
+        enabled: responsibilityGenerationConfig.enabled,
+        promptRules: textToLines(responsibilityRulesText),
+        blockedResponsibilityTitles: textToLines(responsibilityBlockedTitlesText),
+        failureExamples: textToExamples(responsibilityFailureExamplesText),
+        fallbackMode: responsibilityGenerationConfig.fallbackMode,
+        plannerMode: responsibilityGenerationConfig.plannerMode || 'auto',
+      });
+      applyResponsibilityGenerationConfig(payload.config);
+      setMessage('保险责任自我修正设置已保存，下一次生成直接生效');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '保险责任自我修正设置保存失败');
+    } finally {
+      setResponsibilityGenerationSaving(false);
     }
   }
 
@@ -622,6 +702,7 @@ export function AdminApp() {
   function changeAdminPage(page: AdminPageKey) {
     setActivePage(page);
     if (page === 'knowledge' && !knowledgeRecords.length) void loadKnowledgeRecords();
+    if (page === 'responsibilityGeneration' && !responsibilityGenerationConfig) void loadResponsibilityGenerationConfig();
     if (page === 'reportIssues' && !reportIssueReports.length) void loadReportIssues();
     if (page === 'optionalResponsibilities') {
       const expectedCount = overview?.summary.optionalResponsibilityGapCount ?? 0;
@@ -672,6 +753,8 @@ export function AdminApp() {
       void loadReportIssues();
     } else if (activePage === 'knowledge') {
       void loadKnowledgeRecords();
+    } else if (activePage === 'responsibilityGeneration') {
+      void loadResponsibilityGenerationConfig();
     } else if (activePage === 'officialDomains') {
       void loadOfficialDomainProfiles();
     } else if (activePage === 'membership') {
@@ -755,6 +838,23 @@ export function AdminApp() {
             onReview={(record, action) => void reviewKnowledgeRecord(record, action)}
           />
         );
+      case 'responsibilityGeneration':
+        return (
+          <AdminResponsibilityGenerationPage
+            config={responsibilityGenerationConfig}
+            rulesText={responsibilityRulesText}
+            blockedTitlesText={responsibilityBlockedTitlesText}
+            examplesText={responsibilityFailureExamplesText}
+            saving={responsibilityGenerationSaving}
+            onToggleEnabled={(enabled) => setResponsibilityGenerationConfig((current) => (current ? { ...current, enabled } : current))}
+            onRulesTextChange={setResponsibilityRulesText}
+            onBlockedTitlesTextChange={setResponsibilityBlockedTitlesText}
+            onExamplesTextChange={setResponsibilityFailureExamplesText}
+            onFallbackModeChange={(fallbackMode) => setResponsibilityGenerationConfig((current) => (current ? { ...current, fallbackMode } : current))}
+            onPlannerModeChange={(plannerMode) => setResponsibilityGenerationConfig((current) => (current ? { ...current, plannerMode } : current))}
+            onSave={() => void handleSaveResponsibilityGenerationConfig()}
+          />
+        );
       case 'officialDomains':
         return (
           <AdminOfficialDomainsPage
@@ -833,7 +933,7 @@ export function AdminApp() {
       activePage={activePage}
       query={query}
       message={message}
-      loading={loading || reportIssuesLoading || userFamiliesLoading || familyReportLoading || familyReportGenerating || salesReviewLoading || optionalResponsibilityGapsLoading}
+      loading={loading || reportIssuesLoading || userFamiliesLoading || familyReportLoading || familyReportGenerating || salesReviewLoading || optionalResponsibilityGapsLoading || responsibilityGenerationSaving}
       badgeCounts={{
         reportIssues: reportIssueReports.length,
         optionalResponsibilities: overview?.summary.optionalResponsibilityGapCount ?? optionalResponsibilityGaps.length,

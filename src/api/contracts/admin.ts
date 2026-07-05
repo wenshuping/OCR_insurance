@@ -111,6 +111,22 @@ export type AdminMembershipConfig = {
   updatedAt: string;
 };
 
+export type AdminResponsibilityGenerationFailureExample = {
+  badOutput: string;
+  reason: string;
+  correction: string;
+};
+
+export type AdminResponsibilityGenerationConfig = {
+  enabled: boolean;
+  plannerMode: 'auto' | 'all' | 'off' | string;
+  promptRules: string[];
+  blockedResponsibilityTitles: string[];
+  failureExamples: AdminResponsibilityGenerationFailureExample[];
+  fallbackMode: 'official_text_after_second_failure' | 'needs_review' | string;
+  updatedAt: string;
+};
+
 export type AdminReportIssueSummary = {
   id: number;
   familyId: number;
@@ -307,6 +323,18 @@ export function updateAdminMembershipConfig(token: string, input: {
   familySalesReviewDailyRefreshLimit: number;
 }) {
   return request<{ ok: true; config: AdminMembershipConfig }>('/api/admin/membership-config', {
+    token,
+    method: 'PATCH',
+    body: input,
+  });
+}
+
+export function getAdminResponsibilityGenerationConfig(token: string) {
+  return request<{ ok: true; config: AdminResponsibilityGenerationConfig }>('/api/admin/responsibility-generation-config', { token });
+}
+
+export function updateAdminResponsibilityGenerationConfig(token: string, input: Partial<AdminResponsibilityGenerationConfig>) {
+  return request<{ ok: true; config: AdminResponsibilityGenerationConfig }>('/api/admin/responsibility-generation-config', {
     token,
     method: 'PATCH',
     body: input,

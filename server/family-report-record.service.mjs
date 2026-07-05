@@ -425,6 +425,86 @@ function archiveActiveFamilyReportRecords(state, familyId, now) {
   }
 }
 
+function ownerIdentity(owner = {}) {
+  const ownerUserId = Number(owner.userId || owner.ownerUserId || 0) || null;
+  const ownerGuestId = ownerUserId ? '' : trim(owner.guestId || owner.ownerGuestId);
+  return { ownerUserId, ownerGuestId };
+}
+
+function familyReportRecordMatchesOwner(record = {}, owner = {}) {
+  const ownerInfo = ownerIdentity(owner);
+  if (ownerInfo.ownerUserId) return Number(record.ownerUserId || 0) === ownerInfo.ownerUserId;
+  return !Number(record.ownerUserId || 0) && trim(record.ownerGuestId) === ownerInfo.ownerGuestId;
+}
+
+function sortedPolicyIds(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => Number(row?.policyId || row?.id || 0))
+    .filter((id) => id > 0)
+    .sort((left, right) => left - right);
+}
+
+function reportPolicyIds(report = {}) {
+  const appendixPolicies = report?.appendix?.policies || [];
+  const inventoryRows = report?.policyInventory?.rows || [];
+  return sortedPolicyIds(appendixPolicies.length ? appendixPolicies : inventoryRows);
+}
+
+function samePolicyIds(left = [], right = []) {
+  if (!left.length || left.length !== right.length) return false;
+  return left.every((id, index) => id === right[index]);
+}
+
+function familyMemberSnapshot({ family = {}, members = [] } = {}) {
+  return {
+    coreMemberId: Number(family?.coreMemberId || 0) || null,
+    members: (Array.isArray(members) ? members : [])
+      .filter((member) => String(member?.status || 'active') === 'active')
+      .map((member) => ({
+        id: Number(member?.id || 0) || null,
+        name: trim(member?.name),
+        relationToCore: trim(member?.relationToCore),
+        relationLabel: trim(member?.relationLabel),
+        role: trim(member?.role),
+        gender: trim(member?.gender),
+        birthday: trim(member?.birthday),
+        idNumberTail: trim(member?.idNumberTail),
+        mobile: trim(member?.mobile),
+        notes: trim(member?.notes),
+      }))
+      .sort((left, right) => Number(left.id || 0) - Number(right.id || 0)),
+  };
+}
+
+function sameFamilyMemberSnapshot(left = null, right = null) {
+  if (!left || !right) return false;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function reusableFamilyPolicyAnalysisReport({ state, familyId, owner, policies = [], memberSnapshot = null } = {}) {
+  const targetFamilyId = Number(familyId || 0);
+  const nextPolicyIds = sortedPolicyIds(policies);
+  if (!targetFamilyId || !nextPolicyIds.length) return null;
+  const activeReports = (Array.isArray(state?.familyReports) ? state.familyReports : [])
+    .filter((record) => (
+      Number(record?.familyId || 0) === targetFamilyId &&
+      String(record?.status || 'active') === 'active' &&
+      familyReportRecordMatchesOwner(record, owner)
+    ))
+    .sort((left, right) => (
+      String(right.generatedAt || right.createdAt || '').localeCompare(String(left.generatedAt || left.createdAt || '')) ||
+      Number(right.id || 0) - Number(left.id || 0)
+    ));
+  for (const record of activeReports) {
+    const analysisReport = record?.report?.familyPolicyAnalysisReport;
+    if (!analysisReport || String(analysisReport.status || 'complete') === 'failed' || !trim(analysisReport.content)) continue;
+    if (!samePolicyIds(nextPolicyIds, reportPolicyIds(record.report))) continue;
+    if (!sameFamilyMemberSnapshot(memberSnapshot, record.memberSnapshot)) continue;
+    return structuredClone(analysisReport);
+  }
+  return null;
+}
+
 export function createFamilyReportRecord({
   state,
   family,
@@ -448,12 +528,22 @@ export function createFamilyReportRecord({
     ? () => allocateId(state)
     : () => Date.now();
   const finalReport = addMissingMemberReports(structuredClone(report), members, policyRows);
+  const nextMemberSnapshot = familyMemberSnapshot({ family, members });
+  const previousPolicyAnalysisReport = reusableFamilyPolicyAnalysisReport({
+    state,
+    familyId: family.id,
+    owner,
+    policies: policyRows,
+    memberSnapshot: nextMemberSnapshot,
+  });
+  if (previousPolicyAnalysisReport && !finalReport.familyPolicyAnalysisReport) {
+    finalReport.familyPolicyAnalysisReport = previousPolicyAnalysisReport;
+  }
   const issueInputs = buildReportIssues({ family, members, policies: policyRows, report: finalReport });
   const reportId = nextId();
   archiveActiveFamilyReportRecords(state, family.id, now);
 
-  const ownerUserId = Number(owner.userId || owner.ownerUserId || 0) || null;
-  const ownerGuestId = ownerUserId ? '' : trim(owner.guestId || owner.ownerGuestId);
+  const { ownerUserId, ownerGuestId } = ownerIdentity(owner);
   const record = {
     id: reportId,
     familyId: Number(family.id),
@@ -462,6 +552,7 @@ export function createFamilyReportRecord({
     status: 'active',
     source: 'code',
     report: finalReport,
+    memberSnapshot: nextMemberSnapshot,
     planningProfile: planningProfile || null,
     engineVersion: FAMILY_REPORT_ENGINE_VERSION,
     generatedAt: now,

@@ -23,7 +23,7 @@ test('agent skill router supports product comparison and replacement cautions', 
   assert.match(prompt.systemRules.join('\n'), /不得凭记忆编造产品责任/);
 });
 
-test('agent skill prompt keeps DeepSeek-selected product comparison rules', () => {
+test('agent skill prompt keeps router-selected product comparison rules', () => {
   const prompt = buildAgentSkillPromptFromSelection({
     scene: 'family_sales_chat',
     selection: {
@@ -35,6 +35,7 @@ test('agent skill prompt keeps DeepSeek-selected product comparison rules', () =
 
   assert.equal(prompt.selectedBy, 'deepseek');
   assert.equal(prompt.intent, 'product_comparison');
+  assert.match(prompt.promptHint, /智能 skill router 选择/);
   assert.match(prompt.promptHint, /产品比对与替换评估/);
   assert.match(prompt.systemRules.join('\n'), /同类型产品/);
   assert.match(prompt.systemRules.join('\n'), /官网证据/);

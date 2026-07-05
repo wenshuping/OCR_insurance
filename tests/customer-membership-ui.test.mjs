@@ -63,6 +63,26 @@ test('admin app exposes membership settings controls', () => {
   assert.match(appSource, /clearAdminAuthState/);
 });
 
+test('admin app exposes responsibility generation rule controls', () => {
+  const appSource = read('src/apps/admin/AdminApp.tsx');
+  const pagesSource = read('src/apps/admin/adminPages.ts');
+  const pageSource = read('src/apps/admin/pages/AdminResponsibilityGenerationPage.tsx');
+  assert.match(pagesSource, /保险责任自我修正/);
+  assert.match(appSource, /getAdminResponsibilityGenerationConfig/);
+  assert.match(appSource, /updateAdminResponsibilityGenerationConfig/);
+  assert.match(appSource, /AdminResponsibilityGenerationPage/);
+  assert.match(pageSource, /保险责任自我修正/);
+  assert.match(pageSource, /启用自我修正机制/);
+  assert.match(pageSource, /提示词硬性规则/);
+  assert.match(pageSource, /禁止作为责任标题/);
+  assert.match(pageSource, /失败样例库/);
+  assert.match(pageSource, /Planner 模式/);
+  assert.match(pageSource, /全部Planner/);
+  assert.match(pageSource, /关闭Planner/);
+  assert.match(appSource, /plannerMode: responsibilityGenerationConfig\.plannerMode \|\| 'auto'/);
+  assert.match(pageSource, /显示保险责任正文/);
+});
+
 test('customer report refresh requests mark only explicit user refresh actions', () => {
   const source = read('src/apps/customer/CustomerApp.tsx');
   const familyApiSource = read('src/api/contracts/family.ts');

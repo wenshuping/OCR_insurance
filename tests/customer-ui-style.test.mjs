@@ -36,6 +36,7 @@ const customerNavigationSource = readOptionalSource('../src/features/customer-na
 const customerCashflowFeatureSource = readOptionalSource('../src/features/cashflow/CashflowDetailPage.tsx');
 const customerFamilyReportFeatureSource = readOptionalSource('../src/features/family-report/FamilyCoverageOverview.tsx');
 const familySalesReviewMarkdownSource = readOptionalSource('../src/features/family-report/FamilySalesReviewMarkdown.tsx');
+const indexCssSource = readOptionalSource('../src/index.css');
 const customerFamilyPlanningStorageSource = readOptionalSource('../src/features/family-report/family-planning-storage.ts');
 const customerCashValueFeatureSource = readOptionalSource('../src/features/cash-value/CashValueDialog.tsx');
 const adminSharedSource = readOptionalSource('../src/features/admin-shared/AdminStatCard.tsx')
@@ -146,6 +147,8 @@ test('admin family report page reuses family policy report read-only', () => {
 
 test('admin sales review page is read-only and reuses customer markdown renderer', () => {
   assert.match(adminSalesReviewPageSource, /FamilySalesReviewMarkdown/);
+  assert.match(adminSalesReviewPageSource, /family-sales-chat-message/);
+  assert.match(adminSalesReviewPageSource, /<FamilySalesReviewMarkdown content=\{message\.content\}/);
   assert.match(adminSalesReviewPageSource, /只读查看已保存的销售建议/);
   assert.match(adminSalesReviewPageSource, /暂无已保存销售建议/);
   assert.doesNotMatch(adminSalesReviewPageSource, /重新生成专家报告/);
@@ -453,9 +456,12 @@ test('customer app exposes family profile management surface', () => {
   assert.match(customerSource, /familySalesReviewReportRef/);
   assert.match(customerSource, /familySalesReviewExportTitle/);
   assert.match(customerSource, /FamilySalesReviewMarkdown/);
+  assert.match(customerSource, /family-sales-chat-message/);
+  assert.match(customerSource, /<FamilySalesReviewMarkdown content=\{chatMessage\.content\}/);
   assert.match(familySalesReviewMarkdownSource, /parseFamilySalesReviewMarkdown/);
   assert.match(familySalesReviewMarkdownSource, /family-sales-review-markdown/);
   assert.match(familySalesReviewMarkdownSource, /family-sales-review-table-wrap/);
+  assert.match(indexCssSource, /\.family-sales-chat-message \.family-sales-review-markdown/);
   assert.match(customerSource, /familySalesReviewLoadingRef/);
   assert.match(customerSource, /setFamilySalesReviewBusy/);
   assert.match(normalizedCustomerAppSource, /家庭保障策略简报/);
@@ -465,12 +471,15 @@ test('customer app exposes family profile management surface', () => {
   assert.match(normalizedCustomerAppSource, /downloadReportImage\(familySalesReviewReportRef\.current,\s*familySalesReviewExportTitle\)/);
   assert.match(normalizedCustomerAppSource, /familySalesReviewReportRef/);
   assert.match(normalizedCustomerAppSource, /正在读取已保存的专家报告/);
-  assert.match(normalizedCustomerAppSource, /首次生成专家研判中，完成后会自动保存/);
-  assert.match(normalizedCustomerAppSource, /首次进入会自动生成/);
+  assert.match(normalizedCustomerAppSource, /暂无已保存销售建议，正在生成并保存/);
+  assert.match(normalizedCustomerAppSource, /有已保存内容会直接展示/);
+  assert.match(customerSource, /if \(saved\.review\?\.content\) \{[\s\S]*return;[\s\S]*const generated = await createFamilySalesReview\(authInput\)/);
+  assert.doesNotMatch(normalizedCustomerAppSource, /首次生成专家研判中，完成后会自动保存/);
+  assert.doesNotMatch(normalizedCustomerAppSource, /首次进入会自动生成/);
   assert.match(normalizedCustomerAppSource, /专家系统仍在生成中，完成后会自动保存/);
   assert.match(normalizedCustomerAppSource, /专家研判已完成并保存/);
-  assert.match(normalizedCustomerAppSource, /立即生成专家报告/);
-  assert.match(normalizedCustomerAppSource, /重新生成专家报告/);
+  assert.match(normalizedCustomerAppSource, /生成销售建议/);
+  assert.match(normalizedCustomerAppSource, /生成\/重算/);
   assert.match(normalizedCustomerAppSource, /正在请求专家系统生成策略简报/);
   assert.match(normalizedCustomerAppSource, /专家研判控制台/);
   assert.match(normalizedCustomerAppSource, /实时生成中/);
@@ -959,12 +968,12 @@ test('responsibility assistant shows DeepSeek summary blocks and structured resp
   assert.doesNotMatch(source, /CustomerResponsibilitySummaryCard/);
 });
 
-test('ResponsibilityAssistant exposes planner mode switch labels', () => {
+test('ResponsibilityAssistant keeps Planner mode out of customer controls', () => {
   const source = normalizedResponsibilityAssistantSource;
-  assert.match(source, /plannerMode/);
-  assert.match(source, /自动/);
-  assert.match(source, /全部Planner/);
-  assert.match(source, /关闭Planner/);
+  assert.doesNotMatch(source, /plannerMode/);
+  assert.doesNotMatch(source, /onChangePlannerMode/);
+  assert.doesNotMatch(source, /全部\s*Planner/);
+  assert.doesNotMatch(source, /关闭\s*Planner/);
 });
 
 test('ResponsibilityAssistant renders customer summary content blocks when present', () => {
@@ -983,9 +992,9 @@ test('ResponsibilityAssistant shows official responsibility clauses collapsed ab
   assert.ok(source.indexOf('保险责任条款') < source.indexOf('资料来源'));
 });
 
-test('CustomerApp sends selected plannerMode to customer summary API', () => {
-  assert.match(normalizedCustomerAppSource, /assistantPlannerMode/);
-  assert.match(normalizedCustomerAppSource, /plannerMode:\s*assistantPlannerMode/);
+test('CustomerApp lets backend config decide customer summary Planner mode', () => {
+  assert.doesNotMatch(normalizedCustomerAppSource, /assistantPlannerMode/);
+  assert.doesNotMatch(normalizedCustomerAppSource, /plannerMode:\s*assistantPlannerMode/);
 });
 
 test('pdf export uses a dedicated A4 report layout instead of mobile card cloning', () => {
@@ -1145,7 +1154,7 @@ test('customer policy detail uses customer responsibility summary instead of leg
   assert.match(sharedReportUiSource, /card\.sourceExcerpt/);
   assert.match(sharedReportUiSource, /indicator\.sourceExcerpt/);
   assert.match(sharedReportUiSource, /policy\.coverageIndicators/);
-  assert.match(detailSource, /getProductCustomerResponsibilitySummary\(\{ company, name, plannerMode: 'auto' \}\)/);
+  assert.match(detailSource, /getProductCustomerResponsibilitySummary\(\{ company, name \}\)/);
   assert.match(detailSource, /<CustomerResponsibilitySummaryCard summary=\{customerSummary\} \/>/);
   assert.doesNotMatch(detailSource, /ResponsibilityCardList/);
   assert.doesNotMatch(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);

@@ -9,6 +9,11 @@ import {
   buildFamilySalesChatMessages,
   generateFamilySalesChatReply,
 } from '../server/family-sales-chat.service.mjs';
+import {
+  buildFamilySalesMemoryContext,
+  normalizeExtractedFamilySalesMemories,
+  upsertFamilySalesMemories,
+} from '../server/family-sales-memory.service.mjs';
 
 test('family sales review input keeps members without policies and official evidence', () => {
   const family = { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active', notes: '家庭年收入约80万，偏好稳健方案，张三身份证110101198606141234仅本地核验' };
@@ -269,6 +274,8 @@ test('family sales chat prompt uses privacy-safe context and restores display na
     question: '帮我改成微信话术',
   }).map((message) => message.content).join('\n');
 
+  assert.match(prompt, /你是一名保险营销专家/u);
+  assert.match(prompt, /只能回答“我是保险营销专家/u);
   assert.match(prompt, /sourceUpdated=true/);
   assert.match(prompt, /客户说预算不够怎么办/);
   assert.match(prompt, /帮我改成微信话术/);
@@ -295,7 +302,7 @@ test('family sales chat prompt uses privacy-safe context and restores display na
             message: {
               content: body.max_tokens === 300
                 ? JSON.stringify({ intent: 'sales_script', skills: ['sales_script', 'objection_handling'], reason: '微信话术' })
-                : '可以对{{member_1}}说：“我们先核实预算，再拆基础方案。” {{id_number_1}}',
+                : '我是DeepSeek大模型，可以对{{member_1}}说：“我们先核实预算，再拆基础方案。” {{id_number_1}}',
             },
           }],
         }),
@@ -308,12 +315,91 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   assert.match(JSON.stringify(requestBodies[0]), /sales_script/);
   assert.equal(requestBodies[1].model, 'deepseek-v4-pro');
   assert.deepEqual(requestBodies[1].thinking, { type: 'enabled' });
-  assert.match(JSON.stringify(requestBodies[1]), /DeepSeek skill router 选择/);
+  assert.match(JSON.stringify(requestBodies[1]), /智能 skill router 选择/);
   assert.match(JSON.stringify(requestBodies[1]), /客户异议处理/);
   assert.doesNotMatch(JSON.stringify(requestBodies[1]), /张三|李四|张三家庭|110101198606141234|110101198812016543/);
+  assert.match(reply.content, /保险营销专家/);
   assert.match(reply.content, /张三/);
   assert.match(reply.content, /身份证号已脱敏/);
+  assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
   assert.doesNotMatch(reply.content, /\{\{member_1\}\}|\{\{id_number_1\}\}|110101198606141234/);
+});
+
+test('family sales chat answers identity questions as insurance marketing expert without upstream model', async () => {
+  let fetchCalled = false;
+  const reply = await generateFamilySalesChatReply({
+    question: '你是谁？你是什么大模型，是DeepSeek吗？',
+    env: {},
+    fetchImpl: async () => {
+      fetchCalled = true;
+      throw new Error('fetch should not be called');
+    },
+  });
+
+  assert.equal(fetchCalled, false);
+  assert.equal(reply.model, 'identity_guard');
+  assert.match(reply.content, /^我是保险营销专家/u);
+  assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
+});
+
+test('family sales memory context is sanitized, deduplicated, and available to chat and review prompts', () => {
+  const normalized = normalizeExtractedFamilySalesMemories({
+    memories: [
+      { kind: 'objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.91 },
+      { kind: 'objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.9 },
+      { kind: 'strategy', content: '先讲基础方案，再约二次面谈', confidence: 0.83 },
+      { kind: 'noise', content: '无效类型', confidence: 1 },
+      { kind: 'todo', content: '置信度太低的不保存', confidence: 0.3 },
+    ],
+  });
+  assert.deepEqual(normalized.map((memory) => memory.kind), ['objection', 'strategy']);
+  assert.match(normalized[0].content, /手机号已脱敏/u);
+  assert.doesNotMatch(normalized[0].content, /13800138000/u);
+
+  const state = { familySalesMemories: [], nextId: 100 };
+  const result = upsertFamilySalesMemories({
+    state,
+    familyId: 8,
+    owner: { ownerGuestId: 'guest-memory' },
+    sourceThreadId: 30,
+    userMessage: { id: 31 },
+    assistantMessage: { id: 32 },
+    extractedMemories: normalized,
+    allocateId: (target) => {
+      const id = target.nextId;
+      target.nextId += 1;
+      return id;
+    },
+    nowIso: () => '2026-06-15T08:00:00.000Z',
+  });
+  assert.equal(result.changed, true);
+  assert.equal(state.familySalesMemories.length, 2);
+  assert.deepEqual(state.familySalesMemories[0].evidenceMessageIds, [31, 32]);
+
+  const salesMemoryContext = buildFamilySalesMemoryContext(state.familySalesMemories);
+  const chatPrompt = buildFamilySalesChatMessages({
+    context: {
+      familyInput: {},
+      salesMemoryContext,
+    },
+    question: '继续生成微信话术',
+  }).map((message) => message.content).join('\n');
+  assert.match(chatPrompt, /salesMemoryContext/u);
+  assert.match(chatPrompt, /客户担心预算压力/u);
+  assert.match(chatPrompt, /保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准/u);
+
+  const reviewPrompt = buildFamilySalesReviewMessages({
+    family: {},
+    members: [],
+    policies: [],
+    report: {},
+    officialEvidence: [],
+    dataQuality: {},
+    salesMemoryContext,
+    salesChatContext: { selectedMessageCount: 1, recentMessages: [{ role: 'user', content: '本次勾选优先' }] },
+  }).map((message) => message.content).join('\n');
+  assert.match(reviewPrompt, /salesMemoryContext/u);
+  assert.match(reviewPrompt, /salesChatContext 与 salesMemoryContext 同时存在，顾问本次勾选的 salesChatContext 优先/u);
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {

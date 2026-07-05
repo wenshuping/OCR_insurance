@@ -33,6 +33,7 @@ const DB_OWNED_KEYS = new Set([
   'familySalesReviews',
   'familySalesChatThreads',
   'familySalesChatMessages',
+  'familySalesMemories',
   'reportRefreshEvents',
   'membershipConfig',
   'membershipOrders',
@@ -152,6 +153,7 @@ function resolveNextId(state) {
     maxNumericId(state.familySalesReviews),
     maxNumericId(state.familySalesChatThreads),
     maxNumericId(state.familySalesChatMessages),
+    maxNumericId(state.familySalesMemories),
     maxNumericId(state.reportRefreshEvents),
     maxNumericId(state.membershipOrders),
   );
@@ -644,6 +646,23 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_sales_chat_messages_thread_id ON family_sales_chat_messages(thread_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_chat_messages_family_id ON family_sales_chat_messages(family_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_chat_messages_created_at ON family_sales_chat_messages(created_at);
+
+    CREATE TABLE IF NOT EXISTS family_sales_memories (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      kind TEXT,
+      status TEXT,
+      source_thread_id INTEGER,
+      created_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memories_family_id ON family_sales_memories(family_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_user_id ON family_sales_memories(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_guest_id ON family_sales_memories(owner_guest_id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memories_updated_at ON family_sales_memories(updated_at);
 
     CREATE TABLE IF NOT EXISTS report_refresh_events (
       id INTEGER PRIMARY KEY,
@@ -1171,6 +1190,25 @@ function insertRows(db, state) {
     );
   }
 
+  const insertFamilySalesMemory = db.prepare(`
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const memory of normalizeArray(state.familySalesMemories)) {
+    insertFamilySalesMemory.run(
+      Number(memory.id),
+      Number(memory.familyId || 0) || null,
+      Number(memory.ownerUserId || 0) || null,
+      String(memory.ownerGuestId || ''),
+      String(memory.kind || ''),
+      String(memory.status || ''),
+      Number(memory.sourceThreadId || 0) || null,
+      String(memory.createdAt || ''),
+      String(memory.updatedAt || ''),
+      jsonPayload(memory),
+    );
+  }
+
   const insertReportRefreshEvent = db.prepare(`
     INSERT INTO report_refresh_events (id, kind, family_id, report_id, owner_user_id, owner_guest_id, created_at, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1345,6 +1383,17 @@ function upsertMembershipConfig(db, config = null) {
     VALUES (1, ?)
     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
   `).run(jsonPayload(config));
+}
+
+function upsertStateDocument(db, key, value) {
+  const normalizedKey = String(key || '').trim();
+  if (!normalizedKey) return;
+  db.prepare(`
+    INSERT INTO state_documents (key, payload)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      payload = excluded.payload
+  `).run(normalizedKey, JSON.stringify(value ?? null));
 }
 
 function upsertPolicy(db, policy = {}) {
@@ -2003,6 +2052,28 @@ function replaceFamilySalesChats(db, state) {
   }
 }
 
+function replaceFamilySalesMemories(db, state) {
+  db.prepare('DELETE FROM family_sales_memories').run();
+  const insertMemory = db.prepare(`
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const memory of normalizeArray(state.familySalesMemories)) {
+    insertMemory.run(
+      Number(memory.id),
+      Number(memory.familyId || 0) || null,
+      Number(memory.ownerUserId || 0) || null,
+      String(memory.ownerGuestId || ''),
+      String(memory.kind || ''),
+      String(memory.status || ''),
+      Number(memory.sourceThreadId || 0) || null,
+      String(memory.createdAt || ''),
+      String(memory.updatedAt || ''),
+      jsonPayload(memory),
+    );
+  }
+}
+
 function replaceReportRefreshEvents(db, state) {
   db.prepare('DELETE FROM report_refresh_events').run();
   const insertReportRefreshEvent = db.prepare(`
@@ -2047,6 +2118,7 @@ function clearDbOwnedTables(db) {
     DELETE FROM family_report_issues;
     DELETE FROM family_report_corrections;
     DELETE FROM family_reports;
+    DELETE FROM family_sales_memories;
     DELETE FROM family_sales_chat_messages;
     DELETE FROM family_sales_chat_threads;
     DELETE FROM family_sales_reviews;
@@ -2141,6 +2213,7 @@ function loadDbOwnedState(db) {
     familySalesReviews: loadPayloadRows(db, 'family_sales_reviews', 'generated_at ASC, id ASC'),
     familySalesChatThreads: loadPayloadRows(db, 'family_sales_chat_threads', 'updated_at ASC, id ASC'),
     familySalesChatMessages: loadPayloadRows(db, 'family_sales_chat_messages', 'created_at ASC, id ASC'),
+    familySalesMemories: loadPayloadRows(db, 'family_sales_memories', 'updated_at ASC, id ASC'),
     reportRefreshEvents: loadPayloadRows(db, 'report_refresh_events', 'created_at ASC, id ASC'),
     membershipConfig: parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null),
     membershipOrders: loadPayloadRows(db, 'membership_orders', 'id ASC'),
@@ -2234,6 +2307,25 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  async function persistStateDocument({ state, key = '', value = null } = {}) {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) throw new Error('State document key is required');
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      upsertStateDocument(db, normalizedKey, value);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    if (state && typeof state === 'object') state[normalizedKey] = value;
+    return value;
   }
 
   async function persistOfficialDomainProfiles({ state } = {}) {
@@ -2446,6 +2538,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       replaceFamilyReportShares(db, nextState);
       replaceFamilySalesReviews(db, nextState);
       replaceFamilySalesChats(db, nextState);
+      replaceFamilySalesMemories(db, nextState);
       replaceReportRefreshEvents(db, nextState);
       if (includePolicies) {
         for (const policy of normalizeArray(nextState.policies)) {
@@ -2764,6 +2857,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persist,
     persistAdminSession,
     persistMembershipConfig,
+    persistStateDocument,
     persistOfficialDomainProfiles,
     persistAuthSmsCode,
     persistAuthRegistration,

@@ -126,7 +126,7 @@ export function PolicyDetailSheet({
       };
     }
     setCustomerSummaryLoading(true);
-    getProductCustomerResponsibilitySummary({ company, name, plannerMode: 'auto' })
+    getProductCustomerResponsibilitySummary({ company, name })
       .then((payload) => {
         if (cancelled) return;
         setCustomerSummary(payload.ok ? payload.summary : null);

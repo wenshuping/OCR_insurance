@@ -5411,7 +5411,7 @@ test('customer responsibility summary generates once and then reads from databas
   }
 });
 
-test('customer summary endpoint forwards plannerMode override to Planner', async () => {
+test('customer summary endpoint uses admin plannerMode config for Planner', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE policies (id INTEGER PRIMARY KEY)');
   const state = {
@@ -5426,6 +5426,9 @@ test('customer summary endpoint forwards plannerMode override to Planner', async
       official: true,
     }],
     insuranceIndicatorRecords: [],
+    responsibilityGenerationGovernance: {
+      plannerMode: 'all',
+    },
   };
   const persistedSummaries = new Map();
   let plannerCalls = 0;
@@ -5488,11 +5491,12 @@ test('customer summary endpoint forwards plannerMode override to Planner', async
   try {
     const response = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
       method: 'POST',
-      body: JSON.stringify({ company: '新华保险', name: '盛世荣耀', plannerMode: 'all' }),
+      body: JSON.stringify({ company: '新华保险', name: '盛世荣耀', plannerMode: 'off' }),
     });
     assert.equal(response.response.status, 200);
     assert.equal(response.payload.ok, true);
     assert.equal(plannerCalls, 1);
+    assert.equal([...persistedSummaries.values()][0]?.payload?.plannerMode, 'all');
     assert.equal(response.payload.summary.contentBlocks.length, 4);
     assert.equal(response.payload.summary.contentBlocks.some((block) => block.blockKey === 'productFunctions'), true);
   } finally {
@@ -10850,6 +10854,72 @@ test('admin membership config save persists only membership config', async () =>
   }
 });
 
+test('admin responsibility generation config save persists only state document', async () => {
+  const persistedDocuments = [];
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state: {
+      ...createInitialState(),
+      adminSessions: [
+        {
+          token: 'admin-token',
+          createdAt: '2026-07-05T00:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        },
+      ],
+    },
+    now: () => '2026-07-05T00:10:00.000Z',
+    optionalResponsibilityGovernanceRebuilder: () => {
+      throw new Error('responsibility generation config save should not rebuild optional responsibility governance');
+    },
+    persist: async () => {
+      throw new Error('responsibility generation config save should not run full-state persist');
+    },
+    persistStateDocument: async ({ key, value }) => {
+      persistedDocuments.push({ key, value: JSON.parse(JSON.stringify(value)) });
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const before = await jsonFetch(server.baseUrl, '/api/admin/responsibility-generation-config', {
+      headers: { authorization: 'Bearer admin-token' },
+    });
+    assert.equal(before.response.status, 200);
+    assert.equal(before.payload.config.fallbackMode, 'official_text_after_second_failure');
+    assert.equal(before.payload.config.plannerMode, 'auto');
+
+    const saved = await jsonFetch(server.baseUrl, '/api/admin/responsibility-generation-config', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer admin-token' },
+      body: JSON.stringify({
+        enabled: true,
+        promptRules: ['后台规则：责任必须含触发条件和给付义务'],
+        blockedResponsibilityTitles: ['免赔额'],
+        failureExamples: [{
+          badOutput: '免赔额',
+          reason: '参数不是责任',
+          correction: '写入对应医疗责任给付规则',
+        }],
+        fallbackMode: 'needs_review',
+        plannerMode: 'all',
+      }),
+    });
+
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.payload.config.fallbackMode, 'needs_review');
+    assert.equal(saved.payload.config.plannerMode, 'all');
+    assert.deepEqual(saved.payload.config.promptRules, ['后台规则：责任必须含触发条件和给付义务']);
+    assert.deepEqual(app.locals.state.responsibilityGenerationGovernance.blockedResponsibilityTitles, ['免赔额']);
+    assert.equal(persistedDocuments.length, 1);
+    assert.equal(persistedDocuments[0].key, 'responsibilityGenerationGovernance');
+    assert.equal(persistedDocuments[0].value.plannerMode, 'all');
+    assert.equal(persistedDocuments[0].value.updatedAt, '2026-07-05T00:10:00.000Z');
+  } finally {
+    await server.close();
+  }
+});
+
 test('admin can crawl official product materials into local knowledge base', async () => {
   const persisted = [];
   const calls = [];
@@ -12120,7 +12190,7 @@ test('family sales review is generated once persisted and returned by latest rep
     generateFamilySalesReview: async ({ input }) => {
       generationCount += 1;
       assert.equal(input.family.familyRef, '当前家庭');
-      assert.equal(input.members.length, 2);
+      assert.equal(input.members.length, generationCount === 3 ? 3 : 2);
       assert.equal(input.policies.length, 1);
       assert.equal(input.family.notes, generationCount === 1 ? '初始家庭备注' : '更新后的家庭备注：年收入约80万，喜欢现金流方案');
       assert.equal(
@@ -12200,6 +12270,29 @@ test('family sales review is generated once persisted and returned by latest rep
     assert.equal(state.familySalesReviews.find((review) => review.id === 13).status, 'active');
     assert.equal(state.familyReportShares.length, 0);
     assert.equal(generationCount, 2);
+
+    const addedMember = await jsonFetch(server.baseUrl, '/api/family-profiles/8/members?guestId=guest-sales-review', {
+      method: 'POST',
+      body: JSON.stringify({ name: '王五', relationLabel: '子女', notes: '新增家庭成员：准备教育金沟通' }),
+    });
+    assert.equal(addedMember.response.status, 201);
+    assert.equal(addedMember.payload.members.length, 3);
+    assert.equal(state.familySalesReviews.find((review) => review.id === 13).status, 'archived');
+
+    const afterMemberGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
+    assert.equal(afterMemberGet.response.status, 200);
+    assert.equal(afterMemberGet.payload.review, null);
+
+    const regeneratedAfterMember = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(regeneratedAfterMember.response.status, 200);
+    assert.equal(regeneratedAfterMember.payload.review.id, 15);
+    assert.equal(regeneratedAfterMember.payload.review.inputSummary.memberCount, 3);
+    assert.equal(regeneratedAfterMember.payload.review.content.includes('第 3 次销售建议'), true);
+    assert.equal(state.familySalesReviews.find((review) => review.id === 15).status, 'active');
+    assert.equal(generationCount, 3);
   } finally {
     await server.close();
   }
@@ -12327,8 +12420,30 @@ test('family sales chat creates threads continues with history and enforces owne
     createdAt: '2026-06-15T00:03:00.000Z',
     updatedAt: '2026-06-15T00:03:00.000Z',
   });
+  state.familySalesMemories.push({
+    id: 13,
+    familyId: 99,
+    ownerGuestId: 'guest-sales-chat',
+    kind: 'preference',
+    content: '其他家庭的偏好不应进入本家庭续聊',
+    status: 'active',
+    confidence: 0.9,
+    createdAt: '2026-06-15T00:04:00.000Z',
+    updatedAt: '2026-06-15T00:04:00.000Z',
+  }, {
+    id: 14,
+    familyId: 8,
+    ownerGuestId: 'guest-other',
+    kind: 'preference',
+    content: '其他登录人的偏好不应进入本家庭续聊',
+    status: 'active',
+    confidence: 0.9,
+    createdAt: '2026-06-15T00:04:30.000Z',
+    updatedAt: '2026-06-15T00:04:30.000Z',
+  });
   state.nextId = 20;
   const generationCalls = [];
+  const memoryCalls = [];
   const persistCalls = [];
   const app = createPolicyOcrApp({
     state,
@@ -12343,6 +12458,10 @@ test('family sales chat creates threads continues with history and enforces owne
         model: 'test-chat',
         generatedAt: `2026-06-15T08:0${generationCalls.length}:00.000Z`,
       };
+    },
+    extractFamilySalesMemories: async ({ userMessage, assistantMessage, existingMemories }) => {
+      memoryCalls.push({ userMessage, assistantMessage, existingMemories });
+      return [{ kind: 'objection', content: '客户预算敏感，优先基础方案', confidence: 0.92 }];
     },
   });
   const server = await listen(app);
@@ -12361,7 +12480,15 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(state.familySalesChatThreads[0].ownerGuestId, 'guest-sales-chat');
     assert.equal(generationCalls[0].question, '帮我改成微信话术');
     assert.equal(generationCalls[0].context.latestSalesReview.id, 12);
+    assert.equal(generationCalls[0].context.salesMemoryContext, undefined);
+    assert.doesNotMatch(JSON.stringify(generationCalls[0].context), /其他家庭的偏好/u);
+    assert.doesNotMatch(JSON.stringify(generationCalls[0].context), /其他登录人的偏好/u);
     assert.equal(generationCalls[0].history.length, 0);
+    assert.equal(memoryCalls.length, 1);
+    assert.equal(state.familySalesMemories.length, 3);
+    const currentOwnerMemory = state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat');
+    assert.equal(currentOwnerMemory?.content, '客户预算敏感，优先基础方案');
+    assert.deepEqual(currentOwnerMemory?.evidenceMessageIds, [21, 22]);
     assert.deepEqual(persistCalls.map((call) => call.includePolicies), [false]);
 
     const continued = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages?guestId=guest-sales-chat', {
@@ -12372,12 +12499,22 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(continued.payload.messages.length, 2);
     assert.equal(generationCalls[1].question, '客户说预算不够怎么回应');
     assert.equal(generationCalls[1].history.length, 2);
+    assert.equal(generationCalls[1].context.salesMemoryContext.memoryCount, 1);
+    assert.match(JSON.stringify(generationCalls[1].context.salesMemoryContext), /客户预算敏感/u);
+    assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他家庭的偏好/u);
+    assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他登录人的偏好/u);
     assert.equal(state.familySalesChatMessages.length, 4);
+    assert.equal(memoryCalls.length, 2);
+    assert.equal(state.familySalesMemories.filter((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat' && memory.status === 'active').length, 1);
+    assert.deepEqual(state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat')?.evidenceMessageIds, [21, 22, 24, 25]);
 
     const listed = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat');
     assert.equal(listed.response.status, 200);
     assert.equal(listed.payload.threads.length, 1);
     assert.equal(listed.payload.threads[0].messageCount, 4);
+    assert.equal(listed.payload.threads[0].messages.length, 4);
+    assert.equal(listed.payload.threads[0].messages[0].content, '帮我改成微信话术');
+    assert.equal(listed.payload.threads[0].messages[3].content, '回复 2: 客户说预算不够怎么回应');
 
     const otherOwner = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-other');
     assert.equal(otherOwner.response.status, 404);
@@ -12407,6 +12544,7 @@ test('family sales chat keeps failed user message without empty assistant reply'
     updatedAt: '2026-06-15T00:01:00.000Z',
   });
   state.nextId = 30;
+  let memoryCalled = false;
   const app = createPolicyOcrApp({
     state,
     generateFamilySalesChatReply: async () => {
@@ -12414,6 +12552,10 @@ test('family sales chat keeps failed user message without empty assistant reply'
       error.code = 'FAMILY_SALES_CHAT_UPSTREAM_FAILED';
       error.status = 502;
       throw error;
+    },
+    extractFamilySalesMemories: async () => {
+      memoryCalled = true;
+      return [{ kind: 'todo', content: '不应生成', confidence: 1 }];
     },
   });
   const server = await listen(app);
@@ -12428,6 +12570,8 @@ test('family sales chat keeps failed user message without empty assistant reply'
     assert.equal(state.familySalesChatMessages[0].role, 'user');
     assert.equal(state.familySalesChatMessages[0].status, 'failed');
     assert.equal(state.familySalesChatMessages.some((message) => message.role === 'assistant'), false);
+    assert.equal(memoryCalled, false);
+    assert.equal(state.familySalesMemories.length, 0);
   } finally {
     await server.close();
   }
@@ -12480,6 +12624,11 @@ test('family sales review regeneration only includes selected sales chat context
     { id: 32, threadId: 31, familyId: 28, role: 'user', content: '客户说预算不够，希望先看基础方案', status: 'complete', createdAt: '2026-06-15T00:03:00.000Z' },
     { id: 33, threadId: 31, familyId: 28, role: 'assistant', content: '新版建议应先讲基础保障，再约二次面谈。', status: 'complete', createdAt: '2026-06-15T00:04:00.000Z' },
   );
+  state.familySalesMemories.push(
+    { id: 34, familyId: 28, ownerGuestId: 'guest-sales-review-chat', kind: 'preference', content: '客户偏好先看基础方案', status: 'active', confidence: 0.9, createdAt: '2026-06-15T00:05:00.000Z', updatedAt: '2026-06-15T00:05:00.000Z' },
+    { id: 35, familyId: 29, ownerGuestId: 'guest-sales-review-chat', kind: 'preference', content: '其他家庭偏好不应带入', status: 'active', confidence: 0.9, createdAt: '2026-06-15T00:06:00.000Z', updatedAt: '2026-06-15T00:06:00.000Z' },
+    { id: 36, familyId: 28, ownerGuestId: 'guest-other', kind: 'preference', content: '其他登录人偏好不应带入', status: 'active', confidence: 0.9, createdAt: '2026-06-15T00:07:00.000Z', updatedAt: '2026-06-15T00:07:00.000Z' },
+  );
   state.nextId = 40;
   let reviewInput = null;
   const app = createPolicyOcrApp({
@@ -12501,6 +12650,10 @@ test('family sales review regeneration only includes selected sales chat context
     });
     assert.equal(generatedWithoutSelection.response.status, 200);
     assert.equal(reviewInput.salesChatContext, undefined);
+    assert.equal(reviewInput.salesMemoryContext.memoryCount, 1);
+    assert.match(JSON.stringify(reviewInput.salesMemoryContext), /客户偏好先看基础方案/u);
+    assert.doesNotMatch(JSON.stringify(reviewInput.salesMemoryContext), /其他家庭偏好/u);
+    assert.doesNotMatch(JSON.stringify(reviewInput.salesMemoryContext), /其他登录人偏好/u);
 
     const generated = await jsonFetch(server.baseUrl, '/api/family-profiles/28/sales-review?guestId=guest-sales-review-chat', {
       method: 'POST',
@@ -12508,6 +12661,7 @@ test('family sales review regeneration only includes selected sales chat context
     });
     assert.equal(generated.response.status, 200);
     assert.equal(reviewInput.salesChatContext.selectedMessageCount, 2);
+    assert.equal(reviewInput.salesMemoryContext.memoryCount, 1);
     assert.equal(reviewInput.salesChatContext.recentMessages.length, 2);
     assert.match(reviewInput.salesChatContext.recentMessages[0].content, /预算不够/);
     assert.match(reviewInput.salesChatContext.usageHint, /明确选择/);
@@ -15227,6 +15381,16 @@ test('family API rebases relations on core switch and supports manual relation e
       method: 'POST',
       body: JSON.stringify({ name: '小明', relationLabel: '儿子' }),
     });
+    state.familySalesReviews.push({
+      id: 9991,
+      familyId,
+      ownerGuestId: 'guest-family-rebase',
+      status: 'active',
+      content: '切换顶梁柱前的旧销售建议',
+      generatedAt: '2026-06-15T00:00:00.000Z',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    });
 
     const nextCoreRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/core?guestId=guest-family-rebase`, {
       method: 'PATCH',
@@ -15237,6 +15401,7 @@ test('family API rebases relations on core switch and supports manual relation e
     assert.equal(nextMembers.get(spouseRes.payload.member.id).relationLabel, '本人');
     assert.equal(nextMembers.get(coreRes.payload.member.id).relationLabel, '配偶');
     assert.equal(nextMembers.get(childRes.payload.member.id).relationLabel, '待确认');
+    assert.equal(state.familySalesReviews.find((review) => review.id === 9991).status, 'archived');
 
     const relationRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members/${childRes.payload.member.id}?guestId=guest-family-rebase`, {
       method: 'PATCH',

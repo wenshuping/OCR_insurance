@@ -5,7 +5,45 @@ import {
   buildFamilyPolicyAnalysisMessages,
   generateFamilyPolicyAnalysisReport,
 } from '../server/family-policy-analysis-report.service.mjs';
-import { updateFamilyReportRecordReport } from '../server/family-report-record.service.mjs';
+import {
+  createFamilyReportRecord,
+  updateFamilyReportRecordReport,
+} from '../server/family-report-record.service.mjs';
+
+function makeFamilyReport(policyId) {
+  return {
+    summary: { memberCount: 0, policyCount: 1 },
+    policyInventory: { rows: [{ policyId, productName: '重疾险' }] },
+    criticalIllness: { members: [] },
+    accident: { members: [] },
+    wealth: { memberReports: [] },
+    radar: { members: [], hiddenMembers: [] },
+    appendix: { policies: [{ policyId, productName: '重疾险', ocrText: '' }] },
+  };
+}
+
+function makeFamilyMembers(notes = '负责家庭收入') {
+  return [{
+    id: 1,
+    familyId: 10,
+    name: '张先生',
+    relationToCore: 'self',
+    relationLabel: '本人',
+    role: 'core',
+    birthday: '1988-01-01',
+    idNumberTail: '1234',
+    notes,
+    status: 'active',
+  }];
+}
+
+function allocateSequence(start = 100) {
+  let value = start;
+  return () => {
+    value += 1;
+    return value;
+  };
+}
 
 test('family policy analysis prompt asks for full customer report with emphasized gap section', () => {
   const input = buildFamilyPolicyAnalysisInput({
@@ -111,6 +149,158 @@ test('family report refresh preserves generated policy analysis report', () => {
 
   assert.equal(record.report.familyPolicyAnalysisReport.content, '已生成的家庭保单分析报告正文');
   assert.equal(record.report.familyPolicyAnalysisReport.model, 'deepseek-v4-pro');
+});
+
+test('family report regeneration reuses policy analysis report when policy set is unchanged', () => {
+  const state = {
+    familyReports: [],
+    familyReportIssues: [],
+    familyReportCorrections: [],
+  };
+  const allocateId = allocateSequence();
+  const family = { id: 10, familyName: '张先生家庭', coreMemberId: 1 };
+  const members = makeFamilyMembers();
+  const first = createFamilyReportRecord({
+    state,
+    family,
+    owner: { userId: 7 },
+    members,
+    policies: [{ id: 11, name: '重疾险' }],
+    report: makeFamilyReport(11),
+    allocateId,
+  }).record;
+  first.report.familyPolicyAnalysisReport = {
+    status: 'complete',
+    content: '已生成的家庭保单分析报告正文',
+    model: 'deepseek-v4-pro',
+    generatedAt: '2026-07-03T00:00:00.000Z',
+  };
+
+  const { record } = createFamilyReportRecord({
+    state,
+    family,
+    owner: { userId: 7 },
+    members,
+    policies: [{ id: 11, name: '重疾险' }],
+    report: makeFamilyReport(11),
+    allocateId,
+  });
+
+  assert.equal(state.familyReports[0].status, 'archived');
+  assert.equal(record.report.familyPolicyAnalysisReport.content, '已生成的家庭保单分析报告正文');
+  assert.equal(record.report.familyPolicyAnalysisReport.model, 'deepseek-v4-pro');
+});
+
+test('family report regeneration does not reuse policy analysis report when policy set changes', () => {
+  const state = {
+    familyReports: [],
+    familyReportIssues: [],
+    familyReportCorrections: [],
+  };
+  const allocateId = allocateSequence();
+  const family = { id: 10, familyName: '张先生家庭', coreMemberId: 1 };
+  const members = makeFamilyMembers();
+  const first = createFamilyReportRecord({
+    state,
+    family,
+    owner: { userId: 7 },
+    members,
+    policies: [{ id: 11, name: '重疾险' }],
+    report: makeFamilyReport(11),
+    allocateId,
+  }).record;
+  first.report.familyPolicyAnalysisReport = {
+    status: 'complete',
+    content: '旧保单集合的家庭保单分析报告正文',
+    model: 'deepseek-v4-pro',
+    generatedAt: '2026-07-03T00:00:00.000Z',
+  };
+
+  const { record } = createFamilyReportRecord({
+    state,
+    family,
+    owner: { userId: 7 },
+    members,
+    policies: [{ id: 12, name: '医疗险' }],
+    report: makeFamilyReport(12),
+    allocateId,
+  });
+
+  assert.equal(record.report.familyPolicyAnalysisReport, undefined);
+});
+
+test('family report regeneration does not reuse policy analysis report when member notes change', () => {
+  const state = {
+    familyReports: [],
+    familyReportIssues: [],
+    familyReportCorrections: [],
+  };
+  const allocateId = allocateSequence();
+  const family = { id: 10, familyName: '张先生家庭', coreMemberId: 1 };
+  const first = createFamilyReportRecord({
+    state,
+    family,
+    owner: { userId: 7 },
+    members: makeFamilyMembers('负责家庭收入'),
+    policies: [{ id: 11, name: '重疾险' }],
+    report: makeFamilyReport(11),
+    allocateId,
+  }).record;
+  first.report.familyPolicyAnalysisReport = {
+    status: 'complete',
+    content: '旧成员备注的家庭保单分析报告正文',
+    model: 'deepseek-v4-pro',
+    generatedAt: '2026-07-03T00:00:00.000Z',
+  };
+
+  const { record } = createFamilyReportRecord({
+    state,
+    family,
+    owner: { userId: 7 },
+    members: makeFamilyMembers('负责家庭收入，近期新增房贷'),
+    policies: [{ id: 11, name: '重疾险' }],
+    report: makeFamilyReport(11),
+    allocateId,
+  });
+
+  assert.equal(record.report.familyPolicyAnalysisReport, undefined);
+});
+
+test('family report regeneration does not reuse legacy policy analysis report without member snapshot', () => {
+  const state = {
+    familyReports: [{
+      id: 1,
+      familyId: 10,
+      ownerUserId: 7,
+      status: 'active',
+      report: {
+        ...makeFamilyReport(11),
+        familyPolicyAnalysisReport: {
+          status: 'complete',
+          content: '旧版本缓存的家庭保单分析报告正文',
+          model: 'deepseek-v4-pro',
+          generatedAt: '2026-07-03T00:00:00.000Z',
+        },
+      },
+      generatedAt: '2026-07-03T00:00:00.000Z',
+      createdAt: '2026-07-03T00:00:00.000Z',
+      updatedAt: '2026-07-03T00:00:00.000Z',
+    }],
+    familyReportIssues: [],
+    familyReportCorrections: [],
+  };
+
+  const { record } = createFamilyReportRecord({
+    state,
+    family: { id: 10, familyName: '张先生家庭', coreMemberId: 1 },
+    owner: { userId: 7 },
+    members: makeFamilyMembers(),
+    policies: [{ id: 11, name: '重疾险' }],
+    report: makeFamilyReport(11),
+    allocateId: allocateSequence(),
+  });
+
+  assert.equal(record.report.familyPolicyAnalysisReport, undefined);
 });
 
 test('family policy analysis retries pro model after empty pro response', async () => {

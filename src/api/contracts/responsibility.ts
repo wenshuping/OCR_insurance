@@ -308,13 +308,11 @@ export function matchPolicyResponsibilities(input: { company: string; name: stri
 export function getProductCustomerResponsibilitySummary(input: {
   company: string;
   name: string;
-  plannerMode?: ResponsibilityPlannerMode;
 }) {
   return requestResponsibility<CustomerResponsibilitySummaryResponse>('/api/policy-responsibilities/customer-summary', {
     body: {
       company: input.company,
       name: input.name,
-      ...(input.plannerMode ? { plannerMode: input.plannerMode } : {}),
     },
   });
 }

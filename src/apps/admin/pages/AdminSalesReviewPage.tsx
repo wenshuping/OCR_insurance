@@ -94,13 +94,17 @@ export function AdminSalesReviewPage({
                             className={`rounded-2xl px-3 py-2.5 text-xs font-semibold leading-5 ${
                               message.role === 'user'
                                 ? 'bg-blue-600 text-white'
-                                : 'bg-white text-slate-600 ring-1 ring-slate-200'
+                                : 'family-sales-chat-message bg-white text-slate-600 ring-1 ring-slate-200'
                             }`}
                           >
                             <p className={message.role === 'user' ? 'mb-1 font-black text-blue-100' : 'mb-1 font-black text-slate-400'}>
                               {message.role === 'user' ? '顾问追问' : '续聊 Agent'}
                             </p>
-                            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                            {message.role === 'user' ? (
+                              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                            ) : (
+                              <FamilySalesReviewMarkdown content={message.content} />
+                            )}
                           </div>
                         ))}
                       </div>

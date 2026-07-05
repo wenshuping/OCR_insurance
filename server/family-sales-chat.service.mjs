@@ -14,6 +14,9 @@ const DEFAULT_MAX_TOKENS = 8_000;
 const DEFAULT_REASONING_EFFORT = 'high';
 const HISTORY_LIMIT = 12;
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
+const FAMILY_SALES_CHAT_PUBLIC_IDENTITY = '保险营销专家';
+const FAMILY_SALES_CHAT_IDENTITY_REPLY = `我是${FAMILY_SALES_CHAT_PUBLIC_IDENTITY}，可以帮你做保险需求分析、客户沟通话术和销售建议。`;
+const FAMILY_SALES_CHAT_IDENTITY_MODEL = 'identity_guard';
 
 function trim(value) {
   return String(value || '').trim();
@@ -28,6 +31,24 @@ function withCode(error, code, status) {
 function numberOrDefault(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function isFamilySalesChatIdentityQuestion(question = '') {
+  const text = trim(question);
+  if (!text) return false;
+  const identityPattern = /(你是谁|你是.*谁|你是什么|你叫.*什么|介绍.*自己|自我介绍|什么.*模型|哪.*模型|大模型|语言模型|\bai\b|人工智能|机器人|谁开发|哪家公司|供应商|底层|\bapi\b|deep\s*seek|deepseek|深度求索|who are you|what model|which model|\bllm\b)/iu;
+  if (!identityPattern.test(text)) return false;
+
+  const explicitIdentityPattern = /(你是谁|你是.*谁|你是什么|什么.*模型|哪.*模型|大模型|语言模型|deep\s*seek|deepseek|深度求索|who are you|what model|which model|\bllm\b)/iu;
+  const businessPattern = /(话术|方案|保障|保单|客户|预算|异议|责任|条款|缺口|面谈|销售建议|分析|产品|保险|资料|核实|复盘|重算|报告)/u;
+  return explicitIdentityPattern.test(text) || !businessPattern.test(text);
+}
+
+function sanitizeFamilySalesChatPublicIdentity(content = '') {
+  return trim(content)
+    .replace(/\bdeep\s*seek(?:[-_\s]*[a-z0-9]+)*/giu, FAMILY_SALES_CHAT_PUBLIC_IDENTITY)
+    .replace(/深度求索/gu, FAMILY_SALES_CHAT_PUBLIC_IDENTITY)
+    .replace(/保险营销专家\s*(?:大模型|模型|AI|人工智能|agent|Agent)/gu, FAMILY_SALES_CHAT_PUBLIC_IDENTITY);
 }
 
 function resolveFamilySalesChatConfig(env = process.env) {
@@ -154,7 +175,7 @@ export function buildFamilySalesChatMessages({
     {
       role: 'system',
       content: [
-        '你是一名面向保险顾问的家庭销售建议续聊 agent。',
+        '你是一名保险营销专家，面向保险顾问提供家庭销售建议续聊支持。',
         resolvedSkillPrompt.promptHint,
         `本轮启用 skills：${resolvedSkillPrompt.skills.map((skill) => skill.label).join('、') || '通用保险续聊'}`,
         '你要基于当前家庭、保单、家庭保障报告、最近销售建议、官网责任证据和本轮对话继续回答顾问追问。',
@@ -166,6 +187,8 @@ export function buildFamilySalesChatMessages({
         '5. 每个关键判断尽量说明依据来自“保单字段/家庭报告/销售建议/家庭责任信息/官网证据”。',
         '6. 不要输出身份证号、手机号、证件号变量或内部字段名；看到脱敏变量只写“已脱敏”。',
         '7. 客户话术要温和、专业、可复制，避免恐吓式销售。',
+        `8. 对身份、模型、厂商、API、底层大模型等问题，只能回答“${FAMILY_SALES_CHAT_IDENTITY_REPLY}”，不得自称任何底层模型或模型品牌。`,
+        '9. 如果上下文包含 salesMemoryContext，只能把它当作当前家庭的跟进记忆，用于沟通风格、已确认异议、策略偏好和待办；保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准。',
         '',
         '本轮 skill 规则：',
         ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),
@@ -198,6 +221,13 @@ export async function generateFamilySalesChatReply({
   const userQuestion = trim(question);
   if (!userQuestion) {
     throw withCode(new Error('请输入要追问的内容'), 'FAMILY_SALES_CHAT_EMPTY_MESSAGE', 400);
+  }
+  if (isFamilySalesChatIdentityQuestion(userQuestion)) {
+    return {
+      content: FAMILY_SALES_CHAT_IDENTITY_REPLY,
+      model: FAMILY_SALES_CHAT_IDENTITY_MODEL,
+      generatedAt: new Date().toISOString(),
+    };
   }
   const config = resolveFamilySalesChatConfig(env);
   if (!config.apiKey) {
@@ -253,7 +283,9 @@ export async function generateFamilySalesChatReply({
       throw withCode(new Error('FAMILY_SALES_CHAT_EMPTY_RESPONSE'), 'FAMILY_SALES_CHAT_EMPTY_RESPONSE', 502);
     }
     return {
-      content: restoreFamilySalesReviewDisplayText(upstreamContent, context?.familyInput || {}),
+      content: sanitizeFamilySalesChatPublicIdentity(
+        restoreFamilySalesReviewDisplayText(upstreamContent, context?.familyInput || {}),
+      ),
       model: trim(payload?.model || config.model) || config.model,
       generatedAt: new Date().toISOString(),
     };

@@ -10,6 +10,11 @@ import {
   generateFamilySalesChatReply,
 } from '../family-sales-chat.service.mjs';
 import {
+  buildFamilySalesMemoryContext,
+  extractFamilySalesMemories,
+  upsertFamilySalesMemories,
+} from '../family-sales-memory.service.mjs';
+import {
   buildFamilyPolicyAnalysisInput,
   generateFamilyPolicyAnalysisReport,
 } from '../family-policy-analysis-report.service.mjs';
@@ -72,6 +77,7 @@ export function createFamilyRoutes(context) {
     recordUserReportRefresh,
     generateFamilySalesReview: generateFamilySalesReviewImpl = generateFamilySalesReview,
     generateFamilySalesChatReply: generateFamilySalesChatReplyImpl = generateFamilySalesChatReply,
+    extractFamilySalesMemories: extractFamilySalesMemoriesImpl = extractFamilySalesMemories,
     generateFamilyPolicyAnalysisReport: generateFamilyPolicyAnalysisReportImpl = generateFamilyPolicyAnalysisReport,
     nowIso = () => new Date().toISOString(),
   } = context;
@@ -407,6 +413,14 @@ export function createFamilyRoutes(context) {
       updatedAt: thread.updatedAt || thread.createdAt || '',
       messageCount: threadMessages.length,
       latestMessageAt: latestMessage?.createdAt || '',
+      messages: threadMessages
+        .slice()
+        .sort((left, right) => (
+          String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
+          Number(left.id || 0) - Number(right.id || 0)
+        ))
+        .map(clientSalesChatMessage)
+        .filter(Boolean),
     };
   }
 
@@ -444,6 +458,29 @@ export function createFamilyRoutes(context) {
         String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
         Number(left.id || 0) - Number(right.id || 0)
       ));
+  }
+
+  function salesMemoryMatchesOwner(memory = {}, owner = {}) {
+    if (owner.userId) return Number(memory.ownerUserId || 0) === Number(owner.userId);
+    if (owner.guestId) return normalizeGuestId(memory.ownerGuestId) === owner.guestId && !Number(memory.ownerUserId || 0);
+    return false;
+  }
+
+  function familySalesMemoriesForFamily(familyId, owner) {
+    return (Array.isArray(state.familySalesMemories) ? state.familySalesMemories : [])
+      .filter((memory) => (
+        Number(memory?.familyId || 0) === Number(familyId || 0) &&
+        String(memory?.status || 'active') === 'active' &&
+        salesMemoryMatchesOwner(memory, owner)
+      ))
+      .sort((left, right) => (
+        String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')) ||
+        Number(right.id || 0) - Number(left.id || 0)
+      ));
+  }
+
+  function salesMemoryContextForFamily(familyId, owner) {
+    return buildFamilySalesMemoryContext(familySalesMemoriesForFamily(familyId, owner));
   }
 
   function findSalesChatThread({ familyId, threadId, owner }) {
@@ -531,7 +568,7 @@ export function createFamilyRoutes(context) {
       optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
       generatedAt: nowIso(),
     });
-    return buildFamilySalesChatContext({
+    const context = buildFamilySalesChatContext({
       input,
       family,
       members,
@@ -540,22 +577,53 @@ export function createFamilyRoutes(context) {
       familySalesReviews: state.familySalesReviews || [],
       generatedAt: nowIso(),
     });
+    const salesMemoryContext = salesMemoryContextForFamily(family.id, owner);
+    if (salesMemoryContext) context.salesMemoryContext = salesMemoryContext;
+    return context;
   }
 
-  async function generateAndAppendSalesChatReply({ thread, family, owner, question, history }) {
+  async function rememberSalesChatTurn({ thread, family, owner, userMessage, assistantMessage }) {
+    if (!assistantMessage || assistantMessage.model === 'identity_guard') return;
+    try {
+      const extractedMemories = await extractFamilySalesMemoriesImpl({
+        familyId: family.id,
+        threadId: thread.id,
+        userMessage,
+        assistantMessage,
+        existingMemories: familySalesMemoriesForFamily(family.id, owner),
+      });
+      upsertFamilySalesMemories({
+        state,
+        familyId: family.id,
+        owner: ownerFields(owner),
+        sourceThreadId: thread.id,
+        userMessage,
+        assistantMessage,
+        extractedMemories,
+        allocateId,
+        nowIso,
+      });
+    } catch (error) {
+      console.warn(`[family-sales-memory] Failed to extract memories family=${family?.id || ''} thread=${thread?.id || ''}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  async function generateAndAppendSalesChatReply({ thread, family, owner, question, history, userMessage }) {
     const chatContext = buildSalesChatRuntimeContext({ family, owner });
     const reply = await generateFamilySalesChatReplyImpl({
       context: chatContext,
       history,
       question,
     });
-    return appendSalesChatMessage({
+    const assistantMessage = appendSalesChatMessage({
       thread,
       role: 'assistant',
       content: reply.content,
       model: reply.model,
       createdAt: reply.generatedAt || nowIso(),
     });
+    await rememberSalesChatTurn({ thread, family, owner, userMessage, assistantMessage });
+    return assistantMessage;
   }
 
   function clientFamilyPolicyAnalysisReport(record = null) {
@@ -768,6 +836,7 @@ export function createFamilyRoutes(context) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
     try {
+      const beforeMembersJson = reportJson(listFamilyMembers(state, family.id));
       const shouldSetAsCore = Boolean(req.body?.setAsCore);
       const memberInput = {
         ...(req.body || {}),
@@ -780,6 +849,9 @@ export function createFamilyRoutes(context) {
         setFamilyCoreMember(state, family, member);
       } else {
         family.updatedAt = new Date().toISOString();
+      }
+      if (beforeMembersJson !== reportJson(listFamilyMembers(state, family.id))) {
+        archiveGeneratedReportsForFamily(family.id);
       }
       await saveFamilyState();
       return res.status(201).json({ ok: true, member, family, members: listFamilyMembers(state, family.id) });
@@ -903,6 +975,7 @@ export function createFamilyRoutes(context) {
         throw error;
       }
       setFamilyCoreMember(state, family, member);
+      archiveGeneratedReportsForFamily(family.id);
       await saveFamilyState();
       return res.json({ ok: true, family, member, members: listFamilyMembers(state, family.id) });
     } catch (error) {
@@ -1069,6 +1142,8 @@ export function createFamilyRoutes(context) {
         owner,
         selectedSalesChatMessageIdsForSalesReview(req),
       );
+      const salesMemoryContext = salesMemoryContextForFamily(family.id, owner);
+      if (salesMemoryContext) input.salesMemoryContext = salesMemoryContext;
       if (salesChatContext) input.salesChatContext = salesChatContext;
       const review = await generateFamilySalesReviewImpl({ input });
       const reviewOwner = ownerFields(owner);
@@ -1154,6 +1229,7 @@ export function createFamilyRoutes(context) {
           owner,
           question,
           history: [],
+          userMessage,
         });
         createdMessages.push(assistantMessage);
       }
@@ -1218,6 +1294,7 @@ export function createFamilyRoutes(context) {
         owner,
         question,
         history: historyBeforeUserMessage,
+        userMessage,
       });
       await saveFamilyState();
       return res.json({

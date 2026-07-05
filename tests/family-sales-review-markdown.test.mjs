@@ -38,6 +38,9 @@ test('family sales review markdown parser preserves report structure and inline 
     '- `evidenceWarnings` 需要改写',
     '- 暂无',
     '',
+    '### 二、应对策略',
+    '**心态切换：** 从“我要赢”变成“我帮你赢”。',
+    '',
     '| 方案 | 下一步 |',
     '| --- | --- |',
     '| **顶梁柱收入保护** | 核实 `plans` |',
@@ -48,6 +51,8 @@ test('family sales review markdown parser preserves report structure and inline 
     { type: 'heading', level: 2, text: '一、销售结论摘要' },
     { type: 'paragraph', text: '**优先级最高**：先核实 重复保单提示。' },
     { type: 'list', ordered: false, items: ['条款证据冲突 需要改写'] },
+    { type: 'heading', level: 3, text: '二、应对策略' },
+    { type: 'paragraph', text: '**心态切换：** 从“我要赢”变成“我帮你赢”。' },
     {
       type: 'table',
       headers: ['方案', '下一步'],

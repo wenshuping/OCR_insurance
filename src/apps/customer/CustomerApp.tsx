@@ -29,7 +29,6 @@ import {
   Policy,
   PolicyAnalysisResult,
   PolicyCompanySuggestion,
-  ResponsibilityPlannerMode,
   CoverageIndicator,
   FamilyMember,
   FamilyMemberPolicyReference,
@@ -190,6 +189,7 @@ import {
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
+const FAMILY_SALES_REVIEW_RESTORE_KEY = 'policy-ocr-app.familySalesReviewFamilyId';
 const CLIENT_BOOTED_AT = new Date().toISOString();
 const CURRENT_CLIENT_ASSET_PATH = currentClientAssetPath();
 const SHOULD_CHECK_STALE_CLIENT = Boolean(CURRENT_CLIENT_ASSET_PATH) || window.location.port === '3014';
@@ -603,6 +603,18 @@ function reportClientPerformance(event: string, payload: Record<string, unknown>
   });
 }
 
+function policyAnalysisReportFromRecord(record: FamilyReportRecord | null): FamilyPolicyAnalysisReport | null {
+  const report = record?.report?.familyPolicyAnalysisReport;
+  if (!report) return null;
+  return {
+    status: report.status || 'complete',
+    content: report.content || '',
+    model: report.model || '',
+    generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
+    error: report.error || '',
+  };
+}
+
 export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const productKnowledgeFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -648,7 +660,6 @@ export function CustomerApp() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantCompany, setAssistantCompany] = useState('');
   const [assistantName, setAssistantName] = useState('');
-  const [assistantPlannerMode, setAssistantPlannerMode] = useState<ResponsibilityPlannerMode>('auto');
   const [assistantAnalysis, setAssistantAnalysis] = useState<PolicyAnalysisResult | null>(null);
   const [assistantCustomerSummary, setAssistantCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
   const [assistantCustomerSummaryLoading, setAssistantCustomerSummaryLoading] = useState(false);
@@ -690,6 +701,7 @@ export function CustomerApp() {
   const [familySalesReview, setFamilySalesReview] = useState<FamilySalesReview | null>(null);
   const [familySalesReviewLoading, setFamilySalesReviewLoading] = useState(false);
   const familySalesReviewLoadingRef = useRef(false);
+  const familySalesReviewRestoreAttemptRef = useRef(false);
   const [familySalesReviewProgress, setFamilySalesReviewProgress] = useState(0);
   const [familySalesReviewMessage, setFamilySalesReviewMessage] = useState('');
   const [familySalesChatThreads, setFamilySalesChatThreads] = useState<FamilySalesChatThread[]>([]);
@@ -739,6 +751,20 @@ export function CustomerApp() {
     if (!selectedFamily?.planningProfile) return;
     setFamilyPlanningProfile(saveFamilyPlanningProfile(selectedFamily.planningProfile));
   }, [selectedFamily?.planningProfile]);
+  useEffect(() => {
+    if (familySalesReviewRestoreAttemptRef.current || familySalesReviewOpen) return;
+    const restoredFamilyId = Number(sessionStorage.getItem(FAMILY_SALES_REVIEW_RESTORE_KEY) || 0);
+    if (!restoredFamilyId) return;
+    if (!familyProfiles.length) return;
+    const canRestoreFamily = familyProfiles.some((family) => Number(family.id || 0) === restoredFamilyId);
+    if (!canRestoreFamily) {
+      familySalesReviewRestoreAttemptRef.current = true;
+      sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
+      return;
+    }
+    familySalesReviewRestoreAttemptRef.current = true;
+    void openFamilySalesReview(restoredFamilyId);
+  }, [familyProfiles, familySalesReviewOpen, guestId, token]);
 
   function familyReportGenerationMessage(reportRecord: FamilyReportRecord, actionText: string) {
     return String(reportRecord?.source || '').includes('deepseek')
@@ -983,6 +1009,7 @@ export function CustomerApp() {
   function clearCustomerSession(nextMessage = '已退出登录，当前为游客模式') {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_MOBILE_KEY);
+    sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
     setToken('');
     setMobile('');
     setAuthMobile('');
@@ -1676,7 +1703,7 @@ export function CustomerApp() {
         userRefresh: true,
       });
       setSavedFamilyReportRecord(generated.reportRecord);
-      setFamilyPolicyAnalysisReport(null);
+      setFamilyPolicyAnalysisReport(policyAnalysisReportFromRecord(generated.reportRecord));
       setMessage(familyReportGenerationMessage(generated.reportRecord, '重新生成'));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '家庭报告重新生成失败');
@@ -1741,6 +1768,11 @@ export function CustomerApp() {
     setShowFamilyPolicies(true);
   }
 
+  function closeFamilySalesReview() {
+    sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
+    setFamilySalesReviewOpen(false);
+  }
+
   function familySalesReviewFailureMessage(error: unknown) {
     const text = error instanceof Error ? error.message : '';
     if (/DeepSeek|API Key|FAMILY_SALES_REVIEW_PROVIDER_NOT_READY|未配置/iu.test(text)) {
@@ -1760,6 +1792,7 @@ export function CustomerApp() {
   }
 
   async function openFamilySalesReview(familyId: number) {
+    sessionStorage.setItem(FAMILY_SALES_REVIEW_RESTORE_KEY, String(familyId));
     if (familySalesReviewLoadingRef.current) {
       handleSelectFamily(familyId);
       setFamilySalesReviewFamilyId(familyId);
@@ -1777,7 +1810,7 @@ export function CustomerApp() {
     setFamilySalesChatInput('');
     setFamilySalesChatMessage('');
     setFamilySalesChatReviewMessageIds([]);
-    setFamilySalesReviewBusy(true);
+    setFamilySalesReviewProgress(0);
     setFamilySalesReviewMessage('正在读取已保存的专家报告');
     try {
       const authInput = {
@@ -1792,7 +1825,8 @@ export function CustomerApp() {
         await loadFamilySalesChatThreads(familyId);
         return;
       }
-      setFamilySalesReviewMessage('首次生成专家研判中，完成后会自动保存');
+      setFamilySalesReviewBusy(true);
+      setFamilySalesReviewMessage('暂无已保存销售建议，正在生成并保存');
       const generated = await createFamilySalesReview(authInput);
       setFamilySalesReview(generated.review);
       setFamilySalesReviewMessage('专家研判已完成并保存');
@@ -2831,7 +2865,6 @@ export function CustomerApp() {
       const summaryPayload = await getProductCustomerResponsibilitySummary({
         company: input.company,
         name: input.name,
-        plannerMode: assistantPlannerMode,
       });
       if (summaryPayload.ok) {
         setAssistantCustomerSummary(summaryPayload.summary);
@@ -3695,7 +3728,7 @@ export function CustomerApp() {
             <button
               type="button"
               className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full text-[#42566B] active:bg-[#EEF3F7]"
-              onClick={() => setFamilySalesReviewOpen(false)}
+              onClick={closeFamilySalesReview}
               aria-label="返回家庭档案"
               title="返回家庭档案"
             >
@@ -3848,7 +3881,7 @@ export function CustomerApp() {
                         className={`max-w-[92%] rounded-[18px] px-3 py-3 text-sm leading-6 shadow-sm ring-1 ${
                           fromUser
                             ? 'ml-auto bg-blue-600 text-white ring-blue-600'
-                            : 'mr-auto bg-white text-slate-700 ring-slate-200'
+                            : 'family-sales-chat-message mr-auto bg-white text-slate-700 ring-slate-200'
                         }`}
                       >
                         <div className="mb-1 flex items-center justify-between gap-3">
@@ -3885,7 +3918,11 @@ export function CustomerApp() {
                             </button>
                           ) : null}
                         </div>
-                        <p className="whitespace-pre-wrap break-words font-semibold">{chatMessage.content}</p>
+                        {fromUser ? (
+                          <p className="whitespace-pre-wrap break-words font-semibold">{chatMessage.content}</p>
+                        ) : (
+                          <FamilySalesReviewMarkdown content={chatMessage.content} />
+                        )}
                         {chatMessage.status === 'failed' && chatMessage.error ? (
                           <p className={fromUser ? 'mt-2 text-xs font-black text-blue-100' : 'mt-2 text-xs font-black text-rose-600'}>{chatMessage.error}</p>
                         ) : null}
@@ -4080,9 +4117,9 @@ export function CustomerApp() {
                 </div>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
-                  <p className="text-sm font-black text-slate-900">专家报告尚未生成</p>
+                  <p className="text-sm font-black text-slate-900">销售建议尚未生成</p>
                   <p className="mx-auto mt-2 max-w-md text-xs font-semibold leading-5 text-slate-500">
-                    首次进入会自动生成；后续进入直接展示已保存报告，需要更新时点击“重新生成专家报告”。
+                    有已保存内容会直接展示；没有保存内容会自动生成一次，也可点击上方“生成/重算”。
                   </p>
                   <button
                     type="button"
@@ -4090,7 +4127,7 @@ export function CustomerApp() {
                     onClick={() => void regenerateFamilySalesReview()}
                   >
                     <Sparkles className="h-4 w-4" />
-                    <span>立即生成专家报告</span>
+                    <span>生成销售建议</span>
                   </button>
                 </div>
               )}
@@ -4172,7 +4209,6 @@ export function CustomerApp() {
       name={assistantName}
       productSuggestionLoading={assistantProductSuggestionLoading}
       productSuggestions={assistantProductSuggestions}
-      plannerMode={assistantPlannerMode}
       selectedMatchKey={assistantSelectedMatchKey}
       onChangeCompany={(value) => {
         setAssistantCompany(value);
@@ -4193,7 +4229,6 @@ export function CustomerApp() {
         setAssistantMessage('输入保司和产品名称');
       }}
       onClose={() => setAssistantOpen(false)}
-      onChangePlannerMode={setAssistantPlannerMode}
       onOpen={openResponsibilityAssistant}
       onQuery={() => void handleAssistantQuery()}
       onSearchMore={() => void handleAssistantSearchMore()}

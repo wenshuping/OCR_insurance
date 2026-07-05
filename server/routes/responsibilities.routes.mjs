@@ -496,10 +496,7 @@ export function createResponsibilityRoutes(context) {
   router.post('/customer-summary', async (req, res) => {
     const routeStartedAt = nowMs();
     try {
-      const input = {
-        ...normalizeResponsibilityQueryInput(req.body),
-        plannerMode: trim(req.body?.plannerMode),
-      };
+      const input = normalizeResponsibilityQueryInput(req.body);
       const result = await generateProductCustomerResponsibilitySummary({
         state,
         db,

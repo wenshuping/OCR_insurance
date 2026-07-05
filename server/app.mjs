@@ -2037,6 +2037,7 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.familySalesReviews)) state.familySalesReviews = [];
   if (!Array.isArray(state.familySalesChatThreads)) state.familySalesChatThreads = [];
   if (!Array.isArray(state.familySalesChatMessages)) state.familySalesChatMessages = [];
+  if (!Array.isArray(state.familySalesMemories)) state.familySalesMemories = [];
   if (!state.membershipConfig) state.membershipConfig = null;
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
   if (!Array.isArray(state.memberships)) state.memberships = [];
@@ -2124,6 +2125,9 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistMembershipConfig = typeof options.persistMembershipConfig === 'function'
     ? (input = {}) => options.persistMembershipConfig({ state, ...input })
+    : null;
+  const persistStateDocument = typeof options.persistStateDocument === 'function'
+    ? (input = {}) => options.persistStateDocument({ state, ...input })
     : null;
   const persistMembershipState = typeof options.persistMembershipState === 'function'
     ? (input = {}) => options.persistMembershipState({ state, ...input })
@@ -2253,6 +2257,7 @@ export function createPolicyOcrApp(options = {}) {
     persistPolicyState,
     persistPolicyDelete,
     persistMembershipConfig,
+    persistStateDocument,
     persistMembershipState,
     persistOfficialDomainProfiles,
     persistResponsibilityLookupArtifacts,
@@ -2276,6 +2281,7 @@ export function createPolicyOcrApp(options = {}) {
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
     generateFamilySalesChatReply: options.generateFamilySalesChatReply,
+    extractFamilySalesMemories: options.extractFamilySalesMemories,
     generateFamilyPolicyAnalysisReport: options.generateFamilyPolicyAnalysisReport,
     generateFamilyReportQualityIssues: options.generateFamilyReportQualityIssues || generateFamilyReportQualityIssues,
     buildFamilyReport,

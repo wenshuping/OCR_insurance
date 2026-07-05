@@ -14,7 +14,6 @@ import type {
   CustomerResponsibilitySummary,
   PolicyCompanySuggestion,
   PolicyProductSuggestion,
-  ResponsibilityPlannerMode,
 } from '../../api/contracts/responsibility';
 import {
   normalizeSuggestionQuery,
@@ -91,12 +90,6 @@ function productMatchKey(match: PolicyKnowledgeMatch) {
   ].join('\u001f');
 }
 
-const plannerModeOptions: Array<{ value: ResponsibilityPlannerMode; label: string }> = [
-  { value: 'auto', label: '自动' },
-  { value: 'all', label: '全部Planner' },
-  { value: 'off', label: '关闭Planner' },
-];
-
 export function ResponsibilityAssistant(props: {
   analysis: PolicyAnalysisResult | null;
   anchorClassName?: string;
@@ -111,13 +104,11 @@ export function ResponsibilityAssistant(props: {
   matches: PolicyKnowledgeMatch[];
   message: string;
   name: string;
-  plannerMode: ResponsibilityPlannerMode;
   productSuggestionLoading: boolean;
   productSuggestions: PolicyProductSuggestion[];
   selectedMatchKey: string;
   onChangeCompany: (value: string) => void;
   onChangeName: (value: string) => void;
-  onChangePlannerMode: (mode: ResponsibilityPlannerMode) => void;
   onClose: () => void;
   onOpen: () => void;
   onQuery: () => void;
@@ -141,13 +132,11 @@ export function ResponsibilityAssistant(props: {
     matches,
     message,
     name,
-    plannerMode,
     productSuggestionLoading,
     productSuggestions,
     selectedMatchKey,
     onChangeCompany,
     onChangeName,
-    onChangePlannerMode,
     onClose,
     onOpen,
     onQuery,
@@ -379,21 +368,6 @@ export function ResponsibilityAssistant(props: {
                   </div>
                 ) : null}
               </label>
-              <div className="flex rounded-[8px] border border-slate-200 bg-slate-50 p-1 text-[12px] font-semibold text-slate-500">
-                {plannerModeOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={[
-                      'h-8 flex-1 rounded-[6px] px-2 transition',
-                      plannerMode === option.value ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500',
-                    ].join(' ')}
-                    onClick={() => onChangePlannerMode(option.value)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
               <button
                 type="button"
                 disabled={!canQuery}

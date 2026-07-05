@@ -8,6 +8,7 @@ import {
   generateProductCustomerResponsibilitySummary,
   validateCustomerResponsibilitySummaryJson,
 } from '../server/product-customer-responsibility-summary.service.mjs';
+import { RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY } from '../server/responsibility-generation-governance.service.mjs';
 
 const company = '新华保险';
 const productName = '盛世荣耀';
@@ -269,6 +270,195 @@ test('generateProductCustomerResponsibilitySummary generates, validates, saves, 
   assert.equal(result.summary.headline, saved.summaryJson.headline);
   assert.match(result.summary.officialResponsibilityText, /第五条 保险责任/u);
   assert.match(result.summary.officialResponsibilityText, /身故或身体全残保险金/u);
+});
+
+test('generateProductCustomerResponsibilitySummary injects admin governance rules into DeepSeek prompt', async () => {
+  const state = {
+    ...baseState(),
+    [RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY]: {
+      enabled: true,
+      promptRules: ['后台规则：不要把免赔额作为独立责任。'],
+      blockedResponsibilityTitles: ['免赔额', '可选责任一'],
+      failureExamples: [{
+        badOutput: '免赔额',
+        reason: '参数不是责任',
+        correction: '写进医疗保险金 paymentRule',
+      }],
+      fallbackMode: 'official_text_after_second_failure',
+      updatedAt: '2026-07-05T00:00:00.000Z',
+    },
+  };
+  let findArgs = null;
+  let promptText = '';
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards(),
+    input: { company, name: productName },
+    findSummary: async (args) => {
+      findArgs = args;
+      return null;
+    },
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async ({ prompt }) => {
+      promptText = prompt;
+      return structuredLifeSummary();
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(promptText, /后台规则：不要把免赔额作为独立责任/u);
+  assert.match(promptText, /失败样例库/u);
+  assert.match(promptText, /错误输出“免赔额”/u);
+  assert.match(promptText, /以下内容不得作为 responsibilities\[\]\.title 输出：免赔额、可选责任一/u);
+  assert.ok(findArgs?.sourceDigest);
+});
+
+test('generateProductCustomerResponsibilitySummary falls back to official responsibility text after second validation failure', async () => {
+  const state = {
+    ...baseState(),
+    [RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY]: {
+      enabled: true,
+      promptRules: ['章节名不能作为责任。'],
+      blockedResponsibilityTitles: ['可选责任一'],
+      failureExamples: [],
+      fallbackMode: 'official_text_after_second_failure',
+      updatedAt: '2026-07-05T00:02:00.000Z',
+    },
+  };
+  const runs = [];
+  let saved = null;
+  let calls = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards(),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
+    },
+    persistGenerationRun: async (run) => {
+      runs.push(run);
+      return run;
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      calls += 1;
+      if (calls === 2) {
+        assert.match(prompt, /上一次输出未通过校验/u);
+        assert.match(prompt, /blocked_responsibility_title/u);
+      }
+      return {
+        productCategory: 'ordinary_whole_life',
+        categoryLabel: '终身寿险',
+        headline: '错误摘要。',
+        responsibilities: [{
+          title: '可选责任一',
+          plainText: '章节名误输出。',
+          triggerCondition: '无。',
+          paymentRule: '无。',
+          calculationStatus: 'not_calculable',
+        }],
+        productFunctions: [],
+        importantNotes: [],
+        missingOrUnclear: [],
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.source, 'official_text_fallback');
+  assert.equal(calls, 2);
+  assert.equal(saved?.modelProvider, 'official_text_fallback');
+  assert.equal(saved?.payload?.qualityGate?.status, 'official_text_fallback_after_retry_failed');
+  assert.equal(runs.at(-1)?.status, 'official_text_fallback_after_retry_failed');
+  assert.match(result.summary.headline, /自动整理未通过/u);
+  assert.equal(result.summary.mainResponsibilities.length, 0);
+  assert.match(result.summary.officialResponsibilityText, /第五条 保险责任/u);
+  assert.match(result.summary.contentBlocks.find((block) => block.blockKey === 'responsibilities')?.content || '', /身故或身体全残保险金/u);
+});
+
+test('generateProductCustomerResponsibilitySummary disables admin governance rules when switch is off', async () => {
+  const state = {
+    ...baseState(),
+    [RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY]: {
+      enabled: false,
+      promptRules: ['后台规则：禁止输出可选责任一。'],
+      blockedResponsibilityTitles: ['可选责任一'],
+      failureExamples: [{
+        badOutput: '可选责任一',
+        reason: '开关打开时这是章节名',
+        correction: '开关打开时应重写',
+      }],
+      fallbackMode: 'official_text_after_second_failure',
+      updatedAt: '2026-07-05T00:03:00.000Z',
+    },
+  };
+  let promptText = '';
+  let calls = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards(),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async ({ prompt }) => {
+      calls += 1;
+      promptText = prompt;
+      return structuredLifeSummary({
+        responsibilities: [{
+          title: '可选责任一',
+          plainText: '关闭自我修正后不按后台禁用标题拦截。',
+          triggerCondition: '发生约定情形。',
+          paymentRule: '按合同约定给付。',
+          calculationStatus: 'claim_contingent',
+        }],
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls, 1);
+  assert.equal(result.summary.mainResponsibilities[0]?.title, '可选责任一');
+  assert.doesNotMatch(promptText, /后台规则：禁止输出可选责任一/u);
+  assert.doesNotMatch(promptText, /失败样例库/u);
+});
+
+test('generateProductCustomerResponsibilitySummary disables self-correction fallback when switch is off', async () => {
+  const state = {
+    ...baseState(),
+    [RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY]: {
+      enabled: false,
+      promptRules: ['章节名不能作为责任。'],
+      blockedResponsibilityTitles: ['可选责任一'],
+      failureExamples: [],
+      fallbackMode: 'official_text_after_second_failure',
+      updatedAt: '2026-07-05T00:04:00.000Z',
+    },
+  };
+  const prompts = [];
+  const runs = [];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards(),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    persistGenerationRun: async (run) => {
+      runs.push(run);
+      return run;
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      prompts.push(prompt);
+      return { headline: '缺少可渲染责任。' };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'needs_model_review');
+  assert.equal(runs.at(-1)?.status, 'needs_model_review');
+  assert.equal(prompts.length, 2);
+  assert.doesNotMatch(prompts[1], /上一次输出未通过校验/u);
+  assert.doesNotMatch(prompts[1], /blocked_responsibility_title/u);
 });
 
 test('generateProductCustomerResponsibilitySummary explains compound growth formulas from official sources', async () => {
@@ -1657,6 +1847,35 @@ test('generateProductCustomerResponsibilitySummary honors plannerMode all and of
   assert.equal(offSaved?.payload?.plannerMode, 'off');
   assert.equal(offSaved?.payload?.plannerUsed, false);
   assert.equal(offSaved?.payload?.plannerReason, 'disabled');
+});
+
+test('generateProductCustomerResponsibilitySummary uses governance plannerMode by default', async () => {
+  const state = baseState();
+  state[RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY] = { plannerMode: 'all' };
+  let plannerCalls = 0;
+  let saved = null;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards([]),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      assert.match(prompt, /Planner 结果/u);
+      return structuredLifeSummary();
+    },
+    generatePlannerWithDeepSeek: async () => {
+      plannerCalls += 1;
+      return JSON.stringify({ productPurposeFocus: ['终身保障'], responsibilityFocus: ['身故保险金'] });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(plannerCalls, 1);
+  assert.equal(saved?.payload?.plannerMode, 'all');
 });
 
 test('generateProductCustomerResponsibilitySummary falls back when Planner fails and records failure metadata', async () => {
