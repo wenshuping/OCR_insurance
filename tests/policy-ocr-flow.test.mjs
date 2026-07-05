@@ -5273,6 +5273,157 @@ test('public responsibility lookup remains available without phone verification'
   }
 });
 
+test('responsibility assistant reuses persisted product cards before analyzer', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (
+      id INTEGER PRIMARY KEY
+    );
+    CREATE TABLE product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      source_url TEXT,
+      payload TEXT NOT NULL
+    )
+  `);
+  const cardPayload = {
+    id: 'card_fast_path_1',
+    productKey: 'company_product:测试保险:安心一号',
+    company: '测试保险',
+    productName: '安心一号',
+    title: '身故保险金',
+    category: '人寿保障',
+    plainSummary: '被保险人身故时给付保险金。',
+    payoutSummary: '按基本保险金额给付。',
+    sourceUrl: 'https://official.example-life.test/anxin-one.pdf',
+    sourceTitle: '安心一号条款',
+    sourceExcerpt: '身故保险金按基本保险金额给付。',
+    indicators: [{
+      id: 'ind_fast_path_death',
+      company: '测试保险',
+      productName: '安心一号',
+      coverageType: '人寿保障',
+      liability: '身故保险金',
+      sourceUrl: 'https://official.example-life.test/anxin-one.pdf',
+      sourceExcerpt: '身故保险金按基本保险金额给付。',
+    }],
+  };
+  db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id,
+      product_key,
+      company,
+      product_name,
+      title,
+      category,
+      source_url,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    cardPayload.id,
+    cardPayload.productKey,
+    cardPayload.company,
+    cardPayload.productName,
+    cardPayload.title,
+    cardPayload.category,
+    cardPayload.sourceUrl,
+    JSON.stringify(cardPayload),
+  );
+  const pollutedCardPayload = {
+    ...cardPayload,
+    id: 'card_wrong_product_key',
+    company: '测试保险',
+    productName: '安心二号',
+    title: '误挂责任',
+    indicators: [],
+  };
+  db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id,
+      product_key,
+      company,
+      product_name,
+      title,
+      category,
+      source_url,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    pollutedCardPayload.id,
+    cardPayload.productKey,
+    pollutedCardPayload.company,
+    pollutedCardPayload.productName,
+    pollutedCardPayload.title,
+    pollutedCardPayload.category,
+    pollutedCardPayload.sourceUrl,
+    JSON.stringify(pollutedCardPayload),
+  );
+  let analyzerCalls = 0;
+  let persistenceCalls = 0;
+  const app = createPolicyOcrApp({
+    db,
+    state: {
+      ...createInitialState(),
+    },
+    assistantAnalyzer: async () => {
+      analyzerCalls += 1;
+      throw new Error('analyzer should not run when product cards already exist');
+    },
+    persistResponsibilityLookupArtifacts: async (input) => {
+      persistenceCalls += 1;
+      return {
+        knowledgeRecordCount: input.knowledgeRecords?.length || 0,
+        indicatorRecordCount: input.indicatorRecords?.length || 0,
+        responsibilityCardCount: input.responsibilityCards?.length || 0,
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '安心一号',
+      }),
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.payload.analysis.rawAnalysis.generatedBy, 'existing_responsibility_cards_fast_path');
+    assert.equal(result.payload.analysis.coverageTable.length, 1);
+    assert.equal(result.payload.analysis.responsibilityCards.length, 1);
+    assert.equal(result.payload.analysis.coverageTable[0].coverageType, '身故保险金');
+    assert.equal(result.payload.analysis.responsibilityCards[0].title, '身故保险金');
+    assert.equal(result.payload.analysis.responsibilityCards[0].indicators[0].id, 'ind_fast_path_death');
+    assert.equal(result.payload.persistence.reusedResponsibilityCardCount, 1);
+    assert.equal(analyzerCalls, 0);
+    assert.equal(persistenceCalls, 0);
+
+    const partialNameResult = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '安心一',
+      }),
+    });
+    assert.equal(partialNameResult.response.status, 200);
+    assert.equal(partialNameResult.payload.analysis.rawAnalysis.generatedBy, 'existing_responsibility_cards_fast_path');
+    assert.equal(partialNameResult.payload.analysis.responsibilityCards[0].productName, '安心一号');
+    assert.equal(partialNameResult.payload.persistence.reusedResponsibilityCardCount, 1);
+    assert.equal(analyzerCalls, 0);
+    assert.equal(persistenceCalls, 0);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer responsibility summary generates once and then reads from database', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`

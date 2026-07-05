@@ -2470,6 +2470,7 @@ export function createPolicyOcrApp(options = {}) {
     isGeneratedResponsibilityCountReport,
     mergeCoverageTableWithCheckedRows,
     responsibilityRowsFromCards,
+    db: options.db,
     buildRawUploadSnapshot,
     findPolicyForReportRequest,
     policyProductIdentity,

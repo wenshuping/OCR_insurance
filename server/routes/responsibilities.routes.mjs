@@ -19,6 +19,19 @@ function compact(value) {
   return trim(value).normalize('NFKC').replace(/\s+/gu, '');
 }
 
+function comparableProductName(value) {
+  return trim(value).replace(/[\s《》（）()【】\[\]·,，。:：;；、-]/gu, '');
+}
+
+function productNameMatchesQuery(candidate, query) {
+  const normalizedCandidate = comparableProductName(candidate);
+  const normalizedQuery = comparableProductName(query);
+  if (!normalizedCandidate || !normalizedQuery) return false;
+  return normalizedCandidate === normalizedQuery
+    || normalizedCandidate.includes(normalizedQuery)
+    || normalizedQuery.includes(normalizedCandidate);
+}
+
 function positiveIntegerOrFallback(value, fallback, max) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return fallback;
@@ -35,6 +48,17 @@ function booleanFromBody(value) {
   if (typeof value === 'boolean') return value;
   const normalized = String(value || '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
+function parseJsonObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function nowMs() {
@@ -108,6 +132,13 @@ export function createResponsibilityRoutes(context) {
   }
 
   function withFallbackCardSources(cards = [], policyDraft = {}) {
+    if (
+      Array.isArray(cards) &&
+      cards.length &&
+      cards.every((card) => trim(card?.sourceUrl) && trim(card?.sourceExcerpt))
+    ) {
+      return cards;
+    }
     const filteredKnowledge = filteredKnowledgeRecordsForPolicy(policyDraft);
     const knowledge = filteredKnowledge.find((record) => trim(record?.url) || trim(record?.pageText) || trim(record?.snippet))
       || (state?.knowledgeRecords || []).find((record) => {
@@ -152,6 +183,155 @@ export function createResponsibilityRoutes(context) {
     });
   }
 
+  function productNameFromResponsibilityCardRow(row = {}) {
+    const payload = parseJsonObject(row?.payload);
+    return trim(row?.product_name || payload.productName || payload.product_name || row?.name || row?.title);
+  }
+
+  function cardFromProductResponsibilityRow(row = {}) {
+    const payload = parseJsonObject(row?.payload);
+    return {
+      ...payload,
+      id: trim(row.id || payload.id),
+      productKey: trim(row.product_key || payload.productKey || payload.product_key),
+      company: trim(row.company || payload.company),
+      productName: trim(row.product_name || payload.productName || payload.product_name),
+      title: trim(row.title || payload.title),
+      category: trim(row.category || payload.category),
+      sourceUrl: trim(row.source_url || payload.sourceUrl || payload.source_url),
+      sourceTitle: trim(payload.sourceTitle || payload.source_title),
+      sourceExcerpt: trim(payload.sourceExcerpt || payload.source_excerpt),
+      indicators: Array.isArray(payload.indicators) ? payload.indicators : [],
+    };
+  }
+
+  function cardsFromProductResponsibilityRows(rows = [], { company, productName, productKey } = {}) {
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => cardFromProductResponsibilityRow(row))
+      .filter((card) => {
+        const hasProductColumns = trim(card.company) || trim(card.productName);
+        return (
+          trim(card.title) &&
+          (
+            (trim(card.company) === company && productNameMatchesQuery(card.productName, productName)) ||
+            (!hasProductColumns && trim(card.productKey) === productKey)
+          )
+        );
+      });
+  }
+
+  function loadExistingProductResponsibilityCards(policyDraft = {}) {
+    const company = trim(policyDraft.company);
+    const productName = trim(policyDraft.name || policyDraft.productName);
+    if (!db || !company || !productName) return [];
+    const productKey = `company_product:${company}:${productName}`;
+    try {
+      const exactRows = db.prepare(`
+        SELECT *
+        FROM product_responsibility_cards
+        WHERE company = ? AND product_name = ?
+        ORDER BY title ASC, id ASC
+      `).all(company, productName);
+      const exactCards = cardsFromProductResponsibilityRows(exactRows, { company, productName, productKey });
+      if (exactCards.length) return exactCards;
+
+      const fuzzyRows = db.prepare(`
+        SELECT *
+        FROM product_responsibility_cards
+        WHERE company = ?
+          AND (
+            product_name LIKE ?
+            OR ? LIKE '%' || product_name || '%'
+          )
+        ORDER BY product_name ASC, title ASC, id ASC
+      `).all(company, `%${productName}%`, productName);
+      const rowsByProduct = new Map();
+      for (const row of fuzzyRows) {
+        const rowProductName = productNameFromResponsibilityCardRow(row);
+        if (!productNameMatchesQuery(rowProductName, productName)) continue;
+        const key = comparableProductName(rowProductName);
+        if (!key) continue;
+        if (!rowsByProduct.has(key)) rowsByProduct.set(key, []);
+        rowsByProduct.get(key).push(row);
+      }
+      if (rowsByProduct.size !== 1) return [];
+      return cardsFromProductResponsibilityRows([...rowsByProduct.values()][0], { company, productName, productKey });
+    } catch {
+      return [];
+    }
+  }
+
+  function hydrateExistingCardIndicators(cards = [], coverageIndicators = []) {
+    if (!Array.isArray(cards) || !cards.length) return [];
+    const indicators = Array.isArray(coverageIndicators) ? coverageIndicators : [];
+    return cards.map((card) => {
+      if (Array.isArray(card?.indicators) && card.indicators.length) return card;
+      const title = compact(card?.title);
+      if (!title) return card;
+      const matchedIndicators = indicators.filter((indicator) => {
+        const liability = compact(indicator?.liability || indicator?.coverageType);
+        return liability && (liability === title || liability.includes(title) || title.includes(liability));
+      });
+      return matchedIndicators.length ? { ...card, indicators: matchedIndicators } : card;
+    });
+  }
+
+  function sourcesFromResponsibilityCards(cards = []) {
+    const seen = new Set();
+    return (Array.isArray(cards) ? cards : [])
+      .map((card) => {
+        const url = trim(card?.sourceUrl);
+        if (!url || seen.has(url)) return null;
+        seen.add(url);
+        return {
+          title: trim(card?.sourceTitle) || trim(card?.productName) || trim(card?.title) || url,
+          url,
+          snippet: trim(card?.sourceExcerpt),
+          evidenceLabel: trim(card?.evidenceLabel),
+          evidenceLevel: trim(card?.evidenceLevel),
+          verificationStatus: trim(card?.verificationStatus),
+          verificationLabel: trim(card?.verificationLabel),
+          referenceOnly: card?.referenceOnly === true,
+          official: card?.official !== false,
+          sourceType: trim(card?.sourceType),
+          sourceKind: trim(card?.sourceKind),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 5);
+  }
+
+  function existingResponsibilityCardAnalysis(policyDraft = {}) {
+    const coverageIndicators = typeof findPolicyCoverageIndicators === 'function'
+      ? findPolicyCoverageIndicators(policyDraft, state?.insuranceIndicatorRecords || [])
+      : [];
+    const responsibilityCards = withFallbackCardSources(
+      hydrateExistingCardIndicators(loadExistingProductResponsibilityCards(policyDraft), coverageIndicators),
+      policyDraft,
+    );
+    if (!responsibilityCards.length) return null;
+    const coverageTable = typeof responsibilityRowsFromCards === 'function'
+      ? responsibilityRowsFromCards(responsibilityCards, { optionalResponsibilities: [] })
+      : [];
+    return {
+      report: responsibilityReportFor({
+        rows: coverageTable,
+        cards: responsibilityCards,
+        optionalResponsibilities: [],
+      }),
+      coverageTable,
+      responsibilityCards,
+      notes: ['本结果直接返回库内已生成的保险责任卡片和指标，未重新拆分保险责任正文。'],
+      sources: sourcesFromResponsibilityCards(responsibilityCards),
+      rawAnalysis: {
+        generatedBy: 'existing_responsibility_cards_fast_path',
+        reusedExistingResponsibilityCards: true,
+        reusedResponsibilityCardCount: responsibilityCards.length,
+      },
+      modelOutput: null,
+    };
+  }
+
   function attachResponsibilityCards(analysis, policyDraft, optionalResponsibilityRecords = state?.optionalResponsibilityRecords) {
     if (!analysis || typeof analysis !== 'object') return analysis;
     if (Array.isArray(analysis.responsibilityCards)) {
@@ -163,15 +343,23 @@ export function createResponsibilityRoutes(context) {
     const coverageIndicators = typeof findPolicyCoverageIndicators === 'function'
       ? findPolicyCoverageIndicators(policyDraft, state?.insuranceIndicatorRecords || [])
       : [];
-    const rawResponsibilityCards = typeof buildResponsibilityCardsForPolicy === 'function'
-      ? buildResponsibilityCardsForPolicy({
-          policy: policyDraft,
-          responsibilities: analysis.coverageTable,
-          coverageIndicators,
-          knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraft),
-          optionalResponsibilityRecords: optionalResponsibilityRecords || [],
-        })
-      : [];
+    const existingResponsibilityCards = hydrateExistingCardIndicators(
+      loadExistingProductResponsibilityCards(policyDraft),
+      coverageIndicators,
+    );
+    const rawResponsibilityCards = existingResponsibilityCards.length
+      ? existingResponsibilityCards
+      : (
+          typeof buildResponsibilityCardsForPolicy === 'function'
+            ? buildResponsibilityCardsForPolicy({
+                policy: policyDraft,
+                responsibilities: analysis.coverageTable,
+                coverageIndicators,
+                knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraft),
+                optionalResponsibilityRecords: optionalResponsibilityRecords || [],
+              })
+            : []
+        );
     const responsibilityCards = withFallbackCardSources(rawResponsibilityCards, policyDraft);
     const checkedCoverageTable = typeof responsibilityRowsFromCards === 'function'
       ? responsibilityRowsFromCards(responsibilityCards, { optionalResponsibilities: analysis.optionalResponsibilities || [] })
@@ -189,6 +377,13 @@ export function createResponsibilityRoutes(context) {
       }),
       coverageTable: effectiveCoverageTable,
       responsibilityCards,
+      rawAnalysis: existingResponsibilityCards.length
+        ? {
+            ...(analysis.rawAnalysis && typeof analysis.rawAnalysis === 'object' ? analysis.rawAnalysis : {}),
+            reusedExistingResponsibilityCards: true,
+            reusedResponsibilityCardCount: responsibilityCards.length,
+          }
+        : analysis.rawAnalysis,
     };
   }
 
@@ -415,11 +610,22 @@ export function createResponsibilityRoutes(context) {
       const preferLocalKnowledgeAnswer = req.body?.preferLocalKnowledgeAnswer !== false;
       const allowExternalReferences = booleanFromBody(req.body?.allowExternalReferences);
       const analysisStartedAt = nowMs();
-      const analysis = await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer, allowExternalReferences });
+      const existingCardAnalysis = !allowExternalReferences && preferLocalKnowledgeAnswer
+        ? existingResponsibilityCardAnalysis(policy)
+        : null;
+      const analysis = existingCardAnalysis || await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer, allowExternalReferences });
       const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
-      const analysisWithCards = allowExternalReferences ? analysis : attachResponsibilityCards(analysis, policy);
+      const analysisWithCards = allowExternalReferences || existingCardAnalysis ? analysis : attachResponsibilityCards(analysis, policy);
       const effectiveAnalysis = allowExternalReferences ? withExternalReviewWarning(analysisWithCards) : analysisWithCards;
-      const persistence = allowExternalReferences
+      const reusedResponsibilityCardCount = Number(effectiveAnalysis?.rawAnalysis?.reusedResponsibilityCardCount || 0);
+      const persistence = reusedResponsibilityCardCount
+        ? {
+            knowledgeRecordCount: 0,
+            indicatorRecordCount: 0,
+            responsibilityCardCount: 0,
+            reusedResponsibilityCardCount,
+          }
+        : allowExternalReferences
         ? await persistExternalReviewAnalysisArtifacts(policy, effectiveAnalysis, officialDomainProfiles)
         : await persistResponsibilityAnalysisArtifacts(policy, effectiveAnalysis, officialDomainProfiles);
       logPerformance(performanceLogger, 'policy.responsibility.assistant.analysis', {
