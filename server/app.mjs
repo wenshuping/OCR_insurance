@@ -1295,25 +1295,173 @@ function normalizeSuggestionText(value) {
   return trim(value).replace(/\s+/gu, '').toLowerCase();
 }
 
-function buildResponsibilityCompanySuggestions(state, query = '', maxResults = 12) {
-  const normalizedQuery = normalizeSuggestionText(query);
+const responsibilitySuggestionIndexCache = new WeakMap();
+
+function normalizeSuggestionComparableFact(value) {
+  return trim(value)
+    .replace(/[（(][^）)]*[）)]/gu, '')
+    .replace(/\s+/gu, '')
+    .replace(/[：:]/gu, '')
+    .replace(/[^\p{Script=Han}\p{Letter}\p{Number}]/gu, '')
+    .toLowerCase()
+    .trim();
+}
+
+function normalizeSuggestionComparableCompany(value) {
+  return normalizeSuggestionComparableFact(value)
+    .replace(/(?:人寿|财产|养老|健康)?保险股份有限公司/gu, '')
+    .replace(/(?:人寿|财产|养老|健康)?保险有限责任公司/gu, '')
+    .replace(/(?:人寿|财产|养老|健康)?保险有限公司/gu, '')
+    .replace(/保险股份有限公司|保险有限责任公司|股份有限公司|有限责任公司|有限公司/gu, '')
+    .trim();
+}
+
+function profileForSuggestionCompany(company = '', officialDomainProfiles = []) {
+  const target = trim(company);
+  if (!target) return null;
+  return (officialDomainProfiles || []).find((profile) => {
+    const aliases = Array.isArray(profile?.aliases) ? profile.aliases : [];
+    return aliases.some((alias) => alias && target.includes(alias));
+  }) || null;
+}
+
+function companyKeysForSuggestionIndex(company = '', officialDomainProfiles = []) {
+  const values = [company];
+  const profile = profileForSuggestionCompany(company, officialDomainProfiles);
+  if (profile) {
+    values.push(profile.company);
+    values.push(...(Array.isArray(profile.aliases) ? profile.aliases : []));
+    values.push(...(Array.isArray(profile.companyAliases) ? profile.companyAliases : []));
+  }
+  const keys = new Set();
+  for (const value of values) {
+    const normalized = normalizeSuggestionText(value);
+    const comparable = normalizeSuggestionComparableCompany(value);
+    if (normalized) keys.add(normalized);
+    if (comparable) keys.add(comparable);
+  }
+  return keys;
+}
+
+function latestStateRowMarker(rows = []) {
+  let marker = '';
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const next = [
+      row?.updatedAt,
+      row?.reviewedAt,
+      row?.lastFetchedAt,
+      row?.id,
+    ].map((value) => String(value || '')).join(':');
+    if (next > marker) marker = next;
+  }
+  return marker;
+}
+
+function responsibilitySuggestionIndexSignature(state = {}) {
+  const knowledgeRecords = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [];
+  const policies = Array.isArray(state.policies) ? state.policies : [];
+  const officialDomainProfiles = Array.isArray(state.officialDomainProfiles) ? state.officialDomainProfiles : [];
+  return [
+    knowledgeRecords.length,
+    latestStateRowMarker(knowledgeRecords),
+    policies.length,
+    latestStateRowMarker(policies),
+    officialDomainProfiles.length,
+    latestStateRowMarker(officialDomainProfiles),
+  ].join('|');
+}
+
+function buildResponsibilitySuggestionIndex(state = {}, signature = responsibilitySuggestionIndexSignature(state)) {
   const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
-  const stats = new Map();
+  const companyStats = new Map();
   const addCompany = (company, weight = 1) => {
     const name = trim(company);
     if (!name) return;
-    const current = stats.get(name) || { company: name, recordCount: 0 };
+    const current = companyStats.get(name) || { company: name, recordCount: 0 };
     current.recordCount += weight;
-    stats.set(name, current);
+    companyStats.set(name, current);
   };
   for (const record of state.knowledgeRecords || []) addCompany(record.company, 1);
   for (const policy of state.policies || []) addCompany(policy.company, 1);
   for (const profile of officialDomainProfiles) addCompany(profile.company, 0);
 
-  return [...stats.values()]
+  const productStats = new Map();
+  const addProduct = (recordCompany, productName, weight = 1, { official = false, productCodes = [] } = {}) => {
+    const sourceCompany = trim(recordCompany);
+    const name = trim(productName);
+    if (!sourceCompany || !name) return;
+    const key = `${sourceCompany}\u001f${name}`;
+    const current = productStats.get(key) || {
+      company: sourceCompany,
+      productName: name,
+      canonicalProductId: '',
+      productCodes: new Set(),
+      recordCount: 0,
+    };
+    if (official && !current.canonicalProductId) {
+      current.canonicalProductId = canonicalProductIdFromOfficialProduct({
+        company: sourceCompany,
+        productName: name,
+      });
+    }
+    for (const code of productCodes) {
+      const normalizedCode = trim(code).normalize('NFKC').replace(/\s+/gu, '').toUpperCase();
+      if (/^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(normalizedCode)) current.productCodes.add(normalizedCode);
+    }
+    current.recordCount += weight;
+    productStats.set(key, current);
+  };
+  for (const record of state.knowledgeRecords || []) {
+    if (!isProductSuggestionKnowledgeRecord(record)) continue;
+    addProduct(record.company, record.productName, 1, {
+      official: record.official === true,
+      productCodes: productIdentityCodesFromRecord(record),
+    });
+  }
+
+  const productRowsByCompanyKey = new Map();
+  const productRows = [...productStats.values()].map((item) => {
+    const productCodes = [...item.productCodes];
+    const row = {
+      ...item,
+      productCodes,
+      normalizedProduct: normalizeSuggestionText(item.productName),
+      normalizedCodes: productCodes.map(normalizeSuggestionText).filter(Boolean),
+    };
+    for (const companyKey of companyKeysForSuggestionIndex(row.company, officialDomainProfiles)) {
+      const rows = productRowsByCompanyKey.get(companyKey) || [];
+      rows.push(row);
+      productRowsByCompanyKey.set(companyKey, rows);
+    }
+    return row;
+  });
+
+  return {
+    signature,
+    officialDomainProfiles,
+    companyRows: [...companyStats.values()],
+    productRows,
+    productRowsByCompanyKey,
+  };
+}
+
+function getResponsibilitySuggestionIndex(state = {}) {
+  const signature = responsibilitySuggestionIndexSignature(state);
+  const cached = responsibilitySuggestionIndexCache.get(state);
+  if (cached?.signature === signature) return cached;
+  const next = buildResponsibilitySuggestionIndex(state, signature);
+  responsibilitySuggestionIndexCache.set(state, next);
+  return next;
+}
+
+function buildResponsibilityCompanySuggestions(state, query = '', maxResults = 12) {
+  const normalizedQuery = normalizeSuggestionText(query);
+  const suggestionIndex = getResponsibilitySuggestionIndex(state);
+
+  return suggestionIndex.companyRows
     .map((item) => {
       const match = normalizedQuery
-        ? scoreCompanySuggestionMatch(query, item.company, officialDomainProfiles)
+        ? scoreCompanySuggestionMatch(query, item.company, suggestionIndex.officialDomainProfiles)
         : { matched: true, score: 0, matchType: '' };
       return {
         ...item,
@@ -1354,44 +1502,24 @@ function isProductSuggestionKnowledgeRecord(record = {}) {
 function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults = 12 } = {}) {
   if (!normalizeSuggestionText(company)) return [];
   const normalizedQuery = normalizeSuggestionText(query);
-  const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
-  const stats = new Map();
-  const addProduct = (recordCompany, productName, weight = 1, { official = false, productCodes = [] } = {}) => {
-    const sourceCompany = trim(recordCompany);
-    const name = trim(productName);
-    if (!sourceCompany || !name) return;
-    const companyMatches = companiesMatch(company, sourceCompany, officialDomainProfiles);
-    if (!companyMatches) return;
-    const key = `${sourceCompany}\u001f${name}`;
-    const current = stats.get(key) || { company: sourceCompany, productName: name, canonicalProductId: '', productCodes: new Set(), recordCount: 0 };
-    if (official && !current.canonicalProductId) {
-      current.canonicalProductId = canonicalProductIdFromOfficialProduct({
-        company: sourceCompany,
-        productName: name,
-      });
+  const suggestionIndex = getResponsibilitySuggestionIndex(state);
+  const candidatesByKey = new Map();
+  for (const companyKey of companyKeysForSuggestionIndex(company, suggestionIndex.officialDomainProfiles)) {
+    for (const row of suggestionIndex.productRowsByCompanyKey.get(companyKey) || []) {
+      candidatesByKey.set(`${row.company}\u001f${row.productName}`, row);
     }
-    for (const code of productCodes) {
-      const normalizedCode = trim(code).normalize('NFKC').replace(/\s+/gu, '').toUpperCase();
-      if (/^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(normalizedCode)) current.productCodes.add(normalizedCode);
-    }
-    current.recordCount += weight;
-    stats.set(key, current);
-  };
-  for (const record of state.knowledgeRecords || []) {
-    if (!isProductSuggestionKnowledgeRecord(record)) continue;
-    addProduct(record.company, record.productName, 1, {
-      official: record.official === true,
-      productCodes: productIdentityCodesFromRecord(record),
-    });
   }
+  const candidates = candidatesByKey.size
+    ? [...candidatesByKey.values()]
+    : suggestionIndex.productRows.filter((row) => companiesMatch(company, row.company, suggestionIndex.officialDomainProfiles));
 
-  return [...stats.values()]
+  return candidates
     .map((item) => {
-      const normalizedProduct = normalizeSuggestionText(item.productName);
-      const normalizedCodes = [...item.productCodes].map(normalizeSuggestionText).filter(Boolean);
-      const matchIndex = normalizedQuery ? normalizedProduct.indexOf(normalizedQuery) : 0;
+      const matchIndex = normalizedQuery ? item.normalizedProduct.indexOf(normalizedQuery) : 0;
       const codeMatchIndex = normalizedQuery
-        ? normalizedCodes.findIndex((code) => code === normalizedQuery || code.startsWith(normalizedQuery) || code.includes(normalizedQuery))
+        ? item.normalizedCodes.findIndex(
+          (code) => code === normalizedQuery || code.startsWith(normalizedQuery) || code.includes(normalizedQuery),
+        )
         : -1;
       const fuzzyScore = normalizedQuery ? scoreProductNameMatch(query, item.productName, company) : 1;
       return {
@@ -1399,10 +1527,10 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
         fuzzyScore,
         matchIndex,
         effectiveMatchIndex: matchIndex >= 0 ? matchIndex : codeMatchIndex >= 0 ? 0 : 9999,
-        exact: Boolean(normalizedQuery && normalizedProduct === normalizedQuery),
-        codeExact: Boolean(normalizedQuery && normalizedCodes.includes(normalizedQuery)),
-        startsWith: Boolean(normalizedQuery && normalizedProduct.startsWith(normalizedQuery)),
-        codeStartsWith: Boolean(normalizedQuery && normalizedCodes.some((code) => code.startsWith(normalizedQuery))),
+        exact: Boolean(normalizedQuery && item.normalizedProduct === normalizedQuery),
+        codeExact: Boolean(normalizedQuery && item.normalizedCodes.includes(normalizedQuery)),
+        startsWith: Boolean(normalizedQuery && item.normalizedProduct.startsWith(normalizedQuery)),
+        codeStartsWith: Boolean(normalizedQuery && item.normalizedCodes.some((code) => code.startsWith(normalizedQuery))),
         codeMatched: codeMatchIndex >= 0,
       };
     })
@@ -1419,7 +1547,7 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
     )
     .slice(0, maxResults)
     .map(({ company: itemCompany, productName, canonicalProductId, productCodes, recordCount }) => {
-      const resolvedProductCodes = [...productCodes];
+      const resolvedProductCodes = productCodes;
       return {
         company: itemCompany,
         productName,
@@ -1427,8 +1555,8 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
         productCode: resolvedProductCodes[0] || undefined,
         productCodes: resolvedProductCodes,
         recordCount,
-	      };
-	    });
+      };
+    });
 }
 
 function assertUploadItemSize(uploadItem) {

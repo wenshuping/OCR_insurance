@@ -9100,6 +9100,51 @@ test('responsibility product suggestions match one-character product keywords wi
   }
 });
 
+test('responsibility product suggestions refresh after knowledge record updates', async () => {
+  const state = {
+    users: [],
+    sessions: [],
+    adminSessions: [],
+    smsCodes: [],
+    sourceRecords: [],
+    pendingScans: [],
+    officialDomainProfiles: [],
+    knowledgeRecords: [
+      {
+        id: 1,
+        company: '新华保险',
+        productName: '原始快速产品保险',
+        title: '原始快速产品保险产品条款',
+        url: 'https://newchina.example/original.pdf',
+        pageText: '保险责任包括身故保险金。',
+        official: true,
+        updatedAt: '2026-07-05T00:00:00.000Z',
+      },
+    ],
+    policies: [],
+    nextId: 2,
+  };
+  const app = createPolicyOcrApp({ state });
+  const server = await listen(app);
+
+  try {
+    const first = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/product-suggestions?company=新华保险&q=原始快速');
+    assert.equal(first.response.status, 200);
+    assert.ok(first.payload.suggestions.some((item) => item.productName === '原始快速产品保险'));
+
+    state.knowledgeRecords[0].productName = '新增快速产品保险';
+    state.knowledgeRecords[0].title = '新增快速产品保险产品条款';
+    state.knowledgeRecords[0].updatedAt = '2026-07-05T00:01:00.000Z';
+
+    const updated = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/product-suggestions?company=新华保险&q=新增快速');
+    assert.equal(updated.response.status, 200);
+    assert.ok(updated.payload.suggestions.some((item) => item.productName === '新增快速产品保险'));
+    assert.equal(updated.payload.suggestions.some((item) => item.productName === '原始快速产品保险'), false);
+  } finally {
+    await server.close();
+  }
+});
+
 test('responsibility assistant local matches are limited to three and do not query Feishu', async () => {
   let feishuCalled = false;
   const app = createPolicyOcrApp({
