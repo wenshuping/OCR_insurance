@@ -479,6 +479,7 @@ test('customer app exposes family profile management surface', () => {
   assert.match(normalizedCustomerAppSource, /专家系统仍在生成中，完成后会自动保存/);
   assert.match(normalizedCustomerAppSource, /专家研判已完成并保存/);
   assert.match(normalizedCustomerAppSource, /生成销售建议/);
+  assert.match(normalizedCustomerAppSource, /已读取旧版销售建议，资料已更新，可点击重算/);
   assert.match(normalizedCustomerAppSource, /正在请求专家系统生成策略简报/);
   assert.match(normalizedCustomerAppSource, /专家研判控制台/);
   assert.match(normalizedCustomerAppSource, /实时生成中/);
@@ -1378,6 +1379,7 @@ test('customer app exposes family report from family cards and policy dashboard'
   assert.match(openFamilyReportSource, /getFamilyReportRecord/);
   assert.match(openFamilyReportSource, /正在加载家庭保障分析报告/);
   assert.match(openFamilyReportSource, /暂无已保存家庭保障分析报告/);
+  assert.match(openFamilyReportSource, /已读取旧版家庭保障分析报告，资料已更新，建议重新生成/);
   assert.doesNotMatch(openFamilyReportSource, /createFamilyReportRecord/);
   assert.match(normalizedCustomerAppSource, /regenerateFamilyReportRecord\(\{[\s\S]*userRefresh: true/);
   assert.match(normalizedCustomerAppSource, /createFamilySalesReview\(\{[\s\S]*familyId: familySalesReviewFamilyId,[\s\S]*userRefresh: true/);
@@ -1387,6 +1389,9 @@ test('customer app exposes family report from family cards and policy dashboard'
   assert.match(normalizedCustomerAppSource, /onOpenReport=\{openFamilyReport\}/);
   assert.match(normalizedCustomerAppSource, /onClick=\{\(\) => selectedFamilyId \? void openFamilyReport\(selectedFamilyId\) : undefined\}/);
   assert.match(familySource, /onRegenerate/);
+  assert.match(familySource, /当前展示的是旧版家庭保障分析报告/);
+  assert.match(familySource, /当前展示的是旧版家庭保单分析报告/);
+  assert.doesNotMatch(familySource, /autoPolicyAnalysisRequestedRef/);
   assert.match(familySource, /重新生成家庭保障分析报告/);
   assert.match(familySource, /全家总统计/);
   assert.match(familySource, /家庭保单清单/);

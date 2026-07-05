@@ -612,6 +612,7 @@ function policyAnalysisReportFromRecord(record: FamilyReportRecord | null): Fami
     model: report.model || '',
     generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
     error: report.error || '',
+    stale: String(record.status || 'active') !== 'active',
   };
 }
 
@@ -1675,8 +1676,12 @@ export function CustomerApp() {
         guestId: token ? undefined : guestId,
         familyId,
       });
-      setFamilyPolicyAnalysisReport(analysis.analysisReport);
-      setMessage(familyReportGenerationMessage(loaded.reportRecord, '加载'));
+      setFamilyPolicyAnalysisReport(analysis.analysisReport || policyAnalysisReportFromRecord(loaded.reportRecord));
+      setMessage(
+        String(loaded.reportRecord.status || 'active') === 'active'
+          ? familyReportGenerationMessage(loaded.reportRecord, '加载')
+          : '已读取旧版家庭保障分析报告，资料已更新，建议重新生成',
+      );
     } catch (error) {
       setSavedFamilyReportRecord(null);
       setFamilyPolicyAnalysisReport(null);
@@ -1821,7 +1826,11 @@ export function CustomerApp() {
       const saved = await getFamilySalesReview(authInput);
       if (saved.review?.content) {
         setFamilySalesReview(saved.review);
-        setFamilySalesReviewMessage('已读取最近一次专家研判');
+        setFamilySalesReviewMessage(
+          saved.review.status === 'archived'
+            ? '已读取旧版销售建议，资料已更新，可点击重算'
+            : '已读取最近一次专家研判',
+        );
         await loadFamilySalesChatThreads(familyId);
         return;
       }
@@ -4272,6 +4281,7 @@ export function CustomerApp() {
       <>
         <FamilyReportPage
           report={displayFamilyReport}
+          reportStale={String(savedFamilyReportRecord?.status || 'active') !== 'active'}
           planningProfile={familyPlanningProfile}
           policyAnalysisReport={familyPolicyAnalysisReport}
           policyAnalysisLoading={familyPolicyAnalysisLoading}

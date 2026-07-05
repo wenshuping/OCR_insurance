@@ -12452,7 +12452,8 @@ test('family sales review is generated once persisted and returned by latest rep
 
     const afterNotesGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
     assert.equal(afterNotesGet.response.status, 200);
-    assert.equal(afterNotesGet.payload.review, null);
+    assert.equal(afterNotesGet.payload.review.id, 12);
+    assert.equal(afterNotesGet.payload.review.status, 'archived');
 
     const regenerated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
       method: 'POST',
@@ -12477,7 +12478,8 @@ test('family sales review is generated once persisted and returned by latest rep
 
     const afterMemberGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
     assert.equal(afterMemberGet.response.status, 200);
-    assert.equal(afterMemberGet.payload.review, null);
+    assert.equal(afterMemberGet.payload.review.id, 13);
+    assert.equal(afterMemberGet.payload.review.status, 'archived');
 
     const regeneratedAfterMember = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
       method: 'POST',
@@ -13100,6 +13102,53 @@ test('family report generation persists report records and exposes issues only i
     } finally {
       await emptyServer.close();
     }
+  } finally {
+    await server.close();
+  }
+});
+
+test('family report reads archived fallback with stale policy analysis content', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 8,
+    ownerGuestId: 'guest-family-report-stale',
+    familyName: '旧版报告家庭',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  state.familyReports.push({
+    id: 12,
+    familyId: 8,
+    ownerGuestId: 'guest-family-report-stale',
+    status: 'archived',
+    source: 'code',
+    generatedAt: '2026-06-15T00:03:00.000Z',
+    createdAt: '2026-06-15T00:03:00.000Z',
+    updatedAt: '2026-06-15T00:04:00.000Z',
+    summary: { policyCount: 2 },
+    report: {
+      summary: { policyCount: 2 },
+      familyPolicyAnalysisReport: {
+        status: 'complete',
+        content: '旧版家庭保单分析报告正文',
+        model: 'test',
+        generatedAt: '2026-06-15T00:04:00.000Z',
+      },
+    },
+  });
+  const app = createPolicyOcrApp({ state });
+  const server = await listen(app);
+  try {
+    const report = await jsonFetch(server.baseUrl, '/api/family-profiles/8/report?guestId=guest-family-report-stale');
+    assert.equal(report.response.status, 200);
+    assert.equal(report.payload.reportRecord.id, 12);
+    assert.equal(report.payload.reportRecord.status, 'archived');
+
+    const analysis = await jsonFetch(server.baseUrl, '/api/family-profiles/8/policy-analysis-report?guestId=guest-family-report-stale');
+    assert.equal(analysis.response.status, 200);
+    assert.equal(analysis.payload.analysisReport.content, '旧版家庭保单分析报告正文');
+    assert.equal(analysis.payload.analysisReport.stale, true);
   } finally {
     await server.close();
   }
@@ -15439,7 +15488,8 @@ test('family sales review repairs duplicate members before returning or generati
   try {
     const staleGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review-repair');
     assert.equal(staleGet.response.status, 200);
-    assert.equal(staleGet.payload.review, null);
+    assert.equal(staleGet.payload.review.id, 30);
+    assert.equal(staleGet.payload.review.status, 'archived');
     assert.equal(state.familySalesReviews[0].status, 'archived');
     assert.equal(state.familyMembers.filter((member) => member.status === 'active' && member.name === '翟卿').length, 1);
     assert.equal(state.policies[0].insuredMemberId, 10);

@@ -106,6 +106,7 @@ export type FamilyPolicyAnalysisReport = {
   model?: string;
   generatedAt: string;
   error?: string;
+  stale?: boolean;
 };
 
 export type FamilySalesReview = {

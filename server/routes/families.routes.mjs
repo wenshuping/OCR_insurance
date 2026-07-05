@@ -228,30 +228,32 @@ export function createFamilyRoutes(context) {
     return false;
   }
 
-  function latestFamilySalesReview(familyId, owner) {
-    return (Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [])
+  function latestFamilySalesReview(familyId, owner, { includeArchivedFallback = false } = {}) {
+    const matches = (Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [])
       .filter((review) => (
         Number(review?.familyId || 0) === Number(familyId) &&
-        String(review?.status || 'active') === 'active' &&
         salesReviewMatchesOwner(review, owner)
       ))
       .sort((left, right) => (
         String(right.generatedAt || right.createdAt || '').localeCompare(String(left.generatedAt || left.createdAt || '')) ||
         Number(right.id || 0) - Number(left.id || 0)
-      ))[0] || null;
+      ));
+    return matches.find((review) => String(review?.status || 'active') === 'active') ||
+      (includeArchivedFallback ? matches.find((review) => String(review?.status || 'active') === 'archived') || null : null);
   }
 
-  function latestFamilyReport(familyId, owner) {
-    return (Array.isArray(state.familyReports) ? state.familyReports : [])
+  function latestFamilyReport(familyId, owner, { includeArchivedFallback = false } = {}) {
+    const matches = (Array.isArray(state.familyReports) ? state.familyReports : [])
       .filter((record) => (
         Number(record?.familyId || 0) === Number(familyId) &&
-        String(record?.status || 'active') === 'active' &&
         salesReviewMatchesOwner(record, owner)
       ))
       .sort((left, right) => (
         String(right.generatedAt || right.createdAt || '').localeCompare(String(left.generatedAt || left.createdAt || '')) ||
         Number(right.id || 0) - Number(left.id || 0)
-      ))[0] || null;
+      ));
+    return matches.find((record) => String(record?.status || 'active') === 'active') ||
+      (includeArchivedFallback ? matches.find((record) => String(record?.status || 'active') === 'archived') || null : null);
   }
 
   function policiesForFamilyReport(family, owner) {
@@ -381,6 +383,7 @@ export function createFamilyRoutes(context) {
     return {
       id: review.id,
       familyId: review.familyId,
+      status: review.status || 'active',
       content: review.content || '',
       model: '',
       generatedAt: review.generatedAt || review.createdAt || '',
@@ -637,6 +640,7 @@ export function createFamilyRoutes(context) {
       model: '',
       generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
       error: report.error || '',
+      stale: String(record?.status || 'active') !== 'active',
     };
   }
 
@@ -1022,7 +1026,10 @@ export function createFamilyRoutes(context) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
     await repairFamilyMembersBeforeReview(family);
-    return res.json({ ok: true, review: clientSalesReview(latestFamilySalesReview(family.id, owner)) });
+    return res.json({
+      ok: true,
+      review: clientSalesReview(latestFamilySalesReview(family.id, owner, { includeArchivedFallback: true })),
+    });
   });
 
   router.get('/family-profiles/:id/report', async (req, res) => {
@@ -1032,8 +1039,8 @@ export function createFamilyRoutes(context) {
     if (!family) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
-    const reportRecord = latestFamilyReport(family.id, owner);
-    if (reportRecord && (
+    const reportRecord = latestFamilyReport(family.id, owner, { includeArchivedFallback: true });
+    if (reportRecord && String(reportRecord.status || 'active') === 'active' && (
       refreshStaleFamilyReportRecord({ record: reportRecord, family, owner }) ||
       refreshFamilyReportWithTrustedCorrections({ record: reportRecord, family, owner })
     )) {
@@ -1049,7 +1056,7 @@ export function createFamilyRoutes(context) {
     if (!family) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
-    const reportRecord = latestFamilyReport(family.id, owner);
+    const reportRecord = latestFamilyReport(family.id, owner, { includeArchivedFallback: true });
     return res.json({ ok: true, analysisReport: clientFamilyPolicyAnalysisReport(reportRecord) });
   });
 

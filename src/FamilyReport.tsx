@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   AlertTriangle,
   Calculator,
@@ -23,6 +23,7 @@ import { FamilySalesReviewMarkdown } from './features/family-report/FamilySalesR
 
 type FamilyReportPageProps = {
   report: FamilyReport;
+  reportStale?: boolean;
   planningProfile: FamilyPlanningProfile;
   policyAnalysisReport?: FamilyPolicyAnalysisReport | null;
   policyAnalysisLoading?: boolean;
@@ -40,6 +41,7 @@ type FamilyPolicyAnalysisReport = {
   content?: string;
   generatedAt?: string;
   error?: string;
+  stale?: boolean;
 };
 
 type OptionalResponsibilityGap = {
@@ -2060,6 +2062,7 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
 
 export function FamilyReportPage({
   report,
+  reportStale = false,
   planningProfile,
   policyAnalysisReport,
   policyAnalysisLoading = false,
@@ -2072,7 +2075,6 @@ export function FamilyReportPage({
   readOnly = false,
 }: FamilyReportPageProps) {
   const activeReportRef = useRef<HTMLDivElement | null>(null);
-  const autoPolicyAnalysisRequestedRef = useRef(false);
   const [activeReportTab, setActiveReportTab] = useState<'analysis' | 'policyReport'>('analysis');
   const exportTitle = activeReportTab === 'policyReport' ? '家庭保单分析报告' : '家庭保障分析报告';
   const pageTitle = activeReportTab === 'policyReport' ? '家庭保单分析报告' : '家庭保障分析报告';
@@ -2080,20 +2082,6 @@ export function FamilyReportPage({
   const reportWithOptionalGaps = report as FamilyReportWithOptionalGaps;
   const hasPolicyAnalysisContent = Boolean(policyAnalysisReport?.content?.trim());
   const policyAnalysisFailed = policyAnalysisReport?.status === 'failed' || Boolean(policyAnalysisReport?.error);
-
-  useEffect(() => {
-    if (activeReportTab !== 'policyReport') return;
-    if (!onGeneratePolicyAnalysisReport || policyAnalysisLoading || hasPolicyAnalysisContent || policyAnalysisFailed) return;
-    if (autoPolicyAnalysisRequestedRef.current) return;
-    autoPolicyAnalysisRequestedRef.current = true;
-    void onGeneratePolicyAnalysisReport();
-  }, [
-    activeReportTab,
-    hasPolicyAnalysisContent,
-    onGeneratePolicyAnalysisReport,
-    policyAnalysisFailed,
-    policyAnalysisLoading,
-  ]);
 
   return (
     <div className="family-report-shell min-h-screen bg-[#EEF3F7] pb-10 text-[#102033]">
@@ -2173,6 +2161,11 @@ export function FamilyReportPage({
       <main className="py-4 md:py-5">
         {activeReportTab === 'analysis' ? (
           <div ref={activeReportRef} className="family-report-content print-policy-report space-y-4 md:space-y-5">
+            {reportStale ? (
+              <div className="rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-6 text-amber-800">
+                当前展示的是旧版家庭保障分析报告，资料已更新，建议点击右上角重算。
+              </div>
+            ) : null}
             <ReportHero report={report} attentionItems={attentionItems} />
             <FamilyPlanningProfilePanel profile={planningProfile} onChange={onPlanningProfileChange} readOnly={readOnly} />
             <FamilyRadarSection report={report} />
@@ -2211,7 +2204,8 @@ function FamilyPolicyAnalysisReportSection({
 }) {
   const hasContent = Boolean(report?.content?.trim());
   const failed = report?.status === 'failed' || Boolean(report?.error);
-  const statusText = loading ? '生成中' : failed ? '生成失败' : hasContent ? '已生成' : '待生成';
+  const stale = Boolean(report?.stale);
+  const statusText = loading ? '生成中' : failed ? '生成失败' : stale && hasContent ? '旧版' : hasContent ? '已生成' : '待生成';
 
   return (
     <section className={`${reportSurfaceClassName} overflow-hidden bg-[#F8FBFE]`}>
@@ -2261,6 +2255,11 @@ function FamilyPolicyAnalysisReportSection({
 
       {hasContent ? (
         <div className="px-4 py-4 md:px-6 md:py-5">
+          {stale ? (
+            <div className="mx-auto mb-4 max-w-[980px] rounded-[16px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-6 text-amber-800">
+              当前展示的是旧版家庭保单分析报告，资料已更新，建议重新生成。
+            </div>
+          ) : null}
           <article
             className="family-policy-analysis-document mx-auto max-w-[980px] rounded-[18px] border border-[#DCE7F1] bg-white px-4 py-4 shadow-[0_16px_36px_-30px_rgba(15,23,42,0.3)] md:px-7 md:py-6"
             aria-label="家庭保单分析报告正文"
