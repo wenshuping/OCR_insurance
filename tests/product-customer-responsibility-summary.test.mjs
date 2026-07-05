@@ -1604,7 +1604,7 @@ test('structured critical illness context produces prompt, ready v22 metadata, a
   assert.equal(result.summary.productCategory, undefined);
 });
 
-test('generateProductCustomerResponsibilitySummary uses pro model for critical illness model routing', async () => {
+test('generateProductCustomerResponsibilitySummary uses flash first for critical illness pro routing', async () => {
   const product = '新华人寿保险股份有限公司多倍保障少儿重大疾病保险（超越版）';
   const calls = [];
   const savedRows = [];
@@ -1660,14 +1660,14 @@ test('generateProductCustomerResponsibilitySummary uses pro model for critical i
         missingOrUnclear: [],
       };
     },
-    modelName: 'deepseek-v4-flash',
+    modelName: 'deepseek-v4-pro',
   });
 
   assert.equal(result.ok, true);
-  assert.equal(calls[0]?.modelNameOverride, 'deepseek-v4-pro');
-  assert.equal(savedRows[0]?.modelName, 'deepseek-v4-pro');
+  assert.deepEqual(calls.map((call) => call.modelNameOverride), ['deepseek-v4-flash']);
+  assert.equal(savedRows[0]?.modelName, 'deepseek-v4-flash');
   assert.equal(savedRows[0]?.payload?.modelTier, 'pro');
-  assert.equal(runRows.at(-1)?.modelName, 'deepseek-v4-pro');
+  assert.equal(runRows.at(-1)?.modelName, 'deepseek-v4-flash');
   assert.equal(runRows.at(-1)?.modelTier, 'pro');
 });
 
@@ -1902,7 +1902,7 @@ test('generateProductCustomerResponsibilitySummary falls back when Planner fails
   assert.match(saved?.payload?.plannerError, /JSON/u);
 });
 
-test('generateProductCustomerResponsibilitySummary falls back from pro to flash on empty model response', async () => {
+test('generateProductCustomerResponsibilitySummary falls back from flash to pro on empty model response', async () => {
   const product = '新华人寿保险股份有限公司荣耀鑫享终身寿险';
   const calls = [];
   const savedRows = [];
@@ -1937,7 +1937,7 @@ test('generateProductCustomerResponsibilitySummary falls back from pro to flash 
     },
     generateWithDeepSeek: async (args) => {
       calls.push(args);
-      if (args.modelNameOverride === 'deepseek-v4-pro') {
+      if (args.modelNameOverride === 'deepseek-v4-flash') {
         const error = new Error('DeepSeek returned empty message content');
         error.code = 'empty_model_content';
         error.status = 200;
@@ -1972,14 +1972,14 @@ test('generateProductCustomerResponsibilitySummary falls back from pro to flash 
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls.map((call) => call.modelNameOverride), ['deepseek-v4-pro', 'deepseek-v4-flash']);
-  assert.equal(savedRows[0]?.modelName, 'deepseek-v4-flash');
+  assert.deepEqual(calls.map((call) => call.modelNameOverride), ['deepseek-v4-flash', 'deepseek-v4-pro']);
+  assert.equal(savedRows[0]?.modelName, 'deepseek-v4-pro');
   assert.equal(savedRows[0]?.payload?.modelTier, 'pro');
   assert.equal(savedRows[0]?.payload?.qualityGate?.status, 'passed_after_model_fallback');
   assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.code, 'empty_model_content');
   assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.responseId, 'chatcmpl_empty');
   assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.stage, 'primary');
-  assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.modelName, 'deepseek-v4-pro');
+  assert.equal(savedRows[0]?.payload?.qualityGate?.issues?.[0]?.modelName, 'deepseek-v4-flash');
   assert.equal(runRows.at(-1)?.status, 'passed');
 });
 

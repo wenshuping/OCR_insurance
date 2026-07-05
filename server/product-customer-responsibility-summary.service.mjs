@@ -96,6 +96,15 @@ function uniqueStrings(values) {
   return result;
 }
 
+function customerSummaryModelCandidates({ routedModelName = '', resolvedModelName = '' } = {}) {
+  const routed = text(routedModelName);
+  const resolved = text(resolvedModelName) || DEFAULT_MODEL;
+  if (routed === PRO_MODEL) {
+    return uniqueStrings([DEFAULT_MODEL, resolved, PRO_MODEL]);
+  }
+  return uniqueStrings([routed || resolved, resolved]);
+}
+
 function sourceRefIdsFromValue(value) {
   return uniqueStrings(normalizeArray(value).map((item) => {
     if (typeof item === 'string' || typeof item === 'number') return item;
@@ -1471,11 +1480,12 @@ export async function generateProductCustomerResponsibilitySummary({
   });
   let rawSummary = null;
   let quality = { status: 'failed', issues: [] };
-  let usedModelName = routedModelName;
-  const modelCandidates = uniqueStrings([
+  const modelCandidates = customerSummaryModelCandidates({
     routedModelName,
-    routedModelName === PRO_MODEL ? resolvedModelName : '',
-  ]);
+    resolvedModelName,
+  });
+  const preferredModelName = modelCandidates[0] || routedModelName;
+  let usedModelName = preferredModelName;
   const generationAttempts = [];
   for (const candidateModelName of modelCandidates) {
     let candidateSummary = null;
@@ -1515,7 +1525,7 @@ export async function generateProductCustomerResponsibilitySummary({
     }
   }
   let qualityGateStatus = 'passed';
-  if (quality.status === 'passed' && usedModelName !== routedModelName) {
+  if (quality.status === 'passed' && usedModelName !== preferredModelName) {
     qualityGateStatus = 'passed_after_model_fallback';
     quality = {
       ...quality,
@@ -1525,7 +1535,7 @@ export async function generateProductCustomerResponsibilitySummary({
   if (quality.status !== 'passed') {
     let retryRawSummary = null;
     let retryQuality = { status: 'failed', issues: [] };
-    let retryModelName = routedModelName;
+    let retryModelName = preferredModelName;
     const officialRetryPrompt = buildOfficialResponsibilityRetryPrompt({
       product: { company, productName },
       routing,
@@ -1653,7 +1663,7 @@ export async function generateProductCustomerResponsibilitySummary({
     }
     rawSummary = retryRawSummary;
     usedModelName = retryModelName;
-    qualityGateStatus = retryModelName === routedModelName
+    qualityGateStatus = retryModelName === preferredModelName
       ? 'passed_after_official_retry'
       : 'passed_after_official_retry_model_fallback';
     quality = {
