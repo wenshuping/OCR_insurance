@@ -44,6 +44,19 @@ export type FamilyMember = {
   updatedAt: string;
 };
 
+export type FamilyPolicySummary = {
+  policyCount: number;
+  totalCoverage: number;
+  annualPremium: number;
+  insuredGroups: Array<{
+    insured: string;
+    policyCount: number;
+    totalCoverage: number;
+    annualPremium: number;
+    policyIds: number[];
+  }>;
+};
+
 export type FamilyProfile = {
   id: number;
   ownerUserId?: number | null;
@@ -56,6 +69,7 @@ export type FamilyProfile = {
   updatedAt: string;
   members?: FamilyMember[];
   policyCount?: number;
+  policySummary?: FamilyPolicySummary;
   planningProfile?: FamilyPlanningProfile;
 };
 

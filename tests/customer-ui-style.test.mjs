@@ -554,7 +554,8 @@ test('customer app exposes family profile management surface', () => {
   assert.match(customerSource, /policiesLoaded/);
   assert.match(customerSource, /hasFamilyPolicySummaries/);
   assert.match(customerSource, /if \(!policiesLoaded && hasFamilyPolicySummaries\) \{\n      return counts;\n    \}/);
-  assert.match(customerSource, /Number\(family\.policyCount \|\| 0\)/);
+  assert.match(familyApiSource, /policySummary\?: FamilyPolicySummary/);
+  assert.match(customerSource, /family\.policySummary\?\.policyCount \?\? family\.policyCount/);
   assert.match(familySource, /暂无家庭保单，可先维护成员或录入保单/);
   assert.match(familySource, /coreMember\?\.name \|\| '待设置'/);
   assert.doesNotMatch(familySource, /members\[0\]\?\.name \|\| '待设置'/);

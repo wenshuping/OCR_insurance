@@ -15783,7 +15783,7 @@ test('customer family list includes owner policy counts without loading policy d
     { id: 11, familyId: 10, name: '温舒萍', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active', createdAt: '2026-06-14T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z' },
   ];
   state.policies = [
-    { id: 30, userId: 1, guestId: '', familyId: 10, company: '中国人寿', name: '客户家庭保单', applicant: '温舒萍', insured: '温舒萍', responsibilities: [], coverageIndicators: [], createdAt: '2026-06-14T00:02:00.000Z', updatedAt: '2026-06-14T00:02:00.000Z' },
+    { id: 30, userId: 1, guestId: '', familyId: 10, company: '中国人寿', name: '客户家庭保单', applicant: '温舒萍', insured: '温舒萍', amount: 500000, firstPremium: 12000, responsibilities: [], coverageIndicators: [], createdAt: '2026-06-14T00:02:00.000Z', updatedAt: '2026-06-14T00:02:00.000Z' },
     { id: 31, userId: 2, guestId: '', familyId: 10, company: '中国人寿', name: '其他用户保单', applicant: '其他人', insured: '其他人', responsibilities: [], coverageIndicators: [], createdAt: '2026-06-14T00:03:00.000Z', updatedAt: '2026-06-14T00:03:00.000Z' },
   ];
   let persistCount = 0;
@@ -15803,6 +15803,16 @@ test('customer family list includes owner policy counts without loading policy d
     assert.deepEqual(families.payload.families.map((family) => [family.id, family.policyCount]), [
       [10, 1],
       [20, 0],
+    ]);
+    assert.deepEqual(families.payload.families.map((family) => [
+      family.id,
+      family.policySummary.policyCount,
+      family.policySummary.totalCoverage,
+      family.policySummary.annualPremium,
+      family.policySummary.insuredGroups.map((group) => [group.insured, group.policyCount, group.totalCoverage, group.annualPremium, group.policyIds]),
+    ]), [
+      [10, 1, 500000, 12000, [['温舒萍', 1, 500000, 12000, [30]]]],
+      [20, 0, 0, 0, []],
     ]);
     assert.equal(persistCount, 0);
   } finally {

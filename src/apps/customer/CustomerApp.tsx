@@ -718,17 +718,19 @@ export function CustomerApp() {
     () => selectedFamilyId ? policies.filter((policy) => Number(policy.familyId) === Number(selectedFamilyId)) : policies,
     [policies, selectedFamilyId],
   );
-  const familyTotalCoverage = useMemo(() => selectedFamilyPolicies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [selectedFamilyPolicies]);
+  const selectedFamily = useMemo(
+    () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
+    [familyProfiles, selectedFamilyId],
+  );
+  const selectedFamilyPolicySummary = selectedFamily?.policySummary || null;
+  const familyPolicyCount = Number(selectedFamilyPolicySummary?.policyCount ?? selectedFamilyPolicies.length);
+  const familyTotalCoverage = Number(selectedFamilyPolicySummary?.totalCoverage ?? selectedFamilyPolicies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0));
   const familyPolicyGroups = useMemo(() => groupPoliciesByInsured(selectedFamilyPolicies), [selectedFamilyPolicies]);
   const familyReport = useMemo(
     () => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile, { familyId: selectedFamilyId }),
     [selectedFamilyPolicies, familyPlanningProfile, selectedFamilyId],
   );
   const displayFamilyReport = savedFamilyReportRecord?.report || familyReport;
-  const selectedFamily = useMemo(
-    () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
-    [familyProfiles, selectedFamilyId],
-  );
   const familySalesReviewFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(familySalesReviewFamilyId)) || null,
     [familyProfiles, familySalesReviewFamilyId],
@@ -755,7 +757,9 @@ export function CustomerApp() {
     for (const family of familyProfiles) {
       const familyId = Number(family.id || 0);
       if (!familyId) continue;
-      counts[familyId] = (!policiesLoaded && hasFamilyPolicySummaries) ? Number(family.policyCount || 0) : 0;
+      counts[familyId] = (!policiesLoaded && hasFamilyPolicySummaries)
+        ? Number(family.policySummary?.policyCount ?? family.policyCount ?? 0)
+        : 0;
     }
     if (!policiesLoaded && hasFamilyPolicySummaries) {
       return counts;
@@ -3640,8 +3644,8 @@ export function CustomerApp() {
   const familySalesReviewExportTitle = `${familySalesReviewFamily?.familyName || '当前家庭'}销售建议报告`;
   const familySalesReviewFamilyMembers = Array.isArray(familySalesReviewFamily?.members) ? familySalesReviewFamily.members : [];
   const familySalesReviewPolicyCount = familySalesReviewFamilyId
-    ? policies.filter((policy) => Number(policy.familyId) === Number(familySalesReviewFamilyId)).length
-    : selectedFamilyPolicies.length;
+    ? Number(familySalesReviewFamily?.policySummary?.policyCount ?? familySalesReviewFamily?.policyCount ?? policies.filter((policy) => Number(policy.familyId) === Number(familySalesReviewFamilyId)).length)
+    : familyPolicyCount;
   const familySalesReviewSignals = [
     {
       label: '成员画像',
@@ -4416,7 +4420,7 @@ export function CustomerApp() {
               <div className="mt-5 grid grid-cols-2 gap-3">
                 <div className="rounded-2xl bg-white/15 px-4 py-3">
                   <p className="text-xs text-white/70">已录入</p>
-                  <p className="mt-1 text-xl font-black">{selectedFamilyPolicies.length} 张</p>
+                  <p className="mt-1 text-xl font-black">{familyPolicyCount} 张</p>
                 </div>
                 <div className="rounded-2xl bg-white/15 px-4 py-3">
                   <p className="text-xs text-white/70">总保额</p>
@@ -4431,7 +4435,7 @@ export function CustomerApp() {
             policies={selectedFamilyPolicies}
           />
 
-          {selectedFamilyPolicies.length ? (
+          {familyPolicyCount ? (
             <section className="px-4 pt-3">
               <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                 <button
@@ -4459,7 +4463,7 @@ export function CustomerApp() {
           ) : null}
 
           <section className="space-y-4 p-4">
-            {!selectedFamilyPolicies.length ? (
+            {!familyPolicyCount ? (
               <div className="rounded-[24px] border border-dashed border-[#D6E4F5] bg-white px-5 py-10 text-center shadow-[0_18px_34px_-30px_rgba(15,23,42,0.12)]">
                 <p className="text-base font-semibold text-[#0F172A]">还没有家庭保单</p>
                 <p className="mt-2 text-sm leading-6 text-[#6C87A5]">录入保单并绑定家庭后，会在这里统一查看家庭保单责任和保障明细。</p>

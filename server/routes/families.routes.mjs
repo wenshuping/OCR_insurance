@@ -255,18 +255,48 @@ export function createFamilyRoutes(context) {
       .map(attachPolicyForFamilyReview);
   }
 
-  function countPoliciesForFamily(family, owner) {
-    return (Array.isArray(state.policies) ? state.policies : [])
-      .filter((policy) => (
-        Number(policy?.familyId || 0) === Number(family.id) &&
-        familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })
-      )).length;
+  function policySummaryForFamily(family, owner) {
+    const groupsByInsured = new Map();
+    let policyCount = 0;
+    let totalCoverage = 0;
+    let annualPremium = 0;
+    for (const policy of Array.isArray(state.policies) ? state.policies : []) {
+      if (Number(policy?.familyId || 0) !== Number(family.id)) continue;
+      if (!familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })) continue;
+      const insured = String(policy.insured || '').trim() || '未识别被保人';
+      const group = groupsByInsured.get(insured) || {
+        insured,
+        policyCount: 0,
+        totalCoverage: 0,
+        annualPremium: 0,
+        policyIds: [],
+      };
+      policyCount += 1;
+      totalCoverage += Number(policy.amount || 0);
+      annualPremium += Number(policy.firstPremium || 0);
+      group.policyCount += 1;
+      group.totalCoverage += Number(policy.amount || 0);
+      group.annualPremium += Number(policy.firstPremium || 0);
+      group.policyIds.push(policy.id);
+      groupsByInsured.set(insured, group);
+    }
+    return {
+      policyCount,
+      totalCoverage,
+      annualPremium,
+      insuredGroups: [...groupsByInsured.values()].sort((left, right) => (
+        right.policyCount - left.policyCount ||
+        String(left.insured || '').localeCompare(String(right.insured || ''))
+      )),
+    };
   }
 
   function familyListItem(family, owner) {
+    const policySummary = policySummaryForFamily(family, owner);
     return {
       ...familyWithMembers(state, family, familyMembersContext),
-      policyCount: countPoliciesForFamily(family, owner),
+      policyCount: policySummary.policyCount,
+      policySummary,
     };
   }
 
