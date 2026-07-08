@@ -311,6 +311,20 @@ test('entry form exposes local product candidates before responsibility generati
   assert.match(customerPolicyComponentsSource, /匹配：\{planProductDisplayName\(plan\)\}/);
 });
 
+test('customer date fields use text entry instead of mobile native date picker', () => {
+  const textFieldSource = componentSource('TextField', 'PeriodField');
+  const familySource = componentSource('FamilyProfileManager', null);
+  assert.match(textFieldSource, /usesDateTextInput = props\.type === 'date'/);
+  assert.match(textFieldSource, /normalizeDateInputValue\(props\.value\)/);
+  assert.match(textFieldSource, /type=\{usesDateTextInput \? 'text' : props\.type \|\| 'text'\}/);
+  assert.match(textFieldSource, /inputMode=\{usesDateTextInput \? 'numeric' : props\.inputMode\}/);
+  assert.match(textFieldSource, /placeholder=\{usesDateTextInput \? props\.placeholder \|\| 'yyyy\/mm\/dd' : props\.placeholder\}/);
+  assert.match(normalizedFamilyProfileSource, /function normalizedDateDraft/);
+  assert.match(familySource, /inputMode="numeric"/);
+  assert.match(familySource, /placeholder="yyyy\/mm\/dd"/);
+  assert.doesNotMatch(familySource, /type="date"/);
+});
+
 test('poptonic compose persists the production SQLite database in the data volume', () => {
   assert.match(poptonicComposeSource, /POLICY_OCR_APP_DB_PATH:\s*\/data\/policy-ocr\.sqlite/);
   assert.match(poptonicComposeSource, /POLICY_OCR_APP_STATE_PATH:\s*\/data\/state\.json/);

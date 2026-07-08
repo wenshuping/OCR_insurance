@@ -18,6 +18,7 @@ import {
 import {
   normalizePolicyPlanList,
   normalizePolicyPlanListWithIndex,
+  normalizeDateInputValue,
   planProductDisplayName,
 } from './customer-policy-form';
 
@@ -206,15 +207,24 @@ export function TextField(props: {
   inputMode?: 'text' | 'decimal' | 'numeric' | 'tel';
   required?: boolean;
 }) {
+  const usesDateTextInput = props.type === 'date';
+  function handleBlur() {
+    if (!usesDateTextInput) return;
+    const normalized = normalizeDateInputValue(props.value);
+    if (normalized || !props.value.trim()) props.onChange(normalized);
+  }
   return (
     <div>
       <label>{renderFieldLabel(props.label, props.required)}</label>
       <input
-        type={props.type || 'text'}
-        inputMode={props.inputMode}
+        type={usesDateTextInput ? 'text' : props.type || 'text'}
+        inputMode={usesDateTextInput ? 'numeric' : props.inputMode}
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}
-        placeholder={props.placeholder}
+        onBlur={handleBlur}
+        placeholder={usesDateTextInput ? props.placeholder || 'yyyy/mm/dd' : props.placeholder}
+        autoComplete={usesDateTextInput ? 'off' : undefined}
+        pattern={usesDateTextInput ? '[0-9./年-]*' : undefined}
         className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
       />
     </div>

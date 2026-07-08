@@ -15,6 +15,7 @@ import {
 import type { FamilyMember, FamilyProfile } from '../../api/contracts/family';
 import {
   FAMILY_MEMBER_RELATION_OPTIONS,
+  normalizeDateInputValue,
 } from '../../shared/customer-policy-form';
 import type { FamilyMemberPolicyReference } from '../../api/contracts/family';
 import type { FamilyPlanningProfile } from '../../family-report-engine.mjs';
@@ -58,6 +59,11 @@ function planningWithWanValue(profile: FamilyPlanningProfile, key: keyof FamilyP
     ...profile,
     [key]: Math.max(0, Number(value) || 0) * 10000,
   };
+}
+
+function normalizedDateDraft(value: string) {
+  const normalized = normalizeDateInputValue(value);
+  return normalized || value.trim();
 }
 
 export function FamilyProfileManager({
@@ -637,10 +643,15 @@ export function FamilyProfileManager({
                         <label className="block">
                           <span className="mb-1 block text-xs font-black text-slate-400">出生日期</span>
                           <input
-                            type="date"
+                            type="text"
+                            inputMode="numeric"
                             value={memberBirthdayDraft}
                             disabled={editingBusy || addingMember}
                             onChange={(event) => setMemberBirthdayDraft(event.target.value)}
+                            onBlur={() => setMemberBirthdayDraft(normalizedDateDraft(memberBirthdayDraft))}
+                            placeholder="yyyy/mm/dd"
+                            autoComplete="off"
+                            pattern="[0-9./年-]*"
                             className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
                           />
                         </label>
@@ -697,10 +708,15 @@ export function FamilyProfileManager({
                                   <label className="block">
                                     <span className="mb-1 block text-xs font-black text-slate-400">出生日期</span>
                                     <input
-                                      type="date"
+                                      type="text"
+                                      inputMode="numeric"
                                       value={profileDraft.birthday}
                                       disabled={editingBusy}
                                       onChange={(event) => updateMemberProfileDraft(member.id, { birthday: event.target.value })}
+                                      onBlur={() => updateMemberProfileDraft(member.id, { birthday: normalizedDateDraft(profileDraft.birthday) })}
+                                      placeholder="yyyy/mm/dd"
+                                      autoComplete="off"
+                                      pattern="[0-9./年-]*"
                                       className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
                                     />
                                   </label>
