@@ -1656,6 +1656,10 @@ export function CustomerApp() {
   }
 
   async function openFamilyReport(familyId: number) {
+    const family = familyProfiles.find((item) => Number(item.id) === Number(familyId));
+    const reportPlanningProfile = family?.planningProfile
+      ? saveFamilyPlanningProfile(family.planningProfile)
+      : familyPlanningProfile;
     handleSelectFamily(familyId);
     setFamilyReportLoading(true);
     setMessage('正在加载家庭保障分析报告');
@@ -1666,20 +1670,30 @@ export function CustomerApp() {
         guestId: token ? undefined : guestId,
         familyId,
       });
-      if (!loaded.reportRecord) {
-        setMessage('暂无已保存家庭保障分析报告，可在报告页点击重新生成');
-        return;
+      let reportRecord = loaded.reportRecord;
+      let actionText = '加载';
+      if (!reportRecord) {
+        setMessage('正在生成家庭保障分析报告');
+        const generated = await regenerateFamilyReportRecord({
+          token: token || undefined,
+          guestId: token ? undefined : guestId,
+          familyId,
+          planningProfile: reportPlanningProfile,
+          userRefresh: false,
+        });
+        reportRecord = generated.reportRecord;
+        actionText = '生成';
       }
-      setSavedFamilyReportRecord(loaded.reportRecord);
+      setSavedFamilyReportRecord(reportRecord);
       const analysis = await getFamilyPolicyAnalysisReport({
         token: token || undefined,
         guestId: token ? undefined : guestId,
         familyId,
       });
-      setFamilyPolicyAnalysisReport(analysis.analysisReport || policyAnalysisReportFromRecord(loaded.reportRecord));
+      setFamilyPolicyAnalysisReport(analysis.analysisReport || policyAnalysisReportFromRecord(reportRecord));
       setMessage(
-        String(loaded.reportRecord.status || 'active') === 'active'
-          ? familyReportGenerationMessage(loaded.reportRecord, '加载')
+        String(reportRecord.status || 'active') === 'active'
+          ? familyReportGenerationMessage(reportRecord, actionText)
           : '已读取旧版家庭保障分析报告，资料已更新，建议重新生成',
       );
     } catch (error) {

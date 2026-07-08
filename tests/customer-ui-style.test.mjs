@@ -1378,9 +1378,9 @@ test('customer app exposes family report from family cards and policy dashboard'
   assert.match(normalizedCustomerAppSource, /async function regenerateFamilyReport\(\)/);
   assert.match(openFamilyReportSource, /getFamilyReportRecord/);
   assert.match(openFamilyReportSource, /正在加载家庭保障分析报告/);
-  assert.match(openFamilyReportSource, /暂无已保存家庭保障分析报告/);
+  assert.match(openFamilyReportSource, /正在生成家庭保障分析报告/);
+  assert.match(openFamilyReportSource, /userRefresh: false/);
   assert.match(openFamilyReportSource, /已读取旧版家庭保障分析报告，资料已更新，建议重新生成/);
-  assert.doesNotMatch(openFamilyReportSource, /createFamilyReportRecord/);
   assert.match(normalizedCustomerAppSource, /regenerateFamilyReportRecord\(\{[\s\S]*userRefresh: true/);
   assert.match(normalizedCustomerAppSource, /createFamilySalesReview\(\{[\s\S]*familyId: familySalesReviewFamilyId,[\s\S]*userRefresh: true/);
   assert.match(normalizedCustomerAppSource, /正在重新生成家庭保障分析报告/);
