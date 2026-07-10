@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
+import { ensureProductKnowledgeTables } from './product-knowledge-store.mjs';
 
 const SCHEMA_VERSION = '3';
 
@@ -732,6 +733,7 @@ function createSchema(db) {
   `);
   ensureCashflowTable(db);
   ensureCashValueTable(db);
+  ensureProductKnowledgeTables(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
 }
 
