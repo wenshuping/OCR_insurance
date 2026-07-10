@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import express from 'express';
 
+import { createPolicyOcrApp } from '../server/app.mjs';
 import { createProductKnowledgeStore } from '../server/product-knowledge-store.mjs';
 import { createProductKnowledgeRoutes } from '../server/routes/product-knowledge.routes.mjs';
+import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
 function listen(app) {
   return new Promise((resolve) => {
@@ -148,5 +153,41 @@ test('product knowledge routes return stable validation and not-found errors', a
     assert.equal(missing.payload.code, 'PRODUCT_DOCUMENT_NOT_FOUND');
   } finally {
     await app.close();
+  }
+});
+
+test('full app mounts the product knowledge upload API and persists through the sqlite store', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'product-knowledge-route-app-'));
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const state = await store.load();
+  const app = createPolicyOcrApp({
+    state,
+    db: store.db,
+    adminPassword: 'test-password',
+    persist: store.persist,
+    persistAdminSession: store.persistAdminSession,
+  });
+  const running = await listen(app);
+  try {
+    const login = await jsonRequest(running.baseUrl, '/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'test-password' }),
+    });
+    assert.equal(login.response.status, 200);
+    const headers = { authorization: `Bearer ${login.payload.token}` };
+    const uploaded = await jsonRequest(running.baseUrl, '/api/admin/product-knowledge/documents', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(validUploadBody()),
+    });
+
+    assert.equal(uploaded.response.status, 201);
+    assert.equal(uploaded.payload.document.fileName, '公司产品介绍.txt');
+    assert.equal(store.db.prepare('SELECT count(*) AS count FROM product_documents').get().count, 1);
+    assert.equal(store.db.prepare('SELECT count(*) AS count FROM product_document_blobs').get().count, 1);
+    assert.equal(store.db.prepare('SELECT count(*) AS count FROM product_ingestion_jobs').get().count, 1);
+  } finally {
+    await running.close();
+    store.close();
   }
 });

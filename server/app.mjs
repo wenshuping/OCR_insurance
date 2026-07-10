@@ -10,6 +10,7 @@ import { createClientPerformanceRoutes } from './routes/client-performance.route
 import { createFamilyRoutes } from './routes/families.routes.mjs';
 import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
+import { createProductKnowledgeRoutes } from './routes/product-knowledge.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
@@ -81,6 +82,7 @@ import {
   buildPolicyDerivedResult,
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
+import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
 import { generateProductCustomerResponsibilitySummary } from './product-customer-responsibility-summary.service.mjs';
 import {
   buildResponsibilityCardsForPolicy,
@@ -2564,6 +2566,8 @@ export function createPolicyOcrApp(options = {}) {
   });
 
   const app = express();
+  const productKnowledgeStore = options.productKnowledgeStore
+    || (options.db ? createProductKnowledgeStore(options.db) : null);
   app.locals.state = state;
   app.use(express.json({
     limit: JSON_BODY_LIMIT,
@@ -2589,6 +2593,10 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/membership', createMembershipRoutes(routeContext));
   app.use('/api', createPolicyRoutes(routeContext));
   app.use('/api', createCashflowRoutes(routeContext));
+  app.use('/api/admin/product-knowledge', createProductKnowledgeRoutes({
+    ...routeContext,
+    productKnowledgeStore,
+  }));
   app.use('/api/admin', createAdminRoutes(routeContext));
 
   app.recomputeAllCashflow = recomputeAllCashflow;
