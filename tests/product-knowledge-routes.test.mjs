@@ -191,3 +191,87 @@ test('full app mounts the product knowledge upload API and persists through the 
     store.close();
   }
 });
+
+test('admin can process, preview, publish and search document evidence', async () => {
+  const app = await makeApp();
+  const headers = { authorization: 'Bearer admin-token' };
+  try {
+    const uploaded = await jsonRequest(app.baseUrl, '/api/admin/product-knowledge/documents', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(validUploadBody()),
+    });
+    const documentId = uploaded.payload.document.id;
+    const processed = await jsonRequest(
+      app.baseUrl,
+      `/api/admin/product-knowledge/documents/${documentId}/process`,
+      { method: 'POST', headers, body: '{}' },
+    );
+    assert.equal(processed.response.status, 200);
+    assert.equal(processed.payload.document.parseStatus, 'indexed_pending_review');
+    assert.ok(processed.payload.chunks.some((chunk) => chunk.chunkType === 'child'));
+
+    const hidden = await jsonRequest(app.baseUrl, '/api/admin/product-knowledge/search', {
+      method: 'POST', headers, body: JSON.stringify({ query: '等待期' }),
+    });
+    assert.equal(hidden.payload.results.length, 0);
+
+    const preview = await jsonRequest(app.baseUrl, '/api/admin/product-knowledge/search', {
+      method: 'POST', headers, body: JSON.stringify({ query: '等待期', includeQuarantined: true }),
+    });
+    assert.equal(preview.payload.previewMode, true);
+    assert.equal(preview.payload.results.length, 1);
+    assert.equal(preview.payload.results[0].pageStart, 1);
+
+    const candidates = await jsonRequest(
+      app.baseUrl,
+      `/api/admin/product-knowledge/documents/${documentId}/candidates`,
+      { headers },
+    );
+    assert.equal(candidates.response.status, 200);
+    assert.equal(candidates.payload.summary.count, 0);
+
+    const published = await jsonRequest(
+      app.baseUrl,
+      `/api/admin/product-knowledge/documents/${documentId}/review`,
+      { method: 'POST', headers, body: JSON.stringify({ action: 'publish', note: '测试审核' }) },
+    );
+    assert.equal(published.response.status, 200);
+    assert.equal(published.payload.document.reviewStatus, 'published');
+
+    const visible = await jsonRequest(app.baseUrl, '/api/admin/product-knowledge/search', {
+      method: 'POST', headers, body: JSON.stringify({ query: '等待期' }),
+    });
+    assert.equal(visible.payload.results.length, 1);
+    assert.equal(visible.payload.results[0].reviewStatus, 'published');
+  } finally {
+    await app.close();
+  }
+});
+
+test('review rejects invalid actions and unprocessed publishing', async () => {
+  const app = await makeApp();
+  const headers = { authorization: 'Bearer admin-token' };
+  try {
+    const uploaded = await jsonRequest(app.baseUrl, '/api/admin/product-knowledge/documents', {
+      method: 'POST', headers, body: JSON.stringify(validUploadBody()),
+    });
+    const documentId = uploaded.payload.document.id;
+    const invalid = await jsonRequest(
+      app.baseUrl,
+      `/api/admin/product-knowledge/documents/${documentId}/review`,
+      { method: 'POST', headers, body: JSON.stringify({ action: 'approve' }) },
+    );
+    assert.equal(invalid.response.status, 400);
+    assert.equal(invalid.payload.code, 'PRODUCT_DOCUMENT_REVIEW_ACTION_INVALID');
+    const notReady = await jsonRequest(
+      app.baseUrl,
+      `/api/admin/product-knowledge/documents/${documentId}/review`,
+      { method: 'POST', headers, body: JSON.stringify({ action: 'publish' }) },
+    );
+    assert.equal(notReady.response.status, 409);
+    assert.equal(notReady.payload.code, 'PRODUCT_DOCUMENT_NOT_READY');
+  } finally {
+    await app.close();
+  }
+});
