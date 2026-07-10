@@ -54,6 +54,22 @@
     ]
   },
   {
+    "name": "product-knowledge",
+    "patterns": [
+      "server/product-knowledge-store.mjs",
+      "server/product-document-upload.service.mjs",
+      "server/routes/product-knowledge.routes.mjs",
+      "tests/product-knowledge-store.test.mjs",
+      "tests/product-document-upload.test.mjs",
+      "tests/product-knowledge-routes.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/product-knowledge-store.test.mjs",
+      "node --test tests/product-document-upload.test.mjs",
+      "node --test tests/product-knowledge-routes.test.mjs"
+    ]
+  },
+  {
     "name": "ping-an-coverage-audit",
     "patterns": [
       "scripts/audit-ping-an-coverage.mjs",
