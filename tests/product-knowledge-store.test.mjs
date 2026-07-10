@@ -16,6 +16,7 @@ const EXPECTED_TABLES = [
   'insurance_product_versions',
   'insurance_products',
   'knowledge_chunks',
+  'knowledge_chunks_fts',
   'product_claims',
   'product_document_blobs',
   'product_document_links',
@@ -228,6 +229,151 @@ test('product knowledge store updates one ingestion job and records attempts', (
     assert.deepEqual(updated.payload, { parserVersion: 'test-v1' });
     assert.equal(updated.updatedAt, '2026-07-10T00:02:00.000Z');
     assert.equal(store.updateIngestionJob({ tenantId: 'other', jobId: created.job.id }), null);
+  } finally {
+    db.close();
+  }
+});
+
+function createUploadedDocument(store, tenantId = 'default') {
+  return store.createDocumentUpload({
+    tenantId,
+    createdBy: 'admin-session',
+    fileName: '产品介绍.txt',
+    mediaType: 'text/plain',
+    extension: 'txt',
+    bytes: Buffer.from(`document-${tenantId}`),
+    contentHash: `hash-${tenantId}`,
+    now: '2026-07-10T00:00:00.000Z',
+  });
+}
+
+function parsedArtifacts(documentId, content = '等待期为90天，保险责任以正式条款为准。') {
+  return {
+    documentType: 'product_intro',
+    pages: [{ pageNo: 1, rawText: content, headings: ['产品介绍'], tables: [], sourceLabel: '第 1 页' }],
+    chunks: [
+      {
+        id: `${documentId}_parent`,
+        chunkType: 'parent',
+        pageStart: 1,
+        pageEnd: 1,
+        content,
+        contextualPrefix: '资料：产品介绍.txt',
+        tokenCount: 20,
+        contentHash: 'parent-hash',
+        sourceAuthority: 'company_material',
+        reviewStatus: 'pending',
+        indexStatus: 'ready',
+      },
+      {
+        id: `${documentId}_child`,
+        parentChunkId: `${documentId}_parent`,
+        chunkType: 'child',
+        pageStart: 1,
+        pageEnd: 1,
+        content,
+        contextualPrefix: '资料：产品介绍.txt\n页码：第 1 页',
+        tokenCount: 20,
+        contentHash: 'child-hash',
+        sourceAuthority: 'company_material',
+        reviewStatus: 'pending',
+        indexStatus: 'ready',
+      },
+    ],
+  };
+}
+
+test('parsed pages, chunks and FTS rows are replaced idempotently', () => {
+  const db = new DatabaseSync(':memory:');
+  const store = createProductKnowledgeStore(db);
+  try {
+    const created = createUploadedDocument(store);
+    const input = parsedArtifacts(created.document.id);
+    store.replaceParsedArtifacts({ tenantId: 'default', documentId: created.document.id, ...input });
+    store.replaceParsedArtifacts({ tenantId: 'default', documentId: created.document.id, ...input });
+
+    assert.equal(store.listDocumentPages({ tenantId: 'default', documentId: created.document.id }).length, 1);
+    assert.equal(store.listDocumentChunks({ tenantId: 'default', documentId: created.document.id }).length, 2);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_chunks_fts').get().count, 1);
+    assert.equal(store.getDocument({ tenantId: 'default', documentId: created.document.id }).parseStatus, 'indexed_pending_review');
+  } finally {
+    db.close();
+  }
+});
+
+test('artifact replacement rolls back pages, chunks and FTS together', () => {
+  const db = new DatabaseSync(':memory:');
+  const store = createProductKnowledgeStore(db);
+  try {
+    const created = createUploadedDocument(store);
+    const original = parsedArtifacts(created.document.id, '原始等待期为90天。');
+    store.replaceParsedArtifacts({ tenantId: 'default', documentId: created.document.id, ...original });
+    assert.throws(() => store.replaceParsedArtifacts({
+      tenantId: 'default',
+      documentId: created.document.id,
+      pages: [{ pageNo: 2, rawText: '新内容' }],
+      chunks: [{ id: '', content: '' }],
+    }));
+
+    assert.match(store.listDocumentPages({ tenantId: 'default', documentId: created.document.id })[0].rawText, /原始/u);
+    assert.match(store.listDocumentChunks({ tenantId: 'default', documentId: created.document.id })[1].content, /原始/u);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_chunks_fts').get().count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('search is tenant-scoped and published-only by default', () => {
+  const db = new DatabaseSync(':memory:');
+  const store = createProductKnowledgeStore(db);
+  try {
+    const first = createUploadedDocument(store, 'default');
+    const second = createUploadedDocument(store, 'other');
+    store.replaceParsedArtifacts({ tenantId: 'default', documentId: first.document.id, ...parsedArtifacts(first.document.id) });
+    store.replaceParsedArtifacts({ tenantId: 'other', documentId: second.document.id, ...parsedArtifacts(second.document.id) });
+
+    assert.equal(store.searchChunks({ tenantId: 'default', query: '等待期' }).length, 0);
+    assert.equal(store.searchChunks({ tenantId: 'default', query: '等待期', includeQuarantined: true }).length, 1);
+    store.reviewDocument({
+      tenantId: 'default',
+      documentId: first.document.id,
+      action: 'publish',
+      reviewer: 'admin',
+      now: '2026-07-10T01:00:00.000Z',
+    });
+    const results = store.searchChunks({ tenantId: 'default', query: '等待期' });
+    assert.equal(results.length, 1);
+    assert.equal(results[0].documentId, first.document.id);
+    assert.equal(results[0].reviewStatus, 'published');
+    assert.equal(store.searchChunks({ tenantId: 'missing', query: '等待期', includeQuarantined: true }).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('product candidates and review decisions are persisted without creating products', () => {
+  const db = new DatabaseSync(':memory:');
+  const store = createProductKnowledgeStore(db);
+  try {
+    const created = createUploadedDocument(store);
+    const links = store.saveDocumentProductLinks({
+      tenantId: 'default',
+      documentId: created.document.id,
+      links: [{
+        pageStart: 1,
+        pageEnd: 2,
+        relationType: 'candidate',
+        matchConfidence: 0.72,
+        payload: { company: '新华保险', productName: '康宁保终身重大疾病保险' },
+      }],
+    });
+    assert.equal(links.length, 1);
+    assert.equal(links[0].canonicalProductId, '');
+    assert.equal(store.listProducts({ tenantId: 'default' }).length, 0);
+    assert.throws(
+      () => store.reviewDocument({ tenantId: 'default', documentId: created.document.id, action: 'publish' }),
+      (error) => error.code === 'PRODUCT_DOCUMENT_NOT_READY',
+    );
   } finally {
     db.close();
   }
