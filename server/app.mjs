@@ -83,6 +83,7 @@ import {
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
 import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
+import { createProductAgentStore } from './product-agent-store.mjs';
 import { generateProductCustomerResponsibilitySummary } from './product-customer-responsibility-summary.service.mjs';
 import {
   buildResponsibilityCardsForPolicy,
@@ -2568,6 +2569,8 @@ export function createPolicyOcrApp(options = {}) {
   const app = express();
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
+  const productAgentStore = options.productAgentStore
+    || (options.db ? createProductAgentStore(options.db) : null);
   app.locals.state = state;
   app.use(express.json({
     limit: JSON_BODY_LIMIT,
@@ -2596,6 +2599,8 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/admin/product-knowledge', createProductKnowledgeRoutes({
     ...routeContext,
     productKnowledgeStore,
+    productAgentStore,
+    productAgentModelAdapter: options.productAgentModelAdapter,
   }));
   app.use('/api/admin', createAdminRoutes(routeContext));
 

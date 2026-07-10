@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import express from 'express';
 
 import { createPolicyOcrApp } from '../server/app.mjs';
+import { createProductAgentStore } from '../server/product-agent-store.mjs';
 import { createProductKnowledgeStore } from '../server/product-knowledge-store.mjs';
 import { createProductKnowledgeRoutes } from '../server/routes/product-knowledge.routes.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
@@ -34,6 +35,7 @@ function requireTestAdmin(req, res) {
 async function makeApp() {
   const db = new DatabaseSync(':memory:');
   const productKnowledgeStore = createProductKnowledgeStore(db);
+  const productAgentStore = createProductAgentStore(db);
   const app = express();
   app.use(express.json({ limit: '24mb' }));
   app.use('/api/admin/product-knowledge', createProductKnowledgeRoutes({
@@ -41,6 +43,11 @@ async function makeApp() {
     adminPassword: 'test-password',
     requireAdmin: requireTestAdmin,
     productKnowledgeStore,
+    productAgentStore,
+    productAgentModelAdapter: async () => ({
+      answer: '等待期为90天。',
+      claims: [{ text: '等待期为90天。', evidenceChunkIds: [], claimType: 'objective_fact' }],
+    }),
   }));
   const running = await listen(app);
   return {
@@ -274,4 +281,25 @@ test('review rejects invalid actions and unprocessed publishing', async () => {
   } finally {
     await app.close();
   }
+});
+
+test('agent thread API persists messages and downgrades unsupported model claims', async () => {
+  const app = await makeApp(); const headers = { authorization: 'Bearer admin-token' };
+  try {
+    const created = await jsonRequest(app.baseUrl, '/api/admin/product-knowledge/agent/threads', {
+      method: 'POST', headers, body: JSON.stringify({ customerId: 'customer-1', confirmedFacts: { budget: 10000 } }),
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.payload.taskState.confirmedFacts.budget, 10000);
+    const turn = await jsonRequest(app.baseUrl, `/api/admin/product-knowledge/agent/threads/${created.payload.thread.id}/messages`, {
+      method: 'POST', headers, body: JSON.stringify({ query: '给我推荐一下' }),
+    });
+    assert.equal(turn.response.status, 200);
+    assert.equal(turn.payload.validation.valid, false);
+    assert.equal(turn.payload.run.status, 'human_review_required');
+    const detail = await jsonRequest(app.baseUrl, `/api/admin/product-knowledge/agent/threads/${created.payload.thread.id}`, { headers });
+    assert.equal(detail.payload.messages.length, 2);
+    assert.equal(detail.payload.messages[0].role, 'user');
+    assert.equal(detail.payload.messages[1].role, 'assistant');
+  } finally { await app.close(); }
 });
