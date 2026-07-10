@@ -6,6 +6,7 @@ import {
   catalogProductsFromState,
   createProductIngestionService,
 } from '../product-ingestion.service.mjs';
+import { createProductRagService } from '../product-rag.service.mjs';
 
 const DEFAULT_TENANT_ID = 'default';
 
@@ -24,9 +25,13 @@ export function createProductKnowledgeRoutes(context = {}) {
     requireAdmin,
     productKnowledgeStore,
     productIngestionService,
+    productRagService,
   } = context;
   const ingestionService = productIngestionService || (productKnowledgeStore
     ? createProductIngestionService({ store: productKnowledgeStore })
+    : null);
+  const ragService = productRagService || (productKnowledgeStore
+    ? createProductRagService({ store: productKnowledgeStore })
     : null);
 
   function authorize(req, res) {
@@ -170,19 +175,20 @@ export function createProductKnowledgeRoutes(context = {}) {
     const session = authorize(req, res);
     if (!session) return;
     try {
+      if (!ragService) throw routeError('PRODUCT_RAG_UNAVAILABLE', '产品知识检索服务暂不可用', 503);
       const includeQuarantined = req.body?.includeQuarantined === true;
-      const results = storeOrThrow().searchChunks({
+      const evidencePackage = ragService.retrieve({
         tenantId: DEFAULT_TENANT_ID,
         query: req.body?.query,
         canonicalProductId: req.body?.canonicalProductId,
-        limit: req.body?.limit,
+        products: req.body?.products,
+        tokenBudget: req.body?.tokenBudget,
         includeQuarantined,
       });
       return res.json({
         ok: true,
-        results,
-        retrievalVersion: 'rag-v2-lexical',
-        previewMode: includeQuarantined,
+        ...evidencePackage,
+        results: evidencePackage.evidenceChunks,
       });
     } catch (error) {
       return sendError(res, error);
