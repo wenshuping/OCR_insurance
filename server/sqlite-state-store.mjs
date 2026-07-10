@@ -1236,6 +1236,7 @@ function createSchema(db) {
   ensureCashflowTable(db);
   ensureCashValueTable(db);
   ensureProductKnowledgeTables(db);
+  ensureProductAgentTables(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
 }
 

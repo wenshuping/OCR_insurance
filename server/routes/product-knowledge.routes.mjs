@@ -15,6 +15,7 @@ import { createProductDocumentPreviewService } from '../product-document-preview
 import { createProductDocumentReviewService } from '../product-document-review.service.mjs';
 import { createProductDocumentReviewModel } from '../product-document-review-model.service.mjs';
 import { createProductRagService } from '../product-rag.service.mjs';
+import { createProductSalesAgent } from '../product-sales-agent.service.mjs';
 
 const DEFAULT_TENANT_ID = 'default';
 
@@ -829,6 +830,55 @@ export function createProductKnowledgeRoutes(context = {}) {
     } catch (error) {
       return sendError(res, error);
     }
+  });
+
+  router.post('/agent/threads', async (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      if (!productAgentStore) throw routeError('PRODUCT_AGENT_STORE_UNAVAILABLE', '销售建议会话存储暂不可用', 503);
+      const thread = productAgentStore.createThread({
+        tenantId: DEFAULT_TENANT_ID,
+        userId: userIdFromSession(session),
+        customerId: req.body?.customerId,
+        threadType: 'product_sales',
+      });
+      const taskState = productAgentStore.saveTaskState({
+        tenantId: DEFAULT_TENANT_ID,
+        userId: userIdFromSession(session),
+        threadId: thread.id,
+        candidateProducts: Array.isArray(req.body?.candidateProducts) ? req.body.candidateProducts : [],
+        confirmedFacts: req.body?.confirmedFacts || {},
+      });
+      return res.status(201).json({ ok: true, thread, taskState });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  router.get('/agent/threads/:threadId', async (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      if (!productAgentStore) throw routeError('PRODUCT_AGENT_STORE_UNAVAILABLE', '销售建议会话存储暂不可用', 503);
+      const scope = { tenantId: DEFAULT_TENANT_ID, userId: userIdFromSession(session), threadId: req.params.threadId };
+      const thread = productAgentStore.getThread(scope);
+      if (!thread) throw routeError('AGENT_THREAD_NOT_FOUND', '销售建议会话不存在', 404);
+      return res.json({ ok: true, thread, taskState: productAgentStore.getTaskState(scope), messages: productAgentStore.listMessages(scope) });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  router.post('/agent/threads/:threadId/messages', async (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      if (!salesAgent) throw routeError('AGENT_MODEL_UNAVAILABLE', '销售建议模型暂不可用', 503);
+      const result = await salesAgent.runTurn({
+        tenantId: DEFAULT_TENANT_ID,
+        userId: userIdFromSession(session),
+        threadId: req.params.threadId,
+        query: req.body?.query,
+      });
+      return res.json({ ok: true, ...result });
+    } catch (error) { return sendError(res, error); }
   });
 
   return router;
