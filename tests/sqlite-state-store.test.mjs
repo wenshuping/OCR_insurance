@@ -1945,6 +1945,9 @@ test('sqlite state store persists DingTalk identity and challenge audit state ac
 
   const reopened = await createSqliteStateStore({ dbPath });
   const loaded = await reopened.load();
+  assert.equal(loaded.userDingtalkIdentities[0].corpId, 'corp-1');
+  assert.equal(loaded.userDingtalkIdentities[0].dingUserId, 'ding-1');
+  assert.equal(loaded.userDingtalkIdentities[0].userId, 7);
   assert.equal(loaded.userDingtalkIdentities[0].status, 'revoked');
   assert.equal(loaded.userDingtalkIdentities[0].revokedAt, '2026-07-12T09:00:00.000Z');
   assert.equal(loaded.dingtalkBindingChallenges[0].tokenHash, 'abc123exacthash');
@@ -1979,7 +1982,24 @@ test('granular DingTalk persistence upserts one principal without rewriting know
   insertExternalKnowledgeRecord(store);
 
   const identity = { corpId: 'corp-1', dingUserId: 'ding-1', userId: 7, mobile: '13800138000', status: 'pending', updatedAt: '2026-07-12T08:00:00.000Z' };
-  const challenge = { tokenHash: 'hash-only', token: 'raw-token', corpId: 'corp-1', dingUserId: 'ding-1', userId: 7, mobile: '13800138000', status: 'pending', expiresAt: '2026-07-12T08:05:00.000Z', updatedAt: '2026-07-12T08:00:00.000Z' };
+  const challenge = {
+    tokenHash: 'hash-only',
+    token: 'raw-token',
+    corpId: 'corp-1',
+    dingUserId: 'ding-1',
+    userId: 7,
+    mobile: '13800138000',
+    status: 'pending',
+    expiresAt: '2026-07-12T08:05:00.000Z',
+    updatedAt: '2026-07-12T08:00:00.000Z',
+    metadata: {
+      rawToken: 'nested-raw-token',
+      phone: '13900139000',
+      accessToken: 'nested-access-token',
+      attachment: { downloadUrl: 'https://secret.example.test/download' },
+      safeNote: 'retain me',
+    },
+  };
   state.userDingtalkIdentities.push(identity);
   state.dingtalkBindingChallenges.push(challenge);
   await store.persistDingtalkIdentityState({ state, identity, challenge });
@@ -1997,6 +2017,55 @@ test('granular DingTalk persistence upserts one principal without rewriting know
   assert.equal(row.payload.includes('raw-token'), false);
   assert.equal(challengePayload.includes('13800138000'), false);
   assert.equal(challengePayload.includes('raw-token'), false);
+  assert.equal(challengePayload.includes('13900139000'), false);
+  assert.equal(challengePayload.includes('nested-access-token'), false);
+  assert.equal(challengePayload.includes('secret.example.test'), false);
+  assert.equal(JSON.parse(challengePayload).metadata.safeNote, 'retain me');
+  assert.equal(JSON.parse(challengePayload).tokenHash, 'hash-only');
   assertKnowledgeTablesUntouched(store.db);
   store.close();
+});
+
+test('granular DingTalk persistence atomically saves challenge invalidation and replacement', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = { ...createInitialState(), ...baseKnowledgeState() };
+  const oldChallenge = {
+    tokenHash: 'old-hash',
+    corpId: 'corp-1',
+    dingUserId: 'ding-1',
+    userId: 7,
+    status: 'pending',
+    expiresAt: '2026-07-12T08:05:00.000Z',
+    updatedAt: '2026-07-12T08:00:00.000Z',
+  };
+  state.dingtalkBindingChallenges.push(oldChallenge);
+  await store.persist(state);
+  insertExternalKnowledgeRecord(store);
+
+  const invalidatedChallenge = {
+    ...oldChallenge,
+    status: 'invalidated',
+    invalidatedAt: '2026-07-12T08:01:00.000Z',
+    updatedAt: '2026-07-12T08:01:00.000Z',
+  };
+  const newChallenge = {
+    ...oldChallenge,
+    tokenHash: 'new-hash',
+    expiresAt: '2026-07-12T08:06:00.000Z',
+    updatedAt: '2026-07-12T08:01:00.000Z',
+  };
+  state.dingtalkBindingChallenges = [invalidatedChallenge, newChallenge];
+  await store.persistDingtalkIdentityState({ state, challenges: state.dingtalkBindingChallenges });
+  assertKnowledgeTablesUntouched(store.db);
+  store.close();
+
+  const reopened = await createSqliteStateStore({ dbPath });
+  const loaded = await reopened.load();
+  assert.equal(loaded.dingtalkBindingChallenges.length, 2);
+  assert.equal(loaded.dingtalkBindingChallenges.find((row) => row.tokenHash === 'old-hash').status, 'invalidated');
+  assert.equal(loaded.dingtalkBindingChallenges.find((row) => row.tokenHash === 'old-hash').invalidatedAt, '2026-07-12T08:01:00.000Z');
+  assert.equal(loaded.dingtalkBindingChallenges.find((row) => row.tokenHash === 'new-hash').status, 'pending');
+  reopened.close();
 });

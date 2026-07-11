@@ -1861,9 +1861,23 @@ function upsertWechatOAuthState(db, oauthState = {}) {
   );
 }
 
-function safeDingtalkPayload(row = {}) {
-  const { token, mobile, ...safe } = row;
-  return safe;
+const DINGTALK_SENSITIVE_PAYLOAD_KEYS = new Set([
+  'token',
+  'mobile',
+  'rawtoken',
+  'phone',
+  'accesstoken',
+  'downloadurl',
+]);
+
+function safeDingtalkPayload(value) {
+  if (Array.isArray(value)) return value.map((item) => safeDingtalkPayload(item));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !DINGTALK_SENSITIVE_PAYLOAD_KEYS.has(key.replaceAll('_', '').toLowerCase()))
+      .map(([key, item]) => [key, safeDingtalkPayload(item)]),
+  );
 }
 
 function upsertDingtalkIdentity(db, identity = {}) {
@@ -2363,7 +2377,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
-  async function persistDingtalkIdentityState({ state, identity = null, challenge = null } = {}) {
+  async function persistDingtalkIdentityState({ state, identity = null, challenge = null, challenges = [] } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
     const now = new Date().toISOString();
@@ -2371,6 +2385,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     try {
       if (identity) upsertDingtalkIdentity(db, identity);
       if (challenge) upsertDingtalkBindingChallenge(db, challenge);
+      for (const changedChallenge of normalizeArray(challenges)) upsertDingtalkBindingChallenge(db, changedChallenge);
       updateStateMeta(db, nextState, now);
       db.exec('COMMIT');
     } catch (error) {
