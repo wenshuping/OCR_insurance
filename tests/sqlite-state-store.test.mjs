@@ -1909,3 +1909,94 @@ test('sqlite state store persists membership orders, memberships, wechat identit
   assert.equal(reloaded.nextId, 22);
   reopened.close();
 });
+
+test('sqlite state store persists DingTalk identity and challenge audit state across reopen', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = {
+    ...createInitialState(),
+    userDingtalkIdentities: [{
+      corpId: 'corp-1',
+      dingUserId: 'ding-1',
+      userId: 7,
+      status: 'revoked',
+      confirmedAt: '2026-07-12T08:01:00.000Z',
+      revokedAt: '2026-07-12T09:00:00.000Z',
+      reason: 'advisor left company',
+      createdAt: '2026-07-12T08:00:00.000Z',
+      updatedAt: '2026-07-12T09:00:00.000Z',
+    }],
+    dingtalkBindingChallenges: [{
+      tokenHash: 'abc123exacthash',
+      corpId: 'corp-1',
+      dingUserId: 'ding-1',
+      userId: 7,
+      status: 'expired',
+      expiresAt: '2026-07-12T08:05:00.000Z',
+      invalidatedAt: '2026-07-12T08:06:00.000Z',
+      createdAt: '2026-07-12T08:00:00.000Z',
+      updatedAt: '2026-07-12T08:06:00.000Z',
+    }],
+  };
+
+  await store.persist(state);
+  store.close();
+
+  const reopened = await createSqliteStateStore({ dbPath });
+  const loaded = await reopened.load();
+  assert.equal(loaded.userDingtalkIdentities[0].status, 'revoked');
+  assert.equal(loaded.userDingtalkIdentities[0].revokedAt, '2026-07-12T09:00:00.000Z');
+  assert.equal(loaded.dingtalkBindingChallenges[0].tokenHash, 'abc123exacthash');
+  assert.equal(loaded.dingtalkBindingChallenges[0].expiresAt, '2026-07-12T08:05:00.000Z');
+  assert.equal(reopened.db.prepare('SELECT count(*) AS count FROM state_documents WHERE key IN (?, ?)').get('userDingtalkIdentities', 'dingtalkBindingChallenges').count, 0);
+  reopened.close();
+});
+
+test('sqlite state store migrates an initialized legacy database with empty DingTalk identity state', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const legacyDb = new DatabaseSync(dbPath);
+  legacyDb.exec(`
+    CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO app_meta (key, value) VALUES ('state_initialized_at', '2026-07-01T00:00:00.000Z');
+  `);
+  legacyDb.close();
+
+  const store = await createSqliteStateStore({ dbPath });
+  const loaded = await store.load();
+  assert.deepEqual(loaded.userDingtalkIdentities, []);
+  assert.deepEqual(loaded.dingtalkBindingChallenges, []);
+  store.close();
+});
+
+test('granular DingTalk persistence upserts one principal without rewriting knowledge tables', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = { ...createInitialState(), ...baseKnowledgeState() };
+  await store.persist(state);
+  insertExternalKnowledgeRecord(store);
+
+  const identity = { corpId: 'corp-1', dingUserId: 'ding-1', userId: 7, mobile: '13800138000', status: 'pending', updatedAt: '2026-07-12T08:00:00.000Z' };
+  const challenge = { tokenHash: 'hash-only', token: 'raw-token', corpId: 'corp-1', dingUserId: 'ding-1', userId: 7, mobile: '13800138000', status: 'pending', expiresAt: '2026-07-12T08:05:00.000Z', updatedAt: '2026-07-12T08:00:00.000Z' };
+  state.userDingtalkIdentities.push(identity);
+  state.dingtalkBindingChallenges.push(challenge);
+  await store.persistDingtalkIdentityState({ state, identity, challenge });
+
+  const revoked = { ...identity, status: 'revoked', revokedAt: '2026-07-12T09:00:00.000Z', reason: 'security cleanup', updatedAt: '2026-07-12T09:00:00.000Z' };
+  await store.persistDingtalkIdentityState({ state, identity: revoked });
+
+  const row = store.db.prepare('SELECT status, payload FROM user_dingtalk_identities WHERE corp_id = ? AND ding_user_id = ?').get('corp-1', 'ding-1');
+  assert.equal(row.status, 'revoked');
+  assert.equal(JSON.parse(row.payload).reason, 'security cleanup');
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM user_dingtalk_identities').get().count, 1);
+  assert.equal(store.db.prepare('SELECT token_hash FROM dingtalk_binding_challenges').get().token_hash, 'hash-only');
+  const challengePayload = store.db.prepare('SELECT payload FROM dingtalk_binding_challenges').get().payload;
+  assert.equal(row.payload.includes('13800138000'), false);
+  assert.equal(row.payload.includes('raw-token'), false);
+  assert.equal(challengePayload.includes('13800138000'), false);
+  assert.equal(challengePayload.includes('raw-token'), false);
+  assertKnowledgeTablesUntouched(store.db);
+  store.close();
+});

@@ -40,6 +40,8 @@ const DB_OWNED_KEYS = new Set([
   'memberships',
   'userWechatIdentities',
   'wechatOAuthStates',
+  'userDingtalkIdentities',
+  'dingtalkBindingChallenges',
   'nextId',
 ]);
 
@@ -725,6 +727,26 @@ function createSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_wechat_oauth_states_user_id ON wechat_oauth_states(user_id);
 
+    CREATE TABLE IF NOT EXISTS user_dingtalk_identities (
+      corp_id TEXT NOT NULL,
+      ding_user_id TEXT NOT NULL,
+      user_id INTEGER,
+      status TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (corp_id, ding_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS dingtalk_binding_challenges (
+      token_hash TEXT PRIMARY KEY,
+      corp_id TEXT NOT NULL,
+      ding_user_id TEXT NOT NULL,
+      status TEXT,
+      expires_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
@@ -1295,6 +1317,9 @@ function insertRows(db, state) {
     );
   }
 
+  for (const identity of normalizeArray(state.userDingtalkIdentities)) upsertDingtalkIdentity(db, identity);
+  for (const challenge of normalizeArray(state.dingtalkBindingChallenges)) upsertDingtalkBindingChallenge(db, challenge);
+
   const insertStateDocument = db.prepare(`
     INSERT INTO state_documents (key, payload)
     VALUES (?, ?)
@@ -1836,6 +1861,46 @@ function upsertWechatOAuthState(db, oauthState = {}) {
   );
 }
 
+function safeDingtalkPayload(row = {}) {
+  const { token, mobile, ...safe } = row;
+  return safe;
+}
+
+function upsertDingtalkIdentity(db, identity = {}) {
+  const safe = safeDingtalkPayload(identity);
+  const corpId = String(safe.corpId || safe.corp_id || '').trim();
+  const dingUserId = String(safe.dingUserId || safe.ding_user_id || '').trim();
+  if (!corpId || !dingUserId) return;
+  db.prepare(`
+    INSERT INTO user_dingtalk_identities (corp_id, ding_user_id, user_id, status, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(corp_id, ding_user_id) DO UPDATE SET
+      user_id = excluded.user_id,
+      status = excluded.status,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(corpId, dingUserId, Number(safe.userId || 0) || null, String(safe.status || ''), String(safe.updatedAt || ''), jsonPayload(safe));
+}
+
+function upsertDingtalkBindingChallenge(db, challenge = {}) {
+  const safe = safeDingtalkPayload(challenge);
+  const tokenHash = String(safe.tokenHash || safe.token_hash || '').trim();
+  const corpId = String(safe.corpId || safe.corp_id || '').trim();
+  const dingUserId = String(safe.dingUserId || safe.ding_user_id || '').trim();
+  if (!tokenHash || !corpId || !dingUserId) return;
+  db.prepare(`
+    INSERT INTO dingtalk_binding_challenges (token_hash, corp_id, ding_user_id, status, expires_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(token_hash) DO UPDATE SET
+      corp_id = excluded.corp_id,
+      ding_user_id = excluded.ding_user_id,
+      status = excluded.status,
+      expires_at = excluded.expires_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(tokenHash, corpId, dingUserId, String(safe.status || ''), String(safe.expiresAt || ''), String(safe.updatedAt || ''), jsonPayload(safe));
+}
+
 function replaceSourceRecordsForPolicy(db, state, policyId) {
   const id = Number(policyId);
   if (!Number.isFinite(id)) return;
@@ -2147,6 +2212,8 @@ function clearDbOwnedTables(db) {
     DELETE FROM memberships;
     DELETE FROM user_wechat_identities;
     DELETE FROM wechat_oauth_states;
+    DELETE FROM user_dingtalk_identities;
+    DELETE FROM dingtalk_binding_challenges;
     DELETE FROM state_documents;
   `);
 }
@@ -2220,6 +2287,8 @@ function loadDbOwnedState(db) {
     memberships: loadPayloadRows(db, 'memberships', 'user_id ASC'),
     userWechatIdentities: loadPayloadRows(db, 'user_wechat_identities', 'user_id ASC, app_id ASC'),
     wechatOAuthStates: loadPayloadRows(db, 'wechat_oauth_states', 'created_at ASC, state ASC'),
+    userDingtalkIdentities: loadPayloadRows(db, 'user_dingtalk_identities', 'corp_id ASC, ding_user_id ASC'),
+    dingtalkBindingChallenges: loadPayloadRows(db, 'dingtalk_binding_challenges', 'updated_at ASC, token_hash ASC'),
   };
   state.knowledgeRecords = state.knowledgeRecords
     .map((record) => normalizeKnowledgeRecord(record))
@@ -2286,6 +2355,22 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     db.exec('BEGIN IMMEDIATE');
     try {
       upsertAdminSession(db, targetSession);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistDingtalkIdentityState({ state, identity = null, challenge = null } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (identity) upsertDingtalkIdentity(db, identity);
+      if (challenge) upsertDingtalkBindingChallenge(db, challenge);
       updateStateMeta(db, nextState, now);
       db.exec('COMMIT');
     } catch (error) {
@@ -2856,6 +2941,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     load,
     persist,
     persistAdminSession,
+    persistDingtalkIdentityState,
     persistMembershipConfig,
     persistStateDocument,
     persistOfficialDomainProfiles,

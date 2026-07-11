@@ -50,6 +50,8 @@ export function createInitialState() {
     memberships: [],
     userWechatIdentities: [],
     wechatOAuthStates: [],
+    userDingtalkIdentities: [],
+    dingtalkBindingChallenges: [],
     nextId: 1,
   };
 }
