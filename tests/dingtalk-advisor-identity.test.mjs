@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import {
+  DingtalkAdvisorIdentityError,
   confirmAdvisorBinding,
   createAdvisorBindingChallenge,
   findAdvisorBindingCandidate,
@@ -136,4 +137,72 @@ test('revoked binding is auditable and no longer resolves', () => {
   assert.equal(revoked.revokedAt, LATER);
   assert.equal(revoked.reason, 'advisor left company');
   assert.equal(resolveDingtalkAdvisor(state, PRINCIPAL), null);
+});
+
+test('reissuing a pending challenge reuses the identity and invalidates the old challenge', () => {
+  const state = makeState();
+  const first = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, now: NOW });
+  const second = createAdvisorBindingChallenge(state, {
+    ...PRINCIPAL,
+    userId: 7,
+    now: '2026-07-12T08:00:30.000Z',
+  });
+
+  assert.equal(state.userDingtalkIdentities.length, 1);
+  assert.equal(state.dingtalkBindingChallenges[0].invalidatedAt, '2026-07-12T08:00:30.000Z');
+  assert.throws(() => confirmAdvisorBinding(state, {
+    ...PRINCIPAL,
+    token: first.token,
+    now: LATER,
+  }), (error) => error instanceof DingtalkAdvisorIdentityError && error.code === 'CHALLENGE_INVALIDATED');
+  assert.equal(confirmAdvisorBinding(state, { ...PRINCIPAL, token: second.token, now: LATER }).status, 'active');
+});
+
+test('active principal cannot be silently rebound to another user', () => {
+  const state = makeState([
+    { id: 7, mobile: '13800138000', status: 'active' },
+    { id: 8, mobile: '13900139000', status: 'active' },
+  ]);
+  state.userDingtalkIdentities.push({ ...PRINCIPAL, userId: 7, status: 'active' });
+
+  assert.throws(() => createAdvisorBindingChallenge(state, {
+    ...PRINCIPAL,
+    userId: 8,
+    now: NOW,
+  }), (error) => error instanceof DingtalkAdvisorIdentityError && error.code === 'REBIND_REQUIRES_REVOKE');
+  assert.equal(state.userDingtalkIdentities.length, 1);
+});
+
+test('revoked principal can start a new confirmation flow without adding an identity row', () => {
+  const state = makeState();
+  state.userDingtalkIdentities.push({
+    ...PRINCIPAL,
+    userId: 7,
+    status: 'revoked',
+    revokedAt: NOW,
+    reason: 'old binding retired',
+  });
+
+  createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, now: LATER });
+
+  assert.equal(state.userDingtalkIdentities.length, 1);
+  assert.equal(state.userDingtalkIdentities[0].status, 'pending');
+  assert.equal(state.userDingtalkIdentities[0].revokedAt, undefined);
+  assert.equal(state.userDingtalkIdentities[0].reason, undefined);
+});
+
+test('legacy duplicate principal fails closed for resolution and revoke', () => {
+  const state = makeState();
+  state.userDingtalkIdentities.push(
+    { ...PRINCIPAL, userId: 7, status: 'active' },
+    { ...PRINCIPAL, userId: 7, status: 'active' },
+  );
+
+  assert.equal(resolveDingtalkAdvisor(state, PRINCIPAL), null);
+  assert.throws(() => revokeAdvisorBinding(state, {
+    ...PRINCIPAL,
+    now: LATER,
+    reason: 'security cleanup',
+  }), (error) => error instanceof DingtalkAdvisorIdentityError && error.code === 'AMBIGUOUS_PRINCIPAL');
+  assert.equal(state.userDingtalkIdentities.every((row) => row.status === 'active'), true);
 });

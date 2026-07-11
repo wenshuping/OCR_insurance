@@ -2,6 +2,14 @@ import { createHash, randomBytes } from 'node:crypto';
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
+export class DingtalkAdvisorIdentityError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'DingtalkAdvisorIdentityError';
+    this.code = code;
+  }
+}
+
 function tokenHash(token) {
   return createHash('sha256').update(token).digest('hex');
 }
@@ -12,6 +20,23 @@ function maskMobile(mobile) {
 
 function activeUser(state, userId) {
   return (state.users ?? []).find((user) => user.id === userId && user.status === 'active');
+}
+
+function principalIdentities(state, corpId, dingUserId) {
+  return (state.userDingtalkIdentities ?? []).filter((row) => (
+    row.corpId === corpId && row.dingUserId === dingUserId
+  ));
+}
+
+function uniquePrincipalIdentity(state, corpId, dingUserId) {
+  const identities = principalIdentities(state, corpId, dingUserId);
+  if (identities.length > 1) {
+    throw new DingtalkAdvisorIdentityError(
+      'AMBIGUOUS_PRINCIPAL',
+      'Multiple DingTalk identities exist for this principal',
+    );
+  }
+  return identities[0] ?? null;
 }
 
 export function findAdvisorBindingCandidate(state, { mobile, allowedUserIds }) {
@@ -38,16 +63,26 @@ export function createAdvisorBindingChallenge(state, {
 }) {
   if (!activeUser(state, userId)) throw new Error('Advisor account is not active');
 
+  const existingIdentity = uniquePrincipalIdentity(state, corpId, dingUserId);
+  if (existingIdentity?.status === 'active') {
+    const code = existingIdentity.userId === userId ? 'ALREADY_BOUND' : 'REBIND_REQUIRES_REVOKE';
+    throw new DingtalkAdvisorIdentityError(
+      code,
+      code === 'ALREADY_BOUND'
+        ? 'DingTalk principal is already bound'
+        : 'Active DingTalk principal must be revoked before rebinding',
+    );
+  }
+
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(new Date(now).getTime() + CHALLENGE_TTL_MS).toISOString();
-  const identity = {
-    corpId,
-    dingUserId,
-    userId,
-    status: 'pending',
-    createdAt: now,
-    updatedAt: now,
-  };
+  const identity = existingIdentity ?? { corpId, dingUserId, createdAt: now };
+  identity.userId = userId;
+  identity.status = 'pending';
+  identity.updatedAt = now;
+  delete identity.activatedAt;
+  delete identity.revokedAt;
+  delete identity.reason;
   const challenge = {
     corpId,
     dingUserId,
@@ -58,7 +93,12 @@ export function createAdvisorBindingChallenge(state, {
     usedAt: null,
   };
 
-  (state.userDingtalkIdentities ??= []).push(identity);
+  if (!existingIdentity) (state.userDingtalkIdentities ??= []).push(identity);
+  for (const prior of state.dingtalkBindingChallenges ?? []) {
+    if (prior.corpId === corpId && prior.dingUserId === dingUserId && !prior.usedAt) {
+      prior.invalidatedAt = now;
+    }
+  }
   (state.dingtalkBindingChallenges ??= []).push(challenge);
   return { token, expiresAt };
 }
@@ -76,19 +116,19 @@ export function confirmAdvisorBinding(state, {
   if (challenge.corpId !== corpId || challenge.dingUserId !== dingUserId) {
     throw new Error('Binding challenge principal does not match');
   }
+  if (challenge.invalidatedAt) {
+    throw new DingtalkAdvisorIdentityError('CHALLENGE_INVALIDATED', 'Binding challenge was invalidated');
+  }
   if (challenge.usedAt) throw new Error('Binding challenge was already used');
   if (new Date(now).getTime() >= new Date(challenge.expiresAt).getTime()) {
     throw new Error('Binding challenge expired');
   }
   if (!activeUser(state, challenge.userId)) throw new Error('Advisor account is not active');
 
-  const identity = (state.userDingtalkIdentities ?? []).find((row) => (
-    row.corpId === corpId
-      && row.dingUserId === dingUserId
-      && row.userId === challenge.userId
-      && row.status === 'pending'
-  ));
-  if (!identity) throw new Error('Pending DingTalk identity not found');
+  const identity = uniquePrincipalIdentity(state, corpId, dingUserId);
+  if (identity?.userId !== challenge.userId || identity.status !== 'pending') {
+    throw new Error('Pending DingTalk identity not found');
+  }
 
   challenge.usedAt = now;
   identity.status = 'active';
@@ -98,10 +138,11 @@ export function confirmAdvisorBinding(state, {
 }
 
 export function resolveDingtalkAdvisor(state, { corpId, dingUserId }) {
-  const identity = (state.userDingtalkIdentities ?? []).find((row) => (
-    row.corpId === corpId && row.dingUserId === dingUserId && row.status === 'active'
-  ));
+  const identities = principalIdentities(state, corpId, dingUserId);
+  if (identities.length !== 1) return null;
+  const identity = identities[0];
   if (!identity || !activeUser(state, identity.userId)) return null;
+  if (identity.status !== 'active') return null;
   return identity;
 }
 
@@ -111,10 +152,8 @@ export function revokeAdvisorBinding(state, {
   reason,
   now = new Date().toISOString(),
 }) {
-  const identity = (state.userDingtalkIdentities ?? []).find((row) => (
-    row.corpId === corpId && row.dingUserId === dingUserId && row.status === 'active'
-  ));
-  if (!identity) return null;
+  const identity = uniquePrincipalIdentity(state, corpId, dingUserId);
+  if (!identity || identity.status !== 'active') return null;
 
   identity.status = 'revoked';
   identity.revokedAt = now;
