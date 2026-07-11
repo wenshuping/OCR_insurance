@@ -7,6 +7,7 @@ import { createAdminRoutes } from './routes/admin.routes.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
+import { createDingtalkIdentityRoutes } from './routes/dingtalk-identity.routes.mjs';
 import { createFamilyRoutes } from './routes/families.routes.mjs';
 import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
@@ -156,6 +157,12 @@ import {
 } from './wechat-pay.service.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 import { evidenceVerificationFields } from './evidence-classification.service.mjs';
+import {
+  confirmAdvisorBinding,
+  createAdvisorBindingChallenge,
+  findAdvisorBindingCandidate,
+  revokeAdvisorBinding,
+} from './dingtalk-advisor-identity.service.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -2170,6 +2177,8 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
   if (!Array.isArray(state.memberships)) state.memberships = [];
   if (!Array.isArray(state.userWechatIdentities)) state.userWechatIdentities = [];
+  if (!Array.isArray(state.userDingtalkIdentities)) state.userDingtalkIdentities = [];
+  if (!Array.isArray(state.dingtalkBindingChallenges)) state.dingtalkBindingChallenges = [];
   if (!Array.isArray(state.wechatOAuthStates)) state.wechatOAuthStates = [];
   if (!Number(state.nextId)) state.nextId = 1;
 
@@ -2259,6 +2268,9 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistMembershipState = typeof options.persistMembershipState === 'function'
     ? (input = {}) => options.persistMembershipState({ state, ...input })
+    : null;
+  const persistDingtalkIdentityState = typeof options.persistDingtalkIdentityState === 'function'
+    ? (input = {}) => options.persistDingtalkIdentityState({ state, ...input })
     : null;
   const persistOfficialDomainProfiles = typeof options.persistOfficialDomainProfiles === 'function'
     ? (input = {}) => options.persistOfficialDomainProfiles({ state, ...input })
@@ -2387,6 +2399,7 @@ export function createPolicyOcrApp(options = {}) {
     persistMembershipConfig,
     persistStateDocument,
     persistMembershipState,
+    persistDingtalkIdentityState,
     persistOfficialDomainProfiles,
     persistResponsibilityLookupArtifacts,
     persistPolicyDerivedResult,
@@ -2506,6 +2519,13 @@ export function createPolicyOcrApp(options = {}) {
     verifyWechatPaySignature,
     fetchWechatOAuthOpenid: options.fetchWechatOAuthOpenid || fetchWechatOAuthOpenid,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
+    authenticateDingtalkServiceRequest: options.authenticateDingtalkServiceRequest,
+    getDingtalkUserProfile: options.getDingtalkUserProfile,
+    dingtalkAllowedUserIds: Array.isArray(options.dingtalkAllowedUserIds) ? options.dingtalkAllowedUserIds : [],
+    findAdvisorBindingCandidate,
+    createAdvisorBindingChallenge,
+    confirmAdvisorBinding,
+    revokeAdvisorBinding,
     wechatPayMode: defaultWechatPayMode,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
@@ -2584,6 +2604,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/wechat', createWechatRoutes(routeContext));
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
+  app.use('/api/dingtalk/identity', createDingtalkIdentityRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
   app.use('/api', createFamilyRoutes(routeContext));
   app.use('/api/membership', createMembershipRoutes(routeContext));

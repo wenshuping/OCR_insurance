@@ -69,6 +69,18 @@ export * from './api/contracts/family';
 export * from './api/contracts/admin';
 export * from './api/contracts/responsibility';
 export * from './api/contracts/cashflow';
+export {
+  bindDingtalkIdentityFromWeb,
+  confirmDingtalkIdentity,
+  getDingtalkIdentityCandidate,
+  revokeDingtalkIdentity,
+} from './api/contracts/dingtalk';
+export type {
+  DingtalkBoundResponse,
+  DingtalkCandidateResponse,
+  DingtalkChallenge,
+  DingtalkPrincipal,
+} from './api/contracts/dingtalk';
 
 export type ResponsibilitySelectionStatus = ResponsibilitySelectionStatusContract;
 export type QuantificationStatus = QuantificationStatusContract;
