@@ -67,6 +67,13 @@ function positiveInteger(value, fallback) {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+function deepFreeze(value) {
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') deepFreeze(child);
+  }
+  return Object.freeze(value);
+}
+
 function createRegistry(state) {
   const emptyObjectSchema = Object.freeze({
     type: 'object', properties: Object.freeze({}), required: Object.freeze([]), additionalProperties: false,
@@ -107,6 +114,10 @@ export function createWukongMcpGateway({
   onExecute,
 } = {}) {
   const registry = createRegistry(state || {});
+  const toolMetadata = deepFreeze([...registry.values()].map((entry) => ({
+    name: entry.name,
+    inputSchema: structuredClone(entry.inputSchema),
+  })));
   const replay = new Map();
   const rates = new Map();
   const replayTtl = positiveInteger(replayTtlMs, DEFAULT_REPLAY_TTL_MS);
@@ -139,7 +150,7 @@ export function createWukongMcpGateway({
 
   return {
     toolNames: [...registry.keys()],
-    registry: [...registry.values()],
+    toolMetadata,
     get replaySize() { return replay.size; },
     get ratePrincipalCount() { return rates.size; },
     async invoke(request) {

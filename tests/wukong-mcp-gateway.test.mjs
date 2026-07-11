@@ -36,20 +36,21 @@ function call(gateway, overrides = {}) {
 test('registry exposes only the two approved tools and validates exact input schemas', async () => {
   const gateway = createWukongMcpGateway({ state: stateFor() });
   assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families']);
-  assert.deepEqual(gateway.registry.map(({ name, inputSchema, authorize, execute }) => ({
-    name, inputSchema, authorize: typeof authorize, execute: typeof execute,
-  })), [
+  assert.equal(gateway.registry, undefined);
+  assert.deepEqual(gateway.toolMetadata, [
     {
       name: 'resolve_advisor_identity',
       inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
-      authorize: 'function', execute: 'function',
     },
     {
       name: 'list_accessible_families',
       inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
-      authorize: 'function', execute: 'function',
     },
   ]);
+  assert.equal(Object.isFrozen(gateway.toolMetadata), true);
+  assert.equal(Object.isFrozen(gateway.toolMetadata[0]), true);
+  assert.equal(Object.isFrozen(gateway.toolMetadata[0].inputSchema), true);
+  assert.equal(Object.isFrozen(gateway.toolMetadata[0].inputSchema.properties), true);
   await assert.rejects(call(gateway, { tool: 'delete_family' }), { code: 'TOOL_NOT_ALLOWED' });
   await assert.rejects(call(gateway, { requestId: 'req-2', input: { ownerUserId: 7 } }), { code: 'INVALID_TOOL_INPUT' });
   await assert.rejects(call(gateway, { requestId: 'req-3', tool: 'list_accessible_families', input: { familyId: 12 } }), { code: 'INVALID_TOOL_INPUT' });
