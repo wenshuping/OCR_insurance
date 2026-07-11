@@ -13,6 +13,8 @@ import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
+import { createWukongMcpRoutes } from './routes/wukong-mcp.routes.mjs';
+import { createWukongMcpGateway } from './wukong-mcp-gateway.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 import {
   allocateId,
@@ -2147,6 +2149,15 @@ function resolveDefaultWechatPayMode(options = {}) {
 
 export function createPolicyOcrApp(options = {}) {
   const state = options.state || createInitialState();
+  const wukongMcpGateway = options.wukongMcpGateway || createWukongMcpGateway({
+    state,
+    now: typeof options.wukongMcpNow === 'function' ? options.wukongMcpNow : Date.now,
+    replayTtlMs: options.wukongMcpReplayTtlMs,
+    replayMaxEntries: options.wukongMcpReplayMaxEntries,
+    rateLimit: options.wukongMcpRateLimit,
+    rateWindowMs: options.wukongMcpRateWindowMs,
+    rateMaxPrincipals: options.wukongMcpRateMaxPrincipals,
+  });
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
     startedAt: String(options.runtimeStartedAt || new Date().toISOString()),
@@ -2520,6 +2531,7 @@ export function createPolicyOcrApp(options = {}) {
     fetchWechatOAuthOpenid: options.fetchWechatOAuthOpenid || fetchWechatOAuthOpenid,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
     authenticateDingtalkServiceRequest: options.authenticateDingtalkServiceRequest,
+    wukongMcpGateway,
     getDingtalkUserProfile: options.getDingtalkUserProfile,
     dingtalkAllowedUserIds: Array.isArray(options.dingtalkAllowedUserIds) ? options.dingtalkAllowedUserIds : [],
     findAdvisorBindingCandidate,
@@ -2605,6 +2617,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
   app.use('/api/dingtalk/identity', createDingtalkIdentityRoutes(routeContext));
+  app.use('/api/wukong/mcp', createWukongMcpRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
   app.use('/api', createFamilyRoutes(routeContext));
   app.use('/api/membership', createMembershipRoutes(routeContext));
