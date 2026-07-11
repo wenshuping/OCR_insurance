@@ -108,7 +108,6 @@ test('DingTalk token transport, JSON, and HTTP failures use a sanitized stable 5
 test('DingTalk profile non-JSON and non-2xx failures use a sanitized stable 502', async () => {
   for (const profileResponse of [
     { ok: true, json: async () => { throw new Error('raw profile'); } },
-    { ok: true, json: async () => ({}) },
     { ok: false, status: 403, json: async () => ({ detail: 'access-secret raw profile' }) },
   ]) {
     let requestCount = 0;
@@ -127,6 +126,20 @@ test('DingTalk profile non-JSON and non-2xx failures use a sanitized stable 502'
       502,
     );
   }
+});
+
+test('DingTalk profile without a mobile is returned for route-level verification failure', async () => {
+  let requestCount = 0;
+  const runtime = createDingtalkIdentityRuntime({
+    env: CONFIGURED_ENV,
+    fetchImpl: async () => {
+      requestCount += 1;
+      return requestCount === 1
+        ? { ok: true, json: async () => ({ accessToken: 'access-secret' }) }
+        : { ok: true, json: async () => ({ name: 'no mobile available' }) };
+    },
+  });
+  assert.deepEqual(await runtime.getDingtalkUserProfile({ corpId: 'corp-1', dingUserId: 'ding-1' }), { mobile: '' });
 });
 
 test('server entry wires DingTalk store persistence and runtime adapters', async () => {

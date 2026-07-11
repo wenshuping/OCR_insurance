@@ -92,7 +92,7 @@ test('candidate masks a unique match, starts a challenge, and never exposes sens
   } finally { await server.close(); }
 });
 
-test('candidate returns binding required without leaking whether no or duplicate account matched', async () => {
+test('candidate returns the same safe mismatch error whether no or duplicate account matched', async () => {
   for (const users of [[], [
     { id: 7, mobile: '13800138000', status: 'active' },
     { id: 8, mobile: '13800138000', status: 'active' },
@@ -103,8 +103,34 @@ test('candidate returns binding required without leaking whether no or duplicate
       const result = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
         method: 'POST', body: JSON.stringify(PRINCIPAL),
       });
-      assert.equal(result.response.status, 200);
-      assert.deepEqual(result.payload, { ok: true, status: 'binding_required' });
+      assert.equal(result.response.status, 403);
+      assert.equal(result.payload.code, 'MOBILE_MISMATCH');
+      assertSafeResponse(result);
+    } finally { await server.close(); }
+  }
+});
+
+test('candidate rejects mismatched and unverifiable DingTalk mobiles without creating identity state', async () => {
+  for (const [mobile, code] of [
+    ['13900139000', 'MOBILE_MISMATCH'],
+    ['', 'MOBILE_VERIFICATION_REQUIRED'],
+    ['138****8000', 'MOBILE_VERIFICATION_REQUIRED'],
+    ['8000', 'MOBILE_VERIFICATION_REQUIRED'],
+  ]) {
+    const harness = createHarness(undefined, {
+      getDingtalkUserProfile: async () => ({ mobile }),
+    });
+    const server = await listen(harness.app);
+    try {
+      const result = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+        method: 'POST', body: JSON.stringify(PRINCIPAL),
+      });
+      assert.equal(result.response.status, 403);
+      assert.equal(result.payload.code, code);
+      assertSafeResponse(result);
+      assert.equal(identityStateSnapshot(harness.state), JSON.stringify({
+        userDingtalkIdentities: [], dingtalkBindingChallenges: [],
+      }));
     } finally { await server.close(); }
   }
 });
@@ -177,7 +203,7 @@ test('web bind requires customer auth, binds only the session user, and returns 
       service: false, token: 'other-customer-token', method: 'POST', body,
     });
     assert.equal(wrongCustomer.response.status, 403);
-    assert.equal(wrongCustomer.payload.code, 'CHALLENGE_USER_MISMATCH');
+    assert.equal(wrongCustomer.payload.code, 'MOBILE_MISMATCH');
     assertSafeResponse(wrongCustomer);
     const bound = await request(server.baseUrl, '/api/dingtalk/identity/web-bind', {
       service: false, token: 'customer-token', method: 'POST', body,
@@ -186,6 +212,29 @@ test('web bind requires customer auth, binds only the session user, and returns 
     assert.deepEqual(bound.payload, { ok: true, status: 'bound', taskRef: 'task_AbC-123' });
     assertSafeResponse(bound);
     assert.equal(JSON.stringify(bound.payload).includes(candidate.payload.challenge.token), false);
+  } finally { await server.close(); }
+});
+
+test('web bind re-verifies DingTalk mobile against the current session and leaves state unchanged on mismatch', async () => {
+  let profileMobile = '13800138000';
+  const harness = createHarness(undefined, {
+    getDingtalkUserProfile: async () => ({ mobile: profileMobile }),
+  });
+  const server = await listen(harness.app);
+  try {
+    const candidate = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    const before = identityStateSnapshot(harness.state);
+    profileMobile = '13900139000';
+    const result = await request(server.baseUrl, '/api/dingtalk/identity/web-bind', {
+      service: false, token: 'customer-token', method: 'POST',
+      body: JSON.stringify({ ...PRINCIPAL, token: candidate.payload.challenge.token }),
+    });
+    assert.equal(result.response.status, 403);
+    assert.equal(result.payload.code, 'MOBILE_MISMATCH');
+    assertSafeResponse(result);
+    assert.equal(identityStateSnapshot(harness.state), before);
   } finally { await server.close(); }
 });
 
@@ -281,6 +330,7 @@ test('confirm, web-bind, and revoke roll identity state back when persistence is
         ...PRINCIPAL,
         userId: 7,
         tokenHash: createHash('sha256').update(token).digest('hex'),
+        mobileFingerprint: createHash('sha256').update('13800138000').digest('hex'),
         expiresAt: '2026-07-12T08:05:00.000Z',
         usedAt: null,
       }];
@@ -315,8 +365,8 @@ test('web bind validates ownership of the exact submitted token before mutation'
   const otherToken = 'other-token';
   harness.state.userDingtalkIdentities = [{ ...PRINCIPAL, userId: 7, status: 'pending' }];
   harness.state.dingtalkBindingChallenges = [
-    { ...PRINCIPAL, userId: 7, tokenHash: createHash('sha256').update(ownToken).digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
-    { ...PRINCIPAL, userId: 8, tokenHash: createHash('sha256').update(otherToken).digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
+    { ...PRINCIPAL, userId: 7, tokenHash: createHash('sha256').update(ownToken).digest('hex'), mobileFingerprint: createHash('sha256').update('13800138000').digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
+    { ...PRINCIPAL, userId: 8, tokenHash: createHash('sha256').update(otherToken).digest('hex'), mobileFingerprint: createHash('sha256').update('13900139000').digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
   ];
   const before = identityStateSnapshot(harness.state);
   const server = await listen(harness.app);

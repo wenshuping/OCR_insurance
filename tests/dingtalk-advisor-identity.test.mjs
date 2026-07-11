@@ -9,6 +9,7 @@ import {
   findAdvisorBindingCandidate,
   resolveDingtalkAdvisor,
   revokeAdvisorBinding,
+  mobileFingerprint,
 } from '../server/dingtalk-advisor-identity.service.mjs';
 
 const NOW = '2026-07-12T08:00:00.000Z';
@@ -29,6 +30,7 @@ test('unique active whitelisted mobile match returns only a masked confirmation 
     status: 'confirmation_required',
     userId: 7,
     maskedMobile: '138****8000',
+    mobileFingerprint: mobileFingerprint('13800138000'),
   });
   assert.equal(JSON.stringify(result).includes('13800138000'), false);
 });
@@ -38,6 +40,17 @@ test('no mobile match does not select an account', () => {
     mobile: '13900139000',
     allowedUserIds: [7],
   }), { status: 'not_found' });
+});
+
+test('mobile matching permits surrounding whitespace but rejects missing, masked, partial, and tail values', () => {
+  assert.equal(findAdvisorBindingCandidate(makeState(), {
+    mobile: ' 13800138000 ', allowedUserIds: [7],
+  }).status, 'confirmation_required');
+  for (const mobile of ['', '138****8000', '8000', '00138000']) {
+    assert.equal(findAdvisorBindingCandidate(makeState(), {
+      mobile, allowedUserIds: [7],
+    }).status, 'verification_required', mobile);
+  }
 });
 
 test('duplicate active mobile matches do not select an account', () => {
@@ -64,6 +77,7 @@ test('challenge stores a token hash and confirmation activates binding for the s
   const created = createAdvisorBindingChallenge(state, {
     ...PRINCIPAL,
     userId: 7,
+    mobileFingerprint: mobileFingerprint('13800138000'),
     now: NOW,
   });
 
@@ -71,6 +85,8 @@ test('challenge stores a token hash and confirmation activates binding for the s
   assert.equal(created.expiresAt, '2026-07-12T08:05:00.000Z');
   assert.equal(state.dingtalkBindingChallenges[0].token, undefined);
   assert.equal(state.dingtalkBindingChallenges[0].tokenHash, createHash('sha256').update(created.token).digest('hex'));
+  assert.equal(state.dingtalkBindingChallenges[0].mobileFingerprint, mobileFingerprint('13800138000'));
+  assert.equal(JSON.stringify(state.dingtalkBindingChallenges).includes('13800138000'), false);
   assert.equal(state.userDingtalkIdentities[0].status, 'pending');
 
   const binding = confirmAdvisorBinding(state, { ...PRINCIPAL, token: created.token, now: LATER });
@@ -83,7 +99,7 @@ test('challenge stores a token hash and confirmation activates binding for the s
 
 test('expired challenge cannot be confirmed', () => {
   const state = makeState();
-  const created = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, now: NOW });
+  const created = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, mobileFingerprint: mobileFingerprint('13800138000'), now: NOW });
 
   assert.throws(() => confirmAdvisorBinding(state, {
     ...PRINCIPAL,
@@ -94,7 +110,7 @@ test('expired challenge cannot be confirmed', () => {
 
 test('used challenge cannot be confirmed again', () => {
   const state = makeState();
-  const created = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, now: NOW });
+  const created = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, mobileFingerprint: mobileFingerprint('13800138000'), now: NOW });
   confirmAdvisorBinding(state, { ...PRINCIPAL, token: created.token, now: LATER });
 
   assert.throws(() => confirmAdvisorBinding(state, {
@@ -106,7 +122,7 @@ test('used challenge cannot be confirmed again', () => {
 
 test('challenge cannot be confirmed by a different DingTalk principal', () => {
   const state = makeState();
-  const created = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, now: NOW });
+  const created = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, mobileFingerprint: mobileFingerprint('13800138000'), now: NOW });
 
   assert.throws(() => confirmAdvisorBinding(state, {
     corpId: 'corp-1',
@@ -141,10 +157,11 @@ test('revoked binding is auditable and no longer resolves', () => {
 
 test('reissuing a pending challenge reuses the identity and invalidates the old challenge', () => {
   const state = makeState();
-  const first = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, now: NOW });
+  const first = createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, mobileFingerprint: mobileFingerprint('13800138000'), now: NOW });
   const second = createAdvisorBindingChallenge(state, {
     ...PRINCIPAL,
     userId: 7,
+    mobileFingerprint: mobileFingerprint('13800138000'),
     now: '2026-07-12T08:00:30.000Z',
   });
 
@@ -168,6 +185,7 @@ test('active principal cannot be silently rebound to another user', () => {
   assert.throws(() => createAdvisorBindingChallenge(state, {
     ...PRINCIPAL,
     userId: 8,
+    mobileFingerprint: mobileFingerprint('13900139000'),
     now: NOW,
   }), (error) => error instanceof DingtalkAdvisorIdentityError && error.code === 'REBIND_REQUIRES_REVOKE');
   assert.equal(state.userDingtalkIdentities.length, 1);
@@ -183,7 +201,7 @@ test('revoked principal can start a new confirmation flow without adding an iden
     reason: 'old binding retired',
   });
 
-  createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, now: LATER });
+  createAdvisorBindingChallenge(state, { ...PRINCIPAL, userId: 7, mobileFingerprint: mobileFingerprint('13800138000'), now: LATER });
 
   assert.equal(state.userDingtalkIdentities.length, 1);
   assert.equal(state.userDingtalkIdentities[0].status, 'pending');

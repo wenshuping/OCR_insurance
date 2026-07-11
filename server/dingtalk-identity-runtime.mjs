@@ -109,7 +109,6 @@ export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = f
         requestTimeoutMs,
       );
       const mobile = trim(profile.mobile);
-      if (!mobile) throw runtimeError('DINGTALK_PROFILE_LOOKUP_FAILED', 502);
       return { mobile };
     },
   };

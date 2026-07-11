@@ -53,6 +53,8 @@ const IDENTITY_ERROR_STATUS = Object.freeze({
   CHALLENGE_PRINCIPAL_MISMATCH: 403,
   CHALLENGE_USED: 409,
   CHALLENGE_USER_MISMATCH: 403,
+  MOBILE_MISMATCH: 403,
+  MOBILE_VERIFICATION_REQUIRED: 403,
   PENDING_IDENTITY_NOT_FOUND: 409,
   REBIND_REQUIRES_REVOKE: 409,
 });
@@ -134,13 +136,16 @@ export function createDingtalkIdentityRoutes(context) {
         allowedUserIds: dingtalkAllowedUserIds,
       });
       if (candidate.status !== 'confirmation_required') {
-        res.json({ ok: true, status: 'binding_required' });
-        return;
+        throw routeError(
+          candidate.status === 'verification_required' ? 'MOBILE_VERIFICATION_REQUIRED' : 'MOBILE_MISMATCH',
+          403,
+        );
       }
       const { challenge } = await runMutation(() => {
         const createdChallenge = createAdvisorBindingChallenge(state, {
           ...principal,
           userId: candidate.userId,
+          mobileFingerprint: candidate.mobileFingerprint,
           now: nowIso(),
         });
         const identity = (state.userDingtalkIdentities || []).find((row) => (
@@ -182,11 +187,26 @@ export function createDingtalkIdentityRoutes(context) {
       const user = requireCustomer(req, state, resolveAuthUser);
       const principal = principalFromBody(req.body);
       const token = requiredString(req.body?.token, 'CHALLENGE_TOKEN_REQUIRED');
+      if (typeof getDingtalkUserProfile !== 'function') {
+        throw routeError('DINGTALK_PROFILE_ADAPTER_NOT_CONFIGURED', 503);
+      }
+      const profile = await getDingtalkUserProfile(principal);
+      const candidate = findAdvisorBindingCandidate(state, {
+        mobile: profile?.mobile,
+        allowedUserIds: dingtalkAllowedUserIds,
+      });
+      if (candidate.status === 'verification_required') {
+        throw routeError('MOBILE_VERIFICATION_REQUIRED', 403);
+      }
+      if (candidate.status !== 'confirmation_required' || Number(candidate.userId) !== Number(user.id)) {
+        throw routeError('MOBILE_MISMATCH', 403);
+      }
       const { identity } = await runMutation(() => ({
         identity: confirmAdvisorBinding(state, {
           ...principal,
           token,
           expectedUserId: user.id,
+          expectedMobileFingerprint: candidate.mobileFingerprint,
           now: nowIso(),
         }),
       }));
