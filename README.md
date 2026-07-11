@@ -97,5 +97,6 @@ npm install
 - `DINGTALK_IDENTITY_ALLOWED_USER_IDS`：允许绑定的 OCR Insurance 用户 ID，使用英文逗号分隔。
 - `DINGTALK_CORP_ID`、`DINGTALK_APP_KEY`、`DINGTALK_APP_SECRET`：钉钉企业与应用凭据。
 - `DINGTALK_API_BASE_URL`：可选，默认使用钉钉开放平台 API 地址。
+- `DINGTALK_IDENTITY_TIMEOUT_MS`：可选，钉钉 HTTP 请求超时，范围 50–30000 毫秒，默认 10000 毫秒。
 
 不要把凭据提交到仓库；生产进程应从受控运行环境注入这些变量。

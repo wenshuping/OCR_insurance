@@ -1,6 +1,9 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 const DEFAULT_API_BASE_URL = 'https://api.dingtalk.com';
+const DEFAULT_TIMEOUT_MS = 10_000;
+const MIN_TIMEOUT_MS = 50;
+const MAX_TIMEOUT_MS = 30_000;
 
 function trim(value) {
   return String(value || '').trim();
@@ -19,9 +22,10 @@ function bearerToken(req) {
 }
 
 function secretsEqual(left, right) {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+  if (!left || !right) return false;
+  const leftDigest = createHash('sha256').update(left).digest();
+  const rightDigest = createHash('sha256').update(right).digest();
+  return timingSafeEqual(leftDigest, rightDigest);
 }
 
 function allowedUserIds(value) {
@@ -30,22 +34,54 @@ function allowedUserIds(value) {
     .filter((item) => Number.isSafeInteger(item) && item > 0);
 }
 
-async function fetchJson(fetchImpl, url, options, failureCode) {
-  const response = await fetchImpl(url, options);
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || !payload) throw runtimeError(failureCode, 502);
-  return payload;
+function boundedTimeoutMs(value) {
+  if (!trim(value)) return DEFAULT_TIMEOUT_MS;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_TIMEOUT_MS;
+  return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.round(parsed)));
+}
+
+async function fetchJson(fetchImpl, url, options, failureCode, timeoutMs) {
+  const controller = new AbortController();
+  let timeout;
+  const timeoutPromise = new Promise((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(runtimeError('DINGTALK_REQUEST_TIMEOUT', 504));
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      fetchImpl(url, { ...options, signal: controller.signal }),
+      timeoutPromise,
+    ]);
+    if (!response?.ok) throw runtimeError(failureCode, 502);
+    const payload = await Promise.race([
+      response.json().catch(() => null),
+      timeoutPromise,
+    ]);
+    if (!payload) throw runtimeError(failureCode, 502);
+    return payload;
+  } catch (error) {
+    if (controller.signal.aborted) throw runtimeError('DINGTALK_REQUEST_TIMEOUT', 504);
+    if (error?.code === failureCode) throw error;
+    throw runtimeError(failureCode, 502);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // Runtime environment names: DINGTALK_IDENTITY_SERVICE_TOKEN,
 // DINGTALK_IDENTITY_ALLOWED_USER_IDS, DINGTALK_CORP_ID, DINGTALK_APP_KEY,
-// DINGTALK_APP_SECRET, and optional DINGTALK_API_BASE_URL.
-export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = fetch } = {}) {
+// DINGTALK_APP_SECRET, and optional DINGTALK_API_BASE_URL and
+// DINGTALK_IDENTITY_TIMEOUT_MS (50-30000 ms, default 10000 ms).
+export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = fetch, timeoutMs } = {}) {
   const serviceToken = trim(env.DINGTALK_IDENTITY_SERVICE_TOKEN);
   const corpId = trim(env.DINGTALK_CORP_ID);
   const appKey = trim(env.DINGTALK_APP_KEY);
   const appSecret = trim(env.DINGTALK_APP_SECRET);
   const apiBaseUrl = trim(env.DINGTALK_API_BASE_URL) || DEFAULT_API_BASE_URL;
+  const requestTimeoutMs = boundedTimeoutMs(timeoutMs ?? env.DINGTALK_IDENTITY_TIMEOUT_MS);
 
   return {
     dingtalkAllowedUserIds: allowedUserIds(env.DINGTALK_IDENTITY_ALLOWED_USER_IDS),
@@ -62,7 +98,7 @@ export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = f
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ appKey, appSecret }),
-      }, 'DINGTALK_ACCESS_TOKEN_FAILED');
+      }, 'DINGTALK_ACCESS_TOKEN_FAILED', requestTimeoutMs);
       const accessToken = trim(access.accessToken);
       if (!accessToken) throw runtimeError('DINGTALK_ACCESS_TOKEN_FAILED', 502);
       const profile = await fetchJson(
@@ -70,8 +106,11 @@ export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = f
         `${apiBaseUrl}/v1.0/contact/users/${encodeURIComponent(trim(dingUserId))}`,
         { headers: { 'x-acs-dingtalk-access-token': accessToken } },
         'DINGTALK_PROFILE_LOOKUP_FAILED',
+        requestTimeoutMs,
       );
-      return { mobile: trim(profile.mobile) };
+      const mobile = trim(profile.mobile);
+      if (!mobile) throw runtimeError('DINGTALK_PROFILE_LOOKUP_FAILED', 502);
+      return { mobile };
     },
   };
 }
