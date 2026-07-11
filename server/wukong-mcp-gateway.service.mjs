@@ -126,11 +126,10 @@ export function createWukongMcpGateway({
   const maxPrincipals = positiveInteger(rateMaxPrincipals, DEFAULT_RATE_MAX_PRINCIPALS);
   const limit = Number.isSafeInteger(rateLimit) ? rateLimit : DEFAULT_RATE_LIMIT;
 
-  function cleanReplay(timestamp) {
+  function purgeExpiredReplay(timestamp) {
     for (const [key, expiresAt] of replay) {
       if (expiresAt <= timestamp) replay.delete(key);
     }
-    while (replay.size >= replayMax) replay.delete(replay.keys().next().value);
   }
 
   function takeRate(principalKey, timestamp) {
@@ -167,13 +166,16 @@ export function createWukongMcpGateway({
       const timestamp = Number(now());
       if (!Number.isFinite(timestamp)) fail('RATE_LIMITED', 429);
       const principalKey = `${request.corpId}\u0000${request.dingUserId}`;
-      cleanReplay(timestamp);
+      const ownerContext = resolveOwnerContext(state || {}, request);
+      purgeExpiredReplay(timestamp);
       const replayKey = `${principalKey}\u0000${request.requestId}`;
       if (replay.has(replayKey)) fail('REQUEST_REPLAYED', 409);
-      takeRate(principalKey, timestamp);
+      if (replay.size >= replayMax) fail('REPLAY_CACHE_CAPACITY', 503);
 
-      const ownerContext = resolveOwnerContext(state || {}, request);
       if (!entry.authorize(ownerContext, request.input)) fail('TOOL_NOT_ALLOWED', 403);
+      // Internal user ids are stable across multiple DingTalk identities, so aliases share one quota.
+      takeRate(`user:${ownerContext.userId}`, timestamp);
+      // Reservations intentionally survive execution failures to prevent unsafe retries for future write tools.
       replay.set(replayKey, timestamp + replayTtl);
       onExecute?.(entry.name);
       return entry.execute(ownerContext, request.input);

@@ -118,8 +118,35 @@ test('replay cache prevents duplicate execution and expires deterministically wi
   await call(gateway);
   assert.equal(executions, 2);
   await call(gateway, { requestId: 'req-2' });
-  await call(gateway, { requestId: 'req-3' });
+  await assert.rejects(call(gateway, { requestId: 'req-3' }), { code: 'REPLAY_CACHE_CAPACITY' });
   assert.ok(gateway.replaySize <= 2);
+});
+
+test('live oldest and newest replay IDs remain protected at exact capacity', async () => {
+  let executions = 0;
+  const gateway = createWukongMcpGateway({
+    state: stateFor(), replayMaxEntries: 2, onExecute: () => { executions += 1; },
+  });
+  await call(gateway, { requestId: 'oldest' });
+  await call(gateway, { requestId: 'newest' });
+  await assert.rejects(call(gateway, { requestId: 'oldest' }), { code: 'REQUEST_REPLAYED' });
+  await assert.rejects(call(gateway, { requestId: 'newest' }), { code: 'REQUEST_REPLAYED' });
+  await assert.rejects(call(gateway, { requestId: 'new-at-capacity' }), { code: 'REPLAY_CACHE_CAPACITY' });
+  assert.equal(executions, 2);
+});
+
+test('request ID remains reserved when execution fails', async () => {
+  let executions = 0;
+  const gateway = createWukongMcpGateway({
+    state: stateFor(),
+    onExecute: () => {
+      executions += 1;
+      throw new Error('simulated execution failure');
+    },
+  });
+  await assert.rejects(call(gateway), /simulated execution failure/);
+  await assert.rejects(call(gateway), { code: 'REQUEST_REPLAYED' });
+  assert.equal(executions, 1);
 });
 
 test('duplicate request remains a replay error at the rate ceiling', async () => {
@@ -128,7 +155,7 @@ test('duplicate request remains a replay error at the rate ceiling', async () =>
   await assert.rejects(call(gateway), { code: 'REQUEST_REPLAYED' });
 });
 
-test('rate limiting is per principal, clock-driven, bounded, and fail-closed', async () => {
+test('rate limiting is per advisor, clock-driven, bounded, and fail-closed', async () => {
   let now = 1_000;
   const gateway = createWukongMcpGateway({ state: stateFor(), now: () => now, rateLimit: 2, rateWindowMs: 100 });
   await call(gateway, { requestId: 'a' });
@@ -137,6 +164,28 @@ test('rate limiting is per principal, clock-driven, bounded, and fail-closed', a
   now = 1_101;
   await call(gateway, { requestId: 'd' });
   await assert.rejects(call(createWukongMcpGateway({ state: stateFor(), rateLimit: 0 })), { code: 'RATE_LIMITED' });
+});
+
+test('two DingTalk principals bound to one advisor share one business quota', async () => {
+  const state = stateFor();
+  state.userDingtalkIdentities.push({ corpId: 'corp-1', dingUserId: 'ding-alias', userId: 7, status: 'active' });
+  const gateway = createWukongMcpGateway({ state, rateLimit: 1 });
+  await call(gateway, { requestId: 'primary' });
+  await assert.rejects(call(gateway, { dingUserId: 'ding-alias', requestId: 'alias' }), { code: 'RATE_LIMITED' });
+  assert.equal(gateway.ratePrincipalCount, 1);
+});
+
+test('unbound and revoked principal guesses do not allocate or consume advisor quota', async () => {
+  const state = stateFor();
+  state.userDingtalkIdentities.push({ corpId: 'corp-1', dingUserId: 'ding-revoked', userId: 7, status: 'revoked' });
+  const gateway = createWukongMcpGateway({ state, rateLimit: 1, rateMaxPrincipals: 1 });
+  for (let index = 0; index < 3; index += 1) {
+    await assert.rejects(call(gateway, { dingUserId: `unknown-${index}`, requestId: `unknown-${index}` }), { code: 'IDENTITY_NOT_BOUND' });
+  }
+  await assert.rejects(call(gateway, { dingUserId: 'ding-revoked', requestId: 'revoked' }), { code: 'IDENTITY_REVOKED' });
+  assert.equal(gateway.ratePrincipalCount, 0);
+  await call(gateway, { requestId: 'valid' });
+  assert.equal(gateway.ratePrincipalCount, 1);
 });
 
 test('rate limiter bounds tracked principals', async () => {
