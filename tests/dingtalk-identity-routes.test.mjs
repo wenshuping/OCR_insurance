@@ -182,6 +182,36 @@ test('confirm enforces the challenge principal and atomically persists identity 
   } finally { await server.close(); }
 });
 
+test('confirm re-verifies the current DingTalk mobile and leaves the challenge unused when it changes or disappears', async () => {
+  for (const [changedMobile, code] of [
+    ['13900139000', 'MOBILE_MISMATCH'],
+    ['', 'MOBILE_VERIFICATION_REQUIRED'],
+    ['138****8000', 'MOBILE_VERIFICATION_REQUIRED'],
+  ]) {
+    let profileMobile = '13800138000';
+    const harness = createHarness(undefined, {
+      getDingtalkUserProfile: async () => ({ mobile: profileMobile }),
+    });
+    const server = await listen(harness.app);
+    try {
+      const candidate = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+        method: 'POST', body: JSON.stringify(PRINCIPAL),
+      });
+      const before = identityStateSnapshot(harness.state);
+      profileMobile = changedMobile;
+      const result = await request(server.baseUrl, '/api/dingtalk/identity/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ ...PRINCIPAL, token: candidate.payload.challenge.token, mobile: '13800138000' }),
+      });
+      assert.equal(result.response.status, 403);
+      assert.equal(result.payload.code, code);
+      assertSafeResponse(result);
+      assert.equal(identityStateSnapshot(harness.state), before);
+      assert.equal(harness.state.dingtalkBindingChallenges[0].usedAt, null);
+    } finally { await server.close(); }
+  }
+});
+
 test('web bind requires customer auth, binds only the session user, and returns a safe task reference', async () => {
   const harness = createHarness();
   harness.state.users.push({ id: 8, mobile: '13900139000', status: 'active' });

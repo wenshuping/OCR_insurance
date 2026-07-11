@@ -169,8 +169,28 @@ export function createDingtalkIdentityRoutes(context) {
       await requireService(req);
       const principal = principalFromBody(req.body, { requireRequestId: true });
       const token = requiredString(req.body?.token, 'CHALLENGE_TOKEN_REQUIRED');
+      if (typeof getDingtalkUserProfile !== 'function') {
+        throw routeError('DINGTALK_PROFILE_ADAPTER_NOT_CONFIGURED', 503);
+      }
+      const profile = await getDingtalkUserProfile(principal);
+      const candidate = findAdvisorBindingCandidate(state, {
+        mobile: profile?.mobile,
+        allowedUserIds: dingtalkAllowedUserIds,
+      });
+      if (candidate.status === 'verification_required') {
+        throw routeError('MOBILE_VERIFICATION_REQUIRED', 403);
+      }
+      if (candidate.status !== 'confirmation_required') {
+        throw routeError('MOBILE_MISMATCH', 403);
+      }
       const { identity } = await runMutation(() => ({
-        identity: confirmAdvisorBinding(state, { ...principal, token, now: nowIso() }),
+        identity: confirmAdvisorBinding(state, {
+          ...principal,
+          token,
+          expectedUserId: candidate.userId,
+          expectedMobileFingerprint: candidate.mobileFingerprint,
+          now: nowIso(),
+        }),
       }));
       res.json({
         ok: true,
