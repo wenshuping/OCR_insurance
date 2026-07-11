@@ -165,10 +165,9 @@ export function createWukongMcpGateway({
 
       const timestamp = Number(now());
       if (!Number.isFinite(timestamp)) fail('RATE_LIMITED', 429);
-      const principalKey = `${request.corpId}\u0000${request.dingUserId}`;
       const ownerContext = resolveOwnerContext(state || {}, request);
       purgeExpiredReplay(timestamp);
-      const replayKey = `${principalKey}\u0000${request.requestId}`;
+      const replayKey = `user:${ownerContext.userId}\u0000${request.requestId}`;
       if (replay.has(replayKey)) fail('REQUEST_REPLAYED', 409);
       if (replay.size >= replayMax) fail('REPLAY_CACHE_CAPACITY', 503);
 

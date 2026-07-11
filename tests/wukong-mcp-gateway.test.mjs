@@ -175,6 +175,19 @@ test('two DingTalk principals bound to one advisor share one business quota', as
   assert.equal(gateway.ratePrincipalCount, 1);
 });
 
+test('duplicate active bindings cannot bypass advisor replay protection', async () => {
+  const state = stateFor();
+  state.userDingtalkIdentities.push({ corpId: 'corp-1', dingUserId: 'ding-alias', userId: 7, status: 'active' });
+  let executions = 0;
+  const gateway = createWukongMcpGateway({ state, onExecute: () => { executions += 1; } });
+  await call(gateway, { requestId: 'shared-request' });
+  await assert.rejects(call(gateway, {
+    dingUserId: 'ding-alias', requestId: 'shared-request',
+  }), { code: 'REQUEST_REPLAYED' });
+  assert.equal(executions, 1);
+  assert.equal(gateway.replaySize, 1);
+});
+
 test('unbound and revoked principal guesses do not allocate or consume advisor quota', async () => {
   const state = stateFor();
   state.userDingtalkIdentities.push({ corpId: 'corp-1', dingUserId: 'ding-revoked', userId: 7, status: 'revoked' });
@@ -184,6 +197,7 @@ test('unbound and revoked principal guesses do not allocate or consume advisor q
   }
   await assert.rejects(call(gateway, { dingUserId: 'ding-revoked', requestId: 'revoked' }), { code: 'IDENTITY_REVOKED' });
   assert.equal(gateway.ratePrincipalCount, 0);
+  assert.equal(gateway.replaySize, 0);
   await call(gateway, { requestId: 'valid' });
   assert.equal(gateway.ratePrincipalCount, 1);
 });
