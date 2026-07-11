@@ -61,7 +61,9 @@ export function createAdvisorBindingChallenge(state, {
   userId,
   now = new Date().toISOString(),
 }) {
-  if (!activeUser(state, userId)) throw new Error('Advisor account is not active');
+  if (!activeUser(state, userId)) {
+    throw new DingtalkAdvisorIdentityError('ADVISOR_ACCOUNT_INACTIVE', 'Advisor account is not active');
+  }
 
   const existingIdentity = uniquePrincipalIdentity(state, corpId, dingUserId);
   if (existingIdentity?.status === 'active') {
@@ -112,22 +114,34 @@ export function confirmAdvisorBinding(state, {
   const challenge = (state.dingtalkBindingChallenges ?? []).find((row) => (
     row.tokenHash === tokenHash(token)
   ));
-  if (!challenge) throw new Error('Binding challenge not found');
+  if (!challenge) {
+    throw new DingtalkAdvisorIdentityError('CHALLENGE_NOT_FOUND', 'Binding challenge not found');
+  }
   if (challenge.corpId !== corpId || challenge.dingUserId !== dingUserId) {
-    throw new Error('Binding challenge principal does not match');
+    throw new DingtalkAdvisorIdentityError(
+      'CHALLENGE_PRINCIPAL_MISMATCH',
+      'Binding challenge principal does not match',
+    );
   }
   if (challenge.invalidatedAt) {
     throw new DingtalkAdvisorIdentityError('CHALLENGE_INVALIDATED', 'Binding challenge was invalidated');
   }
-  if (challenge.usedAt) throw new Error('Binding challenge was already used');
-  if (new Date(now).getTime() >= new Date(challenge.expiresAt).getTime()) {
-    throw new Error('Binding challenge expired');
+  if (challenge.usedAt) {
+    throw new DingtalkAdvisorIdentityError('CHALLENGE_USED', 'Binding challenge was already used');
   }
-  if (!activeUser(state, challenge.userId)) throw new Error('Advisor account is not active');
+  if (new Date(now).getTime() >= new Date(challenge.expiresAt).getTime()) {
+    throw new DingtalkAdvisorIdentityError('CHALLENGE_EXPIRED', 'Binding challenge expired');
+  }
+  if (!activeUser(state, challenge.userId)) {
+    throw new DingtalkAdvisorIdentityError('ADVISOR_ACCOUNT_INACTIVE', 'Advisor account is not active');
+  }
 
   const identity = uniquePrincipalIdentity(state, corpId, dingUserId);
   if (identity?.userId !== challenge.userId || identity.status !== 'pending') {
-    throw new Error('Pending DingTalk identity not found');
+    throw new DingtalkAdvisorIdentityError(
+      'PENDING_IDENTITY_NOT_FOUND',
+      'Pending DingTalk identity not found',
+    );
   }
 
   challenge.usedAt = now;

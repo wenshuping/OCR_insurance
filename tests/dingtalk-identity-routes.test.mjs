@@ -52,6 +52,14 @@ function createHarness(users = [{ id: 7, mobile: '13800138000', status: 'active'
   return { app, state, persisted, profiles };
 }
 
+function assertSafeResponse(result) {
+  assert.equal(result.response.headers.get('cache-control'), 'no-store');
+  const serialized = JSON.stringify(result.payload);
+  for (const secret of ['13800138000', 'Raw DingTalk Name', 'tokenHash', 'dingtalkBindingChallenges', 'userDingtalkIdentities']) {
+    assert.equal(serialized.includes(secret), false, secret);
+  }
+}
+
 test('candidate masks a unique match, starts a challenge, and never exposes sensitive state', async () => {
   const harness = createHarness();
   const server = await listen(harness.app);
@@ -119,12 +127,17 @@ test('confirm enforces the challenge principal and atomically persists identity 
       body: JSON.stringify({ corpId: 'corp-1', dingUserId: 'ding-2', requestId: 'request-2', token }),
     });
     assert.equal(wrong.response.status, 403);
+    assert.equal(wrong.payload.code, 'CHALLENGE_PRINCIPAL_MISMATCH');
+    assertSafeResponse(wrong);
+    assert.equal(JSON.stringify(wrong.payload).includes(token), false);
 
     const confirmed = await request(server.baseUrl, '/api/dingtalk/identity/confirm', {
       method: 'POST', body: JSON.stringify({ ...PRINCIPAL, token }),
     });
     assert.equal(confirmed.response.status, 200);
     assert.deepEqual(confirmed.payload, { ok: true, status: 'bound', maskedMobile: '138****8000' });
+    assertSafeResponse(confirmed);
+    assert.equal(JSON.stringify(confirmed.payload).includes(token), false);
     const persisted = harness.persisted.at(-1);
     assert.equal(persisted.identity.status, 'active');
     assert.equal(persisted.challenges.length, 1);
@@ -146,15 +159,22 @@ test('web bind requires customer auth, binds only the session user, and returns 
       service: false, method: 'POST', body,
     });
     assert.equal(unauthenticated.response.status, 401);
+    assert.equal(unauthenticated.payload.code, 'UNAUTHORIZED');
+    assertSafeResponse(unauthenticated);
+    assert.equal(JSON.stringify(unauthenticated.payload).includes(candidate.payload.challenge.token), false);
     const wrongCustomer = await request(server.baseUrl, '/api/dingtalk/identity/web-bind', {
       service: false, token: 'other-customer-token', method: 'POST', body,
     });
     assert.equal(wrongCustomer.response.status, 404);
+    assert.equal(wrongCustomer.payload.code, 'BINDING_CHALLENGE_NOT_FOUND');
+    assertSafeResponse(wrongCustomer);
     const bound = await request(server.baseUrl, '/api/dingtalk/identity/web-bind', {
       service: false, token: 'customer-token', method: 'POST', body,
     });
     assert.equal(bound.response.status, 200);
     assert.deepEqual(bound.payload, { ok: true, status: 'bound', taskRef: 'task_AbC-123' });
+    assertSafeResponse(bound);
+    assert.equal(JSON.stringify(bound.payload).includes(candidate.payload.challenge.token), false);
   } finally { await server.close(); }
 });
 
@@ -168,13 +188,55 @@ test('binding deletion revokes only the authenticated user own matching principa
       body: JSON.stringify({ corpId: 'corp-1', dingUserId: 'other' }),
     });
     assert.equal(other.response.status, 404);
+    assert.equal(other.payload.code, 'BINDING_NOT_FOUND');
+    assertSafeResponse(other);
     const own = await request(server.baseUrl, '/api/dingtalk/identity/binding', {
       service: false, token: 'customer-token', method: 'DELETE',
       body: JSON.stringify({ corpId: 'corp-1', dingUserId: 'ding-1' }),
     });
     assert.equal(own.response.status, 200);
     assert.deepEqual(own.payload, { ok: true, status: 'revoked' });
+    assertSafeResponse(own);
     assert.equal(harness.persisted.at(-1).identity.status, 'revoked');
+  } finally { await server.close(); }
+});
+
+test('confirm returns stable codes for expired, used, and active-binding conflicts', async () => {
+  const harness = createHarness();
+  const server = await listen(harness.app);
+  try {
+    const expiredCandidate = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    harness.state.dingtalkBindingChallenges.at(-1).expiresAt = NOW;
+    const expired = await request(server.baseUrl, '/api/dingtalk/identity/confirm', {
+      method: 'POST', body: JSON.stringify({ ...PRINCIPAL, token: expiredCandidate.payload.challenge.token }),
+    });
+    assert.equal(expired.response.status, 409);
+    assert.equal(expired.payload.code, 'CHALLENGE_EXPIRED');
+    assertSafeResponse(expired);
+
+    const freshCandidate = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    const confirmationBody = JSON.stringify({ ...PRINCIPAL, token: freshCandidate.payload.challenge.token });
+    const first = await request(server.baseUrl, '/api/dingtalk/identity/confirm', {
+      method: 'POST', body: confirmationBody,
+    });
+    assert.equal(first.response.status, 200);
+    const used = await request(server.baseUrl, '/api/dingtalk/identity/confirm', {
+      method: 'POST', body: confirmationBody,
+    });
+    assert.equal(used.response.status, 409);
+    assert.equal(used.payload.code, 'CHALLENGE_USED');
+    assertSafeResponse(used);
+
+    const conflict = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    assert.equal(conflict.response.status, 409);
+    assert.equal(conflict.payload.code, 'ALREADY_BOUND');
+    assertSafeResponse(conflict);
   } finally { await server.close(); }
 });
 

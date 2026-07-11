@@ -43,16 +43,29 @@ function safeTaskRef(value) {
   return /^[A-Za-z0-9_-]{1,128}$/.test(taskRef) ? taskRef : undefined;
 }
 
-function statusForIdentityError(error) {
-  if (/principal/i.test(error?.message || '')) return 403;
-  if (/not found/i.test(error?.message || '')) return 404;
-  if (/expired|used|invalidated|already bound|rebind|ambiguous|pending/i.test(error?.message || '')) return 409;
-  return 400;
-}
+const IDENTITY_ERROR_STATUS = Object.freeze({
+  ADVISOR_ACCOUNT_INACTIVE: 409,
+  ALREADY_BOUND: 409,
+  AMBIGUOUS_PRINCIPAL: 409,
+  CHALLENGE_EXPIRED: 409,
+  CHALLENGE_INVALIDATED: 409,
+  CHALLENGE_NOT_FOUND: 404,
+  CHALLENGE_PRINCIPAL_MISMATCH: 403,
+  CHALLENGE_USED: 409,
+  PENDING_IDENTITY_NOT_FOUND: 409,
+  REBIND_REQUIRES_REVOKE: 409,
+});
 
 function sendIdentityError(res, error) {
-  if (!error.status) error.status = statusForIdentityError(error);
-  return sendError(res, error);
+  const mappedStatus = IDENTITY_ERROR_STATUS[error?.code];
+  if (mappedStatus) {
+    error.status = mappedStatus;
+    return sendError(res, error);
+  }
+  if (error?.status && /^[A-Z][A-Z0-9_]*$/.test(String(error.code || ''))) {
+    return sendError(res, error);
+  }
+  return sendError(res, routeError('DINGTALK_IDENTITY_FAILED', 500));
 }
 
 export function createDingtalkIdentityRoutes(context) {
