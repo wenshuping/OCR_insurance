@@ -109,6 +109,7 @@ export function confirmAdvisorBinding(state, {
   corpId,
   dingUserId,
   token,
+  expectedUserId,
   now = new Date().toISOString(),
 }) {
   const challenge = (state.dingtalkBindingChallenges ?? []).find((row) => (
@@ -121,6 +122,12 @@ export function confirmAdvisorBinding(state, {
     throw new DingtalkAdvisorIdentityError(
       'CHALLENGE_PRINCIPAL_MISMATCH',
       'Binding challenge principal does not match',
+    );
+  }
+  if (expectedUserId !== undefined && Number(challenge.userId) !== Number(expectedUserId)) {
+    throw new DingtalkAdvisorIdentityError(
+      'CHALLENGE_USER_MISMATCH',
+      'Binding challenge does not belong to the authenticated user',
     );
   }
   if (challenge.invalidatedAt) {

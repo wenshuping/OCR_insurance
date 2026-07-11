@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
@@ -30,7 +31,7 @@ async function request(baseUrl, path, { token, service = true, ...options } = {}
   return { response, payload: await response.json() };
 }
 
-function createHarness(users = [{ id: 7, mobile: '13800138000', status: 'active' }]) {
+function createHarness(users = [{ id: 7, mobile: '13800138000', status: 'active' }], overrides = {}) {
   const state = {
     ...createInitialState(),
     users,
@@ -38,7 +39,7 @@ function createHarness(users = [{ id: 7, mobile: '13800138000', status: 'active'
   };
   const persisted = [];
   const profiles = [];
-  const app = createPolicyOcrApp({
+  const appOptions = {
     state,
     now: () => NOW,
     dingtalkAllowedUserIds: users.map((user) => user.id),
@@ -48,8 +49,18 @@ function createHarness(users = [{ id: 7, mobile: '13800138000', status: 'active'
       return { mobile: '13800138000', name: 'Raw DingTalk Name', department: [42] };
     },
     persistDingtalkIdentityState: async (input) => persisted.push(structuredClone(input)),
-  });
+    ...overrides,
+  };
+  if (overrides.persistDingtalkIdentityState === null) delete appOptions.persistDingtalkIdentityState;
+  const app = createPolicyOcrApp(appOptions);
   return { app, state, persisted, profiles };
+}
+
+function identityStateSnapshot(state) {
+  return JSON.stringify({
+    userDingtalkIdentities: state.userDingtalkIdentities,
+    dingtalkBindingChallenges: state.dingtalkBindingChallenges,
+  });
 }
 
 function assertSafeResponse(result) {
@@ -165,8 +176,8 @@ test('web bind requires customer auth, binds only the session user, and returns 
     const wrongCustomer = await request(server.baseUrl, '/api/dingtalk/identity/web-bind', {
       service: false, token: 'other-customer-token', method: 'POST', body,
     });
-    assert.equal(wrongCustomer.response.status, 404);
-    assert.equal(wrongCustomer.payload.code, 'BINDING_CHALLENGE_NOT_FOUND');
+    assert.equal(wrongCustomer.response.status, 403);
+    assert.equal(wrongCustomer.payload.code, 'CHALLENGE_USER_MISMATCH');
     assertSafeResponse(wrongCustomer);
     const bound = await request(server.baseUrl, '/api/dingtalk/identity/web-bind', {
       service: false, token: 'customer-token', method: 'POST', body,
@@ -237,6 +248,86 @@ test('confirm returns stable codes for expired, used, and active-binding conflic
     assert.equal(conflict.response.status, 409);
     assert.equal(conflict.payload.code, 'ALREADY_BOUND');
     assertSafeResponse(conflict);
+  } finally { await server.close(); }
+});
+
+test('candidate rolls identity state back when persistence is missing or rejects', async () => {
+  for (const persistDingtalkIdentityState of [null, async () => { throw new Error('database secret'); }]) {
+    const harness = createHarness(undefined, { persistDingtalkIdentityState });
+    const before = identityStateSnapshot(harness.state);
+    const server = await listen(harness.app);
+    try {
+      const result = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+        method: 'POST', body: JSON.stringify(PRINCIPAL),
+      });
+      assert.equal(result.response.status, persistDingtalkIdentityState === null ? 503 : 500);
+      assert.equal(identityStateSnapshot(harness.state), before);
+      assert.equal(JSON.stringify(result.payload).includes('database secret'), false);
+    } finally { await server.close(); }
+  }
+});
+
+test('confirm, web-bind, and revoke roll identity state back when persistence is missing or rejects', async () => {
+  for (const route of ['confirm', 'web-bind', 'binding']) {
+    for (const persistDingtalkIdentityState of [null, async () => { throw new Error('database secret'); }]) {
+      const harness = createHarness(undefined, { persistDingtalkIdentityState });
+      const token = 'route-test-token';
+      harness.state.userDingtalkIdentities = [{
+        ...PRINCIPAL,
+        userId: 7,
+        status: route === 'binding' ? 'active' : 'pending',
+      }];
+      harness.state.dingtalkBindingChallenges = route === 'binding' ? [] : [{
+        ...PRINCIPAL,
+        userId: 7,
+        tokenHash: createHash('sha256').update(token).digest('hex'),
+        expiresAt: '2026-07-12T08:05:00.000Z',
+        usedAt: null,
+      }];
+      const before = identityStateSnapshot(harness.state);
+      const server = await listen(harness.app);
+      try {
+        const result = route === 'binding'
+          ? await request(server.baseUrl, '/api/dingtalk/identity/binding', {
+              service: false, token: 'customer-token', method: 'DELETE',
+              body: JSON.stringify(PRINCIPAL),
+            })
+          : await request(server.baseUrl, `/api/dingtalk/identity/${route}`, {
+              service: route !== 'web-bind',
+              token: route === 'web-bind' ? 'customer-token' : undefined,
+              method: 'POST',
+              body: JSON.stringify({ ...PRINCIPAL, token }),
+            });
+        assert.equal(result.response.status, persistDingtalkIdentityState === null ? 503 : 500);
+        assert.equal(identityStateSnapshot(harness.state), before, route);
+        assert.equal(JSON.stringify(result.payload).includes('database secret'), false);
+      } finally { await server.close(); }
+    }
+  }
+});
+
+test('web bind validates ownership of the exact submitted token before mutation', async () => {
+  const harness = createHarness([
+    { id: 7, mobile: '13800138000', status: 'active' },
+    { id: 8, mobile: '13900139000', status: 'active' },
+  ]);
+  const ownToken = 'own-token';
+  const otherToken = 'other-token';
+  harness.state.userDingtalkIdentities = [{ ...PRINCIPAL, userId: 7, status: 'pending' }];
+  harness.state.dingtalkBindingChallenges = [
+    { ...PRINCIPAL, userId: 7, tokenHash: createHash('sha256').update(ownToken).digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
+    { ...PRINCIPAL, userId: 8, tokenHash: createHash('sha256').update(otherToken).digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
+  ];
+  const before = identityStateSnapshot(harness.state);
+  const server = await listen(harness.app);
+  try {
+    const result = await request(server.baseUrl, '/api/dingtalk/identity/web-bind', {
+      service: false, token: 'customer-token', method: 'POST',
+      body: JSON.stringify({ ...PRINCIPAL, token: otherToken }),
+    });
+    assert.equal(result.response.status, 403);
+    assert.equal(result.payload.code, 'CHALLENGE_USER_MISMATCH');
+    assert.equal(identityStateSnapshot(harness.state), before);
   } finally { await server.close(); }
 });
 

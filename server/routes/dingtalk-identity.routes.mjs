@@ -52,6 +52,7 @@ const IDENTITY_ERROR_STATUS = Object.freeze({
   CHALLENGE_NOT_FOUND: 404,
   CHALLENGE_PRINCIPAL_MISMATCH: 403,
   CHALLENGE_USED: 409,
+  CHALLENGE_USER_MISMATCH: 403,
   PENDING_IDENTITY_NOT_FOUND: 409,
   REBIND_REQUIRES_REVOKE: 409,
 });
@@ -96,14 +97,28 @@ export function createDingtalkIdentityRoutes(context) {
     }
   }
 
-  async function persistMutation(beforeChallenges, identity) {
+  function requirePersistence() {
     if (typeof persistDingtalkIdentityState !== 'function') {
       throw routeError('DINGTALK_IDENTITY_PERSISTENCE_NOT_CONFIGURED', 503);
     }
-    await persistDingtalkIdentityState({
-      identity,
-      challenges: changedChallenges(beforeChallenges, state.dingtalkBindingChallenges),
-    });
+  }
+
+  async function runMutation(mutate) {
+    requirePersistence();
+    const identitiesBefore = structuredClone(state.userDingtalkIdentities || []);
+    const challengesBefore = structuredClone(state.dingtalkBindingChallenges || []);
+    try {
+      const result = mutate();
+      await persistDingtalkIdentityState({
+        identity: result.identity,
+        challenges: changedChallenges(challengesBefore, state.dingtalkBindingChallenges),
+      });
+      return result;
+    } catch (error) {
+      state.userDingtalkIdentities = identitiesBefore;
+      state.dingtalkBindingChallenges = challengesBefore;
+      throw error;
+    }
   }
 
   router.post('/candidate', async (req, res) => {
@@ -122,16 +137,17 @@ export function createDingtalkIdentityRoutes(context) {
         res.json({ ok: true, status: 'binding_required' });
         return;
       }
-      const beforeChallenges = structuredClone(state.dingtalkBindingChallenges || []);
-      const challenge = createAdvisorBindingChallenge(state, {
-        ...principal,
-        userId: candidate.userId,
-        now: nowIso(),
+      const { challenge } = await runMutation(() => {
+        const createdChallenge = createAdvisorBindingChallenge(state, {
+          ...principal,
+          userId: candidate.userId,
+          now: nowIso(),
+        });
+        const identity = (state.userDingtalkIdentities || []).find((row) => (
+          row.corpId === principal.corpId && row.dingUserId === principal.dingUserId
+        ));
+        return { identity, challenge: createdChallenge };
       });
-      const identity = (state.userDingtalkIdentities || []).find((row) => (
-        row.corpId === principal.corpId && row.dingUserId === principal.dingUserId
-      ));
-      await persistMutation(beforeChallenges, identity);
       res.json({
         ok: true,
         status: candidate.status,
@@ -148,9 +164,9 @@ export function createDingtalkIdentityRoutes(context) {
       await requireService(req);
       const principal = principalFromBody(req.body, { requireRequestId: true });
       const token = requiredString(req.body?.token, 'CHALLENGE_TOKEN_REQUIRED');
-      const beforeChallenges = structuredClone(state.dingtalkBindingChallenges || []);
-      const identity = confirmAdvisorBinding(state, { ...principal, token, now: nowIso() });
-      await persistMutation(beforeChallenges, identity);
+      const { identity } = await runMutation(() => ({
+        identity: confirmAdvisorBinding(state, { ...principal, token, now: nowIso() }),
+      }));
       res.json({
         ok: true,
         status: 'bound',
@@ -166,15 +182,14 @@ export function createDingtalkIdentityRoutes(context) {
       const user = requireCustomer(req, state, resolveAuthUser);
       const principal = principalFromBody(req.body);
       const token = requiredString(req.body?.token, 'CHALLENGE_TOKEN_REQUIRED');
-      const challenge = (state.dingtalkBindingChallenges || []).find((row) => (
-        row.corpId === principal.corpId && row.dingUserId === principal.dingUserId
-        && row.userId === user.id && !row.usedAt
-      ));
-      if (!challenge) throw routeError('BINDING_CHALLENGE_NOT_FOUND', 404);
-      const beforeChallenges = structuredClone(state.dingtalkBindingChallenges || []);
-      const identity = confirmAdvisorBinding(state, { ...principal, token, now: nowIso() });
-      if (Number(identity.userId) !== Number(user.id)) throw routeError('BINDING_PRINCIPAL_MISMATCH', 403);
-      await persistMutation(beforeChallenges, identity);
+      const { identity } = await runMutation(() => ({
+        identity: confirmAdvisorBinding(state, {
+          ...principal,
+          token,
+          expectedUserId: user.id,
+          now: nowIso(),
+        }),
+      }));
       const taskRef = safeTaskRef(req.body?.taskRef);
       res.json({ ok: true, status: 'bound', ...(taskRef ? { taskRef } : {}) });
     } catch (error) {
@@ -191,12 +206,13 @@ export function createDingtalkIdentityRoutes(context) {
         && row.status === 'active' && Number(row.userId) === Number(user.id)
       ));
       if (!current) throw routeError('BINDING_NOT_FOUND', 404);
-      const identity = revokeAdvisorBinding(state, {
-        ...principal,
-        reason: 'customer_revoked',
-        now: nowIso(),
-      });
-      await persistMutation(state.dingtalkBindingChallenges || [], identity);
+      await runMutation(() => ({
+        identity: revokeAdvisorBinding(state, {
+          ...principal,
+          reason: 'customer_revoked',
+          now: nowIso(),
+        }),
+      }));
       res.json({ ok: true, status: 'revoked' });
     } catch (error) {
       sendIdentityError(res, error);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPolicyOcrApp } from './app.mjs';
 import { createSqliteStateStore } from './sqlite-state-store.mjs';
+import { createDingtalkIdentityRuntime } from './dingtalk-identity-runtime.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -75,6 +76,7 @@ const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 
 const store = await createSqliteStateStore({ dbPath, seedStatePath: statePath });
 const state = await store.load();
+const dingtalkIdentityRuntime = createDingtalkIdentityRuntime({ env: process.env });
 const app = createPolicyOcrApp({
   state,
   persist: store.persist,
@@ -91,6 +93,7 @@ const app = createPolicyOcrApp({
   persistMembershipConfig: store.persistMembershipConfig,
   persistStateDocument: store.persistStateDocument,
   persistMembershipState: store.persistMembershipState,
+  persistDingtalkIdentityState: store.persistDingtalkIdentityState,
   persistOfficialDomainProfiles: store.persistOfficialDomainProfiles,
   persistPolicyDerivedResult: store.persistPolicyDerivedResult,
   persistProductCustomerResponsibilitySummary: store.persistProductCustomerResponsibilitySummary,
@@ -100,6 +103,7 @@ const app = createPolicyOcrApp({
   markPolicyDerivedResultsStaleByProductKeys: store.markPolicyDerivedResultsStaleByProductKeys,
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
+  ...dingtalkIdentityRuntime,
   db: store.db,
 });
 
