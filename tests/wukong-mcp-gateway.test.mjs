@@ -36,6 +36,20 @@ function call(gateway, overrides = {}) {
 test('registry exposes only the two approved tools and validates exact input schemas', async () => {
   const gateway = createWukongMcpGateway({ state: stateFor() });
   assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families']);
+  assert.deepEqual(gateway.registry.map(({ name, inputSchema, authorize, execute }) => ({
+    name, inputSchema, authorize: typeof authorize, execute: typeof execute,
+  })), [
+    {
+      name: 'resolve_advisor_identity',
+      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      authorize: 'function', execute: 'function',
+    },
+    {
+      name: 'list_accessible_families',
+      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      authorize: 'function', execute: 'function',
+    },
+  ]);
   await assert.rejects(call(gateway, { tool: 'delete_family' }), { code: 'TOOL_NOT_ALLOWED' });
   await assert.rejects(call(gateway, { requestId: 'req-2', input: { ownerUserId: 7 } }), { code: 'INVALID_TOOL_INPUT' });
   await assert.rejects(call(gateway, { requestId: 'req-3', tool: 'list_accessible_families', input: { familyId: 12 } }), { code: 'INVALID_TOOL_INPUT' });
@@ -72,6 +86,21 @@ test('family listing uses the derived owner and ignores forged owner fields by r
   await assert.rejects(call(gateway, {
     requestId: 'families-2', tool: 'list_accessible_families', input: { ownerUserId: 8, familyId: 12 },
   }), { code: 'INVALID_TOOL_INPUT' });
+});
+
+test('family listing includes missing status as active and excludes every non-active status', async () => {
+  const state = stateFor();
+  state.familyProfiles = [
+    { id: 31, ownerUserId: 7, name: '默认家庭' },
+    { id: 32, ownerUserId: 7, name: '启用家庭', status: 'active' },
+    { id: 33, ownerUserId: 7, name: '停用家庭', status: 'disabled' },
+    { id: 34, ownerUserId: 7, name: '非活跃家庭', status: 'inactive' },
+    { id: 35, ownerUserId: 7, name: '未知家庭', status: 'mystery' },
+  ];
+  const result = await call(createWukongMcpGateway({ state }), {
+    requestId: 'family-statuses', tool: 'list_accessible_families', input: {},
+  });
+  assert.deepEqual(result.families.map((family) => family.id), [31, 32]);
 });
 
 test('replay cache prevents duplicate execution and expires deterministically without growing unbounded', async () => {

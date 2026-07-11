@@ -1,4 +1,4 @@
-import { familyOwnerMatches } from './family-profile.domain.mjs';
+import { listFamilyProfilesForOwner } from './family-profile.domain.mjs';
 
 const DEFAULT_REPLAY_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_REPLAY_MAX_ENTRIES = 2_000;
@@ -23,9 +23,21 @@ function nonEmptyString(value) {
   return typeof value === 'string' && Boolean(value.trim());
 }
 
-function validateEmptyObject(input) {
-  if (!input || Array.isArray(input) || typeof input !== 'object' || Object.keys(input).length) {
+function validateInputSchema(schema, input) {
+  if (schema.type !== 'object' || !input || Array.isArray(input) || typeof input !== 'object') {
     fail('INVALID_TOOL_INPUT', 400);
+  }
+  const properties = schema.properties || {};
+  if (schema.additionalProperties === false
+    && Object.keys(input).some((key) => !Object.hasOwn(properties, key))) {
+    fail('INVALID_TOOL_INPUT', 400);
+  }
+  if ((schema.required || []).some((key) => !Object.hasOwn(input, key))) {
+    fail('INVALID_TOOL_INPUT', 400);
+  }
+  for (const [key, value] of Object.entries(input)) {
+    const expectedType = properties[key]?.type;
+    if (expectedType && typeof value !== expectedType) fail('INVALID_TOOL_INPUT', 400);
   }
   return input;
 }
@@ -56,20 +68,22 @@ function positiveInteger(value, fallback) {
 }
 
 function createRegistry(state) {
+  const emptyObjectSchema = Object.freeze({
+    type: 'object', properties: Object.freeze({}), required: Object.freeze([]), additionalProperties: false,
+  });
   return new Map([
     ['resolve_advisor_identity', {
       name: 'resolve_advisor_identity',
-      validate: validateEmptyObject,
+      inputSchema: emptyObjectSchema,
       authorize: () => true,
       execute: (context) => ({ status: 'active', displayLabel: context.displayLabel }),
     }],
     ['list_accessible_families', {
       name: 'list_accessible_families',
-      validate: validateEmptyObject,
+      inputSchema: emptyObjectSchema,
       authorize: () => true,
       execute: (context) => ({
-        families: (state.familyProfiles || [])
-          .filter((family) => family.status !== 'archived' && familyOwnerMatches(family, context))
+        families: listFamilyProfilesForOwner(state, context)
           .map((family) => ({
             id: family.id,
             displayLabel: maskDisplay(family.name || '家庭'),
@@ -125,6 +139,7 @@ export function createWukongMcpGateway({
 
   return {
     toolNames: [...registry.keys()],
+    registry: [...registry.values()],
     get replaySize() { return replay.size; },
     get ratePrincipalCount() { return rates.size; },
     async invoke(request) {
@@ -136,7 +151,7 @@ export function createWukongMcpGateway({
       if (request.conversationType !== 'direct') fail('GROUP_CHAT_FORBIDDEN', 403);
       const entry = registry.get(request.tool);
       if (!entry) fail('TOOL_NOT_ALLOWED', 403);
-      entry.validate(request.input);
+      validateInputSchema(entry.inputSchema, request.input);
 
       const timestamp = Number(now());
       if (!Number.isFinite(timestamp)) fail('RATE_LIMITED', 429);
