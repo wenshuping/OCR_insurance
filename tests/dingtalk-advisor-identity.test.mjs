@@ -4,17 +4,36 @@ import test from 'node:test';
 
 import {
   DingtalkAdvisorIdentityError,
-  confirmAdvisorBinding,
-  createAdvisorBindingChallenge,
-  findAdvisorBindingCandidate,
+  confirmAdvisorBinding as confirmBinding,
+  createAdvisorBindingChallenge as createChallenge,
+  findAdvisorBindingCandidate as findCandidate,
   resolveDingtalkAdvisor,
   revokeAdvisorBinding,
-  mobileFingerprint,
+  createMobileFingerprint,
 } from '../server/dingtalk-advisor-identity.service.mjs';
 
 const NOW = '2026-07-12T08:00:00.000Z';
 const LATER = '2026-07-12T08:01:00.000Z';
 const PRINCIPAL = { corpId: 'corp-1', dingUserId: 'ding-1' };
+const fingerprintMobile = createMobileFingerprint('test-mobile-fingerprint-key-32-bytes');
+const mobileFingerprint = fingerprintMobile;
+const FINGERPRINT_VERSION = 'v1';
+const findAdvisorBindingCandidate = (state, input) => findCandidate(state, {
+  ...input, fingerprintMobile,
+});
+const createAdvisorBindingChallenge = (state, input) => createChallenge(state, {
+  ...input, mobileFingerprintVersion: FINGERPRINT_VERSION,
+});
+const confirmAdvisorBinding = (state, input) => confirmBinding(state, {
+  ...input,
+  expectedMobileFingerprint: input.expectedMobileFingerprint || mobileFingerprint('13800138000'),
+  expectedMobileFingerprintVersion: FINGERPRINT_VERSION,
+});
+
+test('mobile fingerprint is keyed and changes with the configured secret', () => {
+  const other = createMobileFingerprint('other-mobile-fingerprint-key-32-byte');
+  assert.notEqual(fingerprintMobile('13800138000'), other('13800138000'));
+});
 
 function makeState(users = [{ id: 7, mobile: '13800138000', status: 'active' }]) {
   return { users, userDingtalkIdentities: [], dingtalkBindingChallenges: [] };
@@ -89,7 +108,7 @@ test('challenge stores a token hash and confirmation activates binding for the s
   assert.equal(JSON.stringify(state.dingtalkBindingChallenges).includes('13800138000'), false);
   assert.equal(state.userDingtalkIdentities[0].status, 'pending');
 
-  const binding = confirmAdvisorBinding(state, { ...PRINCIPAL, token: created.token, now: LATER });
+  const binding = confirmAdvisorBinding(state, { ...PRINCIPAL, token: created.token, expectedMobileFingerprintVersion: FINGERPRINT_VERSION, now: LATER });
 
   assert.equal(binding.status, 'active');
   assert.equal(binding.userId, 7);
@@ -106,6 +125,18 @@ test('expired challenge cannot be confirmed', () => {
     token: created.token,
     now: '2026-07-12T08:05:00.000Z',
   }), /expired/i);
+});
+
+test('challenge cannot be confirmed with a fingerprint from another key', () => {
+  const state = makeState();
+  const created = createAdvisorBindingChallenge(state, {
+    ...PRINCIPAL, userId: 7, mobileFingerprint: mobileFingerprint('13800138000'), now: NOW,
+  });
+  const other = createMobileFingerprint('other-mobile-fingerprint-key-32-byte');
+  assert.throws(() => confirmAdvisorBinding(state, {
+    ...PRINCIPAL, token: created.token, expectedMobileFingerprint: other('13800138000'), now: LATER,
+  }), (error) => error.code === 'MOBILE_MISMATCH');
+  assert.equal(state.dingtalkBindingChallenges[0].usedAt, null);
 });
 
 test('used challenge cannot be confirmed again', () => {

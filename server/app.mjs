@@ -2534,6 +2534,8 @@ export function createPolicyOcrApp(options = {}) {
     wukongMcpGateway,
     getDingtalkUserProfile: options.getDingtalkUserProfile,
     dingtalkAllowedUserIds: Array.isArray(options.dingtalkAllowedUserIds) ? options.dingtalkAllowedUserIds : [],
+    fingerprintDingtalkMobile: options.fingerprintDingtalkMobile,
+    dingtalkMobileFingerprintVersion: options.dingtalkMobileFingerprintVersion,
     findAdvisorBindingCandidate,
     createAdvisorBindingChallenge,
     confirmAdvisorBinding,

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
@@ -8,6 +8,9 @@ import { createInitialState } from '../server/policy-ocr.domain.mjs';
 
 const NOW = '2026-07-12T08:00:00.000Z';
 const PRINCIPAL = { corpId: 'corp-1', dingUserId: 'ding-1', requestId: 'request-1' };
+const FINGERPRINT_KEY = 'route-mobile-fingerprint-test-key-32-bytes';
+const FINGERPRINT_VERSION = 'v1';
+const fingerprintMobile = (mobile) => createHmac('sha256', FINGERPRINT_KEY).update(mobile).digest('hex');
 
 function listen(app) {
   return new Promise((resolve) => {
@@ -43,6 +46,8 @@ function createHarness(users = [{ id: 7, mobile: '13800138000', status: 'active'
     state,
     now: () => NOW,
     dingtalkAllowedUserIds: users.map((user) => user.id),
+    fingerprintDingtalkMobile: fingerprintMobile,
+    dingtalkMobileFingerprintVersion: FINGERPRINT_VERSION,
     authenticateDingtalkServiceRequest: (req) => req.get('x-test-dingtalk-service') === 'valid',
     getDingtalkUserProfile: async (principal) => {
       profiles.push(principal);
@@ -66,7 +71,7 @@ function identityStateSnapshot(state) {
 function assertSafeResponse(result) {
   assert.equal(result.response.headers.get('cache-control'), 'no-store');
   const serialized = JSON.stringify(result.payload);
-  for (const secret of ['13800138000', 'Raw DingTalk Name', 'tokenHash', 'dingtalkBindingChallenges', 'userDingtalkIdentities']) {
+  for (const secret of ['13800138000', 'Raw DingTalk Name', FINGERPRINT_KEY, 'tokenHash', 'dingtalkBindingChallenges', 'userDingtalkIdentities']) {
     assert.equal(serialized.includes(secret), false, secret);
   }
 }
@@ -133,6 +138,23 @@ test('candidate rejects mismatched and unverifiable DingTalk mobiles without cre
       }));
     } finally { await server.close(); }
   }
+});
+
+test('candidate fails closed when mobile fingerprint configuration is unavailable', async () => {
+  const harness = createHarness(undefined, {
+    fingerprintDingtalkMobile: undefined,
+    dingtalkMobileFingerprintVersion: undefined,
+  });
+  const server = await listen(harness.app);
+  try {
+    const result = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    assert.equal(result.response.status, 403);
+    assert.equal(result.payload.code, 'MOBILE_VERIFICATION_REQUIRED');
+    assertSafeResponse(result);
+    assert.equal(harness.state.dingtalkBindingChallenges.length, 0);
+  } finally { await server.close(); }
 });
 
 test('service routes reject missing service authentication and invalid input', async () => {
@@ -210,6 +232,24 @@ test('confirm re-verifies the current DingTalk mobile and leaves the challenge u
       assert.equal(harness.state.dingtalkBindingChallenges[0].usedAt, null);
     } finally { await server.close(); }
   }
+});
+
+test('confirm rejects an unknown mobile fingerprint version without consuming the challenge', async () => {
+  const harness = createHarness();
+  const server = await listen(harness.app);
+  try {
+    const candidate = await request(server.baseUrl, '/api/dingtalk/identity/candidate', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    harness.state.dingtalkBindingChallenges[0].mobileFingerprintVersion = 'legacy';
+    const result = await request(server.baseUrl, '/api/dingtalk/identity/confirm', {
+      method: 'POST', body: JSON.stringify({ ...PRINCIPAL, token: candidate.payload.challenge.token }),
+    });
+    assert.equal(result.response.status, 403);
+    assert.equal(result.payload.code, 'MOBILE_VERIFICATION_REQUIRED');
+    assertSafeResponse(result);
+    assert.equal(harness.state.dingtalkBindingChallenges[0].usedAt, null);
+  } finally { await server.close(); }
 });
 
 test('web bind requires customer auth, binds only the session user, and returns a safe task reference', async () => {
@@ -360,7 +400,8 @@ test('confirm, web-bind, and revoke roll identity state back when persistence is
         ...PRINCIPAL,
         userId: 7,
         tokenHash: createHash('sha256').update(token).digest('hex'),
-        mobileFingerprint: createHash('sha256').update('13800138000').digest('hex'),
+        mobileFingerprint: fingerprintMobile('13800138000'),
+        mobileFingerprintVersion: FINGERPRINT_VERSION,
         expiresAt: '2026-07-12T08:05:00.000Z',
         usedAt: null,
       }];
@@ -395,8 +436,8 @@ test('web bind validates ownership of the exact submitted token before mutation'
   const otherToken = 'other-token';
   harness.state.userDingtalkIdentities = [{ ...PRINCIPAL, userId: 7, status: 'pending' }];
   harness.state.dingtalkBindingChallenges = [
-    { ...PRINCIPAL, userId: 7, tokenHash: createHash('sha256').update(ownToken).digest('hex'), mobileFingerprint: createHash('sha256').update('13800138000').digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
-    { ...PRINCIPAL, userId: 8, tokenHash: createHash('sha256').update(otherToken).digest('hex'), mobileFingerprint: createHash('sha256').update('13900139000').digest('hex'), expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
+    { ...PRINCIPAL, userId: 7, tokenHash: createHash('sha256').update(ownToken).digest('hex'), mobileFingerprint: fingerprintMobile('13800138000'), mobileFingerprintVersion: FINGERPRINT_VERSION, expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
+    { ...PRINCIPAL, userId: 8, tokenHash: createHash('sha256').update(otherToken).digest('hex'), mobileFingerprint: fingerprintMobile('13900139000'), mobileFingerprintVersion: FINGERPRINT_VERSION, expiresAt: '2026-07-12T08:05:00.000Z', usedAt: null },
   ];
   const before = identityStateSnapshot(harness.state);
   const server = await listen(harness.app);

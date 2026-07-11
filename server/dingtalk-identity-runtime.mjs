@@ -1,9 +1,11 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { createMobileFingerprint } from './dingtalk-advisor-identity.service.mjs';
 
 const DEFAULT_API_BASE_URL = 'https://api.dingtalk.com';
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MIN_TIMEOUT_MS = 50;
 const MAX_TIMEOUT_MS = 30_000;
+const MOBILE_FINGERPRINT_VERSION = 'v1';
 
 function trim(value) {
   return String(value || '').trim();
@@ -82,9 +84,14 @@ export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = f
   const appSecret = trim(env.DINGTALK_APP_SECRET);
   const apiBaseUrl = trim(env.DINGTALK_API_BASE_URL) || DEFAULT_API_BASE_URL;
   const requestTimeoutMs = boundedTimeoutMs(timeoutMs ?? env.DINGTALK_IDENTITY_TIMEOUT_MS);
+  const fingerprintDingtalkMobile = createMobileFingerprint(env.DINGTALK_MOBILE_FINGERPRINT_KEY);
 
   return {
     dingtalkAllowedUserIds: allowedUserIds(env.DINGTALK_IDENTITY_ALLOWED_USER_IDS),
+    ...(fingerprintDingtalkMobile ? {
+      fingerprintDingtalkMobile,
+      dingtalkMobileFingerprintVersion: MOBILE_FINGERPRINT_VERSION,
+    } : {}),
     authenticateDingtalkServiceRequest(req) {
       const supplied = bearerToken(req);
       return Boolean(serviceToken && supplied && secretsEqual(serviceToken, supplied));

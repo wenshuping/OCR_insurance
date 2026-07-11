@@ -8,6 +8,7 @@ const CONFIGURED_ENV = {
   DINGTALK_CORP_ID: 'corp-1',
   DINGTALK_APP_KEY: 'app-key',
   DINGTALK_APP_SECRET: 'app-secret',
+  DINGTALK_MOBILE_FINGERPRINT_KEY: 'runtime-mobile-fingerprint-key-32-bytes',
 };
 
 async function assertRuntimeError(operation, code, status) {
@@ -26,6 +27,7 @@ async function assertRuntimeError(operation, code, status) {
 test('DingTalk runtime is fail-closed when configuration is incomplete', async () => {
   const runtime = createDingtalkIdentityRuntime({ env: {} });
   assert.deepEqual(runtime.dingtalkAllowedUserIds, []);
+  assert.equal(runtime.fingerprintDingtalkMobile, undefined);
   assert.equal(await runtime.authenticateDingtalkServiceRequest({ get: () => '' }), false);
   await assert.rejects(() => runtime.getDingtalkUserProfile({ corpId: 'corp-1', dingUserId: 'ding-1' }), (error) => {
     assert.equal(error.code, 'DINGTALK_PROFILE_NOT_CONFIGURED');
@@ -42,6 +44,7 @@ test('configured DingTalk runtime authenticates service requests and fetches a u
       DINGTALK_CORP_ID: 'corp-1',
       DINGTALK_APP_KEY: 'app-key',
       DINGTALK_APP_SECRET: 'app-secret',
+      DINGTALK_MOBILE_FINGERPRINT_KEY: 'runtime-mobile-fingerprint-key-32-bytes',
     },
     fetchImpl: async (url, options) => {
       requests.push({ url: String(url), options });
@@ -52,6 +55,8 @@ test('configured DingTalk runtime authenticates service requests and fetches a u
     },
   });
   assert.deepEqual(runtime.dingtalkAllowedUserIds, [7, 8]);
+  assert.equal(runtime.dingtalkMobileFingerprintVersion, 'v1');
+  assert.equal(typeof runtime.fingerprintDingtalkMobile, 'function');
   assert.equal(await runtime.authenticateDingtalkServiceRequest({
     get: (name) => name === 'authorization' ? 'Bearer service-secret' : '',
   }), true);
@@ -68,6 +73,16 @@ test('service authentication accepts valid token and safely rejects different to
   assert.equal(runtime.authenticateDingtalkServiceRequest(request('service-secret')), true);
   assert.equal(runtime.authenticateDingtalkServiceRequest(request('wrong-secret-x')), false);
   assert.equal(runtime.authenticateDingtalkServiceRequest(request('x')), false);
+});
+
+test('missing or weak mobile fingerprint keys fail closed', () => {
+  for (const key of ['', 'too-short']) {
+    const runtime = createDingtalkIdentityRuntime({
+      env: { ...CONFIGURED_ENV, DINGTALK_MOBILE_FINGERPRINT_KEY: key },
+    });
+    assert.equal(runtime.fingerprintDingtalkMobile, undefined);
+    assert.equal(runtime.dingtalkMobileFingerprintVersion, undefined);
+  }
 });
 
 test('DingTalk HTTP timeout aborts the request and returns a sanitized 504', async () => {

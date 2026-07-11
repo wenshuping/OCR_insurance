@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
@@ -19,9 +19,12 @@ function normalizedMobile(value) {
   return /^1[3-9]\d{9}$/.test(mobile) ? mobile : null;
 }
 
-export function mobileFingerprint(value) {
-  const mobile = normalizedMobile(value);
-  return mobile ? createHash('sha256').update(mobile).digest('hex') : null;
+export function createMobileFingerprint(key) {
+  if (Buffer.byteLength(String(key || ''), 'utf8') < 32) return undefined;
+  return (value) => {
+    const mobile = normalizedMobile(value);
+    return mobile ? createHmac('sha256', key).update(mobile).digest('hex') : null;
+  };
 }
 
 function maskMobile(mobile) {
@@ -49,7 +52,7 @@ function uniquePrincipalIdentity(state, corpId, dingUserId) {
   return identities[0] ?? null;
 }
 
-export function findAdvisorBindingCandidate(state, { mobile, allowedUserIds }) {
+export function findAdvisorBindingCandidate(state, { mobile, allowedUserIds, fingerprintMobile }) {
   const normalized = normalizedMobile(mobile);
   if (!normalized) return { status: 'verification_required' };
   const matches = (state.users ?? []).filter((user) => (
@@ -60,11 +63,13 @@ export function findAdvisorBindingCandidate(state, { mobile, allowedUserIds }) {
     return { status: 'not_found' };
   }
 
+  const fingerprint = fingerprintMobile?.(normalized);
+  if (!fingerprint) return { status: 'verification_required' };
   return {
     status: 'confirmation_required',
     userId: matches[0].id,
     maskedMobile: maskMobile(normalized),
-    mobileFingerprint: mobileFingerprint(normalized),
+    mobileFingerprint: fingerprint,
   };
 }
 
@@ -73,9 +78,10 @@ export function createAdvisorBindingChallenge(state, {
   dingUserId,
   userId,
   mobileFingerprint: verifiedMobileFingerprint,
+  mobileFingerprintVersion,
   now = new Date().toISOString(),
 }) {
-  if (!/^[a-f0-9]{64}$/.test(String(verifiedMobileFingerprint || ''))) {
+  if (!/^[a-f0-9]{64}$/.test(String(verifiedMobileFingerprint || '')) || !mobileFingerprintVersion) {
     throw new DingtalkAdvisorIdentityError(
       'MOBILE_VERIFICATION_REQUIRED',
       'Exact mobile verification is required',
@@ -110,6 +116,7 @@ export function createAdvisorBindingChallenge(state, {
     dingUserId,
     userId,
     mobileFingerprint: verifiedMobileFingerprint,
+    mobileFingerprintVersion,
     tokenHash: tokenHash(token),
     createdAt: now,
     expiresAt,
@@ -132,6 +139,7 @@ export function confirmAdvisorBinding(state, {
   token,
   expectedUserId,
   expectedMobileFingerprint,
+  expectedMobileFingerprintVersion,
   now = new Date().toISOString(),
 }) {
   const challenge = (state.dingtalkBindingChallenges ?? []).find((row) => (
@@ -152,11 +160,14 @@ export function confirmAdvisorBinding(state, {
       'Binding challenge does not belong to the authenticated user',
     );
   }
-  if (!challenge.mobileFingerprint) {
+  if (!challenge.mobileFingerprint || !challenge.mobileFingerprintVersion
+    || challenge.mobileFingerprintVersion !== expectedMobileFingerprintVersion) {
     throw new DingtalkAdvisorIdentityError('MOBILE_VERIFICATION_REQUIRED', 'Exact mobile verification is required');
   }
-  if (expectedMobileFingerprint !== undefined
-    && challenge.mobileFingerprint !== expectedMobileFingerprint) {
+  if (!/^[a-f0-9]{64}$/.test(String(expectedMobileFingerprint || ''))) {
+    throw new DingtalkAdvisorIdentityError('MOBILE_VERIFICATION_REQUIRED', 'Exact mobile verification is required');
+  }
+  if (challenge.mobileFingerprint !== expectedMobileFingerprint) {
     throw new DingtalkAdvisorIdentityError('MOBILE_MISMATCH', 'Verified mobiles do not match');
   }
   if (challenge.invalidatedAt) {

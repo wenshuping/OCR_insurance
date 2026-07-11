@@ -1930,6 +1930,7 @@ test('sqlite state store persists DingTalk identity and challenge audit state ac
     dingtalkBindingChallenges: [{
       tokenHash: 'abc123exacthash',
       mobileFingerprint: '0'.repeat(64),
+      mobileFingerprintVersion: 'v1',
       corpId: 'corp-1',
       dingUserId: 'ding-1',
       userId: 7,
@@ -1953,6 +1954,7 @@ test('sqlite state store persists DingTalk identity and challenge audit state ac
   assert.equal(loaded.userDingtalkIdentities[0].revokedAt, '2026-07-12T09:00:00.000Z');
   assert.equal(loaded.dingtalkBindingChallenges[0].tokenHash, 'abc123exacthash');
   assert.equal(loaded.dingtalkBindingChallenges[0].mobileFingerprint, '0'.repeat(64));
+  assert.equal(loaded.dingtalkBindingChallenges[0].mobileFingerprintVersion, 'v1');
   assert.equal(JSON.stringify(loaded.dingtalkBindingChallenges).includes('13800138000'), false);
   assert.equal(loaded.dingtalkBindingChallenges[0].expiresAt, '2026-07-12T08:05:00.000Z');
   assert.equal(reopened.db.prepare('SELECT count(*) AS count FROM state_documents WHERE key IN (?, ?)').get('userDingtalkIdentities', 'dingtalkBindingChallenges').count, 0);

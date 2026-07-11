@@ -96,6 +96,7 @@ npm install
 - `DINGTALK_IDENTITY_SERVICE_TOKEN`：悟空/渠道服务调用身份接口时使用的 Bearer token。
 - `DINGTALK_IDENTITY_ALLOWED_USER_IDS`：允许绑定的 OCR Insurance 用户 ID，使用英文逗号分隔。
 - `DINGTALK_CORP_ID`、`DINGTALK_APP_KEY`、`DINGTALK_APP_SECRET`：钉钉企业与应用凭据。
+- `DINGTALK_MOBILE_FINGERPRINT_KEY`：至少 32 字节的独立服务端密钥，用于手机号 HMAC 指纹；当前仅支持活动版本 `v1`，轮换时已有待确认挑战会安全失效。
 - `DINGTALK_API_BASE_URL`：可选，默认使用钉钉开放平台 API 地址。
 - `DINGTALK_IDENTITY_TIMEOUT_MS`：可选，钉钉 HTTP 请求超时，范围 50–30000 毫秒，默认 10000 毫秒。
 

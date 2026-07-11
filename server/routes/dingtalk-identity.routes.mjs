@@ -79,6 +79,8 @@ export function createDingtalkIdentityRoutes(context) {
     authenticateDingtalkServiceRequest,
     getDingtalkUserProfile,
     dingtalkAllowedUserIds = [],
+    fingerprintDingtalkMobile,
+    dingtalkMobileFingerprintVersion,
     persistDingtalkIdentityState,
     findAdvisorBindingCandidate,
     createAdvisorBindingChallenge,
@@ -134,6 +136,7 @@ export function createDingtalkIdentityRoutes(context) {
       const candidate = findAdvisorBindingCandidate(state, {
         mobile: String(profile?.mobile || '').trim(),
         allowedUserIds: dingtalkAllowedUserIds,
+        fingerprintMobile: fingerprintDingtalkMobile,
       });
       if (candidate.status !== 'confirmation_required') {
         throw routeError(
@@ -146,6 +149,7 @@ export function createDingtalkIdentityRoutes(context) {
           ...principal,
           userId: candidate.userId,
           mobileFingerprint: candidate.mobileFingerprint,
+          mobileFingerprintVersion: dingtalkMobileFingerprintVersion,
           now: nowIso(),
         });
         const identity = (state.userDingtalkIdentities || []).find((row) => (
@@ -176,6 +180,7 @@ export function createDingtalkIdentityRoutes(context) {
       const candidate = findAdvisorBindingCandidate(state, {
         mobile: profile?.mobile,
         allowedUserIds: dingtalkAllowedUserIds,
+        fingerprintMobile: fingerprintDingtalkMobile,
       });
       if (candidate.status === 'verification_required') {
         throw routeError('MOBILE_VERIFICATION_REQUIRED', 403);
@@ -189,6 +194,7 @@ export function createDingtalkIdentityRoutes(context) {
           token,
           expectedUserId: candidate.userId,
           expectedMobileFingerprint: candidate.mobileFingerprint,
+          expectedMobileFingerprintVersion: dingtalkMobileFingerprintVersion,
           now: nowIso(),
         }),
       }));
@@ -214,6 +220,7 @@ export function createDingtalkIdentityRoutes(context) {
       const candidate = findAdvisorBindingCandidate(state, {
         mobile: profile?.mobile,
         allowedUserIds: dingtalkAllowedUserIds,
+        fingerprintMobile: fingerprintDingtalkMobile,
       });
       if (candidate.status === 'verification_required') {
         throw routeError('MOBILE_VERIFICATION_REQUIRED', 403);
@@ -227,6 +234,7 @@ export function createDingtalkIdentityRoutes(context) {
           token,
           expectedUserId: user.id,
           expectedMobileFingerprint: candidate.mobileFingerprint,
+          expectedMobileFingerprintVersion: dingtalkMobileFingerprintVersion,
           now: nowIso(),
         }),
       }));
