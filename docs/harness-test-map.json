@@ -19,18 +19,24 @@
     "name": "wukong-mcp-gateway",
     "patterns": [
       "server/app.mjs",
+      "server/index.mjs",
       "server/wukong-mcp-gateway.service.mjs",
+      "server/agent-policy-import.service.mjs",
+      "server/agent-policy-import-runtime.service.mjs",
+      "server/routes/families.routes.mjs",
       "server/routes/wukong-mcp.routes.mjs",
       "server/dingtalk-advisor-identity.service.mjs",
       "server/dingtalk-identity-runtime.mjs",
       "server/routes/dingtalk-identity.routes.mjs",
       "tests/wukong-mcp-gateway.test.mjs",
+      "tests/agent-policy-import.test.mjs",
       "tests/dingtalk-advisor-identity.test.mjs",
       "tests/dingtalk-identity-routes.test.mjs",
       "tests/dingtalk-identity-runtime.test.mjs"
     ],
     "commands": [
       "node --test tests/wukong-mcp-gateway.test.mjs",
+      "node --test tests/agent-policy-import.test.mjs",
       "node --test tests/dingtalk-advisor-identity.test.mjs",
       "node --test tests/dingtalk-identity-routes.test.mjs",
       "node --test tests/dingtalk-identity-runtime.test.mjs"

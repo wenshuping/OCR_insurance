@@ -170,6 +170,44 @@ export type UpdateFamilyMemberResponse = {
   policies?: Policy[];
 };
 
+export type PolicyImportTask = {
+  taskId: number;
+  familyId: number;
+  channel: string;
+  targetAgent: 'sales_champion' | 'insurance_expert';
+  status: string;
+  stateVersion: number;
+  documentSummary: { count: number; statuses: Record<string, number> };
+  policyDraft: Record<string, string | number>;
+  missingFields: string[];
+  legalOptions: {
+    products: Array<{ optionId: string; label: string }>;
+    members: Array<{ optionId: string; label: string }>;
+  };
+  nextInteraction: { type: string; stateVersion: number; field?: string; status?: string } | null;
+};
+
+type PolicyImportScope = { token?: string; guestId?: string; familyId: number };
+
+export function startPolicyImport(input: PolicyImportScope) {
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports${authQuery(input)}`, { token: input.token, body: {} });
+}
+
+export function getPolicyImport(input: PolicyImportScope & { taskId: number }) {
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports/${input.taskId}${authQuery(input)}`, { token: input.token });
+}
+
+export function appendPolicyImportFiles(input: PolicyImportScope & { taskId: number; stateVersion: number; files: Array<{ uploadItem: string; name?: string; mediaType?: string }> }) {
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports/${input.taskId}/files${authQuery(input)}`, {
+    token: input.token, body: { stateVersion: input.stateVersion, files: input.files },
+  });
+}
+
+export function applyPolicyImportAction(input: PolicyImportScope & { taskId: number; stateVersion: number; action: string; field?: string; value?: string; optionId?: string; role?: string }) {
+  const { token, guestId, familyId, taskId, ...body } = input;
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/actions${authQuery({ guestId })}`, { token, body });
+}
+
 export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
   return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
 }

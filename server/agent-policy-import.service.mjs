@@ -151,7 +151,8 @@ function normalizeStoredDocument(value) {
   const mediaType = scalarString(value.mediaType || value.type, { max: 40 }).toLowerCase();
   if (!['image/jpeg', 'image/png', 'application/pdf'].includes(mediaType)) fail('UNSUPPORTED_DOCUMENT_TYPE', '附件类型不支持');
   if (!Number.isSafeInteger(value.size) || value.size < 0) fail('INVALID_DOCUMENT_SIZE', '附件大小无效');
-  return { documentId, sha256, name: redact(scalarString(value.name || '上传文件', { max: 120 })), mediaType, size: value.size, status: DOCUMENT_STATUSES.has(value.status) ? value.status : 'received' };
+  const evidence = isPlainObject(value.evidence) ? structuredClone(value.evidence) : undefined;
+  return { documentId, sha256, name: redact(scalarString(value.name || '上传文件', { max: 120 })), mediaType, size: value.size, status: DOCUMENT_STATUSES.has(value.status) ? value.status : 'received', ...(evidence ? { evidence } : {}) };
 }
 
 function normalizeStoredDocuments(value) {

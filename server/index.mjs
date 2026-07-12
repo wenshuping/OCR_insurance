@@ -84,6 +84,7 @@ const app = createPolicyOcrApp({
   persistPendingScan: store.persistPendingScan,
   persistFamilyState: store.persistFamilyState,
   persistFamilyReportState: store.persistFamilyReportState,
+  persistAgentPolicyImportTask: store.persistAgentPolicyImportTask,
   persistAdminSession: store.persistAdminSession,
   persistAuthSmsCode: store.persistAuthSmsCode,
   persistAuthRegistration: store.persistAuthRegistration,

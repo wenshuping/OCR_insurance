@@ -36,8 +36,14 @@ function validateInputSchema(schema, input) {
     fail('INVALID_TOOL_INPUT', 400);
   }
   for (const [key, value] of Object.entries(input)) {
-    const expectedType = properties[key]?.type;
-    if (expectedType && typeof value !== expectedType) fail('INVALID_TOOL_INPUT', 400);
+    const property = properties[key];
+    const expectedType = property?.type;
+    if (expectedType === 'array') {
+      if (!Array.isArray(value)) fail('INVALID_TOOL_INPUT', 400);
+      for (const item of value) validateInputSchema(property.items, item);
+    } else if (expectedType === 'integer') {
+      if (!Number.isSafeInteger(value) || value <= 0) fail('INVALID_TOOL_INPUT', 400);
+    } else if (expectedType && typeof value !== expectedType) fail('INVALID_TOOL_INPUT', 400);
   }
   return input;
 }
@@ -74,10 +80,16 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function createRegistry(state) {
+function createRegistry(state, policyImports) {
   const emptyObjectSchema = Object.freeze({
     type: 'object', properties: Object.freeze({}), required: Object.freeze([]), additionalProperties: false,
   });
+  const familySchema = (properties, required) => Object.freeze({ type: 'object', properties: Object.freeze(properties), required: Object.freeze(required), additionalProperties: false });
+  const resolveFamily = (context, familyRef) => {
+    const family = listFamilyProfilesForOwner(state, context).find((candidate) => Number(candidate.id) === Number(familyRef) && String(candidate.status || 'active') === 'active');
+    if (!family) fail('FAMILY_NOT_FOUND', 404);
+    return family;
+  };
   return new Map([
     ['resolve_advisor_identity', {
       name: 'resolve_advisor_identity',
@@ -100,6 +112,25 @@ function createRegistry(state) {
           })),
       }),
     }],
+    ['start_policy_import', {
+      name: 'start_policy_import', inputSchema: familySchema({ familyRef: { type: 'integer' } }, ['familyRef']), authorize: () => true,
+      execute: (context, input) => policyImports.start({ family: resolveFamily(context, input.familyRef), owner: context, channel: 'wukong' }),
+    }],
+    ['append_policy_import_files', {
+      name: 'append_policy_import_files', inputSchema: familySchema({ familyRef: { type: 'integer' }, taskId: { type: 'integer' }, stateVersion: { type: 'integer' }, files: { type: 'array', items: { type: 'object', properties: { uploadItem: { type: 'string' }, name: { type: 'string' }, mediaType: { type: 'string' } }, required: ['uploadItem'], additionalProperties: false } } }, ['familyRef', 'taskId', 'stateVersion', 'files']), authorize: () => true,
+      execute: (context, input) => policyImports.append({ familyId: resolveFamily(context, input.familyRef).id, taskId: input.taskId, owner: context, stateVersion: input.stateVersion, files: input.files }),
+    }],
+    ['get_policy_import', {
+      name: 'get_policy_import', inputSchema: familySchema({ familyRef: { type: 'integer' }, taskId: { type: 'integer' } }, ['familyRef', 'taskId']), authorize: () => true,
+      execute: (context, input) => policyImports.get({ familyId: resolveFamily(context, input.familyRef).id, taskId: input.taskId, owner: context }),
+    }],
+    ['apply_policy_import_action', {
+      name: 'apply_policy_import_action', inputSchema: familySchema({ familyRef: { type: 'integer' }, taskId: { type: 'integer' }, stateVersion: { type: 'integer' }, action: { type: 'string' }, field: { type: 'string' }, value: { type: 'string' }, optionId: { type: 'string' }, role: { type: 'string' } }, ['familyRef', 'taskId', 'stateVersion', 'action']), authorize: () => true,
+      execute: (context, input) => {
+        const { familyRef, taskId, ...action } = input;
+        return policyImports.action({ familyId: resolveFamily(context, familyRef).id, taskId, owner: context, input: action });
+      },
+    }],
   ]);
 }
 
@@ -112,8 +143,9 @@ export function createWukongMcpGateway({
   rateWindowMs = DEFAULT_RATE_WINDOW_MS,
   rateMaxPrincipals = DEFAULT_RATE_MAX_PRINCIPALS,
   onExecute,
+  policyImports,
 } = {}) {
-  const registry = createRegistry(state || {});
+  const registry = createRegistry(state || {}, policyImports || { start: () => fail('TOOL_NOT_CONFIGURED', 503), append: () => fail('TOOL_NOT_CONFIGURED', 503), get: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) });
   const toolMetadata = deepFreeze([...registry.values()].map((entry) => ({
     name: entry.name,
     inputSchema: structuredClone(entry.inputSchema),

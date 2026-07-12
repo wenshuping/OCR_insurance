@@ -9,6 +9,30 @@ import { createCashflowStore, createCashValueStore } from '../server/cashflow-st
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
+function policyImportTask(version = 1) {
+  return { id: 80, familyId: 8, ownerUserId: 1, ownerGuestId: '', status: 'uploading', stateVersion: version, updatedAt: `2026-07-12T00:00:0${version}.000Z`, draft: {}, documents: [] };
+}
+
+test('sqlite policy import tasks survive restart and use optimistic CAS across store copies', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const first = await createSqliteStateStore({ dbPath });
+  const state = await first.load();
+  const created = policyImportTask();
+  await first.persistAgentPolicyImportTask({ state, task: created, expectedVersion: 0 });
+  first.close();
+  const writerA = await createSqliteStateStore({ dbPath });
+  const writerB = await createSqliteStateStore({ dbPath });
+  const loaded = await writerA.load();
+  assert.deepEqual(loaded.agentPolicyImportTasks, [created]);
+  await writerA.persistAgentPolicyImportTask({ state: loaded, task: policyImportTask(2), expectedVersion: 1 });
+  await assert.rejects(writerB.persistAgentPolicyImportTask({ state: await writerB.load(), task: { ...policyImportTask(2), status: 'failed' }, expectedVersion: 1 }), { code: 'STALE_INTERACTION' });
+  assert.equal((await writerB.load()).agentPolicyImportTasks[0].status, 'uploading');
+  assert.equal((await writerB.load()).agentPolicyImportTasks[0].stateVersion, 2);
+  writerA.close();
+  writerB.close();
+});
+
 async function makeTempDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'policy-ocr-sqlite-store-'));
 }

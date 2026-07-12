@@ -80,6 +80,7 @@ export function createFamilyRoutes(context) {
     extractFamilySalesMemories: extractFamilySalesMemoriesImpl = extractFamilySalesMemories,
     generateFamilyPolicyAnalysisReport: generateFamilyPolicyAnalysisReportImpl = generateFamilyPolicyAnalysisReport,
     nowIso = () => new Date().toISOString(),
+    policyImports,
   } = context;
   const ownerResolverContext = { resolveAuthUser, requestOwner, state };
   const familyLookupContext = { familyOwnerMatches };
@@ -87,23 +88,60 @@ export function createFamilyRoutes(context) {
   const familyShareContext = { attachPolicyFamilyDisplay: attachPolicyForFamilyReview, listFamilyMembers, normalizeGuestId };
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
   const saveFamilyState = async ({ includePolicies = false } = {}) => {
-    if (persistFamilyState) {
-      await persistFamilyState({ includePolicies });
-      return;
-    }
-    await persist(state, familyPersistOptions);
+    await persistFamilyState({ includePolicies });
   };
   const saveFamilyReportState = async () => {
-    if (persistFamilyReportState) {
-      await persistFamilyReportState();
-      return;
-    }
-    await persist(state, familyPersistOptions);
+    await persistFamilyReportState();
   };
 
   function hasOwn(value, key) {
     return Object.prototype.hasOwnProperty.call(value || {}, key);
   }
+
+  function ownedActiveFamily(req, res) {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return null;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+      return null;
+    }
+    return { owner, family };
+  }
+
+  router.post('/family-profiles/:id/policy-imports', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try {
+      const task = await policyImports.start({ ...scope, channel: 'web' });
+      return res.status(201).json({ ok: true, task });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.get('/family-profiles/:id/policy-imports/:taskId', (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try { return res.json({ ok: true, task: policyImports.get({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner }) }); }
+    catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.post('/family-profiles/:id/policy-imports/:taskId/files', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try {
+      const task = await policyImports.append({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner, stateVersion: req.body?.stateVersion, files: req.body?.files });
+      return res.json({ ok: true, task });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.post('/family-profiles/:id/policy-imports/:taskId/actions', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try {
+      const task = await policyImports.action({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner, input: req.body || {} });
+      return res.json({ ok: true, task });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+  });
 
   function isUserReportRefreshRequest(req) {
     return req.body?.userRefresh === true;

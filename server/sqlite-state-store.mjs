@@ -42,6 +42,7 @@ const DB_OWNED_KEYS = new Set([
   'wechatOAuthStates',
   'userDingtalkIdentities',
   'dingtalkBindingChallenges',
+  'agentPolicyImportTasks',
   'nextId',
 ]);
 
@@ -747,6 +748,18 @@ function createSchema(db) {
       payload TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS agent_policy_import_tasks (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER NOT NULL,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      state_version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_policy_import_tasks_family ON agent_policy_import_tasks(family_id, updated_at);
+
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
@@ -1319,6 +1332,18 @@ function insertRows(db, state) {
 
   for (const identity of normalizeArray(state.userDingtalkIdentities)) upsertDingtalkIdentity(db, identity);
   for (const challenge of normalizeArray(state.dingtalkBindingChallenges)) upsertDingtalkBindingChallenge(db, challenge);
+  const insertAgentPolicyImportTask = db.prepare(`
+    INSERT INTO agent_policy_import_tasks
+      (id, family_id, owner_user_id, owner_guest_id, status, state_version, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const task of normalizeArray(state.agentPolicyImportTasks)) {
+    insertAgentPolicyImportTask.run(
+      Number(task.id), Number(task.familyId), Number(task.ownerUserId || 0) || null,
+      String(task.ownerGuestId || ''), String(task.status || ''), Number(task.stateVersion),
+      String(task.updatedAt || ''), jsonPayload(task),
+    );
+  }
 
   const insertStateDocument = db.prepare(`
     INSERT INTO state_documents (key, payload)
@@ -2228,6 +2253,7 @@ function clearDbOwnedTables(db) {
     DELETE FROM wechat_oauth_states;
     DELETE FROM user_dingtalk_identities;
     DELETE FROM dingtalk_binding_challenges;
+    DELETE FROM agent_policy_import_tasks;
     DELETE FROM state_documents;
   `);
 }
@@ -2303,6 +2329,7 @@ function loadDbOwnedState(db) {
     wechatOAuthStates: loadPayloadRows(db, 'wechat_oauth_states', 'created_at ASC, state ASC'),
     userDingtalkIdentities: loadPayloadRows(db, 'user_dingtalk_identities', 'corp_id ASC, ding_user_id ASC'),
     dingtalkBindingChallenges: loadPayloadRows(db, 'dingtalk_binding_challenges', 'updated_at ASC, token_hash ASC'),
+    agentPolicyImportTasks: loadPayloadRows(db, 'agent_policy_import_tasks', 'updated_at ASC, id ASC'),
   };
   state.knowledgeRecords = state.knowledgeRecords
     .map((record) => normalizeKnowledgeRecord(record))
@@ -2354,6 +2381,43 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       if (seedStatePath && !initializedAt && !getMeta(db, 'imported_from_json_state_path')) {
         setMeta(db, 'imported_from_json_state_path', seedStatePath);
       }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistAgentPolicyImportTask({ state, task, expectedVersion = 0 } = {}) {
+    if (!task || !Number.isSafeInteger(task.id) || !Number.isSafeInteger(task.stateVersion)) {
+      throw Object.assign(new Error('保单录入任务无效'), { code: 'INVALID_TASK', status: 400 });
+    }
+    const nextState = { ...createInitialState(), ...state };
+    const now = String(task.updatedAt || new Date().toISOString());
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      let changed;
+      if (expectedVersion === 0) {
+        changed = db.prepare(`
+          INSERT OR IGNORE INTO agent_policy_import_tasks
+            (id, family_id, owner_user_id, owner_guest_id, status, state_version, updated_at, payload)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          task.id, task.familyId, Number(task.ownerUserId || 0) || null, String(task.ownerGuestId || ''),
+          String(task.status), task.stateVersion, now, jsonPayload(task),
+        ).changes;
+      } else {
+        changed = db.prepare(`
+          UPDATE agent_policy_import_tasks
+          SET family_id = ?, owner_user_id = ?, owner_guest_id = ?, status = ?, state_version = ?, updated_at = ?, payload = ?
+          WHERE id = ? AND state_version = ?
+        `).run(
+          task.familyId, Number(task.ownerUserId || 0) || null, String(task.ownerGuestId || ''),
+          String(task.status), task.stateVersion, now, jsonPayload(task), task.id, expectedVersion,
+        ).changes;
+      }
+      if (changed !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+      updateStateMeta(db, nextState, now);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -2970,6 +3034,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistPendingScan,
     persistFamilyState,
     persistFamilyReportState,
+    persistAgentPolicyImportTask,
     persistPolicyDerivedResult,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,

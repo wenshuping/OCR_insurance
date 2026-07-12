@@ -33,20 +33,13 @@ function call(gateway, overrides = {}) {
   });
 }
 
-test('registry exposes only the two approved tools and validates exact input schemas', async () => {
+test('registry exposes only approved identity, family, and policy intake tools with private schemas', async () => {
   const gateway = createWukongMcpGateway({ state: stateFor() });
-  assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families']);
+  assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families', 'start_policy_import', 'append_policy_import_files', 'get_policy_import', 'apply_policy_import_action']);
   assert.equal(gateway.registry, undefined);
-  assert.deepEqual(gateway.toolMetadata, [
-    {
-      name: 'resolve_advisor_identity',
-      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    },
-    {
-      name: 'list_accessible_families',
-      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    },
-  ]);
+  assert.deepEqual(gateway.toolMetadata.map((tool) => tool.name), gateway.toolNames);
+  assert.deepEqual(gateway.toolMetadata[0].inputSchema, { type: 'object', properties: {}, required: [], additionalProperties: false });
+  for (const tool of gateway.toolMetadata) assert.equal(tool.inputSchema.additionalProperties, false);
   assert.equal(Object.isFrozen(gateway.toolMetadata), true);
   assert.equal(Object.isFrozen(gateway.toolMetadata[0]), true);
   assert.equal(Object.isFrozen(gateway.toolMetadata[0].inputSchema), true);
@@ -55,6 +48,21 @@ test('registry exposes only the two approved tools and validates exact input sch
   await assert.rejects(call(gateway, { requestId: 'req-2', input: { ownerUserId: 7 } }), { code: 'INVALID_TOOL_INPUT' });
   await assert.rejects(call(gateway, { requestId: 'req-3', tool: 'list_accessible_families', input: { familyId: 12 } }), { code: 'INVALID_TOOL_INPUT' });
   await assert.rejects(call(gateway, { requestId: 'req-4', input: [] }), { code: 'INVALID_TOOL_INPUT' });
+});
+
+test('policy intake tools derive owner and reject forged family or owner input', async () => {
+  const calls = [];
+  const policyImports = {
+    start: async (input) => { calls.push(input); return { taskId: 1 }; },
+    append: async () => ({ taskId: 1 }), get: () => ({ taskId: 1 }), action: async () => ({ taskId: 1 }),
+  };
+  const gateway = createWukongMcpGateway({ state: stateFor(), policyImports });
+  const result = await call(gateway, { requestId: 'start-policy', tool: 'start_policy_import', input: { familyRef: 11 } });
+  assert.deepEqual(result, { taskId: 1 });
+  assert.equal(calls[0].owner.userId, 7);
+  assert.equal(calls[0].family.id, 11);
+  await assert.rejects(call(gateway, { requestId: 'foreign-family', tool: 'start_policy_import', input: { familyRef: 12 } }), { code: 'FAMILY_NOT_FOUND' });
+  await assert.rejects(call(gateway, { requestId: 'forged-owner', tool: 'start_policy_import', input: { familyRef: 11, ownerUserId: 8 } }), { code: 'INVALID_TOOL_INPUT' });
 });
 
 test('identity resolution rejects missing, revoked, ambiguous, and inactive bindings with stable codes', async () => {

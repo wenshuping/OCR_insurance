@@ -52,6 +52,7 @@ export function createInitialState() {
     wechatOAuthStates: [],
     userDingtalkIdentities: [],
     dingtalkBindingChallenges: [],
+    agentPolicyImportTasks: [],
     nextId: 1,
   };
 }

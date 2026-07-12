@@ -15,6 +15,7 @@ import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { createWukongMcpRoutes } from './routes/wukong-mcp.routes.mjs';
 import { createWukongMcpGateway } from './wukong-mcp-gateway.service.mjs';
+import { createAgentPolicyImportRuntime } from './agent-policy-import-runtime.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 import {
   allocateId,
@@ -2149,6 +2150,15 @@ function resolveDefaultWechatPayMode(options = {}) {
 
 export function createPolicyOcrApp(options = {}) {
   const state = options.state || createInitialState();
+  const persistAgentPolicyImportTask = options.persistAgentPolicyImportTask || (async () => {
+    throw Object.assign(new Error('保单录入任务持久化未配置'), { code: 'PERSISTENCE_NOT_CONFIGURED', status: 503 });
+  });
+  const policyImports = createAgentPolicyImportRuntime({
+    state,
+    allocateId,
+    persistTask: persistAgentPolicyImportTask,
+    recognizePolicyInput: ({ body }) => recognizePolicyInput({ scanner: options.scanner || scanPolicyWithConfiguredRuntime, body, state }),
+  });
   const wukongMcpGateway = options.wukongMcpGateway || createWukongMcpGateway({
     state,
     now: typeof options.wukongMcpNow === 'function' ? options.wukongMcpNow : Date.now,
@@ -2157,6 +2167,7 @@ export function createPolicyOcrApp(options = {}) {
     rateLimit: options.wukongMcpRateLimit,
     rateWindowMs: options.wukongMcpRateWindowMs,
     rateMaxPrincipals: options.wukongMcpRateMaxPrincipals,
+    policyImports,
   });
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
@@ -2249,10 +2260,10 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistFamilyState = typeof options.persistFamilyState === 'function'
     ? (input = {}) => options.persistFamilyState({ state, ...input })
-    : null;
+    : () => persist(state, { refreshOptionalResponsibilityGovernance: false });
   const persistFamilyReportState = typeof options.persistFamilyReportState === 'function'
     ? (input = {}) => options.persistFamilyReportState({ state, ...input })
-    : null;
+    : () => persist(state, { refreshOptionalResponsibilityGovernance: false });
   const persistAdminSession = typeof options.persistAdminSession === 'function'
     ? (input = {}) => options.persistAdminSession({ state, ...input })
     : null;
@@ -2401,6 +2412,8 @@ export function createPolicyOcrApp(options = {}) {
     persistPendingScan,
     persistFamilyState,
     persistFamilyReportState,
+    persistAgentPolicyImportTask,
+    policyImports,
     persistAdminSession,
     persistAuthSmsCode,
     persistAuthRegistration,
