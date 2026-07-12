@@ -796,6 +796,17 @@ function createSchema(db) {
     WHERE source_policy_import_task_id IS NULL
       AND CAST(json_extract(payload, '$.sourcePolicyImportTaskId') AS INTEGER) > 0;
   `);
+  const duplicateSources = db.prepare(`
+    SELECT user_id, source_policy_import_task_id AS task_id, COUNT(*) AS count, GROUP_CONCAT(id, ',') AS ids
+    FROM policies
+    WHERE source_policy_import_task_id IS NOT NULL
+    GROUP BY user_id, source_policy_import_task_id
+    HAVING COUNT(*) > 1
+  `).all();
+  if (duplicateSources.length) {
+    const detail = duplicateSources.map((row) => `user=${row.user_id || 0},task=${row.task_id},count=${row.count},ids=${row.ids}`).join(';');
+    throw Object.assign(new Error(`检测到重复保单导入来源，请先处理后重试：${detail}`), { code: 'SQLITE_POLICY_IMPORT_SOURCE_DUPLICATE', duplicateCount: duplicateSources.length });
+  }
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_policies_policy_import_task
       ON policies(user_id, source_policy_import_task_id)
@@ -2304,6 +2315,31 @@ function durableFinalizeSnapshot(db, task, ownerUserId) {
   return crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 }
 
+function durablePolicySaveEntitlement(db, ownerUserId, now, { excludeTaskId = 0 } = {}) {
+  const deny = (code, message, status) => { throw Object.assign(new Error(message), { code, status }); };
+  const user = parseJson(db.prepare('SELECT payload FROM users WHERE id = ?').get(ownerUserId)?.payload, null);
+  if (!user || String(user.status || 'active') !== 'active') deny('ADVISOR_ACCOUNT_INACTIVE', '用户账号不可用', 403);
+  const config = parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null) || {};
+  const freeQuota = Math.max(0, Math.floor(Number(config.registeredFreePolicyQuota ?? 3)));
+  const membershipRow = db.prepare('SELECT payload FROM memberships WHERE user_id = ?').get(ownerUserId);
+  const membership = parseJson(membershipRow?.payload, null);
+  const activeMembership = Boolean(membership?.status === 'active' && Date.parse(membership.expiresAt || '') > Date.parse(now));
+  const savedPolicyCount = Number(db.prepare('SELECT COUNT(*) AS count FROM policies WHERE user_id = ?').get(ownerUserId).count);
+  const activeReservationCount = Number(db.prepare(`
+    SELECT COUNT(*) AS count FROM agent_policy_import_finalizations
+    WHERE owner_user_id = ? AND status IN ('reserved', 'failed_unknown') AND task_id <> ?
+  `).get(ownerUserId, Number(excludeTaskId || 0)).count);
+  if (!activeMembership && savedPolicyCount + activeReservationCount >= freeQuota) {
+    const error = new Error('免费保单额度已用完，请开通会员继续录入');
+    error.code = 'MEMBERSHIP_REQUIRED';
+    error.status = 402;
+    error.membership = { savedPolicyCount, freeQuota, annualPriceCents: 30000 };
+    throw error;
+  }
+  const snapshot = { ownerUserId, activeMembership, membershipExpiresAt: activeMembership ? membership.expiresAt : '', savedPolicyCount, activeReservationCount, freeQuota, configUpdatedAt: config.updatedAt || '' };
+  return { ...snapshot, hash: crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex') };
+}
+
 function clearDbOwnedTables(db) {
   db.exec(`
     DELETE FROM family_report_issues;
@@ -2447,7 +2483,12 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
   if (!dbPath) throw new Error('POLICY_OCR_APP_DB_PATH is required');
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
-  createSchema(db);
+  try {
+    createSchema(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 
   async function loadSeedState() {
     const seed = seedStatePath ? await readJsonFile(seedStatePath, createInitialState()) : createInitialState();
@@ -2541,6 +2582,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       if (!durableRow || Number(durableRow.state_version) !== Number(expectedVersion)) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
       const durableTask = parseJson(durableRow.payload, null);
       const validationHash = durableFinalizeSnapshot(db, durableTask, ownerUserId);
+      const entitlement = durablePolicySaveEntitlement(db, ownerUserId, timestamp);
       const maxPolicyId = Number(db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM policies').get().id);
       const reservedPolicyId = Math.max(maxPolicyId + 1, Number(getMeta(db, 'next_id') || 1));
       const claimedTask = {
@@ -2556,7 +2598,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         claimedTask.stateVersion, timestamp, jsonPayload(claimedTask), task.id, expectedVersion,
       ).changes;
       if (changed !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
-      const record = { ownerUserId, taskId: task.id, requestId, status: 'reserved', claimVersion: claimedTask.stateVersion, validationHash, reservedPolicyId, leaseUntil: String(leaseUntil || ''), formalPolicyId: null, completedAt: '', createdAt: timestamp, updatedAt: timestamp };
+      const record = { ownerUserId, taskId: task.id, requestId, status: 'reserved', claimVersion: claimedTask.stateVersion, validationHash, entitlementHash: entitlement.hash, reservedPolicyId, leaseUntil: String(leaseUntil || ''), formalPolicyId: null, completedAt: '', createdAt: timestamp, updatedAt: timestamp };
       db.prepare(`INSERT INTO agent_policy_import_finalizations (owner_user_id, task_id, request_id, status, formal_policy_id, completed_at, payload) VALUES (?, ?, ?, ?, NULL, '', ?)`).run(ownerUserId, task.id, requestId, record.status, jsonPayload(record));
       setMeta(db, 'next_id', reservedPolicyId + 1);
       updateStateMeta(db, { ...createInitialState(), ...state }, timestamp);
@@ -2579,6 +2621,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       if (!durableRecord || Number(durableRecord.claimVersion) !== Number(task.stateVersion) - 1) throw Object.assign(new Error('保存请求状态冲突'), { code: 'FINALIZATION_STATE_CONFLICT', status: 409 });
       const claimedTask = parseJson(db.prepare(`SELECT payload FROM agent_policy_import_tasks WHERE id = ? AND state_version = ? AND status = 'saving'`).get(task.id, durableRecord.claimVersion)?.payload, null);
       if (!claimedTask || durableFinalizeSnapshot(db, claimedTask, durableRecord.ownerUserId) !== durableRecord.validationHash) throw Object.assign(new Error('保存前验证快照已变化'), { code: 'FINALIZATION_VALIDATION_CHANGED', status: 409 });
+      durablePolicySaveEntitlement(db, durableRecord.ownerUserId, now, { excludeTaskId: durableRecord.taskId });
       if (Number(policy.id) !== Number(durableRecord.reservedPolicyId) || Number(policy.userId) !== Number(durableRecord.ownerUserId) || Number(policy.sourcePolicyImportTaskId) !== Number(durableRecord.taskId) || String(policy.sourcePolicyImportRequestId) !== String(durableRecord.requestId)) throw Object.assign(new Error('正式保单来源标记不匹配'), { code: 'FINALIZATION_SOURCE_MISMATCH', status: 409 });
       const existingSource = db.prepare(`SELECT id, source_policy_import_request_id FROM policies WHERE user_id = ? AND source_policy_import_task_id = ?`).get(durableRecord.ownerUserId, durableRecord.taskId);
       if (existingSource) {

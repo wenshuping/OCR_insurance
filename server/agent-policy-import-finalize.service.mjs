@@ -152,7 +152,12 @@ export function createAgentPolicyImportFinalizer({
       Object.assign(task, next);
       if (!(state.policies || []).some((row) => Number(row.id) === Number(policy.id))) state.policies.push(policy);
       return publicResult(completed, next);
-    } catch {
+    } catch (error) {
+      if (['MEMBERSHIP_REQUIRED', 'ADVISOR_ACCOUNT_INACTIVE', 'POLICY_IMPORT_PERMISSION_CHANGED', 'FINALIZATION_VALIDATION_CHANGED', 'FINALIZATION_SOURCE_MISMATCH'].includes(error?.code)) {
+        const retryTask = await failRecord?.({ state, record, unknown: false, now: nowIso() });
+        if (retryTask) Object.assign(task, retryTask);
+        throw error;
+      }
       await failRecord?.({ state, record, unknown: true, now: nowIso() });
       fail('FINALIZATION_OUTCOME_UNKNOWN', '保存结果未知，系统将在重试时先核对', 503);
     }

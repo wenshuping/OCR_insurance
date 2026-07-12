@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { createAgentPolicyImportFinalizer } from '../server/agent-policy-import-finalize.service.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
@@ -163,7 +164,7 @@ test('durable family and member changes block reservation and completion', async
     store.db.prepare(`UPDATE family_members SET status = 'archived', payload = ? WHERE id = 31`).run(JSON.stringify(archived));
     return { id: reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三' };
   } });
-  await assert.rejects(finalize({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'archived-during', stateVersion: 5 }), { code: 'FINALIZATION_OUTCOME_UNKNOWN' });
+  await assert.rejects(finalize({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'archived-during', stateVersion: 5 }), { code: 'POLICY_IMPORT_PERMISSION_CHANGED' });
   assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM policies').get().count, 0);
   store.close();
 });
@@ -179,4 +180,42 @@ test('aborting a finalize wait stops polling promptly', async () => {
   await assert.rejects(pending, { code: 'FINALIZE_WAIT_ABORTED' });
   assert.ok(Date.now() - startedAt < 500);
   const stoppedAt = polls; await new Promise((resolve) => setTimeout(resolve, 80)); assert.equal(polls, stoppedAt);
+});
+
+test('durable quota reservation lets only one of two tasks consume the last free slot', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'policy-finalize-quota-')); const dbPath = path.join(directory, 'state.sqlite');
+  const firstTask = task(); const secondTask = task({ id: 42, documents: [{ ...task().documents[0], documentId: 'doc2', sha256: 'b'.repeat(64) }] });
+  const seed = stateFor(firstTask); seed.agentPolicyImportTasks.push(secondTask); seed.membershipConfig = { registeredFreePolicyQuota: 1, enabled: true };
+  const firstStore = await createSqliteStateStore({ dbPath }); await firstStore.persist(seed); const secondStore = await createSqliteStateStore({ dbPath });
+  const firstState = await firstStore.load(); const secondState = await secondStore.load(); firstState.knowledgeRecords = seed.knowledgeRecords; secondState.knowledgeRecords = seed.knowledgeRecords; let creates = 0;
+  const make = (store, state) => createAgentPolicyImportFinalizer({ state, reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask,
+    createPolicy: async ({ reservedPolicyId }) => { creates += 1; await new Promise((resolve) => setTimeout(resolve, 20)); return { id: reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三' }; } });
+  const calls = [make(firstStore, firstState)({ task: firstState.agentPolicyImportTasks.find((row) => row.id === 41), family: firstState.familyProfiles[0], owner: { userId: 7 }, requestId: 'quota-one', stateVersion: 5 }), make(secondStore, secondState)({ task: secondState.agentPolicyImportTasks.find((row) => row.id === 42), family: secondState.familyProfiles[0], owner: { userId: 7 }, requestId: 'quota-two', stateVersion: 5 })];
+  const results = await Promise.allSettled(calls);
+  assert.equal(results.filter((row) => row.status === 'fulfilled').length, 1); assert.equal(results.find((row) => row.status === 'rejected').reason.code, 'MEMBERSHIP_REQUIRED');
+  assert.equal(creates, 1); assert.equal(firstStore.db.prepare('SELECT COUNT(*) AS count FROM policies WHERE user_id = 7').get().count, 1);
+  firstStore.close(); secondStore.close();
+});
+
+test('membership expiry between reservation and completion blocks policy insert', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'policy-finalize-membership-')); const dbPath = path.join(directory, 'state.sqlite'); const state = stateFor();
+  state.membershipConfig = { registeredFreePolicyQuota: 0, enabled: true }; state.memberships = [{ userId: 7, status: 'active', expiresAt: '2026-07-13T00:00:00.000Z' }];
+  const store = await createSqliteStateStore({ dbPath }); await store.persist(state);
+  const finalize = createAgentPolicyImportFinalizer({ state, nowIso: () => '2026-07-12T00:00:00.000Z', reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask,
+    createPolicy: async ({ reservedPolicyId }) => {
+      const expired = { userId: 7, status: 'expired', expiresAt: '2026-07-11T00:00:00.000Z' };
+      store.db.prepare(`UPDATE memberships SET status = 'expired', expires_at = ?, payload = ? WHERE user_id = 7`).run(expired.expiresAt, JSON.stringify(expired));
+      return { id: reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三' };
+    } });
+  await assert.rejects(finalize({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'expires', stateVersion: 5 }), { code: 'MEMBERSHIP_REQUIRED' });
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM policies').get().count, 0); store.close();
+});
+
+test('v3 duplicate policy import source markers fail migration with a controlled error', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'policy-finalize-migration-')); const dbPath = path.join(directory, 'state.sqlite'); const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`CREATE TABLE policies (id INTEGER PRIMARY KEY, user_id INTEGER, guest_id TEXT, company TEXT, name TEXT, insured TEXT, created_at TEXT, updated_at TEXT, payload TEXT NOT NULL)`);
+  const insert = legacy.prepare('INSERT INTO policies (id, user_id, payload) VALUES (?, 7, ?)');
+  insert.run(1, JSON.stringify({ id: 1, userId: 7, sourcePolicyImportTaskId: 41, sourcePolicyImportRequestId: 'one' }));
+  insert.run(2, JSON.stringify({ id: 2, userId: 7, sourcePolicyImportTaskId: 41, sourcePolicyImportRequestId: 'two' })); legacy.close();
+  await assert.rejects(createSqliteStateStore({ dbPath }), (error) => error.code === 'SQLITE_POLICY_IMPORT_SOURCE_DUPLICATE' && /count=2/u.test(error.message) && /ids=1,2/u.test(error.message));
 });
