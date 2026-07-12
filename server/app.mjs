@@ -16,6 +16,7 @@ import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { createWukongMcpRoutes } from './routes/wukong-mcp.routes.mjs';
 import { createWukongMcpGateway } from './wukong-mcp-gateway.service.mjs';
 import { createAgentPolicyImportRuntime } from './agent-policy-import-runtime.service.mjs';
+import { createAgentPolicyImportFinalizer } from './agent-policy-import-finalize.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 import {
   allocateId,
@@ -2153,12 +2154,39 @@ export function createPolicyOcrApp(options = {}) {
   const persistAgentPolicyImportTask = options.persistAgentPolicyImportTask || (async () => {
     throw Object.assign(new Error('保单录入任务持久化未配置'), { code: 'PERSISTENCE_NOT_CONFIGURED', status: 503 });
   });
+  const finalizer = createAgentPolicyImportFinalizer({
+    state,
+    reserve: options.reserveAgentPolicyImportFinalization,
+    complete: options.completeAgentPolicyImportFinalization,
+    findRecord: options.findAgentPolicyImportFinalization,
+    failRecord: options.failAgentPolicyImportFinalization,
+    createPolicy: async ({ task, family, owner }) => {
+      const user = (state.users || []).find((row) => Number(row.id) === Number(owner.userId));
+      assertUserCanSavePolicy(state, user);
+      const member = (id) => (state.familyMembers || []).find((row) => Number(row.id) === Number(id));
+      const insured = member(task.draft.insuredMemberId);
+      const applicant = member(task.draft.applicantMemberId);
+      return buildPolicyFromScan({
+        state,
+        userId: owner.userId,
+        scan: { data: { ...task.draft, canonicalProductId: task.draft.productId } },
+        analysis: null,
+        familyBinding: {
+          familyBindingSource: 'explicit', familyId: family.id,
+          insuredMemberId: insured?.id || null, insuredMemberName: insured?.name || '', insuredNameSnapshot: insured?.name || task.draft.insured,
+          applicantMemberId: applicant?.id || null, applicantMemberName: applicant?.name || '', applicantNameSnapshot: applicant?.name || task.draft.applicant,
+          participantReviewStatus: 'confirmed',
+        },
+      });
+    },
+  });
   const policyImports = createAgentPolicyImportRuntime({
     state,
     allocateId,
     persistTask: persistAgentPolicyImportTask,
     loadTask: options.findAgentPolicyImportTask,
     recognizePolicyInput: ({ body }) => recognizePolicyInput({ scanner: options.scanner || scanPolicyWithConfiguredRuntime, body, state }),
+    finalizeTask: finalizer,
   });
   const wukongMcpGateway = options.wukongMcpGateway || createWukongMcpGateway({
     state,

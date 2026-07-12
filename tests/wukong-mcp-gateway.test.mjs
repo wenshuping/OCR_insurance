@@ -35,7 +35,7 @@ function call(gateway, overrides = {}) {
 
 test('registry exposes only approved identity, family, and policy intake tools with private schemas', async () => {
   const gateway = createWukongMcpGateway({ state: stateFor() });
-  assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families', 'start_policy_import', 'append_policy_import_files', 'get_policy_import', 'apply_policy_import_action']);
+  assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families', 'start_policy_import', 'append_policy_import_files', 'get_policy_import', 'apply_policy_import_action', 'finalize_policy_import']);
   assert.equal(gateway.registry, undefined);
   assert.deepEqual(gateway.toolMetadata.map((tool) => tool.name), gateway.toolNames);
   assert.deepEqual(gateway.toolMetadata[0].inputSchema, { type: 'object', properties: {}, required: [], additionalProperties: false });

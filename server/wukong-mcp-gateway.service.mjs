@@ -131,6 +131,10 @@ function createRegistry(state, policyImports) {
         return policyImports.action({ familyId: resolveFamily(context, familyRef).id, taskId, owner: context, input: action });
       },
     }],
+    ['finalize_policy_import', {
+      name: 'finalize_policy_import', inputSchema: familySchema({ familyRef: { type: 'integer' }, taskId: { type: 'integer' }, stateVersion: { type: 'integer' }, requestId: { type: 'string' } }, ['familyRef', 'taskId', 'stateVersion', 'requestId']), authorize: () => true,
+      execute: (context, input) => policyImports.finalize({ family: resolveFamily(context, input.familyRef), taskId: input.taskId, owner: context, stateVersion: input.stateVersion, requestId: input.requestId }),
+    }],
   ]);
 }
 

@@ -111,7 +111,7 @@ function mergeDocumentCandidates(task) {
   }
 }
 
-export function createAgentPolicyImportRuntime({ state, allocateId, persistTask, loadTask, recognizePolicyInput, resolveProductCandidates, nowIso = () => new Date().toISOString(), maxDocumentBytes = DEFAULT_MAX_DOCUMENT_BYTES, scanLeaseMs = DEFAULT_SCAN_LEASE_MS, queueLeaseMs = DEFAULT_QUEUE_LEASE_MS } = {}) {
+export function createAgentPolicyImportRuntime({ state, allocateId, persistTask, loadTask, recognizePolicyInput, resolveProductCandidates, finalizeTask, nowIso = () => new Date().toISOString(), maxDocumentBytes = DEFAULT_MAX_DOCUMENT_BYTES, scanLeaseMs = DEFAULT_SCAN_LEASE_MS, queueLeaseMs = DEFAULT_QUEUE_LEASE_MS } = {}) {
   state.agentPolicyImportTasks = Array.isArray(state.agentPolicyImportTasks) ? state.agentPolicyImportTasks : [];
 
   function ownedTask(taskId, familyId, owner) {
@@ -165,6 +165,11 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
   }
 
   return {
+    async finalize({ family, taskId, owner, requestId, stateVersion }) {
+      if (typeof finalizeTask !== 'function') fail('FINALIZATION_NOT_CONFIGURED', '正式保存服务未配置', 503);
+      const task = await freshOwnedTask(taskId, family.id, owner);
+      return finalizeTask({ task, family, owner, requestId, stateVersion });
+    },
     async start({ family, owner, channel = 'web' }) {
       const task = createAgentPolicyImportTask({
         id: allocateId(state), familyId: family.id, owner, channel,

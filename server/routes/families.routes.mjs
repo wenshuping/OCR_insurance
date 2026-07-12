@@ -143,6 +143,15 @@ export function createFamilyRoutes(context) {
     } catch (error) { return sendError(res, error, error?.status || 500); }
   });
 
+  router.post('/family-profiles/:id/policy-imports/:taskId/finalize', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try {
+      const result = await policyImports.finalize({ ...scope, taskId: Number(req.params.taskId), requestId: req.body?.requestId, stateVersion: req.body?.stateVersion });
+      return res.json({ ok: true, result });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
   function isUserReportRefreshRequest(req) {
     return req.body?.userRefresh === true;
   }
