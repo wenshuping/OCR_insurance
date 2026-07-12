@@ -27,6 +27,7 @@ export async function startDingtalkStream({ env = process.env, Client = DWClient
     answerText: createHermesTextAgent({
       command: String(env.HERMES_INSURANCE_COMMAND || '').trim() || 'insuranceagent',
       timeoutMs: Number(env.HERMES_INSURANCE_TIMEOUT_MS) || undefined,
+      policyUploadUrl: String(env.DINGTALK_POLICY_UPLOAD_URL || '').trim() || 'https://ocr.joyhive.cn',
     }),
   });
   client.registerCallbackListener(TOPIC_ROBOT, (event) => {

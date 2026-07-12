@@ -6,6 +6,7 @@ test('Hermes text agent uses an isolated hashed session and passes the principal
   let received;
   const answer = createHermesTextAgent({
     identityKey: 'test-hermes-identity-key-32-bytes-long',
+    policyUploadUrl: 'https://c.example.test/upload',
     execFileImpl: async (command, args, options) => {
       received = { command, args, options };
       return { stdout: '第六个家庭目前有 3 份保单。\n', stderr: '' };
@@ -17,4 +18,7 @@ test('Hermes text agent uses an isolated hashed session and passes the principal
   assert.equal(received.args.join(' ').includes('raw-ding-id'), false);
   assert.match(received.args[received.args.indexOf('--continue') + 1], /^dingtalk-insurance-[a-f0-9]{24}$/);
   assert.match(received.args[received.args.indexOf('--oneshot') + 1], /必须调用工具/);
+  assert.match(received.args[received.args.indexOf('--oneshot') + 1], /https:\/\/c\.example\.test\/upload/);
+  assert.match(received.args[received.args.indexOf('--oneshot') + 1], /不要查询或列出家庭/);
+  assert.match(received.args[received.args.indexOf('--oneshot') + 1], /不要创建专属上传链接/);
 });

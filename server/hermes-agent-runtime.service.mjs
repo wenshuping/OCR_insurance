@@ -20,23 +20,24 @@ function principalToken(dingUserId, secret, now = Date.now()) {
   return `${payload}.${signature}`;
 }
 
-function agentPrompt(text, token) {
+function agentPrompt(text, token, policyUploadUrl) {
   return [
     '你是 OCR Insurance 的钉钉保险顾问 Agent。',
-    '理解用户自然语言后，自主选择 OCR Insurance MCP 工具；涉及家庭时先列出可访问家庭，再按名称、编号或上下文选择，绝不猜测业务数据。',
+    `只要用户表达上传、录入、添加或补充保单原件的意图，直接请用户打开 C 端网页 ${policyUploadUrl} 完成操作；不要查询或列出家庭，不要让用户选择家庭，不要创建专属上传链接，也不要调用任何工具。`,
+    '除上述上传意图外，理解用户自然语言后，自主选择 OCR Insurance MCP 工具；涉及家庭时先列出可访问家庭，再按名称、编号或上下文选择，绝不猜测业务数据。',
     '查询数量、保单或家庭事实必须调用工具。保险结论必须调用保险专家或销冠工具。回答简洁、自然，不要提 MCP、工具调用或内部实现。',
     `本次身份令牌：${token}。调用每个 OCR Insurance 工具时，必须把它原样填写到 principal_token。`,
     `用户消息：${String(text || '').slice(0, 4_000)}`,
   ].join('\n');
 }
 
-export function createHermesTextAgent({ command = 'insuranceagent', execFileImpl = execFile, timeoutMs = 120_000, identityKey = process.env.DINGTALK_IDENTITY_SERVICE_TOKEN } = {}) {
+export function createHermesTextAgent({ command = 'insuranceagent', execFileImpl = execFile, timeoutMs = 120_000, identityKey = process.env.DINGTALK_IDENTITY_SERVICE_TOKEN, policyUploadUrl = 'https://ocr.joyhive.cn' } = {}) {
   return async function answerText({ dingUserId, text }) {
     const principal = String(dingUserId || '').trim();
     if (!principal) throw runtimeError('HERMES_PRINCIPAL_REQUIRED', 400);
     try {
       const result = await execFileImpl(command, [
-        '--oneshot', agentPrompt(text, principalToken(principal, identityKey)),
+        '--oneshot', agentPrompt(text, principalToken(principal, identityKey), policyUploadUrl),
         '--continue', sessionName(principal),
         '--ignore-rules',
       ], {
