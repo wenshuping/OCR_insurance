@@ -12,6 +12,7 @@ const QUESTION_BODY_FIELDS = new Set(['channel', 'channelUserId', 'messageRef', 
 const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'messageRef', 'conversationId']);
 const PUBLIC_DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const PUBLIC_INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
+const SECURE_LINK_ACTIONS = new Set(['open_web', 'register_or_login', 'policy_upload']);
 
 function text(value, maxLength) {
   if (typeof value !== 'string') return '';
@@ -60,24 +61,68 @@ function normalizeOptions(value) {
   return options.length ? options : undefined;
 }
 
-function normalizePublicResult(result) {
+function normalizeCandidates(value) {
+  if (!Array.isArray(value)) return undefined;
+  const candidates = value.slice(0, 20).map((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+    const ref = text(candidate.ref, 200);
+    const label = text(candidate.label, 200);
+    return ref && label ? { ref, label } : null;
+  }).filter(Boolean);
+  return candidates.length ? candidates : undefined;
+}
+
+function normalizeInteraction(interaction, type, allowedOrigins) {
+  const interactionText = typeof interaction?.text === 'string'
+    ? interaction.text.trim().slice(0, 2000)
+    : '';
+  const normalized = { type, ...(interactionText ? { text: interactionText } : {}) };
+  if (type === 'clarification') {
+    const candidates = normalizeCandidates(interaction?.candidates);
+    return { ...normalized, ...(candidates ? { candidates } : {}) };
+  }
+  if (type === 'secure_link') {
+    const url = safeLink(interaction?.url, allowedOrigins);
+    const action = SECURE_LINK_ACTIONS.has(interaction?.action) ? interaction.action : '';
+    return { ...normalized, ...(url ? { url } : {}), ...(action ? { action } : {}) };
+  }
+  if (type === 'confirmation') {
+    const confirmationId = text(interaction?.confirmationId, 200);
+    const summary = text(interaction?.summary, 500);
+    const options = normalizeOptions(interaction?.options);
+    return {
+      ...normalized,
+      ...(confirmationId ? { confirmationId } : {}),
+      ...(summary ? { summary } : {}),
+      ...(options ? { options } : {}),
+    };
+  }
+  if (type === 'progress') {
+    const jobId = text(interaction?.jobId, 200);
+    const status = text(interaction?.status, 40);
+    const message = text(interaction?.message, 500);
+    const progress = Number(interaction?.progress);
+    return {
+      ...normalized,
+      ...(jobId ? { jobId } : {}),
+      ...(status ? { status } : {}),
+      ...(message ? { message } : {}),
+      ...(Number.isFinite(progress) && progress >= 0 && progress <= 100 ? { progress } : {}),
+    };
+  }
+  return normalized;
+}
+
+function normalizePublicResult(result, allowedOrigins) {
   const decision = PUBLIC_DECISIONS.has(result?.decision) ? result.decision : 'deny';
   const interactionType = PUBLIC_INTERACTIONS.has(result?.interaction?.type)
     ? result.interaction.type
     : 'denied';
-  const interactionText = typeof result?.interaction?.text === 'string'
-    ? result.interaction.text.trim().slice(0, 2000)
-    : '';
-  const options = normalizeOptions(result?.interaction?.options);
   const requestRef = text(result?.requestRef, 200);
   const confirmationId = text(result?.confirmationId, 200);
   return {
     decision,
-    interaction: {
-      type: interactionType,
-      ...(interactionText ? { text: interactionText } : {}),
-      ...(options ? { options } : {}),
-    },
+    interaction: normalizeInteraction(result?.interaction, interactionType, allowedOrigins),
     ...(requestRef ? { requestRef } : {}),
     ...(confirmationId ? { confirmationId } : {}),
   };
@@ -236,7 +281,7 @@ export function createAgentRouter({
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
         candidate: input.candidate,
       });
-      res.json({ ok: true, ...normalizePublicResult(result) });
+      res.json({ ok: true, ...normalizePublicResult(result, secureLinkAllowedOrigins) });
     } catch (error) {
       if (Number(error?.status) === 429) {
         send(res, 429, 'AGENT_RATE_LIMITED');
@@ -265,7 +310,7 @@ export function createAgentRouter({
         messageRef: input.messageRef,
         channel: input.channel,
       });
-      res.json({ ok: true, ...normalizePublicResult(result) });
+      res.json({ ok: true, ...normalizePublicResult(result, secureLinkAllowedOrigins) });
     } catch (error) {
       if (Number(error?.status) === 429) {
         send(res, 429, 'AGENT_RATE_LIMITED');

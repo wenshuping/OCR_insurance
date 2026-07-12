@@ -4,6 +4,7 @@ import test from 'node:test';
 import express from 'express';
 
 import { createPolicyOcrApp } from '../server/app.mjs';
+import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
 import { createAgentRouter } from '../server/routes/agent.routes.mjs';
 
 async function startServer(overrides = {}) {
@@ -131,11 +132,126 @@ test('upstream results are reduced to bounded public interaction fields', async 
     interaction: {
       type: 'answer',
       text: '答'.repeat(2000),
-      options: [{ id: 'choice-1', label: '家庭一' }],
     },
   });
   assert.equal(JSON.stringify(result.payload).includes('secret'), false);
   assert.equal(JSON.stringify(result.payload).includes('13800138000'), false);
+});
+
+test('real family router preserves opaque clarification candidates for the authorized next turn', async (t) => {
+  const handled = [];
+  const questionRouter = createAgentQuestionRouter({
+    store: {
+      async load() {
+        return {
+          familyProfiles: [
+            { id: 71, ownerUserId: 7, familyName: '同名家庭', status: 'active' },
+            { id: 72, ownerUserId: 7, familyName: '同名家庭', status: 'active' },
+          ],
+          policies: [],
+        };
+      },
+      async getPublishedAgentQuestionPolicyVersion() { return null; },
+      async recordAgentRouteAudit() {},
+    },
+    handlers: {
+      async insurance_expert(input) {
+        handled.push(input);
+        return { interaction: { type: 'answer', text: '已授权查询' } };
+      },
+    },
+  });
+  const server = await startServer({ questionRouter });
+  t.after(server.close);
+  const first = await post(server, '/api/agent/questions/route', validBody({
+    candidate: {
+      intent: 'family_summary', question: '查看同名家庭', confidence: 1, requestedOperation: 'read',
+      entities: { familyName: '同名家庭' },
+    },
+  }));
+  assert.equal(first.payload.decision, 'clarify');
+  assert.equal(first.payload.interaction.candidates.length, 2);
+  assert.deepEqual(Object.keys(first.payload.interaction.candidates[0]).sort(), ['label', 'ref']);
+  assert.match(first.payload.interaction.candidates[0].ref, /^family_[a-f0-9]{16}$/u);
+  assert.equal(JSON.stringify(first.payload).includes('同名家庭'), false);
+
+  const second = await post(server, '/api/agent/questions/route', validBody({
+    messageRef: 'msg-2',
+    candidate: {
+      intent: 'family_summary', question: '查看所选家庭', confidence: 1, requestedOperation: 'read',
+      entities: { familyRef: first.payload.interaction.candidates[0].ref },
+    },
+  }));
+  assert.equal(second.payload.decision, 'execute');
+  assert.equal(second.payload.interaction.text, '已授权查询');
+  assert.equal(handled.length, 1);
+  assert.ok([71, 72].includes(handled[0].familyId));
+});
+
+test('secure-link and confirmation interactions retain only their type-specific public fields', async (t) => {
+  const results = [
+    {
+      decision: 'open_web',
+      interaction: {
+        type: 'secure_link', text: '继续', url: 'https://app.example.test/continue', action: 'open_web',
+        secret: 'private',
+      },
+    },
+    {
+      decision: 'confirm',
+      confirmationId: 'cfm-top',
+      interaction: {
+        type: 'confirmation', text: '请确认', confirmationId: 'cfm-inner', summary: '生成家庭报告',
+        options: [{ id: 'approve', label: '确认', secret: 'private' }], secret: 'private',
+      },
+    },
+  ];
+  const server = await startServer({ questionRouter: { route: async () => results.shift() } });
+  t.after(server.close);
+  const secure = await post(server, '/api/agent/questions/route', validBody());
+  assert.deepEqual(secure.payload, {
+    ok: true,
+    decision: 'open_web',
+    interaction: {
+      type: 'secure_link', text: '继续', url: 'https://app.example.test/continue', action: 'open_web',
+    },
+  });
+  const confirmation = await post(server, '/api/agent/questions/route', validBody({ messageRef: 'msg-2' }));
+  assert.deepEqual(confirmation.payload, {
+    ok: true,
+    decision: 'confirm',
+    confirmationId: 'cfm-top',
+    interaction: {
+      type: 'confirmation', text: '请确认', confirmationId: 'cfm-inner', summary: '生成家庭报告',
+      options: [{ id: 'approve', label: '确认' }],
+    },
+  });
+  assert.equal(JSON.stringify([secure.payload, confirmation.payload]).includes('private'), false);
+});
+
+test('progress interaction retains bounded job status fields only', async (t) => {
+  const server = await startServer({
+    questionRouter: {
+      async route() {
+        return {
+          decision: 'execute',
+          interaction: {
+            type: 'progress', jobId: 'job-1', status: 'processing', message: '正在生成', progress: 45,
+            internalQueue: 'private',
+          },
+        };
+      },
+    },
+  });
+  t.after(server.close);
+  const result = await post(server, '/api/agent/questions/route', validBody());
+  assert.deepEqual(result.payload, {
+    ok: true,
+    decision: 'execute',
+    interaction: {
+      type: 'progress', jobId: 'job-1', status: 'processing', message: '正在生成', progress: 45,
+    },
+  });
 });
 
 test('malformed and oversized question payloads have stable errors', async (t) => {
