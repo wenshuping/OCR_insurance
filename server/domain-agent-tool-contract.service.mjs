@@ -7,11 +7,13 @@ const MAX_TASK_ID_LENGTH = 160;
 const MAX_ARRAY_LENGTH = 20;
 const MAX_ITEM_LENGTH = 500;
 const MAX_EVIDENCE_FIELD_LENGTH = 300;
+const MAX_INPUT_MULTIPLIER = 4;
 
 const SENSITIVE_LABEL = /(?:raw[ _-]?ocr|ocr[ _-]?(?:text|content)|system[ _-]?prompt|hidden[ _-]?prompt|chain[ _-]?of[ _-]?thought|reasoning|private[ _-]?tool[ _-]?trace|tool[ _-]?trace|internal[ _-]?path|base64[ _-]?(?:image|data)|(?:access[ _-]?|refresh[ _-]?)?token|api[ _-]?key|secret|password)["']?\s*[:=：]/iu;
 const CHINA_ID = /(?<!\d)\d{17}[\dXx](?!\d)/gu;
 const CHINA_MOBILE = /(?<!\d)1[3-9]\d{9}(?!\d)/gu;
 const DATA_URL = /data:(?:image|application)\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/giu;
+const DATA_URL_TEST = /data:(?:image|application)\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/iu;
 const INTERNAL_PATH = /(?:(?:\/)?\.runtime(?:\/[\w.@~+(), -]+)+|\/(?:Users|home|srv|var|tmp|private|Volumes|opt|etc|root)(?:\/[\w.@~+(), -]+)+|[A-Za-z]:\\(?:Users|Windows|ProgramData|private|tmp)\\[^\s；;]*)/gu;
 const PRIVATE_KEY = /-----BEGIN [^-\n]*(?:PRIVATE KEY|TOKEN)[\s\S]*?-----END [^-\n]+-----/gu;
 
@@ -45,7 +47,6 @@ function contractRead(value, key, field) {
 }
 
 function sanitizeText(value, maxLength) {
-  if (typeof value !== 'string') return '';
   if (SENSITIVE_LABEL.test(value)) return '[REDACTED]';
   return value
     .replace(PRIVATE_KEY, '[REDACTED]')
@@ -57,30 +58,51 @@ function sanitizeText(value, maxLength) {
     .slice(0, maxLength);
 }
 
-function requireBoundedString(input, key, maxLength) {
-  const value = safeRead(input, key);
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw contractError(key, 'must be a non-empty string');
+function requireSafeString(value, field, maxLength) {
+  if (typeof value !== 'string') {
+    throw contractError(field, 'must be a non-empty string');
+  }
+  if (value.length > maxLength * MAX_INPUT_MULTIPLIER) {
+    throw contractError(field, 'exceeds the maximum input length');
+  }
+  if (value.trim() === '') {
+    throw contractError(field, 'must be a non-empty string');
   }
   const sanitized = sanitizeText(value, maxLength);
   if (!sanitized || sanitized === '[REDACTED]') {
-    throw contractError(key, 'does not contain safe text');
+    throw contractError(field, 'does not contain safe text');
   }
   return sanitized;
 }
 
-function projectStringArray(input) {
-  if (!Array.isArray(input)) return [];
+function requireBoundedString(input, key, maxLength) {
+  return requireSafeString(contractRead(input, key, key), key, maxLength);
+}
+
+function requireRealArray(input, field) {
+  if (input === undefined) return null;
+  if (types.isProxy(input)) throw contractError(field, 'must be a real array');
+  let isArray;
+  try {
+    isArray = Array.isArray(input);
+  } catch {
+    throw contractError(field, 'must be a readable array');
+  }
+  if (!isArray) throw contractError(field, 'must be an array');
+  const length = contractRead(input, 'length', field);
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_ARRAY_LENGTH) {
+    throw contractError(field, `must contain at most ${MAX_ARRAY_LENGTH} entries`);
+  }
+  return length;
+}
+
+function projectStringArray(input, field) {
+  const length = requireRealArray(input, field);
+  if (length === null) return [];
   const result = [];
-  for (let index = 0; index < Math.min(input.length, MAX_ARRAY_LENGTH); index += 1) {
-    let value;
-    try {
-      value = input[index];
-    } catch {
-      continue;
-    }
-    const sanitized = sanitizeText(value, MAX_ITEM_LENGTH);
-    if (sanitized && sanitized !== '[REDACTED]') result.push(sanitized);
+  for (let index = 0; index < Math.min(length, MAX_ARRAY_LENGTH); index += 1) {
+    const value = contractRead(input, index, field);
+    result.push(requireSafeString(value, field, MAX_ITEM_LENGTH));
   }
   return result;
 }
@@ -130,8 +152,7 @@ function resolverAllowsUrl(url, evidence, resolver) {
 }
 
 function sanitizePublicUrl(value, evidence, options) {
-  if (typeof value !== 'string' || value.length > 2_000 || DATA_URL.test(value)) return '';
-  DATA_URL.lastIndex = 0;
+  if (typeof value !== 'string' || value.length > 2_000 || DATA_URL_TEST.test(value)) return '';
   try {
     const url = new URL(value);
     const policies = normalizeHostPolicies(options.allowedEvidenceHosts);
@@ -149,39 +170,19 @@ function sanitizePublicUrl(value, evidence, options) {
 }
 
 function projectEvidence(input, options) {
-  if (input === undefined) return [];
-  if (types.isProxy(input)) throw contractError('evidence', 'must be a real array');
-  let isArray;
-  try {
-    isArray = Array.isArray(input);
-  } catch {
-    throw contractError('evidence', 'must be a readable array');
-  }
-  if (!isArray) throw contractError('evidence', 'must be an array');
-  const length = contractRead(input, 'length', 'evidence');
-  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_ARRAY_LENGTH) {
-    throw contractError('evidence', `must contain at most ${MAX_ARRAY_LENGTH} entries`);
-  }
+  const length = requireRealArray(input, 'evidence');
+  if (length === null) return [];
   const result = [];
   for (let index = 0; index < Math.min(length, MAX_ARRAY_LENGTH); index += 1) {
-    let item;
-    try {
-      item = input[index];
-    } catch {
-      throw contractError('evidence', 'contains an unreadable entry');
-    }
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    const item = contractRead(input, index, 'evidence');
+    if (!item || typeof item !== 'object' || types.isProxy(item) || Array.isArray(item)) {
       throw contractError('evidence', 'entries must be objects');
     }
-    const label = sanitizeText(safeRead(item, 'label'), MAX_EVIDENCE_FIELD_LENGTH);
-    const sourceRef = sanitizeText(safeRead(item, 'sourceRef'), MAX_EVIDENCE_FIELD_LENGTH);
-    const version = sanitizeText(safeRead(item, 'version'), MAX_EVIDENCE_FIELD_LENGTH);
-    if (!label || label === '[REDACTED]' || !sourceRef || sourceRef === '[REDACTED]'
-      || !version || version === '[REDACTED]') {
-      throw contractError('evidence', 'entries require safe non-empty string label, sourceRef, and version');
-    }
+    const label = requireSafeString(contractRead(item, 'label', 'evidence'), 'evidence', MAX_EVIDENCE_FIELD_LENGTH);
+    const sourceRef = requireSafeString(contractRead(item, 'sourceRef', 'evidence'), 'evidence', MAX_EVIDENCE_FIELD_LENGTH);
+    const version = requireSafeString(contractRead(item, 'version', 'evidence'), 'evidence', MAX_EVIDENCE_FIELD_LENGTH);
     const projected = { label, sourceRef, version };
-    const url = sanitizePublicUrl(safeRead(item, 'url'), item, options);
+    const url = sanitizePublicUrl(contractRead(item, 'url', 'evidence'), item, options);
     if (url) projected.url = url;
     result.push(projected);
   }
@@ -208,7 +209,7 @@ export function buildDomainAgentEnvelope(input, options = {}) {
   if (prototype !== Object.prototype && prototype !== null) {
     throw contractError('envelope', 'must be a plain object');
   }
-  const agent = safeRead(input, 'agent');
+  const agent = contractRead(input, 'agent', 'agent');
   if (!KNOWN_AGENTS.has(agent)) throw contractError('agent', 'must be a known domain agent');
 
   const envelope = {
@@ -216,8 +217,8 @@ export function buildDomainAgentEnvelope(input, options = {}) {
     taskId: requireBoundedString(input, 'taskId', MAX_TASK_ID_LENGTH),
     answer: requireBoundedString(input, 'answer', MAX_ANSWER_LENGTH),
     evidence: projectEvidence(contractRead(input, 'evidence', 'evidence'), options && typeof options === 'object' ? options : {}),
-    limitations: projectStringArray(safeRead(input, 'limitations')),
-    missingInformation: projectStringArray(safeRead(input, 'missingInformation')),
+    limitations: projectStringArray(contractRead(input, 'limitations', 'limitations'), 'limitations'),
+    missingInformation: projectStringArray(contractRead(input, 'missingInformation', 'missingInformation'), 'missingInformation'),
   };
   return deepFreeze(envelope);
 }

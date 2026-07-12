@@ -119,6 +119,21 @@ test('only keeps URLs authorized by a server-configured exact or subdomain host 
   assert.equal('url' in result.evidence[2], false);
 });
 
+test('data URL detection is deterministic across repeated and reordered evidence URLs', () => {
+  const unsafe = 'https://example.com/terms?image=data:image/png;base64,aGVsbG8=';
+  for (const urls of [
+    [unsafe, unsafe, 'https://example.com/safe'],
+    ['https://example.com/safe', unsafe, unsafe],
+  ]) {
+    const result = buildDomainAgentEnvelope({
+      ...baseInput(),
+      evidence: urls.map((url, index) => ({ label: `item ${index}`, sourceRef: `ref:${index}`, version: '1', url })),
+    }, { allowedEvidenceHosts: ['example.com'] });
+    assert.equal(result.evidence.filter((item) => 'url' in item).length, 1);
+    assert.equal(result.evidence.find((item) => item.url)?.url, 'https://example.com/safe');
+  }
+});
+
 test('drops URLs by default and rejects URL metadata and non-public host forms', () => {
   const urls = [
     'https://example.com:8443/x',
@@ -172,8 +187,8 @@ test('bounds arrays and strings and safely handles cyclic, BigInt, and hostile v
     ...baseInput(),
     answer: 'a'.repeat(20_000),
     evidence,
-    limitations: Array.from({ length: 100 }, (_, index) => `limit-${index}-${'x'.repeat(1000)}`),
-    missingInformation: [1n, cyclic, 'safe'],
+    limitations: Array.from({ length: 20 }, (_, index) => `limit-${index}-${'x'.repeat(1000)}`),
+    missingInformation: ['safe'],
   });
 
   assert.ok(result.answer.length <= 8_000);
@@ -199,6 +214,55 @@ test('bounds arrays and strings and safely handles cyclic, BigInt, and hostile v
     () => buildDomainAgentEnvelope({ ...baseInput(), evidence: hostileEvidence }),
     (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && !String(error).includes('array secret'),
   );
+});
+
+test('limitations and missing information require bounded real string arrays', () => {
+  for (const field of ['limitations', 'missingInformation']) {
+    for (const value of [null, {}, ['safe', 1n], Array.from({ length: 21 }, () => 'safe'), new Proxy([], {})]) {
+      assert.throws(
+        () => buildDomainAgentEnvelope({ ...baseInput(), [field]: value }),
+        (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === field,
+      );
+    }
+
+    const hostile = [];
+    Object.defineProperty(hostile, 0, { get() { throw new Error('list getter secret'); } });
+    assert.throws(
+      () => buildDomainAgentEnvelope({ ...baseInput(), [field]: hostile }),
+      (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE'
+        && error?.field === field && !String(error).includes('list getter secret'),
+    );
+  }
+});
+
+test('rejects oversized strings before sanitizer regex work with one property read', () => {
+  const huge = 'x'.repeat(40_000);
+  for (const field of ['taskId', 'answer']) {
+    let getterCount = 0;
+    const input = { ...baseInput() };
+    Object.defineProperty(input, field, {
+      get() {
+        getterCount += 1;
+        return huge;
+      },
+    });
+    assert.throws(
+      () => buildDomainAgentEnvelope(input),
+      (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === field,
+    );
+    assert.equal(getterCount, 1);
+  }
+
+  for (const [field, value] of [
+    ['evidence', [{ label: huge, sourceRef: 'ref', version: '1' }]],
+    ['limitations', [huge]],
+    ['missingInformation', [huge]],
+  ]) {
+    assert.throws(
+      () => buildDomainAgentEnvelope({ ...baseInput(), [field]: value }),
+      (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === field,
+    );
+  }
 });
 
 test('rejects oversized or proxied evidence before unbounded indexed reads', () => {
