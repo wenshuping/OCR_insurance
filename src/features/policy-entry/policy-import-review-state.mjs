@@ -7,8 +7,27 @@ export function parseCustomerRoute(search = '') {
   const params = new URLSearchParams(search);
   return {
     policyImportTaskId: positiveRouteId(params.get('policyImportTaskId')),
+    policyImportRecoveryTaskId: positiveRouteId(params.get('policyImportRecoveryTaskId')),
     policyId: positiveRouteId(params.get('policyId')),
   };
+}
+
+export function principalKey(token, guestId) {
+  return token ? `token:${token}` : `guest:${guestId}`;
+}
+
+export function beginPrincipalLoad(state, nextPrincipalKey) {
+  return { ...state, generation: Number(state.generation || 0) + 1, principalKey: nextPrincipalKey };
+}
+
+export function acceptPrincipalPolicies(state, generation, expectedPrincipalKey, policies) {
+  return state.mounted && state.generation === generation && state.principalKey === expectedPrincipalKey ? policies : null;
+}
+
+export function acquireRequestLock(lock) {
+  if (lock.current) return false;
+  lock.current = true;
+  return true;
 }
 
 export function removeCustomerRouteParam(path, name) {

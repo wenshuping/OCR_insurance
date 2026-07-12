@@ -5,6 +5,10 @@ import {
   beginReviewRequest,
   completedPolicyHref,
   failedPolicyImportRecoveryUrl,
+  acquireRequestLock,
+  acceptPrincipalPolicies,
+  beginPrincipalLoad,
+  principalKey,
   nextPolicyImportPoll,
   parseCustomerRoute,
   removeCustomerRouteParam,
@@ -12,9 +16,24 @@ import {
 } from '../src/features/policy-entry/policy-import-review-state.mjs';
 
 test('customer route parses both task and exact policy while preserving the other parameter', () => {
-  assert.deepEqual(parseCustomerRoute('?policyImportTaskId=41&policyId=91'), { policyImportTaskId: 41, policyId: 91 });
+  assert.deepEqual(parseCustomerRoute('?policyImportTaskId=41&policyId=91'), { policyImportTaskId: 41, policyImportRecoveryTaskId: null, policyId: 91 });
   assert.equal(removeCustomerRouteParam('/?policyImportTaskId=41&policyId=91', 'policyId'), '/?policyImportTaskId=41');
-  assert.deepEqual(parseCustomerRoute('?policyId=forged'), { policyImportTaskId: null, policyId: null });
+  assert.deepEqual(parseCustomerRoute('?policyId=forged'), { policyImportTaskId: null, policyImportRecoveryTaskId: null, policyId: null });
+});
+
+test('a deferred guest policy response is ignored after authentication changes principal', () => {
+  const guest = beginPrincipalLoad({ generation: 0, principalKey: '', mounted: true }, principalKey('', 'guest-1'));
+  const auth = beginPrincipalLoad(guest, principalKey('token-1', 'guest-1'));
+  assert.equal(acceptPrincipalPolicies(auth, guest.generation, guest.principalKey, [{ id: 1 }]), null);
+  assert.deepEqual(acceptPrincipalPolicies(auth, auth.generation, auth.principalKey, [{ id: 2 }]), [{ id: 2 }]);
+});
+
+test('request lock rejects a synchronous duplicate until released', () => {
+  const lock = { current: false };
+  assert.equal(acquireRequestLock(lock), true);
+  assert.equal(acquireRequestLock(lock), false);
+  lock.current = false;
+  assert.equal(acquireRequestLock(lock), true);
 });
 
 test('a task completed elsewhere produces an exact policy link from its safe GET result', () => {

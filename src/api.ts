@@ -137,7 +137,7 @@ export type FamilyPolicyAnalysisReport = FamilyPolicyAnalysisReportContract;
 
 export type FamilySalesReview = FamilySalesReviewContract;
 
-export function listPolicies(input: { token?: string; guestId?: string } = {}) {
+export function listPolicies(input: { token?: string; guestId?: string; signal?: AbortSignal } = {}) {
   return listPoliciesContract(input);
 }
 
@@ -167,7 +167,7 @@ export function confirmCashValue(input: { token?: string; guestId?: string; poli
   return confirmCashValueContract(input);
 }
 
-export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
+export function listFamilyProfiles(input: { token?: string; guestId?: string; signal?: AbortSignal } = {}) {
   // request<{ ok: true; families: FamilyProfile[] }>
   return listFamilyProfilesContract(input);
 }

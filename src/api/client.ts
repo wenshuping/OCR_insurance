@@ -4,6 +4,7 @@ export type ApiOptions = {
   token?: string;
   body?: unknown;
   method?: string;
+  signal?: AbortSignal;
 };
 
 export type HealthStatus = {
@@ -32,6 +33,7 @@ export async function request<T>(path: string, options: ApiOptions = {}): Promis
     headers,
     cache: 'no-store',
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    signal: options.signal,
   });
   const payload = (await response.json().catch(() => null)) as { code?: string; message?: string } | null;
   if (!response.ok) {

@@ -410,8 +410,8 @@ export function analyzePolicy(input: {
   });
 }
 
-export function listPolicies(input: { token?: string; guestId?: string } = {}) {
-  return request<{ ok: true; policies: Policy[] }>(`/api/policies${authQuery(input)}`, { token: input.token });
+export function listPolicies(input: { token?: string; guestId?: string; signal?: AbortSignal } = {}) {
+  return request<{ ok: true; policies: Policy[] }>(`/api/policies${authQuery(input)}`, { token: input.token, signal: input.signal });
 }
 
 export function getPolicy(input: { token?: string; guestId?: string; id: number }) {

@@ -1957,6 +1957,9 @@ test('customer app resumes a masked policy import task from its cross-channel qu
   assert.match(normalizedCustomerAppSource, /parseCustomerRoute\(window\.location\.search\)/);
   assert.match(normalizedCustomerAppSource, /AgentPolicyImportReview/);
   assert.match(normalizedCustomerAppSource, /resolveOwnedPolicy\(requestedPolicyId, policies\)/);
+  assert.match(normalizedCustomerAppSource, /loadedPolicyPrincipalKey !== principalKey\(token, guestId\)/);
+  assert.match(normalizedCustomerAppSource, /policyLoadControllerRef\.current\?\.abort\(\)/);
+  assert.match(normalizedCustomerAppSource, /policyImportRecoveryTaskId/);
   assert.match(normalizedCustomerAppSource, /setActiveTab\('families'\);\s*setShowFamilyPolicies\(true\)/);
   assert.match(reviewSource, /getPolicyImport\(/);
   assert.match(reviewSource, /task\.stateVersion/);
@@ -1972,6 +1975,9 @@ test('customer app resumes a masked policy import task from its cross-channel qu
   assert.match(reviewSource, /任务已在其他渠道更新/);
   assert.match(reviewSource, /clearTimeout\(/);
   assert.match(reviewSource, /nextPolicyImportPoll\(/);
+  assert.match(reviewSource, /requestControllerRef\.current\?\.abort\(\)/);
+  assert.match(reviewSource, /acquireRequestLock\(inFlightRef\)/);
+  assert.match(reviewSource, /productName:\s*'产品名称'/);
   assert.match(reviewSource, /aria-live="polite"/);
   assert.match(reviewSource, /查看已保存保单/);
   assert.doesNotMatch(reviewSource, /localStorage|sessionStorage|data:image|ocrText|rawOcr/i);

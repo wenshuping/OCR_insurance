@@ -197,34 +197,34 @@ export type PolicyImportFinalizationResult = {
   completedAt: string;
 };
 
-type PolicyImportScope = { token?: string; guestId?: string; familyId: number };
+type PolicyImportScope = { token?: string; guestId?: string; familyId: number; signal?: AbortSignal };
 
 export function startPolicyImport(input: PolicyImportScope) {
   return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports${authQuery(input)}`, { token: input.token, body: {} });
 }
 
 export function getPolicyImport(input: PolicyImportScope & { taskId: number }) {
-  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports/${input.taskId}${authQuery(input)}`, { token: input.token });
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports/${input.taskId}${authQuery(input)}`, { token: input.token, signal: input.signal });
 }
 
 export function appendPolicyImportFiles(input: PolicyImportScope & { taskId: number; stateVersion: number; files: Array<{ uploadItem: string; name?: string; mediaType?: string }> }) {
   return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports/${input.taskId}/files${authQuery(input)}`, {
-    token: input.token, body: { stateVersion: input.stateVersion, files: input.files },
+    token: input.token, body: { stateVersion: input.stateVersion, files: input.files }, signal: input.signal,
   });
 }
 
 export function applyPolicyImportAction(input: PolicyImportScope & { taskId: number; stateVersion: number; action: string; field?: string; value?: string; optionId?: string; role?: string }) {
-  const { token, guestId, familyId, taskId, ...body } = input;
-  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/actions${authQuery({ guestId })}`, { token, body });
+  const { token, guestId, familyId, taskId, signal, ...body } = input;
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/actions${authQuery({ guestId })}`, { token, body, signal });
 }
 
 export function finalizePolicyImport(input: PolicyImportScope & { taskId: number; stateVersion: number; requestId: string }) {
-  const { token, guestId, familyId, taskId, ...body } = input;
-  return request<{ ok: true; result: PolicyImportFinalizationResult }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/finalize${authQuery({ guestId })}`, { token, body });
+  const { token, guestId, familyId, taskId, signal, ...body } = input;
+  return request<{ ok: true; result: PolicyImportFinalizationResult }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/finalize${authQuery({ guestId })}`, { token, body, signal });
 }
 
-export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
-  return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
+export function listFamilyProfiles(input: { token?: string; guestId?: string; signal?: AbortSignal } = {}) {
+  return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token, signal: input.signal });
 }
 
 export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string; notes?: string }) {

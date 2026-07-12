@@ -1,7 +1,11 @@
-export type CustomerRoute = { policyImportTaskId: number | null; policyId: number | null };
+export type CustomerRoute = { policyImportTaskId: number | null; policyImportRecoveryTaskId: number | null; policyId: number | null };
 export type ReviewRequestState = { generation: number; mounted: boolean };
 export function positiveRouteId(value: unknown): number | null;
 export function parseCustomerRoute(search?: string): CustomerRoute;
+export function principalKey(token: string, guestId: string): string;
+export function beginPrincipalLoad<T extends { generation: number }>(state: T, nextPrincipalKey: string): T & { principalKey: string };
+export function acceptPrincipalPolicies<T>(state: ReviewRequestState & { principalKey: string }, generation: number, expectedPrincipalKey: string, policies: T[]): T[] | null;
+export function acquireRequestLock(lock: { current: boolean }): boolean;
 export function removeCustomerRouteParam(path: string, name: string): string;
 export function resolveOwnedPolicy<T extends { id: number }>(requestedPolicyId: unknown, policies?: T[]): T | null;
 export function beginReviewRequest<T extends ReviewRequestState>(state: T): T;

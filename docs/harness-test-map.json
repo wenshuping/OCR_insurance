@@ -160,6 +160,9 @@
     "name": "customer-policy-import-review",
     "patterns": [
       "src/apps/customer/CustomerApp.tsx",
+      "src/api.ts",
+      "src/api/client.ts",
+      "src/api/contracts/policy.ts",
       "src/features/policy-entry/AgentPolicyImportReview.tsx",
       "src/features/policy-entry/policy-import-review-state.mjs",
       "src/features/policy-entry/policy-import-review-state.d.mts",
