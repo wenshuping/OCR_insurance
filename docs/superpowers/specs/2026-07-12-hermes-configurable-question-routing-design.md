@@ -1,7 +1,7 @@
 # Hermes 顾问问题路由与可配置策略设计
 
 日期：2026-07-12  
-状态：已实施（本地自动化验收通过；生产发布与真实钉钉/Hermes 企业凭据验证待人工执行）
+状态：代码已实施；本地核心门通过；完整 harness 受既有工作区问题阻塞；外部联调待完成
 适用范围：已注册 OCR Insurance 保险顾问通过钉钉向 Hermes 提问；后续可扩展至 C 端客户
 
 ## 1. 目标
@@ -233,6 +233,8 @@ Hermes 只提交结构化理解结果：
 9. 钉钉不接收客户保单原件，仅返回 C 端安全上传链接。
 10. Hermes 故障或禁用时，OCR Insurance 网页和既有领域服务不受影响。
 
+本地自动化从 Hermes 已产出的标准 candidate 契约开始，验证意图、实体、置信度和读写类型进入路由后的行为。仓库内没有可在无企业凭据条件下运行的 Hermes 自然语言解释器，因此“同义自然问法 → 相同标准 candidate”的识别准确率不属于本地自动化结论，须使用真实 Hermes 企业环境人工联调。
+
 ## 15. 第一阶段实施边界
 
 第一阶段只实现顾问身份、问题策略路由、内置模板、未知问题兜底、两类报告、产品知识、系统帮助、策略管理和审计。高风险写操作先建立统一确认框架，保单转移作为首个样例；不开放任意数据库修改、钉钉群聊客户数据、客户原件上传或 C 端直接使用。
@@ -250,4 +252,8 @@ Hermes 只提交结构化理解结果：
 - 管理后台支持策略草稿、校验、simulation、发布、回滚和审计。simulation 复用实际路由决策但不创建未知问题、确认、outbox 或路由审计；运行时读取唯一 published 版本，配置无效时安全回退到内置策略。
 - 自动化验收覆盖 `tests/agent-question-routes.test.mjs`、`tests/agent-question-handlers.test.mjs`、`tests/agent-confirmation.test.mjs`、`tests/agent-question-router.test.mjs`、`tests/admin-agent-question-policy.test.mjs` 和 `tests/agent-question-policy.test.mjs`。
 
-本记录仅表示本地代码与自动化测试已实施，不表示线上环境已经验证。生产发布、真实钉钉应用回调、Hermes 企业租户接入、签名密钥及企业凭据配置仍须人工执行；凭据不写入本文档、普通日志或测试夹具。
+测试层级明确分为：HTTP 网关层验证服务鉴权、身份、schema、公开字段和稳定错误；`createPolicyOcrApp` 组合层验证 HTTP → 真实问题路由 → 真实领域处理器、报告队列及现有销售聊天上下文，并验证 Hermes 禁用或故障时应用 health 仍可用；领域层验证精确数值、新鲜度、PII 和 SQLite 原子/outbox；管理层验证 published 策略与 simulation 使用同一决策且 simulation 无写入。外部模型生成函数在测试中作为依赖边界 stub，未虚构生产接口。
+
+本地验证记录（2026-07-13）：`npm run check`、`npm run typecheck`、`npm test` 和 `npm run build` 通过；build 保留 Vite 对超过 500 kB chunk 的非阻塞警告。`npm run harness:audit` 已运行，exit 1：Hermes 专用映射及其 focused tests 已通过，完整审计仍被当前工作区其他未映射改动和既有 route handler 裸 `persist(state)` 检查阻塞；另有生产 SQLite 默认路径检查警告。未为通过本任务而修改这些无关项。
+
+本记录仅表示代码和本地核心自动化已实施，不表示完整 harness 或线上环境已经验证。生产发布、真实钉钉应用回调、Hermes 同义表达解释、Hermes 企业租户接入、签名密钥及企业凭据配置仍须人工执行；凭据不写入本文档、普通日志或测试夹具。

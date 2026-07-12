@@ -432,6 +432,115 @@ test('createPolicyOcrApp maps malformed and oversized agent JSON before the glob
   assert.deepEqual(oversized.payload, { ok: false, code: 'AGENT_REQUEST_TOO_LARGE' });
 });
 
+test('createPolicyOcrApp isolates a disabled or failing Hermes route from application health', async (t) => {
+  for (const agentQuestionRouter of [null, { async route() { throw new Error('Hermes unavailable 13800138000'); } }]) {
+    const app = createPolicyOcrApp({
+      recomputeCashflowOnStartup: false,
+      agentQuestionRouter,
+      verifyAgentServiceRequest: async () => true,
+      resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+      runtimeStartedAt: '2026-07-13T00:00:00.000Z',
+      runtimeSessionId: 'acceptance-session',
+    });
+    const listener = await new Promise((resolve) => {
+      const running = app.listen(0, '127.0.0.1', () => resolve(running));
+    });
+    t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+    const baseUrl = `http://127.0.0.1:${listener.address().port}`;
+
+    const routed = await fetch(`${baseUrl}/api/agent/questions/route`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(validBody()),
+    });
+    assert.equal(routed.status, 502);
+    assert.deepEqual(await routed.json(), { ok: false, code: 'AGENT_GATEWAY_UPSTREAM_ERROR' });
+
+    const health = await fetch(`${baseUrl}/api/health`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), {
+      ok: true, service: 'policy-ocr-app', startedAt: '2026-07-13T00:00:00.000Z', sessionId: 'acceptance-session',
+    });
+  }
+});
+
+test('createPolicyOcrApp HTTP route composes the real question router and domain handlers', async (t) => {
+  const state = {
+    familyProfiles: [{ id: 71, ownerUserId: 7, familyName: '余贵祥家庭', status: 'active', updatedAt: '2026-07-12T00:00:00.000Z' }],
+    familyMembers: [{ id: 711, familyId: 71, status: 'active' }],
+    policies: [{ id: 712, userId: 7, familyId: 71, status: 'active' }],
+    familyReports: [], familySalesReviews: [],
+  };
+  const calls = { audits: [], queued: [], generated: [], domain: [] };
+  const store = {
+    async load() { return state; },
+    async getPublishedAgentQuestionPolicyVersion() { return null; },
+    async recordAgentRouteAudit(input) { calls.audits.push(input); },
+  };
+  const authorized = async ({ familyId, internalUserId }) => {
+    const family = state.familyProfiles.find((row) => row.id === familyId && row.ownerUserId === internalUserId);
+    return family ? { family, state } : null;
+  };
+  const domain = createAgentQuestionHandlers({
+    store,
+    authorizedFamilyDataLoader: authorized,
+    authorizedFamilySalesDataLoader: async ({ familyId, internalUserId }) => ({
+      family: (await authorized({ familyId, internalUserId })).family,
+      input: { dataQuality: { pendingFields: ['budget'] } },
+      members: state.familyMembers, policies: state.policies,
+      familyReports: state.familyReports, familySalesReviews: state.familySalesReviews,
+      history: [{ role: 'user', content: '给我销售建议' }],
+    }),
+    reportQueue: { async enqueue(input) { calls.queued.push(input); return { jobId: 'coverage-71', progress: 0 }; } },
+    generateFamilySalesChatReply: async (input) => {
+      calls.generated.push(input);
+      return { content: '先确认预算，再讨论保障优先级。', model: 'stub-external-model' };
+    },
+    clock: () => new Date('2026-07-13T00:00:00.000Z'),
+  });
+  const handlers = {
+    async insurance_expert(input) {
+      const result = await domain.insurance_expert(input);
+      calls.domain.push(result);
+      return { interaction: { type: 'progress', jobId: result.facts.jobId, status: result.facts.status, progress: result.facts.progress } };
+    },
+    async sales_champion(input) {
+      const result = await domain.sales_champion(input);
+      calls.domain.push(result);
+      return { interaction: { type: 'answer', text: result.presentation.message } };
+    },
+  };
+  const app = createPolicyOcrApp({
+    state, agentStore: store, agentQuestionHandlers: handlers,
+    recomputeCashflowOnStartup: false,
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+  const server = { baseUrl: `http://127.0.0.1:${listener.address().port}` };
+
+  const report = await post(server, '/api/agent/questions/route', validBody({ candidate: {
+    intent: 'coverage_report', question: '看余贵祥家庭保障报告', confidence: 1, requestedOperation: 'read',
+    entities: { familyName: '余贵祥家庭' },
+  } }));
+  assert.equal(report.response.status, 200);
+  assert.deepEqual(report.payload.interaction, { type: 'progress', jobId: 'coverage-71', status: 'processing', progress: 0 });
+  assert.equal(calls.domain[0].facts.jobType, 'family_policy_analysis');
+
+  const sales = await post(server, '/api/agent/questions/route', validBody({ messageRef: 'msg-sales', candidate: {
+    intent: 'sales_coaching', question: '那我该怎么跟他聊', confidence: 1, requestedOperation: 'read',
+    entities: { familyName: '余贵祥家庭' },
+  } }));
+  assert.equal(sales.response.status, 200);
+  assert.equal(sales.payload.interaction.text, '先确认预算，再讨论保障优先级。');
+  assert.equal(calls.domain[1].provenance.agent, 'existing_family_sales_chat');
+  assert.equal(calls.generated[0].context.familyInput.dataQuality.pendingFields[0], 'budget');
+  assert.deepEqual(calls.generated[0].history, [{ role: 'user', content: '给我销售建议' }]);
+  assert.equal(calls.generated[0].question, '那我该怎么跟他聊');
+  assert.deepEqual(calls.audits.map((row) => row.authorizedResourceIds), [['family:71'], ['family:71']]);
+});
+
 test('authorized family count resolves once and preserves exact safe facts without PII', async () => {
   const state = {
     familyProfiles: [
