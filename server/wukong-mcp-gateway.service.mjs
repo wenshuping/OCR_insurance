@@ -21,6 +21,8 @@ const WUKONG_PUBLIC_TOOL_NAMES = Object.freeze([
   'finalize_policy_import',
   'ask_sales_champion',
   'ask_insurance_expert',
+  'get_sales_memories',
+  'apply_memory_action',
 ]);
 
 export class WukongMcpError extends Error {
@@ -64,9 +66,12 @@ function validateInputSchema(schema, input) {
     if (expectedType === 'array') {
       if (!Array.isArray(value)) fail('INVALID_TOOL_INPUT', 400);
       for (const item of value) validateInputSchema(property.items, item);
+    } else if (expectedType === 'object') {
+      validateInputSchema(property, value);
     } else if (expectedType === 'integer') {
       if (!Number.isSafeInteger(value) || value <= 0) fail('INVALID_TOOL_INPUT', 400);
     } else if (expectedType && typeof value !== expectedType) fail('INVALID_TOOL_INPUT', 400);
+    if (property?.enum && !property.enum.includes(value)) fail('INVALID_TOOL_INPUT', 400);
     if (typeof value === 'string' && Number.isSafeInteger(property?.maxLength) && value.length > property.maxLength) {
       fail('INVALID_TOOL_INPUT', 400);
     }
@@ -106,7 +111,7 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function createRegistry(state, policyImports, salesChampion, insuranceExpert) {
+function createRegistry(state, policyImports, salesChampion, insuranceExpert, familySalesMemoryApi) {
   const emptyObjectSchema = Object.freeze({
     type: 'object', properties: Object.freeze({}), required: Object.freeze([]), additionalProperties: false,
   });
@@ -173,6 +178,27 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert) {
       authorize: () => true,
       execute: (context, input, request) => insuranceExpert({ owner: context, ...input, requestId: request.requestId }),
     }],
+    ['get_sales_memories', {
+      name: 'get_sales_memories',
+      inputSchema: familySchema({ familyRef: { type: 'integer' }, status: { type: 'string', maxLength: 80 }, kind: { type: 'string', maxLength: 80 }, cursor: { type: 'string', maxLength: 200 }, limit: { type: 'integer' } }, ['familyRef']),
+      authorize: () => true,
+      execute: (context, input) => {
+        const { familyRef, ...query } = input;
+        const result = familySalesMemoryApi.list({ familyId: resolveFamily(context, familyRef).id, owner: context, ...query });
+        const minimal = (memory) => ({ id: memory.id, kind: memory.kind, status: memory.status, content: memory.content, version: memory.version });
+        return { sections: Object.fromEntries(Object.entries(result.sections).map(([name, items]) => [name, items.map(minimal)])), nextCursor: result.nextCursor };
+      },
+    }],
+    ['apply_memory_action', {
+      name: 'apply_memory_action',
+      inputSchema: familySchema({ familyRef: { type: 'integer' }, memoryId: { type: 'integer' }, action: { type: 'string', enum: ['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore'] }, expectedVersion: { type: 'integer' }, reasonCode: { type: 'string', maxLength: 80 }, replacement: { type: 'object', properties: { content: { type: 'string', maxLength: 220 } }, required: ['content'], additionalProperties: false } }, ['familyRef', 'memoryId', 'action', 'expectedVersion', 'reasonCode']),
+      authorize: () => true,
+      execute: async (context, input) => {
+        const { familyRef, memoryId, action, ...actionInput } = input;
+        const result = await familySalesMemoryApi.action({ familyId: resolveFamily(context, familyRef).id, memoryId, owner: context, action, input: actionInput });
+        return { memories: result.memories.map((memory) => ({ id: memory.id, kind: memory.kind, status: memory.status, content: memory.content, version: memory.version })) };
+      },
+    }],
   ];
   const registry = new Map(entries);
   if (registry.size !== WUKONG_PUBLIC_TOOL_NAMES.length
@@ -196,6 +222,7 @@ export function createWukongMcpGateway({
   salesChampionOptions,
   insuranceExpert,
   insuranceExpertOptions,
+  familySalesMemoryApi,
 } = {}) {
   const resolvedState = state || {};
   const registry = createRegistry(
@@ -203,6 +230,7 @@ export function createWukongMcpGateway({
     policyImports || { start: () => fail('TOOL_NOT_CONFIGURED', 503), append: () => fail('TOOL_NOT_CONFIGURED', 503), get: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) },
     salesChampion || createSalesChampionTool({ state: resolvedState, ...salesChampionOptions }),
     insuranceExpert || createInsuranceExpertTool({ state: resolvedState, ...insuranceExpertOptions }),
+    familySalesMemoryApi || { list: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) },
   );
   const toolMetadata = deepFreeze([...registry.values()].map((entry) => ({
     name: entry.name,

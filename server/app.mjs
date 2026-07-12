@@ -15,6 +15,7 @@ import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { createWukongMcpRoutes } from './routes/wukong-mcp.routes.mjs';
 import { createWukongMcpGateway } from './wukong-mcp-gateway.service.mjs';
+import { createFamilySalesMemoryApi } from './family-sales-memory-api.service.mjs';
 import { createAgentPolicyImportRuntime } from './agent-policy-import-runtime.service.mjs';
 import { createAgentPolicyImportFinalizer } from './agent-policy-import-finalize.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
@@ -2193,6 +2194,13 @@ export function createPolicyOcrApp(options = {}) {
     recognizePolicyInput: ({ body }) => recognizePolicyInput({ scanner: options.scanner || scanPolicyWithConfiguredRuntime, body, state }),
     finalizeTask: finalizer,
   });
+  const familySalesMemoryApi = createFamilySalesMemoryApi({
+    state,
+    persistFamilySalesMemoryTransition: options.persistFamilySalesMemoryTransition
+      ? (input) => options.persistFamilySalesMemoryTransition({ state, ...input }) : null,
+    listFamilySalesMemoryEvents: options.listFamilySalesMemoryEvents,
+    nowIso: options.nowIso,
+  });
   const wukongMcpGateway = options.wukongMcpGateway || createWukongMcpGateway({
     state,
     now: typeof options.wukongMcpNow === 'function' ? options.wukongMcpNow : Date.now,
@@ -2206,6 +2214,7 @@ export function createPolicyOcrApp(options = {}) {
     salesChampionOptions: options.salesChampionToolOptions,
     insuranceExpert: options.askInsuranceExpertTool,
     insuranceExpertOptions: options.insuranceExpertToolOptions,
+    familySalesMemoryApi,
   });
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
@@ -2461,6 +2470,7 @@ export function createPolicyOcrApp(options = {}) {
     persistFamilyReportState,
     persistAgentPolicyImportTask,
     policyImports,
+    familySalesMemoryApi,
     persistAdminSession,
     persistAuthSmsCode,
     persistAuthRegistration,

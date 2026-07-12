@@ -88,6 +88,54 @@ export type FamilyReportSharePayload = {
   snapshotAt: string;
 };
 
+export type FamilySalesMemoryStatus = 'candidate' | 'confirmed' | 'conflicted' | 'superseded' | 'rejected' | 'expired' | 'completed' | 'archived';
+export type FamilySalesMemoryAction = 'confirm' | 'reject' | 'supersede' | 'complete' | 'expire' | 'restore';
+export type FamilySalesMemory = {
+  id: number;
+  kind: 'objection' | 'preference' | 'strategy' | 'correction' | 'todo';
+  status: FamilySalesMemoryStatus;
+  content: string;
+  normalizedValue?: string;
+  version: number;
+  validFrom: string | null;
+  validTo: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type FamilySalesMemorySections = {
+  current: FamilySalesMemory[];
+  candidates: FamilySalesMemory[];
+  openTodos: FamilySalesMemory[];
+  history: FamilySalesMemory[];
+};
+export type FamilySalesMemoryEvent = { action: string; previousStatus: string | null; nextStatus: string | null; reasonCode: string; createdAt: string };
+
+type FamilySalesMemoryScope = { token: string; familyId: number; signal?: AbortSignal };
+
+export function getFamilySalesMemories(input: FamilySalesMemoryScope & { status?: string; kind?: string; cursor?: string; limit?: number }) {
+  const query = new URLSearchParams();
+  if (input.status) query.set('status', input.status);
+  if (input.kind) query.set('kind', input.kind);
+  if (input.cursor) query.set('cursor', input.cursor);
+  if (input.limit) query.set('limit', String(input.limit));
+  const suffix = query.size ? `?${query}` : '';
+  return request<{ ok: true; sections: FamilySalesMemorySections; nextCursor: string }>(`/api/family-profiles/${input.familyId}/sales-memories${suffix}`, { token: input.token, signal: input.signal });
+}
+
+export function applyFamilySalesMemoryAction(input: FamilySalesMemoryScope & { memoryId: number; action: FamilySalesMemoryAction; expectedVersion: number; reasonCode: string; replacement?: { content: string } }) {
+  return request<{ ok: true; memories: FamilySalesMemory[] }>(`/api/family-profiles/${input.familyId}/sales-memories/${input.memoryId}/${input.action}`, {
+    token: input.token, body: { expectedVersion: input.expectedVersion, reasonCode: input.reasonCode, ...(input.replacement ? { replacement: input.replacement } : {}) }, signal: input.signal,
+  });
+}
+
+export function getFamilySalesMemoryHistory(input: FamilySalesMemoryScope & { memoryId: number; cursor?: string; limit?: number }) {
+  const query = new URLSearchParams();
+  if (input.cursor) query.set('cursor', input.cursor);
+  if (input.limit) query.set('limit', String(input.limit));
+  const suffix = query.size ? `?${query}` : '';
+  return request<{ ok: true; items: FamilySalesMemoryEvent[]; nextCursor: string }>(`/api/family-profiles/${input.familyId}/sales-memories/${input.memoryId}/history${suffix}`, { token: input.token, signal: input.signal });
+}
+
 export type FamilyReportRecord = {
   id: number;
   familyId: number;

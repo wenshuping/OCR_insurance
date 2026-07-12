@@ -15,6 +15,8 @@ const PUBLIC_TOOL_NAMES = [
   'finalize_policy_import',
   'ask_sales_champion',
   'ask_insurance_expert',
+  'get_sales_memories',
+  'apply_memory_action',
 ];
 
 function stateFor(identity = { ...PRINCIPAL, userId: 7, status: 'active' }) {

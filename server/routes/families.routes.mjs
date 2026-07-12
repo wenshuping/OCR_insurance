@@ -82,6 +82,7 @@ export function createFamilyRoutes(context) {
     generateFamilyPolicyAnalysisReport: generateFamilyPolicyAnalysisReportImpl = generateFamilyPolicyAnalysisReport,
     nowIso = () => new Date().toISOString(),
     policyImports,
+    familySalesMemoryApi,
   } = context;
   const ownerResolverContext = { resolveAuthUser, requestOwner, state };
   const familyLookupContext = { familyOwnerMatches };
@@ -109,6 +110,39 @@ export function createFamilyRoutes(context) {
     }
     return { owner, family };
   }
+
+  function authenticatedMemoryScope(req, res) {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return null;
+    if (!scope.owner.userId) {
+      res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '请先登录' });
+      return null;
+    }
+    return scope;
+  }
+
+  router.get('/family-profiles/:id/sales-memories', (req, res) => {
+    const scope = authenticatedMemoryScope(req, res);
+    if (!scope) return undefined;
+    try { return res.json({ ok: true, ...familySalesMemoryApi.list({ familyId: scope.family.id, owner: scope.owner, ...req.query }) }); }
+    catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  for (const action of ['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore']) {
+    router.post(`/family-profiles/:id/sales-memories/:memoryId/${action}`, async (req, res) => {
+      const scope = authenticatedMemoryScope(req, res);
+      if (!scope) return undefined;
+      try { return res.json({ ok: true, ...(await familySalesMemoryApi.action({ familyId: scope.family.id, memoryId: req.params.memoryId, owner: scope.owner, action, input: req.body || {} })) }); }
+      catch (error) { return sendError(res, error, error?.status || 500); }
+    });
+  }
+
+  router.get('/family-profiles/:id/sales-memories/:memoryId/history', (req, res) => {
+    const scope = authenticatedMemoryScope(req, res);
+    if (!scope) return undefined;
+    try { return res.json({ ok: true, ...familySalesMemoryApi.history({ familyId: scope.family.id, memoryId: req.params.memoryId, owner: scope.owner, ...req.query }) }); }
+    catch (error) { return sendError(res, error, error?.status || 500); }
+  });
 
   router.post('/family-profiles/:id/policy-imports', async (req, res) => {
     const scope = ownedActiveFamily(req, res);
