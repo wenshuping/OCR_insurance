@@ -4,6 +4,7 @@ import express from 'express';
 import { createRouteContext } from './http/context.mjs';
 import { codeFromError } from './http/errors.mjs';
 import { createAdminRoutes } from './routes/admin.routes.mjs';
+import { createAgentRouter } from './routes/agent.routes.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
@@ -2581,6 +2582,14 @@ export function createPolicyOcrApp(options = {}) {
     });
   });
 
+  app.use('/api/agent', createAgentRouter({
+    questionRouter: options.agentQuestionRouter,
+    confirmationService: options.agentConfirmationService,
+    resolveChannelIdentity: options.resolveDingTalkIdentity,
+    verifyAgentServiceRequest: options.verifyAgentServiceRequest,
+    secureUploadLinkFactory: options.agentSecureUploadLinkFactory,
+    maxBodyBytes: options.agentMaxBodyBytes,
+  }));
   app.use('/api/wechat', createWechatRoutes(routeContext));
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
