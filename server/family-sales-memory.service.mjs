@@ -555,7 +555,7 @@ export function upsertFamilySalesMemories({
   nowIso = () => new Date().toISOString(),
 } = {}) {
   const targetFamilyId = Number(familyId || 0);
-  if (!state || !targetFamilyId || typeof allocateId !== 'function') return { changed: false, memories: [] };
+  if (!state || !targetFamilyId || typeof allocateId !== 'function') return { changed: false, memories: [], changes: [] };
   const normalizedOwner = {
     ownerUserId: Number(owner.ownerUserId || 0) || null,
     ownerGuestId: Number(owner.ownerUserId || 0) ? '' : trim(owner.ownerGuestId),
@@ -564,10 +564,11 @@ export function upsertFamilySalesMemories({
   const now = nowIso();
   const evidenceMessageIds = mergeEvidenceMessageIds([], [userMessage?.id]);
   const normalized = normalizeExtractedFamilySalesMemories(extractedMemories);
-  if (!normalized.length) return { changed: false, memories: [] };
+  if (!normalized.length) return { changed: false, memories: [], changes: [] };
 
   state.familySalesMemories = Array.isArray(state.familySalesMemories) ? state.familySalesMemories : [];
   const changedMemories = [];
+  const changes = [];
   for (const item of normalized) {
     const key = normalizeMemoryKey(item.kind, item.content);
     const existing = state.familySalesMemories.find((memory) => (
@@ -577,11 +578,22 @@ export function upsertFamilySalesMemories({
       normalizeMemoryKey(memory?.kind, memory?.content) === key
     ));
     if (existing) {
-      existing.confidence = Math.max(clampConfidence(existing.confidence), item.confidence);
-      existing.evidenceMessageIds = mergeEvidenceMessageIds(existing.evidenceMessageIds, evidenceMessageIds);
-      existing.sourceThreadId = Number(sourceThreadId || existing.sourceThreadId || 0);
+      const previousVersion = Number(existing.version || 1);
+      const confidence = Math.max(clampConfidence(existing.confidence), item.confidence);
+      const mergedEvidence = mergeEvidenceMessageIds(existing.evidenceMessageIds, evidenceMessageIds);
+      const nextSourceThreadId = Number(sourceThreadId || existing.sourceThreadId || 0);
+      if (confidence === clampConfidence(existing.confidence)
+        && JSON.stringify(mergedEvidence) === JSON.stringify(existing.evidenceMessageIds || [])
+        && nextSourceThreadId === Number(existing.sourceThreadId || 0)) continue;
+      existing.confidence = confidence;
+      existing.evidenceMessageIds = mergedEvidence;
+      existing.sourceMessageIds = mergedEvidence;
+      existing.sourceMessageId = mergedEvidence[0] || null;
+      existing.sourceThreadId = nextSourceThreadId;
+      existing.version = previousVersion + 1;
       existing.updatedAt = now;
       changedMemories.push(existing);
+      changes.push({ kind: 'reinforced', memory: { ...existing, evidenceMessageIds: [...existing.evidenceMessageIds], sourceMessageIds: [...existing.sourceMessageIds] }, expectedVersion: previousVersion });
       continue;
     }
     const autoConfirmed = isAutoConfirmableMemory(item);
@@ -611,6 +623,7 @@ export function upsertFamilySalesMemories({
     };
     state.familySalesMemories.push(memory);
     changedMemories.push(memory);
+    changes.push({ kind: 'new', memory: { ...memory }, expectedVersion: 0 });
   }
 
   const active = state.familySalesMemories
@@ -624,12 +637,16 @@ export function upsertFamilySalesMemories({
       Number(right.id || 0) - Number(left.id || 0)
     ));
   for (const memory of active.slice(FAMILY_SALES_MEMORY_LIMIT)) {
+    if (memory.status === 'archived') continue;
+    const previousVersion = Number(memory.version || 1);
     memory.status = 'archived';
+    memory.version = previousVersion + 1;
     memory.updatedAt = now;
     changedMemories.push(memory);
+    changes.push({ kind: 'archived', memory: { ...memory }, expectedVersion: previousVersion });
   }
 
-  return { changed: true, memories: changedMemories };
+  return { changed: changes.length > 0, memories: changedMemories, changes };
 }
 
 export function isCurrentFamilySalesMemory(memory = {}, { asOf = new Date().toISOString() } = {}) {

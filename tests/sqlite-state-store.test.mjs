@@ -61,6 +61,23 @@ test('initialized legacy memory database backfills promoted columns and one impo
   reopened.close();
 });
 
+test('invalid legacy memory rolls back temporal schema migration objects and version', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'invalid-legacy-memory.sqlite');
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO app_meta VALUES ('schema_version', '4');
+    CREATE TABLE family_sales_memories (id INTEGER PRIMARY KEY, family_id INTEGER, owner_user_id INTEGER, owner_guest_id TEXT, kind TEXT, status TEXT, source_thread_id INTEGER, created_at TEXT, updated_at TEXT, payload TEXT NOT NULL);`);
+  legacy.prepare('INSERT INTO family_sales_memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(1, 2, null, 'guest', 'strategy', 'active', null, '', '', '{invalid');
+  legacy.close();
+  await assert.rejects(createSqliteStateStore({ dbPath }), { code: 'MEMORY_MIGRATION_FAILED' });
+  const inspected = new DatabaseSync(dbPath);
+  assert.equal(inspected.prepare("SELECT value FROM app_meta WHERE key = 'schema_version'").get().value, '4');
+  assert.equal(inspected.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'family_sales_memory_events'").get(), undefined);
+  assert.equal(inspected.prepare('PRAGMA table_info(family_sales_memories)').all().some((column) => column.name === 'version'), false);
+  assert.equal(inspected.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'family_sales_memory%'").get(), undefined);
+  inspected.close();
+});
+
 test('real extracted family sales memory persists one proposed event with provenance', async () => {
   const dir = await makeTempDir();
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'extracted-memory.sqlite') });
@@ -76,6 +93,20 @@ test('real extracted family sales memory persists one proposed event with proven
   await store.persistFamilyState({ state });
   const event = store.db.prepare('SELECT event_type, next_status, source_message_id FROM family_sales_memory_events WHERE memory_id = ?').get(result.memories[0].id);
   assert.deepEqual({ ...event }, { event_type: 'proposed', next_status: 'candidate', source_message_id: 700 });
+  const reinforced = await store.persistExtractedFamilySalesMemories({
+    state, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, sourceThreadId: 21,
+    userMessage: { id: 701 }, extractedMemories: [{ kind: 'strategy', content: '先处理预算异议', confidence: 0.95 }], nowIso: () => '2026-07-12T05:01:00.000Z',
+  });
+  assert.equal(reinforced.changes[0].kind, 'reinforced');
+  assert.equal(reinforced.memories[0].version, 2);
+  assert.equal(store.db.prepare("SELECT count(*) AS count FROM family_sales_memory_events WHERE event_type = 'reinforced'").get().count, 1);
+  const repeated = await store.persistExtractedFamilySalesMemories({
+    state, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, sourceThreadId: 21,
+    userMessage: { id: 701 }, extractedMemories: [{ kind: 'strategy', content: '先处理预算异议', confidence: 0.95 }], nowIso: () => '2026-07-12T05:02:00.000Z',
+  });
+  assert.equal(repeated.changed, false);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events').get().count, 2);
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, memoryId: result.memories[0].id, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, action: 'confirm', reasonCode: 'advisor_confirmation', actor: { type: 'advisor', id: 1 }, expectedVersion: 1, now: '2026-07-12T05:03:00.000Z' }), { code: 'STALE_INTERACTION' });
   store.close();
 });
 
@@ -97,6 +128,15 @@ test('durable memory allocation is unique across stores and event history pages 
   assert.equal(page1.items.length, 100);
   assert.equal(page2.items.length, 5);
   assert.equal(new Set([...page1.items, ...page2.items].map((event) => event.id)).size, 105);
+  assert.equal((await first.load()).familySalesMemoryEvents.length, 100);
+  const exported = await first.exportState();
+  assert.equal(exported.familySalesMemoryEvents.length, 105);
+  const restored = await createSqliteStateStore({ dbPath: path.join(dir, 'restored-memory.sqlite') });
+  await restored.load();
+  await restored.persist(exported, { restore: true });
+  assert.equal(restored.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events').get().count, 105);
+  assert.deepEqual(restored.db.prepare('SELECT id FROM family_sales_memory_events ORDER BY id').all().map((row) => row.id), first.db.prepare('SELECT id FROM family_sales_memory_events ORDER BY id').all().map((row) => row.id));
+  restored.close();
   first.close();
   second.close();
 });

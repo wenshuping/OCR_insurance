@@ -396,7 +396,6 @@ function initialFamilySalesMemoryEvent(memory = {}) {
 }
 
 function migrateFamilySalesMemoryHistory(db) {
-  db.exec('BEGIN IMMEDIATE');
   try {
     const rows = db.prepare('SELECT id, payload FROM family_sales_memories ORDER BY id').all();
     for (const row of rows) {
@@ -410,20 +409,17 @@ function migrateFamilySalesMemoryHistory(db) {
       const historyCount = db.prepare('SELECT COUNT(*) AS count FROM family_sales_memory_events WHERE memory_id = ?').get(row.id).count;
       if (!historyCount) insertFamilySalesMemoryEvents(db, [initialFamilySalesMemoryEvent(memory)]);
     }
-    db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
     if (!error.code) error.code = 'MEMORY_MIGRATION_FAILED';
     throw error;
   }
 }
 
 function createSchema(db) {
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  db.exec('SAVEPOINT temporal_memory_schema_migration');
+  try {
   db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
-    PRAGMA busy_timeout = 5000;
-
     CREATE TABLE IF NOT EXISTS app_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -820,6 +816,22 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_guest_id ON family_sales_memories(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_updated_at ON family_sales_memories(updated_at);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_scope_status ON family_sales_memories(family_id, owner_user_id, owner_guest_id, status, id);
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_insert
+      BEFORE INSERT ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy')
+        OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '')
+          OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id
+      BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_update
+      BEFORE UPDATE ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy')
+        OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '')
+          OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id
+      BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
 
     CREATE TABLE IF NOT EXISTS family_sales_memory_events (
       id TEXT PRIMARY KEY,
@@ -827,7 +839,7 @@ function createSchema(db) {
       family_id INTEGER NOT NULL,
       owner_user_id INTEGER,
       owner_guest_id TEXT,
-      event_type TEXT NOT NULL CHECK (event_type IN ('proposed','imported','confirmed','rejected','superseded','completed','expired','restored')),
+      event_type TEXT NOT NULL CHECK (event_type IN ('proposed','imported','reinforced','conflicted','archived','confirmed','rejected','superseded','completed','expired','restored')),
       actor_type TEXT CHECK (actor_type IN ('system','advisor','service')),
       actor_id TEXT,
       source_message_id INTEGER,
@@ -1014,6 +1026,12 @@ function createSchema(db) {
   ensureCashflowTable(db);
   ensureCashValueTable(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
+  db.exec('RELEASE temporal_memory_schema_migration');
+  } catch (error) {
+    db.exec('ROLLBACK TO temporal_memory_schema_migration');
+    db.exec('RELEASE temporal_memory_schema_migration');
+    throw error;
+  }
 }
 
 function insertRows(db, state) {
@@ -2441,7 +2459,7 @@ function insertFamilySalesMemoryEvents(db, events = [], { ignoreDuplicates = fal
     if (!memory || Number(memory.family_id) !== Number(event.familyId)
       || Number(memory.owner_user_id || 0) !== Number(event.ownerUserId || 0)
       || String(memory.owner_guest_id || '') !== String(event.ownerGuestId || '')) throw new Error('memory event scope mismatch or orphan');
-    if (!/^(proposed|imported|confirmed|rejected|superseded|completed|expired|restored)$/u.test(eventType)
+    if (!/^(proposed|imported|reinforced|conflicted|archived|confirmed|rejected|superseded|completed|expired|restored)$/u.test(eventType)
       || !/^(system|advisor|service)$/u.test(actorType)
       || !(/^\d+$/u.test(actorId) || /^sha256:[a-f0-9]{64}$/u.test(actorId))
       || !Number.isFinite(Date.parse(createdAt))) throw new Error('invalid family sales memory event');
@@ -2628,6 +2646,23 @@ function loadFamilySalesMemoryEvents(db) {
     previousStatus: row.previous_status || '', nextStatus: row.next_status || '', reasonCode: row.reason_code || '',
     createdAt: row.created_at, ...parseJson(row.payload, {}),
   }));
+}
+
+function loadAllFamilySalesMemoryEventsPaged(db) {
+  const events = [];
+  let rowId = 0;
+  while (true) {
+    const rows = db.prepare('SELECT rowid AS _rowid, * FROM family_sales_memory_events WHERE rowid > ? ORDER BY rowid ASC LIMIT 500').all(rowId);
+    if (!rows.length) break;
+    for (const row of rows) events.push({
+      id: row.id, memoryId: row.memory_id, familyId: row.family_id, ownerUserId: row.owner_user_id, ownerGuestId: row.owner_guest_id || '',
+      eventType: row.event_type, actor: { type: row.actor_type || '', id: row.actor_id || '' }, sourceMessageId: row.source_message_id,
+      previousStatus: row.previous_status || '', nextStatus: row.next_status || '', reasonCode: row.reason_code || '', createdAt: row.created_at,
+      ...parseJson(row.payload, {}),
+    });
+    rowId = rows.at(-1)._rowid;
+  }
+  return events;
 }
 
 function loadProductCustomerSummaryGenerationRuns(db) {
@@ -3242,20 +3277,27 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     try {
       const existing = db.prepare(`SELECT payload FROM family_sales_memories WHERE family_id = ? AND COALESCE(owner_user_id, 0) = ? AND COALESCE(owner_guest_id, '') = ? ORDER BY id`)
         .all(targetFamilyId, Number(ownerUserId || 0), ownerGuestId).map((row) => parseJson(row.payload, null)).filter(Boolean);
-      const existingIds = new Set(existing.map((memory) => String(memory.id)));
       const working = { ...createInitialState(), familySalesMemories: existing, nextId: 1 };
       const result = upsertFamilySalesMemories({
         state: working, familyId: targetFamilyId, owner: { ownerUserId, ownerGuestId }, sourceThreadId,
         userMessage, extractedMemories, allocateId: () => allocateDurableFamilySalesMemoryId(db), nowIso,
       });
-      for (const memory of result.memories) {
-        if (existingIds.has(String(memory.id))) {
-          const current = existing.find((item) => String(item.id) === String(memory.id));
-          writeFamilySalesMemory(db, memory, { expectedVersion: Number(current?.version || 1) });
-        } else {
+      for (const change of result.changes) {
+        const memory = change.memory;
+        if (change.kind === 'new') {
           writeFamilySalesMemory(db, memory, { insertOnly: true });
           insertFamilySalesMemoryEvents(db, [initialFamilySalesMemoryEvent(memory)]);
+          continue;
         }
+        const written = writeFamilySalesMemory(db, memory, { expectedVersion: change.expectedVersion });
+        if (written.changes !== 1) throw Object.assign(new Error('stale extracted memory version'), { code: 'STALE_INTERACTION', status: 409 });
+        insertFamilySalesMemoryEvents(db, [{
+          id: `memory_event:${memory.id}:${memory.version}:${change.kind}`, memoryId: memory.id, familyId: memory.familyId,
+          ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: change.kind,
+          actor: { type: 'system', id: 1 }, sourceMessageId: memory.sourceMessageId || null,
+          previousStatus: change.kind === 'archived' ? 'candidate' : memory.status, nextStatus: memory.status,
+          reasonCode: change.kind === 'archived' ? 'memory_limit' : 'new_evidence', createdAt: memory.updatedAt, version: memory.version,
+        }]);
       }
       db.exec('COMMIT');
       if (state) {
@@ -3643,6 +3685,14 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return state;
   }
 
+  async function exportState() {
+    const state = createInitialState();
+    Object.assign(state, loadDbOwnedState(db));
+    state.familySalesMemoryEvents = loadAllFamilySalesMemoryEventsPaged(db);
+    state.nextId = resolveNextId({ ...state, nextId: Number(getMeta(db, 'next_id') || 1) });
+    return state;
+  }
+
   function close() {
     db.close();
   }
@@ -3652,6 +3702,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     dbPath,
     seedStatePath,
     load,
+    exportState,
     persist,
     persistAdminSession,
     persistDingtalkIdentityState,

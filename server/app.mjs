@@ -2302,6 +2302,9 @@ export function createPolicyOcrApp(options = {}) {
   const persistExtractedFamilySalesMemories = typeof options.persistExtractedFamilySalesMemories === 'function'
     ? (input = {}) => options.persistExtractedFamilySalesMemories({ state, ...input })
     : null;
+  const persistFamilySalesMemoryTransition = typeof options.persistFamilySalesMemoryTransition === 'function'
+    ? (input = {}) => options.persistFamilySalesMemoryTransition({ state, ...input })
+    : null;
   const persistFamilyReportState = typeof options.persistFamilyReportState === 'function'
     ? (input = {}) => options.persistFamilyReportState({ state, ...input })
     : () => persist(state, { refreshOptionalResponsibilityGovernance: false });
@@ -2453,6 +2456,7 @@ export function createPolicyOcrApp(options = {}) {
     persistPendingScan,
     persistFamilyState,
     persistExtractedFamilySalesMemories,
+    persistFamilySalesMemoryTransition,
     persistFamilyReportState,
     persistAgentPolicyImportTask,
     policyImports,
