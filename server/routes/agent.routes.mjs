@@ -22,17 +22,22 @@ function text(value, maxLength) {
 
 function safeLink(value, allowedOrigins) {
   const raw = text(value, 2048);
-  if (!raw) return '';
-  if (/^\/(?!\/)/u.test(raw)) return raw;
+  if (!raw || raw.includes('\\') || /%5c/iu.test(raw) || raw.startsWith('//')) return '';
   try {
-    const url = new URL(raw);
-    const origins = new Set((Array.isArray(allowedOrigins) ? allowedOrigins : [])
-      .map((origin) => {
-        try { return new URL(origin).origin; } catch { return ''; }
-      })
-      .filter(Boolean));
+    const trustedBases = (Array.isArray(allowedOrigins) ? allowedOrigins : []).map((origin) => {
+      try {
+        const url = new URL(origin);
+        return url.protocol === 'https:' && !url.username && !url.password ? `${url.origin}/` : '';
+      } catch {
+        return '';
+      }
+    }).filter(Boolean);
+    if (!trustedBases.length) return '';
+    const isRelative = raw.startsWith('/');
+    const url = new URL(raw, trustedBases[0]);
+    const origins = new Set(trustedBases.map((base) => new URL(base).origin));
     if (url.protocol !== 'https:' || url.username || url.password || !origins.has(url.origin)) return '';
-    return url.toString();
+    return isRelative ? `${url.pathname}${url.search}${url.hash}` : url.toString();
   } catch {
     return '';
   }
@@ -323,6 +328,18 @@ export function createAgentRouter({
       }
       send(res, 502, 'AGENT_GATEWAY_UPSTREAM_ERROR');
     }
+  });
+
+  router.use((error, _req, res, next) => {
+    if (error?.type === 'entity.too.large' || Number(error?.status) === 413) {
+      send(res, 413, 'AGENT_REQUEST_TOO_LARGE');
+      return;
+    }
+    if (error instanceof URIError || error instanceof SyntaxError || error?.type === 'entity.parse.failed') {
+      send(res, 400, 'AGENT_REQUEST_SCHEMA_INVALID');
+      return;
+    }
+    next(error);
   });
 
   return router;

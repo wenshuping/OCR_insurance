@@ -379,6 +379,7 @@ test('secure actions accept only relative paths or allowlisted HTTPS origins', a
     'http://app.example.test/upload',
     'https://user@app.example.test/upload',
     '//app.example.test/upload',
+    '/\\evil.example/x',
     'https://evil.example.test/upload',
   ]) {
     const server = await startServer({ secureUploadLinkFactory: () => unsafeUrl });
@@ -390,6 +391,19 @@ test('secure actions accept only relative paths or allowlisted HTTPS origins', a
   t.after(server.close);
   const safe = await post(server, '/api/agent/questions/route', validBody({ channelUserId: 'not-linked' }));
   assert.equal(safe.payload.action.url, '/agent/continue');
+});
+
+test('malformed encoded action paths return the stable JSON schema error', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const response = await fetch(`${server.baseUrl}/api/agent/actions/%E0%A4%A/confirm`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-agent-signature': 'valid' },
+    body: JSON.stringify({ channel: 'dingtalk', channelUserId: 'registered', messageRef: 'msg-confirm' }),
+  });
+  assert.equal(response.status, 400);
+  assert.match(response.headers.get('content-type') || '', /^application\/json/u);
+  assert.deepEqual(await response.json(), { ok: false, code: 'AGENT_REQUEST_SCHEMA_INVALID' });
 });
 
 test('createPolicyOcrApp maps malformed and oversized agent JSON before the global parser', async (t) => {
