@@ -4,6 +4,7 @@ import {
   AGENT_QUESTION_POLICIES,
   AGENT_QUESTION_POLICY_TOOLS,
   chooseAgentQuestionPolicy,
+  validateAgentQuestionPolicy,
 } from './agent-question-policy.service.mjs';
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
@@ -130,14 +131,33 @@ function safeFallback(operation) {
 
 function selectPolicy(candidate, published) {
   const policies = Array.isArray(published?.policies) ? published.policies : AGENT_QUESTION_POLICIES;
+  const exact = published?.version
+    ? policies.find((policy) => normalizeIntent(policy?.intent) === candidate.intent)
+    : null;
+  if (exact) {
+    let valid = false;
+    try {
+      valid = validateAgentQuestionPolicy(exact);
+    } catch {
+      valid = false;
+    }
+    if (exact.enabled === false || !valid) {
+      const operation = exact.operation === 'write' ? 'write' : 'read';
+      return {
+        policy: { ...safeFallback(operation) },
+        policySource: 'built_in',
+      };
+    }
+  }
   try {
     return {
       policy: chooseAgentQuestionPolicy(candidate, policies),
       policySource: published?.version ? 'published' : 'built_in',
     };
   } catch {
+    const operation = exact?.operation === 'write' ? 'write' : candidate.requestedOperation;
     return {
-      policy: { ...safeFallback(candidate.requestedOperation) },
+      policy: { ...safeFallback(operation) },
       policySource: 'built_in',
     };
   }

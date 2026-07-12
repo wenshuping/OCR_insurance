@@ -248,6 +248,37 @@ test('configured read deny is audited but not recorded as unknown write', async 
   assert.equal(calls.audits[0].result, 'policy_rejected');
 });
 
+test('disabled or invalid published writes cannot be disguised as Hermes reads', async () => {
+  const writePolicy = {
+    key: 'memory_proposal', intent: 'memory_proposal', decision: 'propose', handler: 'sales_champion',
+    operation: 'write', confirmation: 'required', outputMode: 'preview', tool: 'propose_memory',
+  };
+  for (const policy of [
+    { ...writePolicy, enabled: false },
+    { ...writePolicy, tool: 'shell' },
+  ]) {
+    const { router, calls } = createHarness({
+      published: { version: 11, policies: [policy] },
+      handlers: { sales_champion: async () => ({ interaction: { type: 'answer' } }) },
+    });
+    const result = await router.route(routeInput({
+      intent: 'memory_proposal',
+      question: '保存这条记忆',
+      entities: {},
+      requestedOperation: 'read',
+    }));
+
+    assert.equal(result.decision, 'deny');
+    assert.equal(result.interaction.type, 'denied');
+    assert.equal(calls.handlers.length, 0);
+    assert.equal(calls.unknown.length, 1);
+    assert.equal(calls.audits[0].policySource, 'built_in');
+    assert.equal(calls.audits[0].policyVersion, null);
+    assert.equal(calls.audits[0].operation, 'write');
+    assert.equal(calls.audits[0].policyKey, 'unknown_write');
+  }
+});
+
 test('a unique controlled approximate family-name match executes', async () => {
   const { router, calls } = createHarness({
     families: [
