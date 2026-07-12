@@ -90,6 +90,7 @@ const app = createPolicyOcrApp({
   completeAgentPolicyImportFinalization: store.completeAgentPolicyImportFinalization,
   findAgentPolicyImportFinalization: store.findAgentPolicyImportFinalization,
   failAgentPolicyImportFinalization: store.failAgentPolicyImportFinalization,
+  findPolicyByImportSource: store.findPolicyByImportSource,
   persistAdminSession: store.persistAdminSession,
   persistAuthSmsCode: store.persistAuthSmsCode,
   persistAuthRegistration: store.persistAuthRegistration,

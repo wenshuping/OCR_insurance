@@ -772,6 +772,9 @@ function createSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_agent_policy_import_finalizations_task
       ON agent_policy_import_finalizations(owner_user_id, task_id, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_policy_import_finalizations_active_task
+      ON agent_policy_import_finalizations(owner_user_id, task_id)
+      WHERE status IN ('reserved', 'failed_unknown');
 
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
@@ -2442,24 +2445,49 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return parseJson(db.prepare('SELECT payload FROM agent_policy_import_tasks WHERE id = ?').get(Number(id))?.payload, null);
   }
 
-  async function reserveAgentPolicyImportFinalization({ state, task, ownerUserId, requestId, expectedVersion } = {}) {
-    const now = String(task?.updatedAt || new Date().toISOString());
+  async function reserveAgentPolicyImportFinalization({ state, task, ownerUserId, requestId, expectedVersion, now, leaseUntil } = {}) {
+    const timestamp = String(now || new Date().toISOString());
     db.exec('BEGIN IMMEDIATE');
     try {
-      const existing = db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).get(ownerUserId, task.id, requestId);
-      if (existing) {
+      const completed = db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND status = 'completed' ORDER BY completed_at DESC LIMIT 1`).get(ownerUserId, task.id);
+      if (completed) {
         db.exec('COMMIT');
-        return parseJson(existing.payload, null);
+        return { outcome: 'completed', record: parseJson(completed.payload, null) };
       }
-      const changed = db.prepare(`UPDATE agent_policy_import_tasks SET status = ?, state_version = ?, updated_at = ?, payload = ? WHERE id = ? AND state_version = ?`).run(
-        task.status, task.stateVersion, now, jsonPayload(task), task.id, expectedVersion,
+      const active = db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND status IN ('reserved', 'failed_unknown') LIMIT 1`).get(ownerUserId, task.id);
+      if (active) {
+        const record = parseJson(active.payload, null);
+        if (record?.status === 'reserved' && Number.isFinite(Date.parse(record.leaseUntil)) && Date.parse(record.leaseUntil) <= Date.parse(timestamp)) {
+          const unknown = { ...record, status: 'failed_unknown', updatedAt: timestamp };
+          db.prepare(`UPDATE agent_policy_import_finalizations SET status = 'failed_unknown', payload = ? WHERE owner_user_id = ? AND task_id = ? AND request_id = ? AND status = 'reserved'`).run(jsonPayload(unknown), ownerUserId, task.id, record.requestId);
+          db.exec('COMMIT');
+          return { outcome: 'unknown', record: unknown };
+        }
+        db.exec('COMMIT');
+        return { outcome: record?.status === 'failed_unknown' ? 'unknown' : 'in_progress', record };
+      }
+      const durableRow = db.prepare(`SELECT status, state_version, payload FROM agent_policy_import_tasks WHERE id = ?`).get(task.id);
+      if (!durableRow || Number(durableRow.state_version) !== Number(expectedVersion)) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+      if (durableRow.status !== 'saving') throw Object.assign(new Error('请先明确确认最终保单摘要'), { code: 'FINAL_CONFIRMATION_REQUIRED', status: 409 });
+      const durableTask = parseJson(durableRow.payload, null);
+      const claimedTask = {
+        ...durableTask,
+        status: 'saving',
+        stateVersion: Number(expectedVersion) + 1,
+        finalizeRequestId: requestId,
+        finalizeLeaseUntil: String(leaseUntil || ''),
+        updatedAt: timestamp,
+        events: [...(durableTask.events || []), { action: 'finalize_reserved', status: 'saving', stateVersion: Number(expectedVersion) + 1, createdAt: timestamp }],
+      };
+      const changed = db.prepare(`UPDATE agent_policy_import_tasks SET status = 'saving', state_version = ?, updated_at = ?, payload = ? WHERE id = ? AND state_version = ? AND status = 'saving'`).run(
+        claimedTask.stateVersion, timestamp, jsonPayload(claimedTask), task.id, expectedVersion,
       ).changes;
       if (changed !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
-      const record = { ownerUserId, taskId: task.id, requestId, status: 'reserved', formalPolicyId: null, completedAt: '', createdAt: now, updatedAt: now };
+      const record = { ownerUserId, taskId: task.id, requestId, status: 'reserved', claimVersion: claimedTask.stateVersion, leaseUntil: String(leaseUntil || ''), formalPolicyId: null, completedAt: '', createdAt: timestamp, updatedAt: timestamp };
       db.prepare(`INSERT INTO agent_policy_import_finalizations (owner_user_id, task_id, request_id, status, formal_policy_id, completed_at, payload) VALUES (?, ?, ?, ?, NULL, '', ?)`).run(ownerUserId, task.id, requestId, record.status, jsonPayload(record));
-      updateStateMeta(db, { ...createInitialState(), ...state }, now);
+      updateStateMeta(db, { ...createInitialState(), ...state }, timestamp);
       db.exec('COMMIT');
-      return record;
+      return { outcome: 'acquired', record, task: claimedTask };
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
@@ -2495,17 +2523,39 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return parseJson(row?.payload, null);
   }
 
-  async function failAgentPolicyImportFinalization({ record, unknown = true } = {}) {
-    if (!unknown) {
-      db.prepare(`DELETE FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).run(record.ownerUserId, record.taskId, record.requestId);
-      return null;
+  async function findPolicyByImportSource({ ownerUserId, taskId } = {}) {
+    return loadPayloadRows(db, 'policies', 'id ASC').find((policy) => (
+      Number(policy?.userId) === Number(ownerUserId) && Number(policy?.sourcePolicyImportTaskId) === Number(taskId)
+    )) || null;
+  }
+
+  async function failAgentPolicyImportFinalization({ state, record, unknown = true, now = new Date().toISOString() } = {}) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (!unknown) {
+        const row = db.prepare(`SELECT payload, state_version FROM agent_policy_import_tasks WHERE id = ?`).get(record.taskId);
+        const current = parseJson(row?.payload, null);
+        if (!current || Number(row.state_version) !== Number(record.claimVersion)) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+        const retryTask = { ...current, status: 'final_confirmation', stateVersion: Number(current.stateVersion) + 1, updatedAt: String(now) };
+        delete retryTask.finalizeRequestId;
+        delete retryTask.finalizeLeaseUntil;
+        retryTask.events = [...(current.events || []), { action: 'finalize_precommit_failed', status: retryTask.status, stateVersion: retryTask.stateVersion, createdAt: String(now) }];
+        db.prepare(`UPDATE agent_policy_import_tasks SET status = ?, state_version = ?, updated_at = ?, payload = ? WHERE id = ? AND state_version = ?`).run(retryTask.status, retryTask.stateVersion, retryTask.updatedAt, jsonPayload(retryTask), retryTask.id, record.claimVersion);
+        db.prepare(`DELETE FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).run(record.ownerUserId, record.taskId, record.requestId);
+        updateStateMeta(db, { ...createInitialState(), ...state }, String(now));
+        db.exec('COMMIT');
+        return retryTask;
+      }
+      const next = { ...record, status: 'failed_unknown', updatedAt: String(now) };
+      db.prepare(`UPDATE agent_policy_import_finalizations SET status = ?, payload = ? WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).run(
+        next.status, jsonPayload(next), record.ownerUserId, record.taskId, record.requestId,
+      );
+      db.exec('COMMIT');
+      return next;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
-    const status = unknown ? 'failed_unknown' : 'reserved';
-    const next = { ...record, status, updatedAt: new Date().toISOString() };
-    db.prepare(`UPDATE agent_policy_import_finalizations SET status = ?, payload = ? WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).run(
-      status, jsonPayload(next), record.ownerUserId, record.taskId, record.requestId,
-    );
-    return next;
   }
 
   async function persistAdminSession({ state, session = null } = {}) {
@@ -3122,6 +3172,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     reserveAgentPolicyImportFinalization,
     completeAgentPolicyImportFinalization,
     findAgentPolicyImportFinalization,
+    findPolicyByImportSource,
     failAgentPolicyImportFinalization,
     persistPolicyDerivedResult,
     persistProductCustomerResponsibilitySummary,

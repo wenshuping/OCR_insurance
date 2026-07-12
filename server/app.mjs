@@ -2160,6 +2160,8 @@ export function createPolicyOcrApp(options = {}) {
     complete: options.completeAgentPolicyImportFinalization,
     findRecord: options.findAgentPolicyImportFinalization,
     failRecord: options.failAgentPolicyImportFinalization,
+    findPolicyBySource: options.findPolicyByImportSource,
+    loadTask: options.findAgentPolicyImportTask,
     createPolicy: async ({ task, family, owner }) => {
       const user = (state.users || []).find((row) => Number(row.id) === Number(owner.userId));
       assertUserCanSavePolicy(state, user);

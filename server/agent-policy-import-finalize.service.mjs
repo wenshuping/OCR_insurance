@@ -49,8 +49,11 @@ export function createAgentPolicyImportFinalizer({
   complete,
   findRecord,
   failRecord,
+  findPolicyBySource,
+  loadTask,
   createPolicy,
   nowIso = () => new Date().toISOString(),
+  claimLeaseMs = 60_000,
 } = {}) {
   const inFlight = new Map();
   async function run({ task, family, owner, requestId, stateVersion } = {}) {
@@ -61,22 +64,54 @@ export function createAgentPolicyImportFinalizer({
     const completedForTask = await findRecord?.({ ownerUserId: owner?.userId, taskId: task?.id });
     if (completedForTask?.status === 'completed') return publicResult(completedForTask, task);
     if (prior?.status === 'reserved' || prior?.status === 'failed_unknown') {
-      const reconciledPolicy = (state.policies || []).find((policy) => Number(policy.sourcePolicyImportTaskId) === Number(task?.id) && Number(policy.userId) === Number(owner?.userId));
-      if (!reconciledPolicy) fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果待核对，请稍后重试', 503);
-      const next = structuredClone(task);
-      updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
-      const record = { ...prior, status: 'completed', formalPolicyId: reconciledPolicy.id, completedAt: nowIso(), updatedAt: nowIso() };
-      await complete({ state, task: next, record, policy: reconciledPolicy });
-      Object.assign(task, next);
-      return publicResult(record, next);
+      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id });
+      if (policy) {
+        const claimedTask = await loadTask?.(task.id);
+        const next = structuredClone(claimedTask || task);
+        updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
+        const completed = { ...prior, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
+        await complete({ state, task: next, record: completed, policy });
+        Object.assign(task, next);
+        return publicResult(completed, next);
+      }
+      if (prior.status === 'failed_unknown') fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
+      const now = nowIso();
+      const leaseExpired = Number.isFinite(Date.parse(prior.leaseUntil)) && Date.parse(prior.leaseUntil) <= Date.parse(now);
+      if (!leaseExpired) fail('FINALIZE_IN_PROGRESS', '保单正在保存，请稍后查询结果', 409);
+      const expired = await reserve({ state, task, ownerUserId: owner.userId, requestId: stableRequestId, expectedVersion: task.stateVersion, now, leaseUntil: prior.leaseUntil });
+      if (expired.outcome === 'completed') return publicResult(expired.record, task);
+      fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
     }
     assertReady({ state, task, family, owner, stateVersion });
-    const reservedTask = structuredClone(task);
-    const record = await reserve({ state, task: reservedTask, ownerUserId: owner.userId, requestId: stableRequestId, expectedVersion: task.stateVersion });
+    const now = nowIso();
+    const reservation = await reserve({ state, task, ownerUserId: owner.userId, requestId: stableRequestId, expectedVersion: task.stateVersion, now, leaseUntil: new Date(Date.parse(now) + claimLeaseMs).toISOString() });
+    if (reservation.outcome === 'completed') return publicResult(reservation.record, task);
+    if (reservation.outcome === 'unknown') fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
+    if (reservation.outcome === 'in_progress') {
+      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id });
+      if (!policy) fail('FINALIZE_IN_PROGRESS', '保单正在保存，请稍后查询结果', 409);
+      const claimedTask = await loadTask?.(task.id);
+      const next = structuredClone(claimedTask || task);
+      updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
+      const completed = { ...reservation.record, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
+      await complete({ state, task: next, record: completed, policy });
+      Object.assign(task, next);
+      return publicResult(completed, next);
+    }
+    const record = reservation.record;
+    const reservedTask = reservation.task;
+    Object.assign(task, reservedTask);
+    let policy;
     try {
-      const policy = await createPolicy({ task: reservedTask, family, owner, requestId: stableRequestId });
+      policy = await createPolicy({ task: reservedTask, family, owner, requestId: stableRequestId });
       policy.sourcePolicyImportTaskId = reservedTask.id;
       policy.sourcePolicyImportRequestId = stableRequestId;
+    } catch (error) {
+      const retryTask = await failRecord?.({ state, record, unknown: false, now: nowIso() });
+      if (retryTask) Object.assign(task, retryTask);
+      throw error;
+    }
+    try {
       const next = structuredClone(reservedTask);
       updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
       const completed = { ...record, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
@@ -84,9 +119,8 @@ export function createAgentPolicyImportFinalizer({
       Object.assign(task, next);
       if (!(state.policies || []).some((row) => Number(row.id) === Number(policy.id))) state.policies.push(policy);
       return publicResult(completed, next);
-    } catch (error) {
-      await failRecord?.({ record, unknown: !error?.code });
-      if (error?.code) throw error;
+    } catch {
+      await failRecord?.({ state, record, unknown: true, now: nowIso() });
       fail('FINALIZATION_OUTCOME_UNKNOWN', '保存结果未知，系统将在重试时先核对', 503);
     }
   }
