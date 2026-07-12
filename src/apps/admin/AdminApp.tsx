@@ -141,6 +141,7 @@ export function AdminApp() {
   const [knowledgeCrawling, setKnowledgeCrawling] = useState(false);
   const [retryingPolicyId, setRetryingPolicyId] = useState<number | null>(null);
   const [activePage, setActivePage] = useState<AdminPageKey>('overview');
+  const [agentPoliciesDirty, setAgentPoliciesDirty] = useState(false);
   const [reportIssueReports, setReportIssueReports] = useState<AdminReportIssueSummary[]>([]);
   const [selectedReportIssueReport, setSelectedReportIssueReport] = useState<AdminReportIssueSummary | null>(null);
   const [selectedReportIssues, setSelectedReportIssues] = useState<AdminReportIssue[]>([]);
@@ -701,6 +702,8 @@ export function AdminApp() {
   }
 
   function changeAdminPage(page: AdminPageKey) {
+    if (activePage === 'agentPolicies' && page !== 'agentPolicies' && agentPoliciesDirty && !window.confirm('存在未保存的 Agent 策略草稿，确认离开并丢弃修改吗？')) return;
+    if (page !== 'agentPolicies') setAgentPoliciesDirty(false);
     setActivePage(page);
     if (page === 'knowledge' && !knowledgeRecords.length) void loadKnowledgeRecords();
     if (page === 'responsibilityGeneration' && !responsibilityGenerationConfig) void loadResponsibilityGenerationConfig();
@@ -887,7 +890,7 @@ export function AdminApp() {
           />
         );
       case 'agentPolicies':
-        return <AdminAgentPoliciesPage adminToken={adminToken} />;
+        return <AdminAgentPoliciesPage adminToken={adminToken} onDirtyChange={setAgentPoliciesDirty} />;
       case 'salesReview':
         return (
           <AdminSalesReviewPage
