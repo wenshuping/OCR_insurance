@@ -19,6 +19,8 @@ function clone(value) {
 
 const DEFAULT_MAX_DOCUMENT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_SCAN_LEASE_MS = 5 * 60 * 1000;
+const DEFAULT_QUEUE_LEASE_MS = 30 * 60 * 1000;
+const LEGACY_RECEIVED_GRACE_MS = 15 * 60 * 1000;
 
 function bytesForUpload(uploadItem, maxDocumentBytes) {
   if (typeof uploadItem !== 'string' || !uploadItem) fail('INVALID_DOCUMENT', '附件内容无效');
@@ -109,7 +111,7 @@ function mergeDocumentCandidates(task) {
   }
 }
 
-export function createAgentPolicyImportRuntime({ state, allocateId, persistTask, loadTask, recognizePolicyInput, resolveProductCandidates, nowIso = () => new Date().toISOString(), maxDocumentBytes = DEFAULT_MAX_DOCUMENT_BYTES, scanLeaseMs = DEFAULT_SCAN_LEASE_MS } = {}) {
+export function createAgentPolicyImportRuntime({ state, allocateId, persistTask, loadTask, recognizePolicyInput, resolveProductCandidates, nowIso = () => new Date().toISOString(), maxDocumentBytes = DEFAULT_MAX_DOCUMENT_BYTES, scanLeaseMs = DEFAULT_SCAN_LEASE_MS, queueLeaseMs = DEFAULT_QUEUE_LEASE_MS } = {}) {
   state.agentPolicyImportTasks = Array.isArray(state.agentPolicyImportTasks) ? state.agentPolicyImportTasks : [];
 
   function ownedTask(taskId, familyId, owner) {
@@ -139,7 +141,12 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
 
   async function recoverPending(task) {
     const now = Date.parse(nowIso());
-    const stranded = task.documents.filter((document) => document.status === 'received' || (document.status === 'scanning' && (!Number.isFinite(Date.parse(document.scanLeaseUntil)) || Date.parse(document.scanLeaseUntil) <= now)));
+    const taskAge = now - Date.parse(task.updatedAt);
+    const stranded = task.documents.filter((document) => (
+      document.status === 'received'
+        ? (Number.isFinite(Date.parse(document.queueLeaseUntil)) ? Date.parse(document.queueLeaseUntil) <= now : taskAge >= LEGACY_RECEIVED_GRACE_MS)
+        : document.status === 'scanning' && (!Number.isFinite(Date.parse(document.scanLeaseUntil)) || Date.parse(document.scanLeaseUntil) <= now)
+    ));
     if (!stranded.length) return task;
     const next = clone(task);
     for (const document of next.documents) {
@@ -148,6 +155,7 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
       document.status = 'failed';
       document.errorCode = wasReceived ? 'QUEUED_UPLOAD_REQUIRED' : 'SCAN_LEASE_EXPIRED';
       delete document.scanLeaseUntil;
+      delete document.queueLeaseUntil;
     }
     next.status = 'field_completion';
     next.stateVersion += 1;
@@ -190,15 +198,25 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
         now: nowIso(),
       });
       if (!appended.added.length) return buildAgentPolicyImportContext(current);
+      const queuedAt = nowIso();
+      for (const document of next.documents) {
+        if (document.status !== 'received') continue;
+        document.queuedAt = queuedAt;
+        document.queueAttempt = Number(document.queueAttempt || 0) + 1;
+        document.queueLeaseUntil = new Date(Date.parse(queuedAt) + queueLeaseMs).toISOString();
+      }
       await commit(current, next, stateVersion);
       let expectedVersion = next.stateVersion;
       for (const added of appended.added) {
         const document = next.documents.find((candidate) => candidate.documentId === added.documentId);
         const source = inspected.find(({ bytes }) => crypto.createHash('sha256').update(bytes).digest('hex') === added.sha256);
         document.status = 'scanning';
+        delete document.queueLeaseUntil;
         document.scanAttempt = Number(document.scanAttempt || 0) + 1;
         document.scanLeaseUntil = new Date(Date.parse(nowIso()) + scanLeaseMs).toISOString();
         delete document.errorCode;
+        const renewedQueueLease = new Date(Date.parse(nowIso()) + queueLeaseMs).toISOString();
+        for (const queued of next.documents) if (queued.status === 'received') queued.queueLeaseUntil = renewedQueueLease;
         next.status = 'recognizing';
         next.stateVersion += 1;
         next.updatedAt = nowIso();
@@ -209,6 +227,7 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
           document.evidence = { candidates: candidatesForScan(document, scan) };
           document.status = 'recognized';
           delete document.scanLeaseUntil;
+          delete document.queueLeaseUntil;
           mergeDocumentCandidates(next);
           const resolvedOptions = typeof resolveProductCandidates === 'function'
             ? await resolveProductCandidates({ scan, draft: clone(next.draft), familyId: next.familyId })
@@ -225,6 +244,7 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
           document.status = 'failed';
           document.errorCode = String(error?.code || 'OCR_FAILED').slice(0, 60);
           delete document.scanLeaseUntil;
+          delete document.queueLeaseUntil;
           mergeDocumentCandidates(next);
           const productOptions = exactProductOptions(state, next.draft);
           reconcileAgentPolicyImportResolutions(next, { productOptions, productResolution: next.productResolution || (productOptions.length === 1 ? 'trusted_match' : ''), productId: next.draft.productId || (productOptions.length === 1 ? productOptions[0].productId : undefined), memberBindings: exactMemberBindings(next), now: nowIso() });

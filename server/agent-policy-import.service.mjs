@@ -172,8 +172,11 @@ function normalizeStoredDocument(value) {
   const evidence = candidates.length ? { candidates } : undefined;
   const scanAttempt = Number.isSafeInteger(value.scanAttempt) && value.scanAttempt >= 0 ? value.scanAttempt : 0;
   const scanLeaseUntil = scalarString(value.scanLeaseUntil, { max: 40 });
+  const queueLeaseUntil = scalarString(value.queueLeaseUntil, { max: 40 });
+  const queuedAt = scalarString(value.queuedAt, { max: 40 });
+  const queueAttempt = Number.isSafeInteger(value.queueAttempt) && value.queueAttempt >= 0 ? value.queueAttempt : 0;
   const errorCode = scalarString(value.errorCode, { max: 60 });
-  return { documentId, sha256, name: redact(scalarString(value.name || '上传文件', { max: 120 })), mediaType, size: value.size, status: DOCUMENT_STATUSES.has(value.status) ? value.status : 'received', scanAttempt, ...(scanLeaseUntil ? { scanLeaseUntil } : {}), ...(errorCode ? { errorCode } : {}), ...(evidence ? { evidence } : {}) };
+  return { documentId, sha256, name: redact(scalarString(value.name || '上传文件', { max: 120 })), mediaType, size: value.size, status: DOCUMENT_STATUSES.has(value.status) ? value.status : 'received', scanAttempt, queueAttempt, ...(scanLeaseUntil ? { scanLeaseUntil } : {}), ...(queueLeaseUntil ? { queueLeaseUntil } : {}), ...(queuedAt ? { queuedAt } : {}), ...(errorCode ? { errorCode } : {}), ...(evidence ? { evidence } : {}) };
 }
 
 function normalizeStoredDocuments(value) {

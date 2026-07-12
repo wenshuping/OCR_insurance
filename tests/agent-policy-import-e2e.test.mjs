@@ -210,7 +210,7 @@ test('restart recovery converts a durable received document to retryable and sam
     const task = ctx.loaded.agentPolicyImportTasks[0];
     const bytes = Buffer.from([0xff, 0xd8, 2, 0xff, 0xd9]);
     const sha256 = (await import('node:crypto')).default.createHash('sha256').update(bytes).digest('hex');
-    const received = { ...structuredClone(task), documents: [{ documentId: 'doc_received', sha256, name: 'queued.jpg', mediaType: 'image/jpeg', size: bytes.length, status: 'received', scanAttempt: 0 }], status: 'recognizing', stateVersion: 2 };
+    const received = { ...structuredClone(task), documents: [{ documentId: 'doc_received', sha256, name: 'queued.jpg', mediaType: 'image/jpeg', size: bytes.length, status: 'received', scanAttempt: 0 }], status: 'recognizing', stateVersion: 2, updatedAt: '2020-01-01T00:00:00.000Z' };
     await ctx.store.persistAgentPolicyImportTask({ state: ctx.loaded, task: received, expectedVersion: 1 });
     ctx.loaded.agentPolicyImportTasks[0] = received;
     const recovered = await ctx.request(`/api/family-profiles/10/policy-imports/${task.id}`);
@@ -218,6 +218,37 @@ test('restart recovery converts a durable received document to retryable and sam
     const retried = await ctx.request(`/api/family-profiles/10/policy-imports/${task.id}/files`, { method: 'POST', body: { stateVersion: recovered.payload.task.stateVersion, files: [{ uploadItem: `data:image/jpeg;base64,${bytes.toString('base64')}` }] } });
     assert.equal(retried.payload.task.documentSummary.statuses.recognized, 1);
     assert.equal(retried.payload.task.status, 'final_confirmation');
+  } finally { await ctx.close(); }
+});
+
+test('concurrent GET preserves actively leased received documents during sequential multi-file OCR', async () => {
+  const releases = [];
+  const calls = [];
+  const scanner = ({ uploadItem }) => new Promise((resolve) => {
+    calls.push(uploadItem);
+    releases.push(() => resolve({ data: { company: '可信保险', name: '安心保', insured: '张三', applicant: '李四' } }));
+  });
+  const ctx = await fixture({ scanner });
+  try {
+    const started = await ctx.request('/api/family-profiles/10/policy-imports', { method: 'POST', body: {} });
+    const appendPromise = ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}/files`, { method: 'POST', body: { stateVersion: 1, files: [{ uploadItem: image('slow-one') }, { uploadItem: image('slow-two') }] } });
+    while (calls.length < 1) await new Promise((resolve) => setTimeout(resolve, 1));
+    const duringFirst = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}`);
+    assert.equal(duringFirst.payload.task.status, 'recognizing');
+    assert.equal(duringFirst.payload.task.documentSummary.statuses.scanning, 1);
+    assert.equal(duringFirst.payload.task.documentSummary.statuses.received, 1);
+    const versionDuringFirst = duringFirst.payload.task.stateVersion;
+    const repeated = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}`);
+    assert.equal(repeated.payload.task.stateVersion, versionDuringFirst);
+    releases[0]();
+    while (calls.length < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+    const duringSecond = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}`);
+    assert.equal(duringSecond.payload.task.status, 'recognizing');
+    assert.equal(duringSecond.payload.task.documentSummary.statuses.failed || 0, 0);
+    releases[1]();
+    const complete = await appendPromise;
+    assert.equal(complete.payload.task.status, 'final_confirmation');
+    assert.equal(complete.payload.task.documentSummary.statuses.recognized, 2);
   } finally { await ctx.close(); }
 });
 
