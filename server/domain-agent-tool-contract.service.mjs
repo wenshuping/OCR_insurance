@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { types } from 'node:util';
 
 const KNOWN_AGENTS = new Set(['sales_champion', 'insurance_expert']);
 const MAX_ANSWER_LENGTH = 8_000;
@@ -149,6 +150,7 @@ function sanitizePublicUrl(value, evidence, options) {
 
 function projectEvidence(input, options) {
   if (input === undefined) return [];
+  if (types.isProxy(input)) throw contractError('evidence', 'must be a real array');
   let isArray;
   try {
     isArray = Array.isArray(input);
@@ -157,8 +159,11 @@ function projectEvidence(input, options) {
   }
   if (!isArray) throw contractError('evidence', 'must be an array');
   const length = contractRead(input, 'length', 'evidence');
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_ARRAY_LENGTH) {
+    throw contractError('evidence', `must contain at most ${MAX_ARRAY_LENGTH} entries`);
+  }
   const result = [];
-  for (let index = 0; index < length; index += 1) {
+  for (let index = 0; index < Math.min(length, MAX_ARRAY_LENGTH); index += 1) {
     let item;
     try {
       item = input[index];
@@ -175,7 +180,6 @@ function projectEvidence(input, options) {
       || !version || version === '[REDACTED]') {
       throw contractError('evidence', 'entries require safe non-empty string label, sourceRef, and version');
     }
-    if (result.length >= MAX_ARRAY_LENGTH) continue;
     const projected = { label, sourceRef, version };
     const url = sanitizePublicUrl(safeRead(item, 'url'), item, options);
     if (url) projected.url = url;
@@ -192,8 +196,17 @@ function deepFreeze(value) {
 }
 
 export function buildDomainAgentEnvelope(input, options = {}) {
-  if (!input || (typeof input !== 'object' && typeof input !== 'function')) {
-    throw contractError('envelope', 'must be an object');
+  if (!input || typeof input !== 'object' || types.isProxy(input)) {
+    throw contractError('envelope', 'must be a plain object');
+  }
+  let prototype;
+  try {
+    prototype = Object.getPrototypeOf(input);
+  } catch {
+    throw contractError('envelope', 'must be a plain object');
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw contractError('envelope', 'must be a plain object');
   }
   const agent = safeRead(input, 'agent');
   if (!KNOWN_AGENTS.has(agent)) throw contractError('agent', 'must be a known domain agent');

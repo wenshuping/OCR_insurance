@@ -32,6 +32,17 @@ test('rejects unknown agents, absent task ids, and non-string answers', () => {
   assert.throws(() => buildDomainAgentEnvelope({ ...baseInput(), answer: { text: 'no' } }), /answer/u);
 });
 
+test('rejects non-plain and proxied envelope roots with a stable error', () => {
+  class Envelope extends Object {}
+  const invalidRoots = [[], () => baseInput(), new Envelope(), new Proxy(baseInput(), {})];
+  for (const input of invalidRoots) {
+    assert.throws(
+      () => buildDomainAgentEnvelope(input),
+      (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === 'envelope',
+    );
+  }
+});
+
 test('redacts sensitive text and exposes only projected evidence fields', () => {
   const result = buildDomainAgentEnvelope({
     ...baseInput('insurance_expert'),
@@ -150,7 +161,7 @@ test('allows an explicit nonstandard port or a server URL resolver', () => {
 test('bounds arrays and strings and safely handles cyclic, BigInt, and hostile values', () => {
   const cyclic = { label: 'safe', sourceRef: 'ref', version: '1' };
   cyclic.self = cyclic;
-  const evidence = Array.from({ length: 40 }, (_, index) => ({
+  const evidence = Array.from({ length: 19 }, (_, index) => ({
     label: `label-${index}-${'x'.repeat(500)}`,
     sourceRef: `ref-${index}`,
     version: '1',
@@ -188,4 +199,41 @@ test('bounds arrays and strings and safely handles cyclic, BigInt, and hostile v
     () => buildDomainAgentEnvelope({ ...baseInput(), evidence: hostileEvidence }),
     (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && !String(error).includes('array secret'),
   );
+});
+
+test('rejects oversized or proxied evidence before unbounded indexed reads', () => {
+  let indexedReads = 0;
+  const oversized = Array.from({ length: 1_000 }, (_, index) => ({
+    label: `label-${index}`,
+    sourceRef: `ref-${index}`,
+    version: '1',
+  }));
+  Object.defineProperty(oversized, 0, {
+    configurable: true,
+    get() {
+      indexedReads += 1;
+      return { label: 'unreachable', sourceRef: 'unreachable', version: '1' };
+    },
+  });
+  assert.throws(
+    () => buildDomainAgentEnvelope({ ...baseInput(), evidence: oversized }),
+    (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === 'evidence',
+  );
+  assert.equal(indexedReads, 0);
+
+  for (const lengthValue of [Infinity, 1_000_000_000]) {
+    let getterCount = 0;
+    const hostile = new Proxy([], {
+      get(_target, property) {
+        getterCount += 1;
+        if (property === 'length') return lengthValue;
+        throw new Error('must not read index');
+      },
+    });
+    assert.throws(
+      () => buildDomainAgentEnvelope({ ...baseInput(), evidence: hostile }),
+      (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === 'evidence',
+    );
+    assert.equal(getterCount, 0);
+  }
 });
