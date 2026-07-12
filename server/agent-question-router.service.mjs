@@ -180,6 +180,15 @@ function publicResult(result, fallbackDecision = 'execute') {
   };
 }
 
+export function resolvePolicyExecutionDecision(policy = {}, candidate = {}, authResult = {}, mode = 'route') {
+  const threshold = Math.min(1, Math.max(0, Number(policy.confidenceThreshold) || 0));
+  if ((Number(candidate.confidence) || 0) < threshold) return { decision: 'clarify', result: 'low_confidence' };
+  if (authResult.required === true && authResult.resolved !== true) return { decision: 'clarify', result: 'family_clarification' };
+  if (policy.operation === 'write') return { decision: 'confirm', result: 'write_preview', previewOnly: true, mode };
+  if (policy.decision === 'propose') return { decision: 'confirm', result: 'proposal_preview', previewOnly: true, mode };
+  return { decision: 'execute', result: 'would_execute', previewOnly: mode === 'simulation', mode };
+}
+
 export async function simulateAgentQuestionDecision({ store, policyVersion, internalUserId = 1, candidate: rawCandidate, conversationContext, familyResolver, clock = () => new Date() } = {}) {
   if (!store || typeof store.load !== 'function') throw new TypeError('store with load() is required');
   const candidate = normalizeCandidate(rawCandidate);
@@ -189,9 +198,9 @@ export async function simulateAgentQuestionDecision({ store, policyVersion, inte
   const selected = selectPolicy(candidate, published);
   const policy = selected.policy;
   const policySource = policyVersion ? String(policyVersion.status) : selected.policySource === 'published' ? 'published' : 'built_in';
-  const threshold = Math.min(1, Math.max(0, Number(policy?.confidenceThreshold) || 0));
-  if (candidate.confidence < threshold) {
-    return { policy, policySource, decision: 'clarify', result: 'low_confidence', explanation: `Confidence ${candidate.confidence} is below ${threshold}.` };
+  const initialDecision = resolvePolicyExecutionDecision(policy, candidate, {}, 'simulation');
+  if (initialDecision.result === 'low_confidence') {
+    return { policy, policySource, ...initialDecision, explanation: `Confidence ${candidate.confidence} is below ${Number(policy?.confidenceThreshold) || 0}.` };
   }
   if (policy?.key === 'unknown_write' || policy?.decision === 'reject') {
     return { policy, policySource, decision: 'deny', result: policy?.key === 'unknown_write' ? 'unknown_write_denied' : 'policy_rejected', explanation: `${policy.key} would deny the request.` };
@@ -211,14 +220,13 @@ export async function simulateAgentQuestionDecision({ store, policyVersion, inte
     if (resolved.result) return { policy, policySource, decision: 'clarify', result: 'family_clarification', explanation: 'An authorized family could not be uniquely resolved.' };
     family = resolved.family;
   }
-  const writePreview = policy.operation === 'write';
+  const execution = resolvePolicyExecutionDecision(policy, candidate, { required: Boolean(family), resolved: Boolean(family) }, 'simulation');
   return {
     policy,
     policySource,
-    decision: writePreview || policy.decision === 'propose' ? 'confirm' : 'execute',
-    result: writePreview ? 'write_preview' : 'would_execute',
+    ...execution,
     familyResolved: Boolean(family),
-    explanation: writePreview ? `${policy.key} would require confirmation; no write was executed.` : `${policy.key} would execute.`,
+    explanation: execution.previewOnly ? `${policy.key} would require confirmation; no write was executed.` : `${policy.key} would execute.`,
   };
 }
 
@@ -282,8 +290,8 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       return safe;
     };
 
-    const threshold = Math.min(1, Math.max(0, Number(policy?.confidenceThreshold) || 0));
-    if (candidate.confidence < threshold) {
+    const initialDecision = resolvePolicyExecutionDecision(policy, candidate);
+    if (initialDecision.result === 'low_confidence') {
       const familyRelated = FAMILY_INTENTS.has(policy?.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy?.tool);
       return finish(familyRelated
         ? genericFamilyClarification()
@@ -333,6 +341,11 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       authorizedResourceIds = [`family:${Number(family.id)}`];
     }
 
+    const execution = resolvePolicyExecutionDecision(policy, candidate, { required: Boolean(family), resolved: Boolean(family) });
+    if (execution.previewOnly) {
+      return finish({ decision: execution.decision, interaction: { type: 'confirmation', text: '该操作需要确认后执行。' } }, execution.result);
+    }
+
     const handler = handlers?.[policy.handler];
     if (typeof handler !== 'function') {
       return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } }, 'missing_handler');
@@ -351,11 +364,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     } catch {
       return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } }, 'handler_error');
     }
-    const decision = policy.decision === 'propose' ? 'confirm' : 'execute';
-    const interactionType = decision === 'confirm' ? 'confirmation' : 'answer';
-    return finish(publicResult(handled, decision).interaction.type === 'answer'
-      ? { ...handled, decision, interaction: { ...handled?.interaction, type: interactionType } }
-      : { ...handled, decision }, 'handled');
+    return finish({ ...handled, decision: execution.decision }, 'handled');
   }
 
   return { route };

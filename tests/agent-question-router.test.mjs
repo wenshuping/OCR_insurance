@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
+import { createAgentQuestionRouter, simulateAgentQuestionDecision } from '../server/agent-question-router.service.mjs';
 import { createAgentQuestionHandlers } from '../server/agent-question-handlers.service.mjs';
 
 const NOW = '2026-07-12T08:00:00.000Z';
@@ -24,9 +24,32 @@ function createHarness({ families = [], policies = [], published = null, handler
   };
   return {
     calls,
+    store,
     router: createAgentQuestionRouter({ store, handlers: wrappedHandlers, familyResolver, clock: () => new Date(NOW) }),
   };
 }
+
+test('published execute-write policy is confirmation-only in route and simulation', async () => {
+  const writePolicy = { key: 'write-now', intent: 'write_now', decision: 'execute', handler: 'system', operation: 'write', confirmation: 'required', outputMode: 'preview', tool: 'propose_memory' };
+  const harness = createHarness({ published: { version: 50, status: 'published', policies: [writePolicy] }, handlers: { system: async () => ({ interaction: { type: 'answer', text: 'must not run' } }) } });
+  const candidate = { intent: 'write_now', requestedOperation: 'write', confidence: 1 };
+  const routed = await harness.router.route(routeInput(candidate));
+  const simulated = await simulateAgentQuestionDecision({ store: harness.store, internalUserId: 7, candidate });
+  assert.equal(routed.decision, 'confirm');
+  assert.equal(simulated.decision, 'confirm');
+  assert.equal(simulated.result, 'write_preview');
+  assert.equal(harness.calls.handlers.length, 0);
+});
+
+test('route and simulation share read and low-confidence execution decisions', async () => {
+  const harness = createHarness({ published: { version: 51, status: 'published', policies: [readPolicy] }, families: [{ id: 11, ownerUserId: 7, familyName: '张三家庭', status: 'active' }], handlers: { insurance_expert: async () => ({ interaction: { type: 'answer', text: 'ok' } }) } });
+  for (const confidence of [0.6, 1]) {
+    const candidate = routeInput({ confidence }).candidate;
+    const routed = await harness.router.route(routeInput({ confidence }, { messageRef: `msg-${confidence}` }));
+    const simulated = await simulateAgentQuestionDecision({ store: harness.store, internalUserId: 7, candidate });
+    assert.equal(simulated.decision, routed.decision);
+  }
+});
 
 const readPolicy = {
   key: 'family_summary',
