@@ -206,16 +206,20 @@ function canonicalTask(input) {
 }
 
 function replaceOwnEnumerable(target, value) {
-  for (const key of Object.keys(target)) delete target[key];
-  Object.assign(target, value);
+  for (const key of Reflect.ownKeys(target)) delete target[key];
+  Object.defineProperties(target, Object.fromEntries(Object.entries(value).map(([key, entryValue]) => [key, {
+    value: entryValue,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  }])));
 }
 
 function assertSafeCommitTarget(target) {
-  if (!Object.isExtensible(target)) fail('UNSAFE_TASK_TARGET', '任务对象不支持安全原地更新', 409);
+  if (!isPlainObject(target) || !Object.isExtensible(target)) fail('UNSAFE_TASK_TARGET', '任务对象不支持安全原地更新', 409);
   for (const key of Reflect.ownKeys(target)) {
     const descriptor = Object.getOwnPropertyDescriptor(target, key);
-    if (!descriptor?.enumerable) continue;
-    if (typeof key !== 'string' || !('value' in descriptor) || !descriptor.configurable || !descriptor.writable) {
+    if (typeof key !== 'string' || !descriptor?.enumerable || !('value' in descriptor) || !descriptor.configurable || !descriptor.writable) {
       fail('UNSAFE_TASK_TARGET', '任务对象不支持安全原地更新', 409);
     }
   }

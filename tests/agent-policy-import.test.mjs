@@ -302,3 +302,22 @@ test('successful mutations reject unsafe in-place commit targets atomically', ()
     assert.deepEqual(task, before);
   }
 });
+
+test('non-enumerable readonly task properties are rejected without descriptor changes', () => {
+  const task = create();
+  Object.defineProperty(task, 'status', {
+    value: task.status,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  const keysBefore = Reflect.ownKeys(task);
+  const descriptorsBefore = Object.getOwnPropertyDescriptors(task);
+
+  assert.throws(
+    () => appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [image('a'.repeat(64))] }),
+    (error) => error.code === 'UNSAFE_TASK_TARGET',
+  );
+  assert.deepEqual(Reflect.ownKeys(task), keysBefore);
+  assert.deepEqual(Object.getOwnPropertyDescriptors(task), descriptorsBefore);
+});
