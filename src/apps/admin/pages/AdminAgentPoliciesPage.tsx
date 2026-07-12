@@ -94,6 +94,16 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
 
   useEffect(() => {
     const scope = lifecycle.current.activate(adminToken);
+    requestMutex.current = createRequestMutex();
+    simulationMutex.current = createRequestMutex();
+    scope.commit(() => {
+      setPublished(null); setDraft(null); setPolicies([]); setHistory([]);
+      setPoliciesLoaded(false); setPolicyLoadError(''); setLoading(true);
+      setSaving(false); setDirty(false); setError(''); setSimulation(null); setSimulating(false);
+      setCandidateIntent('coverage_report'); setQuestion('查看家庭保障情况'); setConfidence('0.9'); setRequestedOperation('read');
+      setFamilyName(''); setFamilyRef(''); setPolicyHint(''); setSimulationSource('current');
+      setUnknownItems([]); setUnknownTotal(0); setUnknownOffset(0); setUnknownLoading(false);
+    });
     void loadPolicies({ token: adminToken, scope });
     return () => { scope.invalidate(); policyRequests.current.invalidate(); };
   }, [adminToken]);

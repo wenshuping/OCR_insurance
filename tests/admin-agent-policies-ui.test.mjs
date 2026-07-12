@@ -153,6 +153,36 @@ test('token lifecycle prevents stale save and simulation completions from interr
   assert.equal(tokenA.commit(() => { state = 'old-token'; }), false);
 });
 
+test('token activation rotates mutexes so pending A actions cannot block B actions or flags', async () => {
+  const lifecycle = createLifecycleController();
+  let mutationMutex = createRequestMutex();
+  let simulationMutex = createRequestMutex();
+  let flags = { saving: false, simulating: false, result: '' };
+  const activate = (token) => {
+    const scope = lifecycle.activate(token);
+    mutationMutex = createRequestMutex();
+    simulationMutex = createRequestMutex();
+    scope.commit(() => { flags = { saving: false, simulating: false, result: '' }; });
+    return scope;
+  };
+  const scopeA = activate('a');
+  let resolveSaveA;
+  let resolveSimulationA;
+  const oldMutationMutex = mutationMutex;
+  const oldSimulationMutex = simulationMutex;
+  const saveA = oldMutationMutex.run(() => new Promise((resolve) => { resolveSaveA = resolve; }).finally(() => scopeA.commit(() => { flags.saving = false; })));
+  const simulationA = oldSimulationMutex.run(() => new Promise((resolve) => { resolveSimulationA = resolve; }).finally(() => scopeA.commit(() => { flags.simulating = false; })));
+  activate('b');
+  assert.deepEqual(flags, { saving: false, simulating: false, result: '' });
+  assert.equal(await mutationMutex.run(async () => 'b-save'), 'b-save');
+  assert.equal(await simulationMutex.run(async () => 'b-simulation'), 'b-simulation');
+  flags.result = 'b-result';
+  resolveSaveA();
+  resolveSimulationA();
+  await Promise.all([saveA, simulationA]);
+  assert.equal(flags.result, 'b-result');
+});
+
 test('unknown question view model never carries raw or normalized question text', () => {
   const model = unknownQuestionViewModel({ id: 1, userRef: 'user_01', question: '张三 北京 name@example.com 6222020202020202', normalizedQuestion: 'secret', category: 'unrecognized_question', fallbackDecision: 'manual_review', occurrenceCount: 3, status: 'open', createdAt: '2026-01-01' });
   assert.deepEqual(model, { id: 1, userRef: 'user_01', category: 'unrecognized_question', fallbackDecision: 'manual_review', occurrenceCount: 3, status: 'open', createdAt: '2026-01-01' });
@@ -170,6 +200,8 @@ test('policy duplicate normalization mirrors backend intent normalization', () =
 
 test('page wires unload protection, validated publish, responsive layout and pagination parameters', () => {
   assert.match(pageSource, /beforeunload/u);
+  assert.match(pageSource, /requestMutex\.current = createRequestMutex\(\)/u);
+  assert.match(pageSource, /simulationMutex\.current = createRequestMutex\(\)/u);
   assert.match(pageSource, /shouldDiscardDirty/u);
   assert.match(pageSource, /policyValidationViewModel/u);
   assert.match(pageSource, /disabled=\{[^}]*validationErrors\.length/u);
