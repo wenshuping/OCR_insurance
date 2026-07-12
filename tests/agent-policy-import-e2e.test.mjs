@@ -16,7 +16,10 @@ async function fixture({ ambiguous = false, noProducts = false, scanner, rejectP
     nextId: 100,
     users: [{ id: 1, name: '顾问', status: 'active' }, { id: 2, name: '他人', status: 'active' }],
     sessions: [{ token: 'owner-token', userId: 1 }, { token: 'other-token', userId: 2 }],
-    userDingtalkIdentities: [{ corpId: 'corp', dingUserId: 'ding', userId: 1, status: 'active' }],
+    userDingtalkIdentities: [
+      { corpId: 'corp', dingUserId: 'ding', userId: 1, status: 'active' },
+      { corpId: 'corp', dingUserId: 'ding-other', userId: 2, status: 'active' },
+    ],
     familyProfiles: [{ id: 10, ownerUserId: 1, status: 'active', familyName: '家庭一' }, { id: 20, ownerUserId: 2, status: 'active', familyName: '家庭二' }],
     familyMembers: [
       { id: 31, familyId: 10, name: '张三', status: 'active' },
@@ -145,6 +148,17 @@ test('Wukong-created and appended task is readable and actionable through web fa
     const taskId = started.payload.result.taskId;
     const appended = await invoke('mcp-append', 'append_policy_import_files', { familyRef: 10, taskId, stateVersion: 1, files: [{ uploadItem: image('mcp') }] });
     assert.equal(appended.payload.result.status, 'final_confirmation');
+    const retrieved = await invoke('mcp-get', 'get_policy_import', { familyRef: 10, taskId });
+    assert.equal(retrieved.status, 200);
+    assert.deepEqual(retrieved.payload.result, appended.payload.result);
+    const retrievedJson = JSON.stringify(retrieved.payload.result);
+    for (const secret of ['RAW_SECRET_OCR', image('mcp'), 'uploadItem', 'fieldEvidence', 'evidence', 'ownerUserId']) assert.equal(retrievedJson.includes(secret), false, secret);
+    const forged = await ctx.request('/api/wukong/mcp', {
+      method: 'POST',
+      body: { corpId: 'corp', dingUserId: 'ding-other', conversationType: 'direct', requestId: 'mcp-forged-get', tool: 'get_policy_import', input: { familyRef: 10, taskId } },
+    });
+    assert.equal(forged.status, 404);
+    assert.equal(forged.payload.code, 'FAMILY_NOT_FOUND');
     const read = await ctx.request(`/api/family-profiles/10/policy-imports/${taskId}`);
     assert.equal(read.payload.task.taskId, taskId);
     assert.equal(read.payload.task.channel, 'wukong');
