@@ -99,6 +99,18 @@ function assertOpen(task) {
   if (CLOSED_STATUSES.has(task.status)) fail('AGENT_POLICY_IMPORT_CLOSED', '录入任务已经结束', 409);
 }
 
+function assertActionPhase(task, action) {
+  const allowedStatuses = {
+    set_field: new Set(['field_completion', 'final_confirmation']),
+    select_product: new Set(['candidate_selection']),
+    bind_member: new Set(['member_binding']),
+    confirm: new Set(['final_confirmation']),
+    mark_saved: new Set(['saving']),
+  };
+  const allowed = allowedStatuses[action];
+  if (allowed && !allowed.has(task.status)) fail('ACTION_NOT_ALLOWED_IN_PHASE', '当前任务阶段不允许该操作', 409);
+}
+
 function recordMutation(task, action, now) {
   task.stateVersion += 1;
   task.updatedAt = now;
@@ -221,10 +233,13 @@ export function updateAgentPolicyImportTask(task, {
   normalizeAgentPolicyImportTask(task);
   assertVersion(task, stateVersion);
   assertOpen(task);
+  assertActionPhase(task, action);
   if (action === 'cancel') {
     task.status = 'cancelled';
   } else if (action === 'confirm') {
     if (missingFields(task.draft).length) fail('AGENT_POLICY_IMPORT_INCOMPLETE', '仍有必填字段需要补充', 409);
+    task.status = 'saving';
+  } else if (action === 'mark_saved') {
     task.status = 'completed';
   } else if (action === 'set_field') {
     if (!EDITABLE_FIELDS.has(field)) fail('AGENT_POLICY_IMPORT_FIELD_NOT_ALLOWED', '不支持修改该字段');
@@ -261,6 +276,9 @@ export function agentPolicyImportMatchesOwner(task = {}, owner = {}) {
 
 function nextInteraction(task) {
   if (CLOSED_STATUSES.has(task.status)) return null;
+  if (['uploading', 'recognizing', 'saving'].includes(task.status)) {
+    return { type: 'progress', status: task.status, stateVersion: task.stateVersion };
+  }
   if (task.status === 'candidate_selection') return { type: 'select_product', stateVersion: task.stateVersion };
   if (task.status === 'member_binding') return { type: 'bind_member', stateVersion: task.stateVersion };
   const missing = missingFields(task.draft);

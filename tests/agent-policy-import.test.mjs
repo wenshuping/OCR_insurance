@@ -70,9 +70,14 @@ test('deduplicates SHA-256 without incrementing the version', () => {
 
 test('rejects PDF mixing and configurable count and size limits', () => {
   const pdf = { ...image('c'.repeat(64), 'policy.pdf'), type: 'application/pdf' };
+  const pdfTask = create();
+  appendAgentPolicyImportDocuments(pdfTask, { stateVersion: 1, documents: [pdf] });
+  assert.equal(pdfTask.documents.length, 1);
   assert.throws(() => appendAgentPolicyImportDocuments(create(), { stateVersion: 1, documents: [pdf, image('d'.repeat(64))] }), (error) => error.code === 'MIXED_DOCUMENT_TYPES');
+  assert.throws(() => appendAgentPolicyImportDocuments(pdfTask, { stateVersion: 2, documents: [{ ...pdf, sha256: 'd'.repeat(64), name: 'second.pdf' }] }), (error) => error.code === 'MIXED_DOCUMENT_TYPES');
   assert.throws(() => appendAgentPolicyImportDocuments(create(), { stateVersion: 1, documents: [image('a'.repeat(64)), image('b'.repeat(64))], maxDocuments: 1 }), (error) => error.code === 'DOCUMENT_LIMIT_EXCEEDED');
   assert.throws(() => appendAgentPolicyImportDocuments(create(), { stateVersion: 1, documents: [image('a'.repeat(64), 'big.jpg', 101)], maxDocumentBytes: 100 }), (error) => error.code === 'DOCUMENT_SIZE_EXCEEDED');
+  assert.throws(() => appendAgentPolicyImportDocuments(create(), { stateVersion: 1, documents: [image('a'.repeat(64), 'one.jpg', 60), image('b'.repeat(64), 'two.jpg', 60)], maxTotalBytes: 100 }), (error) => error.code === 'DOCUMENT_TOTAL_SIZE_EXCEEDED');
 });
 
 test('rejects append to closed tasks and stale mutations', () => {
@@ -85,20 +90,53 @@ test('rejects append to closed tasks and stale mutations', () => {
 
 test('enforces legal product and member options through confirmation', () => {
   const task = create({
-    draft: { company: '', name: '', insured: '' },
+    draft: { company: '测试保险', name: '', insured: '' },
     productOptions: [{ optionId: 'product-1', productId: 31, label: '安心保' }],
     memberOptions: [{ optionId: 'member-1', memberId: 21, label: '张*' }],
   });
   assert.throws(() => updateAgentPolicyImportTask(task, { stateVersion: 1, action: 'select_product', optionId: 'invented' }), (error) => error.code === 'INVALID_OPTION');
-  updateAgentPolicyImportTask(task, { stateVersion: 1, action: 'set_field', field: 'company', value: '测试保险' });
-  updateAgentPolicyImportTask(task, { stateVersion: 2, action: 'select_product', optionId: 'product-1' });
-  assert.throws(() => updateAgentPolicyImportTask(task, { stateVersion: 3, action: 'bind_member', optionId: 'invented', role: 'insured' }), (error) => error.code === 'INVALID_OPTION');
-  updateAgentPolicyImportTask(task, { stateVersion: 3, action: 'bind_member', optionId: 'member-1', role: 'insured' });
+  updateAgentPolicyImportTask(task, { stateVersion: 1, action: 'select_product', optionId: 'product-1' });
+  assert.throws(() => updateAgentPolicyImportTask(task, { stateVersion: 2, action: 'bind_member', optionId: 'invented', role: 'insured' }), (error) => error.code === 'INVALID_OPTION');
+  updateAgentPolicyImportTask(task, { stateVersion: 2, action: 'bind_member', optionId: 'member-1', role: 'insured' });
   assert.equal(task.status, 'final_confirmation');
-  updateAgentPolicyImportTask(task, { stateVersion: 4, action: 'confirm' });
-  assert.equal(task.status, 'completed');
+  updateAgentPolicyImportTask(task, { stateVersion: 3, action: 'confirm' });
+  assert.equal(task.status, 'saving');
   assert.equal(task.events.at(-1).action, 'confirm');
   assert.doesNotMatch(JSON.stringify(task.events), /测试保险|安心保|张/u);
+  updateAgentPolicyImportTask(task, { stateVersion: 4, action: 'mark_saved' });
+  assert.equal(task.status, 'completed');
+});
+
+test('enforces the controlled phase and action matrix', () => {
+  for (const status of ['uploading', 'recognizing', 'saving']) {
+    const task = create({ draft: { company: 'A', name: 'B', insured: 'C' } });
+    task.status = status;
+    for (const action of ['set_field', 'select_product', 'bind_member', 'confirm']) {
+      assert.throws(
+        () => updateAgentPolicyImportTask(task, { stateVersion: 1, action, field: 'company', value: 'D', optionId: 'product-1' }),
+        (error) => error.code === 'ACTION_NOT_ALLOWED_IN_PHASE',
+      );
+    }
+    const context = buildAgentPolicyImportContext(task);
+    assert.ok(context.nextInteraction === null || context.nextInteraction.type === 'progress');
+    assert.notEqual(context.nextInteraction?.type, 'confirm');
+  }
+
+  const candidate = create({
+    draft: { company: 'A', insured: 'C' },
+    productOptions: [{ optionId: 'product-1', productId: 1, label: 'B' }],
+  });
+  assert.equal(candidate.status, 'candidate_selection');
+  assert.throws(() => updateAgentPolicyImportTask(candidate, { stateVersion: 1, action: 'set_field', field: 'name', value: 'B' }), (error) => error.code === 'ACTION_NOT_ALLOWED_IN_PHASE');
+
+  const finalTask = create({ draft: { company: 'A', name: 'B', insured: 'C' } });
+  assert.equal(finalTask.status, 'final_confirmation');
+  assert.throws(() => updateAgentPolicyImportTask(finalTask, { stateVersion: 1, action: 'mark_saved' }), (error) => error.code === 'ACTION_NOT_ALLOWED_IN_PHASE');
+  updateAgentPolicyImportTask(finalTask, { stateVersion: 1, action: 'confirm' });
+  assert.equal(finalTask.status, 'saving');
+  assert.equal(buildAgentPolicyImportContext(finalTask).nextInteraction?.type, 'progress');
+  updateAgentPolicyImportTask(finalTask, { stateVersion: 2, action: 'mark_saved' });
+  assert.equal(finalTask.status, 'completed');
 });
 
 test('public context masks identifiers and exposes only safe progress and legal choices', () => {
