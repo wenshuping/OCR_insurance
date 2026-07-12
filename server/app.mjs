@@ -5,6 +5,7 @@ import { createRouteContext } from './http/context.mjs';
 import { codeFromError } from './http/errors.mjs';
 import { createAdminRoutes } from './routes/admin.routes.mjs';
 import { createAgentRouter } from './routes/agent.routes.mjs';
+import { startTransferRegenerationRecovery } from './agent-confirmation.service.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
@@ -2566,6 +2567,20 @@ export function createPolicyOcrApp(options = {}) {
 
   const app = express();
   app.locals.state = state;
+  const recoveryOptions = {
+    intervalMs: options.agentTransferRecoveryIntervalMs,
+    disabled: options.disableAgentTransferRecovery === true,
+    ...(options.agentTransferRecoveryOptions || {}),
+  };
+  const recovery = typeof options.agentConfirmationService?.startRecovery === 'function'
+    ? options.agentConfirmationService.startRecovery(recoveryOptions)
+    : options.agentTransferRegenerationStore && options.agentReportQueue
+      ? startTransferRegenerationRecovery({ store: options.agentTransferRegenerationStore, reportQueue: options.agentReportQueue, ...recoveryOptions })
+      : null;
+  if (recovery) {
+    app.locals.transferRegenerationRecovery = recovery;
+    app.once('close', () => recovery.stop());
+  }
   app.use('/api/agent', createAgentRouter({
     questionRouter: options.agentQuestionRouter,
     confirmationService: options.agentConfirmationService,

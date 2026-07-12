@@ -55,6 +55,13 @@ function policyTail(policy) {
   return value.slice(-4).padStart(4, '*');
 }
 
+function policyDuplicateKey(policy) {
+  const policyNo = normalized(policy?.policyNo || policy?.policyNumber).replace(/[-_]/gu, '');
+  const company = normalized(policy?.company || policy?.insurer);
+  const product = normalized(policy?.productName || policy?.name);
+  return { policyNo, companyProduct: company && product ? `${company}|${product}` : '' };
+}
+
 function targetLinks(input, policy) {
   const shared = Number(input.targetMemberId || 0) || null;
   return {
@@ -63,19 +70,19 @@ function targetLinks(input, policy) {
   };
 }
 
-export async function dispatchPendingTransferRegenerationJobs({ store, reportQueue, confirmationId, now = () => new Date().toISOString(), limit = 100 } = {}) {
-  if (!store || typeof store.listPendingPolicyTransferRegenerationJobs !== 'function') return { dispatched: 0, failed: 0 };
-  const enqueue = reportQueue && (reportQueue.enqueueUnique || reportQueue.enqueue);
-  if (typeof enqueue !== 'function') return { dispatched: 0, failed: 0 };
-  const jobs = await store.listPendingPolicyTransferRegenerationJobs({ confirmationId, limit });
+export async function dispatchPendingTransferRegenerationJobs({ store, reportQueue, confirmationId, now = () => new Date().toISOString(), limit = 100, workerId = nodeRandomUUID(), leaseMs = 60_000 } = {}) {
+  if (!store || typeof store.claimPendingTransferRegenerationJobs !== 'function') return { dispatched: 0, failed: 0 };
+  if (!reportQueue || typeof reportQueue.enqueueUnique !== 'function') return { dispatched: 0, failed: 0, reason: 'enqueue_unique_required' };
+  const jobs = await store.claimPendingTransferRegenerationJobs({ confirmationId, limit, workerId, leaseMs, now: new Date(now()).toISOString() });
   const results = await Promise.allSettled(jobs.map(async (job) => {
     try {
-      await enqueue.call(reportQueue, { familyId: job.familyId, type: job.type, userId: job.userId, dedupeKey: job.dedupeKey });
-      await store.markPolicyTransferRegenerationJobDispatched({ id: job.id, dispatchedAt: new Date(now()).toISOString() });
+      await reportQueue.enqueueUnique({ familyId: job.familyId, type: job.type, userId: job.userId, dedupeKey: job.dedupeKey });
+      await store.markPolicyTransferRegenerationJobDispatched({ id: job.id, claimToken: job.claimToken, dispatchedAt: new Date(now()).toISOString() });
       return 'dispatched';
     } catch (error) {
       await store.markPolicyTransferRegenerationJobFailed({
         id: job.id,
+        claimToken: job.claimToken,
         attemptedAt: new Date(now()).toISOString(),
         error: String(error?.message || 'dispatch failed').slice(0, 500),
       });
@@ -86,6 +93,15 @@ export async function dispatchPendingTransferRegenerationJobs({ store, reportQue
     dispatched: results.filter((row) => row.status === 'fulfilled').length,
     failed: results.filter((row) => row.status === 'rejected').length,
   };
+}
+
+export function startTransferRegenerationRecovery({ store, reportQueue, intervalMs = 30_000, disabled = false, setIntervalFn = setInterval, clearIntervalFn = clearInterval, ...dispatchOptions } = {}) {
+  const drain = () => dispatchPendingTransferRegenerationJobs({ store, reportQueue, ...dispatchOptions });
+  if (disabled) return { initialDrain: Promise.resolve({ dispatched: 0, failed: 0 }), drain, stop() {} };
+  const initialDrain = drain();
+  const timer = setIntervalFn(() => { void drain(); }, Math.max(1_000, Number(intervalMs) || 30_000));
+  timer?.unref?.();
+  return { initialDrain, drain, stop() { clearIntervalFn(timer); } };
 }
 
 export function createAgentConfirmationService({ store, loadState, reportQueue, now = () => new Date().toISOString(), randomUUID = nodeRandomUUID } = {}) {
@@ -116,8 +132,13 @@ export function createAgentConfirmationService({ store, loadState, reportQueue, 
     if (!links.applicantMemberId || !links.insuredMemberId || !activeTargetMemberIds.has(links.applicantMemberId) || !activeTargetMemberIds.has(links.insuredMemberId)) {
       return safeFailure('requires_web_member_link', '请先在网页中将投保人和被保人关联到目标家庭成员。');
     }
-    const identity = normalized(policy.policyNo || policy.policyNumber);
-    if (identity && (current.policies || []).some((row) => Number(row.id) !== Number(policy.id) && Number(row.familyId) === Number(target.id) && normalized(row.policyNo || row.policyNumber) === identity)) {
+    const identity = policyDuplicateKey(policy);
+    if ((current.policies || []).some((row) => {
+      if (Number(row.id) === Number(policy.id) || Number(row.familyId) !== Number(target.id)) return false;
+      const candidate = policyDuplicateKey(row);
+      return (identity.policyNo && candidate.policyNo === identity.policyNo)
+        || (!identity.policyNo && !candidate.policyNo && identity.companyProduct && candidate.companyProduct === identity.companyProduct);
+    })) {
       return safeFailure('duplicate_policy', '目标家庭已存在疑似重复保单，请先核对。');
     }
 
@@ -156,5 +177,9 @@ export function createAgentConfirmationService({ store, loadState, reportQueue, 
     return { ...interaction('answer', '保单已转移，两个家庭的报告正在重新计算。'), ...result };
   }
 
-  return { previewPolicyTransfer, confirm };
+  return {
+    previewPolicyTransfer,
+    confirm,
+    startRecovery: (options = {}) => startTransferRegenerationRecovery({ store, reportQueue, ...options }),
+  };
 }

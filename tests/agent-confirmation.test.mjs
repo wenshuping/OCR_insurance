@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
-import { createAgentConfirmationService } from '../server/agent-confirmation.service.mjs';
+import { createAgentConfirmationService, dispatchPendingTransferRegenerationJobs } from '../server/agent-confirmation.service.mjs';
+import { createInitialState } from '../server/policy-ocr.domain.mjs';
+import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
+import { createPolicyOcrApp } from '../server/app.mjs';
 
 const NOW = '2026-07-12T04:00:00.000Z';
 
@@ -46,11 +52,14 @@ function harness(initial = state()) {
       }
       return { status: 'transferred', sourceFamilyId: 10, targetFamilyId: 20, policyId: 301 };
     },
-    async listPendingPolicyTransferRegenerationJobs({ confirmationId } = {}) {
-      return outbox.filter((row) => (!confirmationId || row.confirmationId === confirmationId) && ['pending', 'failed'].includes(row.status));
+    async claimPendingTransferRegenerationJobs({ confirmationId, workerId } = {}) {
+      return outbox.filter((row) => (!confirmationId || row.confirmationId === confirmationId) && ['pending', 'failed'].includes(row.status)).map((row) => {
+        Object.assign(row, { status: 'processing', claimToken: `${workerId}:${row.id}` });
+        return { ...row };
+      });
     },
-    async markPolicyTransferRegenerationJobDispatched({ id }) { outbox.find((row) => row.id === id).status = 'dispatched'; },
-    async markPolicyTransferRegenerationJobFailed({ id, error }) { Object.assign(outbox.find((row) => row.id === id), { status: 'failed', lastError: error }); },
+    async markPolicyTransferRegenerationJobDispatched({ id, claimToken }) { const row = outbox.find((item) => item.id === id && item.claimToken === claimToken); if (row) row.status = 'dispatched'; },
+    async markPolicyTransferRegenerationJobFailed({ id, claimToken, error }) { const row = outbox.find((item) => item.id === id && item.claimToken === claimToken); if (row) Object.assign(row, { status: 'failed', lastError: error }); },
   };
   const service = createAgentConfirmationService({
     store,
@@ -89,6 +98,72 @@ test('failed regeneration dispatch remains recoverable and does not repeat succe
   assert.equal((await h.service.confirm({ userId: 7, confirmationId: 'confirmation-1' })).status, 'already_consumed');
   assert.deepEqual(h.outbox.map((row) => row.status), ['dispatched', 'dispatched', 'dispatched', 'dispatched']);
   assert.equal(h.calls.enqueued.length, 5);
+});
+
+test('dispatcher refuses a non-idempotent queue without claiming jobs', async () => {
+  const h = harness();
+  let calls = 0;
+  const result = await dispatchPendingTransferRegenerationJobs({ store: h.store, reportQueue: { async enqueue() { calls += 1; } } });
+  assert.deepEqual(result, { dispatched: 0, failed: 0, reason: 'enqueue_unique_required' });
+  assert.equal(calls, 0);
+});
+
+test('application starts transfer recovery immediately and stops its retry timer on close', async () => {
+  let claims = 0;
+  let cleared = false;
+  const store = { async claimPendingTransferRegenerationJobs() { claims += 1; return []; } };
+  const app = createPolicyOcrApp({
+    state: createInitialState(), agentTransferRegenerationStore: store, agentReportQueue: { async enqueueUnique() {} },
+    agentTransferRecoveryOptions: {
+      workerId: 'app-worker', now: () => NOW,
+      setIntervalFn() { return { unref() {} }; }, clearIntervalFn() { cleared = true; },
+    },
+  });
+  assert.deepEqual(await app.locals.transferRegenerationRecovery.initialDrain, { dispatched: 0, failed: 0 });
+  assert.equal(claims, 1);
+  app.emit('close');
+  assert.equal(cleared, true);
+});
+
+async function sqliteTransferHarness() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-transfer-integration-'));
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'state.sqlite') });
+  await store.load();
+  await store.persist({
+    ...createInitialState(), stateVersion: 3,
+    familyProfiles: [{ id: 10, ownerUserId: 7, familyName: '来源家庭', status: 'active' }, { id: 20, ownerUserId: 7, familyName: '目标家庭', status: 'active' }],
+    familyMembers: [{ id: 201, familyId: 20, name: '目标成员', status: 'active' }],
+    policies: [{ id: 301, userId: 7, familyId: 10, company: '测试保险', name: '守护一生', policyNo: 'PX-1234', applicantMemberId: 201, insuredMemberId: 201, status: 'active' }],
+  });
+  const queue = { async enqueueUnique() {} };
+  const service = createAgentConfirmationService({ store, loadState: () => store.load(), reportQueue: queue, now: () => NOW, randomUUID: () => 'real-confirmation' });
+  await service.previewPolicyTransfer({ userId: 7, sourceFamilyName: '来源家庭', targetFamilyName: '目标家庭', policyHint: 'PX-1234', targetMemberId: 201 });
+  return { store, service };
+}
+
+test('real sqlite preview hash confirms unchanged state and rejects every relevant drift category', async () => {
+  const success = await sqliteTransferHarness();
+  assert.equal((await success.service.confirm({ userId: 7, confirmationId: 'real-confirmation' })).status, 'transferred');
+  success.store.close();
+
+  const drifts = [
+    ['family ownership', (store) => store.db.prepare("UPDATE family_profiles SET owner_user_id = 8, payload = json_set(payload, '$.ownerUserId', 8) WHERE id = 20").run()],
+    ['family status', (store) => store.db.prepare("UPDATE family_profiles SET status = 'archived', payload = json_set(payload, '$.status', 'archived') WHERE id = 20").run()],
+    ['member family', (store) => store.db.prepare("UPDATE family_members SET family_id = 10, payload = json_set(payload, '$.familyId', 10) WHERE id = 201").run()],
+    ['member status', (store) => store.db.prepare("UPDATE family_members SET status = 'archived', payload = json_set(payload, '$.status', 'archived') WHERE id = 201").run()],
+    ['policy family', (store) => store.db.prepare("UPDATE policies SET payload = json_set(payload, '$.familyId', 20) WHERE id = 301").run()],
+    ['policy status', (store) => store.db.prepare("UPDATE policies SET payload = json_set(payload, '$.status', 'archived') WHERE id = 301").run()],
+    ['policy number', (store) => store.db.prepare("UPDATE policies SET payload = json_set(payload, '$.policyNo', 'PX-9999') WHERE id = 301").run()],
+  ];
+  for (const [label, mutate] of drifts) {
+    const h = await sqliteTransferHarness();
+    mutate(h.store);
+    const result = await h.service.confirm({ userId: 7, confirmationId: 'real-confirmation' });
+    assert.equal(result.status, 'state_changed', label);
+    assert.equal(JSON.parse(h.store.db.prepare('SELECT payload FROM policies WHERE id = 301').get().payload).familyId === 20 && label !== 'policy family', false, label);
+    assert.equal(h.store.db.prepare('SELECT count(*) count FROM agent_policy_transfer_audits').get().count, 0, label);
+    h.store.close();
+  }
 });
 
 test('ambiguous policy and fuzzy family matches clarify without creating confirmation', async () => {

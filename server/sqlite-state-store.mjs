@@ -78,6 +78,14 @@ function normalizeStringArray(value) {
   return result;
 }
 
+function normalizedPolicyTransferIdentity(policy = {}) {
+  const normalize = (value) => String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/gu, '');
+  const policyNo = normalize(policy.policyNo || policy.policyNumber).replace(/[-_]/gu, '');
+  const company = normalize(policy.company || policy.insurer);
+  const product = normalize(policy.productName || policy.name);
+  return { policyNo, companyProduct: company && product ? `${company}|${product}` : '' };
+}
+
 function normalizeJsonStringArray(value) {
   return normalizeStringArray(typeof value === 'string' ? parseJson(value, []) : value);
 }
@@ -333,6 +341,44 @@ function ensureAgentRouteAuditSchema(db) {
         ON agent_route_audit_events(user_id, created_at DESC, id DESC);
       CREATE INDEX idx_agent_route_audit_events_message_ref
         ON agent_route_audit_events(message_ref);
+    `);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function ensureAgentTransferOutboxLeaseSchema(db) {
+  const columns = db.prepare('PRAGMA table_info(agent_policy_transfer_regeneration_outbox)').all();
+  if (!columns.length || columns.some((column) => column.name === 'claim_token')) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`
+      ALTER TABLE agent_policy_transfer_regeneration_outbox RENAME TO agent_policy_transfer_regeneration_outbox_legacy;
+      CREATE TABLE agent_policy_transfer_regeneration_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        confirmation_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        family_id INTEGER NOT NULL,
+        job_type TEXT NOT NULL CHECK (job_type IN ('family_report', 'family_sales_review')),
+        dedupe_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'failed', 'processing', 'dispatched')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        claim_token TEXT NOT NULL DEFAULT '',
+        lease_until TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        dispatched_at TEXT NOT NULL DEFAULT ''
+      );
+      INSERT INTO agent_policy_transfer_regeneration_outbox
+        (id, confirmation_id, user_id, family_id, job_type, dedupe_key, status, attempts, last_error, created_at, updated_at, dispatched_at)
+      SELECT id, confirmation_id, user_id, family_id, job_type, dedupe_key, status, attempts, last_error, created_at, updated_at, dispatched_at
+      FROM agent_policy_transfer_regeneration_outbox_legacy;
+      DROP TABLE agent_policy_transfer_regeneration_outbox_legacy;
+      CREATE INDEX idx_agent_policy_transfer_outbox_status ON agent_policy_transfer_regeneration_outbox(status, updated_at, id);
+      CREATE INDEX idx_agent_policy_transfer_outbox_confirmation ON agent_policy_transfer_regeneration_outbox(confirmation_id, status, id);
     `);
     db.exec('COMMIT');
   } catch (error) {
@@ -959,9 +1005,11 @@ function createSchema(db) {
       family_id INTEGER NOT NULL,
       job_type TEXT NOT NULL CHECK (job_type IN ('family_report', 'family_sales_review')),
       dedupe_key TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL CHECK (status IN ('pending', 'failed', 'dispatched')),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'failed', 'processing', 'dispatched')),
       attempts INTEGER NOT NULL DEFAULT 0,
       last_error TEXT NOT NULL DEFAULT '',
+      claim_token TEXT NOT NULL DEFAULT '',
+      lease_until TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       dispatched_at TEXT NOT NULL DEFAULT ''
@@ -991,6 +1039,7 @@ function createSchema(db) {
     );
   `);
   ensureAgentRouteAuditSchema(db);
+  ensureAgentTransferOutboxLeaseSchema(db);
   ensureCashflowTable(db);
   ensureCashValueTable(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
@@ -3293,17 +3342,18 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         db.exec('ROLLBACK');
         return { status: 'requires_web_member_link' };
       }
-      const policyNumber = String(policy.policyNo || policy.policyNumber || '').trim();
-      if (policyNumber) {
-        const duplicate = db.prepare('SELECT id, payload FROM policies WHERE id <> ?').all(policyId)
-          .some((row) => {
-            const candidate = parseJson(row.payload, {});
-            return Number(candidate.familyId) === targetFamilyId && String(candidate.policyNo || candidate.policyNumber || '').trim() === policyNumber;
-          });
-        if (duplicate) {
-          db.exec('ROLLBACK');
-          return { status: 'duplicate_policy' };
-        }
+      const identity = normalizedPolicyTransferIdentity(policy);
+      const duplicate = db.prepare('SELECT id, payload FROM policies WHERE id <> ?').all(policyId)
+        .some((row) => {
+          const candidate = parseJson(row.payload, {});
+          if (Number(candidate.familyId) !== targetFamilyId) return false;
+          const candidateIdentity = normalizedPolicyTransferIdentity(candidate);
+          return (identity.policyNo && candidateIdentity.policyNo === identity.policyNo)
+            || (!identity.policyNo && !candidateIdentity.policyNo && identity.companyProduct && candidateIdentity.companyProduct === identity.companyProduct);
+        });
+      if (duplicate) {
+        db.exec('ROLLBACK');
+        return { status: 'duplicate_policy' };
       }
       const before = { familyId: sourceFamilyId, applicantMemberId: Number(policy.applicantMemberId || 0) || null, insuredMemberId: Number(policy.insuredMemberId || 0) || null };
       const updatedPolicy = { ...policy, familyId: targetFamilyId, applicantMemberId, insuredMemberId, updatedAt: timestamp };
@@ -3347,38 +3397,62 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
-  async function listPendingPolicyTransferRegenerationJobs({ confirmationId = '', limit = 100 } = {}) {
+  async function claimPendingTransferRegenerationJobs({ confirmationId = '', limit = 100, workerId = '', leaseMs = 60_000, now = '' } = {}) {
     const normalizedId = String(confirmationId || '').trim();
+    const normalizedWorkerId = String(workerId || '').trim();
+    if (!normalizedWorkerId) throw new TypeError('Transfer regeneration workerId is required');
     const boundedLimit = Math.min(500, Math.max(1, Number.parseInt(limit, 10) || 100));
-    const rows = normalizedId
-      ? db.prepare("SELECT * FROM agent_policy_transfer_regeneration_outbox WHERE confirmation_id = ? AND status IN ('pending', 'failed') ORDER BY id LIMIT ?").all(normalizedId, boundedLimit)
-      : db.prepare("SELECT * FROM agent_policy_transfer_regeneration_outbox WHERE status IN ('pending', 'failed') ORDER BY updated_at, id LIMIT ?").all(boundedLimit);
-    return rows.map((row) => ({
-      id: Number(row.id), confirmationId: String(row.confirmation_id), userId: Number(row.user_id), familyId: Number(row.family_id),
-      type: String(row.job_type), dedupeKey: String(row.dedupe_key), status: String(row.status), attempts: Number(row.attempts), lastError: String(row.last_error || ''),
-    }));
+    const timestamp = normalizeAgentTimestamp(now, 'Transfer regeneration claim time');
+    const leaseUntil = new Date(Date.parse(timestamp) + Math.max(1_000, Number(leaseMs) || 60_000)).toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const rows = normalizedId
+        ? db.prepare("SELECT id FROM agent_policy_transfer_regeneration_outbox WHERE confirmation_id = ? AND (status IN ('pending', 'failed') OR (status = 'processing' AND lease_until <= ?)) ORDER BY id LIMIT ?").all(normalizedId, timestamp, boundedLimit)
+        : db.prepare("SELECT id FROM agent_policy_transfer_regeneration_outbox WHERE status IN ('pending', 'failed') OR (status = 'processing' AND lease_until <= ?) ORDER BY updated_at, id LIMIT ?").all(timestamp, boundedLimit);
+      const claimed = [];
+      for (const row of rows) {
+        const claimToken = `${normalizedWorkerId}:${row.id}:${timestamp}`;
+        const updated = db.prepare(`
+          UPDATE agent_policy_transfer_regeneration_outbox
+          SET status = 'processing', claim_token = ?, lease_until = ?, attempts = attempts + 1, updated_at = ?
+          WHERE id = ? AND (status IN ('pending', 'failed') OR (status = 'processing' AND lease_until <= ?))
+        `).run(claimToken, leaseUntil, timestamp, row.id, timestamp);
+        if (updated.changes === 1) claimed.push(db.prepare('SELECT * FROM agent_policy_transfer_regeneration_outbox WHERE id = ?').get(row.id));
+      }
+      db.exec('COMMIT');
+      return claimed.map((row) => ({
+        id: Number(row.id), confirmationId: String(row.confirmation_id), userId: Number(row.user_id), familyId: Number(row.family_id),
+        type: String(row.job_type), dedupeKey: String(row.dedupe_key), status: String(row.status), attempts: Number(row.attempts),
+        lastError: String(row.last_error || ''), claimToken: String(row.claim_token), leaseUntil: String(row.lease_until),
+      }));
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
-  async function markPolicyTransferRegenerationJobDispatched({ id, dispatchedAt = '' } = {}) {
+  async function markPolicyTransferRegenerationJobDispatched({ id, claimToken = '', dispatchedAt = '' } = {}) {
     const numericId = Number(id);
-    if (!Number.isInteger(numericId) || numericId <= 0) throw new TypeError('Transfer regeneration job id is required');
+    const normalizedClaimToken = String(claimToken || '').trim();
+    if (!Number.isInteger(numericId) || numericId <= 0 || !normalizedClaimToken) throw new TypeError('Transfer regeneration job id and claimToken are required');
     const timestamp = normalizeAgentTimestamp(dispatchedAt, 'Transfer regeneration dispatchedAt');
     db.prepare(`
       UPDATE agent_policy_transfer_regeneration_outbox
-      SET status = 'dispatched', attempts = attempts + 1, last_error = '', updated_at = ?, dispatched_at = ?
-      WHERE id = ? AND status IN ('pending', 'failed')
-    `).run(timestamp, timestamp, numericId);
+      SET status = 'dispatched', last_error = '', claim_token = '', lease_until = '', updated_at = ?, dispatched_at = ?
+      WHERE id = ? AND status = 'processing' AND claim_token = ?
+    `).run(timestamp, timestamp, numericId, normalizedClaimToken);
   }
 
-  async function markPolicyTransferRegenerationJobFailed({ id, error = '', attemptedAt = '' } = {}) {
+  async function markPolicyTransferRegenerationJobFailed({ id, claimToken = '', error = '', attemptedAt = '' } = {}) {
     const numericId = Number(id);
-    if (!Number.isInteger(numericId) || numericId <= 0) throw new TypeError('Transfer regeneration job id is required');
+    const normalizedClaimToken = String(claimToken || '').trim();
+    if (!Number.isInteger(numericId) || numericId <= 0 || !normalizedClaimToken) throw new TypeError('Transfer regeneration job id and claimToken are required');
     const timestamp = normalizeAgentTimestamp(attemptedAt, 'Transfer regeneration attemptedAt');
     db.prepare(`
       UPDATE agent_policy_transfer_regeneration_outbox
-      SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = ?
-      WHERE id = ? AND status IN ('pending', 'failed')
-    `).run(String(error || 'dispatch failed').slice(0, 500), timestamp, numericId);
+      SET status = 'failed', last_error = ?, claim_token = '', lease_until = '', updated_at = ?
+      WHERE id = ? AND status = 'processing' AND claim_token = ?
+    `).run(String(error || 'dispatch failed').slice(0, 500), timestamp, numericId, normalizedClaimToken);
   }
 
   async function appendAgentRouteAuditEvent({ policyVersion, policySource = '', userId, messageRef = '', decision = '', actor = '', createdAt = '', payload = {} } = {}) {
@@ -3477,7 +3551,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     createAgentActionConfirmation,
     consumeAgentActionConfirmation,
     transferPolicyBetweenFamilies,
-    listPendingPolicyTransferRegenerationJobs,
+    claimPendingTransferRegenerationJobs,
     markPolicyTransferRegenerationJobDispatched,
     markPolicyTransferRegenerationJobFailed,
     appendAgentRouteAuditEvent,

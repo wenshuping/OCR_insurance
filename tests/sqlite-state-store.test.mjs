@@ -8,7 +8,7 @@ import { Worker } from 'node:worker_threads';
 
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
-import { dispatchPendingTransferRegenerationJobs } from '../server/agent-confirmation.service.mjs';
+import { dispatchPendingTransferRegenerationJobs, startTransferRegenerationRecovery } from '../server/agent-confirmation.service.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
@@ -2053,6 +2053,25 @@ test('policy transfer confirmation hides expired and other-user confirmations wi
   store.close();
 });
 
+test('policy transfer duplicate guard normalizes policy number and company-product identity', async () => {
+  for (const duplicate of [
+    { id: 302, familyId: 20, policyNo: ' px_1234 ' },
+    { id: 302, familyId: 20, company: ' 测试保险 ', name: '守护一生' },
+  ]) {
+    const dir = await makeTempDir();
+    const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+    await store.load();
+    const source = duplicate.policyNo
+      ? { id: 301, familyId: 10, policyNo: 'PX-1234', applicantMemberId: 201, insuredMemberId: 201 }
+      : { id: 301, familyId: 10, company: '测试保险', name: '守护一生', applicantMemberId: 201, insuredMemberId: 201 };
+    await store.persist({ ...createInitialState(), familyProfiles: [{ id: 10, ownerUserId: 7, status: 'active' }, { id: 20, ownerUserId: 7, status: 'active' }], familyMembers: [{ id: 201, familyId: 20, status: 'active' }], policies: [source, duplicate] });
+    await store.createAgentActionConfirmation({ id: 'duplicate-transfer', userId: 7, action: 'transfer_policy_between_families', actor: 'agent_confirmation', createdAt: '2026-07-12T04:00:00.000Z', expiresAt: '2026-07-12T04:05:00.000Z', payload: { sourceFamilyId: 10, targetFamilyId: 20, policyId: 301, targetApplicantMemberId: 201, targetInsuredMemberId: 201, stateVersion: 0, stateHash: '' } });
+    assert.equal((await store.transferPolicyBetweenFamilies({ confirmationId: 'duplicate-transfer', userId: 7, consumedAt: '2026-07-12T04:01:00.000Z' })).status, 'duplicate_policy');
+    assert.equal(JSON.parse(store.db.prepare('SELECT payload FROM policies WHERE id = 301').get().payload).familyId, 10);
+    store.close();
+  }
+});
+
 test('transfer regeneration outbox retries failed delivery without repeating dispatched jobs', async () => {
   const dir = await makeTempDir();
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
@@ -2071,6 +2090,62 @@ test('transfer regeneration outbox retries failed delivery without repeating dis
   assert.deepEqual(await dispatchPendingTransferRegenerationJobs({ store, reportQueue: queue, confirmationId: 'recover-1', now: () => '2026-07-12T04:02:00.000Z' }), { dispatched: 1, failed: 0 });
   assert.deepEqual(store.db.prepare('SELECT status FROM agent_policy_transfer_regeneration_outbox ORDER BY id').all().map((row) => row.status), ['dispatched', 'dispatched']);
   assert.equal(calls.length, 3);
+  store.close();
+});
+
+test('concurrent dispatchers lease each outbox job once and recovery drains jobs after reopen', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const seed = await createSqliteStateStore({ dbPath });
+  await seed.load();
+  const created = '2026-07-12T04:00:00.000Z';
+  for (let index = 0; index < 4; index += 1) {
+    seed.db.prepare(`INSERT INTO agent_policy_transfer_regeneration_outbox
+      (confirmation_id,user_id,family_id,job_type,dedupe_key,status,attempts,last_error,created_at,updated_at,dispatched_at)
+      VALUES (?,?,?,?,?,'pending',0,'',?,?,'')`).run('restart-1', 7, index < 2 ? 10 : 20, index % 2 ? 'family_sales_review' : 'family_report', `restart-job-${index}`, created, created);
+  }
+  seed.close();
+  const first = await createSqliteStateStore({ dbPath });
+  const second = await createSqliteStateStore({ dbPath });
+  const counts = new Map();
+  const queue = { async enqueueUnique(job) { counts.set(job.dedupeKey, (counts.get(job.dedupeKey) || 0) + 1); } };
+  await Promise.all([
+    dispatchPendingTransferRegenerationJobs({ store: first, reportQueue: queue, workerId: 'worker-a', now: () => '2026-07-12T04:01:00.000Z' }),
+    dispatchPendingTransferRegenerationJobs({ store: second, reportQueue: queue, workerId: 'worker-b', now: () => '2026-07-12T04:01:00.000Z' }),
+  ]);
+  assert.deepEqual([...counts.values()], [1, 1, 1, 1]);
+  first.db.prepare("UPDATE agent_policy_transfer_regeneration_outbox SET status = 'failed', dispatched_at = '', claim_token = '', lease_until = '' WHERE id = 4").run();
+  first.close();
+  second.close();
+  const reopened = await createSqliteStateStore({ dbPath });
+  let intervalCallback;
+  const recovery = startTransferRegenerationRecovery({
+    store: reopened, reportQueue: queue, workerId: 'restart-worker', now: () => '2026-07-12T04:02:00.000Z',
+    setIntervalFn(callback) { intervalCallback = callback; return { unref() {} }; }, clearIntervalFn() {},
+  });
+  assert.deepEqual(await recovery.initialDrain, { dispatched: 1, failed: 0 });
+  assert.equal(typeof intervalCallback, 'function');
+  assert.equal(counts.get('restart-job-3'), 2);
+  assert.equal(reopened.db.prepare("SELECT count(*) count FROM agent_policy_transfer_regeneration_outbox WHERE status = 'dispatched'").get().count, 4);
+  recovery.stop();
+  reopened.close();
+});
+
+test('sqlite store migrates pre-lease transfer outbox rows without losing pending work', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`CREATE TABLE agent_policy_transfer_regeneration_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, confirmation_id TEXT NOT NULL, user_id INTEGER NOT NULL, family_id INTEGER NOT NULL,
+    job_type TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL CHECK (status IN ('pending','failed','dispatched')),
+    attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, dispatched_at TEXT NOT NULL DEFAULT '');`);
+  db.prepare(`INSERT INTO agent_policy_transfer_regeneration_outbox
+    (confirmation_id,user_id,family_id,job_type,dedupe_key,status,created_at,updated_at) VALUES (?,?,?,?,?,'pending',?,?)`)
+    .run('legacy-1', 7, 10, 'family_report', 'legacy-key', '2026-07-12T04:00:00.000Z', '2026-07-12T04:00:00.000Z');
+  db.close();
+  const store = await createSqliteStateStore({ dbPath });
+  assert.equal(store.db.prepare("SELECT count(*) count FROM pragma_table_info('agent_policy_transfer_regeneration_outbox') WHERE name IN ('claim_token','lease_until')").get().count, 2);
+  assert.equal((await store.claimPendingTransferRegenerationJobs({ workerId: 'migration-worker', now: '2026-07-12T04:01:00.000Z' }))[0].dedupeKey, 'legacy-key');
   store.close();
 });
 
