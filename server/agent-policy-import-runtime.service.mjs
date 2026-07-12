@@ -165,10 +165,10 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
   }
 
   return {
-    async finalize({ family, taskId, owner, requestId, stateVersion }) {
+    async finalize({ family, taskId, owner, requestId, stateVersion, signal }) {
       if (typeof finalizeTask !== 'function') fail('FINALIZATION_NOT_CONFIGURED', '正式保存服务未配置', 503);
       const task = await freshOwnedTask(taskId, family.id, owner);
-      return finalizeTask({ task, family, owner, requestId, stateVersion });
+      return finalizeTask({ task, family, owner, requestId, stateVersion, signal });
     },
     async start({ family, owner, channel = 'web' }) {
       const task = createAgentPolicyImportTask({

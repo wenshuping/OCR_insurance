@@ -2162,6 +2162,8 @@ export function createPolicyOcrApp(options = {}) {
     failRecord: options.failAgentPolicyImportFinalization,
     findPolicyBySource: options.findPolicyByImportSource,
     loadTask: options.findAgentPolicyImportTask,
+    waitIntervalMs: options.policyImportFinalizeWaitIntervalMs,
+    waitTimeoutMs: options.policyImportFinalizeWaitTimeoutMs,
     createPolicy: async ({ task, family, owner }) => {
       const user = (state.users || []).find((row) => Number(row.id) === Number(owner.userId));
       assertUserCanSavePolicy(state, user);

@@ -34,6 +34,26 @@ test('finalize rejects incomplete, changed permission, absent confirmation, stal
   await assert.rejects(finalize({ task: current, family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'stale', stateVersion: 4 }), { code: 'STALE_INTERACTION' });
 });
 
+test('finalize validates owner, active family, saving phase, product, and both member bindings without mutation', async () => {
+  const baseTask = task();
+  const cases = [
+    [{ current: baseTask, family: { id: 10, ownerUserId: 7, status: 'active' }, owner: { userId: 8 } }, 'POLICY_IMPORT_NOT_FOUND'],
+    [{ current: baseTask, family: { id: 11, ownerUserId: 7, status: 'active' }, owner: { userId: 7 } }, 'POLICY_IMPORT_NOT_FOUND'],
+    [{ current: baseTask, family: { id: 10, ownerUserId: 7, status: 'archived' }, owner: { userId: 7 } }, 'FAMILY_NOT_FOUND'],
+    [{ current: task({ status: 'final_confirmation' }), family: { id: 10, ownerUserId: 7, status: 'active' }, owner: { userId: 7 } }, 'FINAL_CONFIRMATION_REQUIRED'],
+    [{ current: task({ productResolution: '' }), family: { id: 10, ownerUserId: 7, status: 'active' }, owner: { userId: 7 } }, 'POLICY_IMPORT_PRODUCT_UNRESOLVED'],
+    [{ current: task({ draft: { ...baseTask.draft, productId: 52 } }), family: { id: 10, ownerUserId: 7, status: 'active' }, owner: { userId: 7 } }, 'POLICY_IMPORT_PRODUCT_CHANGED'],
+    [{ current: task({ draft: { ...baseTask.draft, insuredMemberId: undefined } }), family: { id: 10, ownerUserId: 7, status: 'active' }, owner: { userId: 7 } }, 'POLICY_IMPORT_MEMBER_UNRESOLVED'],
+    [{ current: task({ draft: { ...baseTask.draft, applicantMemberId: undefined } }), family: { id: 10, ownerUserId: 7, status: 'active' }, owner: { userId: 7 } }, 'POLICY_IMPORT_MEMBER_UNRESOLVED'],
+  ];
+  for (const [{ current, family, owner }, code] of cases) {
+    const state = stateFor(current); let creates = 0; let reservations = 0; const before = structuredClone(current);
+    const finalize = createAgentPolicyImportFinalizer({ state, findRecord: async () => null, reserve: async () => { reservations += 1; }, createPolicy: async () => { creates += 1; } });
+    await assert.rejects(finalize({ task: current, family, owner, requestId: `validation-${code}`, stateVersion: current.stateVersion }), { code });
+    assert.deepEqual(current, before); assert.equal(creates, 0); assert.equal(reservations, 0);
+  }
+});
+
 test('SQLite finalization is idempotent, durable across restart, and records one policy and immutable completion', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'policy-finalize-')); const dbPath = path.join(directory, 'state.sqlite'); const initial = stateFor();
   const store = await createSqliteStateStore({ dbPath }); await store.persist(initial); let creates = 0;
@@ -59,12 +79,13 @@ test('cross-instance same and different request IDs serialize to one policy crea
     const secondStore = await createSqliteStateStore({ dbPath }); const firstState = await firstStore.load(); const secondState = await secondStore.load(); let creates = 0;
     firstState.knowledgeRecords = seed.knowledgeRecords; secondState.knowledgeRecords = seed.knowledgeRecords;
     const make = (store, state) => createAgentPolicyImportFinalizer({ state, reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask,
+      waitIntervalMs: 2, waitTimeoutMs: 2_000,
       createPolicy: async () => { creates += 1; await new Promise((resolve) => setTimeout(resolve, 30)); return { id: 88, userId: 7, company: '可信保险', name: '安心保', insured: '张三' }; } });
     const base = (state, requestId) => ({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId, stateVersion: 5 });
     const results = await Promise.allSettled([make(firstStore, firstState)(base(firstState, requestIds[0])), make(secondStore, secondState)(base(secondState, requestIds[1]))]);
     assert.equal(creates, 1, JSON.stringify(results.map((row) => row.status === 'rejected' ? { code: row.reason?.code, message: row.reason?.message } : row)));
-    assert.equal(results.filter((row) => row.status === 'fulfilled').length, 1);
-    assert.equal(results.find((row) => row.status === 'rejected')?.reason.code, 'FINALIZE_IN_PROGRESS');
+    assert.equal(results.filter((row) => row.status === 'fulfilled').length, 2);
+    assert.deepEqual(results[0].value, results[1].value);
     const retryState = await secondStore.load();
     const retry = await make(secondStore, retryState)({ ...base(retryState, 'third'), stateVersion: retryState.agentPolicyImportTasks[0].stateVersion });
     assert.equal(retry.policyId, 88); assert.equal(creates, 1);

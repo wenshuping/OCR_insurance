@@ -54,9 +54,57 @@ export function createAgentPolicyImportFinalizer({
   createPolicy,
   nowIso = () => new Date().toISOString(),
   claimLeaseMs = 60_000,
+  waitIntervalMs = 25,
+  waitTimeoutMs = 60_000,
+  waitNowMs = Date.now,
 } = {}) {
-  const inFlight = new Map();
-  async function run({ task, family, owner, requestId, stateVersion } = {}) {
+  const sleep = (milliseconds, signal) => new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(Object.assign(new Error('保存等待已取消'), { code: 'FINALIZE_WAIT_ABORTED', status: 499 }));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error('保存等待已取消'), { code: 'FINALIZE_WAIT_ABORTED', status: 499 }));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
+  async function reconcile({ task, owner, record, policy }) {
+    const claimedTask = await loadTask?.(task.id);
+    const next = structuredClone(claimedTask || task);
+    updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
+    const completed = { ...record, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
+    try {
+      await complete({ state, task: next, record: completed, policy });
+    } catch (error) {
+      const original = await findRecord?.({ ownerUserId: owner.userId, taskId: task.id });
+      if (original?.status === 'completed') return publicResult(original, task);
+      throw error;
+    }
+    Object.assign(task, next);
+    return publicResult(completed, next);
+  }
+
+  async function waitForDurableResult({ task, owner, requestId, signal }) {
+    const deadline = Number(waitNowMs()) + Math.min(60_000, Math.max(1, Number(waitTimeoutMs) || 60_000));
+    while (Number(waitNowMs()) < deadline) {
+      const completed = await findRecord?.({ ownerUserId: owner.userId, taskId: task.id });
+      if (completed?.status === 'completed') return publicResult(completed, task);
+      const durableTask = await loadTask?.(task.id);
+      const activeRequestId = text(durableTask?.finalizeRequestId || requestId);
+      const active = activeRequestId ? await findRecord?.({ ownerUserId: owner.userId, taskId: task.id, requestId: activeRequestId }) : null;
+      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id });
+      if (policy && active) return reconcile({ task, owner, record: active, policy });
+      if (active?.status === 'failed_unknown') fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
+      if (durableTask?.status === 'final_confirmation') fail('FINALIZE_RETRY_REQUIRED', '上次保存未提交，请重新确认后重试', 409);
+      await sleep(Math.max(1, Number(waitIntervalMs) || 25), signal);
+    }
+    fail('FINALIZE_WAIT_TIMEOUT', '等待保单保存结果超时，请稍后查询', 504);
+  }
+
+  async function run({ task, family, owner, requestId, stateVersion, signal } = {}) {
     const stableRequestId = text(requestId);
     if (!stableRequestId || stableRequestId.length > 120) fail('INVALID_REQUEST_ID', 'requestId 无效');
     const prior = await findRecord?.({ ownerUserId: owner?.userId, taskId: task?.id, requestId: stableRequestId });
@@ -65,19 +113,11 @@ export function createAgentPolicyImportFinalizer({
     if (completedForTask?.status === 'completed') return publicResult(completedForTask, task);
     if (prior?.status === 'reserved' || prior?.status === 'failed_unknown') {
       const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id });
-      if (policy) {
-        const claimedTask = await loadTask?.(task.id);
-        const next = structuredClone(claimedTask || task);
-        updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
-        const completed = { ...prior, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
-        await complete({ state, task: next, record: completed, policy });
-        Object.assign(task, next);
-        return publicResult(completed, next);
-      }
+      if (policy) return reconcile({ task, owner, record: prior, policy });
       if (prior.status === 'failed_unknown') fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
       const now = nowIso();
       const leaseExpired = Number.isFinite(Date.parse(prior.leaseUntil)) && Date.parse(prior.leaseUntil) <= Date.parse(now);
-      if (!leaseExpired) fail('FINALIZE_IN_PROGRESS', '保单正在保存，请稍后查询结果', 409);
+      if (!leaseExpired) return waitForDurableResult({ task, owner, requestId: stableRequestId, signal });
       const expired = await reserve({ state, task, ownerUserId: owner.userId, requestId: stableRequestId, expectedVersion: task.stateVersion, now, leaseUntil: prior.leaseUntil });
       if (expired.outcome === 'completed') return publicResult(expired.record, task);
       fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
@@ -88,15 +128,7 @@ export function createAgentPolicyImportFinalizer({
     if (reservation.outcome === 'completed') return publicResult(reservation.record, task);
     if (reservation.outcome === 'unknown') fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
     if (reservation.outcome === 'in_progress') {
-      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id });
-      if (!policy) fail('FINALIZE_IN_PROGRESS', '保单正在保存，请稍后查询结果', 409);
-      const claimedTask = await loadTask?.(task.id);
-      const next = structuredClone(claimedTask || task);
-      updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
-      const completed = { ...reservation.record, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
-      await complete({ state, task: next, record: completed, policy });
-      Object.assign(task, next);
-      return publicResult(completed, next);
+      return waitForDurableResult({ task, owner, requestId: stableRequestId, signal });
     }
     const record = reservation.record;
     const reservedTask = reservation.task;
@@ -125,10 +157,6 @@ export function createAgentPolicyImportFinalizer({
     }
   }
   return async function finalize(input = {}) {
-    const key = `${Number(input.owner?.userId || 0)}\u0000${Number(input.task?.id || 0)}\u0000${text(input.requestId)}`;
-    if (inFlight.has(key)) return inFlight.get(key);
-    const pending = run(input).finally(() => inFlight.delete(key));
-    inFlight.set(key, pending);
-    return pending;
+    return run(input);
   };
 }
