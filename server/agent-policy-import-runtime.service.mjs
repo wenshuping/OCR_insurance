@@ -137,15 +137,16 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
     return buildAgentPolicyImportContext(next);
   }
 
-  async function recoverExpired(task) {
+  async function recoverPending(task) {
     const now = Date.parse(nowIso());
-    const expired = task.documents.filter((document) => document.status === 'scanning' && (!Number.isFinite(Date.parse(document.scanLeaseUntil)) || Date.parse(document.scanLeaseUntil) <= now));
-    if (!expired.length) return task;
+    const stranded = task.documents.filter((document) => document.status === 'received' || (document.status === 'scanning' && (!Number.isFinite(Date.parse(document.scanLeaseUntil)) || Date.parse(document.scanLeaseUntil) <= now)));
+    if (!stranded.length) return task;
     const next = clone(task);
     for (const document of next.documents) {
-      if (!expired.some((candidate) => candidate.documentId === document.documentId)) continue;
+      if (!stranded.some((candidate) => candidate.documentId === document.documentId)) continue;
+      const wasReceived = document.status === 'received';
       document.status = 'failed';
-      document.errorCode = 'SCAN_LEASE_EXPIRED';
+      document.errorCode = wasReceived ? 'QUEUED_UPLOAD_REQUIRED' : 'SCAN_LEASE_EXPIRED';
       delete document.scanLeaseUntil;
     }
     next.status = 'field_completion';
@@ -164,10 +165,10 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
       return commit(null, task, 0);
     },
     async get({ familyId, taskId, owner }) {
-      return buildAgentPolicyImportContext(await recoverExpired(await freshOwnedTask(taskId, familyId, owner)));
+      return buildAgentPolicyImportContext(await recoverPending(await freshOwnedTask(taskId, familyId, owner)));
     },
     async action({ familyId, taskId, owner, input }) {
-      const current = await recoverExpired(await freshOwnedTask(taskId, familyId, owner));
+      const current = await recoverPending(await freshOwnedTask(taskId, familyId, owner));
       const next = clone(current);
       if (input.action === 'select_product') next.productOptions = exactProductOptions(state, next.draft);
       if (input.action === 'bind_member') next.memberOptions = taskMembers(state, next.familyId);
@@ -175,14 +176,14 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
       return commit(current, next, input.stateVersion);
     },
     async append({ familyId, taskId, owner, stateVersion, files }) {
-      const current = await recoverExpired(await freshOwnedTask(taskId, familyId, owner));
+      const current = await recoverPending(await freshOwnedTask(taskId, familyId, owner));
       const next = clone(current);
       const inspected = (Array.isArray(files) ? files : []).map((file) => {
         const decoded = bytesForUpload(file?.uploadItem, maxDocumentBytes);
         return { bytes: decoded.bytes, uploadItem: file.uploadItem, name: file.name, mediaType: mediaTypeFor(decoded.bytes, decoded.declaredType, file.mediaType || file.type) };
       });
       const retryHashes = new Set(inspected.map(({ bytes }) => crypto.createHash('sha256').update(bytes).digest('hex')));
-      next.documents = next.documents.filter((document) => !(document.status === 'failed' && retryHashes.has(document.sha256)));
+      next.documents = next.documents.filter((document) => !(['received', 'failed'].includes(document.status) && retryHashes.has(document.sha256)));
       const appended = appendAgentPolicyImportDocuments(next, {
         stateVersion,
         documents: inspected.map(({ bytes, name, mediaType }) => ({ sha256: crypto.createHash('sha256').update(bytes).digest('hex'), name, mediaType, size: bytes.length })),
@@ -224,9 +225,9 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
           document.status = 'failed';
           document.errorCode = String(error?.code || 'OCR_FAILED').slice(0, 60);
           delete document.scanLeaseUntil;
-          next.status = 'field_completion';
-          next.stateVersion += 1;
-          next.updatedAt = nowIso();
+          mergeDocumentCandidates(next);
+          const productOptions = exactProductOptions(state, next.draft);
+          reconcileAgentPolicyImportResolutions(next, { productOptions, productResolution: next.productResolution || (productOptions.length === 1 ? 'trusted_match' : ''), productId: next.draft.productId || (productOptions.length === 1 ? productOptions[0].productId : undefined), memberBindings: exactMemberBindings(next), now: nowIso() });
         }
         try {
           await commit(state.agentPolicyImportTasks.find((task) => task.id === next.id), clone(normalizeAgentPolicyImportTask(next)), expectedVersion);

@@ -101,6 +101,7 @@ function missingFields(draft) {
 }
 
 function workflowStatus(task) {
+  if (task.documents.some((document) => document.status === 'received' || document.status === 'scanning')) return 'recognizing';
   const missing = missingFields(task.draft);
   if (!task.resolutionRequired) {
     if (missing.includes('name') && task.productOptions.length) return 'candidate_selection';
@@ -361,6 +362,7 @@ export function updateAgentPolicyImportTask(input, { stateVersion, action = 'set
   const task = canonicalTask(input);
   validateExpectedVersion(task, stateVersion);
   assertOpen(task);
+  if (action === 'confirm' && task.documents.some((document) => document.status === 'received' || document.status === 'scanning')) fail('POLICY_IMPORT_DOCUMENTS_PENDING', '仍有附件正在识别，请稍后重试', 409);
   assertActionPhase(task, action);
   if (action === 'cancel') task.status = 'cancelled';
   else if (action === 'confirm') {

@@ -203,6 +203,24 @@ test('expired scanning lease is durably recovered and the same hash can be retri
   } finally { await ctx.close(); }
 });
 
+test('restart recovery converts a durable received document to retryable and same-hash reupload completes it', async () => {
+  const ctx = await fixture();
+  try {
+    const started = await ctx.request('/api/family-profiles/10/policy-imports', { method: 'POST', body: {} });
+    const task = ctx.loaded.agentPolicyImportTasks[0];
+    const bytes = Buffer.from([0xff, 0xd8, 2, 0xff, 0xd9]);
+    const sha256 = (await import('node:crypto')).default.createHash('sha256').update(bytes).digest('hex');
+    const received = { ...structuredClone(task), documents: [{ documentId: 'doc_received', sha256, name: 'queued.jpg', mediaType: 'image/jpeg', size: bytes.length, status: 'received', scanAttempt: 0 }], status: 'recognizing', stateVersion: 2 };
+    await ctx.store.persistAgentPolicyImportTask({ state: ctx.loaded, task: received, expectedVersion: 1 });
+    ctx.loaded.agentPolicyImportTasks[0] = received;
+    const recovered = await ctx.request(`/api/family-profiles/10/policy-imports/${task.id}`);
+    assert.equal(recovered.payload.task.documentSummary.statuses.failed, 1);
+    const retried = await ctx.request(`/api/family-profiles/10/policy-imports/${task.id}/files`, { method: 'POST', body: { stateVersion: recovered.payload.task.stateVersion, files: [{ uploadItem: `data:image/jpeg;base64,${bytes.toString('base64')}` }] } });
+    assert.equal(retried.payload.task.documentSummary.statuses.recognized, 1);
+    assert.equal(retried.payload.task.status, 'final_confirmation');
+  } finally { await ctx.close(); }
+});
+
 test('equal-confidence conflicting OCR values produce stable evidence and an explicit field conflict', async () => {
   async function run(order) {
     const ctx = await fixture({ scanner: async ({ uploadItem }) => ({ data: { company: '可信保险', name: '安心保', insured: Buffer.from(uploadItem.split(',')[1], 'base64').includes(65) ? '甲' : '乙' }, fieldConfidence: { insured: 0.8 } }) });

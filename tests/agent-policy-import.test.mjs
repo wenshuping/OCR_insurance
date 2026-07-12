@@ -321,3 +321,11 @@ test('non-enumerable readonly task properties are rejected without descriptor ch
   assert.deepEqual(Reflect.ownKeys(task), keysBefore);
   assert.deepEqual(Object.getOwnPropertyDescriptors(task), descriptorsBefore);
 });
+
+test('pending documents force recognizing and confirmation rejects corrupted lifecycle status', () => {
+  const task = create({ draft: { company: 'A', name: 'B', insured: 'C' } });
+  appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [image('a'.repeat(64))] });
+  task.status = 'final_confirmation';
+  assert.equal(normalizeAgentPolicyImportTask(task).status, 'recognizing');
+  assert.throws(() => updateAgentPolicyImportTask(task, { stateVersion: 2, action: 'confirm' }), (error) => error.code === 'POLICY_IMPORT_DOCUMENTS_PENDING');
+});
