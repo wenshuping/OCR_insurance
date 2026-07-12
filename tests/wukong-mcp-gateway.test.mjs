@@ -5,6 +5,17 @@ import { createPolicyOcrApp } from '../server/app.mjs';
 import { createWukongMcpGateway } from '../server/wukong-mcp-gateway.service.mjs';
 
 const PRINCIPAL = { corpId: 'corp-1', dingUserId: 'ding-1' };
+const PUBLIC_TOOL_NAMES = [
+  'resolve_advisor_identity',
+  'list_accessible_families',
+  'start_policy_import',
+  'append_policy_import_files',
+  'get_policy_import',
+  'apply_policy_import_action',
+  'finalize_policy_import',
+  'ask_sales_champion',
+  'ask_insurance_expert',
+];
 
 function stateFor(identity = { ...PRINCIPAL, userId: 7, status: 'active' }) {
   return {
@@ -35,7 +46,7 @@ function call(gateway, overrides = {}) {
 
 test('registry exposes only approved identity, family, and policy intake tools with private schemas', async () => {
   const gateway = createWukongMcpGateway({ state: stateFor() });
-  assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families', 'start_policy_import', 'append_policy_import_files', 'get_policy_import', 'apply_policy_import_action', 'finalize_policy_import', 'ask_sales_champion', 'ask_insurance_expert']);
+  assert.deepEqual(gateway.toolNames, PUBLIC_TOOL_NAMES);
   assert.equal(gateway.registry, undefined);
   assert.deepEqual(gateway.toolMetadata.map((tool) => tool.name), gateway.toolNames);
   assert.deepEqual(gateway.toolMetadata[0].inputSchema, { type: 'object', properties: {}, required: [], additionalProperties: false });
@@ -48,6 +59,40 @@ test('registry exposes only approved identity, family, and policy intake tools w
   await assert.rejects(call(gateway, { requestId: 'req-2', input: { ownerUserId: 7 } }), { code: 'INVALID_TOOL_INPUT' });
   await assert.rejects(call(gateway, { requestId: 'req-3', tool: 'list_accessible_families', input: { familyId: 12 } }), { code: 'INVALID_TOOL_INPUT' });
   await assert.rejects(call(gateway, { requestId: 'req-4', input: [] }), { code: 'INVALID_TOOL_INPUT' });
+});
+
+test('server-owned allowlist rejects private, unknown, case, prototype, and forged selector variants', async () => {
+  const gateway = createWukongMcpGateway({ state: stateFor() });
+  const forbidden = [
+    'terminal', 'read_file', 'write_file', 'sql_query', 'http_request',
+    'search_policy_evidence', 'mutate_policy', 'get_hidden_prompt',
+    'sales_champion.search_memories', 'insurance_expert.search_evidence',
+    'ASK_SALES_CHAMPION', 'ask_sales_champion ', '__proto__', 'constructor', 'toString',
+  ];
+  for (const [index, tool] of forbidden.entries()) {
+    await assert.rejects(call(gateway, { requestId: `forbidden-${index}`, tool }), { code: 'TOOL_NOT_ALLOWED' });
+  }
+  await assert.rejects(call(gateway, {
+    requestId: 'forged-selection',
+    tool: 'ask_sales_champion',
+    input: { familyRef: 11, question: '问题' },
+    skills: ['terminal'],
+    selectedTool: 'terminal',
+    role: 'insurance_expert',
+  }), { code: 'INVALID_TOOL_INPUT' });
+  const prototypeInput = Object.create({ hiddenPrompt: true });
+  await assert.rejects(call(gateway, { requestId: 'prototype-input', input: prototypeInput }), { code: 'INVALID_TOOL_INPUT' });
+});
+
+test('public metadata contains only names and schemas and keeps executables private', () => {
+  const gateway = createWukongMcpGateway({ state: stateFor() });
+  assert.deepEqual(gateway.toolMetadata.map(({ name }) => name), PUBLIC_TOOL_NAMES);
+  for (const metadata of gateway.toolMetadata) {
+    assert.deepEqual(Object.keys(metadata).sort(), ['inputSchema', 'name']);
+    assert.equal('execute' in metadata, false);
+    assert.equal('authorize' in metadata, false);
+  }
+  assert.equal(Object.isFrozen(gateway.toolNames), true);
 });
 
 test('policy intake tools derive owner and reject forged family or owner input', async () => {

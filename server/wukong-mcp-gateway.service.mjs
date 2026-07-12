@@ -7,6 +7,21 @@ const DEFAULT_REPLAY_MAX_ENTRIES = 2_000;
 const DEFAULT_RATE_LIMIT = 60;
 const DEFAULT_RATE_WINDOW_MS = 60 * 1000;
 const DEFAULT_RATE_MAX_PRINCIPALS = 2_000;
+const WUKONG_CONVERSATION_TYPES = new Set(['direct']);
+const WUKONG_REQUEST_KEYS = new Set([
+  'corpId', 'dingUserId', 'requestId', 'conversationType', 'tool', 'input',
+]);
+const WUKONG_PUBLIC_TOOL_NAMES = Object.freeze([
+  'resolve_advisor_identity',
+  'list_accessible_families',
+  'start_policy_import',
+  'append_policy_import_files',
+  'get_policy_import',
+  'apply_policy_import_action',
+  'finalize_policy_import',
+  'ask_sales_champion',
+  'ask_insurance_expert',
+]);
 
 export class WukongMcpError extends Error {
   constructor(code, status) {
@@ -25,8 +40,14 @@ function nonEmptyString(value) {
   return typeof value === 'string' && Boolean(value.trim());
 }
 
+function isPlainRecord(value) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function validateInputSchema(schema, input) {
-  if (schema.type !== 'object' || !input || Array.isArray(input) || typeof input !== 'object') {
+  if (schema.type !== 'object' || !isPlainRecord(input)) {
     fail('INVALID_TOOL_INPUT', 400);
   }
   const properties = schema.properties || {};
@@ -95,7 +116,7 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert) {
     if (!family) fail('FAMILY_NOT_FOUND', 404);
     return family;
   };
-  return new Map([
+  const entries = [
     ['resolve_advisor_identity', {
       name: 'resolve_advisor_identity',
       inputSchema: emptyObjectSchema,
@@ -152,7 +173,13 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert) {
       authorize: () => true,
       execute: (context, input, request) => insuranceExpert({ owner: context, ...input, requestId: request.requestId }),
     }],
-  ]);
+  ];
+  const registry = new Map(entries);
+  if (registry.size !== WUKONG_PUBLIC_TOOL_NAMES.length
+    || WUKONG_PUBLIC_TOOL_NAMES.some((name) => !registry.has(name))) {
+    throw new Error('INVALID_WUKONG_TOOL_REGISTRY');
+  }
+  return registry;
 }
 
 export function createWukongMcpGateway({
@@ -211,18 +238,20 @@ export function createWukongMcpGateway({
   }
 
   return {
-    toolNames: [...registry.keys()],
+    toolNames: WUKONG_PUBLIC_TOOL_NAMES,
     toolMetadata,
     get replaySize() { return replay.size; },
     get ratePrincipalCount() { return rates.size; },
     async invoke(request) {
-      if (!nonEmptyString(request?.corpId)
+      if (!isPlainRecord(request)
+        || Object.keys(request).some((key) => !WUKONG_REQUEST_KEYS.has(key))
+        || !nonEmptyString(request?.corpId)
         || !nonEmptyString(request?.dingUserId)
         || !nonEmptyString(request?.requestId)
         || !nonEmptyString(request?.conversationType)
         || !nonEmptyString(request?.tool)
         || request.requestId.length > 160) fail('INVALID_TOOL_INPUT', 400);
-      if (request.conversationType !== 'direct') fail('GROUP_CHAT_FORBIDDEN', 403);
+      if (!WUKONG_CONVERSATION_TYPES.has(request.conversationType)) fail('GROUP_CHAT_FORBIDDEN', 403);
       const entry = registry.get(request.tool);
       if (!entry) fail('TOOL_NOT_ALLOWED', 403);
       validateInputSchema(entry.inputSchema, request.input);
