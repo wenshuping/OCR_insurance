@@ -170,6 +170,34 @@ const AGENT_POLICY_MAX_ENTRIES = 256;
 const AGENT_POLICY_MAX_FIELDS = 32;
 const AGENT_POLICY_MAX_BYTES = 262_144;
 
+function assertStrictJsonValue(value, label, ancestors = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number' && Number.isFinite(value)) return;
+  if (typeof value !== 'object') throw new TypeError(`${label} must contain only valid JSON values`);
+  if (ancestors.has(value)) throw new TypeError(`${label} must contain only valid JSON values`);
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const ownKeys = Reflect.ownKeys(value).filter((key) => key !== 'length');
+      if (ownKeys.length !== value.length || ownKeys.some((key, index) => key !== String(index))) {
+        throw new TypeError(`${label} must contain only valid JSON values`);
+      }
+      for (const item of value) assertStrictJsonValue(item, label, ancestors);
+      return;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) {
+      throw new TypeError(`${label} must contain only valid JSON values`);
+    }
+    const enumerableKeys = Object.keys(value);
+    if (Reflect.ownKeys(value).length !== enumerableKeys.length) {
+      throw new TypeError(`${label} must contain only valid JSON values`);
+    }
+    for (const key of enumerableKeys) assertStrictJsonValue(value[key], label, ancestors);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 function serializeAgentPayload(value, label = 'Agent payload') {
   const payload = value ?? {};
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -178,6 +206,7 @@ function serializeAgentPayload(value, label = 'Agent payload') {
   if (Object.keys(payload).length > AGENT_PAYLOAD_MAX_FIELDS) {
     throw new RangeError(`${label} exceeds ${AGENT_PAYLOAD_MAX_FIELDS} fields`);
   }
+  assertStrictJsonValue(payload, label);
   const serialized = JSON.stringify(payload);
   if (Buffer.byteLength(serialized, 'utf8') > AGENT_PAYLOAD_MAX_BYTES) {
     throw new RangeError(`${label} exceeds ${AGENT_PAYLOAD_MAX_BYTES} bytes`);
@@ -198,16 +227,18 @@ function serializeAgentPolicies(policies) {
       throw new RangeError(`Agent question policy exceeds ${AGENT_POLICY_MAX_FIELDS} fields`);
     }
   }
-  let serialized;
-  try {
-    serialized = JSON.stringify(policies);
-  } catch {
-    throw new TypeError('Agent question policies must be JSON serializable');
-  }
+  assertStrictJsonValue(policies, 'Agent question policies');
+  const serialized = JSON.stringify(policies);
   if (Buffer.byteLength(serialized, 'utf8') > AGENT_POLICY_MAX_BYTES) {
     throw new RangeError(`Agent question policies exceed ${AGENT_POLICY_MAX_BYTES} bytes`);
   }
   return serialized;
+}
+
+function normalizeAgentTimestamp(value, label) {
+  const timestamp = new Date(value || Date.now());
+  if (!Number.isFinite(timestamp.getTime())) throw new TypeError(`${label} must be a valid timestamp`);
+  return timestamp.toISOString();
 }
 
 function normalizeAgentLimit(value) {
@@ -3068,24 +3099,23 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const numericUserId = Number(userId);
     const normalizedAction = String(action || '').trim();
     const normalizedActor = String(actor || '').trim();
-    const normalizedExpiresAt = String(expiresAt || '').trim();
-    if (!normalizedId || !Number.isInteger(numericUserId) || numericUserId <= 0 || !normalizedAction || !normalizedActor || !normalizedExpiresAt) {
+    if (!normalizedId || !Number.isInteger(numericUserId) || numericUserId <= 0 || !normalizedAction || !normalizedActor || !String(expiresAt || '').trim()) {
       throw new TypeError('Agent action confirmation id, userId, action, actor, and expiresAt are required');
     }
-    if (!Number.isFinite(Date.parse(normalizedExpiresAt))) throw new TypeError('Agent action confirmation expiresAt must be a valid timestamp');
+    const normalizedExpiresAt = normalizeAgentTimestamp(expiresAt, 'Agent action confirmation expiresAt');
+    const normalizedCreatedAt = normalizeAgentTimestamp(createdAt, 'Agent action confirmation createdAt');
     db.prepare(`
       INSERT INTO agent_action_confirmations (id, user_id, action, actor, status, created_at, expires_at, consumed_at, payload)
       VALUES (?, ?, ?, ?, 'pending', ?, ?, '', ?)
-    `).run(normalizedId, numericUserId, normalizedAction, normalizedActor, String(createdAt || new Date().toISOString()), normalizedExpiresAt, serializeAgentPayload(payload));
+    `).run(normalizedId, numericUserId, normalizedAction, normalizedActor, normalizedCreatedAt, normalizedExpiresAt, serializeAgentPayload(payload));
     return mapAgentActionConfirmation(db.prepare('SELECT * FROM agent_action_confirmations WHERE id = ?').get(normalizedId));
   }
 
   async function consumeAgentActionConfirmation({ id = '', userId, consumedAt = '' } = {}) {
     const normalizedId = String(id || '').trim();
     const numericUserId = Number(userId);
-    const timestamp = String(consumedAt || new Date().toISOString());
     if (!normalizedId || !Number.isInteger(numericUserId) || numericUserId <= 0) throw new TypeError('Agent action confirmation id and userId are required');
-    if (!Number.isFinite(Date.parse(timestamp))) throw new TypeError('Agent action confirmation consumedAt must be a valid timestamp');
+    const timestamp = normalizeAgentTimestamp(consumedAt, 'Agent action confirmation consumedAt');
     db.exec('BEGIN IMMEDIATE');
     try {
       const row = db.prepare('SELECT * FROM agent_action_confirmations WHERE id = ?').get(normalizedId);
@@ -3095,7 +3125,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         db.exec('COMMIT');
         return mapAgentActionConfirmation(row, 'already_consumed');
       }
-      if (row.status === 'expired' || Date.parse(row.expires_at) <= Date.parse(timestamp)) {
+      if (row.status === 'expired' || row.expires_at <= timestamp) {
         db.prepare("UPDATE agent_action_confirmations SET status = 'expired' WHERE id = ? AND status = 'pending'").run(normalizedId);
         db.exec('COMMIT');
         return mapAgentActionConfirmation({ ...row, status: 'expired' });

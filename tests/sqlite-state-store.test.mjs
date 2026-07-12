@@ -1954,7 +1954,9 @@ test('sqlite state store rejects unsafe agent question policy JSON', async () =>
   await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 4, policies: [new Date()] }), /plain object/i);
   const circular = { key: 'circular' };
   circular.self = circular;
-  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 5, policies: [circular] }), /serializable/i);
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 5, policies: [circular] }), /valid JSON values/i);
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 6, policies: [{ key: 'lossy', value: undefined }] }), /valid JSON values/i);
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 7, policies: [{ key: 'lossy', value: Number.NaN }] }), /valid JSON values/i);
   store.close();
 });
 
@@ -1997,6 +1999,35 @@ test('sqlite state store atomically consumes owned, unexpired agent action confi
   store.close();
 });
 
+test('sqlite state store normalizes confirmation timestamps and serializes competing consumers', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const firstStore = await createSqliteStateStore({ dbPath });
+  const secondStore = await createSqliteStateStore({ dbPath });
+  try {
+    const confirmation = await firstStore.createAgentActionConfirmation({
+      id: 'confirm-offset',
+      userId: 7,
+      action: 'save_memory',
+      actor: 'sales_champion',
+      createdAt: '2026-07-12T11:00:00+08:00',
+      expiresAt: '2026-07-12T12:00:00+08:00',
+    });
+    assert.equal(confirmation.createdAt, '2026-07-12T03:00:00.000Z');
+    assert.equal(confirmation.expiresAt, '2026-07-12T04:00:00.000Z');
+
+    const results = await Promise.all([
+      firstStore.consumeAgentActionConfirmation({ id: confirmation.id, userId: 7, consumedAt: '2026-07-12T11:59:00+08:00' }),
+      secondStore.consumeAgentActionConfirmation({ id: confirmation.id, userId: 7, consumedAt: '2026-07-12T11:59:30+08:00' }),
+    ]);
+    assert.deepEqual(results.map((row) => row.status).sort(), ['already_consumed', 'consumed']);
+    assert.equal(results.find((row) => row.status === 'consumed').consumedAt, '2026-07-12T03:59:00.000Z');
+  } finally {
+    secondStore.close();
+    firstStore.close();
+  }
+});
+
 test('sqlite state store persists traceable bounded agent route audit events', async () => {
   const dir = await makeTempDir();
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
@@ -2028,6 +2059,14 @@ test('sqlite state store persists traceable bounded agent route audit events', a
   await assert.rejects(
     store.appendAgentRouteAuditEvent({ policyVersion: 999, userId: 7, messageRef: 'msg-route-4', decision: 'execute', actor: 'router' }),
     /policy version.*not found/i,
+  );
+  await assert.rejects(
+    store.appendAgentRouteAuditEvent({ policyVersion: 3, userId: 7, messageRef: 'msg-route-5', decision: 'execute', actor: 'router', payload: { lost: () => true } }),
+    /valid JSON values/i,
+  );
+  await assert.rejects(
+    store.appendAgentRouteAuditEvent({ policyVersion: 3, userId: 7, messageRef: 'msg-route-6', decision: 'execute', actor: 'router', payload: { invalid: Infinity } }),
+    /valid JSON values/i,
   );
   store.close();
 });
