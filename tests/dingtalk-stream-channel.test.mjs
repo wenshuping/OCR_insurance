@@ -37,21 +37,15 @@ function harness(identityResponses = [], options = {}) {
   };
 }
 
-test('bind and confirm use the authenticated identity API without exposing the challenge token', async () => {
-  const token = 'secret-challenge-token';
+test('channel silently verifies identity and never asks the advisor to bind', async () => {
   const h = harness([
-    { status: 200, body: { maskedMobile: '138****8000', challenge: { token, expiresAt: '2099-01-01T00:00:00.000Z' } } },
-    { status: 200, body: { maskedMobile: '138****8000' } },
+    { status: 200, body: { status: 'active', maskedMobile: '138****8000' } },
   ]);
-  await h.channel.handle(BASE_MESSAGE);
-  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '确认绑定' } });
-  assert.match(h.replies[0], /138\*{4}8000/);
-  assert.match(h.replies[1], /绑定成功/);
-  assert.equal(h.replies.join(' ').includes(token), false);
-  const candidate = h.requests.find((request) => request.url.endsWith('/candidate'));
-  assert.equal(candidate.options.headers.authorization, 'Bearer service-token');
-  const confirmation = JSON.parse(h.requests.find((request) => request.url.endsWith('/confirm')).options.body);
-  assert.equal(confirmation.token, token);
+  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '你好' } });
+  assert.match(h.replies[0], /上传保单/);
+  assert.equal(h.replies.join(' ').includes('绑定'), false);
+  const auto = h.requests.find((request) => request.url.endsWith('/auto'));
+  assert.equal(auto.options.headers.authorization, 'Bearer service-token');
 });
 
 test('channel rejects groups, ignores foreign corps, and masks identity failures', async () => {
@@ -68,17 +62,6 @@ test('channel rejects groups, ignores foreign corps, and masks identity failures
   assert.deepEqual(mismatch.replies, ['当前钉钉手机号与平台注册手机号不一致，无法登录。']);
   assert.deepEqual(mismatch.errors, ['MOBILE_MISMATCH']);
   assert.equal(mismatch.replies.join(' ').includes('raw detail'), false);
-});
-
-test('expired confirmation requires a fresh binding challenge', async () => {
-  const h = harness([{ status: 200, body: {
-    maskedMobile: '138****8000',
-    challenge: { token: 'token', expiresAt: '1970-01-01T00:00:00.500Z' },
-  } }]);
-  await h.channel.handle(BASE_MESSAGE);
-  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '确认绑定' } });
-  assert.equal(h.replies.at(-1), '绑定确认已过期，请重新发送“绑定”。');
-  assert.equal(h.requests.filter((request) => request.url.endsWith('/confirm')).length, 0);
 });
 
 test('stream runtime registers the robot topic, acknowledges promptly, and fails closed without credentials', async () => {
@@ -107,6 +90,7 @@ test('stream runtime registers the robot topic, acknowledges promptly, and fails
 test('policy upload requires consent before download and sends a masked OCR draft', async () => {
   let downloads = 0;
   const h = harness([
+    { status: 200, body: { status: 'active', maskedMobile: '138****8000' } },
     { status: 200, body: { result: { families: [{ id: 10, displayLabel: '张**庭' }] } } },
     { status: 200, body: { result: { taskId: 101, stateVersion: 1 } } },
     { status: 200, body: { result: {

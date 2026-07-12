@@ -136,7 +136,7 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert, fa
         families: listFamilyProfilesForOwner(state, context)
           .map((family) => ({
             id: family.id,
-            displayLabel: maskDisplay(family.name || '家庭'),
+            displayLabel: maskDisplay(family.familyName || family.name || '家庭'),
             memberCount: (state.familyMembers || []).filter((member) => (
               Number(member.familyId) === Number(family.id) && member.status !== 'archived'
             )).length,

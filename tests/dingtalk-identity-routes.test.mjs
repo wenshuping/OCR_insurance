@@ -97,6 +97,28 @@ test('candidate masks a unique match, starts a challenge, and never exposes sens
   } finally { await server.close(); }
 });
 
+test('auto identity verification silently activates an exact mobile match and is idempotent', async () => {
+  const harness = createHarness();
+  const server = await listen(harness.app);
+  try {
+    const first = await request(server.baseUrl, '/api/dingtalk/identity/auto', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    assert.equal(first.response.status, 200);
+    assert.deepEqual(first.payload, { ok: true, status: 'active', maskedMobile: '138****8000' });
+    assert.equal(harness.state.userDingtalkIdentities[0].status, 'active');
+    assert.equal(harness.state.dingtalkBindingChallenges[0].usedAt, NOW);
+    assert.equal(harness.persisted.length, 1);
+
+    const second = await request(server.baseUrl, '/api/dingtalk/identity/auto', {
+      method: 'POST', body: JSON.stringify({ ...PRINCIPAL, requestId: 'request-2' }),
+    });
+    assert.equal(second.response.status, 200);
+    assert.equal(harness.persisted.length, 1);
+    assertSafeResponse(second);
+  } finally { await server.close(); }
+});
+
 test('candidate returns the same safe mismatch error whether no or duplicate account matched', async () => {
   for (const users of [[], [
     { id: 7, mobile: '13800138000', status: 'active' },

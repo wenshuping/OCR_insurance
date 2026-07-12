@@ -18,7 +18,7 @@ function safeReply(code) {
   const replies = {
     MOBILE_MISMATCH: '当前钉钉手机号与平台注册手机号不一致，无法登录。',
     MOBILE_VERIFICATION_REQUIRED: '无法验证当前钉钉手机号，请联系管理员。',
-    IDENTITY_NOT_BOUND: '请先发送“绑定”，完成平台账号绑定。',
+    IDENTITY_NOT_BOUND: '无法确认当前钉钉账号，请确认钉钉手机号与平台注册手机号一致。',
     IDENTITY_REVOKED: '当前绑定已失效，请联系管理员。',
     ADVISOR_ACCOUNT_INACTIVE: '平台账号当前不可用，请联系管理员。',
     DOCUMENT_SIZE_EXCEEDED: '附件超过 16MiB，请压缩后重试。',
@@ -70,7 +70,7 @@ export function createDingtalkStreamChannel({
 } = {}) {
   const configuredCorpId = required(corpId, 'DINGTALK_CORP_ID_REQUIRED');
   const configuredServiceToken = required(serviceToken, 'DINGTALK_IDENTITY_SERVICE_TOKEN_REQUIRED');
-  const pending = new Map();
+  const authenticated = new Set();
   const intake = new Map();
 
   async function identityRequest(path, body) {
@@ -97,6 +97,16 @@ export function createDingtalkStreamChannel({
       input,
     });
     return payload.result;
+  }
+
+  async function ensureIdentity(dingUserId) {
+    if (authenticated.has(dingUserId)) return;
+    await identityRequest('/api/dingtalk/identity/auto', {
+      corpId: configuredCorpId,
+      dingUserId,
+      requestId: randomUUID(),
+    });
+    authenticated.add(dingUserId);
   }
 
   async function prepareUpload(dingUserId) {
@@ -139,6 +149,7 @@ export function createDingtalkStreamChannel({
         return;
       }
       try {
+        await ensureIdentity(dingUserId);
         const current = intake.get(dingUserId) || await prepareUpload(dingUserId);
         if (!current.familyRef) {
           await reply(sessionWebhook, familyChoiceText(current.families));
@@ -175,50 +186,7 @@ export function createDingtalkStreamChannel({
 
     const text = commandText(message);
     if (!text) {
-      await reply(sessionWebhook, '当前先支持文字消息。发送“绑定”验证平台账号。');
-      return;
-    }
-
-    if (text === '绑定') {
-      try {
-        const requestId = randomUUID();
-        const result = await identityRequest('/api/dingtalk/identity/candidate', {
-          corpId: configuredCorpId,
-          dingUserId,
-          requestId,
-        });
-        pending.set(dingUserId, {
-          token: result.challenge.token,
-          expiresAt: Date.parse(result.challenge.expiresAt),
-        });
-        await reply(sessionWebhook, `检测到平台注册手机号 ${result.maskedMobile}。如为本人，请回复“确认绑定”。`);
-      } catch (error) {
-        reportError(String(error?.code || 'DINGTALK_IDENTITY_FAILED'));
-        await reply(sessionWebhook, safeReply(error?.code));
-      }
-      return;
-    }
-
-    if (text === '确认绑定') {
-      const challenge = pending.get(dingUserId);
-      if (!challenge || !Number.isFinite(challenge.expiresAt) || challenge.expiresAt <= now()) {
-        pending.delete(dingUserId);
-        await reply(sessionWebhook, '绑定确认已过期，请重新发送“绑定”。');
-        return;
-      }
-      try {
-        const result = await identityRequest('/api/dingtalk/identity/confirm', {
-          corpId: configuredCorpId,
-          dingUserId,
-          requestId: randomUUID(),
-          token: challenge.token,
-        });
-        pending.delete(dingUserId);
-        await reply(sessionWebhook, `绑定成功（${result.maskedMobile}）。现在可以发送文字问题；文档上传正在接入安全处理流程。`);
-      } catch (error) {
-        reportError(String(error?.code || 'DINGTALK_IDENTITY_FAILED'));
-        await reply(sessionWebhook, safeReply(error?.code));
-      }
+      await reply(sessionWebhook, '当前支持文字消息以及 JPEG、PNG、PDF 保单附件。发送“上传保单”开始录入。');
       return;
     }
 
@@ -228,6 +196,7 @@ export function createDingtalkStreamChannel({
         return;
       }
       try {
+        await ensureIdentity(dingUserId);
         const current = await prepareUpload(dingUserId);
         if (!current.familyRef) await reply(sessionWebhook, familyChoiceText(current.families));
         else await reply(sessionWebhook, '上传的保单可能包含客户敏感信息，文件将经过钉钉传输并由 OCR Insurance 受控 OCR 服务识别，不会自动保存为正式保单。如已获得客户授权，请回复“同意上传”。');
@@ -264,7 +233,13 @@ export function createDingtalkStreamChannel({
       return;
     }
 
-    await reply(sessionWebhook, '你好，我是企业智能文档助手。首次使用请发送“绑定”。');
+    try {
+      await ensureIdentity(dingUserId);
+      await reply(sessionWebhook, '你好，我是企业智能文档助手。发送“上传保单”可开始录入保单，也可以直接发送问题。');
+    } catch (error) {
+      reportError(String(error?.code || 'DINGTALK_IDENTITY_FAILED'));
+      await reply(sessionWebhook, safeReply(error?.code));
+    }
   }
 
   return { handle };

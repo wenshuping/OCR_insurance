@@ -180,6 +180,58 @@ export function createDingtalkIdentityRoutes(context) {
     }
   });
 
+  router.post('/auto', async (req, res) => {
+    try {
+      await requireService(req);
+      const principal = principalFromBody(req.body, { requireRequestId: true });
+      if (typeof getDingtalkUserProfile !== 'function') {
+        throw routeError('DINGTALK_PROFILE_ADAPTER_NOT_CONFIGURED', 503);
+      }
+      const profile = await getDingtalkUserProfile(principal);
+      const candidate = findAdvisorBindingCandidate(state, {
+        mobile: String(profile?.mobile || '').trim(),
+        allowedUserIds: dingtalkAllowedUserIds,
+        fingerprintMobile: fingerprintDingtalkMobile,
+      });
+      if (candidate.status !== 'confirmation_required') {
+        throw routeError(
+          candidate.status === 'verification_required' ? 'MOBILE_VERIFICATION_REQUIRED' : 'MOBILE_MISMATCH',
+          403,
+        );
+      }
+      const identities = (state.userDingtalkIdentities || []).filter((row) => (
+        row.corpId === principal.corpId && row.dingUserId === principal.dingUserId
+      ));
+      if (identities.length > 1) throw routeError('AMBIGUOUS_PRINCIPAL', 409);
+      if (identities[0]?.status === 'active') {
+        if (Number(identities[0].userId) !== Number(candidate.userId)) throw routeError('REBIND_REQUIRES_REVOKE', 409);
+        res.json({ ok: true, status: 'active', maskedMobile: candidate.maskedMobile });
+        return;
+      }
+      await runMutation(() => {
+        const challenge = createAdvisorBindingChallenge(state, {
+          ...principal,
+          userId: candidate.userId,
+          mobileFingerprint: candidate.mobileFingerprint,
+          mobileFingerprintVersion: dingtalkMobileFingerprintVersion,
+          now: nowIso(),
+        });
+        const identity = confirmAdvisorBinding(state, {
+          ...principal,
+          token: challenge.token,
+          expectedUserId: candidate.userId,
+          expectedMobileFingerprint: candidate.mobileFingerprint,
+          expectedMobileFingerprintVersion: dingtalkMobileFingerprintVersion,
+          now: nowIso(),
+        });
+        return { identity };
+      });
+      res.json({ ok: true, status: 'active', maskedMobile: candidate.maskedMobile });
+    } catch (error) {
+      sendIdentityError(res, error);
+    }
+  });
+
   router.post('/confirm', async (req, res) => {
     try {
       await requireService(req);

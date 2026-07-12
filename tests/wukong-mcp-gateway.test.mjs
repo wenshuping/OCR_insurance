@@ -24,7 +24,7 @@ function stateFor(identity = { ...PRINCIPAL, userId: 7, status: 'active' }) {
     users: [{ id: 7, mobile: '13800138000', name: '张三', status: 'active' }],
     userDingtalkIdentities: identity ? [identity] : [],
     familyProfiles: [
-      { id: 11, ownerUserId: 7, name: '张三家庭', status: 'active' },
+      { id: 11, ownerUserId: 7, familyName: '张三家庭', name: '错误名称', status: 'active' },
       { id: 12, ownerUserId: 8, name: '王五家庭', status: 'active' },
     ],
     familyMembers: [
