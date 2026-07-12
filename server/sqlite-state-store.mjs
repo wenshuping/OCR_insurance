@@ -3169,6 +3169,26 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
   }
 
+  async function listAgentQuestionPolicyVersions() {
+    return db.prepare('SELECT * FROM agent_question_policy_versions ORDER BY version DESC, id DESC').all().map(mapAgentPolicyVersion);
+  }
+
+  async function getAgentQuestionPolicyVersion({ id } = {}) {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) return null;
+    return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(numericId));
+  }
+
+  async function updateAgentQuestionPolicyDraft({ id, policies = [], actor = '' } = {}) {
+    const numericId = Number(id);
+    const normalizedActor = String(actor || '').trim();
+    if (!Number.isInteger(numericId) || numericId <= 0 || !normalizedActor) throw new TypeError('Agent question policy draft id and actor are required');
+    const serializedPolicies = serializeAgentPolicies(policies);
+    const result = db.prepare("UPDATE agent_question_policy_versions SET policy_json = ?, actor = ? WHERE id = ? AND status = 'draft'").run(serializedPolicies, normalizedActor, numericId);
+    if (result.changes !== 1) throw new Error('Agent question policy version must be a draft');
+    return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(numericId));
+  }
+
   async function publishAgentQuestionPolicyVersion({ id, version, actor = '', publishedAt = '' } = {}) {
     const normalizedActor = String(actor || '').trim();
     if (!normalizedActor) throw new TypeError('Agent question policy actor is required');
@@ -3223,10 +3243,12 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return mapAgentUnknownQuestion(db.prepare('SELECT * FROM agent_unknown_questions WHERE id = ?').get(result.lastInsertRowid));
   }
 
-  async function listAgentUnknownQuestions({ limit = 20 } = {}) {
-    return db.prepare('SELECT * FROM agent_unknown_questions ORDER BY created_at DESC, id DESC LIMIT ?')
-      .all(normalizeAgentLimit(limit))
-      .map(mapAgentUnknownQuestion);
+  async function listAgentUnknownQuestions({ limit = 20, offset = 0 } = {}) {
+    const boundedOffset = Math.min(100_000, Math.max(0, Number.parseInt(offset, 10) || 0));
+    const items = db.prepare('SELECT * FROM agent_unknown_questions ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?')
+      .all(normalizeAgentLimit(limit), boundedOffset).map(mapAgentUnknownQuestion);
+    items.total = Number(db.prepare('SELECT count(*) count FROM agent_unknown_questions').get().count);
+    return items;
   }
 
   async function createAgentActionConfirmation({ id = '', userId, action = '', actor = '', expiresAt = '', createdAt = '', payload = {} } = {}) {
@@ -3544,6 +3566,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     recordIndicatorUpdateBatch,
     persistResponsibilityLookupArtifacts,
     createAgentQuestionPolicyDraft,
+    listAgentQuestionPolicyVersions,
+    getAgentQuestionPolicyVersion,
+    updateAgentQuestionPolicyDraft,
     publishAgentQuestionPolicyVersion,
     getPublishedAgentQuestionPolicyVersion,
     appendAgentUnknownQuestion,

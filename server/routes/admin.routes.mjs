@@ -6,6 +6,11 @@ import {
   getResponsibilityGenerationGovernanceConfig,
   normalizeResponsibilityGenerationGovernanceConfig,
 } from '../responsibility-generation-governance.service.mjs';
+import {
+  AGENT_QUESTION_POLICIES,
+  chooseAgentQuestionPolicy,
+  validateAgentQuestionPolicy,
+} from '../agent-question-policy.service.mjs';
 
 export function createAdminRoutes(context) {
   const router = express.Router();
@@ -58,7 +63,117 @@ export function createAdminRoutes(context) {
     allocateId,
     archiveFamilyGeneratedReports,
     nowIso,
+    agentQuestionPolicyStore,
   } = context;
+
+  const policyActor = (session) => `admin:${Number(session?.userId || 0) || 'session'}`;
+  const policyTimestamp = () => typeof nowIso === 'function' ? nowIso() : new Date().toISOString();
+  const strictObject = (value, allowed, label = 'body') => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
+    const extra = Object.keys(value).filter((key) => !allowed.includes(key));
+    if (extra.length) throw new TypeError(`${label} contains unsupported fields`);
+    return value;
+  };
+  const validatePolicySet = (policies) => {
+    if (!Array.isArray(policies) || !policies.length) throw new TypeError('policies must be a non-empty array');
+    for (const policy of policies) validateAgentQuestionPolicy(policy);
+    for (const field of ['key', 'intent']) {
+      const values = policies.map((policy) => String(policy[field]).trim().toLowerCase().replace(/[\s-]+/gu, '_'));
+      if (new Set(values).size !== values.length) throw new TypeError(`duplicate policy ${field}`);
+    }
+    for (const key of ['unknown_read', 'unknown_write']) {
+      const fallback = policies.find((policy) => policy.key === key && policy.enabled !== false);
+      if (!fallback || fallback.operation !== (key === 'unknown_write' ? 'write' : 'read')) throw new TypeError(`safe enabled ${key} fallback is required`);
+    }
+    return policies;
+  };
+  const validateDraftPolicies = (policies) => {
+    if (!Array.isArray(policies) || !policies.length) throw new TypeError('policies must be a non-empty array');
+    for (const policy of policies) validateAgentQuestionPolicy(policy);
+    return policies;
+  };
+  const sendPolicyError = (res, error) => {
+    const status = /must be a draft/iu.test(String(error?.message)) ? 409 : /not found/iu.test(String(error?.message)) ? 404 : 400;
+    error.status = status;
+    sendError(res, error, status);
+  };
+
+  router.get('/agent-question-policies', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
+    try {
+      const history = await agentQuestionPolicyStore.listAgentQuestionPolicyVersions();
+      res.json({ ok: true, published: history.find((row) => row.status === 'published') || null, drafts: history.filter((row) => row.status === 'draft'), history, templates: AGENT_QUESTION_POLICIES.map((row) => ({ ...row })) });
+    } catch (error) { sendPolicyError(res, error); }
+  });
+
+  router.post('/agent-question-policies/drafts', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
+    try {
+      const body = strictObject(req.body, ['policies']);
+      validateDraftPolicies(body.policies);
+      const versions = await agentQuestionPolicyStore.listAgentQuestionPolicyVersions();
+      const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ version: Math.max(0, ...versions.map((row) => row.version)) + 1, policies: body.policies, actor: policyActor(session), createdAt: policyTimestamp() });
+      res.status(201).json({ ok: true, draft });
+    } catch (error) { sendPolicyError(res, error); }
+  });
+
+  router.patch('/agent-question-policies/drafts/:id', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
+    try {
+      const body = strictObject(req.body, ['policies']); validateDraftPolicies(body.policies);
+      const draft = await agentQuestionPolicyStore.updateAgentQuestionPolicyDraft({ id: req.params.id, policies: body.policies, actor: policyActor(session) });
+      res.json({ ok: true, draft });
+    } catch (error) { sendPolicyError(res, error); }
+  });
+
+  router.post('/agent-question-policies/drafts/:id/publish', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
+    try {
+      strictObject(req.body || {}, []);
+      const draft = await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: req.params.id });
+      if (!draft) throw new Error('Agent question policy version not found');
+      validatePolicySet(draft.policies);
+      const published = await agentQuestionPolicyStore.publishAgentQuestionPolicyVersion({ id: draft.id, actor: policyActor(session), publishedAt: policyTimestamp() });
+      res.json({ ok: true, published });
+    } catch (error) { sendPolicyError(res, error); }
+  });
+
+  router.post('/agent-question-policies/versions/:id/rollback', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
+    try {
+      strictObject(req.body || {}, []);
+      const source = await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: req.params.id });
+      if (!source) throw new Error('Agent question policy version not found');
+      validatePolicySet(source.policies);
+      const versions = await agentQuestionPolicyStore.listAgentQuestionPolicyVersions();
+      const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ version: Math.max(0, ...versions.map((row) => row.version)) + 1, policies: source.policies, actor: policyActor(session), createdAt: policyTimestamp() });
+      const published = await agentQuestionPolicyStore.publishAgentQuestionPolicyVersion({ id: draft.id, actor: policyActor(session), publishedAt: policyTimestamp() });
+      res.json({ ok: true, sourceVersionId: source.id, draft, published });
+    } catch (error) { sendPolicyError(res, error); }
+  });
+
+  router.post('/agent-question-policies/simulate', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
+    try {
+      const body = strictObject(req.body, ['draftId', 'candidate']);
+      const candidate = strictObject(body.candidate, ['intent', 'requestedOperation', 'confidence', 'question']);
+      if (typeof candidate.intent !== 'string' || candidate.intent.length > 80 || !['read', 'write'].includes(candidate.requestedOperation || 'read')) throw new TypeError('invalid simulation candidate');
+      const version = body.draftId ? await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: body.draftId }) : await agentQuestionPolicyStore.getPublishedAgentQuestionPolicyVersion();
+      const policies = version?.policies || AGENT_QUESTION_POLICIES;
+      validatePolicySet(policies);
+      const policy = chooseAgentQuestionPolicy(candidate, policies);
+      res.json({ ok: true, previewOnly: true, decision: { policyKey: policy.key, intent: policy.intent, decision: policy.decision, handler: policy.handler, operation: policy.operation, tool: policy.tool, confirmationRequired: policy.confirmation === 'required', outputMode: policy.outputMode, fallback: ['unknown_read', 'unknown_write'].includes(policy.key), explanation: `Matched intent ${candidate.intent || '(empty)'} to ${policy.key}` } });
+    } catch (error) { sendPolicyError(res, error); }
+  });
+
+  router.get('/agent-unknown-questions', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
+    try {
+      const rows = await agentQuestionPolicyStore.listAgentUnknownQuestions({ limit: req.query.limit, offset: req.query.offset });
+      const redact = (text) => String(text || '').replace(/1\d{10}/gu, '[手机号已脱敏]').replace(/\d{17}[\dXx]/gu, '[证件号已脱敏]');
+      res.json({ ok: true, items: rows.map((row) => ({ id: row.id, userRef: `user_${String(row.userId).slice(-2).padStart(2, '0')}`, question: redact(row.question), status: row.status, createdAt: row.createdAt })), total: Number(rows.total || 0), limit: Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20)), offset: Math.max(0, Number.parseInt(req.query.offset, 10) || 0) });
+    } catch (error) { sendPolicyError(res, error); }
+  });
 
   function archivedFamilyReportArtifactsChanged(result = {}) {
     return Boolean(

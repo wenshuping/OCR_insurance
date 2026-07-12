@@ -2399,6 +2399,7 @@ export function createPolicyOcrApp(options = {}) {
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
     recordIndicatorUpdateBatch,
+    agentQuestionPolicyStore: options.agentStore || options.agentTransferRegenerationStore || null,
     scanner,
     analyzer,
     adminPassword,
