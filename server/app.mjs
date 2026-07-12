@@ -2203,6 +2203,7 @@ export function createPolicyOcrApp(options = {}) {
     state,
     persistFamilySalesMemoryTransition: options.persistFamilySalesMemoryTransition
       ? (input) => options.persistFamilySalesMemoryTransition({ state, ...input }) : null,
+    findFamilySalesMemoryActionResult: options.findFamilySalesMemoryActionResult,
     listFamilySalesMemoryEvents: options.listFamilySalesMemoryEvents,
     nowIso: options.nowIso,
     cursorKey: configuredMemoryCursorKey || crypto.randomBytes(32).toString('hex'),

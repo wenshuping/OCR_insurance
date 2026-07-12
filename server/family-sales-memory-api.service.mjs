@@ -63,7 +63,7 @@ function sectionMatches(memory, section, asOf) {
 }
 function canonical(value) { return JSON.stringify(value, Object.keys(value).sort()); }
 
-export function createFamilySalesMemoryApi({ state, persistFamilySalesMemoryTransition, listFamilySalesMemoryEvents, nowIso = () => new Date().toISOString(), cursorKey, verifyAdvisorConfirmation, logger = console } = {}) {
+export function createFamilySalesMemoryApi({ state, persistFamilySalesMemoryTransition, findFamilySalesMemoryActionResult, listFamilySalesMemoryEvents, nowIso = () => new Date().toISOString(), cursorKey, verifyAdvisorConfirmation, logger = console } = {}) {
   if (!cursorKey || String(cursorKey).length < 32) throw new Error('family sales memory cursor key must be at least 32 characters');
   const key = String(cursorKey);
   const sign = (payload) => crypto.createHmac('sha256', key).update(payload).digest('base64url');
@@ -125,6 +125,12 @@ export function createFamilySalesMemoryApi({ state, persistFamilySalesMemoryTran
       const sanitized = sanitizePublicContent(input.replacement.content);
       if (!sanitized.content) fail('INVALID_MEMORY_REPLACEMENT');
       replacement = { content: sanitized.content };
+    }
+    if (typeof findFamilySalesMemoryActionResult === 'function') {
+      try {
+        const completed = await findFamilySalesMemoryActionResult({ memoryId: Number(memoryId), familyId: Number(familyId), owner: scope, action, reasonCode: input.reasonCode, replacement, expectedVersion: input.expectedVersion, requestId });
+        if (completed) return { memories: completed.memories.map(sanitizeMemoryForPublic), idempotent: true };
+      } catch (error) { safeError(error, requestId, logger); }
     }
     let confirmationTokenHash = '';
     if (channel === 'mcp') {

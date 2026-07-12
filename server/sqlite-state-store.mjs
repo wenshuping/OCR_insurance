@@ -3381,6 +3381,25 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  function memoryActionRequestIdentity({ memoryId, familyId, owner = {}, action, reasonCode, replacement = null, expectedVersion, requestId } = {}) {
+    const ownerUserId = Number(owner.ownerUserId || 0) || null;
+    const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+    return { ownerScopeKey: ownerUserId ? `u:${ownerUserId}` : `g:${ownerGuestId}`, ownerUserId, ownerGuestId,
+      inputHash: crypto.createHash('sha256').update(JSON.stringify({ familyId: Number(familyId), memoryId: Number(memoryId), action, reasonCode, replacement, expectedVersion })).digest('hex'), requestId };
+  }
+
+  function findFamilySalesMemoryActionResult(input = {}) {
+    const identity = memoryActionRequestIdentity(input);
+    const prior = db.prepare('SELECT input_hash, status, result_json FROM memory_action_requests WHERE owner_scope_key = ? AND memory_id = ? AND request_id = ?')
+      .get(identity.ownerScopeKey, Number(input.memoryId), identity.requestId);
+    if (!prior) return null;
+    if (prior.input_hash !== identity.inputHash) throw Object.assign(new Error('request id payload conflict'), { code: 'REQUEST_ID_CONFLICT', status: 409 });
+    if (prior.status !== 'completed' || !prior.result_json) throw Object.assign(new Error('memory action still pending'), { code: 'MEMORY_ACTION_PENDING', status: 409 });
+    const bundle = parseJson(prior.result_json, null);
+    if (!bundle) throw new Error('invalid idempotency result');
+    return { ...bundle, idempotent: true };
+  }
+
   async function persistFamilySalesMemoryTransition({ state, memoryId, familyId, owner = {}, action, reasonCode, actor, replacement = null, expectedVersion, now, requestId, confirmationTokenHash = '' } = {}) {
     if (!Number.isSafeInteger(Number(memoryId)) || Number(memoryId) <= 0 || !Number.isSafeInteger(Number(familyId)) || Number(familyId) <= 0
       || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 160) {
@@ -3388,19 +3407,12 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
     db.exec('BEGIN IMMEDIATE');
     try {
-      const ownerUserId = Number(owner.ownerUserId || 0) || null;
-      const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
-      const ownerScopeKey = ownerUserId ? `u:${ownerUserId}` : `g:${ownerGuestId}`;
-      const inputHash = crypto.createHash('sha256').update(JSON.stringify({ familyId: Number(familyId), memoryId: Number(memoryId), action, reasonCode, replacement, expectedVersion })).digest('hex');
-      const prior = db.prepare('SELECT input_hash, status, result_json FROM memory_action_requests WHERE owner_scope_key = ? AND memory_id = ? AND request_id = ?')
-        .get(ownerScopeKey, Number(memoryId), requestId);
-      if (prior) {
-        if (prior.input_hash !== inputHash) throw Object.assign(new Error('request id payload conflict'), { code: 'REQUEST_ID_CONFLICT', status: 409 });
-        if (prior.status !== 'completed' || !prior.result_json) throw Object.assign(new Error('memory action still pending'), { code: 'MEMORY_ACTION_PENDING', status: 409 });
-        const priorBundle = parseJson(prior.result_json, null);
-        if (!priorBundle) throw new Error('invalid idempotency result');
+      const identity = memoryActionRequestIdentity({ memoryId, familyId, owner, action, reasonCode, replacement, expectedVersion, requestId });
+      const { ownerScopeKey, ownerUserId, ownerGuestId, inputHash } = identity;
+      const priorBundle = findFamilySalesMemoryActionResult({ memoryId, familyId, owner, action, reasonCode, replacement, expectedVersion, requestId });
+      if (priorBundle) {
         db.exec('COMMIT');
-        return { ...priorBundle, idempotent: true };
+        return priorBundle;
       }
       if (confirmationTokenHash && db.prepare('SELECT 1 FROM memory_action_requests WHERE confirmation_token_hash = ?').get(confirmationTokenHash)) {
         throw Object.assign(new Error('confirmation token replayed'), { code: 'CONFIRMATION_TOKEN_REPLAYED', status: 409 });
@@ -3812,6 +3824,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistFamilyState,
     persistExtractedFamilySalesMemories,
     persistFamilySalesMemoryTransition,
+    findFamilySalesMemoryActionResult,
     listFamilySalesMemoryEvents,
     persistFamilyReportState,
     persistAgentPolicyImportTask,

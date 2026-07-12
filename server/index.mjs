@@ -87,6 +87,7 @@ const app = createPolicyOcrApp({
   persistFamilyState: store.persistFamilyState,
   persistExtractedFamilySalesMemories: store.persistExtractedFamilySalesMemories,
   persistFamilySalesMemoryTransition: store.persistFamilySalesMemoryTransition,
+  findFamilySalesMemoryActionResult: store.findFamilySalesMemoryActionResult,
   listFamilySalesMemoryEvents: store.listFamilySalesMemoryEvents,
   persistFamilyReportState: store.persistFamilyReportState,
   persistAgentPolicyImportTask: store.persistAgentPolicyImportTask,

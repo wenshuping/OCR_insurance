@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import { createPolicyOcrApp } from '../server/app.mjs';
 import { createAdvisorMemoryConfirmationService } from '../server/advisor-memory-confirmation.service.mjs';
 import { createFamilySalesMemoryApi } from '../server/family-sales-memory-api.service.mjs';
+import { createWukongMcpGateway } from '../server/wukong-mcp-gateway.service.mjs';
 
 const KEY = 'advisor-memory-confirmation-test-key-123456789';
 const BASE = { ownerUserId: 7, corpId: 'corp', dingUserId: 'ding', familyId: 11, memoryId: 31, expectedVersion: 1, action: 'confirm', reasonCode: 'advisor_confirmation', replacementHash: crypto.createHash('sha256').update('null').digest('hex'), interactionId: 'card-1' };
@@ -50,20 +51,34 @@ test('server entry wires the production confirmation key, issuer, and verifier',
 });
 
 test('a valid production token applies once and a different request cannot replay it', async () => {
-  const service = createAdvisorMemoryConfirmationService({ key: KEY });
+  let now = 1_000_000;
+  const service = createAdvisorMemoryConfirmationService({ key: KEY, now: () => now });
   const issued = service.issue(BASE);
-  const state = { familySalesMemories: [{ id: 31, familyId: 11, ownerUserId: 7, kind: 'objection', status: 'candidate', version: 1, content: '异议' }] };
+  const state = { users: [{ id: 7, name: '顾问', status: 'active' }], userDingtalkIdentities: [{ corpId: 'corp', dingUserId: 'ding', userId: 7, status: 'active' }], familyProfiles: [{ id: 11, ownerUserId: 7, status: 'active' }], familySalesMemories: [{ id: 31, familyId: 11, ownerUserId: 7, kind: 'objection', status: 'candidate', version: 1, content: '异议' }] };
   const consumed = new Set();
+  const completed = new Map();
   let writes = 0;
-  const api = createFamilySalesMemoryApi({ state, cursorKey: 'cursor-key-for-confirmation-integration-123', verifyAdvisorConfirmation: service.verify, persistFamilySalesMemoryTransition: async ({ confirmationTokenHash }) => {
+  const api = createFamilySalesMemoryApi({ state, cursorKey: 'cursor-key-for-confirmation-integration-123', verifyAdvisorConfirmation: service.verify,
+    findFamilySalesMemoryActionResult: ({ requestId, reasonCode }) => {
+      const stored = completed.get(requestId);
+      if (stored && stored.reasonCode !== reasonCode) throw Object.assign(new Error('conflict'), { code: 'REQUEST_ID_CONFLICT' });
+      return stored?.bundle || null;
+    }, persistFamilySalesMemoryTransition: async ({ confirmationTokenHash, requestId, reasonCode }) => {
     if (consumed.has(confirmationTokenHash)) throw Object.assign(new Error('replayed'), { code: 'CONFIRMATION_TOKEN_REPLAYED' });
     consumed.add(confirmationTokenHash); writes += 1;
-    return { memories: [{ ...state.familySalesMemories[0], status: 'confirmed', version: 2 }] };
+    const bundle = { memories: [{ ...state.familySalesMemories[0], status: 'confirmed', version: 2 }] };
+    completed.set(requestId, { reasonCode, bundle });
+    return bundle;
   } });
-  const input = { expectedVersion: 1, reasonCode: 'advisor_confirmation' };
-  const call = (outerRequestId) => api.action({ familyId: 11, memoryId: 31, owner: { ownerUserId: 7 }, action: 'confirm', input, channel: 'mcp', outerRequestId,
-    confirmationToken: issued.token, interactionId: 'card-1', confirmationPrincipal: { corpId: 'corp', dingUserId: 'ding' } });
-  assert.equal((await call('request-1')).memories[0].status, 'confirmed');
-  await assert.rejects(call('request-2'), { code: 'CONFIRMATION_TOKEN_REPLAYED' });
+  const gateway = createWukongMcpGateway({ state, familySalesMemoryApi: api, rateLimit: 10 });
+  const call = (requestId, reasonCode = 'advisor_confirmation') => gateway.invoke({ corpId: 'corp', dingUserId: 'ding', conversationType: 'direct', requestId, tool: 'apply_memory_action', input: {
+    familyRef: 11, memoryId: 31, action: 'confirm', expectedVersion: 1, reasonCode, confirmationToken: issued.token, interactionId: 'card-1',
+  } });
+  const original = await call('request-1');
+  assert.equal(original.memories[0].status, 'confirmed');
+  now += 5 * 60 * 1000 + 1;
+  assert.deepEqual((await call('request-1')).memories, original.memories);
+  await assert.rejects(call('request-2'), { code: 'ADVISOR_CONFIRMATION_INVALID' });
+  await assert.rejects(call('request-1', 'user_confirmation'), { code: 'REQUEST_ID_CONFLICT' });
   assert.equal(writes, 1);
 });
