@@ -103,6 +103,19 @@ test('valid identity routes only normalized trusted fields', async (t) => {
   });
 });
 
+test('channel mobile is available only to the authenticated identity resolver', async (t) => {
+  const identityInputs = [];
+  const server = await startServer({
+    resolveChannelIdentity: async (input) => { identityInputs.push(input); return { internalUserId: 7 }; },
+  });
+  t.after(server.close);
+  const result = await post(server, '/api/agent/questions/route', validBody({ channelMobile: '+86 138-0013-8000' }));
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(identityInputs, [{ channel: 'dingtalk', channelUserId: 'registered', channelMobile: '+86 138-0013-8000' }]);
+  assert.equal(JSON.stringify(server.calls.route).includes('13800138000'), false);
+  assert.equal(JSON.stringify(result.payload).includes('13800138000'), false);
+});
+
 test('upstream results are reduced to bounded public interaction fields', async (t) => {
   const server = await startServer({
     questionRouter: {

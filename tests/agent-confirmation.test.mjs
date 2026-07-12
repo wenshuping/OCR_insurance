@@ -3,8 +3,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createHmac } from 'node:crypto';
 
 import { createAgentConfirmationService, dispatchPendingTransferRegenerationJobs } from '../server/agent-confirmation.service.mjs';
+import { createProductionAgentGatewayOptions } from '../server/agent-gateway-runtime.service.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 import { createPolicyOcrApp } from '../server/app.mjs';
@@ -79,6 +81,7 @@ test('unique transfer preview creates a short lived, internal-only confirmation 
   });
   assert.equal(result.interaction.type, 'confirmation');
   assert.equal(result.confirmationId, 'confirmation-1');
+  assert.deepEqual(result.interaction.options, [{ id: 'confirm', label: '确认转移' }, { id: 'cancel', label: '取消' }]);
   assert.match(result.interaction.text, /5678/);
   assert.doesNotMatch(JSON.stringify(result), /SECRET-12345678|张三/);
   assert.deepEqual(Object.keys(h.calls.created[0].payload).sort(), ['policyId', 'sourceFamilyId', 'stateHash', 'stateVersion', 'targetApplicantMemberId', 'targetFamilyId', 'targetInsuredMemberId']);
@@ -268,4 +271,85 @@ test('confirm delegates atomic consume/recheck, handles drift and enqueues both 
   assert.equal((await success.service.confirm({ userId: 7, confirmationId: 'confirmation-1' })).status, 'already_consumed');
   assert.equal(success.calls.enqueued.length, 4);
   await assert.rejects(success.service.confirm({ userId: 8, confirmationId: 'confirmation-1' }), { status: 404, code: 'AGENT_CONFIRMATION_NOT_OWNED' });
+});
+
+test('signed HTTP transfer preview creates a confirmation, preserves policy until owner confirms, and rejects another user', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-http-transfer-'));
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'state.sqlite') });
+  await store.load();
+  await store.persist({
+    ...createInitialState(), stateVersion: 3,
+    users: [
+      { id: 7, mobile: '13800138000', status: 'active' },
+      { id: 8, mobile: '13900139000', status: 'active' },
+    ],
+    familyProfiles: [
+      { id: 10, ownerUserId: 7, familyName: '来源家庭', status: 'active' },
+      { id: 20, ownerUserId: 7, familyName: '目标家庭', status: 'active' },
+    ],
+    familyMembers: [{ id: 201, familyId: 20, name: '目标成员', status: 'active' }],
+    policies: [{ id: 301, userId: 7, familyId: 10, company: '测试保险', name: '守护一生', policyNo: 'PRIVATE-PX-1234', applicantMemberId: 201, insuredMemberId: 201, status: 'active' }],
+  });
+  const secret = 'http-transfer-secret';
+  const gateway = createProductionAgentGatewayOptions({
+    env: { AGENT_GATEWAY_HMAC_SECRET: secret, POLICY_OCR_PUBLIC_APP_URL: 'https://app.example.test' },
+    loadState: () => store.load(), clock: () => Date.parse(NOW),
+  });
+  const app = createPolicyOcrApp({
+    state: await store.load(), agentStore: store, agentReportQueue: { async enqueueUnique() {} },
+    recomputeCashflowOnStartup: false, disableAgentTransferRecovery: true, ...gateway,
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(async () => {
+    await new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+    store.close();
+  });
+  const baseUrl = `http://127.0.0.1:${listener.address().port}`;
+  const signedPost = async (url, body, { timestamp = String(Date.parse(NOW)), signature } = {}) => {
+    const rawBody = JSON.stringify(body);
+    const signed = signature || createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
+    const response = await fetch(`${baseUrl}${url}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-agent-timestamp': timestamp, 'x-agent-signature': signed }, body: rawBody,
+    });
+    return { response, payload: await response.json() };
+  };
+  const routeBody = {
+    channel: 'dingtalk', channelUserId: 'ding-owner', channelMobile: '13800138000', messageRef: 'transfer-route-1',
+    candidate: {
+      intent: 'transfer_preview', question: '把保单转到目标家庭', confidence: 1, requestedOperation: 'write',
+      entities: { sourceFamilyName: '来源家庭', targetFamilyName: '目标家庭', policyHint: 'PRIVATE-PX-1234', targetMemberId: '201' },
+    },
+  };
+  const forged = await signedPost('/api/agent/questions/route', { ...routeBody, messageRef: 'forged-signature' }, { signature: '0'.repeat(64) });
+  assert.equal(forged.response.status, 401);
+  const expired = await signedPost('/api/agent/questions/route', { ...routeBody, messageRef: 'expired-signature' }, { timestamp: String(Date.parse(NOW) - 300_001) });
+  assert.equal(expired.response.status, 401);
+  const mismatched = await signedPost('/api/agent/questions/route', { ...routeBody, messageRef: 'wrong-mobile', channelMobile: '13700137000' });
+  assert.equal(mismatched.response.status, 403);
+  assert.equal(mismatched.payload.code, 'AGENT_REGISTRATION_REQUIRED');
+  const preview = await signedPost('/api/agent/questions/route', routeBody);
+  assert.equal(preview.response.status, 200, JSON.stringify(preview.payload));
+  assert.equal(preview.payload.decision, 'confirm');
+  assert.equal(preview.payload.interaction.type, 'confirmation');
+  assert.ok(preview.payload.interaction.confirmationId);
+  assert.ok(preview.payload.interaction.summary);
+  assert.deepEqual(preview.payload.interaction.options, [{ id: 'confirm', label: '确认转移' }, { id: 'cancel', label: '取消' }]);
+  assert.equal(JSON.stringify(preview.payload).includes('PRIVATE-PX-1234'), false);
+  assert.equal((await store.load()).policies.find((row) => row.id === 301).familyId, 10);
+
+  const confirmationId = preview.payload.interaction.confirmationId;
+  const denied = await signedPost(`/api/agent/actions/${confirmationId}/confirm`, {
+    channel: 'dingtalk', channelUserId: 'ding-other', channelMobile: '13900139000', messageRef: 'transfer-confirm-other',
+  });
+  assert.equal(denied.response.status, 403);
+  assert.equal((await store.load()).policies.find((row) => row.id === 301).familyId, 10);
+
+  const confirmed = await signedPost(`/api/agent/actions/${confirmationId}/confirm`, {
+    channel: 'dingtalk', channelUserId: 'ding-owner', channelMobile: '13800138000', messageRef: 'transfer-confirm-owner',
+  });
+  assert.equal(confirmed.response.status, 200, JSON.stringify(confirmed.payload));
+  assert.equal((await store.load()).policies.find((row) => row.id === 301).familyId, 20);
+  assert.equal(store.db.prepare('SELECT count(*) count FROM agent_policy_transfer_regeneration_outbox WHERE confirmation_id = ?').get(confirmationId).count, 4);
 });

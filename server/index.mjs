@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPolicyOcrApp } from './app.mjs';
+import { createProductionAgentGatewayOptions } from './agent-gateway-runtime.service.mjs';
 import { createSqliteStateStore } from './sqlite-state-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -75,7 +76,9 @@ const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 
 const store = await createSqliteStateStore({ dbPath, seedStatePath: statePath });
 const state = await store.load();
+const agentGatewayOptions = createProductionAgentGatewayOptions({ env: process.env, loadState: () => store.load() });
 const app = createPolicyOcrApp({
+  ...agentGatewayOptions,
   state,
   persist: store.persist,
   persistPolicyScanSave: store.persistPolicyScanSave,

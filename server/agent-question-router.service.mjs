@@ -342,7 +342,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     }
 
     const execution = resolvePolicyExecutionDecision(policy, candidate, { required: Boolean(family), resolved: Boolean(family) });
-    if (execution.previewOnly) {
+    if (execution.previewOnly && policy?.key !== 'transfer_preview') {
       return finish({ decision: execution.decision, interaction: { type: 'confirmation', text: '该操作需要确认后执行。' } }, execution.result);
     }
 

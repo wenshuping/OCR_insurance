@@ -160,7 +160,11 @@ export function createAgentConfirmationService({ store, loadState, reportQueue, 
       },
     });
     const text = `确认将保单（尾号 ${policyTail(policy)}）转移到目标家庭？相关报告将重新计算。`;
-    return interaction('confirmation', text, { confirmationId, summary: `转移保单尾号 ${policyTail(policy)}` });
+    return interaction('confirmation', text, {
+      confirmationId,
+      summary: `转移保单尾号 ${policyTail(policy)}`,
+      options: [{ id: 'confirm', label: '确认转移' }, { id: 'cancel', label: '取消' }],
+    });
   }
 
   async function confirm(input = {}) {

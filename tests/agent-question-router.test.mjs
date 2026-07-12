@@ -402,6 +402,26 @@ test('all router outputs stay within public interaction and decision enums', asy
   }
 });
 
+test('transfer preview invokes its authorized preview handler while other writes remain side-effect free', async () => {
+  const calls = [];
+  const { router } = createHarness({ handlers: {
+    system: async (input) => {
+      calls.push(input);
+      return { interaction: { type: 'confirmation', confirmationId: 'cfm-1', summary: '转移保单尾号 1234', options: [{ id: 'confirm', label: '确认' }] } };
+    },
+  } });
+  const transfer = await router.route(routeInput({
+    intent: 'transfer_preview', requestedOperation: 'write',
+    entities: { sourceFamilyName: '来源家庭', targetFamilyName: '目标家庭', policyHint: 'PX-1234' },
+  }));
+  assert.equal(transfer.decision, 'confirm');
+  assert.equal(transfer.interaction.confirmationId, 'cfm-1');
+  assert.equal(calls.length, 1);
+
+  await router.route(routeInput({ intent: 'memory_proposal', requestedOperation: 'write', entities: {} }));
+  assert.equal(calls.length, 1);
+});
+
 test('sales coaching resolves an authorized family before calling the existing sales chat flow', async () => {
   const families = [{ id: 11, ownerUserId: 7, familyName: '张三家庭', status: 'active' }];
   const state = { familyProfiles: families, familyMembers: [], policies: [], familyReports: [], familySalesReviews: [] };

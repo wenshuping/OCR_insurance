@@ -8,8 +8,8 @@ const CANDIDATE_FIELDS = new Set([
   'intent', 'question', 'confidence', 'requestedOperation', 'entities', 'contextRefs',
 ]);
 const UNTRUSTED_AUTHORITY_FIELDS = new Set(['userId', 'internalUserId', 'familyId', 'permissions']);
-const QUESTION_BODY_FIELDS = new Set(['channel', 'channelUserId', 'messageRef', 'conversationId', 'candidate']);
-const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'messageRef', 'conversationId']);
+const QUESTION_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId', 'candidate']);
+const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId']);
 const PUBLIC_DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const PUBLIC_INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
 const SECURE_LINK_ACTIONS = new Set(['open_web', 'register_or_login', 'policy_upload']);
@@ -176,12 +176,13 @@ function normalizeBaseBody(body, { requireCandidate = false } = {}) {
   if (Object.keys(body).some((key) => !allowedFields.has(key) && !UNTRUSTED_AUTHORITY_FIELDS.has(key))) return null;
   const channel = text(body.channel, 20).toLowerCase();
   const channelUserId = text(body.channelUserId, 200);
+  const channelMobile = body.channelMobile === undefined ? '' : text(body.channelMobile, 40);
   const messageRef = text(body.messageRef, 200);
   const conversationId = body.conversationId === undefined ? '' : text(body.conversationId, 200);
-  if (!channel || !channelUserId || !messageRef || (body.conversationId !== undefined && !conversationId)) return null;
+  if (!channel || !channelUserId || !messageRef || (body.channelMobile !== undefined && !channelMobile) || (body.conversationId !== undefined && !conversationId)) return null;
   const candidate = requireCandidate ? normalizeCandidate(body.candidate) : undefined;
   if (requireCandidate && !candidate) return null;
-  return { channel, channelUserId, messageRef, conversationId, candidate };
+  return { channel, channelUserId, channelMobile, messageRef, conversationId, candidate };
 }
 
 function rawBodyBytes(req) {
@@ -232,7 +233,7 @@ export function createAgentRouter({
     let identity = null;
     try {
       identity = typeof resolveChannelIdentity === 'function'
-        ? await resolveChannelIdentity({ channel: input.channel, channelUserId: input.channelUserId })
+        ? await resolveChannelIdentity({ channel: input.channel, channelUserId: input.channelUserId, channelMobile: input.channelMobile })
         : null;
     } catch {
       identity = null;
