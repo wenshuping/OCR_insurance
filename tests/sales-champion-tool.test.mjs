@@ -30,6 +30,29 @@ test('resolves owned facts and injects only current confirmed memories', async (
   assert.doesNotMatch(JSON.stringify(received.context), /候选记忆|他人记忆/);
 });
 
+test('filters memories by confirmation status and validity time using the injected clock', async () => {
+  const state = stateFor();
+  state.familySalesMemories = [
+    { id: 51, familyId: 11, ownerUserId: 7, kind: 'preference', content: '当前已确认', status: 'confirmed', validFrom: '2026-07-01T00:00:00.000Z' },
+    { id: 52, familyId: 11, ownerUserId: 7, kind: 'strategy', content: '兼容旧 active', status: 'active' },
+    { id: 53, familyId: 11, ownerUserId: 7, kind: 'todo', content: '未来才生效', status: 'confirmed', validFrom: '2026-07-13T00:00:00.000Z' },
+    { id: 54, familyId: 11, ownerUserId: 7, kind: 'todo', content: '已经失效', status: 'confirmed', validTo: '2026-07-11T00:00:00.000Z' },
+    { id: 55, familyId: 11, ownerUserId: 7, kind: 'todo', content: '已经撤销', status: 'confirmed', invalidatedAt: '2026-07-10T00:00:00.000Z' },
+    ...['expired', 'superseded', 'rejected', 'completed', 'conflicted', 'candidate'].map((status, index) => ({
+      id: 60 + index, familyId: 11, ownerUserId: 7, kind: 'todo', content: `排除状态 ${status}`, status,
+    })),
+  ];
+  let serializedContext = '';
+  const ask = createSalesChampionTool({
+    state,
+    nowIso: () => '2026-07-12T00:00:00.000Z',
+    generateReply: async ({ context }) => { serializedContext = JSON.stringify(context); return { content: '已读取当前记忆。' }; },
+  });
+  await ask({ owner: { userId: 7 }, familyRef: 11, question: '读取记忆' });
+  assert.match(serializedContext, /当前已确认|兼容旧 active/);
+  assert.doesNotMatch(serializedContext, /未来才生效|已经失效|已经撤销|排除状态/);
+});
+
 test('rejects foreign families, mismatched tasks, and caller-forged facts', async () => {
   const state = stateFor();
   state.agentPolicyImportTasks.push({ id: 51, familyId: 12, ownerUserId: 7 });

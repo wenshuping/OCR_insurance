@@ -3,7 +3,7 @@ import { buildAgentPolicyImportContext, agentPolicyImportMatchesOwner } from './
 import { buildDomainAgentEnvelope } from './domain-agent-tool-contract.service.mjs';
 import { listFamilyMembers, listFamilyProfilesForOwner } from './family-profile.domain.mjs';
 import { buildFamilySalesChatContext, generateFamilySalesChatReply } from './family-sales-chat.service.mjs';
-import { buildFamilySalesMemoryContext } from './family-sales-memory.service.mjs';
+import { buildFamilySalesMemoryContext, isCurrentFamilySalesMemory } from './family-sales-memory.service.mjs';
 import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -37,13 +37,11 @@ function policiesForFamily(state, family, owner) {
   ));
 }
 
-function currentConfirmedMemories(state, family, owner) {
+function currentConfirmedMemories(state, family, owner, asOf) {
   return (state.familySalesMemories || []).filter((memory) => (
     Number(memory?.familyId || 0) === Number(family.id)
     && ownerMatches(memory, owner)
-    && ['confirmed', 'active'].includes(String(memory?.status || 'active'))
-  )).map((memory) => (
-    String(memory?.status || 'active') === 'confirmed' ? { ...memory, status: 'active' } : memory
+    && isCurrentFamilySalesMemory(memory, { asOf })
   ));
 }
 
@@ -118,7 +116,7 @@ export function createSalesChampionTool({
       familySalesReviews: state.familySalesReviews || [],
       generatedAt,
     });
-    const memoryContext = buildFamilySalesMemoryContext(currentConfirmedMemories(state, family, owner), { asOf: generatedAt });
+    const memoryContext = buildFamilySalesMemoryContext(currentConfirmedMemories(state, family, owner, generatedAt), { asOf: generatedAt });
     if (memoryContext) context.salesMemoryContext = memoryContext;
     if (policyImportTask) context.policyImportContext = buildAgentPolicyImportContext(policyImportTask);
 

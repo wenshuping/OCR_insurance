@@ -6,6 +6,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_TOKENS = 1_200;
 const FAMILY_SALES_MEMORY_LIMIT = 20;
 const MEMORY_KINDS = new Set(['objection', 'preference', 'strategy', 'correction', 'todo']);
+const CURRENT_MEMORY_STATUSES = new Set(['confirmed', 'active']);
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const CHINA_ID_NUMBER_PATTERN = /\b(?:[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3})\b/gu;
 const MOBILE_PATTERN = /\b1[3-9]\d{9}\b/gu;
@@ -272,9 +273,23 @@ export function upsertFamilySalesMemories({
   return { changed: true, memories: changedMemories };
 }
 
-export function buildFamilySalesMemoryContext(memories = []) {
+export function isCurrentFamilySalesMemory(memory = {}, { asOf = new Date().toISOString() } = {}) {
+  if (!CURRENT_MEMORY_STATUSES.has(trim(memory?.status || 'active').toLowerCase())) return false;
+  if (trim(memory?.invalidatedAt)) return false;
+  const point = Date.parse(asOf);
+  if (!Number.isFinite(point)) return false;
+  const validFromText = trim(memory?.validFrom);
+  const validToText = trim(memory?.validTo);
+  const validFrom = validFromText ? Date.parse(validFromText) : Number.NEGATIVE_INFINITY;
+  const validTo = validToText ? Date.parse(validToText) : Number.POSITIVE_INFINITY;
+  if (validFromText && !Number.isFinite(validFrom)) return false;
+  if (validToText && !Number.isFinite(validTo)) return false;
+  return validFrom <= point && validTo > point;
+}
+
+export function buildFamilySalesMemoryContext(memories = [], { asOf = new Date().toISOString() } = {}) {
   const active = (Array.isArray(memories) ? memories : [])
-    .filter((memory) => String(memory?.status || 'active') === 'active')
+    .filter((memory) => isCurrentFamilySalesMemory(memory, { asOf }))
     .sort((left, right) => (
       String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')) ||
       Number(right.id || 0) - Number(left.id || 0)
