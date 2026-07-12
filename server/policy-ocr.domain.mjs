@@ -44,6 +44,7 @@ export function createInitialState() {
     familySalesChatThreads: [],
     familySalesChatMessages: [],
     familySalesMemories: [],
+    familySalesMemoryEvents: [],
     reportRefreshEvents: [],
     membershipConfig: null,
     membershipOrders: [],

@@ -8,6 +8,38 @@ import { DatabaseSync } from 'node:sqlite';
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
+import { buildFamilySalesMemoryTransitionBundle } from '../server/family-sales-memory.service.mjs';
+
+test('sqlite temporal memories persist immutable ordered events with CAS and rollback', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'memory.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  const state = await store.load();
+  const candidate = { id: 101, familyId: 8, ownerUserId: 1, ownerGuestId: '', kind: 'preference', content: '只看摘要', status: 'candidate', version: 1, evidenceMessageIds: [501], createdAt: '2026-07-12T01:00:00.000Z', updatedAt: '2026-07-12T01:00:00.000Z' };
+  state.familySalesMemories.push(candidate);
+  await store.persistFamilyState({ state });
+  await store.persistFamilyState({ state });
+  assert.equal(store.db.prepare("SELECT count(*) AS count FROM family_sales_memory_events WHERE event_type = 'proposed'").get().count, 1);
+
+  const confirmed = buildFamilySalesMemoryTransitionBundle({ memory: candidate, action: 'confirm', actor: { type: 'advisor', id: 1 }, reasonCode: 'advisor_confirmation', expectedVersion: 1, now: '2026-07-12T02:00:00.000Z' });
+  await store.persistFamilySalesMemoryTransition({ state, bundle: confirmed, expectedVersion: 1 });
+  const stale = buildFamilySalesMemoryTransitionBundle({ memory: confirmed.memories[0], action: 'expire', actor: { type: 'service', id: 1 }, reasonCode: 'expired_by_date', expectedVersion: 2, now: '2026-07-12T03:00:00.000Z' });
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, bundle: stale, expectedVersion: 1 }), { code: 'STALE_INTERACTION' });
+  const before = store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload;
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, bundle: { memories: stale.memories, events: [confirmed.events[0]] }, expectedVersion: 2 }));
+  assert.equal(store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload, before);
+  const superseded = buildFamilySalesMemoryTransitionBundle({ memory: confirmed.memories[0], action: 'supersede', actor: { type: 'advisor', id: 1 }, reasonCode: 'advisor_correction', replacement: { id: 102, content: '看完整报告' }, existingMemories: [confirmed.memories[0]], expectedVersion: 2, now: '2026-07-12T04:00:00.000Z' });
+  await store.persistFamilySalesMemoryTransition({ state, bundle: superseded, expectedVersion: 2 });
+  assert.throws(() => store.db.prepare('UPDATE family_sales_memory_events SET reason_code = ?').run('changed'), /immutable/u);
+  store.close();
+
+  const reopened = await createSqliteStateStore({ dbPath });
+  const loaded = await reopened.load();
+  assert.deepEqual(loaded.familySalesMemories.map((memory) => memory.status).sort(), ['confirmed', 'superseded']);
+  assert.deepEqual(loaded.familySalesMemoryEvents.map((event) => event.eventType), ['proposed', 'confirmed', 'superseded', 'confirmed']);
+  assert.ok(loaded.familySalesMemoryEvents.every((event) => !JSON.stringify(event).includes('只看摘要')));
+  reopened.close();
+});
 
 function policyImportTask(version = 1) {
   return { id: 80, familyId: 8, ownerUserId: 1, ownerGuestId: '', status: 'uploading', stateVersion: version, updatedAt: `2026-07-12T00:00:0${version}.000Z`, draft: {}, documents: [] };

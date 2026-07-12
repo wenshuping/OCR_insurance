@@ -6,7 +6,7 @@ import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 
 const DB_OWNED_KEYS = new Set([
   'users',
@@ -35,6 +35,7 @@ const DB_OWNED_KEYS = new Set([
   'familySalesChatThreads',
   'familySalesChatMessages',
   'familySalesMemories',
+  'familySalesMemoryEvents',
   'reportRefreshEvents',
   'membershipConfig',
   'membershipOrders',
@@ -158,6 +159,7 @@ function resolveNextId(state) {
     maxNumericId(state.familySalesChatThreads),
     maxNumericId(state.familySalesChatMessages),
     maxNumericId(state.familySalesMemories),
+    maxNumericId(state.familySalesMemoryEvents),
     maxNumericId(state.reportRefreshEvents),
     maxNumericId(state.membershipOrders),
   );
@@ -663,6 +665,17 @@ function createSchema(db) {
       owner_guest_id TEXT,
       kind TEXT,
       status TEXT,
+      memory_key TEXT,
+      version INTEGER,
+      valid_from TEXT,
+      valid_to TEXT,
+      invalidated_at TEXT,
+      supersedes_memory_id INTEGER,
+      superseded_by_memory_id INTEGER,
+      subject_type TEXT,
+      subject_id TEXT,
+      risk_level TEXT,
+      source_message_id INTEGER,
       source_thread_id INTEGER,
       created_at TEXT,
       updated_at TEXT,
@@ -672,6 +685,34 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_user_id ON family_sales_memories(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_guest_id ON family_sales_memories(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_updated_at ON family_sales_memories(updated_at);
+
+    CREATE TABLE IF NOT EXISTS family_sales_memory_events (
+      id TEXT PRIMARY KEY,
+      memory_id INTEGER NOT NULL,
+      family_id INTEGER NOT NULL,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      event_type TEXT NOT NULL,
+      actor_type TEXT,
+      actor_id TEXT,
+      source_message_id INTEGER,
+      previous_status TEXT,
+      next_status TEXT,
+      reason_code TEXT,
+      created_at TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_memory ON family_sales_memory_events(memory_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_family ON family_sales_memory_events(family_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_owner_user ON family_sales_memory_events(owner_user_id, family_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_owner_guest ON family_sales_memory_events(owner_guest_id, family_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_family_sales_memory_events_source
+      ON family_sales_memory_events(memory_id, event_type, source_message_id)
+      WHERE source_message_id IS NOT NULL;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memory_events_no_update
+      BEFORE UPDATE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memory_events_no_delete
+      BEFORE DELETE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
 
     CREATE TABLE IF NOT EXISTS report_refresh_events (
       id INTEGER PRIMARY KEY,
@@ -789,6 +830,11 @@ function createSchema(db) {
   `);
   ensureColumn(db, 'policies', 'source_policy_import_task_id', 'INTEGER');
   ensureColumn(db, 'policies', 'source_policy_import_request_id', "TEXT NOT NULL DEFAULT ''");
+  for (const [column, definition] of [
+    ['memory_key', 'TEXT'], ['version', 'INTEGER'], ['valid_from', 'TEXT'], ['valid_to', 'TEXT'],
+    ['invalidated_at', 'TEXT'], ['supersedes_memory_id', 'INTEGER'], ['superseded_by_memory_id', 'INTEGER'],
+    ['subject_type', 'TEXT'], ['subject_id', 'TEXT'], ['risk_level', 'TEXT'], ['source_message_id', 'INTEGER'],
+  ]) ensureColumn(db, 'family_sales_memories', column, definition);
   db.exec(`
     UPDATE policies
     SET source_policy_import_task_id = CAST(json_extract(payload, '$.sourcePolicyImportTaskId') AS INTEGER),
@@ -1278,8 +1324,8 @@ function insertRows(db, state) {
   }
 
   const insertFamilySalesMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, memory_key, version, valid_from, valid_to, invalidated_at, supersedes_memory_id, superseded_by_memory_id, subject_type, subject_id, risk_level, source_message_id, source_thread_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const memory of normalizeArray(state.familySalesMemories)) {
     insertFamilySalesMemory.run(
@@ -1289,12 +1335,25 @@ function insertRows(db, state) {
       String(memory.ownerGuestId || ''),
       String(memory.kind || ''),
       String(memory.status || ''),
+      String(memory.memoryKey || ''),
+      Number(memory.version || (memory.status === 'active' ? 1 : 0)) || null,
+      String(memory.validFrom || ''), String(memory.validTo || ''), String(memory.invalidatedAt || ''),
+      Number(memory.supersedesMemoryId || 0) || null, Number(memory.supersededByMemoryId || 0) || null,
+      String(memory.subjectType || ''), String(memory.subjectId || ''), String(memory.riskLevel || ''),
+      Number(memory.sourceMessageId || memory.evidenceMessageIds?.[0] || 0) || null,
       Number(memory.sourceThreadId || 0) || null,
       String(memory.createdAt || ''),
       String(memory.updatedAt || ''),
       jsonPayload(memory),
     );
   }
+  insertFamilySalesMemoryEvents(db, state.familySalesMemoryEvents, { ignoreDuplicates: true });
+  insertFamilySalesMemoryEvents(db, normalizeArray(state.familySalesMemories).map((memory) => ({
+    id: `memory_event:${memory.id}:1:proposed`, memoryId: memory.id, familyId: memory.familyId,
+    ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: 'proposed',
+    actor: { type: 'system', id: '' }, sourceMessageId: memory.sourceMessageId || memory.evidenceMessageIds?.[0] || null,
+    previousStatus: '', nextStatus: 'candidate', reasonCode: 'extracted', createdAt: memory.createdAt || memory.updatedAt, version: 1,
+  })), { ignoreDuplicates: true });
 
   const insertReportRefreshEvent = db.prepare(`
     INSERT INTO report_refresh_events (id, kind, family_id, report_id, owner_user_id, owner_guest_id, created_at, payload)
@@ -2223,11 +2282,47 @@ function replaceFamilySalesChats(db, state) {
   }
 }
 
+function safeMemoryEventPayload(event = {}) {
+  return {
+    action: String(event.action || event.eventType || ''),
+    version: Number(event.version || event.next?.version || 0) || null,
+    source: String(event.source || 'family_sales_memory'),
+  };
+}
+
+function memoryEventId(event = {}) {
+  return String(event.id || `memory_event:${event.memoryId}:${event.version || event.next?.version || 0}:${event.action || event.eventType}:${event.time || event.createdAt || ''}`);
+}
+
+function memoryEventType(event = {}) {
+  const type = String(event.eventType || event.action || '');
+  return ({ confirm: 'confirmed', reject: 'rejected', supersede: 'superseded', complete: 'completed', expire: 'expired', restore: 'restored' })[type] || type;
+}
+
+function insertFamilySalesMemoryEvents(db, events = [], { ignoreDuplicates = false } = {}) {
+  const insert = db.prepare(`
+    INSERT ${ignoreDuplicates ? 'OR IGNORE' : ''} INTO family_sales_memory_events
+      (id, memory_id, family_id, owner_user_id, owner_guest_id, event_type, actor_type, actor_id, source_message_id, previous_status, next_status, reason_code, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const event of normalizeArray(events)) {
+    const actor = event.actor || {};
+    insert.run(
+      memoryEventId(event), Number(event.memoryId), Number(event.familyId), Number(event.ownerUserId || 0) || null,
+      String(event.ownerGuestId || ''), memoryEventType(event), String(actor.type || event.actorType || ''),
+      String(actor.id || event.actorId || ''), Number(event.sourceMessageId || 0) || null,
+      String(event.previousStatus || event.previous?.status || ''), String(event.nextStatus || event.next?.status || ''),
+      String(event.reasonCode || event.reason || ''), String(event.createdAt || event.time || ''), jsonPayload(safeMemoryEventPayload(event)),
+    );
+  }
+}
+
 function replaceFamilySalesMemories(db, state) {
+  const existingIds = new Set(db.prepare('SELECT id FROM family_sales_memories').all().map((row) => String(row.id)));
   db.prepare('DELETE FROM family_sales_memories').run();
   const insertMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, memory_key, version, valid_from, valid_to, invalidated_at, supersedes_memory_id, superseded_by_memory_id, subject_type, subject_id, risk_level, source_message_id, source_thread_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const memory of normalizeArray(state.familySalesMemories)) {
     insertMemory.run(
@@ -2237,12 +2332,28 @@ function replaceFamilySalesMemories(db, state) {
       String(memory.ownerGuestId || ''),
       String(memory.kind || ''),
       String(memory.status || ''),
+      String(memory.memoryKey || ''), Number(memory.version || (memory.status === 'active' ? 1 : 0)) || null,
+      String(memory.validFrom || ''), String(memory.validTo || ''), String(memory.invalidatedAt || ''),
+      Number(memory.supersedesMemoryId || 0) || null, Number(memory.supersededByMemoryId || 0) || null,
+      String(memory.subjectType || ''), String(memory.subjectId || ''), String(memory.riskLevel || ''),
+      Number(memory.sourceMessageId || memory.evidenceMessageIds?.[0] || 0) || null,
       Number(memory.sourceThreadId || 0) || null,
       String(memory.createdAt || ''),
       String(memory.updatedAt || ''),
       jsonPayload(memory),
     );
   }
+  insertFamilySalesMemoryEvents(db, state.familySalesMemoryEvents, { ignoreDuplicates: true });
+  const proposedEvents = normalizeArray(state.familySalesMemories)
+    .filter((memory) => !existingIds.has(String(memory.id)))
+    .map((memory) => ({
+      id: `memory_event:${memory.id}:1:proposed`, memoryId: memory.id, familyId: memory.familyId,
+      ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: 'proposed',
+      actor: { type: 'system', id: '' }, sourceMessageId: memory.sourceMessageId || memory.evidenceMessageIds?.[0] || null,
+      previousStatus: '', nextStatus: 'candidate', reasonCode: 'extracted', createdAt: memory.createdAt || memory.updatedAt,
+      version: 1,
+    }));
+  insertFamilySalesMemoryEvents(db, proposedEvents, { ignoreDuplicates: true });
 }
 
 function replaceReportRefreshEvents(db, state) {
@@ -2388,6 +2499,16 @@ function loadPayloadRows(db, table, orderBy) {
     .filter(Boolean);
 }
 
+function loadFamilySalesMemoryEvents(db) {
+  return db.prepare('SELECT * FROM family_sales_memory_events ORDER BY created_at ASC, rowid ASC').all().map((row) => ({
+    id: row.id, memoryId: row.memory_id, familyId: row.family_id,
+    ownerUserId: row.owner_user_id, ownerGuestId: row.owner_guest_id || '', eventType: row.event_type,
+    actor: { type: row.actor_type || '', id: row.actor_id || '' }, sourceMessageId: row.source_message_id,
+    previousStatus: row.previous_status || '', nextStatus: row.next_status || '', reasonCode: row.reason_code || '',
+    createdAt: row.created_at, ...parseJson(row.payload, {}),
+  }));
+}
+
 function loadProductCustomerSummaryGenerationRuns(db) {
   return db.prepare(`
     SELECT
@@ -2444,6 +2565,7 @@ function loadDbOwnedState(db) {
     familySalesChatThreads: loadPayloadRows(db, 'family_sales_chat_threads', 'updated_at ASC, id ASC'),
     familySalesChatMessages: loadPayloadRows(db, 'family_sales_chat_messages', 'created_at ASC, id ASC'),
     familySalesMemories: loadPayloadRows(db, 'family_sales_memories', 'updated_at ASC, id ASC'),
+    familySalesMemoryEvents: loadFamilySalesMemoryEvents(db),
     reportRefreshEvents: loadPayloadRows(db, 'report_refresh_events', 'created_at ASC, id ASC'),
     membershipConfig: parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null),
     membershipOrders: loadPayloadRows(db, 'membership_orders', 'id ASC'),
@@ -2980,6 +3102,68 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  async function persistFamilySalesMemoryTransition({ state, bundle, expectedVersion } = {}) {
+    const memories = normalizeArray(bundle?.memories);
+    const events = normalizeArray(bundle?.events);
+    if (!memories.length || !events.length || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+      throw Object.assign(new Error('invalid family sales memory transition'), { code: 'INVALID_MEMORY_TRANSITION', status: 400 });
+    }
+    const changedMemory = memories[0];
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(Number(changedMemory.id));
+      const authoritative = parseJson(row?.payload, null);
+      const currentVersion = Number(row?.version || (authoritative?.status === 'active' ? 1 : authoritative?.version));
+      if (!authoritative || currentVersion !== expectedVersion) {
+        throw Object.assign(new Error('stale memory version'), { code: 'STALE_INTERACTION', status: 409 });
+      }
+      for (const memory of memories) {
+        if (Number(memory.familyId) !== Number(authoritative.familyId)
+          || Number(memory.ownerUserId || 0) !== Number(authoritative.ownerUserId || 0)
+          || String(memory.ownerGuestId || '') !== String(authoritative.ownerGuestId || '')) throw new Error('cross-scope memory transition');
+      }
+      if (Number(changedMemory.version) !== expectedVersion + 1) throw new Error('non-monotonic memory version');
+      const changed = db.prepare(`
+        UPDATE family_sales_memories SET status = ?, memory_key = ?, version = ?, valid_from = ?, valid_to = ?, invalidated_at = ?,
+          supersedes_memory_id = ?, superseded_by_memory_id = ?, subject_type = ?, subject_id = ?, risk_level = ?, source_message_id = ?, updated_at = ?, payload = ?
+        WHERE id = ? AND COALESCE(version, CASE WHEN status = 'active' THEN 1 END) = ?
+      `).run(
+        changedMemory.status, changedMemory.memoryKey || '', changedMemory.version, changedMemory.validFrom || '', changedMemory.validTo || '', changedMemory.invalidatedAt || '',
+        Number(changedMemory.supersedesMemoryId || 0) || null, Number(changedMemory.supersededByMemoryId || 0) || null,
+        changedMemory.subjectType || '', changedMemory.subjectId || '', changedMemory.riskLevel || '', Number(changedMemory.sourceMessageId || 0) || null,
+        changedMemory.updatedAt || '', jsonPayload(changedMemory), Number(changedMemory.id), expectedVersion,
+      ).changes;
+      if (changed !== 1) throw Object.assign(new Error('stale memory version'), { code: 'STALE_INTERACTION', status: 409 });
+      if (memories[1]) {
+        const replacement = memories[1];
+        if (Number(replacement.version) !== 1 || String(replacement.status) !== 'confirmed'
+          || String(replacement.supersedesMemoryId) !== String(changedMemory.id)
+          || Date.parse(replacement.validFrom) < Date.parse(authoritative.validFrom || 0)) throw new Error('invalid replacement memory chain');
+        db.prepare(`INSERT INTO family_sales_memories
+          (id, family_id, owner_user_id, owner_guest_id, kind, status, memory_key, version, valid_from, valid_to, invalidated_at, supersedes_memory_id, superseded_by_memory_id, subject_type, subject_id, risk_level, source_message_id, source_thread_id, created_at, updated_at, payload)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(Number(replacement.id), replacement.familyId, Number(replacement.ownerUserId || 0) || null, replacement.ownerGuestId || '', replacement.kind || '', replacement.status,
+            replacement.memoryKey || '', 1, replacement.validFrom || '', replacement.validTo || '', replacement.invalidatedAt || '', Number(replacement.supersedesMemoryId), null,
+            replacement.subjectType || '', replacement.subjectId || '', replacement.riskLevel || '', Number(replacement.sourceMessageId || 0) || null,
+            Number(replacement.sourceThreadId || 0) || null, replacement.createdAt || '', replacement.updatedAt || '', jsonPayload(replacement));
+      }
+      const scopedEvents = events.map((event) => ({ ...event, familyId: authoritative.familyId, ownerUserId: authoritative.ownerUserId, ownerGuestId: authoritative.ownerGuestId }));
+      if (scopedEvents.some((event) => !memories.some((memory) => String(memory.id) === String(event.memoryId)))) throw new Error('event memory is outside transition bundle');
+      insertFamilySalesMemoryEvents(db, scopedEvents);
+      const nextState = { ...createInitialState(), ...state };
+      updateStateMeta(db, nextState, new Date().toISOString());
+      db.exec('COMMIT');
+      if (state) {
+        state.familySalesMemories = normalizeArray(state.familySalesMemories).filter((memory) => !memories.some((next) => String(next.id) === String(memory.id))).concat(memories);
+        state.familySalesMemoryEvents = normalizeArray(state.familySalesMemoryEvents).concat(scopedEvents);
+      }
+      return bundle;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async function persistFamilyReportState({ state } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
@@ -3296,6 +3480,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistFamilySalesMemoryTransition,
     persistFamilyReportState,
     persistAgentPolicyImportTask,
     findAgentPolicyImportTask,
