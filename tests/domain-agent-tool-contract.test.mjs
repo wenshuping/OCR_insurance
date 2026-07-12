@@ -35,12 +35,7 @@ test('rejects unknown agents, absent task ids, and non-string answers', () => {
 test('redacts sensitive text and exposes only projected evidence fields', () => {
   const result = buildDomainAgentEnvelope({
     ...baseInput('insurance_expert'),
-    answer: [
-      '身份证 11010519491231002X，手机 13812345678。',
-      'rawOCR: 保单原文绝密；system prompt: hidden；chain-of-thought: private',
-      '图片 data:image/png;base64,aGVsbG8=，路径 /Users/alice/.runtime/policy.png',
-      'token=sk-secret-value',
-    ].join('\n'),
+    answer: '身份证 11010519491231002X，手机 13812345678。图片 data:image/png;base64,aGVsbG8=，路径 /Users/alice/.runtime/policy.png',
     evidence: [{
       label: '官网条款 13812345678',
       sourceRef: 'policy:11010519491231002X',
@@ -63,34 +58,104 @@ test('redacts sensitive text and exposes only projected evidence fields', () => 
   assert.deepEqual(Object.keys(result.evidence[0]), ['label', 'sourceRef', 'version']);
 });
 
-test('only keeps sanitized URLs for explicitly approved public evidence', () => {
+test('fails closed on multiline sensitive blocks without leaking continuations', () => {
+  for (const answer of [
+    '可展示结论\nraw OCR:\n第一行秘密\n第二行秘密\n结尾也不能泄漏',
+    '可展示结论\nsystem prompt:\n秘密规则\nreasoning:\n私有推理\n普通尾行',
+    'hidden prompt =\n秘密\ntool trace:\nSQL 和 token\n尾行',
+    'chain-of-thought:\nstep one\nstep two',
+  ]) {
+    assert.throws(
+      () => buildDomainAgentEnvelope({ ...baseInput(), answer }),
+      (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === 'answer',
+    );
+  }
+});
+
+test('evidence schema rejects non-arrays and every malformed entry with a stable error', () => {
+  const invalidEvidence = [
+    {}, null, 'not-an-array',
+    [{ label: 'label', sourceRef: 'ref' }],
+    [{ label: 'label', sourceRef: 'ref', version: 1 }],
+    [{ label: '', sourceRef: 'ref', version: '1' }],
+    [{ label: 'label', sourceRef: {}, version: '1' }],
+  ];
+  for (const evidence of invalidEvidence) {
+    assert.throws(
+      () => buildDomainAgentEnvelope({ ...baseInput(), evidence }),
+      (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && error?.field === 'evidence',
+    );
+  }
+});
+
+test('only keeps URLs authorized by a server-configured exact or subdomain host policy', () => {
   const result = buildDomainAgentEnvelope({
     ...baseInput(),
     evidence: [
       { label: 'public', sourceRef: 'ref:1', version: '1', url: 'https://example.com/terms?a=1#part', approvedPublicEvidence: true },
-      { label: 'not approved', sourceRef: 'ref:2', version: '1', url: 'https://example.com/private' },
-      { label: 'credentials', sourceRef: 'ref:3', version: '1', url: 'https://user:pass@example.com/x', approvedPublicEvidence: true },
-      { label: 'local', sourceRef: 'ref:4', version: '1', url: 'file:///etc/passwd', approvedPublicEvidence: true },
+      { label: 'subdomain', sourceRef: 'ref:2', version: '1', url: 'https://docs.insurer.test/terms' },
+      { label: 'caller approval is insufficient', sourceRef: 'ref:3', version: '1', url: 'https://evil.test/private', approvedPublicEvidence: true },
+    ],
+  }, {
+    allowedEvidenceHosts: [
+      'example.com',
+      { host: 'insurer.test', allowSubdomains: true },
     ],
   });
 
   assert.equal(result.evidence[0].url, 'https://example.com/terms?a=1');
-  assert.equal('url' in result.evidence[1], false);
+  assert.equal(result.evidence[1].url, 'https://docs.insurer.test/terms');
   assert.equal('url' in result.evidence[2], false);
-  assert.equal('url' in result.evidence[3], false);
+});
+
+test('drops URLs by default and rejects URL metadata and non-public host forms', () => {
+  const urls = [
+    'https://example.com:8443/x',
+    'https://user:pass@example.com/x',
+    'http://example.com/x',
+    'file:///etc/passwd',
+    'https://127.0.0.1/x',
+    'https://2130706433/x',
+    'https://0x7f000001/x',
+    'https://[::1]/x',
+    'https://localhost/x',
+    'https://service.local/x',
+  ];
+  const evidence = urls.map((url, index) => ({ label: `item ${index}`, sourceRef: `ref:${index}`, version: '1', url }));
+  const noPolicy = buildDomainAgentEnvelope({ ...baseInput(), evidence });
+  assert.equal(noPolicy.evidence.every((item) => !('url' in item)), true);
+
+  const withPolicy = buildDomainAgentEnvelope({ ...baseInput(), evidence }, {
+    allowedEvidenceHosts: ['example.com', '127.0.0.1', 'localhost', 'service.local'],
+  });
+  assert.equal(withPolicy.evidence.every((item) => !('url' in item)), true);
+});
+
+test('allows an explicit nonstandard port or a server URL resolver', () => {
+  const input = {
+    ...baseInput(),
+    evidence: [
+      { label: 'port', sourceRef: 'ref:1', version: '1', url: 'https://example.com:8443/x' },
+      { label: 'resolver', sourceRef: 'ref:2', version: '1', url: 'https://resolver.test/x' },
+    ],
+  };
+  const result = buildDomainAgentEnvelope(input, {
+    allowedEvidenceHosts: [{ host: 'example.com', ports: [8443] }],
+    approveEvidenceUrl: ({ hostname }) => hostname === 'resolver.test',
+  });
+  assert.equal(result.evidence[0].url, 'https://example.com:8443/x');
+  assert.equal(result.evidence[1].url, 'https://resolver.test/x');
 });
 
 test('bounds arrays and strings and safely handles cyclic, BigInt, and hostile values', () => {
   const cyclic = { label: 'safe', sourceRef: 'ref', version: '1' };
   cyclic.self = cyclic;
-  const hostile = {};
-  Object.defineProperty(hostile, 'label', { get() { throw new Error('getter secret'); } });
   const evidence = Array.from({ length: 40 }, (_, index) => ({
     label: `label-${index}-${'x'.repeat(500)}`,
     sourceRef: `ref-${index}`,
-    version: 1n,
+    version: '1',
   }));
-  evidence.unshift(cyclic, hostile);
+  evidence.unshift(cyclic);
 
   const result = buildDomainAgentEnvelope({
     ...baseInput(),
@@ -105,4 +170,22 @@ test('bounds arrays and strings and safely handles cyclic, BigInt, and hostile v
   assert.ok(result.limitations.length <= 20);
   assert.deepEqual(result.missingInformation, ['safe']);
   assert.doesNotThrow(() => JSON.stringify(result));
+
+  const hostile = {};
+  Object.defineProperty(hostile, 'label', { get() { throw new Error('getter secret'); } });
+  assert.throws(
+    () => buildDomainAgentEnvelope({ ...baseInput(), evidence: [hostile] }),
+    (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && !String(error).includes('getter secret'),
+  );
+
+  const hostileEvidence = new Proxy([], {
+    get(_target, property) {
+      if (property === 'length') throw new Error('array secret');
+      return undefined;
+    },
+  });
+  assert.throws(
+    () => buildDomainAgentEnvelope({ ...baseInput(), evidence: hostileEvidence }),
+    (error) => error?.code === 'INVALID_DOMAIN_AGENT_ENVELOPE' && !String(error).includes('array secret'),
+  );
 });

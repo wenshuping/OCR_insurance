@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 const KNOWN_AGENTS = new Set(['sales_champion', 'insurance_expert']);
 const MAX_ANSWER_LENGTH = 8_000;
 const MAX_TASK_ID_LENGTH = 160;
@@ -5,12 +7,25 @@ const MAX_ARRAY_LENGTH = 20;
 const MAX_ITEM_LENGTH = 500;
 const MAX_EVIDENCE_FIELD_LENGTH = 300;
 
-const SENSITIVE_LABELED_VALUE = /(?:raw[ _-]?ocr|ocr[ _-]?(?:text|content)|system[ _-]?prompt|hidden[ _-]?prompt|chain[ _-]?of[ _-]?thought|reasoning|private[ _-]?tool[ _-]?trace|tool[ _-]?trace|internal[ _-]?path|base64[ _-]?(?:image|data)|(?:access[ _-]?|refresh[ _-]?)?token|api[ _-]?key|secret|password)\s*[:=：][^\n；;]*/giu;
+const SENSITIVE_LABEL = /(?:raw[ _-]?ocr|ocr[ _-]?(?:text|content)|system[ _-]?prompt|hidden[ _-]?prompt|chain[ _-]?of[ _-]?thought|reasoning|private[ _-]?tool[ _-]?trace|tool[ _-]?trace|internal[ _-]?path|base64[ _-]?(?:image|data)|(?:access[ _-]?|refresh[ _-]?)?token|api[ _-]?key|secret|password)["']?\s*[:=：]/iu;
 const CHINA_ID = /(?<!\d)\d{17}[\dXx](?!\d)/gu;
 const CHINA_MOBILE = /(?<!\d)1[3-9]\d{9}(?!\d)/gu;
 const DATA_URL = /data:(?:image|application)\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/giu;
 const INTERNAL_PATH = /(?:(?:\/)?\.runtime(?:\/[\w.@~+(), -]+)+|\/(?:Users|home|srv|var|tmp|private|Volumes|opt|etc|root)(?:\/[\w.@~+(), -]+)+|[A-Za-z]:\\(?:Users|Windows|ProgramData|private|tmp)\\[^\s；;]*)/gu;
 const PRIVATE_KEY = /-----BEGIN [^-\n]*(?:PRIVATE KEY|TOKEN)[\s\S]*?-----END [^-\n]+-----/gu;
+
+export class DomainAgentEnvelopeContractError extends TypeError {
+  constructor(field, message) {
+    super(`${field}: ${message}`);
+    this.name = 'DomainAgentEnvelopeContractError';
+    this.code = 'INVALID_DOMAIN_AGENT_ENVELOPE';
+    this.field = field;
+  }
+}
+
+function contractError(field, message) {
+  return new DomainAgentEnvelopeContractError(field, message);
+}
 
 function safeRead(value, key) {
   try {
@@ -20,11 +35,19 @@ function safeRead(value, key) {
   }
 }
 
+function contractRead(value, key, field) {
+  try {
+    return value?.[key];
+  } catch {
+    throw contractError(field, 'contains an unreadable value');
+  }
+}
+
 function sanitizeText(value, maxLength) {
   if (typeof value !== 'string') return '';
+  if (SENSITIVE_LABEL.test(value)) return '[REDACTED]';
   return value
     .replace(PRIVATE_KEY, '[REDACTED]')
-    .replace(SENSITIVE_LABELED_VALUE, '[REDACTED]')
     .replace(DATA_URL, '[REDACTED]')
     .replace(INTERNAL_PATH, '[REDACTED]')
     .replace(CHINA_ID, '[REDACTED]')
@@ -36,11 +59,11 @@ function sanitizeText(value, maxLength) {
 function requireBoundedString(input, key, maxLength) {
   const value = safeRead(input, key);
   if (typeof value !== 'string' || value.trim() === '') {
-    throw new TypeError(`${key} must be a non-empty string`);
+    throw contractError(key, 'must be a non-empty string');
   }
   const sanitized = sanitizeText(value, maxLength);
   if (!sanitized || sanitized === '[REDACTED]') {
-    throw new TypeError(`${key} does not contain safe text`);
+    throw contractError(key, 'does not contain safe text');
   }
   return sanitized;
 }
@@ -61,16 +84,59 @@ function projectStringArray(input) {
   return result;
 }
 
-function sanitizePublicUrl(value) {
+function normalizeHostname(value) {
+  if (typeof value !== 'string') return '';
+  const hostname = value.trim().toLowerCase().replace(/\.$/u, '');
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.local') || isIP(hostname)
+    || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(hostname)) return '';
+  return hostname;
+}
+
+function normalizeHostPolicies(input) {
+  if (!Array.isArray(input)) return [];
+  const result = [];
+  for (const entry of input) {
+    const rawHost = typeof entry === 'string' ? entry : safeRead(entry, 'host');
+    const host = normalizeHostname(rawHost);
+    if (!host) continue;
+    const rawPorts = typeof entry === 'object' && entry ? safeRead(entry, 'ports') : undefined;
+    const ports = new Set(Array.isArray(rawPorts)
+      ? rawPorts.map(Number).filter((port) => Number.isInteger(port) && port >= 1 && port <= 65_535)
+      : []);
+    result.push({ host, allowSubdomains: safeRead(entry, 'allowSubdomains') === true, ports });
+  }
+  return result;
+}
+
+function policyAllowsUrl(url, policies) {
+  const hostname = normalizeHostname(url.hostname);
+  if (!hostname) return false;
+  const port = url.port ? Number(url.port) : 443;
+  return policies.some((policy) => {
+    const hostMatches = hostname === policy.host
+      || (policy.allowSubdomains && hostname.endsWith(`.${policy.host}`));
+    return hostMatches && (port === 443 || policy.ports.has(port));
+  });
+}
+
+function resolverAllowsUrl(url, evidence, resolver) {
+  if (typeof resolver !== 'function' || url.port) return false;
+  try {
+    return resolver({ url: url.toString(), hostname: url.hostname, evidence }) === true;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizePublicUrl(value, evidence, options) {
   if (typeof value !== 'string' || value.length > 2_000 || DATA_URL.test(value)) return '';
   DATA_URL.lastIndex = 0;
   try {
     const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
-      || host === 'localhost' || host.endsWith('.local') || host === '0.0.0.0'
-      || /^127\./u.test(host) || /^10\./u.test(host) || /^192\.168\./u.test(host)
-      || /^172\.(?:1[6-9]|2\d|3[01])\./u.test(host)) return '';
+    const policies = normalizeHostPolicies(options.allowedEvidenceHosts);
+    if (url.protocol !== 'https:' || url.username || url.password || !normalizeHostname(url.hostname)
+      || (!policyAllowsUrl(url, policies)
+        && !resolverAllowsUrl(url, evidence, options.approveEvidenceUrl))) return '';
     for (const key of [...url.searchParams.keys()]) {
       if (/(?:token|secret|password|key|signature|credential)/iu.test(key)) url.searchParams.delete(key);
     }
@@ -81,26 +147,38 @@ function sanitizePublicUrl(value) {
   }
 }
 
-function projectEvidence(input) {
-  if (!Array.isArray(input)) return [];
+function projectEvidence(input, options) {
+  if (input === undefined) return [];
+  let isArray;
+  try {
+    isArray = Array.isArray(input);
+  } catch {
+    throw contractError('evidence', 'must be a readable array');
+  }
+  if (!isArray) throw contractError('evidence', 'must be an array');
+  const length = contractRead(input, 'length', 'evidence');
   const result = [];
-  for (let index = 0; index < input.length && result.length < MAX_ARRAY_LENGTH; index += 1) {
+  for (let index = 0; index < length; index += 1) {
     let item;
     try {
       item = input[index];
     } catch {
-      continue;
+      throw contractError('evidence', 'contains an unreadable entry');
     }
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw contractError('evidence', 'entries must be objects');
+    }
     const label = sanitizeText(safeRead(item, 'label'), MAX_EVIDENCE_FIELD_LENGTH);
     const sourceRef = sanitizeText(safeRead(item, 'sourceRef'), MAX_EVIDENCE_FIELD_LENGTH);
     const version = sanitizeText(safeRead(item, 'version'), MAX_EVIDENCE_FIELD_LENGTH);
-    if (!label || !sourceRef || !version) continue;
-    const projected = { label, sourceRef, version };
-    if (safeRead(item, 'approvedPublicEvidence') === true) {
-      const url = sanitizePublicUrl(safeRead(item, 'url'));
-      if (url) projected.url = url;
+    if (!label || label === '[REDACTED]' || !sourceRef || sourceRef === '[REDACTED]'
+      || !version || version === '[REDACTED]') {
+      throw contractError('evidence', 'entries require safe non-empty string label, sourceRef, and version');
     }
+    if (result.length >= MAX_ARRAY_LENGTH) continue;
+    const projected = { label, sourceRef, version };
+    const url = sanitizePublicUrl(safeRead(item, 'url'), item, options);
+    if (url) projected.url = url;
     result.push(projected);
   }
   return result;
@@ -113,18 +191,18 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-export function buildDomainAgentEnvelope(input) {
+export function buildDomainAgentEnvelope(input, options = {}) {
   if (!input || (typeof input !== 'object' && typeof input !== 'function')) {
-    throw new TypeError('domain agent envelope must be an object');
+    throw contractError('envelope', 'must be an object');
   }
   const agent = safeRead(input, 'agent');
-  if (!KNOWN_AGENTS.has(agent)) throw new TypeError('agent must be a known domain agent');
+  if (!KNOWN_AGENTS.has(agent)) throw contractError('agent', 'must be a known domain agent');
 
   const envelope = {
     agent,
     taskId: requireBoundedString(input, 'taskId', MAX_TASK_ID_LENGTH),
     answer: requireBoundedString(input, 'answer', MAX_ANSWER_LENGTH),
-    evidence: projectEvidence(safeRead(input, 'evidence')),
+    evidence: projectEvidence(contractRead(input, 'evidence', 'evidence'), options && typeof options === 'object' ? options : {}),
     limitations: projectStringArray(safeRead(input, 'limitations')),
     missingInformation: projectStringArray(safeRead(input, 'missingInformation')),
   };
