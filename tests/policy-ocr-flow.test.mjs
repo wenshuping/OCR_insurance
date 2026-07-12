@@ -12788,13 +12788,10 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(continued.payload.messages.length, 2);
     assert.equal(generationCalls[1].question, '客户说预算不够怎么回应');
     assert.equal(generationCalls[1].history.length, 2);
-    assert.equal(generationCalls[1].context.salesMemoryContext.memoryCount, 1);
-    assert.match(JSON.stringify(generationCalls[1].context.salesMemoryContext), /客户预算敏感/u);
-    assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他家庭的偏好/u);
-    assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他登录人的偏好/u);
+    assert.equal(generationCalls[1].context.salesMemoryContext, undefined);
     assert.equal(state.familySalesChatMessages.length, 4);
     assert.equal(memoryCalls.length, 2);
-    assert.equal(state.familySalesMemories.filter((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat' && memory.status === 'active').length, 1);
+    assert.equal(state.familySalesMemories.filter((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat' && memory.status === 'candidate').length, 1);
     assert.deepEqual(state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat')?.evidenceMessageIds, [21, 22, 24, 25]);
 
     const listed = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat');
