@@ -106,6 +106,17 @@ function requireVersion(value, name = 'version') {
   return value;
 }
 
+function canonicalMemoryId(value, name = 'memory id') {
+  if (Number.isSafeInteger(value) && value > 0) return value;
+  const opaque = typeof value === 'string' ? value.trim() : '';
+  if (/^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$/u.test(opaque)) return opaque;
+  throw new TypeError(`${name} must be a positive safe integer or bounded opaque id`);
+}
+
+function sameMemoryId(left, right) {
+  return String(canonicalMemoryId(left)) === String(canonicalMemoryId(right));
+}
+
 function sanitizeEventText(value = '', limit = 120) {
   return sanitizeMemorySourceText(value, limit)
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, '邮箱已脱敏')
@@ -148,6 +159,7 @@ export function applyFamilySalesMemoryAction({
   now = new Date().toISOString(),
 } = {}) {
   if (!memory || typeof memory !== 'object' || Array.isArray(memory)) throw new TypeError('memory is required');
+  const memoryId = canonicalMemoryId(memory.id);
   const rawStatus = trim(memory.status || 'active').toLowerCase();
   const status = normalizedStatus(rawStatus);
   const normalizedAction = trim(action).toLowerCase();
@@ -195,10 +207,12 @@ export function applyFamilySalesMemoryAction({
   let replacementMemory = null;
   let replacementEvent = null;
   if (normalizedAction === 'supersede') {
-    const replacementId = replacement.id;
-    if (!(typeof replacementId === 'string' && trim(replacementId)) && !(Number.isSafeInteger(replacementId) && replacementId > 0)) {
-      throw new TypeError('replacement id is required');
-    }
+    const replacementId = canonicalMemoryId(replacement.id, 'replacement id');
+    if (sameMemoryId(replacementId, memoryId)) throw new Error('replacement id must differ from memory id');
+    if (memory.supersedesMemoryId !== undefined && memory.supersedesMemoryId !== null
+      && sameMemoryId(memory.supersedesMemoryId, replacementId)) throw new Error('memory supersession cycle detected');
+    if (replacement.supersedesMemoryId !== undefined && replacement.supersedesMemoryId !== null
+      && !sameMemoryId(replacement.supersedesMemoryId, memoryId)) throw new Error('replacement supersedes chain is invalid');
     const kind = normalizeKind(replacement.kind || memory.kind);
     const content = sanitizeMemoryContent(replacement.content);
     if (!kind || kind !== normalizeKind(memory.kind) || !content) throw new TypeError('replacement must keep kind and provide content');
@@ -213,6 +227,12 @@ export function applyFamilySalesMemoryAction({
       if (!Number.isFinite(instant)) throw new TypeError('replacement validFrom must be a valid zoned ISO instant or UTC date');
       return new Date(instant).toISOString();
     })();
+    const priorValidFrom = trim(memory.validFrom);
+    if (priorValidFrom) {
+      const priorInstant = parseFamilySalesMemoryInstant(priorValidFrom);
+      if (!Number.isFinite(priorInstant)) throw new TypeError('memory validFrom must be a valid zoned ISO instant or UTC date');
+      if (parseFamilySalesMemoryInstant(replacementValidFrom) < priorInstant) throw new Error('replacement validFrom cannot precede memory validFrom');
+    }
     nextMemory.supersededByMemoryId = replacementId;
     nextMemory.validTo = replacementValidFrom;
     replacementMemory = {
@@ -224,7 +244,7 @@ export function applyFamilySalesMemoryAction({
       ...(memoryKey !== undefined ? { memoryKey } : {}),
       status: 'confirmed',
       version: 1,
-      supersedesMemoryId: memory.id,
+      supersedesMemoryId: memoryId,
       supersededByMemoryId: null,
       validFrom: replacementValidFrom,
       validTo: null,
@@ -245,7 +265,7 @@ export function applyFamilySalesMemoryAction({
     });
   }
   const event = transitionEvent({
-    memoryId: memory.id,
+    memoryId,
     previousStatus: status,
     nextStatus,
     action: normalizedAction,

@@ -465,6 +465,28 @@ test('supersede returns a confirmed replacement and privacy-safe chain event', (
   assert.ok(result.event.reason.length <= 120);
 });
 
+test('supersede enforces canonical acyclic ids and monotonic valid intervals', () => {
+  const actor = { type: 'advisor', id: 7 };
+  const memory = { id: 'mem_old', kind: 'preference', content: '旧偏好', status: 'confirmed', version: 2, validFrom: '2026-07-12T08:00:00.000Z' };
+  const base = { memory, action: 'supersede', actor, reason: '偏好变更', expectedVersion: 2, now: '2026-07-12T09:00:00.000Z' };
+  assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 'mem_old', content: '新偏好' } }), /must differ/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 'bad id with spaces', content: '新偏好' } }), /bounded opaque/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 'mem_new', content: '新偏好', validFrom: '2026-07-12T07:59:59.999Z' } }), /cannot precede/u);
+  assert.throws(() => applyFamilySalesMemoryAction({
+    ...base,
+    memory: { ...memory, supersedesMemoryId: 'mem_new' },
+    replacement: { id: 'mem_new', content: '新偏好' },
+  }), /cycle/u);
+
+  const equalBoundary = applyFamilySalesMemoryAction({
+    ...base,
+    replacement: { id: 'mem_new', content: '新偏好', supersedesMemoryId: 'mem_old', validFrom: memory.validFrom },
+  });
+  assert.equal(equalBoundary.memory.validTo, memory.validFrom);
+  assert.equal(equalBoundary.memory.supersededByMemoryId, 'mem_new');
+  assert.equal(equalBoundary.replacement.supersedesMemoryId, 'mem_old');
+});
+
 test('memory actions reject illegal and stale changes without mutation', () => {
   const memory = { id: 61, kind: 'preference', content: '偏好文字', status: 'confirmed', version: 2 };
   const snapshot = structuredClone(memory);
