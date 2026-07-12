@@ -169,6 +169,10 @@ function sanitizePublicUrl(value, evidence, options) {
   }
 }
 
+export function isAllowedDomainAgentEvidenceUrl(value, options = {}) {
+  return Boolean(sanitizePublicUrl(value, null, options && typeof options === 'object' ? options : {}));
+}
+
 function projectEvidence(input, options) {
   const length = requireRealArray(input, 'evidence');
   if (length === null) return [];

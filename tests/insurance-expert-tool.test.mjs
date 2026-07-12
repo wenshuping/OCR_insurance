@@ -161,6 +161,26 @@ test('rejects https evidence outside configured official domains before analyzer
   assert.deepEqual(result.evidence, []);
 });
 
+test('rejects unsafe official evidence URL variants before analyzer invocation', async () => {
+  const urls = [
+    'http://official.insurer.test/terms.pdf',
+    'ftp://official.insurer.test/terms.pdf',
+    'https://user:password@official.insurer.test/terms.pdf',
+    'https://official.insurer.test:8443/terms.pdf',
+    'https://child.official.insurer.test/terms.pdf',
+    'https://127.0.0.1/terms.pdf',
+    'https://localhost/terms.pdf',
+  ];
+  for (const url of urls) {
+    const state = fixture();
+    state.knowledgeRecords[0].url = url;
+    let calls = 0;
+    const result = await createInsuranceExpertTool({ state, analyze: async () => { calls += 1; return analysis(); } })({ owner: { userId: 7 }, policyRef: 31, question: '问题' });
+    assert.equal(calls, 0, url);
+    assert.deepEqual(result.evidence, [], url);
+  }
+});
+
 test('does not expose superseded product-version evidence', async () => {
   const state = fixture();
   state.knowledgeRecords.push({
@@ -241,10 +261,43 @@ test('uses analyzer question-specific answer and multilingual high-risk cautions
     ...analysis(), answer: '退保金额必须向保险公司申请当期现金价值试算。',
   }) });
   const result = await ask({ owner: { userId: 7 }, policyRef: 31, question: 'Can I surrender / replace this policy and make a claim?' });
-  assert.equal(result.answer, '退保金额必须向保险公司申请当期现金价值试算。');
+  assert.match(result.answer, /退保.*试算/u);
   assert.match(result.limitations.join(' '), /退保/u);
   assert.match(result.limitations.join(' '), /换保/u);
   assert.match(result.limitations.join(' '), /理赔/u);
+});
+
+test('adds limitations for exact Chinese high-risk triggers', async () => {
+  for (const trigger of ['解除合同', '撤单', '拒赔', '健康告知']) {
+    const result = await createInsuranceExpertTool({ state: fixture(), analyze: async () => analysis() })({
+      owner: { userId: 7 }, policyRef: 31, question: trigger,
+    });
+    assert.ok(result.limitations.length >= 2, trigger);
+  }
+});
+
+test('Chinese ngram relevance selects hospitalization and rejects unsupported model prose', async () => {
+  const rows = [
+    { coverageType: '住院医疗保险金', scenario: '住院治疗', payout: '按约定比例报销', note: '' },
+    { coverageType: '身故保险金', scenario: '身故', payout: '基本保险金额', note: '' },
+  ];
+  const ask = createInsuranceExpertTool({ state: fixture(), analyze: async () => analysis({
+    answer: '模型说所有情况都能赔，包括身故。', analysis: { coverageTable: rows },
+  }) });
+  const result = await ask({ owner: { userId: 7 }, policyRef: 31, question: '住院能理赔吗' });
+  assert.match(result.answer, /住院/u);
+  assert.doesNotMatch(result.answer, /身故/u);
+
+  const unsupported = await ask({ owner: { userId: 7 }, policyRef: 31, question: '牙科能理赔吗' });
+  assert.match(unsupported.answer, /不足|核验/u);
+  assert.doesNotMatch(unsupported.answer, /模型说/u);
+});
+
+test('broad English coverage question may return the supported summary', async () => {
+  const result = await createInsuranceExpertTool({ state: fixture(), analyze: async () => analysis() })({
+    owner: { userId: 7 }, policyRef: 31, question: 'What is covered?',
+  });
+  assert.match(result.answer, /身故保险金/u);
 });
 
 test('timeout aborts analyzer work and prevents abort-guarded late mutation', async () => {

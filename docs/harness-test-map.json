@@ -76,11 +76,14 @@
     "name": "insurance-expert-tool",
     "patterns": [
       "server/c-policy-analysis.service.mjs",
+      "server/domain-agent-tool-contract.service.mjs",
       "server/insurance-expert-tool.service.mjs",
+      "tests/domain-agent-tool-contract.test.mjs",
       "tests/insurance-expert-tool.test.mjs",
       "tests/policy-analysis-prompt.test.mjs"
     ],
     "commands": [
+      "node --test tests/domain-agent-tool-contract.test.mjs",
       "node --test tests/insurance-expert-tool.test.mjs",
       "node --test tests/policy-analysis-prompt.test.mjs"
     ]
