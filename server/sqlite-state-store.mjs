@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
@@ -938,6 +939,18 @@ function createSchema(db) {
       payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_agent_action_confirmations_user_status ON agent_action_confirmations(user_id, status);
+
+    CREATE TABLE IF NOT EXISTS agent_policy_transfer_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      confirmation_id TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      policy_id INTEGER NOT NULL,
+      source_family_id INTEGER NOT NULL,
+      target_family_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      before_payload TEXT NOT NULL,
+      after_payload TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS agent_route_audit_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2471,6 +2484,17 @@ function loadDbOwnedState(db) {
   return state;
 }
 
+function agentTransferStateHash(db, stateVersion = 0) {
+  const state = loadDbOwnedState(db);
+  const snapshot = {
+    stateVersion: Number(stateVersion || 0),
+    families: state.familyProfiles.map(({ id, ownerUserId, status, updatedAt }) => ({ id, ownerUserId, status, updatedAt })),
+    members: state.familyMembers.map(({ id, familyId, status, updatedAt }) => ({ id, familyId, status, updatedAt })),
+    policies: state.policies.map(({ id, familyId, policyNo, policyNumber, applicantMemberId, insuredMemberId, status, transferStatus, updatedAt }) => ({ id, familyId, policyNo, policyNumber, applicantMemberId, insuredMemberId, status, transferStatus, updatedAt })),
+  };
+  return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+}
+
 function stateDocumentEntries(state) {
   return Object.entries(state || {}).filter(([key]) => !DB_OWNED_KEYS.has(key) && !RESERVED_STATE_KEYS.has(key));
 }
@@ -3188,6 +3212,112 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  async function transferPolicyBetweenFamilies({ confirmationId = '', userId, consumedAt = '' } = {}) {
+    const normalizedId = String(confirmationId || '').trim();
+    const numericUserId = Number(userId);
+    if (!normalizedId || !Number.isInteger(numericUserId) || numericUserId <= 0) throw new TypeError('Policy transfer confirmationId and userId are required');
+    const timestamp = normalizeAgentTimestamp(consumedAt, 'Policy transfer consumedAt');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const confirmation = db.prepare('SELECT * FROM agent_action_confirmations WHERE id = ?').get(normalizedId);
+      if (!confirmation || Number(confirmation.user_id) !== numericUserId || confirmation.action !== 'transfer_policy_between_families') {
+        db.exec('ROLLBACK');
+        return { status: 'not_found' };
+      }
+      if (confirmation.status === 'consumed') {
+        db.exec('COMMIT');
+        return { status: 'already_consumed' };
+      }
+      if (confirmation.status === 'expired' || confirmation.expires_at <= timestamp) {
+        db.prepare("UPDATE agent_action_confirmations SET status = 'expired' WHERE id = ? AND status = 'pending'").run(normalizedId);
+        db.exec('COMMIT');
+        return { status: 'expired' };
+      }
+      const payload = parseJson(confirmation.payload, {});
+      const sourceFamilyId = Number(payload.sourceFamilyId);
+      const targetFamilyId = Number(payload.targetFamilyId);
+      const policyId = Number(payload.policyId);
+      const applicantMemberId = Number(payload.targetApplicantMemberId);
+      const insuredMemberId = Number(payload.targetInsuredMemberId);
+      if (!sourceFamilyId || !targetFamilyId || sourceFamilyId === targetFamilyId || !policyId || !applicantMemberId || !insuredMemberId) {
+        db.exec('ROLLBACK');
+        return { status: 'precondition_failed' };
+      }
+      if (payload.stateHash && payload.stateHash !== agentTransferStateHash(db, payload.stateVersion)) {
+        db.exec('ROLLBACK');
+        return { status: 'state_changed' };
+      }
+      const ownedFamilies = db.prepare(`
+        SELECT count(*) AS count FROM family_profiles
+        WHERE id IN (?, ?) AND owner_user_id = ? AND status <> 'archived'
+      `).get(sourceFamilyId, targetFamilyId, numericUserId).count;
+      if (Number(ownedFamilies) !== 2) {
+        db.exec('ROLLBACK');
+        return { status: 'not_found' };
+      }
+      const policyRow = db.prepare('SELECT * FROM policies WHERE id = ?').get(policyId);
+      const policy = parseJson(policyRow?.payload, null);
+      if (!policy || Number(policy.familyId) !== sourceFamilyId) {
+        db.exec('ROLLBACK');
+        return { status: 'state_changed' };
+      }
+      if (['pending', 'processing', 'running'].includes(String(policy.transferStatus || '').toLowerCase())) {
+        db.exec('ROLLBACK');
+        return { status: 'policy_busy' };
+      }
+      const linkedMembers = db.prepare(`
+        SELECT count(*) AS count FROM family_members
+        WHERE id IN (?, ?) AND family_id = ? AND status <> 'archived'
+      `).get(applicantMemberId, insuredMemberId, targetFamilyId).count;
+      const requiredMemberCount = applicantMemberId === insuredMemberId ? 1 : 2;
+      if (Number(linkedMembers) !== requiredMemberCount) {
+        db.exec('ROLLBACK');
+        return { status: 'requires_web_member_link' };
+      }
+      const policyNumber = String(policy.policyNo || policy.policyNumber || '').trim();
+      if (policyNumber) {
+        const duplicate = db.prepare('SELECT id, payload FROM policies WHERE id <> ?').all(policyId)
+          .some((row) => {
+            const candidate = parseJson(row.payload, {});
+            return Number(candidate.familyId) === targetFamilyId && String(candidate.policyNo || candidate.policyNumber || '').trim() === policyNumber;
+          });
+        if (duplicate) {
+          db.exec('ROLLBACK');
+          return { status: 'duplicate_policy' };
+        }
+      }
+      const before = { familyId: sourceFamilyId, applicantMemberId: Number(policy.applicantMemberId || 0) || null, insuredMemberId: Number(policy.insuredMemberId || 0) || null };
+      const updatedPolicy = { ...policy, familyId: targetFamilyId, applicantMemberId, insuredMemberId, updatedAt: timestamp };
+      db.prepare('UPDATE policies SET updated_at = ?, payload = ? WHERE id = ?').run(timestamp, jsonPayload(updatedPolicy), policyId);
+      for (const table of ['family_reports', 'family_sales_reviews']) {
+        const rows = db.prepare(`SELECT id, payload FROM ${table} WHERE family_id IN (?, ?)`); // table names are fixed above.
+        for (const row of rows.all(sourceFamilyId, targetFamilyId)) {
+          const value = { ...parseJson(row.payload, {}), status: 'stale', updatedAt: timestamp };
+          db.prepare(`UPDATE ${table} SET status = 'stale', updated_at = ?, payload = ? WHERE id = ?`).run(timestamp, jsonPayload(value), row.id);
+        }
+      }
+      for (const row of db.prepare('SELECT id, payload FROM family_report_shares WHERE family_id IN (?, ?)').all(sourceFamilyId, targetFamilyId)) {
+        const value = { ...parseJson(row.payload, {}), status: 'revoked', updatedAt: timestamp };
+        db.prepare("UPDATE family_report_shares SET status = 'revoked', updated_at = ?, payload = ? WHERE id = ?").run(timestamp, jsonPayload(value), row.id);
+      }
+      db.prepare(`
+        INSERT INTO agent_policy_transfer_audits
+          (confirmation_id, user_id, policy_id, source_family_id, target_family_id, created_at, before_payload, after_payload)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(normalizedId, numericUserId, policyId, sourceFamilyId, targetFamilyId, timestamp, JSON.stringify(before), JSON.stringify({ familyId: targetFamilyId, applicantMemberId, insuredMemberId }));
+      const consumed = db.prepare(`
+        UPDATE agent_action_confirmations SET status = 'consumed', consumed_at = ?
+        WHERE id = ? AND user_id = ? AND status = 'pending' AND expires_at > ?
+      `).run(timestamp, normalizedId, numericUserId, timestamp);
+      if (consumed.changes !== 1) throw new Error('Policy transfer confirmation could not be consumed');
+      db.exec('COMMIT');
+      return { status: 'transferred', policyId, sourceFamilyId, targetFamilyId };
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+      throw error;
+    }
+  }
+
   async function appendAgentRouteAuditEvent({ policyVersion, policySource = '', userId, messageRef = '', decision = '', actor = '', createdAt = '', payload = {} } = {}) {
     const numericPolicyVersion = Number(policyVersion);
     const normalizedPolicySource = String(policySource || (policyVersion == null ? 'built_in' : 'published')).trim();
@@ -3283,6 +3413,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     listAgentUnknownQuestions,
     createAgentActionConfirmation,
     consumeAgentActionConfirmation,
+    transferPolicyBetweenFamilies,
     appendAgentRouteAuditEvent,
     recordAgentRouteAudit,
     listAgentRouteAuditEvents,

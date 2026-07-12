@@ -2001,6 +2001,41 @@ test('sqlite state store atomically consumes owned, unexpired agent action confi
   store.close();
 });
 
+test('sqlite state store atomically transfers a policy, preserves evidence, invalidates derived views, and audits before/after', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  await store.load();
+  await store.persist({
+    ...createInitialState(),
+    familyProfiles: [{ id: 10, ownerUserId: 7, familyName: '来源家庭', status: 'active' }, { id: 20, ownerUserId: 7, familyName: '目标家庭', status: 'active' }],
+    familyMembers: [{ id: 201, familyId: 20, name: '李四', status: 'active' }],
+    policies: [{ id: 301, userId: 7, familyId: 10, policyNo: 'P-1234', applicantMemberId: 201, insuredMemberId: 201, sourceEvidence: { page: 8 }, ocr: { digest: 'keep-me' } }],
+    familyReports: [{ id: 401, familyId: 10, ownerUserId: 7, status: 'active' }, { id: 402, familyId: 20, ownerUserId: 7, status: 'active' }],
+    familySalesReviews: [{ id: 501, familyId: 10, ownerUserId: 7, status: 'active' }, { id: 502, familyId: 20, ownerUserId: 7, status: 'active' }],
+    familyReportShares: [{ id: 601, familyId: 10, ownerUserId: 7, token: 'secret', status: 'active' }],
+  });
+  await store.createAgentActionConfirmation({
+    id: 'transfer-1', userId: 7, action: 'transfer_policy_between_families', actor: 'agent_confirmation',
+    createdAt: '2026-07-12T04:00:00.000Z', expiresAt: '2026-07-12T04:05:00.000Z',
+    payload: { sourceFamilyId: 10, targetFamilyId: 20, policyId: 301, targetApplicantMemberId: 201, targetInsuredMemberId: 201, stateVersion: 0, stateHash: '', impact: {} },
+  });
+  const result = await store.transferPolicyBetweenFamilies({ confirmationId: 'transfer-1', userId: 7, consumedAt: '2026-07-12T04:01:00.000Z' });
+  assert.equal(result.status, 'transferred');
+  const loaded = await store.load();
+  assert.equal(loaded.policies[0].familyId, 20);
+  assert.deepEqual(loaded.policies[0].sourceEvidence, { page: 8 });
+  assert.deepEqual(loaded.policies[0].ocr, { digest: 'keep-me' });
+  assert.deepEqual(loaded.familyReports.map((row) => row.status), ['stale', 'stale']);
+  assert.deepEqual(loaded.familySalesReviews.map((row) => row.status), ['stale', 'stale']);
+  assert.equal(loaded.familyReportShares[0].status, 'revoked');
+  const audit = store.db.prepare('SELECT * FROM agent_policy_transfer_audits').get();
+  assert.deepEqual(JSON.parse(audit.before_payload), { familyId: 10, applicantMemberId: 201, insuredMemberId: 201 });
+  assert.deepEqual(JSON.parse(audit.after_payload), { familyId: 20, applicantMemberId: 201, insuredMemberId: 201 });
+  assert.equal((await store.transferPolicyBetweenFamilies({ confirmationId: 'transfer-1', userId: 7, consumedAt: '2026-07-12T04:02:00.000Z' })).status, 'already_consumed');
+  assert.equal(store.db.prepare('SELECT count(*) count FROM agent_policy_transfer_audits').get().count, 1);
+  store.close();
+});
+
 test('sqlite state store normalizes confirmation timestamps and serializes competing consumers', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');

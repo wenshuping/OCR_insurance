@@ -194,5 +194,18 @@
     "commands": [
       "node --check scripts/local-stack.mjs"
     ]
+  },
+  {
+    "name": "agent-policy-transfer-confirmation",
+    "patterns": [
+      "server/agent-confirmation.service.mjs",
+      "server/sqlite-state-store.mjs",
+      "tests/agent-confirmation.test.mjs",
+      "tests/sqlite-state-store.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/agent-confirmation.test.mjs",
+      "node --test tests/sqlite-state-store.test.mjs"
+    ]
   }
 ]
