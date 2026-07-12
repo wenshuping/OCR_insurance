@@ -103,3 +103,5 @@ npm install
 不要把凭据提交到仓库；生产进程应从受控运行环境注入这些变量。
 
 生产环境还必须配置 `FAMILY_SALES_MEMORY_CURSOR_KEY`（至少 32 个字符），用于绑定并签名家庭销售记忆分页游标。开发环境未配置时会使用进程内随机密钥，重启后旧游标会自然失效。
+
+悟空顾问记忆操作还必须配置独立的 `WUKONG_MEMORY_CONFIRMATION_KEY`（至少 32 个字符）。钉钉卡片点击回调由受信服务调用 `POST /api/wukong/memory-action-confirmations` 换取五分钟内有效的单次确认令牌；该地址不属于 MCP 工具注册表，模型不能自行签发确认。

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPolicyOcrApp } from './app.mjs';
 import { createSqliteStateStore } from './sqlite-state-store.mjs';
+import { createAdvisorMemoryConfirmationService } from './advisor-memory-confirmation.service.mjs';
 import { createDingtalkIdentityRuntime } from './dingtalk-identity-runtime.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,6 +78,7 @@ const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 const store = await createSqliteStateStore({ dbPath, seedStatePath: statePath });
 const state = await store.load();
 const dingtalkIdentityRuntime = createDingtalkIdentityRuntime({ env: process.env });
+const advisorMemoryConfirmationService = createAdvisorMemoryConfirmationService({ key: process.env.WUKONG_MEMORY_CONFIRMATION_KEY });
 const app = createPolicyOcrApp({
   state,
   persist: store.persist,
@@ -114,6 +116,8 @@ const app = createPolicyOcrApp({
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
   ...dingtalkIdentityRuntime,
+  advisorMemoryConfirmationService,
+  verifyAdvisorMemoryConfirmation: advisorMemoryConfirmationService.verify,
   db: store.db,
 });
 

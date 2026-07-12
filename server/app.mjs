@@ -14,6 +14,7 @@ import { createPolicyRoutes } from './routes/policies.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { createWukongMcpRoutes } from './routes/wukong-mcp.routes.mjs';
+import { createAdvisorMemoryConfirmationRoutes } from './routes/advisor-memory-confirmation.routes.mjs';
 import { createWukongMcpGateway } from './wukong-mcp-gateway.service.mjs';
 import { createFamilySalesMemoryApi } from './family-sales-memory-api.service.mjs';
 import { createAgentPolicyImportRuntime } from './agent-policy-import-runtime.service.mjs';
@@ -2608,6 +2609,7 @@ export function createPolicyOcrApp(options = {}) {
     fetchWechatOAuthOpenid: options.fetchWechatOAuthOpenid || fetchWechatOAuthOpenid,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
     authenticateDingtalkServiceRequest: options.authenticateDingtalkServiceRequest,
+    advisorMemoryConfirmationService: options.advisorMemoryConfirmationService,
     wukongMcpGateway,
     getDingtalkUserProfile: options.getDingtalkUserProfile,
     dingtalkAllowedUserIds: Array.isArray(options.dingtalkAllowedUserIds) ? options.dingtalkAllowedUserIds : [],
@@ -2697,6 +2699,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/auth', createAuthRoutes(routeContext));
   app.use('/api/dingtalk/identity', createDingtalkIdentityRoutes(routeContext));
   app.use('/api/wukong/mcp', createWukongMcpRoutes(routeContext));
+  app.use('/api/wukong/memory-action-confirmations', createAdvisorMemoryConfirmationRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
   app.use('/api', createFamilyRoutes(routeContext));
   app.use('/api/membership', createMembershipRoutes(routeContext));

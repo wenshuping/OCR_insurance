@@ -109,7 +109,7 @@ export function createFamilySalesMemoryApi({ state, persistFamilySalesMemoryTran
     return { sections };
   }
 
-  async function action({ familyId, memoryId, owner, action, input = {}, actorType = 'advisor', channel = 'web', outerRequestId = '', confirmationToken = '', interactionId = '' } = {}) {
+  async function action({ familyId, memoryId, owner, action, input = {}, actorType = 'advisor', channel = 'web', outerRequestId = '', confirmationToken = '', interactionId = '', confirmationPrincipal = {} } = {}) {
     const scope = ownerScope(owner);
     if (!(state.familySalesMemories || []).some((memory) => String(memory.id) === String(memoryId) && sameScope(memory, familyId, scope))) fail('MEMORY_NOT_FOUND');
     if (!ACTIONS.has(action)) fail('INVALID_MEMORY_ACTION');
@@ -130,7 +130,8 @@ export function createFamilySalesMemoryApi({ state, persistFamilySalesMemoryTran
     if (channel === 'mcp') {
       if (typeof verifyAdvisorConfirmation !== 'function') fail('ADVISOR_CONFIRMATION_REQUIRED');
       try {
-        const expectedClaims = { interactionId, ownerScopeKey: scopeKey(scope), familyId: Number(familyId), memoryId: Number(memoryId), expectedVersion: input.expectedVersion,
+        const expectedClaims = { interactionId, ownerScopeKey: scopeKey(scope), corpId: confirmationPrincipal.corpId, dingUserId: confirmationPrincipal.dingUserId,
+          familyId: Number(familyId), memoryId: Number(memoryId), expectedVersion: input.expectedVersion,
           action, reasonCode: input.reasonCode, replacementHash: crypto.createHash('sha256').update(JSON.stringify(replacement)).digest('hex') };
         const claims = await verifyAdvisorConfirmation({ token: confirmationToken, ...expectedClaims });
         if (!claims?.valid || Object.entries(expectedClaims).some(([name, value]) => claims[name] !== value)) fail('ADVISOR_CONFIRMATION_INVALID');

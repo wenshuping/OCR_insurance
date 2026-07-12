@@ -191,12 +191,14 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert, fa
     }],
     ['apply_memory_action', {
       name: 'apply_memory_action',
+      durableIdempotency: true,
       inputSchema: familySchema({ familyRef: { type: 'integer' }, memoryId: { type: 'integer' }, action: { type: 'string', enum: ['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore'] }, expectedVersion: { type: 'integer' }, reasonCode: { type: 'string', maxLength: 80 }, confirmationToken: { type: 'string', maxLength: 2000 }, interactionId: { type: 'string', maxLength: 160 }, replacement: { type: 'object', properties: { content: { type: 'string', maxLength: 220 } }, required: ['content'], additionalProperties: false } }, ['familyRef', 'memoryId', 'action', 'expectedVersion', 'reasonCode', 'confirmationToken', 'interactionId']),
       authorize: () => true,
       execute: async (context, input, request) => {
         const { familyRef, memoryId, action, confirmationToken, interactionId, ...actionInput } = input;
         const result = await familySalesMemoryApi.action({ familyId: resolveFamily(context, familyRef).id, memoryId, owner: context, action, input: actionInput,
-          channel: 'mcp', outerRequestId: request.requestId, confirmationToken, interactionId });
+          channel: 'mcp', outerRequestId: request.requestId, confirmationToken, interactionId,
+          confirmationPrincipal: { corpId: request.corpId, dingUserId: request.dingUserId } });
         return { memories: result.memories.map((memory) => ({ id: memory.id, kind: memory.kind, status: memory.status, content: memory.content, untrustedData: true, version: memory.version })), idempotent: result.idempotent };
       },
     }],
@@ -236,6 +238,7 @@ export function createWukongMcpGateway({
   const toolMetadata = deepFreeze([...registry.values()].map((entry) => ({
     name: entry.name,
     inputSchema: structuredClone(entry.inputSchema),
+    ...(entry.durableIdempotency ? { durableIdempotency: true } : {}),
   })));
   const replay = new Map();
   const rates = new Map();
@@ -290,14 +293,14 @@ export function createWukongMcpGateway({
       const ownerContext = resolveOwnerContext(state || {}, request);
       purgeExpiredReplay(timestamp);
       const replayKey = `user:${ownerContext.userId}\u0000${request.requestId}`;
-      if (replay.has(replayKey)) fail('REQUEST_REPLAYED', 409);
-      if (replay.size >= replayMax) fail('REPLAY_CACHE_CAPACITY', 503);
+      if (!entry.durableIdempotency && replay.has(replayKey)) fail('REQUEST_REPLAYED', 409);
+      if (!entry.durableIdempotency && replay.size >= replayMax) fail('REPLAY_CACHE_CAPACITY', 503);
 
       if (!entry.authorize(ownerContext, request.input)) fail('TOOL_NOT_ALLOWED', 403);
       // Internal user ids are stable across multiple DingTalk identities, so aliases share one quota.
       takeRate(`user:${ownerContext.userId}`, timestamp);
       // Reservations intentionally survive execution failures to prevent unsafe retries for future write tools.
-      replay.set(replayKey, timestamp + replayTtl);
+      if (!entry.durableIdempotency) replay.set(replayKey, timestamp + replayTtl);
       onExecute?.(entry.name);
       return entry.execute(ownerContext, request.input, request);
     },

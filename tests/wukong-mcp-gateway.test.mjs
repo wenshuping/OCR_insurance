@@ -90,11 +90,38 @@ test('public metadata contains only names and schemas and keeps executables priv
   const gateway = createWukongMcpGateway({ state: stateFor() });
   assert.deepEqual(gateway.toolMetadata.map(({ name }) => name), PUBLIC_TOOL_NAMES);
   for (const metadata of gateway.toolMetadata) {
-    assert.deepEqual(Object.keys(metadata).sort(), ['inputSchema', 'name']);
+    assert.deepEqual(Object.keys(metadata).sort(), metadata.name === 'apply_memory_action' ? ['durableIdempotency', 'inputSchema', 'name'] : ['inputSchema', 'name']);
     assert.equal('execute' in metadata, false);
     assert.equal('authorize' in metadata, false);
   }
   assert.equal(Object.isFrozen(gateway.toolNames), true);
+});
+
+test('durably idempotent memory actions bypass process replay and permit transient retry', async () => {
+  let calls = 0;
+  let failFirst = false;
+  const familySalesMemoryApi = {
+    list: () => ({ section: 'current', items: [], count: 0, nextCursor: '' }),
+    action: async () => {
+      calls += 1;
+      if (failFirst && calls === 1) throw new Error('transient');
+      return { memories: [{ id: 31, kind: 'objection', status: 'confirmed', content: 'ok', version: 2 }], idempotent: calls > 1 };
+    },
+  };
+  const gateway = createWukongMcpGateway({ state: stateFor(), familySalesMemoryApi, rateLimit: 10 });
+  const request = { ...PRINCIPAL, requestId: 'durable-1', conversationType: 'direct', tool: 'apply_memory_action', input: { familyRef: 11, memoryId: 31, action: 'confirm', expectedVersion: 1, reasonCode: 'advisor_confirmation', confirmationToken: 'token', interactionId: 'card' } };
+  const first = await gateway.invoke(request);
+  const duplicate = await gateway.invoke(request);
+  assert.deepEqual(duplicate.memories, first.memories);
+  assert.equal(calls, 2);
+  assert.equal(gateway.replaySize, 0);
+  calls = 0;
+  failFirst = true;
+  const retryRequest = { ...request, requestId: 'durable-retry' };
+  await assert.rejects(gateway.invoke(retryRequest), /transient/);
+  const retried = await gateway.invoke(retryRequest);
+  assert.equal(retried.memories[0].status, 'confirmed');
+  assert.equal(calls, 2);
 });
 
 test('policy intake tools derive owner and reject forged family or owner input', async () => {
