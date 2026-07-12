@@ -17,6 +17,7 @@ const MAX_OPTIONS = 100;
 const MAX_EVENTS = 200;
 const MAX_PLANS = 100;
 const MAX_TEXT = 160;
+const PRODUCT_RESOLUTIONS = new Set(['trusted_match', 'selected', 'manual_confirmed']);
 
 function fail(code, message, status = 400) {
   throw Object.assign(new Error(message), { code, status });
@@ -100,9 +101,15 @@ function missingFields(draft) {
 
 function workflowStatus(task) {
   const missing = missingFields(task.draft);
-  if (missing.includes('name') && task.productOptions.length) return 'candidate_selection';
-  if (missing.includes('insured') && task.memberOptions.length) return 'member_binding';
-  return missing.length ? 'field_completion' : 'final_confirmation';
+  if (!task.resolutionRequired) {
+    if (missing.includes('name') && task.productOptions.length) return 'candidate_selection';
+    if (missing.includes('insured') && task.memberOptions.length) return 'member_binding';
+    return missing.length ? 'field_completion' : 'final_confirmation';
+  }
+  if (missing.length) return 'field_completion';
+  if (task.resolutionRequired && !PRODUCT_RESOLUTIONS.has(task.productResolution)) return 'candidate_selection';
+  if (task.resolutionRequired && (!task.draft.insuredMemberId || (task.draft.applicant && !task.draft.applicantMemberId))) return 'member_binding';
+  return 'final_confirmation';
 }
 
 function normalizeOptionValue(value, field) {
@@ -196,6 +203,8 @@ function canonicalTask(input) {
     draft: normalizeDraft(input.draft || input.scan || {}),
     productOptions: normalizeOptions(input.productOptions, 'product'),
     memberOptions: normalizeOptions(input.memberOptions, 'member'),
+    resolutionRequired: input.resolutionRequired === true,
+    productResolution: PRODUCT_RESOLUTIONS.has(input.productResolution) ? input.productResolution : '',
     privacyManifest: normalizePrivacyManifest(),
     events: normalizeEvents(input.events),
     createdAt: redact(scalarString(input.createdAt, { max: 40 })),
@@ -247,6 +256,7 @@ function assertActionPhase(task, action) {
   const allowed = {
     set_field: new Set(['field_completion', 'final_confirmation']),
     select_product: new Set(['candidate_selection']),
+    confirm_product_manual: new Set(['candidate_selection']),
     bind_member: new Set(['member_binding']),
     confirm: new Set(['final_confirmation']),
     mark_saved: new Set(['saving']),
@@ -285,10 +295,10 @@ export function normalizeAgentPolicyImportTask(task = {}) {
   return canonicalTask(task);
 }
 
-export function createAgentPolicyImportTask({ id, familyId, owner = {}, channel = 'web', targetAgent = 'sales_champion', draft, scan, productOptions = [], memberOptions = [], now = new Date().toISOString() } = {}) {
+export function createAgentPolicyImportTask({ id, familyId, owner = {}, channel = 'web', targetAgent = 'sales_champion', draft, scan, productOptions = [], memberOptions = [], resolutionRequired = false, now = new Date().toISOString() } = {}) {
   if (!isPlainObject(owner)) fail('INVALID_OWNER_ID', '所有者无效');
   const ownerUserId = owner.userId == null ? null : positiveInteger(owner.userId, 'INVALID_OWNER_ID');
-  const task = canonicalTask({ id, familyId, ownerUserId, ownerGuestId: ownerUserId ? '' : owner.guestId, channel, targetAgent, status: 'uploading', stateVersion: 1, documents: [], draft: draft || scan || {}, productOptions, memberOptions, events: [], createdAt: now, updatedAt: now });
+  const task = canonicalTask({ id, familyId, ownerUserId, ownerGuestId: ownerUserId ? '' : owner.guestId, channel, targetAgent, status: 'uploading', stateVersion: 1, documents: [], draft: draft || scan || {}, productOptions, memberOptions, resolutionRequired, events: [], createdAt: now, updatedAt: now });
   if (draft || scan) task.status = workflowStatus(task);
   task.events.push({ action: 'created', status: task.status, stateVersion: 1, createdAt: task.createdAt });
   return task;
@@ -347,12 +357,23 @@ export function updateAgentPolicyImportTask(input, { stateVersion, action = 'set
     if (!EDITABLE_FIELDS.has(field)) fail('AGENT_POLICY_IMPORT_FIELD_NOT_ALLOWED', '不支持修改该字段');
     const normalized = scalarString(value, { field, allowEmpty: false });
     task.draft[field] = normalized;
+    if (field === 'name' || field === 'company') {
+      task.productResolution = '';
+      delete task.draft.productId;
+    }
+    if (field === 'insured' || field === 'applicant') delete task.draft[`${field}MemberId`];
     task.status = workflowStatus(task);
   } else if (action === 'select_product') {
     const option = task.productOptions.find((candidate) => candidate.optionId === scalarString(optionId, { max: 80 }));
     if (!option) fail('INVALID_OPTION', '产品选项无效');
     task.draft.name = option.label;
     task.draft.productId = option.productId;
+    task.productResolution = 'selected';
+    task.status = workflowStatus(task);
+  } else if (action === 'confirm_product_manual') {
+    if (!task.draft.name || task.productOptions.length) fail('INVALID_OPTION', '存在候选产品时必须选择合法选项');
+    delete task.draft.productId;
+    task.productResolution = 'manual_confirmed';
     task.status = workflowStatus(task);
   } else if (action === 'bind_member') {
     if (!['insured', 'applicant'].includes(role)) fail('INVALID_MEMBER_ROLE', '家庭成员角色无效');
@@ -370,6 +391,27 @@ export function updateAgentPolicyImportTask(input, { stateVersion, action = 'set
 
 export const applyAgentPolicyImportAction = updateAgentPolicyImportTask;
 
+export function reconcileAgentPolicyImportResolutions(input, { productOptions, productResolution, productId, memberBindings = {}, now = new Date().toISOString() } = {}) {
+  const task = canonicalTask(input);
+  assertOpen(task);
+  if (productOptions !== undefined) task.productOptions = normalizeOptions(productOptions, 'product');
+  task.productResolution = PRODUCT_RESOLUTIONS.has(productResolution) ? productResolution : '';
+  if (productId !== undefined) task.draft.productId = normalizeOptionValue(productId, 'productId');
+  else if (!task.productResolution) delete task.draft.productId;
+  for (const role of ['insured', 'applicant']) {
+    const binding = memberBindings[role];
+    if (!binding) continue;
+    const option = task.memberOptions.find((candidate) => candidate.memberId === binding.memberId);
+    if (!option) fail('INVALID_OPTION', '家庭成员选项无效');
+    task.draft[`${role}MemberId`] = option.memberId;
+  }
+  task.status = workflowStatus(task);
+  recordMutation(task, 'resolutions_reconciled', now);
+  assertSafeCommitTarget(input);
+  replaceOwnEnumerable(input, task);
+  return input;
+}
+
 export function agentPolicyImportMatchesOwner(input = {}, owner = {}) {
   let task;
   try { task = canonicalTask(input); } catch { return false; }
@@ -381,7 +423,7 @@ export function agentPolicyImportMatchesOwner(input = {}, owner = {}) {
 function nextInteraction(task) {
   if (CLOSED_STATUSES.has(task.status)) return null;
   if (PROCESSING_STATUSES.has(task.status)) return { type: 'progress', status: task.status, stateVersion: task.stateVersion };
-  if (task.status === 'candidate_selection') return { type: 'select_product', stateVersion: task.stateVersion };
+  if (task.status === 'candidate_selection') return { type: task.productOptions.length ? 'select_product' : 'confirm_product_manual', stateVersion: task.stateVersion };
   if (task.status === 'member_binding') return { type: 'bind_member', stateVersion: task.stateVersion };
   const missing = missingFields(task.draft);
   if (missing.length) return { type: 'set_field', field: missing[0], stateVersion: task.stateVersion };
@@ -408,6 +450,11 @@ export function buildAgentPolicyImportContext(input = {}) {
       insuredIdNumber: maskTail(task.draft.insuredIdNumber), mobile: maskTail(task.draft.mobile), planCount: task.draft.plans.length,
     },
     missingFields: missingFields(task.draft),
+    resolution: {
+      product: task.productResolution || 'pending',
+      insuredMember: task.draft.insuredMemberId ? 'resolved' : 'pending',
+      applicantMember: !task.draft.applicant ? 'not_required' : (task.draft.applicantMemberId ? 'resolved' : 'pending'),
+    },
     legalOptions: {
       products: task.productOptions.map(({ optionId, label }) => ({ optionId: publicText(optionId), label: publicText(label) })),
       members: task.memberOptions.map(({ optionId, label }) => ({ optionId: publicText(optionId), label: maskName(label) })),

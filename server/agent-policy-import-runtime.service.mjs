@@ -5,6 +5,7 @@ import {
   buildAgentPolicyImportContext,
   createAgentPolicyImportTask,
   normalizeAgentPolicyImportTask,
+  reconcileAgentPolicyImportResolutions,
   updateAgentPolicyImportTask,
 } from './agent-policy-import.service.mjs';
 
@@ -51,6 +52,30 @@ function taskProducts(state) {
   }).slice(0, 100);
 }
 
+function normalizedName(value) {
+  return String(value || '').normalize('NFKC').replace(/[\s·•・（）()\-—_]/gu, '').toLowerCase();
+}
+
+function exactProductOptions(state, draft) {
+  const name = normalizedName(draft.name);
+  const company = normalizedName(draft.company);
+  if (!name) return [];
+  return taskProducts(state).filter((option) => {
+    const record = (state.knowledgeRecords || []).find((candidate) => String(candidate.canonicalProductId || candidate.productId || candidate.id) === String(option.productId));
+    return normalizedName(option.label) === name && (!company || !record?.company || normalizedName(record.company) === company);
+  });
+}
+
+function exactMemberBindings(task) {
+  const bindings = {};
+  for (const role of ['insured', 'applicant']) {
+    if (!task.draft[role]) continue;
+    const matches = task.memberOptions.filter((option) => normalizedName(option.label) === normalizedName(task.draft[role]));
+    if (matches.length === 1) bindings[role] = { memberId: matches[0].memberId };
+  }
+  return bindings;
+}
+
 function mergeScanDraft(task, scan) {
   const data = scan?.data && typeof scan.data === 'object' ? scan.data : scan;
   for (const field of ['company', 'name', 'insured', 'applicant', 'date', 'paymentPeriod', 'coveragePeriod', 'amount', 'firstPremium', 'policyNumber', 'insuredIdNumber', 'mobile']) {
@@ -58,7 +83,7 @@ function mergeScanDraft(task, scan) {
   }
 }
 
-export function createAgentPolicyImportRuntime({ state, allocateId, persistTask, recognizePolicyInput, nowIso = () => new Date().toISOString() } = {}) {
+export function createAgentPolicyImportRuntime({ state, allocateId, persistTask, recognizePolicyInput, resolveProductCandidates, nowIso = () => new Date().toISOString() } = {}) {
   state.agentPolicyImportTasks = Array.isArray(state.agentPolicyImportTasks) ? state.agentPolicyImportTasks : [];
 
   function ownedTask(taskId, familyId, owner) {
@@ -78,7 +103,7 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
     async start({ family, owner, channel = 'web' }) {
       const task = createAgentPolicyImportTask({
         id: allocateId(state), familyId: family.id, owner, channel,
-        productOptions: taskProducts(state), memberOptions: taskMembers(state, family.id), now: nowIso(),
+        productOptions: [], memberOptions: taskMembers(state, family.id), resolutionRequired: true, now: nowIso(),
       });
       return commit(null, task, 0);
     },
@@ -123,12 +148,23 @@ export function createAgentPolicyImportRuntime({ state, allocateId, persistTask,
             fieldEvidence: scan?.fieldEvidence && typeof scan.fieldEvidence === 'object' ? clone(scan.fieldEvidence) : {},
           };
           document.status = 'recognized';
+          const resolvedOptions = typeof resolveProductCandidates === 'function'
+            ? await resolveProductCandidates({ scan, draft: clone(next.draft), familyId: next.familyId })
+            : exactProductOptions(state, next.draft);
+          const productOptions = Array.isArray(resolvedOptions) ? resolvedOptions : [];
+          reconcileAgentPolicyImportResolutions(next, {
+            productOptions,
+            productResolution: productOptions.length === 1 ? 'trusted_match' : '',
+            productId: productOptions.length === 1 ? productOptions[0].productId : undefined,
+            memberBindings: exactMemberBindings(next),
+            now: nowIso(),
+          });
         } catch {
           document.status = 'failed';
+          next.status = 'field_completion';
+          next.stateVersion += 1;
+          next.updatedAt = nowIso();
         }
-        next.status = next.documents.some((candidate) => candidate.status === 'scanning') ? 'recognizing' : (next.draft.company && next.draft.name && next.draft.insured ? 'final_confirmation' : 'field_completion');
-        next.stateVersion += 1;
-        next.updatedAt = nowIso();
         await commit(state.agentPolicyImportTasks.find((task) => task.id === next.id), clone(normalizeAgentPolicyImportTask(next)), expectedVersion);
         expectedVersion = next.stateVersion;
       }

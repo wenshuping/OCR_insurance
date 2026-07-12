@@ -30,6 +30,7 @@
       "server/routes/dingtalk-identity.routes.mjs",
       "tests/wukong-mcp-gateway.test.mjs",
       "tests/agent-policy-import.test.mjs",
+      "tests/agent-policy-import-e2e.test.mjs",
       "tests/dingtalk-advisor-identity.test.mjs",
       "tests/dingtalk-identity-routes.test.mjs",
       "tests/dingtalk-identity-runtime.test.mjs"
@@ -37,6 +38,7 @@
     "commands": [
       "node --test tests/wukong-mcp-gateway.test.mjs",
       "node --test tests/agent-policy-import.test.mjs",
+      "node --test tests/agent-policy-import-e2e.test.mjs",
       "node --test tests/dingtalk-advisor-identity.test.mjs",
       "node --test tests/dingtalk-identity-routes.test.mjs",
       "node --test tests/dingtalk-identity-runtime.test.mjs"

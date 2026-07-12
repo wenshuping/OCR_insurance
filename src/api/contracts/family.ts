@@ -180,6 +180,7 @@ export type PolicyImportTask = {
   documentSummary: { count: number; statuses: Record<string, number> };
   policyDraft: Record<string, string | number>;
   missingFields: string[];
+  resolution: { product: 'pending' | 'trusted_match' | 'selected' | 'manual_confirmed'; insuredMember: 'pending' | 'resolved'; applicantMember: 'pending' | 'resolved' | 'not_required' };
   legalOptions: {
     products: Array<{ optionId: string; label: string }>;
     members: Array<{ optionId: string; label: string }>;
