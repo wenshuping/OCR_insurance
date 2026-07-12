@@ -187,8 +187,7 @@ export function createAdminRoutes(context) {
     try {
       const offset = Math.min(100_000, Math.max(0, Number.parseInt(req.query.offset, 10) || 0));
       const rows = await agentQuestionPolicyStore.listAgentUnknownQuestions({ limit: req.query.limit, offset });
-      const redact = (text) => String(text || '').replace(/\b\d{17}[\dXx]\b|\b\d{15}\b/gu, '[证件号已脱敏]').replace(/1\d{10}/gu, '[手机号已脱敏]');
-      res.json({ ok: true, items: rows.map((row) => ({ id: row.id, userRef: `user_${String(row.userId).slice(-2).padStart(2, '0')}`, question: redact(row.question), status: row.status, createdAt: row.createdAt })), total: Number(rows.total || 0), limit: Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20)), offset });
+      res.json({ ok: true, items: rows.map((row) => ({ id: row.id, userRef: `user_${String(row.userId).slice(-2).padStart(2, '0')}`, category: 'unrecognized_question', fallbackDecision: 'manual_review', occurrenceCount: 1, status: row.status, createdAt: row.createdAt })), total: Number(rows.total || 0), limit: Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20)), offset });
     } catch (error) { sendPolicyError(res, error); }
   });
 

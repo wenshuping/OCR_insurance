@@ -24,10 +24,12 @@ export function validatePolicyDraft(policies) {
   for (const policy of policies) {
     const label = String(policy?.key || '未命名策略');
     if (!policy?.key || !policy?.intent) errors.push(`${label} 缺少 key 或 intent。`);
-    if (keys.has(policy?.key)) errors.push(`${label} key 重复。`);
-    if (intents.has(policy?.intent)) errors.push(`${label} intent 重复。`);
-    keys.add(policy?.key);
-    intents.add(policy?.intent);
+    const normalizedKey = normalizePolicyIdentifier(policy?.key);
+    const normalizedIntent = normalizePolicyIdentifier(policy?.intent);
+    if (keys.has(normalizedKey)) errors.push(`${label} key 重复。`);
+    if (intents.has(normalizedIntent)) errors.push(`${label} intent 重复。`);
+    keys.add(normalizedKey);
+    intents.add(normalizedIntent);
     for (const field of Object.keys(ALLOWED)) {
       if (!ALLOWED[field].includes(policy?.[field])) errors.push(`${label} 的 ${field} 不在允许范围内。`);
     }
@@ -54,6 +56,41 @@ export function createRequestMutex() {
       active = true;
       try { return await request(); } finally { active = false; }
     },
+  };
+}
+
+export function createLatestRequestController() {
+  let generation = 0;
+  let disposed = false;
+  return {
+    begin() {
+      const current = ++generation;
+      return {
+        commit(update) {
+          if (disposed || current !== generation) return false;
+          update();
+          return true;
+        },
+      };
+    },
+    invalidate() { generation += 1; },
+    dispose() { disposed = true; generation += 1; },
+  };
+}
+
+export function normalizePolicyIdentifier(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/[\s-]+/gu, '_');
+}
+
+export function unknownQuestionViewModel(item) {
+  return {
+    id: Number(item?.id),
+    userRef: String(item?.userRef || ''),
+    category: String(item?.category || 'unrecognized_question'),
+    fallbackDecision: String(item?.fallbackDecision || 'manual_review'),
+    occurrenceCount: Math.max(1, Number(item?.occurrenceCount) || 1),
+    status: String(item?.status || ''),
+    createdAt: String(item?.createdAt || ''),
   };
 }
 

@@ -13,7 +13,7 @@ import {
   type AdminAgentQuestionPolicyVersion,
   type AdminAgentUnknownQuestion,
 } from '../../../api';
-import { createRequestMutex, fallbackPolicyKeys, policyValidationViewModel, shouldDiscardDirty } from './adminAgentPolicies.mjs';
+import { createLatestRequestController, createRequestMutex, fallbackPolicyKeys, policyValidationViewModel, shouldDiscardDirty, unknownQuestionViewModel } from './adminAgentPolicies.mjs';
 
 const HANDLERS = ['system', 'insurance_expert', 'sales_champion'] as const;
 const OPERATIONS = ['read', 'write'] as const;
@@ -56,43 +56,41 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
   const [unknownOffset, setUnknownOffset] = useState(0);
   const [unknownLoading, setUnknownLoading] = useState(false);
   const requestMutex = useRef(createRequestMutex());
+  const simulationMutex = useRef(createRequestMutex());
+  const policyRequests = useRef(createLatestRequestController());
+  const unknownRequests = useRef(createLatestRequestController());
 
-  async function loadPolicies() {
-    setLoading(true);
-    setPolicyLoadError('');
+  async function loadPolicies(request = policyRequests.current.begin()) {
+    request.commit(() => { setLoading(true); setPolicyLoadError(''); });
     try {
       const response = await getAdminAgentQuestionPolicies(adminToken);
-      const selectedDraft = response.drafts[0] || null;
-      setPublished(response.published);
-      setDraft(selectedDraft);
-      setPolicies((selectedDraft?.policies || response.published?.policies || response.templates).map((item) => ({ ...item })));
-      setHistory(response.history);
-      setPoliciesLoaded(true);
-      setDirty(false);
+      request.commit(() => {
+        const selectedDraft = response.drafts[0] || null;
+        setPublished(response.published); setDraft(selectedDraft);
+        setPolicies((selectedDraft?.policies || response.published?.policies || response.templates).map((item) => ({ ...item })));
+        setHistory(response.history); setPoliciesLoaded(true); setDirty(false);
+      });
     } catch (requestError) {
-      setPoliciesLoaded(false);
-      setPolicyLoadError(errorMessage(requestError));
+      request.commit(() => { setPoliciesLoaded(false); setPolicyLoadError(errorMessage(requestError)); });
     } finally {
-      setLoading(false);
+      request.commit(() => setLoading(false));
     }
   }
 
-  async function loadUnknownQuestions(offset = unknownOffset) {
-    setUnknownLoading(true);
+  async function loadUnknownQuestions(offset = unknownOffset, request = unknownRequests.current.begin()) {
+    request.commit(() => setUnknownLoading(true));
     try {
       const response = await getAdminAgentUnknownQuestions(adminToken, { limit: UNKNOWN_LIMIT, offset });
-      setUnknownItems(response.items);
-      setUnknownTotal(response.total);
-      setUnknownOffset(response.offset);
+      request.commit(() => { setUnknownItems(response.items.map(unknownQuestionViewModel)); setUnknownTotal(response.total); setUnknownOffset(response.offset); });
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      request.commit(() => setError(errorMessage(requestError)));
     } finally {
-      setUnknownLoading(false);
+      request.commit(() => setUnknownLoading(false));
     }
   }
 
-  useEffect(() => { void loadPolicies(); }, [adminToken]);
-  useEffect(() => { void loadUnknownQuestions(unknownOffset); }, [adminToken, unknownOffset]);
+  useEffect(() => { void loadPolicies(); return () => policyRequests.current.invalidate(); }, [adminToken]);
+  useEffect(() => { void loadUnknownQuestions(unknownOffset); return () => unknownRequests.current.invalidate(); }, [adminToken, unknownOffset]);
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => {
     const preventUnload = (event: BeforeUnloadEvent) => {
@@ -127,45 +125,34 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
 
   async function publishDraft() {
     if (!draft || saving || dirty || !window.confirm(`确认发布版本 ${draft.version}？发布后将影响新请求。`)) return;
-    setSaving(true);
-    try {
-      await publishAdminAgentQuestionPolicyDraft(adminToken, draft.id);
-      await loadPolicies();
-    } catch (requestError) {
-      setError(errorMessage(requestError));
-    } finally {
-      setSaving(false);
-    }
+    await requestMutex.current.run(async () => {
+      setSaving(true);
+      try { await publishAdminAgentQuestionPolicyDraft(adminToken, draft.id); await loadPolicies(); }
+      catch (requestError) { setError(errorMessage(requestError)); }
+      finally { setSaving(false); }
+    });
   }
 
   async function rollback(version: AdminAgentQuestionPolicyVersion) {
     if (saving || !shouldDiscardDirty(dirty, window.confirm) || !window.confirm(`确认回滚到版本 ${version.version}？系统会创建新的发布版本。`)) return;
-    setSaving(true);
-    try {
-      await rollbackAdminAgentQuestionPolicyVersion(adminToken, version.id);
-      await loadPolicies();
-    } catch (requestError) {
-      setError(errorMessage(requestError));
-    } finally {
-      setSaving(false);
-    }
+    await requestMutex.current.run(async () => {
+      setSaving(true);
+      try { await rollbackAdminAgentQuestionPolicyVersion(adminToken, version.id); await loadPolicies(); }
+      catch (requestError) { setError(errorMessage(requestError)); }
+      finally { setSaving(false); }
+    });
   }
 
   async function runSimulation() {
     if (simulating || (simulationSource === 'draft' && !draft)) return;
-    setSimulating(true);
-    setError('');
-    try {
-      const entities = Object.fromEntries(Object.entries({ familyName, familyRef, policyHint }).filter(([, value]) => value.trim()));
-      setSimulation(await simulateAdminAgentQuestionPolicy(adminToken, {
-        ...(simulationSource === 'draft' && draft ? { draftId: draft.id } : {}),
-        candidate: { intent: candidateIntent, question, confidence: Number(confidence), requestedOperation, entities },
-      }));
-    } catch (requestError) {
-      setError(errorMessage(requestError));
-    } finally {
-      setSimulating(false);
-    }
+    await simulationMutex.current.run(async () => {
+      setSimulating(true); setError('');
+      try {
+        const entities = Object.fromEntries(Object.entries({ familyName, familyRef, policyHint }).filter(([, value]) => value.trim()));
+        setSimulation(await simulateAdminAgentQuestionPolicy(adminToken, { ...(simulationSource === 'draft' && draft ? { draftId: draft.id } : {}), candidate: { intent: candidateIntent, question, confidence: Number(confidence), requestedOperation, entities } }));
+      } catch (requestError) { setError(errorMessage(requestError)); }
+      finally { setSimulating(false); }
+    });
   }
 
   function refreshPolicies() {
@@ -208,7 +195,7 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
 
       <section className="rounded-[18px] border border-slate-200 bg-white p-5"><h2 className="text-lg font-black">版本历史</h2><div className="mt-3 space-y-2">{history.map((version) => <div key={version.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 p-3 text-sm"><span><b>v{version.version}</b> · {version.status} · {version.createdAt}</span><button className="rounded-lg border border-slate-300 px-3 py-1 font-bold disabled:opacity-40" disabled={saving || version.status === 'draft' || version.id === published?.id} onClick={() => void rollback(version)}>回滚到此版本</button></div>)}</div></section>
 
-      <section className="rounded-[18px] border border-slate-200 bg-white p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-black">脱敏未知问题</h2><p className="text-sm text-slate-500">仅展示后端脱敏字段，不提供消息引用或原始载荷。</p></div><span className="text-sm font-bold">共 {unknownTotal} 条</span></div>{unknownLoading ? <p className="mt-3 text-sm">加载中...</p> : <div className="mt-3 space-y-2">{unknownItems.map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><div className="flex justify-between gap-2"><b>{item.userRef} · {item.status}</b><span className="text-slate-500">{item.createdAt}</span></div><p className="mt-1 break-words text-slate-700">{item.question}</p></div>)}</div>}<div className="mt-3 flex justify-end gap-2"><button className="rounded-lg border px-3 py-1 text-sm font-bold" disabled={unknownLoading || unknownOffset === 0} onClick={() => setUnknownOffset(Math.max(0, unknownOffset - UNKNOWN_LIMIT))}>上一页</button><button className="rounded-lg border px-3 py-1 text-sm font-bold" disabled={unknownLoading || unknownOffset + UNKNOWN_LIMIT >= unknownTotal} onClick={() => setUnknownOffset(unknownOffset + UNKNOWN_LIMIT)}>下一页</button></div></section>
+      <section className="rounded-[18px] border border-slate-200 bg-white p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-black">未知问题统计</h2><p className="text-sm text-slate-500">不展示原问句、标准化文本、消息引用或原始载荷。</p></div><span className="text-sm font-bold">共 {unknownTotal} 条</span></div>{unknownLoading ? <p className="mt-3 text-sm">加载中...</p> : <div className="mt-3 space-y-2">{unknownItems.map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><div className="flex justify-between gap-2"><b>{item.category} · {item.status}</b><span className="text-slate-500">{item.createdAt}</span></div><p className="mt-1 text-slate-700">fallback：{item.fallbackDecision} · 次数：{item.occurrenceCount}</p></div>)}</div>}<div className="mt-3 flex justify-end gap-2"><button className="rounded-lg border px-3 py-1 text-sm font-bold" disabled={unknownLoading || unknownOffset === 0} onClick={() => setUnknownOffset(Math.max(0, unknownOffset - UNKNOWN_LIMIT))}>上一页</button><button className="rounded-lg border px-3 py-1 text-sm font-bold" disabled={unknownLoading || unknownOffset + UNKNOWN_LIMIT >= unknownTotal} onClick={() => setUnknownOffset(unknownOffset + UNKNOWN_LIMIT)}>下一页</button></div></section>
     </div>
   );
 }

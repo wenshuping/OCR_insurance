@@ -194,7 +194,7 @@ export type AdminAgentPolicySimulationResponse = {
   };
 };
 
-export type AdminAgentUnknownQuestion = { id: number; userRef: string; question: string; status: string; createdAt: string };
+export type AdminAgentUnknownQuestion = { id: number; userRef: string; category: string; fallbackDecision: string; occurrenceCount: number; status: string; createdAt: string };
 
 export type AdminReportIssueSummary = {
   id: number;

@@ -90,6 +90,7 @@ test('unknown question list is paginated and redacted, and concurrent publish ke
     assert.equal(JSON.stringify(page.body).includes('secret-message'), false);
     assert.equal(JSON.stringify(page.body).includes('secret'), false);
     await h.store.appendAgentUnknownQuestion({ userId: 789, messageRef: 'mixed', question: '身份证 11010519491231002X，旧证 110105491231002，电话 13812345678', actor: 'router' });
+    await h.store.appendAgentUnknownQuestion({ userId: 790, messageRef: 'private', question: '张三 北京市朝阳区 name@example.com 银行卡 6222020202020202', actor: 'router' });
     const redacted = await call(h, '/api/admin/agent-unknown-questions?limit=100&offset=999999');
     assert.equal(redacted.body.offset, 100000);
     const firstPage = await call(h, '/api/admin/agent-unknown-questions?limit=100');
@@ -97,6 +98,9 @@ test('unknown question list is paginated and redacted, and concurrent publish ke
     assert.equal(serialized.includes('11010519491231002X'), false);
     assert.equal(serialized.includes('110105491231002'), false);
     assert.equal(serialized.includes('13812345678'), false);
+    for (const sensitive of ['张三', '北京市朝阳区', 'name@example.com', '6222020202020202']) assert.equal(serialized.includes(sensitive), false);
+    assert.equal(Object.hasOwn(firstPage.body.items[0], 'question'), false);
+    assert.equal(Object.hasOwn(firstPage.body.items[0], 'normalizedQuestion'), false);
     const a = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
     const b = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
     await Promise.all([a, b].map((row) => call(h, `/api/admin/agent-question-policies/drafts/${row.body.draft.id}/publish`, { method: 'POST', body: {} })));

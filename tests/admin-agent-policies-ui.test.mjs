@@ -4,6 +4,9 @@ import test from 'node:test';
 import {
   createRequestMutex,
   policyValidationViewModel,
+  createLatestRequestController,
+  normalizePolicyIdentifier,
+  unknownQuestionViewModel,
   simulationViewModel,
   shouldDiscardDirty,
   validatePolicyDraft,
@@ -60,7 +63,7 @@ test('simulation and unknown-question views show safe operational detail and pag
   assert.match(pageSource, /policySource/u);
   assert.match(pageSource, /低置信度/u);
   assert.match(pageSource, /写操作预览/u);
-  assert.match(pageSource, /脱敏未知问题/u);
+  assert.match(pageSource, /未知问题统计/u);
   assert.match(pageSource, /unknownOffset/u);
   assert.match(pageSource, /上一页/u);
   assert.match(pageSource, /下一页/u);
@@ -109,6 +112,33 @@ test('policy validation is gated until the policy request succeeds', () => {
   const loaded = policyValidationViewModel({ loading: false, loadError: '', loaded: true, policies: [] });
   assert.equal(loaded.ready, true);
   assert.match(loaded.errors[0], /至少需要一条/u);
+});
+
+test('latest request controller rejects stale and post-cleanup commits', () => {
+  const controller = createLatestRequestController();
+  const first = controller.begin();
+  const second = controller.begin();
+  let commits = 0;
+  assert.equal(first.commit(() => { commits += 1; }), false);
+  assert.equal(second.commit(() => { commits += 1; }), true);
+  controller.dispose();
+  assert.equal(second.commit(() => { commits += 1; }), false);
+  assert.equal(commits, 1);
+});
+
+test('unknown question view model never carries raw or normalized question text', () => {
+  const model = unknownQuestionViewModel({ id: 1, userRef: 'user_01', question: '张三 北京 name@example.com 6222020202020202', normalizedQuestion: 'secret', category: 'unrecognized_question', fallbackDecision: 'manual_review', occurrenceCount: 3, status: 'open', createdAt: '2026-01-01' });
+  assert.deepEqual(model, { id: 1, userRef: 'user_01', category: 'unrecognized_question', fallbackDecision: 'manual_review', occurrenceCount: 3, status: 'open', createdAt: '2026-01-01' });
+  assert.equal(JSON.stringify(model).includes('张三'), false);
+});
+
+test('policy duplicate normalization mirrors backend intent normalization', () => {
+  assert.equal(normalizePolicyIdentifier(' FOO BAR '), 'foo_bar');
+  assert.equal(normalizePolicyIdentifier('foo-bar'), 'foo_bar');
+  const base = { key: 'unknown_read', intent: 'unknown_read', decision: 'execute', handler: 'system', operation: 'read', confirmation: 'not_required', outputMode: 'direct', tool: null };
+  const errors = validatePolicyDraft([base, { ...base, key: 'foo-bar', intent: 'Foo Bar' }, { ...base, key: 'FOO BAR', intent: 'foo-bar' }]).join(' ');
+  assert.match(errors, /key 重复/u);
+  assert.match(errors, /intent 重复/u);
 });
 
 test('page wires unload protection, validated publish, responsive layout and pagination parameters', () => {
