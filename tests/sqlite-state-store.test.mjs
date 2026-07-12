@@ -24,7 +24,9 @@ test('initialized legacy memory database backfills promoted columns and one impo
     INSERT INTO untouched_sentinel VALUES ('keep');
   `);
   const memory = { id: 7, familyId: 3, ownerGuestId: 'guest-legacy', kind: 'preference', content: '简洁展示', status: 'active', confidence: 0.8, createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' };
-  legacy.prepare('INSERT INTO family_sales_memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(7, 3, null, 'guest-legacy', 'preference', 'active', null, memory.createdAt, memory.updatedAt, JSON.stringify(memory));
+  const importedMemories = [memory, { ...memory, id: 8, status: 'confirmed' }, { ...memory, id: 9, status: 'candidate' }];
+  const insertLegacy = legacy.prepare('INSERT INTO family_sales_memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  for (const item of importedMemories) insertLegacy.run(item.id, 3, null, 'guest-legacy', 'preference', item.status, null, item.createdAt, item.updatedAt, JSON.stringify(item));
   legacy.close();
 
   const first = await createSqliteStateStore({ dbPath });
@@ -35,10 +37,15 @@ test('initialized legacy memory database backfills promoted columns and one impo
   assert.equal(promoted.content, memory.content);
   assert.equal(promoted.confidence, 0.8);
   assert.equal(first.db.prepare('SELECT event_type FROM family_sales_memory_events WHERE memory_id = 7').get().event_type, 'imported');
+  assert.deepEqual(first.db.prepare('SELECT memory_id, previous_status, next_status FROM family_sales_memory_events ORDER BY memory_id').all().map((row) => ({ ...row })), [
+    { memory_id: 7, previous_status: 'active', next_status: 'confirmed' },
+    { memory_id: 8, previous_status: '', next_status: 'confirmed' },
+    { memory_id: 9, previous_status: '', next_status: 'candidate' },
+  ]);
   assert.equal(first.db.prepare('SELECT value FROM untouched_sentinel').get().value, 'keep');
   first.close();
   const reopened = await createSqliteStateStore({ dbPath });
-  assert.equal(reopened.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events WHERE memory_id = 7').get().count, 1);
+  assert.equal(reopened.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events').get().count, 3);
   reopened.close();
 });
 
@@ -47,7 +54,7 @@ test('sqlite temporal memories persist immutable ordered events with CAS and rol
   const dbPath = path.join(dir, 'memory.sqlite');
   const store = await createSqliteStateStore({ dbPath });
   const state = await store.load();
-  const candidate = { id: 101, familyId: 8, ownerUserId: 1, ownerGuestId: '', kind: 'preference', content: '只看摘要', status: 'candidate', version: 1, evidenceMessageIds: [501], createdAt: '2026-07-12T01:00:00.000Z', updatedAt: '2026-07-12T01:00:00.000Z' };
+  const candidate = { id: 101, familyId: 8, ownerUserId: 1, ownerGuestId: '', kind: 'preference', content: '只看摘要', status: 'candidate', version: 1, sourceType: 'user_statement', normalizedValue: { format: 'summary' }, confirmationType: 'advisor', confirmedBy: 'advisor:1', invalidationReason: '', extractorVersion: 'v2', evidenceMessageIds: [501], createdAt: '2026-07-12T01:00:00.000Z', updatedAt: '2026-07-12T01:00:00.000Z' };
   state.familySalesMemories.push(candidate);
   await store.persistFamilyState({ state });
   await store.persistFamilyState({ state });
@@ -63,6 +70,26 @@ test('sqlite temporal memories persist immutable ordered events with CAS and rol
   assert.equal(store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload, before);
   assert.deepEqual(store.db.prepare('SELECT (SELECT count(*) FROM family_sales_memories) AS memories, (SELECT count(*) FROM family_sales_memory_events) AS events').get(), countsBefore);
   await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { id: 102, content: '看完整报告' }, expectedVersion: 2, now: '2026-07-12T04:00:00.000Z' });
+  for (const id of [101, 102]) {
+    const row = store.db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(id);
+    const payload = JSON.parse(row.payload);
+    assert.equal(row.status, payload.status);
+    assert.equal(row.content, payload.content);
+    assert.equal(row.confidence, payload.confidence);
+    assert.equal(row.version, payload.version);
+    assert.equal(row.recorded_at, payload.recordedAt);
+    assert.equal(row.valid_from || null, payload.validFrom || null);
+    assert.equal(row.valid_to || null, payload.validTo || null);
+    assert.equal(row.invalidated_at || null, payload.invalidatedAt || null);
+    assert.equal(row.normalized_value_json, JSON.stringify(payload.normalizedValue ?? null));
+    assert.equal(row.source_message_ids_json, JSON.stringify(payload.sourceMessageIds || payload.evidenceMessageIds || []));
+    assert.equal(row.source_type, payload.sourceType || '');
+    assert.equal(row.confirmation_type, payload.confirmationType || '');
+    assert.equal(row.confirmed_by, payload.confirmedBy || '');
+    assert.equal(row.confirmed_at, payload.confirmedAt || '');
+    assert.equal(row.invalidation_reason, payload.invalidationReason || '');
+    assert.equal(row.extractor_version, payload.extractorVersion || '');
+  }
   assert.throws(() => store.db.prepare('UPDATE family_sales_memory_events SET reason_code = ?').run('changed'), /immutable/u);
   assert.throws(() => store.db.prepare('DELETE FROM family_sales_memory_events').run(), /immutable/u);
   await store.persist(state);
