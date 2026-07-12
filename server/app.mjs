@@ -2202,6 +2202,8 @@ export function createPolicyOcrApp(options = {}) {
     rateWindowMs: options.wukongMcpRateWindowMs,
     rateMaxPrincipals: options.wukongMcpRateMaxPrincipals,
     policyImports,
+    salesChampion: options.askSalesChampionTool,
+    salesChampionOptions: options.salesChampionToolOptions,
   });
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {

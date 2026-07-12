@@ -1,4 +1,5 @@
 import { listFamilyProfilesForOwner } from './family-profile.domain.mjs';
+import { createSalesChampionTool } from './sales-champion-tool.service.mjs';
 
 const DEFAULT_REPLAY_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_REPLAY_MAX_ENTRIES = 2_000;
@@ -80,7 +81,7 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function createRegistry(state, policyImports) {
+function createRegistry(state, policyImports, salesChampion) {
   const emptyObjectSchema = Object.freeze({
     type: 'object', properties: Object.freeze({}), required: Object.freeze([]), additionalProperties: false,
   });
@@ -135,6 +136,12 @@ function createRegistry(state, policyImports) {
       name: 'finalize_policy_import', inputSchema: familySchema({ familyRef: { type: 'integer' }, taskId: { type: 'integer' }, stateVersion: { type: 'integer' }, requestId: { type: 'string' } }, ['familyRef', 'taskId', 'stateVersion', 'requestId']), authorize: () => true,
       execute: (context, input) => policyImports.finalize({ family: resolveFamily(context, input.familyRef), taskId: input.taskId, owner: context, stateVersion: input.stateVersion, requestId: input.requestId }),
     }],
+    ['ask_sales_champion', {
+      name: 'ask_sales_champion',
+      inputSchema: familySchema({ question: { type: 'string' }, familyRef: { type: 'integer' }, policyImportTaskId: { type: 'integer' } }, ['question', 'familyRef']),
+      authorize: () => true,
+      execute: (context, input, request) => salesChampion({ owner: context, ...input, requestId: request.requestId }),
+    }],
   ]);
 }
 
@@ -148,8 +155,11 @@ export function createWukongMcpGateway({
   rateMaxPrincipals = DEFAULT_RATE_MAX_PRINCIPALS,
   onExecute,
   policyImports,
+  salesChampion,
+  salesChampionOptions,
 } = {}) {
-  const registry = createRegistry(state || {}, policyImports || { start: () => fail('TOOL_NOT_CONFIGURED', 503), append: () => fail('TOOL_NOT_CONFIGURED', 503), get: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) });
+  const resolvedState = state || {};
+  const registry = createRegistry(resolvedState, policyImports || { start: () => fail('TOOL_NOT_CONFIGURED', 503), append: () => fail('TOOL_NOT_CONFIGURED', 503), get: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) }, salesChampion || createSalesChampionTool({ state: resolvedState, ...salesChampionOptions }));
   const toolMetadata = deepFreeze([...registry.values()].map((entry) => ({
     name: entry.name,
     inputSchema: structuredClone(entry.inputSchema),
@@ -213,7 +223,7 @@ export function createWukongMcpGateway({
       // Reservations intentionally survive execution failures to prevent unsafe retries for future write tools.
       replay.set(replayKey, timestamp + replayTtl);
       onExecute?.(entry.name);
-      return entry.execute(ownerContext, request.input);
+      return entry.execute(ownerContext, request.input, request);
     },
   };
 }
