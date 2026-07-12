@@ -12,6 +12,7 @@ import {
 import {
   applyFamilySalesMemoryAction,
   buildFamilySalesMemoryContext,
+  extractFamilySalesMemories,
   normalizeExtractedFamilySalesMemories,
   upsertFamilySalesMemories,
 } from '../server/family-sales-memory.service.mjs';
@@ -376,7 +377,7 @@ test('family sales memory context is sanitized, deduplicated, and available to c
   });
   assert.equal(result.changed, true);
   assert.equal(state.familySalesMemories.length, 3);
-  assert.deepEqual(state.familySalesMemories[0].evidenceMessageIds, [31, 32]);
+  assert.deepEqual(state.familySalesMemories[0].evidenceMessageIds, [31]);
   assert.deepEqual(state.familySalesMemories.map((memory) => memory.status), ['candidate', 'candidate', 'confirmed']);
 
   const salesMemoryContext = buildFamilySalesMemoryContext(state.familySalesMemories);
@@ -407,7 +408,7 @@ test('family sales memory context is sanitized, deduplicated, and available to c
 });
 
 test('family sales memory actions govern temporal transitions without mutating input', () => {
-  const actor = { type: 'advisor', id: 'advisor-7' };
+  const actor = { type: 'advisor', id: 7 };
   const candidate = Object.freeze({ id: 41, kind: 'todo', content: '补充资料', status: 'candidate', version: 1, createdAt: '2026-07-11T00:00:00.000Z' });
   const confirmed = applyFamilySalesMemoryAction({
     memory: candidate,
@@ -444,9 +445,9 @@ test('supersede returns a confirmed replacement and privacy-safe chain event', (
   const result = applyFamilySalesMemoryAction({
     memory,
     action: 'supersede',
-    actor: { type: 'system', id: 'memory-service' },
-    reason: '客户 110101198606141234 更正手机号 13800138000',
-    replacement: { id: 52, content: '微信联系时使用简短文字' },
+    actor: { type: 'system', id: 1 },
+    reason: '客户 110101198606141234 更正保单 ABC123456789，邮箱 client@example.com，手机号 13800138000',
+    replacement: { id: 52, content: '微信联系时使用简短文字', familyId: 999, ownerUserId: 999, kind: 'preference', validFrom: '2026-07-12T16:00:00+08:00' },
     expectedVersion: 4,
     now: '2026-07-12T08:00:00.000Z',
   });
@@ -454,20 +455,56 @@ test('supersede returns a confirmed replacement and privacy-safe chain event', (
   assert.equal(result.memory.validTo, result.replacement.validFrom);
   assert.equal(result.replacement.status, 'confirmed');
   assert.equal(result.replacement.supersedesMemoryId, 51);
+  assert.equal(result.memory.supersededByMemoryId, 52);
+  assert.equal(result.replacement.familyId, 8);
+  assert.equal(result.replacement.ownerUserId, 9);
   assert.equal(result.replacement.version, 1);
+  assert.deepEqual(result.events.map((event) => event.memoryId), [51, 52]);
   assert.deepEqual(Object.keys(result.event).sort(), ['action', 'actor', 'memoryId', 'next', 'previous', 'reason', 'source', 'time', 'version']);
-  assert.doesNotMatch(JSON.stringify(result.event), /110101198606141234|13800138000|旧手机号|微信联系/u);
+  assert.doesNotMatch(JSON.stringify(result.event), /110101198606141234|13800138000|ABC123456789|client@example\.com|旧手机号|微信联系/u);
+  assert.ok(result.event.reason.length <= 120);
 });
 
 test('memory actions reject illegal and stale changes without mutation', () => {
   const memory = { id: 61, kind: 'preference', content: '偏好文字', status: 'confirmed', version: 2 };
   const snapshot = structuredClone(memory);
-  const actor = { type: 'advisor', id: 'advisor-7' };
+  const actor = { type: 'advisor', id: 7 };
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'complete', actor, expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /only todo/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'reject', actor, reason: '错误', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /illegal/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reason: '过期', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' }), /stale/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /reason/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor: { type: 'advisor', id: 'raw-advisor-id' }, reason: '过期', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /server-owned/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reason: '过期', expectedVersion: 2, now: '2026-07-12T08:00:00' }), /zoned ISO/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reason: '过期', expectedVersion: 2, now: 'not-a-date' }), /zoned ISO/u);
   assert.deepEqual(memory, snapshot);
+});
+
+test('memory actions normalize equivalent timezone instants and date-only UTC', () => {
+  const memory = { id: 71, kind: 'todo', content: '补资料', status: 'confirmed', version: 1 };
+  const base = { memory, action: 'complete', actor: { type: 'service', id: 3 }, expectedVersion: 1 };
+  const utc = applyFamilySalesMemoryAction({ ...base, now: '2026-07-12T08:00:00.000Z' });
+  const offset = applyFamilySalesMemoryAction({ ...base, now: '2026-07-12T16:00:00+08:00' });
+  const dateOnly = applyFamilySalesMemoryAction({ ...base, now: '2026-07-12' });
+  assert.equal(offset.event.time, utc.event.time);
+  assert.equal(dateOnly.event.time, '2026-07-12T00:00:00.000Z');
+});
+
+test('memory extraction treats only the user message as a fact source', async () => {
+  let requestBody;
+  const extracted = await extractFamilySalesMemories({
+    userMessage: { content: '客户偏好微信文字联系' },
+    assistantMessage: { content: '客户预算100万元，身份证110101198606141234' },
+    existingMemories: [{ kind: 'strategy', content: '推荐高预算方案', status: 'confirmed' }],
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '{"memories":[]}' } }] }) };
+    },
+  });
+  assert.deepEqual(extracted, []);
+  const prompt = JSON.stringify(requestBody.messages);
+  assert.match(prompt, /客户偏好微信文字联系/u);
+  assert.doesNotMatch(prompt, /预算100万元|110101198606141234|推荐高预算方案/u);
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {

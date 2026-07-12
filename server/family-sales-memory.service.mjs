@@ -108,14 +108,19 @@ function requireVersion(value, name = 'version') {
 
 function sanitizeEventText(value = '', limit = 120) {
   return sanitizeMemorySourceText(value, limit)
-    .replace(/\b\d{4,}\b/gu, '编号已脱敏');
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, '邮箱已脱敏')
+    .replace(/\b(?=[A-Z0-9_-]{8,}\b)(?=[A-Z0-9_-]*[A-Z])(?=[A-Z0-9_-]*\d)[A-Z0-9_-]+\b/giu, '编号已脱敏')
+    .replace(/\b\d{4,}\b/gu, '编号已脱敏')
+    .slice(0, limit)
+    .trim();
 }
 
 function normalizeActor(actor) {
   if (!actor || typeof actor !== 'object' || Array.isArray(actor)) throw new TypeError('actor must be server-owned type/id');
   const type = trim(actor.type).toLowerCase();
-  const id = sanitizeEventText(actor.id, 64);
-  if (!/^(system|advisor|agent|user|service)$/u.test(type) || !id) throw new TypeError('actor must be server-owned type/id');
+  const id = actor.id;
+  const safeId = (Number.isSafeInteger(id) && id > 0) || /^sha256:[a-f0-9]{64}$/u.test(String(id));
+  if (!/^(system|advisor|service)$/u.test(type) || !safeId) throw new TypeError('actor must be server-owned type/id');
   return { type, id };
 }
 
@@ -150,8 +155,9 @@ export function applyFamilySalesMemoryAction({
   const version = requireVersion(memory.version);
   requireVersion(expectedVersion, 'expectedVersion');
   if (expectedVersion !== version) throw new Error('stale memory version');
-  if (!Number.isFinite(Date.parse(trim(now)))) throw new TypeError('now must be a valid instant');
-  const time = new Date(now).toISOString();
+  const nowInstant = parseFamilySalesMemoryInstant(now);
+  if (!Number.isFinite(nowInstant)) throw new TypeError('now must be a valid zoned ISO instant or UTC date');
+  const time = new Date(nowInstant).toISOString();
   const safeActor = normalizeActor(actor);
   const safeReason = sanitizeEventText(reason);
   if (['reject', 'supersede', 'expire', 'restore'].includes(normalizedAction) && !safeReason) throw new TypeError('reason is required');
@@ -187,6 +193,7 @@ export function applyFamilySalesMemoryAction({
   }
 
   let replacementMemory = null;
+  let replacementEvent = null;
   if (normalizedAction === 'supersede') {
     const replacementId = replacement.id;
     if (!(typeof replacementId === 'string' && trim(replacementId)) && !(Number.isSafeInteger(replacementId) && replacementId > 0)) {
@@ -194,23 +201,48 @@ export function applyFamilySalesMemoryAction({
     }
     const kind = normalizeKind(replacement.kind || memory.kind);
     const content = sanitizeMemoryContent(replacement.content);
-    if (!kind || !content) throw new TypeError('replacement kind/content are required');
+    if (!kind || kind !== normalizeKind(memory.kind) || !content) throw new TypeError('replacement must keep kind and provide content');
+    const normalizedValue = Object.hasOwn(replacement, 'normalizedValue')
+      ? sanitizeMemoryContent(replacement.normalizedValue)
+      : undefined;
+    const memoryKey = Object.hasOwn(replacement, 'memoryKey')
+      ? trim(replacement.memoryKey).slice(0, 120)
+      : undefined;
+    const replacementValidFrom = replacement.validFrom === undefined ? time : (() => {
+      const instant = parseFamilySalesMemoryInstant(replacement.validFrom);
+      if (!Number.isFinite(instant)) throw new TypeError('replacement validFrom must be a valid zoned ISO instant or UTC date');
+      return new Date(instant).toISOString();
+    })();
+    nextMemory.supersededByMemoryId = replacementId;
+    nextMemory.validTo = replacementValidFrom;
     replacementMemory = {
       ...memory,
-      ...replacement,
       id: replacementId,
       kind,
       content,
+      ...(normalizedValue !== undefined ? { normalizedValue } : {}),
+      ...(memoryKey !== undefined ? { memoryKey } : {}),
       status: 'confirmed',
       version: 1,
       supersedesMemoryId: memory.id,
-      validFrom: time,
+      supersededByMemoryId: null,
+      validFrom: replacementValidFrom,
       validTo: null,
       invalidatedAt: null,
       confirmedAt: time,
       createdAt: time,
       updatedAt: time,
     };
+    replacementEvent = transitionEvent({
+      memoryId: replacementId,
+      previousStatus: 'candidate',
+      nextStatus: 'confirmed',
+      action: 'confirm',
+      actor: safeActor,
+      reason: safeReason,
+      time,
+      version: 1,
+    });
   }
   const event = transitionEvent({
     memoryId: memory.id,
@@ -222,7 +254,7 @@ export function applyFamilySalesMemoryAction({
     time,
     version: nextVersion,
   });
-  return { memory: nextMemory, replacement: replacementMemory, event };
+  return { memory: nextMemory, replacement: replacementMemory, event, events: replacementEvent ? [event, replacementEvent] : [event] };
 }
 
 function normalizeMemoryKey(kind = '', content = '') {
@@ -279,16 +311,13 @@ function resolveFamilySalesMemoryConfig(env = process.env) {
 
 export async function extractFamilySalesMemories({
   userMessage = null,
-  assistantMessage = null,
-  existingMemories = [],
   fetchImpl = fetch,
   env = process.env,
 } = {}) {
   const config = resolveFamilySalesMemoryConfig(env);
   if (!config.apiKey) return [];
   const userContent = sanitizeMemorySourceText(userMessage?.content || '', 800);
-  const assistantContent = sanitizeMemorySourceText(assistantMessage?.content || '', 1_600);
-  if (!userContent || !assistantContent) return [];
+  if (!userContent) return [];
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -301,7 +330,8 @@ export async function extractFamilySalesMemories({
           role: 'system',
           content: [
             '你是保险销售续聊 memory 提炼器，只输出 JSON。',
-            '目标：从顾问本轮追问和助手回复中提炼可复用的家庭跟进记忆。',
+            '目标：只从顾问本轮输入中提炼可复用的家庭跟进记忆。',
+            '助手回复和已有记忆都不是本次事实来源，不得补充、推断或固化其中的信息。',
             '只保留明确、长期可复用、属于当前家庭的信息；不要保存完整原文。',
             '不要保存手机号、身份证号、证件号或任何可直接识别身份的号码。',
             '不要把保单金额、责任条款、收益、分红或理赔结论当成已确认事实；这类内容只能在需要补证据时写成 todo/correction。',
@@ -313,14 +343,8 @@ export async function extractFamilySalesMemories({
         {
           role: 'user',
           content: [
-            '已有 memory 摘要：',
-            JSON.stringify(buildFamilySalesMemoryContext(existingMemories)?.memories || [], null, 2),
-            '',
-            '本轮顾问追问：',
+            '本轮顾问输入（唯一事实来源）：',
             userContent,
-            '',
-            '本轮助手回复：',
-            assistantContent,
           ].join('\n'),
         },
       ],
@@ -375,7 +399,6 @@ export function upsertFamilySalesMemories({
   owner = {},
   sourceThreadId = 0,
   userMessage = null,
-  assistantMessage = null,
   extractedMemories = [],
   allocateId,
   nowIso = () => new Date().toISOString(),
@@ -388,7 +411,7 @@ export function upsertFamilySalesMemories({
   };
   const targetOwnerKey = ownerKey(normalizedOwner);
   const now = nowIso();
-  const evidenceMessageIds = mergeEvidenceMessageIds([], [userMessage?.id, assistantMessage?.id]);
+  const evidenceMessageIds = mergeEvidenceMessageIds([], [userMessage?.id]);
   const normalized = normalizeExtractedFamilySalesMemories(extractedMemories);
   if (!normalized.length) return { changed: false, memories: [] };
 
