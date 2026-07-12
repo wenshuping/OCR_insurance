@@ -176,7 +176,7 @@ export function createAdminRoutes(context) {
       validatePolicySet(policies);
       const policy = chooseAgentQuestionPolicy(candidate, policies);
       const fallback = ['unknown_read', 'unknown_write'].includes(policy.key);
-      const policySource = fallback ? 'built_in' : version ? version.status : 'built_in';
+      const policySource = version ? version.status : 'built_in';
       const explanation = fallback
         ? `Fallback ${policy.key} for requestedOperation ${candidate.requestedOperation || 'read'} from built-in policy.`
         : `Selected ${policy.key} from ${policySource} policy for intent ${candidate.intent}.`;
