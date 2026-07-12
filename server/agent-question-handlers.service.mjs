@@ -76,6 +76,25 @@ function stableResult(facts, provenance = {}, presentation = {}) {
   return { facts, provenance, presentation };
 }
 
+function safeSalesChatSources(sources = []) {
+  const allowed = new Set(['kind', 'ref', 'title', 'url', 'provenance']);
+  return (Array.isArray(sources) ? sources : []).slice(0, 12).map((source) => (
+    Object.fromEntries(Object.entries(source || {}).flatMap(([key, value]) => (
+      allowed.has(key) && ['string', 'number'].includes(typeof value)
+        ? [[key, text(value).slice(0, 500)]]
+        : []
+    )))
+  )).filter((source) => Object.keys(source).length);
+}
+
+function safeSalesChatHistory(history = []) {
+  return (Array.isArray(history) ? history : []).slice(-12).flatMap((message) => {
+    const role = text(message?.role);
+    const content = text(message?.content).slice(0, 4_000);
+    return ['user', 'assistant'].includes(role) && content ? [{ role, content }] : [];
+  });
+}
+
 function denial(reason = 'ACTION_NOT_ALLOWED') {
   return stableResult(
     { denied: true, reason },
@@ -88,8 +107,9 @@ export function createAgentQuestionHandlers({
   store,
   reportQueue,
   productKnowledge,
-  existingSalesChatAgent,
-  salesContextLoader,
+  authorizedFamilySalesDataLoader,
+  buildFamilySalesChatContext = buildExistingFamilySalesChatContext,
+  generateFamilySalesChatReply = generateExistingFamilySalesChatReply,
   links = {},
   clock = () => new Date(),
 } = {}) {
@@ -218,36 +238,37 @@ export function createAgentQuestionHandlers({
   }
 
   async function coach(context) {
-    const { id, state } = await loadFamilyState(context?.familyId);
-    const trusted = typeof salesContextLoader === 'function'
-      ? await salesContextLoader({ familyId: id, internalUserId: context?.internalUserId })
-      : null;
-    const members = (Array.isArray(state.familyMembers) ? state.familyMembers : [])
-      .filter((member) => Number(member?.familyId) === id && text(member?.status || 'active') === 'active');
-    const policies = (Array.isArray(state.policies) ? state.policies : [])
-      .filter((policy) => Number(policy?.familyId) === id);
-    const confirmedFacts = trusted
-      ? safeSummary(trusted.confirmedFacts)
-      : { activeMemberCount: members.length, policyCount: policies.length, validPolicyCount: policies.filter((policy) => policyIsValid(policy, clock())).length };
-    if (!existingSalesChatAgent || typeof existingSalesChatAgent.reply !== 'function') {
+    const familyId = positiveInteger(context?.familyId, 'familyId');
+    const internalUserId = positiveInteger(context?.internalUserId, 'internalUserId');
+    if (typeof authorizedFamilySalesDataLoader !== 'function') {
       return stableResult(
         { answer: '', status: 'unavailable' },
         { agent: 'existing_family_sales_chat', sources: [] },
         { message: '保险营销专家暂不可用，请稍后重试。' },
       );
     }
-    const result = await existingSalesChatAgent.reply({
-      familyId: id,
-      internalUserId: positiveInteger(context?.internalUserId, 'internalUserId'),
+    const trusted = await authorizedFamilySalesDataLoader({ familyId, internalUserId });
+    if (!trusted?.family || Number(trusted.family.id) !== familyId) return denial('AUTHORIZED_FAMILY_DATA_REQUIRED');
+    const chatContext = buildFamilySalesChatContext({
+      input: trusted.input || {},
+      family: trusted.family,
+      members: Array.isArray(trusted.members) ? trusted.members : [],
+      policies: Array.isArray(trusted.policies) ? trusted.policies : [],
+      familyReports: Array.isArray(trusted.familyReports) ? trusted.familyReports : [],
+      familySalesReviews: Array.isArray(trusted.familySalesReviews) ? trusted.familySalesReviews : [],
+      generatedAt: clock().toISOString(),
+    });
+    const result = await generateFamilySalesChatReply({
+      context: chatContext,
+      history: safeSalesChatHistory(trusted.history),
       question: text(context?.question).replace(/\s+/gu, ' ').slice(0, 2_000),
-      context: confirmedFacts,
     });
     return stableResult(
       { answer: text(result?.content), generatedAt: text(result?.generatedAt) },
       {
         agent: 'existing_family_sales_chat',
         model: text(result?.model),
-        sources: Array.isArray(result?.sources) ? result.sources : [],
+        sources: safeSalesChatSources(result?.sources),
       },
       { message: text(result?.content) },
     );
@@ -298,4 +319,8 @@ export function createAgentQuestionHandlers({
 }
 import { resolveFamilyPolicyAnalysisReportFreshness } from './family-policy-analysis-report.service.mjs';
 import { resolveFamilySalesReviewFreshness } from './family-sales-review.service.mjs';
+import {
+  buildFamilySalesChatContext as buildExistingFamilySalesChatContext,
+  generateFamilySalesChatReply as generateExistingFamilySalesChatReply,
+} from './family-sales-chat.service.mjs';
 import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';

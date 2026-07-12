@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAgentQuestionHandlers } from '../server/agent-question-handlers.service.mjs';
+import { buildFamilySalesChatContext } from '../server/family-sales-chat.service.mjs';
 
 const NOW = '2026-07-12T08:00:00.000Z';
 
@@ -27,16 +28,24 @@ function harness(state = {}, overrides = {}) {
         return { answer: '等待测试覆盖', sources: [] };
       },
     },
-    existingSalesChatAgent: {
-      async reply(input) {
-        calls.salesChat.push(input);
-        return {
-          content: '先确认客户预算。',
-          model: 'existing-family-sales-agent',
-          sources: [{ kind: 'family_sales_chat', ref: 'thread-1' }],
-          generatedAt: NOW,
-        };
-      },
+    authorizedFamilySalesDataLoader: async ({ familyId }) => ({
+      input: { dataQuality: { pendingFields: ['budget'] } },
+      family: (state.familyProfiles || []).find((row) => Number(row.id) === familyId) || { id: familyId },
+      members: (state.familyMembers || []).filter((row) => Number(row.familyId) === familyId),
+      policies: (state.policies || []).filter((row) => Number(row.familyId) === familyId),
+      familyReports: state.familyReports || [],
+      familySalesReviews: state.familySalesReviews || [],
+      history: [],
+    }),
+    buildFamilySalesChatContext: (input) => ({ builtByExistingService: true, familyId: input.family?.id }),
+    generateFamilySalesChatReply: async (input) => {
+      calls.salesChat.push(input);
+      return {
+        content: '先确认客户预算。',
+        model: 'existing-family-sales-agent',
+        sources: [{ kind: 'family_sales_chat', ref: 'thread-1', secret: 'internal' }],
+        generatedAt: NOW,
+      };
     },
     ...overrides,
   };
@@ -198,17 +207,72 @@ test('sales coaching adapts authorized context to the existing family sales chat
     attachment: { bytes: 'raw' },
   });
 
-  assert.deepEqual(Object.keys(calls.salesChat[0]).sort(), ['context', 'familyId', 'internalUserId', 'question']);
+  assert.deepEqual(Object.keys(calls.salesChat[0]).sort(), ['context', 'history', 'question']);
   assert.deepEqual(calls.salesChat[0], {
-    familyId: 7,
-    internalUserId: 9,
     question: '怎么沟通',
-    context: { activeMemberCount: 1, policyCount: 1, validPolicyCount: 1 },
+    history: [],
+    context: { builtByExistingService: true, familyId: 7 },
   });
   assert.doesNotMatch(JSON.stringify(calls.salesChat[0]), /Hermes|permission|memory|attachment|raw/i);
   assert.equal(result.facts.answer, '先确认客户预算。');
   assert.equal(result.provenance.agent, 'existing_family_sales_chat');
   assert.deepEqual(result.provenance.sources, [{ kind: 'family_sales_chat', ref: 'thread-1' }]);
+});
+
+test('sales coaching uses trusted thread history and the real context-builder signature', async () => {
+  const state = {
+    familyProfiles: [{ id: 7, ownerUserId: 9 }],
+    familyMembers: [{ familyId: 7, status: 'active' }],
+    policies: [{ familyId: 7, status: 'active' }],
+    familyReports: [{ familyId: 7, status: 'active' }],
+    familySalesReviews: [{ familyId: 7, status: 'active' }],
+  };
+  let buildInput;
+  let generateInput;
+  const { handlers } = harness(state, {
+    authorizedFamilySalesDataLoader: async ({ internalUserId, familyId }) => ({
+      input: { confirmed: true },
+      family: state.familyProfiles[0],
+      members: state.familyMembers,
+      policies: state.policies,
+      familyReports: state.familyReports,
+      familySalesReviews: state.familySalesReviews,
+      history: [{ role: 'user', content: '网站线程中的上一问' }],
+      authorizedBy: { internalUserId, familyId },
+    }),
+    buildFamilySalesChatContext(input) { buildInput = input; return { safe: true }; },
+    async generateFamilySalesChatReply(input) { generateInput = input; return { content: '沿用现有续聊回答' }; },
+  });
+
+  await handlers.sales_champion({ intent: 'sales_coaching', familyId: 7, internalUserId: 9, question: '继续' });
+
+  assert.deepEqual(Object.keys(buildInput).sort(), ['family', 'familyReports', 'familySalesReviews', 'generatedAt', 'input', 'members', 'policies']);
+  assert.deepEqual(generateInput, {
+    context: { safe: true },
+    history: [{ role: 'user', content: '网站线程中的上一问' }],
+    question: '继续',
+  });
+});
+
+test('sales coaching can use the production family sales chat context builder unchanged', async () => {
+  let generateInput;
+  const { handlers } = harness({
+    familyProfiles: [{ id: 7, ownerUserId: 9 }],
+    familyMembers: [{ id: 1, familyId: 7, status: 'active' }],
+    policies: [{ id: 2, familyId: 7, status: 'active' }],
+    familyReports: [],
+    familySalesReviews: [],
+  }, {
+    buildFamilySalesChatContext,
+    async generateFamilySalesChatReply(input) { generateInput = input; return { content: '现有服务回答' }; },
+  });
+
+  await handlers.sales_champion({ intent: 'sales_coaching', familyId: 7, internalUserId: 9, question: '继续分析' });
+
+  assert.equal(generateInput.context.familyInput.dataQuality.pendingFields[0], 'budget');
+  assert.equal(generateInput.context.latestSalesReview, null);
+  assert.equal(generateInput.context.latestFamilyReport, null);
+  assert.equal(generateInput.question, '继续分析');
 });
 
 test('safe summaries do not copy numeric phone, identity, or account fields', async () => {
