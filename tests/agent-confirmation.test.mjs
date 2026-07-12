@@ -26,6 +26,7 @@ function harness(initial = state()) {
   let current = initial;
   const confirmations = new Map();
   const calls = { created: [], transferred: [], enqueued: [] };
+  const outbox = [];
   const store = {
     async createAgentActionConfirmation(input) {
       confirmations.set(input.id, { ...input, status: 'pending' });
@@ -40,8 +41,16 @@ function harness(initial = state()) {
       if (confirmation.expiresAt <= input.consumedAt) return { status: 'expired' };
       if (Number(current.stateVersion) !== Number(confirmation.payload.stateVersion)) return { status: 'state_changed' };
       confirmation.status = 'consumed';
+      for (const familyId of [10, 20]) for (const type of ['family_report', 'family_sales_review']) {
+        outbox.push({ id: outbox.length + 1, confirmationId: input.confirmationId, familyId, type, dedupeKey: `${input.confirmationId}:${familyId}:${type}`, status: 'pending', attempts: 0 });
+      }
       return { status: 'transferred', sourceFamilyId: 10, targetFamilyId: 20, policyId: 301 };
     },
+    async listPendingPolicyTransferRegenerationJobs({ confirmationId } = {}) {
+      return outbox.filter((row) => (!confirmationId || row.confirmationId === confirmationId) && ['pending', 'failed'].includes(row.status));
+    },
+    async markPolicyTransferRegenerationJobDispatched({ id }) { outbox.find((row) => row.id === id).status = 'dispatched'; },
+    async markPolicyTransferRegenerationJobFailed({ id, error }) { Object.assign(outbox.find((row) => row.id === id), { status: 'failed', lastError: error }); },
   };
   const service = createAgentConfirmationService({
     store,
@@ -50,7 +59,7 @@ function harness(initial = state()) {
     randomUUID: () => 'confirmation-1',
     reportQueue: { async enqueueUnique(job) { calls.enqueued.push(job); } },
   });
-  return { service, store, calls, confirmations, setState(value) { current = value; } };
+  return { service, store, calls, confirmations, outbox, setState(value) { current = value; } };
 }
 
 test('unique transfer preview creates a short lived, internal-only confirmation and redacted display', async () => {
@@ -63,8 +72,23 @@ test('unique transfer preview creates a short lived, internal-only confirmation 
   assert.equal(result.confirmationId, 'confirmation-1');
   assert.match(result.interaction.text, /5678/);
   assert.doesNotMatch(JSON.stringify(result), /SECRET-12345678|张三/);
-  assert.deepEqual(Object.keys(h.calls.created[0].payload).sort(), ['impact', 'policyId', 'sourceFamilyId', 'stateHash', 'stateVersion', 'targetApplicantMemberId', 'targetFamilyId', 'targetInsuredMemberId']);
+  assert.deepEqual(Object.keys(h.calls.created[0].payload).sort(), ['policyId', 'sourceFamilyId', 'stateHash', 'stateVersion', 'targetApplicantMemberId', 'targetFamilyId', 'targetInsuredMemberId']);
   assert.equal(Date.parse(h.calls.created[0].expiresAt) - Date.parse(NOW), 5 * 60_000);
+});
+
+test('failed regeneration dispatch remains recoverable and does not repeat successful jobs', async () => {
+  const h = harness();
+  let failOnce = true;
+  h.service = createAgentConfirmationService({
+    store: h.store, loadState: async () => state(), now: () => NOW, randomUUID: () => 'confirmation-1',
+    reportQueue: { async enqueueUnique(job) { h.calls.enqueued.push(job); if (failOnce && job.type === 'family_sales_review' && job.familyId === 20) { failOnce = false; throw new Error('queue offline'); } } },
+  });
+  await h.service.previewPolicyTransfer({ userId: 7, sourceFamilyName: '张三家庭', targetFamilyName: '李四家庭', policyHint: 'SECRET-12345678', targetMemberId: 201 });
+  assert.equal((await h.service.confirm({ userId: 7, confirmationId: 'confirmation-1' })).status, 'transferred');
+  assert.deepEqual(h.outbox.map((row) => row.status), ['dispatched', 'dispatched', 'dispatched', 'failed']);
+  assert.equal((await h.service.confirm({ userId: 7, confirmationId: 'confirmation-1' })).status, 'already_consumed');
+  assert.deepEqual(h.outbox.map((row) => row.status), ['dispatched', 'dispatched', 'dispatched', 'dispatched']);
+  assert.equal(h.calls.enqueued.length, 5);
 });
 
 test('ambiguous policy and fuzzy family matches clarify without creating confirmation', async () => {

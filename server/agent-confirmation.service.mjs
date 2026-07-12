@@ -63,6 +63,31 @@ function targetLinks(input, policy) {
   };
 }
 
+export async function dispatchPendingTransferRegenerationJobs({ store, reportQueue, confirmationId, now = () => new Date().toISOString(), limit = 100 } = {}) {
+  if (!store || typeof store.listPendingPolicyTransferRegenerationJobs !== 'function') return { dispatched: 0, failed: 0 };
+  const enqueue = reportQueue && (reportQueue.enqueueUnique || reportQueue.enqueue);
+  if (typeof enqueue !== 'function') return { dispatched: 0, failed: 0 };
+  const jobs = await store.listPendingPolicyTransferRegenerationJobs({ confirmationId, limit });
+  const results = await Promise.allSettled(jobs.map(async (job) => {
+    try {
+      await enqueue.call(reportQueue, { familyId: job.familyId, type: job.type, userId: job.userId, dedupeKey: job.dedupeKey });
+      await store.markPolicyTransferRegenerationJobDispatched({ id: job.id, dispatchedAt: new Date(now()).toISOString() });
+      return 'dispatched';
+    } catch (error) {
+      await store.markPolicyTransferRegenerationJobFailed({
+        id: job.id,
+        attemptedAt: new Date(now()).toISOString(),
+        error: String(error?.message || 'dispatch failed').slice(0, 500),
+      });
+      throw error;
+    }
+  }));
+  return {
+    dispatched: results.filter((row) => row.status === 'fulfilled').length,
+    failed: results.filter((row) => row.status === 'rejected').length,
+  };
+}
+
 export function createAgentConfirmationService({ store, loadState, reportQueue, now = () => new Date().toISOString(), randomUUID = nodeRandomUUID } = {}) {
   if (!store || typeof store.createAgentActionConfirmation !== 'function' || typeof store.transferPolicyBetweenFamilies !== 'function') {
     throw new TypeError('Agent confirmation store is required');
@@ -110,7 +135,6 @@ export function createAgentConfirmationService({ store, loadState, reportQueue, 
         sourceFamilyId: Number(source.id), targetFamilyId: Number(target.id), policyId: Number(policy.id),
         targetApplicantMemberId: links.applicantMemberId, targetInsuredMemberId: links.insuredMemberId,
         stateVersion: Number(current.stateVersion || 0), stateHash: stateHash(current),
-        impact: { invalidatedFamilyCount: 2, reportKinds: 2 },
       },
     });
     const text = `确认将保单（尾号 ${policyTail(policy)}）转移到目标家庭？相关报告将重新计算。`;
@@ -125,15 +149,10 @@ export function createAgentConfirmationService({ store, loadState, reportQueue, 
     if (result?.status === 'not_found') {
       throw Object.assign(new Error('Confirmation unavailable'), { status: 404, code: 'AGENT_CONFIRMATION_NOT_OWNED' });
     }
-    if (result?.status !== 'transferred') return { ...safeFailure(result?.status || 'transfer_rejected'), status: result?.status || 'rejected' };
-    const enqueue = reportQueue && (reportQueue.enqueueUnique || reportQueue.enqueue);
-    if (typeof enqueue === 'function') {
-      for (const familyId of [result.sourceFamilyId, result.targetFamilyId]) {
-        for (const type of ['family_report', 'family_sales_review']) {
-          await enqueue.call(reportQueue, { familyId, type, userId, dedupeKey: `${type}:${familyId}` });
-        }
-      }
+    if (result?.status === 'transferred' || result?.status === 'already_consumed') {
+      await dispatchPendingTransferRegenerationJobs({ store, reportQueue, confirmationId: String(input.confirmationId || ''), now });
     }
+    if (result?.status !== 'transferred') return { ...safeFailure(result?.status || 'transfer_rejected'), status: result?.status || 'rejected' };
     return { ...interaction('answer', '保单已转移，两个家庭的报告正在重新计算。'), ...result };
   }
 

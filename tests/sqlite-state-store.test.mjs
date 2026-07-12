@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
+import { dispatchPendingTransferRegenerationJobs } from '../server/agent-confirmation.service.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
@@ -2031,9 +2032,90 @@ test('sqlite state store atomically transfers a policy, preserves evidence, inva
   const audit = store.db.prepare('SELECT * FROM agent_policy_transfer_audits').get();
   assert.deepEqual(JSON.parse(audit.before_payload), { familyId: 10, applicantMemberId: 201, insuredMemberId: 201 });
   assert.deepEqual(JSON.parse(audit.after_payload), { familyId: 20, applicantMemberId: 201, insuredMemberId: 201 });
+  const outbox = store.db.prepare('SELECT * FROM agent_policy_transfer_regeneration_outbox ORDER BY id').all();
+  assert.equal(outbox.length, 4);
+  assert.deepEqual(outbox.map((row) => row.status), ['pending', 'pending', 'pending', 'pending']);
+  assert.equal(new Set(outbox.map((row) => row.dedupe_key)).size, 4);
   assert.equal((await store.transferPolicyBetweenFamilies({ confirmationId: 'transfer-1', userId: 7, consumedAt: '2026-07-12T04:02:00.000Z' })).status, 'already_consumed');
   assert.equal(store.db.prepare('SELECT count(*) count FROM agent_policy_transfer_audits').get().count, 1);
   store.close();
+});
+
+test('policy transfer confirmation hides expired and other-user confirmations without mutation', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  await store.load();
+  await store.createAgentActionConfirmation({ id: 'expired-transfer', userId: 7, action: 'transfer_policy_between_families', actor: 'agent_confirmation', createdAt: '2026-07-12T03:00:00.000Z', expiresAt: '2026-07-12T03:05:00.000Z', payload: {} });
+  assert.equal((await store.transferPolicyBetweenFamilies({ confirmationId: 'expired-transfer', userId: 8, consumedAt: '2026-07-12T04:00:00.000Z' })).status, 'not_found');
+  assert.equal((await store.transferPolicyBetweenFamilies({ confirmationId: 'expired-transfer', userId: 7, consumedAt: '2026-07-12T04:00:00.000Z' })).status, 'expired');
+  assert.equal(store.db.prepare('SELECT count(*) count FROM agent_policy_transfer_audits').get().count, 0);
+  assert.equal(store.db.prepare('SELECT count(*) count FROM agent_policy_transfer_regeneration_outbox').get().count, 0);
+  store.close();
+});
+
+test('transfer regeneration outbox retries failed delivery without repeating dispatched jobs', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  await store.load();
+  const created = '2026-07-12T04:00:00.000Z';
+  for (const [familyId, type] of [[10, 'family_report'], [10, 'family_sales_review']]) {
+    store.db.prepare(`INSERT INTO agent_policy_transfer_regeneration_outbox
+      (confirmation_id,user_id,family_id,job_type,dedupe_key,status,attempts,last_error,created_at,updated_at,dispatched_at)
+      VALUES (?,?,?,?,?,'pending',0,'',?,?,'')`).run('recover-1', 7, familyId, type, `recover-1:${familyId}:${type}`, created, created);
+  }
+  const calls = [];
+  let fail = true;
+  const queue = { async enqueueUnique(job) { calls.push(job); if (fail && job.type === 'family_sales_review') { fail = false; throw new Error('offline'); } } };
+  assert.deepEqual(await dispatchPendingTransferRegenerationJobs({ store, reportQueue: queue, confirmationId: 'recover-1', now: () => '2026-07-12T04:01:00.000Z' }), { dispatched: 1, failed: 1 });
+  assert.deepEqual(store.db.prepare('SELECT status FROM agent_policy_transfer_regeneration_outbox ORDER BY id').all().map((row) => row.status), ['dispatched', 'failed']);
+  assert.deepEqual(await dispatchPendingTransferRegenerationJobs({ store, reportQueue: queue, confirmationId: 'recover-1', now: () => '2026-07-12T04:02:00.000Z' }), { dispatched: 1, failed: 0 });
+  assert.deepEqual(store.db.prepare('SELECT status FROM agent_policy_transfer_regeneration_outbox ORDER BY id').all().map((row) => row.status), ['dispatched', 'dispatched']);
+  assert.equal(calls.length, 3);
+  store.close();
+});
+
+test('competing policy transfer workers produce one mutation, one audit, and one outbox set', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  await store.load();
+  await store.persist({
+    ...createInitialState(),
+    familyProfiles: [{ id: 10, ownerUserId: 7, familyName: '来源', status: 'active' }, { id: 20, ownerUserId: 7, familyName: '目标', status: 'active' }],
+    familyMembers: [{ id: 201, familyId: 20, name: '成员', status: 'active' }],
+    policies: [{ id: 301, userId: 7, familyId: 10, policyNo: 'P-CONCURRENT', applicantMemberId: 201, insuredMemberId: 201 }],
+  });
+  await store.createAgentActionConfirmation({ id: 'concurrent-transfer', userId: 7, action: 'transfer_policy_between_families', actor: 'agent_confirmation', createdAt: '2026-07-12T04:00:00.000Z', expiresAt: '2026-07-12T04:05:00.000Z', payload: { sourceFamilyId: 10, targetFamilyId: 20, policyId: 301, targetApplicantMemberId: 201, targetInsuredMemberId: 201, stateVersion: 0, stateHash: '' } });
+  store.close();
+  const workerSource = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      const { createSqliteStateStore } = await import(workerData.moduleUrl);
+      const workerStore = await createSqliteStateStore({ dbPath: workerData.dbPath });
+      parentPort.postMessage({ type: 'ready' });
+      parentPort.once('message', async () => {
+        try { parentPort.postMessage({ type: 'result', value: await workerStore.transferPolicyBetweenFamilies(workerData.input) }); }
+        catch (error) { parentPort.postMessage({ type: 'error', message: error.stack || error.message }); }
+        finally { workerStore.close(); }
+      });
+    })().catch((error) => parentPort.postMessage({ type: 'error', message: error.stack || error.message }));
+  `;
+  const spawn = () => {
+    const worker = new Worker(workerSource, { eval: true, workerData: { dbPath, moduleUrl: new URL('../server/sqlite-state-store.mjs', import.meta.url).href, input: { confirmationId: 'concurrent-transfer', userId: 7, consumedAt: '2026-07-12T04:01:00.000Z' } } });
+    const ready = new Promise((resolve, reject) => { worker.on('message', (message) => message.type === 'ready' && resolve()); worker.once('error', reject); });
+    const result = new Promise((resolve, reject) => { worker.on('message', (message) => message.type === 'result' ? resolve(message.value) : message.type === 'error' && reject(new Error(message.message))); worker.once('error', reject); });
+    return { worker, ready, result };
+  };
+  const workers = [spawn(), spawn()];
+  await Promise.all(workers.map((item) => item.ready));
+  workers.forEach((item) => item.worker.postMessage('go'));
+  const results = await Promise.all(workers.map((item) => item.result));
+  assert.deepEqual(results.map((row) => row.status).sort(), ['already_consumed', 'transferred']);
+  const verify = await createSqliteStateStore({ dbPath });
+  assert.equal((await verify.load()).policies[0].familyId, 20);
+  assert.equal(verify.db.prepare('SELECT count(*) count FROM agent_policy_transfer_audits').get().count, 1);
+  assert.equal(verify.db.prepare('SELECT count(*) count FROM agent_policy_transfer_regeneration_outbox').get().count, 4);
+  verify.close();
 });
 
 test('sqlite state store normalizes confirmation timestamps and serializes competing consumers', async () => {
