@@ -18,6 +18,7 @@ function safeReply(code) {
   const replies = {
     MOBILE_MISMATCH: '当前钉钉手机号与平台注册手机号不一致，无法登录。',
     MOBILE_VERIFICATION_REQUIRED: '无法验证当前钉钉手机号，请联系管理员。',
+    REGISTRATION_REQUIRED: '当前手机号尚未注册 OCR Insurance。请回复“注册”获取短信验证码。',
     IDENTITY_NOT_BOUND: '无法确认当前钉钉账号，请确认钉钉手机号与平台注册手机号一致。',
     IDENTITY_REVOKED: '当前绑定已失效，请联系管理员。',
     ADVISOR_ACCOUNT_INACTIVE: '平台账号当前不可用，请联系管理员。',
@@ -72,6 +73,7 @@ export function createDingtalkStreamChannel({
   const configuredCorpId = required(corpId, 'DINGTALK_CORP_ID_REQUIRED');
   const configuredServiceToken = required(serviceToken, 'DINGTALK_IDENTITY_SERVICE_TOKEN_REQUIRED');
   const authenticated = new Set();
+  const registrationPending = new Set();
   const intake = new Map();
 
   async function identityRequest(path, body) {
@@ -191,6 +193,40 @@ export function createDingtalkStreamChannel({
       return;
     }
 
+    if (text === '注册') {
+      try {
+        const profile = await identityRequest('/api/dingtalk/identity/registration/mobile', {
+          corpId: configuredCorpId, dingUserId, requestId: randomUUID(),
+        });
+        await identityRequest('/api/auth/send-code', { mobile: profile.mobile });
+        registrationPending.add(dingUserId);
+        await reply(sessionWebhook, '验证码已发送到当前钉钉手机号，请在 10 分钟内直接回复短信中的 6 位验证码。');
+      } catch (error) {
+        reportError(String(error?.code || 'DINGTALK_REGISTRATION_FAILED'));
+        await reply(sessionWebhook, safeReply(error?.code));
+      }
+      return;
+    }
+
+    if (/^\d{6}$/u.test(text) && registrationPending.has(dingUserId)) {
+      try {
+        const profile = await identityRequest('/api/dingtalk/identity/registration/mobile', {
+          corpId: configuredCorpId, dingUserId, requestId: randomUUID(),
+        });
+        await identityRequest('/api/auth/register', { mobile: profile.mobile, code: text, includePolicies: false });
+        await identityRequest('/api/dingtalk/identity/auto', {
+          corpId: configuredCorpId, dingUserId, requestId: randomUUID(),
+        });
+        registrationPending.delete(dingUserId);
+        authenticated.add(dingUserId);
+        await reply(sessionWebhook, '注册验证成功。现在可以直接提问，或发送“上传保单”开始录入。');
+      } catch (error) {
+        reportError(String(error?.code || 'DINGTALK_REGISTRATION_FAILED'));
+        await reply(sessionWebhook, error?.code === 'INVALID_CODE' ? '验证码不正确或已过期，请回复“注册”重新获取。' : safeReply(error?.code));
+      }
+      return;
+    }
+
     if (text === '上传保单' || text === '录入保单') {
       if (!policyUploadEnabled) {
         await reply(sessionWebhook, '当前企业尚未启用钉钉原件上传，请使用网页上传。');
@@ -240,6 +276,7 @@ export function createDingtalkStreamChannel({
       await reply(sessionWebhook, await answerText({ dingUserId, text }));
     } catch (error) {
       reportError(String(error?.code || 'DINGTALK_AGENT_FAILED'));
+      if (error?.code === 'REGISTRATION_REQUIRED') registrationPending.add(dingUserId);
       await reply(sessionWebhook, safeReply(error?.code));
     }
   }

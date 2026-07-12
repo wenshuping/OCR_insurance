@@ -56,16 +56,14 @@ function uniquePrincipalIdentity(state, corpId, dingUserId) {
   return identities[0] ?? null;
 }
 
-export function findAdvisorBindingCandidate(state, { mobile, allowedUserIds, fingerprintMobile }) {
+export function findAdvisorBindingCandidate(state, { mobile, fingerprintMobile }) {
   const normalized = normalizedMobile(mobile);
   if (!normalized) return { status: 'verification_required' };
   const matches = (state.users ?? []).filter((user) => (
     normalizedMobile(user.mobile) === normalized && isActiveUser(user)
   ));
   if (matches.length > 1) return { status: 'ambiguous' };
-  if (matches.length === 0 || !allowedUserIds.includes(Number(matches[0].id))) {
-    return { status: 'not_found' };
-  }
+  if (matches.length === 0) return { status: 'not_found' };
 
   const fingerprint = fingerprintMobile?.(normalized);
   if (!fingerprint) return { status: 'verification_required' };

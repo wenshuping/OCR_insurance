@@ -96,11 +96,10 @@ test('duplicate active mobile matches do not select an account', () => {
   }), { status: 'ambiguous' });
 });
 
-test('non-whitelisted mobile match does not select an account', () => {
-  assert.deepEqual(findAdvisorBindingCandidate(makeState(), {
+test('every registered active mobile can become a binding candidate', () => {
+  assert.equal(findAdvisorBindingCandidate(makeState(), {
     mobile: '13800138000',
-    allowedUserIds: [8],
-  }), { status: 'not_found' });
+  }).status, 'confirmation_required');
 });
 
 test('challenge stores a token hash and confirmation activates binding for the same principal', () => {

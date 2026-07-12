@@ -119,6 +119,28 @@ test('auto identity verification silently activates an exact mobile match and is
   } finally { await server.close(); }
 });
 
+test('auto identity verification distinguishes an unregistered mobile and exposes it only to the service registration endpoint', async () => {
+  const harness = createHarness([]);
+  const server = await listen(harness.app);
+  try {
+    const automatic = await request(server.baseUrl, '/api/dingtalk/identity/auto', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    assert.equal(automatic.response.status, 403);
+    assert.equal(automatic.payload.code, 'REGISTRATION_REQUIRED');
+    assertSafeResponse(automatic);
+
+    const profile = await request(server.baseUrl, '/api/dingtalk/identity/registration/mobile', {
+      method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    assert.deepEqual(profile.payload, { ok: true, mobile: '13800138000' });
+    const publicAttempt = await request(server.baseUrl, '/api/dingtalk/identity/registration/mobile', {
+      service: false, method: 'POST', body: JSON.stringify(PRINCIPAL),
+    });
+    assert.equal(publicAttempt.response.status, 401);
+  } finally { await server.close(); }
+});
+
 test('candidate returns the same safe mismatch error whether no or duplicate account matched', async () => {
   for (const users of [[], [
     { id: 7, mobile: '13800138000', status: 'active' },

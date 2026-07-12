@@ -59,6 +59,7 @@ const IDENTITY_ERROR_STATUS = Object.freeze({
   CHALLENGE_USED: 409,
   CHALLENGE_USER_MISMATCH: 403,
   MOBILE_MISMATCH: 403,
+  REGISTRATION_REQUIRED: 403,
   MOBILE_VERIFICATION_REQUIRED: 403,
   PENDING_IDENTITY_NOT_FOUND: 409,
   REBIND_REQUIRES_REVOKE: 409,
@@ -194,6 +195,7 @@ export function createDingtalkIdentityRoutes(context) {
         fingerprintMobile: fingerprintDingtalkMobile,
       });
       if (candidate.status !== 'confirmation_required') {
+        if (candidate.status === 'not_found') throw routeError('REGISTRATION_REQUIRED', 403);
         throw routeError(
           candidate.status === 'verification_required' ? 'MOBILE_VERIFICATION_REQUIRED' : 'MOBILE_MISMATCH',
           403,
@@ -227,6 +229,20 @@ export function createDingtalkIdentityRoutes(context) {
         return { identity };
       });
       res.json({ ok: true, status: 'active', maskedMobile: candidate.maskedMobile });
+    } catch (error) {
+      sendIdentityError(res, error);
+    }
+  });
+
+  router.post('/registration/mobile', async (req, res) => {
+    try {
+      await requireService(req);
+      const principal = principalFromBody(req.body, { requireRequestId: true });
+      if (typeof getDingtalkUserProfile !== 'function') throw routeError('DINGTALK_PROFILE_ADAPTER_NOT_CONFIGURED', 503);
+      const profile = await getDingtalkUserProfile(principal);
+      const mobile = String(profile?.mobile || '').trim();
+      if (!/^1[3-9]\d{9}$/.test(mobile)) throw routeError('MOBILE_VERIFICATION_REQUIRED', 403);
+      res.json({ ok: true, mobile });
     } catch (error) {
       sendIdentityError(res, error);
     }

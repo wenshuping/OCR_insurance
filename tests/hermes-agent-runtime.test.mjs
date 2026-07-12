@@ -5,6 +5,7 @@ import { createHermesTextAgent } from '../server/hermes-agent-runtime.service.mj
 test('Hermes text agent uses an isolated hashed session and passes the principal only through environment', async () => {
   let received;
   const answer = createHermesTextAgent({
+    identityKey: 'test-hermes-identity-key-32-bytes-long',
     execFileImpl: async (command, args, options) => {
       received = { command, args, options };
       return { stdout: '第六个家庭目前有 3 份保单。\n', stderr: '' };

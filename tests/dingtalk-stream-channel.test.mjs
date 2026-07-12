@@ -121,3 +121,23 @@ test('policy upload requires consent before download and sends a masked OCR draf
   assert.match(h.replies.at(-1), /待补充字段：date/);
   assert.equal(h.replies.join(' ').includes('secret-code'), false);
 });
+
+test('an unregistered DingTalk user can request SMS verification and register without exposing the mobile', async () => {
+  const h = harness([
+    { status: 403, body: { code: 'REGISTRATION_REQUIRED' } },
+    { status: 200, body: { mobile: '13800138000' } },
+    { status: 200, body: { expiresInSeconds: 600, devCode: '123456' } },
+    { status: 200, body: { mobile: '13800138000' } },
+    { status: 200, body: { user: { id: 9 }, token: 'session-secret' } },
+    { status: 200, body: { status: 'active', maskedMobile: '138****8000' } },
+  ]);
+  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '你好' } });
+  assert.match(h.replies.at(-1), /回复“注册”/);
+  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '注册' } });
+  assert.match(h.replies.at(-1), /验证码已发送/);
+  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '123456' } });
+  assert.match(h.replies.at(-1), /注册验证成功/);
+  const replies = h.replies.join(' ');
+  assert.equal(replies.includes('13800138000'), false);
+  assert.equal(replies.includes('session-secret'), false);
+});
