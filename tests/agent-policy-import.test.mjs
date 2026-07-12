@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   agentPolicyImportMatchesOwner,
   appendAgentPolicyImportDocuments,
+  assertAgentPolicyImportExpectedVersion,
   buildAgentPolicyImportContext,
   createAgentPolicyImportTask,
   normalizeAgentPolicyImportTask,
@@ -15,9 +16,6 @@ const image = (sha256, name = 'policy.jpg', size = 100) => ({
   name,
   type: 'image/jpeg',
   size,
-  dataUrl: 'data:image/jpeg;base64,SECRET',
-  path: '/private/customer/policy.jpg',
-  ocrText: '张三 13812345678 330106199001011234',
 });
 
 function create(overrides = {}) {
@@ -55,7 +53,7 @@ test('appends two images using stable safe document metadata', () => {
   assert.equal(task.documents.length, 2);
   assert.equal(task.status, 'recognizing');
   assert.equal(task.stateVersion, 2);
-  assert.match(task.documents[0].documentId, /^doc_[a-f0-9]{16}$/u);
+  assert.match(task.documents[0].documentId, /^doc_[a-f0-9]{16,32}$/u);
   assert.deepEqual(Object.keys(task.documents[0]).sort(), ['documentId', 'mediaType', 'name', 'sha256', 'size', 'status'].sort());
 });
 
@@ -85,7 +83,7 @@ test('rejects append to closed tasks and stale mutations', () => {
   task.status = 'completed';
   assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [image('a'.repeat(64))] }), (error) => error.code === 'AGENT_POLICY_IMPORT_CLOSED');
   const open = create();
-  assert.throws(() => appendAgentPolicyImportDocuments(open, { stateVersion: 0, documents: [image('a'.repeat(64))] }), (error) => error.code === 'STALE_INTERACTION');
+  assert.throws(() => appendAgentPolicyImportDocuments(open, { stateVersion: 0, documents: [image('a'.repeat(64))] }), (error) => error.code === 'INVALID_STATE_VERSION');
 });
 
 test('enforces legal product and member options through confirmation', () => {
@@ -173,4 +171,93 @@ test('matches only the exact task owner identity', () => {
   const guestTask = create({ owner: { guestId: 'guest-1' } });
   assert.equal(agentPolicyImportMatchesOwner(guestTask, { guestId: 'guest-1' }), true);
   assert.equal(agentPolicyImportMatchesOwner(guestTask, { guestId: 'guest-2' }), false);
+});
+
+test('failed mutations are atomic and reject untrusted document metadata', () => {
+  const task = create({ draft: { company: '', name: '', insured: '' } });
+  const before = structuredClone(task);
+  assert.throws(
+    () => appendAgentPolicyImportDocuments(task, {
+      stateVersion: 1,
+      documents: [{ ...image('a'.repeat(64)), documentId: 'caller-id', status: 'recognized', dataUrl: 'secret' }],
+    }),
+    (error) => error.code === 'UNTRUSTED_DOCUMENT_METADATA',
+  );
+  assert.deepEqual(task, before);
+  assert.throws(() => updateAgentPolicyImportTask(task, { stateVersion: 1, action: 'set_field', field: 'company', value: { secret: 'x' } }), (error) => error.code === 'INVALID_FIELD_VALUE');
+  assert.deepEqual(task, before);
+});
+
+test('strict versions and invalid limit configuration fail closed without mutation', () => {
+  const task = create();
+  const before = structuredClone(task);
+  for (const stateVersion of [Infinity, 1.5, 0, '1']) {
+    assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion, documents: [] }), (error) => error.code === 'INVALID_STATE_VERSION' || error.code === 'STALE_INTERACTION');
+    assert.deepEqual(task, before);
+  }
+  for (const maxDocuments of [0, Infinity, 1.5, 10_000]) {
+    assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [], maxDocuments }), (error) => error.code === 'INVALID_DOCUMENT_LIMIT');
+    assert.deepEqual(task, before);
+  }
+  assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: {}, maxDocuments: 2 }), (error) => error.code === 'INVALID_DOCUMENT_LIST');
+  assert.deepEqual(task, before);
+  assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [image('a'.repeat(65))] }), (error) => error.code === 'INVALID_DOCUMENT_HASH');
+  assert.deepEqual(task, before);
+  assert.equal(assertAgentPolicyImportExpectedVersion(task, 1), true);
+  assert.throws(() => assertAgentPolicyImportExpectedVersion(task, 2), (error) => error.code === 'STALE_INTERACTION');
+  const corruptVersion = { ...task, stateVersion: Infinity };
+  const corruptBefore = structuredClone(corruptVersion);
+  assert.throws(() => appendAgentPolicyImportDocuments(corruptVersion, { stateVersion: 1, documents: [] }), (error) => error.code === 'INVALID_STATE_VERSION');
+  assert.deepEqual(corruptVersion, corruptBefore);
+});
+
+test('server generates document IDs and always starts documents as received', () => {
+  const task = create();
+  let sequence = 0;
+  appendAgentPolicyImportDocuments(task, {
+    stateVersion: 1,
+    documents: [image('a'.repeat(64))],
+    generateDocumentId: () => `doc_test_${++sequence}`,
+  });
+  assert.equal(task.documents[0].documentId, 'doc_test_1');
+  assert.equal(task.documents[0].status, 'received');
+});
+
+test('creation validates canonical IDs, option schemas, and scalar draft fields', () => {
+  for (const id of [0, -1, 1.2, Infinity, '10']) {
+    assert.throws(() => create({ id }), (error) => error.code === 'INVALID_TASK_ID');
+  }
+  assert.throws(() => create({ familyId: 0 }), (error) => error.code === 'INVALID_FAMILY_ID');
+  assert.throws(() => create({ owner: { userId: 1.5 } }), (error) => error.code === 'INVALID_OWNER_ID');
+  assert.throws(() => create({ draft: { company: ['not scalar'] } }), (error) => error.code === 'INVALID_FIELD_VALUE');
+  assert.throws(() => create({ productOptions: [{ optionId: 'p', label: 'P' }] }), (error) => error.code === 'INVALID_OPTION');
+  assert.throws(() => create({ memberOptions: [{ optionId: 'm', label: 'M' }] }), (error) => error.code === 'INVALID_OPTION');
+  assert.throws(() => create({ productOptions: [{ optionId: 'p', productId: 1, label: 'P' }, { optionId: 'p', productId: 2, label: 'Q' }] }), (error) => error.code === 'INVALID_OPTION');
+});
+
+test('legacy active phases are rederived while processing and closed phases remain stable', () => {
+  const base = { id: 1, familyId: 2, ownerGuestId: 'guest', stateVersion: 1, draft: { company: '', name: '', insured: '' } };
+  assert.equal(normalizeAgentPolicyImportTask({ ...base, status: 'candidate_selection' }).status, 'field_completion');
+  assert.equal(normalizeAgentPolicyImportTask({ ...base, status: 'recognizing' }).status, 'recognizing');
+  assert.equal(normalizeAgentPolicyImportTask({ ...base, status: 'completed' }).status, 'completed');
+});
+
+test('deep public serialization redacts identifiers and drops unknown graphs', () => {
+  const task = create({
+    draft: {
+      company: '保险 13812345678',
+      name: '产品 330106199001011234',
+      insured: '张小明',
+      amount: '金额 13812345678',
+      firstPremium: 1234,
+      plans: [{ nested: { raw: 'DEEP_SECRET' } }],
+      unknown: { raw: 'UNKNOWN_SECRET' },
+    },
+    productOptions: [{ optionId: 'p1', productId: 1, label: '候选 13812345678' }],
+    memberOptions: [{ optionId: 'm1', memberId: 2, label: '李四 330106199001011234' }],
+  });
+  const serialized = JSON.stringify(buildAgentPolicyImportContext(task));
+  assert.doesNotMatch(serialized, /13812345678|330106199001011234|DEEP_SECRET|UNKNOWN_SECRET/u);
+  assert.equal(typeof buildAgentPolicyImportContext(task).policyDraft.amount, 'string');
+  assert.equal(typeof buildAgentPolicyImportContext(task).policyDraft.firstPremium, 'string');
 });
