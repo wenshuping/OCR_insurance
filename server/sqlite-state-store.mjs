@@ -164,6 +164,83 @@ function jsonPayload(value) {
   return JSON.stringify(value || {});
 }
 
+const AGENT_PAYLOAD_MAX_BYTES = 16_384;
+const AGENT_PAYLOAD_MAX_FIELDS = 32;
+
+function serializeAgentPayload(value, label = 'Agent payload') {
+  const payload = value ?? {};
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new TypeError(`${label} must be an object`);
+  }
+  if (Object.keys(payload).length > AGENT_PAYLOAD_MAX_FIELDS) {
+    throw new RangeError(`${label} exceeds ${AGENT_PAYLOAD_MAX_FIELDS} fields`);
+  }
+  const serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, 'utf8') > AGENT_PAYLOAD_MAX_BYTES) {
+    throw new RangeError(`${label} exceeds ${AGENT_PAYLOAD_MAX_BYTES} bytes`);
+  }
+  return serialized;
+}
+
+function normalizeAgentLimit(value) {
+  return Math.min(100, Math.max(1, Number.parseInt(value, 10) || 20));
+}
+
+function mapAgentPolicyVersion(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    version: Number(row.version),
+    status: String(row.status),
+    policies: parseJson(row.policy_json, []),
+    actor: String(row.actor || ''),
+    createdAt: String(row.created_at || ''),
+    publishedAt: String(row.published_at || ''),
+    archivedAt: String(row.archived_at || ''),
+  };
+}
+
+function mapAgentUnknownQuestion(row) {
+  return {
+    id: Number(row.id),
+    userId: Number(row.user_id),
+    messageRef: String(row.message_ref || ''),
+    question: String(row.question || ''),
+    actor: String(row.actor || ''),
+    status: String(row.status || ''),
+    createdAt: String(row.created_at || ''),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
+function mapAgentActionConfirmation(row, status = row?.status) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    userId: Number(row.user_id),
+    action: String(row.action),
+    actor: String(row.actor || ''),
+    status: String(status || ''),
+    createdAt: String(row.created_at || ''),
+    expiresAt: String(row.expires_at || ''),
+    consumedAt: String(row.consumed_at || ''),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
+function mapAgentRouteAuditEvent(row) {
+  return {
+    id: Number(row.id),
+    policyVersion: Number(row.policy_version),
+    userId: Number(row.user_id),
+    messageRef: String(row.message_ref || ''),
+    decision: String(row.decision || ''),
+    actor: String(row.actor || ''),
+    createdAt: String(row.created_at || ''),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
 function normalizePolicyDerivedResult(row = {}) {
   const policyId = Number(row.policyId || row.policy_id || 0);
   if (!Number.isFinite(policyId) || policyId <= 0) return null;
@@ -724,6 +801,57 @@ function createSchema(db) {
       payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_wechat_oauth_states_user_id ON wechat_oauth_states(user_id);
+
+    CREATE TABLE IF NOT EXISTS agent_question_policy_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version INTEGER NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('draft', 'published', 'archived')),
+      policy_json TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      published_at TEXT,
+      archived_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_question_policy_single_published
+      ON agent_question_policy_versions(status) WHERE status = 'published';
+
+    CREATE TABLE IF NOT EXISTS agent_unknown_questions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      message_ref TEXT NOT NULL,
+      question TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_unknown_questions_created_at ON agent_unknown_questions(created_at DESC, id DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_action_confirmations (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'expired')),
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_action_confirmations_user_status ON agent_action_confirmations(user_id, status);
+
+    CREATE TABLE IF NOT EXISTS agent_route_audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_version INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      message_ref TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_route_audit_events_user_created ON agent_route_audit_events(user_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_route_audit_events_message_ref ON agent_route_audit_events(message_ref);
 
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
@@ -2833,6 +2961,151 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     };
   }
 
+  async function createAgentQuestionPolicyDraft({ version, policies = [], actor = '', createdAt = '' } = {}) {
+    const numericVersion = Number(version);
+    if (!Number.isInteger(numericVersion) || numericVersion <= 0) throw new TypeError('Agent question policy version must be a positive integer');
+    if (!Array.isArray(policies)) throw new TypeError('Agent question policies must be an array');
+    const normalizedActor = String(actor || '').trim();
+    if (!normalizedActor) throw new TypeError('Agent question policy actor is required');
+    const timestamp = String(createdAt || new Date().toISOString());
+    const result = db.prepare(`
+      INSERT INTO agent_question_policy_versions (version, status, policy_json, actor, created_at, published_at, archived_at)
+      VALUES (?, 'draft', ?, ?, ?, '', '')
+    `).run(numericVersion, JSON.stringify(policies), normalizedActor, timestamp);
+    return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
+  }
+
+  async function publishAgentQuestionPolicyVersion({ id, version, actor = '', publishedAt = '' } = {}) {
+    const normalizedActor = String(actor || '').trim();
+    if (!normalizedActor) throw new TypeError('Agent question policy actor is required');
+    const timestamp = String(publishedAt || new Date().toISOString());
+    const targetId = Number(id);
+    const targetVersion = Number(version);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const target = Number.isInteger(targetId) && targetId > 0
+        ? db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(targetId)
+        : db.prepare('SELECT * FROM agent_question_policy_versions WHERE version = ?').get(targetVersion);
+      if (!target) throw new Error('Agent question policy version not found');
+      db.prepare(`
+        UPDATE agent_question_policy_versions
+        SET status = 'archived', archived_at = ?
+        WHERE status = 'published' AND id <> ?
+      `).run(timestamp, target.id);
+      db.prepare(`
+        UPDATE agent_question_policy_versions
+        SET status = 'published', actor = ?, published_at = ?, archived_at = ''
+        WHERE id = ?
+      `).run(normalizedActor, timestamp, target.id);
+      db.exec('COMMIT');
+      return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(target.id));
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function getPublishedAgentQuestionPolicyVersion() {
+    return mapAgentPolicyVersion(db.prepare("SELECT * FROM agent_question_policy_versions WHERE status = 'published' LIMIT 1").get());
+  }
+
+  async function appendAgentUnknownQuestion({ userId, messageRef = '', question = '', actor = '', status = 'open', createdAt = '', payload = {} } = {}) {
+    const numericUserId = Number(userId);
+    if (!Number.isInteger(numericUserId) || numericUserId <= 0) throw new TypeError('Agent unknown question userId is required');
+    const normalizedMessageRef = String(messageRef || '').trim();
+    const normalizedQuestion = String(question || '').trim();
+    const normalizedActor = String(actor || '').trim();
+    if (!normalizedMessageRef || !normalizedQuestion || !normalizedActor) throw new TypeError('Agent unknown question messageRef, question, and actor are required');
+    const result = db.prepare(`
+      INSERT INTO agent_unknown_questions (user_id, message_ref, question, actor, status, created_at, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(numericUserId, normalizedMessageRef, normalizedQuestion, normalizedActor, String(status || 'open'), String(createdAt || new Date().toISOString()), serializeAgentPayload(payload));
+    return mapAgentUnknownQuestion(db.prepare('SELECT * FROM agent_unknown_questions WHERE id = ?').get(result.lastInsertRowid));
+  }
+
+  async function listAgentUnknownQuestions({ limit = 20 } = {}) {
+    return db.prepare('SELECT * FROM agent_unknown_questions ORDER BY created_at DESC, id DESC LIMIT ?')
+      .all(normalizeAgentLimit(limit))
+      .map(mapAgentUnknownQuestion);
+  }
+
+  async function createAgentActionConfirmation({ id = '', userId, action = '', actor = '', expiresAt = '', createdAt = '', payload = {} } = {}) {
+    const normalizedId = String(id || '').trim();
+    const numericUserId = Number(userId);
+    const normalizedAction = String(action || '').trim();
+    const normalizedActor = String(actor || '').trim();
+    const normalizedExpiresAt = String(expiresAt || '').trim();
+    if (!normalizedId || !Number.isInteger(numericUserId) || numericUserId <= 0 || !normalizedAction || !normalizedActor || !normalizedExpiresAt) {
+      throw new TypeError('Agent action confirmation id, userId, action, actor, and expiresAt are required');
+    }
+    if (!Number.isFinite(Date.parse(normalizedExpiresAt))) throw new TypeError('Agent action confirmation expiresAt must be a valid timestamp');
+    db.prepare(`
+      INSERT INTO agent_action_confirmations (id, user_id, action, actor, status, created_at, expires_at, consumed_at, payload)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?, '', ?)
+    `).run(normalizedId, numericUserId, normalizedAction, normalizedActor, String(createdAt || new Date().toISOString()), normalizedExpiresAt, serializeAgentPayload(payload));
+    return mapAgentActionConfirmation(db.prepare('SELECT * FROM agent_action_confirmations WHERE id = ?').get(normalizedId));
+  }
+
+  async function consumeAgentActionConfirmation({ id = '', userId, consumedAt = '' } = {}) {
+    const normalizedId = String(id || '').trim();
+    const numericUserId = Number(userId);
+    const timestamp = String(consumedAt || new Date().toISOString());
+    if (!normalizedId || !Number.isInteger(numericUserId) || numericUserId <= 0) throw new TypeError('Agent action confirmation id and userId are required');
+    if (!Number.isFinite(Date.parse(timestamp))) throw new TypeError('Agent action confirmation consumedAt must be a valid timestamp');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = db.prepare('SELECT * FROM agent_action_confirmations WHERE id = ?').get(normalizedId);
+      if (!row) throw new Error('Agent action confirmation not found');
+      if (Number(row.user_id) !== numericUserId) throw new Error('Agent action confirmation ownership mismatch');
+      if (row.status === 'consumed') {
+        db.exec('COMMIT');
+        return mapAgentActionConfirmation(row, 'already_consumed');
+      }
+      if (row.status === 'expired' || Date.parse(row.expires_at) <= Date.parse(timestamp)) {
+        db.prepare("UPDATE agent_action_confirmations SET status = 'expired' WHERE id = ? AND status = 'pending'").run(normalizedId);
+        db.exec('COMMIT');
+        return mapAgentActionConfirmation({ ...row, status: 'expired' });
+      }
+      const result = db.prepare(`
+        UPDATE agent_action_confirmations
+        SET status = 'consumed', consumed_at = ?
+        WHERE id = ? AND user_id = ? AND status = 'pending' AND expires_at > ?
+      `).run(timestamp, normalizedId, numericUserId, timestamp);
+      if (result.changes !== 1) throw new Error('Agent action confirmation could not be consumed');
+      const consumed = db.prepare('SELECT * FROM agent_action_confirmations WHERE id = ?').get(normalizedId);
+      db.exec('COMMIT');
+      return mapAgentActionConfirmation(consumed);
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function appendAgentRouteAuditEvent({ policyVersion, userId, messageRef = '', decision = '', actor = '', createdAt = '', payload = {} } = {}) {
+    const numericPolicyVersion = Number(policyVersion);
+    const numericUserId = Number(userId);
+    const normalizedMessageRef = String(messageRef || '').trim();
+    const normalizedDecision = String(decision || '').trim();
+    const normalizedActor = String(actor || '').trim();
+    if (!Number.isInteger(numericPolicyVersion) || numericPolicyVersion <= 0 || !Number.isInteger(numericUserId) || numericUserId <= 0 || !normalizedMessageRef || !normalizedDecision || !normalizedActor) {
+      throw new TypeError('Agent route audit policyVersion, userId, messageRef, decision, and actor are required');
+    }
+    const serializedPayload = serializeAgentPayload(payload, 'Agent route audit payload');
+    const result = db.prepare(`
+      INSERT INTO agent_route_audit_events (policy_version, user_id, message_ref, decision, actor, created_at, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(numericPolicyVersion, numericUserId, normalizedMessageRef, normalizedDecision, normalizedActor, String(createdAt || new Date().toISOString()), serializedPayload);
+    return mapAgentRouteAuditEvent(db.prepare('SELECT * FROM agent_route_audit_events WHERE id = ?').get(result.lastInsertRowid));
+  }
+
+  async function listAgentRouteAuditEvents({ limit = 20, userId } = {}) {
+    const numericUserId = Number(userId);
+    const rows = Number.isInteger(numericUserId) && numericUserId > 0
+      ? db.prepare('SELECT * FROM agent_route_audit_events WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?').all(numericUserId, normalizeAgentLimit(limit))
+      : db.prepare('SELECT * FROM agent_route_audit_events ORDER BY created_at DESC, id DESC LIMIT ?').all(normalizeAgentLimit(limit));
+    return rows.map(mapAgentRouteAuditEvent);
+  }
+
   async function load() {
     if (!getMeta(db, 'state_initialized_at')) {
       const seedState = await loadSeedState();
@@ -2877,6 +3150,15 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     upsertProductIndicatorVersions,
     recordIndicatorUpdateBatch,
     persistResponsibilityLookupArtifacts,
+    createAgentQuestionPolicyDraft,
+    publishAgentQuestionPolicyVersion,
+    getPublishedAgentQuestionPolicyVersion,
+    appendAgentUnknownQuestion,
+    listAgentUnknownQuestions,
+    createAgentActionConfirmation,
+    consumeAgentActionConfirmation,
+    appendAgentRouteAuditEvent,
+    listAgentRouteAuditEvents,
     close,
   };
 }

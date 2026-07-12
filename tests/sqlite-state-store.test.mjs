@@ -1909,3 +1909,100 @@ test('sqlite state store persists membership orders, memberships, wechat identit
   assert.equal(reloaded.nextId, 22);
   reopened.close();
 });
+
+test('sqlite state store drafts and transactionally publishes agent question policy versions', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const first = await store.createAgentQuestionPolicyDraft({
+    version: 1,
+    policies: [{ key: 'chat', decision: 'execute' }],
+    actor: 'admin:1',
+    createdAt: '2026-07-12T01:00:00.000Z',
+  });
+  const second = await store.createAgentQuestionPolicyDraft({
+    version: 2,
+    policies: [{ key: 'chat', decision: 'propose' }],
+    actor: 'admin:2',
+    createdAt: '2026-07-12T02:00:00.000Z',
+  });
+
+  await store.publishAgentQuestionPolicyVersion({ id: first.id, actor: 'admin:1', publishedAt: '2026-07-12T01:05:00.000Z' });
+  await store.publishAgentQuestionPolicyVersion({ id: second.id, actor: 'admin:2', publishedAt: '2026-07-12T02:05:00.000Z' });
+  const published = await store.getPublishedAgentQuestionPolicyVersion();
+
+  assert.equal(published.version, 2);
+  assert.equal(published.status, 'published');
+  assert.equal(published.actor, 'admin:2');
+  assert.deepEqual(published.policies, [{ key: 'chat', decision: 'propose' }]);
+  assert.equal(store.db.prepare("SELECT count(*) AS count FROM agent_question_policy_versions WHERE status = 'published'").get().count, 1);
+  assert.equal(store.db.prepare('SELECT status FROM agent_question_policy_versions WHERE id = ?').get(first.id).status, 'archived');
+  store.close();
+});
+
+test('sqlite state store appends and limits unknown agent questions', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  await store.appendAgentUnknownQuestion({ userId: 7, messageRef: 'msg-1', question: '第一个问题', actor: 'router', createdAt: '2026-07-12T03:00:00.000Z', payload: { intent: 'unknown_read' } });
+  await store.appendAgentUnknownQuestion({ userId: 8, messageRef: 'msg-2', question: '第二个问题', actor: 'router', createdAt: '2026-07-12T03:01:00.000Z', payload: { intent: 'unknown_write' } });
+
+  const rows = await store.listAgentUnknownQuestions({ limit: 1 });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].userId, 8);
+  assert.equal(rows[0].messageRef, 'msg-2');
+  assert.deepEqual(rows[0].payload, { intent: 'unknown_write' });
+  store.close();
+});
+
+test('sqlite state store atomically consumes owned, unexpired agent action confirmations once', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const confirmation = await store.createAgentActionConfirmation({
+    id: 'confirm-1',
+    userId: 7,
+    action: 'save_memory',
+    actor: 'sales_champion',
+    expiresAt: '2026-07-12T04:10:00.000Z',
+    createdAt: '2026-07-12T04:00:00.000Z',
+    payload: { memory: '客户预算敏感' },
+  });
+  assert.equal(confirmation.status, 'pending');
+  await assert.rejects(
+    store.consumeAgentActionConfirmation({ id: confirmation.id, userId: 8, consumedAt: '2026-07-12T04:01:00.000Z' }),
+    /ownership/i,
+  );
+  assert.equal((await store.consumeAgentActionConfirmation({ id: confirmation.id, userId: 7, consumedAt: '2026-07-12T04:01:00.000Z' })).status, 'consumed');
+  assert.equal((await store.consumeAgentActionConfirmation({ id: confirmation.id, userId: 7, consumedAt: '2026-07-12T04:02:00.000Z' })).status, 'already_consumed');
+
+  await store.createAgentActionConfirmation({ id: 'confirm-expired', userId: 7, action: 'save_memory', actor: 'sales_champion', expiresAt: '2026-07-12T03:59:00.000Z', createdAt: '2026-07-12T03:00:00.000Z' });
+  assert.equal((await store.consumeAgentActionConfirmation({ id: 'confirm-expired', userId: 7, consumedAt: '2026-07-12T04:00:00.000Z' })).status, 'expired');
+  store.close();
+});
+
+test('sqlite state store persists traceable bounded agent route audit events', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  await store.appendAgentRouteAuditEvent({
+    policyVersion: 3,
+    userId: 7,
+    messageRef: 'msg-route-1',
+    decision: 'execute',
+    actor: 'router',
+    createdAt: '2026-07-12T05:00:00.000Z',
+    payload: { intent: 'family_summary', handler: 'insurance_expert' },
+  });
+  const rows = await store.listAgentRouteAuditEvents({ limit: 10, userId: 7 });
+  assert.equal(rows[0].policyVersion, 3);
+  assert.equal(rows[0].userId, 7);
+  assert.equal(rows[0].messageRef, 'msg-route-1');
+  assert.equal(rows[0].decision, 'execute');
+  assert.deepEqual(rows[0].payload, { intent: 'family_summary', handler: 'insurance_expert' });
+  await assert.rejects(
+    store.appendAgentRouteAuditEvent({ policyVersion: 3, userId: 7, messageRef: 'msg-route-2', decision: 'execute', actor: 'router', payload: { detail: 'x'.repeat(17_000) } }),
+    /payload.*bytes/i,
+  );
+  await assert.rejects(
+    store.appendAgentRouteAuditEvent({ policyVersion: 3, userId: 7, messageRef: 'msg-route-3', decision: 'execute', actor: 'router', payload: Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`field${index}`, index])) }),
+    /payload.*fields/i,
+  );
+  store.close();
+});
