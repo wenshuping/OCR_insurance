@@ -136,6 +136,7 @@ import {
 } from '../../shared/customer-policy-list';
 import { AnalysisReportPage, UploadPolicyPage } from '../../features/policy-entry/UploadPolicyPage';
 import { AgentPolicyImportReview } from '../../features/policy-entry/AgentPolicyImportReview';
+import { parseCustomerRoute, removeCustomerRouteParam, resolveOwnedPolicy } from '../../features/policy-entry/policy-import-review-state.mjs';
 import { PolicyDetailSheet } from '../../features/policy-detail/PolicyDetailSheet';
 import { ResponsibilityAssistant } from '../../features/responsibility-assistant/ResponsibilityAssistant';
 import { CustomerAccountSheet } from '../../features/customer-auth/CustomerAccountSheet';
@@ -627,10 +628,8 @@ export function CustomerApp() {
   const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
-  const [policyImportTaskId, setPolicyImportTaskId] = useState(() => {
-    const value = Number(new URLSearchParams(window.location.search).get('policyImportTaskId') || 0);
-    return Number.isSafeInteger(value) && value > 0 ? value : null;
-  });
+  const [policyImportTaskId, setPolicyImportTaskId] = useState(() => parseCustomerRoute(window.location.search).policyImportTaskId);
+  const [requestedPolicyId, setRequestedPolicyId] = useState(() => parseCustomerRoute(window.location.search).policyId);
   const [mobile, setMobile] = useState(() => localStorage.getItem(USER_MOBILE_KEY) || '');
   const [formData, setFormData] = useState<PolicyFormData>(emptyForm);
   const [ocrText, setOcrText] = useState('');
@@ -760,6 +759,20 @@ export function CustomerApp() {
   useEffect(() => {
     if (policyImportTaskId && !token) openPhoneVerificationDialog('验证手机号后继续审核跨渠道保单任务');
   }, [policyImportTaskId, token]);
+  useEffect(() => {
+    if (!requestedPolicyId || !policiesLoaded) return;
+    if (policyImportTaskId && !token) return;
+    const ownedPolicy = resolveOwnedPolicy(requestedPolicyId, policies);
+    if (ownedPolicy) {
+      setSelectedPolicy(ownedPolicy);
+      setSelectedFamilyId(ownedPolicy.familyId || null);
+      setActiveTab('families');
+      setShowFamilyPolicies(true);
+      return;
+    }
+    window.history.replaceState({}, '', removeCustomerRouteParam(`${window.location.pathname}${window.location.search}${window.location.hash}`, 'policyId'));
+    setRequestedPolicyId(null);
+  }, [policies, policiesLoaded, policyImportTaskId, requestedPolicyId, token]);
   useEffect(() => {
     if (familySalesReviewRestoreAttemptRef.current || familySalesReviewOpen) return;
     const restoredFamilyId = Number(sessionStorage.getItem(FAMILY_SALES_REVIEW_RESTORE_KEY) || 0);
@@ -4351,12 +4364,22 @@ export function CustomerApp() {
     );
   }
 
-  if (policyImportTaskId && token) {
+  if (policyImportTaskId && token && !selectedPolicy) {
     return (
       <>
         <AgentPolicyImportReview
           taskId={policyImportTaskId}
           token={token}
+          onRecover={(taskId) => {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('policyImportTaskId');
+            url.searchParams.set('policyImportRecoveryTaskId', String(taskId));
+            window.history.replaceState({}, '', url);
+            setPolicyImportTaskId(null);
+            setActiveTab('entry');
+            setShowFamilyPolicies(false);
+            setMessage('任务识别失败，请重新上传保单或进行人工复核');
+          }}
           onBack={() => {
             const url = new URL(window.location.href);
             url.searchParams.delete('policyImportTaskId');

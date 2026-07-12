@@ -1,0 +1,11 @@
+export type CustomerRoute = { policyImportTaskId: number | null; policyId: number | null };
+export type ReviewRequestState = { generation: number; mounted: boolean };
+export function positiveRouteId(value: unknown): number | null;
+export function parseCustomerRoute(search?: string): CustomerRoute;
+export function removeCustomerRouteParam(path: string, name: string): string;
+export function resolveOwnedPolicy<T extends { id: number }>(requestedPolicyId: unknown, policies?: T[]): T | null;
+export function beginReviewRequest<T extends ReviewRequestState>(state: T): T;
+export function acceptReviewResponse<T>(state: ReviewRequestState, generation: number, value: T): T | null;
+export function nextPolicyImportPoll(attempt: number, maxAttempts: number): { attempt: number; exhausted: boolean; delayMs: number };
+export function failedPolicyImportRecoveryUrl(taskId: number): string;
+export function completedPolicyHref(taskId: number, completedResult?: { policyId?: number }): string;

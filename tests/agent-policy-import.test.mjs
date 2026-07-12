@@ -156,6 +156,19 @@ test('public context masks identifiers and exposes only safe progress and legal 
   assert.doesNotMatch(JSON.stringify(context), /data:image|"ocrText"\s*:|\/private\/|330106199001011234|POLICY12345678|13812345678/u);
 });
 
+test('completed public context exposes only its safe saved policy result', () => {
+  const task = create({ draft: { company: 'A', name: 'B', insured: 'C' } });
+  task.status = 'completed';
+  task.formalPolicyId = 91;
+  task.completedAt = '2026-07-12T08:00:00.000Z';
+  task.ownerSecret = 'never-public';
+  const context = buildAgentPolicyImportContext(task);
+  assert.deepEqual(context.completedResult, { policyId: 91, completedAt: '2026-07-12T08:00:00.000Z' });
+  assert.doesNotMatch(JSON.stringify(context), /ownerSecret|sourcePolicyImport|never-public/u);
+  task.status = 'failed';
+  assert.equal(buildAgentPolicyImportContext(task).completedResult, undefined);
+});
+
 test('normalizes legacy tasks missing document and status state', () => {
   const legacy = normalizeAgentPolicyImportTask({ id: 2, familyId: 3, ownerGuestId: 'g', draft: { company: 'A', name: 'B', insured: 'C' } });
   assert.deepEqual(legacy.documents, []);

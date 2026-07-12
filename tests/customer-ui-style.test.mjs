@@ -1954,8 +1954,10 @@ test('customer app resumes a masked policy import task from its cross-channel qu
   const familyApiSource = fs.readFileSync(new URL('../src/api/contracts/family.ts', import.meta.url), 'utf8');
 
   assert.match(normalizedCustomerAppSource, /policyImportTaskId/);
-  assert.match(normalizedCustomerAppSource, /new URLSearchParams\(window\.location\.search\)/);
+  assert.match(normalizedCustomerAppSource, /parseCustomerRoute\(window\.location\.search\)/);
   assert.match(normalizedCustomerAppSource, /AgentPolicyImportReview/);
+  assert.match(normalizedCustomerAppSource, /resolveOwnedPolicy\(requestedPolicyId, policies\)/);
+  assert.match(normalizedCustomerAppSource, /setActiveTab\('families'\);\s*setShowFamilyPolicies\(true\)/);
   assert.match(reviewSource, /getPolicyImport\(/);
   assert.match(reviewSource, /task\.stateVersion/);
   assert.match(reviewSource, /task\.documentSummary/);
@@ -1969,7 +1971,7 @@ test('customer app resumes a masked policy import task from its cross-channel qu
   assert.match(reviewSource, /error instanceof ApiError && error\.status === 409/);
   assert.match(reviewSource, /任务已在其他渠道更新/);
   assert.match(reviewSource, /clearTimeout\(/);
-  assert.match(reviewSource, /Math\.min\(/);
+  assert.match(reviewSource, /nextPolicyImportPoll\(/);
   assert.match(reviewSource, /aria-live="polite"/);
   assert.match(reviewSource, /查看已保存保单/);
   assert.doesNotMatch(reviewSource, /localStorage|sessionStorage|data:image|ocrText|rawOcr/i);

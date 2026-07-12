@@ -76,6 +76,8 @@ export function createAgentPolicyImportFinalizer({
     const next = structuredClone(claimedTask || task);
     updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
     const completed = { ...record, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
+    next.formalPolicyId = completed.formalPolicyId;
+    next.completedAt = completed.completedAt;
     try {
       await complete({ state, task: next, record: completed, policy });
     } catch (error) {
@@ -148,6 +150,8 @@ export function createAgentPolicyImportFinalizer({
       const next = structuredClone(reservedTask);
       updateAgentPolicyImportTask(next, { stateVersion: next.stateVersion, action: 'mark_saved', now: nowIso() });
       const completed = { ...record, status: 'completed', formalPolicyId: policy.id, completedAt: nowIso(), updatedAt: nowIso() };
+      next.formalPolicyId = completed.formalPolicyId;
+      next.completedAt = completed.completedAt;
       await complete({ state, task: next, record: completed, policy });
       Object.assign(task, next);
       if (!(state.policies || []).some((row) => Number(row.id) === Number(policy.id))) state.policies.push(policy);

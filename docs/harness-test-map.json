@@ -161,10 +161,14 @@
     "patterns": [
       "src/apps/customer/CustomerApp.tsx",
       "src/features/policy-entry/AgentPolicyImportReview.tsx",
-      "tests/customer-ui-style.test.mjs"
+      "src/features/policy-entry/policy-import-review-state.mjs",
+      "src/features/policy-entry/policy-import-review-state.d.mts",
+      "tests/customer-ui-style.test.mjs",
+      "tests/policy-import-review-state.test.mjs"
     ],
     "commands": [
-      "node --test tests/customer-ui-style.test.mjs"
+      "node --test tests/customer-ui-style.test.mjs",
+      "node --test tests/policy-import-review-state.test.mjs"
     ]
   },
   {

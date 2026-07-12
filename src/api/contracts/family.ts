@@ -187,6 +187,7 @@ export type PolicyImportTask = {
     members: Array<{ optionId: string; label: string }>;
   };
   nextInteraction: { type: string; stateVersion: number; field?: string; status?: string } | null;
+  completedResult?: { policyId: number; completedAt: string };
 };
 
 export type PolicyImportFinalizationResult = {

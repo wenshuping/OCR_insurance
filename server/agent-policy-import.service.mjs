@@ -228,6 +228,8 @@ function canonicalTask(input) {
     createdAt: redact(scalarString(input.createdAt, { max: 40 })),
     updatedAt: redact(scalarString(input.updatedAt, { max: 40 })),
   };
+  if (input.formalPolicyId != null) task.formalPolicyId = positiveInteger(input.formalPolicyId, 'INVALID_POLICY_ID');
+  if (input.completedAt) task.completedAt = redact(scalarString(input.completedAt, { max: 40 }));
   if (!task.status) task.status = documents.length ? 'recognizing' : workflowStatus(task);
   else if (!PROCESSING_STATUSES.has(task.status) && !CLOSED_STATUSES.has(task.status)) task.status = workflowStatus(task);
   return task;
@@ -481,6 +483,9 @@ export function buildAgentPolicyImportContext(input = {}) {
       members: task.memberOptions.map(({ optionId, label }) => ({ optionId: publicText(optionId), label: maskName(label) })),
     },
     nextInteraction: nextInteraction(task),
+    ...(task.status === 'completed' && Number(task.formalPolicyId) > 0
+      ? { completedResult: { policyId: task.formalPolicyId, completedAt: publicText(task.completedAt) } }
+      : {}),
     privacy: { classification: 'customer_sensitive', maskedForChannel: true, originalDocumentsIncluded: false, ocrTextIncluded: false, externalSharing: 'redacted_only' },
   };
 }
