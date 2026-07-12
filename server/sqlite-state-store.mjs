@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
+import { applyFamilySalesMemoryAction } from './family-sales-memory.service.mjs';
 
 const SCHEMA_VERSION = '5';
 
@@ -299,6 +300,47 @@ function setMeta(db, key, value) {
 function ensureColumn(db, table, column, definition) {
   if (db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function migrateFamilySalesMemoryHistory(db) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const rows = db.prepare('SELECT id, payload FROM family_sales_memories ORDER BY id').all();
+    const update = db.prepare(`UPDATE family_sales_memories SET
+      family_id = ?, owner_user_id = ?, owner_guest_id = ?, kind = ?, status = ?, memory_key = ?, content = ?, confidence = ?, version = ?,
+      recorded_at = ?, valid_from = ?, valid_to = ?, invalidated_at = ?, supersedes_memory_id = ?, superseded_by_memory_id = ?,
+      subject_type = ?, subject_id = ?, risk_level = ?, source_message_id = ?, normalized_value_json = ?, source_message_ids_json = ?,
+      source_type = ?, confirmation_type = ?, confirmed_by = ?, confirmed_at = ?, invalidation_reason = ?, extractor_version = ?,
+      source_thread_id = ?, created_at = ?, updated_at = ? WHERE id = ?`);
+    for (const row of rows) {
+      const memory = parseJson(row.payload, null);
+      if (!memory || Number(memory.id) !== Number(row.id)) throw Object.assign(new Error('invalid legacy family sales memory payload'), { code: 'MEMORY_MIGRATION_FAILED' });
+      const ownerUserId = Number(memory.ownerUserId || 0) || null;
+      const ownerGuestId = ownerUserId ? '' : String(memory.ownerGuestId || '');
+      if (!Number(memory.familyId) || (!ownerUserId && !ownerGuestId)) throw Object.assign(new Error('legacy family sales memory scope is invalid'), { code: 'MEMORY_MIGRATION_FAILED' });
+      const status = String(memory.status || 'active') === 'active' ? 'confirmed' : String(memory.status || 'candidate');
+      const version = Number(memory.version || 1);
+      const recordedAt = String(memory.recordedAt || memory.createdAt || memory.updatedAt || new Date(0).toISOString());
+      const messageIds = normalizeArray(memory.sourceMessageIds || memory.evidenceMessageIds).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+      update.run(memory.familyId, ownerUserId, ownerGuestId, memory.kind || '', status, memory.memoryKey || '', memory.content || '', Number(memory.confidence || 0), version,
+        recordedAt, memory.validFrom || (status === 'confirmed' ? recordedAt : ''), memory.validTo || '', memory.invalidatedAt || '',
+        Number(memory.supersedesMemoryId || 0) || null, Number(memory.supersededByMemoryId || 0) || null, memory.subjectType || '', memory.subjectId || '', memory.riskLevel || '',
+        Number(memory.sourceMessageId || messageIds[0] || 0) || null, JSON.stringify(memory.normalizedValue ?? null), JSON.stringify(messageIds), memory.sourceType || '',
+        memory.confirmationType || '', String(memory.confirmedBy || ''), memory.confirmedAt || '', memory.invalidationReason || '', memory.extractorVersion || '',
+        Number(memory.sourceThreadId || 0) || null, memory.createdAt || recordedAt, memory.updatedAt || recordedAt, row.id);
+      const historyCount = db.prepare('SELECT COUNT(*) AS count FROM family_sales_memory_events WHERE memory_id = ?').get(row.id).count;
+      if (!historyCount) insertFamilySalesMemoryEvents(db, [{
+        id: `memory_event:${row.id}:imported`, memoryId: row.id, familyId: memory.familyId, ownerUserId, ownerGuestId,
+        eventType: 'imported', actor: { type: 'system', id: 1 }, sourceMessageId: messageIds[0] || null,
+        previousStatus: '', nextStatus: status, reasonCode: 'legacy_import', createdAt: recordedAt, version,
+      }]);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    if (!error.code) error.code = 'MEMORY_MIGRATION_FAILED';
+    throw error;
+  }
 }
 
 function createSchema(db) {
@@ -666,7 +708,10 @@ function createSchema(db) {
       kind TEXT,
       status TEXT,
       memory_key TEXT,
+      content TEXT,
+      confidence REAL,
       version INTEGER,
+      recorded_at TEXT,
       valid_from TEXT,
       valid_to TEXT,
       invalidated_at TEXT,
@@ -676,6 +721,14 @@ function createSchema(db) {
       subject_id TEXT,
       risk_level TEXT,
       source_message_id INTEGER,
+      normalized_value_json TEXT,
+      source_message_ids_json TEXT,
+      source_type TEXT,
+      confirmation_type TEXT,
+      confirmed_by TEXT,
+      confirmed_at TEXT,
+      invalidation_reason TEXT,
+      extractor_version TEXT,
       source_thread_id INTEGER,
       created_at TEXT,
       updated_at TEXT,
@@ -692,15 +745,20 @@ function createSchema(db) {
       family_id INTEGER NOT NULL,
       owner_user_id INTEGER,
       owner_guest_id TEXT,
-      event_type TEXT NOT NULL,
-      actor_type TEXT,
+      event_type TEXT NOT NULL CHECK (event_type IN ('proposed','imported','confirmed','rejected','superseded','completed','expired','restored')),
+      actor_type TEXT CHECK (actor_type IN ('system','advisor','service')),
       actor_id TEXT,
       source_message_id INTEGER,
-      previous_status TEXT,
-      next_status TEXT,
+      previous_status TEXT CHECK (previous_status IN ('','candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      next_status TEXT NOT NULL CHECK (next_status IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
       reason_code TEXT,
       created_at TEXT NOT NULL,
-      payload TEXT NOT NULL
+      payload TEXT NOT NULL,
+      CHECK (memory_id > 0 AND family_id > 0),
+      CHECK ((owner_user_id IS NOT NULL AND owner_user_id > 0 AND COALESCE(owner_guest_id, '') = '')
+          OR (owner_user_id IS NULL AND length(owner_guest_id) BETWEEN 1 AND 128)),
+      CHECK (length(id) BETWEEN 1 AND 240 AND length(created_at) BETWEEN 10 AND 40),
+      FOREIGN KEY (memory_id) REFERENCES family_sales_memories(id)
     );
     CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_memory ON family_sales_memory_events(memory_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_family ON family_sales_memory_events(family_id, created_at, id);
@@ -831,10 +889,13 @@ function createSchema(db) {
   ensureColumn(db, 'policies', 'source_policy_import_task_id', 'INTEGER');
   ensureColumn(db, 'policies', 'source_policy_import_request_id', "TEXT NOT NULL DEFAULT ''");
   for (const [column, definition] of [
-    ['memory_key', 'TEXT'], ['version', 'INTEGER'], ['valid_from', 'TEXT'], ['valid_to', 'TEXT'],
+    ['memory_key', 'TEXT'], ['content', 'TEXT'], ['confidence', 'REAL'], ['version', 'INTEGER'], ['recorded_at', 'TEXT'], ['valid_from', 'TEXT'], ['valid_to', 'TEXT'],
     ['invalidated_at', 'TEXT'], ['supersedes_memory_id', 'INTEGER'], ['superseded_by_memory_id', 'INTEGER'],
     ['subject_type', 'TEXT'], ['subject_id', 'TEXT'], ['risk_level', 'TEXT'], ['source_message_id', 'INTEGER'],
+    ['normalized_value_json', 'TEXT'], ['source_message_ids_json', 'TEXT'], ['source_type', 'TEXT'],
+    ['confirmation_type', 'TEXT'], ['confirmed_by', 'TEXT'], ['confirmed_at', 'TEXT'], ['invalidation_reason', 'TEXT'], ['extractor_version', 'TEXT'],
   ]) ensureColumn(db, 'family_sales_memories', column, definition);
+  migrateFamilySalesMemoryHistory(db);
   db.exec(`
     UPDATE policies
     SET source_policy_import_task_id = CAST(json_extract(payload, '$.sourcePolicyImportTaskId') AS INTEGER),
@@ -1324,8 +1385,13 @@ function insertRows(db, state) {
   }
 
   const insertFamilySalesMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, memory_key, version, valid_from, valid_to, invalidated_at, supersedes_memory_id, superseded_by_memory_id, subject_type, subject_id, risk_level, source_message_id, source_thread_id, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, memory_key, content, confidence, version, recorded_at, valid_from, valid_to, invalidated_at, supersedes_memory_id, superseded_by_memory_id, subject_type, subject_id, risk_level, source_message_id, normalized_value_json, source_message_ids_json, source_type, confirmation_type, confirmed_by, confirmed_at, invalidation_reason, extractor_version, source_thread_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET status = excluded.status, memory_key = excluded.memory_key, content = excluded.content,
+      confidence = excluded.confidence, version = excluded.version, recorded_at = excluded.recorded_at,
+      valid_from = excluded.valid_from, valid_to = excluded.valid_to, invalidated_at = excluded.invalidated_at,
+      supersedes_memory_id = excluded.supersedes_memory_id, superseded_by_memory_id = excluded.superseded_by_memory_id,
+      updated_at = excluded.updated_at, payload = excluded.payload
   `);
   for (const memory of normalizeArray(state.familySalesMemories)) {
     insertFamilySalesMemory.run(
@@ -1336,11 +1402,16 @@ function insertRows(db, state) {
       String(memory.kind || ''),
       String(memory.status || ''),
       String(memory.memoryKey || ''),
+      String(memory.content || ''), Number(memory.confidence || 0),
       Number(memory.version || (memory.status === 'active' ? 1 : 0)) || null,
+      String(memory.recordedAt || memory.createdAt || memory.updatedAt || ''),
       String(memory.validFrom || ''), String(memory.validTo || ''), String(memory.invalidatedAt || ''),
       Number(memory.supersedesMemoryId || 0) || null, Number(memory.supersededByMemoryId || 0) || null,
       String(memory.subjectType || ''), String(memory.subjectId || ''), String(memory.riskLevel || ''),
       Number(memory.sourceMessageId || memory.evidenceMessageIds?.[0] || 0) || null,
+      JSON.stringify(memory.normalizedValue ?? null), JSON.stringify(memory.sourceMessageIds || memory.evidenceMessageIds || []),
+      String(memory.sourceType || ''), String(memory.confirmationType || ''), String(memory.confirmedBy || ''), String(memory.confirmedAt || ''),
+      String(memory.invalidationReason || ''), String(memory.extractorVersion || ''),
       Number(memory.sourceThreadId || 0) || null,
       String(memory.createdAt || ''),
       String(memory.updatedAt || ''),
@@ -1348,12 +1419,14 @@ function insertRows(db, state) {
     );
   }
   insertFamilySalesMemoryEvents(db, state.familySalesMemoryEvents, { ignoreDuplicates: true });
-  insertFamilySalesMemoryEvents(db, normalizeArray(state.familySalesMemories).map((memory) => ({
+  insertFamilySalesMemoryEvents(db, normalizeArray(state.familySalesMemories)
+    .filter((memory) => !db.prepare('SELECT 1 AS found FROM family_sales_memory_events WHERE memory_id = ? LIMIT 1').get(Number(memory.id)))
+    .map((memory) => ({
     id: `memory_event:${memory.id}:1:proposed`, memoryId: memory.id, familyId: memory.familyId,
     ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: 'proposed',
-    actor: { type: 'system', id: '' }, sourceMessageId: memory.sourceMessageId || memory.evidenceMessageIds?.[0] || null,
+    actor: { type: 'system', id: 1 }, sourceMessageId: memory.sourceMessageId || memory.evidenceMessageIds?.[0] || null,
     previousStatus: '', nextStatus: 'candidate', reasonCode: 'extracted', createdAt: memory.createdAt || memory.updatedAt, version: 1,
-  })), { ignoreDuplicates: true });
+    })), { ignoreDuplicates: true });
 
   const insertReportRefreshEvent = db.prepare(`
     INSERT INTO report_refresh_events (id, kind, family_id, report_id, owner_user_id, owner_guest_id, created_at, payload)
@@ -2307,22 +2380,38 @@ function insertFamilySalesMemoryEvents(db, events = [], { ignoreDuplicates = fal
   `);
   for (const event of normalizeArray(events)) {
     const actor = event.actor || {};
+    const eventType = memoryEventType(event);
+    const memory = db.prepare('SELECT family_id, owner_user_id, owner_guest_id FROM family_sales_memories WHERE id = ?').get(Number(event.memoryId));
+    const actorType = String(actor.type || event.actorType || '');
+    const actorId = String(actor.id || event.actorId || '');
+    const createdAt = String(event.createdAt || event.time || '');
+    if (!memory || Number(memory.family_id) !== Number(event.familyId)
+      || Number(memory.owner_user_id || 0) !== Number(event.ownerUserId || 0)
+      || String(memory.owner_guest_id || '') !== String(event.ownerGuestId || '')) throw new Error('memory event scope mismatch or orphan');
+    if (!/^(proposed|imported|confirmed|rejected|superseded|completed|expired|restored)$/u.test(eventType)
+      || !/^(system|advisor|service)$/u.test(actorType)
+      || !(/^\d+$/u.test(actorId) || /^sha256:[a-f0-9]{64}$/u.test(actorId))
+      || !Number.isFinite(Date.parse(createdAt))) throw new Error('invalid family sales memory event');
     insert.run(
       memoryEventId(event), Number(event.memoryId), Number(event.familyId), Number(event.ownerUserId || 0) || null,
-      String(event.ownerGuestId || ''), memoryEventType(event), String(actor.type || event.actorType || ''),
-      String(actor.id || event.actorId || ''), Number(event.sourceMessageId || 0) || null,
+      String(event.ownerGuestId || ''), eventType, actorType,
+      actorId, Number(event.sourceMessageId || 0) || null,
       String(event.previousStatus || event.previous?.status || ''), String(event.nextStatus || event.next?.status || ''),
-      String(event.reasonCode || event.reason || ''), String(event.createdAt || event.time || ''), jsonPayload(safeMemoryEventPayload(event)),
+      String(event.reasonCode || event.reason || ''), createdAt, jsonPayload(safeMemoryEventPayload(event)),
     );
   }
 }
 
 function replaceFamilySalesMemories(db, state) {
   const existingIds = new Set(db.prepare('SELECT id FROM family_sales_memories').all().map((row) => String(row.id)));
-  db.prepare('DELETE FROM family_sales_memories').run();
   const insertMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, memory_key, version, valid_from, valid_to, invalidated_at, supersedes_memory_id, superseded_by_memory_id, subject_type, subject_id, risk_level, source_message_id, source_thread_id, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, memory_key, content, confidence, version, recorded_at, valid_from, valid_to, invalidated_at, supersedes_memory_id, superseded_by_memory_id, subject_type, subject_id, risk_level, source_message_id, normalized_value_json, source_message_ids_json, source_type, confirmation_type, confirmed_by, confirmed_at, invalidation_reason, extractor_version, source_thread_id, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET status = excluded.status, memory_key = excluded.memory_key, content = excluded.content,
+      confidence = excluded.confidence, version = excluded.version, recorded_at = excluded.recorded_at,
+      valid_from = excluded.valid_from, valid_to = excluded.valid_to, invalidated_at = excluded.invalidated_at,
+      supersedes_memory_id = excluded.supersedes_memory_id, superseded_by_memory_id = excluded.superseded_by_memory_id,
+      updated_at = excluded.updated_at, payload = excluded.payload
   `);
   for (const memory of normalizeArray(state.familySalesMemories)) {
     insertMemory.run(
@@ -2332,11 +2421,15 @@ function replaceFamilySalesMemories(db, state) {
       String(memory.ownerGuestId || ''),
       String(memory.kind || ''),
       String(memory.status || ''),
-      String(memory.memoryKey || ''), Number(memory.version || (memory.status === 'active' ? 1 : 0)) || null,
+      String(memory.memoryKey || ''), String(memory.content || ''), Number(memory.confidence || 0), Number(memory.version || (memory.status === 'active' ? 1 : 0)) || null,
+      String(memory.recordedAt || memory.createdAt || memory.updatedAt || ''),
       String(memory.validFrom || ''), String(memory.validTo || ''), String(memory.invalidatedAt || ''),
       Number(memory.supersedesMemoryId || 0) || null, Number(memory.supersededByMemoryId || 0) || null,
       String(memory.subjectType || ''), String(memory.subjectId || ''), String(memory.riskLevel || ''),
       Number(memory.sourceMessageId || memory.evidenceMessageIds?.[0] || 0) || null,
+      JSON.stringify(memory.normalizedValue ?? null), JSON.stringify(memory.sourceMessageIds || memory.evidenceMessageIds || []),
+      String(memory.sourceType || ''), String(memory.confirmationType || ''), String(memory.confirmedBy || ''), String(memory.confirmedAt || ''),
+      String(memory.invalidationReason || ''), String(memory.extractorVersion || ''),
       Number(memory.sourceThreadId || 0) || null,
       String(memory.createdAt || ''),
       String(memory.updatedAt || ''),
@@ -2349,7 +2442,7 @@ function replaceFamilySalesMemories(db, state) {
     .map((memory) => ({
       id: `memory_event:${memory.id}:1:proposed`, memoryId: memory.id, familyId: memory.familyId,
       ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: 'proposed',
-      actor: { type: 'system', id: '' }, sourceMessageId: memory.sourceMessageId || memory.evidenceMessageIds?.[0] || null,
+      actor: { type: 'system', id: 1 }, sourceMessageId: memory.sourceMessageId || memory.evidenceMessageIds?.[0] || null,
       previousStatus: '', nextStatus: 'candidate', reasonCode: 'extracted', createdAt: memory.createdAt || memory.updatedAt,
       version: 1,
     }));
@@ -2456,7 +2549,6 @@ function clearDbOwnedTables(db) {
     DELETE FROM family_report_issues;
     DELETE FROM family_report_corrections;
     DELETE FROM family_reports;
-    DELETE FROM family_sales_memories;
     DELETE FROM family_sales_chat_messages;
     DELETE FROM family_sales_chat_threads;
     DELETE FROM family_sales_reviews;
@@ -3102,26 +3194,36 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
-  async function persistFamilySalesMemoryTransition({ state, bundle, expectedVersion } = {}) {
-    const memories = normalizeArray(bundle?.memories);
-    const events = normalizeArray(bundle?.events);
-    if (!memories.length || !events.length || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+  async function persistFamilySalesMemoryTransition({ state, memoryId, familyId, owner = {}, action, reasonCode, actor, replacement = null, expectedVersion, now } = {}) {
+    if (!Number.isSafeInteger(Number(memoryId)) || Number(memoryId) <= 0 || !Number.isSafeInteger(Number(familyId)) || Number(familyId) <= 0
+      || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw Object.assign(new Error('invalid family sales memory transition'), { code: 'INVALID_MEMORY_TRANSITION', status: 400 });
     }
-    const changedMemory = memories[0];
     db.exec('BEGIN IMMEDIATE');
     try {
-      const row = db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(Number(changedMemory.id));
+      const row = db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(Number(memoryId));
       const authoritative = parseJson(row?.payload, null);
       const currentVersion = Number(row?.version || (authoritative?.status === 'active' ? 1 : authoritative?.version));
       if (!authoritative || currentVersion !== expectedVersion) {
         throw Object.assign(new Error('stale memory version'), { code: 'STALE_INTERACTION', status: 409 });
       }
-      for (const memory of memories) {
-        if (Number(memory.familyId) !== Number(authoritative.familyId)
-          || Number(memory.ownerUserId || 0) !== Number(authoritative.ownerUserId || 0)
-          || String(memory.ownerGuestId || '') !== String(authoritative.ownerGuestId || '')) throw new Error('cross-scope memory transition');
-      }
+      const ownerUserId = Number(owner.ownerUserId || 0) || null;
+      const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+      if (Number(authoritative.familyId) !== Number(familyId)
+        || Number(authoritative.ownerUserId || 0) !== Number(ownerUserId || 0)
+        || String(authoritative.ownerGuestId || '') !== ownerGuestId) throw new Error('cross-scope memory transition');
+      const graphRows = db.prepare(`SELECT payload FROM family_sales_memories
+        WHERE family_id = ? AND COALESCE(owner_user_id, 0) = ? AND COALESCE(owner_guest_id, '') = ? ORDER BY id LIMIT 1002`)
+        .all(Number(familyId), Number(ownerUserId || 0), ownerGuestId);
+      if (graphRows.length > 1000) throw new Error('memory supersession graph exceeds limit');
+      const existingMemories = graphRows.map((item) => parseJson(item.payload, null));
+      if (existingMemories.some((memory) => !memory)) throw new Error('invalid memory graph payload');
+      if (replacement?.id && db.prepare('SELECT 1 AS found FROM family_sales_memories WHERE id = ?').get(Number(replacement.id))) throw new Error('replacement id already exists');
+      const result = applyFamilySalesMemoryAction({ memory: authoritative, action, reasonCode, actor, replacement, existingMemories, expectedVersion, now });
+      const memories = result.replacement ? [result.memory, result.replacement] : [result.memory];
+      const events = result.events;
+      const bundle = { memories, events };
+      const changedMemory = memories[0];
       if (Number(changedMemory.version) !== expectedVersion + 1) throw new Error('non-monotonic memory version');
       const changed = db.prepare(`
         UPDATE family_sales_memories SET status = ?, memory_key = ?, version = ?, valid_from = ?, valid_to = ?, invalidated_at = ?,
@@ -3148,7 +3250,6 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
             Number(replacement.sourceThreadId || 0) || null, replacement.createdAt || '', replacement.updatedAt || '', jsonPayload(replacement));
       }
       const scopedEvents = events.map((event) => ({ ...event, familyId: authoritative.familyId, ownerUserId: authoritative.ownerUserId, ownerGuestId: authoritative.ownerGuestId }));
-      if (scopedEvents.some((event) => !memories.some((memory) => String(memory.id) === String(event.memoryId)))) throw new Error('event memory is outside transition bundle');
       insertFamilySalesMemoryEvents(db, scopedEvents);
       const nextState = { ...createInitialState(), ...state };
       updateStateMeta(db, nextState, new Date().toISOString());

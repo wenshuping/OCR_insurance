@@ -8,7 +8,39 @@ import { DatabaseSync } from 'node:sqlite';
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
-import { buildFamilySalesMemoryTransitionBundle } from '../server/family-sales-memory.service.mjs';
+
+test('initialized legacy memory database backfills promoted columns and one imported event', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'legacy-memory.sqlite');
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO app_meta VALUES ('state_initialized_at', '2026-01-01T00:00:00.000Z');
+    CREATE TABLE family_sales_memories (
+      id INTEGER PRIMARY KEY, family_id INTEGER, owner_user_id INTEGER, owner_guest_id TEXT, kind TEXT, status TEXT,
+      source_thread_id INTEGER, created_at TEXT, updated_at TEXT, payload TEXT NOT NULL
+    );
+    CREATE TABLE untouched_sentinel (value TEXT NOT NULL);
+    INSERT INTO untouched_sentinel VALUES ('keep');
+  `);
+  const memory = { id: 7, familyId: 3, ownerGuestId: 'guest-legacy', kind: 'preference', content: '简洁展示', status: 'active', confidence: 0.8, createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' };
+  legacy.prepare('INSERT INTO family_sales_memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(7, 3, null, 'guest-legacy', 'preference', 'active', null, memory.createdAt, memory.updatedAt, JSON.stringify(memory));
+  legacy.close();
+
+  const first = await createSqliteStateStore({ dbPath });
+  const promoted = first.db.prepare('SELECT status, version, recorded_at, content, confidence FROM family_sales_memories WHERE id = 7').get();
+  assert.equal(promoted.status, 'confirmed');
+  assert.equal(promoted.version, 1);
+  assert.equal(promoted.recorded_at, memory.createdAt);
+  assert.equal(promoted.content, memory.content);
+  assert.equal(promoted.confidence, 0.8);
+  assert.equal(first.db.prepare('SELECT event_type FROM family_sales_memory_events WHERE memory_id = 7').get().event_type, 'imported');
+  assert.equal(first.db.prepare('SELECT value FROM untouched_sentinel').get().value, 'keep');
+  first.close();
+  const reopened = await createSqliteStateStore({ dbPath });
+  assert.equal(reopened.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events WHERE memory_id = 7').get().count, 1);
+  reopened.close();
+});
 
 test('sqlite temporal memories persist immutable ordered events with CAS and rollback', async () => {
   const dir = await makeTempDir();
@@ -21,16 +53,20 @@ test('sqlite temporal memories persist immutable ordered events with CAS and rol
   await store.persistFamilyState({ state });
   assert.equal(store.db.prepare("SELECT count(*) AS count FROM family_sales_memory_events WHERE event_type = 'proposed'").get().count, 1);
 
-  const confirmed = buildFamilySalesMemoryTransitionBundle({ memory: candidate, action: 'confirm', actor: { type: 'advisor', id: 1 }, reasonCode: 'advisor_confirmation', expectedVersion: 1, now: '2026-07-12T02:00:00.000Z' });
-  await store.persistFamilySalesMemoryTransition({ state, bundle: confirmed, expectedVersion: 1 });
-  const stale = buildFamilySalesMemoryTransitionBundle({ memory: confirmed.memories[0], action: 'expire', actor: { type: 'service', id: 1 }, reasonCode: 'expired_by_date', expectedVersion: 2, now: '2026-07-12T03:00:00.000Z' });
-  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, bundle: stale, expectedVersion: 1 }), { code: 'STALE_INTERACTION' });
+  const transitionBase = { state, memoryId: 101, familyId: 8, owner: { ownerUserId: 1 }, actor: { type: 'advisor', id: 1 } };
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, bundle: { memories: [{ ...candidate, status: 'confirmed' }], events: [] }, expectedVersion: 1 }), { code: 'INVALID_MEMORY_TRANSITION' });
+  await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'confirm', reasonCode: 'advisor_confirmation', expectedVersion: 1, now: '2026-07-12T02:00:00.000Z' });
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'expire', reasonCode: 'expired_by_date', actor: { type: 'service', id: 1 }, expectedVersion: 1, now: '2026-07-12T03:00:00.000Z' }), { code: 'STALE_INTERACTION' });
   const before = store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload;
-  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, bundle: { memories: stale.memories, events: [confirmed.events[0]] }, expectedVersion: 2 }));
+  const countsBefore = store.db.prepare('SELECT (SELECT count(*) FROM family_sales_memories) AS memories, (SELECT count(*) FROM family_sales_memory_events) AS events').get();
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { id: 101, content: '篡改' }, expectedVersion: 2, now: '2026-07-12T03:00:00.000Z' }));
   assert.equal(store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload, before);
-  const superseded = buildFamilySalesMemoryTransitionBundle({ memory: confirmed.memories[0], action: 'supersede', actor: { type: 'advisor', id: 1 }, reasonCode: 'advisor_correction', replacement: { id: 102, content: '看完整报告' }, existingMemories: [confirmed.memories[0]], expectedVersion: 2, now: '2026-07-12T04:00:00.000Z' });
-  await store.persistFamilySalesMemoryTransition({ state, bundle: superseded, expectedVersion: 2 });
+  assert.deepEqual(store.db.prepare('SELECT (SELECT count(*) FROM family_sales_memories) AS memories, (SELECT count(*) FROM family_sales_memory_events) AS events').get(), countsBefore);
+  await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { id: 102, content: '看完整报告' }, expectedVersion: 2, now: '2026-07-12T04:00:00.000Z' });
   assert.throws(() => store.db.prepare('UPDATE family_sales_memory_events SET reason_code = ?').run('changed'), /immutable/u);
+  assert.throws(() => store.db.prepare('DELETE FROM family_sales_memory_events').run(), /immutable/u);
+  await store.persist(state);
+  assert.equal(store.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events').get().count, 4);
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath });
