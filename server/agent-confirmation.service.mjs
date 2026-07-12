@@ -74,11 +74,12 @@ export async function dispatchPendingTransferRegenerationJobs({ store, reportQue
   if (!store || typeof store.claimPendingTransferRegenerationJobs !== 'function') return { dispatched: 0, failed: 0 };
   if (!reportQueue || typeof reportQueue.enqueueUnique !== 'function') return { dispatched: 0, failed: 0, reason: 'enqueue_unique_required' };
   const jobs = await store.claimPendingTransferRegenerationJobs({ confirmationId, limit, workerId, leaseMs, now: new Date(now()).toISOString() });
-  const results = await Promise.allSettled(jobs.map(async (job) => {
+  const results = [];
+  for (const job of jobs) {
     try {
       await reportQueue.enqueueUnique({ familyId: job.familyId, type: job.type, userId: job.userId, dedupeKey: job.dedupeKey });
       await store.markPolicyTransferRegenerationJobDispatched({ id: job.id, claimToken: job.claimToken, dispatchedAt: new Date(now()).toISOString() });
-      return 'dispatched';
+      results.push({ status: 'fulfilled' });
     } catch (error) {
       await store.markPolicyTransferRegenerationJobFailed({
         id: job.id,
@@ -86,9 +87,9 @@ export async function dispatchPendingTransferRegenerationJobs({ store, reportQue
         attemptedAt: new Date(now()).toISOString(),
         error: String(error?.message || 'dispatch failed').slice(0, 500),
       });
-      throw error;
+      results.push({ status: 'rejected' });
     }
-  }));
+  }
   return {
     dispatched: results.filter((row) => row.status === 'fulfilled').length,
     failed: results.filter((row) => row.status === 'rejected').length,

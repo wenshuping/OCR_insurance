@@ -514,10 +514,11 @@ export function createFamilyReportRecord({
   report,
   planningProfile = null,
   allocateId,
+  allowEmptyPolicies = false,
 } = {}) {
   if (!family || !report) throw new Error('FAMILY_REPORT_INPUT_REQUIRED');
   const policyRows = Array.isArray(policies) ? policies : [];
-  if (!policyRows.length) {
+  if (!policyRows.length && !allowEmptyPolicies) {
     const error = new Error('家庭暂无保单，上传并绑定保单后再生成报告');
     error.code = 'FAMILY_REPORT_NO_POLICIES';
     error.status = 400;

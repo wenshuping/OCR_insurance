@@ -151,6 +151,38 @@ test('real app composition drains persisted sales regeneration work on startup',
   store.close();
 });
 
+test('same-process confirm regenerates both families from post-transfer sqlite state', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-fresh-snapshot-'));
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'state.sqlite') });
+  await store.load();
+  await store.persist({
+    ...createInitialState(), stateVersion: 1,
+    familyProfiles: [{ id: 10, ownerUserId: 7, familyName: '来源家庭', status: 'active' }, { id: 20, ownerUserId: 7, familyName: '目标家庭', status: 'active' }],
+    familyMembers: [{ id: 201, familyId: 20, name: '成员', status: 'active' }],
+    policies: [{ id: 301, userId: 7, familyId: 10, policyNo: 'FRESH-1234', applicantMemberId: 201, insuredMemberId: 201, status: 'active' }],
+    familyReports: [{ id: 401, familyId: 10, ownerUserId: 7, status: 'active', generatedAt: '2026-07-11T00:00:00.000Z' }, { id: 402, familyId: 20, ownerUserId: 7, status: 'active', generatedAt: '2026-07-11T00:00:00.000Z' }],
+  });
+  const app = createPolicyOcrApp({
+    state: await store.load(), agentStore: store,
+    persistFamilyState: store.persistFamilyState, persistFamilyReportState: store.persistFamilyReportState,
+    generateFamilySalesReview: async () => ({ content: '建议', model: 'test', generatedAt: NOW, inputSummary: {} }),
+    agentTransferRecoveryOptions: { workerId: 'fresh-worker', now: () => NOW, setIntervalFn() { return { unref() {} }; }, clearIntervalFn() {} },
+  });
+  await app.locals.transferRegenerationRecovery.initialDrain;
+  const service = app.locals.agentConfirmationService;
+  await service.previewPolicyTransfer({ userId: 7, sourceFamilyName: '来源家庭', targetFamilyName: '目标家庭', policyHint: 'FRESH-1234', targetMemberId: 201 });
+  assert.equal((await service.confirm({ userId: 7, confirmationId: app.locals.state ? (store.db.prepare("SELECT id FROM agent_action_confirmations ORDER BY created_at DESC LIMIT 1").get().id) : '' })).status, 'transferred');
+  const fresh = await store.load();
+  const latest = (familyId) => fresh.familyReports.filter((row) => Number(row.familyId) === familyId && row.status === 'active').at(-1);
+  assert.ok(latest(10), JSON.stringify(store.db.prepare('SELECT job_type,status,last_error FROM agent_policy_transfer_regeneration_outbox ORDER BY id').all()));
+  assert.equal(latest(10).report.summary.policyCount, 0);
+  assert.equal(latest(20).report.summary.policyCount, 1);
+  assert.equal(fresh.familyReports.filter((row) => [401, 402].includes(row.id)).every((row) => row.status !== 'active'), true);
+  assert.equal(store.db.prepare("SELECT count(*) count FROM agent_policy_transfer_regeneration_outbox WHERE status = 'dispatched'").get().count, 4);
+  app.locals.transferRegenerationRecovery.stop();
+  store.close();
+});
+
 async function sqliteTransferHarness() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-transfer-integration-'));
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'state.sqlite') });

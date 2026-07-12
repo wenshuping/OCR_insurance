@@ -257,18 +257,18 @@ export function createFamilyRoutes(context) {
       (includeArchivedFallback ? matches.find((record) => String(record?.status || 'active') === 'archived') || null : null);
   }
 
-  function policiesForFamilyReport(family, owner) {
-    return (state.policies || [])
+  function policiesForFamilyReport(family, owner, snapshot = state) {
+    return (snapshot.policies || [])
       .filter((policy) => (
         Number(policy?.familyId || 0) === Number(family.id) &&
         familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })
       ))
-      .map(attachPolicyForFamilyReview);
+      .map((policy) => attachPolicyForFamilyReview(policy, snapshot));
   }
 
-  function refreshFamilyCashflowsForAnalysis(family, owner) {
+  function refreshFamilyCashflowsForAnalysis(family, owner, snapshot = state) {
     if (typeof computeAndStoreCashflow !== 'function') return;
-    for (const policy of state.policies || []) {
+    for (const policy of snapshot.policies || []) {
       if (Number(policy?.familyId || 0) !== Number(family?.id || 0)) continue;
       if (!familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })) continue;
       try {
@@ -708,26 +708,26 @@ export function createFamilyRoutes(context) {
     }
   }
 
-  function findPolicyDerivedResult(policyId) {
+  function findPolicyDerivedResult(policyId, snapshot = state) {
     const id = Number(policyId || 0);
     if (!Number.isFinite(id) || id <= 0) return null;
-    return (Array.isArray(state.policyDerivedResults) ? state.policyDerivedResults : [])
+    return (Array.isArray(snapshot.policyDerivedResults) ? snapshot.policyDerivedResults : [])
       .find((row) => Number(row?.policyId || 0) === id) || null;
   }
 
-  function attachPolicyForFamilyReview(policy) {
+  function attachPolicyForFamilyReview(policy, snapshot = state) {
     let displayed = typeof attachPolicyFamilyDisplay === 'function'
-      ? attachPolicyFamilyDisplay(policy, state)
+      ? attachPolicyFamilyDisplay(policy, snapshot)
       : { ...policy };
-    const derivedResult = findPolicyDerivedResult(policy?.id);
+    const derivedResult = findPolicyDerivedResult(policy?.id, snapshot);
     if (typeof mergePolicyDerivedResult === 'function' && derivedResult) {
       displayed = mergePolicyDerivedResult(displayed, derivedResult);
     } else if (typeof attachPolicyCoverageIndicators === 'function') {
       displayed = attachPolicyCoverageIndicators(
         displayed,
-        state.insuranceIndicatorRecords,
-        state.knowledgeRecords,
-        state.optionalResponsibilityRecords,
+        snapshot.insuranceIndicatorRecords,
+        snapshot.knowledgeRecords,
+        snapshot.optionalResponsibilityRecords,
       );
     }
     const cashflowEntries = typeof cashflowStore?.getEntries === 'function'
@@ -743,16 +743,18 @@ export function createFamilyRoutes(context) {
     };
   }
 
-  const policiesForSalesReview = (family, owner) => (state.policies || [])
+  const persistFreshFamilyState = async (snapshot) => persistFamilyState({ state: snapshot });
+  const persistFreshFamilyReportState = async (snapshot) => persistFamilyReportState({ state: snapshot });
+  const policiesForSalesReview = (family, owner, snapshot = state) => (snapshot.policies || [])
     .filter((policy) => Number(policy?.familyId || 0) === Number(family.id) && familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId }))
-    .map(attachPolicyForFamilyReview);
+    .map((policy) => attachPolicyForFamilyReview(policy, snapshot));
   const regenerationService = createFamilyReportRegenerationService({
     state, allocateId, listFamilyMembers, policiesForFamilyReport, policiesForSalesReview,
     repairFamilyMembersBeforeReview, refreshFamilyCashflowsForAnalysis, buildFamilyReport,
     createFamilyReportRecord, appendDeepSeekReportIssues, refreshFamilyReportWithTrustedCorrections,
     buildFamilySalesReviewInput, generateFamilySalesReview: generateFamilySalesReviewImpl,
-    archiveSalesReviewForFamily, ownerFields, persistFamilyReportState: saveFamilyReportState,
-    persistFamilyState: saveFamilyState, nowIso,
+    archiveSalesReviewForFamily, ownerFields, persistFamilyReportState: persistFreshFamilyReportState,
+    persistFamilyState: persistFreshFamilyState, nowIso,
   });
   context.registerFamilyReportRegenerationService?.(regenerationService);
 

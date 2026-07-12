@@ -2587,7 +2587,7 @@ export function createPolicyOcrApp(options = {}) {
   });
   const agentStore = options.agentStore || options.agentTransferRegenerationStore || null;
   const agentReportQueue = options.agentReportQueue || (agentStore && familyRegenerationWorkflow
-    ? createAgentReportRegenerationQueue({ state, workflow: familyRegenerationWorkflow, familyOwnerMatches })
+    ? createAgentReportRegenerationQueue({ state, workflow: familyRegenerationWorkflow, familyOwnerMatches, loadFreshState: () => agentStore.load() })
     : null);
   const canCreateAgentConfirmation = agentStore
     && typeof agentStore.createAgentActionConfirmation === 'function'
