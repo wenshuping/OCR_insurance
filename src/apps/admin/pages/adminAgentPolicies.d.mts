@@ -18,4 +18,5 @@ export function simulationViewModel(response: AdminAgentPolicySimulationResponse
   lowConfidence: boolean;
   writePreview: boolean;
 };
+export function policyValidationViewModel(input: { loading: boolean; loadError: string; loaded?: boolean; policies: AdminAgentQuestionPolicy[] }): { ready: boolean; errors: string[] };
 export const fallbackPolicyKeys: readonly string[];

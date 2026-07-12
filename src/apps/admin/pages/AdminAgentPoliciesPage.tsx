@@ -13,7 +13,7 @@ import {
   type AdminAgentQuestionPolicyVersion,
   type AdminAgentUnknownQuestion,
 } from '../../../api';
-import { createRequestMutex, fallbackPolicyKeys, shouldDiscardDirty, validatePolicyDraft } from './adminAgentPolicies.mjs';
+import { createRequestMutex, fallbackPolicyKeys, policyValidationViewModel, shouldDiscardDirty } from './adminAgentPolicies.mjs';
 
 const HANDLERS = ['system', 'insurance_expert', 'sales_champion'] as const;
 const OPERATIONS = ['read', 'write'] as const;
@@ -36,6 +36,8 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
   const [policies, setPolicies] = useState<AdminAgentQuestionPolicy[]>([]);
   const [history, setHistory] = useState<AdminAgentQuestionPolicyVersion[]>([]);
   const [loading, setLoading] = useState(true);
+  const [policiesLoaded, setPoliciesLoaded] = useState(false);
+  const [policyLoadError, setPolicyLoadError] = useState('');
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState('');
@@ -57,7 +59,7 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
 
   async function loadPolicies() {
     setLoading(true);
-    setError('');
+    setPolicyLoadError('');
     try {
       const response = await getAdminAgentQuestionPolicies(adminToken);
       const selectedDraft = response.drafts[0] || null;
@@ -65,9 +67,11 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
       setDraft(selectedDraft);
       setPolicies((selectedDraft?.policies || response.published?.policies || response.templates).map((item) => ({ ...item })));
       setHistory(response.history);
+      setPoliciesLoaded(true);
       setDirty(false);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setPoliciesLoaded(false);
+      setPolicyLoadError(errorMessage(requestError));
     } finally {
       setLoading(false);
     }
@@ -101,7 +105,8 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
   }, [dirty]);
 
   const intentOptions = useMemo(() => [...new Set(policies.map((policy) => policy.intent))], [policies]);
-  const validationErrors = useMemo(() => validatePolicyDraft(policies), [policies]);
+  const validation = useMemo(() => policyValidationViewModel({ loading, loadError: policyLoadError, loaded: policiesLoaded, policies }), [loading, policies, policiesLoaded, policyLoadError]);
+  const validationErrors = validation.errors;
 
   function changePolicy(index: number, patch: Partial<AdminAgentQuestionPolicy>) {
     setPolicies((current) => current.map((policy, policyIndex) => policyIndex === index ? { ...policy, ...patch } : policy));
@@ -173,9 +178,10 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
       <section className="rounded-[18px] border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><h2 className="text-lg font-black text-slate-950">Agent 策略管理</h2><p className="mt-1 text-sm font-semibold text-slate-500">当前发布版本：{published ? `v${published.version} · ${published.status}` : '暂无'}</p></div>
-          <div className="flex gap-2"><button className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold" disabled={loading || saving} onClick={refreshPolicies}>刷新</button><button className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white disabled:opacity-50" disabled={loading || saving || !policies.length || validationErrors.length > 0} onClick={() => void saveDraft()}>{saving ? '处理中...' : '保存草稿'}</button><button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-black text-white disabled:opacity-50" disabled={!draft || saving || dirty || validationErrors.length > 0} onClick={() => void publishDraft()}>显式发布</button></div>
+          <div className="flex gap-2"><button className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold" disabled={loading || saving} onClick={refreshPolicies}>刷新</button><button className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white disabled:opacity-50" disabled={!validation.ready || loading || saving || !policies.length || validationErrors.length > 0} onClick={() => void saveDraft()}>{saving ? '处理中...' : '保存草稿'}</button><button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-black text-white disabled:opacity-50" disabled={!validation.ready || !draft || saving || dirty || validationErrors.length > 0} onClick={() => void publishDraft()}>显式发布</button></div>
         </div>
         {dirty && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">未保存草稿：请先保存后再发布或模拟草稿。</p>}
+        {policyLoadError && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{policyLoadError}</p>}
         {validationErrors.length > 0 && <div className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">请修正后保存：{validationErrors[0]}</div>}
         {error && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{error}</p>}
         {loading ? <p className="mt-5 text-sm text-slate-500">加载中...</p> : <div className="mt-5 grid gap-3 lg:grid-cols-2">{policies.map((policy, index) => (

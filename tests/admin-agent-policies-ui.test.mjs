@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import {
   createRequestMutex,
+  policyValidationViewModel,
   simulationViewModel,
   shouldDiscardDirty,
   validatePolicyDraft,
@@ -101,10 +102,19 @@ test('simulation view model retains only safe result fields', () => {
   assert.equal(JSON.stringify(model).includes('secret'), false);
 });
 
+test('policy validation is gated until the policy request succeeds', () => {
+  assert.deepEqual(policyValidationViewModel({ loading: true, loadError: '', policies: [] }), { ready: false, errors: [] });
+  assert.deepEqual(policyValidationViewModel({ loading: false, loadError: '读取失败', policies: [] }), { ready: false, errors: [] });
+  assert.deepEqual(policyValidationViewModel({ loading: false, loadError: '', loaded: false, policies: [] }), { ready: false, errors: [] });
+  const loaded = policyValidationViewModel({ loading: false, loadError: '', loaded: true, policies: [] });
+  assert.equal(loaded.ready, true);
+  assert.match(loaded.errors[0], /至少需要一条/u);
+});
+
 test('page wires unload protection, validated publish, responsive layout and pagination parameters', () => {
   assert.match(pageSource, /beforeunload/u);
   assert.match(pageSource, /shouldDiscardDirty/u);
-  assert.match(pageSource, /validatePolicyDraft/u);
+  assert.match(pageSource, /policyValidationViewModel/u);
   assert.match(pageSource, /disabled=\{[^}]*validationErrors\.length/u);
   assert.match(pageSource, /limit: UNKNOWN_LIMIT, offset/u);
   assert.match(pageSource, /sm:grid-cols-2/u);

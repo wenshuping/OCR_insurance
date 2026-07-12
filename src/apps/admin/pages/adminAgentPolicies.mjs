@@ -76,4 +76,9 @@ export function simulationViewModel(response) {
   };
 }
 
+export function policyValidationViewModel({ loading, loadError, loaded = false, policies }) {
+  if (loading || loadError || !loaded) return { ready: false, errors: [] };
+  return { ready: true, errors: validatePolicyDraft(policies) };
+}
+
 export const fallbackPolicyKeys = Object.freeze(Object.keys(FALLBACKS));
