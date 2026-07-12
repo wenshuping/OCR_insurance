@@ -99,6 +99,15 @@ npm install
 - `DINGTALK_MOBILE_FINGERPRINT_KEY`：至少 32 字节的独立服务端密钥，用于手机号 HMAC 指纹；当前仅支持活动版本 `v1`，轮换时已有待确认挑战会安全失效。
 - `DINGTALK_API_BASE_URL`：可选，默认使用钉钉开放平台 API 地址。
 - `DINGTALK_IDENTITY_TIMEOUT_MS`：可选，钉钉 HTTP 请求超时，范围 50–30000 毫秒，默认 10000 毫秒。
+- `DINGTALK_CHANNEL_API_BASE_URL`：可选，Stream 渠道调用 OCR Insurance API 的地址，开发环境默认 `http://127.0.0.1:4207`。
+
+API 启动后，可在另一个终端启动钉钉 Stream 渠道：
+
+```bash
+npm run dev:dingtalk
+```
+
+渠道默认只接受企业内单聊。首次使用发送“绑定”，确认脱敏手机号后发送“确认绑定”。
 
 不要把凭据提交到仓库；生产进程应从受控运行环境注入这些变量。
 

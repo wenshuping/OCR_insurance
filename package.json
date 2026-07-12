@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "POLICY_OCR_PROFILE=dev POLICY_OCR_WEB_PORT=3014 POLICY_OCR_WEB_HOST=127.0.0.1 POLICY_OCR_APP_API_PORT=4207 vite",
     "dev:api": "POLICY_OCR_PROFILE=dev POLICY_OCR_SKIP_PROJECT_DOTENV_LOCAL=true NODE_ENV=development POLICY_OCR_APP_API_PORT=4207 POLICY_OCR_APP_HOST=127.0.0.1 POLICY_OCR_APP_DB_PATH=.runtime/local/policy-ocr.sqlite POLICY_OCR_SERVICE_URL=http://127.0.0.1:4109 POLICY_ADMIN_PASSWORD=admin123456 SMS_MODE=mock SMS_MOCK_CODE=123456 node server/index.mjs",
+    "dev:dingtalk": "POLICY_OCR_SKIP_PROJECT_DOTENV_LOCAL=true NODE_ENV=development node server/dingtalk-stream.mjs",
     "dev:ocr": "POLICY_OCR_PROFILE=dev POLICY_OCR_SKIP_PROJECT_DOTENV_LOCAL=true NODE_ENV=development OCR_SERVICE_PORT=4109 OCR_SERVICE_HOST=127.0.0.1 POLICY_OCR_PROVIDER=paddle_local node ocr-service/index.mjs",
     "db:sync:dev-from-prod": "node scripts/sync-dev-db-from-prod.mjs",
     "start:ocr": "node ocr-service/index.mjs",
@@ -107,6 +108,7 @@
     "@alicloud/openapi-client": "^0.4.15",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
+    "dingtalk-stream": "^2.1.6-beta.1",
     "dotenv": "^17.2.3",
     "express": "^4.22.1",
     "html-to-image": "^1.11.13",

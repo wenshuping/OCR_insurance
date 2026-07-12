@@ -1,0 +1,38 @@
+import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
+import { createDingtalkStreamChannel } from './dingtalk-stream-channel.service.mjs';
+
+function requiredEnv(env, name) {
+  const value = String(env[name] || '').trim();
+  if (!value) throw new Error(`${name}_REQUIRED`);
+  return value;
+}
+
+export async function startDingtalkStream({ env = process.env, Client = DWClient } = {}) {
+  const clientId = requiredEnv(env, 'DINGTALK_APP_KEY');
+  const clientSecret = requiredEnv(env, 'DINGTALK_APP_SECRET');
+  const channel = createDingtalkStreamChannel({
+    corpId: String(env.DINGTALK_CORP_ID || '').trim(),
+    serviceToken: String(env.DINGTALK_IDENTITY_SERVICE_TOKEN || '').trim(),
+    apiBaseUrl: String(env.DINGTALK_CHANNEL_API_BASE_URL || '').trim() || 'http://127.0.0.1:4207',
+  });
+  const client = new Client({ clientId, clientSecret, keepAlive: true });
+  client.registerCallbackListener(TOPIC_ROBOT, (event) => {
+    client.socketCallBackResponse(event.headers.messageId, 'OK');
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    void channel.handle(message).catch(() => {});
+  });
+  await client.connect();
+  return client;
+}
+
+if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+  startDingtalkStream().catch((error) => {
+    console.error(`[dingtalk-stream] ${error?.message || 'START_FAILED'}`);
+    process.exitCode = 1;
+  });
+}
