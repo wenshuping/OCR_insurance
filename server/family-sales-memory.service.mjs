@@ -579,6 +579,7 @@ export function upsertFamilySalesMemories({
     ));
     if (existing) {
       const previousVersion = Number(existing.version || 1);
+      const previousEvidenceMessageIds = [...(existing.evidenceMessageIds || [])];
       const confidence = Math.max(clampConfidence(existing.confidence), item.confidence);
       const mergedEvidence = mergeEvidenceMessageIds(existing.evidenceMessageIds, evidenceMessageIds);
       const nextSourceThreadId = Number(sourceThreadId || existing.sourceThreadId || 0);
@@ -593,7 +594,7 @@ export function upsertFamilySalesMemories({
       existing.version = previousVersion + 1;
       existing.updatedAt = now;
       changedMemories.push(existing);
-      changes.push({ kind: 'reinforced', memory: { ...existing, evidenceMessageIds: [...existing.evidenceMessageIds], sourceMessageIds: [...existing.sourceMessageIds] }, expectedVersion: previousVersion });
+      changes.push({ kind: 'reinforced', memory: { ...existing, evidenceMessageIds: [...existing.evidenceMessageIds], sourceMessageIds: [...existing.sourceMessageIds] }, expectedVersion: previousVersion, previousEvidenceMessageIds, addedEvidenceMessageIds: mergedEvidence.filter((id) => !previousEvidenceMessageIds.includes(id)) });
       continue;
     }
     const autoConfirmed = isAutoConfirmableMemory(item);
@@ -639,11 +640,12 @@ export function upsertFamilySalesMemories({
   for (const memory of active.slice(FAMILY_SALES_MEMORY_LIMIT)) {
     if (memory.status === 'archived') continue;
     const previousVersion = Number(memory.version || 1);
+    const previousStatus = String(memory.status || 'candidate') === 'active' ? 'confirmed' : String(memory.status || 'candidate');
     memory.status = 'archived';
     memory.version = previousVersion + 1;
     memory.updatedAt = now;
     changedMemories.push(memory);
-    changes.push({ kind: 'archived', memory: { ...memory }, expectedVersion: previousVersion });
+    changes.push({ kind: 'archived', memory: { ...memory }, expectedVersion: previousVersion, previousStatus });
   }
 
   return { changed: changes.length > 0, memories: changedMemories, changes };

@@ -415,6 +415,46 @@ function migrateFamilySalesMemoryHistory(db) {
   }
 }
 
+function migrateFamilySalesMemoryEventSchema(db) {
+  const sql = String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'family_sales_memory_events'").get()?.sql || '');
+  if (!sql || (sql.includes("'reinforced'") && sql.includes("'conflicted'") && sql.includes("'archived'"))) return;
+  db.exec(`
+    DROP TRIGGER IF EXISTS family_sales_memories_validate_insert;
+    DROP TRIGGER IF EXISTS family_sales_memories_validate_update;
+    DROP TRIGGER IF EXISTS family_sales_memory_events_no_update;
+    DROP TRIGGER IF EXISTS family_sales_memory_events_no_delete;
+    DROP TRIGGER IF EXISTS family_sales_memory_events_scope_insert;
+    CREATE TABLE family_sales_memory_events_new (
+      id TEXT PRIMARY KEY, memory_id INTEGER NOT NULL, family_id INTEGER NOT NULL, owner_user_id INTEGER, owner_guest_id TEXT,
+      event_type TEXT NOT NULL CHECK (event_type IN ('proposed','imported','reinforced','conflicted','archived','confirmed','rejected','superseded','completed','expired','restored')),
+      actor_type TEXT CHECK (actor_type IN ('system','advisor','service')), actor_id TEXT, source_message_id INTEGER,
+      previous_status TEXT CHECK (previous_status IN ('','active','candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      next_status TEXT NOT NULL CHECK (next_status IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      reason_code TEXT, created_at TEXT NOT NULL, payload TEXT NOT NULL,
+      CHECK (memory_id > 0 AND family_id > 0),
+      CHECK ((owner_user_id IS NOT NULL AND owner_user_id > 0 AND COALESCE(owner_guest_id, '') = '') OR (owner_user_id IS NULL AND length(owner_guest_id) BETWEEN 1 AND 128)),
+      CHECK (length(id) BETWEEN 1 AND 240 AND length(created_at) BETWEEN 10 AND 40),
+      FOREIGN KEY (memory_id) REFERENCES family_sales_memories(id)
+    );
+    INSERT INTO family_sales_memory_events_new SELECT * FROM family_sales_memory_events;
+    DROP TABLE family_sales_memory_events;
+    ALTER TABLE family_sales_memory_events_new RENAME TO family_sales_memory_events;
+    CREATE INDEX idx_family_sales_memory_events_memory ON family_sales_memory_events(memory_id, created_at, id);
+    CREATE INDEX idx_family_sales_memory_events_family ON family_sales_memory_events(family_id, created_at, id);
+    CREATE INDEX idx_family_sales_memory_events_owner_user ON family_sales_memory_events(owner_user_id, family_id, created_at);
+    CREATE INDEX idx_family_sales_memory_events_owner_guest ON family_sales_memory_events(owner_guest_id, family_id, created_at);
+    CREATE INDEX idx_family_sales_memory_events_scope_memory ON family_sales_memory_events(family_id, owner_user_id, owner_guest_id, memory_id, created_at, id);
+    CREATE UNIQUE INDEX idx_family_sales_memory_events_source ON family_sales_memory_events(memory_id, event_type, source_message_id) WHERE source_message_id IS NOT NULL;
+    CREATE TRIGGER family_sales_memory_events_no_update BEFORE UPDATE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER family_sales_memory_events_no_delete BEFORE DELETE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER family_sales_memory_events_scope_insert BEFORE INSERT ON family_sales_memory_events BEGIN
+      SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM family_sales_memories m WHERE m.id = NEW.memory_id AND m.family_id = NEW.family_id
+        AND COALESCE(m.owner_user_id, 0) = COALESCE(NEW.owner_user_id, 0) AND COALESCE(m.owner_guest_id, '') = COALESCE(NEW.owner_guest_id, ''))
+        THEN RAISE(ABORT, 'family sales memory event scope mismatch') END;
+    END;
+  `);
+}
+
 function createSchema(db) {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec('SAVEPOINT temporal_memory_schema_migration');
@@ -987,6 +1027,7 @@ function createSchema(db) {
       payload TEXT NOT NULL
     );
   `);
+  migrateFamilySalesMemoryEventSchema(db);
   ensureColumn(db, 'policies', 'source_policy_import_task_id', 'INTEGER');
   ensureColumn(db, 'policies', 'source_policy_import_request_id', "TEXT NOT NULL DEFAULT ''");
   for (const [column, definition] of [
@@ -996,6 +1037,18 @@ function createSchema(db) {
     ['normalized_value_json', 'TEXT'], ['source_message_ids_json', 'TEXT'], ['source_type', 'TEXT'],
     ['confirmation_type', 'TEXT'], ['confirmed_by', 'TEXT'], ['confirmed_at', 'TEXT'], ['invalidation_reason', 'TEXT'], ['extractor_version', 'TEXT'],
   ]) ensureColumn(db, 'family_sales_memories', column, definition);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_insert
+      BEFORE INSERT ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy') OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '') OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_update
+      BEFORE UPDATE ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy') OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '') OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
+  `);
   migrateFamilySalesMemoryHistory(db);
   db.exec(`
     UPDATE policies
@@ -3294,8 +3347,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         insertFamilySalesMemoryEvents(db, [{
           id: `memory_event:${memory.id}:${memory.version}:${change.kind}`, memoryId: memory.id, familyId: memory.familyId,
           ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: change.kind,
-          actor: { type: 'system', id: 1 }, sourceMessageId: memory.sourceMessageId || null,
-          previousStatus: change.kind === 'archived' ? 'candidate' : memory.status, nextStatus: memory.status,
+          actor: { type: 'system', id: 1 }, sourceMessageId: change.addedEvidenceMessageIds?.at(-1) || memory.sourceMessageId || null,
+          previousStatus: change.kind === 'archived' ? change.previousStatus : memory.status, nextStatus: memory.status,
           reasonCode: change.kind === 'archived' ? 'memory_limit' : 'new_evidence', createdAt: memory.updatedAt, version: memory.version,
         }]);
       }

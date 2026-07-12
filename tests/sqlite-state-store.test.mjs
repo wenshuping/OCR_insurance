@@ -78,6 +78,26 @@ test('invalid legacy memory rolls back temporal schema migration objects and ver
   inspected.close();
 });
 
+test('legacy event CHECK schema rebuild preserves history and accepts reinforcement', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'old-event-check.sqlite');
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO app_meta VALUES ('schema_version', '5');
+    CREATE TABLE family_sales_memories (id INTEGER PRIMARY KEY, family_id INTEGER, owner_user_id INTEGER, owner_guest_id TEXT, kind TEXT, status TEXT, source_thread_id INTEGER, created_at TEXT, updated_at TEXT, payload TEXT NOT NULL);
+    CREATE TABLE family_sales_memory_events (id TEXT PRIMARY KEY, memory_id INTEGER NOT NULL, family_id INTEGER NOT NULL, owner_user_id INTEGER, owner_guest_id TEXT,
+      event_type TEXT NOT NULL CHECK(event_type IN ('proposed','imported','confirmed')), actor_type TEXT, actor_id TEXT, source_message_id INTEGER,
+      previous_status TEXT, next_status TEXT, reason_code TEXT, created_at TEXT NOT NULL, payload TEXT NOT NULL);`);
+  const memory = { id: 11, familyId: 6, ownerGuestId: 'guest-old-check', kind: 'strategy', content: '先说结论', status: 'candidate', version: 1, sourceType: 'user_statement', evidenceMessageIds: [810], createdAt: '2026-01-03T00:00:00.000Z', updatedAt: '2026-01-03T00:00:00.000Z' };
+  legacy.prepare('INSERT INTO family_sales_memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(11, 6, null, 'guest-old-check', 'strategy', 'candidate', null, memory.createdAt, memory.updatedAt, JSON.stringify(memory));
+  legacy.prepare('INSERT INTO family_sales_memory_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('old-event-11', 11, 6, null, 'guest-old-check', 'proposed', 'system', '1', 810, '', 'candidate', 'extracted', memory.createdAt, JSON.stringify({ action: 'proposed', version: 1, source: 'family_sales_memory' }));
+  legacy.close();
+  const store = await createSqliteStateStore({ dbPath });
+  const state = await store.load();
+  await store.persistExtractedFamilySalesMemories({ state, familyId: 6, owner: { ownerGuestId: 'guest-old-check' }, userMessage: { id: 811 }, extractedMemories: [{ kind: 'strategy', content: '先说结论', confidence: 0.95 }], nowIso: () => '2026-01-03T01:00:00.000Z' });
+  assert.deepEqual(store.db.prepare('SELECT id, event_type FROM family_sales_memory_events ORDER BY created_at').all().map((row) => ({ ...row })), [{ id: 'old-event-11', event_type: 'proposed' }, { id: 'memory_event:11:2:reinforced', event_type: 'reinforced' }]);
+  store.close();
+});
+
 test('real extracted family sales memory persists one proposed event with provenance', async () => {
   const dir = await makeTempDir();
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'extracted-memory.sqlite') });
@@ -106,6 +126,12 @@ test('real extracted family sales memory persists one proposed event with proven
   });
   assert.equal(repeated.changed, false);
   assert.equal(store.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events').get().count, 2);
+  const reinforcedAgain = await store.persistExtractedFamilySalesMemories({
+    state, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, sourceThreadId: 21,
+    userMessage: { id: 702 }, extractedMemories: [{ kind: 'strategy', content: '先处理预算异议', confidence: 0.96 }], nowIso: () => '2026-07-12T05:02:30.000Z',
+  });
+  assert.equal(reinforcedAgain.memories[0].version, 3);
+  assert.deepEqual(store.db.prepare("SELECT source_message_id FROM family_sales_memory_events WHERE event_type = 'reinforced' ORDER BY created_at").all().map((row) => row.source_message_id), [701, 702]);
   await assert.rejects(store.persistFamilySalesMemoryTransition({ state, memoryId: result.memories[0].id, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, action: 'confirm', reasonCode: 'advisor_confirmation', actor: { type: 'advisor', id: 1 }, expectedVersion: 1, now: '2026-07-12T05:03:00.000Z' }), { code: 'STALE_INTERACTION' });
   store.close();
 });

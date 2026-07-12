@@ -2305,6 +2305,7 @@ export function createPolicyOcrApp(options = {}) {
   const persistFamilySalesMemoryTransition = typeof options.persistFamilySalesMemoryTransition === 'function'
     ? (input = {}) => options.persistFamilySalesMemoryTransition({ state, ...input })
     : null;
+  // Governed memory APIs consume this context method so web and MCP actions share the authoritative SQLite transition transaction.
   const persistFamilyReportState = typeof options.persistFamilyReportState === 'function'
     ? (input = {}) => options.persistFamilyReportState({ state, ...input })
     : () => persist(state, { refreshOptionalResponsibilityGovernance: false });
