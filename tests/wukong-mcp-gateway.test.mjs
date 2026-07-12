@@ -35,7 +35,7 @@ function call(gateway, overrides = {}) {
 
 test('registry exposes only approved identity, family, and policy intake tools with private schemas', async () => {
   const gateway = createWukongMcpGateway({ state: stateFor() });
-  assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families', 'start_policy_import', 'append_policy_import_files', 'get_policy_import', 'apply_policy_import_action', 'finalize_policy_import', 'ask_sales_champion']);
+  assert.deepEqual(gateway.toolNames, ['resolve_advisor_identity', 'list_accessible_families', 'start_policy_import', 'append_policy_import_files', 'get_policy_import', 'apply_policy_import_action', 'finalize_policy_import', 'ask_sales_champion', 'ask_insurance_expert']);
   assert.equal(gateway.registry, undefined);
   assert.deepEqual(gateway.toolMetadata.map((tool) => tool.name), gateway.toolNames);
   assert.deepEqual(gateway.toolMetadata[0].inputSchema, { type: 'object', properties: {}, required: [], additionalProperties: false });
@@ -270,6 +270,28 @@ test('HTTP transport authenticates service, requires direct complete principals,
       const serialized = JSON.stringify(result.payload);
       for (const secret of ['13800138000', 'tokenHash', 'userDingtalkIdentities']) assert.equal(serialized.includes(secret), false);
     }
+  } finally {
+    await server.close();
+  }
+});
+
+test('HTTP transport invokes Insurance Expert with server-derived owner context', async () => {
+  let received;
+  const app = createPolicyOcrApp({
+    state: stateFor(),
+    authenticateDingtalkServiceRequest: (req) => req.get('authorization') === 'Bearer service-secret',
+    askInsuranceExpertTool: async (input) => { received = input; return { agent: 'insurance_expert', answer: '安全回答' }; },
+  });
+  const server = await listen(app);
+  try {
+    const result = await post(server.baseUrl, {
+      ...PRINCIPAL, requestId: 'expert-http', conversationType: 'direct', tool: 'ask_insurance_expert',
+      input: { policyRef: 31, question: '保障什么？' },
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(received.owner.userId, 7);
+    assert.equal(received.requestId, 'expert-http');
+    assert.deepEqual(result.payload.result, { agent: 'insurance_expert', answer: '安全回答' });
   } finally {
     await server.close();
   }

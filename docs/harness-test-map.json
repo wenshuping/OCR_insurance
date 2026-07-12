@@ -73,6 +73,18 @@
     ]
   },
   {
+    "name": "insurance-expert-tool",
+    "patterns": [
+      "server/c-policy-analysis.service.mjs",
+      "server/insurance-expert-tool.service.mjs",
+      "tests/insurance-expert-tool.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/insurance-expert-tool.test.mjs",
+      "node --test tests/policy-analysis-prompt.test.mjs"
+    ]
+  },
+  {
     "name": "knowledge-responsibility-indicators",
     "patterns": [
       "scripts/backfill-knowledge-responsibility-indicators.mjs",

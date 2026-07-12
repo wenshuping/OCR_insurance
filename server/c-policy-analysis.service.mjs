@@ -2186,7 +2186,7 @@ function policyAnalysisSkillRouterMessages({ policy = {}, analysisInput = {}, se
   ];
 }
 
-async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisInput, searchArtifacts, fetchImpl }) {
+async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisInput, searchArtifacts, fetchImpl, signal }) {
   const hasOfficialSource = hasOfficialSearchSource(searchArtifacts?.sources);
   const hasExternalSource = hasExternalReviewSource(searchArtifacts?.sources);
   const fallback = buildLocalPolicyAnalysisSkillPlan({
@@ -2200,6 +2200,7 @@ async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisIn
       config,
       model,
       fetchImpl,
+      signal,
       messages: policyAnalysisSkillRouterMessages({
         policy,
         analysisInput,
@@ -2271,12 +2272,13 @@ function buildOfficialSourceDiscoveryMessages(policy = {}) {
   ];
 }
 
-async function discoverOfficialSourceResults({ config, policy, fetchImpl }) {
+async function discoverOfficialSourceResults({ config, policy, fetchImpl, signal }) {
   try {
     const payload = await requestPolicyAnalysis({
       config,
       model: config.model,
       fetchImpl,
+      signal,
       messages: buildOfficialSourceDiscoveryMessages(policy),
       options: { maxTokens: DEFAULT_DISCOVERY_MAX_TOKENS },
     });
@@ -2299,19 +2301,20 @@ function uniqueResultsByUrl(results = []) {
   return unique;
 }
 
-async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialDomainProfiles = getDefaultOfficialDomainProfiles() }) {
+async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialDomainProfiles = getDefaultOfficialDomainProfiles(), signal }) {
   if (!config.smartSearchEnabled) return { context: '', sources: [] };
   if (!trimString(policy?.company) || !trimString(policy?.name)) return { context: '', sources: [] };
   const queries = buildSearchQueries(policy, officialDomainProfiles);
   if (!queries.length) return { context: '', sources: [] };
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.smartSearchTimeoutMs);
+  const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
   try {
     const resultsByUrl = new Map();
     const officialResults = await fetchNewChinaDisclosureResults({
       policy,
       fetchImpl,
-      signal: controller.signal,
+      signal: fetchSignal,
     });
     for (const result of officialResults) {
       if (!resultsByUrl.has(result.url)) {
@@ -2326,7 +2329,7 @@ async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialD
         query,
         policy,
         fetchImpl,
-        signal: controller.signal,
+        signal: fetchSignal,
         maxResults: candidateLimit,
       });
       for (const result of results) {
@@ -2345,18 +2348,18 @@ async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialD
       results: sortedResults,
       policy,
       fetchImpl,
-      signal: controller.signal,
+      signal: fetchSignal,
       maxResults: config.smartSearchMaxResults,
     });
     let sources = formatSearchSources(enriched, { policy, extraOfficialDomains: officialDomains, officialDomainProfiles });
     if (!hasOfficialSearchSource(sources)) {
-      const discovered = await discoverOfficialSourceResults({ config, policy, fetchImpl });
+      const discovered = await discoverOfficialSourceResults({ config, policy, fetchImpl, signal: fetchSignal });
       officialDomains = discovered.officialDomains;
       const discoveredEnriched = await enrichSearchResultsWithPageText({
         results: discovered.results,
         policy,
         fetchImpl,
-        signal: controller.signal,
+        signal: fetchSignal,
         maxResults: config.smartSearchMaxResults,
       });
       enriched = uniqueResultsByUrl([...enriched, ...discoveredEnriched])
@@ -2417,9 +2420,10 @@ ${contextBlock}`,
   return messages;
 }
 
-async function requestPolicyAnalysis({ config, model, messages, fetchImpl, options = {} }) {
+async function requestPolicyAnalysis({ config, model, messages, fetchImpl, options = {}, signal }) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+  const providerSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
   try {
     const url = new URL('/chat/completions', config.baseUrl);
     const body = {
@@ -2436,7 +2440,7 @@ async function requestPolicyAnalysis({ config, model, messages, fetchImpl, optio
     }
     const response = await fetchImpl(url, {
       method: 'POST',
-      signal: controller.signal,
+      signal: providerSignal,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
@@ -2550,6 +2554,7 @@ export async function analyzeInsurancePolicyResponsibilities({
   officialDomainProfiles: customOfficialDomainProfiles = [],
   knowledgeRecords = [],
   allowExternalReferences = false,
+  signal,
 }) {
   const normalizedPolicy = normalizePolicyForPrompt(policy);
   const externalPolicy = stripSensitivePolicyForLlm(normalizedPolicy);
@@ -2579,6 +2584,7 @@ export async function analyzeInsurancePolicyResponsibilities({
         policy: externalPolicy,
         fetchImpl,
         officialDomainProfiles,
+        signal,
       });
   const hasOfficialSource = hasOfficialSearchSource(searchArtifacts.sources);
   const hasExternalSource = allowExternalReferences && hasExternalReviewSource(searchArtifacts.sources);
@@ -2610,11 +2616,13 @@ export async function analyzeInsurancePolicyResponsibilities({
         analysisInput: enrichedAnalysisInput,
         searchArtifacts,
         fetchImpl,
+        signal,
       });
       const payload = await requestPolicyAnalysis({
         config,
         model,
         fetchImpl,
+        signal,
         messages: buildMessages({
           policy: externalPolicy,
           analysisInput: enrichedAnalysisInput,

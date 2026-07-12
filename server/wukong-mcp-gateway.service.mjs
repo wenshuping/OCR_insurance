@@ -1,4 +1,5 @@
 import { listFamilyProfilesForOwner } from './family-profile.domain.mjs';
+import { createInsuranceExpertTool } from './insurance-expert-tool.service.mjs';
 import { createSalesChampionTool } from './sales-champion-tool.service.mjs';
 
 const DEFAULT_REPLAY_TTL_MS = 5 * 60 * 1000;
@@ -84,7 +85,7 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function createRegistry(state, policyImports, salesChampion) {
+function createRegistry(state, policyImports, salesChampion, insuranceExpert) {
   const emptyObjectSchema = Object.freeze({
     type: 'object', properties: Object.freeze({}), required: Object.freeze([]), additionalProperties: false,
   });
@@ -145,6 +146,12 @@ function createRegistry(state, policyImports, salesChampion) {
       authorize: () => true,
       execute: (context, input, request) => salesChampion({ owner: context, ...input, requestId: request.requestId }),
     }],
+    ['ask_insurance_expert', {
+      name: 'ask_insurance_expert',
+      inputSchema: familySchema({ question: { type: 'string', maxLength: 4_000 }, policyRef: { type: 'integer' }, policyImportTaskId: { type: 'integer' } }, ['question']),
+      authorize: () => true,
+      execute: (context, input, request) => insuranceExpert({ owner: context, ...input, requestId: request.requestId }),
+    }],
   ]);
 }
 
@@ -160,9 +167,16 @@ export function createWukongMcpGateway({
   policyImports,
   salesChampion,
   salesChampionOptions,
+  insuranceExpert,
+  insuranceExpertOptions,
 } = {}) {
   const resolvedState = state || {};
-  const registry = createRegistry(resolvedState, policyImports || { start: () => fail('TOOL_NOT_CONFIGURED', 503), append: () => fail('TOOL_NOT_CONFIGURED', 503), get: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) }, salesChampion || createSalesChampionTool({ state: resolvedState, ...salesChampionOptions }));
+  const registry = createRegistry(
+    resolvedState,
+    policyImports || { start: () => fail('TOOL_NOT_CONFIGURED', 503), append: () => fail('TOOL_NOT_CONFIGURED', 503), get: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) },
+    salesChampion || createSalesChampionTool({ state: resolvedState, ...salesChampionOptions }),
+    insuranceExpert || createInsuranceExpertTool({ state: resolvedState, ...insuranceExpertOptions }),
+  );
   const toolMetadata = deepFreeze([...registry.values()].map((entry) => ({
     name: entry.name,
     inputSchema: structuredClone(entry.inputSchema),

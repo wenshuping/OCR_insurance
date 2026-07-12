@@ -2204,6 +2204,8 @@ export function createPolicyOcrApp(options = {}) {
     policyImports,
     salesChampion: options.askSalesChampionTool,
     salesChampionOptions: options.salesChampionToolOptions,
+    insuranceExpert: options.askInsuranceExpertTool,
+    insuranceExpertOptions: options.insuranceExpertToolOptions,
   });
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
