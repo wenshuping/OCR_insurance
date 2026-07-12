@@ -8,6 +8,7 @@ import {
   ListChecks,
   MessageSquareText,
   Settings,
+  ShieldCheck,
   Users,
   type LucideIcon,
 } from 'lucide-react';
@@ -23,7 +24,8 @@ export type AdminPageKey =
   | 'responsibilityGeneration'
   | 'officialDomains'
   | 'membership'
-  | 'salesReview';
+  | 'salesReview'
+  | 'agentPolicies';
 
 export type AdminPageMeta = {
   key: AdminPageKey;
@@ -69,6 +71,7 @@ export const ADMIN_PAGE_GROUPS: AdminPageGroup[] = [
   {
     group: '系统',
     items: [
+      { key: 'agentPolicies', label: 'Agent 策略管理', description: '管理受限路由策略、预览决策和版本', icon: ShieldCheck },
       { key: 'membership', label: '会员设置', description: '配置会员购买和免费额度', icon: Settings },
     ],
   },

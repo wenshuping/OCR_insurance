@@ -62,6 +62,7 @@ import { isPolicyReportGenerating } from '../../shared/policy-report-ui';
 import { AdminShell } from './AdminShell';
 import type { AdminPageKey } from './adminPages';
 import { AdminKnowledgePage } from './pages/AdminKnowledgePage';
+import { AdminAgentPoliciesPage } from './pages/AdminAgentPoliciesPage';
 import { AdminFamilyReportPage } from './pages/AdminFamilyReportPage';
 import { AdminMembershipPage } from './pages/AdminMembershipPage';
 import { AdminOfficialDomainsPage } from './pages/AdminOfficialDomainsPage';
@@ -885,6 +886,8 @@ export function AdminApp() {
             onSave={() => void handleSaveMembershipConfig()}
           />
         );
+      case 'agentPolicies':
+        return <AdminAgentPoliciesPage adminToken={adminToken} />;
       case 'salesReview':
         return (
           <AdminSalesReviewPage

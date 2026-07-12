@@ -127,6 +127,75 @@ export type AdminResponsibilityGenerationConfig = {
   updatedAt: string;
 };
 
+export type AdminAgentPolicyDecision = 'execute' | 'propose' | 'reject';
+export type AdminAgentPolicyHandler = 'system' | 'insurance_expert' | 'sales_champion';
+export type AdminAgentPolicyOperation = 'read' | 'write';
+export type AdminAgentPolicyConfirmation = 'not_required' | 'required';
+export type AdminAgentPolicyOutputMode = 'direct' | 'structured' | 'preview';
+export type AdminAgentPolicyTool = 'family_summary' | 'coverage_report' | 'sales_report' | 'product_knowledge_search' | 'create_upload_link' | 'propose_memory' | 'preview_transfer';
+
+export type AdminAgentQuestionPolicy = {
+  key: string;
+  intent: string;
+  decision: AdminAgentPolicyDecision;
+  handler: AdminAgentPolicyHandler;
+  operation: AdminAgentPolicyOperation;
+  confirmation: AdminAgentPolicyConfirmation;
+  outputMode: AdminAgentPolicyOutputMode;
+  tool: AdminAgentPolicyTool | null;
+  enabled?: boolean;
+  confidenceThreshold?: number;
+};
+
+export type AdminAgentQuestionPolicyVersion = {
+  id: number;
+  version: number;
+  status: 'draft' | 'published' | 'archived';
+  policies: AdminAgentQuestionPolicy[];
+  actor: string;
+  createdAt: string;
+  publishedAt: string;
+  archivedAt: string;
+};
+
+export type AdminAgentQuestionPoliciesResponse = {
+  ok: true;
+  published: AdminAgentQuestionPolicyVersion | null;
+  drafts: AdminAgentQuestionPolicyVersion[];
+  history: AdminAgentQuestionPolicyVersion[];
+  templates: AdminAgentQuestionPolicy[];
+};
+
+export type AdminAgentPolicySimulationCandidate = {
+  intent: string;
+  requestedOperation: AdminAgentPolicyOperation;
+  confidence?: number;
+  question?: string;
+  entities?: Record<string, string>;
+};
+
+export type AdminAgentPolicySimulationResponse = {
+  ok: true;
+  previewOnly: true;
+  decision: {
+    policyKey: string;
+    policySource: 'draft' | 'published' | 'built_in';
+    intent: string;
+    decision: string;
+    result: string;
+    handler: AdminAgentPolicyHandler;
+    operation: AdminAgentPolicyOperation;
+    tool: AdminAgentPolicyTool | null;
+    confirmationRequired: boolean;
+    outputMode: AdminAgentPolicyOutputMode;
+    familyResolved: boolean;
+    fallback: boolean;
+    explanation: string;
+  };
+};
+
+export type AdminAgentUnknownQuestion = { id: number; userRef: string; question: string; status: string; createdAt: string };
+
 export type AdminReportIssueSummary = {
   id: number;
   familyId: number;
@@ -339,4 +408,27 @@ export function updateAdminResponsibilityGenerationConfig(token: string, input: 
     method: 'PATCH',
     body: input,
   });
+}
+
+export function getAdminAgentQuestionPolicies(token: string) {
+  return request<AdminAgentQuestionPoliciesResponse>('/api/admin/agent-question-policies', { token });
+}
+export function createAdminAgentQuestionPolicyDraft(token: string, policies: AdminAgentQuestionPolicy[]) {
+  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>('/api/admin/agent-question-policies/drafts', { token, body: { policies } });
+}
+export function updateAdminAgentQuestionPolicyDraft(token: string, draftId: number, policies: AdminAgentQuestionPolicy[]) {
+  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/drafts/${draftId}`, { token, method: 'PATCH', body: { policies } });
+}
+export function publishAdminAgentQuestionPolicyDraft(token: string, draftId: number) {
+  return request<{ ok: true; published: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/drafts/${draftId}/publish`, { token, body: {} });
+}
+export function rollbackAdminAgentQuestionPolicyVersion(token: string, versionId: number) {
+  return request<{ ok: true; sourceVersionId: number; published: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/versions/${versionId}/rollback`, { token, body: {} });
+}
+export function simulateAdminAgentQuestionPolicy(token: string, input: { draftId?: number; candidate: AdminAgentPolicySimulationCandidate }) {
+  return request<AdminAgentPolicySimulationResponse>('/api/admin/agent-question-policies/simulate', { token, body: input });
+}
+export function getAdminAgentUnknownQuestions(token: string, input: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams({ limit: String(input.limit || 20), offset: String(input.offset || 0) });
+  return request<{ ok: true; items: AdminAgentUnknownQuestion[]; total: number; limit: number; offset: number }>(`/api/admin/agent-unknown-questions?${params}`, { token });
 }
