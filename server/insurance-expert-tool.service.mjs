@@ -167,28 +167,17 @@ function questionRelevance(analysis, question) {
 function answerFromAnalysis(analysis, question, relevance = questionRelevance(analysis, question)) {
   const rows = relevance.rows;
   if (!rows.length) return '现有官方证据不足以确认具体保险责任。';
-  if (/核保|承保|underwrit/iu.test(question)) return '官方产品责任资料不能决定个案核保结果，须提交完整且如实的健康及投保资料由保险公司审核。';
-  if (/退保|解約|解除合同|撤单|撤單|surrender|cancel(?:lation)?\s+(?:the\s+)?policy/iu.test(question)) return '官方保险责任资料不能确定当期退保金额，须向保险公司申请现金价值或退保试算。';
   const selectedRows = relevance.narrow ? relevance.relevantRows : rows;
   if (!selectedRows.length) return '现有官方责任表没有足够信息直接回答该问题，需结合具体事故、核保或保全资料进一步核验。';
-  return selectedRows.map((row) => {
+  const summary = selectedRows.map((row) => {
     const title = String(row?.coverageType || '').trim();
     const details = [row?.scenario, row?.payout, row?.note].map((value) => String(value || '').trim()).filter(Boolean);
     return `${title}：${details.join('；')}`;
   }).filter((line) => !line.startsWith('：')).join('\n');
-}
-
-function modelAnswerSupported(answer, relevance) {
-  if (!answer) return false;
-  if (!relevance.narrow) return true;
-  if (!relevance.relevantRows.length) return false;
-  const normalized = String(answer).toLowerCase();
-  if (!relevance.terms.some((term) => normalized.includes(term))) return false;
-  const unrelatedRows = relevance.rows.filter((row) => !relevance.relevantRows.includes(row));
-  return !unrelatedRows.some((row) => {
-    const title = String(row?.coverageType || '').trim().toLowerCase();
-    return title && normalized.includes(title);
-  });
+  const prefix = relevance.narrow
+    ? '根据当前匹配的官方责任条目，以下仅为条款摘要，不代表必然赔付：'
+    : '当前产品版本的官方责任条目摘要：';
+  return `${prefix}\n${summary}`;
 }
 
 function taskMissingInformation(task) {
@@ -317,11 +306,10 @@ export function createInsuranceExpertTool({
     const limitations = ['仅依据当前产品版本的保险公司官方证据回答；个案以正式保险合同及保险公司审核为准。'];
     for (const item of HIGH_RISK_PATTERNS) if (item.pattern.test(question)) limitations.push(item.caution);
     const relevance = questionRelevance(sanitized, question);
-    const modelAnswer = String(rawResult?.answer || rawResult?.analysis?.answer || '').trim();
     return buildDomainAgentEnvelope({
       agent: 'insurance_expert',
       taskId: String(task?.id || requestId || `policy:${policy.id}`),
-      answer: modelAnswerSupported(modelAnswer, relevance) ? modelAnswer : answerFromAnalysis(sanitized, question, relevance),
+      answer: answerFromAnalysis(sanitized, question, relevance),
       evidence,
       limitations,
       missingInformation,

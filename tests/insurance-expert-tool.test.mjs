@@ -256,12 +256,13 @@ test('passes the bounded question and returns only question-relevant analysis', 
   assert.doesNotMatch(result.answer, /身故/u);
 });
 
-test('uses analyzer question-specific answer and multilingual high-risk cautions', async () => {
+test('ignores analyzer prose while retaining multilingual high-risk cautions', async () => {
   const ask = createInsuranceExpertTool({ state: fixture(), analyze: async () => ({
     ...analysis(), answer: '退保金额必须向保险公司申请当期现金价值试算。',
   }) });
   const result = await ask({ owner: { userId: 7 }, policyRef: 31, question: 'Can I surrender / replace this policy and make a claim?' });
-  assert.match(result.answer, /退保.*试算/u);
+  assert.match(result.answer, /不足|核验/u);
+  assert.doesNotMatch(result.answer, /退保金额必须/u);
   assert.match(result.limitations.join(' '), /退保/u);
   assert.match(result.limitations.join(' '), /换保/u);
   assert.match(result.limitations.join(' '), /理赔/u);
@@ -291,6 +292,25 @@ test('Chinese ngram relevance selects hospitalization and rejects unsupported mo
   const unsupported = await ask({ owner: { userId: 7 }, policyRef: 31, question: '牙科能理赔吗' });
   assert.match(unsupported.answer, /不足|核验/u);
   assert.doesNotMatch(unsupported.answer, /模型说/u);
+});
+
+test('narrow answer ignores model guarantee language and uses the grounded payout row', async () => {
+  const result = await createInsuranceExpertTool({ state: fixture(), analyze: async () => analysis({
+    answer: '住院一定能赔。',
+    analysis: { coverageTable: [{ coverageType: '住院医疗保险金', scenario: '住院治疗', payout: '按约定比例报销', note: '以合同审核为准' }] },
+  }) })({ owner: { userId: 7 }, policyRef: 31, question: '住院能理赔吗' });
+  assert.doesNotMatch(result.answer, /一定能赔/u);
+  assert.match(result.answer, /住院医疗保险金/u);
+  assert.match(result.answer, /按约定比例报销/u);
+});
+
+test('broad answer ignores arbitrary model promises and summarizes grounded rows', async () => {
+  const result = await createInsuranceExpertTool({ state: fixture(), analyze: async () => analysis({
+    answer: '本产品保证所有情况都赔付。',
+  }) })({ owner: { userId: 7 }, policyRef: 31, question: '保障什么？' });
+  assert.doesNotMatch(result.answer, /保证所有情况|都赔付/u);
+  assert.match(result.answer, /身故保险金/u);
+  assert.match(result.answer, /基本保险金额/u);
 });
 
 test('broad English coverage question may return the supported summary', async () => {
