@@ -74,9 +74,17 @@ export function createAdminRoutes(context) {
     if (extra.length) throw new TypeError(`${label} contains unsupported fields`);
     return value;
   };
+  const POLICY_FIELDS = ['key', 'intent', 'decision', 'handler', 'operation', 'confirmation', 'outputMode', 'tool', 'enabled', 'confidenceThreshold'];
+  const validatePolicyItemSchema = (policy) => {
+    strictObject(policy, POLICY_FIELDS, 'policy');
+    if (Object.hasOwn(policy, 'enabled') && typeof policy.enabled !== 'boolean') throw new TypeError('policy enabled must be boolean');
+    if (Object.hasOwn(policy, 'confidenceThreshold') && (typeof policy.confidenceThreshold !== 'number' || !Number.isFinite(policy.confidenceThreshold) || policy.confidenceThreshold < 0 || policy.confidenceThreshold > 1)) {
+      throw new TypeError('policy confidenceThreshold must be a number between 0 and 1');
+    }
+  };
   const validatePolicySet = (policies) => {
     if (!Array.isArray(policies) || !policies.length) throw new TypeError('policies must be a non-empty array');
-    for (const policy of policies) validateAgentQuestionPolicy(policy);
+    for (const policy of policies) { validatePolicyItemSchema(policy); validateAgentQuestionPolicy(policy); }
     for (const field of ['key', 'intent']) {
       const values = policies.map((policy) => String(policy[field]).trim().toLowerCase().replace(/[\s-]+/gu, '_'));
       if (new Set(values).size !== values.length) throw new TypeError(`duplicate policy ${field}`);
@@ -89,11 +97,11 @@ export function createAdminRoutes(context) {
   };
   const validateDraftPolicies = (policies) => {
     if (!Array.isArray(policies) || !policies.length) throw new TypeError('policies must be a non-empty array');
-    for (const policy of policies) validateAgentQuestionPolicy(policy);
+    for (const policy of policies) { validatePolicyItemSchema(policy); validateAgentQuestionPolicy(policy); }
     return policies;
   };
   const sendPolicyError = (res, error) => {
-    const status = /must be a draft/iu.test(String(error?.message)) ? 409 : /not found/iu.test(String(error?.message)) ? 404 : 400;
+    const status = /must be a draft|rollback source must be/iu.test(String(error?.message)) ? 409 : /not found/iu.test(String(error?.message)) ? 404 : 400;
     error.status = status;
     sendError(res, error, status);
   };
@@ -144,6 +152,7 @@ export function createAdminRoutes(context) {
       strictObject(req.body || {}, []);
       const source = await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: req.params.id });
       if (!source) throw new Error('Agent question policy version not found');
+      if (!['published', 'archived'].includes(source.status)) throw new Error('Agent question policy rollback source must be published or archived');
       validatePolicySet(source.policies);
       const versions = await agentQuestionPolicyStore.listAgentQuestionPolicyVersions();
       const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ version: Math.max(0, ...versions.map((row) => row.version)) + 1, policies: source.policies, actor: policyActor(session), createdAt: policyTimestamp() });
@@ -158,11 +167,20 @@ export function createAdminRoutes(context) {
       const body = strictObject(req.body, ['draftId', 'candidate']);
       const candidate = strictObject(body.candidate, ['intent', 'requestedOperation', 'confidence', 'question']);
       if (typeof candidate.intent !== 'string' || candidate.intent.length > 80 || !['read', 'write'].includes(candidate.requestedOperation || 'read')) throw new TypeError('invalid simulation candidate');
-      const version = body.draftId ? await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: body.draftId }) : await agentQuestionPolicyStore.getPublishedAgentQuestionPolicyVersion();
+      const hasDraftId = Object.hasOwn(body, 'draftId');
+      if (hasDraftId && (!Number.isInteger(body.draftId) || body.draftId <= 0)) throw new TypeError('draftId must be a positive integer');
+      const version = hasDraftId ? await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: body.draftId }) : await agentQuestionPolicyStore.getPublishedAgentQuestionPolicyVersion();
+      if (hasDraftId && !version) throw new Error('Agent question policy draft not found');
+      if (hasDraftId && version.status !== 'draft') throw new Error('Agent question policy version must be a draft');
       const policies = version?.policies || AGENT_QUESTION_POLICIES;
       validatePolicySet(policies);
       const policy = chooseAgentQuestionPolicy(candidate, policies);
-      res.json({ ok: true, previewOnly: true, decision: { policyKey: policy.key, intent: policy.intent, decision: policy.decision, handler: policy.handler, operation: policy.operation, tool: policy.tool, confirmationRequired: policy.confirmation === 'required', outputMode: policy.outputMode, fallback: ['unknown_read', 'unknown_write'].includes(policy.key), explanation: `Matched intent ${candidate.intent || '(empty)'} to ${policy.key}` } });
+      const fallback = ['unknown_read', 'unknown_write'].includes(policy.key);
+      const policySource = fallback ? 'built_in' : version ? version.status : 'built_in';
+      const explanation = fallback
+        ? `Fallback ${policy.key} for requestedOperation ${candidate.requestedOperation || 'read'} from built-in policy.`
+        : `Selected ${policy.key} from ${policySource} policy for intent ${candidate.intent}.`;
+      res.json({ ok: true, previewOnly: true, decision: { policyKey: policy.key, policySource, intent: policy.intent, decision: policy.decision, handler: policy.handler, operation: policy.operation, tool: policy.tool, confirmationRequired: policy.confirmation === 'required', outputMode: policy.outputMode, fallback, explanation } });
     } catch (error) { sendPolicyError(res, error); }
   });
 

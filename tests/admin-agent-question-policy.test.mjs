@@ -95,3 +95,46 @@ test('unknown question list is paginated and redacted, and concurrent publish ke
     assert.equal(h.store.db.prepare("SELECT count(*) count FROM agent_question_policy_versions WHERE status='published'").get().count, 1);
   } finally { await h.close(); }
 });
+
+test('draft policy items reject extra fields and non-boolean enabled values', async () => {
+  const h = await harness();
+  try {
+    for (const policy of [
+      { ...AGENT_QUESTION_POLICIES[0], injected: 'no' },
+      { ...AGENT_QUESTION_POLICIES[0], enabled: 'false' },
+    ]) {
+      const created = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: [policy] } });
+      assert.equal(created.status, 400);
+    }
+    const valid = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
+    const patched = await call(h, `/api/admin/agent-question-policies/drafts/${valid.body.draft.id}`, { method: 'PATCH', body: { policies: [{ ...AGENT_QUESTION_POLICIES[0], extra: true }] } });
+    assert.equal(patched.status, 400);
+  } finally { await h.close(); }
+});
+
+test('simulation requires a positive draft id and an existing draft version', async () => {
+  const h = await harness();
+  try {
+    const candidate = { intent: 'chat', requestedOperation: 'read' };
+    for (const draftId of [0, -1, 1.5, '1']) {
+      assert.equal((await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId, candidate } })).status, 400);
+    }
+    assert.equal((await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: 999, candidate } })).status, 404);
+    const draft = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
+    await call(h, `/api/admin/agent-question-policies/drafts/${draft.body.draft.id}/publish`, { method: 'POST', body: {} });
+    assert.equal((await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate } })).status, 409);
+  } finally { await h.close(); }
+});
+
+test('rollback rejects drafts and fallback explanation identifies operation and built-in source', async () => {
+  const h = await harness();
+  try {
+    const draft = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
+    assert.equal((await call(h, `/api/admin/agent-question-policies/versions/${draft.body.draft.id}/rollback`, { method: 'POST', body: {} })).status, 409);
+    const fallback = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { candidate: { intent: 'missing', requestedOperation: 'write' } } });
+    assert.equal(fallback.body.decision.policyKey, 'unknown_write');
+    assert.equal(fallback.body.decision.policySource, 'built_in');
+    assert.match(fallback.body.decision.explanation, /unknown_write.*write.*built-in/iu);
+    assert.doesNotMatch(fallback.body.decision.explanation, /matched/iu);
+  } finally { await h.close(); }
+});
