@@ -79,6 +79,28 @@ test('real extracted family sales memory persists one proposed event with proven
   store.close();
 });
 
+test('durable memory allocation is unique across stores and event history pages stably', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'concurrent-memory.sqlite');
+  const first = await createSqliteStateStore({ dbPath });
+  await first.load();
+  const second = await createSqliteStateStore({ dbPath });
+  await second.load();
+  const input = (content, messageId) => ({ familyId: 5, owner: { ownerGuestId: 'guest-pages' }, userMessage: { id: messageId }, extractedMemories: [{ kind: 'strategy', content, confidence: 0.9 }], nowIso: () => `2026-07-12T06:${String(messageId % 60).padStart(2, '0')}:00.000Z` });
+  const [left, right] = await Promise.all([first.persistExtractedFamilySalesMemories(input('先讲保障', 801)), second.persistExtractedFamilySalesMemories(input('再讲预算', 802))]);
+  assert.notEqual(left.memories[0].id, right.memories[0].id);
+  const state = await first.load();
+  for (let index = 0; index < 103; index += 1) state.familySalesMemories.push({ id: 10_000 + index, familyId: 5, ownerGuestId: 'guest-pages', kind: 'strategy', content: `策略${index}`, status: 'candidate', sourceType: 'user_statement', version: 1, evidenceMessageIds: [900 + index], createdAt: `2026-07-13T00:${String(index % 60).padStart(2, '0')}:${String(Math.floor(index / 60)).padStart(2, '0')}.000Z`, updatedAt: `2026-07-13T00:${String(index % 60).padStart(2, '0')}:${String(Math.floor(index / 60)).padStart(2, '0')}.000Z` });
+  await first.persistFamilyState({ state });
+  const page1 = first.listFamilySalesMemoryEvents({ familyId: 5, owner: { ownerGuestId: 'guest-pages' }, limit: 100 });
+  const page2 = first.listFamilySalesMemoryEvents({ familyId: 5, owner: { ownerGuestId: 'guest-pages' }, cursor: page1.nextCursor, limit: 100 });
+  assert.equal(page1.items.length, 100);
+  assert.equal(page2.items.length, 5);
+  assert.equal(new Set([...page1.items, ...page2.items].map((event) => event.id)).size, 105);
+  first.close();
+  second.close();
+});
+
 test('sqlite temporal memories persist immutable ordered events with CAS and rollback', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'memory.sqlite');
@@ -99,7 +121,7 @@ test('sqlite temporal memories persist immutable ordered events with CAS and rol
   await assert.rejects(store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { id: 101, content: '篡改' }, expectedVersion: 2, now: '2026-07-12T03:00:00.000Z' }));
   assert.equal(store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload, before);
   assert.deepEqual(store.db.prepare('SELECT (SELECT count(*) FROM family_sales_memories) AS memories, (SELECT count(*) FROM family_sales_memory_events) AS events').get(), countsBefore);
-  await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { id: 102, content: '看完整报告' }, expectedVersion: 2, now: '2026-07-12T04:00:00.000Z' });
+  await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { content: '看完整报告' }, expectedVersion: 2, now: '2026-07-12T04:00:00.000Z' });
   for (const id of [101, 102]) {
     const row = store.db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(id);
     const payload = JSON.parse(row.payload);

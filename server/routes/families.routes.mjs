@@ -53,6 +53,7 @@ export function createFamilyRoutes(context) {
     normalizeGuestId,
     persistFamilyReportState,
     persistFamilyState,
+    persistExtractedFamilySalesMemories,
     repairDuplicateFamilyMembers,
     requestOwner,
     resolveAuthUser,
@@ -650,17 +651,11 @@ export function createFamilyRoutes(context) {
         assistantMessage,
         existingMemories: familySalesMemoriesForFamily(family.id, owner),
       });
-      upsertFamilySalesMemories({
-        state,
-        familyId: family.id,
-        owner: ownerFields(owner),
-        sourceThreadId: thread.id,
-        userMessage,
-        assistantMessage,
-        extractedMemories,
-        allocateId,
-        nowIso,
-      });
+      if (persistExtractedFamilySalesMemories) {
+        await persistExtractedFamilySalesMemories({ familyId: family.id, owner: ownerFields(owner), sourceThreadId: thread.id, userMessage, extractedMemories, nowIso });
+      } else {
+        upsertFamilySalesMemories({ state, familyId: family.id, owner: ownerFields(owner), sourceThreadId: thread.id, userMessage, extractedMemories, allocateId, nowIso });
+      }
     } catch (error) {
       console.warn(`[family-sales-memory] Failed to extract memories family=${family?.id || ''} thread=${thread?.id || ''}: ${error instanceof Error ? error.message : error}`);
     }

@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
-import { applyFamilySalesMemoryAction } from './family-sales-memory.service.mjs';
+import { applyFamilySalesMemoryAction, upsertFamilySalesMemories } from './family-sales-memory.service.mjs';
 
 const SCHEMA_VERSION = '5';
 
@@ -297,6 +297,17 @@ function setMeta(db, key, value) {
   `).run(key, String(value ?? ''));
 }
 
+function allocateDurableFamilySalesMemoryId(db) {
+  const next = Math.max(
+    Number(getMeta(db, 'next_id') || 1),
+    Number(getMeta(db, 'family_sales_memory_next_id') || 1),
+    Number(db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS next FROM family_sales_memories').get().next),
+  );
+  setMeta(db, 'family_sales_memory_next_id', next + 1);
+  setMeta(db, 'next_id', next + 1);
+  return next;
+}
+
 function ensureColumn(db, table, column, definition) {
   if (db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
@@ -362,6 +373,14 @@ function writeFamilySalesMemory(db, memory, { expectedVersion, insertOnly = fals
   const placeholders = FAMILY_SALES_MEMORY_COLUMNS.map(() => '?').join(', ');
   const conflict = insertOnly ? '' : ` ON CONFLICT(id) DO UPDATE SET ${FAMILY_SALES_MEMORY_COLUMNS.slice(1).map((column) => `${column} = excluded.${column}`).join(', ')}`;
   return { memory: normalized, changes: db.prepare(`INSERT INTO family_sales_memories (${FAMILY_SALES_MEMORY_COLUMNS.join(', ')}) VALUES (${placeholders})${conflict}`).run(...values).changes };
+}
+
+function insertOrCompareFamilySalesMemory(db, memory) {
+  const { normalized } = bindFamilySalesMemory(memory);
+  const existing = db.prepare('SELECT payload FROM family_sales_memories WHERE id = ?').get(Number(normalized.id));
+  if (!existing) return writeFamilySalesMemory(db, normalized, { insertOnly: true });
+  if (existing.payload !== jsonPayload(normalized)) throw Object.assign(new Error('family sales memory restore conflict'), { code: 'RESTORE_CONFLICT' });
+  return { memory: normalized, changes: 0 };
 }
 
 function initialFamilySalesMemoryEvent(memory = {}) {
@@ -788,12 +807,19 @@ function createSchema(db) {
       source_thread_id INTEGER,
       created_at TEXT,
       updated_at TEXT,
-      payload TEXT NOT NULL
+      payload TEXT NOT NULL,
+      CHECK (family_id > 0 AND version > 0),
+      CHECK (kind IN ('preference','objection','todo','correction','strategy','budget','health','income','debt','family_responsibility','purchase_intent')),
+      CHECK (status IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      CHECK ((owner_user_id IS NOT NULL AND owner_user_id > 0 AND COALESCE(owner_guest_id, '') = '') OR (owner_user_id IS NULL AND length(owner_guest_id) BETWEEN 1 AND 128)),
+      CHECK (supersedes_memory_id IS NULL OR supersedes_memory_id <> id),
+      CHECK (superseded_by_memory_id IS NULL OR superseded_by_memory_id <> id)
     );
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_family_id ON family_sales_memories(family_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_user_id ON family_sales_memories(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_guest_id ON family_sales_memories(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_updated_at ON family_sales_memories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memories_scope_status ON family_sales_memories(family_id, owner_user_id, owner_guest_id, status, id);
 
     CREATE TABLE IF NOT EXISTS family_sales_memory_events (
       id TEXT PRIMARY KEY,
@@ -820,6 +846,7 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_family ON family_sales_memory_events(family_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_owner_user ON family_sales_memory_events(owner_user_id, family_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_owner_guest ON family_sales_memory_events(owner_guest_id, family_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_scope_memory ON family_sales_memory_events(family_id, owner_user_id, owner_guest_id, memory_id, created_at, id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_family_sales_memory_events_source
       ON family_sales_memory_events(memory_id, event_type, source_message_id)
       WHERE source_message_id IS NOT NULL;
@@ -827,6 +854,12 @@ function createSchema(db) {
       BEFORE UPDATE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
     CREATE TRIGGER IF NOT EXISTS family_sales_memory_events_no_delete
       BEFORE DELETE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memory_events_scope_insert
+      BEFORE INSERT ON family_sales_memory_events BEGIN
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM family_sales_memories m WHERE m.id = NEW.memory_id AND m.family_id = NEW.family_id
+          AND COALESCE(m.owner_user_id, 0) = COALESCE(NEW.owner_user_id, 0) AND COALESCE(m.owner_guest_id, '') = COALESCE(NEW.owner_guest_id, ''))
+          THEN RAISE(ABORT, 'family sales memory event scope mismatch') END;
+      END;
 
     CREATE TABLE IF NOT EXISTS report_refresh_events (
       id INTEGER PRIMARY KEY,
@@ -1441,7 +1474,7 @@ function insertRows(db, state) {
   }
 
   for (const memory of normalizeArray(state.familySalesMemories)) {
-    writeFamilySalesMemory(db, memory);
+    insertOrCompareFamilySalesMemory(db, memory);
   }
   insertFamilySalesMemoryEvents(db, state.familySalesMemoryEvents, { ignoreDuplicates: true });
   insertFamilySalesMemoryEvents(db, normalizeArray(state.familySalesMemories)
@@ -2394,7 +2427,7 @@ function memoryEventType(event = {}) {
 
 function insertFamilySalesMemoryEvents(db, events = [], { ignoreDuplicates = false } = {}) {
   const insert = db.prepare(`
-    INSERT ${ignoreDuplicates ? 'OR IGNORE' : ''} INTO family_sales_memory_events
+    INSERT INTO family_sales_memory_events
       (id, memory_id, family_id, owner_user_id, owner_guest_id, event_type, actor_type, actor_id, source_message_id, previous_status, next_status, reason_code, created_at, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
@@ -2412,20 +2445,31 @@ function insertFamilySalesMemoryEvents(db, events = [], { ignoreDuplicates = fal
       || !/^(system|advisor|service)$/u.test(actorType)
       || !(/^\d+$/u.test(actorId) || /^sha256:[a-f0-9]{64}$/u.test(actorId))
       || !Number.isFinite(Date.parse(createdAt))) throw new Error('invalid family sales memory event');
-    insert.run(
-      memoryEventId(event), Number(event.memoryId), Number(event.familyId), Number(event.ownerUserId || 0) || null,
+    const values = [memoryEventId(event), Number(event.memoryId), Number(event.familyId), Number(event.ownerUserId || 0) || null,
       String(event.ownerGuestId || ''), eventType, actorType,
       actorId, Number(event.sourceMessageId || 0) || null,
       String(event.previousStatus || event.previous?.status || ''), String(event.nextStatus || event.next?.status || ''),
-      String(event.reasonCode || event.reason || ''), createdAt, jsonPayload(safeMemoryEventPayload(event)),
-    );
+      String(event.reasonCode || event.reason || ''), createdAt, jsonPayload(safeMemoryEventPayload(event))];
+    if (ignoreDuplicates) {
+      const existing = db.prepare('SELECT * FROM family_sales_memory_events WHERE id = ?').get(values[0]);
+      if (existing) {
+        const actual = [existing.id, existing.memory_id, existing.family_id, existing.owner_user_id, existing.owner_guest_id, existing.event_type,
+          existing.actor_type, existing.actor_id, existing.source_message_id, existing.previous_status, existing.next_status, existing.reason_code, existing.created_at, existing.payload];
+        if (JSON.stringify(actual) !== JSON.stringify(values)) throw Object.assign(new Error('memory event restore conflict'), { code: 'RESTORE_CONFLICT' });
+        continue;
+      }
+      if (values[8] && db.prepare('SELECT 1 FROM family_sales_memory_events WHERE memory_id = ? AND event_type = ? AND source_message_id = ?').get(values[1], values[5], values[8])) {
+        throw Object.assign(new Error('memory event source restore conflict'), { code: 'RESTORE_CONFLICT' });
+      }
+    }
+    insert.run(...values);
   }
 }
 
 function replaceFamilySalesMemories(db, state) {
   const existingIds = new Set(db.prepare('SELECT id FROM family_sales_memories').all().map((row) => String(row.id)));
   for (const memory of normalizeArray(state.familySalesMemories)) {
-    writeFamilySalesMemory(db, memory);
+    insertOrCompareFamilySalesMemory(db, memory);
   }
   insertFamilySalesMemoryEvents(db, state.familySalesMemoryEvents, { ignoreDuplicates: true });
   const proposedEvents = normalizeArray(state.familySalesMemories)
@@ -2577,7 +2621,7 @@ function loadPayloadRows(db, table, orderBy) {
 }
 
 function loadFamilySalesMemoryEvents(db) {
-  return db.prepare('SELECT * FROM family_sales_memory_events ORDER BY created_at ASC, rowid ASC').all().map((row) => ({
+  return db.prepare('SELECT * FROM family_sales_memory_events ORDER BY created_at DESC, rowid DESC LIMIT 100').all().reverse().map((row) => ({
     id: row.id, memoryId: row.memory_id, familyId: row.family_id,
     ownerUserId: row.owner_user_id, ownerGuestId: row.owner_guest_id || '', eventType: row.event_type,
     actor: { type: row.actor_type || '', id: row.actor_id || '' }, sourceMessageId: row.source_message_id,
@@ -2694,11 +2738,21 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return { ...createInitialState(), ...seed, nextId: resolveNextId(seed) };
   }
 
-  async function persist(state) {
+  async function persist(state, { restore = false } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
     const now = new Date().toISOString();
     const initializedAt = getMeta(db, 'state_initialized_at');
+    if (restore) {
+      const storedMemoryIds = db.prepare('SELECT id FROM family_sales_memories ORDER BY id').all().map((row) => String(row.id)).sort();
+      const storedEventIds = db.prepare('SELECT id FROM family_sales_memory_events ORDER BY id').all().map((row) => String(row.id)).sort();
+      const incomingMemoryIds = normalizeArray(nextState.familySalesMemories).map((row) => String(row.id)).sort();
+      const incomingEventIds = normalizeArray(nextState.familySalesMemoryEvents).map((row) => String(row.id)).sort();
+      if ((storedMemoryIds.length || storedEventIds.length)
+        && (JSON.stringify(storedMemoryIds) !== JSON.stringify(incomingMemoryIds) || JSON.stringify(storedEventIds) !== JSON.stringify(incomingEventIds))) {
+        throw Object.assign(new Error('temporal memory restore requires an empty target or exact history'), { code: 'RESTORE_CONFLICT' });
+      }
+    }
     db.exec('BEGIN IMMEDIATE');
     try {
       db.exec('PRAGMA defer_foreign_keys = ON');
@@ -3179,6 +3233,42 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  async function persistExtractedFamilySalesMemories({ state, familyId, owner = {}, sourceThreadId = 0, userMessage = null, extractedMemories = [], nowIso = () => new Date().toISOString() } = {}) {
+    const targetFamilyId = Number(familyId || 0);
+    const ownerUserId = Number(owner.ownerUserId || 0) || null;
+    const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+    if (!targetFamilyId || (!ownerUserId && !ownerGuestId)) throw Object.assign(new Error('invalid memory extraction scope'), { code: 'INVALID_MEMORY_SCOPE' });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = db.prepare(`SELECT payload FROM family_sales_memories WHERE family_id = ? AND COALESCE(owner_user_id, 0) = ? AND COALESCE(owner_guest_id, '') = ? ORDER BY id`)
+        .all(targetFamilyId, Number(ownerUserId || 0), ownerGuestId).map((row) => parseJson(row.payload, null)).filter(Boolean);
+      const existingIds = new Set(existing.map((memory) => String(memory.id)));
+      const working = { ...createInitialState(), familySalesMemories: existing, nextId: 1 };
+      const result = upsertFamilySalesMemories({
+        state: working, familyId: targetFamilyId, owner: { ownerUserId, ownerGuestId }, sourceThreadId,
+        userMessage, extractedMemories, allocateId: () => allocateDurableFamilySalesMemoryId(db), nowIso,
+      });
+      for (const memory of result.memories) {
+        if (existingIds.has(String(memory.id))) {
+          const current = existing.find((item) => String(item.id) === String(memory.id));
+          writeFamilySalesMemory(db, memory, { expectedVersion: Number(current?.version || 1) });
+        } else {
+          writeFamilySalesMemory(db, memory, { insertOnly: true });
+          insertFamilySalesMemoryEvents(db, [initialFamilySalesMemoryEvent(memory)]);
+        }
+      }
+      db.exec('COMMIT');
+      if (state) {
+        const changedIds = new Set(result.memories.map((memory) => String(memory.id)));
+        state.familySalesMemories = normalizeArray(state.familySalesMemories).filter((memory) => !changedIds.has(String(memory.id))).concat(result.memories);
+      }
+      return result;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async function persistFamilySalesMemoryTransition({ state, memoryId, familyId, owner = {}, action, reasonCode, actor, replacement = null, expectedVersion, now } = {}) {
     if (!Number.isSafeInteger(Number(memoryId)) || Number(memoryId) <= 0 || !Number.isSafeInteger(Number(familyId)) || Number(familyId) <= 0
       || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
@@ -3203,8 +3293,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       if (graphRows.length > 1000) throw new Error('memory supersession graph exceeds limit');
       const existingMemories = graphRows.map((item) => parseJson(item.payload, null));
       if (existingMemories.some((memory) => !memory)) throw new Error('invalid memory graph payload');
-      if (replacement?.id && db.prepare('SELECT 1 AS found FROM family_sales_memories WHERE id = ?').get(Number(replacement.id))) throw new Error('replacement id already exists');
-      const result = applyFamilySalesMemoryAction({ memory: authoritative, action, reasonCode, actor, replacement, existingMemories, expectedVersion, now });
+      if (replacement?.id !== undefined) throw new Error('replacement id is server allocated');
+      const safeReplacement = replacement ? { ...replacement, id: allocateDurableFamilySalesMemoryId(db) } : null;
+      const result = applyFamilySalesMemoryAction({ memory: authoritative, action, reasonCode, actor, replacement: safeReplacement, existingMemories, expectedVersion, now });
       const memories = result.replacement ? [result.memory, result.replacement] : [result.memory];
       const events = result.events;
       const bundle = { memories, events };
@@ -3249,6 +3340,31 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  function listFamilySalesMemoryEvents({ familyId, owner = {}, memoryId = null, cursor = '', limit = 50 } = {}) {
+    const pageSize = Math.min(100, Math.max(1, Number(limit) || 50));
+    const ownerUserId = Number(owner.ownerUserId || 0) || 0;
+    const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+    let cursorTime = '';
+    let cursorId = '';
+    if (cursor) {
+      try { [cursorTime, cursorId] = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8')); } catch { throw new Error('invalid memory event cursor'); }
+    }
+    const rows = db.prepare(`SELECT * FROM family_sales_memory_events
+      WHERE family_id = ? AND COALESCE(owner_user_id, 0) = ? AND COALESCE(owner_guest_id, '') = ?
+        AND (? IS NULL OR memory_id = ?)
+        AND (? = '' OR created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at ASC, id ASC LIMIT ?`).all(Number(familyId), ownerUserId, ownerGuestId,
+        memoryId == null ? null : Number(memoryId), memoryId == null ? null : Number(memoryId), cursorTime, cursorTime, cursorTime, cursorId, pageSize + 1);
+    const page = rows.slice(0, pageSize);
+    const items = page.map((row) => ({
+      id: row.id, memoryId: row.memory_id, familyId: row.family_id, ownerUserId: row.owner_user_id, ownerGuestId: row.owner_guest_id || '',
+      eventType: row.event_type, actor: { type: row.actor_type, id: row.actor_id }, sourceMessageId: row.source_message_id,
+      previousStatus: row.previous_status, nextStatus: row.next_status, reasonCode: row.reason_code, createdAt: row.created_at, ...parseJson(row.payload, {}),
+    }));
+    const last = page.at(-1);
+    return { items, nextCursor: rows.length > pageSize && last ? Buffer.from(JSON.stringify([last.created_at, last.id])).toString('base64url') : '' };
   }
 
   async function persistPolicyDerivedResult({ state, derivedResult = null } = {}) {
@@ -3551,7 +3667,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistExtractedFamilySalesMemories,
     persistFamilySalesMemoryTransition,
+    listFamilySalesMemoryEvents,
     persistFamilyReportState,
     persistAgentPolicyImportTask,
     findAgentPolicyImportTask,
