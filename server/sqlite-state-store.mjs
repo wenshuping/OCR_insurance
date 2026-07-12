@@ -348,8 +348,12 @@ function bindFamilySalesMemory(memory = {}) {
   return { normalized, values };
 }
 
-function writeFamilySalesMemory(db, memory, { expectedVersion, insertOnly = false } = {}) {
+function writeFamilySalesMemory(db, memory, { expectedVersion, insertOnly = false, migration = false } = {}) {
   const { normalized, values } = bindFamilySalesMemory(memory);
+  if (migration) {
+    const assignments = FAMILY_SALES_MEMORY_COLUMNS.slice(1).map((column) => `${column} = ?`).join(', ');
+    return { memory: normalized, changes: db.prepare(`UPDATE family_sales_memories SET ${assignments} WHERE id = ?`).run(...values.slice(1), values[0]).changes };
+  }
   if (Number.isSafeInteger(expectedVersion)) {
     const assignments = FAMILY_SALES_MEMORY_COLUMNS.slice(1).map((column) => `${column} = ?`).join(', ');
     return { memory: normalized, changes: db.prepare(`UPDATE family_sales_memories SET ${assignments}
@@ -382,7 +386,8 @@ function migrateFamilySalesMemoryHistory(db) {
       const ownerUserId = Number(memory.ownerUserId || 0) || null;
       const ownerGuestId = ownerUserId ? '' : String(memory.ownerGuestId || '');
       if (!Number(memory.familyId) || (!ownerUserId && !ownerGuestId)) throw Object.assign(new Error('legacy family sales memory scope is invalid'), { code: 'MEMORY_MIGRATION_FAILED' });
-      writeFamilySalesMemory(db, memory, { expectedVersion: Number(memory.version || 1) });
+      const migrated = writeFamilySalesMemory(db, memory, { migration: true });
+      if (migrated.changes !== 1) throw Object.assign(new Error('legacy family sales memory migration did not update exactly one row'), { code: 'MEMORY_MIGRATION_FAILED' });
       const historyCount = db.prepare('SELECT COUNT(*) AS count FROM family_sales_memory_events WHERE memory_id = ?').get(row.id).count;
       if (!historyCount) insertFamilySalesMemoryEvents(db, [initialFamilySalesMemoryEvent(memory)]);
     }

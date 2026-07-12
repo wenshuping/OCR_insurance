@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
+import { upsertFamilySalesMemories } from '../server/family-sales-memory.service.mjs';
 
 test('initialized legacy memory database backfills promoted columns and one imported event', async () => {
   const dir = await makeTempDir();
@@ -36,6 +37,17 @@ test('initialized legacy memory database backfills promoted columns and one impo
   assert.equal(promoted.recorded_at, memory.createdAt);
   assert.equal(promoted.content, memory.content);
   assert.equal(promoted.confidence, 0.8);
+  for (const id of [7, 8, 9]) {
+    const row = first.db.prepare('SELECT status, version, recorded_at, content, confidence, source_message_ids_json, normalized_value_json, payload FROM family_sales_memories WHERE id = ?').get(id);
+    const payload = JSON.parse(row.payload);
+    assert.equal(row.status, payload.status);
+    assert.equal(row.version, payload.version);
+    assert.equal(row.recorded_at, payload.recordedAt);
+    assert.equal(row.content, payload.content);
+    assert.equal(row.confidence, payload.confidence);
+    assert.ok(row.source_message_ids_json);
+    assert.ok(row.normalized_value_json);
+  }
   assert.equal(first.db.prepare('SELECT event_type FROM family_sales_memory_events WHERE memory_id = 7').get().event_type, 'imported');
   assert.deepEqual(first.db.prepare('SELECT memory_id, previous_status, next_status FROM family_sales_memory_events ORDER BY memory_id').all().map((row) => ({ ...row })), [
     { memory_id: 7, previous_status: 'active', next_status: 'confirmed' },
@@ -47,6 +59,24 @@ test('initialized legacy memory database backfills promoted columns and one impo
   const reopened = await createSqliteStateStore({ dbPath });
   assert.equal(reopened.db.prepare('SELECT count(*) AS count FROM family_sales_memory_events').get().count, 3);
   reopened.close();
+});
+
+test('real extracted family sales memory persists one proposed event with provenance', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'extracted-memory.sqlite') });
+  const state = await store.load();
+  const result = upsertFamilySalesMemories({
+    state, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, sourceThreadId: 21,
+    userMessage: { id: 700 }, extractedMemories: [{ kind: 'strategy', content: '先处理预算异议', confidence: 0.91 }],
+    allocateId: (target) => target.nextId++, nowIso: () => '2026-07-12T05:00:00.000Z',
+  });
+  assert.equal(result.memories[0].sourceType, 'user_statement');
+  assert.equal(result.memories[0].recordedAt, '2026-07-12T05:00:00.000Z');
+  assert.deepEqual(result.memories[0].sourceMessageIds, [700]);
+  await store.persistFamilyState({ state });
+  const event = store.db.prepare('SELECT event_type, next_status, source_message_id FROM family_sales_memory_events WHERE memory_id = ?').get(result.memories[0].id);
+  assert.deepEqual({ ...event }, { event_type: 'proposed', next_status: 'candidate', source_message_id: 700 });
+  store.close();
 });
 
 test('sqlite temporal memories persist immutable ordered events with CAS and rollback', async () => {
