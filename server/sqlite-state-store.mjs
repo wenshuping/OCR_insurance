@@ -166,6 +166,9 @@ function jsonPayload(value) {
 
 const AGENT_PAYLOAD_MAX_BYTES = 16_384;
 const AGENT_PAYLOAD_MAX_FIELDS = 32;
+const AGENT_POLICY_MAX_ENTRIES = 256;
+const AGENT_POLICY_MAX_FIELDS = 32;
+const AGENT_POLICY_MAX_BYTES = 262_144;
 
 function serializeAgentPayload(value, label = 'Agent payload') {
   const payload = value ?? {};
@@ -178,6 +181,31 @@ function serializeAgentPayload(value, label = 'Agent payload') {
   const serialized = JSON.stringify(payload);
   if (Buffer.byteLength(serialized, 'utf8') > AGENT_PAYLOAD_MAX_BYTES) {
     throw new RangeError(`${label} exceeds ${AGENT_PAYLOAD_MAX_BYTES} bytes`);
+  }
+  return serialized;
+}
+
+function serializeAgentPolicies(policies) {
+  if (!Array.isArray(policies)) throw new TypeError('Agent question policies must be an array');
+  if (policies.length > AGENT_POLICY_MAX_ENTRIES) {
+    throw new RangeError(`Agent question policies exceed ${AGENT_POLICY_MAX_ENTRIES} entries`);
+  }
+  for (const policy of policies) {
+    if (!policy || typeof policy !== 'object' || Array.isArray(policy) || Object.getPrototypeOf(policy) !== Object.prototype) {
+      throw new TypeError('Each agent question policy must be a plain object');
+    }
+    if (Object.keys(policy).length > AGENT_POLICY_MAX_FIELDS) {
+      throw new RangeError(`Agent question policy exceeds ${AGENT_POLICY_MAX_FIELDS} fields`);
+    }
+  }
+  let serialized;
+  try {
+    serialized = JSON.stringify(policies);
+  } catch {
+    throw new TypeError('Agent question policies must be JSON serializable');
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > AGENT_POLICY_MAX_BYTES) {
+    throw new RangeError(`Agent question policies exceed ${AGENT_POLICY_MAX_BYTES} bytes`);
   }
   return serialized;
 }
@@ -2964,14 +2992,14 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
   async function createAgentQuestionPolicyDraft({ version, policies = [], actor = '', createdAt = '' } = {}) {
     const numericVersion = Number(version);
     if (!Number.isInteger(numericVersion) || numericVersion <= 0) throw new TypeError('Agent question policy version must be a positive integer');
-    if (!Array.isArray(policies)) throw new TypeError('Agent question policies must be an array');
     const normalizedActor = String(actor || '').trim();
     if (!normalizedActor) throw new TypeError('Agent question policy actor is required');
     const timestamp = String(createdAt || new Date().toISOString());
+    const serializedPolicies = serializeAgentPolicies(policies);
     const result = db.prepare(`
       INSERT INTO agent_question_policy_versions (version, status, policy_json, actor, created_at, published_at, archived_at)
       VALUES (?, 'draft', ?, ?, ?, '', '')
-    `).run(numericVersion, JSON.stringify(policies), normalizedActor, timestamp);
+    `).run(numericVersion, serializedPolicies, normalizedActor, timestamp);
     return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
   }
 
@@ -2987,16 +3015,22 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         ? db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(targetId)
         : db.prepare('SELECT * FROM agent_question_policy_versions WHERE version = ?').get(targetVersion);
       if (!target) throw new Error('Agent question policy version not found');
+      if (target.status === 'published') {
+        db.exec('COMMIT');
+        return mapAgentPolicyVersion(target);
+      }
+      if (target.status !== 'draft') throw new Error('Agent question policy version must be a draft');
       db.prepare(`
         UPDATE agent_question_policy_versions
         SET status = 'archived', archived_at = ?
         WHERE status = 'published' AND id <> ?
       `).run(timestamp, target.id);
-      db.prepare(`
+      const result = db.prepare(`
         UPDATE agent_question_policy_versions
         SET status = 'published', actor = ?, published_at = ?, archived_at = ''
-        WHERE id = ?
+        WHERE id = ? AND status = 'draft'
       `).run(normalizedActor, timestamp, target.id);
+      if (result.changes !== 1) throw new Error('Agent question policy draft could not be published');
       db.exec('COMMIT');
       return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(target.id));
     } catch (error) {
@@ -3089,6 +3123,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const normalizedActor = String(actor || '').trim();
     if (!Number.isInteger(numericPolicyVersion) || numericPolicyVersion <= 0 || !Number.isInteger(numericUserId) || numericUserId <= 0 || !normalizedMessageRef || !normalizedDecision || !normalizedActor) {
       throw new TypeError('Agent route audit policyVersion, userId, messageRef, decision, and actor are required');
+    }
+    if (!db.prepare('SELECT 1 FROM agent_question_policy_versions WHERE version = ?').get(numericPolicyVersion)) {
+      throw new Error('Agent route audit policy version not found');
     }
     const serializedPayload = serializeAgentPayload(payload, 'Agent route audit payload');
     const result = db.prepare(`

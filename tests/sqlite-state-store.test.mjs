@@ -1936,6 +1936,25 @@ test('sqlite state store drafts and transactionally publishes agent question pol
   assert.deepEqual(published.policies, [{ key: 'chat', decision: 'propose' }]);
   assert.equal(store.db.prepare("SELECT count(*) AS count FROM agent_question_policy_versions WHERE status = 'published'").get().count, 1);
   assert.equal(store.db.prepare('SELECT status FROM agent_question_policy_versions WHERE id = ?').get(first.id).status, 'archived');
+  assert.equal((await store.publishAgentQuestionPolicyVersion({ id: second.id, actor: 'admin:2' })).status, 'published');
+  await assert.rejects(
+    store.publishAgentQuestionPolicyVersion({ id: first.id, actor: 'admin:1' }),
+    /must be a draft/i,
+  );
+  store.close();
+});
+
+test('sqlite state store rejects unsafe agent question policy JSON', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const base = { actor: 'admin:1', createdAt: '2026-07-12T01:00:00.000Z' };
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 1, policies: Array.from({ length: 257 }, (_, index) => ({ key: `rule-${index}` })) }), /256 entries/i);
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 2, policies: [Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`field${index}`, index]))] }), /32 fields/i);
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 3, policies: [{ key: 'large', detail: 'x'.repeat(263_000) }] }), /bytes/i);
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 4, policies: [new Date()] }), /plain object/i);
+  const circular = { key: 'circular' };
+  circular.self = circular;
+  await assert.rejects(store.createAgentQuestionPolicyDraft({ ...base, version: 5, policies: [circular] }), /serializable/i);
   store.close();
 });
 
@@ -1981,6 +2000,8 @@ test('sqlite state store atomically consumes owned, unexpired agent action confi
 test('sqlite state store persists traceable bounded agent route audit events', async () => {
   const dir = await makeTempDir();
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const policy = await store.createAgentQuestionPolicyDraft({ version: 3, policies: [{ key: 'family_summary' }], actor: 'admin:1' });
+  await store.publishAgentQuestionPolicyVersion({ id: policy.id, actor: 'admin:1' });
   await store.appendAgentRouteAuditEvent({
     policyVersion: 3,
     userId: 7,
@@ -2003,6 +2024,10 @@ test('sqlite state store persists traceable bounded agent route audit events', a
   await assert.rejects(
     store.appendAgentRouteAuditEvent({ policyVersion: 3, userId: 7, messageRef: 'msg-route-3', decision: 'execute', actor: 'router', payload: Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`field${index}`, index])) }),
     /payload.*fields/i,
+  );
+  await assert.rejects(
+    store.appendAgentRouteAuditEvent({ policyVersion: 999, userId: 7, messageRef: 'msg-route-4', decision: 'execute', actor: 'router' }),
+    /policy version.*not found/i,
   );
   store.close();
 });
