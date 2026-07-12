@@ -132,6 +132,16 @@ test('real extracted family sales memory persists one proposed event with proven
   });
   assert.equal(reinforcedAgain.memories[0].version, 3);
   assert.deepEqual(store.db.prepare("SELECT source_message_id FROM family_sales_memory_events WHERE event_type = 'reinforced' ORDER BY created_at").all().map((row) => row.source_message_id), [701, 702]);
+  for (let messageId = 703; messageId <= 714; messageId += 1) {
+    await store.persistExtractedFamilySalesMemories({
+      state, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, sourceThreadId: messageId,
+      userMessage: { id: messageId }, extractedMemories: [{ kind: 'strategy', content: '先处理预算异议', confidence: 0.96 }],
+      nowIso: () => `2026-07-12T05:${String(messageId - 700).padStart(2, '0')}:00.000Z`,
+    });
+  }
+  const cappedSources = store.db.prepare("SELECT source_message_id FROM family_sales_memory_events WHERE event_type = 'reinforced' ORDER BY created_at DESC LIMIT 2").all().map((row) => row.source_message_id).sort();
+  assert.deepEqual(cappedSources, [713, 714]);
+  assert.equal(JSON.parse(store.db.prepare('SELECT source_message_ids_json FROM family_sales_memories WHERE id = ?').get(result.memories[0].id).source_message_ids_json).length, 12);
   await assert.rejects(store.persistFamilySalesMemoryTransition({ state, memoryId: result.memories[0].id, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, action: 'confirm', reasonCode: 'advisor_confirmation', actor: { type: 'advisor', id: 1 }, expectedVersion: 1, now: '2026-07-12T05:03:00.000Z' }), { code: 'STALE_INTERACTION' });
   store.close();
 });

@@ -562,6 +562,7 @@ export function upsertFamilySalesMemories({
   };
   const targetOwnerKey = ownerKey(normalizedOwner);
   const now = nowIso();
+  const eventSourceMessageId = Number(userMessage?.id || 0);
   const evidenceMessageIds = mergeEvidenceMessageIds([], [userMessage?.id]);
   const normalized = normalizeExtractedFamilySalesMemories(extractedMemories);
   if (!normalized.length) return { changed: false, memories: [], changes: [] };
@@ -594,7 +595,7 @@ export function upsertFamilySalesMemories({
       existing.version = previousVersion + 1;
       existing.updatedAt = now;
       changedMemories.push(existing);
-      changes.push({ kind: 'reinforced', memory: { ...existing, evidenceMessageIds: [...existing.evidenceMessageIds], sourceMessageIds: [...existing.sourceMessageIds] }, expectedVersion: previousVersion, previousEvidenceMessageIds, addedEvidenceMessageIds: mergedEvidence.filter((id) => !previousEvidenceMessageIds.includes(id)) });
+      changes.push({ kind: 'reinforced', memory: { ...existing, evidenceMessageIds: [...existing.evidenceMessageIds], sourceMessageIds: [...existing.sourceMessageIds] }, expectedVersion: previousVersion, previousEvidenceMessageIds, addedEvidenceMessageIds: mergedEvidence.filter((id) => !previousEvidenceMessageIds.includes(id)), eventSourceMessageId: Number.isSafeInteger(eventSourceMessageId) && eventSourceMessageId > 0 ? eventSourceMessageId : null });
       continue;
     }
     const autoConfirmed = isAutoConfirmableMemory(item);

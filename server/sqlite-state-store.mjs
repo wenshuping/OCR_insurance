@@ -3347,7 +3347,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         insertFamilySalesMemoryEvents(db, [{
           id: `memory_event:${memory.id}:${memory.version}:${change.kind}`, memoryId: memory.id, familyId: memory.familyId,
           ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: change.kind,
-          actor: { type: 'system', id: 1 }, sourceMessageId: change.addedEvidenceMessageIds?.at(-1) || memory.sourceMessageId || null,
+          actor: { type: 'system', id: 1 }, sourceMessageId: change.kind === 'archived' ? null : change.eventSourceMessageId,
           previousStatus: change.kind === 'archived' ? change.previousStatus : memory.status, nextStatus: memory.status,
           reasonCode: change.kind === 'archived' ? 'memory_limit' : 'new_evidence', createdAt: memory.updatedAt, version: memory.version,
         }]);
