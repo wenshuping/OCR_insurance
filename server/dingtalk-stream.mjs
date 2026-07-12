@@ -36,7 +36,9 @@ export async function startDingtalkStream({ env = process.env, Client = DWClient
     } catch {
       return;
     }
-    void channel.handle(message).catch(() => {});
+    void channel.handle(message).catch((error) => {
+      console.warn(`[dingtalk-stream] UNHANDLED_MESSAGE_ERROR cause=${String(error?.code || 'UNCLASSIFIED').replace(/[^A-Z0-9_]/g, '') || 'UNCLASSIFIED'}`);
+    });
   });
   await client.connect();
   return client;

@@ -37,3 +37,20 @@ test('DingTalk media downloader rejects untrusted URLs and oversized responses',
   });
   await assert.rejects(() => oversized(message), { code: 'DOCUMENT_SIZE_EXCEEDED' });
 });
+
+test('DingTalk media downloader accepts JSON-string and rich-text picture content', async () => {
+  const bodies = [];
+  const downloader = createDingtalkMediaDownloader({
+    client: { getAccessToken: async () => 'access-token' },
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/messageFiles/download')) {
+        bodies.push(JSON.parse(options.body));
+        return new Response(JSON.stringify({ downloadUrl: 'https://files.dingtalk.com/policy' }), { status: 200 });
+      }
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), { status: 200, headers: { 'content-type': 'image/jpeg' } });
+    },
+  });
+  await downloader({ msgtype: 'picture', robotCode: 'robot', content: JSON.stringify({ downloadCode: 'string-code' }) });
+  await downloader({ msgtype: 'richText', robotCode: 'robot', content: { richText: [{ type: 'picture', downloadCode: 'rich-code' }] } });
+  assert.deepEqual(bodies.map((body) => body.downloadCode), ['string-code', 'rich-code']);
+});

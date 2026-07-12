@@ -10,11 +10,20 @@ function mediaError(code, status = 502) {
   return Object.assign(new Error(code), { code, status });
 }
 
+function messageContent(message) {
+  if (message?.content && typeof message.content === 'object') return message.content;
+  if (typeof message?.content === 'string') {
+    try { return JSON.parse(message.content); } catch { return {}; }
+  }
+  return message?.picture || message?.file || {};
+}
+
 function attachmentDescriptor(message) {
-  const content = message?.content && typeof message.content === 'object' ? message.content : {};
-  const downloadCode = String(content.downloadCode || content.pictureDownloadCode || '').trim();
+  const content = messageContent(message);
+  const richItem = Array.isArray(content.richText) ? content.richText.find((item) => item?.downloadCode) : null;
+  const downloadCode = String(content.downloadCode || content.pictureDownloadCode || richItem?.downloadCode || '').trim();
   if (!downloadCode) throw mediaError('DINGTALK_ATTACHMENT_CODE_REQUIRED', 400);
-  const name = message?.msgtype === 'picture' ? 'dingtalk-policy.jpg' : 'dingtalk-policy-file';
+  const name = ['picture', 'richText'].includes(message?.msgtype) ? 'dingtalk-policy.jpg' : 'dingtalk-policy-file';
   return { downloadCode, name };
 }
 

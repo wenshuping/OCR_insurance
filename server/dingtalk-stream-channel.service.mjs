@@ -36,7 +36,13 @@ function commandText(message) {
 }
 
 function isAttachment(message) {
-  return message?.msgtype === 'picture' || message?.msgtype === 'file';
+  if (message?.msgtype === 'picture' || message?.msgtype === 'file') return true;
+  if (message?.msgtype !== 'richText') return false;
+  let content = message?.content;
+  if (typeof content === 'string') {
+    try { content = JSON.parse(content); } catch { return false; }
+  }
+  return Array.isArray(content?.richText) && content.richText.some((item) => item?.downloadCode);
 }
 
 function familyChoiceText(families) {
@@ -162,6 +168,7 @@ export function createDingtalkStreamChannel({
           await reply(sessionWebhook, '上传的保单可能包含客户敏感信息，文件将经过钉钉传输并由 OCR Insurance 受控 OCR 服务识别，不会自动保存为正式保单。如已获得客户授权，请回复“同意上传”，再重新发送附件。');
           return;
         }
+        await reply(sessionWebhook, '已收到附件，正在安全下载并识别，请稍候。');
         const file = await downloadAttachment(message);
         let taskId = current.taskId;
         let stateVersion = current.stateVersion;
