@@ -52,6 +52,24 @@ test('resolves only owned policies and insurance-expert tasks in the same family
   await assert.rejects(ask({ owner: { userId: 7 }, policyImportTaskId: 51, question: '保障什么？' }), { code: 'POLICY_IMPORT_NOT_FOUND' });
 });
 
+test('rejects same-family policy and task references for different products before analysis', async () => {
+  const state = fixture();
+  state.agentPolicyImportTasks[0].draft = { company: '可信保险', name: '另一款', canonicalProductId: 'product-other' };
+  let calls = 0;
+  const ask = createInsuranceExpertTool({ state, analyze: async () => { calls += 1; return analysis(); } });
+  await assert.rejects(ask({ owner: { userId: 7 }, policyRef: 31, policyImportTaskId: 51, question: '问题' }), { code: 'POLICY_TASK_MISMATCH' });
+  assert.equal(calls, 0);
+});
+
+test('completed task must reference the exact formal policy', async () => {
+  const state = fixture();
+  state.agentPolicyImportTasks[0].status = 'completed';
+  state.agentPolicyImportTasks[0].formalPolicyId = 999;
+  await assert.rejects(createInsuranceExpertTool({ state, analyze: async () => analysis() })({
+    owner: { userId: 7 }, policyRef: 31, policyImportTaskId: 51, question: '问题',
+  }), { code: 'POLICY_TASK_MISMATCH' });
+});
+
 test('passes a safe internal projection and never returns raw scan or policy data', async () => {
   const state = fixture();
   let input;
@@ -73,7 +91,7 @@ test('preserves official evidence label, source reference, and current version',
   assert.match(result.answer, /身故保险金/u);
 });
 
-test('rejects superseded product-version evidence', async () => {
+test('does not expose superseded product-version evidence', async () => {
   const state = fixture();
   state.knowledgeRecords.push({
     ...state.knowledgeRecords[0], id: 70, versionNo: 'v2',
@@ -83,18 +101,44 @@ test('rejects superseded product-version evidence', async () => {
     title: '安心保旧版条款', url: 'https://official.insurer.test/terms-v2.pdf',
     evidenceLabel: '保险公司官方条款', evidenceLevel: 'insurer_official', official: true,
   }] });
-  await assert.rejects(createInsuranceExpertTool({ state, analyze: async () => oldAnalysis })({
+  const result = await createInsuranceExpertTool({ state, analyze: async () => oldAnalysis })({
     owner: { userId: 7 }, policyRef: 31, question: '问题',
-  }), { code: 'POLICY_EVIDENCE_NOT_FOUND' });
+  });
+  assert.deepEqual(result.evidence, []);
+  assert.match(result.answer, /证据不足/u);
 });
 
-test('fails closed when product evidence is absent, mismatched, or analyzer omits official evidence', async () => {
+test('excludes explicitly stale and expired evidence without falling back to it', async () => {
+  const state = fixture();
+  state.knowledgeRecords[0].isCurrent = false;
+  state.knowledgeRecords.push({
+    ...state.knowledgeRecords[0], id: 72, isCurrent: undefined, versionNo: 'v4',
+    validFrom: '2020-01-01T00:00:00.000Z', validTo: '2021-01-01T00:00:00.000Z',
+    url: 'https://official.insurer.test/terms-v4.pdf',
+  });
+  let calls = 0;
+  const result = await createInsuranceExpertTool({ state, analyze: async () => { calls += 1; return analysis(); } })({
+    owner: { userId: 7 }, policyRef: 31, question: '问题',
+  });
+  assert.equal(calls, 0);
+  assert.deepEqual(result.evidence, []);
+  assert.match(result.answer, /证据不足/u);
+  assert.ok(result.missingInformation.length > 0);
+});
+
+test('returns a safe missing-evidence envelope for absent or mismatched current evidence', async () => {
   const state = fixture();
   const missing = structuredClone(state); missing.knowledgeRecords = [];
-  await assert.rejects(createInsuranceExpertTool({ state: missing, analyze: async () => analysis() })({ owner: { userId: 7 }, policyRef: 31, question: '问题' }), { code: 'POLICY_EVIDENCE_NOT_FOUND' });
+  const missingResult = await createInsuranceExpertTool({ state: missing, analyze: async () => { throw new Error('must not run'); } })({ owner: { userId: 7 }, policyRef: 31, question: '问题' });
+  assert.deepEqual(missingResult.evidence, []);
+  assert.match(missingResult.answer, /证据不足/u);
+  assert.ok(missingResult.missingInformation.length > 0);
   const mismatch = structuredClone(state); mismatch.knowledgeRecords[0].canonicalProductId = 'different'; mismatch.knowledgeRecords[0].productName = '其他产品';
-  await assert.rejects(createInsuranceExpertTool({ state: mismatch, analyze: async () => analysis() })({ owner: { userId: 7 }, policyRef: 31, question: '问题' }), { code: 'POLICY_EVIDENCE_NOT_FOUND' });
-  await assert.rejects(createInsuranceExpertTool({ state, analyze: async () => analysis({ sources: [] }) })({ owner: { userId: 7 }, policyRef: 31, question: '问题' }), { code: 'POLICY_EVIDENCE_NOT_FOUND' });
+  const mismatchResult = await createInsuranceExpertTool({ state: mismatch, analyze: async () => { throw new Error('must not run'); } })({ owner: { userId: 7 }, policyRef: 31, question: '问题' });
+  assert.deepEqual(mismatchResult.evidence, []);
+  const analyzerGap = await createInsuranceExpertTool({ state, analyze: async () => analysis({ sources: [] }) })({ owner: { userId: 7 }, policyRef: 31, question: '问题' });
+  assert.deepEqual(analyzerGap.evidence, []);
+  assert.ok(analyzerGap.missingInformation.length > 0);
 });
 
 test('reports missing analysis evidence and keeps high-risk cautions', async () => {
@@ -158,6 +202,51 @@ test('analyzer propagates caller abort to the provider fetch signal', async () =
     await pending.catch(() => {});
     if (previous.apiKey === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = previous.apiKey;
     if (previous.smartSearch === undefined) delete process.env.POLICY_ANALYSIS_SMART_SEARCH_ENABLED; else process.env.POLICY_ANALYSIS_SMART_SEARCH_ENABLED = previous.smartSearch;
+  }
+});
+
+test('analyzer treats provider abort as terminal without model fallback or search continuation', async () => {
+  const previous = {
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    smartSearch: process.env.POLICY_ANALYSIS_SMART_SEARCH_ENABLED,
+    model: process.env.DEEPSEEK_MODEL,
+    fallback: process.env.DEEPSEEK_FALLBACK_MODEL,
+  };
+  process.env.DEEPSEEK_API_KEY = 'test-key';
+  process.env.POLICY_ANALYSIS_SMART_SEARCH_ENABLED = 'true';
+  process.env.DEEPSEEK_MODEL = 'first-model';
+  process.env.DEEPSEEK_FALLBACK_MODEL = 'fallback-model';
+  const controller = new AbortController();
+  let providerCalls = 0;
+  let searchCalls = 0;
+  let observedSignal;
+  const fetchImpl = async (url, options) => {
+    if (!String(url).includes('/chat/completions')) { searchCalls += 1; throw new Error('search must not run'); }
+    providerCalls += 1;
+    observedSignal = options.signal;
+    controller.abort();
+    throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+  };
+  try {
+    await assert.rejects(analyzeInsurancePolicyResponsibilities({
+      policy: { company: '可信保险', name: '安心保' },
+      knowledgeRecords: fixture().knowledgeRecords,
+      officialDomainProfiles: fixture().officialDomainProfiles,
+      fetchImpl,
+      signal: controller.signal,
+    }), { code: 'POLICY_ANALYSIS_TIMEOUT' });
+    assert.equal(observedSignal.aborted, true);
+    assert.equal(providerCalls, 1);
+    assert.equal(searchCalls, 0);
+  } finally {
+    for (const [key, value] of Object.entries({
+      DEEPSEEK_API_KEY: previous.apiKey,
+      POLICY_ANALYSIS_SMART_SEARCH_ENABLED: previous.smartSearch,
+      DEEPSEEK_MODEL: previous.model,
+      DEEPSEEK_FALLBACK_MODEL: previous.fallback,
+    })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });
 

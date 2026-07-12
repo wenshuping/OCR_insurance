@@ -1609,13 +1609,15 @@ async function fetchNewChinaDisclosureResultsFromUrl({ disclosureUrl: disclosure
             seenUrls.add(result.url);
             results.push(result);
           }
-        } catch {
+        } catch (error) {
+          if (isPolicyAnalysisAbort(error, signal)) throw error;
           // Continue with other official material links.
         }
       }
     }
     return results;
-  } catch {
+  } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return [];
   }
 }
@@ -1753,7 +1755,8 @@ async function fetchSearchResultsForQuery({ query, policy, fetchImpl, signal, ma
           maxResults,
         }),
       );
-    } catch {
+    } catch (error) {
+      if (isPolicyAnalysisAbort(error, signal)) throw error;
       continue;
     }
   }
@@ -2042,7 +2045,8 @@ async function enrichSearchResultsWithPageText({ results = [], policy, fetchImpl
           pageText = extractRelevantPageText(await response.text(), policy);
         }
       }
-    } catch {
+    } catch (error) {
+      if (isPolicyAnalysisAbort(error, signal)) throw error;
       pageText = '';
     }
     enriched.push({
@@ -2215,6 +2219,7 @@ async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisIn
     const content = trimString(payload?.choices?.[0]?.message?.content);
     return normalizePolicyAnalysisSkillPlanPayload(extractJson(content), fallback);
   } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return {
       ...fallback,
       routerError: trimString(error?.code || error?.message).slice(0, 120),
@@ -2284,7 +2289,8 @@ async function discoverOfficialSourceResults({ config, policy, fetchImpl, signal
     });
     const content = trimString(payload?.choices?.[0]?.message?.content);
     return normalizeDiscoveredSourcePayload(extractJson(content));
-  } catch {
+  } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return { officialDomains: [], results: [] };
   }
 }
@@ -2371,7 +2377,8 @@ async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialD
       context: formatSearchContext(enriched, { policy, extraOfficialDomains: officialDomains, officialDomainProfiles }),
       sources,
     };
-  } catch {
+  } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return { context: '', sources: [] };
   } finally {
     clearTimeout(timeoutId);
@@ -2547,6 +2554,12 @@ function withCode(error, code) {
   return error;
 }
 
+function isPolicyAnalysisAbort(error, signal) {
+  return signal?.aborted === true
+    || error?.name === 'AbortError'
+    || error?.code === 'POLICY_ANALYSIS_TIMEOUT';
+}
+
 export async function analyzeInsurancePolicyResponsibilities({
   policy,
   ocrText = '',
@@ -2655,6 +2668,7 @@ export async function analyzeInsurancePolicyResponsibilities({
       };
       return buildAnalysisResult(result);
     } catch (error) {
+      if (isPolicyAnalysisAbort(error, signal)) throw error;
       if (error?.code) {
         lastError = error;
       } else {

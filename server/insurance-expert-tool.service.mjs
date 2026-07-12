@@ -42,6 +42,15 @@ function exactProductMatch(record, policy) {
     && String(record?.productName || record?.name || '').trim() === String(policy?.name || '').trim();
 }
 
+function currentAt(record, now) {
+  if (record?.current === false || record?.isCurrent === false) return false;
+  const validFrom = Date.parse(String(record?.validFrom || ''));
+  const validTo = Date.parse(String(record?.validTo || ''));
+  if (Number.isFinite(validFrom) && validFrom > now) return false;
+  if (Number.isFinite(validTo) && validTo <= now) return false;
+  return true;
+}
+
 function officialEvidenceRecords(state, policy) {
   const matched = (state.knowledgeRecords || []).filter((record) => (
     exactProductMatch(record, policy)
@@ -49,12 +58,31 @@ function officialEvidenceRecords(state, policy) {
     && String(record?.evidenceLevel || 'insurer_official') === 'insurer_official'
     && String(record?.url || '').startsWith('https://')
     && String(record?.versionNo || record?.version || '').trim()
+    && currentAt(record, Date.now())
   ));
   const explicitlyCurrent = matched.filter((record) => record?.isCurrent === true || record?.current === true);
-  if (explicitlyCurrent.length) return explicitlyCurrent;
-  const versions = matched.map((record) => String(record.versionNo || record.version));
+  const candidates = explicitlyCurrent.length ? explicitlyCurrent : matched;
+  const versions = candidates.map((record) => String(record.versionNo || record.version));
   const currentVersion = versions.sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))[0];
-  return matched.filter((record) => String(record.versionNo || record.version) === currentVersion);
+  return candidates.filter((record) => String(record.versionNo || record.version) === currentVersion);
+}
+
+function normalizedProductPart(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s（）()【】\[\]《》<>「」『』·.,，。；;:：、_-]+/gu, '');
+}
+
+function productIdentityMatches(policy, task) {
+  const taskProduct = task?.draft || task?.scan || {};
+  const policyCanonical = String(policy?.canonicalProductId || policy?.productId || '').trim();
+  const taskCanonical = String(taskProduct?.canonicalProductId || taskProduct?.productId || '').trim();
+  if (policyCanonical && taskCanonical) return policyCanonical === taskCanonical;
+  const policyParts = [policy?.company, policy?.name, policy?.versionNo || policy?.version].map(normalizedProductPart);
+  const taskParts = [taskProduct?.company, taskProduct?.name, taskProduct?.versionNo || taskProduct?.version].map(normalizedProductPart);
+  return Boolean(policyParts[0] && policyParts[1] && policyParts.every((part, index) => part === taskParts[index]));
+}
+
+function completedTaskPolicyId(task) {
+  return Number(task?.formalPolicyId || task?.savedPolicyId || task?.result?.formalPolicyId || task?.result?.policyId || 0);
 }
 
 function safePolicyProjection(value = {}) {
@@ -109,6 +137,19 @@ function invokeWithTimeout(invoke, timeoutMs) {
   return Promise.race([operation, timeout]).finally(() => clearTimeout(timer));
 }
 
+function missingEvidenceEnvelope({ policy, task, requestId, question, evidenceHosts, detail }) {
+  const limitations = ['当前没有可确认该产品当前版本责任的保险公司官方证据，不能据此形成保障、核保、退保或理赔结论。'];
+  for (const item of HIGH_RISK_PATTERNS) if (item.pattern.test(question)) limitations.push(item.caution);
+  return buildDomainAgentEnvelope({
+    agent: 'insurance_expert',
+    taskId: String(task?.id || requestId || `policy:${policy.id}`),
+    answer: '当前版本的保险公司官方证据不足，暂时无法确认具体保险责任。',
+    evidence: [],
+    limitations,
+    missingInformation: [detail || '缺少与当前产品版本匹配的保险公司官方条款或说明书。'],
+  }, { allowedEvidenceHosts: evidenceHosts });
+}
+
 export function createInsuranceExpertTool({
   state = {},
   analyze = analyzeInsurancePolicyResponsibilities,
@@ -141,11 +182,18 @@ export function createInsuranceExpertTool({
       && (!policy || Number(candidate?.familyId) === Number(policy?.familyId))
     ));
     if (policyImportTaskId !== undefined && !task) fail('POLICY_IMPORT_NOT_FOUND', 404);
+    if (policy && task) {
+      const formalPolicyId = completedTaskPolicyId(task);
+      const correlated = String(task.status || '') === 'completed'
+        ? formalPolicyId === Number(policy.id)
+        : productIdentityMatches(policy, task);
+      if (!correlated) fail('POLICY_TASK_MISMATCH', 409);
+    }
 
     const policyProjection = safePolicyProjection(policy || task?.draft);
     if (!policyProjection.company || !policyProjection.name) fail('POLICY_PRODUCT_NOT_RESOLVED', 409);
     const evidenceRecords = officialEvidenceRecords(state, policyProjection);
-    if (!evidenceRecords.length) fail('POLICY_EVIDENCE_NOT_FOUND', 409);
+    if (!evidenceRecords.length) return missingEvidenceEnvelope({ policy, task, requestId, question, evidenceHosts });
 
     let rawResult;
     try {
@@ -165,7 +213,10 @@ export function createInsuranceExpertTool({
     const sanitized = sanitizeStoredPolicyAnalysis(rawResult?.analysis || rawResult);
     if (!sanitized) fail('POLICY_ANALYSIS_INVALID', 502);
     const evidence = sourceEvidence(rawResult?.sources, evidenceRecords);
-    if (!evidence.length) fail('POLICY_EVIDENCE_NOT_FOUND', 409);
+    if (!evidence.length) return missingEvidenceEnvelope({
+      policy, task, requestId, question, evidenceHosts,
+      detail: '分析结果缺少与当前产品版本匹配的保险公司官方来源。',
+    });
     const missingInformation = sanitized.coverageTable.length ? [] : ['官方证据未提供可确认的保险责任。'];
     const limitations = ['仅依据当前产品版本的保险公司官方证据回答；个案以正式保险合同及保险公司审核为准。'];
     for (const item of HIGH_RISK_PATTERNS) if (item.pattern.test(question)) limitations.push(item.caution);
