@@ -88,6 +88,7 @@ import {
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
 import { generateProductCustomerResponsibilitySummary } from './product-customer-responsibility-summary.service.mjs';
+import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 import {
   buildResponsibilityCardsForPolicy,
   buildResponsibilitySummaryReportFromCards,
@@ -2613,11 +2614,24 @@ export function createPolicyOcrApp(options = {}) {
           .filter((row) => Number(row.familyId) === Number(familyId) && Number(row.ownerUserId || 0) === Number(internalUserId) && String(row.status || 'active') === 'active')
           .sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
         const threadId = Number(threads[0]?.id || 0);
+        const members = (current.familyMembers || []).filter((row) => Number(row.familyId) === Number(familyId) && String(row.status || 'active') === 'active');
+        const policies = (current.policies || []).filter((row) => Number(row.familyId) === Number(familyId));
+        const planningProfile = family.planningProfile || null;
+        const familyReport = buildFamilyReport(policies, planningProfile, { familyId });
         return {
-          input: { dataQuality: { pendingFields: ['budget'] } },
+          input: buildFamilySalesReviewInput({
+            family,
+            members,
+            policies,
+            familyReport,
+            planningProfile,
+            knowledgeRecords: current.knowledgeRecords || [],
+            indicatorRecords: current.insuranceIndicatorRecords || [],
+            optionalResponsibilityRecords: current.optionalResponsibilityRecords || [],
+          }),
           family,
-          members: (current.familyMembers || []).filter((row) => Number(row.familyId) === Number(familyId) && String(row.status || 'active') === 'active'),
-          policies: (current.policies || []).filter((row) => Number(row.familyId) === Number(familyId)),
+          members,
+          policies,
           familyReports: current.familyReports || [],
           familySalesReviews: current.familySalesReviews || [],
           history: threadId ? (current.familySalesChatMessages || []).filter((row) => Number(row.threadId) === threadId) : [],

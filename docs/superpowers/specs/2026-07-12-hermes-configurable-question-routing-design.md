@@ -252,7 +252,7 @@ Hermes 只提交结构化理解结果：
 - 管理后台支持策略草稿、校验、simulation、发布、回滚和审计。simulation 复用实际路由决策但不创建未知问题、确认、outbox 或路由审计；运行时读取唯一 published 版本，配置无效时安全回退到内置策略。
 - 自动化验收覆盖 `tests/agent-question-routes.test.mjs`、`tests/agent-question-handlers.test.mjs`、`tests/agent-confirmation.test.mjs`、`tests/agent-question-router.test.mjs`、`tests/admin-agent-question-policy.test.mjs` 和 `tests/agent-question-policy.test.mjs`。
 
-测试层级明确分为：HTTP 网关层验证服务鉴权、身份、schema、公开字段和稳定错误；`createPolicyOcrApp` 默认组合层仅注入 store、身份/服务鉴权、持久化边界和外部模型生成 stub，由 app 自行构造问题路由、领域 handlers、报告队列及生产销售聊天上下文，验证家庭精确数量、stale 报告生成进度、销售续聊和审计边界，同时验证 Hermes 禁用或故障时应用 health 仍可用；领域层验证新鲜度、PII 和 SQLite 原子/outbox；管理层验证 published 策略与 simulation 使用同一决策且 simulation 无写入。测试未注入 custom agent handler 或 reportQueue，也未虚构生产接口。
+测试层级明确分为：HTTP 网关层验证服务鉴权、身份、schema、公开字段和稳定错误；`createPolicyOcrApp` 默认组合层仅注入 store、身份/服务鉴权、持久化边界和外部模型生成 stub，由 app 自行构造问题路由、领域 handlers、报告队列及生产销售聊天上下文。销售输入复用网页路径的 `buildFamilySalesReviewInput(...)`，由真实家庭、成员、保单、planning profile、保障报告和知识/指标记录推导，不硬编码待确认预算字段。该层验证家庭精确数量、stale 报告生成进度、销售续聊和审计边界，同时验证 Hermes 禁用或故障时应用 health 仍可用；领域层验证新鲜度、PII 和 SQLite 原子/outbox；管理层验证 published 策略与 simulation 使用同一决策且 simulation 无写入。测试未注入 custom agent handler 或 reportQueue，也未虚构生产接口。
 
 本地验证记录（2026-07-13）：`npm run check`、`npm run typecheck`、`npm test` 和 `npm run build` 通过；build 保留 Vite 对超过 500 kB chunk 的非阻塞警告。`npm run harness:audit` 已运行，exit 1：Hermes 专用映射及其 focused tests 已通过，完整审计仍被当前工作区其他未映射改动和既有 route handler 裸 `persist(state)` 检查阻塞；另有生产 SQLite 默认路径检查警告。未为通过本任务而修改这些无关项。
 

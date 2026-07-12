@@ -465,7 +465,10 @@ test('createPolicyOcrApp isolates a disabled or failing Hermes route from applic
 test('createPolicyOcrApp default composition routes family facts, report regeneration, and sales coaching', async (t) => {
   const state = {
     nextId: 900,
-    familyProfiles: [{ id: 71, ownerUserId: 7, familyName: '余贵祥家庭', mobile: '13800138000', status: 'active', updatedAt: '2026-07-12T00:00:00.000Z' }],
+    familyProfiles: [{
+      id: 71, ownerUserId: 7, familyName: '余贵祥家庭', mobile: '13800138000', status: 'active',
+      planningProfile: { annualIncome: 240000, premiumBudget: 36000 }, updatedAt: '2026-07-12T00:00:00.000Z',
+    }],
     familyMembers: [{ id: 711, familyId: 71, name: '余贵祥', idNumber: '110101199001011234', status: 'active' }],
     policies: [{
       id: 712, userId: 7, familyId: 71, policyNo: 'SECRET-0001', name: '测试终身寿险', company: '测试保险',
@@ -523,7 +526,11 @@ test('createPolicyOcrApp default composition routes family facts, report regener
   } }));
   assert.equal(sales.response.status, 200);
   assert.equal(sales.payload.interaction.text, '先确认预算，再讨论保障优先级。');
-  assert.equal(calls.generated[0].context.familyInput.dataQuality.pendingFields[0], 'budget');
+  assert.deepEqual(calls.generated[0].context.familyInput.family.planningProfile, {
+    annualIncome: 240000, annualExpense: 0, debt: 0, educationGoal: 0,
+    parentSupportGoal: 0, availableAssets: 0, premiumBudget: 36000,
+  });
+  assert.equal(Object.hasOwn(calls.generated[0].context.familyInput.dataQuality, 'pendingFields'), false);
   assert.deepEqual(calls.generated[0].history, [{ role: 'user', content: '给我销售建议' }]);
   assert.equal(calls.generated[0].question, '那我该怎么跟他聊');
   assert.deepEqual(calls.audits.map((row) => row.authorizedResourceIds), [['family:71'], ['family:71'], ['family:71']]);
