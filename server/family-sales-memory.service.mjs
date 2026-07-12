@@ -10,9 +10,45 @@ const CURRENT_MEMORY_STATUSES = new Set(['confirmed', 'active']);
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const CHINA_ID_NUMBER_PATTERN = /\b(?:[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3})\b/gu;
 const MOBILE_PATTERN = /\b1[3-9]\d{9}\b/gu;
+const ISO_DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
+const ISO_DATETIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?(Z|([+-])(\d{2}):(\d{2}))$/u;
 
 function trim(value) {
   return String(value || '').trim();
+}
+
+export function parseFamilySalesMemoryInstant(value = '') {
+  const text = trim(value);
+  const dateOnly = ISO_DATE_ONLY_PATTERN.exec(text);
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly.map(Number);
+    const timestamp = Date.UTC(year, month - 1, day);
+    const date = new Date(timestamp);
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+      ? timestamp : Number.NaN;
+  }
+  const match = ISO_DATETIME_PATTERN.exec(text);
+  if (!match) return Number.NaN;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const millisecond = Number(match[7] || 0);
+  const localTimestamp = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+  const localDate = new Date(localTimestamp);
+  if (localDate.getUTCFullYear() !== year || localDate.getUTCMonth() !== month - 1 || localDate.getUTCDate() !== day
+    || localDate.getUTCHours() !== hour || localDate.getUTCMinutes() !== minute || localDate.getUTCSeconds() !== second) return Number.NaN;
+  let offsetMinutes = 0;
+  if (match[8] !== 'Z') {
+    const offsetHour = Number(match[10]);
+    const offsetMinute = Number(match[11]);
+    if (offsetHour > 23 || offsetMinute > 59) return Number.NaN;
+    offsetMinutes = (offsetHour * 60 + offsetMinute) * (match[9] === '+' ? 1 : -1);
+  }
+  const timestamp = localTimestamp - offsetMinutes * 60_000;
+  return Number.isFinite(timestamp) && Number.isFinite(Date.parse(text)) ? timestamp : Number.NaN;
 }
 
 function numberOrDefault(value, fallback) {
@@ -276,12 +312,12 @@ export function upsertFamilySalesMemories({
 export function isCurrentFamilySalesMemory(memory = {}, { asOf = new Date().toISOString() } = {}) {
   if (!CURRENT_MEMORY_STATUSES.has(trim(memory?.status || 'active').toLowerCase())) return false;
   if (trim(memory?.invalidatedAt)) return false;
-  const point = Date.parse(asOf);
+  const point = parseFamilySalesMemoryInstant(asOf);
   if (!Number.isFinite(point)) return false;
   const validFromText = trim(memory?.validFrom);
   const validToText = trim(memory?.validTo);
-  const validFrom = validFromText ? Date.parse(validFromText) : Number.NEGATIVE_INFINITY;
-  const validTo = validToText ? Date.parse(validToText) : Number.POSITIVE_INFINITY;
+  const validFrom = validFromText ? parseFamilySalesMemoryInstant(validFromText) : Number.NEGATIVE_INFINITY;
+  const validTo = validToText ? parseFamilySalesMemoryInstant(validToText) : Number.POSITIVE_INFINITY;
   if (validFromText && !Number.isFinite(validFrom)) return false;
   if (validToText && !Number.isFinite(validTo)) return false;
   return validFrom <= point && validTo > point;

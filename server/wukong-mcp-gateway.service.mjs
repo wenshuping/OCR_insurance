@@ -45,6 +45,9 @@ function validateInputSchema(schema, input) {
     } else if (expectedType === 'integer') {
       if (!Number.isSafeInteger(value) || value <= 0) fail('INVALID_TOOL_INPUT', 400);
     } else if (expectedType && typeof value !== expectedType) fail('INVALID_TOOL_INPUT', 400);
+    if (typeof value === 'string' && Number.isSafeInteger(property?.maxLength) && value.length > property.maxLength) {
+      fail('INVALID_TOOL_INPUT', 400);
+    }
   }
   return input;
 }
@@ -138,7 +141,7 @@ function createRegistry(state, policyImports, salesChampion) {
     }],
     ['ask_sales_champion', {
       name: 'ask_sales_champion',
-      inputSchema: familySchema({ question: { type: 'string' }, familyRef: { type: 'integer' }, policyImportTaskId: { type: 'integer' } }, ['question', 'familyRef']),
+      inputSchema: familySchema({ question: { type: 'string', maxLength: 4_000 }, familyRef: { type: 'integer' }, policyImportTaskId: { type: 'integer' } }, ['question', 'familyRef']),
       authorize: () => true,
       execute: (context, input, request) => salesChampion({ owner: context, ...input, requestId: request.requestId }),
     }],
@@ -203,7 +206,8 @@ export function createWukongMcpGateway({
         || !nonEmptyString(request?.dingUserId)
         || !nonEmptyString(request?.requestId)
         || !nonEmptyString(request?.conversationType)
-        || !nonEmptyString(request?.tool)) fail('INVALID_TOOL_INPUT', 400);
+        || !nonEmptyString(request?.tool)
+        || request.requestId.length > 160) fail('INVALID_TOOL_INPUT', 400);
       if (request.conversationType !== 'direct') fail('GROUP_CHAT_FORBIDDEN', 403);
       const entry = registry.get(request.tool);
       if (!entry) fail('TOOL_NOT_ALLOWED', 403);

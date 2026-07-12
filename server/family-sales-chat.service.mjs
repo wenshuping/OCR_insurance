@@ -217,6 +217,7 @@ export async function generateFamilySalesChatReply({
   question = '',
   fetchImpl = fetch,
   env = process.env,
+  signal,
 } = {}) {
   const userQuestion = trim(question);
   if (!userQuestion) {
@@ -235,6 +236,9 @@ export async function generateFamilySalesChatReply({
   }
 
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
     const skillPrompt = await selectAgentSkillPromptWithDeepSeek({
@@ -247,6 +251,7 @@ export async function generateFamilySalesChatReply({
         model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
         timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
       },
+      signal: controller.signal,
     });
     const body = {
       model: config.model,
@@ -296,5 +301,6 @@ export async function generateFamilySalesChatReply({
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 }

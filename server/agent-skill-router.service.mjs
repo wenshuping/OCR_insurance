@@ -229,11 +229,15 @@ export async function selectAgentSkillPromptWithDeepSeek({
   salesChatContext = null,
   fetchImpl = fetch,
   config = {},
+  signal,
 } = {}) {
   if (!config.apiKey) {
     return selectAgentSkillPrompt({ scene, question, salesChatContext });
   }
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), Number(config.timeoutMs || 30_000));
   try {
     const body = {
@@ -262,5 +266,6 @@ export async function selectAgentSkillPromptWithDeepSeek({
     return selectAgentSkillPrompt({ scene, question, salesChatContext });
   } finally {
     clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentPolicyImportTask } from '../server/agent-policy-import.service.mjs';
+import { isCurrentFamilySalesMemory, parseFamilySalesMemoryInstant } from '../server/family-sales-memory.service.mjs';
 import { createSalesChampionTool } from '../server/sales-champion-tool.service.mjs';
 import { createWukongMcpGateway } from '../server/wukong-mcp-gateway.service.mjs';
 
@@ -53,6 +54,19 @@ test('filters memories by confirmation status and validity time using the inject
   assert.doesNotMatch(serializedContext, /未来才生效|已经失效|已经撤销|排除状态/);
 });
 
+test('memory instants are strict and validity boundaries are timezone-independent', () => {
+  assert.equal(parseFamilySalesMemoryInstant('2026-07-12'), Date.UTC(2026, 6, 12));
+  assert.equal(parseFamilySalesMemoryInstant('2026-07-12T08:00:00+08:00'), Date.UTC(2026, 6, 12));
+  assert.equal(parseFamilySalesMemoryInstant('2026-07-12T00:00:00Z'), Date.UTC(2026, 6, 12));
+  for (const invalid of ['2026-07-12T00:00:00', '2026-02-30', '2026-07-12 00:00:00Z', '2026-07-12T00:00:00+24:00']) {
+    assert.equal(Number.isNaN(parseFamilySalesMemoryInstant(invalid)), true);
+  }
+  const memory = { status: 'confirmed', validFrom: '2026-07-12T00:00:00Z', validTo: '2026-07-13T00:00:00Z' };
+  assert.equal(isCurrentFamilySalesMemory(memory, { asOf: '2026-07-12T00:00:00Z' }), true);
+  assert.equal(isCurrentFamilySalesMemory(memory, { asOf: '2026-07-13T00:00:00Z' }), false);
+  assert.equal(isCurrentFamilySalesMemory({ ...memory, validFrom: '2026-07-12T00:00:00' }, { asOf: '2026-07-12T01:00:00Z' }), false);
+});
+
 test('rejects foreign families, mismatched tasks, and caller-forged facts', async () => {
   const state = stateFor();
   state.agentPolicyImportTasks.push({ id: 51, familyId: 12, ownerUserId: 7 });
@@ -82,6 +96,36 @@ test('timeout is stable and does not mutate tasks or memories', async () => {
   const ask = createSalesChampionTool({ state, timeoutMs: 5, generateReply: () => new Promise(() => {}) });
   await assert.rejects(ask({ owner: { userId: 7 }, familyRef: 11, question: '问题' }), { code: 'AGENT_TIMEOUT', status: 504 });
   assert.deepEqual([state.agentPolicyImportTasks, state.familySalesMemories], before);
+});
+
+test('timeout aborts provider work and prevents an abort-guarded late mutation', async () => {
+  const state = stateFor();
+  let observedSignal;
+  let lateMutation = false;
+  const ask = createSalesChampionTool({
+    state,
+    timeoutMs: 5,
+    generateReply: ({ signal }) => new Promise((resolve, reject) => {
+      observedSignal = signal;
+      const timer = setTimeout(() => { if (!signal.aborted) lateMutation = true; resolve({ content: 'late' }); }, 25);
+      signal.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); }, { once: true });
+    }),
+  });
+  await assert.rejects(ask({ owner: { userId: 7 }, familyRef: 11, question: '问题' }), { code: 'AGENT_TIMEOUT' });
+  assert.equal(observedSignal.aborted, true);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(lateMutation, false);
+});
+
+test('oversized questions are rejected before generator invocation', async () => {
+  let calls = 0;
+  const state = stateFor();
+  const ask = createSalesChampionTool({ state, generateReply: async () => { calls += 1; return { content: 'no' }; } });
+  await assert.rejects(ask({ owner: { userId: 7 }, familyRef: 11, question: '问'.repeat(4_001) }), { code: 'INVALID_TOOL_INPUT' });
+  assert.equal(calls, 0);
+  const gateway = createWukongMcpGateway({ state, salesChampion: ask });
+  await assert.rejects(gateway.invoke({ corpId: 'corp', dingUserId: 'ding', conversationType: 'direct', requestId: 'oversized', tool: 'ask_sales_champion', input: { familyRef: 11, question: '问'.repeat(4_001) } }), { code: 'INVALID_TOOL_INPUT' });
+  assert.equal(calls, 0);
 });
 
 test('MCP uses strict schema and injects the outer request id', async () => {

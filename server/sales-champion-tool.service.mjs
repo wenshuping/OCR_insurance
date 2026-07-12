@@ -7,6 +7,8 @@ import { buildFamilySalesMemoryContext, isCurrentFamilySalesMemory } from './fam
 import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_QUESTION_LENGTH = 4_000;
+const MAX_REQUEST_ID_LENGTH = 160;
 
 export class SalesChampionToolError extends Error {
   constructor(code, status) {
@@ -58,12 +60,22 @@ function evidenceFromContext(context) {
   })).slice(0, 20);
 }
 
-function timeoutAfter(promise, timeoutMs) {
+function invokeWithTimeout(invoke, timeoutMs) {
+  const controller = new AbortController();
   let timer;
   const timeout = new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new SalesChampionToolError('AGENT_TIMEOUT', 504)), timeoutMs);
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new SalesChampionToolError('AGENT_TIMEOUT', 504));
+    }, timeoutMs);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  let operation;
+  try {
+    operation = Promise.resolve(invoke(controller.signal));
+  } catch (error) {
+    operation = Promise.reject(error);
+  }
+  return Promise.race([operation, timeout]).finally(() => clearTimeout(timer));
 }
 
 export function createSalesChampionTool({
@@ -80,7 +92,9 @@ export function createSalesChampionTool({
     if (!toolInput || Array.isArray(toolInput) || typeof toolInput !== 'object'
       || Object.keys(toolInput).some((key) => !allowedKeys.has(key))) fail('INVALID_TOOL_INPUT', 400);
     const { owner, question, familyRef, policyImportTaskId, requestId } = toolInput;
-    if (!owner || typeof question !== 'string' || !question.trim() || !Number.isSafeInteger(familyRef) || familyRef <= 0) {
+    if (!owner || typeof question !== 'string' || question.length > MAX_QUESTION_LENGTH
+      || !question.trim() || (requestId !== undefined && (typeof requestId !== 'string' || !requestId.trim() || requestId.length > MAX_REQUEST_ID_LENGTH))
+      || !Number.isSafeInteger(familyRef) || familyRef <= 0) {
       fail('INVALID_TOOL_INPUT', 400);
     }
     const family = listFamilyProfilesForOwner(state, owner)
@@ -122,16 +136,17 @@ export function createSalesChampionTool({
 
     let reply;
     try {
-      reply = await timeoutAfter(Promise.resolve(generateReply({
+      reply = await invokeWithTimeout((signal) => generateReply({
         context,
         history: [],
         question: question.trim(),
+        signal,
         env: {
           ...process.env,
           FAMILY_SALES_CHAT_TIMEOUT_MS: String(timeoutMs),
           FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS: String(Math.min(timeoutMs, 30_000)),
         },
-      })), timeoutMs);
+      }), timeoutMs);
     } catch (error) {
       if (error?.code === 'AGENT_TIMEOUT' || error?.code === 'FAMILY_SALES_CHAT_TIMEOUT' || error?.name === 'AbortError') {
         fail('AGENT_TIMEOUT', 504);
