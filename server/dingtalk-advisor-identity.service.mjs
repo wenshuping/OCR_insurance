@@ -31,8 +31,12 @@ function maskMobile(mobile) {
   return `${mobile.slice(0, 3)}****${mobile.slice(-4)}`;
 }
 
+function isActiveUser(user) {
+  return String(user?.status || 'active') === 'active';
+}
+
 function activeUser(state, userId) {
-  return (state.users ?? []).find((user) => user.id === userId && user.status === 'active');
+  return (state.users ?? []).find((user) => Number(user.id) === Number(userId) && isActiveUser(user));
 }
 
 function principalIdentities(state, corpId, dingUserId) {
@@ -56,10 +60,10 @@ export function findAdvisorBindingCandidate(state, { mobile, allowedUserIds, fin
   const normalized = normalizedMobile(mobile);
   if (!normalized) return { status: 'verification_required' };
   const matches = (state.users ?? []).filter((user) => (
-    normalizedMobile(user.mobile) === normalized && user.status === 'active'
+    normalizedMobile(user.mobile) === normalized && isActiveUser(user)
   ));
   if (matches.length > 1) return { status: 'ambiguous' };
-  if (matches.length === 0 || !allowedUserIds.includes(matches[0].id)) {
+  if (matches.length === 0 || !allowedUserIds.includes(Number(matches[0].id))) {
     return { status: 'not_found' };
   }
 

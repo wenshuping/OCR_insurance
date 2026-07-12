@@ -44,6 +44,7 @@ test('configured DingTalk runtime authenticates service requests and fetches a u
       DINGTALK_CORP_ID: 'corp-1',
       DINGTALK_APP_KEY: 'app-key',
       DINGTALK_APP_SECRET: 'app-secret',
+      DINGTALK_OAPI_BASE_URL: 'https://oapi.example.test',
       DINGTALK_MOBILE_FINGERPRINT_KEY: 'runtime-mobile-fingerprint-key-32-bytes',
     },
     fetchImpl: async (url, options) => {
@@ -51,7 +52,7 @@ test('configured DingTalk runtime authenticates service requests and fetches a u
       if (String(url).endsWith('/v1.0/oauth2/accessToken')) {
         return { ok: true, json: async () => ({ accessToken: 'access-secret' }) };
       }
-      return { ok: true, json: async () => ({ mobile: '13800138000', name: 'raw name' }) };
+      return { ok: true, json: async () => ({ errcode: 0, result: { mobile: '13800138000', name: 'raw name' } }) };
     },
   });
   assert.deepEqual(runtime.dingtalkAllowedUserIds, [7, 8]);
@@ -64,7 +65,9 @@ test('configured DingTalk runtime authenticates service requests and fetches a u
     mobile: '13800138000',
   });
   assert.equal(requests.length, 2);
-  assert.equal(requests[1].options.headers['x-acs-dingtalk-access-token'], 'access-secret');
+  assert.equal(requests[1].url, 'https://oapi.example.test/topapi/v2/user/get?access_token=access-secret');
+  assert.equal(requests[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[1].options.body), { userid: 'ding-1' });
 });
 
 test('service authentication accepts valid token and safely rejects different token lengths', () => {
@@ -151,7 +154,7 @@ test('DingTalk profile without a mobile is returned for route-level verification
       requestCount += 1;
       return requestCount === 1
         ? { ok: true, json: async () => ({ accessToken: 'access-secret' }) }
-        : { ok: true, json: async () => ({ name: 'no mobile available' }) };
+        : { ok: true, json: async () => ({ errcode: 0, result: { name: 'no mobile available' } }) };
     },
   });
   assert.deepEqual(await runtime.getDingtalkUserProfile({ corpId: 'corp-1', dingUserId: 'ding-1' }), { mobile: '' });

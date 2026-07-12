@@ -15,6 +15,7 @@ const BASE_MESSAGE = {
 function harness(identityResponses = []) {
   const requests = [];
   const replies = [];
+  const errors = [];
   const fetchImpl = async (url, options) => {
     requests.push({ url, options });
     if (url === BASE_MESSAGE.sessionWebhook) {
@@ -27,8 +28,10 @@ function harness(identityResponses = []) {
   return {
     requests,
     replies,
+    errors,
     channel: createDingtalkStreamChannel({
       corpId: 'corp-1', serviceToken: 'service-token', fetchImpl, now: () => 1_000,
+      reportError: (code) => errors.push(code),
     }),
   };
 }
@@ -62,6 +65,7 @@ test('channel rejects groups, ignores foreign corps, and masks identity failures
   const mismatch = harness([{ status: 403, body: { code: 'MOBILE_MISMATCH', detail: 'raw detail' } }]);
   await mismatch.channel.handle(BASE_MESSAGE);
   assert.deepEqual(mismatch.replies, ['当前钉钉手机号与平台注册手机号不一致，无法登录。']);
+  assert.deepEqual(mismatch.errors, ['MOBILE_MISMATCH']);
   assert.equal(mismatch.replies.join(' ').includes('raw detail'), false);
 });
 

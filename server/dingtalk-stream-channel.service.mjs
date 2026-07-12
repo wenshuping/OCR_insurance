@@ -33,6 +33,7 @@ export function createDingtalkStreamChannel({
   apiBaseUrl = 'http://127.0.0.1:4207',
   fetchImpl = fetch,
   now = () => Date.now(),
+  reportError = (code) => console.warn(`[dingtalk-stream] ${code}`),
 } = {}) {
   const configuredCorpId = required(corpId, 'DINGTALK_CORP_ID_REQUIRED');
   const configuredServiceToken = required(serviceToken, 'DINGTALK_IDENTITY_SERVICE_TOKEN_REQUIRED');
@@ -90,6 +91,7 @@ export function createDingtalkStreamChannel({
         });
         await reply(sessionWebhook, `检测到平台注册手机号 ${result.maskedMobile}。如为本人，请回复“确认绑定”。`);
       } catch (error) {
+        reportError(String(error?.code || 'DINGTALK_IDENTITY_FAILED'));
         await reply(sessionWebhook, safeReply(error?.code));
       }
       return;
@@ -112,6 +114,7 @@ export function createDingtalkStreamChannel({
         pending.delete(dingUserId);
         await reply(sessionWebhook, `绑定成功（${result.maskedMobile}）。现在可以发送文字问题；文档上传正在接入安全处理流程。`);
       } catch (error) {
+        reportError(String(error?.code || 'DINGTALK_IDENTITY_FAILED'));
         await reply(sessionWebhook, safeReply(error?.code));
       }
       return;

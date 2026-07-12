@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { createMobileFingerprint } from './dingtalk-advisor-identity.service.mjs';
 
 const DEFAULT_API_BASE_URL = 'https://api.dingtalk.com';
+const DEFAULT_OAPI_BASE_URL = 'https://oapi.dingtalk.com';
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MIN_TIMEOUT_MS = 50;
 const MAX_TIMEOUT_MS = 30_000;
@@ -57,7 +58,10 @@ async function fetchJson(fetchImpl, url, options, failureCode, timeoutMs) {
       fetchImpl(url, { ...options, signal: controller.signal }),
       timeoutPromise,
     ]);
-    if (!response?.ok) throw runtimeError(failureCode, 502);
+    if (!response?.ok) {
+      console.warn(`[dingtalk-identity] ${failureCode} upstream_status=${Number(response?.status) || 0}`);
+      throw runtimeError(failureCode, 502);
+    }
     const payload = await Promise.race([
       response.json().catch(() => null),
       timeoutPromise,
@@ -83,6 +87,7 @@ export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = f
   const appKey = trim(env.DINGTALK_APP_KEY);
   const appSecret = trim(env.DINGTALK_APP_SECRET);
   const apiBaseUrl = trim(env.DINGTALK_API_BASE_URL) || DEFAULT_API_BASE_URL;
+  const oapiBaseUrl = trim(env.DINGTALK_OAPI_BASE_URL) || DEFAULT_OAPI_BASE_URL;
   const requestTimeoutMs = boundedTimeoutMs(timeoutMs ?? env.DINGTALK_IDENTITY_TIMEOUT_MS);
   const fingerprintDingtalkMobile = createMobileFingerprint(env.DINGTALK_MOBILE_FINGERPRINT_KEY);
 
@@ -108,13 +113,22 @@ export function createDingtalkIdentityRuntime({ env = process.env, fetchImpl = f
       }, 'DINGTALK_ACCESS_TOKEN_FAILED', requestTimeoutMs);
       const accessToken = trim(access.accessToken);
       if (!accessToken) throw runtimeError('DINGTALK_ACCESS_TOKEN_FAILED', 502);
-      const profile = await fetchJson(
+      const profilePayload = await fetchJson(
         fetchImpl,
-        `${apiBaseUrl}/v1.0/contact/users/${encodeURIComponent(trim(dingUserId))}`,
-        { headers: { 'x-acs-dingtalk-access-token': accessToken } },
+        `${oapiBaseUrl}/topapi/v2/user/get?access_token=${encodeURIComponent(accessToken)}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ userid: trim(dingUserId) }),
+        },
         'DINGTALK_PROFILE_LOOKUP_FAILED',
         requestTimeoutMs,
       );
+      if (Number(profilePayload.errcode || 0) !== 0 || !profilePayload.result) {
+        console.warn(`[dingtalk-identity] DINGTALK_PROFILE_LOOKUP_FAILED upstream_code=${Number(profilePayload.errcode) || 0}`);
+        throw runtimeError('DINGTALK_PROFILE_LOOKUP_FAILED', 502);
+      }
+      const profile = profilePayload.result;
       const mobile = trim(profile.mobile);
       return { mobile };
     },

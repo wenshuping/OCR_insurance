@@ -38,6 +38,11 @@ function maskedMobileForUser(state, userId) {
   return mobile.length >= 7 ? `${mobile.slice(0, 3)}****${mobile.slice(-4)}` : undefined;
 }
 
+function diagnosticMobileMask(value) {
+  const mobile = String(value || '').trim();
+  return /^1[3-9]\d{9}$/.test(mobile) ? `${mobile.slice(0, 3)}****${mobile.slice(-4)}` : 'unavailable';
+}
+
 function safeTaskRef(value) {
   const taskRef = String(value || '').trim();
   return /^[A-Za-z0-9_-]{1,128}$/.test(taskRef) ? taskRef : undefined;
@@ -68,6 +73,7 @@ function sendIdentityError(res, error) {
   if (error?.status && /^[A-Z][A-Z0-9_]*$/.test(String(error.code || ''))) {
     return sendError(res, error);
   }
+  console.warn(`[dingtalk-identity] DINGTALK_IDENTITY_FAILED cause=${/^[A-Z][A-Z0-9_]*$/.test(String(error?.code || '')) ? error.code : 'UNCLASSIFIED'}`);
   return sendError(res, routeError('DINGTALK_IDENTITY_FAILED', 500));
 }
 
@@ -114,6 +120,7 @@ export function createDingtalkIdentityRoutes(context) {
     try {
       const result = mutate();
       await persistDingtalkIdentityState({
+        state,
         identity: result.identity,
         challenges: changedChallenges(challengesBefore, state.dingtalkBindingChallenges),
       });
@@ -139,6 +146,11 @@ export function createDingtalkIdentityRoutes(context) {
         fingerprintMobile: fingerprintDingtalkMobile,
       });
       if (candidate.status !== 'confirmation_required') {
+        const allowedMasks = (state.users || [])
+          .filter((user) => dingtalkAllowedUserIds.includes(Number(user.id)) && String(user.status || 'active') === 'active')
+          .map((user) => diagnosticMobileMask(user.mobile))
+          .join(',');
+        console.warn(`[dingtalk-identity] MOBILE_MATCH_FAILED dingtalk=${diagnosticMobileMask(profile?.mobile)} allowed=${allowedMasks || 'none'}`);
         throw routeError(
           candidate.status === 'verification_required' ? 'MOBILE_VERIFICATION_REQUIRED' : 'MOBILE_MISMATCH',
           403,

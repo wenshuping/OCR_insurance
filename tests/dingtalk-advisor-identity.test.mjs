@@ -54,6 +54,18 @@ test('unique active whitelisted mobile match returns only a masked confirmation 
   assert.equal(JSON.stringify(result).includes('13800138000'), false);
 });
 
+test('legacy users without an explicit status remain eligible for binding', () => {
+  const result = findAdvisorBindingCandidate(makeState([
+    { id: 7, mobile: '13800138000' },
+  ]), {
+    mobile: '13800138000',
+    allowedUserIds: [7],
+  });
+
+  assert.equal(result.status, 'confirmation_required');
+  assert.equal(result.userId, 7);
+});
+
 test('no mobile match does not select an account', () => {
   assert.deepEqual(findAdvisorBindingCandidate(makeState(), {
     mobile: '13900139000',
