@@ -8,7 +8,10 @@ const CANDIDATE_FIELDS = new Set([
   'intent', 'question', 'confidence', 'requestedOperation', 'entities', 'contextRefs',
 ]);
 const UNTRUSTED_AUTHORITY_FIELDS = new Set(['userId', 'internalUserId', 'familyId', 'permissions']);
-const BASE_BODY_FIELDS = new Set(['channel', 'channelUserId', 'messageRef', 'conversationId', 'candidate']);
+const QUESTION_BODY_FIELDS = new Set(['channel', 'channelUserId', 'messageRef', 'conversationId', 'candidate']);
+const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'messageRef', 'conversationId']);
+const PUBLIC_DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
+const PUBLIC_INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
 
 function text(value, maxLength) {
   if (typeof value !== 'string') return '';
@@ -16,14 +19,68 @@ function text(value, maxLength) {
   return normalized.length <= maxLength ? normalized : '';
 }
 
-function safeAction(secureUploadLinkFactory, input) {
+function safeLink(value, allowedOrigins) {
+  const raw = text(value, 2048);
+  if (!raw) return '';
+  if (/^\/(?!\/)/u.test(raw)) return raw;
+  try {
+    const url = new URL(raw);
+    const origins = new Set((Array.isArray(allowedOrigins) ? allowedOrigins : [])
+      .map((origin) => {
+        try { return new URL(origin).origin; } catch { return ''; }
+      })
+      .filter(Boolean));
+    if (url.protocol !== 'https:' || url.username || url.password || !origins.has(url.origin)) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function safeAction(secureUploadLinkFactory, allowedOrigins, input) {
   let url = '';
   try {
-    url = text(secureUploadLinkFactory?.(input), 2048);
+    url = safeLink(secureUploadLinkFactory?.(input), allowedOrigins);
   } catch {
     // A missing link must not weaken authentication or identity checks.
   }
   return { type: 'secure_link', ...(url ? { url } : {}) };
+}
+
+function normalizeOptions(value) {
+  if (!Array.isArray(value)) return undefined;
+  const options = value.slice(0, 20).map((option) => {
+    if (!option || typeof option !== 'object' || Array.isArray(option)) return null;
+    const id = text(option.id, 100);
+    const label = text(option.label, 200);
+    const ref = text(option.ref, 200);
+    if (!id || !label) return null;
+    return { id, label, ...(ref ? { ref } : {}) };
+  }).filter(Boolean);
+  return options.length ? options : undefined;
+}
+
+function normalizePublicResult(result) {
+  const decision = PUBLIC_DECISIONS.has(result?.decision) ? result.decision : 'deny';
+  const interactionType = PUBLIC_INTERACTIONS.has(result?.interaction?.type)
+    ? result.interaction.type
+    : 'denied';
+  const interactionText = typeof result?.interaction?.text === 'string'
+    ? result.interaction.text.trim().slice(0, 2000)
+    : '';
+  const options = normalizeOptions(result?.interaction?.options);
+  const requestRef = text(result?.requestRef, 200);
+  const confirmationId = text(result?.confirmationId, 200);
+  return {
+    decision,
+    interaction: {
+      type: interactionType,
+      ...(interactionText ? { text: interactionText } : {}),
+      ...(options ? { options } : {}),
+    },
+    ...(requestRef ? { requestRef } : {}),
+    ...(confirmationId ? { confirmationId } : {}),
+  };
 }
 
 function send(res, status, code, extra = {}) {
@@ -65,7 +122,8 @@ function normalizeCandidate(value) {
 
 function normalizeBaseBody(body, { requireCandidate = false } = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
-  if (Object.keys(body).some((key) => !BASE_BODY_FIELDS.has(key) && !UNTRUSTED_AUTHORITY_FIELDS.has(key))) return null;
+  const allowedFields = requireCandidate ? QUESTION_BODY_FIELDS : CONFIRM_BODY_FIELDS;
+  if (Object.keys(body).some((key) => !allowedFields.has(key) && !UNTRUSTED_AUTHORITY_FIELDS.has(key))) return null;
   const channel = text(body.channel, 20).toLowerCase();
   const channelUserId = text(body.channelUserId, 200);
   const messageRef = text(body.messageRef, 200);
@@ -87,9 +145,26 @@ export function createAgentRouter({
   resolveChannelIdentity,
   verifyAgentServiceRequest,
   secureUploadLinkFactory,
-  maxBodyBytes = 16 * 1024,
+  secureLinkAllowedOrigins = [],
+  maxBodyBytes: requestedMaxBodyBytes = 16 * 1024,
 } = {}) {
   const router = express.Router();
+  const maxBodyBytes = Math.min(16 * 1024, Math.max(1, Number(requestedMaxBodyBytes) || 16 * 1024));
+  router.use(express.json({
+    limit: maxBodyBytes,
+    verify(req, _res, buffer) { req.rawBody = buffer.toString('utf8'); },
+  }));
+  router.use((error, _req, res, next) => {
+    if (error?.type === 'entity.too.large' || Number(error?.status) === 413) {
+      send(res, 413, 'AGENT_REQUEST_TOO_LARGE');
+      return;
+    }
+    if (error instanceof SyntaxError || error?.type === 'entity.parse.failed') {
+      send(res, 400, 'AGENT_REQUEST_SCHEMA_INVALID');
+      return;
+    }
+    next(error);
+  });
 
   async function authenticate(req, res) {
     let valid = false;
@@ -115,7 +190,7 @@ export function createAgentRouter({
     const internalUserId = Number(identity?.internalUserId);
     if (!Number.isInteger(internalUserId) || internalUserId <= 0) {
       send(res, 403, 'AGENT_REGISTRATION_REQUIRED', {
-        action: safeAction(secureUploadLinkFactory, { purpose: 'register_or_login', channel: input.channel }),
+        action: safeAction(secureUploadLinkFactory, secureLinkAllowedOrigins, { purpose: 'register_or_login', channel: input.channel }),
       });
       return null;
     }
@@ -130,7 +205,7 @@ export function createAgentRouter({
     }
     if (hasAttachmentField(req.body)) {
       send(res, 400, 'DINGTALK_POLICY_UPLOAD_DISABLED', {
-        action: safeAction(secureUploadLinkFactory, { purpose: 'policy_upload', channel: 'dingtalk' }),
+        action: safeAction(secureUploadLinkFactory, secureLinkAllowedOrigins, { purpose: 'policy_upload', channel: 'dingtalk' }),
       });
       return null;
     }
@@ -161,10 +236,10 @@ export function createAgentRouter({
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
         candidate: input.candidate,
       });
-      res.json({ ok: true, ...result });
+      res.json({ ok: true, ...normalizePublicResult(result) });
     } catch (error) {
       if (Number(error?.status) === 429) {
-        send(res, 429, text(error?.code, 80) || 'AGENT_RATE_LIMITED');
+        send(res, 429, 'AGENT_RATE_LIMITED');
         return;
       }
       send(res, 502, 'AGENT_GATEWAY_UPSTREAM_ERROR');
@@ -190,10 +265,10 @@ export function createAgentRouter({
         messageRef: input.messageRef,
         channel: input.channel,
       });
-      res.json({ ok: true, ...result });
+      res.json({ ok: true, ...normalizePublicResult(result) });
     } catch (error) {
       if (Number(error?.status) === 429) {
-        send(res, 429, text(error?.code, 80) || 'AGENT_RATE_LIMITED');
+        send(res, 429, 'AGENT_RATE_LIMITED');
         return;
       }
       const status = Number(error?.status);

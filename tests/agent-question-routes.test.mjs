@@ -3,15 +3,12 @@ import test from 'node:test';
 
 import express from 'express';
 
+import { createPolicyOcrApp } from '../server/app.mjs';
 import { createAgentRouter } from '../server/routes/agent.routes.mjs';
 
 async function startServer(overrides = {}) {
   const calls = { route: [], confirm: [] };
   const app = express();
-  app.use(express.json({
-    limit: '1mb',
-    verify(req, _res, buffer) { req.rawBody = buffer.toString('utf8'); },
-  }));
   app.use('/api/agent', createAgentRouter({
     questionRouter: {
       async route(input) {
@@ -24,6 +21,7 @@ async function startServer(overrides = {}) {
       channelUserId === 'registered' ? { internalUserId: 7 } : null
     ),
     secureUploadLinkFactory: () => 'https://app.example.test/agent/continue',
+    secureLinkAllowedOrigins: ['https://app.example.test'],
     confirmationService: {
       async confirm(input) {
         calls.confirm.push(input);
@@ -103,6 +101,43 @@ test('valid identity routes only normalized trusted fields', async (t) => {
   });
 });
 
+test('upstream results are reduced to bounded public interaction fields', async (t) => {
+  const server = await startServer({
+    questionRouter: {
+      async route() {
+        return {
+          ok: false,
+          secret: '13800138000',
+          internalUserId: 99,
+          decision: 'execute',
+          requestRef: 'request-1',
+          interaction: {
+            type: 'answer',
+            text: `${'答'.repeat(2000)}secret-tail`,
+            secret: 'identity-card',
+            options: [{ id: 'choice-1', label: '家庭一', secret: 'private' }],
+          },
+        };
+      },
+    },
+  });
+  t.after(server.close);
+  const result = await post(server, '/api/agent/questions/route', validBody());
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(result.payload, {
+    ok: true,
+    decision: 'execute',
+    requestRef: 'request-1',
+    interaction: {
+      type: 'answer',
+      text: '答'.repeat(2000),
+      options: [{ id: 'choice-1', label: '家庭一' }],
+    },
+  });
+  assert.equal(JSON.stringify(result.payload).includes('secret'), false);
+  assert.equal(JSON.stringify(result.payload).includes('13800138000'), false);
+});
+
 test('malformed and oversized question payloads have stable errors', async (t) => {
   const server = await startServer({ maxBodyBytes: 512 });
   t.after(server.close);
@@ -113,6 +148,17 @@ test('malformed and oversized question payloads have stable errors', async (t) =
   assert.equal(unknownField.response.status, 400);
   assert.equal(unknownField.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
   const oversized = await post(server, '/api/agent/questions/route', validBody({ candidate: { intent: 'chat', question: 'x'.repeat(1000) } }));
+  assert.equal(oversized.response.status, 413);
+  assert.equal(oversized.payload.code, 'AGENT_REQUEST_TOO_LARGE');
+});
+
+test('configured body limit cannot exceed the 16KiB gateway ceiling', async (t) => {
+  const server = await startServer({ maxBodyBytes: 64 * 1024 });
+  t.after(server.close);
+  const oversized = await post(server, '/api/agent/questions/route', validBody({
+    candidate: { intent: 'chat', question: 'x', requestedOperation: 'read', confidence: 1 },
+    padding: 'x'.repeat(17 * 1024),
+  }));
   assert.equal(oversized.response.status, 413);
   assert.equal(oversized.payload.code, 'AGENT_REQUEST_TOO_LARGE');
 });
@@ -139,6 +185,22 @@ test('confirmation requires the resolved owner and delegates ownership enforceme
   assert.deepEqual(server.calls.confirm[0], {
     confirmationId: 'cfm-1', internalUserId: 7, messageRef: 'msg-confirm', channel: 'dingtalk',
   });
+});
+
+test('confirmation schema rejects question-only and nested fields', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  for (const extra of [
+    { candidate: validBody().candidate },
+    { unexpected: { nested: true } },
+  ]) {
+    const result = await post(server, '/api/agent/actions/cfm-1/confirm', {
+      channel: 'dingtalk', channelUserId: 'registered', messageRef: 'msg-confirm', ...extra,
+    });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  }
+  assert.equal(server.calls.confirm.length, 0);
 });
 
 test('confirmation ownership failures do not reveal whether an action exists', async (t) => {
@@ -188,9 +250,53 @@ test('router failures are redacted while rate limits pass through', async (t) =>
   assert.deepEqual(internal.payload, { ok: false, code: 'AGENT_GATEWAY_UPSTREAM_ERROR' });
   assert.equal(JSON.stringify(internal.payload).includes('13800138000'), false);
 
-  const limited = await startServer({ questionRouter: { route: async () => { throw Object.assign(new Error('secret'), { status: 429, code: 'AGENT_RATE_LIMITED' }); } } });
+  const limited = await startServer({ questionRouter: { route: async () => { throw Object.assign(new Error('secret'), { status: 429, code: 'PRIVATE_LIMITER_NAME' }); } } });
   t.after(limited.close);
   const rateLimit = await post(limited, '/api/agent/questions/route', validBody());
   assert.equal(rateLimit.response.status, 429);
   assert.deepEqual(rateLimit.payload, { ok: false, code: 'AGENT_RATE_LIMITED' });
+});
+
+test('secure actions accept only relative paths or allowlisted HTTPS origins', async (t) => {
+  for (const unsafeUrl of [
+    'javascript:alert(1)',
+    'http://app.example.test/upload',
+    'https://user@app.example.test/upload',
+    '//app.example.test/upload',
+    'https://evil.example.test/upload',
+  ]) {
+    const server = await startServer({ secureUploadLinkFactory: () => unsafeUrl });
+    t.after(server.close);
+    const result = await post(server, '/api/agent/questions/route', validBody({ channelUserId: 'not-linked' }));
+    assert.deepEqual(result.payload.action, { type: 'secure_link' });
+  }
+  const server = await startServer({ secureUploadLinkFactory: () => '/agent/continue' });
+  t.after(server.close);
+  const safe = await post(server, '/api/agent/questions/route', validBody({ channelUserId: 'not-linked' }));
+  assert.equal(safe.payload.action.url, '/agent/continue');
+});
+
+test('createPolicyOcrApp maps malformed and oversized agent JSON before the global parser', async (t) => {
+  const app = createPolicyOcrApp({
+    recomputeCashflowOnStartup: false,
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
+  });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const sendRaw = async (body) => {
+    const response = await fetch(`${baseUrl}/api/agent/questions/route`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    });
+    return { response, payload: await response.json() };
+  };
+  const malformed = await sendRaw('{bad json');
+  assert.equal(malformed.response.status, 400);
+  assert.deepEqual(malformed.payload, { ok: false, code: 'AGENT_REQUEST_SCHEMA_INVALID' });
+  const oversized = await sendRaw(JSON.stringify({ payload: 'x'.repeat(17 * 1024) }));
+  assert.equal(oversized.response.status, 413);
+  assert.deepEqual(oversized.payload, { ok: false, code: 'AGENT_REQUEST_TOO_LARGE' });
 });

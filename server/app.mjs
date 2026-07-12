@@ -2566,6 +2566,15 @@ export function createPolicyOcrApp(options = {}) {
 
   const app = express();
   app.locals.state = state;
+  app.use('/api/agent', createAgentRouter({
+    questionRouter: options.agentQuestionRouter,
+    confirmationService: options.agentConfirmationService,
+    resolveChannelIdentity: options.resolveDingTalkIdentity,
+    verifyAgentServiceRequest: options.verifyAgentServiceRequest,
+    secureUploadLinkFactory: options.agentSecureUploadLinkFactory,
+    secureLinkAllowedOrigins: options.agentSecureLinkAllowedOrigins,
+    maxBodyBytes: options.agentMaxBodyBytes,
+  }));
   app.use(express.json({
     limit: JSON_BODY_LIMIT,
     verify: (req, _res, buf) => {
@@ -2582,14 +2591,6 @@ export function createPolicyOcrApp(options = {}) {
     });
   });
 
-  app.use('/api/agent', createAgentRouter({
-    questionRouter: options.agentQuestionRouter,
-    confirmationService: options.agentConfirmationService,
-    resolveChannelIdentity: options.resolveDingTalkIdentity,
-    verifyAgentServiceRequest: options.verifyAgentServiceRequest,
-    secureUploadLinkFactory: options.agentSecureUploadLinkFactory,
-    maxBodyBytes: options.agentMaxBodyBytes,
-  }));
   app.use('/api/wechat', createWechatRoutes(routeContext));
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
