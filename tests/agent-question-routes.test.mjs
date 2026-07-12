@@ -4,6 +4,7 @@ import test from 'node:test';
 import express from 'express';
 
 import { createPolicyOcrApp } from '../server/app.mjs';
+import { createAgentQuestionHandlers } from '../server/agent-question-handlers.service.mjs';
 import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
 import { createAgentRouter } from '../server/routes/agent.routes.mjs';
 
@@ -429,4 +430,142 @@ test('createPolicyOcrApp maps malformed and oversized agent JSON before the glob
   const oversized = await sendRaw(JSON.stringify({ payload: 'x'.repeat(17 * 1024) }));
   assert.equal(oversized.response.status, 413);
   assert.deepEqual(oversized.payload, { ok: false, code: 'AGENT_REQUEST_TOO_LARGE' });
+});
+
+test('authorized family count resolves once and preserves exact safe facts without PII', async () => {
+  const state = {
+    familyProfiles: [
+      { id: 71, ownerUserId: 7, familyName: '余贵祥家庭', status: 'active' },
+      { id: 72, ownerUserId: 8, familyName: '余贵祥家庭', status: 'active' },
+    ],
+    familyMembers: [{ id: 711, familyId: 71, name: '余贵祥', mobile: '13800138000', status: 'active' }],
+    policies: [
+      { id: 1, userId: 7, familyId: 71, policyNo: 'SECRET-0001', status: 'active' },
+      { id: 2, userId: 7, familyId: 71, policyNo: 'SECRET-0002', status: '失效' },
+      { id: 3, userId: 8, familyId: 72, policyNo: 'OTHER-0003', status: 'active' },
+    ],
+  };
+  let familyLoads = 0;
+  let handled;
+  const domain = createAgentQuestionHandlers({
+    store: { async load() { return state; } },
+    authorizedFamilyDataLoader: async ({ familyId, internalUserId }) => {
+      familyLoads += 1;
+      const family = state.familyProfiles.find((row) => row.id === familyId && row.ownerUserId === internalUserId);
+      return family ? { family, state } : null;
+    },
+    clock: () => new Date('2026-07-13T00:00:00.000Z'),
+  });
+  const router = createAgentQuestionRouter({
+    store: {
+      async load() { return state; },
+      async getPublishedAgentQuestionPolicyVersion() { return null; },
+      async recordAgentRouteAudit() {},
+    },
+    handlers: {
+      async insurance_expert(input) {
+        handled = await domain.insurance_expert(input);
+        return { interaction: { type: 'answer', text: `共有 ${handled.facts.policyCount} 份保单` } };
+      },
+    },
+  });
+
+  const result = await router.route({
+    internalUserId: 7,
+    messageRef: 'msg-count',
+    candidate: {
+      intent: 'family_summary', requestedOperation: 'read', confidence: 1,
+      question: '余贵祥家庭有几个保单', entities: { familyName: '余贵祥家庭' },
+    },
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(result.interaction.text, '共有 2 份保单');
+  assert.deepEqual(handled.facts, { familyId: 71, activeMemberCount: 1, policyCount: 2, validPolicyCount: 1 });
+  assert.equal(familyLoads, 1);
+  assert.doesNotMatch(JSON.stringify({ result, handled }), /13800138000|SECRET-0001|余贵祥/);
+});
+
+test('report freshness and sales follow-up use the existing domain handlers with explicit family context', async () => {
+  const state = {
+    familyProfiles: [{ id: 71, ownerUserId: 7, familyName: '余贵祥家庭', status: 'active', updatedAt: '2026-07-10T00:00:00.000Z' }],
+    familyMembers: [],
+    policies: [],
+    familyReports: [{
+      id: 90, familyId: 71, status: 'active', generatedAt: '2026-07-11T00:00:00.000Z',
+      report: { familyPolicyAnalysisReport: { status: 'complete', generatedAt: '2026-07-11T00:00:00.000Z' } },
+      summary: { policyCount: 0, mobile: 13800138000 },
+    }],
+    familySalesReviews: [],
+  };
+  const calls = { queued: [], chat: [] };
+  const authorized = async ({ familyId, internalUserId }) => {
+    const family = state.familyProfiles.find((row) => row.id === familyId && row.ownerUserId === internalUserId);
+    return family ? { family, state } : null;
+  };
+  const handlers = createAgentQuestionHandlers({
+    store: { async load() { return state; } },
+    authorizedFamilyDataLoader: authorized,
+    authorizedFamilySalesDataLoader: async ({ familyId, internalUserId }) => ({
+      family: (await authorized({ familyId, internalUserId })).family,
+      input: { dataQuality: { pendingFields: ['budget'] } }, members: [], policies: [],
+      familyReports: state.familyReports, familySalesReviews: [],
+      history: [{ role: 'assistant', content: '上一轮已确认保障缺口' }],
+    }),
+    links: { familyReport: ({ familyId }) => `/customer/families/${familyId}/report` },
+    reportQueue: { async enqueue(input) { calls.queued.push(input); return { jobId: 'job-71', progress: 0 }; } },
+    buildFamilySalesChatContext: (input) => ({ familyId: input.family.id, pendingFields: input.input.dataQuality.pendingFields }),
+    generateFamilySalesChatReply: async (input) => { calls.chat.push(input); return { content: '先确认预算，再讨论保障优先级。', model: 'stub-model' }; },
+    clock: () => new Date('2026-07-13T00:00:00.000Z'),
+  });
+
+  const fresh = await handlers.insurance_expert({ intent: 'coverage_report', familyId: 71, internalUserId: 7 });
+  assert.equal(fresh.facts.status, 'fresh');
+  assert.equal(fresh.presentation.secureLink, '/customer/families/71/report');
+  assert.deepEqual(fresh.facts.summary, { policyCount: 0 });
+  assert.equal(calls.queued.length, 0);
+
+  state.familyProfiles[0].updatedAt = '2026-07-12T00:00:00.000Z';
+  const stale = await handlers.insurance_expert({ intent: 'coverage_report', familyId: 71, internalUserId: 7 });
+  assert.equal(stale.facts.status, 'processing');
+  assert.equal(stale.facts.jobId, 'job-71');
+  assert.equal(calls.queued.length, 1);
+
+  const coached = await handlers.sales_champion({
+    intent: 'sales_coaching', familyId: 71, internalUserId: 7, question: '那我该怎么跟他聊',
+  });
+  assert.equal(coached.provenance.agent, 'existing_family_sales_chat');
+  assert.deepEqual(calls.chat[0], {
+    context: { familyId: 71, pendingFields: ['budget'] },
+    history: [{ role: 'assistant', content: '上一轮已确认保障缺口' }],
+    question: '那我该怎么跟他聊',
+  });
+  assert.doesNotMatch(JSON.stringify({ fresh, stale, coached }), /13800138000/);
+});
+
+test('unknown read falls back safely and unknown write denies before any handler', async () => {
+  let handlerCalls = 0;
+  const unknowns = [];
+  const router = createAgentQuestionRouter({
+    store: {
+      async load() { return { familyProfiles: [], policies: [] }; },
+      async getPublishedAgentQuestionPolicyVersion() { return null; },
+      async appendAgentUnknownQuestion(input) { unknowns.push(input); },
+      async recordAgentRouteAudit() {},
+    },
+    handlers: { system: async () => { handlerCalls += 1; return { interaction: { type: 'answer', text: 'unsafe' } }; } },
+  });
+  const read = await router.route({ internalUserId: 7, messageRef: 'unknown-read', candidate: {
+    intent: 'not_configured', requestedOperation: 'read', confidence: 1, question: '一个未知的公开问题',
+  } });
+  const write = await router.route({ internalUserId: 7, messageRef: 'unknown-write', candidate: {
+    intent: 'not_configured', requestedOperation: 'write', confidence: 1, question: '替我修改未知字段 mobile=13800138000',
+  } });
+  assert.equal(read.decision, 'open_web');
+  assert.equal(read.interaction.type, 'secure_link');
+  assert.equal(write.decision, 'deny');
+  assert.equal(write.interaction.type, 'denied');
+  assert.equal(handlerCalls, 0);
+  assert.equal(unknowns.length, 1);
+  assert.doesNotMatch(JSON.stringify({ read, write }), /13800138000|mobile/);
 });
