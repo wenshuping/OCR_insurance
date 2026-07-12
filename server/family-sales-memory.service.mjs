@@ -6,6 +6,8 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_TOKENS = 1_200;
 const FAMILY_SALES_MEMORY_LIMIT = 20;
 const MEMORY_KINDS = new Set(['objection', 'preference', 'strategy', 'correction', 'todo']);
+const MEMORY_STATUSES = new Set(['candidate', 'confirmed', 'conflicted', 'superseded', 'rejected', 'expired', 'completed', 'archived']);
+const MEMORY_ACTIONS = new Set(['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore']);
 const CURRENT_MEMORY_STATUSES = new Set(['confirmed', 'active']);
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const CHINA_ID_NUMBER_PATTERN = /\b(?:[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3})\b/gu;
@@ -85,6 +87,142 @@ function sanitizeMemorySourceText(value = '', limit = 1_600) {
     .replace(/\s+/gu, ' ')
     .slice(0, limit)
     .trim();
+}
+
+function isAutoConfirmableMemory(memory = {}) {
+  const content = sanitizeMemoryContent(memory.content).toLowerCase();
+  if (normalizeKind(memory.kind) !== 'preference' || !content) return false;
+  if (/(预算|保费|收入|负债|债务|健康|病|家庭责任|赡养|意向|购买|投保|异议|纠正|策略|方案|保额|收益)/u.test(content)) return false;
+  return /(称呼|显示|展示|联系格式|联系方式格式|电话格式|手机号格式|微信格式|日期格式|时间格式|简短|简洁|详细|先看结论|文字|语音)/u.test(content);
+}
+
+function normalizedStatus(value = '') {
+  const status = trim(value).toLowerCase();
+  return status === 'active' ? 'confirmed' : status;
+}
+
+function requireVersion(value, name = 'version') {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive safe integer`);
+  return value;
+}
+
+function sanitizeEventText(value = '', limit = 120) {
+  return sanitizeMemorySourceText(value, limit)
+    .replace(/\b\d{4,}\b/gu, '编号已脱敏');
+}
+
+function normalizeActor(actor) {
+  if (!actor || typeof actor !== 'object' || Array.isArray(actor)) throw new TypeError('actor must be server-owned type/id');
+  const type = trim(actor.type).toLowerCase();
+  const id = sanitizeEventText(actor.id, 64);
+  if (!/^(system|advisor|agent|user|service)$/u.test(type) || !id) throw new TypeError('actor must be server-owned type/id');
+  return { type, id };
+}
+
+function transitionEvent({ memoryId, previousStatus, nextStatus, action, actor, reason, time, version }) {
+  return {
+    memoryId,
+    previous: { status: previousStatus, version: version - 1 },
+    next: { status: nextStatus, version },
+    action,
+    actor,
+    reason,
+    source: 'family_sales_memory',
+    time,
+    version,
+  };
+}
+
+export function applyFamilySalesMemoryAction({
+  memory,
+  action,
+  actor,
+  reason = '',
+  replacement = null,
+  expectedVersion,
+  now = new Date().toISOString(),
+} = {}) {
+  if (!memory || typeof memory !== 'object' || Array.isArray(memory)) throw new TypeError('memory is required');
+  const rawStatus = trim(memory.status || 'active').toLowerCase();
+  const status = normalizedStatus(rawStatus);
+  const normalizedAction = trim(action).toLowerCase();
+  if (!MEMORY_STATUSES.has(status) || !MEMORY_ACTIONS.has(normalizedAction)) throw new Error('illegal memory transition');
+  const version = requireVersion(memory.version);
+  requireVersion(expectedVersion, 'expectedVersion');
+  if (expectedVersion !== version) throw new Error('stale memory version');
+  if (!Number.isFinite(Date.parse(trim(now)))) throw new TypeError('now must be a valid instant');
+  const time = new Date(now).toISOString();
+  const safeActor = normalizeActor(actor);
+  const safeReason = sanitizeEventText(reason);
+  if (['reject', 'supersede', 'expire', 'restore'].includes(normalizedAction) && !safeReason) throw new TypeError('reason is required');
+
+  const legalFrom = {
+    confirm: new Set(['candidate', 'conflicted']),
+    reject: new Set(['candidate', 'conflicted']),
+    supersede: new Set(['confirmed']),
+    complete: new Set(['confirmed']),
+    expire: new Set(['candidate', 'confirmed', 'conflicted']),
+    restore: new Set(['rejected', 'expired', 'completed', 'archived']),
+  };
+  if (!legalFrom[normalizedAction].has(status)) throw new Error('illegal memory transition');
+  if (normalizedAction === 'complete' && normalizeKind(memory.kind) !== 'todo') throw new Error('only todo memory can be completed');
+  if (normalizedAction === 'supersede' && (!replacement || typeof replacement !== 'object' || Array.isArray(replacement))) {
+    throw new TypeError('replacement is required');
+  }
+
+  const nextStatus = ({ confirm: 'confirmed', reject: 'rejected', supersede: 'superseded', complete: 'completed', expire: 'expired', restore: 'candidate' })[normalizedAction];
+  const nextVersion = version + 1;
+  const nextMemory = { ...memory, status: nextStatus, version: nextVersion, updatedAt: time };
+  if (normalizedAction === 'confirm') {
+    nextMemory.confirmedAt = time;
+    nextMemory.validFrom = trim(nextMemory.validFrom) || time;
+    nextMemory.invalidatedAt = null;
+    nextMemory.validTo = null;
+  } else if (normalizedAction === 'restore') {
+    nextMemory.invalidatedAt = null;
+    nextMemory.validTo = null;
+  } else if (['reject', 'supersede', 'complete', 'expire'].includes(normalizedAction)) {
+    nextMemory.invalidatedAt = time;
+    nextMemory.validTo = time;
+  }
+
+  let replacementMemory = null;
+  if (normalizedAction === 'supersede') {
+    const replacementId = replacement.id;
+    if (!(typeof replacementId === 'string' && trim(replacementId)) && !(Number.isSafeInteger(replacementId) && replacementId > 0)) {
+      throw new TypeError('replacement id is required');
+    }
+    const kind = normalizeKind(replacement.kind || memory.kind);
+    const content = sanitizeMemoryContent(replacement.content);
+    if (!kind || !content) throw new TypeError('replacement kind/content are required');
+    replacementMemory = {
+      ...memory,
+      ...replacement,
+      id: replacementId,
+      kind,
+      content,
+      status: 'confirmed',
+      version: 1,
+      supersedesMemoryId: memory.id,
+      validFrom: time,
+      validTo: null,
+      invalidatedAt: null,
+      confirmedAt: time,
+      createdAt: time,
+      updatedAt: time,
+    };
+  }
+  const event = transitionEvent({
+    memoryId: memory.id,
+    previousStatus: status,
+    nextStatus,
+    action: normalizedAction,
+    actor: safeActor,
+    reason: safeReason,
+    time,
+    version: nextVersion,
+  });
+  return { memory: nextMemory, replacement: replacementMemory, event };
 }
 
 function normalizeMemoryKey(kind = '', content = '') {
@@ -260,7 +398,7 @@ export function upsertFamilySalesMemories({
     const key = normalizeMemoryKey(item.kind, item.content);
     const existing = state.familySalesMemories.find((memory) => (
       Number(memory?.familyId || 0) === targetFamilyId &&
-      String(memory?.status || 'active') === 'active' &&
+      ['candidate', 'confirmed', 'active'].includes(String(memory?.status || 'active')) &&
       memoryOwnerKey(memory) === targetOwnerKey &&
       normalizeMemoryKey(memory?.kind, memory?.content) === key
     ));
@@ -272,6 +410,7 @@ export function upsertFamilySalesMemories({
       changedMemories.push(existing);
       continue;
     }
+    const autoConfirmed = isAutoConfirmableMemory(item);
     const memory = {
       id: allocateId(state),
       familyId: targetFamilyId,
@@ -281,8 +420,11 @@ export function upsertFamilySalesMemories({
       content: item.content,
       evidenceMessageIds,
       sourceThreadId: Number(sourceThreadId || 0) || null,
-      status: 'active',
+      status: autoConfirmed ? 'confirmed' : 'candidate',
       confidence: item.confidence,
+      version: 1,
+      validFrom: autoConfirmed ? now : null,
+      confirmedAt: autoConfirmed ? now : null,
       createdAt: now,
       updatedAt: now,
     };
@@ -293,7 +435,7 @@ export function upsertFamilySalesMemories({
   const active = state.familySalesMemories
     .filter((memory) => (
       Number(memory?.familyId || 0) === targetFamilyId &&
-      String(memory?.status || 'active') === 'active' &&
+      ['candidate', 'confirmed', 'active'].includes(String(memory?.status || 'active')) &&
       memoryOwnerKey(memory) === targetOwnerKey
     ))
     .sort((left, right) => (

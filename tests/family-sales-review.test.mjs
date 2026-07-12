@@ -10,6 +10,7 @@ import {
   generateFamilySalesChatReply,
 } from '../server/family-sales-chat.service.mjs';
 import {
+  applyFamilySalesMemoryAction,
   buildFamilySalesMemoryContext,
   normalizeExtractedFamilySalesMemories,
   upsertFamilySalesMemories,
@@ -348,11 +349,12 @@ test('family sales memory context is sanitized, deduplicated, and available to c
       { kind: 'objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.91 },
       { kind: 'objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.9 },
       { kind: 'strategy', content: '先讲基础方案，再约二次面谈', confidence: 0.83 },
+      { kind: 'preference', content: '微信联系时先看简短结论', confidence: 0.88 },
       { kind: 'noise', content: '无效类型', confidence: 1 },
       { kind: 'todo', content: '置信度太低的不保存', confidence: 0.3 },
     ],
   });
-  assert.deepEqual(normalized.map((memory) => memory.kind), ['objection', 'strategy']);
+  assert.deepEqual(normalized.map((memory) => memory.kind), ['objection', 'strategy', 'preference']);
   assert.match(normalized[0].content, /手机号已脱敏/u);
   assert.doesNotMatch(normalized[0].content, /13800138000/u);
 
@@ -373,8 +375,9 @@ test('family sales memory context is sanitized, deduplicated, and available to c
     nowIso: () => '2026-06-15T08:00:00.000Z',
   });
   assert.equal(result.changed, true);
-  assert.equal(state.familySalesMemories.length, 2);
+  assert.equal(state.familySalesMemories.length, 3);
   assert.deepEqual(state.familySalesMemories[0].evidenceMessageIds, [31, 32]);
+  assert.deepEqual(state.familySalesMemories.map((memory) => memory.status), ['candidate', 'candidate', 'confirmed']);
 
   const salesMemoryContext = buildFamilySalesMemoryContext(state.familySalesMemories);
   const chatPrompt = buildFamilySalesChatMessages({
@@ -385,7 +388,8 @@ test('family sales memory context is sanitized, deduplicated, and available to c
     question: '继续生成微信话术',
   }).map((message) => message.content).join('\n');
   assert.match(chatPrompt, /salesMemoryContext/u);
-  assert.match(chatPrompt, /客户担心预算压力/u);
+  assert.match(chatPrompt, /微信联系时先看简短结论/u);
+  assert.doesNotMatch(chatPrompt, /客户担心预算压力|先讲基础方案/u);
   assert.match(chatPrompt, /保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准/u);
 
   const reviewPrompt = buildFamilySalesReviewMessages({
@@ -400,6 +404,70 @@ test('family sales memory context is sanitized, deduplicated, and available to c
   }).map((message) => message.content).join('\n');
   assert.match(reviewPrompt, /salesMemoryContext/u);
   assert.match(reviewPrompt, /salesChatContext 与 salesMemoryContext 同时存在，顾问本次勾选的 salesChatContext 优先/u);
+});
+
+test('family sales memory actions govern temporal transitions without mutating input', () => {
+  const actor = { type: 'advisor', id: 'advisor-7' };
+  const candidate = Object.freeze({ id: 41, kind: 'todo', content: '补充资料', status: 'candidate', version: 1, createdAt: '2026-07-11T00:00:00.000Z' });
+  const confirmed = applyFamilySalesMemoryAction({
+    memory: candidate,
+    action: 'confirm',
+    actor,
+    expectedVersion: 1,
+    now: '2026-07-12T08:00:00.000Z',
+  });
+  assert.equal(candidate.status, 'candidate');
+  assert.equal(confirmed.memory.status, 'confirmed');
+  assert.equal(confirmed.memory.version, 2);
+  assert.equal(confirmed.memory.validFrom, '2026-07-12T08:00:00.000Z');
+  assert.deepEqual(confirmed.event.previous, { status: 'candidate', version: 1 });
+  assert.deepEqual(confirmed.event.next, { status: 'confirmed', version: 2 });
+
+  const completed = applyFamilySalesMemoryAction({ memory: confirmed.memory, action: 'complete', actor, expectedVersion: 2, now: '2026-07-12T09:00:00.000Z' });
+  assert.equal(completed.memory.status, 'completed');
+  assert.equal(completed.memory.validTo, '2026-07-12T09:00:00.000Z');
+  assert.equal(completed.memory.invalidatedAt, '2026-07-12T09:00:00.000Z');
+
+  const restored = applyFamilySalesMemoryAction({ memory: completed.memory, action: 'restore', actor, reason: '顾问要求重新核实', expectedVersion: 3, now: '2026-07-12T10:00:00.000Z' });
+  assert.equal(restored.memory.status, 'candidate');
+  assert.equal(restored.memory.validTo, null);
+  assert.equal(restored.memory.invalidatedAt, null);
+
+  const rejected = applyFamilySalesMemoryAction({ memory: candidate, action: 'reject', actor, reason: '信息有误', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' });
+  const expired = applyFamilySalesMemoryAction({ memory: candidate, action: 'expire', actor, reason: '已超过跟进期', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' });
+  assert.equal(rejected.memory.status, 'rejected');
+  assert.equal(expired.memory.status, 'expired');
+});
+
+test('supersede returns a confirmed replacement and privacy-safe chain event', () => {
+  const memory = { id: 51, familyId: 8, ownerUserId: 9, kind: 'preference', content: '旧手机号 13800138000', status: 'active', version: 4, validFrom: '2026-07-01T00:00:00.000Z' };
+  const result = applyFamilySalesMemoryAction({
+    memory,
+    action: 'supersede',
+    actor: { type: 'system', id: 'memory-service' },
+    reason: '客户 110101198606141234 更正手机号 13800138000',
+    replacement: { id: 52, content: '微信联系时使用简短文字' },
+    expectedVersion: 4,
+    now: '2026-07-12T08:00:00.000Z',
+  });
+  assert.equal(result.memory.status, 'superseded');
+  assert.equal(result.memory.validTo, result.replacement.validFrom);
+  assert.equal(result.replacement.status, 'confirmed');
+  assert.equal(result.replacement.supersedesMemoryId, 51);
+  assert.equal(result.replacement.version, 1);
+  assert.deepEqual(Object.keys(result.event).sort(), ['action', 'actor', 'memoryId', 'next', 'previous', 'reason', 'source', 'time', 'version']);
+  assert.doesNotMatch(JSON.stringify(result.event), /110101198606141234|13800138000|旧手机号|微信联系/u);
+});
+
+test('memory actions reject illegal and stale changes without mutation', () => {
+  const memory = { id: 61, kind: 'preference', content: '偏好文字', status: 'confirmed', version: 2 };
+  const snapshot = structuredClone(memory);
+  const actor = { type: 'advisor', id: 'advisor-7' };
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'complete', actor, expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /only todo/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'reject', actor, reason: '错误', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /illegal/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reason: '过期', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' }), /stale/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /reason/u);
+  assert.deepEqual(memory, snapshot);
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {
