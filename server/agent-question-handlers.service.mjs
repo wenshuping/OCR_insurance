@@ -154,7 +154,7 @@ export function createAgentQuestionHandlers({
   }
 
   async function enqueueReport({ familyId, jobType, reason }) {
-    if (!reportQueue || typeof reportQueue.enqueue !== 'function') {
+    if (!reportQueue || (typeof reportQueue.enqueueUnique !== 'function' && typeof reportQueue.enqueue !== 'function')) {
       return stableResult(
         { status: 'unavailable', jobType, progress: 0 },
         { source: 'report_queue', reason },
@@ -165,11 +165,27 @@ export function createAgentQuestionHandlers({
     let job = pendingReports.get(key);
     if (job) {
       job = await job;
-      if (typeof reportQueue.getStatus === 'function') {
+      if (text(job?.status).toLowerCase() === 'completed') {
+        if (clock().getTime() - Number(job?._cachedAt || 0) < Math.max(1, Number(pendingJobTtlMs) || 300_000)) {
+          return stableResult(
+            { status: 'syncing', jobType, jobId: job?.jobId || job?.id || '', progress: 100 },
+            { source: 'report_queue', reason: 'awaiting_report_persistence', dedupeKey: key },
+            { message: '报告已生成，正在同步，请稍后查看。' },
+          );
+        }
+        pendingReports.delete(key);
+        job = null;
+      }
+      if (job && typeof reportQueue.getStatus === 'function') {
         const current = await reportQueue.getStatus({ familyId, jobType, dedupeKey: key, jobId: job?.jobId || job?.id || '' });
         const status = text(current?.status).toLowerCase();
         if (['completed', 'complete'].includes(status)) {
-          pendingReports.delete(key);
+          pendingReports.set(key, {
+            ...job,
+            ...current,
+            status: 'completed',
+            _cachedAt: clock().getTime(),
+          });
           return stableResult(
             { status: 'syncing', jobType, jobId: current?.jobId || job?.jobId || job?.id || '', progress: 100 },
             { source: 'report_queue', reason: 'awaiting_report_persistence', dedupeKey: key },
@@ -183,7 +199,7 @@ export function createAgentQuestionHandlers({
           job = { ...job, ...current, _cachedAt: job?._cachedAt || clock().getTime() };
           pendingReports.set(key, job);
         }
-      } else if (clock().getTime() - Number(job?._cachedAt || 0) >= Math.max(1, Number(pendingJobTtlMs) || 300_000)) {
+      } else if (job && clock().getTime() - Number(job?._cachedAt || 0) >= Math.max(1, Number(pendingJobTtlMs) || 300_000)) {
         pendingReports.delete(key);
         job = null;
       }

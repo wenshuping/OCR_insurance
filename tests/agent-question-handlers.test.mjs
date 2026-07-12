@@ -325,6 +325,39 @@ test('queued report job remains deduplicated after enqueue resolves until comple
   assert.equal(base.calls.enqueued.length, 2);
 });
 
+test('report queue may provide enqueueUnique without enqueue', async () => {
+  let calls = 0;
+  const { handlers } = harness({ familyReports: [] }, {
+    reportQueue: {
+      async enqueueUnique(input) { calls += 1; return { jobId: input.dedupeKey, status: 'queued' }; },
+    },
+  });
+
+  const result = await handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+
+  assert.equal(result.facts.status, 'processing');
+  assert.equal(calls, 1);
+});
+
+test('completed job stays syncing until report persistence or TTL without re-enqueue', async () => {
+  let enqueueCount = 0;
+  const { handlers } = harness({ familyReports: [] }, {
+    reportQueue: {
+      async enqueue() { enqueueCount += 1; return { jobId: 'job-complete', status: 'queued' }; },
+      async getStatus() { return { jobId: 'job-complete', status: 'completed', progress: 100 }; },
+    },
+    reloadAuthorizedFamilyData: async ({ familyId }) => ({ family: { id: familyId }, state: { familyReports: [] } }),
+  });
+
+  await handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+  const completed = await handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+  const stillSyncing = await handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+
+  assert.equal(completed.facts.status, 'syncing');
+  assert.equal(stillSyncing.facts.status, 'syncing');
+  assert.equal(enqueueCount, 1);
+});
+
 test('upload link ignores attachments and unknown actions are denied', async () => {
   const { handlers, calls } = harness();
 
