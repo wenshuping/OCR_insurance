@@ -2194,12 +2194,19 @@ export function createPolicyOcrApp(options = {}) {
     recognizePolicyInput: ({ body }) => recognizePolicyInput({ scanner: options.scanner || scanPolicyWithConfiguredRuntime, body, state }),
     finalizeTask: finalizer,
   });
+  const configuredMemoryCursorKey = String(options.familySalesMemoryCursorKey || process.env.FAMILY_SALES_MEMORY_CURSOR_KEY || '');
+  if (process.env.NODE_ENV === 'production' && configuredMemoryCursorKey.length < 32) {
+    throw new Error('FAMILY_SALES_MEMORY_CURSOR_KEY must be configured in production');
+  }
   const familySalesMemoryApi = createFamilySalesMemoryApi({
     state,
     persistFamilySalesMemoryTransition: options.persistFamilySalesMemoryTransition
       ? (input) => options.persistFamilySalesMemoryTransition({ state, ...input }) : null,
     listFamilySalesMemoryEvents: options.listFamilySalesMemoryEvents,
     nowIso: options.nowIso,
+    cursorKey: configuredMemoryCursorKey || crypto.randomBytes(32).toString('hex'),
+    verifyAdvisorConfirmation: options.verifyAdvisorMemoryConfirmation,
+    logger: options.logger || console,
   });
   const wukongMcpGateway = options.wukongMcpGateway || createWukongMcpGateway({
     state,

@@ -913,6 +913,23 @@ function createSchema(db) {
           THEN RAISE(ABORT, 'family sales memory event scope mismatch') END;
       END;
 
+    CREATE TABLE IF NOT EXISTS memory_action_requests (
+      owner_scope_key TEXT NOT NULL,
+      family_id INTEGER NOT NULL,
+      memory_id INTEGER NOT NULL,
+      request_id TEXT NOT NULL,
+      input_hash TEXT NOT NULL,
+      confirmation_token_hash TEXT,
+      status TEXT NOT NULL CHECK (status IN ('pending','completed')),
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      PRIMARY KEY (owner_scope_key, memory_id, request_id),
+      UNIQUE (confirmation_token_hash),
+      CHECK (family_id > 0 AND memory_id > 0 AND length(request_id) BETWEEN 1 AND 160)
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_action_requests_scope ON memory_action_requests(owner_scope_key, family_id, memory_id, created_at);
+
     CREATE TABLE IF NOT EXISTS report_refresh_events (
       id INTEGER PRIMARY KEY,
       kind TEXT,
@@ -3364,21 +3381,40 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
-  async function persistFamilySalesMemoryTransition({ state, memoryId, familyId, owner = {}, action, reasonCode, actor, replacement = null, expectedVersion, now } = {}) {
+  async function persistFamilySalesMemoryTransition({ state, memoryId, familyId, owner = {}, action, reasonCode, actor, replacement = null, expectedVersion, now, requestId, confirmationTokenHash = '' } = {}) {
     if (!Number.isSafeInteger(Number(memoryId)) || Number(memoryId) <= 0 || !Number.isSafeInteger(Number(familyId)) || Number(familyId) <= 0
-      || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+      || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 160) {
       throw Object.assign(new Error('invalid family sales memory transition'), { code: 'INVALID_MEMORY_TRANSITION', status: 400 });
     }
     db.exec('BEGIN IMMEDIATE');
     try {
+      const ownerUserId = Number(owner.ownerUserId || 0) || null;
+      const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+      const ownerScopeKey = ownerUserId ? `u:${ownerUserId}` : `g:${ownerGuestId}`;
+      const inputHash = crypto.createHash('sha256').update(JSON.stringify({ familyId: Number(familyId), memoryId: Number(memoryId), action, reasonCode, replacement, expectedVersion })).digest('hex');
+      const prior = db.prepare('SELECT input_hash, status, result_json FROM memory_action_requests WHERE owner_scope_key = ? AND memory_id = ? AND request_id = ?')
+        .get(ownerScopeKey, Number(memoryId), requestId);
+      if (prior) {
+        if (prior.input_hash !== inputHash) throw Object.assign(new Error('request id payload conflict'), { code: 'REQUEST_ID_CONFLICT', status: 409 });
+        if (prior.status !== 'completed' || !prior.result_json) throw Object.assign(new Error('memory action still pending'), { code: 'MEMORY_ACTION_PENDING', status: 409 });
+        const priorBundle = parseJson(prior.result_json, null);
+        if (!priorBundle) throw new Error('invalid idempotency result');
+        db.exec('COMMIT');
+        return { ...priorBundle, idempotent: true };
+      }
+      if (confirmationTokenHash && db.prepare('SELECT 1 FROM memory_action_requests WHERE confirmation_token_hash = ?').get(confirmationTokenHash)) {
+        throw Object.assign(new Error('confirmation token replayed'), { code: 'CONFIRMATION_TOKEN_REPLAYED', status: 409 });
+      }
+      db.prepare(`INSERT INTO memory_action_requests
+        (owner_scope_key, family_id, memory_id, request_id, input_hash, confirmation_token_hash, status, result_json, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)`)
+        .run(ownerScopeKey, Number(familyId), Number(memoryId), requestId, inputHash, confirmationTokenHash || null, String(now || new Date().toISOString()));
       const row = db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(Number(memoryId));
       const authoritative = parseJson(row?.payload, null);
       const currentVersion = Number(row?.version || (authoritative?.status === 'active' ? 1 : authoritative?.version));
       if (!authoritative || currentVersion !== expectedVersion) {
         throw Object.assign(new Error('stale memory version'), { code: 'STALE_INTERACTION', status: 409 });
       }
-      const ownerUserId = Number(owner.ownerUserId || 0) || null;
-      const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
       if (Number(authoritative.familyId) !== Number(familyId)
         || Number(authoritative.ownerUserId || 0) !== Number(ownerUserId || 0)
         || String(authoritative.ownerGuestId || '') !== ownerGuestId) throw new Error('cross-scope memory transition');
@@ -3407,6 +3443,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       }
       const scopedEvents = events.map((event) => ({ ...event, familyId: authoritative.familyId, ownerUserId: authoritative.ownerUserId, ownerGuestId: authoritative.ownerGuestId }));
       insertFamilySalesMemoryEvents(db, scopedEvents);
+      db.prepare(`UPDATE memory_action_requests SET status = 'completed', result_json = ?, completed_at = ?
+        WHERE owner_scope_key = ? AND memory_id = ? AND request_id = ?`)
+        .run(JSON.stringify(bundle), String(now || new Date().toISOString()), ownerScopeKey, Number(memoryId), requestId);
       const nextState = { ...createInitialState(), ...state };
       updateStateMeta(db, nextState, new Date().toISOString());
       db.exec('COMMIT');

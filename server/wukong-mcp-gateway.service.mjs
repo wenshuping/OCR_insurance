@@ -180,23 +180,24 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert, fa
     }],
     ['get_sales_memories', {
       name: 'get_sales_memories',
-      inputSchema: familySchema({ familyRef: { type: 'integer' }, status: { type: 'string', maxLength: 80 }, kind: { type: 'string', maxLength: 80 }, cursor: { type: 'string', maxLength: 200 }, limit: { type: 'integer' } }, ['familyRef']),
+      inputSchema: familySchema({ familyRef: { type: 'integer' }, section: { type: 'string', enum: ['current', 'pending', 'todos', 'history'] }, status: { type: 'string', maxLength: 80 }, kind: { type: 'string', maxLength: 80 }, cursor: { type: 'string', maxLength: 1000 }, limit: { type: 'integer' } }, ['familyRef', 'section']),
       authorize: () => true,
       execute: (context, input) => {
         const { familyRef, ...query } = input;
         const result = familySalesMemoryApi.list({ familyId: resolveFamily(context, familyRef).id, owner: context, ...query });
-        const minimal = (memory) => ({ id: memory.id, kind: memory.kind, status: memory.status, content: memory.content, version: memory.version });
-        return { sections: Object.fromEntries(Object.entries(result.sections).map(([name, items]) => [name, items.map(minimal)])), nextCursor: result.nextCursor };
+        const minimal = (memory) => ({ id: memory.id, kind: memory.kind, status: memory.status, content: memory.content, untrustedData: true, version: memory.version });
+        return { section: result.section, items: result.items.map(minimal), count: result.count, nextCursor: result.nextCursor };
       },
     }],
     ['apply_memory_action', {
       name: 'apply_memory_action',
-      inputSchema: familySchema({ familyRef: { type: 'integer' }, memoryId: { type: 'integer' }, action: { type: 'string', enum: ['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore'] }, expectedVersion: { type: 'integer' }, reasonCode: { type: 'string', maxLength: 80 }, replacement: { type: 'object', properties: { content: { type: 'string', maxLength: 220 } }, required: ['content'], additionalProperties: false } }, ['familyRef', 'memoryId', 'action', 'expectedVersion', 'reasonCode']),
+      inputSchema: familySchema({ familyRef: { type: 'integer' }, memoryId: { type: 'integer' }, action: { type: 'string', enum: ['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore'] }, expectedVersion: { type: 'integer' }, reasonCode: { type: 'string', maxLength: 80 }, confirmationToken: { type: 'string', maxLength: 2000 }, interactionId: { type: 'string', maxLength: 160 }, replacement: { type: 'object', properties: { content: { type: 'string', maxLength: 220 } }, required: ['content'], additionalProperties: false } }, ['familyRef', 'memoryId', 'action', 'expectedVersion', 'reasonCode', 'confirmationToken', 'interactionId']),
       authorize: () => true,
-      execute: async (context, input) => {
-        const { familyRef, memoryId, action, ...actionInput } = input;
-        const result = await familySalesMemoryApi.action({ familyId: resolveFamily(context, familyRef).id, memoryId, owner: context, action, input: actionInput });
-        return { memories: result.memories.map((memory) => ({ id: memory.id, kind: memory.kind, status: memory.status, content: memory.content, version: memory.version })) };
+      execute: async (context, input, request) => {
+        const { familyRef, memoryId, action, confirmationToken, interactionId, ...actionInput } = input;
+        const result = await familySalesMemoryApi.action({ familyId: resolveFamily(context, familyRef).id, memoryId, owner: context, action, input: actionInput,
+          channel: 'mcp', outerRequestId: request.requestId, confirmationToken, interactionId });
+        return { memories: result.memories.map((memory) => ({ id: memory.id, kind: memory.kind, status: memory.status, content: memory.content, untrustedData: true, version: memory.version })), idempotent: result.idempotent };
       },
     }],
   ];

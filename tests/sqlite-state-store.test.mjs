@@ -142,7 +142,7 @@ test('real extracted family sales memory persists one proposed event with proven
   const cappedSources = store.db.prepare("SELECT source_message_id FROM family_sales_memory_events WHERE event_type = 'reinforced' ORDER BY created_at DESC LIMIT 2").all().map((row) => row.source_message_id).sort();
   assert.deepEqual(cappedSources, [713, 714]);
   assert.equal(JSON.parse(store.db.prepare('SELECT source_message_ids_json FROM family_sales_memories WHERE id = ?').get(result.memories[0].id).source_message_ids_json).length, 12);
-  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, memoryId: result.memories[0].id, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, action: 'confirm', reasonCode: 'advisor_confirmation', actor: { type: 'advisor', id: 1 }, expectedVersion: 1, now: '2026-07-12T05:03:00.000Z' }), { code: 'STALE_INTERACTION' });
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ state, memoryId: result.memories[0].id, familyId: 4, owner: { ownerGuestId: 'guest-extraction' }, action: 'confirm', reasonCode: 'advisor_confirmation', actor: { type: 'advisor', id: 1 }, expectedVersion: 1, now: '2026-07-12T05:03:00.000Z', requestId: 'extract-stale' }), { code: 'STALE_INTERACTION' });
   store.close();
 });
 
@@ -177,7 +177,7 @@ test('durable memory allocation is unique across stores and event history pages 
   second.close();
 });
 
-test('sqlite temporal memories persist immutable ordered events with CAS and rollback', async () => {
+test('sqlite temporal memories persist immutable ordered events with CAS, rollback, and restart-safe action idempotency', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'memory.sqlite');
   const store = await createSqliteStateStore({ dbPath });
@@ -190,14 +190,22 @@ test('sqlite temporal memories persist immutable ordered events with CAS and rol
 
   const transitionBase = { state, memoryId: 101, familyId: 8, owner: { ownerUserId: 1 }, actor: { type: 'advisor', id: 1 } };
   await assert.rejects(store.persistFamilySalesMemoryTransition({ state, bundle: { memories: [{ ...candidate, status: 'confirmed' }], events: [] }, expectedVersion: 1 }), { code: 'INVALID_MEMORY_TRANSITION' });
-  await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'confirm', reasonCode: 'advisor_confirmation', expectedVersion: 1, now: '2026-07-12T02:00:00.000Z' });
-  await assert.rejects(store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'expire', reasonCode: 'expired_by_date', actor: { type: 'service', id: 1 }, expectedVersion: 1, now: '2026-07-12T03:00:00.000Z' }), { code: 'STALE_INTERACTION' });
+  const confirmed = await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'confirm', reasonCode: 'advisor_confirmation', expectedVersion: 1, now: '2026-07-12T02:00:00.000Z', requestId: 'confirm-101', confirmationTokenHash: 'token-hash-101' });
+  const concurrentStore = await createSqliteStateStore({ dbPath });
+  const concurrentState = await concurrentStore.load();
+  const replayed = await concurrentStore.persistFamilySalesMemoryTransition({ ...transitionBase, state: concurrentState, action: 'confirm', reasonCode: 'advisor_confirmation', expectedVersion: 1, now: '2026-07-12T02:00:00.000Z', requestId: 'confirm-101', confirmationTokenHash: 'token-hash-101' });
+  assert.equal(replayed.idempotent, true);
+  assert.deepEqual(replayed.memories, confirmed.memories);
+  assert.equal(concurrentStore.db.prepare("SELECT count(*) AS count FROM memory_action_requests WHERE status = 'completed'").get().count, 1);
+  await assert.rejects(concurrentStore.persistFamilySalesMemoryTransition({ ...transitionBase, state: concurrentState, action: 'expire', reasonCode: 'expired_by_date', actor: { type: 'service', id: 1 }, expectedVersion: 2, now: '2026-07-12T03:00:00.000Z', requestId: 'reuse-token-101', confirmationTokenHash: 'token-hash-101' }), { code: 'CONFIRMATION_TOKEN_REPLAYED' });
+  concurrentStore.close();
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'expire', reasonCode: 'expired_by_date', actor: { type: 'service', id: 1 }, expectedVersion: 1, now: '2026-07-12T03:00:00.000Z', requestId: 'stale-101' }), { code: 'STALE_INTERACTION' });
   const before = store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload;
   const countsBefore = store.db.prepare('SELECT (SELECT count(*) FROM family_sales_memories) AS memories, (SELECT count(*) FROM family_sales_memory_events) AS events').get();
-  await assert.rejects(store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { id: 101, content: '篡改' }, expectedVersion: 2, now: '2026-07-12T03:00:00.000Z' }));
+  await assert.rejects(store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { id: 101, content: '篡改' }, expectedVersion: 2, now: '2026-07-12T03:00:00.000Z', requestId: 'supersede-retry-101' }));
   assert.equal(store.db.prepare('SELECT payload FROM family_sales_memories WHERE id = 101').get().payload, before);
   assert.deepEqual(store.db.prepare('SELECT (SELECT count(*) FROM family_sales_memories) AS memories, (SELECT count(*) FROM family_sales_memory_events) AS events').get(), countsBefore);
-  await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { content: '看完整报告' }, expectedVersion: 2, now: '2026-07-12T04:00:00.000Z' });
+  await store.persistFamilySalesMemoryTransition({ ...transitionBase, action: 'supersede', reasonCode: 'advisor_correction', replacement: { content: '看完整报告' }, expectedVersion: 2, now: '2026-07-12T04:00:00.000Z', requestId: 'supersede-retry-101' });
   for (const id of [101, 102]) {
     const row = store.db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(id);
     const payload = JSON.parse(row.payload);

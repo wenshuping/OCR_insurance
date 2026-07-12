@@ -95,6 +95,7 @@ export type FamilySalesMemory = {
   kind: 'objection' | 'preference' | 'strategy' | 'correction' | 'todo';
   status: FamilySalesMemoryStatus;
   content: string;
+  untrustedData: true;
   normalizedValue?: string;
   version: number;
   validFrom: string | null;
@@ -103,28 +104,29 @@ export type FamilySalesMemory = {
   updatedAt: string;
 };
 export type FamilySalesMemorySections = {
-  current: FamilySalesMemory[];
-  candidates: FamilySalesMemory[];
-  openTodos: FamilySalesMemory[];
-  history: FamilySalesMemory[];
+  current: { items: FamilySalesMemory[]; count: number; nextCursor: string };
+  pending: { items: FamilySalesMemory[]; count: number; nextCursor: string };
+  todos: { items: FamilySalesMemory[]; count: number; nextCursor: string };
+  history: { items: FamilySalesMemory[]; count: number; nextCursor: string };
 };
 export type FamilySalesMemoryEvent = { action: string; previousStatus: string | null; nextStatus: string | null; reasonCode: string; createdAt: string };
 
 type FamilySalesMemoryScope = { token: string; familyId: number; signal?: AbortSignal };
 
-export function getFamilySalesMemories(input: FamilySalesMemoryScope & { status?: string; kind?: string; cursor?: string; limit?: number }) {
+export function getFamilySalesMemories(input: FamilySalesMemoryScope & { section?: 'current' | 'pending' | 'todos' | 'history'; status?: string; kind?: string; cursor?: string; limit?: number }) {
   const query = new URLSearchParams();
   if (input.status) query.set('status', input.status);
+  if (input.section) query.set('section', input.section);
   if (input.kind) query.set('kind', input.kind);
   if (input.cursor) query.set('cursor', input.cursor);
   if (input.limit) query.set('limit', String(input.limit));
   const suffix = query.size ? `?${query}` : '';
-  return request<{ ok: true; sections: FamilySalesMemorySections; nextCursor: string }>(`/api/family-profiles/${input.familyId}/sales-memories${suffix}`, { token: input.token, signal: input.signal });
+  return request<{ ok: true; sections?: FamilySalesMemorySections; section?: string; items?: FamilySalesMemory[]; count?: number; nextCursor?: string }>(`/api/family-profiles/${input.familyId}/sales-memories${suffix}`, { token: input.token, signal: input.signal });
 }
 
-export function applyFamilySalesMemoryAction(input: FamilySalesMemoryScope & { memoryId: number; action: FamilySalesMemoryAction; expectedVersion: number; reasonCode: string; replacement?: { content: string } }) {
+export function applyFamilySalesMemoryAction(input: FamilySalesMemoryScope & { memoryId: number; action: FamilySalesMemoryAction; expectedVersion: number; reasonCode: string; requestId: string; replacement?: { content: string } }) {
   return request<{ ok: true; memories: FamilySalesMemory[] }>(`/api/family-profiles/${input.familyId}/sales-memories/${input.memoryId}/${input.action}`, {
-    token: input.token, body: { expectedVersion: input.expectedVersion, reasonCode: input.reasonCode, ...(input.replacement ? { replacement: input.replacement } : {}) }, signal: input.signal,
+    token: input.token, body: { expectedVersion: input.expectedVersion, reasonCode: input.reasonCode, requestId: input.requestId, ...(input.replacement ? { replacement: input.replacement } : {}) }, signal: input.signal,
   });
 }
 

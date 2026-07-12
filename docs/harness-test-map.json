@@ -22,6 +22,8 @@
       "server/index.mjs",
       "server/wukong-mcp-gateway.service.mjs",
       "server/family-sales-memory-api.service.mjs",
+      "server/family-sales-memory.service.mjs",
+      "server/privacy/public-content.service.mjs",
       "server/agent-skill-router.service.mjs",
       "server/agent-policy-import.service.mjs",
       "server/agent-policy-import-runtime.service.mjs",
