@@ -14,13 +14,11 @@ import { createPolicyRoutes } from './routes/policies.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { createWukongMcpRoutes } from './routes/wukong-mcp.routes.mjs';
-import { createPolicyUploadLinkRoutes } from './routes/policy-upload-link.routes.mjs';
 import { createAdvisorMemoryConfirmationRoutes } from './routes/advisor-memory-confirmation.routes.mjs';
 import { createWukongMcpGateway } from './wukong-mcp-gateway.service.mjs';
 import { createFamilySalesMemoryApi } from './family-sales-memory-api.service.mjs';
 import { createAgentPolicyImportRuntime } from './agent-policy-import-runtime.service.mjs';
 import { createAgentPolicyImportFinalizer } from './agent-policy-import-finalize.service.mjs';
-import { createPolicyUploadLinkService } from './policy-upload-link.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 import {
   allocateId,
@@ -2197,11 +2195,6 @@ export function createPolicyOcrApp(options = {}) {
     recognizePolicyInput: ({ body }) => recognizePolicyInput({ scanner: options.scanner || scanPolicyWithConfiguredRuntime, body, state }),
     finalizeTask: finalizer,
   });
-  const policyUploadLinks = createPolicyUploadLinkService({
-    key: options.policyUploadLinkKey || process.env.POLICY_UPLOAD_LINK_KEY || process.env.WUKONG_MEMORY_CONFIRMATION_KEY,
-    publicBaseUrl: options.publicAppBaseUrl || process.env.PUBLIC_APP_BASE_URL || 'https://ocr.joyhive.cn',
-    now: typeof options.policyUploadLinkNow === 'function' ? options.policyUploadLinkNow : Date.now,
-  });
   const configuredMemoryCursorKey = String(options.familySalesMemoryCursorKey || process.env.FAMILY_SALES_MEMORY_CURSOR_KEY || '');
   if (process.env.NODE_ENV === 'production' && configuredMemoryCursorKey.length < 32) {
     throw new Error('FAMILY_SALES_MEMORY_CURSOR_KEY must be configured in production');
@@ -2231,7 +2224,6 @@ export function createPolicyOcrApp(options = {}) {
     insuranceExpert: options.askInsuranceExpertTool,
     insuranceExpertOptions: options.insuranceExpertToolOptions,
     familySalesMemoryApi,
-    policyUploadLinks,
   });
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
@@ -2708,7 +2700,6 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/auth', createAuthRoutes(routeContext));
   app.use('/api/dingtalk/identity', createDingtalkIdentityRoutes(routeContext));
   app.use('/api/wukong/mcp', createWukongMcpRoutes(routeContext));
-  app.use('/api/policy-upload-links', createPolicyUploadLinkRoutes({ policyUploadLinks, policyImports }));
   app.use('/api/wukong/memory-action-confirmations', createAdvisorMemoryConfirmationRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
   app.use('/api', createFamilyRoutes(routeContext));

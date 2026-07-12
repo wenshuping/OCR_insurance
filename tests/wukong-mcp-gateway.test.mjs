@@ -9,7 +9,6 @@ const PUBLIC_TOOL_NAMES = [
   'resolve_advisor_identity',
   'list_accessible_families',
   'get_family_context',
-  'create_policy_upload_link',
   'start_policy_import',
   'append_policy_import_files',
   'get_policy_import',
