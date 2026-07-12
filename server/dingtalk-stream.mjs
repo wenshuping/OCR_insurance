@@ -1,6 +1,7 @@
 import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import { createDingtalkStreamChannel } from './dingtalk-stream-channel.service.mjs';
 import { createDingtalkMediaDownloader } from './dingtalk-media-runtime.mjs';
+import { createHermesTextAgent } from './hermes-agent-runtime.service.mjs';
 
 function requiredEnv(env, name) {
   const value = String(env[name] || '').trim();
@@ -21,6 +22,10 @@ export async function startDingtalkStream({ env = process.env, Client = DWClient
       client,
       apiBaseUrl: String(env.DINGTALK_API_BASE_URL || '').trim() || 'https://api.dingtalk.com',
       maxBytes: Number(env.DINGTALK_POLICY_MAX_DOCUMENT_BYTES) || undefined,
+    }),
+    answerText: createHermesTextAgent({
+      command: String(env.HERMES_INSURANCE_COMMAND || '').trim() || 'insuranceagent',
+      timeoutMs: Number(env.HERMES_INSURANCE_TIMEOUT_MS) || undefined,
     }),
   });
   client.registerCallbackListener(TOPIC_ROBOT, (event) => {

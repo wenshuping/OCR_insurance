@@ -14,6 +14,7 @@ const WUKONG_REQUEST_KEYS = new Set([
 const WUKONG_PUBLIC_TOOL_NAMES = Object.freeze([
   'resolve_advisor_identity',
   'list_accessible_families',
+  'get_family_context',
   'start_policy_import',
   'append_policy_import_files',
   'get_policy_import',
@@ -142,6 +143,27 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert, fa
             )).length,
           })),
       }),
+    }],
+    ['get_family_context', {
+      name: 'get_family_context', inputSchema: familySchema({ familyRef: { type: 'integer' } }, ['familyRef']), authorize: () => true,
+      execute: (context, input) => {
+        const family = resolveFamily(context, input.familyRef);
+        const policies = (state.policies || []).filter((policy) => (
+          Number(policy.familyId) === Number(family.id)
+          && Number(policy.ownerUserId || policy.userId || 0) === Number(context.userId)
+        ));
+        return {
+          family: { id: family.id, displayLabel: maskDisplay(family.familyName || family.name || '家庭') },
+          memberCount: (state.familyMembers || []).filter((member) => Number(member.familyId) === Number(family.id) && member.status !== 'archived').length,
+          policyCount: policies.length,
+          policies: policies.map((policy) => ({
+            id: policy.id,
+            company: String(policy.company || ''),
+            productName: String(policy.name || policy.productName || ''),
+            insured: maskDisplay(policy.insured || ''),
+          })),
+        };
+      },
     }],
     ['start_policy_import', {
       name: 'start_policy_import', inputSchema: familySchema({ familyRef: { type: 'integer' } }, ['familyRef']), authorize: () => true,

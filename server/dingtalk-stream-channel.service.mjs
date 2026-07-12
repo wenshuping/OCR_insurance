@@ -64,6 +64,7 @@ export function createDingtalkStreamChannel({
   apiBaseUrl = 'http://127.0.0.1:4207',
   fetchImpl = fetch,
   downloadAttachment,
+  answerText,
   policyUploadEnabled = false,
   now = () => Date.now(),
   reportError = (code) => console.warn(`[dingtalk-stream] ${code}`),
@@ -235,9 +236,10 @@ export function createDingtalkStreamChannel({
 
     try {
       await ensureIdentity(dingUserId);
-      await reply(sessionWebhook, '你好，我是企业智能文档助手。发送“上传保单”可开始录入保单，也可以直接发送问题。');
+      if (typeof answerText !== 'function') throw channelError('HERMES_AGENT_NOT_CONFIGURED', 503);
+      await reply(sessionWebhook, await answerText({ dingUserId, text }));
     } catch (error) {
-      reportError(String(error?.code || 'DINGTALK_IDENTITY_FAILED'));
+      reportError(String(error?.code || 'DINGTALK_AGENT_FAILED'));
       await reply(sessionWebhook, safeReply(error?.code));
     }
   }

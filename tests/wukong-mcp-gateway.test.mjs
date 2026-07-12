@@ -8,6 +8,7 @@ const PRINCIPAL = { corpId: 'corp-1', dingUserId: 'ding-1' };
 const PUBLIC_TOOL_NAMES = [
   'resolve_advisor_identity',
   'list_accessible_families',
+  'get_family_context',
   'start_policy_import',
   'append_policy_import_files',
   'get_policy_import',
@@ -169,6 +170,19 @@ test('family listing uses the derived owner and ignores forged owner fields by r
   await assert.rejects(call(gateway, {
     requestId: 'families-2', tool: 'list_accessible_families', input: { ownerUserId: 8, familyId: 12 },
   }), { code: 'INVALID_TOOL_INPUT' });
+});
+
+test('family context returns only owned masked policy summaries', async () => {
+  const state = stateFor();
+  state.policies = [
+    { id: 51, familyId: 11, ownerUserId: 7, company: '可信保险', name: '安心保', insured: '张三' },
+    { id: 52, familyId: 11, ownerUserId: 8, company: '其他保险', name: '不可见', insured: '王五' },
+  ];
+  const result = await call(createWukongMcpGateway({ state }), {
+    requestId: 'family-context', tool: 'get_family_context', input: { familyRef: 11 },
+  });
+  assert.equal(result.policyCount, 1);
+  assert.deepEqual(result.policies, [{ id: 51, company: '可信保险', productName: '安心保', insured: '张**' }]);
 });
 
 test('family listing includes missing status as active and excludes every non-active status', async () => {

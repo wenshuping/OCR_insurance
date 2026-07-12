@@ -32,6 +32,7 @@ function harness(identityResponses = [], options = {}) {
     channel: createDingtalkStreamChannel({
       corpId: 'corp-1', serviceToken: 'service-token', fetchImpl, now: () => 1_000,
       reportError: (code) => errors.push(code),
+      answerText: async () => '自然语言回答',
       ...options,
     }),
   };
@@ -42,7 +43,7 @@ test('channel silently verifies identity and never asks the advisor to bind', as
     { status: 200, body: { status: 'active', maskedMobile: '138****8000' } },
   ]);
   await h.channel.handle({ ...BASE_MESSAGE, text: { content: '你好' } });
-  assert.match(h.replies[0], /上传保单/);
+  assert.equal(h.replies[0], '自然语言回答');
   assert.equal(h.replies.join(' ').includes('绑定'), false);
   const auto = h.requests.find((request) => request.url.endsWith('/auto'));
   assert.equal(auto.options.headers.authorization, 'Bearer service-token');
