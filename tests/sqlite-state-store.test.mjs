@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
 
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
@@ -2002,10 +2003,9 @@ test('sqlite state store atomically consumes owned, unexpired agent action confi
 test('sqlite state store normalizes confirmation timestamps and serializes competing consumers', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
-  const firstStore = await createSqliteStateStore({ dbPath });
-  const secondStore = await createSqliteStateStore({ dbPath });
+  const store = await createSqliteStateStore({ dbPath });
   try {
-    const confirmation = await firstStore.createAgentActionConfirmation({
+    const confirmation = await store.createAgentActionConfirmation({
       id: 'confirm-offset',
       userId: 7,
       action: 'save_memory',
@@ -2015,16 +2015,69 @@ test('sqlite state store normalizes confirmation timestamps and serializes compe
     });
     assert.equal(confirmation.createdAt, '2026-07-12T03:00:00.000Z');
     assert.equal(confirmation.expiresAt, '2026-07-12T04:00:00.000Z');
+    store.close();
 
-    const results = await Promise.all([
-      firstStore.consumeAgentActionConfirmation({ id: confirmation.id, userId: 7, consumedAt: '2026-07-12T11:59:00+08:00' }),
-      secondStore.consumeAgentActionConfirmation({ id: confirmation.id, userId: 7, consumedAt: '2026-07-12T11:59:30+08:00' }),
-    ]);
+    const workerSource = `
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        const { createSqliteStateStore } = await import(workerData.storeModuleUrl);
+        const workerStore = await createSqliteStateStore({ dbPath: workerData.dbPath });
+        parentPort.postMessage({ type: 'ready' });
+        parentPort.once('message', async ({ type }) => {
+          if (type !== 'go') return;
+          try {
+            const result = await workerStore.consumeAgentActionConfirmation(workerData.consumeArgs);
+            parentPort.postMessage({ type: 'result', result });
+          } catch (error) {
+            parentPort.postMessage({ type: 'error', message: error.message, stack: error.stack });
+          } finally {
+            workerStore.close();
+          }
+        });
+      })().catch((error) => parentPort.postMessage({ type: 'error', message: error.message, stack: error.stack }));
+    `;
+    const storeModuleUrl = new URL('../server/sqlite-state-store.mjs', import.meta.url).href;
+    const createConsumer = (consumedAt) => {
+      const worker = new Worker(workerSource, {
+        eval: true,
+        workerData: {
+          dbPath,
+          storeModuleUrl,
+          consumeArgs: { id: confirmation.id, userId: 7, consumedAt },
+        },
+      });
+      const ready = new Promise((resolve, reject) => {
+        worker.once('message', (message) => message.type === 'ready' ? resolve() : reject(new Error(message.stack || message.message)));
+        worker.once('error', reject);
+      });
+      const result = new Promise((resolve, reject) => {
+        const onMessage = (message) => {
+          if (message.type === 'result') resolve(message.result);
+          if (message.type === 'error') reject(new Error(message.stack || message.message));
+        };
+        worker.on('message', onMessage);
+        worker.once('error', reject);
+        worker.once('exit', (code) => {
+          if (code !== 0) reject(new Error(`confirmation worker exited with code ${code}`));
+        });
+      });
+      return { worker, ready, result };
+    };
+    const consumers = [
+      createConsumer('2026-07-12T11:59:00+08:00'),
+      createConsumer('2026-07-12T11:59:30+08:00'),
+    ];
+    await Promise.all(consumers.map((consumer) => consumer.ready));
+    for (const consumer of consumers) consumer.worker.postMessage({ type: 'go' });
+    const results = await Promise.all(consumers.map((consumer) => consumer.result));
     assert.deepEqual(results.map((row) => row.status).sort(), ['already_consumed', 'consumed']);
     assert.equal(results.find((row) => row.status === 'consumed').consumedAt, '2026-07-12T03:59:00.000Z');
   } finally {
-    secondStore.close();
-    firstStore.close();
+    try {
+      store.close();
+    } catch {
+      // The store is closed before workers open independent connections.
+    }
   }
 });
 
