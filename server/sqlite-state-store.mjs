@@ -290,7 +290,8 @@ function mapAgentActionConfirmation(row, status = row?.status) {
 function mapAgentRouteAuditEvent(row) {
   return {
     id: Number(row.id),
-    policyVersion: Number(row.policy_version),
+    policyVersion: row.policy_version === null ? null : Number(row.policy_version),
+    policySource: String(row.policy_source || 'published'),
     userId: Number(row.user_id),
     messageRef: String(row.message_ref || ''),
     decision: String(row.decision || ''),
@@ -298,6 +299,45 @@ function mapAgentRouteAuditEvent(row) {
     createdAt: String(row.created_at || ''),
     payload: parseJson(row.payload, {}),
   };
+}
+
+function ensureAgentRouteAuditSchema(db) {
+  const columns = db.prepare('PRAGMA table_info(agent_route_audit_events)').all();
+  const policyVersion = columns.find((column) => column.name === 'policy_version');
+  const hasPolicySource = columns.some((column) => column.name === 'policy_source');
+  if (hasPolicySource && Number(policyVersion?.notnull || 0) === 0) return;
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`
+      ALTER TABLE agent_route_audit_events RENAME TO agent_route_audit_events_legacy;
+      CREATE TABLE agent_route_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        policy_version INTEGER,
+        policy_source TEXT NOT NULL CHECK (policy_source IN ('published', 'built_in')),
+        user_id INTEGER NOT NULL,
+        message_ref TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      INSERT INTO agent_route_audit_events (
+        id, policy_version, policy_source, user_id, message_ref, decision, actor, created_at, payload
+      )
+      SELECT id, policy_version, 'published', user_id, message_ref, decision, actor, created_at, payload
+      FROM agent_route_audit_events_legacy;
+      DROP TABLE agent_route_audit_events_legacy;
+      CREATE INDEX idx_agent_route_audit_events_user_created
+        ON agent_route_audit_events(user_id, created_at DESC, id DESC);
+      CREATE INDEX idx_agent_route_audit_events_message_ref
+        ON agent_route_audit_events(message_ref);
+    `);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 function normalizePolicyDerivedResult(row = {}) {
@@ -901,7 +941,8 @@ function createSchema(db) {
 
     CREATE TABLE IF NOT EXISTS agent_route_audit_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      policy_version INTEGER NOT NULL,
+      policy_version INTEGER,
+      policy_source TEXT NOT NULL CHECK (policy_source IN ('published', 'built_in')),
       user_id INTEGER NOT NULL,
       message_ref TEXT NOT NULL,
       decision TEXT NOT NULL,
@@ -917,6 +958,7 @@ function createSchema(db) {
       payload TEXT NOT NULL
     );
   `);
+  ensureAgentRouteAuditSchema(db);
   ensureCashflowTable(db);
   ensureCashValueTable(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
@@ -2437,6 +2479,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
   if (!dbPath) throw new Error('POLICY_OCR_APP_DB_PATH is required');
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA busy_timeout = 5000');
   createSchema(db);
 
   async function loadSeedState() {
@@ -3145,24 +3188,40 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
-  async function appendAgentRouteAuditEvent({ policyVersion, userId, messageRef = '', decision = '', actor = '', createdAt = '', payload = {} } = {}) {
+  async function appendAgentRouteAuditEvent({ policyVersion, policySource = '', userId, messageRef = '', decision = '', actor = '', createdAt = '', payload = {} } = {}) {
     const numericPolicyVersion = Number(policyVersion);
+    const normalizedPolicySource = String(policySource || (policyVersion == null ? 'built_in' : 'published')).trim();
     const numericUserId = Number(userId);
     const normalizedMessageRef = String(messageRef || '').trim();
     const normalizedDecision = String(decision || '').trim();
     const normalizedActor = String(actor || '').trim();
-    if (!Number.isInteger(numericPolicyVersion) || numericPolicyVersion <= 0 || !Number.isInteger(numericUserId) || numericUserId <= 0 || !normalizedMessageRef || !normalizedDecision || !normalizedActor) {
-      throw new TypeError('Agent route audit policyVersion, userId, messageRef, decision, and actor are required');
+    const validPublishedVersion = normalizedPolicySource === 'published' && Number.isInteger(numericPolicyVersion) && numericPolicyVersion > 0;
+    const validBuiltInVersion = normalizedPolicySource === 'built_in' && policyVersion == null;
+    if ((!validPublishedVersion && !validBuiltInVersion) || !Number.isInteger(numericUserId) || numericUserId <= 0 || !normalizedMessageRef || !normalizedDecision || !normalizedActor) {
+      throw new TypeError('Agent route audit policy source/version, userId, messageRef, decision, and actor are required');
     }
-    if (!db.prepare('SELECT 1 FROM agent_question_policy_versions WHERE version = ?').get(numericPolicyVersion)) {
+    if (normalizedPolicySource === 'published' && !db.prepare('SELECT 1 FROM agent_question_policy_versions WHERE version = ?').get(numericPolicyVersion)) {
       throw new Error('Agent route audit policy version not found');
     }
     const serializedPayload = serializeAgentPayload(payload, 'Agent route audit payload');
     const result = db.prepare(`
-      INSERT INTO agent_route_audit_events (policy_version, user_id, message_ref, decision, actor, created_at, payload)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(numericPolicyVersion, numericUserId, normalizedMessageRef, normalizedDecision, normalizedActor, String(createdAt || new Date().toISOString()), serializedPayload);
+      INSERT INTO agent_route_audit_events (policy_version, policy_source, user_id, message_ref, decision, actor, created_at, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(validPublishedVersion ? numericPolicyVersion : null, normalizedPolicySource, numericUserId, normalizedMessageRef, normalizedDecision, normalizedActor, String(createdAt || new Date().toISOString()), serializedPayload);
     return mapAgentRouteAuditEvent(db.prepare('SELECT * FROM agent_route_audit_events WHERE id = ?').get(result.lastInsertRowid));
+  }
+
+  async function recordAgentRouteAudit(audit = {}) {
+    return appendAgentRouteAuditEvent({
+      policyVersion: audit.policyVersion,
+      policySource: audit.policySource,
+      userId: audit.userId,
+      messageRef: audit.messageRef,
+      decision: audit.decision,
+      actor: audit.actor,
+      createdAt: audit.createdAt,
+      payload: audit,
+    });
   }
 
   async function listAgentRouteAuditEvents({ limit = 20, userId } = {}) {
@@ -3225,6 +3284,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     createAgentActionConfirmation,
     consumeAgentActionConfirmation,
     appendAgentRouteAuditEvent,
+    recordAgentRouteAudit,
     listAgentRouteAuditEvents,
     close,
   };

@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
 
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
+import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
@@ -2120,6 +2121,99 @@ test('sqlite state store persists traceable bounded agent route audit events', a
   await assert.rejects(
     store.appendAgentRouteAuditEvent({ policyVersion: 3, userId: 7, messageRef: 'msg-route-6', decision: 'execute', actor: 'router', payload: { invalid: Infinity } }),
     /valid JSON values/i,
+  );
+  store.close();
+});
+
+test('sqlite state store persists complete built-in router audits without a published policy version', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const router = createAgentQuestionRouter({
+    store,
+    handlers: { sales_champion: async () => ({ interaction: { type: 'answer', text: '你好' } }) },
+    clock: () => new Date('2026-07-12T08:00:00.000Z'),
+  });
+
+  assert.equal((await router.route({
+    internalUserId: 7,
+    messageRef: 'msg-built-in-chat',
+    candidate: { intent: 'chat', question: '你好', confidence: 0.9, requestedOperation: 'read' },
+  })).decision, 'execute');
+  assert.equal((await router.route({
+    internalUserId: 7,
+    messageRef: 'msg-built-in-unknown',
+    candidate: { intent: 'unregistered', question: '查一下', confidence: 0.9, requestedOperation: 'read' },
+  })).decision, 'open_web');
+
+  const rows = await store.listAgentRouteAuditEvents({ userId: 7 });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].policyVersion, null);
+  assert.equal(rows[0].policySource, 'built_in');
+  assert.equal(rows[0].payload.policyKey, 'unknown_read');
+  assert.equal(rows[0].payload.candidate.intent, 'unregistered');
+  assert.equal(rows[0].payload.candidate.confidence, 0.9);
+  assert.deepEqual(rows[0].payload.authorizedResourceIds, []);
+  assert.equal(rows[0].payload.result, 'unknown_read_fallback');
+  assert.equal(rows[1].payload.result, 'handled');
+  store.close();
+});
+
+test('built-in route audit migrates the legacy non-null policy version table', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE agent_route_audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_version INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      message_ref TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+  `);
+  legacy.close();
+
+  const store = await createSqliteStateStore({ dbPath });
+  await store.recordAgentRouteAudit({
+    policyVersion: null,
+    policySource: 'built_in',
+    userId: 7,
+    messageRef: 'msg-migrated',
+    decision: 'open_web',
+    actor: 'router',
+    candidate: { intent: 'unknown', entities: {}, confidence: 0.5 },
+    policyKey: 'unknown_read',
+    authorizedResourceIds: [],
+    fallback: true,
+    result: 'unknown_read_fallback',
+  });
+  const [row] = await store.listAgentRouteAuditEvents({ userId: 7 });
+  assert.equal(row.policyVersion, null);
+  assert.equal(row.policySource, 'built_in');
+  store.close();
+});
+
+test('published route audit still rejects a missing policy version', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  await assert.rejects(
+    store.recordAgentRouteAudit({
+      policyVersion: 999,
+      policySource: 'published',
+      userId: 7,
+      messageRef: 'msg-missing-policy',
+      decision: 'execute',
+      actor: 'router',
+      candidate: { intent: 'chat', entities: {}, confidence: 1 },
+      policyKey: 'chat',
+      authorizedResourceIds: [],
+      fallback: false,
+      result: 'handled',
+    }),
+    /policy version.*not found/i,
   );
   store.close();
 });
