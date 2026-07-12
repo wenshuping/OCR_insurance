@@ -115,6 +115,18 @@ test('simulation uses router confidence and authorized-family decisions without 
     const unauthorized = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate: { intent: 'coverage_report', requestedOperation: 'read', confidence: 1, entities: { familyName: '甲家庭' } } } });
     assert.equal(unauthorized.body.decision.decision, 'clarify');
     assert.equal(unauthorized.body.decision.familyResolved, false);
+    const state = await h.store.load();
+    state.familyProfiles.push({ id: 91, ownerUserId: 7, familyName: '甲家庭', status: 'active', members: [] });
+    await h.store.persist(state);
+    const tableCounts = () => Object.fromEntries(h.store.db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(({ name }) => [name, Number(h.store.db.prepare(`SELECT count(*) count FROM ${name}`).get().count)]));
+    const before = tableCounts();
+    const authorized = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate: { intent: 'coverage_report', requestedOperation: 'read', confidence: 1, entities: { familyName: '甲家庭' } } } });
+    assert.equal(authorized.body.decision.decision, 'execute');
+    assert.equal(authorized.body.decision.familyResolved, true);
+    const write = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate: { intent: 'transfer_preview', requestedOperation: 'write', confidence: 1 } } });
+    assert.equal(write.body.decision.result, 'write_preview');
+    assert.equal(write.body.decision.decision, 'confirm');
+    assert.deepEqual(tableCounts(), before);
   } finally { await h.close(); }
 });
 
