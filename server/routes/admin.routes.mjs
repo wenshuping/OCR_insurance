@@ -178,7 +178,7 @@ export function createAdminRoutes(context) {
       const fallback = ['unknown_read', 'unknown_write'].includes(policy.key);
       const policySource = version ? version.status : 'built_in';
       const explanation = fallback
-        ? `Fallback ${policy.key} for requestedOperation ${candidate.requestedOperation || 'read'} from built-in policy.`
+        ? `Fallback ${policy.key} for requestedOperation ${candidate.requestedOperation || 'read'} from ${policySource.replace('_', '-')} policy.`
         : `Selected ${policy.key} from ${policySource} policy for intent ${candidate.intent}.`;
       res.json({ ok: true, previewOnly: true, decision: { policyKey: policy.key, policySource, intent: policy.intent, decision: policy.decision, handler: policy.handler, operation: policy.operation, tool: policy.tool, confirmationRequired: policy.confirmation === 'required', outputMode: policy.outputMode, fallback, explanation } });
     } catch (error) { sendPolicyError(res, error); }

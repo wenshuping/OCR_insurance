@@ -123,10 +123,12 @@ test('simulation requires a positive draft id and an existing draft version', as
     const draft = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
     const draftFallback = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate: { intent: 'missing', requestedOperation: 'read' } } });
     assert.equal(draftFallback.body.decision.policySource, 'draft');
+    assert.match(draftFallback.body.decision.explanation, /draft policy/iu);
     await call(h, `/api/admin/agent-question-policies/drafts/${draft.body.draft.id}/publish`, { method: 'POST', body: {} });
     assert.equal((await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate } })).status, 409);
     const publishedFallback = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { candidate: { intent: 'missing', requestedOperation: 'read' } } });
     assert.equal(publishedFallback.body.decision.policySource, 'published');
+    assert.match(publishedFallback.body.decision.explanation, /published policy/iu);
   } finally { await h.close(); }
 });
 
