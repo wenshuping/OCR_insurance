@@ -100,11 +100,24 @@ const app = createPolicyOcrApp({
   markPolicyDerivedResultsStaleByProductKeys: store.markPolicyDerivedResultsStaleByProductKeys,
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
+  agentStore: store,
   db: store.db,
 });
 
-app.listen(port, host, () => {
+const server = app.listen(port, host, () => {
   console.log(`[policy-ocr-app] API listening on http://${host}:${port}`);
   console.log(`[policy-ocr-app] db=${dbPath}`);
   if (statePath) console.log(`[policy-ocr-app] seed-state=${statePath}`);
 });
+
+let closed = false;
+function closeRuntime() {
+  if (closed) return;
+  closed = true;
+  app.locals.transferRegenerationRecovery?.stop?.();
+  store.close();
+}
+server.once('close', closeRuntime);
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => server.close());
+}

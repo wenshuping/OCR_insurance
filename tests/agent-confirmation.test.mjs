@@ -125,6 +125,32 @@ test('application starts transfer recovery immediately and stops its retry timer
   assert.equal(cleared, true);
 });
 
+test('real app composition drains persisted sales regeneration work on startup', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-composition-'));
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'state.sqlite') });
+  await store.load();
+  await store.persist({
+    ...createInitialState(),
+    familyProfiles: [{ id: 20, ownerUserId: 7, familyName: '恢复家庭', status: 'active' }],
+    familyMembers: [{ id: 201, familyId: 20, name: '成员', status: 'active' }],
+    policies: [],
+  });
+  store.db.prepare(`INSERT INTO agent_policy_transfer_regeneration_outbox
+    (confirmation_id,user_id,family_id,job_type,dedupe_key,status,attempts,last_error,claim_token,lease_until,created_at,updated_at,dispatched_at)
+    VALUES (?,?,?,?,?,'pending',0,'','','',?,?,'')`).run('boot-1', 7, 20, 'family_sales_review', 'boot-sales-20', NOW, NOW);
+  const app = createPolicyOcrApp({
+    state: await store.load(), agentStore: store,
+    persistFamilyState: store.persistFamilyState, persistFamilyReportState: store.persistFamilyReportState,
+    generateFamilySalesReview: async () => ({ content: '已恢复销售建议', model: 'test', generatedAt: NOW, inputSummary: {} }),
+    agentTransferRecoveryOptions: { workerId: 'bootstrap-worker', now: () => NOW, setIntervalFn() { return { unref() {} }; }, clearIntervalFn() {} },
+  });
+  assert.deepEqual(await app.locals.transferRegenerationRecovery.initialDrain, { dispatched: 1, failed: 0 });
+  assert.equal((await store.load()).familySalesReviews[0].content, '已恢复销售建议');
+  assert.equal(store.db.prepare('SELECT status FROM agent_policy_transfer_regeneration_outbox').get().status, 'dispatched');
+  app.locals.transferRegenerationRecovery.stop();
+  store.close();
+});
+
 async function sqliteTransferHarness() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-transfer-integration-'));
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'state.sqlite') });

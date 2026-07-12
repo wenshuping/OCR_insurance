@@ -6,6 +6,10 @@ import { codeFromError } from './http/errors.mjs';
 import { createAdminRoutes } from './routes/admin.routes.mjs';
 import { createAgentRouter } from './routes/agent.routes.mjs';
 import { startTransferRegenerationRecovery } from './agent-confirmation.service.mjs';
+import { createAgentConfirmationService } from './agent-confirmation.service.mjs';
+import { createAgentReportRegenerationQueue } from './agent-report-regeneration-queue.service.mjs';
+import { createAgentQuestionHandlers } from './agent-question-handlers.service.mjs';
+import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
@@ -2567,23 +2571,66 @@ export function createPolicyOcrApp(options = {}) {
 
   const app = express();
   app.locals.state = state;
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      service: 'policy-ocr-app',
+      startedAt: runtimeInfo.startedAt,
+      sessionId: runtimeInfo.sessionId,
+    });
+  });
+
+  let familyRegenerationWorkflow = null;
+  const familyRoutes = createFamilyRoutes({
+    ...routeContext,
+    registerFamilyReportRegenerationService(service) { familyRegenerationWorkflow = service; },
+  });
+  const agentStore = options.agentStore || options.agentTransferRegenerationStore || null;
+  const agentReportQueue = options.agentReportQueue || (agentStore && familyRegenerationWorkflow
+    ? createAgentReportRegenerationQueue({ state, workflow: familyRegenerationWorkflow, familyOwnerMatches })
+    : null);
+  const canCreateAgentConfirmation = agentStore
+    && typeof agentStore.createAgentActionConfirmation === 'function'
+    && typeof agentStore.transferPolicyBetweenFamilies === 'function';
+  const agentConfirmationService = options.agentConfirmationService || (canCreateAgentConfirmation && agentReportQueue
+    ? createAgentConfirmationService({ store: agentStore, loadState: () => agentStore.load(), reportQueue: agentReportQueue })
+    : null);
+  const baseAgentHandlers = options.agentQuestionHandlers || (agentStore && typeof agentStore.load === 'function'
+    ? createAgentQuestionHandlers({
+      store: agentStore,
+      reportQueue: agentReportQueue,
+      authorizedFamilyDataLoader: async ({ familyId, internalUserId }) => {
+        const current = await agentStore.load();
+        const family = (current.familyProfiles || []).find((row) => Number(row.id) === Number(familyId) && familyOwnerMatches(row, { userId: internalUserId }));
+        return family ? { family, state: current } : null;
+      },
+    })
+    : null);
+  const agentHandlers = baseAgentHandlers && agentConfirmationService ? {
+    ...baseAgentHandlers,
+    system: async (input) => input.intent === 'transfer_preview'
+      ? agentConfirmationService.previewPolicyTransfer({ userId: input.internalUserId, ...(input.entities || {}) })
+      : baseAgentHandlers.system(input),
+  } : baseAgentHandlers;
+  const agentQuestionRouter = options.agentQuestionRouter || (agentStore && agentHandlers
+    ? createAgentQuestionRouter({ store: agentStore, handlers: agentHandlers })
+    : null);
   const recoveryOptions = {
     intervalMs: options.agentTransferRecoveryIntervalMs,
     disabled: options.disableAgentTransferRecovery === true,
+    onError: (error) => console.error('[agent-transfer-recovery] drain failed', error?.code || error?.name || 'error'),
     ...(options.agentTransferRecoveryOptions || {}),
   };
-  const recovery = typeof options.agentConfirmationService?.startRecovery === 'function'
-    ? options.agentConfirmationService.startRecovery(recoveryOptions)
-    : options.agentTransferRegenerationStore && options.agentReportQueue
-      ? startTransferRegenerationRecovery({ store: options.agentTransferRegenerationStore, reportQueue: options.agentReportQueue, ...recoveryOptions })
-      : null;
+  const recovery = agentConfirmationService?.startRecovery(recoveryOptions)
+    || (agentStore && agentReportQueue ? startTransferRegenerationRecovery({ store: agentStore, reportQueue: agentReportQueue, ...recoveryOptions }) : null);
   if (recovery) {
     app.locals.transferRegenerationRecovery = recovery;
     app.once('close', () => recovery.stop());
   }
+  app.locals.agentConfirmationService = agentConfirmationService;
   app.use('/api/agent', createAgentRouter({
-    questionRouter: options.agentQuestionRouter,
-    confirmationService: options.agentConfirmationService,
+    questionRouter: agentQuestionRouter,
+    confirmationService: agentConfirmationService,
     resolveChannelIdentity: options.resolveDingTalkIdentity,
     verifyAgentServiceRequest: options.verifyAgentServiceRequest,
     secureUploadLinkFactory: options.agentSecureUploadLinkFactory,
@@ -2596,21 +2643,11 @@ export function createPolicyOcrApp(options = {}) {
       req.rawBody = buf.toString('utf8');
     },
   }));
-
-  app.get('/api/health', (_req, res) => {
-    res.json({
-      ok: true,
-      service: 'policy-ocr-app',
-      startedAt: runtimeInfo.startedAt,
-      sessionId: runtimeInfo.sessionId,
-    });
-  });
-
   app.use('/api/wechat', createWechatRoutes(routeContext));
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
   app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
-  app.use('/api', createFamilyRoutes(routeContext));
+  app.use('/api', familyRoutes);
   app.use('/api/membership', createMembershipRoutes(routeContext));
   app.use('/api', createPolicyRoutes(routeContext));
   app.use('/api', createCashflowRoutes(routeContext));

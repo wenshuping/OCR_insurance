@@ -95,11 +95,11 @@ export async function dispatchPendingTransferRegenerationJobs({ store, reportQue
   };
 }
 
-export function startTransferRegenerationRecovery({ store, reportQueue, intervalMs = 30_000, disabled = false, setIntervalFn = setInterval, clearIntervalFn = clearInterval, ...dispatchOptions } = {}) {
+export function startTransferRegenerationRecovery({ store, reportQueue, intervalMs = 30_000, disabled = false, setIntervalFn = setInterval, clearIntervalFn = clearInterval, onError = () => {}, ...dispatchOptions } = {}) {
   const drain = () => dispatchPendingTransferRegenerationJobs({ store, reportQueue, ...dispatchOptions });
   if (disabled) return { initialDrain: Promise.resolve({ dispatched: 0, failed: 0 }), drain, stop() {} };
-  const initialDrain = drain();
-  const timer = setIntervalFn(() => { void drain(); }, Math.max(1_000, Number(intervalMs) || 30_000));
+  const initialDrain = drain().catch((error) => { onError(error); return { dispatched: 0, failed: 1 }; });
+  const timer = setIntervalFn(() => { void drain().catch(onError); }, Math.max(1_000, Number(intervalMs) || 30_000));
   timer?.unref?.();
   return { initialDrain, drain, stop() { clearIntervalFn(timer); } };
 }

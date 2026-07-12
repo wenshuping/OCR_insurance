@@ -1,3 +1,4 @@
+import { createFamilyReportRegenerationService } from '../family-report-regeneration.service.mjs';
 import crypto from 'node:crypto';
 import express from 'express';
 import { buildFamilyReport } from '../../src/family-report-engine.mjs';
@@ -263,6 +264,19 @@ export function createFamilyRoutes(context) {
         familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })
       ))
       .map(attachPolicyForFamilyReview);
+  }
+
+  function refreshFamilyCashflowsForAnalysis(family, owner) {
+    if (typeof computeAndStoreCashflow !== 'function') return;
+    for (const policy of state.policies || []) {
+      if (Number(policy?.familyId || 0) !== Number(family?.id || 0)) continue;
+      if (!familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })) continue;
+      try {
+        computeAndStoreCashflow(policy);
+      } catch (error) {
+        console.warn(`[family-analysis] Failed to refresh cashflow policy=${policy?.id || ''}: ${error instanceof Error ? error.message : error}`);
+      }
+    }
   }
 
   function policySummaryForFamily(family, owner) {
@@ -729,6 +743,19 @@ export function createFamilyRoutes(context) {
     };
   }
 
+  const policiesForSalesReview = (family, owner) => (state.policies || [])
+    .filter((policy) => Number(policy?.familyId || 0) === Number(family.id) && familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId }))
+    .map(attachPolicyForFamilyReview);
+  const regenerationService = createFamilyReportRegenerationService({
+    state, allocateId, listFamilyMembers, policiesForFamilyReport, policiesForSalesReview,
+    repairFamilyMembersBeforeReview, refreshFamilyCashflowsForAnalysis, buildFamilyReport,
+    createFamilyReportRecord, appendDeepSeekReportIssues, refreshFamilyReportWithTrustedCorrections,
+    buildFamilySalesReviewInput, generateFamilySalesReview: generateFamilySalesReviewImpl,
+    archiveSalesReviewForFamily, ownerFields, persistFamilyReportState: saveFamilyReportState,
+    persistFamilyState: saveFamilyState, nowIso,
+  });
+  context.registerFamilyReportRegenerationService?.(regenerationService);
+
   router.get('/family-profiles', async (req, res) => {
     const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
     if (!owner) return undefined;
@@ -1074,29 +1101,7 @@ export function createFamilyRoutes(context) {
       if (userRefresh && typeof assertUserReportRefreshAllowed === 'function') {
         assertUserReportRefreshAllowed(state, owner, 'familyReport', { familyId: family.id, now });
       }
-      await repairFamilyMembersBeforeReview(family);
-      const members = listFamilyMembers(state, family.id);
-      const policies = policiesForFamilyReport(family, owner);
-      const familyReport = buildFamilyReport(policies, req.body?.planningProfile || null, { familyId: family.id });
-      const { record } = createFamilyReportRecord({
-        state,
-        family,
-        owner,
-        members,
-        policies,
-        report: familyReport,
-        planningProfile: req.body?.planningProfile || null,
-        allocateId,
-      });
-      await appendDeepSeekReportIssues({
-        record,
-        family,
-        members,
-        policies,
-        report: record.report,
-        planningProfile: req.body?.planningProfile || null,
-      });
-      refreshFamilyReportWithTrustedCorrections({ record, family, owner, members, policies });
+      const record = await regenerationService.regenerateCoverage({ family, owner, planningProfile: req.body?.planningProfile || null });
       if (userRefresh && typeof recordUserReportRefresh === 'function') {
         recordUserReportRefresh(state, owner, 'familyReport', {
           familyId: family.id,
@@ -1105,7 +1110,7 @@ export function createFamilyRoutes(context) {
           allocateId,
         });
       }
-      await saveFamilyReportState();
+      if (userRefresh) await saveFamilyReportState();
       return res.json({ ok: true, reportRecord: clientFamilyReportRecord(record) });
     } catch (error) {
       return sendError(res, error, error?.status || 500);
@@ -1126,55 +1131,13 @@ export function createFamilyRoutes(context) {
       if (userRefresh && typeof assertUserReportRefreshAllowed === 'function') {
         assertUserReportRefreshAllowed(state, owner, 'familySalesReview', { familyId: family.id, now });
       }
-      await repairFamilyMembersBeforeReview(family);
-      const members = listFamilyMembers(state, family.id);
-      const policies = (state.policies || [])
-        .filter((policy) => (
-          Number(policy?.familyId || 0) === Number(family.id) &&
-          familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId })
-        ))
-        .map(attachPolicyForFamilyReview);
-      const planningProfile = family.planningProfile || null;
-      const familyReport = buildFamilyReport(policies, planningProfile, { familyId: family.id });
-      const input = buildFamilySalesReviewInput({
-        family,
-        members,
-        policies,
-        familyReport,
-        planningProfile,
-        knowledgeRecords: state.knowledgeRecords || [],
-        indicatorRecords: state.insuranceIndicatorRecords || [],
-        optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
-      });
       const salesChatContext = salesChatContextForSalesReview(
         family.id,
         owner,
         selectedSalesChatMessageIdsForSalesReview(req),
       );
       const salesMemoryContext = salesMemoryContextForFamily(family.id, owner);
-      if (salesMemoryContext) input.salesMemoryContext = salesMemoryContext;
-      if (salesChatContext) input.salesChatContext = salesChatContext;
-      const review = await generateFamilySalesReviewImpl({ input });
-      const reviewOwner = ownerFields(owner);
-      const reviewRecord = {
-        id: allocateId(state),
-        familyId: Number(family.id),
-        ownerUserId: reviewOwner.ownerUserId,
-        ownerGuestId: reviewOwner.ownerGuestId,
-        status: 'active',
-        content: review.content,
-        model: review.model,
-        generatedAt: review.generatedAt || now,
-        createdAt: now,
-        updatedAt: now,
-        inputSummary: {
-          ...(review.inputSummary || {}),
-          familyId: Number(family.id),
-        },
-      };
-      state.familySalesReviews = Array.isArray(state.familySalesReviews) ? state.familySalesReviews : [];
-      archiveSalesReviewForFamily(family.id, owner);
-      state.familySalesReviews.push(reviewRecord);
+      const reviewRecord = await regenerationService.regenerateSalesReview({ family, owner, salesChatContext, salesMemoryContext });
       if (userRefresh && typeof recordUserReportRefresh === 'function') {
         recordUserReportRefresh(state, owner, 'familySalesReview', {
           familyId: family.id,
@@ -1183,7 +1146,7 @@ export function createFamilyRoutes(context) {
           allocateId,
         });
       }
-      await saveFamilyState();
+      if (userRefresh) await saveFamilyState();
       return res.json({ ok: true, review: clientSalesReview(reviewRecord) });
     } catch (error) {
       return sendError(res, error, error?.status || 500);

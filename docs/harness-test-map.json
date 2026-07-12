@@ -199,6 +199,12 @@
     "name": "agent-policy-transfer-confirmation",
     "patterns": [
       "server/agent-confirmation.service.mjs",
+      "server/agent-report-regeneration-queue.service.mjs",
+      "server/family-report-regeneration.service.mjs",
+      "server/agent-question-router.service.mjs",
+      "server/app.mjs",
+      "server/index.mjs",
+      "server/routes/families.routes.mjs",
       "server/sqlite-state-store.mjs",
       "tests/agent-confirmation.test.mjs",
       "tests/sqlite-state-store.test.mjs"

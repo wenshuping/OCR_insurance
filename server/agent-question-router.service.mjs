@@ -300,6 +300,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       internalUserId: userId,
       intent: candidate.intent,
       question: candidate.question,
+      ...(policy?.key === 'transfer_preview' ? { entities: candidate.entities } : {}),
       ...(family ? { familyId: Number(family.id) } : {}),
     };
     let handled;
