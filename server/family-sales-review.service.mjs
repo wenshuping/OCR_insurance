@@ -26,6 +26,18 @@ const ID_NUMBER_TOKEN_PATTERN = /\{\{id_number_\d+\}\}/gu;
 const CHINA_ID_NUMBER_PATTERN = /\b(?:[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3})\b/gu;
 const SENSITIVE_ID_KEY_PATTERN = /(?:idNumber|idCard|identityNumber|certificateNumber|certificateNo|certNumber|certNo|cardNumber|cardNo|证件号码|身份证号码)/iu;
 
+export function resolveFamilySalesReviewFreshness(review = null, { sourceUpdatedAt = '' } = {}) {
+  if (!review || String(review.status || 'active') !== 'active') return { status: 'missing', review: null, generatedAt: '' };
+  const generatedAt = String(review.generatedAt || '').trim();
+  if (!generatedAt) return { status: 'stale', review, generatedAt: '' };
+  const latestSourceAt = String(sourceUpdatedAt || review.sourceUpdatedAt || '').trim();
+  return {
+    status: latestSourceAt && latestSourceAt > generatedAt ? 'stale' : 'fresh',
+    review,
+    generatedAt,
+  };
+}
+
 function trim(value) {
   return String(value || '').trim();
 }

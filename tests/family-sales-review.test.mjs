@@ -4,6 +4,7 @@ import {
   buildFamilySalesReviewInput,
   buildFamilySalesReviewMessages,
   generateFamilySalesReview,
+  resolveFamilySalesReviewFreshness,
 } from '../server/family-sales-review.service.mjs';
 import {
   buildFamilySalesChatMessages,
@@ -14,6 +15,13 @@ import {
   normalizeExtractedFamilySalesMemories,
   upsertFamilySalesMemories,
 } from '../server/family-sales-memory.service.mjs';
+
+test('sales review freshness follows active status, generatedAt, and current source timestamp', () => {
+  const review = { status: 'active', generatedAt: '2026-07-11T00:00:00.000Z' };
+  assert.equal(resolveFamilySalesReviewFreshness(review, { sourceUpdatedAt: '2026-07-10T00:00:00.000Z' }).status, 'fresh');
+  assert.equal(resolveFamilySalesReviewFreshness(review, { sourceUpdatedAt: '2026-07-12T00:00:00.000Z' }).status, 'stale');
+  assert.equal(resolveFamilySalesReviewFreshness({ status: 'archived', generatedAt: '2026-07-11T00:00:00.000Z' }).status, 'missing');
+});
 
 test('family sales review input keeps members without policies and official evidence', () => {
   const family = { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active', notes: '家庭年收入约80万，偏好稳健方案，张三身份证110101198606141234仅本地核验' };

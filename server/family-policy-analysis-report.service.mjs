@@ -18,6 +18,26 @@ const DEFAULT_REASONING_EFFORT = 'high';
 const THINKING_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const PRO_MODEL = 'deepseek-v4-pro';
 
+const COMPLETE_REPORT_STATUSES = new Set(['complete', 'completed', 'ready', 'success']);
+
+export function resolveFamilyPolicyAnalysisReportFreshness(record = null, { sourceUpdatedAt = '' } = {}) {
+  if (!record || String(record.status || 'active') !== 'active') return { status: 'missing', report: null, generatedAt: '' };
+  const report = record?.report?.familyPolicyAnalysisReport || null;
+  if (!report) return { status: 'missing', report: null, generatedAt: '' };
+  const reportStatus = String(report.status || '').trim().toLowerCase();
+  if (!COMPLETE_REPORT_STATUSES.has(reportStatus)) {
+    return { status: ['pending', 'queued', 'running', 'processing'].includes(reportStatus) ? 'pending' : 'stale', report, generatedAt: '' };
+  }
+  const generatedAt = String(report.generatedAt || '').trim();
+  if (!generatedAt) return { status: 'stale', report, generatedAt: '' };
+  const latestSourceAt = String(sourceUpdatedAt || report.sourceUpdatedAt || record.sourceUpdatedAt || '').trim();
+  return {
+    status: latestSourceAt && latestSourceAt > generatedAt ? 'stale' : 'fresh',
+    report,
+    generatedAt,
+  };
+}
+
 function trim(value) {
   return String(value || '').trim();
 }

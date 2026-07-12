@@ -38,7 +38,7 @@ function harness(state = {}, overrides = {}) {
   return { handlers: createAgentQuestionHandlers(deps), calls };
 }
 
-test('family summary counts only active members and explicitly valid family policies', async () => {
+test('family summary counts only active members and currently valid family policies', async () => {
   const { handlers } = harness({
     familyMembers: [
       { id: 1, familyId: 7, name: '张三', status: 'active' },
@@ -56,18 +56,32 @@ test('family summary counts only active members and explicitly valid family poli
   const result = await handlers.execute('family_policy_summary', { familyId: 7, internalUserId: 9 });
 
   assert.deepEqual(result.facts, { familyId: 7, activeMemberCount: 1, policyCount: 3, validPolicyCount: 2 });
-  assert.match(result.provenance.validPolicyDefinition, /有效|active/);
+  assert.match(result.provenance.validPolicyDefinition, /业务状态.*保障期间/);
   assert.doesNotMatch(JSON.stringify(result), /张三|P-SECRET/);
+});
+
+test('family summary excludes business-inactive and expired policies even when outer status is active', async () => {
+  const { handlers } = harness({ policies: [
+    { id: 1, familyId: 7, status: 'active', policyState: '失效', coveragePeriod: '终身' },
+    { id: 2, familyId: 7, status: 'active', contractStatus: '有效', coveragePeriod: '至2026年07月11日' },
+    { id: 3, familyId: 7, status: 'active', validityStatus: '有效', coveragePeriod: '终身' },
+  ] });
+
+  const result = await handlers.execute('family_policy_summary', { familyId: 7, internalUserId: 9 });
+
+  assert.equal(result.facts.policyCount, 3);
+  assert.equal(result.facts.validPolicyCount, 1);
 });
 
 test('fresh family coverage report returns a safe summary and login link', async () => {
   const { handlers, calls } = harness({ familyReports: [{
     id: 21,
     familyId: 7,
-    status: 'complete',
+    status: 'active',
     sourceUpdatedAt: '2026-07-10T00:00:00.000Z',
     generatedAt: '2026-07-11T00:00:00.000Z',
     summary: { policyCount: 2, note: '张三 13800138000 保单 P123456' },
+    report: { familyPolicyAnalysisReport: { status: 'complete', generatedAt: '2026-07-11T00:00:00.000Z' } },
   }] });
 
   const result = await handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
@@ -78,9 +92,30 @@ test('fresh family coverage report returns a safe summary and login link', async
   assert.doesNotMatch(JSON.stringify(result), /张三|13800138000|P123456/);
 });
 
+test('coverage report requires a complete nested policy analysis report', async () => {
+  const missing = harness({ familyReports: [{ familyId: 7, status: 'active', generatedAt: '2026-07-11T00:00:00.000Z', report: {} }] });
+  const pending = harness({ familyReports: [{
+    familyId: 7,
+    status: 'active',
+    generatedAt: '2026-07-11T00:00:00.000Z',
+    report: { familyPolicyAnalysisReport: { status: 'pending', generatedAt: '2026-07-11T00:00:00.000Z' } },
+  }] });
+
+  const missingResult = await missing.handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+  const pendingResult = await pending.handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+
+  assert.equal(missingResult.provenance.reason, 'missing');
+  assert.equal(pendingResult.provenance.reason, 'pending');
+});
+
 test('stale and missing reports enqueue once per family and job type while in flight', async () => {
   const { handlers, calls } = harness({
-    familyReports: [{ familyId: 7, status: 'complete', sourceUpdatedAt: '2026-07-12T01:00:00.000Z', generatedAt: '2026-07-11T00:00:00.000Z' }],
+    familyReports: [{
+      familyId: 7,
+      status: 'active',
+      sourceUpdatedAt: '2026-07-12T01:00:00.000Z',
+      report: { familyPolicyAnalysisReport: { status: 'complete', generatedAt: '2026-07-11T00:00:00.000Z' } },
+    }],
     familySalesReviews: [],
   });
 
@@ -141,24 +176,69 @@ test('product knowledge requires public sources for definite facts', async () =>
   assert.doesNotMatch(JSON.stringify(uncertain), /等待测试覆盖/);
 });
 
-test('sales coaching receives only confirmed minimal facts and marks pending fields', async () => {
+test('sales coaching loads trusted minimal facts from authorized family context', async () => {
   const { handlers, calls } = harness({
     familyMembers: [{ familyId: 7, name: '张三', status: 'active' }],
+    policies: [{ familyId: 7, status: 'active', coveragePeriod: '终身' }],
     familySalesMemories: [{ familyId: 7, content: 'Hermes secret', status: 'confirmed' }],
   });
 
-  const result = await handlers.execute('sales_coaching', {
+  const result = await handlers.sales_champion({
+    intent: 'sales_coaching',
     familyId: 7,
     internalUserId: 9,
     question: '怎么沟通',
-    confirmedFacts: { policyCount: 2, annualPremium: 10000 },
-    pendingFields: ['budget'],
     hermesMemory: 'do not pass',
   });
 
   assert.deepEqual(Object.keys(calls.coaching[0]).sort(), ['confirmedFacts', 'pendingFields', 'question']);
   assert.equal(JSON.stringify(calls.coaching[0]).includes('Hermes'), false);
-  assert.deepEqual(result.facts.pendingConfirmation, ['budget']);
+  assert.deepEqual(calls.coaching[0].confirmedFacts, { activeMemberCount: 1, policyCount: 1, validPolicyCount: 1 });
+  assert.ok(result.facts.pendingConfirmation.includes('customerNeeds'));
+});
+
+test('safe summaries do not copy numeric phone, identity, or account fields', async () => {
+  const { handlers } = harness({ familySalesReviews: [{
+    id: 31,
+    familyId: 7,
+    status: 'active',
+    generatedAt: '2026-07-11T00:00:00.000Z',
+    inputSummary: {
+      policyCount: 2,
+      mobile: 13800138000,
+      identityNumber: 110101199001011234,
+      accountNumber: 6222021234567890,
+    },
+  }] });
+
+  const result = await handlers.execute('view_sales_advice_report', { familyId: 7, internalUserId: 9 });
+  const serialized = JSON.stringify(result);
+
+  assert.equal(result.facts.summary.policyCount, 2);
+  assert.doesNotMatch(serialized, /13800138000|110101199001011234|6222021234567890/);
+});
+
+test('queued report job remains deduplicated after enqueue resolves until completion', async () => {
+  let status = 'running';
+  const base = harness({ familyReports: [] });
+  base.handlers = createAgentQuestionHandlers({
+    store: { async load() { return { familyReports: [] }; } },
+    links: {},
+    reportQueue: {
+      async enqueue(input) { base.calls.enqueued.push(input); return { jobId: 'persistent-job', status: 'queued', progress: 0 }; },
+      async getStatus() { return { jobId: 'persistent-job', status, progress: 20 }; },
+    },
+  });
+
+  const first = await base.handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+  const second = await base.handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+
+  assert.equal(first.facts.jobId, 'persistent-job');
+  assert.equal(second.facts.progress, 20);
+  assert.equal(base.calls.enqueued.length, 1);
+  status = 'failed';
+  await base.handlers.execute('view_family_coverage_report', { familyId: 7, internalUserId: 9 });
+  assert.equal(base.calls.enqueued.length, 2);
 });
 
 test('upload link ignores attachments and unknown actions are denied', async () => {

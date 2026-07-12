@@ -4,6 +4,7 @@ import {
   buildFamilyPolicyAnalysisInput,
   buildFamilyPolicyAnalysisMessages,
   generateFamilyPolicyAnalysisReport,
+  resolveFamilyPolicyAnalysisReportFreshness,
 } from '../server/family-policy-analysis-report.service.mjs';
 import {
   createFamilyReportRecord,
@@ -44,6 +45,21 @@ function allocateSequence(start = 100) {
     return value;
   };
 }
+
+test('policy analysis freshness follows nested report status and current source timestamp', () => {
+  const record = {
+    status: 'active',
+    report: { familyPolicyAnalysisReport: { status: 'complete', generatedAt: '2026-07-11T00:00:00.000Z' } },
+  };
+
+  assert.equal(resolveFamilyPolicyAnalysisReportFreshness(record, { sourceUpdatedAt: '2026-07-10T00:00:00.000Z' }).status, 'fresh');
+  assert.equal(resolveFamilyPolicyAnalysisReportFreshness(record, { sourceUpdatedAt: '2026-07-12T00:00:00.000Z' }).status, 'stale');
+  assert.equal(resolveFamilyPolicyAnalysisReportFreshness({ status: 'active', report: {} }).status, 'missing');
+  assert.equal(resolveFamilyPolicyAnalysisReportFreshness({
+    status: 'active',
+    report: { familyPolicyAnalysisReport: { status: 'pending' } },
+  }).status, 'pending');
+});
 
 test('family policy analysis prompt asks for full customer report with emphasized gap section', () => {
   const input = buildFamilyPolicyAnalysisInput({

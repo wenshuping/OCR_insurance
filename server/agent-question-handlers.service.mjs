@@ -4,9 +4,11 @@ const HANDLER_ACTIONS = Object.freeze({
   system: Object.freeze(['upload_link', 'system_help', 'unknown_read', 'unknown_write', 'transfer_preview', 'memory_proposal']),
 });
 
-const INVALID_POLICY_STATUS = /(失效|停效|中止|终止|退保|过期|inactive|expired|lapsed|terminated|cancelled|canceled)/iu;
-const VALID_POLICY_STATUS = /^(有效|生效|承保|正常|active|valid|in_force|in force)$/iu;
-const COMPLETE_REPORT_STATUS = new Set(['active', 'complete', 'completed', 'ready', 'success']);
+const INACTIVE_POLICY_STATUS = /(失效|停效|中止|终止|退保|已退保|过期|作废|无效|inactive|expired|lapsed|terminated|surrendered|cancelled|canceled|void)/iu;
+const SAFE_SUMMARY_FIELDS = new Set([
+  'memberCount', 'activeMemberCount', 'policyCount', 'validPolicyCount',
+  'membersWithoutPolicyCount', 'officialProductCount', 'issueCount', 'gapCount',
+]);
 
 function text(value) {
   return String(value ?? '').trim();
@@ -35,25 +37,39 @@ function latestForFamily(records, familyId) {
     ))[0] || null;
 }
 
-export function isAgentReportFresh(report) {
-  if (!report || !COMPLETE_REPORT_STATUS.has(text(report.status || 'active').toLowerCase())) return false;
-  const generatedAt = recordTime(report, 'generatedAt', 'updatedAt', 'createdAt');
-  if (!generatedAt) return false;
-  const sourceUpdatedAt = recordTime(report, 'sourceUpdatedAt', 'source_updated_at');
-  return !sourceUpdatedAt || sourceUpdatedAt <= generatedAt;
+function safeSummary(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([key, item]) => (
+    SAFE_SUMMARY_FIELDS.has(key) && typeof item === 'number' && Number.isFinite(item)
+  )));
 }
 
-function numericSummary(value, depth = 0) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 2) return {};
-  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
-    if (typeof item === 'number' && Number.isFinite(item)) return [[key, item]];
-    if (typeof item === 'boolean') return [[key, item]];
-    if (item && typeof item === 'object' && !Array.isArray(item)) {
-      const nested = numericSummary(item, depth + 1);
-      return Object.keys(nested).length ? [[key, nested]] : [];
-    }
-    return [];
-  }));
+function policyStatusText(policy = {}) {
+  return [
+    policy.status,
+    policy.policyStatus,
+    policy.policyState,
+    policy.contractStatus,
+    policy.validityStatus,
+  ].map(text).filter(Boolean).join(' ');
+}
+
+function policyIsValid(policy = {}, now = new Date()) {
+  if (policy.expired === true || INACTIVE_POLICY_STATUS.test(policyStatusText(policy))) return false;
+  return resolvePolicyValidityStatus(policy.coveragePeriod, {
+    effectiveDate: policy.date || policy.effectiveDate,
+    insuredBirthday: policy.insuredBirthday,
+    now,
+  }).tone !== 'expired';
+}
+
+function latestSourceUpdatedAt(state, familyId) {
+  const records = [
+    ...(Array.isArray(state.familyProfiles) ? state.familyProfiles : []).filter((row) => Number(row?.id) === familyId),
+    ...(Array.isArray(state.familyMembers) ? state.familyMembers : []).filter((row) => Number(row?.familyId) === familyId),
+    ...(Array.isArray(state.policies) ? state.policies : []).filter((row) => Number(row?.familyId) === familyId),
+  ];
+  return records.map((record) => recordTime(record, 'updatedAt', 'createdAt')).filter(Boolean).sort().at(-1) || '';
 }
 
 function stableResult(facts, provenance = {}, presentation = {}) {
@@ -73,6 +89,7 @@ export function createAgentQuestionHandlers({
   reportQueue,
   productKnowledge,
   salesCoaching,
+  salesContextLoader,
   links = {},
   clock = () => new Date(),
 } = {}) {
@@ -90,16 +107,13 @@ export function createAgentQuestionHandlers({
       .filter((member) => Number(member?.familyId) === id && text(member?.status || 'active') === 'active');
     const policies = (Array.isArray(state.policies) ? state.policies : [])
       .filter((policy) => Number(policy?.familyId) === id);
-    const validPolicies = policies.filter((policy) => {
-      const status = text(policy?.status || policy?.policyStatus);
-      return Boolean(status && !INVALID_POLICY_STATUS.test(status) && VALID_POLICY_STATUS.test(status));
-    });
+    const validPolicies = policies.filter((policy) => policyIsValid(policy, clock()));
     return stableResult(
       { familyId: id, activeMemberCount: members.length, policyCount: policies.length, validPolicyCount: validPolicies.length },
       {
         source: 'persistent_family_state',
         countedAt: clock().toISOString(),
-        validPolicyDefinition: '状态明确为“有效/生效/承保/正常”或 active/valid/in_force，且不含失效、停效、中止、终止、退保、过期状态。',
+        validPolicyDefinition: '综合保单状态、合同状态和效力状态排除失效、停效、中止、终止、退保、过期等业务状态，并按保障期间排除已到期保单。',
       },
       { message: '家庭保单统计已按持久化记录计算。' },
     );
@@ -114,15 +128,35 @@ export function createAgentQuestionHandlers({
       );
     }
     const key = `${jobType}:${familyId}`;
-    if (!pendingReports.has(key)) {
-      const queued = Promise.resolve(reportQueue.enqueue({ familyId, jobType, dedupeKey: key, reason }));
-      pendingReports.set(key, queued);
-      queued.then(
-        () => pendingReports.delete(key),
-        () => pendingReports.delete(key),
-      );
+    let job = pendingReports.get(key);
+    if (job) {
+      job = await job;
+      if (typeof reportQueue.getStatus === 'function') {
+        const current = await reportQueue.getStatus({ familyId, jobType, dedupeKey: key, jobId: job?.jobId || job?.id || '' });
+        const status = text(current?.status).toLowerCase();
+        if (['completed', 'complete', 'failed', 'cancelled', 'canceled'].includes(status)) {
+          pendingReports.delete(key);
+          job = null;
+        } else {
+          job = { ...job, ...current };
+          pendingReports.set(key, job);
+        }
+      }
     }
-    const job = await pendingReports.get(key);
+    if (!job) {
+      const enqueue = typeof reportQueue.enqueueUnique === 'function'
+        ? reportQueue.enqueueUnique.bind(reportQueue)
+        : reportQueue.enqueue.bind(reportQueue);
+      const queued = Promise.resolve(enqueue({ familyId, jobType, dedupeKey: key, reason }));
+      pendingReports.set(key, queued);
+      try {
+        job = await queued;
+        pendingReports.set(key, job);
+      } catch (error) {
+        pendingReports.delete(key);
+        throw error;
+      }
+    }
     return stableResult(
       { status: 'processing', jobType, jobId: job?.jobId || job?.id || '', progress: Number(job?.progress) || 0 },
       { source: 'report_queue', reason, dedupeKey: key },
@@ -133,9 +167,14 @@ export function createAgentQuestionHandlers({
   async function viewReport(context, { collection, jobType, link }) {
     const { id, state } = await loadFamilyState(context?.familyId);
     const report = latestForFamily(state[collection], id);
-    if (!isAgentReportFresh(report)) {
-      return enqueueReport({ familyId: id, jobType, reason: report ? 'stale' : 'missing' });
+    const sourceUpdatedAt = latestSourceUpdatedAt(state, id) || recordTime(report, 'sourceUpdatedAt', 'source_updated_at');
+    const freshness = collection === 'familyReports'
+      ? resolveFamilyPolicyAnalysisReportFreshness(report, { sourceUpdatedAt })
+      : resolveFamilySalesReviewFreshness(report, { sourceUpdatedAt });
+    if (freshness.status !== 'fresh') {
+      return enqueueReport({ familyId: id, jobType, reason: freshness.status });
     }
+    pendingReports.delete(`${jobType}:${id}`);
     const secureLink = typeof links[link] === 'function'
       ? links[link]({ familyId: id, internalUserId: context?.internalUserId })
       : '';
@@ -144,10 +183,10 @@ export function createAgentQuestionHandlers({
         familyId: id,
         status: 'fresh',
         reportId: report.id ?? null,
-        generatedAt: recordTime(report, 'generatedAt', 'createdAt'),
-        summary: numericSummary(report.summary || report.inputSummary || report.report?.summary),
+        generatedAt: freshness.generatedAt,
+        summary: safeSummary(report.summary || report.inputSummary || report.report?.summary),
       },
-      { source: collection, sourceUpdatedAt: recordTime(report, 'sourceUpdatedAt', 'source_updated_at') },
+      { source: collection, sourceUpdatedAt },
       { secureLink, requiresLogin: true, message: '报告已生成，请登录安全页面查看完整内容。' },
     );
   }
@@ -179,10 +218,18 @@ export function createAgentQuestionHandlers({
   }
 
   async function coach(context) {
-    const confirmedFacts = context?.confirmedFacts && typeof context.confirmedFacts === 'object' && !Array.isArray(context.confirmedFacts)
-      ? numericSummary(context.confirmedFacts)
-      : {};
-    const pendingFields = (Array.isArray(context?.pendingFields) ? context.pendingFields : [])
+    const { id, state } = await loadFamilyState(context?.familyId);
+    const trusted = typeof salesContextLoader === 'function'
+      ? await salesContextLoader({ familyId: id, internalUserId: context?.internalUserId })
+      : null;
+    const members = (Array.isArray(state.familyMembers) ? state.familyMembers : [])
+      .filter((member) => Number(member?.familyId) === id && text(member?.status || 'active') === 'active');
+    const policies = (Array.isArray(state.policies) ? state.policies : [])
+      .filter((policy) => Number(policy?.familyId) === id);
+    const confirmedFacts = trusted
+      ? safeSummary(trusted.confirmedFacts)
+      : { activeMemberCount: members.length, policyCount: policies.length, validPolicyCount: policies.filter((policy) => policyIsValid(policy, clock())).length };
+    const pendingFields = (Array.isArray(trusted?.pendingFields) ? trusted.pendingFields : ['customerNeeds', 'budget'])
       .map(text).filter(Boolean).slice(0, 20);
     const input = { question: text(context?.question).slice(0, 2_000), confirmedFacts, pendingFields };
     const result = salesCoaching && typeof salesCoaching.answer === 'function'
@@ -238,3 +285,6 @@ export function createAgentQuestionHandlers({
   ])));
   return Object.freeze({ ...registry, registry, execute });
 }
+import { resolveFamilyPolicyAnalysisReportFreshness } from './family-policy-analysis-report.service.mjs';
+import { resolveFamilySalesReviewFreshness } from './family-sales-review.service.mjs';
+import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';
