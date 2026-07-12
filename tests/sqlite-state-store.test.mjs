@@ -2065,7 +2065,7 @@ test('sqlite state store normalizes confirmation timestamps and serializes compe
     };
     const consumers = [
       createConsumer('2026-07-12T11:59:00+08:00'),
-      createConsumer('2026-07-12T11:59:30+08:00'),
+      createConsumer('2026-07-12T11:59:00+08:00'),
     ];
     await Promise.all(consumers.map((consumer) => consumer.ready));
     for (const consumer of consumers) consumer.worker.postMessage({ type: 'go' });
