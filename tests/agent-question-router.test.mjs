@@ -5,7 +5,7 @@ import { createAgentQuestionRouter } from '../server/agent-question-router.servi
 
 const NOW = '2026-07-12T08:00:00.000Z';
 
-function createHarness({ families = [], published = null, handlers = {} } = {}) {
+function createHarness({ families = [], policies = [], published = null, handlers = {}, familyResolver } = {}) {
   const calls = { audits: [], unknown: [], handlers: [] };
   const wrappedHandlers = Object.fromEntries(Object.entries(handlers).map(([key, handler]) => [
     key,
@@ -15,14 +15,15 @@ function createHarness({ families = [], published = null, handlers = {} } = {}) 
     },
   ]));
   const store = {
-    async load() { return { familyProfiles: families }; },
+    async load() { return { familyProfiles: families, policies }; },
     async getPublishedAgentQuestionPolicyVersion() { return published; },
     async appendAgentUnknownQuestion(input) { calls.unknown.push(input); },
     async appendAgentRouteAuditEvent(input) { calls.audits.push(input); },
+    async recordAgentRouteAudit(input) { calls.audits.push(input); },
   };
   return {
     calls,
-    router: createAgentQuestionRouter({ store, handlers: wrappedHandlers, clock: () => new Date(NOW) }),
+    router: createAgentQuestionRouter({ store, handlers: wrappedHandlers, familyResolver, clock: () => new Date(NOW) }),
   };
 }
 
@@ -67,11 +68,11 @@ test('a unique authorized family executes without listing other families', async
   const result = await router.route(routeInput({ familyId: 12, permission: 'admin' }));
 
   assert.equal(result.decision, 'execute');
-  assert.equal(calls.handlers[0].input.authorizedContext.familyId, 11);
+  assert.equal(calls.handlers[0].input.familyId, 11);
   assert.equal(JSON.stringify(calls.handlers[0].input).includes('李四家庭'), false);
-  assert.equal('familyId' in calls.handlers[0].input.candidate, false);
-  assert.equal('permission' in calls.handlers[0].input.candidate, false);
-  assert.equal(calls.audits.length, 0);
+  assert.deepEqual(Object.keys(calls.handlers[0].input).sort(), ['familyId', 'intent', 'internalUserId', 'question']);
+  assert.equal(calls.audits.length, 1);
+  assert.equal(calls.audits[0].policySource, 'built_in');
 });
 
 test('duplicate names clarify with matching candidates only', async () => {
@@ -89,6 +90,9 @@ test('duplicate names clarify with matching candidates only', async () => {
   assert.equal(JSON.stringify(result).includes('李四'), false);
   assert.equal(JSON.stringify(result).includes('张三家庭'), false);
   assert.deepEqual(Object.keys(result.interaction.candidates[0]).sort(), ['label', 'ref']);
+  assert.notEqual(result.interaction.candidates[0].label, result.interaction.candidates[1].label);
+  assert.notEqual(result.interaction.candidates[0].ref, result.interaction.candidates[1].ref);
+  assert.doesNotMatch(result.interaction.candidates[0].ref, /21|22/);
 });
 
 test('missing or unauthorized family gives the same non-disclosing clarification', async () => {
@@ -140,7 +144,7 @@ test('confirmed unexpired pronoun context is reauthorized and executes', async (
   ));
 
   assert.equal(result.decision, 'execute');
-  assert.equal(calls.handlers[0].input.authorizedContext.familyId, 41);
+  assert.equal(calls.handlers[0].input.familyId, 41);
 });
 
 test('expired or unauthorized pronoun context clarifies without disclosure', async () => {
@@ -190,12 +194,106 @@ test('candidate fields and lengths are bounded before reaching handlers', async 
     requestedOperation: 'read',
   }));
 
-  const normalized = calls.handlers[0].input.candidate;
+  const normalized = calls.handlers[0].input;
   assert.ok(normalized.question.length <= 1000);
-  assert.ok(normalized.entities.topic.length <= 200);
-  assert.equal(normalized.entities.ignored, undefined);
-  assert.ok(normalized.contextRefs.length <= 10);
-  assert.deepEqual(Object.keys(normalized).sort(), ['confidence', 'contextRefs', 'entities', 'intent', 'question', 'requestedOperation']);
+  assert.deepEqual(Object.keys(normalized).sort(), ['intent', 'internalUserId', 'question']);
+});
+
+test('every built-in finish path records a redacted audit contract', async () => {
+  const { router, calls } = createHarness({ handlers: {
+    sales_champion: async () => ({ interaction: { type: 'answer', text: 'ok' } }),
+  } });
+  await router.route(routeInput({
+    intent: 'chat',
+    question: '身份证 310000000000000000',
+    entities: { personName: '张三', secret: '310000000000000000' },
+  }));
+  await router.route(routeInput({ intent: 'missing', question: '未知查询', entities: {} }));
+
+  assert.equal(calls.audits.length, 2);
+  for (const audit of calls.audits) {
+    assert.equal(audit.policyVersion, null);
+    assert.equal(audit.policySource, 'built_in');
+    assert.equal(typeof audit.candidate.intent, 'string');
+    assert.equal(typeof audit.candidate.confidence, 'number');
+    assert.equal(Array.isArray(audit.authorizedResourceIds), true);
+    assert.equal(JSON.stringify(audit).includes('310000000000000000'), false);
+    assert.equal(['execute', 'open_web'].includes(audit.decision), true);
+  }
+});
+
+test('low confidence non-family questions ask for intent instead of a family', async () => {
+  const { router } = createHarness({
+    published: { version: 8, policies: [{
+      key: 'chat', intent: 'chat', decision: 'execute', handler: 'sales_champion', operation: 'read',
+      confirmation: 'not_required', outputMode: 'direct', tool: null, confidenceThreshold: 0.8,
+    }] },
+  });
+  const result = await router.route(routeInput({ intent: 'chat', question: '你好', entities: {}, confidence: 0.2 }));
+
+  assert.equal(result.decision, 'clarify');
+  assert.doesNotMatch(result.interaction.text, /家庭/u);
+});
+
+test('configured read deny is audited but not recorded as unknown write', async () => {
+  const { router, calls } = createHarness({ published: { version: 9, policies: [{
+    key: 'blocked_read', intent: 'blocked_read', decision: 'reject', handler: 'system', operation: 'read',
+    confirmation: 'not_required', outputMode: 'direct', tool: null,
+  }] } });
+  const result = await router.route(routeInput({ intent: 'blocked_read', question: '受控查询', entities: {} }));
+
+  assert.equal(result.decision, 'deny');
+  assert.equal(calls.unknown.length, 0);
+  assert.equal(calls.audits[0].operation, 'read');
+  assert.equal(calls.audits[0].result, 'policy_rejected');
+});
+
+test('a unique controlled approximate family-name match executes', async () => {
+  const { router, calls } = createHarness({
+    families: [
+      { id: 51, ownerUserId: 7, familyName: '张三保险之家', status: 'active' },
+      { id: 52, ownerUserId: 7, familyName: '李四家庭', status: 'active' },
+    ],
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer' } }) },
+  });
+  const result = await router.route(routeInput({ question: '查看张三保险', entities: { familyName: '张三保险' } }));
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(calls.handlers[0].input.familyId, 51);
+});
+
+test('default authorization includes policy-linked families and injected resolver is honored', async () => {
+  const linked = createHarness({
+    families: [{ id: 61, ownerUserId: null, familyName: '保单关联家庭', status: 'active' }],
+    policies: [{ id: 1, userId: 7, familyId: 61 }],
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer' } }) },
+  });
+  const injected = createHarness({
+    families: [{ id: 62, ownerUserId: 99, familyName: '注入授权家庭', status: 'active' }],
+    familyResolver: async ({ state }) => state.familyProfiles,
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer' } }) },
+  });
+
+  assert.equal((await linked.router.route(routeInput({ entities: { familyName: '保单关联家庭' } }))).decision, 'execute');
+  assert.equal((await injected.router.route(routeInput({ entities: { familyName: '注入授权家庭' } }))).decision, 'execute');
+});
+
+test('opaque family candidate selection is reauthorized before execution', async () => {
+  const families = [
+    { id: 71, ownerUserId: 7, familyName: '同名家庭', status: 'active' },
+    { id: 72, ownerUserId: 7, familyName: '同名家庭', status: 'active' },
+  ];
+  const harness = createHarness({
+    families,
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer' } }) },
+  });
+  const clarified = await harness.router.route(routeInput({ entities: { familyName: '同名家庭' } }));
+  const selectedRef = clarified.interaction.candidates[0].ref;
+  families[0].ownerUserId = 99;
+  const selected = await harness.router.route(routeInput({ entities: { familyRef: selectedRef } }));
+
+  assert.equal(selected.decision, 'clarify');
+  assert.equal(harness.calls.handlers.length, 0);
 });
 
 test('missing handler and unknown tool fail safely', async () => {

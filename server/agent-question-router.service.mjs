@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   AGENT_QUESTION_POLICIES,
   AGENT_QUESTION_POLICY_TOOLS,
@@ -50,10 +52,19 @@ function normalizeFamilyName(value) {
     .replace(/家庭$/u, '');
 }
 
-function ownedFamilies(state, internalUserId) {
+async function defaultFamilyResolver({ store, state, internalUserId }) {
+  if (typeof store.listAuthorizedFamilyProfiles === 'function') {
+    return store.listAuthorizedFamilyProfiles({ internalUserId });
+  }
+  const policyFamilyIds = new Set((Array.isArray(state?.policies) ? state.policies : [])
+    .filter((policy) => Number(policy?.userId || 0) === internalUserId)
+    .map((policy) => Number(policy?.familyId || 0))
+    .filter(Boolean));
   return (Array.isArray(state?.familyProfiles) ? state.familyProfiles : []).filter((family) => (
-    Number(family?.ownerUserId || 0) === internalUserId &&
-    String(family?.status || 'active') === 'active'
+    String(family?.status || 'active') === 'active' && (
+      Number(family?.ownerUserId || 0) === internalUserId ||
+      (!Number(family?.ownerUserId || 0) && policyFamilyIds.has(Number(family?.id || 0)))
+    )
   ));
 }
 
@@ -65,32 +76,50 @@ function isValidContext(context, now) {
   return Number.isFinite(expiresAt) && expiresAt > now.getTime();
 }
 
-function genericFamilyClarification(candidates = []) {
+function opaqueFamilyRef(internalUserId, familyId) {
+  return `family_${createHash('sha256').update(`${internalUserId}:${familyId}:agent-router`).digest('hex').slice(0, 16)}`;
+}
+
+function genericFamilyClarification(candidates = [], internalUserId = 0) {
   const interaction = {
     type: 'clarification',
     text: '请确认要查看哪个家庭。',
   };
   if (candidates.length > 1) {
-    interaction.candidates = candidates.map((family, index) => ({
-      ref: `family_${index + 1}`,
-      label: `${boundedString(family.familyName, 40).slice(0, 1) || '同'}***`,
-    }));
+    interaction.candidates = candidates.map((family) => {
+      const discriminator = opaqueFamilyRef(internalUserId, family.id).slice(-4).toUpperCase();
+      return {
+        ref: opaqueFamilyRef(internalUserId, family.id),
+        label: `${boundedString(family.familyName, 40).slice(0, 1) || '同'}*** ${discriminator}`,
+      };
+    });
   }
   return { decision: 'clarify', interaction };
 }
 
-function resolveFamily({ candidate, conversationContext, families, now }) {
+function resolveFamily({ candidate, conversationContext, families, internalUserId, now }) {
   if (PRONOUN_PATTERN.test(candidate.question)) {
     if (!isValidContext(conversationContext, now)) return { result: genericFamilyClarification() };
     const family = families.find((item) => Number(item.id) === Number(conversationContext.familyId));
     return family ? { family } : { result: genericFamilyClarification() };
   }
 
+  const requestedRef = candidate.entities.familyRef;
+  if (requestedRef) {
+    const family = families.find((item) => opaqueFamilyRef(internalUserId, item.id) === requestedRef);
+    return family ? { family } : { result: genericFamilyClarification() };
+  }
   const requestedName = normalizeFamilyName(candidate.entities.familyName);
   if (!requestedName) return { result: genericFamilyClarification() };
-  const matches = families.filter((family) => normalizeFamilyName(family.familyName) === requestedName);
+  const exactMatches = families.filter((family) => normalizeFamilyName(family.familyName) === requestedName);
+  const matches = exactMatches.length ? exactMatches : families.filter((family) => {
+    const name = normalizeFamilyName(family.familyName);
+    return requestedName.length >= 2 && Math.abs(name.length - requestedName.length) <= 4 && (
+      name.startsWith(requestedName) || requestedName.startsWith(name) || name.endsWith(requestedName)
+    );
+  });
   if (matches.length === 1) return { family: matches[0] };
-  return { result: genericFamilyClarification(matches) };
+  return { result: genericFamilyClarification(matches, internalUserId) };
 }
 
 function safeFallback(operation) {
@@ -125,7 +154,7 @@ function publicResult(result, fallbackDecision = 'execute') {
   };
 }
 
-export function createAgentQuestionRouter({ store, handlers = {}, clock = () => new Date() } = {}) {
+export function createAgentQuestionRouter({ store, handlers = {}, familyResolver, clock = () => new Date() } = {}) {
   if (!store || typeof store.load !== 'function') throw new TypeError('store with load() is required');
 
   async function route({ internalUserId, candidate: rawCandidate, messageRef, conversationContext } = {}) {
@@ -141,26 +170,55 @@ export function createAgentQuestionRouter({ store, handlers = {}, clock = () => 
       : null;
     const policy = selectPolicy(candidate, published);
 
-    const finish = async (result) => {
+    let authorizedResourceIds = [];
+    const finish = async (result, resultCode = 'completed') => {
       const safe = publicResult(result, result?.decision || 'deny');
-      if (published?.version && typeof store.appendAgentRouteAuditEvent === 'function') {
+      const audit = {
+        policyVersion: published?.version || null,
+        policySource: published?.version ? 'published' : 'built_in',
+        userId,
+        messageRef: normalizedMessageRef,
+        operation: policy?.operation || candidate.requestedOperation,
+        candidate: {
+          intent: candidate.intent,
+          entities: Object.fromEntries(Object.keys(candidate.entities).map((key) => [key, '[redacted]'])),
+          confidence: candidate.confidence,
+        },
+        policyKey: policy?.key || '',
+        authorizedResourceIds,
+        decision: safe.decision,
+        fallback: policy?.key === 'unknown_read' || policy?.key === 'unknown_write',
+        result: resultCode,
+        actor: 'agent_question_router',
+        createdAt: now.toISOString(),
+      };
+      if (typeof store.recordAgentRouteAudit === 'function') {
+        await store.recordAgentRouteAudit(audit);
+      } else if (published?.version && typeof store.appendAgentRouteAuditEvent === 'function') {
         await store.appendAgentRouteAuditEvent({
-          policyVersion: published.version,
+          policyVersion: audit.policyVersion,
           userId,
           messageRef: normalizedMessageRef,
           decision: safe.decision,
           actor: 'agent_question_router',
           createdAt: now.toISOString(),
-          payload: { intent: candidate.intent, policyKey: policy?.key || '' },
+          payload: audit,
         });
+      } else {
+        throw new Error('Agent route audit recorder is required for built-in policy routing');
       }
       return safe;
     };
 
     const threshold = Math.min(1, Math.max(0, Number(policy?.confidenceThreshold) || 0));
-    if (candidate.confidence < threshold) return finish(genericFamilyClarification());
+    if (candidate.confidence < threshold) {
+      const familyRelated = FAMILY_INTENTS.has(policy?.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy?.tool);
+      return finish(familyRelated
+        ? genericFamilyClarification()
+        : { decision: 'clarify', interaction: { type: 'clarification', text: '请更明确地说明想查询或办理的事项。' } }, 'low_confidence');
+    }
 
-    if (policy?.key === 'unknown_write' || policy?.decision === 'reject') {
+    if (policy?.key === 'unknown_write') {
       if (typeof store.appendAgentUnknownQuestion === 'function') {
         await store.appendAgentUnknownQuestion({
           userId,
@@ -171,45 +229,60 @@ export function createAgentQuestionRouter({ store, handlers = {}, clock = () => 
           payload: { intent: candidate.intent, requestedOperation: 'write' },
         });
       }
-      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该操作不能执行。' } });
+      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该操作不能执行。' } }, 'unknown_write_denied');
+    }
+
+    if (policy?.decision === 'reject') {
+      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求不能执行。' } }, 'policy_rejected');
     }
 
     if (policy?.key === 'unknown_read') {
-      return finish({ decision: 'open_web', interaction: { type: 'secure_link', text: '请通过安全页面继续查询。' } });
+      return finish({ decision: 'open_web', interaction: { type: 'secure_link', text: '请通过安全页面继续查询。' } }, 'unknown_read_fallback');
     }
 
     if (policy?.unsafe || policy?.enabled === false || (policy?.tool && !AGENT_QUESTION_POLICY_TOOLS.includes(policy.tool))) {
-      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } });
+      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } }, 'unsafe_policy');
     }
 
     const state = await store.load();
     let family = null;
     if (FAMILY_INTENTS.has(policy.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy.tool)) {
+      const resolver = typeof familyResolver === 'function' ? familyResolver : defaultFamilyResolver;
+      const authorizedFamilies = await resolver({ store, state, internalUserId: userId });
       const resolved = resolveFamily({
         candidate,
         conversationContext,
-        families: ownedFamilies(state, userId),
+        families: Array.isArray(authorizedFamilies) ? authorizedFamilies : [],
+        internalUserId: userId,
         now,
       });
-      if (resolved.result) return finish(resolved.result);
+      if (resolved.result) return finish(resolved.result, 'family_clarification');
       family = resolved.family;
+      authorizedResourceIds = [`family:${Number(family.id)}`];
     }
 
     const handler = handlers?.[policy.handler];
     if (typeof handler !== 'function') {
-      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } });
+      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } }, 'missing_handler');
     }
 
     const authorizedContext = {
       internalUserId: userId,
-      ...(family ? { familyId: Number(family.id), family } : {}),
+      intent: candidate.intent,
+      question: candidate.question,
+      ...(family ? { familyId: Number(family.id) } : {}),
     };
-    const handled = await handler({ candidate, policy, authorizedContext });
+    let handled;
+    try {
+      handled = await handler(authorizedContext);
+    } catch {
+      return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } }, 'handler_error');
+    }
     const decision = policy.decision === 'propose' ? 'confirm' : 'execute';
     const interactionType = decision === 'confirm' ? 'confirmation' : 'answer';
     return finish(publicResult(handled, decision).interaction.type === 'answer'
       ? { ...handled, decision, interaction: { ...handled?.interaction, type: interactionType } }
-      : { ...handled, decision });
+      : { ...handled, decision }, 'handled');
   }
 
   return { route };
