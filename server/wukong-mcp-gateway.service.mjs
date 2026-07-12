@@ -15,6 +15,7 @@ const WUKONG_PUBLIC_TOOL_NAMES = Object.freeze([
   'resolve_advisor_identity',
   'list_accessible_families',
   'get_family_context',
+  'create_policy_upload_link',
   'start_policy_import',
   'append_policy_import_files',
   'get_policy_import',
@@ -112,7 +113,7 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function createRegistry(state, policyImports, salesChampion, insuranceExpert, familySalesMemoryApi) {
+function createRegistry(state, policyImports, salesChampion, insuranceExpert, familySalesMemoryApi, policyUploadLinks) {
   const emptyObjectSchema = Object.freeze({
     type: 'object', properties: Object.freeze({}), required: Object.freeze([]), additionalProperties: false,
   });
@@ -163,6 +164,15 @@ function createRegistry(state, policyImports, salesChampion, insuranceExpert, fa
             insured: maskDisplay(policy.insured || ''),
           })),
         };
+      },
+    }],
+    ['create_policy_upload_link', {
+      name: 'create_policy_upload_link', inputSchema: familySchema({ familyRef: { type: 'integer' } }, ['familyRef']), authorize: () => true,
+      execute: async (context, input) => {
+        if (!policyUploadLinks) fail('UPLOAD_LINKS_NOT_CONFIGURED', 503);
+        const family = resolveFamily(context, input.familyRef);
+        const task = await policyImports.start({ family, owner: context, channel: 'web_delegated' });
+        return { ...policyUploadLinks.issue({ familyId: family.id, taskId: task.taskId, userId: context.userId }), taskId: task.taskId, familyLabel: maskDisplay(family.familyName || family.name || '家庭') };
       },
     }],
     ['start_policy_import', {
@@ -248,6 +258,7 @@ export function createWukongMcpGateway({
   insuranceExpert,
   insuranceExpertOptions,
   familySalesMemoryApi,
+  policyUploadLinks,
 } = {}) {
   const resolvedState = state || {};
   const registry = createRegistry(
@@ -256,6 +267,7 @@ export function createWukongMcpGateway({
     salesChampion || createSalesChampionTool({ state: resolvedState, ...salesChampionOptions }),
     insuranceExpert || createInsuranceExpertTool({ state: resolvedState, ...insuranceExpertOptions }),
     familySalesMemoryApi || { list: () => fail('TOOL_NOT_CONFIGURED', 503), action: () => fail('TOOL_NOT_CONFIGURED', 503) },
+    policyUploadLinks,
   );
   const toolMetadata = deepFreeze([...registry.values()].map((entry) => ({
     name: entry.name,

@@ -91,6 +91,12 @@ def get_family_context(family_ref: int, principal_token: str) -> dict:
 
 
 @mcp.tool()
+def create_policy_upload_link(family_ref: int, principal_token: str) -> dict:
+    """为指定家庭创建24小时有效的客户保单安全网页上传链接。"""
+    return invoke("create_policy_upload_link", {"familyRef": family_ref}, principal_token)
+
+
+@mcp.tool()
 def ask_sales_champion(family_ref: int, question: str, principal_token: str) -> dict:
     """针对指定家庭回答保障缺口、销售建议、异议处理和跟进问题。"""
     return invoke("ask_sales_champion", {"familyRef": family_ref, "question": question}, principal_token)
