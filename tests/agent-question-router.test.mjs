@@ -279,18 +279,36 @@ test('disabled or invalid published writes cannot be disguised as Hermes reads',
   }
 });
 
-test('a unique controlled approximate family-name match executes', async () => {
+test('an approximate family-name match requires opaque selection before execution', async () => {
   const { router, calls } = createHarness({
     families: [
-      { id: 51, ownerUserId: 7, familyName: '张三保险之家', status: 'active' },
+      { id: 51, ownerUserId: 7, familyName: '张三丰家庭', status: 'active' },
       { id: 52, ownerUserId: 7, familyName: '李四家庭', status: 'active' },
     ],
     handlers: { insurance_expert: async () => ({ interaction: { type: 'answer' } }) },
   });
-  const result = await router.route(routeInput({ question: '查看张三保险', entities: { familyName: '张三保险' } }));
+  const result = await router.route(routeInput({ question: '查看张三', entities: { familyName: '张三' } }));
 
-  assert.equal(result.decision, 'execute');
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.interaction.candidates.length, 1);
+  assert.equal(JSON.stringify(result).includes('张三丰'), false);
+  assert.equal(calls.handlers.length, 0);
+  const selected = await router.route(routeInput({ entities: { familyRef: result.interaction.candidates[0].ref } }));
+  assert.equal(selected.decision, 'execute');
   assert.equal(calls.handlers[0].input.familyId, 51);
+});
+
+test('truncated approximate collisions disclose no family names and never execute', async () => {
+  const { router, calls } = createHarness({ families: [
+    { id: 53, ownerUserId: 7, familyName: '欧阳明珠家庭', status: 'active' },
+    { id: 54, ownerUserId: 7, familyName: '欧阳明月家庭', status: 'active' },
+  ] });
+  const result = await router.route(routeInput({ question: '查看欧阳明', entities: { familyName: '欧阳明' } }));
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.interaction.candidates.length, 2);
+  assert.equal(JSON.stringify(result).includes('欧阳'), false);
+  assert.equal(calls.handlers.length, 0);
 });
 
 test('default authorization includes policy-linked families and injected resolver is honored', async () => {
@@ -320,11 +338,13 @@ test('opaque family candidate selection is reauthorized before execution', async
   });
   const clarified = await harness.router.route(routeInput({ entities: { familyName: '同名家庭' } }));
   const selectedRef = clarified.interaction.candidates[0].ref;
+  const authorized = await harness.router.route(routeInput({ entities: { familyRef: selectedRef } }));
+  assert.equal(authorized.decision, 'execute');
   families[0].ownerUserId = 99;
   const selected = await harness.router.route(routeInput({ entities: { familyRef: selectedRef } }));
 
   assert.equal(selected.decision, 'clarify');
-  assert.equal(harness.calls.handlers.length, 0);
+  assert.equal(harness.calls.handlers.length, 1);
 });
 
 test('missing handler and unknown tool fail safely', async () => {

@@ -2150,7 +2150,7 @@ test('sqlite state store persists complete built-in router audits without a publ
   assert.equal(rows[0].policyVersion, null);
   assert.equal(rows[0].policySource, 'built_in');
   assert.equal(rows[0].payload.policyKey, 'unknown_read');
-  assert.equal(rows[0].payload.candidate.intent, 'unregistered');
+  assert.equal(rows[0].payload.candidate.intent, 'unknown');
   assert.equal(rows[0].payload.candidate.confidence, 0.9);
   assert.deepEqual(rows[0].payload.authorizedResourceIds, []);
   assert.equal(rows[0].payload.result, 'unknown_read_fallback');
@@ -2244,5 +2244,31 @@ test('router attributes a published-policy fallback to the built-in policy sourc
   assert.equal(audit.policyVersion, null);
   assert.equal(audit.payload.policyKey, 'unknown_read');
   assert.equal(audit.payload.evaluatedPublishedVersion, 10);
+  store.close();
+});
+
+test('router audit drops arbitrary intents and entity keys containing sensitive text', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const router = createAgentQuestionRouter({ store, clock: () => new Date('2026-07-12T08:00:00.000Z') });
+  await router.route({
+    internalUserId: 7,
+    messageRef: 'msg-redacted-audit',
+    candidate: {
+      intent: '身份证_310000000000000000',
+      question: '测试',
+      entities: {
+        familyName: '张三家庭',
+        '身份证310000000000000000': '秘密',
+      },
+      confidence: 0.8,
+      requestedOperation: 'read',
+    },
+  });
+
+  const [audit] = await store.listAgentRouteAuditEvents({ userId: 7 });
+  assert.equal(audit.payload.candidate.intent, 'unknown');
+  assert.deepEqual(audit.payload.candidate.entities, { familyName: '[redacted]' });
+  assert.equal(JSON.stringify(audit).includes('310000000000000000'), false);
   store.close();
 });

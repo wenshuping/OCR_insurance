@@ -10,6 +10,7 @@ import {
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
 const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_report']);
+const AUDIT_ENTITY_KEYS = new Set(['familyName', 'familyRef', 'policyHint', 'sourceFamilyName', 'targetFamilyName']);
 const PRONOUN_PATTERN = /(?:这个家庭|刚才那家)/u;
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
@@ -20,6 +21,8 @@ function boundedString(value, limit) {
 function normalizeIntent(value) {
   return boundedString(value, 80).toLowerCase().replace(/[\s-]+/g, '_');
 }
+
+const AUDIT_INTENTS = new Set(AGENT_QUESTION_POLICIES.map((policy) => normalizeIntent(policy.intent)));
 
 function normalizeCandidate(candidate = {}) {
   const rawEntities = candidate?.entities && typeof candidate.entities === 'object' && !Array.isArray(candidate.entities)
@@ -86,12 +89,12 @@ function genericFamilyClarification(candidates = [], internalUserId = 0) {
     type: 'clarification',
     text: '请确认要查看哪个家庭。',
   };
-  if (candidates.length > 1) {
+  if (candidates.length > 0) {
     interaction.candidates = candidates.map((family) => {
       const discriminator = opaqueFamilyRef(internalUserId, family.id).slice(-4).toUpperCase();
       return {
         ref: opaqueFamilyRef(internalUserId, family.id),
-        label: `${boundedString(family.familyName, 40).slice(0, 1) || '同'}*** ${discriminator}`,
+        label: `候选家庭 ${discriminator}`,
       };
     });
   }
@@ -113,13 +116,14 @@ function resolveFamily({ candidate, conversationContext, families, internalUserI
   const requestedName = normalizeFamilyName(candidate.entities.familyName);
   if (!requestedName) return { result: genericFamilyClarification() };
   const exactMatches = families.filter((family) => normalizeFamilyName(family.familyName) === requestedName);
-  const matches = exactMatches.length ? exactMatches : families.filter((family) => {
+  if (exactMatches.length === 1) return { family: exactMatches[0] };
+  if (exactMatches.length > 1) return { result: genericFamilyClarification(exactMatches, internalUserId) };
+  const matches = families.filter((family) => {
     const name = normalizeFamilyName(family.familyName);
     return requestedName.length >= 2 && Math.abs(name.length - requestedName.length) <= 4 && (
       name.startsWith(requestedName) || requestedName.startsWith(name) || name.endsWith(requestedName)
     );
   });
-  if (matches.length === 1) return { family: matches[0] };
   return { result: genericFamilyClarification(matches, internalUserId) };
 }
 
@@ -204,8 +208,10 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
         messageRef: normalizedMessageRef,
         operation: policy?.operation || candidate.requestedOperation,
         candidate: {
-          intent: candidate.intent,
-          entities: Object.fromEntries(Object.keys(candidate.entities).map((key) => [key, '[redacted]'])),
+          intent: AUDIT_INTENTS.has(candidate.intent) ? candidate.intent : 'unknown',
+          entities: Object.fromEntries(Object.keys(candidate.entities)
+            .filter((key) => AUDIT_ENTITY_KEYS.has(key))
+            .map((key) => [key, '[redacted]'])),
           confidence: candidate.confidence,
         },
         policyKey: policy?.key || '',
