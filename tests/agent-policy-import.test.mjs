@@ -261,3 +261,44 @@ test('deep public serialization redacts identifiers and drops unknown graphs', (
   assert.equal(typeof buildAgentPolicyImportContext(task).policyDraft.amount, 'string');
   assert.equal(typeof buildAgentPolicyImportContext(task).policyDraft.firstPremium, 'string');
 });
+
+test('required scalar identifiers reject missing and null values', () => {
+  for (const guestId of [undefined, null, '']) {
+    assert.throws(() => create({ owner: { guestId } }), (error) => error.code === 'INVALID_FIELD_VALUE');
+  }
+  for (const optionId of [undefined, null, '']) {
+    assert.throws(() => create({ productOptions: [{ optionId, productId: 1, label: 'P' }] }), (error) => error.code === 'INVALID_FIELD_VALUE');
+  }
+  for (const label of [undefined, null, '']) {
+    assert.throws(() => create({ productOptions: [{ optionId: 'p', productId: 1, label }] }), (error) => error.code === 'INVALID_FIELD_VALUE');
+  }
+  const task = create();
+  assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [image('a'.repeat(64))], generateDocumentId: () => null }), (error) => error.code === 'INVALID_FIELD_VALUE');
+  assert.throws(() => normalizeAgentPolicyImportTask({ ...task, documents: [{ ...image('a'.repeat(64)), mediaType: 'image/jpeg', documentId: null, status: 'received' }] }), (error) => error.code === 'INVALID_FIELD_VALUE');
+});
+
+test('a newly created task satisfies its own normalization invariants', () => {
+  const task = create({ draft: { company: 'A', name: 'B', insured: 'C' } });
+  assert.deepEqual(normalizeAgentPolicyImportTask(task), task);
+});
+
+test('document IDs and stored active hashes must be unique', () => {
+  const task = create();
+  appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [image('a'.repeat(64))], generateDocumentId: () => 'doc_same' });
+  const before = structuredClone(task);
+  assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion: 2, documents: [image('b'.repeat(64))], generateDocumentId: () => 'doc_same' }), (error) => error.code === 'DUPLICATE_DOCUMENT_ID');
+  assert.deepEqual(task, before);
+
+  const duplicateId = { ...task, documents: [...task.documents, { ...task.documents[0], sha256: 'b'.repeat(64) }] };
+  assert.throws(() => normalizeAgentPolicyImportTask(duplicateId), (error) => error.code === 'DUPLICATE_DOCUMENT_ID');
+  const duplicateHash = { ...task, documents: [...task.documents, { ...task.documents[0], documentId: 'doc_other' }] };
+  assert.throws(() => normalizeAgentPolicyImportTask(duplicateHash), (error) => error.code === 'DUPLICATE_DOCUMENT_HASH');
+});
+
+test('successful mutations reject unsafe in-place commit targets atomically', () => {
+  for (const task of [Object.freeze(create()), Object.preventExtensions(create())]) {
+    const before = structuredClone(task);
+    assert.throws(() => appendAgentPolicyImportDocuments(task, { stateVersion: 1, documents: [image('a'.repeat(64))] }), (error) => error.code === 'UNSAFE_TASK_TARGET');
+    assert.deepEqual(task, before);
+  }
+});

@@ -29,7 +29,10 @@ function isPlainObject(value) {
 }
 
 function scalarString(value, { field = 'value', max = MAX_TEXT, allowEmpty = true } = {}) {
-  if (value === undefined || value === null) return '';
+  if (value === undefined || value === null) {
+    if (!allowEmpty) fail('INVALID_FIELD_VALUE', `${field} 不能为空`);
+    return '';
+  }
   if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value))) {
     fail('INVALID_FIELD_VALUE', `${field} 必须是标量`);
   }
@@ -154,7 +157,18 @@ function normalizeStoredDocument(value) {
 function normalizeStoredDocuments(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > MAX_DOCUMENTS) fail('INVALID_DOCUMENT_LIST', '附件列表无效');
-  return value.map(normalizeStoredDocument);
+  const documents = value.map(normalizeStoredDocument);
+  const ids = new Set();
+  const activeHashes = new Set();
+  for (const document of documents) {
+    if (ids.has(document.documentId)) fail('DUPLICATE_DOCUMENT_ID', '附件 ID 重复');
+    ids.add(document.documentId);
+    if (document.status !== 'removed') {
+      if (activeHashes.has(document.sha256)) fail('DUPLICATE_DOCUMENT_HASH', '有效附件哈希重复');
+      activeHashes.add(document.sha256);
+    }
+  }
+  return documents;
 }
 
 function normalizePrivacyManifest() {
@@ -194,6 +208,17 @@ function canonicalTask(input) {
 function replaceOwnEnumerable(target, value) {
   for (const key of Object.keys(target)) delete target[key];
   Object.assign(target, value);
+}
+
+function assertSafeCommitTarget(target) {
+  if (!Object.isExtensible(target)) fail('UNSAFE_TASK_TARGET', '任务对象不支持安全原地更新', 409);
+  for (const key of Reflect.ownKeys(target)) {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (!descriptor?.enumerable) continue;
+    if (typeof key !== 'string' || !('value' in descriptor) || !descriptor.configurable || !descriptor.writable) {
+      fail('UNSAFE_TASK_TARGET', '任务对象不支持安全原地更新', 409);
+    }
+  }
 }
 
 function validateExpectedVersion(task, expectedVersion) {
@@ -276,11 +301,17 @@ export function appendAgentPolicyImportDocuments(input, { stateVersion, document
   const incoming = documents.map((document) => normalizeIncomingDocument(document, generateDocumentId));
   if (incoming.some((document) => document.size > fileLimit)) fail('DOCUMENT_SIZE_EXCEEDED', '单个附件超过大小限制');
   const byHash = new Map(task.documents.map((document) => [document.sha256, document]));
+  const documentIds = new Set(task.documents.map((document) => document.documentId));
   const added = [];
   const existing = [];
   for (const document of incoming) {
     if (byHash.has(document.sha256)) existing.push(byHash.get(document.sha256));
-    else { added.push(document); byHash.set(document.sha256, document); }
+    else {
+      if (documentIds.has(document.documentId)) fail('DUPLICATE_DOCUMENT_ID', '附件 ID 重复');
+      documentIds.add(document.documentId);
+      added.push(document);
+      byHash.set(document.sha256, document);
+    }
   }
   const active = [...task.documents.filter((document) => document.status !== 'removed'), ...added];
   if (active.length > countLimit) fail('DOCUMENT_LIMIT_EXCEEDED', '附件数量超过限制');
@@ -291,6 +322,7 @@ export function appendAgentPolicyImportDocuments(input, { stateVersion, document
     task.documents.push(...added);
     task.status = 'recognizing';
     recordMutation(task, 'documents_appended', now);
+    assertSafeCommitTarget(input);
     replaceOwnEnumerable(input, task);
   }
   return { task: added.length ? input : task, added, existing };
@@ -326,6 +358,7 @@ export function updateAgentPolicyImportTask(input, { stateVersion, action = 'set
     task.status = workflowStatus(task);
   } else fail('UNSUPPORTED_ACTION', '不支持该操作');
   recordMutation(task, action, now);
+  assertSafeCommitTarget(input);
   replaceOwnEnumerable(input, task);
   return input;
 }
