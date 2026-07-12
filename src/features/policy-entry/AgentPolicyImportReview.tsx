@@ -8,10 +8,8 @@ import {
   type PolicyImportTask,
 } from '../../api';
 import {
-  acquireRequestLock,
-  acceptReviewResponse,
-  beginReviewRequest,
   completedPolicyHref,
+  createLatestRequestController,
   nextPolicyImportPoll,
 } from './policy-import-review-state.mjs';
 
@@ -51,43 +49,38 @@ export function AgentPolicyImportReview({ taskId, token, onBack, onRecover }: Pr
   const [pollExhausted, setPollExhausted] = useState(false);
   const pollAttemptRef = useRef(0);
   const pollStartedAtRef = useRef(Date.now());
-  const requestStateRef = useRef({ generation: 0, mounted: true });
-  const requestControllerRef = useRef<AbortController | null>(null);
-  const inFlightRef = useRef(false);
+  const requestControllerRef = useRef(createLatestRequestController());
   const requestIdRef = useRef(`web-review-${taskId}-${crypto.randomUUID?.() || Date.now()}`);
 
   const loadTask = useCallback(async () => {
-    requestControllerRef.current?.abort();
-    const controller = new AbortController();
-    requestControllerRef.current = controller;
-    requestStateRef.current = beginReviewRequest(requestStateRef.current);
-    const generation = requestStateRef.current.generation;
-    const families = (await listFamilyProfiles({ token, signal: controller.signal })).families;
-    for (const family of families) {
-      try {
-        const payload = await getPolicyImport({ token, familyId: family.id, taskId, signal: controller.signal });
-        if (!acceptReviewResponse(requestStateRef.current, generation, payload.task)) return null;
-        setFamilyId(family.id);
-        setTask(payload.task);
-        if (payload.task.completedResult?.policyId) setPolicyId(payload.task.completedResult.policyId);
-        setMessage('已加载最新任务状态');
-        return payload.task;
-      } catch (error) {
-        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+    const result = await requestControllerRef.current.run(async (signal) => {
+      const families = (await listFamilyProfiles({ token, signal })).families;
+      for (const family of families) {
+        try {
+          const payload = await getPolicyImport({ token, familyId: family.id, taskId, signal });
+          return { familyId: family.id, task: payload.task };
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.status !== 404) throw error;
+        }
       }
-    }
-    throw new Error('没有找到可访问的保单导入任务');
+      throw new Error('没有找到可访问的保单导入任务');
+    });
+    if (!result.accepted || !result.value) return null;
+    setFamilyId(result.value.familyId);
+    setTask(result.value.task);
+    if (result.value.task.completedResult?.policyId) setPolicyId(result.value.task.completedResult.policyId);
+    setMessage('已加载最新任务状态');
+    return result.value.task;
   }, [taskId, token]);
 
   useEffect(() => {
-    requestStateRef.current = { ...requestStateRef.current, mounted: true };
-    const generation = requestStateRef.current.generation + 1;
+    requestControllerRef.current.dispose();
+    requestControllerRef.current = createLatestRequestController();
     void loadTask().catch((error) => {
-      if (requestStateRef.current.mounted && requestStateRef.current.generation === generation) setMessage(errorMessage(error));
+      setMessage(errorMessage(error));
     });
     return () => {
-      requestStateRef.current = { generation: requestStateRef.current.generation + 1, mounted: false };
-      requestControllerRef.current?.abort();
+      requestControllerRef.current.dispose();
     };
   }, [loadTask]);
 
@@ -103,34 +96,28 @@ export function AgentPolicyImportReview({ taskId, token, onBack, onRecover }: Pr
       return undefined;
     }
     pollAttemptRef.current = nextPoll.attempt;
-    const timer = window.setTimeout(() => {
-      const generation = requestStateRef.current.generation + 1;
+    requestControllerRef.current.schedule(nextPoll.delayMs, () => {
       void loadTask().catch((error) => {
-        if (requestStateRef.current.mounted && requestStateRef.current.generation === generation) setMessage(errorMessage(error));
+        setMessage(errorMessage(error));
       });
-    }, nextPoll.delayMs);
+    });
     return () => {
-      clearTimeout(timer);
+      requestControllerRef.current.clearScheduled();
     };
   }, [loadTask, task]);
 
   async function runAction(input: { action: string; field?: string; value?: string; optionId?: string; role?: string }) {
-    if (!task || !familyId || !acquireRequestLock(inFlightRef)) return;
-    requestControllerRef.current?.abort();
-    const controller = new AbortController();
-    requestControllerRef.current = controller;
-    requestStateRef.current = beginReviewRequest(requestStateRef.current);
-    const generation = requestStateRef.current.generation;
+    if (!task || !familyId) return;
     setBusy(true);
     setMessage('正在提交');
     try {
-      const payload = await applyPolicyImportAction({ token, familyId, taskId, stateVersion: task.stateVersion, signal: controller.signal, ...input });
-      if (!acceptReviewResponse(requestStateRef.current, generation, payload.task)) return undefined;
+      const result = await requestControllerRef.current.run((signal) => applyPolicyImportAction({ token, familyId, taskId, stateVersion: task.stateVersion, signal, ...input }), { lock: true });
+      if (!result.accepted || !result.value) return undefined;
+      const payload = result.value;
       setTask(payload.task);
       setMessage('任务已更新');
       return payload.task;
     } catch (error) {
-      if (controller.signal.aborted) return undefined;
       if (error instanceof ApiError && error.status === 409) {
         const latest = await loadTask();
         if (latest) setMessage('任务已在其他渠道更新，已刷新到最新状态，请重新确认');
@@ -138,37 +125,31 @@ export function AgentPolicyImportReview({ taskId, token, onBack, onRecover }: Pr
         setMessage(errorMessage(error));
       }
     } finally {
-      inFlightRef.current = false;
-      if (requestStateRef.current.mounted) setBusy(false);
+      if (requestControllerRef.current.active()) setBusy(false);
     }
   }
 
   async function finalize(currentTask = task) {
-    if (!currentTask || !familyId || !acquireRequestLock(inFlightRef)) return;
-    requestControllerRef.current?.abort();
-    const controller = new AbortController();
-    requestControllerRef.current = controller;
-    requestStateRef.current = beginReviewRequest(requestStateRef.current);
-    const generation = requestStateRef.current.generation;
+    if (!currentTask || !familyId) return;
     setBusy(true);
     setMessage('正在保存保单');
     try {
-      const payload = await finalizePolicyImport({
+      const result = await requestControllerRef.current.run((signal) => finalizePolicyImport({
         token,
         familyId,
         taskId,
         stateVersion: currentTask.stateVersion,
         requestId: requestIdRef.current,
-        signal: controller.signal,
-      });
-      if (!acceptReviewResponse(requestStateRef.current, generation, payload.result)) return;
+        signal,
+      }), { lock: true });
+      if (!result.accepted || !result.value) return;
+      const payload = result.value;
       setPolicyId(payload.result.policyId);
       const latest = await loadTask();
       if (!latest) return;
       setPolicyId(payload.result.policyId);
       setMessage('保单已保存');
     } catch (error) {
-      if (controller.signal.aborted) return;
       if (error instanceof ApiError && error.status === 409) {
         const latest = await loadTask();
         if (latest) setMessage('任务已在其他渠道更新，已刷新到最新状态，请重新确认');
@@ -176,8 +157,7 @@ export function AgentPolicyImportReview({ taskId, token, onBack, onRecover }: Pr
         setMessage(errorMessage(error));
       }
     } finally {
-      inFlightRef.current = false;
-      if (requestStateRef.current.mounted) setBusy(false);
+      if (requestControllerRef.current.active()) setBusy(false);
     }
   }
 

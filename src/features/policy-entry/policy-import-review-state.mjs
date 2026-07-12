@@ -30,6 +30,60 @@ export function acquireRequestLock(lock) {
   return true;
 }
 
+export function createLatestRequestController(options = {}) {
+  const AbortControllerImpl = options.AbortControllerImpl || AbortController;
+  const setTimer = options.setTimer || setTimeout;
+  const clearTimer = options.clearTimer || clearTimeout;
+  let generation = 0;
+  let disposed = false;
+  let locked = false;
+  let controller = null;
+  let timer = null;
+  return {
+    async run(operation, runOptions = {}) {
+      if (disposed || (runOptions.lock && locked)) return { accepted: false, value: undefined };
+      if (runOptions.lock) locked = true;
+      controller?.abort();
+      controller = new AbortControllerImpl();
+      const currentController = controller;
+      const currentGeneration = ++generation;
+      try {
+        const value = await operation(currentController.signal);
+        return !disposed && generation === currentGeneration
+          ? { accepted: true, value }
+          : { accepted: false, value: undefined };
+      } catch (error) {
+        if (currentController.signal.aborted || disposed || generation !== currentGeneration) return { accepted: false, value: undefined };
+        throw error;
+      } finally {
+        if (runOptions.lock) locked = false;
+      }
+    },
+    schedule(delayMs, callback) {
+      if (timer != null) clearTimer(timer);
+      if (disposed) return;
+      timer = setTimer(() => {
+        timer = null;
+        if (!disposed) callback();
+      }, delayMs);
+    },
+    clearScheduled() {
+      if (timer != null) clearTimer(timer);
+      timer = null;
+    },
+    active() {
+      return !disposed;
+    },
+    dispose() {
+      disposed = true;
+      generation += 1;
+      controller?.abort();
+      if (timer != null) clearTimer(timer);
+      timer = null;
+    },
+  };
+}
+
 export function removeCustomerRouteParam(path, name) {
   const url = new URL(path, 'https://local.invalid');
   url.searchParams.delete(name);

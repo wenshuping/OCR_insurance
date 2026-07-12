@@ -6,6 +6,13 @@ export function principalKey(token: string, guestId: string): string;
 export function beginPrincipalLoad<T extends { generation: number }>(state: T, nextPrincipalKey: string): T & { principalKey: string };
 export function acceptPrincipalPolicies<T>(state: ReviewRequestState & { principalKey: string }, generation: number, expectedPrincipalKey: string, policies: T[]): T[] | null;
 export function acquireRequestLock(lock: { current: boolean }): boolean;
+export function createLatestRequestController(options?: { AbortControllerImpl?: typeof AbortController; setTimer?: (callback: () => void, delayMs: number) => unknown; clearTimer?: (timer: unknown) => void }): {
+  run<T>(operation: (signal: AbortSignal) => Promise<T>, options?: { lock?: boolean }): Promise<{ accepted: boolean; value?: T }>;
+  schedule(delayMs: number, callback: () => void): void;
+  clearScheduled(): void;
+  active(): boolean;
+  dispose(): void;
+};
 export function removeCustomerRouteParam(path: string, name: string): string;
 export function resolveOwnedPolicy<T extends { id: number }>(requestedPolicyId: unknown, policies?: T[]): T | null;
 export function beginReviewRequest<T extends ReviewRequestState>(state: T): T;

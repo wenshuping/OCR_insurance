@@ -136,7 +136,7 @@ import {
 } from '../../shared/customer-policy-list';
 import { AnalysisReportPage, UploadPolicyPage } from '../../features/policy-entry/UploadPolicyPage';
 import { AgentPolicyImportReview } from '../../features/policy-entry/AgentPolicyImportReview';
-import { acceptPrincipalPolicies, beginPrincipalLoad, parseCustomerRoute, principalKey, removeCustomerRouteParam, resolveOwnedPolicy } from '../../features/policy-entry/policy-import-review-state.mjs';
+import { createLatestRequestController, parseCustomerRoute, principalKey, removeCustomerRouteParam, resolveOwnedPolicy } from '../../features/policy-entry/policy-import-review-state.mjs';
 import { PolicyDetailSheet } from '../../features/policy-detail/PolicyDetailSheet';
 import { ResponsibilityAssistant } from '../../features/responsibility-assistant/ResponsibilityAssistant';
 import { CustomerAccountSheet } from '../../features/customer-auth/CustomerAccountSheet';
@@ -625,8 +625,7 @@ export function CustomerApp() {
   const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
   const membershipStatusRequestRef = useRef(0);
-  const policyLoadRef = useRef({ generation: 0, principalKey: '', mounted: true });
-  const policyLoadControllerRef = useRef<AbortController | null>(null);
+  const policyLoadControllerRef = useRef(createLatestRequestController());
   const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
@@ -764,7 +763,9 @@ export function CustomerApp() {
     if (policyImportTaskId && !token) openPhoneVerificationDialog('验证手机号后继续审核跨渠道保单任务');
   }, [policyImportTaskId, token]);
   useEffect(() => {
-    if (policyImportRecoveryTaskId) setMessage(`任务 ${policyImportRecoveryTaskId} 已退出失败流程；本次将开始全新的保单录入，不再关联旧任务。`);
+    if (!policyImportRecoveryTaskId) return;
+    setMessage(`任务 ${policyImportRecoveryTaskId} 已退出失败流程；本次将开始全新的保单录入，不再关联旧任务。`);
+    window.history.replaceState({}, '', removeCustomerRouteParam(`${window.location.pathname}${window.location.search}${window.location.hash}`, 'policyImportRecoveryTaskId'));
   }, [policyImportRecoveryTaskId]);
   useEffect(() => {
     if (!requestedPolicyId || !policiesLoaded) return;
@@ -942,15 +943,10 @@ export function CustomerApp() {
   }
 
   async function refreshPolicies(nextToken = token) {
-    policyLoadControllerRef.current?.abort();
-    const controller = new AbortController();
-    policyLoadControllerRef.current = controller;
     const nextPrincipalKey = principalKey(nextToken, guestId);
-    policyLoadRef.current = beginPrincipalLoad(policyLoadRef.current, nextPrincipalKey);
-    const generation = policyLoadRef.current.generation;
-    const payload = await listPolicies({ token: nextToken || undefined, guestId: nextToken ? undefined : guestId, signal: controller.signal });
-    const accepted = acceptPrincipalPolicies(policyLoadRef.current, generation, nextPrincipalKey, payload.policies);
-    if (!accepted) return [];
+    const result = await policyLoadControllerRef.current.run((signal) => listPolicies({ token: nextToken || undefined, guestId: nextToken ? undefined : guestId, signal }));
+    if (!result.accepted || !result.value) return [];
+    const accepted = result.value.policies;
     setPolicies(accepted);
     setPoliciesLoaded(true);
     setLoadedPolicyPrincipalKey(nextPrincipalKey);
@@ -1081,7 +1077,8 @@ export function CustomerApp() {
   }
 
   useEffect(() => {
-    policyLoadRef.current = { ...policyLoadRef.current, mounted: true };
+    policyLoadControllerRef.current.dispose();
+    policyLoadControllerRef.current = createLatestRequestController();
     setPoliciesLoaded(false);
     setLoadedPolicyPrincipalKey('');
     Promise.all([refreshPolicies(), refreshFamilyProfiles(), refreshMembershipStatus()]).catch((error) => {
@@ -1090,8 +1087,7 @@ export function CustomerApp() {
       }
     });
     return () => {
-      policyLoadRef.current = { ...policyLoadRef.current, generation: policyLoadRef.current.generation + 1, mounted: false };
-      policyLoadControllerRef.current?.abort();
+      policyLoadControllerRef.current.dispose();
     };
   }, [token, guestId]);
 

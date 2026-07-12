@@ -4,6 +4,7 @@ import {
   acceptReviewResponse,
   beginReviewRequest,
   completedPolicyHref,
+  createLatestRequestController,
   failedPolicyImportRecoveryUrl,
   acquireRequestLock,
   acceptPrincipalPolicies,
@@ -19,6 +20,39 @@ test('customer route parses both task and exact policy while preserving the othe
   assert.deepEqual(parseCustomerRoute('?policyImportTaskId=41&policyId=91'), { policyImportTaskId: 41, policyImportRecoveryTaskId: null, policyId: 91 });
   assert.equal(removeCustomerRouteParam('/?policyImportTaskId=41&policyId=91', 'policyId'), '/?policyImportTaskId=41');
   assert.deepEqual(parseCustomerRoute('?policyId=forged'), { policyImportTaskId: null, policyImportRecoveryTaskId: null, policyId: null });
+});
+
+test('component request controller aborts stale loads and ignores completion after dispose', async () => {
+  const deferred = [];
+  const controller = createLatestRequestController();
+  const first = controller.run((signal) => new Promise((resolve) => deferred.push({ resolve, signal })));
+  const second = controller.run((signal) => new Promise((resolve) => deferred.push({ resolve, signal })));
+  assert.equal(deferred[0].signal.aborted, true);
+  deferred[0].resolve('guest');
+  deferred[1].resolve('auth');
+  assert.deepEqual(await first, { accepted: false, value: undefined });
+  assert.deepEqual(await second, { accepted: true, value: 'auth' });
+  const after = controller.run(() => Promise.resolve('late'));
+  controller.dispose();
+  assert.deepEqual(await after, { accepted: false, value: undefined });
+});
+
+test('component request controller locks rapid confirms and cleans scheduled polling', async () => {
+  let resolve;
+  let calls = 0;
+  let timerCleared = false;
+  const controller = createLatestRequestController({
+    setTimer: (callback) => ({ callback }),
+    clearTimer: () => { timerCleared = true; },
+  });
+  const first = controller.run(() => { calls += 1; return new Promise((done) => { resolve = done; }); }, { lock: true });
+  assert.deepEqual(await controller.run(() => { calls += 1; return Promise.resolve(); }, { lock: true }), { accepted: false, value: undefined });
+  assert.equal(calls, 1);
+  controller.schedule(1000, () => {});
+  controller.dispose();
+  assert.equal(timerCleared, true);
+  resolve('saved');
+  assert.deepEqual(await first, { accepted: false, value: undefined });
 });
 
 test('a deferred guest policy response is ignored after authentication changes principal', () => {
@@ -62,4 +96,5 @@ test('policy import polling stops at its bounded maximum', () => {
 
 test('failed recovery routes back to policy entry with the task context', () => {
   assert.equal(failedPolicyImportRecoveryUrl(41), '/?policyImportRecoveryTaskId=41');
+  assert.equal(removeCustomerRouteParam('/?policyImportTaskId=42&policyImportRecoveryTaskId=41&policyId=91', 'policyImportRecoveryTaskId'), '/?policyImportTaskId=42&policyId=91');
 });
