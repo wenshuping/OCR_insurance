@@ -8,7 +8,14 @@ const FAMILY_SALES_MEMORY_LIMIT = 20;
 const MEMORY_KINDS = new Set(['objection', 'preference', 'strategy', 'correction', 'todo']);
 const MEMORY_STATUSES = new Set(['candidate', 'confirmed', 'conflicted', 'superseded', 'rejected', 'expired', 'completed', 'archived']);
 const MEMORY_ACTIONS = new Set(['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore']);
-const MEMORY_REASON_CODES = new Set(['advisor_correction', 'user_confirmation', 'advisor_rejection', 'todo_completed', 'expired_by_date', 'restored_after_review', 'system_archival']);
+const ACTION_REASON_CODES = {
+  confirm: new Set(['user_confirmation', 'advisor_confirmation']),
+  reject: new Set(['advisor_rejection', 'user_correction']),
+  supersede: new Set(['advisor_correction', 'user_correction']),
+  complete: new Set(['todo_completed']),
+  expire: new Set(['expired_by_date', 'system_expiration']),
+  restore: new Set(['restored_after_review']),
+};
 const MAX_EXTRACTED_MEMORY_ITEMS = 32;
 const MAX_MODEL_RESPONSE_CHARS = 100_000;
 const MAX_MEMORY_GRAPH_SIZE = 1_000;
@@ -218,7 +225,7 @@ export function applyFamilySalesMemoryAction({
   const time = new Date(nowInstant).toISOString();
   const safeActor = normalizeActor(actor);
   const safeReason = trim(reasonCode).toLowerCase();
-  if (!MEMORY_REASON_CODES.has(safeReason)) throw new TypeError('reasonCode must be an approved enum value');
+  if (!ACTION_REASON_CODES[normalizedAction]?.has(safeReason)) throw new TypeError('reasonCode is not allowed for action');
 
   const legalFrom = {
     confirm: new Set(['candidate', 'conflicted']),
@@ -365,11 +372,26 @@ export function normalizeExtractedFamilySalesMemories(value = {}) {
   const seen = new Set();
   return (Array.isArray(source) ? source : [])
     .map((item) => {
-      const kind = normalizeKind(item?.kind);
-      const content = sanitizeMemoryContent(item?.content || item?.text || item?.summary);
-      const confidence = clampConfidence(item?.confidence);
+      let raw;
+      try {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+        raw = {};
+        for (const [key, limit] of [['kind', 32], ['key', 120], ['memoryKey', 120], ['content', 2_000], ['text', 2_000], ['summary', 2_000], ['normalizedValue', 500], ['validFrom', 64]]) {
+          const field = item[key];
+          if (field !== undefined && field !== null && !['string', 'number', 'boolean'].includes(typeof field)) return null;
+          if (field !== undefined && field !== null && String(field).length > limit) return null;
+          raw[key] = field;
+        }
+        raw.confidence = item.confidence;
+      } catch {
+        return null;
+      }
+      const kind = normalizeKind(raw.kind);
+      const content = sanitizeMemoryContent(raw.content || raw.text || raw.summary);
+      const confidence = clampConfidence(raw.confidence);
       return { kind, content, confidence };
     })
+    .filter(Boolean)
     .filter((item) => item.kind && item.content && item.confidence >= 0.7)
     .filter((item) => {
       const key = normalizeMemoryKey(item.kind, item.content);
@@ -388,6 +410,51 @@ function resolveFamilySalesMemoryConfig(env = process.env) {
     timeoutMs: boundedNumber(env.FAMILY_SALES_MEMORY_TIMEOUT_MS || env.DEEPSEEK_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1_000, 120_000),
     maxTokens: boundedNumber(env.FAMILY_SALES_MEMORY_MAX_TOKENS, DEFAULT_MAX_TOKENS, 100, 4_000),
   };
+}
+
+async function readBoundedModelResponse(response, controller) {
+  const contentLengthText = response?.headers?.get?.('content-length');
+  if (contentLengthText && /^\d+$/u.test(contentLengthText.trim()) && Number(contentLengthText) > MAX_MODEL_RESPONSE_CHARS) {
+    await response?.body?.cancel?.().catch(() => {});
+    controller.abort();
+    return null;
+  }
+  if (response?.body?.getReader) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let byteCount = 0;
+    let text = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array)) throw new TypeError('model response chunk must be bytes');
+        byteCount += value.byteLength;
+        if (byteCount > MAX_MODEL_RESPONSE_CHARS) {
+          await reader.cancel('model response exceeds limit');
+          controller.abort();
+          return null;
+        }
+        text += decoder.decode(value, { stream: true });
+        if (text.length > MAX_MODEL_RESPONSE_CHARS) {
+          await reader.cancel('model response exceeds limit');
+          controller.abort();
+          return null;
+        }
+      }
+      text += decoder.decode();
+      return text.length <= MAX_MODEL_RESPONSE_CHARS ? text : null;
+    } finally {
+      reader.releaseLock?.();
+    }
+  }
+  // Test doubles and legacy fetch shims may omit a readable body; cap their text before parsing.
+  const text = await response.text();
+  if (text.length > MAX_MODEL_RESPONSE_CHARS) {
+    controller.abort();
+    return null;
+  }
+  return text;
 }
 
 export async function extractFamilySalesMemories({
@@ -446,8 +513,9 @@ export async function extractFamilySalesMemories({
       body: JSON.stringify(body),
     });
     if (!response.ok) return [];
-    const responseText = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
-    if (responseText.length > MAX_MODEL_RESPONSE_CHARS) return [];
+    if (!response.body && typeof response.text !== 'function') return [];
+    const responseText = await readBoundedModelResponse(response, controller);
+    if (responseText === null || responseText.length > MAX_MODEL_RESPONSE_CHARS) return [];
     const payload = JSON.parse(responseText);
     const parsed = parseJsonContent(payload?.choices?.[0]?.message?.content);
     return normalizeExtractedFamilySalesMemories(parsed || {});

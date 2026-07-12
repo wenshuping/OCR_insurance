@@ -527,6 +527,7 @@ test('memory actions reject illegal and stale changes without mutation', () => {
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'reject', actor, reasonCode: 'advisor_rejection', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /illegal/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'expired_by_date', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' }), /stale/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'free form reason', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /reasonCode/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'todo_completed', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /not allowed/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor: { type: 'advisor', id: 'raw-advisor-id' }, reasonCode: 'expired_by_date', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /server-owned/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'expired_by_date', expectedVersion: 2, now: '2026-07-12T08:00:00' }), /zoned ISO/u);
   assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'expired_by_date', expectedVersion: 2, now: 'not-a-date' }), /zoned ISO/u);
@@ -552,7 +553,7 @@ test('memory extraction treats only the user message as a fact source', async ()
     env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
     fetchImpl: async (_url, options) => {
       requestBody = JSON.parse(options.body);
-      return { ok: true, json: async () => ({ choices: [{ message: { content: '{"memories":[]}' } }] }) };
+      return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content: '{"memories":[]}' } }] }) };
     },
   });
   assert.deepEqual(extracted, []);
@@ -563,6 +564,8 @@ test('memory extraction treats only the user message as a fact source', async ()
 
 test('memory extraction fails closed on excessive inputs and model responses', async () => {
   assert.deepEqual(normalizeExtractedFamilySalesMemories(Array.from({ length: 33 }, () => ({ kind: 'preference', content: '文字联系', confidence: 1 }))), []);
+  assert.deepEqual(normalizeExtractedFamilySalesMemories([{ kind: 'preference', content: 'x'.repeat(2_001), confidence: 1 }]), []);
+  assert.deepEqual(normalizeExtractedFamilySalesMemories([{ kind: 'preference', get content() { throw new Error('hostile getter'); }, confidence: 1 }]), []);
   let requestBody;
   const extracted = await extractFamilySalesMemories({
     userMessage: { content: '偏好文字联系' },
@@ -574,6 +577,53 @@ test('memory extraction fails closed on excessive inputs and model responses', a
   });
   assert.equal(requestBody.max_tokens, 4_000);
   assert.deepEqual(extracted, []);
+});
+
+test('memory extraction streams bounded responses and cancels oversized bodies', async () => {
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  let reads = 0;
+  const oversized = await extractFamilySalesMemories({
+    userMessage: { content: '偏好文字联系' },
+    env: { DEEPSEEK_API_KEY: 'test-key' },
+    fetchImpl: async () => ({
+      ok: true,
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: async () => (++reads <= 2 ? { done: false, value: new Uint8Array(60_000) } : { done: true }),
+          cancel: async () => { cancelled = true; },
+          releaseLock: () => {},
+        }),
+      },
+    }),
+  });
+  assert.deepEqual(oversized, []);
+  assert.equal(cancelled, true);
+
+  const payload = JSON.stringify({ choices: [{ message: { content: '{"memories":[{"kind":"preference","content":"偏好文字联系","confidence":0.9}]}' } }] });
+  const bytes = encoder.encode(payload);
+  let offset = 0;
+  const valid = await extractFamilySalesMemories({
+    userMessage: { content: '偏好文字联系' },
+    env: { DEEPSEEK_API_KEY: 'test-key' },
+    fetchImpl: async () => ({
+      ok: true,
+      headers: { get: () => String(bytes.byteLength) },
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (offset >= bytes.length) return { done: true };
+            const value = bytes.slice(offset, offset += 17);
+            return { done: false, value };
+          },
+          cancel: async () => {},
+          releaseLock: () => {},
+        }),
+      },
+    }),
+  });
+  assert.deepEqual(valid, [{ kind: 'preference', content: '偏好文字联系', confidence: 0.9 }]);
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {
