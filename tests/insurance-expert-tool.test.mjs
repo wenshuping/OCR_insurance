@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { analyzeInsurancePolicyResponsibilities } from '../server/c-policy-analysis.service.mjs';
+import { analyzeInsurancePolicyResponsibilities, extractPdfTextWithPython } from '../server/c-policy-analysis.service.mjs';
+import { createAgentPolicyImportTask } from '../server/agent-policy-import.service.mjs';
 import { createInsuranceExpertTool } from '../server/insurance-expert-tool.service.mjs';
 import { createWukongMcpGateway } from '../server/wukong-mcp-gateway.service.mjs';
 
@@ -14,12 +15,13 @@ function fixture() {
       { id: 12, ownerUserId: 8, status: 'active' },
     ],
     policies: [
-      { id: 31, userId: 7, familyId: 11, company: '可信保险', name: '安心保', canonicalProductId: 'product-1', policyNumber: 'RAW-POLICY-7788' },
+      { id: 31, userId: 7, familyId: 11, company: '可信保险', name: '安心保', canonicalProductId: 'product-1', versionNo: 'v3', effectiveDate: '2026-01-01', policyNumber: 'RAW-POLICY-7788' },
       { id: 32, userId: 8, familyId: 12, company: '他人保险', name: '他人保', canonicalProductId: 'product-2' },
     ],
     agentPolicyImportTasks: [{
       id: 51, familyId: 11, ownerUserId: 7, targetAgent: 'insurance_expert',
-      draft: { company: '可信保险', name: '安心保', canonicalProductId: 'product-1', insured: '张小明', rawOcr: 'RAW_SCAN_SECRET' },
+      status: 'final_confirmation', productResolution: 'trusted_match',
+      draft: { company: '可信保险', name: '安心保', canonicalProductId: 'product-1', versionNo: 'v3', effectiveDate: '2026-01-01', insured: '张小明', rawOcr: 'RAW_SCAN_SECRET' },
       rawOcr: 'RAW_SCAN_SECRET', storagePath: '/tmp/private.jpg', documents: [],
     }],
     officialDomainProfiles: [{ company: '可信保险', officialDomains: ['official.insurer.test'] }],
@@ -41,6 +43,15 @@ function analysis(overrides = {}) {
     ...overrides,
   };
 }
+
+test('canonical policy import task retains trusted product version fields', () => {
+  const task = createAgentPolicyImportTask({
+    id: 1, familyId: 11, owner: { userId: 7 }, targetAgent: 'insurance_expert',
+    draft: { company: '可信保险', name: '安心保', insured: '张三', versionNo: 'v3', effectiveDate: '2026-01-01' },
+  });
+  assert.equal(task.draft.versionNo, 'v3');
+  assert.equal(task.draft.effectiveDate, '2026-01-01');
+});
 
 test('resolves only owned policies and insurance-expert tasks in the same family', async () => {
   const state = fixture();
@@ -70,12 +81,45 @@ test('completed task must reference the exact formal policy', async () => {
   }), { code: 'POLICY_TASK_MISMATCH' });
 });
 
+test('canonical product match still rejects a different product version', async () => {
+  const state = fixture();
+  state.agentPolicyImportTasks[0].draft.versionNo = 'v2';
+  await assert.rejects(createInsuranceExpertTool({ state, analyze: async () => analysis() })({
+    owner: { userId: 7 }, policyRef: 31, policyImportTaskId: 51, question: '问题',
+  }), { code: 'POLICY_TASK_MISMATCH' });
+});
+
+test('task eligibility rejects processing and terminal failures before analysis', async () => {
+  for (const status of ['uploading', 'recognizing', 'saving', 'cancelled', 'failed']) {
+    const state = fixture();
+    state.agentPolicyImportTasks[0].status = status;
+    await assert.rejects(createInsuranceExpertTool({ state, analyze: async () => analysis() })({
+      owner: { userId: 7 }, policyImportTaskId: 51, question: '问题',
+    }), { code: 'POLICY_IMPORT_NOT_READY' });
+  }
+});
+
+test('review tasks require resolved products and expose missing fields', async () => {
+  const state = fixture();
+  state.agentPolicyImportTasks[0].status = 'field_completion';
+  state.agentPolicyImportTasks[0].productResolution = 'trusted_match';
+  delete state.agentPolicyImportTasks[0].draft.insured;
+  const result = await createInsuranceExpertTool({ state, analyze: async () => analysis() })({
+    owner: { userId: 7 }, policyImportTaskId: 51, question: '问题',
+  });
+  assert.ok(result.missingInformation.some((item) => /被保险人/u.test(item)));
+  state.agentPolicyImportTasks[0].productResolution = '';
+  await assert.rejects(createInsuranceExpertTool({ state, analyze: async () => analysis() })({
+    owner: { userId: 7 }, policyImportTaskId: 51, question: '问题',
+  }), { code: 'POLICY_IMPORT_NOT_READY' });
+});
+
 test('passes a safe internal projection and never returns raw scan or policy data', async () => {
   const state = fixture();
   let input;
   const ask = createInsuranceExpertTool({ state, analyze: async (value) => { input = value; return analysis(); } });
   const result = await ask({ owner: { userId: 7 }, policyImportTaskId: 51, question: '保障什么？', requestId: 'req' });
-  assert.deepEqual(Object.keys(input.policy).sort(), ['canonicalProductId', 'company', 'name']);
+  assert.deepEqual(Object.keys(input.policy).sort(), ['canonicalProductId', 'company', 'effectiveDate', 'name', 'versionNo']);
   assert.equal(input.ocrText, '');
   assert.equal(input.allowExternalReferences, false);
   const serialized = JSON.stringify({ input, result });
@@ -89,6 +133,32 @@ test('preserves official evidence label, source reference, and current version',
     label: '保险公司官方条款', sourceRef: 'knowledge:71', version: 'v3', url: 'https://official.insurer.test/terms-v3.pdf',
   }]);
   assert.match(result.answer, /身故保险金/u);
+});
+
+test('binds evidence to the selected policy version and effective interval', async () => {
+  const state = fixture();
+  state.knowledgeRecords.push({
+    ...state.knowledgeRecords[0], id: 72, versionNo: 'v2', validTo: '2025-01-01',
+    url: 'https://official.insurer.test/terms-v2.pdf',
+  });
+  let received;
+  await createInsuranceExpertTool({ state, analyze: async (input) => { received = input; return analysis(); } })({
+    owner: { userId: 7 }, policyRef: 31, question: '问题',
+  });
+  assert.deepEqual(received.knowledgeRecords.map((record) => record.versionNo), ['v3']);
+  const unknown = structuredClone(state); delete unknown.policies[0].versionNo;
+  const gap = await createInsuranceExpertTool({ state: unknown, analyze: async () => { throw new Error('must not run'); } })({ owner: { userId: 7 }, policyRef: 31, question: '问题' });
+  assert.deepEqual(gap.evidence, []);
+  assert.match(gap.missingInformation.join(' '), /版本/u);
+});
+
+test('rejects https evidence outside configured official domains before analyzer invocation', async () => {
+  const state = fixture();
+  state.knowledgeRecords[0].url = 'https://evil.example/terms.pdf';
+  let calls = 0;
+  const result = await createInsuranceExpertTool({ state, analyze: async () => { calls += 1; return analysis(); } })({ owner: { userId: 7 }, policyRef: 31, question: '问题' });
+  assert.equal(calls, 0);
+  assert.deepEqual(result.evidence, []);
 });
 
 test('does not expose superseded product-version evidence', async () => {
@@ -147,6 +217,33 @@ test('reports missing analysis evidence and keeps high-risk cautions', async () 
   assert.ok(result.missingInformation.includes('官方证据未提供可确认的保险责任。'));
   assert.match(result.limitations.join(' '), /退保|换保/u);
   assert.match(result.limitations.join(' '), /核保/u);
+  assert.match(result.limitations.join(' '), /理赔/u);
+});
+
+test('passes the bounded question and returns only question-relevant analysis', async () => {
+  const state = fixture();
+  let receivedQuestion;
+  const ask = createInsuranceExpertTool({ state, analyze: async ({ question }) => {
+    receivedQuestion = question;
+    return analysis({ analysis: { coverageTable: [
+      { coverageType: '住院医疗保险金', scenario: '住院治疗', payout: '按约定比例报销', note: '' },
+      { coverageType: '身故保险金', scenario: '身故', payout: '基本保险金额', note: '' },
+    ] } });
+  } });
+  const result = await ask({ owner: { userId: 7 }, policyRef: 31, question: '住院 claim 能理赔吗？' });
+  assert.equal(receivedQuestion, '住院 claim 能理赔吗？');
+  assert.match(result.answer, /住院/u);
+  assert.doesNotMatch(result.answer, /身故/u);
+});
+
+test('uses analyzer question-specific answer and multilingual high-risk cautions', async () => {
+  const ask = createInsuranceExpertTool({ state: fixture(), analyze: async () => ({
+    ...analysis(), answer: '退保金额必须向保险公司申请当期现金价值试算。',
+  }) });
+  const result = await ask({ owner: { userId: 7 }, policyRef: 31, question: 'Can I surrender / replace this policy and make a claim?' });
+  assert.equal(result.answer, '退保金额必须向保险公司申请当期现金价值试算。');
+  assert.match(result.limitations.join(' '), /退保/u);
+  assert.match(result.limitations.join(' '), /换保/u);
   assert.match(result.limitations.join(' '), /理赔/u);
 });
 
@@ -248,6 +345,30 @@ test('analyzer treats provider abort as terminal without model fallback or searc
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
+});
+
+test('PDF extraction abort kills the child and rejects immediately', async () => {
+  const events = [];
+  const listeners = new Map();
+  const child = {
+    stdout: { on: () => {} },
+    stdin: { end: () => {} },
+    on: (name, listener) => { listeners.set(name, listener); },
+    off: (name) => { listeners.delete(name); },
+    kill: (signal) => { events.push(signal); return true; },
+  };
+  const controller = new AbortController();
+  const pending = extractPdfTextWithPython(Buffer.from('pdf'), {
+    signal: controller.signal,
+    spawnImpl: () => child,
+    killGraceMs: 5,
+  });
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(events[0], 'SIGTERM');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(events.includes('SIGKILL'));
+  assert.equal(listeners.has('close'), false);
 });
 
 test('MCP schema is strict, derives owner, injects request id, and supports HTTP registry metadata', async () => {

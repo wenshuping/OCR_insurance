@@ -77,7 +77,8 @@
     "patterns": [
       "server/c-policy-analysis.service.mjs",
       "server/insurance-expert-tool.service.mjs",
-      "tests/insurance-expert-tool.test.mjs"
+      "tests/insurance-expert-tool.test.mjs",
+      "tests/policy-analysis-prompt.test.mjs"
     ],
     "commands": [
       "node --test tests/insurance-expert-tool.test.mjs",

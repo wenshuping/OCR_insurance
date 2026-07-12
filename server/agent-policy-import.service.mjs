@@ -6,6 +6,7 @@ const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'failed']);
 const DOCUMENT_STATUSES = new Set(['received', 'scanning', 'recognized', 'failed', 'removed']);
 const TARGET_AGENTS = new Set(['sales_champion', 'insurance_expert']);
 const EDITABLE_FIELDS = new Set(['company', 'name', 'insured', 'applicant', 'date', 'paymentPeriod', 'coveragePeriod', 'amount', 'firstPremium', 'policyNumber', 'insuredIdNumber', 'mobile']);
+const TRUSTED_PRODUCT_VERSION_FIELDS = new Set(['versionNo', 'version', 'effectiveDate', 'issueDate']);
 const REQUIRED_FIELDS = ['company', 'name', 'insured'];
 const ID_NUMBER_PATTERN = /(?<!\d)\d{17}[0-9Xx](?!\d)/gu;
 const MOBILE_PATTERN = /(?<!\d)1[3-9]\d{9}(?!\d)/gu;
@@ -79,7 +80,7 @@ function normalizeDraft(value = {}) {
   const source = isPlainObject(value?.data) ? value.data : value;
   if (!isPlainObject(source)) fail('INVALID_DRAFT', '保单草稿必须是对象');
   const draft = {};
-  for (const field of EDITABLE_FIELDS) {
+  for (const field of new Set([...EDITABLE_FIELDS, ...TRUSTED_PRODUCT_VERSION_FIELDS])) {
     if (source[field] !== undefined && source[field] !== null && source[field] !== '') {
       const normalized = scalarString(source[field], { field });
       if (normalized) draft[field] = normalized;

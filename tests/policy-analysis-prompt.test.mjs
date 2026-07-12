@@ -162,7 +162,7 @@ test('policy analysis searches the current New China disclosure page when the ol
   );
 });
 
-test('policy analysis prompt only asks DeepSeek for the responsibility table', async () => {
+test('policy analysis prompt asks for a question-specific answer and supporting responsibility rows', async () => {
   await withPolicyAnalysisEnv(async () => {
     const calls = [];
     const fetchImpl = async (url, options) => {
@@ -186,6 +186,7 @@ test('policy analysis prompt only asks DeepSeek for the responsibility table', a
         amount: 300000,
       },
       ocrText: '身故保险金 全残保险金 特定公共交通工具意外额外给付',
+      question: '公共交通意外怎么赔？',
       fetchImpl,
     });
 
@@ -195,7 +196,9 @@ test('policy analysis prompt only asks DeepSeek for the responsibility table', a
       .body.messages.map((message) => message.content).join('\n');
     assert.match(routerPrompt, /policy_analysis_skill_router/u);
     assert.match(prompt, /本次解析技能计划/u);
-    assert.match(prompt, /JSON 字段只包含：coverageTable/);
+    assert.match(prompt, /JSON 字段只包含：answer、coverageTable/);
+    assert.match(routerPrompt, /用户问题：公共交通意外怎么赔/u);
+    assert.match(prompt, /用户问题：公共交通意外怎么赔/u);
     assert.match(prompt, /不要输出 report、notes、summary、overview、disclaimer/);
     assert.match(prompt, /每一条保险责任.*单独.*coverageTable/);
     assert.match(prompt, /coverageTable 是保险责任表/);

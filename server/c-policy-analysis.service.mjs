@@ -867,6 +867,8 @@ function normalizePolicyForPrompt(policy = {}) {
     insuredRelation: trimString(policy.insuredRelation),
     paymentPeriod: trimString(policy.paymentPeriod),
     coveragePeriod: trimString(policy.coveragePeriod),
+    versionNo: trimString(policy.versionNo || policy.version),
+    effectiveDate: trimString(policy.effectiveDate || policy.issueDate || policy.date),
     responsibilities: Array.isArray(policy.responsibilities)
       ? policy.responsibilities
           .map((item) => ({
@@ -1275,6 +1277,7 @@ function normalizeAnalysis(payload, model, options = {}) {
   };
   const parsed = analysisResponseSchema.parse(normalizedPayload);
   return {
+    answer: trimString(payload?.answer || payload?.conclusion).slice(0, 8_000),
     report: '',
     productOverview: '',
     coreFeature: '',
@@ -1325,7 +1328,7 @@ function buildModelChain(config) {
   });
 }
 
-function buildAnalysisInput({ policy, ocrText = '' }) {
+function buildAnalysisInput({ policy, ocrText = '', question = '' }) {
   const sensitiveTerms = buildSensitiveTerms({ policy, ocrText });
   const ocrConflictSummary = summarizeOcrConflict(policy, ocrText);
   const effectiveOcrText = ocrConflictSummary ? '' : ocrText;
@@ -1341,6 +1344,7 @@ function buildAnalysisInput({ policy, ocrText = '' }) {
     insuredRelation: policy.insuredRelation,
     paymentPeriod: policy.paymentPeriod,
     coveragePeriod: policy.coveragePeriod,
+    question: trimString(question).slice(0, 4_000),
     ocrText: normalizedOcrText,
     ocrConflictSummary,
     sensitiveTerms,
@@ -1964,11 +1968,12 @@ function extractPdfActualText(buffer) {
   return values.join('');
 }
 
-async function extractPdfTextWithPython(buffer) {
+export async function extractPdfTextWithPython(buffer, { signal, spawnImpl = spawn, killGraceMs = 250 } = {}) {
   const raw = Buffer.from(buffer || []);
   if (!raw.length) return '';
-  return new Promise((resolve) => {
-    const child = spawn(
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(
       'python3',
       [
         '-c',
@@ -1988,31 +1993,60 @@ async function extractPdfTextWithPython(buffer) {
       },
     );
     let output = '';
-    const timeout = setTimeout(() => {
+    let settled = false;
+    let killTimer;
+    const remove = (name, listener) => child.off?.(name, listener);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      remove('close', onClose);
+      remove('error', onError);
+    };
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const terminate = () => {
       child.kill('SIGTERM');
-      resolve('');
+      killTimer = setTimeout(() => {
+        if (child.exitCode == null) child.kill('SIGKILL');
+      }, Math.max(1, Number(killGraceMs) || 250));
+      killTimer.unref?.();
+    };
+    const onAbort = () => {
+      terminate();
+      finish(reject, new DOMException('Aborted', 'AbortError'));
+    };
+    const onClose = () => {
+      clearTimeout(killTimer);
+      finish(resolve, trimString(output));
+    };
+    const onError = () => {
+      clearTimeout(killTimer);
+      finish(resolve, '');
+    };
+    const timeout = setTimeout(() => {
+      terminate();
+      finish(resolve, '');
     }, 8000);
     child.stdout.on('data', (chunk) => {
       output += String(chunk || '');
       if (output.length > 20_000) {
-        child.kill('SIGTERM');
+        terminate();
       }
     });
-    child.on('close', () => {
-      clearTimeout(timeout);
-      resolve(trimString(output));
-    });
-    child.on('error', () => {
-      clearTimeout(timeout);
-      resolve('');
-    });
+    child.on('close', onClose);
+    child.on('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
     child.stdin.end(raw.toString('base64'));
   });
 }
 
-async function extractRelevantPdfText(buffer, policy = {}) {
+async function extractRelevantPdfText(buffer, policy = {}, signal) {
   const actualText = extractPdfActualText(buffer);
-  const rawText = actualText || (await extractPdfTextWithPython(buffer));
+  const rawText = actualText || (await extractPdfTextWithPython(buffer, { signal }));
   return extractRelevantText(rawText, policy);
 }
 
@@ -2039,7 +2073,7 @@ async function enrichSearchResultsWithPageText({ results = [], policy, fetchImpl
         if (response.ok && isPdf && (!contentLength || contentLength <= MAX_SEARCH_PDF_BYTES)) {
           const buffer = Buffer.from(await response.arrayBuffer());
           if (buffer.length <= MAX_SEARCH_PDF_BYTES) {
-            pageText = await extractRelevantPdfText(buffer, policy);
+            pageText = await extractRelevantPdfText(buffer, policy, signal);
           }
         } else if (response.ok && !/(application\/msword|officedocument)/iu.test(contentType)) {
           pageText = extractRelevantPageText(await response.text(), policy);
@@ -2181,6 +2215,7 @@ function policyAnalysisSkillRouterMessages({ policy = {}, analysisInput = {}, se
       content: [
         `保险公司：${policy.company || '未识别'}`,
         `产品名称：${policy.name || '未识别'}`,
+        `用户问题：${analysisInput.question || '请概括保险责任'}`,
         `本地初判文档类型：${localPlan.documentType || 'unknown'}`,
         `OCR证据模式：${analysisInput.evidenceMode || 'basic'}`,
         `OCR片段：${trimString(analysisInput.ocrText).slice(0, 1200) || '无'}`,
@@ -2408,7 +2443,7 @@ function buildMessages({ policy, analysisInput, externalReviewMode = false, skil
 
 输出要求：
 1. 最终只输出保险责任，不要输出保单概览、注意事项、免责声明、产品利益说明、资料来源说明，也不要提到“联网”“搜索”“网页”“检索”“资料摘要”“内部上下文”“外部资料”等来源字样。
-2. 优先输出严格 JSON，不要包裹 markdown 代码块。JSON 字段只包含：coverageTable。coverageTable 是对象数组，不要输出 report、notes、summary、overview、disclaimer 等其他字段。
+2. 优先输出严格 JSON，不要包裹 markdown 代码块。JSON 字段只包含：answer、coverageTable。answer 只直接回答用户问题；coverageTable 只保留支持该回答的责任行。不要输出 report、notes、summary、overview、disclaimer 等其他字段。
 3. coverageTable 是保险责任表，只能写保险公司在“发生保险事故、达到领取条件或满足合同约定触发条件”后承担的给付/赔付/报销责任。每一条保险责任都要单独写入 coverageTable 的一行；分阶段给付、额外给付、不同领取条件也要拆成独立行，不要把多项责任合并成一行。每行必须包含 coverageType、scenario、payout、note，并尽量补充指标拆解字段 liability、triggerCondition、formulaText、basis、value、unit、cashflowTreatment、calculationReason、requiredInputs、sourceExcerpt。
 4. 指标拆解规则：liability 写具体责任名称；triggerCondition 写触发条件；formulaText 写可执行的给付公式或条款口径；basis 写计算基准，例如基本保险金额、已交保险费、现金价值、账户价值、实际医疗费用、领取计划/比例表、伤残等级比例表；value 和 unit 只在条款明确百分比、倍数或固定金额时填写；cashflowTreatment 只能取 scheduled_cashflow、claim_contingent、waiver_only、not_cashflow；sourceExcerpt 必须摘录支持该责任和公式的原文短句，不得编造。
 5. 计算字段统一规则：所有可拆解责任都可以作为指标候选。能直接用保单基础字段计算的，formulaText/basis/value/unit 要写完整；暂时需要额外输入的，也要写完整公式口径，并用 requiredInputs 写需要的输入字段，例如 cashValue、accountValue、policyScheduleTable、policyYearOrAge、disabilityGrade、actualMedicalExpense、deductible、reimbursementRate、thirdPartyPaid、liabilityLimit、actualDays、dailyAmount、dayLimit。凡是需要额外输入才能算出具体金额的责任，标记 calculationEligible=false，并在 calculationReason 写明缺哪些输入。
@@ -2422,7 +2457,7 @@ ${contextBlock}`,
   ];
   messages.push({
     role: 'user',
-    content: `${policy.company || '未识别'}公司的保险产品：${policy.name || '未识别'}。请只输出保险责任 coverageTable，不要输出其他内容。`,
+    content: `${policy.company || '未识别'}公司的保险产品：${policy.name || '未识别'}。用户问题：${analysisInput.question || '请概括保险责任'}。请只输出保险责任 coverageTable 及直接回答问题的 answer，不要输出其他内容。`,
   });
   return messages;
 }
@@ -2567,6 +2602,7 @@ export async function analyzeInsurancePolicyResponsibilities({
   officialDomainProfiles: customOfficialDomainProfiles = [],
   knowledgeRecords = [],
   allowExternalReferences = false,
+  question = '',
   signal,
 }) {
   const normalizedPolicy = normalizePolicyForPrompt(policy);
@@ -2579,6 +2615,7 @@ export async function analyzeInsurancePolicyResponsibilities({
   const analysisInput = buildAnalysisInput({
     policy: normalizedPolicy,
     ocrText,
+    question,
   });
   const officialDomainProfiles = mergeOfficialDomainProfiles(customOfficialDomainProfiles);
   const searchQuery = buildSearchQuery(externalPolicy, officialDomainProfiles);

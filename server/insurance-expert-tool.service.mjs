@@ -1,6 +1,7 @@
 import { agentPolicyImportMatchesOwner } from './agent-policy-import.service.mjs';
 import {
   analyzeInsurancePolicyResponsibilities,
+  mergeOfficialDomainProfiles,
   sanitizeStoredPolicyAnalysis,
 } from './c-policy-analysis.service.mjs';
 import { buildDomainAgentEnvelope } from './domain-agent-tool-contract.service.mjs';
@@ -9,11 +10,13 @@ import { listFamilyProfilesForOwner } from './family-profile.domain.mjs';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_QUESTION_LENGTH = 4_000;
 const MAX_REQUEST_ID_LENGTH = 160;
+const READY_TASK_STATUSES = new Set(['field_completion', 'candidate_selection', 'member_binding', 'final_confirmation', 'completed']);
+const RESOLVED_PRODUCTS = new Set(['trusted_match', 'selected', 'manual_confirmed']);
 const HIGH_RISK_PATTERNS = [
-  { pattern: /换保|替换|转保/u, caution: '换保可能导致保障中断、等待期重置或既往症限制，须在新合同生效且核保结论明确后再决定。' },
-  { pattern: /退保| surrender/iu, caution: '退保可能产生现金价值损失并终止保障，须以保险公司当期退保试算和正式合同为准。' },
-  { pattern: /核保|承保/u, caution: '核保结论由保险公司基于完整、如实告知的申请资料决定，本回答不能代替核保。' },
-  { pattern: /理赔|赔付/u, caution: '理赔须结合事故事实、完整材料、除外责任及保险公司正式审核，本回答不构成理赔承诺。' },
+  { pattern: /换保|換保|替换|替換|转保|轉保|replace(?:ment)?|switch(?:ing)?(?:\s+polic(?:y|ies))?/iu, caution: '换保可能导致保障中断、等待期重置或既往症限制，须在新合同生效且核保结论明确后再决定。' },
+  { pattern: /退保|解約|退保金|surrender|cancel(?:lation)?\s+(?:the\s+)?policy/iu, caution: '退保可能产生现金价值损失并终止保障，须以保险公司当期退保试算和正式合同为准。' },
+  { pattern: /核保|承保|underwrit(?:e|ing|ten)/iu, caution: '核保结论由保险公司基于完整、如实告知的申请资料决定，本回答不能代替核保。' },
+  { pattern: /理赔|理賠|赔付|賠付|claim|payout/iu, caution: '理赔须结合事故事实、完整材料、除外责任及保险公司正式审核，本回答不构成理赔承诺。' },
 ];
 
 export class InsuranceExpertToolError extends Error {
@@ -42,29 +45,52 @@ function exactProductMatch(record, policy) {
     && String(record?.productName || record?.name || '').trim() === String(policy?.name || '').trim();
 }
 
-function currentAt(record, now) {
+function applicableAt(record, instant) {
   if (record?.current === false || record?.isCurrent === false) return false;
   const validFrom = Date.parse(String(record?.validFrom || ''));
   const validTo = Date.parse(String(record?.validTo || ''));
-  if (Number.isFinite(validFrom) && validFrom > now) return false;
-  if (Number.isFinite(validTo) && validTo <= now) return false;
+  if (Number.isFinite(validFrom) && validFrom > instant) return false;
+  if (Number.isFinite(validTo) && validTo <= instant) return false;
   return true;
 }
 
-function officialEvidenceRecords(state, policy) {
-  const matched = (state.knowledgeRecords || []).filter((record) => (
+function productVersion(value = {}) {
+  return normalizedProductPart(value.versionNo || value.version);
+}
+
+function policyInstant(policy = {}) {
+  const value = Date.parse(String(policy.effectiveDate || policy.issueDate || policy.date || ''));
+  return Number.isFinite(value) ? value : NaN;
+}
+
+function officialHostAllowed(urlValue, policy, profiles) {
+  let hostname;
+  try { hostname = new URL(String(urlValue)).hostname.toLowerCase(); } catch { return false; }
+  const company = normalizedProductPart(policy.company);
+  const applicable = (profiles || []).filter((profile) => {
+    const names = [profile?.company, profile?.companyName, profile?.name, ...(profile?.aliases || []), ...(profile?.companyAliases || [])].map(normalizedProductPart);
+    return !company || names.includes(company);
+  });
+  const domains = applicable.flatMap((profile) => profile?.officialDomains || profile?.domains || profile?.siteDomains || [])
+    .map((domain) => String(domain).trim().toLowerCase().replace(/^https?:\/\//u, '').split('/')[0])
+    .filter(Boolean);
+  return domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+}
+
+function officialEvidenceRecords(state, policy, officialDomainProfiles = state.officialDomainProfiles || []) {
+  const version = productVersion(policy);
+  const instant = policyInstant(policy);
+  if (!version) return { records: [], reason: '缺少保单对应的产品版本标识，无法安全匹配当前官方条款。' };
+  if (!Number.isFinite(instant)) return { records: [], reason: '缺少保单签发或生效日期，无法判断官方条款版本是否适用。' };
+  const records = (state.knowledgeRecords || []).filter((record) => (
     exactProductMatch(record, policy)
+    && productVersion(record) === version
     && record?.official === true
     && String(record?.evidenceLevel || 'insurer_official') === 'insurer_official'
-    && String(record?.url || '').startsWith('https://')
-    && String(record?.versionNo || record?.version || '').trim()
-    && currentAt(record, Date.now())
+    && officialHostAllowed(record?.url, policy, officialDomainProfiles)
+    && applicableAt(record, instant)
   ));
-  const explicitlyCurrent = matched.filter((record) => record?.isCurrent === true || record?.current === true);
-  const candidates = explicitlyCurrent.length ? explicitlyCurrent : matched;
-  const versions = candidates.map((record) => String(record.versionNo || record.version));
-  const currentVersion = versions.sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))[0];
-  return candidates.filter((record) => String(record.versionNo || record.version) === currentVersion);
+  return { records, reason: records.length ? '' : '缺少与该保单产品版本及生效日期匹配的保险公司官方条款或说明书。' };
 }
 
 function normalizedProductPart(value) {
@@ -75,9 +101,13 @@ function productIdentityMatches(policy, task) {
   const taskProduct = task?.draft || task?.scan || {};
   const policyCanonical = String(policy?.canonicalProductId || policy?.productId || '').trim();
   const taskCanonical = String(taskProduct?.canonicalProductId || taskProduct?.productId || '').trim();
-  if (policyCanonical && taskCanonical) return policyCanonical === taskCanonical;
-  const policyParts = [policy?.company, policy?.name, policy?.versionNo || policy?.version].map(normalizedProductPart);
-  const taskParts = [taskProduct?.company, taskProduct?.name, taskProduct?.versionNo || taskProduct?.version].map(normalizedProductPart);
+  const policyVersion = productVersion(policy);
+  const taskVersion = productVersion(taskProduct);
+  if ((policyVersion || taskVersion) && policyVersion !== taskVersion) return false;
+  if (policyCanonical && taskCanonical && policyCanonical !== taskCanonical) return false;
+  if (policyCanonical && taskCanonical) return true;
+  const policyParts = [policy?.company, policy?.name].map(normalizedProductPart);
+  const taskParts = [taskProduct?.company, taskProduct?.name].map(normalizedProductPart);
   return Boolean(policyParts[0] && policyParts[1] && policyParts.every((part, index) => part === taskParts[index]));
 }
 
@@ -87,7 +117,7 @@ function completedTaskPolicyId(task) {
 
 function safePolicyProjection(value = {}) {
   const projection = {};
-  for (const key of ['company', 'name', 'canonicalProductId']) {
+  for (const key of ['company', 'name', 'canonicalProductId', 'versionNo', 'version', 'effectiveDate', 'issueDate', 'date']) {
     const text = String(value?.[key] || '').trim();
     if (text) projection[key] = text;
   }
@@ -109,14 +139,39 @@ function sourceEvidence(sources, records) {
   });
 }
 
-function answerFromAnalysis(analysis) {
+function answerFromAnalysis(analysis, question) {
   const rows = Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [];
   if (!rows.length) return '现有官方证据不足以确认具体保险责任。';
-  return rows.map((row) => {
+  if (/核保|承保|underwrit/iu.test(question)) return '官方产品责任资料不能决定个案核保结果，须提交完整且如实的健康及投保资料由保险公司审核。';
+  if (/退保|解約|surrender|cancel(?:lation)?\s+(?:the\s+)?policy/iu.test(question)) return '官方保险责任资料不能确定当期退保金额，须向保险公司申请现金价值或退保试算。';
+  const terms = String(question).toLowerCase().match(/[\p{Script=Han}]{2,}|[a-z]{4,}/gu) || [];
+  const ignored = /^(?:保障什么|保障|什么|问题|理赔|理賠|赔付|賠付|保险|保險|责任|責任|claim|payout|policy)$/iu;
+  const relevantTerms = terms.filter((term) => !ignored.test(term));
+  const relevantRows = relevantTerms.length ? rows.filter((row) => {
+    const text = [row?.coverageType, row?.scenario, row?.payout, row?.note].join(' ').toLowerCase();
+    return relevantTerms.some((term) => text.includes(term));
+  }) : rows;
+  const selectedRows = relevantRows.length ? relevantRows : [];
+  if (!selectedRows.length) return '现有官方责任表没有足够信息直接回答该问题，需结合具体事故、核保或保全资料进一步核验。';
+  return selectedRows.map((row) => {
     const title = String(row?.coverageType || '').trim();
     const details = [row?.scenario, row?.payout, row?.note].map((value) => String(value || '').trim()).filter(Boolean);
     return `${title}：${details.join('；')}`;
   }).filter((line) => !line.startsWith('：')).join('\n');
+}
+
+function taskMissingInformation(task) {
+  if (!task) return [];
+  const fields = [
+    ['company', '保险公司'], ['name', '产品名称'], ['insured', '被保险人'],
+  ];
+  return fields.filter(([key]) => !String(task?.draft?.[key] || '').trim()).map(([, label]) => `保单录入任务仍缺少${label}。`);
+}
+
+function taskIsEligible(task) {
+  if (!task || !READY_TASK_STATUSES.has(String(task.status || ''))) return false;
+  if (task.status === 'completed') return true;
+  return RESOLVED_PRODUCTS.has(String(task.productResolution || ''));
 }
 
 function invokeWithTimeout(invoke, timeoutMs) {
@@ -146,7 +201,10 @@ function missingEvidenceEnvelope({ policy, task, requestId, question, evidenceHo
     answer: '当前版本的保险公司官方证据不足，暂时无法确认具体保险责任。',
     evidence: [],
     limitations,
-    missingInformation: [detail || '缺少与当前产品版本匹配的保险公司官方条款或说明书。'],
+    missingInformation: [
+      detail || '缺少与当前产品版本匹配的保险公司官方条款或说明书。',
+      ...taskMissingInformation(task),
+    ],
   }, { allowedEvidenceHosts: evidenceHosts });
 }
 
@@ -156,7 +214,8 @@ export function createInsuranceExpertTool({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   allowedEvidenceHosts,
 } = {}) {
-  const evidenceHosts = allowedEvidenceHosts || (state.officialDomainProfiles || [])
+  const officialDomainProfiles = mergeOfficialDomainProfiles(state.officialDomainProfiles || []);
+  const evidenceHosts = allowedEvidenceHosts || officialDomainProfiles
     .flatMap((profile) => profile?.officialDomains || profile?.domains || []);
   return async function askInsuranceExpert(toolInput = {}) {
     const allowedKeys = new Set(['owner', 'question', 'policyRef', 'policyImportTaskId', 'requestId']);
@@ -182,6 +241,7 @@ export function createInsuranceExpertTool({
       && (!policy || Number(candidate?.familyId) === Number(policy?.familyId))
     ));
     if (policyImportTaskId !== undefined && !task) fail('POLICY_IMPORT_NOT_FOUND', 404);
+    if (task && !taskIsEligible(task)) fail('POLICY_IMPORT_NOT_READY', 409);
     if (policy && task) {
       const formalPolicyId = completedTaskPolicyId(task);
       const correlated = String(task.status || '') === 'completed'
@@ -192,8 +252,9 @@ export function createInsuranceExpertTool({
 
     const policyProjection = safePolicyProjection(policy || task?.draft);
     if (!policyProjection.company || !policyProjection.name) fail('POLICY_PRODUCT_NOT_RESOLVED', 409);
-    const evidenceRecords = officialEvidenceRecords(state, policyProjection);
-    if (!evidenceRecords.length) return missingEvidenceEnvelope({ policy, task, requestId, question, evidenceHosts });
+    const evidenceResolution = officialEvidenceRecords(state, policyProjection, officialDomainProfiles);
+    const evidenceRecords = evidenceResolution.records;
+    if (!evidenceRecords.length) return missingEvidenceEnvelope({ policy, task, requestId, question, evidenceHosts, detail: evidenceResolution.reason });
 
     let rawResult;
     try {
@@ -201,8 +262,9 @@ export function createInsuranceExpertTool({
         policy: policyProjection,
         ocrText: '',
         knowledgeRecords: evidenceRecords,
-        officialDomainProfiles: state.officialDomainProfiles || [],
+        officialDomainProfiles,
         allowExternalReferences: false,
+        question: question.trim(),
         signal,
       }), timeoutMs);
     } catch (error) {
@@ -217,13 +279,16 @@ export function createInsuranceExpertTool({
       policy, task, requestId, question, evidenceHosts,
       detail: '分析结果缺少与当前产品版本匹配的保险公司官方来源。',
     });
-    const missingInformation = sanitized.coverageTable.length ? [] : ['官方证据未提供可确认的保险责任。'];
+    const missingInformation = [
+      ...(sanitized.coverageTable.length ? [] : ['官方证据未提供可确认的保险责任。']),
+      ...taskMissingInformation(task),
+    ];
     const limitations = ['仅依据当前产品版本的保险公司官方证据回答；个案以正式保险合同及保险公司审核为准。'];
     for (const item of HIGH_RISK_PATTERNS) if (item.pattern.test(question)) limitations.push(item.caution);
     return buildDomainAgentEnvelope({
       agent: 'insurance_expert',
       taskId: String(task?.id || requestId || `policy:${policy.id}`),
-      answer: answerFromAnalysis(sanitized),
+      answer: String(rawResult?.answer || rawResult?.analysis?.answer || '').trim() || answerFromAnalysis(sanitized, question),
       evidence,
       limitations,
       missingInformation,
