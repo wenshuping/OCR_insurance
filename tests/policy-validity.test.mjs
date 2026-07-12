@@ -3,8 +3,18 @@ import test from 'node:test';
 
 import {
   parseCoveragePeriodEndDate,
+  resolvePolicyRecordValidity,
   resolvePolicyValidityStatus,
 } from '../src/policy-validity.mjs';
+
+test('resolvePolicyRecordValidity requires confirmed active status and effective coverage dates', () => {
+  const now = new Date('2026-07-12T08:00:00.000Z');
+  assert.equal(resolvePolicyRecordValidity({ status: 'active', coveragePeriod: '终身' }, { now }).valid, true);
+  assert.equal(resolvePolicyRecordValidity({ status: 'unknown', coveragePeriod: '终身' }, { now }).valid, false);
+  assert.equal(resolvePolicyRecordValidity({ status: 'active', effectiveDate: '2026-07-13', coveragePeriod: '终身' }, { now }).status, 'future');
+  assert.equal(resolvePolicyRecordValidity({ status: 'active', effectiveDate: '2020-01-01', coveragePeriod: '至2026年07月11日' }, { now }).status, 'expired');
+  assert.equal(resolvePolicyRecordValidity({ status: 'active', policyState: 'pending', coveragePeriod: '终身' }, { now }).valid, false);
+});
 
 test('resolvePolicyValidityStatus marks an exact past coverage end date as expired', () => {
   const status = resolvePolicyValidityStatus('至2025年09月29日', {

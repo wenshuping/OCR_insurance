@@ -54,6 +54,7 @@ test('policy analysis freshness follows nested report status and current source 
 
   assert.equal(resolveFamilyPolicyAnalysisReportFreshness(record, { sourceUpdatedAt: '2026-07-10T00:00:00.000Z' }).status, 'fresh');
   assert.equal(resolveFamilyPolicyAnalysisReportFreshness(record, { sourceUpdatedAt: '2026-07-12T00:00:00.000Z' }).status, 'stale');
+  assert.equal(resolveFamilyPolicyAnalysisReportFreshness(record, { sourceUpdatedAt: '2026-07-11T09:00:00+08:00' }).status, 'stale');
   assert.equal(resolveFamilyPolicyAnalysisReportFreshness({ status: 'active', report: {} }).status, 'missing');
   assert.equal(resolveFamilyPolicyAnalysisReportFreshness({
     status: 'active',

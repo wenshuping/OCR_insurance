@@ -31,8 +31,11 @@ export function resolveFamilySalesReviewFreshness(review = null, { sourceUpdated
   const generatedAt = String(review.generatedAt || '').trim();
   if (!generatedAt) return { status: 'stale', review, generatedAt: '' };
   const latestSourceAt = String(sourceUpdatedAt || review.sourceUpdatedAt || '').trim();
+  const generatedTime = Date.parse(generatedAt);
+  if (!Number.isFinite(generatedTime)) return { status: 'stale', review, generatedAt };
+  const sourceTime = Date.parse(latestSourceAt);
   return {
-    status: latestSourceAt && latestSourceAt > generatedAt ? 'stale' : 'fresh',
+    status: Number.isFinite(sourceTime) && (!Number.isFinite(generatedTime) || sourceTime > generatedTime) ? 'stale' : 'fresh',
     review,
     generatedAt,
   };

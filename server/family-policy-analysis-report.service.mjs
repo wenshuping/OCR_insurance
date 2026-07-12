@@ -31,8 +31,11 @@ export function resolveFamilyPolicyAnalysisReportFreshness(record = null, { sour
   const generatedAt = String(report.generatedAt || '').trim();
   if (!generatedAt) return { status: 'stale', report, generatedAt: '' };
   const latestSourceAt = String(sourceUpdatedAt || report.sourceUpdatedAt || record.sourceUpdatedAt || '').trim();
+  const generatedTime = Date.parse(generatedAt);
+  if (!Number.isFinite(generatedTime)) return { status: 'stale', report, generatedAt };
+  const sourceTime = Date.parse(latestSourceAt);
   return {
-    status: latestSourceAt && latestSourceAt > generatedAt ? 'stale' : 'fresh',
+    status: Number.isFinite(sourceTime) && (!Number.isFinite(generatedTime) || sourceTime > generatedTime) ? 'stale' : 'fresh',
     report,
     generatedAt,
   };

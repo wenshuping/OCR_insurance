@@ -9,7 +9,7 @@ import {
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
-const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_report']);
+const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_report', 'sales_coaching']);
 const AUDIT_ENTITY_KEYS = new Set(['familyName', 'familyRef', 'policyHint', 'sourceFamilyName', 'targetFamilyName']);
 const PRONOUN_PATTERN = /(?:这个家庭|刚才那家)/u;
 const CONTEXT_TTL_MS = 5 * 60 * 1000;

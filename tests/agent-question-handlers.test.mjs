@@ -10,12 +10,17 @@ function harness(state = {}, overrides = {}) {
   const calls = { enqueued: [], knowledge: [], salesChat: [], upload: [] };
   const deps = {
     store: { async load() { return state; } },
+    authorizedFamilyDataLoader: async ({ familyId }) => ({
+      family: (state.familyProfiles || []).find((row) => Number(row.id) === familyId) || { id: familyId },
+      state,
+    }),
     clock: () => new Date(NOW),
     links: {
       familyReport: ({ familyId }) => `/customer/families/${familyId}/report`,
       salesReview: ({ familyId }) => `/customer/families/${familyId}/sales-review`,
       upload: ({ internalUserId }) => `/customer/upload?user=${internalUserId}`,
     },
+    allowedKnowledgeOrigins: ['https://example.test'],
     reportQueue: {
       async enqueue(input) {
         calls.enqueued.push(input);
@@ -176,7 +181,7 @@ test('sales advice freshness uses the same generated-versus-source boundary', as
 test('product knowledge requires public sources for definite facts', async () => {
   const sourced = harness({}, { productKnowledge: { async search(input) {
     sourced.calls.knowledge.push(input);
-    return { answer: '等待期为90天', sources: [{ title: '官方条款', url: 'https://example.test/terms', provenance: 'official' }] };
+    return { answer: '等待期为90天', sources: [{ title: '官方条款', url: 'https://example.test/terms', provenance: 'official', verified: true }] };
   } } });
   const noSource = harness();
 
@@ -301,6 +306,7 @@ test('queued report job remains deduplicated after enqueue resolves until comple
   const base = harness({ familyReports: [] });
   base.handlers = createAgentQuestionHandlers({
     store: { async load() { return { familyReports: [] }; } },
+    authorizedFamilyDataLoader: async ({ familyId }) => ({ family: { id: familyId }, state: { familyReports: [] } }),
     links: {},
     reportQueue: {
       async enqueue(input) { base.calls.enqueued.push(input); return { jobId: 'persistent-job', status: 'queued', progress: 0 }; },
@@ -337,4 +343,46 @@ test('upload link ignores attachments and unknown actions are denied', async () 
   assert.equal(write.facts.confirmationRequired, true);
   assert.equal(Object.isFrozen(handlers), true);
   assert.equal(Object.isFrozen(handlers.registry), true);
+});
+
+test('family handlers deny direct execution when the authorized loader rejects the family', async () => {
+  const { handlers, calls } = harness({}, {
+    authorizedFamilyDataLoader: async () => null,
+    authorizedFamilySalesDataLoader: async () => { throw new Error('must not be called'); },
+  });
+
+  const summary = await handlers.execute('family_summary', { familyId: 99, internalUserId: 9 });
+  const report = await handlers.execute('coverage_report', { familyId: 99, internalUserId: 9 });
+  const coaching = await handlers.execute('sales_coaching', { familyId: 99, internalUserId: 9, question: '继续' });
+
+  assert.equal(summary.facts.denied, true);
+  assert.equal(report.facts.denied, true);
+  assert.equal(coaching.facts.denied, true);
+  assert.equal(calls.salesChat.length, 0);
+});
+
+test('links and knowledge sources reject external, userinfo, and unverified URLs', async () => {
+  const { handlers } = harness({}, {
+    links: {
+      upload: () => '//evil.test/upload',
+      familyReport: () => 'https://user:pass@example.test/report',
+    },
+    allowedLinkOrigins: ['https://example.test'],
+    allowedKnowledgeOrigins: ['https://example.test'],
+    productKnowledge: { async search() { return {
+      answer: '不应成为确定事实',
+      sources: [
+        { verified: false, title: '未验证', url: 'https://example.test/a' },
+        { verified: true, title: '恶意', url: 'javascript:alert(1)' },
+        { verified: true, title: '用户信息', url: 'https://user@example.test/a' },
+      ],
+    }; } },
+  });
+
+  const upload = await handlers.execute('upload_link', { internalUserId: 9 });
+  const knowledge = await handlers.execute('insurance_product_knowledge', { internalUserId: 9, question: '产品事实' });
+
+  assert.equal(upload.presentation.secureLink, '');
+  assert.equal(knowledge.facts.certainty, 'unverified');
+  assert.deepEqual(knowledge.provenance.sources, []);
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
+import { createAgentQuestionHandlers } from '../server/agent-question-handlers.service.mjs';
 
 const NOW = '2026-07-12T08:00:00.000Z';
 
@@ -376,4 +377,37 @@ test('all router outputs stay within public interaction and decision enums', asy
     assert.equal(allowedInteractions.has(result.interaction.type), true);
     assert.equal(allowedDecisions.has(result.decision), true);
   }
+});
+
+test('sales coaching resolves an authorized family before calling the existing sales chat flow', async () => {
+  const families = [{ id: 11, ownerUserId: 7, familyName: '张三家庭', status: 'active' }];
+  const state = { familyProfiles: families, familyMembers: [], policies: [], familyReports: [], familySalesReviews: [] };
+  const calls = [];
+  const store = {
+    async load() { return state; },
+    async getPublishedAgentQuestionPolicyVersion() { return null; },
+    async recordAgentRouteAudit() {},
+  };
+  const handlers = createAgentQuestionHandlers({
+    store,
+    authorizedFamilyDataLoader: async ({ familyId }) => ({ family: families[0], state }),
+    authorizedFamilySalesDataLoader: async ({ familyId }) => ({ family: families[0], members: [], policies: [], familyReports: [], familySalesReviews: [], history: [], input: { familyId } }),
+    buildFamilySalesChatContext: (input) => ({ familyId: input.family.id }),
+    generateFamilySalesChatReply: async (input) => { calls.push(input); return { content: '现有续聊回答' }; },
+  });
+  const router = createAgentQuestionRouter({ store, handlers });
+
+  const answered = await router.route(routeInput({ intent: 'sales_coaching', question: '张三家庭怎么继续沟通' }));
+  const emptyStore = {
+    async load() { return { familyProfiles: [], policies: [] }; },
+    async getPublishedAgentQuestionPolicyVersion() { return null; },
+    async recordAgentRouteAudit() {},
+  };
+  const missing = await createAgentQuestionRouter({ store: emptyStore, handlers }).route(
+    routeInput({ intent: 'sales_coaching', question: '怎么继续沟通', entities: {} }),
+  );
+
+  assert.equal(answered.decision, 'execute');
+  assert.equal(calls[0].context.familyId, 11);
+  assert.equal(missing.decision, 'clarify');
 });
