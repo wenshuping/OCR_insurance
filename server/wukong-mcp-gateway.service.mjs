@@ -96,7 +96,7 @@ function resolveOwnerContext(state, principal) {
   if (identity.status === 'revoked') fail('IDENTITY_REVOKED', 403);
   if (identity.status !== 'active') fail('IDENTITY_NOT_BOUND', 403);
   const user = (state.users || []).find((candidate) => Number(candidate.id) === Number(identity.userId));
-  if (!user || user.status !== 'active') fail('ADVISOR_ACCOUNT_INACTIVE', 403);
+  if (!user || String(user.status || 'active') !== 'active') fail('ADVISOR_ACCOUNT_INACTIVE', 403);
   return { userId: user.id, displayLabel: maskDisplay(user.name || '顾问') };
 }
 

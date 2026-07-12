@@ -12,7 +12,7 @@ const BASE_MESSAGE = {
   text: { content: '绑定' },
 };
 
-function harness(identityResponses = []) {
+function harness(identityResponses = [], options = {}) {
   const requests = [];
   const replies = [];
   const errors = [];
@@ -32,6 +32,7 @@ function harness(identityResponses = []) {
     channel: createDingtalkStreamChannel({
       corpId: 'corp-1', serviceToken: 'service-token', fetchImpl, now: () => 1_000,
       reportError: (code) => errors.push(code),
+      ...options,
     }),
   };
 }
@@ -86,6 +87,7 @@ test('stream runtime registers the robot topic, acknowledges promptly, and fails
     constructor(options) { this.options = options; FakeClient.instance = this; }
     registerCallbackListener(topic, callback) { this.topic = topic; this.callback = callback; }
     socketCallBackResponse(messageId, result) { this.ack = { messageId, result }; }
+    async getAccessToken() { return 'access-token'; }
     async connect() { this.connected = true; }
   }
   const env = {
@@ -100,4 +102,37 @@ test('stream runtime registers the robot topic, acknowledges promptly, and fails
   client.callback({ headers: { messageId: 'message-1' }, data: '{invalid' });
   assert.deepEqual(client.ack, { messageId: 'message-1', result: 'OK' });
   await assert.rejects(() => startDingtalkStream({ env: {}, Client: FakeClient }), /DINGTALK_APP_KEY_REQUIRED/);
+});
+
+test('policy upload requires consent before download and sends a masked OCR draft', async () => {
+  let downloads = 0;
+  const h = harness([
+    { status: 200, body: { result: { families: [{ id: 10, displayLabel: '张**庭' }] } } },
+    { status: 200, body: { result: { taskId: 101, stateVersion: 1 } } },
+    { status: 200, body: { result: {
+      taskId: 101,
+      stateVersion: 4,
+      documentSummary: { count: 1 },
+      policyDraft: { company: '可信保险', productName: '安心保', insured: '张*' },
+      missingFields: ['date'],
+      nextInteraction: { type: 'set_field', field: 'date' },
+    } } },
+  ], {
+    policyUploadEnabled: true,
+    downloadAttachment: async () => {
+      downloads += 1;
+      return { uploadItem: 'data:image/jpeg;base64,/9j/2Q==', name: 'policy.jpg', mediaType: 'image/jpeg' };
+    },
+  });
+  const picture = { ...BASE_MESSAGE, msgtype: 'picture', content: { downloadCode: 'secret-code' } };
+  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '上传保单' } });
+  await h.channel.handle(picture);
+  assert.equal(downloads, 0);
+  assert.match(h.replies.at(-1), /同意上传/);
+  await h.channel.handle({ ...BASE_MESSAGE, text: { content: '同意上传' } });
+  await h.channel.handle(picture);
+  assert.equal(downloads, 1);
+  assert.match(h.replies.at(-1), /可信保险/);
+  assert.match(h.replies.at(-1), /待补充字段：date/);
+  assert.equal(h.replies.join(' ').includes('secret-code'), false);
 });

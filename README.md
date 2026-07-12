@@ -100,6 +100,8 @@ npm install
 - `DINGTALK_API_BASE_URL`：可选，默认使用钉钉开放平台 API 地址。
 - `DINGTALK_IDENTITY_TIMEOUT_MS`：可选，钉钉 HTTP 请求超时，范围 50–30000 毫秒，默认 10000 毫秒。
 - `DINGTALK_CHANNEL_API_BASE_URL`：可选，Stream 渠道调用 OCR Insurance API 的地址，开发环境默认 `http://127.0.0.1:4207`。
+- `DINGTALK_POLICY_UPLOAD_MODE`：默认关闭；企业批准钉钉单聊传输客户原件后设为 `raw_allowed`。
+- `DINGTALK_POLICY_MAX_DOCUMENT_BYTES`：可选，单个钉钉附件下载上限，默认 16MiB；业务层仍会校验 JPEG、PNG、PDF 的真实文件签名。
 
 API 启动后，可在另一个终端启动钉钉 Stream 渠道：
 
@@ -107,7 +109,7 @@ API 启动后，可在另一个终端启动钉钉 Stream 渠道：
 npm run dev:dingtalk
 ```
 
-渠道默认只接受企业内单聊。首次使用发送“绑定”，确认脱敏手机号后发送“确认绑定”。
+渠道默认只接受企业内单聊。首次使用发送“绑定”，确认脱敏手机号后发送“确认绑定”。启用原件上传后，先发送“上传保单”，按提示选择家庭并发送“同意上传”，再上传 JPEG、PNG 或 PDF；识别结果只返回脱敏草稿，未经顾问确认不会保存为正式保单。
 
 不要把凭据提交到仓库；生产进程应从受控运行环境注入这些变量。
 
