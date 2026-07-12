@@ -20,6 +20,7 @@ const KNOWLEDGE_TABLES = [
   'knowledge_records',
   'insurance_indicator_records',
   'optional_responsibility_records',
+  'product_responsibility_cards',
   'official_domain_profiles',
   'indicator_definitions',
 ];
@@ -40,8 +41,14 @@ const PROTECTED_TABLE_KEYS = {
   policy_cash_values: ['id'],
   family_profiles: ['id'],
   family_members: ['id'],
+  family_reports: ['id'],
+  family_report_issues: ['id'],
+  family_report_corrections: ['id'],
   family_report_shares: ['id'],
   family_sales_reviews: ['id'],
+  family_sales_chat_threads: ['id'],
+  family_sales_chat_messages: ['id'],
+  family_sales_memories: ['id'],
   membership_config: ['id'],
   membership_orders: ['id'],
   memberships: ['user_id'],
@@ -53,11 +60,18 @@ const CORE_TABLES = [
   'policies',
   'family_profiles',
   'family_members',
+  'family_reports',
+  'family_report_issues',
+  'family_report_corrections',
   'family_report_shares',
   'family_sales_reviews',
+  'family_sales_chat_threads',
+  'family_sales_chat_messages',
+  'family_sales_memories',
   'knowledge_records',
   'insurance_indicator_records',
   'optional_responsibility_records',
+  'product_responsibility_cards',
   'official_domain_profiles',
   'source_records',
   'policy_cashflows',
@@ -594,13 +608,23 @@ export async function installKnowledgeDataBundle({
           keys: KNOWLEDGE_STATE_DOCUMENT_KEYS,
         }));
         targetDb.exec(`
+          CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+          )
+        `);
+        targetDb.exec(`
           INSERT INTO app_meta (key, value)
           VALUES ('updated_at', ${sqlString(new Date().toISOString())})
           ON CONFLICT(key) DO UPDATE SET value = excluded.value
         `);
         targetDb.exec('COMMIT');
       } catch (error) {
-        targetDb.exec('ROLLBACK');
+        try {
+          targetDb.exec('ROLLBACK');
+        } catch (rollbackError) {
+          error.rollbackError = rollbackError?.message || String(rollbackError);
+        }
         throw error;
       }
       return {

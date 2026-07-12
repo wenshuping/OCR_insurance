@@ -115,3 +115,52 @@ export async function fileToUploadItem(file: File, timings: ClientPerformanceTim
     dataUrl,
   };
 }
+
+type ImageRotationDegrees = 90 | 180 | 270;
+
+async function loadImageFromDataUrl(dataUrl: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const node = new Image();
+    node.onload = () => resolve(node);
+    node.onerror = () => reject(new Error('图片解析失败'));
+    node.src = dataUrl;
+  });
+}
+
+export async function rotateUploadItemImage(uploadItem: UploadItem, degrees: ImageRotationDegrees): Promise<UploadItem | null> {
+  if (!uploadItem.dataUrl || !String(uploadItem.type || '').startsWith('image/')) return null;
+  const image = await loadImageFromDataUrl(uploadItem.dataUrl);
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  if (!width || !height) return null;
+
+  const turnsSideways = degrees === 90 || degrees === 270;
+  const canvas = document.createElement('canvas');
+  canvas.width = turnsSideways ? height : width;
+  canvas.height = turnsSideways ? width : height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.translate(canvas.width / 2, canvas.height / 2);
+  context.rotate((degrees * Math.PI) / 180);
+  context.drawImage(image, -width / 2, -height / 2, width, height);
+
+  const dataUrl = canvas.toDataURL('image/jpeg', OCR_IMAGE_JPEG_QUALITY);
+  return {
+    name: `${uploadItem.name.replace(/\.[^.]+$/, '') || uploadItem.name}-rotate-${degrees}.jpg`,
+    type: 'image/jpeg',
+    size: dataUrlByteSize(dataUrl),
+    dataUrl,
+  };
+}
+
+export async function buildUploadItemOrientationAttempts(uploadItem: UploadItem) {
+  const attempts = [uploadItem];
+  for (const degrees of [90, 270, 180] as const) {
+    const rotated = await rotateUploadItemImage(uploadItem, degrees).catch(() => null);
+    if (rotated?.dataUrl) attempts.push(rotated);
+  }
+  return attempts;
+}

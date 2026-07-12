@@ -3,61 +3,103 @@ import {
   useMemo,
   useState,
 } from 'react';
-import {
-  LayoutDashboard,
-  Search,
-  Users,
-} from 'lucide-react';
+import { LayoutDashboard } from 'lucide-react';
 import {
   AdminOfficialDomainProfile,
   AdminMembershipConfig,
   AdminOverview,
+  AdminReportCorrection,
+  AdminReportIssue,
+  AdminReportIssueSummary,
+  AdminResponsibilityGenerationConfig,
+  AdminUserFamiliesResponse,
   ApiError,
+  FamilyReportRecord,
+  FamilySalesChatThread,
+  FamilySalesReview,
   KnowledgeRecord,
   OptionalResponsibilityGap,
   Policy,
   adminLogin,
   crawlAdminKnowledge,
   createAdminOfficialDomainProfile,
+  createAdminFamilyReport,
   deleteAdminOfficialDomainProfile,
   getAdminOfficialDomainProfiles,
   getAdminKnowledgeRecords,
   getAdminMembershipConfig,
   getAdminOverview,
+  getAdminFamilySalesReview,
+  getAdminFamilySalesChatThreads,
+  getAdminFamilyReport,
+  getAdminReportIssueDetail,
+  getAdminReportIssues,
+  getAdminOptionalResponsibilityGaps,
+  getAdminPolicy,
+  getAdminResponsibilityGenerationConfig,
+  getAdminUserFamilies,
   markOptionalResponsibilityNotQuantifiable,
   regeneratePolicyReport,
   reextractOptionalResponsibilities,
+  reviewAdminKnowledgeRecord,
   updateAdminMembershipConfig,
   updateAdminOfficialDomainProfile,
+  updateAdminResponsibilityGenerationConfig,
 } from '../../api';
-
+import { maskMobile } from '../../shared/formatters';
 import {
-  formatCoverageAmount,
-  formatDateLabel,
-  maskMobile,
-} from '../../shared/formatters';
-import {
-  AdminOfficialDomainPanel,
   emptyOfficialDomainForm,
   formToOfficialDomainPayload,
   profileToOfficialDomainForm,
   type OfficialDomainForm,
 } from '../../features/admin-official-domain/AdminOfficialDomainPanel';
 import {
-  AdminKnowledgePanel,
   emptyKnowledgeCrawlForm,
   type KnowledgeCrawlForm,
 } from '../../features/admin-knowledge/AdminKnowledgePanel';
-import { AdminOptionalResponsibilityGapPanel } from '../../features/admin-governance/AdminOptionalResponsibilityGapPanel';
-import { AdminPolicyDetail } from '../../features/admin-policy-detail/AdminPolicyDetail';
-import { AdminStatCard } from '../../features/admin-shared/AdminStatCard';
 import { TextField } from '../../features/admin-shared/TextField';
-import {
-  isPolicyReportFailed,
-  isPolicyReportGenerating,
-} from '../../shared/policy-report-ui';
+import { isPolicyReportGenerating } from '../../shared/policy-report-ui';
+import { AdminShell } from './AdminShell';
+import type { AdminPageKey } from './adminPages';
+import { AdminKnowledgePage } from './pages/AdminKnowledgePage';
+import { AdminAgentPoliciesPage } from './pages/AdminAgentPoliciesPage';
+import { AdminFamilyReportPage } from './pages/AdminFamilyReportPage';
+import { AdminMembershipPage } from './pages/AdminMembershipPage';
+import { AdminOfficialDomainsPage } from './pages/AdminOfficialDomainsPage';
+import { AdminOptionalResponsibilitiesPage } from './pages/AdminOptionalResponsibilitiesPage';
+import { AdminOverviewPage } from './pages/AdminOverviewPage';
+import { AdminPoliciesPage } from './pages/AdminPoliciesPage';
+import { AdminReportIssuesPage } from './pages/AdminReportIssuesPage';
+import { AdminResponsibilityGenerationPage } from './pages/AdminResponsibilityGenerationPage';
+import { AdminSalesReviewPage } from './pages/AdminSalesReviewPage';
+import { AdminUsersPage } from './pages/AdminUsersPage';
 
 const ADMIN_TOKEN_KEY = 'policy-ocr-app.adminToken';
+
+function linesToText(values: string[] = []) {
+  return values.filter(Boolean).join('\n');
+}
+
+function textToLines(value: string) {
+  return value
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function examplesToText(examples: AdminResponsibilityGenerationConfig['failureExamples'] = []) {
+  return examples
+    .map((item) => [item.badOutput, item.reason, item.correction].filter(Boolean).join(' | '))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function textToExamples(value: string): AdminResponsibilityGenerationConfig['failureExamples'] {
+  return textToLines(value).map((line) => {
+    const [badOutput = '', reason = '', correction = ''] = line.split('|').map((part) => part.trim());
+    return { badOutput, reason, correction };
+  });
+}
 
 export function AdminApp() {
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem(ADMIN_TOKEN_KEY) || '');
@@ -70,16 +112,43 @@ export function AdminApp() {
   const [query, setQuery] = useState('');
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [selectedAdminUserId, setSelectedAdminUserId] = useState<number | null>(null);
+  const [selectedAdminFamilyId, setSelectedAdminFamilyId] = useState<number | null>(null);
+  const [selectedUserFamilies, setSelectedUserFamilies] = useState<AdminUserFamiliesResponse | null>(null);
+  const [userFamiliesLoading, setUserFamiliesLoading] = useState(false);
+  const [selectedFamilyReport, setSelectedFamilyReport] = useState<FamilyReportRecord | null>(null);
+  const [selectedFamilyReportFamilyName, setSelectedFamilyReportFamilyName] = useState('');
+  const [familyReportLoading, setFamilyReportLoading] = useState(false);
+  const [familyReportGenerating, setFamilyReportGenerating] = useState(false);
+  const [selectedSalesReview, setSelectedSalesReview] = useState<FamilySalesReview | null>(null);
+  const [selectedSalesReviewFamilyName, setSelectedSalesReviewFamilyName] = useState('');
+  const [selectedSalesChatThreads, setSelectedSalesChatThreads] = useState<FamilySalesChatThread[]>([]);
+  const [salesReviewLoading, setSalesReviewLoading] = useState(false);
   const [message, setMessage] = useState('输入后台密码进入平台只读管理台');
   const [loading, setLoading] = useState(false);
   const [membershipConfig, setMembershipConfig] = useState<AdminMembershipConfig | null>(null);
   const [membershipQuotaInput, setMembershipQuotaInput] = useState('3');
+  const [familyReportDailyRefreshLimitInput, setFamilyReportDailyRefreshLimitInput] = useState('3');
+  const [familySalesReviewDailyRefreshLimitInput, setFamilySalesReviewDailyRefreshLimitInput] = useState('3');
   const [membershipSaving, setMembershipSaving] = useState(false);
+  const [responsibilityGenerationConfig, setResponsibilityGenerationConfig] = useState<AdminResponsibilityGenerationConfig | null>(null);
+  const [responsibilityRulesText, setResponsibilityRulesText] = useState('');
+  const [responsibilityBlockedTitlesText, setResponsibilityBlockedTitlesText] = useState('');
+  const [responsibilityFailureExamplesText, setResponsibilityFailureExamplesText] = useState('');
+  const [responsibilityGenerationSaving, setResponsibilityGenerationSaving] = useState(false);
   const [officialDomainLoading, setOfficialDomainLoading] = useState(false);
   const [officialDomainSaving, setOfficialDomainSaving] = useState(false);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgeCrawling, setKnowledgeCrawling] = useState(false);
   const [retryingPolicyId, setRetryingPolicyId] = useState<number | null>(null);
+  const [activePage, setActivePage] = useState<AdminPageKey>('overview');
+  const [agentPoliciesDirty, setAgentPoliciesDirty] = useState(false);
+  const [reportIssueReports, setReportIssueReports] = useState<AdminReportIssueSummary[]>([]);
+  const [selectedReportIssueReport, setSelectedReportIssueReport] = useState<AdminReportIssueSummary | null>(null);
+  const [selectedReportIssues, setSelectedReportIssues] = useState<AdminReportIssue[]>([]);
+  const [selectedReportCorrections, setSelectedReportCorrections] = useState<AdminReportCorrection[]>([]);
+  const [reportIssuesLoading, setReportIssuesLoading] = useState(false);
+  const [optionalResponsibilityGaps, setOptionalResponsibilityGaps] = useState<OptionalResponsibilityGap[]>([]);
+  const [optionalResponsibilityGapsLoading, setOptionalResponsibilityGapsLoading] = useState(false);
 
   function clearAdminAuthState() {
     localStorage.removeItem(ADMIN_TOKEN_KEY);
@@ -87,12 +156,31 @@ export function AdminApp() {
     setOverview(null);
     setMembershipConfig(null);
     setMembershipQuotaInput('3');
+    setFamilyReportDailyRefreshLimitInput('3');
+    setFamilySalesReviewDailyRefreshLimitInput('3');
+    setResponsibilityGenerationConfig(null);
+    setResponsibilityRulesText('');
+    setResponsibilityBlockedTitlesText('');
+    setResponsibilityFailureExamplesText('');
     setOfficialDomainProfiles([]);
     setOfficialDomainForm(emptyOfficialDomainForm);
     setKnowledgeRecords([]);
     setKnowledgeCrawlForm(emptyKnowledgeCrawlForm);
     setSelectedPolicy(null);
     setSelectedAdminUserId(null);
+    setSelectedAdminFamilyId(null);
+    setSelectedUserFamilies(null);
+    setSelectedFamilyReport(null);
+    setSelectedFamilyReportFamilyName('');
+    setSelectedSalesReview(null);
+    setSelectedSalesReviewFamilyName('');
+    setSelectedSalesChatThreads([]);
+    setReportIssueReports([]);
+    setSelectedReportIssueReport(null);
+    setSelectedReportIssues([]);
+    setSelectedReportCorrections([]);
+    setOptionalResponsibilityGaps([]);
+    setActivePage('overview');
   }
 
   async function loadOverview(token = adminToken) {
@@ -101,15 +189,19 @@ export function AdminApp() {
     try {
       const payload = await getAdminOverview(token);
       setOverview(payload);
+      setOptionalResponsibilityGaps((current) => {
+        const preview = payload.optionalResponsibilityGaps || [];
+        const expectedCount = payload.summary.optionalResponsibilityGapCount ?? preview.length;
+        return current.length === expectedCount ? current : preview;
+      });
       setSelectedPolicy((current) => {
         if (!current) return current;
-        return payload.policies.find((policy) => Number(policy.id) === Number(current.id)) || current;
+        const summary = payload.policies.find((policy) => Number(policy.id) === Number(current.id));
+        return summary ? { ...summary, ...current, report: summary.report, reportStatus: summary.reportStatus, reportError: summary.reportError } : current;
       });
       setMessage('平台数据已加载');
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearAdminAuthState();
-      }
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '后台数据加载失败');
     } finally {
       setLoading(false);
@@ -122,11 +214,29 @@ export function AdminApp() {
       const payload = await getAdminMembershipConfig(token);
       setMembershipConfig(payload.config);
       setMembershipQuotaInput(String(payload.config.registeredFreePolicyQuota));
+      setFamilyReportDailyRefreshLimitInput(String(payload.config.familyReportDailyRefreshLimit));
+      setFamilySalesReviewDailyRefreshLimitInput(String(payload.config.familySalesReviewDailyRefreshLimit));
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearAdminAuthState();
-      }
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '会员设置读取失败');
+    }
+  }
+
+  function applyResponsibilityGenerationConfig(config: AdminResponsibilityGenerationConfig) {
+    setResponsibilityGenerationConfig(config);
+    setResponsibilityRulesText(linesToText(config.promptRules));
+    setResponsibilityBlockedTitlesText(linesToText(config.blockedResponsibilityTitles));
+    setResponsibilityFailureExamplesText(examplesToText(config.failureExamples));
+  }
+
+  async function loadResponsibilityGenerationConfig(token = adminToken) {
+    if (!token) return;
+    try {
+      const payload = await getAdminResponsibilityGenerationConfig(token);
+      applyResponsibilityGenerationConfig(payload.config);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '保险责任自我修正设置读取失败');
     }
   }
 
@@ -137,9 +247,7 @@ export function AdminApp() {
       const payload = await getAdminOfficialDomainProfiles(token);
       setOfficialDomainProfiles(payload.profiles);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearAdminAuthState();
-      }
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '官方域名白名单读取失败');
     } finally {
       setOfficialDomainLoading(false);
@@ -153,19 +261,138 @@ export function AdminApp() {
       const payload = await getAdminKnowledgeRecords(token);
       setKnowledgeRecords(payload.records);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearAdminAuthState();
-      }
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '本地知识库读取失败');
     } finally {
       setKnowledgeLoading(false);
     }
   }
 
+  async function loadReportIssues(token = adminToken) {
+    if (!token) return;
+    setReportIssuesLoading(true);
+    try {
+      const payload = await getAdminReportIssues(token);
+      setReportIssueReports(payload.reports);
+      setSelectedReportIssueReport((current) => (
+        current ? payload.reports.find((row) => Number(row.id) === Number(current.id)) || null : current
+      ));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '报告问题读取失败');
+    } finally {
+      setReportIssuesLoading(false);
+    }
+  }
+
+  async function loadAdminOptionalResponsibilityGaps(token = adminToken) {
+    if (!token) return;
+    setOptionalResponsibilityGapsLoading(true);
+    try {
+      const payload = await getAdminOptionalResponsibilityGaps(token);
+      setOptionalResponsibilityGaps(payload.gaps);
+      setMessage('可选责任治理列表已加载');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '可选责任治理列表读取失败');
+    } finally {
+      setOptionalResponsibilityGapsLoading(false);
+    }
+  }
+
+  async function loadSelectedUserFamilies(userId: number, token = adminToken) {
+    if (!token || !userId) return;
+    setUserFamiliesLoading(true);
+    try {
+      const payload = await getAdminUserFamilies(token, userId);
+      setSelectedUserFamilies(payload);
+      setMessage('用户家庭列表已加载');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '用户家庭列表读取失败');
+    } finally {
+      setUserFamiliesLoading(false);
+    }
+  }
+
+  async function loadAdminFamilyReport(familyId: number, token = adminToken) {
+    if (!token || !familyId) return;
+    setFamilyReportLoading(true);
+    setSelectedFamilyReport(null);
+    try {
+      const payload = await getAdminFamilyReport(token, familyId);
+      setSelectedFamilyReport(payload.reportRecord || null);
+      setMessage(payload.reportRecord?.report ? '家庭保单分析报告已加载' : '暂无已保存家庭保单分析报告');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '家庭保单分析报告读取失败');
+    } finally {
+      setFamilyReportLoading(false);
+    }
+  }
+
+  async function generateAdminFamilyReport(familyId = selectedAdminFamilyId || 0, token = adminToken) {
+    if (!token || !familyId || familyReportGenerating) return;
+    setFamilyReportGenerating(true);
+    setMessage('正在生成家庭保单分析报告');
+    try {
+      const payload = await createAdminFamilyReport(token, familyId);
+      setSelectedFamilyReport(payload.reportRecord || null);
+      setMessage('家庭保单分析报告已生成');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '家庭保单分析报告生成失败');
+    } finally {
+      setFamilyReportGenerating(false);
+    }
+  }
+
+  async function loadAdminFamilySalesReview(familyId: number, token = adminToken) {
+    if (!token || !familyId) return;
+    setSalesReviewLoading(true);
+    setSelectedSalesReview(null);
+    setSelectedSalesChatThreads([]);
+    try {
+      const [payload, chatPayload] = await Promise.all([
+        getAdminFamilySalesReview(token, familyId),
+        getAdminFamilySalesChatThreads(token, familyId),
+      ]);
+      setSelectedSalesReview(payload.review || null);
+      setSelectedSalesChatThreads(chatPayload.threads || []);
+      setMessage(payload.review?.content ? '销售建议已加载' : '暂无已保存销售建议');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '销售建议读取失败');
+    } finally {
+      setSalesReviewLoading(false);
+    }
+  }
+
+  async function openReportIssueDetail(report: AdminReportIssueSummary) {
+    if (!adminToken) return;
+    setSelectedReportIssueReport(report);
+    setSelectedReportIssues([]);
+    setSelectedReportCorrections([]);
+    setReportIssuesLoading(true);
+    try {
+      const payload = await getAdminReportIssueDetail(adminToken, report.id);
+      setSelectedReportIssueReport(payload.report);
+      setSelectedReportIssues(payload.issues);
+      setSelectedReportCorrections(payload.corrections || []);
+      setMessage('报告问题详情已加载');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '报告问题详情读取失败');
+    } finally {
+      setReportIssuesLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!adminToken) return;
     void loadMembershipConfig(adminToken);
+    void loadResponsibilityGenerationConfig(adminToken);
     void loadOfficialDomainProfiles(adminToken);
+    void loadReportIssues(adminToken);
     const overviewTimer = window.setTimeout(() => {
       void loadOverview(adminToken);
     }, 300);
@@ -209,24 +436,58 @@ export function AdminApp() {
       setMessage('免费保存保单数请输入非负整数');
       return;
     }
-    const quota = Number(normalizedQuotaInput);
+    const normalizedFamilyReportLimitInput = familyReportDailyRefreshLimitInput.trim();
+    const normalizedSalesReviewLimitInput = familySalesReviewDailyRefreshLimitInput.trim();
+    if (!/^\d+$/.test(normalizedFamilyReportLimitInput)) {
+      setMessage('家庭保单分析报告每日刷新次数请输入非负整数');
+      return;
+    }
+    if (!/^\d+$/.test(normalizedSalesReviewLimitInput)) {
+      setMessage('营销建议报告每日刷新次数请输入非负整数');
+      return;
+    }
     setMembershipSaving(true);
     setMessage('正在保存会员设置');
     try {
       const payload = await updateAdminMembershipConfig(adminToken, {
         enabled: membershipConfig.enabled,
-        registeredFreePolicyQuota: quota,
+        registeredFreePolicyQuota: Number(normalizedQuotaInput),
+        familyReportDailyRefreshLimit: Number(normalizedFamilyReportLimitInput),
+        familySalesReviewDailyRefreshLimit: Number(normalizedSalesReviewLimitInput),
       });
       setMembershipConfig(payload.config);
       setMembershipQuotaInput(String(payload.config.registeredFreePolicyQuota));
+      setFamilyReportDailyRefreshLimitInput(String(payload.config.familyReportDailyRefreshLimit));
+      setFamilySalesReviewDailyRefreshLimitInput(String(payload.config.familySalesReviewDailyRefreshLimit));
       setMessage('会员设置已保存');
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearAdminAuthState();
-      }
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '会员设置保存失败');
     } finally {
       setMembershipSaving(false);
+    }
+  }
+
+  async function handleSaveResponsibilityGenerationConfig() {
+    if (!adminToken || !responsibilityGenerationConfig || responsibilityGenerationSaving) return;
+    setResponsibilityGenerationSaving(true);
+    setMessage('正在保存保险责任自我修正设置');
+    try {
+      const payload = await updateAdminResponsibilityGenerationConfig(adminToken, {
+        enabled: responsibilityGenerationConfig.enabled,
+        promptRules: textToLines(responsibilityRulesText),
+        blockedResponsibilityTitles: textToLines(responsibilityBlockedTitlesText),
+        failureExamples: textToExamples(responsibilityFailureExamplesText),
+        fallbackMode: responsibilityGenerationConfig.fallbackMode,
+        plannerMode: responsibilityGenerationConfig.plannerMode || 'auto',
+      });
+      applyResponsibilityGenerationConfig(payload.config);
+      setMessage('保险责任自我修正设置已保存，下一次生成直接生效');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '保险责任自我修正设置保存失败');
+    } finally {
+      setResponsibilityGenerationSaving(false);
     }
   }
 
@@ -249,6 +510,20 @@ export function AdminApp() {
       setMessage(error instanceof Error ? error.message : '重新生成报告失败');
     } finally {
       setRetryingPolicyId(null);
+    }
+  }
+
+  async function openAdminPolicy(policy: Policy) {
+    if (!policy) return;
+    const policyId = Number(policy.id);
+    setSelectedPolicy(policy);
+    if (!adminToken || !policyId) return;
+    try {
+      const payload = await getAdminPolicy(adminToken, policyId);
+      setSelectedPolicy((current) => (Number(current?.id || 0) === policyId ? payload.policy : current));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : '保单详情读取失败');
     }
   }
 
@@ -305,6 +580,21 @@ export function AdminApp() {
     }
   }
 
+  async function reviewKnowledgeRecord(record: KnowledgeRecord, action: 'approved' | 'rejected') {
+    if (!adminToken || loading) return;
+    setLoading(true);
+    setMessage(action === 'approved' ? '正在通过客户照片线索' : '正在驳回客户照片线索');
+    try {
+      const payload = await reviewAdminKnowledgeRecord(adminToken, { id: record.id, action });
+      setKnowledgeRecords(payload.records);
+      setMessage(action === 'approved' ? '客户照片线索已通过，后续可作为非官方候选' : '客户照片线索已驳回');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '客户照片线索审核失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleMarkOptionalNotQuantifiable(gap: OptionalResponsibilityGap) {
     if (!adminToken || loading) return;
     setLoading(true);
@@ -312,6 +602,7 @@ export function AdminApp() {
     try {
       await markOptionalResponsibilityNotQuantifiable(adminToken, gap.id, '该责任暂不进入金额量化计算');
       await loadOverview(adminToken);
+      await loadAdminOptionalResponsibilityGaps(adminToken);
       setMessage('可选责任已标记为不可量化');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '标记失败');
@@ -327,6 +618,7 @@ export function AdminApp() {
     try {
       await reextractOptionalResponsibilities(adminToken);
       await loadOverview(adminToken);
+      await loadAdminOptionalResponsibilityGaps(adminToken);
       setMessage('可选责任拆解已刷新');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '重新拆解失败');
@@ -344,6 +636,8 @@ export function AdminApp() {
   useEffect(() => {
     if (!selectedAdminUserId || selectedAdminUser || !overview) return;
     setSelectedAdminUserId(null);
+    setSelectedAdminFamilyId(null);
+    setSelectedUserFamilies(null);
   }, [overview, selectedAdminUser, selectedAdminUserId]);
 
   function matchesAdminQuery(values: Array<unknown>) {
@@ -353,12 +647,26 @@ export function AdminApp() {
       .some((value) => String(value).toLowerCase().includes(normalizedQuery));
   }
 
+  const filteredUsers = useMemo(() => {
+    const rows = overview?.users || [];
+    if (!normalizedQuery) return rows;
+    return rows.filter((user) =>
+      matchesAdminQuery([
+        user.mobile,
+        maskMobile(user.mobile),
+        user.id,
+        `${user.familyCount || 0} 家庭`,
+        `${user.policyCount} 保单`,
+        `${user.insuredCount} 被保人`,
+      ]),
+    );
+  }, [overview, normalizedQuery]);
+
   const filteredPolicies = useMemo(() => {
     const rows = overview?.policies || [];
     return rows.filter((policy) => {
-      if (selectedAdminUserId && String(policy.userMobile || '') !== String(selectedAdminUser?.mobile || '')) {
-        return false;
-      }
+      if (selectedAdminUserId && String(policy.userMobile || '') !== String(selectedAdminUser?.mobile || '')) return false;
+      if (selectedAdminFamilyId && Number(policy.familyId || 0) !== Number(selectedAdminFamilyId)) return false;
       return matchesAdminQuery([
         policy.userMobile,
         policy.company,
@@ -370,50 +678,250 @@ export function AdminApp() {
         policy.coveragePeriod,
       ]);
     });
-  }, [overview, normalizedQuery, selectedAdminUser?.mobile, selectedAdminUserId]);
-
-  const filteredUsers = useMemo(() => {
-    const rows = overview?.users || [];
-    if (!normalizedQuery) return rows;
-    return rows.filter((user) =>
-      matchesAdminQuery([
-        user.mobile,
-        maskMobile(user.mobile),
-        user.id,
-        `${user.policyCount} 保单`,
-        `${user.insuredCount} 被保人`,
-      ]),
-    );
-  }, [overview, normalizedQuery]);
+  }, [overview, normalizedQuery, selectedAdminFamilyId, selectedAdminUser?.mobile, selectedAdminUserId]);
 
   function formatAdminMobile(mobileValue: string) {
     return String(mobileValue || '').trim() || '未绑定手机号';
   }
 
-  const filteredInsureds = useMemo(() => {
-    const rows = overview?.insureds || [];
-    return rows.filter((row) => {
-      if (selectedAdminUserId && Number(row.userId) !== Number(selectedAdminUserId)) return false;
-      return matchesAdminQuery([row.userMobile, maskMobile(row.userMobile), row.insured]);
-    });
-  }, [overview, normalizedQuery, selectedAdminUserId]);
+  function selectAdminUser(userId: number) {
+    setSelectedAdminUserId(userId);
+    setSelectedAdminFamilyId(null);
+    setSelectedUserFamilies(null);
+    setSelectedFamilyReport(null);
+    setSelectedFamilyReportFamilyName('');
+    setSelectedSalesReview(null);
+    setSelectedSalesReviewFamilyName('');
+    void loadSelectedUserFamilies(userId);
+  }
+
+  function clearPolicyFilters() {
+    setSelectedAdminUserId(null);
+    setSelectedAdminFamilyId(null);
+    setSelectedUserFamilies(null);
+  }
+
+  function changeAdminPage(page: AdminPageKey) {
+    if (activePage === 'agentPolicies' && page !== 'agentPolicies' && agentPoliciesDirty && !window.confirm('存在未保存的 Agent 策略草稿，确认离开并丢弃修改吗？')) return;
+    if (page !== 'agentPolicies') setAgentPoliciesDirty(false);
+    setActivePage(page);
+    if (page === 'knowledge' && !knowledgeRecords.length) void loadKnowledgeRecords();
+    if (page === 'responsibilityGeneration' && !responsibilityGenerationConfig) void loadResponsibilityGenerationConfig();
+    if (page === 'reportIssues' && !reportIssueReports.length) void loadReportIssues();
+    if (page === 'optionalResponsibilities') {
+      const expectedCount = overview?.summary.optionalResponsibilityGapCount ?? 0;
+      if (!optionalResponsibilityGaps.length || optionalResponsibilityGaps.length < expectedCount) {
+        void loadAdminOptionalResponsibilityGaps();
+      }
+    }
+    if (page === 'officialDomains' && !officialDomainProfiles.length) void loadOfficialDomainProfiles();
+    if (page === 'membership' && !membershipConfig) void loadMembershipConfig();
+  }
+
+  function openAdminFamilyPolicies(familyId: number) {
+    setSelectedAdminFamilyId(familyId);
+    changeAdminPage('policies');
+    setSelectedPolicy(null);
+    setMessage('已筛选该家庭的保单');
+  }
+
+  function openAdminFamilyReport(familyId: number) {
+    const family = selectedUserFamilies?.families.find((row) => Number(row.id) === Number(familyId)) || null;
+    setSelectedAdminFamilyId(familyId);
+    setSelectedFamilyReportFamilyName(family?.familyName || `家庭 ${familyId}`);
+    changeAdminPage('familyReport');
+    void loadAdminFamilyReport(familyId);
+  }
+
+  function openAdminFamilySalesReview(familyId: number) {
+    const family = selectedUserFamilies?.families.find((row) => Number(row.id) === Number(familyId)) || null;
+    setSelectedAdminFamilyId(familyId);
+    setSelectedSalesReviewFamilyName(family?.familyName || `家庭 ${familyId}`);
+    changeAdminPage('salesReview');
+    void loadAdminFamilySalesReview(familyId);
+  }
+
+  function refreshCurrentAdminPage() {
+    if (activePage === 'overview') {
+      void loadOverview();
+      void loadReportIssues();
+    } else if (activePage === 'policies' || activePage === 'optionalResponsibilities') {
+      void loadOverview();
+      if (activePage === 'optionalResponsibilities') void loadAdminOptionalResponsibilityGaps();
+    } else if (activePage === 'users') {
+      void loadOverview();
+      if (selectedAdminUserId) void loadSelectedUserFamilies(selectedAdminUserId);
+    } else if (activePage === 'familyReport' && selectedAdminFamilyId) {
+      void loadAdminFamilyReport(selectedAdminFamilyId);
+    } else if (activePage === 'reportIssues') {
+      void loadReportIssues();
+    } else if (activePage === 'knowledge') {
+      void loadKnowledgeRecords();
+    } else if (activePage === 'responsibilityGeneration') {
+      void loadResponsibilityGenerationConfig();
+    } else if (activePage === 'officialDomains') {
+      void loadOfficialDomainProfiles();
+    } else if (activePage === 'membership') {
+      void loadMembershipConfig();
+    } else if (activePage === 'salesReview' && selectedAdminFamilyId) {
+      void loadAdminFamilySalesReview(selectedAdminFamilyId);
+    }
+  }
+
+  function renderAdminPage() {
+    switch (activePage) {
+      case 'overview':
+        return <AdminOverviewPage overview={overview} reportIssueReports={reportIssueReports} onNavigate={changeAdminPage} />;
+      case 'policies':
+        return (
+          <AdminPoliciesPage
+            filteredPolicies={filteredPolicies}
+            selectedAdminUserLabel={selectedAdminFamilyId ? `家庭 ${selectedAdminFamilyId}` : (selectedAdminUser ? formatAdminMobile(selectedAdminUser.mobile) : '')}
+            selectedPolicy={selectedPolicy}
+            retryingPolicyId={retryingPolicyId}
+            onClearUserFilter={clearPolicyFilters}
+            onSelectPolicy={(policy) => (policy ? void openAdminPolicy(policy) : setSelectedPolicy(null))}
+            onRetryPolicyReport={(policy) => void retryAdminPolicyReport(policy)}
+          />
+        );
+      case 'users':
+        return (
+          <AdminUsersPage
+            users={filteredUsers}
+            selectedUserId={selectedAdminUserId}
+            familiesPayload={selectedUserFamilies}
+            loadingFamilies={userFamiliesLoading}
+            onSelectUser={selectAdminUser}
+            onOpenFamilyReport={openAdminFamilyReport}
+            onViewFamilyPolicies={openAdminFamilyPolicies}
+            onOpenSalesReview={openAdminFamilySalesReview}
+          />
+        );
+      case 'familyReport':
+        return (
+          <AdminFamilyReportPage
+            reportRecord={selectedFamilyReport}
+            familyName={selectedFamilyReportFamilyName}
+            loading={familyReportLoading}
+            generating={familyReportGenerating}
+            onBack={() => changeAdminPage('users')}
+            onGenerate={() => void generateAdminFamilyReport()}
+          />
+        );
+      case 'reportIssues':
+        return (
+          <AdminReportIssuesPage
+            reports={reportIssueReports}
+            selectedReport={selectedReportIssueReport}
+            issues={selectedReportIssues}
+            corrections={selectedReportCorrections}
+            loading={reportIssuesLoading}
+            onRefresh={() => void loadReportIssues()}
+            onOpenReport={(report) => void openReportIssueDetail(report)}
+          />
+        );
+      case 'optionalResponsibilities':
+        return (
+          <AdminOptionalResponsibilitiesPage
+            gaps={optionalResponsibilityGaps}
+            loading={loading || optionalResponsibilityGapsLoading}
+            onMarkNotQuantifiable={(gap) => void handleMarkOptionalNotQuantifiable(gap)}
+            onReextract={() => void handleReextractOptionalResponsibilities()}
+          />
+        );
+      case 'knowledge':
+        return (
+          <AdminKnowledgePage
+            records={knowledgeRecords}
+            form={knowledgeCrawlForm}
+            loading={knowledgeLoading}
+            crawling={knowledgeCrawling}
+            onChange={setKnowledgeCrawlForm}
+            onRefresh={() => void loadKnowledgeRecords()}
+            onCrawl={() => void crawlKnowledgeRecords()}
+            onReview={(record, action) => void reviewKnowledgeRecord(record, action)}
+          />
+        );
+      case 'responsibilityGeneration':
+        return (
+          <AdminResponsibilityGenerationPage
+            config={responsibilityGenerationConfig}
+            rulesText={responsibilityRulesText}
+            blockedTitlesText={responsibilityBlockedTitlesText}
+            examplesText={responsibilityFailureExamplesText}
+            saving={responsibilityGenerationSaving}
+            onToggleEnabled={(enabled) => setResponsibilityGenerationConfig((current) => (current ? { ...current, enabled } : current))}
+            onRulesTextChange={setResponsibilityRulesText}
+            onBlockedTitlesTextChange={setResponsibilityBlockedTitlesText}
+            onExamplesTextChange={setResponsibilityFailureExamplesText}
+            onFallbackModeChange={(fallbackMode) => setResponsibilityGenerationConfig((current) => (current ? { ...current, fallbackMode } : current))}
+            onPlannerModeChange={(plannerMode) => setResponsibilityGenerationConfig((current) => (current ? { ...current, plannerMode } : current))}
+            onSave={() => void handleSaveResponsibilityGenerationConfig()}
+          />
+        );
+      case 'officialDomains':
+        return (
+          <AdminOfficialDomainsPage
+            profiles={officialDomainProfiles}
+            form={officialDomainForm}
+            loading={officialDomainLoading}
+            saving={officialDomainSaving}
+            onChange={setOfficialDomainForm}
+            onEdit={(profile) => setOfficialDomainForm(profileToOfficialDomainForm(profile))}
+            onReset={() => setOfficialDomainForm(emptyOfficialDomainForm)}
+            onRefresh={() => void loadOfficialDomainProfiles()}
+            onSave={() => void saveOfficialDomainProfile()}
+            onDelete={(profile) => void removeOfficialDomainProfile(profile)}
+          />
+        );
+      case 'membership':
+        return (
+          <AdminMembershipPage
+            config={membershipConfig}
+            quotaInput={membershipQuotaInput}
+            familyReportDailyRefreshLimitInput={familyReportDailyRefreshLimitInput}
+            familySalesReviewDailyRefreshLimitInput={familySalesReviewDailyRefreshLimitInput}
+            saving={membershipSaving}
+            onToggleEnabled={(enabled) => setMembershipConfig((current) => (current ? { ...current, enabled } : current))}
+            onQuotaInputChange={setMembershipQuotaInput}
+            onFamilyReportDailyRefreshLimitInputChange={setFamilyReportDailyRefreshLimitInput}
+            onFamilySalesReviewDailyRefreshLimitInputChange={setFamilySalesReviewDailyRefreshLimitInput}
+            onSave={() => void handleSaveMembershipConfig()}
+          />
+        );
+      case 'agentPolicies':
+        return <AdminAgentPoliciesPage adminToken={adminToken} onDirtyChange={setAgentPoliciesDirty} />;
+      case 'salesReview':
+        return (
+          <AdminSalesReviewPage
+            review={selectedSalesReview}
+            chatThreads={selectedSalesChatThreads}
+            familyName={selectedSalesReviewFamilyName}
+            loading={salesReviewLoading}
+            onBack={() => changeAdminPage('users')}
+          />
+        );
+      default:
+        return null;
+    }
+  }
 
   if (!adminToken) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#EEF3F8] px-6">
         <section className="w-full max-w-md rounded-[26px] border border-white bg-white p-8 shadow-[0_24px_80px_-50px_rgba(15,23,42,0.45)]">
           <div className="mb-8 flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-white">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-600 text-white">
               <LayoutDashboard size={22} />
             </div>
             <div>
               <h1 className="text-2xl font-black text-slate-950">平台管理后台</h1>
-              <p className="mt-1 text-sm text-slate-500">只读查看账号、被保人和保单</p>
+              <p className="mt-1 text-sm text-slate-500">只读查看账号、家庭和保单</p>
             </div>
           </div>
           <TextField label="后台密码" value={password} onChange={setPassword} type="password" placeholder="请输入后台密码" />
           <button
-            className="mt-5 flex h-12 w-full items-center justify-center rounded-2xl bg-slate-950 text-sm font-black text-white disabled:opacity-60"
+            className="mt-5 flex h-12 w-full items-center justify-center rounded-2xl bg-blue-600 text-sm font-black text-white transition hover:bg-blue-700 disabled:opacity-60"
             type="button"
             disabled={loading || !password.trim()}
             onClick={() => void handleAdminLogin()}
@@ -427,274 +935,21 @@ export function AdminApp() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F4F7FB] text-slate-950">
-      <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/95 px-6 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-950 text-white shadow-[0_14px_38px_-24px_rgba(15,23,42,0.8)]">
-              <LayoutDashboard size={21} />
-            </div>
-            <div>
-              <h1 className="text-[19px] font-black leading-tight">P 端保单运营台</h1>
-              <p className="mt-0.5 text-xs font-medium text-slate-500">{message}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="relative w-[460px]">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索注册用户手机号 / 被保人 / 保司 / 产品"
-                className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-4 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
-              />
-            </div>
-            <button
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 shadow-sm transition hover:border-slate-300"
-              type="button"
-              onClick={() => {
-                void loadOverview();
-                void loadMembershipConfig();
-                void loadOfficialDomainProfiles();
-              }}
-            >
-              刷新
-            </button>
-            <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-bold text-white shadow-[0_14px_36px_-24px_rgba(15,23,42,0.9)]" type="button" onClick={logoutAdmin}>
-              退出
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-[1440px] px-6 py-5">
-        <section className="mb-5 grid grid-cols-5 gap-3">
-          <AdminStatCard label="注册账号" value={`${overview?.summary.userCount || 0}`} />
-          <AdminStatCard label="被保人数" value={`${overview?.summary.insuredCount || 0}`} />
-          <AdminStatCard label="保单总数" value={`${overview?.summary.policyCount || 0}`} />
-          <AdminStatCard label="知识库资料" value={`${overview?.summary.knowledgeRecordCount || knowledgeRecords.length || 0}`} />
-          <AdminStatCard label="总保额" value={formatCoverageAmount(overview?.summary.totalCoverage || 0)} />
-        </section>
-
-        <div className="grid grid-cols-[340px_minmax(0,1fr)] gap-5">
-          <aside className="space-y-4">
-            <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_-42px_rgba(15,23,42,0.45)]">
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 text-sm font-black">
-                    <Users size={16} />
-                    注册用户
-                  </div>
-                  <p className="mt-1 text-xs font-medium text-slate-400">搜索手机号，点击用户筛选保单</p>
-                </div>
-                {selectedAdminUser ? (
-                  <button
-                    className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-500 transition hover:bg-slate-200"
-                    type="button"
-                    onClick={() => setSelectedAdminUserId(null)}
-                  >
-                    全部
-                  </button>
-                ) : (
-                  <span className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-400">{filteredUsers.length}</span>
-                )}
-              </div>
-              <div className="max-h-[320px] space-y-2 overflow-auto pr-1">
-                {filteredUsers.map((user) => {
-                  const active = Number(user.id) === Number(selectedAdminUserId);
-                  return (
-                    <button
-                      key={user.id}
-                      className={[
-                        'w-full rounded-[18px] border px-4 py-3 text-left transition',
-                        active
-                          ? 'border-slate-950 bg-slate-950 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.9)]'
-                          : 'border-slate-100 bg-slate-50 text-slate-950 hover:border-slate-200 hover:bg-white',
-                      ].join(' ')}
-                      type="button"
-                      onClick={() => setSelectedAdminUserId(Number(user.id))}
-                    >
-                      <p className="font-mono text-[20px] font-black leading-none tracking-normal">{formatAdminMobile(user.mobile)}</p>
-                      <div className="mt-3 flex items-center justify-between text-xs font-bold">
-                        <span className={active ? 'text-white/65' : 'text-slate-500'}>{user.insuredCount} 被保人</span>
-                        <span className={active ? 'rounded-full bg-white/10 px-2.5 py-1 text-white/80' : 'rounded-full bg-white px-2.5 py-1 text-slate-500'}>
-                          {user.policyCount} 保单
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-                {!filteredUsers.length ? <p className="rounded-[18px] bg-slate-50 px-3 py-4 text-sm font-bold text-slate-400">没有匹配的注册用户</p> : null}
-              </div>
-            </section>
-
-            <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_-42px_rgba(15,23,42,0.45)]">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-black">被保人</p>
-                  <p className="mt-1 text-xs font-medium text-slate-400">{selectedAdminUser ? '当前注册用户名下' : '全部账号下的被保人'}</p>
-                </div>
-                <span className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-400">{filteredInsureds.length}</span>
-              </div>
-              <div className="max-h-[260px] space-y-2 overflow-auto pr-1">
-                {filteredInsureds.map((row) => (
-                  <div key={row.key} className="rounded-[16px] border border-slate-100 bg-slate-50 px-3 py-2.5 text-sm">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="min-w-0 truncate font-black">{row.insured}</p>
-                      <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-xs font-black text-slate-500">{row.policyCount}</span>
-                    </div>
-                    <p className="mt-1 font-mono text-xs text-slate-500">{formatAdminMobile(row.userMobile)}</p>
-                  </div>
-                ))}
-                {!filteredInsureds.length ? <p className="rounded-[16px] bg-slate-50 px-3 py-4 text-sm font-bold text-slate-400">没有匹配的被保人</p> : null}
-              </div>
-            </section>
-
-            <section className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_-42px_rgba(15,23,42,0.45)]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-black text-slate-950">会员设置</h2>
-                  <p className="mt-1 text-xs font-medium text-slate-400">控制年度会员购买和免费保单额度</p>
-                </div>
-                <span className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-400">300 元/年</span>
-              </div>
-              <label className="mt-4 flex items-center justify-between gap-3 rounded-[16px] border border-slate-200 bg-slate-50 px-3 py-2.5">
-                <span className="text-sm font-bold text-slate-700">开放会员购买</span>
-                <input
-                  type="checkbox"
-                  checked={membershipConfig?.enabled ?? true}
-                  onChange={(event) => setMembershipConfig((current) => (current ? { ...current, enabled: event.target.checked } : current))}
-                />
-              </label>
-              <label className="mt-3 block">
-                <span className="text-xs font-black text-slate-400">注册用户免费保存保单数</span>
-                <input
-                  className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 outline-none transition focus:border-slate-400"
-                  type="number"
-                  min="0"
-                  value={membershipQuotaInput}
-                  onChange={(event) => setMembershipQuotaInput(event.target.value)}
-                />
-              </label>
-              <p className="mt-3 text-xs font-semibold leading-5 text-slate-500">年费价格 300 元，有效期 365 天。免费额度只按已成功保存保单数计算。</p>
-              <button
-                className="mt-4 h-11 w-full rounded-xl bg-slate-950 px-4 text-sm font-black text-white shadow-[0_14px_36px_-24px_rgba(15,23,42,0.9)] disabled:opacity-60"
-                type="button"
-                disabled={!membershipConfig || membershipSaving}
-                onClick={() => void handleSaveMembershipConfig()}
-              >
-                {membershipSaving ? '保存中...' : '保存会员设置'}
-              </button>
-            </section>
-
-            <AdminOfficialDomainPanel
-              profiles={officialDomainProfiles}
-              form={officialDomainForm}
-              loading={officialDomainLoading}
-              saving={officialDomainSaving}
-              onChange={setOfficialDomainForm}
-              onEdit={(profile) => setOfficialDomainForm(profileToOfficialDomainForm(profile))}
-              onReset={() => setOfficialDomainForm(emptyOfficialDomainForm)}
-              onRefresh={() => void loadOfficialDomainProfiles()}
-              onSave={() => void saveOfficialDomainProfile()}
-              onDelete={(profile) => void removeOfficialDomainProfile(profile)}
-            />
-
-            <AdminOptionalResponsibilityGapPanel
-              gaps={overview?.optionalResponsibilityGaps || []}
-              loading={loading}
-              onMarkNotQuantifiable={(gap) => void handleMarkOptionalNotQuantifiable(gap)}
-              onReextract={() => void handleReextractOptionalResponsibilities()}
-            />
-
-            <AdminKnowledgePanel
-              records={knowledgeRecords}
-              form={knowledgeCrawlForm}
-              loading={knowledgeLoading}
-              crawling={knowledgeCrawling}
-              onChange={setKnowledgeCrawlForm}
-              onRefresh={() => void loadKnowledgeRecords()}
-              onCrawl={() => void crawlKnowledgeRecords()}
-            />
-          </aside>
-
-          <section className="min-w-0 rounded-[22px] border border-slate-200 bg-white p-5 shadow-[0_24px_80px_-58px_rgba(15,23,42,0.42)]">
-            <div className="mb-4 flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
-              <div>
-                <h2 className="text-xl font-black">{selectedAdminUser ? '注册用户保单' : '全部保单'}</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {selectedAdminUser ? `当前只看 ${formatAdminMobile(selectedAdminUser.mobile)} 名下的被保人和保单。` : '只读列表，点击查看 OCR 原文和责任解析。'}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {selectedAdminUser ? (
-                  <button
-                    className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white"
-                    type="button"
-                    onClick={() => setSelectedAdminUserId(null)}
-                  >
-                    清除用户筛选
-                  </button>
-                ) : null}
-                <span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-500">{filteredPolicies.length} 条</span>
-              </div>
-            </div>
-
-            <div className="overflow-hidden rounded-[18px] border border-slate-200">
-              <div className="grid grid-cols-[1.05fr_1.45fr_0.9fr_0.85fr_0.8fr_0.8fr] bg-slate-50 px-4 py-3 text-xs font-black text-slate-500">
-                <div>注册用户</div>
-                <div>产品</div>
-                <div>被保人</div>
-                <div>保司</div>
-                <div>保额</div>
-                <div>录入时间</div>
-              </div>
-              <div className="max-h-[720px] divide-y divide-slate-100 overflow-auto">
-                {filteredPolicies.map((policy) => {
-                  const reportSummary = isPolicyReportGenerating(policy)
-                    ? '报告生成中'
-                    : isPolicyReportFailed(policy)
-                      ? policy.reportError || '报告生成失败'
-                      : policy.report || `已生成 ${Array.isArray(policy.responsibilities) ? policy.responsibilities.length : 0} 项保险责任`;
-                  return (
-                    <button
-                      key={policy.id}
-                      type="button"
-                      onClick={() => setSelectedPolicy(policy)}
-                      className="grid w-full grid-cols-[1.05fr_1.45fr_0.9fr_0.85fr_0.8fr_0.8fr] items-center px-4 py-3 text-left text-sm transition hover:bg-slate-50"
-                    >
-                      <div className="font-mono font-bold text-slate-600">{formatAdminMobile(policy.userMobile || '')}</div>
-                      <div className="min-w-0 pr-3 font-black text-slate-950">
-                        <span className="block truncate">{policy.name}</span>
-                        <span className="mt-1 block truncate text-xs font-medium text-slate-500">{reportSummary}</span>
-                      </div>
-                      <div className="truncate pr-3">{policy.insured || '未识别'}</div>
-                      <div className="truncate pr-3">{policy.company}</div>
-                      <div className="font-bold">{formatCoverageAmount(Number(policy.amount || 0))}</div>
-                      <div className="text-slate-500">{formatDateLabel(policy.createdAt)}</div>
-                    </button>
-                  );
-                })}
-                {!filteredPolicies.length ? (
-                  <div className="px-4 py-12 text-center">
-                    <p className="text-sm font-black text-slate-500">没有匹配的保单</p>
-                    <p className="mt-1 text-xs font-medium text-slate-400">可以换一个手机号、被保人或产品关键词搜索。</p>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </section>
-        </div>
-      </main>
-
-      {selectedPolicy ? (
-        <AdminPolicyDetail
-          policy={selectedPolicy}
-          onClose={() => setSelectedPolicy(null)}
-          onRetryReport={retryAdminPolicyReport}
-          retrying={retryingPolicyId === selectedPolicy.id}
-        />
-      ) : null}
-    </div>
+    <AdminShell
+      activePage={activePage}
+      query={query}
+      message={message}
+      loading={loading || reportIssuesLoading || userFamiliesLoading || familyReportLoading || familyReportGenerating || salesReviewLoading || optionalResponsibilityGapsLoading || responsibilityGenerationSaving}
+      badgeCounts={{
+        reportIssues: reportIssueReports.length,
+        optionalResponsibilities: overview?.summary.optionalResponsibilityGapCount ?? optionalResponsibilityGaps.length,
+      }}
+      onPageChange={changeAdminPage}
+      onQueryChange={setQuery}
+      onRefresh={refreshCurrentAdminPage}
+      onLogout={logoutAdmin}
+    >
+      {renderAdminPage()}
+    </AdminShell>
   );
 }

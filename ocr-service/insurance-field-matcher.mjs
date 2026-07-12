@@ -46,6 +46,45 @@ function chooseBestCandidate(candidates = []) {
     .sort((left, right) => right.score - left.score || left.lineIndex - right.lineIndex)[0] || null;
 }
 
+function candidateEvidenceRegion(field) {
+  if (['name', 'amount', 'firstPremium', 'coveragePeriod', 'paymentMode', 'paymentPeriod'].includes(field)) {
+    return 'policy-table';
+  }
+  return 'text';
+}
+
+function candidateRowText(lines, lineIndex) {
+  if (lineIndex < 0) return '';
+  return lines
+    .slice(Math.max(0, lineIndex - 1), Math.min(lines.length, lineIndex + 2))
+    .map((line) => cleanupFieldText(line))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function buildCandidateEvidence(lines, candidate) {
+  if (!candidate?.value) return null;
+  const rawValue = candidate.lineIndex >= 0 ? cleanupFieldText(lines[candidate.lineIndex] || '') : '';
+  return {
+    value: candidate.value,
+    rawValue,
+    labelText: '',
+    rowText: candidateRowText(lines, candidate.lineIndex),
+    relation: candidate.source || 'candidate',
+    source: 'match-policy-ocr-fields',
+    region: candidateEvidenceRegion(candidate.field),
+    score: candidate.score,
+    reason: candidate.reason || '',
+  };
+}
+
+function confidenceFromCandidate(candidate) {
+  if (!candidate) return '';
+  if (candidate.score >= 90) return 'matcher-high';
+  if (candidate.score >= 70) return 'matcher';
+  return 'review';
+}
+
 function findFieldLabelIndex(lines, field) {
   return lines.findIndex((line) => lineHasFieldLabel(line, field));
 }
@@ -278,6 +317,7 @@ function isPotentialPlanNameLine(line, company = '') {
   const text = compactText(line);
   if (!text) return false;
   if (isBenefitTableHeaderLine(text) || isBenefitTablePlanBoundary(text)) return false;
+  if (inlineLabeledPlanName(text)) return true;
   if (isProductNameNoiseLine(text, company)) return false;
   if (isProductDescriptorLine(text)) return false;
   if (isPlanFieldValue(text)) return false;
@@ -344,10 +384,41 @@ function normalizePlanName(parts = []) {
   return normalizeProductNameText(text);
 }
 
+function normalizeLabeledAmountBeforeNextLabel(line, labelPattern, stopLabels) {
+  const text = compactText(line);
+  const matched = text.match(new RegExp(`(?:${labelPattern})[:：]?(.+?)(?=(?:${stopLabels})[:：]?|$)`, 'u'));
+  return normalizeAmountText(matched?.[1] || '');
+}
+
+function normalizePlanAmountLine(line) {
+  return normalizeLabeledAmountBeforeNextLabel(
+    line,
+    '基本保险金额|保险金额|保额',
+    '保险期间|保障期间|保险期限|保障期限|交费方式|缴费方式|交费期间|缴费期间|保险费|保费|首期|合计',
+  );
+}
+
+function normalizePlanPremiumLine(line) {
+  return normalizeLabeledAmountBeforeNextLabel(
+    line,
+    '保险费|保费|总保费|首期|首年',
+    '交费方式|缴费方式|交费期间|缴费期间|保险期间|保障期间|保险期限|保障期限|保险金额|基本保险金额|保额|合计',
+  );
+}
+
+function inlineLabeledPlanName(line) {
+  const text = compactText(line);
+  if (!text || !lineHasFieldLabel(text, 'name')) return '';
+  const name = normalizeProductNameText(text);
+  if (!name || name === text) return '';
+  if (isBenefitTableHeaderLine(name) || isProductNameNoiseLine(name)) return '';
+  return name;
+}
+
 function findInlineLabeledPlanName(lines) {
   for (let index = 0; index < lines.length; index += 1) {
     if (!lineHasFieldLabel(lines[index], 'name')) continue;
-    const name = normalizeProductNameText(lines[index]);
+    const name = inlineLabeledPlanName(lines[index]);
     if (!name) continue;
     return {
       name,
@@ -499,6 +570,134 @@ function extractReceiptPolicyPlans(lines, company = '') {
       premiumText: premiumLine,
     };
   });
+}
+
+function isAppPlanSummaryHeader(line) {
+  const text = compactText(line);
+  return /险种名称/u.test(text)
+    && /(?:标准保费|保费)/u.test(text)
+    && /(?:基本保额|基本保险金额|保险金额)/u.test(text)
+    && /(?:交费期间|缴费期间)/u.test(text)
+    && /(?:保险期间|保障期间)/u.test(text);
+}
+
+function findAppPlanSummaryHeaderRange(lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isAppPlanSummaryHeader(lines[index])) return { startIndex: index, endIndex: index };
+    let windowText = '';
+    for (let endIndex = index; endIndex < Math.min(lines.length, index + 8); endIndex += 1) {
+      windowText += compactText(lines[endIndex]);
+      if (isAppPlanSummaryHeader(windowText)) return { startIndex: index, endIndex };
+    }
+  }
+  return null;
+}
+
+function normalizeAppPlanName(rawName) {
+  const text = compactText(rawName)
+    .replace(/^\d{2,4}/u, '')
+    .trim()
+    .replace(/^V\d+(?:\.\d+)?/iu, '')
+    .trim();
+  return normalizePlanName([text]) || (/(?:保险|寿险|年金|医疗|意外|疾病|护理)/u.test(text) ? text : '');
+}
+
+function parseAppPlanPeriods(value) {
+  const text = compactText(value);
+  const paymentModeToken = text.match(/一次性交清|一次交清|一次性交费|一次性缴清|趸交|年交|年缴|月交|月缴|季交|季缴|半年交|半年缴/u)?.[0] || '';
+  const paymentMode = normalizePaymentModeText(paymentModeToken);
+  const remainder = paymentModeToken ? text.replace(paymentModeToken, '') : text;
+  const rawPaymentPeriod = paymentMode === '趸交'
+    ? ''
+    : normalizePaymentPeriodText(text.match(/\d{1,3}年(?=\s*(?:交|缴|终身|$))/u)?.[0] || '');
+  const effectivePaymentMode = paymentMode || (rawPaymentPeriod ? '年交' : '');
+  const coveragePeriod = text.includes('终身')
+    ? '终身'
+    : /^\d{1,3}年$/u.test(remainder)
+      ? remainder
+    : normalizeCoveragePeriodText(remainder) || normalizeCoveragePeriodText(text);
+  return {
+    coveragePeriod,
+    paymentMode: effectivePaymentMode,
+    paymentPeriod: normalizePlanPaymentPeriod(rawPaymentPeriod, effectivePaymentMode),
+  };
+}
+
+function normalizeAppPlanSummaryRowText(line) {
+  let text = cleanupFieldText(line)
+    .replace(/\s+/gu, ' ')
+    .trim();
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    text = text
+      .replace(/(\d[\d,，]*)\s+(\d{1,3}\.\d{2}\s*(?:元|圆))/gu, '$1$2')
+      .replace(/(\d+\.)\s+(\d{1,2}\s*(?:元|圆))/gu, '$1$2')
+      .replace(/(\d+\.\d)\s+(\d\s*(?:元|圆))/gu, '$1$2');
+  }
+  return text;
+}
+
+function parseAppPlanSummaryRow(line, company = '') {
+  const raw = normalizeAppPlanSummaryRowText(line);
+  const amountMatches = [...raw.matchAll(/[¥￥]?\d[\d,，]*(?:\.\d+)?\s*(?:元|圆)/gu)];
+  if (amountMatches.length < 2) return null;
+
+  const name = normalizeAppPlanName(raw.slice(0, amountMatches[0].index));
+  if (!name) return null;
+
+  const periods = parseAppPlanPeriods(raw.slice(amountMatches[1].index + amountMatches[1][0].length));
+  return {
+    company,
+    role: '',
+    name,
+    productType: inferPlanProductType(name),
+    amount: normalizeAmountText(amountMatches[1][0]),
+    coveragePeriod: periods.coveragePeriod,
+    paymentMode: periods.paymentMode,
+    paymentPeriod: periods.paymentPeriod,
+    premium: normalizeAmountText(amountMatches[0][0]),
+    premiumText: compactText(amountMatches[0][0]),
+  };
+}
+
+function isAppPlanSummaryBoundary(line) {
+  return /^(?:投保人|被保险人|受益人|特别约定|保单详情|手机号码|手机号码|客户信息|家庭信息|保障信息)/u.test(compactText(line));
+}
+
+function isAppPlanSummaryRowStart(line) {
+  const text = compactText(line);
+  if (/^\d{1,3}年(?:交|缴)?$/u.test(text)) return false;
+  return /^\d{2,4}(?:\s|[A-Za-z]|[\u4e00-\u9fff])/u.test(text)
+    && !/^\d{4}[-/年]\d{1,2}/u.test(text)
+    && !/^\d+(?:\.\d+)?(?:元|圆)$/u.test(text);
+}
+
+function extractAppPlanSummaryPlans(lines, company = '') {
+  const headerRange = findAppPlanSummaryHeaderRange(lines);
+  if (!headerRange) return [];
+
+  const plans = [];
+  let rowBuffer = [];
+  const flushRowBuffer = () => {
+    if (!rowBuffer.length) return;
+    const plan = parseAppPlanSummaryRow(rowBuffer.join(' '), company);
+    if (plan) plans.push(plan);
+    rowBuffer = [];
+  };
+
+  for (let index = headerRange.endIndex + 1; index < Math.min(lines.length, headerRange.endIndex + 80); index += 1) {
+    const line = compactText(lines[index]);
+    if (!line) continue;
+    if (isAppPlanSummaryBoundary(line)) break;
+    if (isAppPlanSummaryHeader(line) || /可左滑列表查看更多信息/u.test(line)) continue;
+    if (isAppPlanSummaryRowStart(line)) {
+      flushRowBuffer();
+      rowBuffer = [lines[index]];
+      continue;
+    }
+    if (rowBuffer.length) rowBuffer.push(lines[index]);
+  }
+  flushRowBuffer();
+  return plans;
 }
 
 function labeledPlanValue(line, labelPattern) {
@@ -673,7 +872,7 @@ function addCandidatesFromInlineSinglePlanSummary({ candidates, lines, company }
 }
 
 function readPlanName(source, startIndex, company) {
-  const parts = [source[startIndex]];
+  const parts = [inlineLabeledPlanName(source[startIndex]) || source[startIndex]];
   let endIndex = startIndex;
   for (let index = startIndex + 1; index < Math.min(source.length, startIndex + 5); index += 1) {
     const line = source[index];
@@ -1114,14 +1313,15 @@ function parsePlanDetails(source, startIndex, company) {
       continue;
     }
 
-    const labeledAmount = normalizeAmountText(line);
-    if (labeledAmount && /(?:保险费|保费|总保费|首期|首年|合计)/u.test(line)) {
+    const labeledPremium = normalizePlanPremiumLine(line);
+    if (labeledPremium && /(?:保险费|保费|总保费|首期|首年|合计)/u.test(line)) {
       if (!plan.premium) {
-        plan.premium = labeledAmount;
+        plan.premium = labeledPremium;
         plan.premiumText = line;
       }
       continue;
     }
+    const labeledAmount = normalizePlanAmountLine(line);
     if (labeledAmount && /(?:保险金额|基本保险金额|保额)/u.test(line)) {
       if (!plan.amount) plan.amount = labeledAmount;
       continue;
@@ -1252,15 +1452,16 @@ function hydrateMissingSequentialPlanDetails(plans, source) {
         continue;
       }
 
-      const amount = normalizeAmountText(line);
+      const amount = normalizePlanAmountLine(line) || normalizeAmountText(line);
       if (!amount) continue;
       if (sawTotalPremiumLine && /^[¥￥]/u.test(line)) continue;
       if (/(?:保险金额|基本保险金额|保额)/u.test(line) && !plan.amount) {
         plan.amount = amount;
         continue;
       }
+      const premium = normalizePlanPremiumLine(line) || amount;
       if (/(?:保险费|保费|总保费|首期|首年)/u.test(line) && !plan.premium) {
-        plan.premium = amount;
+        plan.premium = premium;
         plan.premiumText = line;
       }
     }
@@ -1283,6 +1484,18 @@ export function extractPolicyPlansFromLines(inputLines, options = {}) {
       ...plan,
       role: inferPlanRole(plan, index),
     }));
+  }
+  const appSummaryPlans = extractAppPlanSummaryPlans(lines, company);
+  if (appSummaryPlans.length) {
+    let hasMainPlan = false;
+    return appSummaryPlans.map((plan, index) => {
+      const inferredRole = inferPlanRole(plan, index);
+      const role = inferredRole === 'rider' && !/附加/u.test(compactText(plan.name)) && !hasMainPlan
+        ? 'main'
+        : inferredRole;
+      if (role === 'main') hasMainPlan = true;
+      return { ...plan, role };
+    });
   }
   const inlineSinglePlan = extractInlineSinglePlanSummary(lines, company);
   if (inlineSinglePlan) {
@@ -1340,13 +1553,22 @@ export function matchPolicyFieldsFromLines(inputLines, options = {}) {
   addCandidatesFromInlineSinglePlanSummary({ candidates, lines, company });
 
   const fields = createEmptyPolicyFields();
+  const fieldEvidence = {};
+  const fieldConfidence = {};
   for (const field of POLICY_FIELD_KEYS) {
     const best = chooseBestCandidate(candidates[field]);
-    if (best) fields[field] = best.value;
+    if (!best) continue;
+    fields[field] = best.value;
+    const evidence = buildCandidateEvidence(lines, best);
+    if (evidence) fieldEvidence[field] = evidence;
+    const confidence = confidenceFromCandidate(best);
+    if (confidence) fieldConfidence[field] = confidence;
   }
 
   return {
     fields,
     candidates,
+    fieldEvidence,
+    fieldConfidence,
   };
 }

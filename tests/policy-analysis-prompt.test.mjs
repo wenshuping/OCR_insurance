@@ -80,6 +80,18 @@ function createChatResponse(content) {
   };
 }
 
+function requestPrompt(options = {}) {
+  return JSON.parse(options.body).messages.map((message) => message.content).join('\n');
+}
+
+function isSkillRouterPrompt(prompt = '') {
+  return /policy_analysis_skill_router/u.test(prompt);
+}
+
+function isResponsibilityPrompt(prompt = '') {
+  return /请只输出保险责任 coverageTable/u.test(prompt);
+}
+
 test('policy analysis searches the current New China disclosure page when the old entry misses the product', async () => {
   await withPolicyAnalysisEnv(
     async () => {
@@ -177,18 +189,150 @@ test('policy analysis prompt only asks DeepSeek for the responsibility table', a
       fetchImpl,
     });
 
-    assert.equal(calls.length, 1);
-    const prompt = calls[0].body.messages.map((message) => message.content).join('\n');
+    assert.equal(calls.length, 2);
+    const routerPrompt = calls[0].body.messages.map((message) => message.content).join('\n');
+    const prompt = calls.find((call) => isResponsibilityPrompt(call.body.messages.map((message) => message.content).join('\n')))
+      .body.messages.map((message) => message.content).join('\n');
+    assert.match(routerPrompt, /policy_analysis_skill_router/u);
+    assert.match(prompt, /本次解析技能计划/u);
     assert.match(prompt, /JSON 字段只包含：coverageTable/);
     assert.match(prompt, /不要输出 report、notes、summary、overview、disclaimer/);
     assert.match(prompt, /每一条保险责任.*单独.*coverageTable/);
     assert.match(prompt, /coverageTable 是保险责任表/);
+    assert.match(prompt, /指标拆解字段 liability、triggerCondition、formulaText、basis、value、unit/);
+    assert.match(prompt, /计算字段统一规则/);
+    assert.match(prompt, /calculationEligible=false/);
     assert.match(prompt, /分红、红利领取方式、现金价值.*不要作为 coverageTable 的独立行/);
     assert.doesNotMatch(
       prompt,
       /productOverview|productAdvantages|mainGuarantees|dividendMechanism|dividendOptions|dividendImpact|coreFeature|exclusions|purchaseAdvice/,
     );
   });
+});
+
+test('policy analysis uses DeepSeek skill router to compile the next responsibility prompt', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    const prompts = [];
+    const fetchImpl = async (url, options = {}) => {
+      const prompt = requestPrompt(options);
+      prompts.push(prompt);
+      if (isSkillRouterPrompt(prompt)) {
+        return createChatResponse({
+          documentType: 'responsibility_page',
+          skills: [
+            'responsibility_extraction',
+            'indicator_quantification',
+            'uploaded_ocr_fallback',
+          ],
+          promptDirectives: ['优先基于上传OCR逐条拆分保险责任，并为每条责任写 sourceExcerpt'],
+          reason: 'OCR包含保险责任和给付比例',
+        });
+      }
+      return createChatResponse({
+        coverageTable: [
+          {
+            coverageType: '重大疾病保险金',
+            scenario: '被保险人确诊合同约定重大疾病',
+            payout: '按基本保险金额给付',
+            formulaText: '重大疾病保险金 = 基本保险金额',
+            basis: '基本保险金额',
+            sourceExcerpt: '重大疾病保险金按基本保险金额给付。',
+            note: '给付后该项责任终止。',
+          },
+        ],
+      });
+    };
+
+    const result = await analyzeInsurancePolicyResponsibilities({
+      policy: {
+        company: '华夏人寿',
+        name: '常青树重大疾病保险',
+        amount: 500000,
+      },
+      ocrText: '保险责任 重大疾病保险金 按基本保险金额给付 轻症疾病保险金 按基本保险金额的30%给付',
+      fetchImpl,
+    });
+
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[0], /policy_analysis_skill_router/u);
+    assert.match(prompts[1], /uploaded_ocr_fallback/u);
+    assert.match(prompts[1], /indicator_quantification/u);
+    assert.match(prompts[1], /优先基于上传OCR逐条拆分保险责任/u);
+    assert.equal(result.modelOutput.skillPlan.selectedBy, 'deepseek');
+    assert.deepEqual(result.modelOutput.skillPlan.skills, [
+      'responsibility_extraction',
+      'indicator_quantification',
+      'uploaded_ocr_fallback',
+    ]);
+    assert.equal(result.coverageTable[0].coverageType, '重大疾病保险金');
+  });
+});
+
+test('policy analysis falls back to uploaded OCR skills when official RAG is missing', async () => {
+  await withPolicyAnalysisEnv(
+    async () => {
+      const prompts = [];
+      const fetchImpl = async (url, options = {}) => {
+        const href = String(url);
+        if (href.startsWith('https://deepseek.test/')) {
+          const prompt = requestPrompt(options);
+          prompts.push(prompt);
+          if (/只查找保险公司官方资料/u.test(prompt)) {
+            return createChatResponse({
+              companyOfficialDomainHints: [],
+              sources: [],
+            });
+          }
+          if (isSkillRouterPrompt(prompt)) {
+            return createChatResponse({
+              documentType: 'responsibility_page',
+              skills: [
+                'responsibility_extraction',
+                'indicator_quantification',
+                'uploaded_ocr_fallback',
+              ],
+              promptDirectives: ['官方资料未命中时，仍以上传OCR中的责任条款生成指标候选'],
+              reason: '责任页OCR可用',
+            });
+          }
+          return createChatResponse({
+            coverageTable: [
+              {
+                coverageType: '轻症疾病保险金',
+                scenario: '被保险人确诊合同约定轻症疾病',
+                payout: '按基本保险金额的30%给付',
+                formulaText: '轻症疾病保险金 = 基本保险金额 × 30%',
+                basis: '基本保险金额',
+                value: 30,
+                unit: '%',
+                sourceExcerpt: '轻症疾病保险金按基本保险金额的30%给付。',
+                note: '以上传条款页为证据生成，需结合完整合同核对。',
+              },
+            ],
+          });
+        }
+        return emptyHtmlResponse();
+      };
+
+      const result = await analyzeInsurancePolicyResponsibilities({
+        policy: {
+          company: '华夏人寿',
+          name: '常青树重大疾病保险',
+          amount: 500000,
+        },
+        ocrText: '保险责任 轻症疾病保险金 按基本保险金额的30%给付',
+        fetchImpl,
+      });
+
+      const finalPrompt = prompts.find(isResponsibilityPrompt);
+      assert.ok(finalPrompt);
+      assert.match(finalPrompt, /uploaded_ocr_fallback/u);
+      assert.match(finalPrompt, /官方资料未命中时，仍以上传OCR中的责任条款生成指标候选/u);
+      assert.equal(result.coverageTable[0].coverageType, '轻症疾病保险金');
+      assert.equal(result.coverageTable[0].value, 30);
+    },
+    { smartSearchEnabled: true },
+  );
 });
 
 test('policy analysis accepts coverageTable-only response without report or notes', async () => {
@@ -198,8 +342,13 @@ test('policy analysis accepts coverageTable-only response without report or note
         coverageTable: [
           {
             coverageType: '身故或全残保险金',
+            liability: '身故或全残保险金',
             scenario: '被保险人身故或全残',
             payout: '按合同约定取较大值给付',
+            formulaText: '身故或全残保险金 = 基本保险金额',
+            basis: '基本保险金额',
+            unit: '公式',
+            sourceExcerpt: '被保险人身故或全残，本公司按基本保险金额给付身故或全残保险金。',
             note: '给付后合同终止',
           },
         ],
@@ -216,6 +365,9 @@ test('policy analysis accepts coverageTable-only response without report or note
     });
 
     assert.equal(result.coverageTable.length, 1);
+    assert.equal(result.coverageTable[0].formulaText, '身故或全残保险金 = 基本保险金额');
+    assert.equal(result.coverageTable[0].basis, '基本保险金额');
+    assert.match(result.coverageTable[0].sourceExcerpt, /基本保险金额给付/u);
     assert.equal(result.report, '');
     assert.deepEqual(result.notes, []);
   });
@@ -258,8 +410,8 @@ test('policy analysis does not send customer names, id numbers, or mobile number
       fetchImpl,
     });
 
-    assert.equal(calls.length, 1);
-    const prompt = calls[0].body.messages.map((message) => message.content).join('\n');
+    assert.equal(calls.length, 2);
+    const prompt = calls.map((call) => call.body.messages.map((message) => message.content).join('\n')).join('\n');
     assert.doesNotMatch(prompt, /张三/);
     assert.doesNotMatch(prompt, /李四/);
     assert.doesNotMatch(prompt, /110101199001011234/);
@@ -798,7 +950,20 @@ test('policy analysis uses local official knowledge before live smart search', a
 test('policy analysis does not reuse cached model output between requests', async () => {
   await withPolicyAnalysisEnv(async () => {
     let modelCalls = 0;
-    const fetchImpl = async () => {
+    const fetchImpl = async (_url, options = {}) => {
+      const prompt = requestPrompt(options);
+      if (isSkillRouterPrompt(prompt)) {
+        return createChatResponse({
+          documentType: 'responsibility_page',
+          skills: [
+            'responsibility_extraction',
+            'indicator_quantification',
+            'uploaded_ocr_fallback',
+          ],
+          promptDirectives: [],
+          reason: '缓存测试',
+        });
+      }
       modelCalls += 1;
       return createChatResponse({
         coverageTable: [

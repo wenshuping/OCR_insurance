@@ -6,8 +6,8 @@ function compactText(value) {
 
 function isBenefitHeader(text) {
   if (/保险利益表/u.test(text)) return true;
-  return /险种名称|产品名称/u.test(text)
-    && /基本保险金额|保险金额|保险期间|交费方式|缴费方式|交费期间|缴费期间|保险费/u.test(text);
+  return /险种名称|产品名称|保险项目/u.test(text)
+    && /基本保险金额|保险金额|保险期间|交费方式|缴费方式|交费期间|缴费期间|交费年限|缴费年限|保险费/u.test(text);
 }
 
 function isFooter(text) {

@@ -108,6 +108,21 @@ test('parsePolicyBasicInfoFromLayoutBoxes does not use the next same-row label a
   assert.equal(result.fields.insured, '李四');
 });
 
+test('parsePolicyBasicInfoFromLayoutBoxes reads policy number before premium due date', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('投保人：', 160, 141, 245, 173),
+    box('杜金坤', 298, 136, 377, 169),
+    box('No.', 840, 141, 900, 173),
+    box('3212010000014897', 920, 141, 1160, 173),
+    box('保单号码：', 451, 149, 579, 181),
+    box('HP12010000087018', 560, 146, 790, 180),
+    box('保费缴至日：2003年02月08日', 805, 165, 1128, 197),
+  ]);
+
+  assert.equal(result.fields.applicant, '杜金坤');
+  assert.equal(result.fields.policyNumber, 'HP12010000087018');
+});
+
 test('parsePolicyBasicInfoFromLayoutBoxes does not use adjacent general labels as person values', () => {
   const result = parsePolicyBasicInfoFromLayoutBoxes([
     box('投保人', 70, 120, 140, 145),
@@ -225,6 +240,61 @@ test('parsePolicyBasicInfoFromLayoutBoxes reads Xinhua student policy by visual 
   );
   assert.equal(result.fieldConfidence.name, 'visual-table');
   assert.equal(result.evidence.name.source, 'benefit-table-layout');
+});
+
+test('parsePolicyBasicInfoFromLayoutBoxes reads legacy China Life table with vertical labels', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    box('本公司根据投保人申请，同意按下列条件承保。', 359, 322, 1826, 429),
+    box('保险单号码', 361, 469, 849, 575),
+    box('投保日期', 1918, 463, 2289, 562),
+    box('1999年03月12日', 2546, 475, 3029, 567),
+    box('3301001000000899', 1027, 496, 1603, 580),
+    box('投保人姓名', 360, 607, 847, 701),
+    box('性别', 1309, 600, 1553, 693),
+    box('出生日期', 1925, 594, 2297, 687),
+    box('1970年01月06日', 2552, 596, 3035, 693),
+    box('秦国英', 963, 619, 1170, 718),
+    box('被保险人', 352, 724, 449, 1051),
+    box('姓名', 580, 733, 890, 839),
+    box('性别', 1304, 721, 1703, 827),
+    box('出生日期', 1929, 720, 2304, 816),
+    box('1970年01月06日', 2561, 731, 3037, 823),
+    box('秦国英', 963, 752, 1169, 847),
+    box('与投保人关系', 1369, 884, 1977, 981),
+    box('本人', 2243, 868, 2389, 951),
+    box('投保时年龄', 580, 898, 1080, 997),
+    box('与被保险人关系', 1311, 1045, 2030, 1142),
+    box('受益顺序', 2129, 1035, 2438, 1133),
+    box('受益份额', 2657, 1026, 3053, 1125),
+    box('受益人姓名', 345, 1064, 858, 1161),
+    box('性别', 977, 1055, 1254, 1151),
+    box('本人', 1592, 1198, 1751, 1284),
+    box('1', 2243, 1194, 2295, 1263),
+    box('1/1', 2736, 1182, 2884, 1258),
+    box('秦国英', 455, 1215, 671, 1310),
+    box('1999年03月13日零时起', 1984, 1554, 2671, 1678),
+    box('保险责任开始时间', 354, 1585, 1143, 1691),
+    box('利差领取方式', 2141, 1671, 2597, 1784),
+    box('储存生息', 2790, 1679, 3066, 1768),
+    box('保险金额伍万元整', 350, 1718, 1151, 1834),
+    box('（? 50000.00', 1429, 1731, 1833, 1816),
+    box('缴费日期', 2304, 1799, 2693, 1908),
+    box('1999,03.', 2794, 1803, 3056, 1895),
+    box('缴费方式', 352, 1853, 747, 1953),
+    box('缴费标准', 1346, 1842, 1744, 1938),
+    box('1785.00元', 1823, 1849, 2145, 1938),
+  ]);
+
+  assert.equal(result.fields.policyNumber, '3301001000000899');
+  assert.equal(result.fields.applicant, '秦国英');
+  assert.equal(result.fields.insured, '秦国英');
+  assert.equal(result.fields.beneficiary, '秦国英');
+  assert.equal(result.fields.insuredBirthday, '1970-01-06');
+  assert.equal(result.fields.date, '1999-03-13');
+  assert.equal(result.fields.amount, '50000');
+  assert.equal(result.fields.firstPremium, '1785');
+  assert.equal(result.fieldConfidence.amount, 'visual-table');
+  assert.equal(result.fieldConfidence.firstPremium, 'visual-table');
 });
 
 test('parsePolicyBasicInfoFromLayoutBoxes classifies universal account table rows as linked accounts', () => {

@@ -123,6 +123,7 @@ async function main() {
   const offset = readNumberArg('offset', Number(process.env.PING_AN_MISSING_OFFSET || 0));
   const limit = readNumberArg('limit', Number(process.env.PING_AN_MISSING_LIMIT || 50));
   const cdpUrl = readArg('cdp-url', process.env.PING_AN_CDP_URL || 'http://127.0.0.1:9223');
+  const pdfArchiveDir = readArg('pdf-archive-dir', process.env.POLICY_PDF_ARCHIVE_DIR || '');
   const catalog = readJson(catalogPath, {});
   const knowledgeStore = await createKnowledgeStateStore();
   try {
@@ -156,6 +157,8 @@ async function main() {
       mode: 'ping_an_browser_catalog_materials',
       company: '中国平安',
       cdpUrl,
+      archivePdf: true,
+      ...(trim(pdfArchiveDir) ? { pdfArchiveDir } : {}),
       tasks: selectedTasks,
     });
     if (result.ok === false) {
@@ -195,6 +198,8 @@ async function main() {
           newSavedMaxId: newSavedIds.at(-1) || null,
           localKnowledgeBefore: before,
           localKnowledgeAfter: after,
+          pdfArchiveDir: result.pdfArchiveDir || '',
+          archivedPdfCount: result.archivedPdfCount || 0,
         },
         null,
         2,

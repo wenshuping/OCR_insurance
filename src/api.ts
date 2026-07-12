@@ -4,15 +4,20 @@ import {
 } from './api/contracts/cashflow';
 import {
   createFamilyMember as createFamilyMemberContract,
+  createFamilyPolicyAnalysisReport as createFamilyPolicyAnalysisReportContract,
   createFamilyProfile as createFamilyProfileContract,
   createFamilyReportShare as createFamilyReportShareContract,
   createFamilySalesReview as createFamilySalesReviewContract,
+  deleteFamilyMember as deleteFamilyMemberContract,
   deleteFamilyProfile as deleteFamilyProfileContract,
   ensureDefaultFamilyProfile as ensureDefaultFamilyProfileContract,
+  getFamilyPolicyAnalysisReport as getFamilyPolicyAnalysisReportContract,
   getFamilySalesReview as getFamilySalesReviewContract,
   getFamilyReportShare as getFamilyReportShareContract,
   listFamilyProfiles as listFamilyProfilesContract,
+  regenerateFamilyReportRecord as regenerateFamilyReportRecordContract,
   setFamilyCoreMember as setFamilyCoreMemberContract,
+  updateFamilyMember as updateFamilyMemberContract,
   updateFamilyProfile as updateFamilyProfileContract,
   updateFamilyMemberRelation as updateFamilyMemberRelationContract,
 } from './api/contracts/family';
@@ -27,11 +32,15 @@ import type {
   CashValueRow as CashValueRowContract,
   CashValueScanResult as CashValueScanResultContract,
 } from './api/contracts/cashflow';
+import type { FamilyPlanningProfile } from './family-report-engine.mjs';
 import type { OptionalResponsibilityGap as OptionalResponsibilityGapContract } from './api/contracts/admin';
 import type {
   FamilyMember as FamilyMemberContract,
+  FamilyMemberPolicyReference as FamilyMemberPolicyReferenceContract,
+  FamilyPolicyAnalysisReport as FamilyPolicyAnalysisReportContract,
   FamilyProfile as FamilyProfileContract,
   FamilyRelationToCore as FamilyRelationToCoreContract,
+  FamilyReportRecord as FamilyReportRecordContract,
   FamilyReportShare as FamilyReportShareContract,
   FamilyReportSharePayload as FamilyReportSharePayloadContract,
   FamilySalesReview as FamilySalesReviewContract,
@@ -91,7 +100,7 @@ export type PolicyUpdateInput = PolicyUpdateInputContract;
 export type OptionalResponsibilityGap = OptionalResponsibilityGapContract;
 
 export type CashValueScanResult = CashValueScanResultContract & {
-  source?: 'ocr' | 'macos_vision' | 'vision_llm' | 'manual';
+  source?: 'ocr' | 'deepseek_ocr' | 'macos_vision' | 'vision_llm' | 'manual';
 };
 
 export type CashValueRow = CashValueRowContract;
@@ -102,11 +111,17 @@ export type FamilyRelationToCore =
 
 export type FamilyMember = FamilyMemberContract;
 
+export type FamilyMemberPolicyReference = FamilyMemberPolicyReferenceContract;
+
 export type FamilyProfile = FamilyProfileContract;
+
+export type FamilyReportRecord = FamilyReportRecordContract;
 
 export type FamilyReportShare = FamilyReportShareContract;
 
 export type FamilyReportSharePayload = FamilyReportSharePayloadContract;
+
+export type FamilyPolicyAnalysisReport = FamilyPolicyAnalysisReportContract;
 
 export type FamilySalesReview = FamilySalesReviewContract;
 
@@ -149,7 +164,7 @@ export function createFamilyProfile(input: { token?: string; guestId?: string; f
   return createFamilyProfileContract(input);
 }
 
-export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string }) {
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string; planningProfile?: FamilyPlanningProfile | null }) {
   return updateFamilyProfileContract(input);
 }
 
@@ -179,19 +194,50 @@ export function setFamilyCoreMember(input: { token?: string; guestId?: string; f
   return setFamilyCoreMemberContract(input);
 }
 
+export function updateFamilyMember(input: {
+  token?: string;
+  guestId?: string;
+  familyId: number;
+  memberId: number;
+  name?: string;
+  relationLabel?: string;
+  birthday?: string;
+  idNumberTail?: string;
+  notes?: string;
+  syncBoundPolicies?: boolean;
+}) {
+  return updateFamilyMemberContract(input);
+}
+
 export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel?: string; notes?: string }) {
   return updateFamilyMemberRelationContract(input);
+}
+
+export function deleteFamilyMember(input: { token?: string; guestId?: string; familyId: number; memberId: number }) {
+  return deleteFamilyMemberContract(input);
 }
 
 export function createFamilyReportShare(input: { token?: string; guestId?: string; familyId: number }) {
   return createFamilyReportShareContract(input);
 }
 
+export function regenerateFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null; userRefresh?: boolean }) {
+  return regenerateFamilyReportRecordContract(input);
+}
+
+export function getFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number }) {
+  return getFamilyPolicyAnalysisReportContract(input);
+}
+
+export function createFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null }) {
+  return createFamilyPolicyAnalysisReportContract(input);
+}
+
 export function getFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
   return getFamilySalesReviewContract(input);
 }
 
-export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
+export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number; userRefresh?: boolean; salesChatMessageIds?: number[] }) {
   return createFamilySalesReviewContract(input);
 }
 

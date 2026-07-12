@@ -1,11 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildExternalReferenceResponsibilityAnalysis,
   buildLocalKnowledgeResponsibilityAnalysis,
   queryPolicyAndPlanResponsibilities,
   queryPolicyResponsibilities,
 } from '../server/policy-responsibility-query.mjs';
-import { buildKnowledgeSearchArtifacts, findKnowledgeProductCandidates } from '../server/policy-knowledge.service.mjs';
+import {
+  indicatorsFromResponsibilityCards,
+  knowledgeRecordsFromResponsibilityAnalysis,
+} from '../server/responsibility-lookup-artifacts.mjs';
+import { extractStructuredResponsibilitySections } from '../server/responsibility-section-extractor.mjs';
+import {
+  JRCPCX_TERMS_EVIDENCE_LEVEL,
+  LEGACY_EXTERNAL_REFERENCE_LEVEL,
+  buildKnowledgeSearchArtifacts,
+  callDeepSeekForOpenWebSearchPlan,
+  crawlOpenWebProductReferenceRecords,
+  findKnowledgeProductCandidates,
+  legacyExternalProductReferenceRecords,
+  withPolicyProductMatchStatus,
+} from '../server/policy-knowledge.service.mjs';
 
 test('responsibility query retries once when the first model response is empty', async () => {
   const calls = [];
@@ -39,6 +54,67 @@ test('responsibility query retries once when the first model response is empty',
   assert.equal(calls.length, 2);
   assert.equal(result.coverageTable.length, 1);
   assert.equal(result.coverageTable[0].coverageType, '护理保险金');
+});
+
+test('responsibility card indicators persist with canonical calculation inputs', () => {
+  const policy = {
+    company: '新华保险',
+    name: '测试多倍保障重大疾病保险',
+    amount: 500000,
+  };
+  const evidence = {
+    sourceUrl: 'customer-policy-terms://knowledge/test',
+    sourceTitle: '客户上传保单责任页/合同页',
+    sourceKind: 'customer_policy_terms',
+    evidenceLevel: 'customer_policy_terms',
+    verificationStatus: 'verified',
+    referenceOnly: false,
+    official: true,
+  };
+  const indicators = indicatorsFromResponsibilityCards({
+    policy,
+    cards: [
+      {
+        ...evidence,
+        id: 'card-critical',
+        title: '轻症疾病保险金',
+        category: '疾病保障',
+        triggerCondition: '被保险人确诊合同约定轻症疾病',
+        payoutSummary: '按基本保险金额的20%给付',
+        formulaText: '轻症疾病保险金 = 基本保险金额的20%',
+        basis: '基本保险金额',
+        value: 20,
+        unit: '%',
+        cashflowTreatment: 'claim_contingent',
+        sourceExcerpt: '轻症疾病保险金 被保险人确诊轻症疾病，本公司按基本保险金额的20%给付轻症疾病保险金。',
+      },
+      {
+        ...evidence,
+        id: 'card-medical',
+        title: '疾病医疗保险金',
+        category: '医疗保障',
+        triggerCondition: '被保险人发生合同约定医疗费用',
+        payoutSummary: '按实际合理医疗费用扣除免赔额后补偿',
+        formulaText: '疾病医疗保险金 = 实际医疗费用 - 免赔额',
+        basis: '实际医疗费用',
+        cashflowTreatment: 'claim_contingent',
+        sourceExcerpt: '疾病医疗保险金 被保险人发生实际合理医疗费用，本公司按约定免赔额和赔付比例补偿医疗费用。',
+      },
+    ],
+  });
+
+  assert.equal(indicators.length, 2);
+  const critical = indicators.find((item) => item.liability === '轻症疾病保险金');
+  assert.ok(critical);
+  assert.equal(critical.calculationEligible, true);
+  assert.equal(critical.calculationKey, 'percent_of_basic_amount');
+  assert.deepEqual(critical.requiredInputs, ['policy.amount']);
+  const medical = indicators.find((item) => item.liability === '疾病医疗保险金');
+  assert.ok(medical);
+  assert.equal(medical.calculationEligible, false);
+  assert.equal(medical.calculationKey, 'medical_formula');
+  assert.deepEqual(medical.requiredInputs, ['actualMedicalExpense', 'deductible', 'reimbursementRate', 'thirdPartyPaid', 'liabilityLimit']);
+  assert.equal(medical.calculationStatus, 'needs_table');
 });
 
 test('responsibility query can limit retry attempts for manual online lookup', async () => {
@@ -158,6 +234,286 @@ test('responsibility query uses Feishu knowledge before falling back to the curr
   assert.equal(result.coverageTable[0].coverageType, '重大疾病保险金');
 });
 
+test('responsibility query returns external review rows without waiting for the model', async () => {
+  const calls = [];
+  const result = await queryPolicyResponsibilities({
+    scan: {
+      ocrText: '中国人寿 潇洒明天',
+      data: {
+        company: '中国人寿',
+        name: '潇洒明天',
+      },
+    },
+    preferLocalKnowledgeAnswer: true,
+    allowExternalReferences: true,
+    knowledgeRecords: [
+      {
+        company: '中国人寿',
+        productName: '潇洒明天',
+        title: '潇洒明天外部资料',
+        url: 'https://insurance.example.test/xiaosa',
+        snippet: '非官方公开资料提及保险责任。',
+        pageText: '保险责任：被保险人身故，按合同约定给付身故保险金。',
+        official: false,
+        sourceKind: 'open_web_reference',
+        evidenceLabel: '非官方资料，待保险公司确认',
+        evidenceLevel: LEGACY_EXTERNAL_REFERENCE_LEVEL,
+        responsibilityDeferred: true,
+      },
+    ],
+    query: async (input) => {
+      calls.push(input);
+      return {
+        analysis: {
+          coverageTable: [
+            {
+              coverageType: '身故保险金',
+              scenario: '非官方公开资料称被保险人身故。',
+              payout: '按合同约定给付身故保险金。',
+              note: '非官方资料待保险公司确认',
+            },
+          ],
+        },
+        sources: input.knowledgeRecords.map((record) => ({
+          title: record.title,
+          url: record.url,
+          snippet: record.snippet,
+          evidenceLabel: record.evidenceLabel,
+          evidenceLevel: record.evidenceLevel,
+          official: record.official,
+          sourceKind: record.sourceKind,
+        })),
+      };
+    },
+  });
+
+  assert.equal(calls.length, 0);
+  assert.equal(result.rawAnalysis.generatedBy, 'external_reference_review_fallback');
+  assert.equal(result.coverageTable[0].coverageType, '生存保险金（待核实）');
+  assert.ok(result.coverageTable.some((row) => row.coverageType === '身故保险金（待核实）'));
+  assert.equal(result.sources[0].official, false);
+  assert.equal(result.sources[0].evidenceLevel, LEGACY_EXTERNAL_REFERENCE_LEVEL);
+});
+
+test('customer policy photo candidates require approval before global matching', () => {
+  const policy = { company: '新华保险', name: '测试多倍保障重大疾病保险' };
+  const pendingRecord = {
+    company: '新华保险',
+    productName: '测试多倍保障重大疾病保险',
+    title: '客户补充保单照片识别：测试多倍保障重大疾病保险',
+    url: 'customer-policy-photo://knowledge/pending',
+    pageText: '产品名称:测试多倍保障重大疾病保险\n保险责任:可选责任一。',
+    official: false,
+    sourceKind: 'customer_policy_photo',
+    evidenceLevel: 'customer_policy_photo_pending',
+    reviewStatus: 'pending',
+    globalSearchable: false,
+    responsibilityDeferred: true,
+  };
+  const approvedRecord = {
+    ...pendingRecord,
+    url: 'customer-policy-photo://knowledge/approved',
+    evidenceLevel: 'customer_policy_photo_reviewed',
+    reviewStatus: 'approved',
+    globalSearchable: true,
+  };
+
+  const pendingMatches = findKnowledgeProductCandidates({
+    policy,
+    records: [pendingRecord],
+    includeCustomerPolicyPhotoRecords: true,
+    requirePageText: false,
+  });
+  assert.equal(pendingMatches.length, 0);
+
+  const approvedMatches = findKnowledgeProductCandidates({
+    policy,
+    records: [approvedRecord],
+    includeCustomerPolicyPhotoRecords: true,
+    requirePageText: false,
+  });
+  assert.equal(approvedMatches.length, 1);
+  assert.equal(approvedMatches[0].sourceKind, 'customer_policy_photo');
+  const resolved = withPolicyProductMatchStatus({ policy, matches: approvedMatches });
+  assert.equal(resolved.status, 'candidates');
+  assert.equal(resolved.matches[0].needsConfirmation, true);
+});
+
+test('responsibility lookup artifacts keep external review sources non-official', () => {
+  const records = knowledgeRecordsFromResponsibilityAnalysis({
+    policy: {
+      company: '中国人寿',
+      name: '潇洒明天',
+    },
+    analysis: {
+      coverageTable: [
+        {
+          coverageType: '身故保险金',
+          scenario: '被保险人身故。',
+          payout: '按合同约定给付。',
+          note: '非官方资料待保险公司确认',
+        },
+      ],
+      sources: [
+        {
+          title: '潇洒明天外部资料',
+          url: 'https://insurance.example.test/xiaosa',
+          snippet: '非官方公开资料。',
+          official: false,
+          sourceKind: 'open_web_reference',
+          evidenceLevel: LEGACY_EXTERNAL_REFERENCE_LEVEL,
+        },
+      ],
+    },
+  });
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].official, false);
+  assert.equal(records[0].sourceKind, 'open_web_reference');
+  assert.equal(records[0].evidenceLevel, LEGACY_EXTERNAL_REFERENCE_LEVEL);
+  assert.equal(records[0].materialType, 'external_reference');
+});
+
+test('responsibility query artifacts expose official responsibility text for customer summary extraction', () => {
+  const records = knowledgeRecordsFromResponsibilityAnalysis({
+    policy: {
+      company: '中国人寿',
+      name: '国寿99鸿福两全保险',
+    },
+    analysis: {
+      coverageTable: [
+        {
+          coverageType: '身故保险金',
+          scenario: '被保险人身故。',
+          payout: '保险金额 x 100%',
+        },
+        {
+          coverageType: '生存保险金',
+          scenario: '被保险人生存至合同约定日期。',
+          payout: '保险金额',
+        },
+      ],
+      sources: [
+        {
+          title: '国寿99鸿福两全保险条款',
+          url: 'https://www.e-chinalife.com/upload/resources/file/productBasicInfo/a79b6c2e-14c3-11ee-a6ed-bc97e1225d40/100_国寿99鸿福两全保险条款.pdf',
+          snippet: '中国人寿官网条款，已截取保险责任正文段。',
+          official: true,
+          sourceKind: 'insurer_official',
+          evidenceLevel: 'insurer_official',
+          sourceType: 'pdf',
+          materialType: 'terms',
+        },
+      ],
+    },
+  });
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].parser, 'responsibility_query');
+  assert.equal(records[0].qualityStatus, 'valid_responsibility_refilled');
+  assert.match(records[0].responsibilityText, /身故保险金/u);
+
+  const sections = extractStructuredResponsibilitySections({
+    productCategory: 'annuity',
+    records,
+  });
+
+  assert.equal(sections.quality.status, 'complete');
+  assert.match(sections.mainResponsibilityText, /生存保险金/u);
+});
+
+test('external reference responsibility fallback returns review rows when model is empty', async () => {
+  const result = await queryPolicyResponsibilities({
+    scan: {
+      ocrText: '中国人寿 潇洒明天',
+      data: {
+        company: '中国人寿',
+        name: '潇洒明天',
+      },
+    },
+    allowExternalReferences: true,
+    knowledgeRecords: [
+      {
+        company: '中国人寿',
+        productName: '潇洒明天',
+        title: '潇洒明天外部资料',
+        url: 'https://insurance.example.test/xiaosa',
+        snippet: '非官方公开资料提及保险责任。',
+        pageText: '保障条款：生存保险金，每三周年给付10%的保额。身故保险金，按合同约定给付基本保额。',
+        official: false,
+        sourceKind: 'open_web_reference',
+        evidenceLabel: '非官方资料，待保险公司确认',
+        evidenceLevel: LEGACY_EXTERNAL_REFERENCE_LEVEL,
+        responsibilityDeferred: true,
+      },
+    ],
+    query: async () => ({ coverageTable: [] }),
+  });
+
+  assert.equal(result.rawAnalysis.generatedBy, 'external_reference_review_fallback');
+  assert.equal(result.coverageTable[0].coverageType, '生存保险金（待核实）');
+  assert.match(result.coverageTable[0].scenario, /生存金/u);
+  assert.equal(result.coverageTable[0].payout, '外部资料称按保额的10%给付。');
+  assert.equal(result.coverageTable[0].referenceOnly, true);
+  assert.equal(result.coverageTable[0].verificationStatus, 'pending_review');
+  assert.equal(result.sources[0].official, false);
+  assert.equal(result.sources[0].referenceOnly, true);
+});
+
+test('external reference fallback formats old popular products into concise review rows', () => {
+  const analysis = buildExternalReferenceResponsibilityAnalysis([
+    {
+      company: '中国人寿',
+      productName: '潇洒明天',
+      title: '中国人寿潇洒明天-基础知识-金投保险-金投网',
+      url: 'https://insurance.cngold.org/jczs/c3246186.html',
+      snippet: '第三方网页称“潇洒明天”是一份增额终身人寿保险。',
+      pageText: '中国人寿潇洒明天-基础知识-金投保险-金投网 金投首页 黄金 白银 原油 外汇 正文 中国人寿潇洒明天 据了解，中国人寿“潇洒明天”其中生命保障会在基本保额的基础上按每年保额的5%增长，并且每3年领取生存金是保额的10%直至终身。相关推荐 上海银保监局等三部门联合发文。',
+      official: false,
+      sourceKind: 'open_web_reference',
+      evidenceLevel: LEGACY_EXTERNAL_REFERENCE_LEVEL,
+    },
+    {
+      company: '中国人寿',
+      productName: '潇洒明天',
+      title: '人寿保险潇洒明天险种',
+      url: 'https://www.shenlanbao.com/he/1608721',
+      snippet: '第三方保险内容站提及“潇洒明天”相关老产品信息。',
+      pageText: '潇洒明天相关老产品信息：包含身故保险金和生存保险金等责任线索。',
+      official: false,
+      sourceKind: 'legacy_external_reference',
+      evidenceLevel: LEGACY_EXTERNAL_REFERENCE_LEVEL,
+    },
+  ]);
+
+  assert.equal(analysis.coverageTable.length, 3);
+  assert.deepEqual(
+    analysis.coverageTable.map((row) => row.coverageType),
+    ['生存保险金（待核实）', '生存金累积（待核实）', '身故保险金（待核实）'],
+  );
+  const renderedText = analysis.coverageTable.map((row) => `${row.coverageType} ${row.scenario} ${row.payout}`).join('\n');
+  assert.match(renderedText, /每生存满三周年/u);
+  assert.match(renderedText, /身故/u);
+  assert.doesNotMatch(renderedText, /金投首页|黄金|相关推荐|银保监局/u);
+});
+
+test('buildExternalReferenceResponsibilityAnalysis ignores official-only records', () => {
+  assert.equal(
+    buildExternalReferenceResponsibilityAnalysis([
+      {
+        company: '中国人寿',
+        productName: '潇洒明天',
+        title: '官方条款',
+        url: 'https://www.e-chinalife.com/xiaosa.pdf',
+        pageText: '保险责任 身故保险金。',
+        official: true,
+        evidenceLevel: 'insurer_official',
+      },
+    ]),
+    null,
+  );
+});
+
 test('knowledge product candidates fuzzy match similar local official products', () => {
   const matches = findKnowledgeProductCandidates({
     policy: { company: '新华保险', name: '尊享人生两全' },
@@ -213,6 +569,259 @@ test('knowledge product candidates fuzzy match similar local official products',
   const zunxiang = matches.find((match) => match.productName === '尊享人生年金保险（分红型）');
   const zunshang = matches.find((match) => match.productName === '新华人寿保险股份有限公司尊尚人生两全保险（分红型）');
   assert.notEqual(zunxiang.canonicalProductId, zunshang.canonicalProductId);
+});
+
+test('knowledge product candidates expose product codes and rank matching code first', () => {
+  const matches = findKnowledgeProductCandidates({
+    policy: { company: '中国平安', name: '聚财宝（844）' },
+    officialDomainProfiles: [
+      {
+        company: '中国平安',
+        aliases: ['中国平安', '平安'],
+        siteDomains: ['life.pingan.com'],
+        officialDomains: ['life.pingan.com'],
+      },
+    ],
+    records: [
+      {
+        company: '中国平安',
+        productName: '平安附加聚财宝两全保险（万能型，2015）',
+        title: '平安附加聚财宝两全保险（万能型，2015）产品条款',
+        url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=848&versionNo=848-1&attachmentType=1',
+        pageText: '保险责任包括身故保险金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+      {
+        company: '中国平安',
+        productName: '平安附加聚财宝两全保险（万能型）',
+        title: '平安附加聚财宝两全保险（万能型）产品条款',
+        url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=844&versionNo=844-1&attachmentType=1',
+        pageText: '保险责任包括身故保险金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+  });
+
+  assert.equal(matches[0].productName, '平安附加聚财宝两全保险（万能型）');
+  assert.equal(matches[0].productCode, '844');
+  assert.deepEqual(matches[0].productCodes, ['844']);
+  assert.equal(matches[0].bestSource.productCode, '844');
+  assert.equal(matches[0].matchReason, '产品代码 844');
+});
+
+test('knowledge product candidates rank strict exact product version before loose normalized variants', () => {
+  const matches = findKnowledgeProductCandidates({
+    policy: { company: '友邦人寿', name: '友邦附加安益意外医药补偿（2020）医疗保险' },
+    officialDomainProfiles: [
+      {
+        company: '友邦人寿',
+        aliases: ['友邦人寿'],
+        siteDomains: ['aia.com.cn'],
+        officialDomains: ['aia.com.cn'],
+      },
+    ],
+    records: [
+      {
+        company: '友邦人寿',
+        productName: '友邦附加安益意外医药补偿医疗保险',
+        title: '友邦附加安益意外医药补偿医疗保险产品条款',
+        url: 'https://www.aia.com.cn/public/unversioned-terms-a.pdf',
+        pageText: '第二条保险责任 本公司给付意外医药费用补偿金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+      {
+        company: '友邦人寿',
+        productName: '友邦附加安益意外医药补偿医疗保险',
+        title: '友邦附加安益意外医药补偿医疗保险产品说明书',
+        url: 'https://www.aia.com.cn/public/unversioned-manual.pdf',
+        pageText: '保险责任 包括意外医药费用补偿金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'product_manual',
+      },
+      {
+        company: '友邦人寿',
+        productName: '友邦附加安益意外医药补偿（2020）医疗保险',
+        title: '友邦附加安益意外医药补偿（2020）医疗保险产品条款',
+        url: 'https://www.aia.com.cn/public/versioned-terms.pdf',
+        pageText: '第二条保险责任 本公司支付意外医药费用补偿金。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+  });
+
+  assert.equal(matches[0].productName, '友邦附加安益意外医药补偿（2020）医疗保险');
+  assert.equal(matches[0].bestSource.url, 'https://www.aia.com.cn/public/versioned-terms.pdf');
+});
+
+test('knowledge product match status gates fuzzy and version-near matches behind confirmation', () => {
+  const policy = { company: '新华保险', name: '多倍保障智享版' };
+  const { status, matches } = withPolicyProductMatchStatus({
+    policy,
+    matches: [
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）',
+        title: '新华人寿保险股份有限公司多倍保障重大疾病保险（智享版）条款',
+        score: 0.92,
+        matchReason: '产品名称高度相近',
+        evidenceLabel: '本地知识库官方资料',
+        sourceCount: 1,
+      },
+      {
+        company: '新华保险',
+        productName: '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）',
+        title: '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）条款',
+        score: 0.89,
+        matchReason: '产品名称高度相近',
+        evidenceLabel: '本地知识库官方资料',
+        sourceCount: 1,
+      },
+    ],
+  });
+
+  assert.equal(status, 'candidates');
+  assert.equal(matches.length, 2);
+  assert.equal(matches.every((match) => match.needsConfirmation), true);
+});
+
+test('knowledge product match status allows a single strict official name correction', () => {
+  const { status, matches } = withPolicyProductMatchStatus({
+    policy: { company: '友邦人寿', name: '友邦附加安益意外医药补偿（2020）医疗保险' },
+    matches: [
+      {
+        company: '友邦人寿',
+        productName: '友邦附加安益意外医药补偿（2020）医疗保险',
+        title: '友邦附加安益意外医药补偿（2020）医疗保险产品条款',
+        score: 1,
+        matchReason: '官方产品名完全一致',
+        evidenceLabel: '本地知识库官方资料',
+        sourceCount: 1,
+      },
+    ],
+  });
+
+  assert.equal(status, 'exact');
+  assert.equal(matches[0].needsConfirmation, false);
+  assert.equal(matches[0].resolvedProductName, '友邦附加安益意外医药补偿（2020）医疗保险');
+});
+
+test('knowledge product candidates can expose JRCPCX catalog records as confirmation-only candidates', () => {
+  const matches = findKnowledgeProductCandidates({
+    policy: { company: '测试人寿保险有限公司', name: '安心重大疾病保险' },
+    records: [
+      {
+        company: '测试人寿保险有限公司',
+        productName: '测试安心重大疾病保险',
+        title: '测试安心重大疾病保险条款',
+        url: 'https://www.jrcpcx.cn/#/query?catalogId=test',
+        official: true,
+        officialDomain: 'inspdinfo.iachina.cn',
+        sourceKind: 'jrcpcx',
+        evidenceLevel: JRCPCX_TERMS_EVIDENCE_LEVEL,
+        evidenceLabel: '金融产品查询平台/中国保险行业协会条款 PDF',
+        materialType: 'terms',
+        pageText: '',
+      },
+    ],
+    minScore: 0.1,
+    requirePageText: false,
+  });
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].sourceKind, 'jrcpcx');
+  assert.equal(matches[0].evidenceLevel, JRCPCX_TERMS_EVIDENCE_LEVEL);
+  assert.equal(matches[0].needsConfirmation, true);
+});
+
+test('legacy external product references expose old popular products as non-official candidates', () => {
+  const records = legacyExternalProductReferenceRecords({
+    policy: { company: '中国人寿', name: '潇洒明天' },
+  });
+  const matches = findKnowledgeProductCandidates({
+    policy: { company: '中国人寿', name: '潇洒明天' },
+    records,
+    minScore: 0.1,
+    requirePageText: false,
+    includeExternalReferences: true,
+  });
+
+  assert.ok(records.length >= 1);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].sourceKind, 'legacy_external_reference');
+  assert.equal(matches[0].evidenceLevel, LEGACY_EXTERNAL_REFERENCE_LEVEL);
+  assert.equal(matches[0].responsibilityDeferred, true);
+  assert.equal(matches[0].needsConfirmation, true);
+});
+
+test('DeepSeek open web search plan can produce dynamic external reference records', async () => {
+  const requests = [];
+  const fakeSearchHtml = `
+    <html><body>
+      <div class="result">
+        <a class="result__a" href="https://insurance.example.test/xiaosa">中国人寿潇洒明天保险介绍</a>
+        <a class="result__snippet">第三方网页提及中国人寿潇洒明天老产品。</a>
+      </div>
+    </body></html>
+  `;
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url: String(url), body: options.body });
+    if (String(url).includes('/chat/completions')) {
+      return new Response(JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                queries: ['中国人寿 潇洒明天 老产品'],
+                preferredDomains: ['insurance.example.test'],
+              }),
+            },
+          },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(fakeSearchHtml, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  const policy = { company: '中国人寿', name: '潇洒明天' };
+  const plan = await callDeepSeekForOpenWebSearchPlan({
+    policy,
+    fetchImpl,
+    env: {
+      DEEPSEEK_API_KEY: 'test-key',
+      DEEPSEEK_BASE_URL: 'https://deepseek.example.test',
+      DEEPSEEK_OPEN_WEB_SEARCH_MODEL: 'deepseek-v4-flash',
+    },
+  });
+  const result = await crawlOpenWebProductReferenceRecords({
+    policy,
+    fetchImpl,
+    searchPlan: plan,
+    maxResults: 5,
+  });
+  const matches = findKnowledgeProductCandidates({
+    policy,
+    records: result.records,
+    minScore: 0.1,
+    requirePageText: false,
+    includeExternalReferences: true,
+  });
+  const gated = withPolicyProductMatchStatus({ policy, matches });
+
+  assert.equal(plan.queries[0], '中国人寿 潇洒明天 老产品');
+  assert.equal(result.status, 'candidates');
+  assert.equal(result.records[0].sourceKind, 'open_web_reference');
+  assert.equal(result.records[0].responsibilityDeferred, true);
+  assert.equal(gated.status, 'candidates');
+  assert.equal(gated.matches[0].needsConfirmation, true);
+  assert.ok(requests.some((request) => request.url.includes('/chat/completions')));
 });
 
 test('knowledge search keeps exact product version before similar New China variants', () => {
@@ -308,8 +917,54 @@ test('responsibility assistant returns local responsibility text as one raw row 
   assert.equal(result.coverageTable[0].payout, '');
   assert.equal(result.coverageTable[0].sourceUrl, 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf');
   assert.equal(result.coverageTable[0].sourceTitle, '尊尚人生两全保险条款');
+  assert.equal(result.officialResponsibilityText, responsibilityText);
   assert.equal(result.sources[0].url, 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf');
   assert.equal(result.rawAnalysis.generatedBy, 'local_knowledge_fast_path');
+});
+
+test('responsibility query does not fast-path unrelated local knowledge', async () => {
+  const calls = [];
+  const result = await queryPolicyResponsibilities({
+    scan: {
+      ocrText: '测试保险 安心一号 身故保险金',
+      data: {
+        company: '测试保险',
+        name: '安心一号',
+      },
+    },
+    preferLocalKnowledgeAnswer: true,
+    knowledgeRecords: [
+      {
+        company: '泄漏保险',
+        productName: '泄漏产品',
+        title: '泄漏产品条款',
+        url: 'https://leak.example.test/leak.pdf',
+        pageText: '泄漏产品保险责任正文。',
+        official: true,
+        sourceType: 'pdf',
+        materialType: 'terms',
+      },
+    ],
+    query: async (input) => {
+      calls.push(input);
+      return {
+        coverageTable: [
+          {
+            coverageType: '身故保险金',
+            scenario: '被保险人身故',
+            payout: '按合同约定给付',
+          },
+        ],
+        sources: [],
+      };
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].knowledgeRecords, []);
+  assert.notEqual(result.rawAnalysis.generatedBy, 'local_knowledge_fast_path');
+  assert.equal(result.coverageTable[0].coverageType, '身故保险金');
+  assert.equal(result.sources.some((source) => source.url === 'https://leak.example.test/leak.pdf'), false);
 });
 
 test('multi-plan responsibility query tags local knowledge sources with each plan product', async () => {
@@ -388,4 +1043,5 @@ test('local knowledge responsibility analysis falls back to a single row for uns
   assert.equal(result.coverageTable[0].payout, '');
   assert.equal(result.coverageTable[0].sourceUrl, 'https://official.example.test/policy.pdf');
   assert.equal(result.coverageTable[0].sourceTitle, '测试产品条款');
+  assert.equal(result.officialResponsibilityText, '保险责任 在本合同保险期间内，本公司按照合同约定承担保险责任并给付保险金。');
 });

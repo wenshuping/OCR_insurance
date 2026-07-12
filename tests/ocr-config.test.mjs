@@ -5,8 +5,10 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  OCR_PROVIDER_DEEPSEEK_OCR_VLLM,
   OCR_PROVIDER_PADDLE_LOCAL,
   OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE,
+  POLICY_OCR_MODE_DEEPSEEK_OCR_VLLM,
   POLICY_OCR_MODE_EXISTING_DEFAULT,
   POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE,
   POLICY_OCR_MODE_PADDLEOCR_LOCAL,
@@ -64,6 +66,15 @@ test('remote GPU vision mode is available when a 4080 vision endpoint is configu
   const options = listPolicyOcrModeOptions({ probeRuntime: false });
   const remoteVision = options.find((option) => option.value === POLICY_OCR_MODE_REMOTE_GPU_VISION);
   assert.equal(remoteVision?.selectable, true);
+});
+
+test('DeepSeek-OCR vLLM mode requires a local vLLM endpoint', () => {
+  const env = { POLICY_OCR_DEEPSEEK_OCR_BASE_URL: 'http://127.0.0.1:6008' };
+
+  assert.equal(resolvePolicyOcrModeReadiness(POLICY_OCR_MODE_DEEPSEEK_OCR_VLLM, {}).ready, false);
+  assert.equal(resolvePolicyOcrModeReadiness(POLICY_OCR_MODE_DEEPSEEK_OCR_VLLM, env).ready, true);
+  assert.equal(resolvePolicyOcrModeAdminReadiness(POLICY_OCR_MODE_DEEPSEEK_OCR_VLLM, {}).ready, true);
+  assert.equal(policyOcrProviderLabel(OCR_PROVIDER_DEEPSEEK_OCR_VLLM), 'DeepSeek-OCR 本机 vLLM');
 });
 
 test('Huawei Cloud insurance OCR mode requires project and credentials', () => {

@@ -24,7 +24,7 @@ export type CashValueRow = {
 
 export type CashValueScanResult = {
   ok: boolean;
-  source?: 'ocr' | 'macos_vision' | 'vision_llm' | 'manual';
+  source?: 'ocr' | 'deepseek_ocr' | 'macos_vision' | 'vision_llm' | 'manual';
   tableType?: 2 | 3;
   rows: CashValueRow[];
   rowCount?: number;

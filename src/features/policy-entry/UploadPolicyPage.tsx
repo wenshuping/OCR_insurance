@@ -13,8 +13,11 @@ import {
   Copy,
   Download,
   Loader2,
+  ImageIcon,
+  RefreshCw,
   Search,
   Sparkles,
+  Trash2,
   Users,
 } from 'lucide-react';
 import type { FamilyMember, FamilyProfile } from '../../api/contracts/family';
@@ -43,7 +46,9 @@ import {
 } from '../../shared/formatters';
 import {
   ReportText,
+  ResponsibilityCardList,
   buildDraftReportTitle,
+  getVisibleResponsibilityCards,
 } from '../../shared/policy-report-ui';
 import {
   FAMILY_MEMBER_RELATION_OPTIONS,
@@ -65,15 +70,50 @@ import {
 } from '../../shared/customer-policy-components';
 import { CustomerBottomTabs } from '../customer-navigation/CustomerBottomTabs';
 
+function isReferenceOnlyMatch(match: PolicyKnowledgeMatch) {
+  return Boolean(
+    match.referenceOnly ||
+      match.responsibilityDeferred ||
+      match.bestSource?.referenceOnly ||
+      match.bestSource?.responsibilityDeferred ||
+      match.verificationStatus === 'pending_review' ||
+      match.bestSource?.verificationStatus === 'pending_review',
+  );
+}
+
+function matchVerificationLabel(match: PolicyKnowledgeMatch) {
+  if (match.verificationLabel) return match.verificationLabel;
+  if (match.bestSource?.verificationLabel) return match.bestSource.verificationLabel;
+  if (match.sourceKind === 'customer_policy_terms') return '客户上传保单责任页/合同页';
+  if (isReferenceOnlyMatch(match)) return '非官方资料，待保险公司确认';
+  return match.evidenceLabel || '资料来源';
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function productMatchDisplayName(match: PolicyKnowledgeMatch) {
+  const name = match.productName || '';
+  const code = String(match.productCode || match.bestSource?.productCode || '').trim();
+  if (!name || !code) return name;
+  if (new RegExp(`[（(]\\s*${escapeRegExp(code)}\\s*[)）]`, 'u').test(name)) return name;
+  return `${name}（${code}）`;
+}
+
 function ProductMatchSelectPanel(props: {
   loading: boolean;
   matches: PolicyKnowledgeMatch[];
   message: string;
+  showSupplement?: boolean;
+  supplementUploading?: boolean;
+  supplementCount?: number;
+  onSupplementClick?: () => void;
   onSelect: (match: PolicyKnowledgeMatch) => void;
 }) {
   const matches = Array.isArray(props.matches) ? props.matches : [];
   const statusMessage = props.loading ? '正在匹配本地产品' : props.message;
-  if (!props.loading && !matches.length && !statusMessage) return null;
+  if (!props.loading && !matches.length && !statusMessage && !props.showSupplement) return null;
 
   return (
     <section className="mt-2 overflow-hidden rounded-xl border border-[#DDE8F5] bg-[#F8FBFF]" aria-label="保险产品匹配候选">
@@ -91,36 +131,67 @@ function ProductMatchSelectPanel(props: {
 
       {matches.length ? (
         <div className="max-h-[260px] overflow-y-auto p-2" role="listbox" aria-label="选择本地匹配产品">
-          {matches.map((match, index) => (
-            <button
-              key={`${match.company}-${match.productName}-${index}`}
-              type="button"
-              onClick={() => props.onSelect(match)}
-              className="block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white active:scale-[0.99]"
-              role="option"
-              aria-selected={false}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[11px] font-black text-blue-600">{match.company}</p>
-                  <p className="mt-0.5 break-words text-sm font-black leading-5 text-slate-950">{match.productName}</p>
-                  <p className="mt-1 line-clamp-2 break-words text-xs font-medium leading-5 text-slate-500">
-                    {match.bestSource?.title || match.title || match.matchReason}
-                  </p>
+          {matches.map((match, index) => {
+            const displayName = productMatchDisplayName(match);
+            return (
+              <button
+                key={`${match.company}-${match.productName}-${index}`}
+                type="button"
+                onClick={() => props.onSelect(match)}
+                className="block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white active:scale-[0.99]"
+                role="option"
+                aria-selected={false}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[11px] font-black text-blue-600">{match.company}</p>
+                    <p className="mt-0.5 break-words text-sm font-black leading-5 text-slate-950">{displayName}</p>
+                    <p className="mt-1 line-clamp-2 break-words text-xs font-medium leading-5 text-slate-500">
+                      {match.bestSource?.title || match.title || match.matchReason}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">
+                    {Math.round(match.score * 100)}%
+                  </span>
                 </div>
-                <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">
-                  {Math.round(match.score * 100)}%
-                </span>
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] font-black text-slate-400">
-                <span className="rounded-full bg-white px-2 py-0.5">{match.matchReason}</span>
-                <span className="rounded-full bg-white px-2 py-0.5">{match.sourceCount} 份资料</span>
-              </div>
-            </button>
-          ))}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] font-black text-slate-400">
+                  <span className="rounded-full bg-white px-2 py-0.5">{match.matchReason}</span>
+                  <span className={`rounded-full px-2 py-0.5 ${
+                    isReferenceOnlyMatch(match)
+                      ? 'bg-amber-50 text-amber-700'
+                      : match.sourceKind === 'customer_policy_terms'
+                        ? 'bg-emerald-50 text-emerald-700'
+                        : 'bg-white'
+                  }`}>{matchVerificationLabel(match)}</span>
+                  <span className="rounded-full bg-white px-2 py-0.5">{match.sourceCount} 份资料</span>
+                </div>
+                {isReferenceOnlyMatch(match) ? (
+                  <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold leading-5 text-amber-700">
+                    待核实参考线索，仅用于建档，不直接生成正式保险责任。
+                  </p>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       ) : statusMessage ? (
         <p className="px-3 py-3 text-xs font-semibold leading-5 text-slate-500">{statusMessage}</p>
+      ) : null}
+      {props.showSupplement ? (
+        <div className="border-t border-blue-100/70 p-3">
+          <button
+            type="button"
+            disabled={props.supplementUploading || Number(props.supplementCount || 0) >= 5}
+            onClick={props.onSupplementClick}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-black text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-55"
+          >
+            {props.supplementUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+            {props.supplementUploading ? '正在识别补充照片' : '上传产品页/保险利益表照片'}
+          </button>
+          <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">
+            已补充 {Number(props.supplementCount || 0)}/5 张。识别文本会保存到当前保单；产品知识线索需后台审核后才会全局复用。
+          </p>
+        </div>
       ) : null}
     </section>
   );
@@ -132,6 +203,102 @@ function requiredFieldLabel(label: string) {
       <span className="mr-1 text-red-500">*</span>
       {label}
     </span>
+  );
+}
+
+function UploadPageCard(props: {
+  title: string;
+  item: UploadItem;
+  badge: string;
+  disabled?: boolean;
+  onDelete: () => void;
+  onReplace: () => void;
+}) {
+  const { badge, disabled = false, item, onDelete, onReplace, title } = props;
+  return (
+    <article className="grid w-[118px] shrink-0 grid-rows-[88px_auto_auto] gap-2 rounded-lg border border-slate-200 bg-white p-2 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.45)]">
+      <div className="relative overflow-hidden rounded-md bg-slate-100">
+        {item.dataUrl ? (
+          <img src={item.dataUrl} alt={title} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-slate-400">
+            <ImageIcon size={28} />
+          </div>
+        )}
+        <span className="absolute left-1.5 top-1.5 rounded-full bg-white/95 px-2 py-0.5 text-[10px] font-black text-blue-700 ring-1 ring-blue-100">
+          {badge}
+        </span>
+      </div>
+      <p className="truncate text-[11px] font-black leading-4 text-slate-700" title={item.name}>{item.name}</p>
+      <div className="grid grid-cols-2 gap-1">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onReplace}
+          aria-label={`替换${title}`}
+          title={`替换${title}`}
+          className="flex h-8 items-center justify-center rounded-md bg-blue-50 text-blue-600 ring-1 ring-blue-100 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <RefreshCw size={15} />
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onDelete}
+          aria-label={`删除${title}`}
+          title={`删除${title}`}
+          className="flex h-8 items-center justify-center rounded-md bg-rose-50 text-rose-600 ring-1 ring-rose-100 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <Trash2 size={15} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function UploadedPageStrip(props: {
+  baseItem: UploadItem | null;
+  disabled?: boolean;
+  supplementItems: UploadItem[];
+  onDeleteBase: () => void;
+  onDeleteSupplement: (index: number) => void;
+  onReplaceBase: () => void;
+  onReplaceSupplement: (index: number) => void;
+}) {
+  const supplementItems = Array.isArray(props.supplementItems) ? props.supplementItems : [];
+  if (!props.baseItem && !supplementItems.length) return null;
+  return (
+    <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="已上传保单页面">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-xs font-black text-slate-700">已上传页面</h3>
+        <span className="shrink-0 rounded-full bg-slate-50 px-2 py-1 text-[11px] font-black text-slate-500 ring-1 ring-slate-100">
+          {Number(Boolean(props.baseItem)) + supplementItems.length}/6
+        </span>
+      </div>
+      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+        {props.baseItem ? (
+          <UploadPageCard
+            title="保单基本页"
+            item={props.baseItem}
+            badge="基本页"
+            disabled={props.disabled}
+            onDelete={props.onDeleteBase}
+            onReplace={props.onReplaceBase}
+          />
+        ) : null}
+        {supplementItems.map((item, index) => (
+          <UploadPageCard
+            key={`${item.name}-${item.size}-${index}`}
+            title={`补充页${index + 1}`}
+            item={item}
+            badge={`补充${index + 1}`}
+            disabled={props.disabled || !props.baseItem}
+            onDelete={() => props.onDeleteSupplement(index)}
+            onReplace={() => props.onReplaceSupplement(index)}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -157,15 +324,25 @@ export function UploadPolicyPage(props: {
   productMatchLoading: boolean;
   productMatchMessage: string;
   productMatches: PolicyKnowledgeMatch[];
+  productKnowledgeUploading?: boolean;
+  productKnowledgeUploadCount?: number;
+  productKnowledgeUploadItems?: UploadItem[];
+  showProductKnowledgeSupplement?: boolean;
   optionalResponsibilities?: OptionalResponsibility[];
   selectedFamilyId: number | null;
   selectedFamilyMembers: FamilyMember[];
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onProductKnowledgeFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onDeleteBaseUpload: () => void;
+  onDeleteProductKnowledgeUpload: (index: number) => void;
+  onReplaceBaseUpload: () => void;
+  onReplaceProductKnowledgeUpload: (index: number) => void;
   onCreateFamily: () => void;
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
   onOpenFamilies: () => void;
   onScanClick: () => void;
+  onProductKnowledgeScanClick: () => void;
   onSelectFamily: (familyId: number | null) => void;
   onSelectFormCompany: (company: string) => void;
   onSelectFormProduct: (suggestion: PolicyProductSuggestion) => void;
@@ -179,6 +356,7 @@ export function UploadPolicyPage(props: {
   onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
   onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
   uploadItem: UploadItem | null;
+  productKnowledgeFileInputRef: React.RefObject<HTMLInputElement | null>;
   staleClientDetected?: boolean;
   onReloadForLatestVersion?: () => void;
 }) {
@@ -203,15 +381,25 @@ export function UploadPolicyPage(props: {
     productMatchLoading,
     productMatchMessage,
     productMatches,
+    productKnowledgeUploading = false,
+    productKnowledgeUploadCount = 0,
+    productKnowledgeUploadItems = [],
+    showProductKnowledgeSupplement = false,
     optionalResponsibilities = [],
     selectedFamilyId,
     selectedFamilyMembers,
     onFileChange,
+    onProductKnowledgeFileChange,
+    onDeleteBaseUpload,
+    onDeleteProductKnowledgeUpload,
+    onReplaceBaseUpload,
+    onReplaceProductKnowledgeUpload,
     onCreateFamily,
     onOcrTextChange,
     onOpenAccount,
     onOpenFamilies,
     onScanClick,
+    onProductKnowledgeScanClick,
     onSelectFamily,
     onSelectFormCompany,
     onSelectFormProduct,
@@ -225,6 +413,7 @@ export function UploadPolicyPage(props: {
     onUpdateForm,
     onUpdateOptionalResponsibility,
     uploadItem,
+    productKnowledgeFileInputRef,
     staleClientDetected = false,
     onReloadForLatestVersion,
   } = props;
@@ -249,6 +438,41 @@ export function UploadPolicyPage(props: {
   const showCompanySuggestions = companyFocused && companyQuery && (formCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (formProductSuggestionLoading || visibleProductSuggestions.length);
 
+  function findFamilyMemberByName(name: string) {
+    const normalizedName = name.trim();
+    if (!normalizedName) return null;
+    const matches = selectedFamilyMembers.filter((member) => (
+      member.status === 'active' &&
+      areSameParticipantName(member.name, normalizedName)
+    ));
+    return matches.sort((left, right) => (
+      (Number(right.id) === Number(selectedFamily?.coreMemberId || 0) ? 1 : 0) -
+        (Number(left.id) === Number(selectedFamily?.coreMemberId || 0) ? 1 : 0) ||
+      (right.relationLabel && right.relationLabel !== '待确认' ? 1 : 0) -
+        (left.relationLabel && left.relationLabel !== '待确认' ? 1 : 0) ||
+      (right.birthday ? 1 : 0) - (left.birthday ? 1 : 0) ||
+      (right.idNumberTail ? 1 : 0) - (left.idNumberTail ? 1 : 0) ||
+      Number(left.id || 0) - Number(right.id || 0)
+    ))[0] || null;
+  }
+
+  function relationForFamilyMember(member: FamilyMember) {
+    if (Number(member.id) === Number(selectedFamily?.coreMemberId || 0)) return '本人';
+    return member.relationLabel || '待确认';
+  }
+
+  function applyParticipantMember(kind: 'applicant' | 'insured', member: FamilyMember | null) {
+    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
+    const birthdayKey = kind === 'applicant' ? 'applicantBirthday' : 'insuredBirthday';
+    if (!member) {
+      if (formData[memberIdKey]) onUpdateForm(memberIdKey, null);
+      return;
+    }
+    if (Number(formData[memberIdKey] || 0) !== Number(member.id)) onUpdateForm(memberIdKey, member.id);
+    applyParticipantRelation(kind, relationForFamilyMember(member));
+    if (member.birthday && !String(formData[birthdayKey] || '').trim()) onUpdateForm(birthdayKey, member.birthday);
+  }
+
   useEffect(() => {
     if (!participantsAreSamePerson()) return;
     const applicantRelation = participantRelation('applicant');
@@ -267,6 +491,18 @@ export function UploadPolicyPage(props: {
     onUpdateForm,
   ]);
 
+  useEffect(() => {
+    applyParticipantMember('applicant', findFamilyMemberByName(formData.applicant || ''));
+    applyParticipantMember('insured', findFamilyMemberByName(formData.insured || ''));
+  }, [
+    formData.applicant,
+    formData.insured,
+    formData.applicantMemberId,
+    formData.insuredMemberId,
+    selectedFamily?.coreMemberId,
+    selectedFamilyMembers,
+  ]);
+
   async function handleCopyOcrText() {
     const text = ocrText.trim();
     if (!text) return;
@@ -280,13 +516,7 @@ export function UploadPolicyPage(props: {
 
   function updateParticipantName(kind: 'applicant' | 'insured', value: string) {
     const nameKey = kind === 'applicant' ? 'applicant' : 'insured';
-    const memberIdKey = kind === 'applicant' ? 'applicantMemberId' : 'insuredMemberId';
-    const selectedMemberId = formData[memberIdKey];
-    const selectedMember = selectedFamilyMembers.find((member) => Number(member.id) === Number(selectedMemberId || 0));
     onUpdateForm(nameKey, value);
-    if (!selectedMember || selectedMember.name.trim() !== value.trim()) {
-      onUpdateForm(memberIdKey, null);
-    }
   }
 
   function participantRelation(kind: 'applicant' | 'insured') {
@@ -508,13 +738,23 @@ export function UploadPolicyPage(props: {
               )}
             </div>
             <span className="max-w-[80%] truncate text-center text-base font-bold text-blue-600">{loading ? 'OCR 识别中' : uploadItem ? uploadItem.name : getWechatUploadLabel()}</span>
-            <p className="px-4 text-center text-xs text-blue-400" aria-live="polite">{loading ? '正在读取保单信息' : uploadItem ? 'OCR 已完成，可继续生成保险责任' : '上传保单基本信息页照片或相册图片'}</p>
+            <p className="px-4 text-center text-xs text-blue-400" aria-live="polite">{loading ? '正在读取保单信息' : uploadItem ? '点击可替换保单基本页' : '上传保单基本信息页照片或相册图片'}</p>
             <div className="absolute left-3 top-3 h-4 w-4 rounded-tl border-l-2 border-t-2 border-blue-500"></div>
             <div className="absolute right-3 top-3 h-4 w-4 rounded-tr border-r-2 border-t-2 border-blue-500"></div>
             <div className="absolute bottom-3 left-3 h-4 w-4 rounded-bl border-b-2 border-l-2 border-blue-500"></div>
             <div className="absolute bottom-3 right-3 h-4 w-4 rounded-br border-b-2 border-r-2 border-blue-500"></div>
           </button>
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
+          <input ref={productKnowledgeFileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={onProductKnowledgeFileChange} />
+          <UploadedPageStrip
+            baseItem={uploadItem}
+            disabled={loading || productKnowledgeUploading}
+            supplementItems={productKnowledgeUploadItems}
+            onDeleteBase={onDeleteBaseUpload}
+            onDeleteSupplement={onDeleteProductKnowledgeUpload}
+            onReplaceBase={onReplaceBaseUpload}
+            onReplaceSupplement={onReplaceProductKnowledgeUpload}
+          />
 
           <div className="mt-4 rounded-xl border border-blue-100 bg-white px-4 py-3 text-sm font-medium text-blue-700">{message}</div>
 
@@ -652,6 +892,10 @@ export function UploadPolicyPage(props: {
                 loading={productMatchLoading}
                 matches={productMatches}
                 message={productMatchMessage}
+                showSupplement={showProductKnowledgeSupplement}
+                supplementUploading={productKnowledgeUploading}
+                supplementCount={productKnowledgeUploadCount}
+                onSupplementClick={onProductKnowledgeScanClick}
                 onSelect={onSelectProductMatch}
               />
             </div>
@@ -773,6 +1017,10 @@ export function AnalysisReportPage(props: {
   const reportRef = useRef<HTMLElement | null>(null);
   const { analysis, canSave, formData, loading, message, onBack, onSave, onUpdateOptionalResponsibility } = props;
   const responsibilities = Array.isArray(analysis.coverageTable) ? analysis.coverageTable : [];
+  const responsibilityCards = Array.isArray(analysis.responsibilityCards) ? analysis.responsibilityCards : [];
+  const optionalResponsibilities = Array.isArray(analysis.optionalResponsibilities) ? analysis.optionalResponsibilities : [];
+  const visibleResponsibilityCards = getVisibleResponsibilityCards(responsibilityCards, optionalResponsibilities);
+  const responsibilityCount = responsibilityCards.length ? visibleResponsibilityCards.length : responsibilities.length;
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const exportTitle = buildDraftReportTitle(formData);
   const exportControlText = getReportExportControlText();
@@ -816,7 +1064,7 @@ export function AnalysisReportPage(props: {
             </div>
             <div className="rounded-2xl bg-white/15 px-4 py-3">
               <p className="text-xs text-white/70">责任项</p>
-              <p className="mt-1 text-base font-black">{responsibilities.length} 项</p>
+              <p className="mt-1 text-base font-black">{responsibilityCount} 项</p>
             </div>
           </div>
         </section>
@@ -849,10 +1097,12 @@ export function AnalysisReportPage(props: {
           insuredBirthday={formData.insuredBirthday}
           paymentPeriod={formData.paymentPeriod}
           coveragePeriod={formData.coveragePeriod}
+          amount={formData.amount}
+          firstPremium={formData.firstPremium}
         />
 
         <OptionalResponsibilityReview
-          items={analysis.optionalResponsibilities}
+          items={optionalResponsibilities}
           disabled={loading}
           onChange={onUpdateOptionalResponsibility}
         />
@@ -873,17 +1123,22 @@ export function AnalysisReportPage(props: {
               <h3 className="text-base font-black text-slate-950">保险责任</h3>
               <p className="mt-1 text-xs text-slate-500">保存后请在家庭档案中确认。</p>
             </div>
-            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">{responsibilities.length} 项</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">{responsibilityCount} 项</span>
           </div>
 
-          {responsibilities.map((row, index) => (
+          {responsibilityCards.length ? (
+            <ResponsibilityCardList
+              cards={responsibilityCards}
+              optionalResponsibilities={optionalResponsibilities}
+            />
+          ) : responsibilities.map((row, index) => (
             <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
               <div className="flex items-start gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] bg-[#EEF6FF] text-sm font-black text-blue-600">
                   {index + 1}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h4 className="text-lg font-black leading-7 text-slate-950">{row.coverageType || '保险责任'}</h4>
+                  <h4 className="text-lg font-black leading-7 text-slate-950">{[row.productName, row.coverageType || '保险责任'].filter(Boolean).join(' · ')}</h4>
                   {row.scenario ? <p className="mt-1 whitespace-pre-wrap text-base leading-7 text-slate-500">{row.scenario}</p> : null}
                   {row.payout ? <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{row.payout}</p> : null}
                   {row.note ? <p className="mt-2 text-base leading-7 text-slate-500">{row.note}</p> : null}

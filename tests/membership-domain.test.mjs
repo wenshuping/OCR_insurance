@@ -6,7 +6,9 @@ import {
   ANNUAL_MEMBERSHIP_DURATION_DAYS,
   ANNUAL_MEMBERSHIP_PRICE_CENTS,
   assertUserCanSavePolicy,
+  assertUserReportRefreshAllowed,
   buildMembershipSnapshot,
+  countUserReportRefreshesForDay,
   consumeWechatOAuthState,
   createMembershipOrder,
   createWechatOAuthState,
@@ -15,6 +17,7 @@ import {
   markMembershipOrderPrepayCreated,
   normalizeMembershipConfig,
   processMembershipPaymentSuccess,
+  recordUserReportRefresh,
   upsertUserWechatIdentity,
 } from '../server/membership.domain.mjs';
 
@@ -24,6 +27,8 @@ test('normalizeMembershipConfig keeps price and duration fixed while accepting a
   assert.deepEqual(normalizeMembershipConfig({
     enabled: false,
     registeredFreePolicyQuota: '5',
+    familyReportDailyRefreshLimit: '7',
+    familySalesReviewDailyRefreshLimit: '9',
     annualPriceCents: 1,
     annualDurationDays: 1,
   }, NOW), {
@@ -31,9 +36,67 @@ test('normalizeMembershipConfig keeps price and duration fixed while accepting a
     annualPriceCents: ANNUAL_MEMBERSHIP_PRICE_CENTS,
     annualDurationDays: ANNUAL_MEMBERSHIP_DURATION_DAYS,
     registeredFreePolicyQuota: 5,
+    familyReportDailyRefreshLimit: 7,
+    familySalesReviewDailyRefreshLimit: 9,
     updatedAt: NOW,
   });
   assert.equal(defaultMembershipConfig(NOW).registeredFreePolicyQuota, 3);
+  assert.equal(defaultMembershipConfig(NOW).familyReportDailyRefreshLimit, 3);
+  assert.equal(defaultMembershipConfig(NOW).familySalesReviewDailyRefreshLimit, 3);
+});
+
+test('user report refresh counters only count explicit user refresh events for the same day', () => {
+  const state = {
+    ...createInitialState(),
+    membershipConfig: {
+      ...defaultMembershipConfig(NOW),
+      familyReportDailyRefreshLimit: 1,
+      familySalesReviewDailyRefreshLimit: 2,
+    },
+    nextId: 100,
+  };
+  const owner = { userId: 8 };
+
+  assert.deepEqual(assertUserReportRefreshAllowed(state, owner, 'familyReport', { familyId: 20, now: NOW }), {
+    limit: 1,
+    used: 0,
+    remaining: 1,
+  });
+
+  const event = recordUserReportRefresh(state, owner, 'familyReport', {
+    familyId: 20,
+    reportId: 30,
+    now: NOW,
+    allocateId: (targetState) => {
+      const id = targetState.nextId;
+      targetState.nextId += 1;
+      return id;
+    },
+  });
+
+  state.familyReports.push({
+    id: 31,
+    familyId: 20,
+    ownerUserId: 8,
+    status: 'active',
+    generatedAt: NOW,
+  });
+
+  assert.equal(event.id, 100);
+  assert.equal(countUserReportRefreshesForDay(state, owner, 'familyReport', { familyId: 20, now: NOW }), 1);
+  assert.throws(
+    () => assertUserReportRefreshAllowed(state, owner, 'familyReport', { familyId: 20, now: NOW }),
+    (error) => {
+      assert.equal(error.code, 'FAMILY_REPORT_DAILY_REFRESH_LIMIT_EXCEEDED');
+      assert.equal(error.status, 429);
+      return true;
+    },
+  );
+  assert.equal(countUserReportRefreshesForDay(state, owner, 'familySalesReview', { familyId: 20, now: NOW }), 0);
+  assert.equal(
+    countUserReportRefreshesForDay(state, owner, 'familyReport', { familyId: 20, now: '2026-06-12T08:00:00.000Z' }),
+    0,
+  );
 });
 
 test('buildMembershipSnapshot reports active membership and saved policy quota', () => {

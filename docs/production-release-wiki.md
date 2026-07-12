@@ -20,10 +20,14 @@ Before releasing:
 
 ```bash
 npm run check
+npm run build
 node --test --test-name-pattern "remote GPU vision|configured OCR runtime|product suggestions" tests/policy-ocr-flow.test.mjs
 ```
 
-Push the code to GitHub `master`.
+Push the exact ref you plan to release. Before merge this is usually the current
+feature branch, for example `origin/codex/wechat-pay-membership`; after merge it
+is `origin/master`. The ECS and AutoDL release scripts deploy from Git refs, not
+from unpushed local working-tree changes.
 
 Never commit or paste production secrets. Keep these files only on the target machines:
 
@@ -100,6 +104,24 @@ Verify that the API is using the persistent SQLite path:
 docker-compose -f docker-compose.poptonic.yml logs --tail=40 api | grep "db=/data/policy-ocr.sqlite"
 ```
 
+Verify that ECS can reach the AutoDL OCR service configured in
+`deploy/poptonic.env`:
+
+```bash
+set -a
+. deploy/poptonic.env
+set +a
+
+curl -fsS -H "x-ocr-service-token: $POLICY_OCR_SERVICE_TOKEN" \
+  "$POLICY_OCR_SERVICE_URL/internal/ocr-service/config"
+```
+
+For DeepSeek-OCR production releases, the response must include:
+
+```json
+"provider":"deepseek_ocr_vllm"
+```
+
 Verify admin and annual membership payment configuration without printing secrets:
 
 ```bash
@@ -139,6 +161,20 @@ Expected production values:
 - `wechatPay.mode: "live"`
 - `wechatPay.ready: true`
 - `wechatPay.notifyUrl: "https://ocr.joyhive.cn/api/membership/wechatpay/notify"`
+
+If the release has already passed container, local, and public health checks but
+this payment-readiness check fails because a PEM file is missing, for example
+`/data/secrets/wxp_pub.pem`, the web/API/OCR release is still live. For OCR-only
+releases, rerun with `--allow-pay-not-ready` and fix WeChat Pay separately:
+
+```bash
+scripts/release-ecs-production.sh --ref origin/codex/wechat-pay-membership --allow-pay-not-ready
+```
+
+For WeChat Pay live readiness, `WECHAT_PAY_PLATFORM_PUBLIC_KEY_ID` must contain
+the `PUB_KEY_ID_...` value, and `WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH` must point
+to a file containing the actual `-----BEGIN PUBLIC KEY-----` PEM body inside the
+API container.
 
 The admin login page is `https://ocr.joyhive.cn/admin`. If the login API returns
 `ADMIN_PASSWORD_NOT_CONFIGURED`, update `~/OCR_insurance/deploy/poptonic.env` on
@@ -247,6 +283,20 @@ The script fetches the selected ref, installs production Node dependencies,
 restarts `ocr-service/index.mjs` with `nohup`, tails the log, and waits for the
 local OCR health endpoint. It does not touch ECS or SQLite data.
 
+For DeepSeek-OCR, verify vLLM first:
+
+```bash
+curl -fsS http://127.0.0.1:6008/v1/models
+```
+
+`deploy/autodl-ocr.env` must contain:
+
+```bash
+POLICY_OCR_PROVIDER=deepseek_ocr_vllm
+POLICY_OCR_DEEPSEEK_OCR_BASE_URL=http://127.0.0.1:6008
+POLICY_OCR_DEEPSEEK_OCR_MODEL=deepseek-ai/DeepSeek-OCR
+```
+
 Manual equivalent:
 
 ```bash
@@ -257,6 +307,21 @@ git reset --hard origin/master
 
 git log -1 --oneline
 test -f deploy/autodl-ocr.env && echo "autodl-ocr.env exists"
+```
+
+If `scripts/release-autodl-ocr.sh` does not exist, the AutoDL checkout is on an
+old branch. Fetch and switch to the release ref first:
+
+```bash
+git fetch origin codex/wechat-pay-membership
+git checkout -B codex/wechat-pay-membership FETCH_HEAD
+```
+
+If checkout is blocked by local AutoDL edits, save them before switching:
+
+```bash
+git stash push -m "autodl-local-before-release" -- ocr-service/insurance-ocr.service.mjs
+git checkout -B codex/wechat-pay-membership FETCH_HEAD
 ```
 
 Restart the OCR service:
@@ -278,10 +343,27 @@ tail -n 30 /root/autodl-tmp/ocr-service.log
 Verify locally on AutoDL:
 
 ```bash
-curl -fsS http://127.0.0.1:6006/internal/ocr-service/health
+set -a
+. deploy/autodl-ocr.env
+set +a
+
+OCR_PORT="${OCR_SERVICE_PORT:-6006}"
+
+curl -fsS "http://127.0.0.1:${OCR_PORT}/internal/ocr-service/health"
+
+curl -fsS -H "x-ocr-service-token: $POLICY_OCR_SERVICE_TOKEN" \
+  "http://127.0.0.1:${OCR_PORT}/internal/ocr-service/config"
 ```
 
-Verify through the AutoDL public service URL:
+For the current AutoDL deployment, the OCR service listens on `6006`; `4105`
+may fail with `Connection refused` and is not the health port for that instance.
+The config response must include:
+
+```json
+"provider":"deepseek_ocr_vllm"
+```
+
+Verify through the AutoDL public service URL from ECS:
 
 ```bash
 curl --http1.1 -fsS \

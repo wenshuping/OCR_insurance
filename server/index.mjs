@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPolicyOcrApp } from './app.mjs';
+import { createProductionAgentGatewayOptions } from './agent-gateway-runtime.service.mjs';
 import { createSqliteStateStore } from './sqlite-state-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +18,9 @@ const skippedProjectDotenvLocalAllowKeys = new Set([
   'DEEPSEEK_FAMILY_REVIEW_MODEL',
   'DEEPSEEK_FAMILY_REVIEW_TIMEOUT_MS',
   'DEEPSEEK_FAMILY_REVIEW_MAX_TOKENS',
+  'DEEPSEEK_FAMILY_REPORT_MODEL',
+  'DEEPSEEK_FAMILY_REPORT_TIMEOUT_MS',
+  'DEEPSEEK_FAMILY_REPORT_MAX_TOKENS',
 ]);
 
 function normalizeEnvValue({ key, value, envPath }) {
@@ -72,12 +76,15 @@ const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 
 const store = await createSqliteStateStore({ dbPath, seedStatePath: statePath });
 const state = await store.load();
+const agentGatewayOptions = createProductionAgentGatewayOptions({ env: process.env, loadState: () => store.load() });
 const app = createPolicyOcrApp({
+  ...agentGatewayOptions,
   state,
   persist: store.persist,
   persistPolicyScanSave: store.persistPolicyScanSave,
   persistPendingScan: store.persistPendingScan,
   persistFamilyState: store.persistFamilyState,
+  persistFamilyReportState: store.persistFamilyReportState,
   persistAdminSession: store.persistAdminSession,
   persistAuthSmsCode: store.persistAuthSmsCode,
   persistAuthRegistration: store.persistAuthRegistration,
@@ -85,17 +92,35 @@ const app = createPolicyOcrApp({
   persistPolicyState: store.persistPolicyState,
   persistPolicyDelete: store.persistPolicyDelete,
   persistMembershipConfig: store.persistMembershipConfig,
+  persistStateDocument: store.persistStateDocument,
   persistMembershipState: store.persistMembershipState,
   persistOfficialDomainProfiles: store.persistOfficialDomainProfiles,
   persistPolicyDerivedResult: store.persistPolicyDerivedResult,
+  persistProductCustomerResponsibilitySummary: store.persistProductCustomerResponsibilitySummary,
+  persistProductCustomerSummaryGenerationRun: store.persistProductCustomerSummaryGenerationRun,
+  persistResponsibilityLookupArtifacts: store.persistResponsibilityLookupArtifacts,
+  findProductCustomerResponsibilitySummary: store.findProductCustomerResponsibilitySummary,
   markPolicyDerivedResultsStaleByProductKeys: store.markPolicyDerivedResultsStaleByProductKeys,
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
+  agentStore: store,
   db: store.db,
 });
 
-app.listen(port, host, () => {
+const server = app.listen(port, host, () => {
   console.log(`[policy-ocr-app] API listening on http://${host}:${port}`);
   console.log(`[policy-ocr-app] db=${dbPath}`);
   if (statePath) console.log(`[policy-ocr-app] seed-state=${statePath}`);
 });
+
+let closed = false;
+function closeRuntime() {
+  if (closed) return;
+  closed = true;
+  app.locals.transferRegenerationRecovery?.stop?.();
+  store.close();
+}
+server.once('close', closeRuntime);
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => server.close());
+}

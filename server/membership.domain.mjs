@@ -5,7 +5,10 @@ import { allocateId } from './policy-ocr.domain.mjs';
 export const ANNUAL_MEMBERSHIP_PRICE_CENTS = 30000;
 export const ANNUAL_MEMBERSHIP_DURATION_DAYS = 365;
 export const DEFAULT_REGISTERED_FREE_POLICY_QUOTA = 3;
+export const DEFAULT_FAMILY_REPORT_DAILY_REFRESH_LIMIT = 3;
+export const DEFAULT_FAMILY_SALES_REVIEW_DAILY_REFRESH_LIMIT = 3;
 export const MEMBERSHIP_PRODUCT_CODE = 'annual_membership';
+const REPORT_REFRESH_TIME_ZONE = 'Asia/Shanghai';
 
 function trim(value) {
   return String(value || '').trim();
@@ -46,6 +49,7 @@ function assertSameSiteRedirectUrl(value) {
 
 function ensureMembershipArrays(state) {
   if (!state.membershipConfig) state.membershipConfig = defaultMembershipConfig(nowIso());
+  if (!Array.isArray(state.reportRefreshEvents)) state.reportRefreshEvents = [];
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
   if (!Array.isArray(state.memberships)) state.memberships = [];
   if (!Array.isArray(state.userWechatIdentities)) state.userWechatIdentities = [];
@@ -58,17 +62,25 @@ export function defaultMembershipConfig(updatedAt = nowIso()) {
     annualPriceCents: ANNUAL_MEMBERSHIP_PRICE_CENTS,
     annualDurationDays: ANNUAL_MEMBERSHIP_DURATION_DAYS,
     registeredFreePolicyQuota: DEFAULT_REGISTERED_FREE_POLICY_QUOTA,
+    familyReportDailyRefreshLimit: DEFAULT_FAMILY_REPORT_DAILY_REFRESH_LIMIT,
+    familySalesReviewDailyRefreshLimit: DEFAULT_FAMILY_SALES_REVIEW_DAILY_REFRESH_LIMIT,
     updatedAt,
   };
 }
 
+function normalizeNonNegativeInteger(value, fallback) {
+  const number = Math.max(0, Math.floor(Number(value ?? fallback)));
+  return Number.isFinite(number) ? number : fallback;
+}
+
 export function normalizeMembershipConfig(input = {}, updatedAt = nowIso()) {
-  const quota = Math.max(0, Math.floor(Number(input.registeredFreePolicyQuota ?? DEFAULT_REGISTERED_FREE_POLICY_QUOTA)));
   return {
     enabled: input.enabled !== false,
     annualPriceCents: ANNUAL_MEMBERSHIP_PRICE_CENTS,
     annualDurationDays: ANNUAL_MEMBERSHIP_DURATION_DAYS,
-    registeredFreePolicyQuota: Number.isFinite(quota) ? quota : DEFAULT_REGISTERED_FREE_POLICY_QUOTA,
+    registeredFreePolicyQuota: normalizeNonNegativeInteger(input.registeredFreePolicyQuota, DEFAULT_REGISTERED_FREE_POLICY_QUOTA),
+    familyReportDailyRefreshLimit: normalizeNonNegativeInteger(input.familyReportDailyRefreshLimit, DEFAULT_FAMILY_REPORT_DAILY_REFRESH_LIMIT),
+    familySalesReviewDailyRefreshLimit: normalizeNonNegativeInteger(input.familySalesReviewDailyRefreshLimit, DEFAULT_FAMILY_SALES_REVIEW_DAILY_REFRESH_LIMIT),
     updatedAt,
   };
 }
@@ -159,6 +171,80 @@ export function assertUserCanSavePolicy(state, user, { now = nowIso() } = {}) {
     annualPriceCents: snapshot.purchase.annualPriceCents,
   };
   throw error;
+}
+
+function ownerMatchesRecord(record = {}, owner = {}) {
+  if (owner.userId) return Number(record.ownerUserId || 0) === Number(owner.userId);
+  if (owner.guestId) return trim(record.ownerGuestId) === trim(owner.guestId) && !Number(record.ownerUserId || 0);
+  return false;
+}
+
+function reportRefreshDayKey(value) {
+  const date = new Date(value || '');
+  if (!Number.isFinite(date.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: REPORT_REFRESH_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+function reportRefreshLimitForKind(config, kind) {
+  return kind === 'familySalesReview'
+    ? config.familySalesReviewDailyRefreshLimit
+    : config.familyReportDailyRefreshLimit;
+}
+
+function reportRefreshLabel(kind) {
+  return kind === 'familySalesReview' ? '营销建议报告' : '家庭保单分析报告';
+}
+
+export function countUserReportRefreshesForDay(state, owner, kind, { familyId, now = nowIso() } = {}) {
+  const dayKey = reportRefreshDayKey(now);
+  const targetFamilyId = Number(familyId || 0);
+  if (!dayKey || !targetFamilyId) return 0;
+  ensureMembershipArrays(state);
+  return state.reportRefreshEvents.filter((event) => (
+    String(event?.kind || '') === kind &&
+    Number(event.familyId || 0) === targetFamilyId &&
+    ownerMatchesRecord(event, owner) &&
+    reportRefreshDayKey(event.createdAt) === dayKey
+  )).length;
+}
+
+export function assertUserReportRefreshAllowed(state, owner, kind, { familyId, now = nowIso() } = {}) {
+  const config = getMembershipConfig(state, now);
+  const limit = reportRefreshLimitForKind(config, kind);
+  const used = countUserReportRefreshesForDay(state, owner, kind, { familyId, now });
+  if (used < limit) return { limit, used, remaining: Math.max(0, limit - used) };
+  const label = reportRefreshLabel(kind);
+  const error = new Error(`今日${label}刷新次数已用完（${used}/${limit}），请明天再试`);
+  error.code = kind === 'familySalesReview'
+    ? 'FAMILY_SALES_REVIEW_DAILY_REFRESH_LIMIT_EXCEEDED'
+    : 'FAMILY_REPORT_DAILY_REFRESH_LIMIT_EXCEEDED';
+  error.status = 429;
+  throw error;
+}
+
+export function recordUserReportRefresh(state, owner, kind, { familyId, reportId, now = nowIso(), allocateId } = {}) {
+  ensureMembershipArrays(state);
+  const ownerUserId = Number(owner?.userId || owner?.ownerUserId || 0) || null;
+  const event = {
+    id: typeof allocateId === 'function' ? allocateId(state) : Date.now(),
+    kind,
+    familyId: Number(familyId || 0),
+    reportId: Number(reportId || 0) || null,
+    ownerUserId,
+    ownerGuestId: ownerUserId ? '' : trim(owner?.guestId || owner?.ownerGuestId),
+    createdAt: now,
+  };
+  state.reportRefreshEvents.push(event);
+  return event;
 }
 
 export function createMembershipOrder(state, { userId, now = nowIso(), randomBytes } = {}) {

@@ -14,7 +14,9 @@ function functionSource(source, name, nextName) {
 async function loadCustomerPolicyFormModule() {
   const source = fs.readFileSync(new URL('../src/shared/customer-policy-form.ts', import.meta.url), 'utf8');
   const isValidDateInputPartsSource = functionSource(source, 'isValidDateInputParts', 'normalizeDateInputValue');
-  const normalizeDateInputValueSource = functionSource(source, 'normalizeDateInputValue', 'normalizePolicyPlanListWithIndex');
+  const normalizeDateInputValueSource = functionSource(source, 'normalizeDateInputValue', 'shareBirthdayForSameName');
+  const shareBirthdayForSameNameSource = functionSource(source, 'shareBirthdayForSameName', 'sharePolicyPersonInfo');
+  const sharePolicyPersonInfoSource = functionSource(source, 'sharePolicyPersonInfo', 'normalizePolicyPlanListWithIndex');
   const scanToFormSource = functionSource(source, 'scanToForm', 'canReuseParticipantMemberId');
   const canReuseParticipantMemberIdSource = functionSource(source, 'canReuseParticipantMemberId', 'mergeScanToForm');
   const mergeScanToFormSource = functionSource(source, 'mergeScanToForm', 'sanitizeAmount');
@@ -23,10 +25,12 @@ async function loadCustomerPolicyFormModule() {
   const hasPlanPremiumEvidenceSource = functionSource(source, 'hasPlanPremiumEvidence', 'hasConfirmedRelation');
   const hasConfirmedRelationSource = functionSource(source, 'hasConfirmedRelation', 'validatePolicyEntryForm');
   const validatePolicyEntryFormSource = functionSource(source, 'validatePolicyEntryForm', 'productLookupKey');
+  const syncMainPolicyPlanFieldsSource = functionSource(source, 'syncMainPolicyPlanFields', 'syncMainPolicyPlanAmount');
   const buildPolicyUpdateDataSource = functionSource(source, 'buildPolicyUpdateData', 'scanToForm');
   const moduleSource = `
     type PolicyFormData = any;
     type PolicyScanResult = any;
+    type MainPolicyPlanFieldSync = any;
     function normalizeBeneficiaryValue(value: unknown) {
       return String(value || '');
     }
@@ -48,6 +52,9 @@ async function loadCustomerPolicyFormModule() {
     }
     ${isValidDateInputPartsSource}
     ${normalizeDateInputValueSource}
+    ${shareBirthdayForSameNameSource}
+    ${sharePolicyPersonInfoSource}
+    ${syncMainPolicyPlanFieldsSource}
     ${buildPolicyUpdateDataSource}
     ${scanToFormSource}
     ${canReuseParticipantMemberIdSource}
@@ -57,7 +64,7 @@ async function loadCustomerPolicyFormModule() {
     ${hasPlanPremiumEvidenceSource}
     ${hasConfirmedRelationSource}
     ${validatePolicyEntryFormSource}
-    export { scanToForm, mergeScanToForm, validatePolicyEntryForm, buildPolicyUpdateData, normalizeDateInputValue };
+    export { scanToForm, mergeScanToForm, validatePolicyEntryForm, buildPolicyUpdateData, normalizeDateInputValue, sharePolicyPersonInfo };
   `;
   const output = ts.transpileModule(moduleSource, {
     compilerOptions: {
@@ -102,6 +109,62 @@ test('buildPolicyUpdateData normalizes slash date values before saving policy ed
   assert.equal(updated.insuredBirthday, '1987-12-02');
   assert.equal(updated.beneficiaryBirthday, '2020-01-03');
   assert.equal(updated.date, '2024-12-05');
+});
+
+test('buildPolicyUpdateData syncs editable top-level fields into the main plan', async () => {
+  const { buildPolicyUpdateData } = await loadCustomerPolicyFormModule();
+  const updated = buildPolicyUpdateData(
+    { company: '中国平安', name: '旧产品', canonicalProductId: 'old-id' },
+    {
+      company: '中国平安',
+      name: '旧产品',
+      canonicalProductId: 'old-id',
+      applicant: '张三',
+      applicantBirthday: '',
+      beneficiary: '法定',
+      beneficiaryRelation: '',
+      beneficiaryBirthday: '',
+      applicantRelation: '本人',
+      insured: '张三',
+      insuredRelation: '本人',
+      insuredIdNumber: '',
+      insuredBirthday: '',
+      date: '2024-12-05',
+      paymentPeriod: '10年交',
+      coveragePeriod: '至70岁',
+      amount: '1000',
+      firstPremium: '888',
+      plans: [
+        {
+          company: '中国平安',
+          role: 'main',
+          name: '旧产品',
+          matchedProductName: '旧产品',
+          amount: '3',
+          premium: '2',
+          coveragePeriod: '旧保障期间',
+          paymentPeriod: '旧缴费期间',
+        },
+        {
+          company: '中国平安',
+          role: 'rider',
+          name: '附加险',
+          matchedProductName: '附加险',
+          amount: '200',
+          premium: '20',
+          coveragePeriod: '20年',
+          paymentPeriod: '3年交',
+        },
+      ],
+    },
+  );
+
+  assert.equal(updated.plans[0].amount, '1000');
+  assert.equal(updated.plans[0].premium, '888');
+  assert.equal(updated.plans[0].coveragePeriod, '至70岁');
+  assert.equal(updated.plans[0].paymentPeriod, '10年交');
+  assert.equal(updated.plans[1].amount, '200');
+  assert.equal(updated.plans[1].premium, '20');
 });
 
 test('mergeScanToForm clears stale participant member ids when OCR changes participant names', async () => {
@@ -264,6 +327,44 @@ test('mergeScanToForm clears stale insured identity fields when OCR changes the 
   assert.equal(merged.insuredMemberId, null);
 });
 
+test('mergeScanToForm shares birthday across same-name policy people', async () => {
+  const { mergeScanToForm } = await loadCustomerPolicyFormModule();
+  const merged = mergeScanToForm(
+    {
+      ocrText: '投保人:秦国英\n被保险人:秦国英\n生日:1970/01/06',
+      data: {
+        company: '中国平安',
+        name: '测试保单',
+        applicant: '秦国英',
+        insured: '秦国英',
+        beneficiary: '秦国英',
+        applicantRelation: '母亲',
+        insuredBirthday: '1970-01-06',
+      },
+    },
+    {
+      company: '中国平安',
+      name: '旧保单',
+      applicant: '秦国英',
+      insured: '秦国英',
+      beneficiary: '秦国英',
+      applicantBirthday: '',
+      beneficiaryBirthday: '',
+      insuredBirthday: '',
+      date: '',
+      paymentPeriod: '',
+      coveragePeriod: '',
+      amount: '',
+      firstPremium: '',
+    },
+  );
+
+  assert.equal(merged.applicantBirthday, '1970-01-06');
+  assert.equal(merged.insuredBirthday, '1970-01-06');
+  assert.equal(merged.beneficiaryBirthday, '1970-01-06');
+  assert.equal(merged.beneficiaryRelation, '母亲');
+});
+
 test('validatePolicyEntryForm accepts riders when OCR proves only total premium is printed', async () => {
   const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
   const errors = validatePolicyEntryForm({
@@ -309,6 +410,63 @@ test('validatePolicyEntryForm accepts riders when OCR proves only total premium 
   assert.ok(!errors.includes('投保人生日'));
   assert.ok(!errors.includes('受益人生日'));
   assert.ok(!errors.includes('被保险人生日'));
+});
+
+test('validatePolicyEntryForm can allow first save before a family profile exists', async () => {
+  const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
+  const form = {
+    familyId: null,
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    applicant: '楼媛媛',
+    beneficiary: '法定',
+    applicantRelation: '本人',
+    insured: '王後曦',
+    insuredRelation: '子女',
+    applicantBirthday: '',
+    beneficiaryBirthday: '',
+    insuredBirthday: '',
+    date: '2024-08-16',
+    paymentPeriod: '趸交',
+    coveragePeriod: '至2025年08月15日',
+    amount: '80000',
+    firstPremium: '298',
+    plans: [],
+  };
+
+  assert.ok(validatePolicyEntryForm(form).includes('选择家庭档案'));
+  assert.ok(!validatePolicyEntryForm(form, { requireFamily: false }).includes('选择家庭档案'));
+});
+
+test('validatePolicyEntryForm can allow pending top-pillar relations before core member is set', async () => {
+  const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
+  const form = {
+    familyId: 1,
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    applicant: '楼媛媛',
+    beneficiary: '法定',
+    applicantRelation: '待确认',
+    insured: '王後曦',
+    insuredRelation: '待确认',
+    applicantBirthday: '',
+    beneficiaryBirthday: '',
+    insuredBirthday: '',
+    date: '2024-08-16',
+    paymentPeriod: '趸交',
+    coveragePeriod: '至2025年08月15日',
+    amount: '80000',
+    firstPremium: '298',
+    plans: [],
+  };
+
+  const strictErrors = validatePolicyEntryForm(form);
+  assert.ok(strictErrors.includes('投保人与顶梁柱的关系'));
+  assert.ok(strictErrors.includes('被保险人与顶梁柱的关系'));
+
+  const relaxedErrors = validatePolicyEntryForm(form, { requireParticipantRelations: false });
+  assert.ok(!relaxedErrors.includes('投保人与顶梁柱的关系'));
+  assert.ok(!relaxedErrors.includes('被保险人与顶梁柱的关系'));
 });
 
 test('scanToForm preserves linked account role from visual OCR plans', async () => {

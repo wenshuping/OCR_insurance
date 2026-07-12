@@ -62,6 +62,7 @@ async function main() {
       saleStatus,
       maxProducts,
       maxWorkers,
+      archivePdf: true,
     });
 
     const state = knowledgeStore.loadState();

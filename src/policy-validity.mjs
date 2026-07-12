@@ -62,6 +62,37 @@ export function resolvePolicyValidityStatus(coveragePeriod, context = {}) {
   return { label: '有效', tone: 'active', expiresAt };
 }
 
+const ACTIVE_STATUS_PATTERN = /^(?:有效|生效|承保|正常|active|valid|in[_\s-]?force)$/iu;
+const INACTIVE_STATUS_PATTERN = /(?:失效|停效|中止|终止|退保|过期|作废|无效|待生效|审核中|pending|future|unknown|archived|inactive|expired|lapsed|terminated|surrendered|cancelled|canceled|void)/iu;
+
+export function resolvePolicyRecordValidity(policy = {}, context = {}) {
+  const statuses = [
+    policy.status,
+    policy.policyStatus,
+    policy.policyState,
+    policy.contractStatus,
+    policy.validityStatus,
+  ].filter((value) => value !== null && value !== undefined && String(value).trim()).map((value) => String(value).trim());
+  if (policy.expired === true || statuses.some((value) => INACTIVE_STATUS_PATTERN.test(value))) {
+    return { status: 'inactive', valid: false, reason: 'business_status' };
+  }
+  if (!statuses.some((value) => ACTIVE_STATUS_PATTERN.test(value))) {
+    return { status: 'unknown', valid: false, reason: 'status_unconfirmed' };
+  }
+  const now = context.now || new Date();
+  const effectiveAt = parseDateFromText(policy.date || policy.effectiveDate, false);
+  if (effectiveAt && effectiveAt.getTime() > now.getTime()) {
+    return { status: 'future', valid: false, reason: 'not_effective' };
+  }
+  const period = resolvePolicyValidityStatus(policy.coveragePeriod, {
+    effectiveDate: policy.date || policy.effectiveDate,
+    insuredBirthday: policy.insuredBirthday,
+    now,
+  });
+  if (period.tone === 'expired') return { status: 'expired', valid: false, reason: 'coverage_ended', expiresAt: period.expiresAt };
+  return { status: 'active', valid: true, reason: 'confirmed_active', expiresAt: period.expiresAt };
+}
+
 export function policyValidityClassName(tone) {
   if (tone === 'expired') return 'bg-rose-50 text-rose-600 ring-rose-100';
   return 'bg-[#EBFBF1] text-[#16A34A] ring-[#CFF3DA]';

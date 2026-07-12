@@ -44,6 +44,7 @@ export function createAuthRoutes(context) {
     createSession,
     publicUser,
     attachPolicyFamilyDisplay,
+    attachPolicyCoverageIndicators,
     mergePolicyDerivedResult,
     getBearerToken,
     deleteSession,
@@ -61,8 +62,24 @@ export function createAuthRoutes(context) {
   function attachStoredPolicyDerivedResult(policy) {
     const displayed = attachPolicyFamilyDisplay(policy, state);
     const derivedResult = findPolicyDerivedResult(policy?.id);
-    if (typeof mergePolicyDerivedResult === 'function') {
+    if (derivedResult && typeof mergePolicyDerivedResult === 'function') {
       return mergePolicyDerivedResult(displayed, derivedResult);
+    }
+    if (!derivedResult && typeof attachPolicyCoverageIndicators === 'function') {
+      const attached = attachPolicyCoverageIndicators(
+        displayed,
+        state.insuranceIndicatorRecords,
+        state.knowledgeRecords,
+        state.optionalResponsibilityRecords,
+      );
+      if (typeof mergePolicyDerivedResult === 'function') {
+        return mergePolicyDerivedResult(attached, null);
+      }
+      return {
+        ...attached,
+        derivedStatus: 'stale',
+        derivedStaleReason: 'missing',
+      };
     }
     return {
       ...displayed,

@@ -2,12 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronLeft,
   Download,
-  ExternalLink,
   Loader2,
   Pencil,
   RefreshCw,
   Save,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -16,11 +14,13 @@ import type {
   PolicyFormData,
 } from '../../api/contracts/policy';
 import type {
+  CustomerResponsibilitySummary,
   OptionalResponsibility,
   PolicyCompanySuggestion,
   PolicyProductSuggestion,
 } from '../../api/contracts/responsibility';
 import {
+  getProductCustomerResponsibilitySummary,
   listPolicyResponsibilityCompanySuggestions,
   listPolicyResponsibilityProductSuggestions,
 } from '../../api/contracts/responsibility';
@@ -38,8 +38,6 @@ import {
   MetricBox,
   ReportText,
   buildPolicyReportTitle,
-  formatSourceUrlHost,
-  getPolicyResponsibilitySourceLinks,
   getReportPlaceholder,
   isPolicyReportFailed,
   isPolicyReportGenerating,
@@ -49,10 +47,12 @@ import {
   normalizePolicyPlanList,
   policyToForm,
   sanitizeAmount,
+  syncMainPolicyPlanFields,
 } from '../../shared/customer-policy-form';
 import {
   summarizeCashValues,
 } from '../../shared/customer-cash-value';
+import { CustomerResponsibilitySummaryCard } from '../../shared/CustomerResponsibilitySummaryCard';
 import {
   CoveragePeriodField,
   PaymentPeriodField,
@@ -64,6 +64,11 @@ import {
   normalizeSuggestionQuery,
   renderHighlightedSuggestion,
 } from '../../shared/customer-policy-components';
+
+function normalizeProductCode(value: unknown) {
+  const text = String(value || '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
 
 export function PolicyDetailSheet({
   policy,
@@ -91,15 +96,54 @@ export function PolicyDetailSheet({
   const reportRef = useRef<HTMLElement | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [customerSummary, setCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
+  const [customerSummaryLoading, setCustomerSummaryLoading] = useState(false);
+  const [customerSummaryMessage, setCustomerSummaryMessage] = useState('');
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const exportTitle = buildPolicyReportTitle(policy);
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
-  const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
+  const reportReadyWithoutContent = !reportGenerating && !reportFailed && !(
+    policy.report?.trim() ||
+      policy.responsibilities?.length ||
+      policy.responsibilityCards?.length
+  );
   const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
-  const responsibilitySourceLinks = getPolicyResponsibilitySourceLinks(policy);
+
+  useEffect(() => {
+    let cancelled = false;
+    const company = String(policy.company || '').trim();
+    const name = String(policy.name || '').trim();
+    setCustomerSummary(null);
+    setCustomerSummaryMessage('');
+    if (!company || !name) {
+      setCustomerSummaryLoading(false);
+      setCustomerSummaryMessage('缺少保险公司或产品名称，暂无法生成客户版保险责任摘要。');
+      return () => {
+        cancelled = true;
+      };
+    }
+    setCustomerSummaryLoading(true);
+    getProductCustomerResponsibilitySummary({ company, name })
+      .then((payload) => {
+        if (cancelled) return;
+        setCustomerSummary(payload.ok ? payload.summary : null);
+        setCustomerSummaryMessage(payload.ok ? '' : (payload.message || '客户版保险责任摘要暂未生成，请稍后重试。'));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCustomerSummary(null);
+        setCustomerSummaryMessage('客户版保险责任摘要生成失败，请稍后重试。');
+      })
+      .finally(() => {
+        if (!cancelled) setCustomerSummaryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [policy.company, policy.id, policy.name]);
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
@@ -192,18 +236,22 @@ export function PolicyDetailSheet({
           </section>
         ) : null}
 
-        {reportGenerating || reportFailed ? (
+        {reportGenerating || reportFailed || reportReadyWithoutContent ? (
           <section className={`mt-4 rounded-[22px] border px-4 py-3 ${
             reportFailed ? 'border-red-100 bg-red-50 text-red-700' : 'border-orange-100 bg-orange-50 text-orange-700'
           }`}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-black">{reportFailed ? '报告生成失败' : '报告正在后台生成'}</p>
+                <p className="text-sm font-black">{reportFailed ? '报告生成失败' : reportReadyWithoutContent ? '保险责任未生成' : '报告正在后台生成'}</p>
                 <p className="mt-1 text-xs font-medium leading-5">
-                  {reportFailed ? policy.reportError || '可以稍后刷新查看，或重新生成报告。' : '保单信息已经保存，完整保险责任生成后会自动刷新。'}
+                  {reportFailed
+                    ? policy.reportError || '可以稍后刷新查看，或重新生成报告。'
+                    : reportReadyWithoutContent
+                      ? '已保存保单基本信息，但还没有生成保险责任和指标。'
+                      : '保单信息已经保存，完整保险责任生成后会自动刷新。'}
                 </p>
               </div>
-              {reportFailed && onRetryReport ? (
+              {(reportFailed || reportReadyWithoutContent) && onRetryReport ? (
                 <button
                   className="flex shrink-0 items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white shadow-sm disabled:opacity-60"
                   type="button"
@@ -292,6 +340,8 @@ export function PolicyDetailSheet({
           insuredBirthday={policy.insuredBirthday}
           paymentPeriod={policy.paymentPeriod}
           coveragePeriod={policy.coveragePeriod}
+          amount={policy.amount}
+          firstPremium={policy.firstPremium}
         />
 
         {optionalResponsibilities.length ? (
@@ -309,49 +359,17 @@ export function PolicyDetailSheet({
         <section className="mt-4 space-y-3">
           <div>
             <h3 className="text-base font-bold text-slate-900">保险责任</h3>
-            <p className="mt-1 text-xs text-slate-500">以下内容来自本次 OCR 识别和责任解析。</p>
+            <p className="mt-1 text-xs text-slate-500">以下内容来自官网保险责任摘要。</p>
           </div>
-          {responsibilitySourceLinks.length ? (
-            <div className="rounded-[18px] border border-blue-100 bg-blue-50/70 px-3 py-3">
-              <p className="text-xs font-black text-blue-700">官网地址</p>
-              <div className="mt-2 space-y-2">
-                {responsibilitySourceLinks.map((source) => (
-                  <a
-                    key={`${source.title}-${source.url}`}
-                    href={source.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-start gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-blue-700 ring-1 ring-blue-100"
-                  >
-                    <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0">
-                      <span className="block truncate font-black">{source.title || formatSourceUrlHost(source.url)}</span>
-                      <span className="block break-all text-blue-500">{source.url}</span>
-                    </span>
-                  </a>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {responsibilities.length ? (
-            responsibilities.map((row, index) => (
-              <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] bg-blue-50 text-blue-600">
-                    <Sparkles className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-lg font-bold leading-7 text-slate-900">{row.coverageType}</h4>
-                    <p className="mt-1 whitespace-pre-wrap text-base leading-7 text-slate-500">{row.scenario}</p>
-                    <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{row.payout}</p>
-                    {row.note ? <p className="mt-2 text-base leading-7 text-slate-500">{row.note}</p> : null}
-                  </div>
-                </div>
-              </article>
-            ))
+          {customerSummaryLoading ? (
+            <article className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 text-sm font-semibold leading-6 text-slate-500">
+              正在生成客户可读保险责任摘要...
+            </article>
+          ) : customerSummary ? (
+            <CustomerResponsibilitySummaryCard summary={customerSummary} />
           ) : (
             <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">
-              {reportGenerating ? '正在生成完整保险责任解析，请稍后。' : '暂无保险责任解析。'}
+              {customerSummaryMessage || (reportGenerating ? '正在生成客户可读保险责任摘要，请稍后。' : '暂无客户版保险责任摘要。')}
             </article>
           )}
         </section>
@@ -414,22 +432,28 @@ function PolicyEditDialog({
     q: '',
   });
   const updateDraft = (key: keyof PolicyFormData, value: string) => {
-    setDraft((current) => ({ ...current, [key]: key === 'amount' || key === 'firstPremium' ? sanitizeAmount(value) : value }));
+    const nextValue = key === 'amount' || key === 'firstPremium' ? sanitizeAmount(value) : value;
+    const shouldSyncMainPlan = key === 'amount' || key === 'firstPremium' || key === 'coveragePeriod' || key === 'paymentPeriod';
+    setDraft((current) => ({
+      ...current,
+      [key]: nextValue,
+      ...(shouldSyncMainPlan ? { plans: syncMainPolicyPlanFields(current.plans, current.company, { [key]: nextValue }) } : {}),
+    }));
   };
   const updateDraftPlan = (index: number, key: string, value: string) => {
     setDraft((current) => {
       const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
       const existing = plans[index];
       if (!existing) return current;
-      const nextPlans = plans.map((plan, planIndex) => (
-        planIndex === index
-          ? {
-              ...plan,
-              [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
-              ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
-            }
-          : plan
-      ));
+	      const nextPlans = plans.map((plan, planIndex) => (
+	        planIndex === index
+	          ? {
+	              ...plan,
+	              [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
+	              ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '', productCode: '', productCodes: [] } : {}),
+	            }
+	          : plan
+	      ));
       return { ...current, plans: nextPlans };
     });
   };
@@ -465,6 +489,8 @@ function PolicyEditDialog({
     setEditPlanProductQuery((current) => (current.index === index ? { index: null, company: '', q: '' } : current));
   };
   const selectDraftPlanProduct = (index: number, suggestion: PolicyProductSuggestion) => {
+    const productCode = normalizeProductCode(suggestion.productCode || suggestion.productCodes?.[0] || '');
+    const productCodes = Array.isArray(suggestion.productCodes) ? suggestion.productCodes.map(normalizeProductCode).filter(Boolean) : [];
     setDraft((current) => {
       const plans = normalizePolicyPlanList(current.plans, current.company, { keepEmpty: true });
       const existing = plans[index];
@@ -477,6 +503,8 @@ function PolicyEditDialog({
               name: suggestion.productName.trim(),
               matchedProductName: suggestion.productName.trim(),
               canonicalProductId: String(suggestion.canonicalProductId || '').trim(),
+              productCode,
+              productCodes: productCodes.length ? productCodes : productCode ? [productCode] : [],
             }
           : plan
       ));
@@ -726,11 +754,8 @@ function PolicyEditDialog({
             <SelectField label="投保人与顶梁柱关系" value={draft.applicantRelation} onChange={(value) => updateDraft('applicantRelation', value)} options={POLICY_PERSON_RELATION_OPTIONS} />
             <SelectField label="被保人与顶梁柱关系" value={draft.insuredRelation} onChange={(value) => updateDraft('insuredRelation', value)} options={POLICY_PERSON_RELATION_OPTIONS} />
           </div>
-          <div className="grid grid-cols-1 gap-3">
-            <TextField label="身份证号" value={draft.insuredIdNumber || ''} onChange={(value) => updateDraft('insuredIdNumber', value)} placeholder="被保人证件号" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label="生效日期" type="date" value={draft.date} onChange={(value) => updateDraft('date', value)} />
+	          <div className="grid grid-cols-2 gap-3">
+	            <TextField label="生效日期" type="date" value={draft.date} onChange={(value) => updateDraft('date', value)} />
             <CoveragePeriodField label="保障期间" value={draft.coveragePeriod} onChange={(value) => updateDraft('coveragePeriod', value)} placeholder="如 终身、30年、至70岁" />
           </div>
           <div className="grid grid-cols-2 gap-3">

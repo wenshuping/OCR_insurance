@@ -12,7 +12,8 @@ import {
   CircleUserRound,
   Copy,
   Download,
-  FileSearch,
+  MessageSquareText,
+  SendHorizontal,
   Shield,
   ShieldCheck,
   Sparkles,
@@ -30,7 +31,12 @@ import {
   PolicyCompanySuggestion,
   CoverageIndicator,
   FamilyMember,
+  FamilyMemberPolicyReference,
+  FamilyPolicyAnalysisReport,
   FamilyProfile,
+  FamilyReportRecord,
+  FamilySalesChatMessage,
+  FamilySalesChatThread,
   FamilySalesReview,
   PolicyFormData,
   PolicyKnowledgeMatch,
@@ -41,15 +47,22 @@ import {
   analyzePolicy,
   confirmCashValue,
   createFamilyMember,
+  createFamilyPolicyAnalysisReport,
   createFamilyProfile,
   createFamilyReportShare,
+  createFamilySalesChatThread,
   createFamilySalesReview,
+  deleteFamilyMember,
   deleteFamilyProfile,
   deletePolicy,
+  getFamilyPolicyAnalysisReport,
+  getFamilyReportRecord,
   getFamilySalesReview,
+  listFamilySalesChatThreads,
   getHealthStatus,
   getLocalPolicyAnalysisDraft,
   getPolicy,
+  getProductCustomerResponsibilitySummary,
   listPolicies,
   listFamilyProfiles,
   listPolicyResponsibilityCompanySuggestions,
@@ -59,15 +72,20 @@ import {
   matchPolicyResponsibilities,
   queryPolicyResponsibilities,
   register,
+  regenerateFamilyReportRecord,
   regeneratePolicyReport,
   recognizePolicy,
   scanCashValue,
   scanPolicy,
+  scanPolicyProductKnowledge,
   sendCode,
+  sendFamilySalesChatMessage,
   setFamilyCoreMember,
   updateFamilyProfile,
+  updateFamilyMember,
   updateFamilyMemberRelation,
   updatePolicy,
+  CustomerResponsibilitySummary,
 } from '../../api';
 import {
   FamilyReportPage,
@@ -94,6 +112,7 @@ import {
 } from '../../shared/errors';
 import {
   MAX_POLICY_UPLOAD_BYTES,
+  buildUploadItemOrientationAttempts,
   type ClientPerformanceTimings,
   clientElapsedMs,
   clientPerfNow,
@@ -136,6 +155,7 @@ import {
 import { CashflowDetailPage } from '../../features/cashflow/CashflowDetailPage';
 import { CashValueDialog } from '../../features/cash-value/CashValueDialog';
 import { FamilyCoverageOverview } from '../../features/family-report/FamilyCoverageOverview';
+import { FamilySalesReviewMarkdown } from '../../features/family-report/FamilySalesReviewMarkdown';
 import {
   readFamilyPlanningProfile,
   saveFamilyPlanningProfile,
@@ -152,6 +172,8 @@ import {
   sanitizeAmount,
   scanToForm,
   setMainPolicyPlanProduct,
+  sharePolicyPersonInfo,
+  syncMainPolicyPlanFields,
   updateOptionalResponsibilityItems,
   validatePolicyEntryForm,
 } from '../../shared/customer-policy-form';
@@ -167,9 +189,11 @@ import {
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
+const FAMILY_SALES_REVIEW_RESTORE_KEY = 'policy-ocr-app.familySalesReviewFamilyId';
 const CLIENT_BOOTED_AT = new Date().toISOString();
 const CURRENT_CLIENT_ASSET_PATH = currentClientAssetPath();
 const SHOULD_CHECK_STALE_CLIENT = Boolean(CURRENT_CLIENT_ASSET_PATH) || window.location.port === '3014';
+const CASH_VALUE_ROTATION_RETRY_ERRORS = new Set(['CASH_VALUE_TABLE_NOT_DETECTED', 'PARSE_FAILED', 'POLICY_OCR_EMPTY']);
 
 declare global {
   interface Window {
@@ -186,6 +210,50 @@ function clientAssetPathFromHtml(html: string) {
   return html.match(/\/assets\/index-[^"']+\.js/u)?.[0] || '';
 }
 
+function reloadOnceForClientAsset(latestAssetPath: string) {
+  const marker = `policy-ocr-app.reload:${latestAssetPath}`;
+  if (sessionStorage.getItem(marker)) return false;
+  sessionStorage.setItem(marker, '1');
+  window.location.reload();
+  return true;
+}
+
+function shouldRetryCashValueScanWithRotatedImage(result: CashValueScanResult | null) {
+  if (!result || result.ok) return false;
+  const error = String(result.error || '');
+  const message = String(result.message || '');
+  return CASH_VALUE_ROTATION_RETRY_ERRORS.has(error)
+    || /未检测到现金价值表表头|解析结果不可靠|未识别到有效行|POLICY_OCR_EMPTY/u.test(message);
+}
+
+function normalizeProductCode(value: unknown) {
+  const text = String(value || '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function appendProductCodeDisplayName(name: string, code: string) {
+  const normalizedName = String(name || '').trim();
+  const normalizedCode = normalizeProductCode(code);
+  if (!normalizedName || !normalizedCode) return normalizedName;
+  if (new RegExp(`[（(]\\s*${escapeRegExp(normalizedCode)}\\s*[)）]`, 'u').test(normalizedName)) return normalizedName;
+  return `${normalizedName}（${normalizedCode}）`;
+}
+
+function productSuggestionDisplayName(suggestion: PolicyProductSuggestion) {
+  return appendProductCodeDisplayName(suggestion.productName, suggestion.productCode || suggestion.productCodes?.[0] || '');
+}
+
+function policyKnowledgeMatchDisplayName(match: PolicyKnowledgeMatch) {
+  return appendProductCodeDisplayName(
+    match.resolvedProductName || match.productName,
+    match.productCode || match.productCodes?.[0] || match.bestSource?.productCode || match.bestSource?.productCodes?.[0] || '',
+  );
+}
+
 function productSuggestionToKnowledgeMatch(
   suggestion: PolicyProductSuggestion,
   queryName: string,
@@ -198,6 +266,8 @@ function productSuggestionToKnowledgeMatch(
     company: suggestion.company.trim(),
     productName,
     canonicalProductId: suggestion.canonicalProductId,
+    productCode: suggestion.productCode,
+    productCodes: suggestion.productCodes,
     title: productName,
     score: exactNameMatch ? 1 : Math.max(0.5, 0.72 - index * 0.04),
     matchReason: exactNameMatch ? '产品名称高度匹配' : '本地产品候选',
@@ -205,8 +275,34 @@ function productSuggestionToKnowledgeMatch(
     sourceCount: recordCount > 0 ? recordCount : 1,
     bestSource: {
       title: '本地产品资料',
+      productCode: suggestion.productCode,
+      productCodes: suggestion.productCodes,
     },
   };
+}
+
+function isExternalResponsibilityReference(match: PolicyKnowledgeMatch) {
+  return Boolean(
+    match.responsibilityDeferred ||
+      match.referenceOnly ||
+      match.bestSource?.responsibilityDeferred ||
+      match.bestSource?.referenceOnly ||
+      match.verificationStatus === 'pending_review' ||
+      match.bestSource?.verificationStatus === 'pending_review' ||
+      match.evidenceLevel === 'external_legacy_reference' ||
+      match.bestSource?.evidenceLevel === 'external_legacy_reference' ||
+      match.sourceKind === 'legacy_external_reference' ||
+      match.sourceKind === 'open_web_reference',
+  );
+}
+
+function assistantMatchKey(match: PolicyKnowledgeMatch) {
+  return [
+    match.company.trim(),
+    (match.resolvedProductName || match.productName).trim(),
+    match.sourceKind || '',
+    match.bestSource?.url || '',
+  ].join('\u001f');
 }
 
 const emptyForm: PolicyFormData = {
@@ -233,6 +329,24 @@ const emptyForm: PolicyFormData = {
   applicantMemberId: null,
   insuredMemberId: null,
 };
+
+function chooseFamilyMemberByName(members: FamilyMember[], name: string, coreMemberId?: number | null) {
+  const normalizedName = name.trim();
+  if (!normalizedName) return null;
+  const matches = (Array.isArray(members) ? members : []).filter((member) => (
+    member.status === 'active' &&
+    areSameParticipantName(member.name, normalizedName)
+  ));
+  return matches.sort((left, right) => (
+    (Number(right.id) === Number(coreMemberId || 0) ? 1 : 0) -
+      (Number(left.id) === Number(coreMemberId || 0) ? 1 : 0) ||
+    (right.relationLabel && right.relationLabel !== '待确认' ? 1 : 0) -
+      (left.relationLabel && left.relationLabel !== '待确认' ? 1 : 0) ||
+    (right.birthday ? 1 : 0) - (left.birthday ? 1 : 0) ||
+    (right.idNumberTail ? 1 : 0) - (left.idNumberTail ? 1 : 0) ||
+    Number(left.id || 0) - Number(right.id || 0)
+  ))[0] || null;
+}
 
 function createGuestId() {
   if (crypto.randomUUID) return `guest-${crypto.randomUUID()}`;
@@ -489,75 +603,23 @@ function reportClientPerformance(event: string, payload: Record<string, unknown>
   });
 }
 
-type SalesReviewReportSection = {
-  title: string;
-  lines: string[];
-};
-
-function isFamilySalesReviewPlaceholderLine(value: string) {
-  const normalized = String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
-  return !normalized || /^[•·\-_*—–]+$/u.test(normalized) || /^(暂无明确结论|暂无|无|待补充)$/u.test(normalized);
-}
-
-function formatFamilySalesReviewLine(value: string) {
-  return String(value || '')
-    .replace(/\*+/gu, '')
-    .replace(/`([^`]+)`/gu, (_match, token) => {
-      const text = String(token || '');
-      if (/duplicatePolicyHints/iu.test(text)) return '重复保单提示';
-      if (/evidenceWarnings/iu.test(text)) return '条款证据冲突';
-      if (/canonical:product_/iu.test(text)) return '官方条款证据';
-      if (/plans/iu.test(text)) return '险种明细';
-      if (/officialEvidence/iu.test(text)) return '官网条款证据';
-      return text;
-    })
-    .replace(/\bduplicatePolicyHints\b/giu, '重复保单提示')
-    .replace(/\bevidenceWarnings\b/giu, '条款证据冲突')
-    .replace(/\bcanonical:product_[a-z0-9_-]+\b/giu, '官方条款证据')
-    .replace(/\bofficialEvidence\b/giu, '官网条款证据')
-    .replace(/\bplans\b/giu, '险种明细')
-    .replace(/^[#＃]{1,6}\s*/u, '')
-    .replace(/\s+/gu, ' ')
-    .trim();
-}
-
-function parseFamilySalesReviewContent(content = ''): SalesReviewReportSection[] {
-  const sections: SalesReviewReportSection[] = [];
-  let current: SalesReviewReportSection | null = null;
-  for (const rawLine of String(content || '').replace(/\r/gu, '').split('\n')) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const headingMatch = line.match(/^#{1,3}\s*(.+)$/u);
-    if (headingMatch) {
-      const title = formatFamilySalesReviewLine(headingMatch[1]).replace(/^([一二三四五六七八九十]+|[0-9]+)[、.．]\s*/u, '');
-      current = { title: title || '专家研判', lines: [] };
-      sections.push(current);
-      continue;
-    }
-    if (!current) {
-      current = { title: '专家结论摘要', lines: [] };
-      sections.push(current);
-    }
-    const cleaned = formatFamilySalesReviewLine(line.replace(/^[-*]\s*/u, '').replace(/^\s*[-*]\s*/u, ''));
-    if (!isFamilySalesReviewPlaceholderLine(cleaned)) current.lines.push(cleaned);
-  }
-  const visibleSections = sections.filter((section) => section.lines.length > 0);
-  const mergedSections: SalesReviewReportSection[] = [];
-  for (const section of visibleSections) {
-    const existing = mergedSections.find((item) => item.title === section.title);
-    if (existing) {
-      for (const line of section.lines) {
-        if (!existing.lines.includes(line)) existing.lines.push(line);
-      }
-    } else {
-      mergedSections.push({ title: section.title, lines: [...section.lines] });
-    }
-  }
-  return mergedSections.length ? mergedSections : [{ title: '专家研判', lines: ['暂无专家研判内容'] }];
+function policyAnalysisReportFromRecord(record: FamilyReportRecord | null): FamilyPolicyAnalysisReport | null {
+  const report = record?.report?.familyPolicyAnalysisReport;
+  if (!report) return null;
+  return {
+    status: report.status || 'complete',
+    content: report.content || '',
+    model: report.model || '',
+    generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
+    error: report.error || '',
+    stale: String(record.status || 'active') !== 'active',
+  };
 }
 
 export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const productKnowledgeFileInputRef = useRef<HTMLInputElement | null>(null);
+  const productKnowledgeReplaceIndexRef = useRef<number | null>(null);
   const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
   const membershipStatusRequestRef = useRef(0);
@@ -572,6 +634,7 @@ export function CustomerApp() {
   const [analysisDraft, setAnalysisDraft] = useState<PolicyAnalysisResult | null>(null);
   const [showAnalysisReport, setShowAnalysisReport] = useState(false);
   const [policies, setPolicies] = useState<Policy[]>([]);
+  const [policiesLoaded, setPoliciesLoaded] = useState(false);
   const [familyProfiles, setFamilyProfiles] = useState<FamilyProfile[]>([]);
   const [familyCreateDialogOpen, setFamilyCreateDialogOpen] = useState(false);
   const [familyCreateLoading, setFamilyCreateLoading] = useState(false);
@@ -599,7 +662,11 @@ export function CustomerApp() {
   const [assistantCompany, setAssistantCompany] = useState('');
   const [assistantName, setAssistantName] = useState('');
   const [assistantAnalysis, setAssistantAnalysis] = useState<PolicyAnalysisResult | null>(null);
+  const [assistantCustomerSummary, setAssistantCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
+  const [assistantCustomerSummaryLoading, setAssistantCustomerSummaryLoading] = useState(false);
+  const [assistantCustomerSummaryMessage, setAssistantCustomerSummaryMessage] = useState('');
   const [assistantMatches, setAssistantMatches] = useState<PolicyKnowledgeMatch[]>([]);
+  const [assistantSelectedMatchKey, setAssistantSelectedMatchKey] = useState('');
   const [assistantCompanySuggestions, setAssistantCompanySuggestions] = useState<PolicyCompanySuggestion[]>([]);
   const [assistantCompanySuggestionLoading, setAssistantCompanySuggestionLoading] = useState(false);
   const [assistantProductSuggestions, setAssistantProductSuggestions] = useState<PolicyProductSuggestion[]>([]);
@@ -617,16 +684,34 @@ export function CustomerApp() {
   const [formProductMatches, setFormProductMatches] = useState<PolicyKnowledgeMatch[]>([]);
   const [formProductMatchLoading, setFormProductMatchLoading] = useState(false);
   const [formProductMatchMessage, setFormProductMatchMessage] = useState('');
+  const [formProductMatchStatus, setFormProductMatchStatus] = useState<'exact' | 'candidates' | 'not_found' | 'source_review_required' | ''>('');
+  const [productKnowledgeUploading, setProductKnowledgeUploading] = useState(false);
+  const [productKnowledgeUploadCount, setProductKnowledgeUploadCount] = useState(0);
+  const [productKnowledgeUploadItems, setProductKnowledgeUploadItems] = useState<UploadItem[]>([]);
+  const [baseScanResult, setBaseScanResult] = useState<PolicyScanResult | null>(null);
+  const [baseAnalysisDraft, setBaseAnalysisDraft] = useState<PolicyAnalysisResult | null>(null);
   const [confirmedProductMatchKey, setConfirmedProductMatchKey] = useState('');
   const [cashflowMember, setCashflowMember] = useState<string | null>(null);
   const [showFamilyReport, setShowFamilyReport] = useState(false);
+  const [savedFamilyReportRecord, setSavedFamilyReportRecord] = useState<FamilyReportRecord | null>(null);
+  const [familyReportLoading, setFamilyReportLoading] = useState(false);
+  const [familyPolicyAnalysisReport, setFamilyPolicyAnalysisReport] = useState<FamilyPolicyAnalysisReport | null>(null);
+  const [familyPolicyAnalysisLoading, setFamilyPolicyAnalysisLoading] = useState(false);
   const [familySalesReviewOpen, setFamilySalesReviewOpen] = useState(false);
   const [familySalesReviewFamilyId, setFamilySalesReviewFamilyId] = useState<number | null>(null);
   const [familySalesReview, setFamilySalesReview] = useState<FamilySalesReview | null>(null);
   const [familySalesReviewLoading, setFamilySalesReviewLoading] = useState(false);
   const familySalesReviewLoadingRef = useRef(false);
+  const familySalesReviewRestoreAttemptRef = useRef(false);
   const [familySalesReviewProgress, setFamilySalesReviewProgress] = useState(0);
   const [familySalesReviewMessage, setFamilySalesReviewMessage] = useState('');
+  const [familySalesChatThreads, setFamilySalesChatThreads] = useState<FamilySalesChatThread[]>([]);
+  const [familySalesChatThread, setFamilySalesChatThread] = useState<FamilySalesChatThread | null>(null);
+  const [familySalesChatMessages, setFamilySalesChatMessages] = useState<FamilySalesChatMessage[]>([]);
+  const [familySalesChatInput, setFamilySalesChatInput] = useState('');
+  const [familySalesChatLoading, setFamilySalesChatLoading] = useState(false);
+  const [familySalesChatMessage, setFamilySalesChatMessage] = useState('');
+  const [familySalesChatReviewMessageIds, setFamilySalesChatReviewMessageIds] = useState<number[]>([]);
   const [familyPlanningProfile, setFamilyPlanningProfile] = useState<FamilyPlanningProfile>(readFamilyPlanningProfile);
 
   // Cash value upload dialog state
@@ -646,20 +731,48 @@ export function CustomerApp() {
     () => selectedFamilyId ? policies.filter((policy) => Number(policy.familyId) === Number(selectedFamilyId)) : policies,
     [policies, selectedFamilyId],
   );
-  const familyTotalCoverage = useMemo(() => selectedFamilyPolicies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0), [selectedFamilyPolicies]);
+  const selectedFamily = useMemo(
+    () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
+    [familyProfiles, selectedFamilyId],
+  );
+  const selectedFamilyPolicySummary = selectedFamily?.policySummary || null;
+  const familyPolicyCount = Number(selectedFamilyPolicySummary?.policyCount ?? selectedFamilyPolicies.length);
+  const familyTotalCoverage = Number(selectedFamilyPolicySummary?.totalCoverage ?? selectedFamilyPolicies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0));
   const familyPolicyGroups = useMemo(() => groupPoliciesByInsured(selectedFamilyPolicies), [selectedFamilyPolicies]);
   const familyReport = useMemo(
     () => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile, { familyId: selectedFamilyId }),
     [selectedFamilyPolicies, familyPlanningProfile, selectedFamilyId],
   );
-  const selectedFamily = useMemo(
-    () => familyProfiles.find((family) => Number(family.id) === Number(selectedFamilyId)) || null,
-    [familyProfiles, selectedFamilyId],
-  );
+  const displayFamilyReport = savedFamilyReportRecord?.report || familyReport;
   const familySalesReviewFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(familySalesReviewFamilyId)) || null,
     [familyProfiles, familySalesReviewFamilyId],
   );
+  useEffect(() => {
+    if (!selectedFamily?.planningProfile) return;
+    setFamilyPlanningProfile(saveFamilyPlanningProfile(selectedFamily.planningProfile));
+  }, [selectedFamily?.planningProfile]);
+  useEffect(() => {
+    if (familySalesReviewRestoreAttemptRef.current || familySalesReviewOpen) return;
+    const restoredFamilyId = Number(sessionStorage.getItem(FAMILY_SALES_REVIEW_RESTORE_KEY) || 0);
+    if (!restoredFamilyId) return;
+    if (!familyProfiles.length) return;
+    const canRestoreFamily = familyProfiles.some((family) => Number(family.id || 0) === restoredFamilyId);
+    if (!canRestoreFamily) {
+      familySalesReviewRestoreAttemptRef.current = true;
+      sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
+      return;
+    }
+    familySalesReviewRestoreAttemptRef.current = true;
+    void openFamilySalesReview(restoredFamilyId);
+  }, [familyProfiles, familySalesReviewOpen, guestId, token]);
+
+  function familyReportGenerationMessage(reportRecord: FamilyReportRecord, actionText: string) {
+    return String(reportRecord?.source || '').includes('deepseek')
+      ? `家庭保障分析报告已${actionText}，DeepSeek质检已完成`
+      : `家庭保障分析报告已${actionText}，当前为本地规则结果`;
+  }
+
   const entryFamilyId = formData.familyId ?? selectedFamilyId ?? null;
   const entrySelectedFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(entryFamilyId)) || null,
@@ -667,13 +780,24 @@ export function CustomerApp() {
   );
   const familyPolicyCounts = useMemo(() => {
     const counts: Record<number, number> = {};
+    const hasFamilyPolicySummaries = familyProfiles.some((family) => typeof family.policyCount === 'number');
+    for (const family of familyProfiles) {
+      const familyId = Number(family.id || 0);
+      if (!familyId) continue;
+      counts[familyId] = (!policiesLoaded && hasFamilyPolicySummaries)
+        ? Number(family.policySummary?.policyCount ?? family.policyCount ?? 0)
+        : 0;
+    }
+    if (!policiesLoaded && hasFamilyPolicySummaries) {
+      return counts;
+    }
     for (const policy of policies) {
       const familyId = Number(policy.familyId || 0);
       if (!familyId) continue;
       counts[familyId] = (counts[familyId] || 0) + 1;
     }
     return counts;
-  }, [policies]);
+  }, [familyProfiles, policies, policiesLoaded]);
   const familyPolicyMemberIds = useMemo(() => {
     const memberIds: Record<number, number[]> = {};
     for (const policy of policies) {
@@ -687,6 +811,35 @@ export function CustomerApp() {
       memberIds[familyId] = ids;
     }
     return memberIds;
+  }, [policies]);
+  const familyMemberPolicyRefs = useMemo(() => {
+    const refs: Record<number, Record<number, FamilyMemberPolicyReference[]>> = {};
+    for (const policy of policies) {
+      const familyId = Number(policy.familyId || 0);
+      if (!familyId) continue;
+      refs[familyId] = refs[familyId] || {};
+      const rolesByMemberId: Record<number, string[]> = {};
+      const applicantMemberId = Number(policy.applicantMemberId || 0);
+      const insuredMemberId = Number(policy.insuredMemberId || 0);
+      if (applicantMemberId) rolesByMemberId[applicantMemberId] = [...(rolesByMemberId[applicantMemberId] || []), '投保人'];
+      if (insuredMemberId) rolesByMemberId[insuredMemberId] = [...(rolesByMemberId[insuredMemberId] || []), '被保人'];
+      for (const [memberIdText, roles] of Object.entries(rolesByMemberId)) {
+        const memberId = Number(memberIdText);
+        refs[familyId][memberId] = [
+          ...(refs[familyId][memberId] || []),
+          {
+            id: policy.id,
+            company: policy.company || '',
+            name: policy.name || '',
+            policyNumber: '',
+            applicant: policy.applicant || '',
+            insured: policy.insured || '',
+            roles,
+          },
+        ];
+      }
+    }
+    return refs;
   }, [policies]);
   useEffect(() => {
     if (!familySalesReviewLoading) return undefined;
@@ -756,11 +909,13 @@ export function CustomerApp() {
 
   function handleFamilyPlanningProfileChange(next: FamilyPlanningProfile) {
     setFamilyPlanningProfile(saveFamilyPlanningProfile(next));
+    setSavedFamilyReportRecord(null);
   }
 
   async function refreshPolicies(nextToken = token) {
     const payload = await listPolicies({ token: nextToken || undefined, guestId: nextToken ? undefined : guestId });
     setPolicies(payload.policies);
+    setPoliciesLoaded(true);
     setSelectedPolicy((current) => {
       if (!current) return current;
       return payload.policies.find((policy) => Number(policy.id) === Number(current.id)) || current;
@@ -855,6 +1010,7 @@ export function CustomerApp() {
   function clearCustomerSession(nextMessage = '已退出登录，当前为游客模式') {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_MOBILE_KEY);
+    sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
     setToken('');
     setMobile('');
     setAuthMobile('');
@@ -868,6 +1024,7 @@ export function CustomerApp() {
     setMembershipMessage('');
     setSelectedPolicy(null);
     setPolicies([]);
+    setPoliciesLoaded(false);
     setFamilyProfiles([]);
     setSelectedFamilyId(null);
     setMessage(nextMessage);
@@ -885,6 +1042,7 @@ export function CustomerApp() {
   }
 
   useEffect(() => {
+    setPoliciesLoaded(false);
     Promise.all([refreshPolicies(), refreshFamilyProfiles(), refreshMembershipStatus()]).catch((error) => {
       if (error instanceof ApiError && error.status === 401) {
         clearCustomerSession('登录已失效，请重新验证手机号');
@@ -940,6 +1098,7 @@ export function CustomerApp() {
           const latestAssetPath = clientAssetPathFromHtml(await response.text());
           if (cancelled) return;
           if (latestAssetPath && latestAssetPath !== CURRENT_CLIENT_ASSET_PATH) {
+            if (reloadOnceForClientAsset(latestAssetPath)) return;
             setStaleClientHealth({ ok: true, service: 'policy-ocr-app', startedAt: CLIENT_BOOTED_AT });
             return;
           }
@@ -1128,6 +1287,7 @@ export function CustomerApp() {
       setFormProductMatches([]);
       setFormProductMatchLoading(false);
       setFormProductMatchMessage('');
+      setFormProductMatchStatus('');
       return;
     }
 
@@ -1139,6 +1299,7 @@ export function CustomerApp() {
         const payload = await matchPolicyResponsibilities({ company, name });
         if (cancelled) return;
         let matches = Array.isArray(payload.matches) ? payload.matches : [];
+        const matchStatus = payload.status || (matches.length ? 'candidates' : 'not_found');
         if (!matches.length) {
           const suggestionPayload = await listPolicyResponsibilityProductSuggestions({ company, q: name, limit: 3 });
           if (cancelled) return;
@@ -1147,10 +1308,12 @@ export function CustomerApp() {
             .map((suggestion, index) => productSuggestionToKnowledgeMatch(suggestion, name, index));
         }
         setFormProductMatches(matches);
+        setFormProductMatchStatus(matchStatus);
         setFormProductMatchMessage(matches.length ? '' : '本地暂无匹配候选，生成时将继续查找官方资料');
       } catch (error) {
         if (cancelled) return;
         setFormProductMatches([]);
+        setFormProductMatchStatus('');
         setFormProductMatchMessage(error instanceof Error ? error.message : '本地产品匹配失败');
       } finally {
         if (!cancelled) setFormProductMatchLoading(false);
@@ -1212,7 +1375,21 @@ export function CustomerApp() {
       setConfirmedProductMatchKey('');
     }
     setFormData((current) => {
-      if (key !== 'company' && key !== 'name') return { ...current, [key]: value };
+      if (['amount', 'firstPremium', 'coveragePeriod', 'paymentPeriod'].includes(key)) {
+        const nextValue = key === 'amount' || key === 'firstPremium' ? sanitizeAmount(String(value || '')) : String(value || '');
+        return {
+          ...current,
+          [key]: nextValue,
+          plans: syncMainPolicyPlanFields(current.plans, current.company, { [key]: nextValue }),
+        };
+      }
+      if (key !== 'company' && key !== 'name') {
+        const next = { ...current, [key]: value };
+        if (['applicant', 'insured', 'beneficiary', 'applicantBirthday', 'insuredBirthday', 'beneficiaryBirthday', 'insuredIdNumber'].includes(key)) {
+          return autoBindEntryMembersByName(next);
+        }
+        return next;
+      }
       const nextCompany = key === 'company' ? String(value || '') : current.company;
       const nextName = key === 'name' ? String(value || '') : current.name;
       const plans = normalizePolicyPlanList(current.plans, nextCompany, { keepEmpty: true }).map((plan, index) => {
@@ -1238,14 +1415,14 @@ export function CustomerApp() {
     const plans = normalizePolicyPlanList(formData.plans, formData.company, { keepEmpty: true });
     const existing = plans[index];
     if (!existing) return;
-    const nextPlans = plans.map((plan, planIndex) => {
-      if (planIndex !== index) return plan;
-      return {
-        ...plan,
-        [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
-        ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '' } : {}),
-      };
-    });
+	    const nextPlans = plans.map((plan, planIndex) => {
+	      if (planIndex !== index) return plan;
+	      return {
+	        ...plan,
+	        [key]: key === 'amount' || key === 'premium' ? sanitizeAmount(value) : value,
+	        ...(key === 'name' ? { matchedProductName: '', canonicalProductId: '', productCode: '', productCodes: [] } : {}),
+	      };
+	    });
     const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
     const totalPremium = nextPlans.reduce((sum, plan) => sum + Number(plan.premium || 0), 0);
     const nextData = {
@@ -1273,6 +1450,8 @@ export function CustomerApp() {
     const company = suggestion.company.trim();
     const name = suggestion.productName.trim();
     const canonicalProductId = String(suggestion.canonicalProductId || '').trim();
+    const productCode = normalizeProductCode(suggestion.productCode || suggestion.productCodes?.[0] || '');
+    const productCodes = Array.isArray(suggestion.productCodes) ? suggestion.productCodes.map(normalizeProductCode).filter(Boolean) : [];
     if (!company || !name) return;
     setShowAnalysisReport(false);
     setFormPlanProductQuery({ index: null, company: '', q: '' });
@@ -1288,6 +1467,8 @@ export function CustomerApp() {
         name,
         matchedProductName: name,
         canonicalProductId,
+        productCode,
+        productCodes: productCodes.length ? productCodes : productCode ? [productCode] : [],
       };
     });
     const primary = nextPlans.find((plan) => plan.role === 'main') || nextPlans[0] || null;
@@ -1384,6 +1565,7 @@ export function CustomerApp() {
     setConfirmedProductMatchKey(productLookupKey(company, name));
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
     const nextData = {
       ...formData,
       company,
@@ -1459,6 +1641,12 @@ export function CustomerApp() {
 
   function handleSelectFamily(familyId: number | null) {
     setSelectedFamilyId(familyId);
+    setSavedFamilyReportRecord(null);
+    setFamilyPolicyAnalysisReport(null);
+    const family = familyProfiles.find((item) => Number(item.id) === Number(familyId || 0));
+    if (family?.planningProfile) {
+      setFamilyPlanningProfile(saveFamilyPlanningProfile(family.planningProfile));
+    }
     setFormData((current) => ({
       ...current,
       familyId,
@@ -1467,14 +1655,141 @@ export function CustomerApp() {
     }));
   }
 
-  function openFamilyReport(familyId: number) {
+  async function openFamilyReport(familyId: number) {
+    const family = familyProfiles.find((item) => Number(item.id) === Number(familyId));
+    const reportPlanningProfile = family?.planningProfile
+      ? saveFamilyPlanningProfile(family.planningProfile)
+      : familyPlanningProfile;
     handleSelectFamily(familyId);
+    setFamilyReportLoading(true);
+    setMessage('正在加载家庭保障分析报告');
     setShowFamilyReport(true);
+    try {
+      const loaded = await getFamilyReportRecord({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      });
+      let reportRecord = loaded.reportRecord;
+      let actionText = '加载';
+      if (!reportRecord) {
+        setMessage('正在生成家庭保障分析报告');
+        const generated = await regenerateFamilyReportRecord({
+          token: token || undefined,
+          guestId: token ? undefined : guestId,
+          familyId,
+          planningProfile: reportPlanningProfile,
+          userRefresh: false,
+        });
+        reportRecord = generated.reportRecord;
+        actionText = '生成';
+      }
+      setSavedFamilyReportRecord(reportRecord);
+      const analysis = await getFamilyPolicyAnalysisReport({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      });
+      setFamilyPolicyAnalysisReport(analysis.analysisReport || policyAnalysisReportFromRecord(reportRecord));
+      setMessage(
+        String(reportRecord.status || 'active') === 'active'
+          ? familyReportGenerationMessage(reportRecord, actionText)
+          : '已读取旧版家庭保障分析报告，资料已更新，建议重新生成',
+      );
+    } catch (error) {
+      setSavedFamilyReportRecord(null);
+      setFamilyPolicyAnalysisReport(null);
+      setMessage(error instanceof Error ? error.message : '家庭报告加载失败，已展示本地预览');
+    } finally {
+      setFamilyReportLoading(false);
+    }
+  }
+
+  async function regenerateFamilyReport() {
+    if (!selectedFamilyId) {
+      setMessage('请先选择家庭档案');
+      return;
+    }
+    if (familyReportLoading) return;
+    setFamilyReportLoading(true);
+    setMessage('正在重新生成家庭保障分析报告');
+    try {
+      const generated = await regenerateFamilyReportRecord({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: selectedFamilyId,
+        planningProfile: familyPlanningProfile,
+        userRefresh: true,
+      });
+      setSavedFamilyReportRecord(generated.reportRecord);
+      setFamilyPolicyAnalysisReport(policyAnalysisReportFromRecord(generated.reportRecord));
+      setMessage(familyReportGenerationMessage(generated.reportRecord, '重新生成'));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '家庭报告重新生成失败');
+    } finally {
+      setFamilyReportLoading(false);
+    }
+  }
+
+  async function generateFamilyPolicyAnalysisReport() {
+    if (!selectedFamilyId) {
+      setMessage('请先选择家庭档案');
+      return;
+    }
+    if (familyPolicyAnalysisLoading) return;
+    setFamilyPolicyAnalysisLoading(true);
+    setMessage('正在生成家庭保单分析报告');
+    try {
+      setFamilyPolicyAnalysisReport(null);
+      const generated = await createFamilyPolicyAnalysisReport({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: selectedFamilyId,
+        planningProfile: familyPlanningProfile,
+      });
+      setFamilyPolicyAnalysisReport(generated.analysisReport);
+      setMessage('家庭保单分析报告已生成');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '家庭保单分析报告生成失败';
+      setFamilyPolicyAnalysisReport({
+        status: 'failed',
+        content: '',
+        generatedAt: new Date().toISOString(),
+        error: errorMessage,
+      });
+      setMessage(errorMessage);
+    } finally {
+      setFamilyPolicyAnalysisLoading(false);
+    }
+  }
+
+  async function handleShareFamilyReport(familyId = selectedFamilyId) {
+    if (!familyId) {
+      setMessage('请先选择家庭档案');
+      return;
+    }
+    try {
+      const created = await createFamilyReportShare({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId,
+      });
+      const shareUrl = `${window.location.origin}${window.location.pathname}#/family-share/${created.share.token}`;
+      await navigator.clipboard.writeText(shareUrl);
+      setMessage(`分享链接：${shareUrl}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '家庭报告分享失败');
+    }
   }
 
   function viewFamilyPolicies(familyId: number) {
     handleSelectFamily(familyId);
     setShowFamilyPolicies(true);
+  }
+
+  function closeFamilySalesReview() {
+    sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
+    setFamilySalesReviewOpen(false);
   }
 
   function familySalesReviewFailureMessage(error: unknown) {
@@ -1483,7 +1798,7 @@ export function CustomerApp() {
       return '专家分析服务暂不可用，请联系管理员完成专家系统配置';
     }
     if (/timeout|超时/iu.test(text)) return '专家研判耗时较长，请稍后重试';
-    return '专家分析暂时未完成，请稍后重试';
+    return text ? `专家分析暂时未完成：${text}` : '专家分析暂时未完成，请稍后重试';
   }
 
   function setFamilySalesReviewBusy(loading: boolean) {
@@ -1496,6 +1811,7 @@ export function CustomerApp() {
   }
 
   async function openFamilySalesReview(familyId: number) {
+    sessionStorage.setItem(FAMILY_SALES_REVIEW_RESTORE_KEY, String(familyId));
     if (familySalesReviewLoadingRef.current) {
       handleSelectFamily(familyId);
       setFamilySalesReviewFamilyId(familyId);
@@ -1507,7 +1823,13 @@ export function CustomerApp() {
     setFamilySalesReviewFamilyId(familyId);
     setFamilySalesReviewOpen(true);
     setFamilySalesReview(null);
-    setFamilySalesReviewBusy(true);
+    setFamilySalesChatThreads([]);
+    setFamilySalesChatThread(null);
+    setFamilySalesChatMessages([]);
+    setFamilySalesChatInput('');
+    setFamilySalesChatMessage('');
+    setFamilySalesChatReviewMessageIds([]);
+    setFamilySalesReviewProgress(0);
     setFamilySalesReviewMessage('正在读取已保存的专家报告');
     try {
       const authInput = {
@@ -1518,13 +1840,16 @@ export function CustomerApp() {
       const saved = await getFamilySalesReview(authInput);
       if (saved.review?.content) {
         setFamilySalesReview(saved.review);
-        setFamilySalesReviewMessage('已读取最近一次专家研判');
+        setFamilySalesReviewMessage(
+          saved.review.status === 'archived'
+            ? '已读取旧版销售建议，资料已更新，可点击重算'
+            : '已读取最近一次专家研判',
+        );
+        await loadFamilySalesChatThreads(familyId);
         return;
       }
-      setFamilySalesReviewMessage('暂无已保存报告，正在生成专家研判');
-      const generated = await createFamilySalesReview(authInput);
-      setFamilySalesReview(generated.review);
-      setFamilySalesReviewMessage('专家研判已完成并保存');
+      setFamilySalesReviewMessage('暂无已保存销售建议，可点击生成');
+      await loadFamilySalesChatThreads(familyId);
     } catch (error) {
       setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
     } finally {
@@ -1542,15 +1867,18 @@ export function CustomerApp() {
       return;
     }
     setFamilySalesReviewBusy(true);
-    setFamilySalesReviewMessage('专家系统正在重新生成策略简报');
+    setFamilySalesReviewMessage('正在请求专家系统生成策略简报');
     try {
       const payload = await createFamilySalesReview({
         token: token || undefined,
         guestId: token ? undefined : guestId,
         familyId: familySalesReviewFamilyId,
+        userRefresh: true,
+        salesChatMessageIds: familySalesChatReviewMessageIds,
       });
       setFamilySalesReview(payload.review);
-      setFamilySalesReviewMessage('专家研判已完成并保存');
+      setFamilySalesReviewMessage(familySalesChatReviewMessageIds.length ? '专家研判已按所选续聊内容重算并保存' : '专家研判已完成并保存');
+      await loadFamilySalesChatThreads(familySalesReviewFamilyId);
     } catch (error) {
       setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
     } finally {
@@ -1558,27 +1886,90 @@ export function CustomerApp() {
     }
   }
 
-  async function handleShareFamilyReport() {
-    if (!selectedFamilyId) {
-      setMessage('请先选择家庭档案');
-      return;
-    }
+  async function loadFamilySalesChatThreads(familyId: number) {
     try {
-      const payload = await createFamilyReportShare({
+      const payload = await listFamilySalesChatThreads({
         token: token || undefined,
         guestId: token ? undefined : guestId,
-        familyId: selectedFamilyId,
+        familyId,
       });
-      const shareUrl = `${window.location.origin}${window.location.pathname}#/family-share/${payload.share.token}`;
-      try {
-        await navigator.clipboard.writeText(shareUrl);
-        setMessage('家庭报告分享链接已复制');
-      } catch {
-        setMessage(`分享链接：${shareUrl}`);
-      }
+      setFamilySalesChatThreads(payload.threads || []);
+      const latestThread = (payload.threads || [])[0] || null;
+      setFamilySalesChatThread(latestThread);
+      setFamilySalesChatMessages(Array.isArray(latestThread?.messages) ? latestThread.messages : []);
+      setFamilySalesChatReviewMessageIds([]);
+      setFamilySalesChatMessage(latestThread ? '已读取最近一次续聊' : '可以围绕这份销售建议继续追问');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '家庭报告分享失败');
+      setFamilySalesChatThreads([]);
+      setFamilySalesChatThread(null);
+      setFamilySalesChatMessages([]);
+      setFamilySalesChatReviewMessageIds([]);
+      setFamilySalesChatMessage(error instanceof Error ? error.message : '续聊记录读取失败');
     }
+  }
+
+  async function submitFamilySalesChat(messageText = familySalesChatInput) {
+    const content = messageText.trim();
+    if (!content || !familySalesReviewFamilyId || familySalesChatLoading) return;
+    setFamilySalesChatLoading(true);
+    setFamilySalesChatMessage('正在生成续聊回复');
+    setFamilySalesChatInput('');
+    try {
+      const authInput = {
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: familySalesReviewFamilyId,
+      };
+      const payload = familySalesChatThread?.id
+        ? await sendFamilySalesChatMessage({
+          ...authInput,
+          threadId: familySalesChatThread.id,
+          message: content,
+        })
+        : await createFamilySalesChatThread({
+          ...authInput,
+          message: content,
+        });
+      setFamilySalesChatThread(payload.thread);
+      setFamilySalesChatMessages((current) => {
+        const byId = new Map(current.map((item) => [Number(item.id), item]));
+        for (const item of payload.messages || []) byId.set(Number(item.id), item);
+        return Array.from(byId.values()).sort((left, right) => (
+          String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
+          Number(left.id || 0) - Number(right.id || 0)
+        ));
+      });
+      setFamilySalesChatThreads((current) => {
+        const next = [payload.thread, ...current.filter((thread) => Number(thread.id) !== Number(payload.thread.id))];
+        return next.sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+      });
+      setFamilySalesChatMessage('续聊回复已生成');
+    } catch (error) {
+      setFamilySalesChatInput(content);
+      setFamilySalesChatMessage(error instanceof Error ? error.message : '续聊生成失败');
+    } finally {
+      setFamilySalesChatLoading(false);
+    }
+  }
+
+  async function copyFamilySalesChatMessage(content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setFamilySalesChatMessage('已复制续聊内容');
+    } catch {
+      setFamilySalesChatMessage('复制失败，请手动选择文本复制');
+    }
+  }
+
+  function toggleFamilySalesChatReviewMessage(messageId: number) {
+    setFamilySalesChatReviewMessageIds((current) => {
+      if (current.includes(messageId)) return current.filter((id) => id !== messageId);
+      if (current.length >= 6) {
+        setFamilySalesChatMessage('最多选择 6 条续聊内容用于重算');
+        return current;
+      }
+      return [...current, messageId];
+    });
   }
 
   async function createFamilyProfileByName(familyName: string) {
@@ -1617,10 +2008,99 @@ export function CustomerApp() {
   }
 
   function findFamilyMemberByName(name: string) {
-    const normalizedName = name.trim();
-    if (!normalizedName) return null;
-    const matches = entrySelectedFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
-    return matches.length === 1 ? matches[0] : null;
+    return chooseFamilyMemberByName(entrySelectedFamilyMembers, name, entrySelectedFamily?.coreMemberId);
+  }
+
+  function relationLabelForEntryMember(member: FamilyMember) {
+    if (Number(member.id) === Number(entrySelectedFamily?.coreMemberId || 0)) return '本人';
+    return member.relationLabel || '待确认';
+  }
+
+  function namedPolicyPerson(value: unknown) {
+    const name = String(value || '').trim();
+    return name && name !== '法定' ? name : '';
+  }
+
+  function entryPersonInfoByName(familyId: number) {
+    const people = new Map<string, { birthday?: string; insuredIdNumber?: string; relationLabel?: string }>();
+    const remember = (nameValue: unknown, info: { birthday?: unknown; insuredIdNumber?: unknown; relationLabel?: unknown } = {}) => {
+      const name = namedPolicyPerson(nameValue);
+      if (!name) return;
+      const existing = people.get(name) || {};
+      const birthday = String(info.birthday || '').trim();
+      const insuredIdNumber = String(info.insuredIdNumber || '').trim();
+      const relationLabel = String(info.relationLabel || '').trim();
+      if (birthday && !existing.birthday) existing.birthday = birthday;
+      if (insuredIdNumber && !existing.insuredIdNumber) existing.insuredIdNumber = insuredIdNumber;
+      if (relationLabel && relationLabel !== '待确认' && !existing.relationLabel) existing.relationLabel = relationLabel;
+      people.set(name, existing);
+    };
+
+    for (const member of entrySelectedFamilyMembers) {
+      if (member.status !== 'active') continue;
+      remember(member.name, { birthday: member.birthday, relationLabel: relationLabelForEntryMember(member) });
+    }
+    for (const policy of policies) {
+      if (Number(policy.familyId || 0) !== Number(familyId)) continue;
+      remember(policy.applicant, {
+        birthday: policy.applicantBirthday,
+        relationLabel: policy.applicantRelationLabel || policy.applicantRelation,
+      });
+      remember(policy.insured, {
+        birthday: policy.insuredBirthday,
+        insuredIdNumber: policy.insuredIdNumber,
+        relationLabel: policy.insuredRelationLabel || policy.insuredRelation,
+      });
+      remember(policy.beneficiary, {
+        birthday: policy.beneficiaryBirthday,
+        relationLabel: policy.beneficiaryRelation,
+      });
+    }
+    return people;
+  }
+
+  function fillEntryPersonInfo(data: PolicyFormData): PolicyFormData {
+    const familyId = Number(data.familyId || entryFamilyId || 0);
+    const next = sharePolicyPersonInfo(data);
+    if (!familyId) return next;
+    const people = entryPersonInfoByName(familyId);
+    const applicantInfo = people.get(namedPolicyPerson(next.applicant));
+    const insuredInfo = people.get(namedPolicyPerson(next.insured));
+    const beneficiaryInfo = people.get(namedPolicyPerson(next.beneficiary));
+    if (!String(next.applicantBirthday || '').trim() && applicantInfo?.birthday) next.applicantBirthday = applicantInfo.birthday;
+    if (!String(next.insuredBirthday || '').trim() && insuredInfo?.birthday) next.insuredBirthday = insuredInfo.birthday;
+    if (!String(next.insuredIdNumber || '').trim() && insuredInfo?.insuredIdNumber) next.insuredIdNumber = insuredInfo.insuredIdNumber;
+    if (!String(next.beneficiaryBirthday || '').trim() && beneficiaryInfo?.birthday) next.beneficiaryBirthday = beneficiaryInfo.birthday;
+    if (!String(next.beneficiaryRelation || '').trim() && beneficiaryInfo?.relationLabel) next.beneficiaryRelation = beneficiaryInfo.relationLabel;
+    return sharePolicyPersonInfo(next);
+  }
+
+  function autoBindEntryMembersByName(data: PolicyFormData): PolicyFormData {
+    const familyId = Number(data.familyId || entryFamilyId || 0);
+    const syncedData = fillEntryPersonInfo(data);
+    if (!familyId || Number(entrySelectedFamily?.id || 0) !== familyId) return syncedData;
+    const applicantMember = findFamilyMemberByName(syncedData.applicant || '');
+    const insuredMember = findFamilyMemberByName(syncedData.insured || '');
+    const sameParticipant = areSameParticipantName(syncedData.applicant || '', syncedData.insured || '');
+    const sharedMember = sameParticipant ? applicantMember || insuredMember : null;
+    const finalApplicantMember = sharedMember || applicantMember;
+    const finalInsuredMember = sharedMember || insuredMember;
+    return {
+      ...syncedData,
+      familyId,
+      ...(finalApplicantMember ? {
+        applicantMemberId: finalApplicantMember.id,
+        applicantRelation: relationLabelForEntryMember(finalApplicantMember),
+        applicantRelationLabel: relationLabelForEntryMember(finalApplicantMember),
+        applicantBirthday: syncedData.applicantBirthday || finalApplicantMember.birthday || '',
+      } : {}),
+      ...(finalInsuredMember ? {
+        insuredMemberId: finalInsuredMember.id,
+        insuredRelation: relationLabelForEntryMember(finalInsuredMember),
+        insuredRelationLabel: relationLabelForEntryMember(finalInsuredMember),
+        insuredBirthday: syncedData.insuredBirthday || finalInsuredMember.birthday || '',
+      } : {}),
+    };
   }
 
   async function ensureFamilyBeforeSave() {
@@ -1690,15 +2170,83 @@ export function CustomerApp() {
     return replaceFamilyProfile(payload.family, payload.members);
   }
 
-  async function updateFamilyNameForFamily(family: FamilyProfile, familyName: string) {
+  async function updateFamilyMemberForFamily(family: FamilyProfile, member: FamilyMember, input: { name: string; birthday?: string; relationLabel?: string; notes?: string; syncBoundPolicies?: boolean }) {
+    const payload = await updateFamilyMember({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      memberId: member.id,
+      name: input.name,
+      birthday: input.birthday,
+      relationLabel: input.relationLabel,
+      notes: input.notes,
+      syncBoundPolicies: input.syncBoundPolicies,
+    });
+    if (Array.isArray(payload.policies) && payload.policies.length) {
+      const updatedPolicies = new Map(payload.policies.map((policy) => [Number(policy.id), policy]));
+      setPolicies((current) => current.map((policy) => updatedPolicies.get(Number(policy.id)) || policy));
+    } else {
+      setPolicies((current) => current.map((policy) => {
+        if (Number(policy.familyId || 0) !== Number(family.id)) return policy;
+        const nextPolicy = { ...policy };
+        if (Number(nextPolicy.applicantMemberId || 0) === Number(member.id)) {
+          nextPolicy.applicantMemberName = payload.member.name;
+          if (input.syncBoundPolicies) {
+            nextPolicy.applicant = payload.member.name;
+            nextPolicy.applicantBirthday = payload.member.birthday || '';
+            nextPolicy.applicantRelation = payload.member.relationLabel || '';
+            nextPolicy.applicantRelationLabel = payload.member.relationLabel || '';
+          }
+        }
+        if (Number(nextPolicy.insuredMemberId || 0) === Number(member.id)) {
+          nextPolicy.insuredMemberName = payload.member.name;
+          if (input.syncBoundPolicies) {
+            nextPolicy.insured = payload.member.name;
+            nextPolicy.insuredBirthday = payload.member.birthday || '';
+            nextPolicy.insuredRelation = payload.member.relationLabel || '';
+            nextPolicy.insuredRelationLabel = payload.member.relationLabel || '';
+          }
+        }
+        return nextPolicy;
+      }));
+    }
+    const syncedPolicyCount = Number(payload.syncedPolicyCount || 0);
+    setMessage(syncedPolicyCount ? `已更新成员：${payload.member.name}，同步${syncedPolicyCount}张保单` : `已更新成员：${payload.member.name}`);
+    return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function deleteFamilyMemberForFamily(family: FamilyProfile, member: FamilyMember) {
+    const payload = await deleteFamilyMember({
+      token: token || undefined,
+      guestId: token ? undefined : guestId,
+      familyId: family.id,
+      memberId: member.id,
+    });
+    if (payload.clearedPolicyCount) await refreshPolicies();
+    setMessage(`已删除成员：${member.name}`);
+    return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function updateFamilyForFamily(family: FamilyProfile, input: { familyName: string; notes?: string; planningProfile?: FamilyPlanningProfile | null }) {
     const payload = await updateFamilyProfile({
       token: token || undefined,
       guestId: token ? undefined : guestId,
       familyId: family.id,
-      familyName,
+      familyName: input.familyName,
+      notes: input.notes,
+      planningProfile: input.planningProfile,
     });
-    setMessage(`已更新家庭名称：${payload.family.familyName}`);
+    if (Number(payload.family.id) === Number(selectedFamilyId || 0)) {
+      setFamilyPlanningProfile(saveFamilyPlanningProfile(payload.family.planningProfile || {}));
+      setSavedFamilyReportRecord(null);
+      setFamilyPolicyAnalysisReport(null);
+    }
+    setMessage(`已保存家庭档案：${payload.family.familyName}`);
     return replaceFamilyProfile(payload.family, payload.members);
+  }
+
+  async function updateFamilyNameForFamily(family: FamilyProfile, familyName: string) {
+    return updateFamilyForFamily(family, { familyName, notes: family.notes || '' });
   }
 
   async function updateFamilyNotesForFamily(family: FamilyProfile, notes: string) {
@@ -1796,6 +2344,7 @@ export function CustomerApp() {
   }) {
     const { item, originalBytes, flowStartedAt, source } = input;
     clearOptionalResponsibilitySelections();
+    productKnowledgeReplaceIndexRef.current = null;
     setUploadItem(item);
     setScanResult(null);
     setAnalysisDraft(null);
@@ -1803,6 +2352,11 @@ export function CustomerApp() {
     setConfirmedProductMatchKey('');
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
+    setProductKnowledgeUploadItems([]);
+    setProductKnowledgeUploadCount(0);
+    setBaseScanResult(null);
+    setBaseAnalysisDraft(null);
     setMessage('正在上传并 OCR 识别保单信息');
     const recognizeStartedAt = clientPerfNow();
     const payload = await recognizePolicy({
@@ -1821,18 +2375,22 @@ export function CustomerApp() {
       hasUpload: true,
       outputOcrChars: String(payload.scan?.ocrText || '').length,
     });
-    setFormData((current) => mergeScanToForm(payload.scan, current));
+    setFormData((current) => autoBindEntryMembersByName(mergeScanToForm(payload.scan, current)));
     setOcrText(payload.scan.ocrText || '');
     setScanResult(payload.scan);
+    setBaseScanResult(payload.scan);
     const recognizedAnalysis = payload.analysis || null;
     if (hasAnalysisResult(recognizedAnalysis)) {
-      setAnalysisDraft(withRememberedOptionalResponsibilitySelections(recognizedAnalysis));
+      const nextAnalysis = withRememberedOptionalResponsibilitySelections(recognizedAnalysis);
+      setAnalysisDraft(nextAnalysis);
+      setBaseAnalysisDraft(nextAnalysis);
       setShowAnalysisReport(false);
       const reviewSuffix = scanReviewMessageSuffix(payload.scan);
       setMessage(recognizedAnalysis?.optionalResponsibilities?.length
         ? `OCR 已完成，已匹配本地保险责任${reviewSuffix}，请确认可选责任后保存`
         : `OCR 已完成，已匹配本地保险责任${reviewSuffix}，请确认后保存`);
     } else {
+      setBaseAnalysisDraft(null);
       setMessage(`OCR 已完成${scanReviewMessageSuffix(payload.scan)}，可生成保险责任或直接保存`);
     }
     reportClientPerformance('client.recognize.complete', {
@@ -1848,6 +2406,135 @@ export function CustomerApp() {
   function handleScanClick() {
     if (blockPolicyEntryIfUnauthenticated('上传保单照片前需要先验证手机号')) return;
     fileInputRef.current?.click();
+  }
+
+  function handleProductKnowledgeScanClick() {
+    if (blockPolicyEntryIfUnauthenticated('上传补充产品页前需要先验证手机号')) return;
+    if (!uploadItem || !baseScanResult) {
+      setMessage('请先上传保单基本信息页照片');
+      return;
+    }
+    productKnowledgeReplaceIndexRef.current = null;
+    productKnowledgeFileInputRef.current?.click();
+  }
+
+  function handleReplaceProductKnowledgeUpload(index: number) {
+    if (productKnowledgeUploading) return;
+    if (!productKnowledgeUploadItems[index]) return;
+    productKnowledgeReplaceIndexRef.current = index;
+    productKnowledgeFileInputRef.current?.click();
+  }
+
+  async function rescanProductKnowledgeUploads(input: {
+    items: UploadItem[];
+    startedAt: number;
+    originalBytes: number;
+    successMessage: string;
+  }) {
+    const { items, startedAt, originalBytes, successMessage } = input;
+    if (!baseScanResult) {
+      setMessage('请先上传保单基本信息页照片');
+      return;
+    }
+    if (!items.length) {
+      setProductKnowledgeUploadItems([]);
+      setProductKnowledgeUploadCount(0);
+      setScanResult(baseScanResult);
+      setOcrText(baseScanResult.ocrText || '');
+      setAnalysisDraft(baseAnalysisDraft);
+      setShowAnalysisReport(false);
+      setFormProductMatches([]);
+      setFormProductMatchStatus('');
+      setFormProductMatchMessage('');
+      setMessage('已删除补充照片，已恢复保单基本页 OCR');
+      return;
+    }
+    setProductKnowledgeUploading(true);
+    try {
+      const payload = await scanPolicyProductKnowledge({
+        token,
+        guestId,
+        company: formData.company,
+        name: formData.name,
+        manualData: formData,
+        scan: baseScanResult,
+        uploadItems: items,
+      });
+      setProductKnowledgeUploadItems(items);
+      setProductKnowledgeUploadCount(items.length);
+      setScanResult(payload.scan);
+      setOcrText(payload.scan.ocrText || '');
+      setFormProductMatches(Array.isArray(payload.matches) ? payload.matches : []);
+      setFormProductMatchStatus(payload.status || '');
+      setFormProductMatchMessage(payload.message || '');
+      setShowAnalysisReport(false);
+      if (Array.isArray(payload.optionalResponsibilities) && payload.optionalResponsibilities.length) {
+        setAnalysisDraft((current) => withRememberedOptionalResponsibilitySelections({
+          ...(current || baseAnalysisDraft || { report: '', coverageTable: [] }),
+          optionalResponsibilities: payload.optionalResponsibilities,
+        }));
+      } else {
+        setAnalysisDraft(baseAnalysisDraft);
+      }
+      reportClientPerformance('client.product_knowledge_scan.complete', {
+        durationMs: clientElapsedMs(startedAt),
+        requestMs: clientElapsedMs(startedAt),
+        originalBytes,
+        uploadBytes: items.reduce((sum, item) => sum + item.size, 0),
+        hasUpload: true,
+        outputOcrChars: String(payload.scan?.ocrText || '').length,
+      });
+      setMessage(payload.message || successMessage);
+    } catch (error) {
+      reportClientPerformance('client.product_knowledge_scan.error', {
+        durationMs: clientElapsedMs(startedAt),
+        hasUpload: true,
+        errorCode: getErrorCode(error),
+        errorMessage: getErrorMessage(error),
+      });
+      if (handleRegistrationRequiredError(error)) return;
+      setMessage(error instanceof Error ? error.message : '补充产品页识别失败，请稍后重试');
+    } finally {
+      setProductKnowledgeUploading(false);
+    }
+  }
+
+  async function handleDeleteProductKnowledgeUpload(index: number) {
+    if (productKnowledgeUploading) return;
+    const nextItems = productKnowledgeUploadItems.filter((_, itemIndex) => itemIndex !== index);
+    if (nextItems.length === productKnowledgeUploadItems.length) return;
+    const startedAt = clientPerfNow();
+    await rescanProductKnowledgeUploads({
+      items: nextItems,
+      startedAt,
+      originalBytes: 0,
+      successMessage: '已删除补充照片并重新整理 OCR',
+    });
+  }
+
+  function handleDeleteBaseUpload() {
+    if (loading || productKnowledgeUploading) return;
+    const nextFamilyId = entryFamilyId;
+    productKnowledgeReplaceIndexRef.current = null;
+    setFormData({
+      ...emptyForm,
+      familyId: nextFamilyId,
+    });
+    setOcrText('');
+    setUploadItem(null);
+    setBaseScanResult(null);
+    setBaseAnalysisDraft(null);
+    setScanResult(null);
+    setAnalysisDraft(null);
+    setProductKnowledgeUploadItems([]);
+    setProductKnowledgeUploadCount(0);
+    clearOptionalResponsibilitySelections();
+    setShowAnalysisReport(false);
+    setConfirmedProductMatchKey('');
+    setFormProductMatches([]);
+    setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
+    setMessage('已删除保单基本页，请重新上传保单基本信息页');
   }
 
   async function handleSendAuthCode() {
@@ -1888,6 +2575,9 @@ export function CustomerApp() {
       setMobile(payload.user.mobile);
       if (!payload.policiesDeferred) {
         setPolicies([...payload.policies].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))));
+        setPoliciesLoaded(true);
+      } else {
+        setPoliciesLoaded(false);
       }
       void refreshMembershipStatus(payload.token).catch(() => undefined);
       setAuthCode('');
@@ -1949,6 +2639,67 @@ export function CustomerApp() {
     }
   }
 
+  async function handleProductKnowledgeFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length || productKnowledgeUploading) return;
+    if (blockPolicyEntryIfUnauthenticated('上传补充产品页前需要先验证手机号')) {
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+      return;
+    }
+    if (!uploadItem || !baseScanResult) {
+      setMessage('请先上传保单基本信息页照片');
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+      return;
+    }
+    const replaceIndex = productKnowledgeReplaceIndexRef.current;
+    const isReplacing = replaceIndex !== null;
+    const remaining = isReplacing ? 1 : Math.max(0, 5 - productKnowledgeUploadItems.length);
+    const selectedFiles = files.slice(0, remaining);
+    if (!selectedFiles.length) {
+      setMessage('补充照片最多上传 5 张保险产品页面');
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+      return;
+    }
+    const startedAt = clientPerfNow();
+    setProductKnowledgeUploading(true);
+    setMessage(isReplacing ? '正在替换并识别补充产品页' : '正在识别补充产品页');
+    try {
+      const preparedItems: UploadItem[] = [];
+      let originalBytes = 0;
+      const timings: ClientPerformanceTimings = {};
+      for (const file of selectedFiles) {
+        originalBytes += file.size;
+        const item = await fileToUploadItem(file, timings);
+        if (item.size > MAX_POLICY_UPLOAD_BYTES) {
+          throw createCodedError('图片太大，请压缩到 12MB 以内后重新上传', 'UPLOAD_TOO_LARGE');
+        }
+        preparedItems.push(item);
+      }
+      const nextItems = isReplacing
+        ? productKnowledgeUploadItems.map((item, index) => (index === replaceIndex ? preparedItems[0] : item))
+        : [...productKnowledgeUploadItems, ...preparedItems];
+      await rescanProductKnowledgeUploads({
+        items: nextItems,
+        startedAt,
+        originalBytes,
+        successMessage: isReplacing ? '补充照片已替换并重新识别' : '补充产品页已识别，知识线索待后台审核',
+      });
+    } catch (error) {
+      reportClientPerformance('client.product_knowledge_scan.error', {
+        durationMs: clientElapsedMs(startedAt),
+        hasUpload: true,
+        errorCode: getErrorCode(error),
+        errorMessage: getErrorMessage(error),
+      });
+      if (handleRegistrationRequiredError(error)) return;
+      setMessage(error instanceof Error ? error.message : '补充产品页识别失败，请稍后重试');
+    } finally {
+      productKnowledgeReplaceIndexRef.current = null;
+      setProductKnowledgeUploading(false);
+      if (productKnowledgeFileInputRef.current) productKnowledgeFileInputRef.current.value = '';
+    }
+  }
+
   async function handleGenerateAnalysis() {
     if (!canSubmit || loading) return;
     if (blockPolicyEntryIfUnauthenticated()) return;
@@ -1974,7 +2725,7 @@ export function CustomerApp() {
         responsibilityCount: payload.analysis?.coverageTable?.length || 0,
       });
       setScanResult(payload.scan);
-      setFormData((current) => mergeScanToForm(payload.scan, current));
+      setFormData((current) => autoBindEntryMembersByName(mergeScanToForm(payload.scan, current)));
       setOcrText(payload.scan.ocrText || '');
       setAnalysisDraft(withRememberedOptionalResponsibilitySelections(payload.analysis));
       setShowAnalysisReport(true);
@@ -2010,6 +2761,12 @@ export function CustomerApp() {
     setAssistantOpen(true);
   }
 
+  function resetAssistantCustomerSummary(message = '') {
+    setAssistantCustomerSummary(null);
+    setAssistantCustomerSummaryLoading(false);
+    setAssistantCustomerSummaryMessage(message);
+  }
+
   async function handleAssistantQuery() {
     const company = assistantCompany.trim();
     const name = assistantName.trim();
@@ -2020,7 +2777,9 @@ export function CustomerApp() {
     const startedAt = clientPerfNow();
     setAssistantLoading(true);
     setAssistantAnalysis(null);
+    resetAssistantCustomerSummary('');
     setAssistantMatches([]);
+    setAssistantSelectedMatchKey('');
     setAssistantLocalSearched(false);
     setAssistantMessage('正在匹配本地产品');
     try {
@@ -2032,9 +2791,22 @@ export function CustomerApp() {
       });
       const matches = Array.isArray(matched.matches) ? matched.matches : [];
       setAssistantLocalSearched(true);
+      const exactMatch = matched.status === 'exact'
+        ? matches.find((match) => match.needsConfirmation === false) || matches[0]
+        : null;
+      if (exactMatch && exactMatch.needsConfirmation === false) {
+        const resolvedCompany = exactMatch.company.trim();
+        const resolvedName = (exactMatch.resolvedProductName || exactMatch.productName).trim();
+        const displayName = policyKnowledgeMatchDisplayName(exactMatch) || resolvedName;
+        setAssistantCompany(resolvedCompany);
+        setAssistantName(displayName);
+        setAssistantMessage(`已按官方名称校正为：${displayName}`);
+        await loadAssistantResponsibilities({ company: resolvedCompany, name: resolvedName, startedAt });
+        return;
+      }
       if (matches.length) {
         setAssistantMatches(matches);
-        setAssistantMessage(`本地找到 ${matches.length} 个相近产品`);
+        setAssistantMessage(matched.message || `本地找到 ${matches.length} 个相近产品，请选择确认`);
         reportClientPerformance('client.responsibility.assistant.match', {
           durationMs: clientElapsedMs(startedAt),
           requestMs: clientElapsedMs(startedAt),
@@ -2044,7 +2816,7 @@ export function CustomerApp() {
         });
         return;
       }
-      setAssistantMessage('本地库未找到匹配产品');
+      setAssistantMessage(matched.message || '本地库未找到匹配产品');
       reportClientPerformance('client.responsibility.assistant.match', {
         durationMs: clientElapsedMs(startedAt),
         requestMs: clientElapsedMs(startedAt),
@@ -2055,6 +2827,7 @@ export function CustomerApp() {
     } catch (error) {
       setAssistantAnalysis(null);
       setAssistantMatches([]);
+      setAssistantSelectedMatchKey('');
       setAssistantLocalSearched(false);
       setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
       reportClientPerformance('client.responsibility.assistant.error', {
@@ -2069,17 +2842,68 @@ export function CustomerApp() {
     }
   }
 
-  async function loadAssistantResponsibilities(input: { company: string; name: string; startedAt: number; preferLocalKnowledgeAnswer?: boolean }) {
+  async function loadAssistantResponsibilities(input: {
+    company: string;
+    name: string;
+    startedAt: number;
+    preferLocalKnowledgeAnswer?: boolean;
+    allowExternalReferences?: boolean;
+    keepMatches?: boolean;
+    selectedMatchKey?: string;
+  }) {
     const payload = await queryPolicyResponsibilities({
       company: input.company,
       name: input.name,
       preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer,
+      allowExternalReferences: input.allowExternalReferences,
     });
     setAssistantAnalysis(payload.analysis);
-    setAssistantMatches([]);
+    if (!input.keepMatches) setAssistantMatches([]);
+    setAssistantSelectedMatchKey(input.keepMatches ? input.selectedMatchKey || '' : '');
     setAssistantLocalSearched(false);
     const responsibilityCount = payload.analysis?.coverageTable?.length || 0;
-    setAssistantMessage(responsibilityCount ? `已找到 ${responsibilityCount} 项责任` : '未查询到责任明细');
+    if (input.allowExternalReferences) {
+      setAssistantCustomerSummary(null);
+      setAssistantCustomerSummaryLoading(false);
+      setAssistantCustomerSummaryMessage('');
+      setAssistantMessage(responsibilityCount ? `已生成 ${responsibilityCount} 项待核实责任` : '外部线索未提取到责任明细');
+      reportClientPerformance('client.responsibility.assistant.request', {
+        durationMs: clientElapsedMs(input.startedAt),
+        requestMs: clientElapsedMs(input.startedAt),
+        hasUpload: false,
+        inputOcrChars: `${input.company} ${input.name}`.length,
+        responsibilityCount,
+      });
+      return;
+    }
+    setAssistantMessage('正在生成客户可读摘要');
+    setAssistantCustomerSummaryLoading(true);
+    setAssistantCustomerSummary(null);
+    setAssistantCustomerSummaryMessage('');
+    try {
+      const summaryPayload = await getProductCustomerResponsibilitySummary({
+        company: input.company,
+        name: input.name,
+      });
+      if (summaryPayload.ok) {
+        setAssistantCustomerSummary(summaryPayload.summary);
+        setAssistantCustomerSummaryMessage('');
+        const summaryCount = Array.isArray(summaryPayload.summary.mainResponsibilities)
+          ? summaryPayload.summary.mainResponsibilities.filter((item) => item?.title || item?.plainText || item?.howItPays).length
+          : 0;
+        setAssistantMessage(summaryCount ? `已生成 ${summaryCount} 项责任摘要` : '已生成客户可读摘要');
+      } else {
+        setAssistantCustomerSummary(null);
+        setAssistantCustomerSummaryMessage(summaryPayload.message || '这个产品还需要补充保险责任资料');
+        setAssistantMessage(summaryPayload.message || '客户摘要生成失败，请稍后重试');
+      }
+    } catch (error) {
+      setAssistantCustomerSummary(null);
+      setAssistantCustomerSummaryMessage(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
+      setAssistantMessage(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
+    } finally {
+      setAssistantCustomerSummaryLoading(false);
+    }
     reportClientPerformance('client.responsibility.assistant.request', {
       durationMs: clientElapsedMs(input.startedAt),
       requestMs: clientElapsedMs(input.startedAt),
@@ -2092,12 +2916,51 @@ export function CustomerApp() {
   async function handleAssistantSelectMatch(match: PolicyKnowledgeMatch) {
     if (assistantLoading) return;
     const company = match.company.trim();
-    const name = match.productName.trim();
+    const name = (match.resolvedProductName || match.productName).trim();
+    const displayName = policyKnowledgeMatchDisplayName(match) || name;
     if (!company || !name) return;
+    if (isExternalResponsibilityReference(match)) {
+      const startedAt = clientPerfNow();
+      const selectedKey = assistantMatchKey(match);
+      setAssistantCompany(company);
+      setAssistantName(displayName);
+      setAssistantAnalysis(null);
+      setAssistantSelectedMatchKey(selectedKey);
+      resetAssistantCustomerSummary('');
+      setAssistantLoading(true);
+      setAssistantMessage('正在基于外部线索生成待核实责任');
+      try {
+        await loadAssistantResponsibilities({
+          company,
+          name,
+          startedAt,
+          preferLocalKnowledgeAnswer: false,
+          allowExternalReferences: true,
+          keepMatches: true,
+          selectedMatchKey: selectedKey,
+        });
+      } catch (error) {
+        setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('外部资料未提取到可展示责任；请通过客服、寿险APP或柜面核实。');
+        setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
+        reportClientPerformance('client.responsibility.assistant.error', {
+          durationMs: clientElapsedMs(startedAt),
+          hasUpload: false,
+          inputOcrChars: `${company} ${name}`.length,
+          errorCode: getErrorCode(error),
+          errorMessage: getErrorMessage(error),
+        });
+      } finally {
+        setAssistantLoading(false);
+      }
+      return;
+    }
     const startedAt = clientPerfNow();
     setAssistantCompany(company);
-    setAssistantName(name);
+    setAssistantName(displayName);
     setAssistantAnalysis(null);
+    setAssistantSelectedMatchKey('');
+    resetAssistantCustomerSummary('');
     setAssistantMatches([]);
     setAssistantLoading(true);
     setAssistantMessage('正在查询所选产品');
@@ -2105,6 +2968,7 @@ export function CustomerApp() {
       await loadAssistantResponsibilities({ company, name, startedAt });
     } catch (error) {
       setAssistantAnalysis(null);
+      resetAssistantCustomerSummary(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
       setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
       reportClientPerformance('client.responsibility.assistant.error', {
         durationMs: clientElapsedMs(startedAt),
@@ -2128,16 +2992,53 @@ export function CustomerApp() {
     const startedAt = clientPerfNow();
     setAssistantLoading(true);
     setAssistantAnalysis(null);
-    setAssistantMessage('正在联网查询官方资料');
+    resetAssistantCustomerSummary('');
+    setAssistantMatches([]);
+    setAssistantSelectedMatchKey('');
+    setAssistantLocalSearched(true);
+    setAssistantMessage('正在联网查找候选产品');
     try {
-      await loadAssistantResponsibilities({
+      const matched = await matchPolicyResponsibilities({
         company,
         name,
-        startedAt,
-        preferLocalKnowledgeAnswer: false,
+        limit: 20,
+        minScore: 0.1,
+        includeOnline: true,
       });
+      const matches = Array.isArray(matched.matches) ? matched.matches : [];
+      const exactMatch = matched.status === 'exact'
+        ? matches.find((match) => match.needsConfirmation === false) || matches[0]
+        : null;
+      if (exactMatch && exactMatch.needsConfirmation === false) {
+        const resolvedCompany = exactMatch.company.trim();
+        const resolvedName = (exactMatch.resolvedProductName || exactMatch.productName).trim();
+        setAssistantCompany(resolvedCompany);
+        setAssistantName(resolvedName);
+        setAssistantMessage(`已按官方名称校正为：${resolvedName}`);
+        await loadAssistantResponsibilities({
+          company: resolvedCompany,
+          name: resolvedName,
+          startedAt,
+          preferLocalKnowledgeAnswer: false,
+        });
+        return;
+      }
+      if (matches.length) {
+        setAssistantMatches(matches);
+        setAssistantMessage(matched.message || `联网找到 ${matches.length} 个候选产品，请选择确认`);
+        reportClientPerformance('client.responsibility.assistant.match_online', {
+          durationMs: clientElapsedMs(startedAt),
+          requestMs: clientElapsedMs(startedAt),
+          hasUpload: false,
+          inputOcrChars: `${company} ${name}`.length,
+          responsibilityCount: 0,
+        });
+        return;
+      }
+      setAssistantMessage(matched.message || '未找到匹配产品，请核对合同条款名称或上传条款页');
     } catch (error) {
       setAssistantAnalysis(null);
+      resetAssistantCustomerSummary('');
       setAssistantMessage(error instanceof Error ? error.message : '查询失败，请稍后重试');
       reportClientPerformance('client.responsibility.assistant.error', {
         durationMs: clientElapsedMs(startedAt),
@@ -2154,7 +3055,7 @@ export function CustomerApp() {
   async function handleSubmit() {
     if (loading) return;
     if (blockPolicyEntryIfUnauthenticated('保存保单前需要先验证手机号')) return;
-    const submitBaseData = Number(entryFamilyId || 0) && Number(formData.familyId || 0) !== Number(entryFamilyId)
+    const familyAlignedData = Number(entryFamilyId || 0) && Number(formData.familyId || 0) !== Number(entryFamilyId)
       ? {
           ...formData,
           familyId: entryFamilyId,
@@ -2162,8 +3063,14 @@ export function CustomerApp() {
           insuredMemberId: null,
         }
       : formData;
+    const submitBaseData = autoBindEntryMembersByName(familyAlignedData);
     if (submitBaseData !== formData) setFormData(submitBaseData);
-    const validationErrors = validatePolicyEntryForm(submitBaseData);
+    const mustSelectExistingFamily = familyProfiles.some((family) => String(family.status || 'active') === 'active');
+    const familyHasCoreMember = Boolean(entrySelectedFamily?.coreMemberId);
+    const validationErrors = validatePolicyEntryForm(submitBaseData, {
+      requireFamily: mustSelectExistingFamily,
+      requireParticipantRelations: familyHasCoreMember,
+    });
     if (validationErrors.length) {
       const message = `以下必录项未填写：\n${validationErrors.map((item) => `- ${item}`).join('\n')}`;
       window.alert(message);
@@ -2182,12 +3089,8 @@ export function CustomerApp() {
       let submitFamilyMembers = Array.isArray(submitFamily.members) ? [...submitFamily.members] : [...entrySelectedFamilyMembers];
       const findActiveMemberById = (id: number | null | undefined) =>
         submitFamilyMembers.find((member) => member.status === 'active' && Number(member.id) === Number(id || 0)) || null;
-      const findActiveSingleMemberByName = (name: string) => {
-        const normalizedName = name.trim();
-        if (!normalizedName) return null;
-        const matches = submitFamilyMembers.filter((member) => member.status === 'active' && member.name.trim() === normalizedName);
-        return matches.length === 1 ? matches[0] : null;
-      };
+      const findActiveMemberByName = (name: string) =>
+        chooseFamilyMemberByName(submitFamilyMembers, name, submitFamily.coreMemberId);
       const createSubmitMember = async (input: { name: string; relationLabel: string; birthday?: string; setAsCore?: boolean }) => {
         const member = await createFamilyMemberForFamily(submitFamily, input);
         if (member) {
@@ -2210,7 +3113,7 @@ export function CustomerApp() {
           if (selectedMember && areSameParticipantName(selectedMember.name, normalizedName)) return selectedMember;
         }
         const exactMember =
-          findActiveSingleMemberByName(normalizedName) ||
+          findActiveMemberByName(normalizedName) ||
           (Number(submitFamily.id) === Number(selectedFamilyId) ? findFamilyMemberByName(normalizedName) : null);
         if (exactMember) return exactMember;
         return createSubmitMember({
@@ -2263,13 +3166,15 @@ export function CustomerApp() {
         refreshSubmitFamilyMembers();
         return findSubmitMemberById(member.id) || member;
       };
-      let insuredMember = await resolveSubmitMember({
-        name: insuredName,
-        memberId: submitBaseData.insuredMemberId,
-        relationLabel: insuredRelationForSubmit,
-        birthday: insuredBirthday,
-        setAsCoreOnCreate: insuredShouldBeCore && !submitFamily.coreMemberId,
-      });
+      let insuredMember = participantNamesMatch
+        ? applicantMember
+        : await resolveSubmitMember({
+          name: insuredName,
+          memberId: submitBaseData.insuredMemberId,
+          relationLabel: insuredRelationForSubmit,
+          birthday: insuredBirthday,
+          setAsCoreOnCreate: insuredShouldBeCore && !submitFamily.coreMemberId,
+        });
       if (!insuredMember) {
         window.alert('被保险人姓名未找到可绑定的家庭成员，请先检查被保险人姓名');
         setMessage('请先补全必录项后再保存');
@@ -2322,19 +3227,25 @@ export function CustomerApp() {
         outputOcrChars: String(payload.policy?.ocrText || '').length,
         responsibilityCount: payload.policy?.responsibilities?.length || 0,
       });
+      setSelectedFamilyId(submitFamily.id);
       setFormData({
         ...emptyForm,
         familyId: submitFamily.id,
       });
       setOcrText('');
       setUploadItem(null);
+      setBaseScanResult(null);
+      setBaseAnalysisDraft(null);
       setScanResult(null);
       setAnalysisDraft(null);
+      setProductKnowledgeUploadItems([]);
+      setProductKnowledgeUploadCount(0);
       clearOptionalResponsibilitySelections();
       setShowAnalysisReport(false);
       setConfirmedProductMatchKey('');
       setFormProductMatches([]);
       setFormProductMatchMessage('');
+      setFormProductMatchStatus('');
       setPolicies((current) => {
         const withoutDuplicate = current.filter((policy) => policy.id !== payload.policy.id);
         return [payload.policy, ...withoutDuplicate];
@@ -2383,12 +3294,26 @@ export function CustomerApp() {
 
     try {
       const uploadItem = await fileToUploadItem(file);
-      const result = await scanCashValue({
-        token,
-        guestId,
-        policyId: cashValuePolicyId,
-        uploadItem,
-      });
+      const uploadAttempts = await buildUploadItemOrientationAttempts(uploadItem);
+      let result: CashValueScanResult = { ok: false, rows: [], error: 'PARSE_FAILED' };
+      let usedRotatedImage = false;
+      for (let attemptIndex = 0; attemptIndex < uploadAttempts.length; attemptIndex++) {
+        const attemptUploadItem = uploadAttempts[attemptIndex];
+        if (attemptIndex > 0) {
+          setCashValueMessage(`正在尝试第 ${attemptIndex + 1} 个图片方向...`);
+        }
+        result = await scanCashValue({
+          token,
+          guestId,
+          policyId: cashValuePolicyId,
+          uploadItem: attemptUploadItem,
+        });
+        if (result.ok && result.rows?.length) {
+          usedRotatedImage = attemptIndex > 0;
+          break;
+        }
+        if (!shouldRetryCashValueScanWithRotatedImage(result)) break;
+      }
 
       if (result.ok && result.rows?.length) {
         const nextRows = mode === 'append'
@@ -2405,9 +3330,19 @@ export function CustomerApp() {
           rowCount: nextRows.length,
         });
         setCashValueEditRows(nextRows);
-        setCashValueMessage(mode === 'append' ? `已追加 ${appendedCount} 行现金价值，请确认后保存` : '');
+        setCashValueMessage(
+          mode === 'append'
+            ? `已追加 ${appendedCount} 行现金价值，请确认后保存`
+            : usedRotatedImage
+              ? '已自动校正图片方向，请确认后保存'
+              : '',
+        );
       } else {
-        setCashValueMessage(result.message || '未能识别现金价值表，请确保照片清晰且包含完整表格');
+        const noCashValueHeader = result.error === 'CASH_VALUE_TABLE_NOT_DETECTED'
+          || /未检测到现金价值表表头/u.test(String(result.message || ''));
+        setCashValueMessage(noCashValueHeader
+          ? '未检测到现金价值列，请上传包含“现金价值/现金价值表”的页面；保单利益摘要、生存金/身故利益表不会录入为现金价值'
+          : result.message || '未能识别现金价值表，请确保照片清晰且包含完整表格');
         if (mode !== 'append') {
           setCashValueScanResult(null);
           setCashValueEditRows([]);
@@ -2473,8 +3408,24 @@ export function CustomerApp() {
     });
   }
 
-  function handleAddCashValueRow() {
-    setCashValueEditRows((prev) => [...prev, nextManualCashValueRow(prev)]);
+  function handleAddCashValueRow(afterRowIndex?: number) {
+    setCashValueEditRows((prev) => {
+      if (afterRowIndex === undefined || afterRowIndex < 0 || afterRowIndex >= prev.length) {
+        return [...prev, nextManualCashValueRow(prev)];
+      }
+
+      const baseRow = prev[afterRowIndex];
+      const basePolicyYear = parseNumericInput(baseRow?.policyYear);
+      const baseAge = baseRow?.age === null || baseRow?.age === undefined ? null : parseNumericInput(baseRow.age);
+      const insertedRow = basePolicyYear === null
+        ? nextManualCashValueRow(prev)
+        : makeManualCashValueRow(basePolicyYear + 1, baseAge === null ? null : baseAge + 1);
+      return [
+        ...prev.slice(0, afterRowIndex + 1),
+        insertedRow,
+        ...prev.slice(afterRowIndex + 1),
+      ];
+    });
   }
 
   function handleRemoveCashValueRow(rowIndex: number) {
@@ -2652,13 +3603,18 @@ export function CustomerApp() {
     });
     setOcrText('');
     setUploadItem(null);
+    setBaseScanResult(null);
+    setBaseAnalysisDraft(null);
     setScanResult(null);
     setAnalysisDraft(null);
+    setProductKnowledgeUploadItems([]);
+    setProductKnowledgeUploadCount(0);
     clearOptionalResponsibilitySelections();
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey('');
     setFormProductMatches([]);
     setFormProductMatchMessage('');
+    setFormProductMatchStatus('');
     setActiveTab('entry');
     setMessage('可以继续录入保单');
   }
@@ -2737,15 +3693,11 @@ export function CustomerApp() {
       pulseClass: 'from-indigo-300 via-indigo-100 to-transparent',
     },
   ];
-  const familySalesReviewSections = useMemo(
-    () => parseFamilySalesReviewContent(familySalesReview?.content || ''),
-    [familySalesReview?.content],
-  );
   const familySalesReviewExportTitle = `${familySalesReviewFamily?.familyName || '当前家庭'}销售建议报告`;
   const familySalesReviewFamilyMembers = Array.isArray(familySalesReviewFamily?.members) ? familySalesReviewFamily.members : [];
   const familySalesReviewPolicyCount = familySalesReviewFamilyId
-    ? policies.filter((policy) => Number(policy.familyId) === Number(familySalesReviewFamilyId)).length
-    : selectedFamilyPolicies.length;
+    ? Number(familySalesReviewFamily?.policySummary?.policyCount ?? familySalesReviewFamily?.policyCount ?? policies.filter((policy) => Number(policy.familyId) === Number(familySalesReviewFamilyId)).length)
+    : familyPolicyCount;
   const familySalesReviewSignals = [
     {
       label: '成员画像',
@@ -2780,68 +3732,62 @@ export function CustomerApp() {
     { label: '识别缺口', threshold: 68 },
     { label: '生成报告', threshold: 90 },
   ];
+  const familySalesChatQuickPrompts = [
+    '帮我改成微信话术',
+    '客户说预算不够怎么回应',
+    '这份方案优先讲哪三点',
+    '生成二次面谈提纲',
+  ];
 
   const familySalesReviewPage = familySalesReviewOpen ? (
-    <div className="min-h-screen bg-slate-50">
-      <section className="mx-auto flex min-h-screen max-w-5xl flex-col overflow-hidden bg-white shadow-sm shadow-slate-950/5">
-        <header className="relative overflow-hidden border-b border-cyan-100 bg-slate-950 px-4 py-5 text-white">
-          <div className="pointer-events-none absolute inset-0 opacity-35 [background-image:linear-gradient(rgba(34,211,238,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.18)_1px,transparent_1px)] [background-size:22px_22px]" />
-          <div className="relative flex flex-col gap-4">
+    <div className="family-report-shell min-h-screen bg-[#EEF3F7] pb-10 text-[#102033]">
+      <section className="min-h-screen">
+        <header className="no-print fixed inset-x-0 top-0 z-30 border-b border-[#DDE6EE] bg-white/95 backdrop-blur">
+          <div className="family-report-content grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3">
             <button
               type="button"
-              className="flex w-fit items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-black text-cyan-100 ring-1 ring-white/15 transition hover:bg-white/15"
-              onClick={() => setFamilySalesReviewOpen(false)}
+              className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full text-[#42566B] active:bg-[#EEF3F7]"
+              onClick={closeFamilySalesReview}
               aria-label="返回家庭档案"
+              title="返回家庭档案"
             >
-              <ArrowLeft size={16} />
-              <span>返回家庭档案</span>
+              <ArrowLeft size={22} />
             </button>
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-300/35">
-                  <BrainCircuit size={24} />
-                </span>
-                <div className="min-w-0">
-                  <p className="text-[11px] font-black uppercase text-cyan-200">Expert Intelligence</p>
-                  <h2 className="mt-1 text-xl font-black leading-tight">家庭保障策略简报</h2>
-                  <p className="mt-1 truncate text-xs font-semibold text-slate-300">
-                    {familySalesReviewFamily?.familyName || '当前家庭'}
-                    <span className="mx-1 text-cyan-300">·</span>
-                    公司专家分析系统
-                  </p>
-                </div>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {familySalesReview?.content ? (
-                  <button
-                    type="button"
-                    className="flex h-11 items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 text-sm font-black text-cyan-100 ring-1 ring-white/15 transition hover:bg-white/15"
-                    aria-label="下载销售建议报告"
-                    title="下载销售建议报告"
-                    onClick={() => void downloadReportImage(familySalesReviewReportRef.current, familySalesReviewExportTitle)}
-                  >
-                    <Download size={16} />
-                    <span>下载报告</span>
-                  </button>
-                ) : null}
+            <div className="min-w-0 text-center">
+              <h1 className="family-report-heading truncate text-lg font-black text-[#102033]">家庭保障策略简报</h1>
+              <p className="family-report-kicker mt-0.5 hidden text-[11px] text-[#72849A] sm:block">Expert Intelligence</p>
+            </div>
+            <div className="flex shrink-0 items-center justify-end gap-2">
+              {familySalesReview?.content ? (
                 <button
                   type="button"
-                  className={`flex h-11 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-black shadow-lg shadow-cyan-950/20 transition ${
+                  className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-[#0B72B9] active:bg-blue-100"
+                  aria-label="下载销售建议报告"
+                  title="下载销售建议报告"
+                  onClick={() => void downloadReportImage(familySalesReviewReportRef.current, familySalesReviewExportTitle)}
+                >
+                  <Download size={18} />
+                  <span>图片</span>
+                </button>
+              ) : null}
+                <button
+                  type="button"
+                  className={`flex h-10 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-black transition ${
                     familySalesReviewLoading
-                      ? 'cursor-wait bg-cyan-100 text-cyan-950 ring-1 ring-cyan-200'
-                      : 'bg-cyan-300 text-slate-950 hover:bg-cyan-200'
+                      ? 'cursor-wait bg-blue-50 text-[#0B72B9] ring-1 ring-blue-100'
+                      : 'bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-500 text-white shadow-sm shadow-sky-900/20 active:opacity-90'
                   }`}
                   aria-busy={familySalesReviewLoading}
                   onClick={() => void regenerateFamilySalesReview()}
                 >
                   <Sparkles className={familySalesReviewLoading ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
-                  <span>{familySalesReviewLoading ? '正在生成专家报告' : '重新生成专家报告'}</span>
+                  <span>{familySalesReviewLoading ? '生成中' : familySalesReview?.content ? (familySalesChatReviewMessageIds.length ? `按${familySalesChatReviewMessageIds.length}条续聊重算` : '重算') : '生成'}</span>
                 </button>
-              </div>
             </div>
           </div>
         </header>
-        <div className="flex-1 bg-slate-50 px-4 py-4 sm:px-6">
+        <div className="no-print h-[65px]" aria-hidden="true" />
+        <div className="family-report-content py-4 md:py-5">
           {familySalesReviewMessage ? (
             <div className={`mb-3 flex items-center gap-2 rounded-2xl px-3 py-2.5 text-xs font-black ring-1 ${
               familySalesReviewLoading
@@ -2856,81 +3802,188 @@ export function CustomerApp() {
             </div>
           ) : null}
           {familySalesReview?.content ? (
-            <div ref={familySalesReviewReportRef} className="print-policy-report space-y-3 bg-slate-50">
-              {familySalesReview.inputSummary ? (
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">家庭成员</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.memberCount ?? 0}</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">有效样本</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.policyCount ?? 0}</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">待覆盖成员</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.membersWithoutPolicyCount ?? 0}</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
-                    <p className="text-[11px] font-black text-slate-400">条款证据</p>
-                    <p className="mt-1 text-xl font-black text-slate-950">{familySalesReview.inputSummary.officialProductCount ?? 0}</p>
+            <section ref={familySalesReviewReportRef} className="print-policy-report overflow-hidden rounded-[24px] border border-[#D7E2EA] bg-[#F8FBFE] shadow-[0_18px_48px_-36px_rgba(15,23,42,0.38)]">
+              <div className="border-b border-[#BDE2F5] bg-gradient-to-br from-blue-600 via-sky-500 to-cyan-500 px-4 py-4 text-white md:px-6 md:py-5">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="h-8 w-1.5 shrink-0 rounded-full bg-white/75" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="family-report-kicker text-[11px] uppercase text-white/72">Expert Intelligence</p>
+                    <h2 className="family-report-heading min-w-0 break-words text-xl font-black leading-tight text-white">家庭保障策略简报</h2>
+                    <p className="mt-1 truncate text-xs font-semibold text-white/72">
+                      {familySalesReviewFamily?.familyName || '当前家庭'} · 公司专家分析系统
+                    </p>
                   </div>
                 </div>
-              ) : null}
-              <article className="rounded-[22px] bg-white p-4 ring-1 ring-slate-200">
-                <div className="mb-3 flex items-center gap-2 border-b border-slate-100 pb-3">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100">
-                    <FileSearch size={18} />
+                <p className="mt-3 max-w-3xl text-sm font-semibold leading-6 text-white/78">
+                  面向销售跟进的保障缺口、财富机会与下一步沟通建议。
+                </p>
+                {familySalesReview.inputSummary ? (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-4">
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">家庭成员</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.memberCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">有效样本</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.policyCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">待覆盖成员</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.membersWithoutPolicyCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-[16px] border border-white/25 bg-white/12 px-3 py-2.5">
+                      <p className="text-[11px] font-bold text-white/68">条款证据</p>
+                      <p className="mt-1 text-sm font-black text-white">{familySalesReview.inputSummary.officialProductCount ?? 0}</p>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <div className="px-4 py-4 md:px-6 md:py-5">
+                <article className="family-policy-analysis-document mx-auto max-w-[980px] rounded-[18px] border border-[#DCE7F1] bg-white px-4 py-4 shadow-[0_16px_36px_-30px_rgba(15,23,42,0.3)] md:px-7 md:py-6">
+                  <FamilySalesReviewMarkdown content={familySalesReview.content} />
+                </article>
+              </div>
+            </section>
+          ) : null}
+          {familySalesReview?.content ? (
+            <section className="no-print mt-4 rounded-[24px] border border-[#D7E2EA] bg-white p-4 shadow-[0_18px_48px_-36px_rgba(15,23,42,0.28)] md:p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-700 ring-1 ring-blue-100">
+                    <MessageSquareText size={20} />
                   </span>
-                  <div>
-                    <h3 className="text-sm font-black text-slate-950">专家研判报告</h3>
-                    <p className="mt-0.5 text-xs font-semibold text-slate-500">面向销售跟进的保障缺口与财富机会建议</p>
+                  <div className="min-w-0">
+                    <h3 className="text-base font-black text-[#102033]">继续追问销售建议</h3>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-[#72849A]">
+                      基于当前家庭、保单、家庭报告和这份销售建议继续生成话术、面谈提纲和异议处理。
+                    </p>
                   </div>
                 </div>
-                <div className="space-y-3">
-                  {familySalesReviewSections.map((section, index) => {
-                    const title = section.title;
-                    const isRisk = /风险|核实|数据/u.test(title);
-                    const isGap = /缺口|保障/u.test(title);
-                    const isWealth = /理财|财富|传承/u.test(title);
-                    const isAction = /动作|清单|切入/u.test(title);
-                    const SectionIcon = isWealth ? TrendingUp : isAction ? Target : isRisk ? ShieldCheck : isGap ? BrainCircuit : FileSearch;
-                    const visual = isWealth
-                      ? 'border-emerald-100 bg-emerald-50/45 text-emerald-700'
-                      : isAction
-                        ? 'border-indigo-100 bg-indigo-50/45 text-indigo-700'
-                        : isRisk
-                          ? 'border-amber-100 bg-amber-50/50 text-amber-700'
-                          : isGap
-                            ? 'border-cyan-100 bg-cyan-50/45 text-cyan-700'
-                            : 'border-slate-200 bg-slate-50 text-slate-700';
-                    return (
-                      <section key={`${title}-${index}`} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                        <div className={`flex items-center gap-2 border-b px-3 py-3 ${visual}`}>
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/80 ring-1 ring-white/80">
-                            <SectionIcon size={16} />
-                          </span>
-                          <h4 className="min-w-0 text-sm font-black text-slate-950">{title}</h4>
-                        </div>
-                        <div className="space-y-2 px-3 py-3">
-                          {section.lines.length ? section.lines.map((line, lineIndex) => (
-                            <div key={`${title}-${lineIndex}`} className="flex gap-2 rounded-xl bg-slate-50 px-3 py-2.5">
-                              <span className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${
-                                isWealth ? 'bg-emerald-500' : isAction ? 'bg-indigo-500' : isRisk ? 'bg-amber-500' : isGap ? 'bg-cyan-500' : 'bg-slate-400'
-                              }`}
-                              />
-                              <p className="min-w-0 whitespace-pre-wrap break-words text-sm font-semibold leading-6 text-slate-700">{line}</p>
-                            </div>
-                          )) : (
-                            <p className="rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-500">暂无明确结论</p>
-                          )}
-                        </div>
-                      </section>
-                    );
-                  })}
+                <div className="rounded-full bg-slate-50 px-3 py-1.5 text-[11px] font-black text-slate-500 ring-1 ring-slate-200">
+                  {familySalesChatThread ? `会话 ${familySalesChatThread.id}` : '新会话'}
+                  {familySalesChatThreads.length > 1 ? ` · ${familySalesChatThreads.length} 组记录` : ''}
                 </div>
-              </article>
-            </div>
+              </div>
+              {familySalesChatMessage ? (
+                <p className={`mt-3 rounded-2xl px-3 py-2 text-xs font-black ${
+                  familySalesChatLoading ? 'bg-blue-50 text-blue-700' : 'bg-slate-50 text-slate-500'
+                }`}
+                >
+                  {familySalesChatMessage}
+                </p>
+              ) : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {familySalesChatQuickPrompts.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    disabled={familySalesChatLoading}
+                    className="rounded-full bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 ring-1 ring-blue-100 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void submitFamilySalesChat(prompt)}
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-col gap-2 rounded-2xl bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500 ring-1 ring-slate-100 sm:flex-row sm:items-center sm:justify-between">
+                <span>重算报告默认不带入聊天，勾选关键消息后再点击上方重算。</span>
+                <span className="shrink-0 font-black text-slate-700">已选 {familySalesChatReviewMessageIds.length}/6 条</span>
+              </div>
+              <div className="mt-4 max-h-[520px] space-y-3 overflow-y-auto rounded-[18px] bg-slate-50 p-3 ring-1 ring-slate-100">
+                {familySalesChatMessages.length ? (
+                  familySalesChatMessages.map((chatMessage) => {
+                    const fromUser = chatMessage.role === 'user';
+                    const selectedForReview = familySalesChatReviewMessageIds.includes(Number(chatMessage.id));
+                    return (
+                      <article
+                        key={chatMessage.id}
+                        className={`max-w-[92%] rounded-[18px] px-3 py-3 text-sm leading-6 shadow-sm ring-1 ${
+                          fromUser
+                            ? 'ml-auto bg-blue-600 text-white ring-blue-600'
+                            : 'family-sales-chat-message mr-auto bg-white text-slate-700 ring-slate-200'
+                        }`}
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`text-[11px] font-black ${fromUser ? 'text-blue-100' : 'text-slate-400'}`}>
+                              {fromUser ? '顾问追问' : '续聊 Agent'}
+                            </span>
+                            <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-black ring-1 ${
+                              fromUser
+                                ? 'bg-white/10 text-blue-50 ring-white/20'
+                                : selectedForReview
+                                  ? 'bg-blue-50 text-blue-700 ring-blue-100'
+                                  : 'bg-slate-50 text-slate-500 ring-slate-200'
+                            }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 accent-blue-600"
+                                checked={selectedForReview}
+                                onChange={() => toggleFamilySalesChatReviewMessage(Number(chatMessage.id))}
+                              />
+                              用于重算
+                            </label>
+                          </div>
+                          {!fromUser ? (
+                            <button
+                              type="button"
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-50 text-slate-500 ring-1 ring-slate-200 transition hover:bg-slate-100"
+                              aria-label="复制续聊回复"
+                              title="复制续聊回复"
+                              onClick={() => void copyFamilySalesChatMessage(chatMessage.content)}
+                            >
+                              <Copy size={14} />
+                            </button>
+                          ) : null}
+                        </div>
+                        {fromUser ? (
+                          <p className="whitespace-pre-wrap break-words font-semibold">{chatMessage.content}</p>
+                        ) : (
+                          <FamilySalesReviewMarkdown content={chatMessage.content} />
+                        )}
+                        {chatMessage.status === 'failed' && chatMessage.error ? (
+                          <p className={fromUser ? 'mt-2 text-xs font-black text-blue-100' : 'mt-2 text-xs font-black text-rose-600'}>{chatMessage.error}</p>
+                        ) : null}
+                      </article>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[16px] border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm font-bold text-slate-400">
+                    暂无续聊记录，可以从上方快捷问题开始。
+                  </div>
+                )}
+                {familySalesChatLoading ? (
+                  <div className="mr-auto rounded-[18px] bg-white px-3 py-3 text-sm font-black text-blue-700 ring-1 ring-blue-100">
+                    <Sparkles className="mr-2 inline h-4 w-4 animate-pulse" />
+                    正在整理回复
+                  </div>
+                ) : null}
+              </div>
+              <form
+                className="mt-3 flex flex-col gap-2 sm:flex-row"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void submitFamilySalesChat();
+                }}
+              >
+                <textarea
+                  value={familySalesChatInput}
+                  onChange={(event) => setFamilySalesChatInput(event.target.value)}
+                  placeholder="继续追问，例如：帮我把这段建议改成更温和的微信话术"
+                  rows={2}
+                  className="min-h-[52px] flex-1 resize-none rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold leading-5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                />
+                <button
+                  type="submit"
+                  disabled={!familySalesChatInput.trim() || familySalesChatLoading}
+                  className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 text-sm font-black text-white shadow-sm shadow-blue-900/15 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-55 sm:h-auto"
+                >
+                  <SendHorizontal size={17} />
+                  <span>{familySalesChatLoading ? '生成中' : '发送'}</span>
+                </button>
+              </form>
+            </section>
           ) : (
             <div className={familySalesReviewLoading ? 'overflow-hidden rounded-[24px] bg-slate-950 text-white shadow-xl shadow-cyan-950/20 ring-1 ring-cyan-200/30' : 'rounded-[22px] bg-white p-4 ring-1 ring-slate-200'}>
               {familySalesReviewLoading ? (
@@ -3083,7 +4136,18 @@ export function CustomerApp() {
                 </div>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
-                  <p className="text-sm font-black text-slate-900">暂无专家研判内容</p>
+                  <p className="text-sm font-black text-slate-900">销售建议尚未生成</p>
+                  <p className="mx-auto mt-2 max-w-md text-xs font-semibold leading-5 text-slate-500">
+                    有已保存内容会直接展示；没有保存内容时可点击上方或下方按钮生成。
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-cyan-300 px-5 text-sm font-black text-slate-950 shadow-lg shadow-cyan-950/10 transition hover:bg-cyan-200"
+                    onClick={() => void regenerateFamilySalesReview()}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    <span>生成销售建议</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -3154,6 +4218,9 @@ export function CustomerApp() {
       company={assistantCompany}
       companySuggestionLoading={assistantCompanySuggestionLoading}
       companySuggestions={assistantCompanySuggestions}
+      customerSummary={assistantCustomerSummary}
+      customerSummaryLoading={assistantCustomerSummaryLoading}
+      customerSummaryMessage={assistantCustomerSummaryMessage}
       localSearched={assistantLocalSearched}
       loading={assistantLoading}
       matches={assistantMatches}
@@ -3161,17 +4228,22 @@ export function CustomerApp() {
       name={assistantName}
       productSuggestionLoading={assistantProductSuggestionLoading}
       productSuggestions={assistantProductSuggestions}
+      selectedMatchKey={assistantSelectedMatchKey}
       onChangeCompany={(value) => {
         setAssistantCompany(value);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
       onChangeName={(value) => {
         setAssistantName(value);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
@@ -3182,16 +4254,20 @@ export function CustomerApp() {
       onSelectCompany={(company) => {
         setAssistantCompany(company);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
       onSelectMatch={(match) => void handleAssistantSelectMatch(match)}
-      onSelectProduct={(suggestion) => {
+      onSelectProduct={(suggestion, displayName) => {
         setAssistantCompany(suggestion.company);
-        setAssistantName(suggestion.productName);
+        setAssistantName(displayName || productSuggestionDisplayName(suggestion) || suggestion.productName);
         setAssistantAnalysis(null);
+        resetAssistantCustomerSummary('');
         setAssistantMatches([]);
+        setAssistantSelectedMatchKey('');
         setAssistantLocalSearched(false);
         setAssistantMessage('输入保司和产品名称');
       }}
@@ -3218,22 +4294,23 @@ export function CustomerApp() {
     return (
       <>
         <FamilyReportPage
-          report={familyReport}
+          report={displayFamilyReport}
+          reportStale={String(savedFamilyReportRecord?.status || 'active') !== 'active'}
           planningProfile={familyPlanningProfile}
+          policyAnalysisReport={familyPolicyAnalysisReport}
+          policyAnalysisLoading={familyPolicyAnalysisLoading}
           onPlanningProfileChange={handleFamilyPlanningProfileChange}
           onBack={() => setShowFamilyReport(false)}
           onExport={(target, title) => void downloadReportImage(target, title)}
+          onRegenerate={regenerateFamilyReport}
+          onGeneratePolicyAnalysisReport={generateFamilyPolicyAnalysisReport}
+          regenerating={familyReportLoading}
         />
-        <button
-          type="button"
-          onClick={() => void handleShareFamilyReport()}
-          className="no-print fixed bottom-24 right-4 z-30 flex h-12 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white shadow-xl shadow-slate-950/20 active:scale-[0.98]"
-          aria-label="分享家庭报告"
-          title="分享家庭报告"
-        >
-          <Copy size={18} />
-          <span>分享</span>
-        </button>
+        {familyReportLoading || familyPolicyAnalysisLoading ? (
+          <div className="no-print fixed bottom-40 right-4 z-30 rounded-full bg-white px-4 py-2 text-xs font-black text-slate-600 shadow-lg shadow-slate-950/10">
+            {familyPolicyAnalysisLoading ? '保单分析报告生成中...' : '报告加载中...'}
+          </div>
+        ) : null}
         {authDialog}
         {accountSheet}
         {membershipDialog}
@@ -3287,13 +4364,23 @@ export function CustomerApp() {
           productMatchLoading={formProductMatchLoading}
           productMatchMessage={formProductMatchMessage}
           productMatches={formProductMatches}
+          productKnowledgeUploading={productKnowledgeUploading}
+          productKnowledgeUploadCount={productKnowledgeUploadCount}
+          productKnowledgeUploadItems={productKnowledgeUploadItems}
+          showProductKnowledgeSupplement={formProductMatchStatus === 'not_found' || formProductMatchStatus === 'source_review_required'}
           optionalResponsibilities={analysisDraft?.optionalResponsibilities || []}
           selectedFamilyId={entryFamilyId}
           selectedFamilyMembers={Array.isArray(entrySelectedFamily?.members) ? entrySelectedFamily.members : []}
           onFileChange={handleFileChange}
+          onProductKnowledgeFileChange={handleProductKnowledgeFileChange}
+          onDeleteBaseUpload={handleDeleteBaseUpload}
+          onDeleteProductKnowledgeUpload={(index) => void handleDeleteProductKnowledgeUpload(index)}
+          onReplaceBaseUpload={handleScanClick}
+          onReplaceProductKnowledgeUpload={handleReplaceProductKnowledgeUpload}
           onCreateFamily={openFamilyCreateDialog}
           onOcrTextChange={handleOcrTextChange}
           onScanClick={handleScanClick}
+          onProductKnowledgeScanClick={handleProductKnowledgeScanClick}
           onSelectFamily={handleSelectFamily}
           onSelectFormCompany={(company) => updateForm('company', company)}
           onSelectFormProduct={(suggestion) => selectFormProductSuggestion(suggestion)}
@@ -3312,6 +4399,7 @@ export function CustomerApp() {
           onOpenFamilies={() => setActiveTab('families')}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
+          productKnowledgeFileInputRef={productKnowledgeFileInputRef}
           staleClientDetected={Boolean(staleClientHealth)}
           onReloadForLatestVersion={() => window.location.reload()}
         />
@@ -3387,7 +4475,7 @@ export function CustomerApp() {
               <div className="mt-5 grid grid-cols-2 gap-3">
                 <div className="rounded-2xl bg-white/15 px-4 py-3">
                   <p className="text-xs text-white/70">已录入</p>
-                  <p className="mt-1 text-xl font-black">{selectedFamilyPolicies.length} 张</p>
+                  <p className="mt-1 text-xl font-black">{familyPolicyCount} 张</p>
                 </div>
                 <div className="rounded-2xl bg-white/15 px-4 py-3">
                   <p className="text-xs text-white/70">总保额</p>
@@ -3398,28 +4486,39 @@ export function CustomerApp() {
           </div>
 
           <FamilyCoverageOverview
-            report={familyReport}
+            report={displayFamilyReport}
             policies={selectedFamilyPolicies}
           />
 
-          {selectedFamilyPolicies.length ? (
+          {familyPolicyCount ? (
             <section className="px-4 pt-3">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between rounded-[20px] border border-[#D9E6F4] bg-white px-4 py-3 text-left shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
-                onClick={() => setShowFamilyReport(true)}
-              >
-                <span>
-                  <span className="block text-sm font-black text-[#0F172A]">家庭保障分析报告</span>
-                  <span className="mt-1 block text-xs font-semibold text-[#7890AA]">全家统计、保单清单、重疾、意外、财富分析</span>
-                </span>
-                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">查看</span>
-              </button>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center justify-between rounded-[20px] border border-[#D9E6F4] bg-white px-4 py-3 text-left shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
+                  onClick={() => selectedFamilyId ? void openFamilyReport(selectedFamilyId) : undefined}
+                >
+                  <span className="min-w-0">
+                    <span className="block text-sm font-black text-[#0F172A]">家庭保障分析报告</span>
+                    <span className="mt-1 block text-xs font-semibold text-[#7890AA]">全家统计、保单清单、重疾、意外、财富分析</span>
+                  </span>
+                  <span className="ml-3 shrink-0 rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600">查看</span>
+                </button>
+                <button
+                  type="button"
+                  className="flex min-h-[64px] items-center justify-center rounded-[20px] border border-[#D9E6F4] bg-white px-4 text-xs font-black text-blue-600 shadow-[0_14px_28px_-24px_rgba(15,23,42,0.14)]"
+                  onClick={() => void handleShareFamilyReport(selectedFamilyId)}
+                  aria-label="分享家庭报告"
+                  title="分享家庭报告"
+                >
+                  <span>分享</span>
+                </button>
+              </div>
             </section>
           ) : null}
 
           <section className="space-y-4 p-4">
-            {!selectedFamilyPolicies.length ? (
+            {!familyPolicyCount ? (
               <div className="rounded-[24px] border border-dashed border-[#D6E4F5] bg-white px-5 py-10 text-center shadow-[0_18px_34px_-30px_rgba(15,23,42,0.12)]">
                 <p className="text-base font-semibold text-[#0F172A]">还没有家庭保单</p>
                 <p className="mt-2 text-sm leading-6 text-[#6C87A5]">录入保单并绑定家庭后，会在这里统一查看家庭保单责任和保障明细。</p>
@@ -3498,16 +4597,17 @@ export function CustomerApp() {
           familyProfiles={familyProfiles}
           familyPolicyCounts={familyPolicyCounts}
           familyPolicyMemberIds={familyPolicyMemberIds}
+          familyMemberPolicyRefs={familyMemberPolicyRefs}
           selectedFamilyId={selectedFamilyId}
           onSelectFamily={(familyId) => handleSelectFamily(familyId)}
           onCreateFamily={openFamilyCreateDialog}
           onCreateFamilyMember={createFamilyMemberForFamily}
-          onUpdateFamilyName={updateFamilyNameForFamily}
-          onUpdateFamilyNotes={updateFamilyNotesForFamily}
+          onUpdateFamily={updateFamilyForFamily}
           onDeleteFamily={deleteFamilyForFamily}
           onSetCoreMember={setCoreMemberForCurrentFamily}
+          onUpdateFamilyMember={updateFamilyMemberForFamily}
           onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
-          onUpdateFamilyMemberNotes={updateFamilyMemberNotesForFamily}
+          onDeleteFamilyMember={deleteFamilyMemberForFamily}
           onBackToEntry={() => {
             startEntryForm({ preserveSelectedFamily: true });
           }}

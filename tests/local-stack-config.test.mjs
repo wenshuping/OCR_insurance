@@ -11,6 +11,8 @@ test('local production stack lets runtime OCR env override the default provider'
   assert.match(localStackSource, /'POLICY_OCR_OLLAMA_VISION_COMPLEX_PASSES'/u);
   assert.match(localStackSource, /'POLICY_OCR_REMOTE_VISION_MAX_IMAGE_DIMENSION'/u);
   assert.match(localStackSource, /'POLICY_OCR_REMOTE_VISION_MAX_TOKENS'/u);
+  assert.match(localStackSource, /'POLICY_OCR_SERVICE_URL'/u);
+  assert.match(localStackSource, /'POLICY_OCR_SERVICE_TOKEN'/u);
   assert.match(localStackSource, /'POLICY_OCR_HUAWEI_PROJECT_ID'/u);
   assert.match(localStackSource, /'POLICY_OCR_HUAWEI_X_AUTH_TOKEN'/u);
   assert.match(localStackSource, /'POLICY_OCR_HUAWEI_AK'/u);
@@ -23,12 +25,16 @@ test('local production stack lets runtime OCR env override the default provider'
   const envBlock = localStackSource.match(/env:\s*\{[\s\S]+?POLICY_OCR_PROVIDER:[\s\S]+?\n\s*\},\n\s*\};/u)?.[0] || '';
   assert.doesNotMatch(envBlock, /POLICY_OCR_CONFIG_PATH/u);
   assert.match(envBlock, /POLICY_OCR_PROVIDER:\s*'remote_gpu_vision'[\s\S]+?\.\.\.extraEnv/u);
+  assert.match(envBlock, /\.\.\.extraEnv[\s\S]+?\.\.\.readProcessRuntimeEnvOverrides\(\)/u);
+  assert.match(localStackSource, /function readProcessRuntimeEnvOverrides/u);
+  assert.match(localStackSource, /'POLICY_OCR_DEEPSEEK_OCR_BASE_URL'/u);
 });
 
 test('development dotenv skip still permits DeepSeek review configuration', () => {
   assert.match(serverIndexSource, /skippedProjectDotenvLocalAllowKeys/u);
   assert.match(serverIndexSource, /'DEEPSEEK_API_KEY'/u);
   assert.match(serverIndexSource, /'DEEPSEEK_FAMILY_REVIEW_MODEL'/u);
+  assert.match(serverIndexSource, /'DEEPSEEK_FAMILY_REPORT_MODEL'/u);
   assert.match(serverIndexSource, /allowKeys:\s*skippedProjectDotenvLocalAllowKeys/u);
   assert.match(serverIndexSource, /POLICY_OCR_SKIP_PROJECT_DOTENV_LOCAL/u);
 });

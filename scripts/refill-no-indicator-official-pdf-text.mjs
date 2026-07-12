@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
 const BUNDLED_PYTHON = '/Users/wenshuping/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3';
-const VERSION = '2026-06-14-no-indicator-official-pdf-text-refill';
+const VERSION = '2026-06-26-official-pdf-text-refill-target-scope';
 
 function trim(value) {
   return String(value ?? '').trim();
@@ -61,6 +61,10 @@ function isOfficialPayload(payload = {}) {
     || trim(payload.evidenceLevel) === 'insurer_official'
     || trim(payload.sourceEvidenceLevel) === 'insurer_official'
     || trim(payload.evidenceLabel).includes('官方');
+}
+
+function tableExists(db, tableName) {
+  return Boolean(db.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', tableName));
 }
 
 function isPdfUrl(url) {
@@ -315,17 +319,43 @@ async function fetchPdfBuffer(url, { timeoutMs = 15000 } = {}) {
   return buffer;
 }
 
-function loadTargetRows(db, { companies = [], onlyShorterThan = 12000, limit = 0 } = {}) {
-  const rows = db.prepare(`
-    SELECT id, company, product_name, url, payload
-      FROM knowledge_records
-     WHERE product_name IS NOT NULL AND product_name <> ''
+export function loadTargetRows(db, {
+  companies = [],
+  onlyShorterThan = 12000,
+  limit = 0,
+  targetScope = 'no-indicator',
+} = {}) {
+  const hasCardTable = tableExists(db, 'product_responsibility_cards');
+  const missingPredicate = targetScope === 'missing-cards-or-indicators'
+    ? `
+       AND (
+         NOT EXISTS (
+           SELECT 1
+             FROM insurance_indicator_records indicator
+            WHERE indicator.company = knowledge_records.company
+              AND indicator.product_name = knowledge_records.product_name
+         )
+         OR ${hasCardTable ? `NOT EXISTS (
+           SELECT 1
+             FROM product_responsibility_cards card
+            WHERE card.company = knowledge_records.company
+              AND card.product_name = knowledge_records.product_name
+         )` : '1 = 1'}
+       )
+      `
+    : `
        AND NOT EXISTS (
          SELECT 1
            FROM insurance_indicator_records indicator
           WHERE indicator.company = knowledge_records.company
             AND indicator.product_name = knowledge_records.product_name
        )
+      `;
+  const rows = db.prepare(`
+    SELECT id, company, product_name, url, payload
+      FROM knowledge_records
+     WHERE product_name IS NOT NULL AND product_name <> ''
+       ${missingPredicate}
      ORDER BY company, product_name, id DESC
   `).all();
   const targets = [];
@@ -393,13 +423,15 @@ export async function refillNoIndicatorOfficialPdfText({
   minNewTextLength = 800,
   maxChars = 32000,
   downloadTimeoutMs = 15000,
+  targetScope = 'no-indicator',
 } = {}) {
   const db = new DatabaseSync(dbPath);
   try {
-    const targets = loadTargetRows(db, { companies, onlyShorterThan, limit });
+    const targets = loadTargetRows(db, { companies, onlyShorterThan, limit, targetScope });
     const result = {
       dbPath,
       dryRun: !write,
+      targetScope,
       targetRows: targets.length,
       attemptedRows: 0,
       extractedRows: 0,
@@ -476,6 +508,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     minNewTextLength: Number(readArg('min-new-text-length', 800)) || 800,
     maxChars: Number(readArg('max-chars', 32000)) || 32000,
     downloadTimeoutMs: Number(readArg('download-timeout-ms', 15000)) || 15000,
+    targetScope: readArg('target-scope', 'no-indicator'),
   });
   console.log(JSON.stringify(result, null, 2));
 }

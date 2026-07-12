@@ -91,3 +91,26 @@ test('reviewPolicyFieldValues marks weak OCR evidence for confirmation without d
   assert.ok(reviewed.warnings.some((warning) => warning.includes('保险责任明细表')));
   assert.ok(reviewed.warnings.some((warning) => warning.includes('首期保费')));
 });
+
+test('reviewPolicyFieldValues accepts legacy amount and premium labels', () => {
+  const reviewed = reviewPolicyFieldValues({
+    data: {
+      amount: '50000',
+      firstPremium: '1785',
+    },
+    fieldConfidence: {
+      amount: 'visual-table',
+      firstPremium: 'visual-table',
+    },
+    fieldEvidence: {
+      amount: { rowText: '保险金额伍万元整 （? 50000.00' },
+      firstPremium: { rowText: '缴费方式 缴费标准 1785.00元' },
+    },
+  });
+
+  assert.equal(reviewed.data.amount, '50000');
+  assert.equal(reviewed.data.firstPremium, '1785');
+  assert.equal(reviewed.fieldConfidence.amount, 'visual-table');
+  assert.equal(reviewed.fieldConfidence.firstPremium, 'visual-table');
+  assert.deepEqual(reviewed.warnings, []);
+});

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Single Product Responsibility Review"
+  short_description: "Manual official-source insurance responsibility review"
+  default_prompt: "Use $ocr-insurance-single-product-responsibility-review to review one insurance product from official source, split responsibilities, verify indicators, and write only manually checked rows."

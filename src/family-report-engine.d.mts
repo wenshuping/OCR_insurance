@@ -242,14 +242,18 @@ export type FamilyRadarAmountDetail = {
   amount: number;
   amountText: string;
   calculationText: string;
+  referenceOnly?: boolean;
 };
 
 export type FamilyPlanningProfile = {
+  annualIncome?: number;
   annualExpense?: number;
   debt?: number;
   educationGoal?: number;
+  parentSupportGoal?: number;
   retirementGoal?: number;
   availableAssets?: number;
+  premiumBudget?: number;
 };
 
 export type FamilyPlanningAssumptions = {
@@ -308,18 +312,54 @@ export type FamilyRadarReport = {
   hiddenMembers: FamilyRadarSeries[];
 };
 
+export type FamilyPendingVerificationItem = {
+  policyId?: number | string | null;
+  company: string;
+  productName: string;
+  title: string;
+  sourceKind: string;
+  verificationStatus: string;
+  verificationLabel: string;
+  url: string;
+  excerpt: string;
+};
+
 export type FamilyReport = {
   summary: FamilyReportSummary;
   policyInventory: FamilyPolicyInventory;
+  optionalResponsibilityGaps?: Array<{
+    member?: string;
+    policyId?: number | string | null;
+    productName?: string;
+    liability?: string;
+    quantificationStatus?: string;
+    quantificationReason?: string;
+  }>;
+  pendingVerificationItems?: FamilyPendingVerificationItem[];
   criticalIllness: FamilySectionReport;
   accident: FamilySectionReport;
   wealth: FamilyWealthReport;
   radar: FamilyRadarReport;
+  familyPolicyAnalysisReport?: {
+    status?: string;
+    content?: string;
+    model?: string;
+    generatedAt?: string;
+    error?: string;
+  };
   appendix: { policies: Array<{ policyId: number; productName: string; ocrText: string }> };
 };
 
 export type FamilyReportOptions = {
   familyId?: number | null;
+  corrections?: Array<{
+    status?: string;
+    action?: string;
+    dimension?: string;
+    policyId?: number | null;
+    memberId?: number | null;
+    productName?: string;
+  }>;
 };
 
 export function buildFamilyReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null, options?: FamilyReportOptions): FamilyReport;
@@ -328,4 +368,4 @@ export function buildPolicyInventory(policies: Policy[]): FamilyPolicyInventory;
 export function buildCriticalIllnessSection(policies: Policy[]): FamilySectionReport;
 export function buildAccidentSection(policies: Policy[]): FamilySectionReport;
 export function buildWealthSection(policies: Policy[]): FamilyWealthReport;
-export function buildFamilyRadarReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null): FamilyRadarReport;
+export function buildFamilyRadarReport(policies: Policy[], planningProfile?: FamilyPlanningProfile | null, options?: FamilyReportOptions): FamilyRadarReport;

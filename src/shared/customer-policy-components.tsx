@@ -18,6 +18,7 @@ import {
 import {
   normalizePolicyPlanList,
   normalizePolicyPlanListWithIndex,
+  normalizeDateInputValue,
   planProductDisplayName,
 } from './customer-policy-form';
 
@@ -80,6 +81,23 @@ export function normalizeSuggestionQuery(value: string) {
   return value.trim().replace(/\s+/g, '').toLowerCase();
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeProductCode(value: unknown) {
+  const text = String(value || '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+  return /^[A-Z0-9][A-Z0-9_-]{1,23}$/u.test(text) ? text : '';
+}
+
+function productSuggestionDisplayName(suggestion: PolicyProductSuggestion) {
+  const name = String(suggestion.productName || '').trim();
+  const code = normalizeProductCode(suggestion.productCode || suggestion.productCodes?.[0]);
+  if (!name || !code) return name;
+  if (new RegExp(`[（(]\\s*${escapeRegExp(code)}\\s*[)）]`, 'u').test(name)) return name;
+  return `${name}（${code}）`;
+}
+
 export function renderHighlightedSuggestion(value: string, query: string) {
   const normalizedQuery = normalizeSuggestionQuery(query);
   if (!normalizedQuery) return value;
@@ -107,7 +125,8 @@ function isSharedPlanPremiumText(value?: string) {
   return /整单合计保费|保单未列逐险种保费/.test(String(value || ''));
 }
 
-function planPremiumDisplayText(plan: NonNullable<PolicyFormData['plans']>[number]) {
+function planPremiumDisplayText(plan: NonNullable<PolicyFormData['plans']>[number], fallbackPremium: string | number = '') {
+  if (fallbackPremium !== '') return formatCurrency(Number(fallbackPremium || 0));
   if (plan.premium) return formatCurrency(Number(plan.premium || 0));
   return isSharedPlanPremiumText(plan.premiumText) ? String(plan.premiumText || '') : formatCurrency(0);
 }
@@ -188,15 +207,24 @@ export function TextField(props: {
   inputMode?: 'text' | 'decimal' | 'numeric' | 'tel';
   required?: boolean;
 }) {
+  const usesDateTextInput = props.type === 'date';
+  function handleBlur() {
+    if (!usesDateTextInput) return;
+    const normalized = normalizeDateInputValue(props.value);
+    if (normalized || !props.value.trim()) props.onChange(normalized);
+  }
   return (
     <div>
       <label>{renderFieldLabel(props.label, props.required)}</label>
       <input
-        type={props.type || 'text'}
-        inputMode={props.inputMode}
+        type={usesDateTextInput ? 'text' : props.type || 'text'}
+        inputMode={usesDateTextInput ? 'numeric' : props.inputMode}
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}
-        placeholder={props.placeholder}
+        onBlur={handleBlur}
+        placeholder={usesDateTextInput ? props.placeholder || 'yyyy/mm/dd' : props.placeholder}
+        autoComplete={usesDateTextInput ? 'off' : undefined}
+        pattern={usesDateTextInput ? '[0-9./年-]*' : undefined}
         className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
       />
     </div>
@@ -423,7 +451,7 @@ export function PolicyPlanEditor(props: {
       {editablePlans.length ? (
         <div className="space-y-3">
           {editablePlans.map((plan) => (
-            <article key={`${plan.name}-${plan.originalIndex}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+            <article key={`policy-plan-${plan.originalIndex}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-600 ring-1 ring-slate-200">
                   {normalizePolicyPlanRoleLabel(String(plan.role || ''))}
@@ -460,33 +488,36 @@ export function PolicyPlanEditor(props: {
                           正在加载保险产品
                         </div>
                       ) : (
-                        productSuggestionsForPlan(plan).map((suggestion) => (
-                          <button
-                            key={`${suggestion.company}-${suggestion.productName}`}
-                            type="button"
-                            className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
-                            role="option"
-                            aria-selected={false}
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => {
-                              onSelectProduct?.(plan.originalIndex, suggestion);
-                              setFocusedProductPlanIndex(null);
-                            }}
-                          >
-                            <span className="min-w-0">
-                              <span className="block truncate">{renderHighlightedSuggestion(suggestion.productName, String(plan.name || ''))}</span>
-                              <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
-                            </span>
-                            <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
-                          </button>
-                        ))
+                        productSuggestionsForPlan(plan).map((suggestion) => {
+                          const displayName = productSuggestionDisplayName(suggestion);
+                          return (
+                            <button
+                              key={`${suggestion.company}-${suggestion.productName}-${suggestion.productCode || suggestion.productCodes?.[0] || ''}`}
+                              type="button"
+                              className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-black text-slate-900 transition hover:bg-blue-50 active:bg-blue-100"
+                              role="option"
+                              aria-selected={false}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                onSelectProduct?.(plan.originalIndex, suggestion);
+                                setFocusedProductPlanIndex(null);
+                              }}
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate">{renderHighlightedSuggestion(displayName, String(plan.name || ''))}</span>
+                                <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400">{suggestion.company}</span>
+                              </span>
+                              <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-400">{suggestion.recordCount} 份资料</span>
+                            </button>
+                          );
+                        })
                       )}
                     </div>
                   ) : null}
                 </label>
                 {plan.matchedProductName ? (
                   <p className="rounded-xl bg-white px-3 py-2 text-xs font-bold leading-5 text-blue-700 ring-1 ring-blue-100">
-                    已按 {plan.company || company || '保险公司'} 匹配：{plan.matchedProductName}
+                    已按 {plan.company || company || '保险公司'} 匹配：{planProductDisplayName(plan)}
                   </p>
                 ) : null}
                 <div className="grid grid-cols-2 gap-3">
@@ -529,12 +560,16 @@ export function PolicyPlanSummary({
   insuredBirthday,
   paymentPeriod = '',
   coveragePeriod = '',
+  amount = '',
+  firstPremium = '',
 }: {
   plans: NonNullable<PolicyFormData['plans']>;
   effectiveDate?: string;
   insuredBirthday?: string;
   paymentPeriod?: string;
   coveragePeriod?: string;
+  amount?: string | number;
+  firstPremium?: string | number;
 }) {
   const visiblePlans = normalizePolicyPlanList(plans);
   if (!visiblePlans.length) return null;
@@ -548,8 +583,11 @@ export function PolicyPlanSummary({
         {visiblePlans.map((plan, index) => {
           const fallbackCoveragePeriod = index === 0 ? coveragePeriod : '';
           const fallbackPaymentPeriod = index === 0 ? paymentPeriod : '';
+          const fallbackAmount = index === 0 ? amount : '';
+          const fallbackPremium = index === 0 ? firstPremium : '';
           const planCoveragePeriod = plan.coveragePeriod || fallbackCoveragePeriod;
           const planPaymentPeriod = plan.paymentPeriod || plan.paymentMode || fallbackPaymentPeriod;
+          const planAmount = fallbackAmount || plan.amount;
           const validityStatus = resolvePolicyValidityStatus(planCoveragePeriod, {
             effectiveDate,
             insuredBirthday,
@@ -565,8 +603,8 @@ export function PolicyPlanSummary({
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs font-bold leading-5 text-slate-500">
                 <p>分类：{plan.productType || '-'}</p>
-                <p>保额：{formatCoverageAmount(Number(plan.amount || 0))}</p>
-                <p>保费：{planPremiumDisplayText(plan)}</p>
+                <p>保额：{formatCoverageAmount(Number(planAmount || 0))}</p>
+                <p>保费：{planPremiumDisplayText(plan, fallbackPremium)}</p>
                 <p>期间：{planCoveragePeriod || '-'}</p>
                 <p>缴费：{planPaymentPeriod || '-'}</p>
                 <p>

@@ -54,6 +54,39 @@
     ]
   },
   {
+    "name": "ping-an-coverage-audit",
+    "patterns": [
+      "scripts/audit-ping-an-coverage.mjs",
+      "tests/ping-an-coverage-audit.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/ping-an-coverage-audit.test.mjs"
+    ]
+  },
+  {
+    "name": "ping-an-jrcpcx-backfill",
+    "patterns": [
+      "scripts/ping-an-jrcpcx-backfill.mjs",
+      "tests/ping-an-jrcpcx-backfill.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/ping-an-jrcpcx-backfill.test.mjs"
+    ]
+  },
+  {
+    "name": "deepanalyze-indicator-review",
+    "patterns": [
+      "scripts/export-deepanalyze-indicator-review-samples.mjs",
+      "scripts/run-deepanalyze-indicator-review.mjs",
+      "tests/export-deepanalyze-indicator-review-samples.test.mjs",
+      "tests/run-deepanalyze-indicator-review.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/export-deepanalyze-indicator-review-samples.test.mjs",
+      "node --test tests/run-deepanalyze-indicator-review.test.mjs"
+    ]
+  },
+  {
     "name": "policy-ocr",
     "patterns": [
       "ocr-service/**",
@@ -160,6 +193,59 @@
     ],
     "commands": [
       "node --check scripts/local-stack.mjs"
+    ]
+  },
+  {
+    "name": "agent-policy-transfer-confirmation",
+    "patterns": [
+      "server/agent-confirmation.service.mjs",
+      "server/agent-report-regeneration-queue.service.mjs",
+      "server/family-report-regeneration.service.mjs",
+      "server/agent-question-router.service.mjs",
+      "server/app.mjs",
+      "server/index.mjs",
+      "server/routes/families.routes.mjs",
+      "server/sqlite-state-store.mjs",
+      "tests/agent-confirmation.test.mjs",
+      "tests/sqlite-state-store.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/agent-confirmation.test.mjs",
+      "node --test tests/sqlite-state-store.test.mjs"
+    ]
+  },
+  {
+    "name": "hermes-question-routing",
+    "patterns": [
+      "server/agent-question-policy.service.mjs",
+      "server/agent-question-router.service.mjs",
+      "server/agent-question-handlers.service.mjs",
+      "server/agent-confirmation.service.mjs",
+      "server/agent-report-regeneration-queue.service.mjs",
+      "server/routes/agent.routes.mjs",
+      "server/routes/admin.routes.mjs",
+      "server/app.mjs",
+      "server/sqlite-state-store.mjs",
+      "src/api/contracts/admin.ts",
+      "src/apps/admin/AdminApp.tsx",
+      "src/apps/admin/adminPages.ts",
+      "src/apps/admin/pages/AdminAgentPoliciesPage.tsx",
+      "tests/agent-question-policy.test.mjs",
+      "tests/agent-question-router.test.mjs",
+      "tests/agent-question-handlers.test.mjs",
+      "tests/agent-question-routes.test.mjs",
+      "tests/agent-confirmation.test.mjs",
+      "tests/admin-agent-question-policy.test.mjs",
+      "tests/admin-agent-policies-ui.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/agent-question-policy.test.mjs",
+      "node --test tests/agent-question-router.test.mjs",
+      "node --test tests/agent-question-handlers.test.mjs",
+      "node --test tests/agent-question-routes.test.mjs",
+      "node --test tests/agent-confirmation.test.mjs",
+      "node --test tests/admin-agent-question-policy.test.mjs",
+      "node --test tests/admin-agent-policies-ui.test.mjs"
     ]
   }
 ]

@@ -22,6 +22,7 @@ __pycache__/
 
 # Crawl data (generated)
 crawled/
+.firecrawl/
 
 # Outputs (generated reports/files)
 outputs/
@@ -29,6 +30,8 @@ outputs/
 graphify-out/
 upload-to-ecs/
 production-data/
+production-data-bundles/
+reports/
 
 # Temp files
 tmp/

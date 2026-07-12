@@ -1,0 +1,246 @@
+#!/usr/bin/env node
+import fs from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+
+import {
+  CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+  generateProductCustomerResponsibilitySummary,
+} from '../server/product-customer-responsibility-summary.service.mjs';
+import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
+
+const DEFAULT_DB_PATH = '.runtime/local/policy-ocr.sqlite';
+const SUPPORTED_SUMMARY_VERSION = CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION;
+
+function text(value) {
+  return String(value ?? '').trim();
+}
+
+function readValue(argv, index, flag) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
+function parseLimit(value, flag = 'limit') {
+  const limit = Number(value);
+  if (Number.isInteger(limit) && limit > 0) return limit;
+  throw new Error(`${flag} must be a positive integer`);
+}
+
+function resolveSummaryVersion(value) {
+  const version = text(value);
+  if (!version || version === 'v24' || version === SUPPORTED_SUMMARY_VERSION) return SUPPORTED_SUMMARY_VERSION;
+  throw new Error(`Only ${SUPPORTED_SUMMARY_VERSION} is supported`);
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function inspectDryRunDatabase(dbPath) {
+  if (!(await fileExists(dbPath))) return { ok: false, databaseMissing: true };
+  let db = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const hasAppMeta = db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'app_meta'
+      LIMIT 1
+    `).get();
+    if (!hasAppMeta) return { ok: false, databaseUninitialized: true };
+    const initialized = db.prepare(`
+      SELECT value
+      FROM app_meta
+      WHERE key = 'state_initialized_at'
+      LIMIT 1
+    `).get()?.value;
+    return text(initialized) ? { ok: true } : { ok: false, databaseUninitialized: true };
+  } catch {
+    return { ok: false, databaseUninitialized: true };
+  } finally {
+    if (db) db.close();
+  }
+}
+
+function categoryMatches(record, category) {
+  const filter = text(category).toLowerCase();
+  if (!filter) return true;
+  const values = [
+    record?.productCategory,
+    record?.product_category,
+    record?.category,
+    record?.productType,
+    record?.product_type,
+  ].map((value) => text(value).toLowerCase()).filter(Boolean);
+  return values.some((value) => value === filter || value.includes(filter));
+}
+
+export function parseBackfillArgs(argv = process.argv.slice(2)) {
+  const args = {
+    summaryVersion: SUPPORTED_SUMMARY_VERSION,
+    limit: 50,
+    company: '',
+    category: '',
+    dbPath: DEFAULT_DB_PATH,
+    dryRun: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--version') {
+      args.summaryVersion = resolveSummaryVersion(readValue(argv, index, arg));
+      index += 1;
+    } else if (arg === '--limit') {
+      args.limit = parseLimit(readValue(argv, index, arg), arg);
+      index += 1;
+    } else if (arg === '--company') {
+      args.company = text(readValue(argv, index, arg));
+      index += 1;
+    } else if (arg === '--category') {
+      args.category = text(readValue(argv, index, arg));
+      index += 1;
+    } else if (arg === '--db') {
+      args.dbPath = text(readValue(argv, index, arg));
+      index += 1;
+    } else if (arg === '--dry-run') {
+      args.dryRun = true;
+    }
+  }
+
+  return args;
+}
+
+export function selectBackfillProducts({ knowledgeRecords = [], company = '', category = '', limit = 50 } = {}) {
+  const companyFilter = text(company);
+  const maxRows = parseLimit(limit);
+  const seen = new Set();
+  const products = [];
+
+  for (const record of Array.isArray(knowledgeRecords) ? knowledgeRecords : []) {
+    const row = {
+      company: text(record?.company),
+      productName: text(record?.productName || record?.product_name || record?.title),
+    };
+    if (!row.company || !row.productName) continue;
+    if (companyFilter && row.company !== companyFilter) continue;
+    if (!categoryMatches(record, category)) continue;
+
+    const key = `${row.company}\n${row.productName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    products.push(row);
+    if (products.length >= maxRows) break;
+  }
+
+  return products;
+}
+
+export async function backfillProductCustomerResponsibilitySummaries({
+  dbPath = DEFAULT_DB_PATH,
+  summaryVersion = SUPPORTED_SUMMARY_VERSION,
+  limit = 50,
+  company = '',
+  category = '',
+  dryRun = false,
+  storeFactory = createSqliteStateStore,
+  generateSummary = generateProductCustomerResponsibilitySummary,
+} = {}) {
+  const resolvedSummaryVersion = resolveSummaryVersion(summaryVersion);
+  const dryRunDatabase = dryRun ? await inspectDryRunDatabase(dbPath) : { ok: true };
+  if (dryRun && !dryRunDatabase.ok) {
+    return {
+      dbPath,
+      summaryVersion: resolvedSummaryVersion,
+      category,
+      dryRun: true,
+      databaseMissing: Boolean(dryRunDatabase.databaseMissing),
+      databaseUninitialized: Boolean(dryRunDatabase.databaseUninitialized),
+      total: 0,
+      generated: 0,
+      failed: 0,
+      skippedDryRun: 0,
+      products: [],
+      failures: [],
+    };
+  }
+
+  const store = await storeFactory({ dbPath });
+  try {
+    const state = await store.load();
+    const products = selectBackfillProducts({
+      knowledgeRecords: state.knowledgeRecords,
+      company,
+      category,
+      limit,
+    });
+    const report = {
+      dbPath,
+      summaryVersion: resolvedSummaryVersion,
+      category,
+      dryRun: Boolean(dryRun),
+      databaseMissing: false,
+      databaseUninitialized: false,
+      total: products.length,
+      generated: 0,
+      failed: 0,
+      skippedDryRun: 0,
+      products,
+      failures: [],
+    };
+
+    for (const product of products) {
+      if (dryRun) {
+        report.skippedDryRun += 1;
+        continue;
+      }
+
+      try {
+        const result = await generateSummary({
+          state,
+          db: store.db,
+          input: { company: product.company, productName: product.productName },
+          findSummary: store.findProductCustomerResponsibilitySummary
+            ? (query) => store.findProductCustomerResponsibilitySummary(query)
+            : undefined,
+          persistSummary: store.persistProductCustomerResponsibilitySummary
+            ? (summary) => store.persistProductCustomerResponsibilitySummary({ state, summary })
+            : undefined,
+          persistGenerationRun: store.persistProductCustomerSummaryGenerationRun
+            ? (run) => store.persistProductCustomerSummaryGenerationRun({ state, run })
+            : undefined,
+        });
+        if (result?.ok) {
+          report.generated += 1;
+        } else {
+          report.failed += 1;
+          report.failures.push({ ...product, status: text(result?.status) || 'not_ready' });
+        }
+      } catch (error) {
+        report.failed += 1;
+        report.failures.push({
+          ...product,
+          status: 'failed',
+          message: text(error?.message),
+        });
+      }
+    }
+
+    return report;
+  } finally {
+    if (typeof store.close === 'function') store.close();
+  }
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const args = parseBackfillArgs();
+  const report = await backfillProductCustomerResponsibilitySummaries(args);
+  console.log(JSON.stringify(report, null, 2));
+}

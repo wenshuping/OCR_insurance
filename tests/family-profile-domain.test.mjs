@@ -3,10 +3,13 @@ import test from 'node:test';
 
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
 import {
+  archiveFamilyMember,
   ensureDefaultFamilyProfileForPrincipal,
   matchFamilyMemberByPerson,
   normalizeFamilyMemberInput,
   normalizeFamilyRelation,
+  repairDuplicateFamilyMembers,
+  upsertFamilyMember,
   validatePolicyFamilyBinding,
 } from '../server/family-profile.domain.mjs';
 
@@ -32,7 +35,7 @@ test('ensureDefaultFamilyProfileForPrincipal migrates existing policy participan
   assert.ok(state.policies[0].insuredMemberId);
 });
 
-test('ensureDefaultFamilyProfileForPrincipal keeps same-name insured people distinct by identity', () => {
+test('ensureDefaultFamilyProfileForPrincipal merges same-name insured people by family name', () => {
   const state = {
     ...createInitialState(),
     nextId: 20,
@@ -62,9 +65,9 @@ test('ensureDefaultFamilyProfileForPrincipal keeps same-name insured people dist
   const insuredMembers = state.familyMembers.filter((member) => member.name === '李四');
 
   assert.equal(family.familyName, '默认家庭');
-  assert.equal(insuredMembers.length, 2);
-  assert.notEqual(state.policies[0].insuredMemberId, state.policies[1].insuredMemberId);
-  assert.equal(state.familyMembers.find((member) => member.id === state.policies[0].insuredMemberId)?.birthday, '2010-01-01');
+  assert.equal(insuredMembers.filter((member) => member.status === 'active').length, 1);
+  assert.equal(state.policies[0].insuredMemberId, state.policies[1].insuredMemberId);
+  assert.equal(state.familyMembers.find((member) => member.id === state.policies[0].insuredMemberId)?.birthday, '2012-02-02');
   assert.equal(state.familyMembers.find((member) => member.id === state.policies[1].insuredMemberId)?.idNumberTail, '0033');
 });
 
@@ -160,8 +163,98 @@ test('matchFamilyMemberByPerson prefers exact name and birthday matches', () => 
 
   assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '3333' })?.id, 2);
   assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01' })?.id, 2);
-  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '9999' }), null);
-  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1970-01-01' }), null);
+  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1990-01-01', idNumberTail: '9999' })?.id, 2);
+  assert.equal(matchFamilyMemberByPerson(members, { name: '张三', birthday: '1970-01-01' })?.id, 1);
+});
+
+test('upsertFamilyMember reuses same-name compatible member instead of duplicating', () => {
+  const state = {
+    ...createInitialState(),
+    nextId: 20,
+    familyProfiles: [
+      { id: 10, ownerGuestId: 'guest-upsert-member', familyName: '去重家庭', coreMemberId: null, status: 'active' },
+    ],
+    familyMembers: [
+      { id: 11, familyId: 10, name: '翟卿', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active' },
+    ],
+  };
+
+  const family = state.familyProfiles[0];
+  const member = upsertFamilyMember(state, family, { name: '翟卿', relationLabel: '儿子', birthday: '2018-01-01' });
+
+  assert.equal(member.id, 11);
+  assert.equal(member.birthday, '2018-01-01');
+  assert.equal(state.familyMembers.filter((row) => row.status === 'active' && row.name === '翟卿').length, 1);
+});
+
+test('upsertFamilyMember syncs same-name member identity instead of duplicating', () => {
+  const state = {
+    ...createInitialState(),
+    nextId: 30,
+    familyProfiles: [
+      { id: 10, ownerGuestId: 'guest-upsert-member-conflict', familyName: '同名家庭', coreMemberId: null, status: 'active' },
+    ],
+    familyMembers: [
+      { id: 11, familyId: 10, name: '秦国英', birthday: '1969-01-01', idNumberTail: '1111', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active' },
+    ],
+  };
+
+  const family = state.familyProfiles[0];
+  const member = upsertFamilyMember(state, family, { name: '秦国英', relationLabel: '母亲', birthday: '1970-01-06', idNumber: '110101197001060022' });
+
+  assert.equal(member.id, 11);
+  assert.equal(member.birthday, '1970-01-06');
+  assert.equal(member.idNumberTail, '0022');
+  assert.equal(state.familyMembers.filter((row) => row.status === 'active' && row.name === '秦国英').length, 1);
+});
+
+test('repairDuplicateFamilyMembers merges compatible duplicate names and rewires policies', () => {
+  const state = {
+    ...createInitialState(),
+    familyProfiles: [
+      { id: 10, ownerGuestId: 'guest-repair-member', familyName: '旧重复家庭', coreMemberId: 11, status: 'active' },
+    ],
+    familyMembers: [
+      { id: 11, familyId: 10, name: '翟卿', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active' },
+      { id: 12, familyId: 10, name: '翟卿', birthday: '1990-01-01', relationToCore: 'pending', relationLabel: '待确认', role: 'unknown', status: 'active' },
+    ],
+    policies: [
+      { id: 1, familyId: 10, applicantMemberId: 11, insuredMemberId: 12 },
+    ],
+  };
+
+  assert.equal(repairDuplicateFamilyMembers(state, state.familyProfiles[0]), true);
+
+  const activeMembers = state.familyMembers.filter((member) => member.status === 'active');
+  assert.equal(activeMembers.length, 1);
+  assert.equal(activeMembers[0].id, 11);
+  assert.equal(activeMembers[0].birthday, '1990-01-01');
+  assert.equal(state.policies[0].insuredMemberId, 11);
+});
+
+test('archiveFamilyMember clears policy bindings for deleted member only', () => {
+  const state = {
+    ...createInitialState(),
+    familyProfiles: [
+      { id: 10, ownerGuestId: 'guest-delete-member', familyName: '删除成员家庭', coreMemberId: 11, status: 'active' },
+    ],
+    familyMembers: [
+      { id: 11, familyId: 10, name: '顾晨妍', relationToCore: 'self', relationLabel: '本人', role: 'core', status: 'active' },
+      { id: 12, familyId: 10, name: '翟卿', relationToCore: 'son', relationLabel: '儿子', role: 'child', status: 'active' },
+    ],
+    policies: [
+      { id: 1, familyId: 10, applicantMemberId: 11, insuredMemberId: 12, applicantRelationLabel: '本人', insuredRelationLabel: '儿子' },
+    ],
+  };
+
+  const result = archiveFamilyMember(state, state.familyProfiles[0], state.familyMembers[1]);
+
+  assert.equal(result.clearedPolicyCount, 1);
+  assert.equal(state.familyMembers[1].status, 'archived');
+  assert.equal(state.policies[0].applicantMemberId, 11);
+  assert.equal(state.policies[0].insuredMemberId, null);
+  assert.equal(state.policies[0].insuredRelationLabel, '');
+  assert.equal(state.policies[0].participantReviewStatus, 'pending_review');
 });
 
 test('validatePolicyFamilyBinding rejects participants outside the selected family', () => {

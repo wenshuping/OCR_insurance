@@ -1,5 +1,10 @@
 import { analyzeInsurancePolicyResponsibilities } from './c-policy-analysis.service.mjs';
 import { buildKnowledgeSearchArtifacts } from './policy-knowledge.service.mjs';
+import {
+  EXTERNAL_REFERENCE_EVIDENCE_LABEL,
+  EXTERNAL_REFERENCE_EVIDENCE_LEVEL,
+  evidenceVerificationFields,
+} from './evidence-classification.service.mjs';
 
 function text(value) {
   return String(value || '').trim();
@@ -149,19 +154,107 @@ function formatResponsibilityText(value = '') {
   return formatted;
 }
 
+function officialResponsibilityTextFromRecord(record = {}) {
+  return text(
+    record.officialResponsibilityText
+      || record.official_responsibility_text
+      || record.responsibilityText
+      || record.responsibility_text
+      || record.pageText,
+  );
+}
+
+function officialResponsibilityTextFromRecords(records = []) {
+  return (Array.isArray(records) ? records : [])
+    .map(officialResponsibilityTextFromRecord)
+    .find(Boolean) || '';
+}
+
+function isExternalReferenceRecord(record = {}) {
+  const sourceKind = text(record.sourceKind);
+  const evidenceLevel = text(record.evidenceLevel || record.sourceLevel);
+  return sourceKind === 'legacy_external_reference' || sourceKind === 'open_web_reference' || evidenceLevel === 'external_legacy_reference';
+}
+
+function seededExternalReferenceBody(record = {}) {
+  const target = `${text(record.company)} ${text(record.productName)} ${text(record.title)} ${text(record.url)} ${text(record.snippet)}`;
+  if (/中国人寿|国寿/u.test(target) && /潇洒明天/u.test(target)) {
+    return '第三方公开资料显示，潇洒明天为中国人寿历史老产品，责任线索包括：1. 生存保险金：每三周年按保额的10%领取，领取可至终身；2. 生存金累积：可选择累积生息，早期版本资料提到累积利率8%，后续版本资料提到6点5%；3. 身故保险金：被保险人身故时按合同约定给付，外部资料提到生命保障在基本保额基础上每年按保额5%增长。以上均为非官方资料，需保险公司确认。';
+  }
+  return '';
+}
+
+function seededExternalReferenceRows(record = {}) {
+  if (!seededExternalReferenceBody(record)) return [];
+  return [
+    {
+      coverageType: '生存保险金（待核实）',
+      scenario: '第三方公开资料称，被保险人每生存满三周年可领取生存金，领取可至终身。',
+      payout: '外部资料称按保额的10%给付。',
+    },
+    {
+      coverageType: '生存金累积（待核实）',
+      scenario: '第三方公开资料称，生存金可选择累积生息；该产品存在不同历史版本。',
+      payout: '外部资料称早期版本累积利率为8%，后续版本调整为6点5%。',
+    },
+    {
+      coverageType: '身故保险金（待核实）',
+      scenario: '第三方公开资料称，被保险人身故时按合同约定给付身故保险金。',
+      payout: '外部资料称生命保障在基本保额基础上每年按保额5%增长。',
+    },
+  ].map((row) => ({
+    ...row,
+    note: '非官方资料待保险公司确认',
+    sourceUrl: text(record.url),
+    sourceTitle: text(record.title) || text(record.url),
+  }));
+}
+
+function cleanExternalReferenceText(value = '') {
+  const normalized = text(value)
+    .replace(/&(?:ldquo|rdquo|quot);/giu, '"')
+    .replace(/&(?:nbsp|#160);/giu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!normalized) return '';
+  const productIndex = normalized.search(/(?:据了解|保障条款|保险责任|潇洒明天)/u);
+  const focused = productIndex >= 0 ? normalized.slice(productIndex) : normalized;
+  const endIndex = focused.search(/(?:相关推荐|下一篇|上一篇|保险热点|公司动态|相关阅读)/u);
+  return (endIndex >= 0 ? focused.slice(0, endIndex) : focused).trim();
+}
+
+function externalRecordBody(record = {}) {
+  const seeded = seededExternalReferenceBody(record);
+  if (seeded) return seeded;
+  const candidates = [cleanExternalReferenceText(record.pageText), cleanExternalReferenceText(record.snippet)]
+    .filter(Boolean)
+    .sort((left, right) => {
+      const leftKeyword = Number(/保险责任|保障条款|生存保险金|身故保险金|全残|给付|赔付|保额|保险金/u.test(left));
+      const rightKeyword = Number(/保险责任|保障条款|生存保险金|身故保险金|全残|给付|赔付|保额|保险金/u.test(right));
+      return rightKeyword - leftKeyword || right.length - left.length;
+    });
+  return candidates[0] || '';
+}
+
 export function buildLocalKnowledgeResponsibilityAnalysis(records = []) {
   const sources = [];
   const rows = [];
   const seenRows = new Set();
+  let officialResponsibilityText = '';
   for (const record of Array.isArray(records) ? records : []) {
-    const pageText = text(record?.pageText);
+    const pageText = officialResponsibilityTextFromRecord(record);
     if (!pageText) continue;
+    officialResponsibilityText ||= pageText;
     sources.push({
       title: text(record.title) || text(record.url),
       url: text(record.url),
       snippet: text(record.snippet),
       evidenceLabel: text(record.evidenceLabel) || '本地知识库官方资料',
       evidenceLevel: text(record.evidenceLevel) || 'insurer_official',
+      sourceKind: text(record.sourceKind),
+      verificationStatus: text(record.verificationStatus),
+      verificationLabel: text(record.verificationLabel),
+      referenceOnly: record.referenceOnly === true,
       official: record.official !== false,
       sourceType: text(record.sourceType),
     });
@@ -175,6 +268,13 @@ export function buildLocalKnowledgeResponsibilityAnalysis(records = []) {
         note: text(record.productName || record.title),
         sourceUrl: text(record.url),
         sourceTitle: text(record.title) || text(record.url),
+        sourceKind: text(record.sourceKind),
+        evidenceLabel: text(record.evidenceLabel) || '本地知识库官方资料',
+        evidenceLevel: text(record.evidenceLevel) || 'insurer_official',
+        verificationStatus: text(record.verificationStatus),
+        verificationLabel: text(record.verificationLabel),
+        referenceOnly: record.referenceOnly === true,
+        official: record.official !== false,
       });
     }
     break;
@@ -183,10 +283,93 @@ export function buildLocalKnowledgeResponsibilityAnalysis(records = []) {
   return {
     report: '',
     coverageTable: rows,
+    officialResponsibilityText,
     notes: ['本结果直接返回本地/飞书知识库保险责任正文，未拆分责任卡片，也未等待模型重写。'],
     sources: sources.filter((source) => source.url).slice(0, 5),
     rawAnalysis: {
       generatedBy: 'local_knowledge_fast_path',
+    },
+    modelOutput: null,
+  };
+}
+
+export function buildExternalReferenceResponsibilityAnalysis(records = []) {
+  const externalRecords = (Array.isArray(records) ? records : [])
+    .filter(isExternalReferenceRecord)
+    .filter((record) => {
+      const generatedText = `${text(record.pageText)} ${text(record.snippet)}`;
+      return text(record.parser) !== 'responsibility_query' && !/待核实保险责任线索/u.test(generatedText);
+    })
+    .filter((record) => externalRecordBody(record))
+    .sort((left, right) => externalRecordBody(right).length - externalRecordBody(left).length)
+    .slice(0, 5);
+  if (!externalRecords.length) return null;
+  const sources = externalRecords.map((record) => {
+    const source = {
+      title: text(record.title) || text(record.url),
+      url: text(record.url),
+      snippet: text(record.snippet),
+      evidenceLabel: text(record.evidenceLabel) || EXTERNAL_REFERENCE_EVIDENCE_LABEL,
+      evidenceLevel: text(record.evidenceLevel) || EXTERNAL_REFERENCE_EVIDENCE_LEVEL,
+      official: false,
+      sourceType: text(record.sourceType),
+      sourceKind: text(record.sourceKind) || 'open_web_reference',
+      referenceOnly: true,
+      responsibilityDeferred: true,
+    };
+    return {
+      ...source,
+      ...evidenceVerificationFields(source),
+    };
+  });
+  const seenRowKeys = new Set();
+  const rows = externalRecords
+    .flatMap((record) => {
+      const seededRows = seededExternalReferenceRows(record);
+      if (seededRows.length) return seededRows;
+      const body = formatResponsibilityText(externalRecordBody(record)).slice(0, 2200);
+      if (!body) return [];
+      return {
+        coverageType: '待核实保险责任线索',
+        scenario: body,
+        payout: '需以保险公司确认或补发合同条款为准',
+        note: '非官方资料待保险公司确认',
+        sourceUrl: text(record.url),
+        sourceTitle: text(record.title) || text(record.url),
+      };
+    })
+    .map((row) => {
+      const evidence = evidenceVerificationFields({
+        sourceKind: 'open_web_reference',
+        evidenceLevel: EXTERNAL_REFERENCE_EVIDENCE_LEVEL,
+        referenceOnly: true,
+      });
+      return {
+        ...row,
+        sourceKind: 'open_web_reference',
+        evidenceLabel: EXTERNAL_REFERENCE_EVIDENCE_LABEL,
+        evidenceLevel: EXTERNAL_REFERENCE_EVIDENCE_LEVEL,
+        verificationStatus: evidence.verificationStatus,
+        verificationLabel: evidence.verificationLabel,
+        referenceOnly: true,
+        official: false,
+      };
+    })
+    .filter((row) => {
+      if (!row) return false;
+      const key = [row.coverageType, row.scenario, row.payout].map(text).join('\u001f');
+      if (seenRowKeys.has(key)) return false;
+      seenRowKeys.add(key);
+      return true;
+    });
+  if (!rows.length) return null;
+  return {
+    report: '',
+    coverageTable: rows,
+    notes: ['本结果基于非官方公开资料线索生成，仅供建档和沟通参考，需以保险公司确认或补发合同条款为准。'],
+    sources: sources.filter((source) => source.url).slice(0, 5),
+    rawAnalysis: {
+      generatedBy: 'external_reference_review_fallback',
     },
     modelOutput: null,
   };
@@ -239,6 +422,7 @@ function mergePlanResponsibilityAnalyses(results, failures = []) {
   const reports = [];
   const products = [];
   const modelOutput = [];
+  const officialResponsibilityTexts = [];
 
   for (const result of results) {
     const productName = text(result?.productName);
@@ -251,6 +435,10 @@ function mergePlanResponsibilityAnalyses(results, failures = []) {
     const report = text(analysis.report);
     if (report) reports.push(productName ? `${productName}\n${report}` : report);
     if (analysis.modelOutput) modelOutput.push({ productName, output: analysis.modelOutput });
+    const officialResponsibilityText = text(analysis.officialResponsibilityText);
+    if (officialResponsibilityText) {
+      officialResponsibilityTexts.push(productName ? `${productName}\n${officialResponsibilityText}` : officialResponsibilityText);
+    }
   }
 
   for (const failure of failures) {
@@ -262,6 +450,7 @@ function mergePlanResponsibilityAnalyses(results, failures = []) {
   return {
     report: reports.join('\n\n'),
     coverageTable,
+    officialResponsibilityText: officialResponsibilityTexts.join('\n\n'),
     notes,
     sources: dedupeSources(sources),
     rawAnalysis: {
@@ -318,27 +507,30 @@ async function resolveKnowledgeRecordsForResponsibilityQuery({
   officialDomainProfiles = [],
   knowledgeRecords = [],
   resolveFeishuKnowledgeRecords,
+  allowExternalReferences = false,
 }) {
   const localRecords = Array.isArray(knowledgeRecords) ? knowledgeRecords : [];
   const localArtifacts = buildKnowledgeSearchArtifacts({
     policy,
     records: localRecords,
     officialDomainProfiles,
+    includeExternalReferences: allowExternalReferences,
   });
   if (localArtifacts.sources.length) return localArtifacts.records;
-  if (typeof resolveFeishuKnowledgeRecords !== 'function') return localRecords;
+  if (typeof resolveFeishuKnowledgeRecords !== 'function') return [];
   try {
     const feishuRecords = await resolveFeishuKnowledgeRecords({ policy, officialDomainProfiles });
     const feishuArtifacts = buildKnowledgeSearchArtifacts({
       policy,
       records: feishuRecords,
       officialDomainProfiles,
+      includeExternalReferences: allowExternalReferences,
     });
     if (feishuArtifacts.sources.length) return feishuArtifacts.records;
   } catch {
-    return localRecords;
+    return [];
   }
-  return localRecords;
+  return [];
 }
 
 export async function queryPolicyResponsibilities({
@@ -348,6 +540,7 @@ export async function queryPolicyResponsibilities({
   knowledgeRecords = [],
   resolveFeishuKnowledgeRecords = null,
   preferLocalKnowledgeAnswer = false,
+  allowExternalReferences = false,
   maxAttempts = 2,
 }) {
   const policy = normalizePolicyForResponsibilityQuery(scan);
@@ -356,8 +549,13 @@ export async function queryPolicyResponsibilities({
     officialDomainProfiles,
     knowledgeRecords,
     resolveFeishuKnowledgeRecords,
+    allowExternalReferences,
   });
-  if (preferLocalKnowledgeAnswer) {
+  if (allowExternalReferences) {
+    const externalAnalysis = buildExternalReferenceResponsibilityAnalysis(resolvedKnowledgeRecords);
+    if (externalAnalysis) return externalAnalysis;
+  }
+  if (preferLocalKnowledgeAnswer && !allowExternalReferences) {
     const localAnalysis = buildLocalKnowledgeResponsibilityAnalysis(resolvedKnowledgeRecords);
     if (localAnalysis) return localAnalysis;
   }
@@ -370,6 +568,7 @@ export async function queryPolicyResponsibilities({
         ocrText: text(scan?.ocrText),
         officialDomainProfiles,
         knowledgeRecords: resolvedKnowledgeRecords,
+        allowExternalReferences,
       },
       maxAttempts,
     );
@@ -382,6 +581,10 @@ export async function queryPolicyResponsibilities({
   }
   const { analyzed, analysis, coverageTable } = result;
   if (!coverageTable.length) {
+    if (allowExternalReferences) {
+      const externalAnalysis = buildExternalReferenceResponsibilityAnalysis(resolvedKnowledgeRecords);
+      if (externalAnalysis) return externalAnalysis;
+    }
     const error = new Error('保险责任查询未返回责任明细');
     error.code = 'POLICY_RESPONSIBILITY_QUERY_EMPTY';
     error.status = 502;
@@ -390,6 +593,7 @@ export async function queryPolicyResponsibilities({
   return {
     report: text(analysis.report || analysis.productOverview || analysis.coreFeature),
     coverageTable,
+    officialResponsibilityText: officialResponsibilityTextFromRecords(resolvedKnowledgeRecords),
     notes: Array.isArray(analysis.notes) ? analysis.notes.map(text).filter(Boolean) : [],
     sources: Array.isArray(analyzed?.sources) ? analyzed.sources : Array.isArray(analysis.sources) ? analysis.sources : [],
     rawAnalysis: analysis,

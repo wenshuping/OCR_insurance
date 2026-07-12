@@ -1,4 +1,5 @@
 import type { Policy } from './policy';
+import type { FamilyPlanningProfile, FamilyReport } from '../../family-report-engine.mjs';
 import { authQuery, request } from '../client';
 
 export type FamilyRelationToCore =
@@ -43,6 +44,19 @@ export type FamilyMember = {
   updatedAt: string;
 };
 
+export type FamilyPolicySummary = {
+  policyCount: number;
+  totalCoverage: number;
+  annualPremium: number;
+  insuredGroups: Array<{
+    insured: string;
+    policyCount: number;
+    totalCoverage: number;
+    annualPremium: number;
+    policyIds: number[];
+  }>;
+};
+
 export type FamilyProfile = {
   id: number;
   ownerUserId?: number | null;
@@ -54,6 +68,9 @@ export type FamilyProfile = {
   createdAt: string;
   updatedAt: string;
   members?: FamilyMember[];
+  policyCount?: number;
+  policySummary?: FamilyPolicySummary;
+  planningProfile?: FamilyPlanningProfile;
 };
 
 export type FamilyReportShare = {
@@ -69,6 +86,27 @@ export type FamilyReportSharePayload = {
   members: FamilyMember[];
   policies: Policy[];
   snapshotAt: string;
+};
+
+export type FamilyReportRecord = {
+  id: number;
+  familyId: number;
+  status: 'active' | 'archived' | string;
+  source: 'code' | 'deepseek' | string;
+  generatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
+  summary?: FamilyReport['summary'] & { issueCount?: number };
+  report: FamilyReport;
+};
+
+export type FamilyPolicyAnalysisReport = {
+  status: 'complete' | 'failed' | 'empty' | string;
+  content: string;
+  model?: string;
+  generatedAt: string;
+  error?: string;
+  stale?: boolean;
 };
 
 export type FamilySalesReview = {
@@ -89,6 +127,49 @@ export type FamilySalesReview = {
   };
 };
 
+export type FamilySalesChatMessage = {
+  id: number;
+  threadId: number;
+  familyId: number;
+  role: 'user' | 'assistant' | string;
+  content: string;
+  status: 'complete' | 'failed' | string;
+  createdAt: string;
+  error?: string;
+};
+
+export type FamilySalesChatThread = {
+  id: number;
+  familyId: number;
+  status: 'active' | 'archived' | string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  latestMessageAt?: string;
+  messages?: FamilySalesChatMessage[];
+};
+
+export type FamilyMemberPolicyReference = {
+  id: number;
+  company: string;
+  name: string;
+  policyNumber?: string;
+  applicant?: string;
+  insured?: string;
+  roles: string[];
+};
+
+export type UpdateFamilyMemberResponse = {
+  ok: true;
+  family: FamilyProfile;
+  member: FamilyMember;
+  members: FamilyMember[];
+  affectedPolicies?: FamilyMemberPolicyReference[];
+  syncedPolicyCount?: number;
+  policies?: Policy[];
+};
+
 export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
   return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
 }
@@ -100,11 +181,11 @@ export function createFamilyProfile(input: { token?: string; guestId?: string; f
   });
 }
 
-export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string }) {
+export function updateFamilyProfile(input: { token?: string; guestId?: string; familyId: number; familyName?: string; notes?: string; planningProfile?: FamilyPlanningProfile | null }) {
   return request<{ ok: true; family: FamilyProfile; members: FamilyMember[] }>(`/api/family-profiles/${input.familyId}${authQuery(input)}`, {
     token: input.token,
     method: 'PATCH',
-    body: { familyName: input.familyName, notes: input.notes },
+    body: { familyName: input.familyName, notes: input.notes, planningProfile: input.planningProfile },
   });
 }
 
@@ -160,15 +241,48 @@ export function setFamilyCoreMember(input: { token?: string; guestId?: string; f
   });
 }
 
-export function updateFamilyMemberRelation(input: { token?: string; guestId?: string; familyId: number; memberId: number; relationLabel?: string; notes?: string }) {
-  return request<{ ok: true; family: FamilyProfile; member: FamilyMember; members: FamilyMember[] }>(
+export function updateFamilyMember(input: {
+  token?: string;
+  guestId?: string;
+  familyId: number;
+  memberId: number;
+  name?: string;
+  relationLabel?: string;
+  birthday?: string;
+  idNumberTail?: string;
+  notes?: string;
+  syncBoundPolicies?: boolean;
+}) {
+  return request<UpdateFamilyMemberResponse>(
     `/api/family-profiles/${input.familyId}/members/${input.memberId}${authQuery(input)}`,
     {
       token: input.token,
       method: 'PATCH',
-      body: { relationLabel: input.relationLabel, notes: input.notes },
+      body: {
+        name: input.name,
+        relationLabel: input.relationLabel,
+        birthday: input.birthday,
+        idNumberTail: input.idNumberTail,
+        notes: input.notes,
+        syncBoundPolicies: input.syncBoundPolicies,
+      },
     },
   );
+}
+
+export const updateFamilyMemberRelation = updateFamilyMember;
+
+export function deleteFamilyMember(input: { token?: string; guestId?: string; familyId: number; memberId: number }) {
+  return request<{
+    ok: true;
+    family: FamilyProfile;
+    member: FamilyMember;
+    members: FamilyMember[];
+    clearedPolicyCount: number;
+  }>(`/api/family-profiles/${input.familyId}/members/${input.memberId}${authQuery(input)}`, {
+    token: input.token,
+    method: 'DELETE',
+  });
 }
 
 export function createFamilyReportShare(input: { token?: string; guestId?: string; familyId: number }) {
@@ -178,17 +292,85 @@ export function createFamilyReportShare(input: { token?: string; guestId?: strin
   });
 }
 
+export function getFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; reportRecord: FamilyReportRecord | null }>(`/api/family-profiles/${input.familyId}/report${authQuery(input)}`, {
+    token: input.token,
+  });
+}
+
+export function createFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null; userRefresh?: boolean }) {
+  return request<{ ok: true; reportRecord: FamilyReportRecord }>(`/api/family-profiles/${input.familyId}/report${authQuery(input)}`, {
+    token: input.token,
+    body: { planningProfile: input.planningProfile || null, userRefresh: input.userRefresh === true },
+  });
+}
+
+export function regenerateFamilyReportRecord(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null; userRefresh?: boolean }) {
+  return createFamilyReportRecord(input);
+}
+
+export function getFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; analysisReport: FamilyPolicyAnalysisReport | null }>(`/api/family-profiles/${input.familyId}/policy-analysis-report${authQuery(input)}`, {
+    token: input.token,
+  });
+}
+
+export function createFamilyPolicyAnalysisReport(input: { token?: string; guestId?: string; familyId: number; planningProfile?: FamilyPlanningProfile | null }) {
+  return request<{ ok: true; analysisReport: FamilyPolicyAnalysisReport }>(`/api/family-profiles/${input.familyId}/policy-analysis-report${authQuery(input)}`, {
+    token: input.token,
+    body: { planningProfile: input.planningProfile || null },
+  });
+}
+
 export function getFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
   return request<{ ok: true; review: FamilySalesReview | null }>(`/api/family-profiles/${input.familyId}/sales-review${authQuery(input)}`, {
     token: input.token,
   });
 }
 
-export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number }) {
+export function createFamilySalesReview(input: { token?: string; guestId?: string; familyId: number; userRefresh?: boolean; salesChatMessageIds?: number[] }) {
   return request<{ ok: true; review: FamilySalesReview }>(`/api/family-profiles/${input.familyId}/sales-review${authQuery(input)}`, {
     token: input.token,
-    body: {},
+    body: {
+      userRefresh: input.userRefresh === true,
+      salesChatMessageIds: Array.isArray(input.salesChatMessageIds) ? input.salesChatMessageIds : [],
+    },
   });
+}
+
+export function listFamilySalesChatThreads(input: { token?: string; guestId?: string; familyId: number }) {
+  return request<{ ok: true; threads: FamilySalesChatThread[] }>(`/api/family-profiles/${input.familyId}/sales-chat/threads${authQuery(input)}`, {
+    token: input.token,
+  });
+}
+
+export function createFamilySalesChatThread(input: { token?: string; guestId?: string; familyId: number; message?: string }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads${authQuery(input)}`,
+    {
+      token: input.token,
+      body: { message: input.message || '' },
+    },
+  );
+}
+
+export function getFamilySalesChatThread(input: { token?: string; guestId?: string; familyId: number; threadId: number }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads/${input.threadId}${authQuery(input)}`,
+    {
+      token: input.token,
+    },
+  );
+}
+
+export function sendFamilySalesChatMessage(input: { token?: string; guestId?: string; familyId: number; threadId: number; message: string }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads/${input.threadId}/messages${authQuery(input)}`,
+    {
+      token: input.token,
+      body: { message: input.message },
+    },
+  );
 }
 
 export function getFamilyReportShare(shareToken: string) {

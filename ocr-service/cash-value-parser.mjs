@@ -39,6 +39,15 @@ function boxXMin(box) {
   return Math.min(...xs);
 }
 
+function boxXMax(box) {
+  if (!box || !Array.isArray(box) || box.length < 4) return 0;
+  if (typeof box[0] === 'number') {
+    return Math.max(box[0], box[2]);
+  }
+  const xs = box.map((point) => (Array.isArray(point) ? point[0] : 0));
+  return Math.max(...xs);
+}
+
 function boxXMid(box) {
   if (!box || !Array.isArray(box) || box.length < 4) return 0;
   if (typeof box[0] === 'number') {
@@ -277,6 +286,127 @@ function uniqueRowsByPolicyYear(rows) {
   return [...byYear.values()].sort((a, b) => a.policyYear - b.policyYear || (a.age ?? 0) - (b.age ?? 0));
 }
 
+function itemsWithCoordinates(boxes) {
+  return boxes
+    .map((item, index) => ({
+      ...item,
+      _index: index,
+      _xMin: boxXMin(item.box),
+      _xMax: boxXMax(item.box),
+      _xMid: boxXMid(item.box),
+      _yMid: boxYMid(item.box),
+    }))
+    .filter((item) => typeof item.text === 'string' && item.text.trim() && item._yMid !== null);
+}
+
+function median(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function detectRepeatedHeaderGroups(items) {
+  const yearHeaders = items.filter((item) => isYearHeader(item.text));
+  const cashHeaders = items.filter((item) => isCashValueHeader(item.text));
+  const groups = [];
+  const usedCashIndexes = new Set();
+
+  for (const yearHeader of yearHeaders) {
+    let best = null;
+    let bestScore = Infinity;
+    for (const cashHeader of cashHeaders) {
+      if (usedCashIndexes.has(cashHeader._index)) continue;
+      if (cashHeader._xMid <= yearHeader._xMid) continue;
+      const xDistance = cashHeader._xMid - yearHeader._xMid;
+      const yDistance = Math.abs(cashHeader._yMid - yearHeader._yMid);
+      if (xDistance < 60 || xDistance > 900 || yDistance > 90) continue;
+      const score = yDistance * 5 + xDistance;
+      if (score < bestScore) {
+        best = cashHeader;
+        bestScore = score;
+      }
+    }
+    if (!best) continue;
+    usedCashIndexes.add(best._index);
+    groups.push({
+      yearHeader,
+      cashHeader: best,
+      centerX: (yearHeader._xMid + best._xMid) / 2,
+      headerY: Math.min(yearHeader._yMid, best._yMid),
+    });
+  }
+
+  return groups.sort((a, b) => a.centerX - b.centerX);
+}
+
+function extractCashValueRowsByHeaderGroups(boxes) {
+  const items = itemsWithCoordinates(boxes);
+  const headerGroups = detectRepeatedHeaderGroups(items);
+  if (headerGroups.length < 2) return [];
+
+  const rows = [];
+  for (let i = 0; i < headerGroups.length; i++) {
+    const group = headerGroups[i];
+    const previous = headerGroups[i - 1];
+    const next = headerGroups[i + 1];
+    const leftBoundary = previous ? (previous.centerX + group.centerX) / 2 : -Infinity;
+    const rightBoundary = next ? (group.centerX + next.centerX) / 2 : Infinity;
+    const groupItems = items.filter((item) => (
+      item._xMid >= leftBoundary
+      && item._xMid < rightBoundary
+      && item._yMid > group.headerY + 18
+      && !isYearHeader(item.text)
+      && !isCashValueHeader(item.text)
+    ));
+
+    const yearItems = groupItems
+      .map((item) => ({ ...item, _policyYear: parsePolicyYear(item.text) }))
+      .filter((item) => item._policyYear !== null);
+    const valueItems = groupItems
+      .map((item) => ({ ...item, _cashValue: parseNumericValue(item.text) }))
+      .filter((item) => (
+        item._cashValue !== null
+        && item._cashValue >= 0
+        && parsePolicyYear(item.text) === null
+      ));
+
+    const sortedYearItems = [...yearItems].sort((a, b) => a._yMid - b._yMid);
+    const yearYDistances = [];
+    for (let y = 1; y < sortedYearItems.length; y++) {
+      yearYDistances.push(Math.abs(sortedYearItems[y]._yMid - sortedYearItems[y - 1]._yMid));
+    }
+    const rowGap = median(yearYDistances);
+    const yThreshold = Math.max(28, Math.min(80, (rowGap || 55) * 0.7));
+    const usedValueIndexes = new Set();
+
+    for (const yearItem of yearItems) {
+      let best = null;
+      let bestScore = Infinity;
+      for (const valueItem of valueItems) {
+        if (usedValueIndexes.has(valueItem._index)) continue;
+        if (valueItem._xMid <= yearItem._xMid) continue;
+        const yDistance = Math.abs(valueItem._yMid - yearItem._yMid);
+        if (yDistance > yThreshold) continue;
+        const score = yDistance * 6 + Math.abs(valueItem._xMid - group.cashHeader._xMid);
+        if (score < bestScore) {
+          best = valueItem;
+          bestScore = score;
+        }
+      }
+      if (!best) continue;
+      usedValueIndexes.add(best._index);
+      rows.push({
+        policyYear: yearItem._policyYear,
+        age: null,
+        cashValue: best._cashValue,
+      });
+    }
+  }
+
+  return uniqueRowsByPolicyYear(rows);
+}
+
 function sortBoxesReadingOrder(boxes, options = {}) {
   return clusterIntoRows(boxes, options)
     .flatMap((row) => row)
@@ -373,7 +503,10 @@ function isCashValueHeader(text) {
 }
 
 function isTableStopLine(text) {
-  return /^第\d+页/u.test(text) || /^本表/u.test(text) || /^上表/u.test(text) || /^注[:：]/u.test(text);
+  return /^第\d+页/u.test(text)
+    || /^(?:\d+[.．、]\s*)?本表/u.test(text)
+    || /^上表/u.test(text)
+    || /^注[:：]/u.test(text);
 }
 
 function parseAlternatingYearValueTokens(tokens) {
@@ -407,9 +540,32 @@ function parseSequentialYearValueTextRows(lines) {
     if (policyYear === null) continue;
     const nextLine = lines[i + 1];
     if (isYearHeader(nextLine) || isCashValueHeader(nextLine) || parsePolicyYear(nextLine) !== null) continue;
+    if (parseInlineYearValueTextRows([nextLine]).length) continue;
     const cashValue = parseNumericValue(nextLine);
     if (cashValue === null || cashValue < 0) continue;
     rows.push({ policyYear, age: null, cashValue });
+  }
+  return rows;
+}
+
+function looksLikeCashValueToken(text) {
+  return /[,，.．]/u.test(String(text || ''));
+}
+
+function parseInlineYearValueTextRows(lines) {
+  const rows = [];
+  for (const line of lines) {
+    if (isTableStopLine(line)) continue;
+    const tokens = String(line || '').match(/(?<![\d,，.．])(?:\d{1,3}(?:年末|年未|年木|年度末)?|[\d,，]*\d[\d,，]*(?:[.．]\d{2})?)(?![\d,，.．])/gu) || [];
+    for (let i = 0; i < tokens.length - 1; i++) {
+      const policyYear = parsePolicyYear(tokens[i]);
+      if (policyYear === null) continue;
+      const cashToken = tokens[i + 1];
+      if (!looksLikeCashValueToken(cashToken)) continue;
+      const cashValue = parseNumericValue(cashToken);
+      if (cashValue === null || cashValue < 0) continue;
+      rows.push({ policyYear, age: null, cashValue });
+    }
   }
   return rows;
 }
@@ -424,7 +580,11 @@ function parseCashValueTextSegment(segment, options = {}) {
   const beforeCashHeader = segment.slice(yearHeaderIndex + 1, cashHeaderIndex)
     .filter((line) => parsePolicyYear(line) !== null);
   const afterCashHeader = segment.slice(cashHeaderIndex + 1)
-    .filter((line) => !isYearHeader(line) && !isCashValueHeader(line));
+    .filter((line) => (
+      !isYearHeader(line)
+      && !isCashValueHeader(line)
+      && (parsePolicyYear(line) !== null || parseNumericValue(line) !== null)
+    ));
 
   const splitRows = parseSplitYearValueTokens(beforeCashHeader, afterCashHeader);
   if (splitRows.length) return splitRows;
@@ -461,9 +621,11 @@ export function parseCashValueText(input, options = {}) {
   if (current.length) segments.push(current);
 
   const sequentialRows = parseSequentialYearValueTextRows(lines);
+  const inlineRows = parseInlineYearValueTextRows(lines);
   const sequentialYears = new Set(sequentialRows.map((row) => row.policyYear));
   const parsedRows = uniqueRowsByPolicyYear([
     ...sequentialRows,
+    ...inlineRows,
     ...segments.flatMap((segment) => parseCashValueTextSegment(segment, { excludedPolicyYears: sequentialYears })),
   ]);
   const { valid, confidence } = validateAndScore(parsedRows, []);
@@ -503,6 +665,13 @@ function validateAndScore(rows, boxes) {
     if (rows[i].policyYear >= rows[i - 1].policyYear) ascendingCount++;
   }
   const yearOrdered = totalPairs === 0 || ascendingCount / totalPairs >= 0.5;
+  const adjacentYearLikeCashValues = rows.filter((row) => (
+    Number.isInteger(row.cashValue)
+    && row.cashValue >= 1
+    && row.cashValue <= 150
+    && Math.abs(row.cashValue - row.policyYear) <= 1
+  )).length;
+  const mostlyAdjacentYearValues = rows.length >= 5 && adjacentYearLikeCashValues / rows.length >= 0.5;
 
   // Check cash value non-negative (already enforced in parsing)
   // Check age ordering if present
@@ -519,8 +688,8 @@ function validateAndScore(rows, boxes) {
 
   // OCR average confidence
   const confidences = boxes
-    .filter((b) => typeof b.confidence === 'number')
-    .map((b) => b.confidence);
+    .map((b) => Number(b.confidence))
+    .filter((confidence) => Number.isFinite(confidence) && confidence > 0);
   const avgConfidence = confidences.length > 0
     ? confidences.reduce((a, b) => a + b, 0) / confidences.length
     : 0.8;
@@ -533,7 +702,7 @@ function validateAndScore(rows, boxes) {
   const confidence = ocrScore * 0.4 + alignmentScore * 0.3 + reasonabilityScore * 0.3;
 
   return {
-    valid: yearOrdered && confidence >= CONFIDENCE_THRESHOLD,
+    valid: yearOrdered && !mostlyAdjacentYearValues && confidence >= CONFIDENCE_THRESHOLD,
     confidence: Math.round(confidence * 100) / 100,
   };
 }
@@ -555,7 +724,10 @@ export function parseCashValueTable(boxes, options = {}) {
 
   const dataRows = rows.slice(header.headerRowIndex + 1);
   let parsedRows = extractCashValueRows(dataRows, header.columns);
-  if (parsedRows.length < MIN_DATA_ROWS) {
+  const groupedRows = extractCashValueRowsByHeaderGroups(boxes);
+  if (groupedRows.length >= MIN_DATA_ROWS && groupedRows.length >= parsedRows.length) {
+    parsedRows = groupedRows;
+  } else if (parsedRows.length < MIN_DATA_ROWS) {
     parsedRows = parseCashValueRowsFromRecognizedOrder(boxes, options);
   }
   // Sort by policyYear (repeating groups interleave years from different column groups)
