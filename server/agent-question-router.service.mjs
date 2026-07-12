@@ -180,6 +180,48 @@ function publicResult(result, fallbackDecision = 'execute') {
   };
 }
 
+export async function simulateAgentQuestionDecision({ store, policyVersion, internalUserId = 1, candidate: rawCandidate, conversationContext, familyResolver, clock = () => new Date() } = {}) {
+  if (!store || typeof store.load !== 'function') throw new TypeError('store with load() is required');
+  const candidate = normalizeCandidate(rawCandidate);
+  const published = policyVersion || (typeof store.getPublishedAgentQuestionPolicyVersion === 'function'
+    ? await store.getPublishedAgentQuestionPolicyVersion()
+    : null);
+  const selected = selectPolicy(candidate, published);
+  const policy = selected.policy;
+  const policySource = policyVersion ? String(policyVersion.status) : selected.policySource === 'published' ? 'published' : 'built_in';
+  const threshold = Math.min(1, Math.max(0, Number(policy?.confidenceThreshold) || 0));
+  if (candidate.confidence < threshold) {
+    return { policy, policySource, decision: 'clarify', result: 'low_confidence', explanation: `Confidence ${candidate.confidence} is below ${threshold}.` };
+  }
+  if (policy?.key === 'unknown_write' || policy?.decision === 'reject') {
+    return { policy, policySource, decision: 'deny', result: policy?.key === 'unknown_write' ? 'unknown_write_denied' : 'policy_rejected', explanation: `${policy.key} would deny the request.` };
+  }
+  if (policy?.key === 'unknown_read') {
+    return { policy, policySource, decision: 'open_web', result: 'unknown_read_fallback', explanation: `${policy.key} would use the secure web fallback.` };
+  }
+  if (policy?.unsafe || policy?.enabled === false || (policy?.tool && !AGENT_QUESTION_POLICY_TOOLS.includes(policy.tool))) {
+    return { policy, policySource, decision: 'deny', result: 'unsafe_policy', explanation: `${policy.key} is unavailable.` };
+  }
+  let family = null;
+  if (FAMILY_INTENTS.has(policy.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy.tool)) {
+    const state = await store.load();
+    const resolver = typeof familyResolver === 'function' ? familyResolver : defaultFamilyResolver;
+    const families = await resolver({ store, state, internalUserId: Number(internalUserId), candidate });
+    const resolved = resolveFamily({ candidate, conversationContext, families, internalUserId: Number(internalUserId), now: clock() });
+    if (resolved.result) return { policy, policySource, decision: 'clarify', result: 'family_clarification', explanation: 'An authorized family could not be uniquely resolved.' };
+    family = resolved.family;
+  }
+  const writePreview = policy.operation === 'write';
+  return {
+    policy,
+    policySource,
+    decision: writePreview || policy.decision === 'propose' ? 'confirm' : 'execute',
+    result: writePreview ? 'write_preview' : 'would_execute',
+    familyResolved: Boolean(family),
+    explanation: writePreview ? `${policy.key} would require confirmation; no write was executed.` : `${policy.key} would execute.`,
+  };
+}
+
 export function createAgentQuestionRouter({ store, handlers = {}, familyResolver, clock = () => new Date() } = {}) {
   if (!store || typeof store.load !== 'function') throw new TypeError('store with load() is required');
 

@@ -8,9 +8,9 @@ import {
 } from '../responsibility-generation-governance.service.mjs';
 import {
   AGENT_QUESTION_POLICIES,
-  chooseAgentQuestionPolicy,
   validateAgentQuestionPolicy,
 } from '../agent-question-policy.service.mjs';
+import { simulateAgentQuestionDecision } from '../agent-question-router.service.mjs';
 
 export function createAdminRoutes(context) {
   const router = express.Router();
@@ -101,9 +101,12 @@ export function createAdminRoutes(context) {
     return policies;
   };
   const sendPolicyError = (res, error) => {
-    const status = /must be a draft|rollback source must be/iu.test(String(error?.message)) ? 409 : /not found/iu.test(String(error?.message)) ? 404 : 400;
-    error.status = status;
-    sendError(res, error, status);
+    const message = String(error?.message || '');
+    const status = /must be a draft|rollback source must be|constraint/iu.test(message) ? 409 : /not found/iu.test(message) ? 404 : error instanceof TypeError || error instanceof RangeError ? 400 : 500;
+    const exposed = status === 500 ? new Error('Agent question policy administration failed') : new Error(message);
+    exposed.code = status === 409 ? 'AGENT_POLICY_CONFLICT' : status === 404 ? 'AGENT_POLICY_NOT_FOUND' : status === 400 ? 'AGENT_POLICY_INVALID' : 'AGENT_POLICY_INTERNAL';
+    exposed.status = status;
+    sendError(res, exposed, status);
   };
 
   router.get('/agent-question-policies', async (req, res) => {
@@ -119,8 +122,7 @@ export function createAdminRoutes(context) {
     try {
       const body = strictObject(req.body, ['policies']);
       validateDraftPolicies(body.policies);
-      const versions = await agentQuestionPolicyStore.listAgentQuestionPolicyVersions();
-      const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ version: Math.max(0, ...versions.map((row) => row.version)) + 1, policies: body.policies, actor: policyActor(session), createdAt: policyTimestamp() });
+      const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ policies: body.policies, actor: policyActor(session), createdAt: policyTimestamp() });
       res.status(201).json({ ok: true, draft });
     } catch (error) { sendPolicyError(res, error); }
   });
@@ -154,10 +156,8 @@ export function createAdminRoutes(context) {
       if (!source) throw new Error('Agent question policy version not found');
       if (!['published', 'archived'].includes(source.status)) throw new Error('Agent question policy rollback source must be published or archived');
       validatePolicySet(source.policies);
-      const versions = await agentQuestionPolicyStore.listAgentQuestionPolicyVersions();
-      const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ version: Math.max(0, ...versions.map((row) => row.version)) + 1, policies: source.policies, actor: policyActor(session), createdAt: policyTimestamp() });
-      const published = await agentQuestionPolicyStore.publishAgentQuestionPolicyVersion({ id: draft.id, actor: policyActor(session), publishedAt: policyTimestamp() });
-      res.json({ ok: true, sourceVersionId: source.id, draft, published });
+      const published = await agentQuestionPolicyStore.rollbackAgentQuestionPolicyVersion({ sourceId: source.id, actor: policyActor(session), publishedAt: policyTimestamp() });
+      res.json({ ok: true, sourceVersionId: source.id, published });
     } catch (error) { sendPolicyError(res, error); }
   });
 
@@ -165,31 +165,30 @@ export function createAdminRoutes(context) {
     const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
     try {
       const body = strictObject(req.body, ['draftId', 'candidate']);
-      const candidate = strictObject(body.candidate, ['intent', 'requestedOperation', 'confidence', 'question']);
+      const candidate = strictObject(body.candidate, ['intent', 'requestedOperation', 'confidence', 'question', 'entities', 'contextRefs']);
       if (typeof candidate.intent !== 'string' || candidate.intent.length > 80 || !['read', 'write'].includes(candidate.requestedOperation || 'read')) throw new TypeError('invalid simulation candidate');
       const hasDraftId = Object.hasOwn(body, 'draftId');
       if (hasDraftId && (!Number.isInteger(body.draftId) || body.draftId <= 0)) throw new TypeError('draftId must be a positive integer');
       const version = hasDraftId ? await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: body.draftId }) : await agentQuestionPolicyStore.getPublishedAgentQuestionPolicyVersion();
       if (hasDraftId && !version) throw new Error('Agent question policy draft not found');
       if (hasDraftId && version.status !== 'draft') throw new Error('Agent question policy version must be a draft');
-      const policies = version?.policies || AGENT_QUESTION_POLICIES;
-      validatePolicySet(policies);
-      const policy = chooseAgentQuestionPolicy(candidate, policies);
+      validatePolicySet(version?.policies || AGENT_QUESTION_POLICIES);
+      const simulated = await simulateAgentQuestionDecision({ store: agentQuestionPolicyStore, policyVersion: version, internalUserId: Number(session?.userId || 1), candidate });
+      const policy = simulated.policy;
       const fallback = ['unknown_read', 'unknown_write'].includes(policy.key);
-      const policySource = version ? version.status : 'built_in';
-      const explanation = fallback
-        ? `Fallback ${policy.key} for requestedOperation ${candidate.requestedOperation || 'read'} from ${policySource.replace('_', '-')} policy.`
-        : `Selected ${policy.key} from ${policySource} policy for intent ${candidate.intent}.`;
-      res.json({ ok: true, previewOnly: true, decision: { policyKey: policy.key, policySource, intent: policy.intent, decision: policy.decision, handler: policy.handler, operation: policy.operation, tool: policy.tool, confirmationRequired: policy.confirmation === 'required', outputMode: policy.outputMode, fallback, explanation } });
+      const sourceLabel = simulated.policySource.replace('_', '-');
+      const explanation = fallback ? `${simulated.explanation} requestedOperation ${candidate.requestedOperation || 'read'}; source ${sourceLabel} policy.` : simulated.explanation;
+      res.json({ ok: true, previewOnly: true, decision: { policyKey: policy.key, policySource: simulated.policySource, intent: policy.intent, decision: simulated.decision, result: simulated.result, handler: policy.handler, operation: policy.operation, tool: policy.tool, confirmationRequired: policy.confirmation === 'required', outputMode: policy.outputMode, familyResolved: simulated.familyResolved === true, fallback, explanation } });
     } catch (error) { sendPolicyError(res, error); }
   });
 
   router.get('/agent-unknown-questions', async (req, res) => {
     const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
     try {
-      const rows = await agentQuestionPolicyStore.listAgentUnknownQuestions({ limit: req.query.limit, offset: req.query.offset });
-      const redact = (text) => String(text || '').replace(/1\d{10}/gu, '[手机号已脱敏]').replace(/\d{17}[\dXx]/gu, '[证件号已脱敏]');
-      res.json({ ok: true, items: rows.map((row) => ({ id: row.id, userRef: `user_${String(row.userId).slice(-2).padStart(2, '0')}`, question: redact(row.question), status: row.status, createdAt: row.createdAt })), total: Number(rows.total || 0), limit: Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20)), offset: Math.max(0, Number.parseInt(req.query.offset, 10) || 0) });
+      const offset = Math.min(100_000, Math.max(0, Number.parseInt(req.query.offset, 10) || 0));
+      const rows = await agentQuestionPolicyStore.listAgentUnknownQuestions({ limit: req.query.limit, offset });
+      const redact = (text) => String(text || '').replace(/\b\d{17}[\dXx]\b|\b\d{15}\b/gu, '[证件号已脱敏]').replace(/1\d{10}/gu, '[手机号已脱敏]');
+      res.json({ ok: true, items: rows.map((row) => ({ id: row.id, userRef: `user_${String(row.userId).slice(-2).padStart(2, '0')}`, question: redact(row.question), status: row.status, createdAt: row.createdAt })), total: Number(rows.total || 0), limit: Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20)), offset });
     } catch (error) { sendPolicyError(res, error); }
   });
 

@@ -1947,6 +1947,20 @@ test('sqlite state store drafts and transactionally publishes agent question pol
   store.close();
 });
 
+test('sqlite state store allocates draft versions and rolls back atomically', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const drafts = await Promise.all(Array.from({ length: 4 }, () => store.createAgentQuestionPolicyDraft({ policies: [{ key: 'chat' }], actor: 'admin' })));
+  assert.deepEqual(drafts.map((row) => row.version).sort((a, b) => a - b), [1, 2, 3, 4]);
+  await store.publishAgentQuestionPolicyVersion({ id: drafts[0].id, actor: 'admin' });
+  const rolled = await store.rollbackAgentQuestionPolicyVersion({ sourceId: drafts[0].id, actor: 'admin' });
+  assert.equal(rolled.status, 'published');
+  assert.equal(rolled.version, 5);
+  assert.equal(store.db.prepare("SELECT count(*) count FROM agent_question_policy_versions WHERE status = 'published'").get().count, 1);
+  assert.equal(store.db.prepare("SELECT count(*) count FROM agent_question_policy_versions WHERE version = 5 AND status = 'draft'").get().count, 0);
+  store.close();
+});
+
 test('sqlite state store rejects unsafe agent question policy JSON', async () => {
   const dir = await makeTempDir();
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });

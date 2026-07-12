@@ -3156,17 +3156,47 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
   }
 
   async function createAgentQuestionPolicyDraft({ version, policies = [], actor = '', createdAt = '' } = {}) {
-    const numericVersion = Number(version);
-    if (!Number.isInteger(numericVersion) || numericVersion <= 0) throw new TypeError('Agent question policy version must be a positive integer');
     const normalizedActor = String(actor || '').trim();
     if (!normalizedActor) throw new TypeError('Agent question policy actor is required');
     const timestamp = String(createdAt || new Date().toISOString());
     const serializedPolicies = serializeAgentPolicies(policies);
-    const result = db.prepare(`
-      INSERT INTO agent_question_policy_versions (version, status, policy_json, actor, created_at, published_at, archived_at)
-      VALUES (?, 'draft', ?, ?, ?, '', '')
-    `).run(numericVersion, serializedPolicies, normalizedActor, timestamp);
-    return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const requestedVersion = version == null ? null : Number(version);
+      if (requestedVersion != null && (!Number.isInteger(requestedVersion) || requestedVersion <= 0)) throw new TypeError('Agent question policy version must be a positive integer');
+      const numericVersion = requestedVersion ?? Number(db.prepare('SELECT COALESCE(MAX(version), 0) + 1 version FROM agent_question_policy_versions').get().version);
+      const result = db.prepare(`
+        INSERT INTO agent_question_policy_versions (version, status, policy_json, actor, created_at, published_at, archived_at)
+        VALUES (?, 'draft', ?, ?, ?, '', '')
+      `).run(numericVersion, serializedPolicies, normalizedActor, timestamp);
+      db.exec('COMMIT');
+      return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function rollbackAgentQuestionPolicyVersion({ sourceId, actor = '', publishedAt = '' } = {}) {
+    const normalizedActor = String(actor || '').trim();
+    if (!normalizedActor) throw new TypeError('Agent question policy actor is required');
+    const timestamp = String(publishedAt || new Date().toISOString());
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const source = db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(Number(sourceId));
+      if (!source) throw new Error('Agent question policy version not found');
+      if (!['published', 'archived'].includes(source.status)) throw new Error('Agent question policy rollback source must be published or archived');
+      const nextVersion = Number(db.prepare('SELECT COALESCE(MAX(version), 0) + 1 version FROM agent_question_policy_versions').get().version);
+      db.prepare("UPDATE agent_question_policy_versions SET status = 'archived', archived_at = ? WHERE status = 'published'").run(timestamp);
+      const result = db.prepare(`INSERT INTO agent_question_policy_versions
+        (version, status, policy_json, actor, created_at, published_at, archived_at)
+        VALUES (?, 'published', ?, ?, ?, ?, '')`).run(nextVersion, source.policy_json, normalizedActor, timestamp, timestamp);
+      db.exec('COMMIT');
+      return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   async function listAgentQuestionPolicyVersions() {
@@ -3569,6 +3599,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     listAgentQuestionPolicyVersions,
     getAgentQuestionPolicyVersion,
     updateAgentQuestionPolicyDraft,
+    rollbackAgentQuestionPolicyVersion,
     publishAgentQuestionPolicyVersion,
     getPublishedAgentQuestionPolicyVersion,
     appendAgentUnknownQuestion,

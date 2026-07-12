@@ -89,10 +89,32 @@ test('unknown question list is paginated and redacted, and concurrent publish ke
     assert.equal(JSON.stringify(page.body).includes('13812345678'), false);
     assert.equal(JSON.stringify(page.body).includes('secret-message'), false);
     assert.equal(JSON.stringify(page.body).includes('secret'), false);
+    await h.store.appendAgentUnknownQuestion({ userId: 789, messageRef: 'mixed', question: '身份证 11010519491231002X，旧证 110105491231002，电话 13812345678', actor: 'router' });
+    const redacted = await call(h, '/api/admin/agent-unknown-questions?limit=100&offset=999999');
+    assert.equal(redacted.body.offset, 100000);
+    const firstPage = await call(h, '/api/admin/agent-unknown-questions?limit=100');
+    const serialized = JSON.stringify(firstPage.body);
+    assert.equal(serialized.includes('11010519491231002X'), false);
+    assert.equal(serialized.includes('110105491231002'), false);
+    assert.equal(serialized.includes('13812345678'), false);
     const a = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
     const b = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
     await Promise.all([a, b].map((row) => call(h, `/api/admin/agent-question-policies/drafts/${row.body.draft.id}/publish`, { method: 'POST', body: {} })));
     assert.equal(h.store.db.prepare("SELECT count(*) count FROM agent_question_policy_versions WHERE status='published'").get().count, 1);
+  } finally { await h.close(); }
+});
+
+test('simulation uses router confidence and authorized-family decisions without writes', async () => {
+  const h = await harness();
+  try {
+    const policies = AGENT_QUESTION_POLICIES.map((policy) => policy.key === 'coverage_report' ? { ...policy, confidenceThreshold: 0.8 } : policy);
+    const draft = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies } });
+    const low = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate: { intent: 'coverage_report', requestedOperation: 'read', confidence: 0.2, entities: { familyName: '甲家庭' } } } });
+    assert.equal(low.body.decision.decision, 'clarify');
+    assert.equal(low.body.decision.result, 'low_confidence');
+    const unauthorized = await call(h, '/api/admin/agent-question-policies/simulate', { method: 'POST', body: { draftId: draft.body.draft.id, candidate: { intent: 'coverage_report', requestedOperation: 'read', confidence: 1, entities: { familyName: '甲家庭' } } } });
+    assert.equal(unauthorized.body.decision.decision, 'clarify');
+    assert.equal(unauthorized.body.decision.familyResolved, false);
   } finally { await h.close(); }
 });
 
