@@ -135,6 +135,7 @@ import {
   groupPoliciesByInsured,
 } from '../../shared/customer-policy-list';
 import { AnalysisReportPage, UploadPolicyPage } from '../../features/policy-entry/UploadPolicyPage';
+import { AgentPolicyImportReview } from '../../features/policy-entry/AgentPolicyImportReview';
 import { PolicyDetailSheet } from '../../features/policy-detail/PolicyDetailSheet';
 import { ResponsibilityAssistant } from '../../features/responsibility-assistant/ResponsibilityAssistant';
 import { CustomerAccountSheet } from '../../features/customer-auth/CustomerAccountSheet';
@@ -626,6 +627,10 @@ export function CustomerApp() {
   const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
+  const [policyImportTaskId, setPolicyImportTaskId] = useState(() => {
+    const value = Number(new URLSearchParams(window.location.search).get('policyImportTaskId') || 0);
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  });
   const [mobile, setMobile] = useState(() => localStorage.getItem(USER_MOBILE_KEY) || '');
   const [formData, setFormData] = useState<PolicyFormData>(emptyForm);
   const [ocrText, setOcrText] = useState('');
@@ -752,6 +757,9 @@ export function CustomerApp() {
     if (!selectedFamily?.planningProfile) return;
     setFamilyPlanningProfile(saveFamilyPlanningProfile(selectedFamily.planningProfile));
   }, [selectedFamily?.planningProfile]);
+  useEffect(() => {
+    if (policyImportTaskId && !token) openPhoneVerificationDialog('验证手机号后继续审核跨渠道保单任务');
+  }, [policyImportTaskId, token]);
   useEffect(() => {
     if (familySalesReviewRestoreAttemptRef.current || familySalesReviewOpen) return;
     const restoredFamilyId = Number(sessionStorage.getItem(FAMILY_SALES_REVIEW_RESTORE_KEY) || 0);
@@ -4339,6 +4347,24 @@ export function CustomerApp() {
         {membershipDialog}
         {cashValueDialog}
         {familyCreateDialog}
+      </>
+    );
+  }
+
+  if (policyImportTaskId && token) {
+    return (
+      <>
+        <AgentPolicyImportReview
+          taskId={policyImportTaskId}
+          token={token}
+          onBack={() => {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('policyImportTaskId');
+            window.history.replaceState({}, '', url);
+            setPolicyImportTaskId(null);
+          }}
+        />
+        {accountSheet}
       </>
     );
   }

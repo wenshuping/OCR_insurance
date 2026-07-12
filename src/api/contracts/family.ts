@@ -189,6 +189,13 @@ export type PolicyImportTask = {
   nextInteraction: { type: string; stateVersion: number; field?: string; status?: string } | null;
 };
 
+export type PolicyImportFinalizationResult = {
+  taskId: number;
+  policyId: number;
+  summary: Record<string, unknown>;
+  completedAt: string;
+};
+
 type PolicyImportScope = { token?: string; guestId?: string; familyId: number };
 
 export function startPolicyImport(input: PolicyImportScope) {
@@ -208,6 +215,11 @@ export function appendPolicyImportFiles(input: PolicyImportScope & { taskId: num
 export function applyPolicyImportAction(input: PolicyImportScope & { taskId: number; stateVersion: number; action: string; field?: string; value?: string; optionId?: string; role?: string }) {
   const { token, guestId, familyId, taskId, ...body } = input;
   return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/actions${authQuery({ guestId })}`, { token, body });
+}
+
+export function finalizePolicyImport(input: PolicyImportScope & { taskId: number; stateVersion: number; requestId: string }) {
+  const { token, guestId, familyId, taskId, ...body } = input;
+  return request<{ ok: true; result: PolicyImportFinalizationResult }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/finalize${authQuery({ guestId })}`, { token, body });
 }
 
 export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {

@@ -157,6 +157,17 @@
     ]
   },
   {
+    "name": "customer-policy-import-review",
+    "patterns": [
+      "src/apps/customer/CustomerApp.tsx",
+      "src/features/policy-entry/AgentPolicyImportReview.tsx",
+      "tests/customer-ui-style.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/customer-ui-style.test.mjs"
+    ]
+  },
+  {
     "name": "cashflow",
     "patterns": [
       "src/cashflow-engine.mjs",

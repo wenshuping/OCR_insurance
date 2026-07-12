@@ -1949,6 +1949,33 @@ test('client API exposes family profile types and endpoints', () => {
   assert.match(apiSource, /insuredMemberId\?: number/);
 });
 
+test('customer app resumes a masked policy import task from its cross-channel query', () => {
+  const reviewSource = fs.readFileSync(new URL('../src/features/policy-entry/AgentPolicyImportReview.tsx', import.meta.url), 'utf8');
+  const familyApiSource = fs.readFileSync(new URL('../src/api/contracts/family.ts', import.meta.url), 'utf8');
+
+  assert.match(normalizedCustomerAppSource, /policyImportTaskId/);
+  assert.match(normalizedCustomerAppSource, /new URLSearchParams\(window\.location\.search\)/);
+  assert.match(normalizedCustomerAppSource, /AgentPolicyImportReview/);
+  assert.match(reviewSource, /getPolicyImport\(/);
+  assert.match(reviewSource, /task\.stateVersion/);
+  assert.match(reviewSource, /task\.documentSummary/);
+  assert.match(reviewSource, /task\.policyDraft/);
+  assert.match(reviewSource, /task\.missingFields/);
+  assert.match(reviewSource, /task\.legalOptions\.products/);
+  assert.match(reviewSource, /task\.legalOptions\.members/);
+  assert.match(reviewSource, /task\.resolution/);
+  assert.match(reviewSource, /stateVersion:\s*task\.stateVersion/);
+  assert.match(reviewSource, /finalizePolicyImport\(/);
+  assert.match(reviewSource, /error instanceof ApiError && error\.status === 409/);
+  assert.match(reviewSource, /任务已在其他渠道更新/);
+  assert.match(reviewSource, /clearTimeout\(/);
+  assert.match(reviewSource, /Math\.min\(/);
+  assert.match(reviewSource, /aria-live="polite"/);
+  assert.match(reviewSource, /查看已保存保单/);
+  assert.doesNotMatch(reviewSource, /localStorage|sessionStorage|data:image|ocrText|rawOcr/i);
+  assert.match(familyApiSource, /\/finalize/);
+});
+
 test('deleting a rider does not force-refresh optional responsibilities when main product is unchanged', () => {
   const source = `${normalizedCustomerPolicyFormSource}\n${normalizedCustomerAppSource}`;
 
