@@ -148,12 +148,14 @@ export function createFamilyRoutes(context) {
     if (!scope) return undefined;
     const controller = new AbortController();
     const abort = () => controller.abort();
+    const abortOnClose = () => { if (!res.writableFinished) controller.abort(); };
     req.once('aborted', abort);
+    res.once('close', abortOnClose);
     try {
       const result = await policyImports.finalize({ ...scope, taskId: Number(req.params.taskId), requestId: req.body?.requestId, stateVersion: req.body?.stateVersion, signal: controller.signal });
       return res.json({ ok: true, result });
     } catch (error) { return sendError(res, error, error?.status || 500); }
-    finally { req.off('aborted', abort); }
+    finally { req.off('aborted', abort); res.off('close', abortOnClose); }
   });
 
   function isUserReportRefreshRequest(req) {

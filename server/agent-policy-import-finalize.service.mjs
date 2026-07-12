@@ -95,7 +95,7 @@ export function createAgentPolicyImportFinalizer({
       const durableTask = await loadTask?.(task.id);
       const activeRequestId = text(durableTask?.finalizeRequestId || requestId);
       const active = activeRequestId ? await findRecord?.({ ownerUserId: owner.userId, taskId: task.id, requestId: activeRequestId }) : null;
-      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id });
+      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id, requestId: activeRequestId });
       if (policy && active) return reconcile({ task, owner, record: active, policy });
       if (active?.status === 'failed_unknown') fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
       if (durableTask?.status === 'final_confirmation') fail('FINALIZE_RETRY_REQUIRED', '上次保存未提交，请重新确认后重试', 409);
@@ -112,7 +112,7 @@ export function createAgentPolicyImportFinalizer({
     const completedForTask = await findRecord?.({ ownerUserId: owner?.userId, taskId: task?.id });
     if (completedForTask?.status === 'completed') return publicResult(completedForTask, task);
     if (prior?.status === 'reserved' || prior?.status === 'failed_unknown') {
-      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id });
+      const policy = await findPolicyBySource?.({ ownerUserId: owner.userId, taskId: task.id, requestId: prior.requestId });
       if (policy) return reconcile({ task, owner, record: prior, policy });
       if (prior.status === 'failed_unknown') fail('FINALIZATION_OUTCOME_UNKNOWN', '上次保存结果未知，需要人工核对', 503);
       const now = nowIso();
@@ -135,7 +135,8 @@ export function createAgentPolicyImportFinalizer({
     Object.assign(task, reservedTask);
     let policy;
     try {
-      policy = await createPolicy({ task: reservedTask, family, owner, requestId: stableRequestId });
+      policy = await createPolicy({ task: reservedTask, family, owner, requestId: stableRequestId, reservedPolicyId: record.reservedPolicyId });
+      policy.id = record.reservedPolicyId;
       policy.sourcePolicyImportTaskId = reservedTask.id;
       policy.sourcePolicyImportRequestId = stableRequestId;
     } catch (error) {

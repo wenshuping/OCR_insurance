@@ -1050,7 +1050,7 @@ export function normalizePolicySources(sources = []) {
     .slice(0, 12);
 }
 
-export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, analysis, familyBinding = null }) {
+export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, analysis, familyBinding = null, policyId = null }) {
   const data = normalizePolicyScanData(scan?.data || {});
   let plans = normalizePolicyPlans(scan?.data?.plans, data.company);
   const mainPlan = plans.find((plan) => plan.role === 'main') || plans[0] || null;
@@ -1110,7 +1110,7 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
   const beneficiaryRelation = data.beneficiaryRelation || (familyBeneficiaryRelation !== '待确认' ? familyBeneficiaryRelation : '');
 
   return {
-    id: allocateId(state),
+    id: Number.isSafeInteger(policyId) && policyId > 0 ? policyId : allocateId(state),
     userId: userId ? Number(userId) : null,
     guestId: userId ? '' : normalizeGuestId(guestId),
     company: data.company,

@@ -59,7 +59,7 @@ test('SQLite finalization is idempotent, durable across restart, and records one
   const store = await createSqliteStateStore({ dbPath }); await store.persist(initial); let creates = 0;
   const finalize = createAgentPolicyImportFinalizer({ state: initial, reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, nowIso: () => '2026-07-12T01:00:00.000Z',
     failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask,
-    createPolicy: async () => { creates += 1; await new Promise((resolve) => setTimeout(resolve, 5)); return { id: 99, userId: 7, company: '可信保险', name: '安心保', insured: '张三', createdAt: '2026-07-12T01:00:00.000Z', updatedAt: '2026-07-12T01:00:00.000Z' }; } });
+    createPolicy: async ({ reservedPolicyId }) => { creates += 1; await new Promise((resolve) => setTimeout(resolve, 5)); return { id: reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三', createdAt: '2026-07-12T01:00:00.000Z', updatedAt: '2026-07-12T01:00:00.000Z' }; } });
   const input = { task: initial.agentPolicyImportTasks[0], family: initial.familyProfiles[0], owner: { userId: 7 }, requestId: 'stable-request', stateVersion: 5 };
   const [first, concurrent] = await Promise.all([finalize(input), finalize(input)]); const duplicate = await finalize(input);
   assert.deepEqual(concurrent, first);
@@ -69,7 +69,7 @@ test('SQLite finalization is idempotent, durable across restart, and records one
   assert.equal(loaded.policies.length, 1); assert.equal(loaded.agentPolicyImportTasks[0].status, 'completed');
   assert.equal(loaded.agentPolicyImportTasks[0].events.filter((event) => event.action === 'mark_saved').length, 1);
   assert.equal(restarted.db.prepare(`SELECT COUNT(*) AS count FROM agent_policy_import_finalizations WHERE owner_user_id = 7 AND task_id = 41 AND status = 'completed'`).get().count, 1);
-  assert.equal((await restarted.findAgentPolicyImportFinalization({ ownerUserId: 7, taskId: 41, requestId: 'stable-request' })).formalPolicyId, 99); restarted.close();
+  assert.equal((await restarted.findAgentPolicyImportFinalization({ ownerUserId: 7, taskId: 41, requestId: 'stable-request' })).formalPolicyId, first.policyId); restarted.close();
 });
 
 test('cross-instance same and different request IDs serialize to one policy create', async () => {
@@ -80,7 +80,7 @@ test('cross-instance same and different request IDs serialize to one policy crea
     firstState.knowledgeRecords = seed.knowledgeRecords; secondState.knowledgeRecords = seed.knowledgeRecords;
     const make = (store, state) => createAgentPolicyImportFinalizer({ state, reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask,
       waitIntervalMs: 2, waitTimeoutMs: 2_000,
-      createPolicy: async () => { creates += 1; await new Promise((resolve) => setTimeout(resolve, 30)); return { id: 88, userId: 7, company: '可信保险', name: '安心保', insured: '张三' }; } });
+      createPolicy: async ({ reservedPolicyId }) => { creates += 1; await new Promise((resolve) => setTimeout(resolve, 30)); return { id: reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三' }; } });
     const base = (state, requestId) => ({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId, stateVersion: 5 });
     const results = await Promise.allSettled([make(firstStore, firstState)(base(firstState, requestIds[0])), make(secondStore, secondState)(base(secondState, requestIds[1]))]);
     assert.equal(creates, 1, JSON.stringify(results.map((row) => row.status === 'rejected' ? { code: row.reason?.code, message: row.reason?.message } : row)));
@@ -88,7 +88,7 @@ test('cross-instance same and different request IDs serialize to one policy crea
     assert.deepEqual(results[0].value, results[1].value);
     const retryState = await secondStore.load();
     const retry = await make(secondStore, retryState)({ ...base(retryState, 'third'), stateVersion: retryState.agentPolicyImportTasks[0].stateVersion });
-    assert.equal(retry.policyId, 88); assert.equal(creates, 1);
+    assert.equal(retry.policyId, results[0].value.policyId); assert.equal(creates, 1);
     firstStore.close(); secondStore.close();
   }
 });
@@ -98,12 +98,14 @@ test('policy source marker reconciles a crash after save and unknown without mar
   const store = await createSqliteStateStore({ dbPath }); await store.persist(state);
   const reservation = await store.reserveAgentPolicyImportFinalization({ state, task: state.agentPolicyImportTasks[0], ownerUserId: 7, requestId: 'crash', expectedVersion: 5, now: '2026-07-12T02:00:00.000Z', leaseUntil: '2026-07-12T02:01:00.000Z' });
   assert.equal(reservation.task.stateVersion, 6); assert.equal(reservation.task.finalizeRequestId, 'crash');
-  const policy = { id: 77, userId: 7, company: '可信保险', name: '安心保', insured: '张三', sourcePolicyImportTaskId: 41, sourcePolicyImportRequestId: 'crash' };
+  const policy = { id: reservation.record.reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三', sourcePolicyImportTaskId: 41, sourcePolicyImportRequestId: 'crash' };
   state.policies.push(policy); await store.persistPolicyState({ state, policy });
   const restarted = await store.load(); let creates = 0;
   const finalize = createAgentPolicyImportFinalizer({ state: restarted, reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask, createPolicy: async () => { creates += 1; } });
   const result = await finalize({ task: restarted.agentPolicyImportTasks[0], family: restarted.familyProfiles[0], owner: { userId: 7 }, requestId: 'crash', stateVersion: 6 });
-  assert.equal(result.policyId, 77); assert.equal(creates, 0);
+  assert.equal(result.policyId, policy.id); assert.equal(creates, 0);
+  const sourceRow = store.db.prepare('SELECT source_policy_import_task_id, source_policy_import_request_id FROM policies WHERE id = ?').get(policy.id);
+  assert.equal(sourceRow.source_policy_import_task_id, 41); assert.equal(sourceRow.source_policy_import_request_id, 'crash');
   store.close();
 });
 
@@ -127,4 +129,54 @@ test('unknown outcome without a source marker fails closed and precommit failure
   await assert.rejects(unknown({ task: unknownState.agentPolicyImportTasks[0], family: unknownState.familyProfiles[0], owner: { userId: 7 }, requestId: 'unknown', stateVersion: reservation.task.stateVersion }), { code: 'FINALIZATION_OUTCOME_UNKNOWN' });
   assert.equal(creates, 0);
   store.close();
+});
+
+test('reserved policy id collision never overwrites an unrelated policy', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'policy-finalize-collision-')); const dbPath = path.join(directory, 'state.sqlite'); const state = stateFor();
+  const store = await createSqliteStateStore({ dbPath }); await store.persist(state);
+  let unrelated;
+  const finalize = createAgentPolicyImportFinalizer({ state, reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask,
+    createPolicy: async ({ reservedPolicyId }) => {
+      unrelated = { id: reservedPolicyId, userId: 99, company: '其他保险', name: '不得覆盖', insured: '王五', createdAt: '2026-07-12T04:00:00.000Z', updatedAt: '2026-07-12T04:00:00.000Z' };
+      const writer = await createSqliteStateStore({ dbPath }); const writerState = await writer.load(); writerState.policies.push(unrelated); await writer.persistPolicyState({ state: writerState, policy: unrelated }); writer.close();
+      return { id: reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三' };
+    } });
+  await assert.rejects(finalize({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'collision', stateVersion: 5 }), { code: 'FINALIZATION_OUTCOME_UNKNOWN' });
+  const stored = store.db.prepare('SELECT payload FROM policies WHERE id = ?').get(unrelated.id);
+  assert.deepEqual(JSON.parse(stored.payload), unrelated);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM policies').get().count, 1);
+  store.close();
+});
+
+test('durable family and member changes block reservation and completion', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'policy-finalize-toctou-')); const dbPath = path.join(directory, 'state.sqlite'); const state = stateFor();
+  const store = await createSqliteStateStore({ dbPath }); await store.persist(state);
+  const archivedFamily = { ...state.familyProfiles[0], status: 'archived' };
+  store.db.prepare(`UPDATE family_profiles SET status = 'archived', payload = ? WHERE id = 10`).run(JSON.stringify(archivedFamily));
+  const baseOptions = { state, reserve: store.reserveAgentPolicyImportFinalization, complete: store.completeAgentPolicyImportFinalization, findRecord: store.findAgentPolicyImportFinalization, failRecord: store.failAgentPolicyImportFinalization, findPolicyBySource: store.findPolicyByImportSource, loadTask: store.findAgentPolicyImportTask };
+  let creates = 0;
+  await assert.rejects(createAgentPolicyImportFinalizer({ ...baseOptions, createPolicy: async () => { creates += 1; } })({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'archived-before', stateVersion: 5 }), { code: 'POLICY_IMPORT_PERMISSION_CHANGED' });
+  assert.equal(creates, 0);
+  store.db.prepare(`UPDATE family_profiles SET status = 'active', payload = ? WHERE id = 10`).run(JSON.stringify(state.familyProfiles[0]));
+  const finalize = createAgentPolicyImportFinalizer({ ...baseOptions, createPolicy: async ({ reservedPolicyId }) => {
+    const archived = { ...state.familyMembers[0], status: 'archived' };
+    store.db.prepare(`UPDATE family_members SET status = 'archived', payload = ? WHERE id = 31`).run(JSON.stringify(archived));
+    return { id: reservedPolicyId, userId: 7, company: '可信保险', name: '安心保', insured: '张三' };
+  } });
+  await assert.rejects(finalize({ task: state.agentPolicyImportTasks[0], family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'archived-during', stateVersion: 5 }), { code: 'FINALIZATION_OUTCOME_UNKNOWN' });
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM policies').get().count, 0);
+  store.close();
+});
+
+test('aborting a finalize wait stops polling promptly', async () => {
+  const current = task(); const state = stateFor(current); let polls = 0;
+  const controller = new AbortController();
+  const finalize = createAgentPolicyImportFinalizer({ state, waitIntervalMs: 50, waitTimeoutMs: 2_000,
+    findRecord: async ({ requestId }) => { polls += 1; return requestId ? { ownerUserId: 7, taskId: 41, requestId, status: 'reserved', leaseUntil: '2999-01-01T00:00:00.000Z' } : null; },
+    findPolicyBySource: async () => null, loadTask: async () => ({ ...current, finalizeRequestId: 'wait' }) });
+  const startedAt = Date.now(); const pending = finalize({ task: current, family: state.familyProfiles[0], owner: { userId: 7 }, requestId: 'wait', stateVersion: 5, signal: controller.signal });
+  setTimeout(() => controller.abort(), 5);
+  await assert.rejects(pending, { code: 'FINALIZE_WAIT_ABORTED' });
+  assert.ok(Date.now() - startedAt < 500);
+  const stoppedAt = polls; await new Promise((resolve) => setTimeout(resolve, 80)); assert.equal(polls, stoppedAt);
 });

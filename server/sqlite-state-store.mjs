@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 
-const SCHEMA_VERSION = '3';
+const SCHEMA_VERSION = '4';
 
 const DB_OWNED_KEYS = new Set([
   'users',
@@ -291,6 +292,11 @@ function setMeta(db, key, value) {
     VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, String(value ?? ''));
+}
+
+function ensureColumn(db, table, column, definition) {
+  if (db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 function createSchema(db) {
@@ -781,6 +787,23 @@ function createSchema(db) {
       payload TEXT NOT NULL
     );
   `);
+  ensureColumn(db, 'policies', 'source_policy_import_task_id', 'INTEGER');
+  ensureColumn(db, 'policies', 'source_policy_import_request_id', "TEXT NOT NULL DEFAULT ''");
+  db.exec(`
+    UPDATE policies
+    SET source_policy_import_task_id = CAST(json_extract(payload, '$.sourcePolicyImportTaskId') AS INTEGER),
+        source_policy_import_request_id = COALESCE(json_extract(payload, '$.sourcePolicyImportRequestId'), '')
+    WHERE source_policy_import_task_id IS NULL
+      AND CAST(json_extract(payload, '$.sourcePolicyImportTaskId') AS INTEGER) > 0;
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_policies_policy_import_task
+      ON policies(user_id, source_policy_import_task_id)
+      WHERE source_policy_import_task_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_policies_policy_import_request
+      ON policies(user_id, source_policy_import_task_id, source_policy_import_request_id)
+      WHERE source_policy_import_task_id IS NOT NULL;
+  `);
   ensureCashflowTable(db);
   ensureCashValueTable(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
@@ -837,8 +860,8 @@ function insertRows(db, state) {
   }
 
   const insertPolicy = db.prepare(`
-    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, source_policy_import_task_id, source_policy_import_request_id, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const policy of normalizeArray(state.policies)) {
     insertPolicy.run(
@@ -850,6 +873,8 @@ function insertRows(db, state) {
       String(policy.insured || ''),
       String(policy.createdAt || ''),
       String(policy.updatedAt || ''),
+      Number(policy.sourcePolicyImportTaskId || 0) || null,
+      String(policy.sourcePolicyImportRequestId || ''),
       jsonPayload(policy),
     );
   }
@@ -1464,8 +1489,8 @@ function upsertStateDocument(db, key, value) {
 
 function upsertPolicy(db, policy = {}) {
   db.prepare(`
-    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, source_policy_import_task_id, source_policy_import_request_id, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       user_id = excluded.user_id,
       guest_id = excluded.guest_id,
@@ -1474,6 +1499,8 @@ function upsertPolicy(db, policy = {}) {
       insured = excluded.insured,
       created_at = excluded.created_at,
       updated_at = excluded.updated_at,
+      source_policy_import_task_id = excluded.source_policy_import_task_id,
+      source_policy_import_request_id = excluded.source_policy_import_request_id,
       payload = excluded.payload
   `).run(
     Number(policy.id),
@@ -1484,7 +1511,20 @@ function upsertPolicy(db, policy = {}) {
     String(policy.insured || ''),
     String(policy.createdAt || ''),
     String(policy.updatedAt || ''),
+    Number(policy.sourcePolicyImportTaskId || 0) || null,
+    String(policy.sourcePolicyImportRequestId || ''),
     jsonPayload(policy),
+  );
+}
+
+function insertFinalizedPolicy(db, policy = {}) {
+  db.prepare(`
+    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, source_policy_import_task_id, source_policy_import_request_id, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    Number(policy.id), Number(policy.userId || 0) || null, String(policy.guestId || ''), String(policy.company || ''),
+    String(policy.name || ''), String(policy.insured || ''), String(policy.createdAt || ''), String(policy.updatedAt || ''),
+    Number(policy.sourcePolicyImportTaskId || 0) || null, String(policy.sourcePolicyImportRequestId || ''), jsonPayload(policy),
   );
 }
 
@@ -2228,9 +2268,40 @@ function replacePendingScan(db, state, guestId) {
 
 function updateStateMeta(db, state, now) {
   const initializedAt = getMeta(db, 'state_initialized_at');
-  setMeta(db, 'next_id', String(resolveNextId(state)));
+  setMeta(db, 'next_id', String(Math.max(Number(getMeta(db, 'next_id') || 1), resolveNextId(state))));
   setMeta(db, 'state_initialized_at', initializedAt || now);
   setMeta(db, 'updated_at', now);
+}
+
+function durableFinalizeSnapshot(db, task, ownerUserId) {
+  const reject = (code, message, status = 409) => { throw Object.assign(new Error(message), { code, status }); };
+  if (Number(task?.ownerUserId) !== Number(ownerUserId) || !Number(task?.familyId)) reject('POLICY_IMPORT_NOT_FOUND', '保单录入任务不存在', 404);
+  if (task.status !== 'saving') reject('FINAL_CONFIRMATION_REQUIRED', '请先明确确认最终保单摘要');
+  const confirmationVersion = Number(task.stateVersion) - (task.finalizeRequestId ? 1 : 0);
+  if (!(task.events || []).some((event) => event.action === 'confirm' && Number(event.stateVersion) === confirmationVersion)) reject('FINAL_CONFIRMATION_REQUIRED', '缺少有效的最终确认动作');
+  if (!task.draft?.company || !task.draft?.name || !task.draft?.insured) reject('POLICY_IMPORT_INCOMPLETE', '保单信息尚未补充完整');
+  if (task.fieldConflicts?.length || !task.documents?.length || task.documents.some((document) => !['recognized', 'removed'].includes(document.status))) reject('POLICY_IMPORT_NOT_READY', '保单任务仍有冲突或待处理附件');
+  if (!['trusted_match', 'selected', 'manual_confirmed'].includes(task.productResolution)) reject('POLICY_IMPORT_PRODUCT_UNRESOLVED', '产品尚未确认');
+  const familyRow = db.prepare(`SELECT payload FROM family_profiles WHERE id = ? AND owner_user_id = ? AND status = 'active'`).get(task.familyId, ownerUserId);
+  const family = parseJson(familyRow?.payload, null);
+  if (!family) reject('POLICY_IMPORT_PERMISSION_CHANGED', '家庭权限已变更', 403);
+  const members = {};
+  for (const role of ['insured', 'applicant']) {
+    const memberId = Number(task.draft?.[`${role}MemberId`] || 0);
+    if (!memberId && (role === 'insured' || task.draft?.applicant)) reject('POLICY_IMPORT_MEMBER_UNRESOLVED', '家庭成员尚未确认');
+    if (!memberId) continue;
+    const memberRow = db.prepare(`SELECT payload FROM family_members WHERE id = ? AND family_id = ? AND status = 'active'`).get(memberId, task.familyId);
+    const member = parseJson(memberRow?.payload, null);
+    if (!member) reject('POLICY_IMPORT_PERMISSION_CHANGED', '家庭成员或权限已变更', 403);
+    members[role] = member;
+  }
+  let product = null;
+  if (task.productResolution !== 'manual_confirmed') {
+    product = loadPayloadRows(db, 'knowledge_records', 'id ASC').find((row) => String(row.canonicalProductId || row.productId || row.id) === String(task.draft.productId)) || null;
+    if (!product || String(product.productName || product.name || '').trim() !== String(task.draft.name).trim()) reject('POLICY_IMPORT_PRODUCT_CHANGED', '已确认产品不再可用');
+  }
+  const snapshot = { ownerUserId, familyId: task.familyId, draft: task.draft, productResolution: task.productResolution, documents: task.documents.map(({ documentId, sha256, status }) => ({ documentId, sha256, status })), family, members, product };
+  return crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 }
 
 function clearDbOwnedTables(db) {
@@ -2468,8 +2539,10 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       }
       const durableRow = db.prepare(`SELECT status, state_version, payload FROM agent_policy_import_tasks WHERE id = ?`).get(task.id);
       if (!durableRow || Number(durableRow.state_version) !== Number(expectedVersion)) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
-      if (durableRow.status !== 'saving') throw Object.assign(new Error('请先明确确认最终保单摘要'), { code: 'FINAL_CONFIRMATION_REQUIRED', status: 409 });
       const durableTask = parseJson(durableRow.payload, null);
+      const validationHash = durableFinalizeSnapshot(db, durableTask, ownerUserId);
+      const maxPolicyId = Number(db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM policies').get().id);
+      const reservedPolicyId = Math.max(maxPolicyId + 1, Number(getMeta(db, 'next_id') || 1));
       const claimedTask = {
         ...durableTask,
         status: 'saving',
@@ -2483,10 +2556,12 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         claimedTask.stateVersion, timestamp, jsonPayload(claimedTask), task.id, expectedVersion,
       ).changes;
       if (changed !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
-      const record = { ownerUserId, taskId: task.id, requestId, status: 'reserved', claimVersion: claimedTask.stateVersion, leaseUntil: String(leaseUntil || ''), formalPolicyId: null, completedAt: '', createdAt: timestamp, updatedAt: timestamp };
+      const record = { ownerUserId, taskId: task.id, requestId, status: 'reserved', claimVersion: claimedTask.stateVersion, validationHash, reservedPolicyId, leaseUntil: String(leaseUntil || ''), formalPolicyId: null, completedAt: '', createdAt: timestamp, updatedAt: timestamp };
       db.prepare(`INSERT INTO agent_policy_import_finalizations (owner_user_id, task_id, request_id, status, formal_policy_id, completed_at, payload) VALUES (?, ?, ?, ?, NULL, '', ?)`).run(ownerUserId, task.id, requestId, record.status, jsonPayload(record));
+      setMeta(db, 'next_id', reservedPolicyId + 1);
       updateStateMeta(db, { ...createInitialState(), ...state }, timestamp);
       db.exec('COMMIT');
+      if (state && typeof state === 'object') state.nextId = Math.max(Number(state.nextId || 1), reservedPolicyId + 1);
       return { outcome: 'acquired', record, task: claimedTask };
     } catch (error) {
       db.exec('ROLLBACK');
@@ -2499,13 +2574,24 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     db.exec('BEGIN IMMEDIATE');
     try {
       db.exec('PRAGMA defer_foreign_keys = ON');
-      upsertPolicy(db, policy);
+      const durableRecordRow = db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND request_id = ? AND status IN ('reserved', 'failed_unknown')`).get(record.ownerUserId, record.taskId, record.requestId);
+      const durableRecord = parseJson(durableRecordRow?.payload, null);
+      if (!durableRecord || Number(durableRecord.claimVersion) !== Number(task.stateVersion) - 1) throw Object.assign(new Error('保存请求状态冲突'), { code: 'FINALIZATION_STATE_CONFLICT', status: 409 });
+      const claimedTask = parseJson(db.prepare(`SELECT payload FROM agent_policy_import_tasks WHERE id = ? AND state_version = ? AND status = 'saving'`).get(task.id, durableRecord.claimVersion)?.payload, null);
+      if (!claimedTask || durableFinalizeSnapshot(db, claimedTask, durableRecord.ownerUserId) !== durableRecord.validationHash) throw Object.assign(new Error('保存前验证快照已变化'), { code: 'FINALIZATION_VALIDATION_CHANGED', status: 409 });
+      if (Number(policy.id) !== Number(durableRecord.reservedPolicyId) || Number(policy.userId) !== Number(durableRecord.ownerUserId) || Number(policy.sourcePolicyImportTaskId) !== Number(durableRecord.taskId) || String(policy.sourcePolicyImportRequestId) !== String(durableRecord.requestId)) throw Object.assign(new Error('正式保单来源标记不匹配'), { code: 'FINALIZATION_SOURCE_MISMATCH', status: 409 });
+      const existingSource = db.prepare(`SELECT id, source_policy_import_request_id FROM policies WHERE user_id = ? AND source_policy_import_task_id = ?`).get(durableRecord.ownerUserId, durableRecord.taskId);
+      if (existingSource) {
+        if (Number(existingSource.id) !== Number(policy.id) || String(existingSource.source_policy_import_request_id) !== String(durableRecord.requestId)) throw Object.assign(new Error('正式保单来源记录冲突'), { code: 'FINALIZATION_SOURCE_MISMATCH', status: 409 });
+      } else {
+        insertFinalizedPolicy(db, policy);
+      }
       const changedTask = db.prepare(`UPDATE agent_policy_import_tasks SET status = ?, state_version = ?, updated_at = ?, payload = ? WHERE id = ? AND state_version = ?`).run(
         task.status, task.stateVersion, task.updatedAt, jsonPayload(task), task.id, task.stateVersion - 1,
       ).changes;
       if (changedTask !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
       const changedRecord = db.prepare(`UPDATE agent_policy_import_finalizations SET status = 'completed', formal_policy_id = ?, completed_at = ?, payload = ? WHERE owner_user_id = ? AND task_id = ? AND request_id = ? AND status IN ('reserved', 'failed_unknown')`).run(
-        policy.id, now, jsonPayload(record), record.ownerUserId, record.taskId, record.requestId,
+        policy.id, now, jsonPayload({ ...record, reservedPolicyId: durableRecord.reservedPolicyId, validationHash: durableRecord.validationHash }), record.ownerUserId, record.taskId, record.requestId,
       ).changes;
       if (changedRecord !== 1) throw Object.assign(new Error('保存请求状态冲突'), { code: 'FINALIZATION_STATE_CONFLICT', status: 409 });
       updateStateMeta(db, { ...createInitialState(), ...state }, now);
@@ -2523,10 +2609,11 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return parseJson(row?.payload, null);
   }
 
-  async function findPolicyByImportSource({ ownerUserId, taskId } = {}) {
-    return loadPayloadRows(db, 'policies', 'id ASC').find((policy) => (
-      Number(policy?.userId) === Number(ownerUserId) && Number(policy?.sourcePolicyImportTaskId) === Number(taskId)
-    )) || null;
+  async function findPolicyByImportSource({ ownerUserId, taskId, requestId = '' } = {}) {
+    const row = db.prepare(`SELECT payload, source_policy_import_request_id FROM policies WHERE user_id = ? AND source_policy_import_task_id = ?`).get(ownerUserId, taskId);
+    if (!row) return null;
+    if (requestId && String(row.source_policy_import_request_id) !== String(requestId)) throw Object.assign(new Error('正式保单来源请求不匹配'), { code: 'FINALIZATION_SOURCE_MISMATCH', status: 409 });
+    return parseJson(row.payload, null);
   }
 
   async function failAgentPolicyImportFinalization({ state, record, unknown = true, now = new Date().toISOString() } = {}) {

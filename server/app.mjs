@@ -2164,7 +2164,7 @@ export function createPolicyOcrApp(options = {}) {
     loadTask: options.findAgentPolicyImportTask,
     waitIntervalMs: options.policyImportFinalizeWaitIntervalMs,
     waitTimeoutMs: options.policyImportFinalizeWaitTimeoutMs,
-    createPolicy: async ({ task, family, owner }) => {
+    createPolicy: async ({ task, family, owner, reservedPolicyId }) => {
       const user = (state.users || []).find((row) => Number(row.id) === Number(owner.userId));
       assertUserCanSavePolicy(state, user);
       const member = (id) => (state.familyMembers || []).find((row) => Number(row.id) === Number(id));
@@ -2181,6 +2181,7 @@ export function createPolicyOcrApp(options = {}) {
           applicantMemberId: applicant?.id || null, applicantMemberName: applicant?.name || '', applicantNameSnapshot: applicant?.name || task.draft.applicant,
           participantReviewStatus: 'confirmed',
         },
+        policyId: reservedPolicyId,
       });
     },
   });
