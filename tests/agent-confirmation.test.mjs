@@ -158,7 +158,7 @@ test('same-process confirm regenerates both families from post-transfer sqlite s
   await store.persist({
     ...createInitialState(), stateVersion: 1,
     familyProfiles: [{ id: 10, ownerUserId: 7, familyName: '来源家庭', status: 'active' }, { id: 20, ownerUserId: 7, familyName: '目标家庭', status: 'active' }],
-    familyMembers: [{ id: 201, familyId: 20, name: '成员', status: 'active' }],
+    familyMembers: [{ id: 201, familyId: 20, name: '成员', status: 'active' }, { id: 202, familyId: 20, name: '成员', status: 'active' }],
     policies: [{ id: 301, userId: 7, familyId: 10, policyNo: 'FRESH-1234', applicantMemberId: 201, insuredMemberId: 201, status: 'active' }],
     familyReports: [{ id: 401, familyId: 10, ownerUserId: 7, status: 'active', generatedAt: '2026-07-11T00:00:00.000Z' }, { id: 402, familyId: 20, ownerUserId: 7, status: 'active', generatedAt: '2026-07-11T00:00:00.000Z' }],
   });
@@ -177,6 +177,8 @@ test('same-process confirm regenerates both families from post-transfer sqlite s
   assert.ok(latest(10), JSON.stringify(store.db.prepare('SELECT job_type,status,last_error FROM agent_policy_transfer_regeneration_outbox ORDER BY id').all()));
   assert.equal(latest(10).report.summary.policyCount, 0);
   assert.equal(latest(20).report.summary.policyCount, 1);
+  assert.equal(fresh.policies.find((row) => row.id === 301).familyId, 20);
+  assert.equal(fresh.familyMembers.filter((row) => row.familyId === 20 && row.status === 'archived').length, 1);
   assert.equal(fresh.familyReports.filter((row) => [401, 402].includes(row.id)).every((row) => row.status !== 'active'), true);
   assert.equal(store.db.prepare("SELECT count(*) count FROM agent_policy_transfer_regeneration_outbox WHERE status = 'dispatched'").get().count, 4);
   app.locals.transferRegenerationRecovery.stop();

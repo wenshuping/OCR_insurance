@@ -383,12 +383,21 @@ export function createFamilyRoutes(context) {
     return refreshFamilyReportWithTrustedCorrections({ record, family, owner, force: true });
   }
 
-  async function repairFamilyMembersBeforeReview(family) {
+  async function repairFamilyMembersBeforeReview(family, { stateSnapshot = state } = {}) {
     if (typeof repairDuplicateFamilyMembers !== 'function') return false;
-    const repaired = repairDuplicateFamilyMembers(state, family);
+    const repaired = repairDuplicateFamilyMembers(stateSnapshot, family);
     if (!repaired) return false;
-    archiveGeneratedReportsForFamily(family.id);
-    await saveFamilyState({ includePolicies: true });
+    if (stateSnapshot === state) {
+      archiveGeneratedReportsForFamily(family.id);
+      await saveFamilyState({ includePolicies: true });
+    } else {
+      for (const collection of [stateSnapshot.familyReports || [], stateSnapshot.familySalesReviews || []]) {
+        for (const record of collection) {
+          if (Number(record?.familyId) === Number(family.id) && String(record?.status || 'active') === 'active') record.status = 'archived';
+        }
+      }
+      await persistFamilyState({ state: stateSnapshot, includePolicies: true });
+    }
     return true;
   }
 
@@ -743,8 +752,12 @@ export function createFamilyRoutes(context) {
     };
   }
 
-  const persistFreshFamilyState = async (snapshot) => persistFamilyState({ state: snapshot });
-  const persistFreshFamilyReportState = async (snapshot) => persistFamilyReportState({ state: snapshot });
+  const persistFreshFamilyState = async (snapshot) => persistFamilyState
+    ? persistFamilyState({ state: snapshot, includePolicies: false })
+    : persist(snapshot, familyPersistOptions);
+  const persistFreshFamilyReportState = async (snapshot) => persistFamilyReportState
+    ? persistFamilyReportState({ state: snapshot })
+    : persist(snapshot, familyPersistOptions);
   const policiesForSalesReview = (family, owner, snapshot = state) => (snapshot.policies || [])
     .filter((policy) => Number(policy?.familyId || 0) === Number(family.id) && familySharePolicyMatchesOwner(policy, owner, { normalizeGuestId }))
     .map((policy) => attachPolicyForFamilyReview(policy, snapshot));

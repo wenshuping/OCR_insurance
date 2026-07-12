@@ -8,7 +8,7 @@ export function createFamilyReportRegenerationService(deps = {}) {
   } = deps;
 
   async function regenerateCoverage({ family, owner, planningProfile = null, stateSnapshot = state, system = false } = {}) {
-    await repairFamilyMembersBeforeReview(family);
+    await repairFamilyMembersBeforeReview(family, { stateSnapshot });
     refreshFamilyCashflowsForAnalysis(family, owner, stateSnapshot);
     const members = listFamilyMembers(stateSnapshot, family.id);
     const policies = policiesForFamilyReport(family, owner, stateSnapshot);
@@ -23,7 +23,7 @@ export function createFamilyReportRegenerationService(deps = {}) {
   }
 
   async function regenerateSalesReview({ family, owner, salesChatContext = null, salesMemoryContext = null, stateSnapshot = state } = {}) {
-    await repairFamilyMembersBeforeReview(family);
+    await repairFamilyMembersBeforeReview(family, { stateSnapshot });
     refreshFamilyCashflowsForAnalysis(family, owner, stateSnapshot);
     const members = listFamilyMembers(stateSnapshot, family.id);
     const policies = policiesForSalesReview(family, owner, stateSnapshot);
