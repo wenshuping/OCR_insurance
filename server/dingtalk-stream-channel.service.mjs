@@ -73,6 +73,7 @@ export function createDingtalkStreamChannel({
   downloadAttachment,
   answerText,
   policyUploadEnabled = false,
+  policyUploadUrl = 'https://ocr.joyhive.cn',
   now = () => Date.now(),
   reportError = (code) => console.warn(`[dingtalk-stream] ${code}`),
 } = {}) {
@@ -150,7 +151,7 @@ export function createDingtalkStreamChannel({
 
     if (isAttachment(message)) {
       if (!policyUploadEnabled) {
-        await reply(sessionWebhook, '当前企业尚未启用钉钉原件上传，请使用网页上传。');
+        await reply(sessionWebhook, `为保护客户隐私，钉钉不接收客户保单原件。请通过安全网页上传：${policyUploadUrl}`);
         return;
       }
       if (typeof downloadAttachment !== 'function') {
@@ -236,7 +237,7 @@ export function createDingtalkStreamChannel({
 
     if (text === '上传保单' || text === '录入保单') {
       if (!policyUploadEnabled) {
-        await reply(sessionWebhook, '当前企业尚未启用钉钉原件上传，请使用网页上传。');
+        await reply(sessionWebhook, `客户保单原件请通过安全网页上传：${policyUploadUrl}\n钉钉仅用于查询、进度通知和脱敏分析结果。`);
         return;
       }
       try {

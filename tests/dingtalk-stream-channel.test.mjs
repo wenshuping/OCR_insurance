@@ -122,6 +122,19 @@ test('policy upload requires consent before download and sends a masked OCR draf
   assert.equal(h.replies.join(' ').includes('secret-code'), false);
 });
 
+test('disabled raw upload never downloads DingTalk attachments and returns the safe website', async () => {
+  let downloads = 0;
+  const h = harness([], {
+    policyUploadEnabled: false,
+    policyUploadUrl: 'https://safe.example.test/upload',
+    downloadAttachment: async () => { downloads += 1; },
+  });
+  await h.channel.handle({ ...BASE_MESSAGE, msgtype: 'picture', content: { downloadCode: 'secret' } });
+  assert.equal(downloads, 0);
+  assert.match(h.replies[0], /https:\/\/safe\.example\.test\/upload/);
+  assert.match(h.replies[0], /不接收客户保单原件/);
+});
+
 test('an unregistered DingTalk user can request SMS verification and register without exposing the mobile', async () => {
   const h = harness([
     { status: 403, body: { code: 'REGISTRATION_REQUIRED' } },

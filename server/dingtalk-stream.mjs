@@ -18,6 +18,7 @@ export async function startDingtalkStream({ env = process.env, Client = DWClient
     serviceToken: String(env.DINGTALK_IDENTITY_SERVICE_TOKEN || '').trim(),
     apiBaseUrl: String(env.DINGTALK_CHANNEL_API_BASE_URL || '').trim() || 'http://127.0.0.1:4207',
     policyUploadEnabled: String(env.DINGTALK_POLICY_UPLOAD_MODE || '').trim() === 'raw_allowed',
+    policyUploadUrl: String(env.DINGTALK_POLICY_UPLOAD_URL || '').trim() || 'https://ocr.joyhive.cn',
     downloadAttachment: createDingtalkMediaDownloader({
       client,
       apiBaseUrl: String(env.DINGTALK_API_BASE_URL || '').trim() || 'https://api.dingtalk.com',
