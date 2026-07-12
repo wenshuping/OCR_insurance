@@ -131,13 +131,15 @@ function safeFallback(operation) {
 function selectPolicy(candidate, published) {
   const policies = Array.isArray(published?.policies) ? published.policies : AGENT_QUESTION_POLICIES;
   try {
-    return chooseAgentQuestionPolicy(candidate, policies);
+    return {
+      policy: chooseAgentQuestionPolicy(candidate, policies),
+      policySource: published?.version ? 'published' : 'built_in',
+    };
   } catch {
-    const exact = policies.find((policy) => (
-      policy?.enabled !== false && normalizeIntent(policy?.intent) === candidate.intent
-    ));
-    if (exact) return { ...exact, unsafe: true };
-    return { ...safeFallback(candidate.requestedOperation) };
+    return {
+      policy: { ...safeFallback(candidate.requestedOperation) },
+      policySource: 'built_in',
+    };
   }
 }
 
@@ -168,14 +170,16 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     const published = typeof store.getPublishedAgentQuestionPolicyVersion === 'function'
       ? await store.getPublishedAgentQuestionPolicyVersion()
       : null;
-    const policy = selectPolicy(candidate, published);
+    const selected = selectPolicy(candidate, published);
+    const policy = selected.policy;
 
     let authorizedResourceIds = [];
     const finish = async (result, resultCode = 'completed') => {
       const safe = publicResult(result, result?.decision || 'deny');
       const audit = {
-        policyVersion: published?.version || null,
-        policySource: published?.version ? 'published' : 'built_in',
+        policyVersion: selected.policySource === 'published' ? published.version : null,
+        policySource: selected.policySource,
+        evaluatedPublishedVersion: published?.version || null,
         userId,
         messageRef: normalizedMessageRef,
         operation: policy?.operation || candidate.requestedOperation,

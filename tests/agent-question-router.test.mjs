@@ -306,7 +306,7 @@ test('missing handler and unknown tool fail safely', async () => {
   });
 
   assert.equal((await missing.router.route(routeInput({}))).decision, 'deny');
-  assert.equal((await unknownTool.router.route(routeInput({}))).decision, 'deny');
+  assert.equal((await unknownTool.router.route(routeInput({}))).decision, 'open_web');
   assert.equal(unknownTool.calls.handlers.length, 0);
 });
 

@@ -2217,3 +2217,32 @@ test('published route audit still rejects a missing policy version', async () =>
   );
   store.close();
 });
+
+test('router attributes a published-policy fallback to the built-in policy source', async () => {
+  const dir = await makeTempDir();
+  const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
+  const draft = await store.createAgentQuestionPolicyDraft({
+    version: 10,
+    actor: 'admin:1',
+    policies: [{
+      key: 'coverage_report', intent: 'coverage_report', decision: 'execute', handler: 'insurance_expert',
+      operation: 'read', confirmation: 'not_required', outputMode: 'structured', tool: 'coverage_report', enabled: false,
+    }],
+  });
+  await store.publishAgentQuestionPolicyVersion({ id: draft.id, actor: 'admin:1' });
+  const router = createAgentQuestionRouter({ store, clock: () => new Date('2026-07-12T08:00:00.000Z') });
+
+  const result = await router.route({
+    internalUserId: 7,
+    messageRef: 'msg-published-fallback',
+    candidate: { intent: 'coverage_report', question: '看看保障', confidence: 0.9, requestedOperation: 'read' },
+  });
+  const [audit] = await store.listAgentRouteAuditEvents({ userId: 7 });
+
+  assert.equal(result.decision, 'open_web');
+  assert.equal(audit.policySource, 'built_in');
+  assert.equal(audit.policyVersion, null);
+  assert.equal(audit.payload.policyKey, 'unknown_read');
+  assert.equal(audit.payload.evaluatedPublishedVersion, 10);
+  store.close();
+});
