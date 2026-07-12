@@ -462,57 +462,36 @@ test('createPolicyOcrApp isolates a disabled or failing Hermes route from applic
   }
 });
 
-test('createPolicyOcrApp HTTP route composes the real question router and domain handlers', async (t) => {
+test('createPolicyOcrApp default composition routes family facts, report regeneration, and sales coaching', async (t) => {
   const state = {
-    familyProfiles: [{ id: 71, ownerUserId: 7, familyName: '余贵祥家庭', status: 'active', updatedAt: '2026-07-12T00:00:00.000Z' }],
-    familyMembers: [{ id: 711, familyId: 71, status: 'active' }],
-    policies: [{ id: 712, userId: 7, familyId: 71, status: 'active' }],
+    nextId: 900,
+    familyProfiles: [{ id: 71, ownerUserId: 7, familyName: '余贵祥家庭', mobile: '13800138000', status: 'active', updatedAt: '2026-07-12T00:00:00.000Z' }],
+    familyMembers: [{ id: 711, familyId: 71, name: '余贵祥', idNumber: '110101199001011234', status: 'active' }],
+    policies: [{
+      id: 712, userId: 7, familyId: 71, policyNo: 'SECRET-0001', name: '测试终身寿险', company: '测试保险',
+      insuredMemberId: 711, applicantMemberId: 711, coveragePeriod: '终身', amount: '100000', status: 'active',
+    }],
     familyReports: [], familySalesReviews: [],
+    familySalesChatThreads: [{ id: 801, familyId: 71, ownerUserId: 7, status: 'active' }],
+    familySalesChatMessages: [{ id: 802, threadId: 801, familyId: 71, role: 'user', content: '给我销售建议' }],
   };
-  const calls = { audits: [], queued: [], generated: [], domain: [] };
+  const calls = { audits: [], generated: [], persistedReports: [] };
   const store = {
     async load() { return state; },
     async getPublishedAgentQuestionPolicyVersion() { return null; },
     async recordAgentRouteAudit(input) { calls.audits.push(input); },
   };
-  const authorized = async ({ familyId, internalUserId }) => {
-    const family = state.familyProfiles.find((row) => row.id === familyId && row.ownerUserId === internalUserId);
-    return family ? { family, state } : null;
-  };
-  const domain = createAgentQuestionHandlers({
-    store,
-    authorizedFamilyDataLoader: authorized,
-    authorizedFamilySalesDataLoader: async ({ familyId, internalUserId }) => ({
-      family: (await authorized({ familyId, internalUserId })).family,
-      input: { dataQuality: { pendingFields: ['budget'] } },
-      members: state.familyMembers, policies: state.policies,
-      familyReports: state.familyReports, familySalesReviews: state.familySalesReviews,
-      history: [{ role: 'user', content: '给我销售建议' }],
-    }),
-    reportQueue: { async enqueue(input) { calls.queued.push(input); return { jobId: 'coverage-71', progress: 0 }; } },
+  const app = createPolicyOcrApp({
+    state, agentStore: store,
+    recomputeCashflowOnStartup: false,
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+    persistFamilyReportState: async ({ state: snapshot }) => { calls.persistedReports.push(snapshot.familyReports.at(-1)); },
+    persistFamilyState: async () => {},
     generateFamilySalesChatReply: async (input) => {
       calls.generated.push(input);
       return { content: '先确认预算，再讨论保障优先级。', model: 'stub-external-model' };
     },
-    clock: () => new Date('2026-07-13T00:00:00.000Z'),
-  });
-  const handlers = {
-    async insurance_expert(input) {
-      const result = await domain.insurance_expert(input);
-      calls.domain.push(result);
-      return { interaction: { type: 'progress', jobId: result.facts.jobId, status: result.facts.status, progress: result.facts.progress } };
-    },
-    async sales_champion(input) {
-      const result = await domain.sales_champion(input);
-      calls.domain.push(result);
-      return { interaction: { type: 'answer', text: result.presentation.message } };
-    },
-  };
-  const app = createPolicyOcrApp({
-    state, agentStore: store, agentQuestionHandlers: handlers,
-    recomputeCashflowOnStartup: false,
-    verifyAgentServiceRequest: async () => true,
-    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
   });
   const listener = await new Promise((resolve) => {
     const running = app.listen(0, '127.0.0.1', () => resolve(running));
@@ -520,13 +499,23 @@ test('createPolicyOcrApp HTTP route composes the real question router and domain
   t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
   const server = { baseUrl: `http://127.0.0.1:${listener.address().port}` };
 
+  const summary = await post(server, '/api/agent/questions/route', validBody({ messageRef: 'msg-summary', candidate: {
+    intent: 'family_summary', question: '余贵祥家庭有几个保单', confidence: 1, requestedOperation: 'read',
+    entities: { familyName: '余贵祥家庭' },
+  } }));
+  assert.equal(summary.response.status, 200);
+  assert.equal(summary.payload.interaction.text, '该家庭共有 1 份保单，其中 1 份当前有效。');
+
   const report = await post(server, '/api/agent/questions/route', validBody({ candidate: {
     intent: 'coverage_report', question: '看余贵祥家庭保障报告', confidence: 1, requestedOperation: 'read',
     entities: { familyName: '余贵祥家庭' },
   } }));
   assert.equal(report.response.status, 200);
-  assert.deepEqual(report.payload.interaction, { type: 'progress', jobId: 'coverage-71', status: 'processing', progress: 0 });
-  assert.equal(calls.domain[0].facts.jobType, 'family_policy_analysis');
+  assert.equal(report.payload.interaction.type, 'progress', JSON.stringify({ report: report.payload, audits: calls.audits, persisted: calls.persistedReports }));
+  assert.equal(report.payload.interaction.status, 'processing');
+  assert.equal(report.payload.interaction.progress, 100);
+  assert.equal(calls.persistedReports.length, 1);
+  assert.equal(calls.persistedReports[0].familyId, 71);
 
   const sales = await post(server, '/api/agent/questions/route', validBody({ messageRef: 'msg-sales', candidate: {
     intent: 'sales_coaching', question: '那我该怎么跟他聊', confidence: 1, requestedOperation: 'read',
@@ -534,11 +523,12 @@ test('createPolicyOcrApp HTTP route composes the real question router and domain
   } }));
   assert.equal(sales.response.status, 200);
   assert.equal(sales.payload.interaction.text, '先确认预算，再讨论保障优先级。');
-  assert.equal(calls.domain[1].provenance.agent, 'existing_family_sales_chat');
   assert.equal(calls.generated[0].context.familyInput.dataQuality.pendingFields[0], 'budget');
   assert.deepEqual(calls.generated[0].history, [{ role: 'user', content: '给我销售建议' }]);
   assert.equal(calls.generated[0].question, '那我该怎么跟他聊');
-  assert.deepEqual(calls.audits.map((row) => row.authorizedResourceIds), [['family:71'], ['family:71']]);
+  assert.deepEqual(calls.audits.map((row) => row.authorizedResourceIds), [['family:71'], ['family:71'], ['family:71']]);
+  const publicPayloads = JSON.stringify([summary.payload, report.payload, sales.payload, calls.audits]);
+  assert.doesNotMatch(publicPayloads, /余贵祥|13800138000|110101199001011234|SECRET-0001/);
 });
 
 test('authorized family count resolves once and preserves exact safe facts without PII', async () => {

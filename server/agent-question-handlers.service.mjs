@@ -64,7 +64,23 @@ function latestSourceUpdatedAt(state, familyId) {
 }
 
 function stableResult(facts, provenance = {}, presentation = {}) {
-  return { facts, provenance, presentation };
+  const message = text(presentation.message);
+  const status = text(facts?.status).toLowerCase();
+  let interaction;
+  if (['processing', 'syncing'].includes(status)) {
+    interaction = {
+      type: 'progress',
+      jobId: text(facts?.jobId),
+      status,
+      message,
+      progress: Math.min(100, Math.max(0, Number(facts?.progress) || 0)),
+    };
+  } else if (text(presentation.secureLink)) {
+    interaction = { type: 'secure_link', text: message, url: text(presentation.secureLink), action: 'open_web' };
+  } else {
+    interaction = { type: facts?.denied === true ? 'denied' : 'answer', text: message };
+  }
+  return { facts, provenance, presentation, interaction };
 }
 
 function safeSalesChatSources(sources = []) {
@@ -149,11 +165,11 @@ export function createAgentQuestionHandlers({
         countedAt: clock().toISOString(),
         validPolicyDefinition: '综合保单状态、合同状态和效力状态排除失效、停效、中止、终止、退保、过期等业务状态，并按保障期间排除已到期保单。',
       },
-      { message: '家庭保单统计已按持久化记录计算。' },
+      { message: `该家庭共有 ${policies.length} 份保单，其中 ${validPolicies.length} 份当前有效。` },
     );
   }
 
-  async function enqueueReport({ familyId, jobType, reason }) {
+  async function enqueueReport({ familyId, internalUserId, jobType, reason }) {
     if (!reportQueue || (typeof reportQueue.enqueueUnique !== 'function' && typeof reportQueue.enqueue !== 'function')) {
       return stableResult(
         { status: 'unavailable', jobType, progress: 0 },
@@ -208,7 +224,8 @@ export function createAgentQuestionHandlers({
       const enqueue = typeof reportQueue.enqueueUnique === 'function'
         ? reportQueue.enqueueUnique.bind(reportQueue)
         : reportQueue.enqueue.bind(reportQueue);
-      const queued = Promise.resolve(enqueue({ familyId, jobType, dedupeKey: key, reason }))
+      const queueType = jobType === 'family_policy_analysis' ? 'family_report' : jobType;
+      const queued = Promise.resolve(enqueue({ familyId, userId: internalUserId, jobType, type: queueType, dedupeKey: key, reason }))
         .then((result) => ({ ...result, _cachedAt: clock().getTime() }));
       pendingReports.set(key, queued);
       try {
@@ -238,7 +255,7 @@ export function createAgentQuestionHandlers({
       ? resolveFamilyPolicyAnalysisReportFreshness(report, { sourceUpdatedAt })
       : resolveFamilySalesReviewFreshness(report, { sourceUpdatedAt });
     if (freshness.status !== 'fresh') {
-      const queued = await enqueueReport({ familyId: id, jobType, reason: freshness.status });
+      const queued = await enqueueReport({ familyId: id, internalUserId: context?.internalUserId, jobType, reason: freshness.status });
       if (queued?.facts?.status === 'syncing' && typeof reloadAuthorizedFamilyData === 'function') {
         const data = await reloadAuthorizedFamilyData({ familyId: id, internalUserId: context?.internalUserId });
         if (data && Number(data.family?.id || data.familyId) === id) {

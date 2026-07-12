@@ -2605,6 +2605,25 @@ export function createPolicyOcrApp(options = {}) {
         const family = (current.familyProfiles || []).find((row) => Number(row.id) === Number(familyId) && familyOwnerMatches(row, { userId: internalUserId }));
         return family ? { family, state: current } : null;
       },
+      authorizedFamilySalesDataLoader: async ({ familyId, internalUserId }) => {
+        const current = await agentStore.load();
+        const family = (current.familyProfiles || []).find((row) => Number(row.id) === Number(familyId) && familyOwnerMatches(row, { userId: internalUserId }));
+        if (!family) return null;
+        const threads = (current.familySalesChatThreads || [])
+          .filter((row) => Number(row.familyId) === Number(familyId) && Number(row.ownerUserId || 0) === Number(internalUserId) && String(row.status || 'active') === 'active')
+          .sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+        const threadId = Number(threads[0]?.id || 0);
+        return {
+          input: { dataQuality: { pendingFields: ['budget'] } },
+          family,
+          members: (current.familyMembers || []).filter((row) => Number(row.familyId) === Number(familyId) && String(row.status || 'active') === 'active'),
+          policies: (current.policies || []).filter((row) => Number(row.familyId) === Number(familyId)),
+          familyReports: current.familyReports || [],
+          familySalesReviews: current.familySalesReviews || [],
+          history: threadId ? (current.familySalesChatMessages || []).filter((row) => Number(row.threadId) === threadId) : [],
+        };
+      },
+      generateFamilySalesChatReply: options.generateFamilySalesChatReply,
     })
     : null);
   const agentHandlers = baseAgentHandlers && agentConfirmationService ? {
