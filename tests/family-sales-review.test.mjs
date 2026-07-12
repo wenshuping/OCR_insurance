@@ -11,6 +11,7 @@ import {
 } from '../server/family-sales-chat.service.mjs';
 import {
   applyFamilySalesMemoryAction,
+  buildFamilySalesMemoryTransitionBundle,
   buildFamilySalesMemoryContext,
   extractFamilySalesMemories,
   normalizeExtractedFamilySalesMemories,
@@ -414,6 +415,7 @@ test('family sales memory actions govern temporal transitions without mutating i
     memory: candidate,
     action: 'confirm',
     actor,
+    reasonCode: 'user_confirmation',
     expectedVersion: 1,
     now: '2026-07-12T08:00:00.000Z',
   });
@@ -424,18 +426,18 @@ test('family sales memory actions govern temporal transitions without mutating i
   assert.deepEqual(confirmed.event.previous, { status: 'candidate', version: 1 });
   assert.deepEqual(confirmed.event.next, { status: 'confirmed', version: 2 });
 
-  const completed = applyFamilySalesMemoryAction({ memory: confirmed.memory, action: 'complete', actor, expectedVersion: 2, now: '2026-07-12T09:00:00.000Z' });
+  const completed = applyFamilySalesMemoryAction({ memory: confirmed.memory, action: 'complete', actor, reasonCode: 'todo_completed', expectedVersion: 2, now: '2026-07-12T09:00:00.000Z' });
   assert.equal(completed.memory.status, 'completed');
   assert.equal(completed.memory.validTo, '2026-07-12T09:00:00.000Z');
   assert.equal(completed.memory.invalidatedAt, '2026-07-12T09:00:00.000Z');
 
-  const restored = applyFamilySalesMemoryAction({ memory: completed.memory, action: 'restore', actor, reason: '顾问要求重新核实', expectedVersion: 3, now: '2026-07-12T10:00:00.000Z' });
+  const restored = applyFamilySalesMemoryAction({ memory: completed.memory, action: 'restore', actor, reasonCode: 'restored_after_review', expectedVersion: 3, now: '2026-07-12T10:00:00.000Z' });
   assert.equal(restored.memory.status, 'candidate');
   assert.equal(restored.memory.validTo, null);
   assert.equal(restored.memory.invalidatedAt, null);
 
-  const rejected = applyFamilySalesMemoryAction({ memory: candidate, action: 'reject', actor, reason: '信息有误', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' });
-  const expired = applyFamilySalesMemoryAction({ memory: candidate, action: 'expire', actor, reason: '已超过跟进期', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' });
+  const rejected = applyFamilySalesMemoryAction({ memory: candidate, action: 'reject', actor, reasonCode: 'advisor_rejection', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' });
+  const expired = applyFamilySalesMemoryAction({ memory: candidate, action: 'expire', actor, reasonCode: 'expired_by_date', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' });
   assert.equal(rejected.memory.status, 'rejected');
   assert.equal(expired.memory.status, 'expired');
 });
@@ -446,7 +448,8 @@ test('supersede returns a confirmed replacement and privacy-safe chain event', (
     memory,
     action: 'supersede',
     actor: { type: 'system', id: 1 },
-    reason: '客户 110101198606141234 更正保单 ABC123456789，邮箱 client@example.com，手机号 13800138000',
+    reasonCode: 'advisor_correction',
+    note: '王先生住西湖区，护照 ABC123456789，微信 client@example.com，手机号 13800138000',
     replacement: { id: 52, content: '微信联系时使用简短文字', familyId: 999, ownerUserId: 999, kind: 'preference', validFrom: '2026-07-12T16:00:00+08:00' },
     expectedVersion: 4,
     now: '2026-07-12T08:00:00.000Z',
@@ -462,13 +465,13 @@ test('supersede returns a confirmed replacement and privacy-safe chain event', (
   assert.deepEqual(result.events.map((event) => event.memoryId), [51, 52]);
   assert.deepEqual(Object.keys(result.event).sort(), ['action', 'actor', 'memoryId', 'next', 'previous', 'reason', 'source', 'time', 'version']);
   assert.doesNotMatch(JSON.stringify(result.event), /110101198606141234|13800138000|ABC123456789|client@example\.com|旧手机号|微信联系/u);
-  assert.ok(result.event.reason.length <= 120);
+  assert.equal(result.event.reason, 'advisor_correction');
 });
 
 test('supersede enforces canonical acyclic ids and monotonic valid intervals', () => {
   const actor = { type: 'advisor', id: 7 };
   const memory = { id: 'mem_old', kind: 'preference', content: '旧偏好', status: 'confirmed', version: 2, validFrom: '2026-07-12T08:00:00.000Z' };
-  const base = { memory, action: 'supersede', actor, reason: '偏好变更', expectedVersion: 2, now: '2026-07-12T09:00:00.000Z' };
+  const base = { memory, action: 'supersede', actor, reasonCode: 'advisor_correction', expectedVersion: 2, now: '2026-07-12T09:00:00.000Z', existingMemories: [memory] };
   assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 'mem_old', content: '新偏好' } }), /must differ/u);
   assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 'bad id with spaces', content: '新偏好' } }), /bounded opaque/u);
   assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 'mem_new', content: '新偏好', validFrom: '2026-07-12T07:59:59.999Z' } }), /cannot precede/u);
@@ -485,25 +488,54 @@ test('supersede enforces canonical acyclic ids and monotonic valid intervals', (
   assert.equal(equalBoundary.memory.validTo, memory.validFrom);
   assert.equal(equalBoundary.memory.supersededByMemoryId, 'mem_new');
   assert.equal(equalBoundary.replacement.supersedesMemoryId, 'mem_old');
+  assert.throws(() => applyFamilySalesMemoryAction({
+    ...base,
+    replacement: { id: 'mem_future', content: '未来偏好', validFrom: '2026-07-12T09:00:00.001Z' },
+  }), (error) => error.code === 'SCHEDULED_SUPERSEDE_UNSUPPORTED');
+});
+
+test('supersede validates the bounded authoritative graph and exposes a transaction bundle', () => {
+  const scope = { familyId: 8, ownerUserId: 7 };
+  const first = { id: 101, ...scope, kind: 'preference', content: '一', status: 'superseded', version: 2, supersededByMemoryId: 102 };
+  const second = { id: 102, ...scope, kind: 'preference', content: '二', status: 'superseded', version: 2, supersedesMemoryId: 101, supersededByMemoryId: 103 };
+  const third = { id: 103, ...scope, kind: 'preference', content: '三', status: 'confirmed', version: 2, supersedesMemoryId: 102, validFrom: '2026-07-12T08:00:00.000Z' };
+  const base = { memory: third, action: 'supersede', actor: { type: 'advisor', id: 7 }, reasonCode: 'advisor_correction', expectedVersion: 2, now: '2026-07-12T09:00:00.000Z' };
+  assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 104, content: '四' }, existingMemories: [first, second, { ...third, supersededByMemoryId: 101 }] }), /cycle/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 105, content: '重复' }, existingMemories: [first, second, third, { id: 105, ...scope }] }), /already exists/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 104, content: '四' }, existingMemories: [first, { ...second, familyId: 9 }, third] }), /cross-scope/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ ...base, replacement: { id: 104, content: '四' }, existingMemories: Array.from({ length: 1_001 }, (_, id) => ({ id: id + 1 })) }), /exceeds limit/u);
+
+  const bundle = buildFamilySalesMemoryTransitionBundle({ ...base, replacement: { id: 104, content: '四' }, existingMemories: [first, second, third] });
+  assert.deepEqual(bundle.memories.map((memory) => memory.id), [103, 104]);
+  assert.deepEqual(bundle.events.map((event) => event.memoryId), [103, 104]);
+});
+
+test('legacy active versionless memory transitions as confirmed version one', () => {
+  const legacy = { id: 81, kind: 'todo', content: '旧待办', status: 'active' };
+  const result = applyFamilySalesMemoryAction({ memory: legacy, action: 'complete', actor: { type: 'service', id: 3 }, reasonCode: 'todo_completed', expectedVersion: 1, now: '2026-07-12' });
+  assert.equal(result.event.previous.status, 'confirmed');
+  assert.equal(result.event.previous.version, 1);
+  assert.equal(result.memory.version, 2);
+  assert.equal(result.memory.status, 'completed');
 });
 
 test('memory actions reject illegal and stale changes without mutation', () => {
   const memory = { id: 61, kind: 'preference', content: '偏好文字', status: 'confirmed', version: 2 };
   const snapshot = structuredClone(memory);
   const actor = { type: 'advisor', id: 7 };
-  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'complete', actor, expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /only todo/u);
-  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'reject', actor, reason: '错误', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /illegal/u);
-  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reason: '过期', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' }), /stale/u);
-  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /reason/u);
-  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor: { type: 'advisor', id: 'raw-advisor-id' }, reason: '过期', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /server-owned/u);
-  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reason: '过期', expectedVersion: 2, now: '2026-07-12T08:00:00' }), /zoned ISO/u);
-  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reason: '过期', expectedVersion: 2, now: 'not-a-date' }), /zoned ISO/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'complete', actor, reasonCode: 'todo_completed', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /only todo/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'reject', actor, reasonCode: 'advisor_rejection', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /illegal/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'expired_by_date', expectedVersion: 1, now: '2026-07-12T08:00:00.000Z' }), /stale/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'free form reason', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /reasonCode/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor: { type: 'advisor', id: 'raw-advisor-id' }, reasonCode: 'expired_by_date', expectedVersion: 2, now: '2026-07-12T08:00:00.000Z' }), /server-owned/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'expired_by_date', expectedVersion: 2, now: '2026-07-12T08:00:00' }), /zoned ISO/u);
+  assert.throws(() => applyFamilySalesMemoryAction({ memory, action: 'expire', actor, reasonCode: 'expired_by_date', expectedVersion: 2, now: 'not-a-date' }), /zoned ISO/u);
   assert.deepEqual(memory, snapshot);
 });
 
 test('memory actions normalize equivalent timezone instants and date-only UTC', () => {
   const memory = { id: 71, kind: 'todo', content: '补资料', status: 'confirmed', version: 1 };
-  const base = { memory, action: 'complete', actor: { type: 'service', id: 3 }, expectedVersion: 1 };
+  const base = { memory, action: 'complete', actor: { type: 'service', id: 3 }, reasonCode: 'todo_completed', expectedVersion: 1 };
   const utc = applyFamilySalesMemoryAction({ ...base, now: '2026-07-12T08:00:00.000Z' });
   const offset = applyFamilySalesMemoryAction({ ...base, now: '2026-07-12T16:00:00+08:00' });
   const dateOnly = applyFamilySalesMemoryAction({ ...base, now: '2026-07-12' });
@@ -527,6 +559,21 @@ test('memory extraction treats only the user message as a fact source', async ()
   const prompt = JSON.stringify(requestBody.messages);
   assert.match(prompt, /客户偏好微信文字联系/u);
   assert.doesNotMatch(prompt, /预算100万元|110101198606141234|推荐高预算方案/u);
+});
+
+test('memory extraction fails closed on excessive inputs and model responses', async () => {
+  assert.deepEqual(normalizeExtractedFamilySalesMemories(Array.from({ length: 33 }, () => ({ kind: 'preference', content: '文字联系', confidence: 1 }))), []);
+  let requestBody;
+  const extracted = await extractFamilySalesMemories({
+    userMessage: { content: '偏好文字联系' },
+    env: { DEEPSEEK_API_KEY: 'test-key', FAMILY_SALES_MEMORY_MAX_TOKENS: '999999', FAMILY_SALES_MEMORY_TIMEOUT_MS: '999999' },
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { ok: true, text: async () => 'x'.repeat(100_001) };
+    },
+  });
+  assert.equal(requestBody.max_tokens, 4_000);
+  assert.deepEqual(extracted, []);
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {

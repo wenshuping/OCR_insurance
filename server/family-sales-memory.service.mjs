@@ -8,6 +8,10 @@ const FAMILY_SALES_MEMORY_LIMIT = 20;
 const MEMORY_KINDS = new Set(['objection', 'preference', 'strategy', 'correction', 'todo']);
 const MEMORY_STATUSES = new Set(['candidate', 'confirmed', 'conflicted', 'superseded', 'rejected', 'expired', 'completed', 'archived']);
 const MEMORY_ACTIONS = new Set(['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore']);
+const MEMORY_REASON_CODES = new Set(['advisor_correction', 'user_confirmation', 'advisor_rejection', 'todo_completed', 'expired_by_date', 'restored_after_review', 'system_archival']);
+const MAX_EXTRACTED_MEMORY_ITEMS = 32;
+const MAX_MODEL_RESPONSE_CHARS = 100_000;
+const MAX_MEMORY_GRAPH_SIZE = 1_000;
 const CURRENT_MEMORY_STATUSES = new Set(['confirmed', 'active']);
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const CHINA_ID_NUMBER_PATTERN = /\b(?:[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3})\b/gu;
@@ -56,6 +60,10 @@ export function parseFamilySalesMemoryInstant(value = '') {
 function numberOrDefault(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function boundedNumber(value, fallback, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, numberOrDefault(value, fallback)));
 }
 
 function clampConfidence(value) {
@@ -117,13 +125,49 @@ function sameMemoryId(left, right) {
   return String(canonicalMemoryId(left)) === String(canonicalMemoryId(right));
 }
 
-function sanitizeEventText(value = '', limit = 120) {
-  return sanitizeMemorySourceText(value, limit)
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, '邮箱已脱敏')
-    .replace(/\b(?=[A-Z0-9_-]{8,}\b)(?=[A-Z0-9_-]*[A-Z])(?=[A-Z0-9_-]*\d)[A-Z0-9_-]+\b/giu, '编号已脱敏')
-    .replace(/\b\d{4,}\b/gu, '编号已脱敏')
-    .slice(0, limit)
-    .trim();
+function memoryScope(memory = {}) {
+  return [Number(memory.familyId || 0) || 0, Number(memory.ownerUserId || 0) || 0, trim(memory.ownerGuestId)].join(':');
+}
+
+function validateSupersessionGraph({ memory, replacementId, existingMemories }) {
+  if (!Array.isArray(existingMemories)) throw new TypeError('existingMemories authoritative collection is required');
+  if (existingMemories.length > MAX_MEMORY_GRAPH_SIZE) throw new Error('memory supersession graph exceeds limit');
+  const nodes = new Map();
+  for (const item of existingMemories) {
+    const key = String(canonicalMemoryId(item?.id));
+    if (nodes.has(key)) throw new Error('duplicate memory id in supersession graph');
+    nodes.set(key, item);
+  }
+  if (nodes.has(String(replacementId))) throw new Error('replacement id already exists');
+  const authoritativeMemory = nodes.get(String(memory.id));
+  if (authoritativeMemory && memoryScope(authoritativeMemory) !== memoryScope(memory)) throw new Error('cross-scope authoritative memory');
+  if (!authoritativeMemory) nodes.set(String(memory.id), memory);
+  const edges = new Map();
+  const addEdge = (from, to) => {
+    const fromKey = String(canonicalMemoryId(from));
+    const toKey = String(canonicalMemoryId(to));
+    const fromNode = nodes.get(fromKey);
+    const toNode = nodes.get(toKey);
+    if (fromNode && toNode && memoryScope(fromNode) !== memoryScope(toNode)) throw new Error('cross-scope memory supersession chain');
+    if (!edges.has(fromKey)) edges.set(fromKey, new Set());
+    edges.get(fromKey).add(toKey);
+  };
+  for (const item of nodes.values()) {
+    if (item.supersededByMemoryId !== undefined && item.supersededByMemoryId !== null) addEdge(item.id, item.supersededByMemoryId);
+    if (item.supersedesMemoryId !== undefined && item.supersedesMemoryId !== null) addEdge(item.supersedesMemoryId, item.id);
+  }
+  addEdge(memory.id, replacementId);
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (id) => {
+    if (visiting.has(id)) throw new Error('memory supersession cycle detected');
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const next of edges.get(id) || []) visit(next);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const id of edges.keys()) visit(id);
 }
 
 function normalizeActor(actor) {
@@ -153,8 +197,10 @@ export function applyFamilySalesMemoryAction({
   memory,
   action,
   actor,
-  reason = '',
+  reasonCode = '',
+  note: _note = '',
   replacement = null,
+  existingMemories = [],
   expectedVersion,
   now = new Date().toISOString(),
 } = {}) {
@@ -164,15 +210,15 @@ export function applyFamilySalesMemoryAction({
   const status = normalizedStatus(rawStatus);
   const normalizedAction = trim(action).toLowerCase();
   if (!MEMORY_STATUSES.has(status) || !MEMORY_ACTIONS.has(normalizedAction)) throw new Error('illegal memory transition');
-  const version = requireVersion(memory.version);
+  const version = requireVersion(memory.version ?? (rawStatus === 'active' ? 1 : undefined));
   requireVersion(expectedVersion, 'expectedVersion');
   if (expectedVersion !== version) throw new Error('stale memory version');
   const nowInstant = parseFamilySalesMemoryInstant(now);
   if (!Number.isFinite(nowInstant)) throw new TypeError('now must be a valid zoned ISO instant or UTC date');
   const time = new Date(nowInstant).toISOString();
   const safeActor = normalizeActor(actor);
-  const safeReason = sanitizeEventText(reason);
-  if (['reject', 'supersede', 'expire', 'restore'].includes(normalizedAction) && !safeReason) throw new TypeError('reason is required');
+  const safeReason = trim(reasonCode).toLowerCase();
+  if (!MEMORY_REASON_CODES.has(safeReason)) throw new TypeError('reasonCode must be an approved enum value');
 
   const legalFrom = {
     confirm: new Set(['candidate', 'conflicted']),
@@ -213,6 +259,7 @@ export function applyFamilySalesMemoryAction({
       && sameMemoryId(memory.supersedesMemoryId, replacementId)) throw new Error('memory supersession cycle detected');
     if (replacement.supersedesMemoryId !== undefined && replacement.supersedesMemoryId !== null
       && !sameMemoryId(replacement.supersedesMemoryId, memoryId)) throw new Error('replacement supersedes chain is invalid');
+    validateSupersessionGraph({ memory, replacementId, existingMemories });
     const kind = normalizeKind(replacement.kind || memory.kind);
     const content = sanitizeMemoryContent(replacement.content);
     if (!kind || kind !== normalizeKind(memory.kind) || !content) throw new TypeError('replacement must keep kind and provide content');
@@ -227,6 +274,11 @@ export function applyFamilySalesMemoryAction({
       if (!Number.isFinite(instant)) throw new TypeError('replacement validFrom must be a valid zoned ISO instant or UTC date');
       return new Date(instant).toISOString();
     })();
+    if (parseFamilySalesMemoryInstant(replacementValidFrom) > nowInstant) {
+      const error = new Error('scheduled supersede is unsupported');
+      error.code = 'SCHEDULED_SUPERSEDE_UNSUPPORTED';
+      throw error;
+    }
     const priorValidFrom = trim(memory.validFrom);
     if (priorValidFrom) {
       const priorInstant = parseFamilySalesMemoryInstant(priorValidFrom);
@@ -277,6 +329,14 @@ export function applyFamilySalesMemoryAction({
   return { memory: nextMemory, replacement: replacementMemory, event, events: replacementEvent ? [event, replacementEvent] : [event] };
 }
 
+export function buildFamilySalesMemoryTransitionBundle(options = {}) {
+  const result = applyFamilySalesMemoryAction(options);
+  return {
+    memories: result.replacement ? [result.memory, result.replacement] : [result.memory],
+    events: result.events,
+  };
+}
+
 function normalizeMemoryKey(kind = '', content = '') {
   return `${normalizeKind(kind)}:${sanitizeMemoryContent(content)
     .normalize('NFKC')
@@ -301,6 +361,7 @@ function parseJsonContent(content = '') {
 
 export function normalizeExtractedFamilySalesMemories(value = {}) {
   const source = Array.isArray(value) ? value : value?.memories;
+  if (Array.isArray(source) && source.length > MAX_EXTRACTED_MEMORY_ITEMS) return [];
   const seen = new Set();
   return (Array.isArray(source) ? source : [])
     .map((item) => {
@@ -324,8 +385,8 @@ function resolveFamilySalesMemoryConfig(env = process.env) {
     apiKey: trim(env.FAMILY_SALES_MEMORY_API_KEY || env.DEEPSEEK_API_KEY || env.FAMILY_SALES_CHAT_API_KEY),
     baseUrl: trim(env.FAMILY_SALES_MEMORY_BASE_URL || env.DEEPSEEK_BASE_URL || env.FAMILY_SALES_CHAT_BASE_URL) || DEFAULT_DEEPSEEK_BASE_URL,
     model: trim(env.FAMILY_SALES_MEMORY_MODEL) || DEFAULT_MEMORY_MODEL,
-    timeoutMs: numberOrDefault(env.FAMILY_SALES_MEMORY_TIMEOUT_MS || env.DEEPSEEK_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
-    maxTokens: numberOrDefault(env.FAMILY_SALES_MEMORY_MAX_TOKENS, DEFAULT_MAX_TOKENS),
+    timeoutMs: boundedNumber(env.FAMILY_SALES_MEMORY_TIMEOUT_MS || env.DEEPSEEK_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1_000, 120_000),
+    maxTokens: boundedNumber(env.FAMILY_SALES_MEMORY_MAX_TOKENS, DEFAULT_MAX_TOKENS, 100, 4_000),
   };
 }
 
@@ -385,7 +446,9 @@ export async function extractFamilySalesMemories({
       body: JSON.stringify(body),
     });
     if (!response.ok) return [];
-    const payload = await response.json();
+    const responseText = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
+    if (responseText.length > MAX_MODEL_RESPONSE_CHARS) return [];
+    const payload = JSON.parse(responseText);
     const parsed = parseJsonContent(payload?.choices?.[0]?.message?.content);
     return normalizeExtractedFamilySalesMemories(parsed || {});
   } catch {
