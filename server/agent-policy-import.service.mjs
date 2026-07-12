@@ -17,6 +17,7 @@ const MAX_OPTIONS = 100;
 const MAX_EVENTS = 200;
 const MAX_PLANS = 100;
 const MAX_TEXT = 160;
+const MAX_EVIDENCE_CANDIDATES = 40;
 const PRODUCT_RESOLUTIONS = new Set(['trusted_match', 'selected', 'manual_confirmed']);
 
 function fail(code, message, status = 400) {
@@ -106,6 +107,7 @@ function workflowStatus(task) {
     if (missing.includes('insured') && task.memberOptions.length) return 'member_binding';
     return missing.length ? 'field_completion' : 'final_confirmation';
   }
+  if (task.fieldConflicts.length) return 'field_completion';
   if (missing.length) return 'field_completion';
   if (task.resolutionRequired && !PRODUCT_RESOLUTIONS.has(task.productResolution)) return 'candidate_selection';
   if (task.resolutionRequired && (!task.draft.insuredMemberId || (task.draft.applicant && !task.draft.applicantMemberId))) return 'member_binding';
@@ -158,8 +160,19 @@ function normalizeStoredDocument(value) {
   const mediaType = scalarString(value.mediaType || value.type, { max: 40 }).toLowerCase();
   if (!['image/jpeg', 'image/png', 'application/pdf'].includes(mediaType)) fail('UNSUPPORTED_DOCUMENT_TYPE', '附件类型不支持');
   if (!Number.isSafeInteger(value.size) || value.size < 0) fail('INVALID_DOCUMENT_SIZE', '附件大小无效');
-  const evidence = isPlainObject(value.evidence) ? structuredClone(value.evidence) : undefined;
-  return { documentId, sha256, name: redact(scalarString(value.name || '上传文件', { max: 120 })), mediaType, size: value.size, status: DOCUMENT_STATUSES.has(value.status) ? value.status : 'received', ...(evidence ? { evidence } : {}) };
+  const candidates = Array.isArray(value.evidence?.candidates) ? value.evidence.candidates.slice(0, MAX_EVIDENCE_CANDIDATES).map((candidate) => {
+    if (!isPlainObject(candidate) || !EDITABLE_FIELDS.has(candidate.field)) fail('INVALID_EVIDENCE', '识别证据无效');
+    const confidence = candidate.confidence == null ? undefined : Number(candidate.confidence);
+    if (confidence !== undefined && (!Number.isFinite(confidence) || confidence < 0 || confidence > 1)) fail('INVALID_EVIDENCE', '识别置信度无效');
+    const page = candidate.page == null ? undefined : Number(candidate.page);
+    if (page !== undefined && (!Number.isSafeInteger(page) || page < 0 || page > 10000)) fail('INVALID_EVIDENCE', '识别页码无效');
+    return { field: candidate.field, value: scalarString(candidate.value, { field: candidate.field, max: MAX_TEXT, allowEmpty: false }), documentId, sha256, ...(confidence === undefined ? {} : { confidence }), ...(page === undefined ? {} : { page }) };
+  }) : [];
+  const evidence = candidates.length ? { candidates } : undefined;
+  const scanAttempt = Number.isSafeInteger(value.scanAttempt) && value.scanAttempt >= 0 ? value.scanAttempt : 0;
+  const scanLeaseUntil = scalarString(value.scanLeaseUntil, { max: 40 });
+  const errorCode = scalarString(value.errorCode, { max: 60 });
+  return { documentId, sha256, name: redact(scalarString(value.name || '上传文件', { max: 120 })), mediaType, size: value.size, status: DOCUMENT_STATUSES.has(value.status) ? value.status : 'received', scanAttempt, ...(scanLeaseUntil ? { scanLeaseUntil } : {}), ...(errorCode ? { errorCode } : {}), ...(evidence ? { evidence } : {}) };
 }
 
 function normalizeStoredDocuments(value) {
@@ -203,6 +216,7 @@ function canonicalTask(input) {
     draft: normalizeDraft(input.draft || input.scan || {}),
     productOptions: normalizeOptions(input.productOptions, 'product'),
     memberOptions: normalizeOptions(input.memberOptions, 'member'),
+    fieldConflicts: Array.isArray(input.fieldConflicts) ? [...new Set(input.fieldConflicts.filter((field) => EDITABLE_FIELDS.has(field)))].slice(0, EDITABLE_FIELDS.size) : [],
     resolutionRequired: input.resolutionRequired === true,
     productResolution: PRODUCT_RESOLUTIONS.has(input.productResolution) ? input.productResolution : '',
     privacyManifest: normalizePrivacyManifest(),
@@ -357,6 +371,7 @@ export function updateAgentPolicyImportTask(input, { stateVersion, action = 'set
     if (!EDITABLE_FIELDS.has(field)) fail('AGENT_POLICY_IMPORT_FIELD_NOT_ALLOWED', '不支持修改该字段');
     const normalized = scalarString(value, { field, allowEmpty: false });
     task.draft[field] = normalized;
+    task.fieldConflicts = task.fieldConflicts.filter((candidate) => candidate !== field);
     if (field === 'name' || field === 'company') {
       task.productResolution = '';
       delete task.draft.productId;
@@ -443,6 +458,7 @@ export function buildAgentPolicyImportContext(input = {}) {
     status: task.status,
     stateVersion: task.stateVersion,
     documentSummary: { count: task.documents.length, statuses },
+    intakeLimits: { maxDocumentBytes: 16 * 1024 * 1024, transport: 'base64_data_url' },
     policyDraft: {
       company: publicText(task.draft.company), productName: publicText(task.draft.name), insured: maskName(task.draft.insured), applicant: maskName(task.draft.applicant),
       date: publicText(task.draft.date), paymentPeriod: publicText(task.draft.paymentPeriod), coveragePeriod: publicText(task.draft.coveragePeriod),

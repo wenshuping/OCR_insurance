@@ -178,6 +178,7 @@ export type PolicyImportTask = {
   status: string;
   stateVersion: number;
   documentSummary: { count: number; statuses: Record<string, number> };
+  intakeLimits: { maxDocumentBytes: number; transport: 'base64_data_url' };
   policyDraft: Record<string, string | number>;
   missingFields: string[];
   resolution: { product: 'pending' | 'trusted_match' | 'selected' | 'manual_confirmed'; insuredMember: 'pending' | 'resolved'; applicantMember: 'pending' | 'resolved' | 'not_required' };

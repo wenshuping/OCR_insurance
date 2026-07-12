@@ -2425,6 +2425,10 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     }
   }
 
+  async function findAgentPolicyImportTask(id) {
+    return parseJson(db.prepare('SELECT payload FROM agent_policy_import_tasks WHERE id = ?').get(Number(id))?.payload, null);
+  }
+
   async function persistAdminSession({ state, session = null } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
@@ -3035,6 +3039,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     persistFamilyState,
     persistFamilyReportState,
     persistAgentPolicyImportTask,
+    findAgentPolicyImportTask,
     persistPolicyDerivedResult,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,

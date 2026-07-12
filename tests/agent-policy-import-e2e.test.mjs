@@ -44,6 +44,7 @@ async function fixture({ ambiguous = false, noProducts = false, scanner, rejectP
     state: loaded,
     scanner: scanner || (async () => ({ data: { company: '可信保险', name: '安心保', insured: '张三', applicant: '李四' }, ocrText: 'RAW_SECRET_OCR' })),
     persistAgentPolicyImportTask: persistTask,
+    findAgentPolicyImportTask: store.findAgentPolicyImportTask,
     authenticateDingtalkServiceRequest: () => true,
     recomputeCashflowOnStartup: false,
   });
@@ -58,7 +59,7 @@ async function fixture({ ambiguous = false, noProducts = false, scanner, rejectP
   return { store, loaded, request, close: async () => { await new Promise((resolve) => server.close(resolve)); store.close(); await fs.rm(dir, { recursive: true, force: true }); } };
 }
 
-const image = (text) => `data:image/jpeg;base64,${Buffer.from(text).toString('base64')}`;
+const image = (text) => `data:image/jpeg;base64,${Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from(text), Buffer.from([0xff, 0xd9])]).toString('base64')}`;
 
 test('family policy import E2E hashes, merges, dedupes, auto-resolves trusted exact matches, and never leaks OCR', async () => {
   const ctx = await fixture();
@@ -165,5 +166,73 @@ test('Wukong-created and appended task is readable and actionable through web fa
     assert.equal(JSON.stringify(read.payload).includes('RAW_SECRET_OCR'), false);
     const action = await invoke('mcp-action', 'apply_policy_import_action', { familyRef: 10, taskId, stateVersion: read.payload.task.stateVersion, action: 'confirm' });
     assert.equal(action.payload.result.status, 'saving');
+  } finally { await ctx.close(); }
+});
+
+test('strict upload validation rejects invalid base64 and spoofed signatures before mutation', async () => {
+  const ctx = await fixture();
+  try {
+    const started = await ctx.request('/api/family-profiles/10/policy-imports', { method: 'POST', body: {} });
+    for (const uploadItem of ['data:image/jpeg;base64,%%%=', `data:image/png;base64,${Buffer.from('%PDF-fake').toString('base64')}`]) {
+      const result = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}/files`, { method: 'POST', body: { stateVersion: 1, files: [{ uploadItem }] } });
+      assert.equal(result.status, 400);
+    }
+    const current = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}`);
+    assert.equal(current.payload.task.documentSummary.count, 0);
+  } finally { await ctx.close(); }
+});
+
+test('expired scanning lease is durably recovered and the same hash can be retried', async () => {
+  const ctx = await fixture();
+  try {
+    const started = await ctx.request('/api/family-profiles/10/policy-imports', { method: 'POST', body: {} });
+    const task = ctx.loaded.agentPolicyImportTasks[0];
+    const bytes = Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]);
+    const sha256 = (await import('node:crypto')).default.createHash('sha256').update(bytes).digest('hex');
+    const scanning = structuredClone(task);
+    scanning.documents = [{ documentId: 'doc_expired', sha256, name: 'expired.jpg', mediaType: 'image/jpeg', size: bytes.length, status: 'scanning', scanAttempt: 1, scanLeaseUntil: '2020-01-01T00:00:00.000Z' }];
+    scanning.status = 'recognizing';
+    scanning.stateVersion = 2;
+    await ctx.store.persistAgentPolicyImportTask({ state: ctx.loaded, task: scanning, expectedVersion: 1 });
+    ctx.loaded.agentPolicyImportTasks[0] = scanning;
+    const recovered = await ctx.request(`/api/family-profiles/10/policy-imports/${task.id}`);
+    assert.equal(recovered.payload.task.documentSummary.statuses.failed, 1);
+    const retried = await ctx.request(`/api/family-profiles/10/policy-imports/${task.id}/files`, { method: 'POST', body: { stateVersion: recovered.payload.task.stateVersion, files: [{ uploadItem: `data:image/jpeg;base64,${bytes.toString('base64')}` }] } });
+    assert.equal(retried.payload.task.documentSummary.statuses.recognized, 1);
+    assert.equal((await ctx.store.load()).agentPolicyImportTasks[0].documents[0].scanAttempt, 1);
+  } finally { await ctx.close(); }
+});
+
+test('equal-confidence conflicting OCR values produce stable evidence and an explicit field conflict', async () => {
+  async function run(order) {
+    const ctx = await fixture({ scanner: async ({ uploadItem }) => ({ data: { company: '可信保险', name: '安心保', insured: Buffer.from(uploadItem.split(',')[1], 'base64').includes(65) ? '甲' : '乙' }, fieldConfidence: { insured: 0.8 } }) });
+    try {
+      const started = await ctx.request('/api/family-profiles/10/policy-imports', { method: 'POST', body: {} });
+      const result = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}/files`, { method: 'POST', body: { stateVersion: 1, files: order.map((value) => ({ uploadItem: image(value) })) } });
+      const stored = (await ctx.store.load()).agentPolicyImportTasks[0];
+      return { status: result.payload.task.status, conflicts: stored.fieldConflicts, candidates: stored.documents.flatMap((document) => document.evidence?.candidates || []).filter((candidate) => candidate.field === 'insured').map(({ documentId, ...candidate }) => candidate).sort((a, b) => a.sha256.localeCompare(b.sha256)) };
+    } finally { await ctx.close(); }
+  }
+  const forward = await run(['A', 'B']);
+  const reverse = await run(['B', 'A']);
+  assert.equal(forward.status, 'field_completion');
+  assert.deepEqual(forward.conflicts, ['insured']);
+  assert.deepEqual(forward.candidates, reverse.candidates);
+});
+
+test('action options are refreshed so archived members and removed products cannot be selected', async () => {
+  const ctx = await fixture({ ambiguous: true });
+  try {
+    const started = await ctx.request('/api/family-profiles/10/policy-imports', { method: 'POST', body: {} });
+    const scanned = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}/files`, { method: 'POST', body: { stateVersion: 1, files: [{ uploadItem: image('fresh') }] } });
+    const oldProduct = scanned.payload.task.legalOptions.products[0].optionId;
+    ctx.loaded.knowledgeRecords = [];
+    const staleProduct = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}/actions`, { method: 'POST', body: { stateVersion: scanned.payload.task.stateVersion, action: 'select_product', optionId: oldProduct } });
+    assert.equal(staleProduct.status, 400);
+    ctx.loaded.knowledgeRecords = [{ id: 51, company: '可信保险', productName: '安心保' }];
+    const selected = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}/actions`, { method: 'POST', body: { stateVersion: scanned.payload.task.stateVersion, action: 'select_product', optionId: oldProduct } });
+    ctx.loaded.familyMembers.find((member) => member.id === 31).status = 'archived';
+    const staleMember = await ctx.request(`/api/family-profiles/10/policy-imports/${started.payload.task.taskId}/actions`, { method: 'POST', body: { stateVersion: selected.payload.task.stateVersion, action: 'bind_member', role: 'insured', optionId: 'member_31' } });
+    assert.equal(staleMember.status, 400);
   } finally { await ctx.close(); }
 });

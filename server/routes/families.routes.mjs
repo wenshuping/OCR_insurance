@@ -118,10 +118,10 @@ export function createFamilyRoutes(context) {
     } catch (error) { return sendError(res, error, error?.status || 500); }
   });
 
-  router.get('/family-profiles/:id/policy-imports/:taskId', (req, res) => {
+  router.get('/family-profiles/:id/policy-imports/:taskId', async (req, res) => {
     const scope = ownedActiveFamily(req, res);
     if (!scope) return undefined;
-    try { return res.json({ ok: true, task: policyImports.get({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner }) }); }
+    try { return res.json({ ok: true, task: await policyImports.get({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner }) }); }
     catch (error) { return sendError(res, error, error?.status || 500); }
   });
 

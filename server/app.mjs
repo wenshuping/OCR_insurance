@@ -2157,6 +2157,7 @@ export function createPolicyOcrApp(options = {}) {
     state,
     allocateId,
     persistTask: persistAgentPolicyImportTask,
+    loadTask: options.findAgentPolicyImportTask,
     recognizePolicyInput: ({ body }) => recognizePolicyInput({ scanner: options.scanner || scanPolicyWithConfiguredRuntime, body, state }),
   });
   const wukongMcpGateway = options.wukongMcpGateway || createWukongMcpGateway({
