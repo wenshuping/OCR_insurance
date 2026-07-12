@@ -67,3 +67,37 @@ test('mutating a selected policy cannot pollute later selections', () => {
   assert.equal(second.handler, 'insurance_expert');
   assert.notEqual(second.tool, 'shell');
 });
+
+test('disabled exact matches are skipped in favor of a safe enabled fallback', () => {
+  const policies = AGENT_QUESTION_POLICIES.map((policy) => (
+    policy.key === 'coverage_report' ? { ...policy, enabled: false } : policy
+  ));
+
+  const selected = chooseAgentQuestionPolicy(
+    { intent: 'coverage_report', requestedOperation: 'read' },
+    policies,
+  );
+  assert.equal(selected.key, 'unknown_read');
+});
+
+test('disabled fallbacks fail safely instead of being selected', () => {
+  const policies = AGENT_QUESTION_POLICIES.map((policy) => (
+    policy.key === 'unknown_write' ? { ...policy, enabled: false } : policy
+  ));
+
+  assert.throws(
+    () => chooseAgentQuestionPolicy({ intent: 'missing', requestedOperation: 'write' }, policies),
+    /missing enabled unknown_write policy/i,
+  );
+});
+
+test('validation requires key and intent to be non-empty trimmed strings', () => {
+  for (const field of ['key', 'intent']) {
+    for (const value of [[], {}, '   ']) {
+      assert.throws(
+        () => validateAgentQuestionPolicy({ ...AGENT_QUESTION_POLICIES[0], [field]: value }),
+        new RegExp(field, 'i'),
+      );
+    }
+  }
+});

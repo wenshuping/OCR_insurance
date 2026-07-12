@@ -43,7 +43,8 @@ const includes = (allowed, value) => allowed.includes(value);
 
 export function validateAgentQuestionPolicy(policy) {
   if (!policy || typeof policy !== 'object') throw new TypeError('policy must be an object');
-  if (!policy.key || !policy.intent) throw new TypeError('policy key and intent are required');
+  if (typeof policy.key !== 'string' || !policy.key.trim()) throw new TypeError('policy key must be a non-empty string');
+  if (typeof policy.intent !== 'string' || !policy.intent.trim()) throw new TypeError('policy intent must be a non-empty string');
   if (!includes(AGENT_QUESTION_POLICY_DECISIONS, policy.decision)) throw new TypeError('invalid policy decision');
   if (!includes(AGENT_QUESTION_POLICY_HANDLERS, policy.handler)) throw new TypeError('invalid policy handler');
   if (!includes(AGENT_QUESTION_POLICY_OPERATIONS, policy.operation)) throw new TypeError('invalid policy operation');
@@ -58,12 +59,13 @@ export function validateAgentQuestionPolicy(policy) {
 
 export function chooseAgentQuestionPolicy(candidate = {}, policies = AGENT_QUESTION_POLICIES) {
   const intent = normalizeIntent(candidate.intent);
-  const matched = policies.find((policy) => normalizeIntent(policy.intent) === intent);
+  const enabledPolicies = policies.filter((policy) => policy.enabled !== false);
+  const matched = enabledPolicies.find((policy) => normalizeIntent(policy.intent) === intent);
   const fallbackKey = normalizeIntent(candidate.requestedOperation) === 'write'
     ? 'unknown_write'
     : 'unknown_read';
-  const selected = matched ?? policies.find((policy) => policy.key === fallbackKey);
-  if (!selected) throw new TypeError(`missing ${fallbackKey} policy`);
+  const selected = matched ?? enabledPolicies.find((policy) => policy.key === fallbackKey);
+  if (!selected) throw new TypeError(`missing enabled ${fallbackKey} policy`);
   validateAgentQuestionPolicy(selected);
   return { ...selected };
 }
