@@ -6,7 +6,7 @@ import { createAgentQuestionHandlers } from '../server/agent-question-handlers.s
 const NOW = '2026-07-12T08:00:00.000Z';
 
 function harness(state = {}, overrides = {}) {
-  const calls = { enqueued: [], knowledge: [], coaching: [], upload: [] };
+  const calls = { enqueued: [], knowledge: [], salesChat: [], upload: [] };
   const deps = {
     store: { async load() { return state; } },
     clock: () => new Date(NOW),
@@ -27,10 +27,15 @@ function harness(state = {}, overrides = {}) {
         return { answer: '等待测试覆盖', sources: [] };
       },
     },
-    salesCoaching: {
-      async answer(input) {
-        calls.coaching.push(input);
-        return { guidance: ['先确认预算'] };
+    existingSalesChatAgent: {
+      async reply(input) {
+        calls.salesChat.push(input);
+        return {
+          content: '先确认客户预算。',
+          model: 'existing-family-sales-agent',
+          sources: [{ kind: 'family_sales_chat', ref: 'thread-1' }],
+          generatedAt: NOW,
+        };
       },
     },
     ...overrides,
@@ -176,7 +181,7 @@ test('product knowledge requires public sources for definite facts', async () =>
   assert.doesNotMatch(JSON.stringify(uncertain), /等待测试覆盖/);
 });
 
-test('sales coaching loads trusted minimal facts from authorized family context', async () => {
+test('sales coaching adapts authorized context to the existing family sales chat agent', async () => {
   const { handlers, calls } = harness({
     familyMembers: [{ familyId: 7, name: '张三', status: 'active' }],
     policies: [{ familyId: 7, status: 'active', coveragePeriod: '终身' }],
@@ -187,14 +192,23 @@ test('sales coaching loads trusted minimal facts from authorized family context'
     intent: 'sales_coaching',
     familyId: 7,
     internalUserId: 9,
-    question: '怎么沟通',
+    question: '  怎么沟通\n',
     hermesMemory: 'do not pass',
+    permission: 'admin',
+    attachment: { bytes: 'raw' },
   });
 
-  assert.deepEqual(Object.keys(calls.coaching[0]).sort(), ['confirmedFacts', 'pendingFields', 'question']);
-  assert.equal(JSON.stringify(calls.coaching[0]).includes('Hermes'), false);
-  assert.deepEqual(calls.coaching[0].confirmedFacts, { activeMemberCount: 1, policyCount: 1, validPolicyCount: 1 });
-  assert.ok(result.facts.pendingConfirmation.includes('customerNeeds'));
+  assert.deepEqual(Object.keys(calls.salesChat[0]).sort(), ['context', 'familyId', 'internalUserId', 'question']);
+  assert.deepEqual(calls.salesChat[0], {
+    familyId: 7,
+    internalUserId: 9,
+    question: '怎么沟通',
+    context: { activeMemberCount: 1, policyCount: 1, validPolicyCount: 1 },
+  });
+  assert.doesNotMatch(JSON.stringify(calls.salesChat[0]), /Hermes|permission|memory|attachment|raw/i);
+  assert.equal(result.facts.answer, '先确认客户预算。');
+  assert.equal(result.provenance.agent, 'existing_family_sales_chat');
+  assert.deepEqual(result.provenance.sources, [{ kind: 'family_sales_chat', ref: 'thread-1' }]);
 });
 
 test('safe summaries do not copy numeric phone, identity, or account fields', async () => {

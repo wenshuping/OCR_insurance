@@ -88,7 +88,7 @@ export function createAgentQuestionHandlers({
   store,
   reportQueue,
   productKnowledge,
-  salesCoaching,
+  existingSalesChatAgent,
   salesContextLoader,
   links = {},
   clock = () => new Date(),
@@ -229,16 +229,27 @@ export function createAgentQuestionHandlers({
     const confirmedFacts = trusted
       ? safeSummary(trusted.confirmedFacts)
       : { activeMemberCount: members.length, policyCount: policies.length, validPolicyCount: policies.filter((policy) => policyIsValid(policy, clock())).length };
-    const pendingFields = (Array.isArray(trusted?.pendingFields) ? trusted.pendingFields : ['customerNeeds', 'budget'])
-      .map(text).filter(Boolean).slice(0, 20);
-    const input = { question: text(context?.question).slice(0, 2_000), confirmedFacts, pendingFields };
-    const result = salesCoaching && typeof salesCoaching.answer === 'function'
-      ? await salesCoaching.answer(input)
-      : {};
+    if (!existingSalesChatAgent || typeof existingSalesChatAgent.reply !== 'function') {
+      return stableResult(
+        { answer: '', status: 'unavailable' },
+        { agent: 'existing_family_sales_chat', sources: [] },
+        { message: '保险营销专家暂不可用，请稍后重试。' },
+      );
+    }
+    const result = await existingSalesChatAgent.reply({
+      familyId: id,
+      internalUserId: positiveInteger(context?.internalUserId, 'internalUserId'),
+      question: text(context?.question).replace(/\s+/gu, ' ').slice(0, 2_000),
+      context: confirmedFacts,
+    });
     return stableResult(
-      { guidance: Array.isArray(result?.guidance) ? result.guidance.map(text).filter(Boolean) : [], pendingConfirmation: pendingFields },
-      { source: 'confirmed_request_facts', hermesMemoryUsed: false },
-      { message: text(result?.message) },
+      { answer: text(result?.content), generatedAt: text(result?.generatedAt) },
+      {
+        agent: 'existing_family_sales_chat',
+        model: text(result?.model),
+        sources: Array.isArray(result?.sources) ? result.sources : [],
+      },
+      { message: text(result?.content) },
     );
   }
 
