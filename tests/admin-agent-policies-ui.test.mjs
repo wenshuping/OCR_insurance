@@ -5,6 +5,7 @@ import {
   createRequestMutex,
   policyValidationViewModel,
   createLatestRequestController,
+  createLifecycleController,
   normalizePolicyIdentifier,
   unknownQuestionViewModel,
   simulationViewModel,
@@ -124,6 +125,32 @@ test('latest request controller rejects stale and post-cleanup commits', () => {
   controller.dispose();
   assert.equal(second.commit(() => { commits += 1; }), false);
   assert.equal(commits, 1);
+});
+
+test('token lifecycle prevents stale save and simulation completions from interrupting the new token load', async () => {
+  const lifecycle = createLifecycleController();
+  const tokenA = lifecycle.activate('token-a');
+  const saveA = lifecycle.capture('token-a');
+  const simulationA = lifecycle.capture('token-a');
+  let resolveSave;
+  let resolveSimulation;
+  let state = '';
+  let reloads = 0;
+  const savePending = new Promise((resolve) => { resolveSave = resolve; }).then(() => {
+    saveA.commit(() => { state = 'stale-save'; });
+    saveA.run(() => { reloads += 1; });
+  });
+  const simulationPending = new Promise((resolve) => { resolveSimulation = resolve; }).then(() => simulationA.commit(() => { state = 'stale-simulation'; }));
+  const tokenB = lifecycle.activate('token-b');
+  assert.equal(tokenB.commit(() => { state = 'token-b-load'; }), true);
+  resolveSave();
+  resolveSimulation();
+  await Promise.all([savePending, simulationPending]);
+  assert.equal(state, 'token-b-load');
+  assert.equal(reloads, 0);
+  tokenB.invalidate();
+  assert.equal(tokenB.commit(() => { state = 'after-cleanup'; }), false);
+  assert.equal(tokenA.commit(() => { state = 'old-token'; }), false);
 });
 
 test('unknown question view model never carries raw or normalized question text', () => {

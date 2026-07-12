@@ -3,11 +3,20 @@ import type { AdminAgentPolicySimulationResponse, AdminAgentQuestionPolicy } fro
 export function shouldDiscardDirty(dirty: boolean, confirmDiscard: (message: string) => boolean): boolean;
 export function validatePolicyDraft(policies: AdminAgentQuestionPolicy[]): string[];
 export function createRequestMutex(): { run<T>(request: () => Promise<T>): Promise<T | undefined> };
+export type AgentPolicyLatestRequestScope = { commit(update: () => void): boolean };
 export function createLatestRequestController(): {
-  begin(): { commit(update: () => void): boolean };
+  begin(): AgentPolicyLatestRequestScope;
   invalidate(): void;
   dispose(): void;
 };
+export type AgentPolicyLifecycleScope = {
+  token: string;
+  isCurrent(): boolean;
+  commit(update: () => void): boolean;
+  run(action: () => void): boolean;
+  invalidate(): void;
+};
+export function createLifecycleController(): { activate(token: string): AgentPolicyLifecycleScope; capture(token: string): AgentPolicyLifecycleScope };
 export function normalizePolicyIdentifier(value: unknown): string;
 export function unknownQuestionViewModel(item: unknown): { id: number; userRef: string; category: string; fallbackDecision: string; occurrenceCount: number; status: string; createdAt: string };
 export function simulationViewModel(response: AdminAgentPolicySimulationResponse): {

@@ -13,7 +13,7 @@ import {
   type AdminAgentQuestionPolicyVersion,
   type AdminAgentUnknownQuestion,
 } from '../../../api';
-import { createLatestRequestController, createRequestMutex, fallbackPolicyKeys, policyValidationViewModel, shouldDiscardDirty, unknownQuestionViewModel } from './adminAgentPolicies.mjs';
+import { createLatestRequestController, createLifecycleController, createRequestMutex, fallbackPolicyKeys, policyValidationViewModel, shouldDiscardDirty, unknownQuestionViewModel, type AgentPolicyLatestRequestScope, type AgentPolicyLifecycleScope } from './adminAgentPolicies.mjs';
 
 const HANDLERS = ['system', 'insurance_expert', 'sales_champion'] as const;
 const OPERATIONS = ['read', 'write'] as const;
@@ -59,38 +59,49 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
   const simulationMutex = useRef(createRequestMutex());
   const policyRequests = useRef(createLatestRequestController());
   const unknownRequests = useRef(createLatestRequestController());
+  const lifecycle = useRef(createLifecycleController());
 
-  async function loadPolicies(request = policyRequests.current.begin()) {
-    request.commit(() => { setLoading(true); setPolicyLoadError(''); });
+  async function loadPolicies({ token = adminToken, scope = lifecycle.current.capture(adminToken), request = policyRequests.current.begin() }: { token?: string; scope?: AgentPolicyLifecycleScope; request?: AgentPolicyLatestRequestScope } = {}) {
+    const commit = (update: () => void) => scope.commit(() => { request.commit(update); });
+    commit(() => { setLoading(true); setPolicyLoadError(''); });
     try {
-      const response = await getAdminAgentQuestionPolicies(adminToken);
-      request.commit(() => {
+      const response = await getAdminAgentQuestionPolicies(token);
+      commit(() => {
         const selectedDraft = response.drafts[0] || null;
         setPublished(response.published); setDraft(selectedDraft);
         setPolicies((selectedDraft?.policies || response.published?.policies || response.templates).map((item) => ({ ...item })));
         setHistory(response.history); setPoliciesLoaded(true); setDirty(false);
       });
     } catch (requestError) {
-      request.commit(() => { setPoliciesLoaded(false); setPolicyLoadError(errorMessage(requestError)); });
+      commit(() => { setPoliciesLoaded(false); setPolicyLoadError(errorMessage(requestError)); });
     } finally {
-      request.commit(() => setLoading(false));
+      commit(() => setLoading(false));
     }
   }
 
-  async function loadUnknownQuestions(offset = unknownOffset, request = unknownRequests.current.begin()) {
-    request.commit(() => setUnknownLoading(true));
+  async function loadUnknownQuestions(offset = unknownOffset, token = adminToken, scope = lifecycle.current.capture(adminToken), request = unknownRequests.current.begin()) {
+    const commit = (update: () => void) => scope.commit(() => { request.commit(update); });
+    commit(() => setUnknownLoading(true));
     try {
-      const response = await getAdminAgentUnknownQuestions(adminToken, { limit: UNKNOWN_LIMIT, offset });
-      request.commit(() => { setUnknownItems(response.items.map(unknownQuestionViewModel)); setUnknownTotal(response.total); setUnknownOffset(response.offset); });
+      const response = await getAdminAgentUnknownQuestions(token, { limit: UNKNOWN_LIMIT, offset });
+      commit(() => { setUnknownItems(response.items.map(unknownQuestionViewModel)); setUnknownTotal(response.total); setUnknownOffset(response.offset); });
     } catch (requestError) {
-      request.commit(() => setError(errorMessage(requestError)));
+      commit(() => setError(errorMessage(requestError)));
     } finally {
-      request.commit(() => setUnknownLoading(false));
+      commit(() => setUnknownLoading(false));
     }
   }
 
-  useEffect(() => { void loadPolicies(); return () => policyRequests.current.invalidate(); }, [adminToken]);
-  useEffect(() => { void loadUnknownQuestions(unknownOffset); return () => unknownRequests.current.invalidate(); }, [adminToken, unknownOffset]);
+  useEffect(() => {
+    const scope = lifecycle.current.activate(adminToken);
+    void loadPolicies({ token: adminToken, scope });
+    return () => { scope.invalidate(); policyRequests.current.invalidate(); };
+  }, [adminToken]);
+  useEffect(() => {
+    const scope = lifecycle.current.capture(adminToken);
+    void loadUnknownQuestions(unknownOffset, adminToken, scope);
+    return () => unknownRequests.current.invalidate();
+  }, [adminToken, unknownOffset]);
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => {
     const preventUnload = (event: BeforeUnloadEvent) => {
@@ -113,45 +124,55 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
 
   async function saveDraft() {
     if (validationErrors.length) { setError(validationErrors[0]); return; }
+    const scope = lifecycle.current.capture(adminToken);
+    const token = scope.token;
     await requestMutex.current.run(async () => {
-      setSaving(true); setError('');
+      scope.commit(() => { setSaving(true); setError(''); });
       try {
-        const response = draft ? await updateAdminAgentQuestionPolicyDraft(adminToken, draft.id, policies) : await createAdminAgentQuestionPolicyDraft(adminToken, policies);
-        setDraft(response.draft); setSimulationSource('draft'); setDirty(false);
-        await loadPolicies();
-      } catch (requestError) { setError(errorMessage(requestError)); } finally { setSaving(false); }
+        const response = draft ? await updateAdminAgentQuestionPolicyDraft(token, draft.id, policies) : await createAdminAgentQuestionPolicyDraft(token, policies);
+        if (!scope.commit(() => { setDraft(response.draft); setSimulationSource('draft'); setDirty(false); })) return;
+        if (scope.isCurrent()) await loadPolicies({ token, scope });
+      } catch (requestError) { scope.commit(() => setError(errorMessage(requestError))); }
+      finally { scope.commit(() => setSaving(false)); }
     });
   }
 
   async function publishDraft() {
     if (!draft || saving || dirty || !window.confirm(`确认发布版本 ${draft.version}？发布后将影响新请求。`)) return;
+    const scope = lifecycle.current.capture(adminToken);
+    const token = scope.token;
     await requestMutex.current.run(async () => {
-      setSaving(true);
-      try { await publishAdminAgentQuestionPolicyDraft(adminToken, draft.id); await loadPolicies(); }
-      catch (requestError) { setError(errorMessage(requestError)); }
-      finally { setSaving(false); }
+      scope.commit(() => setSaving(true));
+      try { await publishAdminAgentQuestionPolicyDraft(token, draft.id); if (scope.isCurrent()) await loadPolicies({ token, scope }); }
+      catch (requestError) { scope.commit(() => setError(errorMessage(requestError))); }
+      finally { scope.commit(() => setSaving(false)); }
     });
   }
 
   async function rollback(version: AdminAgentQuestionPolicyVersion) {
     if (saving || !shouldDiscardDirty(dirty, window.confirm) || !window.confirm(`确认回滚到版本 ${version.version}？系统会创建新的发布版本。`)) return;
+    const scope = lifecycle.current.capture(adminToken);
+    const token = scope.token;
     await requestMutex.current.run(async () => {
-      setSaving(true);
-      try { await rollbackAdminAgentQuestionPolicyVersion(adminToken, version.id); await loadPolicies(); }
-      catch (requestError) { setError(errorMessage(requestError)); }
-      finally { setSaving(false); }
+      scope.commit(() => setSaving(true));
+      try { await rollbackAdminAgentQuestionPolicyVersion(token, version.id); if (scope.isCurrent()) await loadPolicies({ token, scope }); }
+      catch (requestError) { scope.commit(() => setError(errorMessage(requestError))); }
+      finally { scope.commit(() => setSaving(false)); }
     });
   }
 
   async function runSimulation() {
     if (simulating || (simulationSource === 'draft' && !draft)) return;
+    const scope = lifecycle.current.capture(adminToken);
+    const token = scope.token;
     await simulationMutex.current.run(async () => {
-      setSimulating(true); setError('');
+      scope.commit(() => { setSimulating(true); setError(''); });
       try {
         const entities = Object.fromEntries(Object.entries({ familyName, familyRef, policyHint }).filter(([, value]) => value.trim()));
-        setSimulation(await simulateAdminAgentQuestionPolicy(adminToken, { ...(simulationSource === 'draft' && draft ? { draftId: draft.id } : {}), candidate: { intent: candidateIntent, question, confidence: Number(confidence), requestedOperation, entities } }));
-      } catch (requestError) { setError(errorMessage(requestError)); }
-      finally { setSimulating(false); }
+        const response = await simulateAdminAgentQuestionPolicy(token, { ...(simulationSource === 'draft' && draft ? { draftId: draft.id } : {}), candidate: { intent: candidateIntent, question, confidence: Number(confidence), requestedOperation, entities } });
+        scope.commit(() => setSimulation(response));
+      } catch (requestError) { scope.commit(() => setError(errorMessage(requestError))); }
+      finally { scope.commit(() => setSimulating(false)); }
     });
   }
 

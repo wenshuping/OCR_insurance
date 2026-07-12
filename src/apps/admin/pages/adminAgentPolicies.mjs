@@ -78,6 +78,36 @@ export function createLatestRequestController() {
   };
 }
 
+export function createLifecycleController() {
+  let generation = 0;
+  let activeToken = '';
+  const scope = (token, capturedGeneration) => ({
+    token,
+    isCurrent: () => generation === capturedGeneration && activeToken === token,
+    commit(update) {
+      if (generation !== capturedGeneration || activeToken !== token) return false;
+      update();
+      return true;
+    },
+    run(action) {
+      if (generation !== capturedGeneration || activeToken !== token) return false;
+      action();
+      return true;
+    },
+    invalidate() {
+      if (generation === capturedGeneration) { generation += 1; activeToken = ''; }
+    },
+  });
+  return {
+    activate(token) {
+      activeToken = String(token || '');
+      generation += 1;
+      return scope(activeToken, generation);
+    },
+    capture(token) { return scope(String(token || ''), generation); },
+  };
+}
+
 export function normalizePolicyIdentifier(value) {
   return String(value ?? '').trim().toLowerCase().replace(/[\s-]+/gu, '_');
 }
