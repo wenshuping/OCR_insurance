@@ -391,7 +391,7 @@ test('entry form requires family profile and supports top-pillar setup after OCR
   assert.match(customerSource, /setAsCoreOnCreate/);
   assert.match(customerSource, /validatePolicyEntryForm\(submitBaseData,\s*\{/);
   assert.match(customerSource, /requireFamily: mustSelectExistingFamily/);
-  assert.match(customerSource, /requireParticipantRelations: familyHasCoreMember/);
+  assert.match(customerSource, /requireParticipantRelations: true/);
   assert.match(customerSource, /window\.alert\(message\)/);
   assert.match(customerSource, /请先补全必录项后再保存/);
   assert.match(formSource, /if \(requireFamily && !data\.familyId\) errors\.push\('选择家庭档案'\)/);
