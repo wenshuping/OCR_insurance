@@ -35,7 +35,7 @@ function comparable(value) {
   return clean(value).normalize('NFKC').replace(/[\s《》（）()【】\[\]·,，。:：;；、-]/gu, '').toLowerCase();
 }
 
-function productIdentity(value) {
+export function catalogProductIdentity(value) {
   return comparable(value).replace(/^[\p{Script=Han}]{2,24}?保险(?:股份)?有限公司/gu, '');
 }
 
@@ -111,7 +111,7 @@ export function rankProductCatalogRows(rows, query, limit = 30) {
     const company = clean(row.company);
     const productName = clean(row.productName || row.product_name);
     if (!company || !productName) continue;
-    const key = `${company}\u001f${productIdentity(productName)}`;
+    const key = `${company}\u001f${catalogProductIdentity(productName)}`;
     const current = deduplicated.get(key);
     if (!current || Number(row.recordCount || 0) > Number(current.recordCount || 0)) {
       deduplicated.set(key, { ...row, company, productName });
