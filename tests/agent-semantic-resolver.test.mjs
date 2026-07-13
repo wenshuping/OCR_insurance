@@ -35,7 +35,9 @@ function harness({ productResult, familyResult } = {}) {
   const productResolver = {
     resolve(input) {
       productCalls.push(input);
-      return productResult || { status: 'resolved', entity: PRODUCT, candidates: [] };
+      return typeof productResult === 'function'
+        ? productResult(input)
+        : productResult || { status: 'resolved', entity: PRODUCT, candidates: [] };
     },
   };
   const familyResolver = {
@@ -177,10 +179,10 @@ test('expired active references clarify instead of entering a resolver as contex
   assert.equal(productCalls[0].activeProduct, null);
 });
 
-test('ambiguous product stores typed candidates and selection 2 resumes the saved proposal', async () => {
+test('ambiguous product selection revalidates formal identity and ignores stored canonical id', async () => {
   const candidates = [
     { ...PRODUCT, canonicalProductId: 'product-1', officialName: '第一款保险', extra: 'drop' },
-    { ...PRODUCT, canonicalProductId: 'product-2', officialName: '第二款保险', extra: 'drop' },
+    { ...PRODUCT, canonicalProductId: 'attacker-controlled-id', officialName: '第二款保险', extra: 'drop' },
   ];
   const first = harness({ productResult: { status: 'ambiguous', entity: null, candidates } });
   const originalQuestion = '康健无忧保什么';
@@ -194,7 +196,20 @@ test('ambiguous product stores typed candidates and selection 2 resumes the save
   assert.equal(clarified.nextTaskState.candidateSets.product.length, 2);
   assert.equal(JSON.stringify(clarified.nextTaskState).includes('extra'), false);
 
-  const second = harness();
+  const second = harness({
+    productResult: ({ mentions, activeProduct: selectedActive }) => {
+      assert.equal(selectedActive, null);
+      assert.deepEqual(mentions, [
+        { type: 'insurer', rawText: PRODUCT.company },
+        { type: 'product', rawText: '第二款保险' },
+      ]);
+      return {
+        status: 'resolved',
+        entity: { ...PRODUCT, canonicalProductId: 'catalog-canonical-id', officialName: '第二款保险' },
+        candidates: [],
+      };
+    },
+  });
   const selected = await second.resolver.resolve({
     internalUserId: 7,
     question: '选择2',
@@ -204,10 +219,33 @@ test('ambiguous product stores typed candidates and selection 2 resumes the save
   });
   assert.equal(selected.decision, 'execute');
   assert.equal(selected.candidate.question, '选择2');
-  assert.equal(second.productCalls[0].activeProduct.officialName, '第二款保险');
-  assert.equal(second.productCalls[0].mentions.some((item) => item.type === 'product'), false);
+  assert.equal(selected.candidate.entities.productCanonicalId, 'catalog-canonical-id');
+  assert.equal(JSON.stringify(selected).includes('attacker-controlled-id'), false);
   assert.equal(selected.nextTaskState.pendingClarification, null);
   assert.deepEqual(selected.nextTaskState.candidateSets.product, []);
+});
+
+test('a stored product candidate that catalog revalidation cannot resolve never executes', async () => {
+  const savedProposal = proposal({ mentions: [{ type: 'product', rawText: '伪造产品' }] });
+  const { resolver, productCalls } = harness({
+    productResult: { status: 'not_found', entity: null, candidates: [] },
+  });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '选择1',
+    runtime: 'hermes',
+    context: { taskState: {
+      candidateSets: { product: [{ ...PRODUCT, canonicalProductId: 'forged', officialName: '不存在保险' }] },
+      pendingClarification: {
+        entityType: 'product', proposal: savedProposal, originalQuestion: '伪造产品保什么', expiresAt: NOW + 10_000,
+      },
+    } },
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'product_required');
+  assert.equal(result.candidate, null);
+  assert.equal(productCalls[0].activeProduct, null);
 });
 
 test('family selection is reauthorized through the family resolver', async () => {
@@ -260,6 +298,45 @@ test('expired, out-of-range, and unbound selections fail with candidate_selectio
   }
 });
 
+test('candidate selection rejects product and family pending-intent type mismatches', async () => {
+  const cases = [
+    {
+      entityType: 'product',
+      savedProposal: proposal({
+        intent: 'family_summary', mentions: [{ type: 'family', rawText: '张家' }], queryAspects: ['family_overview'],
+      }),
+      originalQuestion: '张家有几张保单',
+      candidateSets: { product: [PRODUCT] },
+    },
+    {
+      entityType: 'family',
+      savedProposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+      originalQuestion: '康健无忧保什么',
+      candidateSets: { family: [{ familyId: 12, displayName: '张三家庭' }] },
+    },
+  ];
+  for (const item of cases) {
+    const { resolver } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question: '选择1',
+      runtime: 'rule',
+      context: { taskState: {
+        candidateSets: item.candidateSets,
+        pendingClarification: {
+          entityType: item.entityType,
+          proposal: item.savedProposal,
+          originalQuestion: item.originalQuestion,
+          expiresAt: NOW + 10_000,
+        },
+      } },
+    });
+    assert.equal(result.decision, 'clarify');
+    assert.equal(result.decisionReason, 'candidate_selection_expired');
+    assert.equal(result.candidate, null);
+  }
+});
+
 test('proposal-free fallback executes only an explicit positive upload signal', async () => {
   const { resolver, productCalls, familyCalls } = harness();
   const upload = await resolver.resolve({
@@ -275,6 +352,27 @@ test('proposal-free fallback executes only an explicit positive upload signal', 
   assert.equal(unavailable.decisionReason, 'semantic_proposal_unavailable');
   assert.equal(productCalls.length, 0);
   assert.equal(familyCalls.length, 0);
+});
+
+test('upload rule synthesis is limited to truly unavailable proposals in rule runtime', async () => {
+  for (const runtime of ['hermes', 'direct']) {
+    const { resolver } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7, question: '我要上传保单资料', runtime, proposal: null,
+    });
+    assert.equal(result.decision, 'retry_later');
+    assert.equal(result.candidate, null);
+  }
+
+  const { resolver } = harness();
+  const invalid = await resolver.resolve({
+    internalUserId: 7,
+    question: '我要上传保单资料',
+    runtime: 'rule',
+    proposal: { intent: 'upload_link', authority: 'admin' },
+  });
+  assert.equal(invalid.decision, 'retry_later');
+  assert.equal(invalid.candidate, null);
 });
 
 test('direct write readiness prevents execution', async () => {

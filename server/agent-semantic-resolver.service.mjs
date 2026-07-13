@@ -151,6 +151,12 @@ function hasReference(proposal, type) {
   return proposal.references.some((reference) => reference.type === type);
 }
 
+function requiredEntityType(intent) {
+  if (intent === PRODUCT_INTENT) return 'product';
+  if (FAMILY_INTENTS.has(intent)) return 'family';
+  return '';
+}
+
 function projectPendingClarification(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const entityType = clean(value.entityType, 20);
@@ -234,15 +240,15 @@ function pendingSelection(state, selection, now) {
   }
   const candidate = state.candidateSets[entityType]?.[selection.index] || null;
   const proposal = normalizedProposal(pending.proposal, originalQuestion);
-  if (!candidate || !proposal) return { valid: false, entityType };
+  if (!candidate || !proposal || requiredEntityType(proposal.intent) !== entityType) {
+    return { valid: false, entityType };
+  }
   return { valid: true, entityType, candidate, proposal, originalQuestion };
 }
 
 function stateAfterResolution({ state, proposal, proposalQuestion, resolutions, readiness, now, contextTtlMs }) {
   const priorPendingType = clean(state.pendingClarification?.entityType, 20);
-  const requiredType = proposal.intent === PRODUCT_INTENT
-    ? 'product'
-    : FAMILY_INTENTS.has(proposal.intent) ? 'family' : '';
+  const requiredType = requiredEntityType(proposal.intent);
   const resolution = requiredType ? resolutions[requiredType] : null;
 
   if (resolution?.status === 'resolved') {
@@ -308,6 +314,7 @@ export function createAgentSemanticResolver({
 
       const preparsed = preparseAgentMessage(normalizedQuestion);
       const state = sanitizedState(context, now, contextTtlMs);
+      const proposalUnavailable = proposal === null || proposal === undefined;
       let selection = null;
       let effectiveProposal = normalizedProposal(proposal, normalizedQuestion);
       let proposalQuestion = normalizedQuestion;
@@ -325,20 +332,29 @@ export function createAgentSemanticResolver({
         proposalQuestion = selection.originalQuestion;
       }
 
-      if (!effectiveProposal && preparsed.operationHint === 'upload_link') {
+      if (!effectiveProposal
+        && proposalUnavailable
+        && runtime === 'rule'
+        && preparsed.operationHint === 'upload_link') {
         effectiveProposal = uploadProposal();
       }
 
       const resolutions = {};
       if (effectiveProposal?.intent === PRODUCT_INTENT) {
         const explicitProduct = hasMention(effectiveProposal, 'product');
-        const activeProduct = selection?.entityType === 'product'
-          ? selection.candidate
+        const selectedProduct = selection?.entityType === 'product'
+          ? projectProduct(selection.candidate)
+          : null;
+        const activeProduct = selectedProduct
+          ? null
           : !explicitProduct && hasReference(effectiveProposal, 'current_product')
             ? state.activeEntities.product
             : null;
-        const mentions = selection?.entityType === 'product'
-          ? effectiveProposal.mentions.filter((mention) => !['product', 'insurer'].includes(mention.type))
+        const mentions = selectedProduct
+          ? [
+            { type: 'insurer', rawText: selectedProduct.company },
+            { type: 'product', rawText: selectedProduct.officialName },
+          ]
           : effectiveProposal.mentions;
         resolutions.product = projectResolution(await productResolver.resolve({
           mentions,
