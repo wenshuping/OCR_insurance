@@ -1,5 +1,5 @@
 const CATALOG_TABLES = [
-  { table: 'knowledge_records', product: 'product_name', publicWhere: `(
+  { table: 'knowledge_records', product: 'product_name', requiredPublicColumns: ['payload'], publicWhere: `(
       json_valid(payload) = 1 AND (
         COALESCE(json_extract(payload, '$.sourceKind'), '') NOT IN ('open_web_reference', 'legacy_external_reference')
         AND COALESCE(json_extract(payload, '$.evidenceLevel'), '') != 'external_legacy_reference'
@@ -19,8 +19,8 @@ const CATALOG_TABLES = [
   { table: 'insurance_indicator_records', product: 'product_name', public: false },
   { table: 'product_responsibility_cards', product: 'product_name', public: false },
   { table: 'optional_responsibility_records', product: 'product_name', public: false },
-  { table: 'product_customer_responsibility_summaries', product: 'product_name', publicWhere: "status = 'ready'" },
-  { table: 'insurance_products', product: 'official_name', publicWhere: "COALESCE(status, '') NOT IN ('draft', 'pending', 'disabled', 'rejected')" },
+  { table: 'product_customer_responsibility_summaries', product: 'product_name', requiredPublicColumns: ['status'], publicWhere: "status = 'ready'" },
+  { table: 'insurance_products', product: 'official_name', requiredPublicColumns: ['status'], publicWhere: "COALESCE(status, '') NOT IN ('draft', 'pending', 'disabled', 'rejected')" },
 ];
 
 const queryCacheByDb = new WeakMap();
@@ -51,7 +51,9 @@ function availableSources(db, visibility) {
   return CATALOG_TABLES.filter((source) => {
     if (visibility === 'public' && source.public === false) return false;
     const columns = tableColumns(db, source.table);
-    return columns.has('company') && columns.has(source.product);
+    const hasPublicColumns = visibility !== 'public'
+      || (source.requiredPublicColumns || []).every((column) => columns.has(column));
+    return columns.has('company') && columns.has(source.product) && hasPublicColumns;
   });
 }
 

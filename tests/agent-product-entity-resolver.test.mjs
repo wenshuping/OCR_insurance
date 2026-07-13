@@ -3,6 +3,8 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
 import { createAgentProductEntityResolver } from '../server/agent-product-entity-resolver.service.mjs';
+import { getDefaultOfficialDomainProfiles } from '../server/c-policy-analysis.service.mjs';
+import { listProductCatalogCompanies, searchProductCatalog } from '../server/product-catalog-search.mjs';
 
 function makeDb() {
   const db = new DatabaseSync(':memory:');
@@ -10,6 +12,7 @@ function makeDb() {
     CREATE TABLE knowledge_records (company TEXT, product_name TEXT, payload TEXT NOT NULL);
     CREATE TABLE insurance_products (
       canonical_product_id TEXT,
+      tenant_id TEXT,
       company TEXT,
       official_name TEXT,
       status TEXT,
@@ -33,18 +36,15 @@ function addProduct(db, {
   officialName,
   status = 'active',
   payload = {},
+  tenantId = 'tenant-default',
 }) {
   db.prepare(`
-    INSERT INTO insurance_products (canonical_product_id, company, official_name, status, payload)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(canonicalProductId, company, officialName, status, JSON.stringify(payload));
+    INSERT INTO insurance_products (canonical_product_id, tenant_id, company, official_name, status, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(canonicalProductId, tenantId, company, officialName, status, JSON.stringify(payload));
 }
 
-const XINHUA_PROFILES = [{
-  company: '新华保险',
-  aliases: ['新华人寿保险股份有限公司', '新华人寿'],
-  companyAliases: ['新华保险'],
-}];
+const OFFICIAL_DOMAIN_PROFILES = getDefaultOfficialDomainProfiles();
 
 test('resolves an insurer-scoped short product mention to the active canonical product', () => {
   const db = makeDb();
@@ -57,7 +57,7 @@ test('resolves an insurer-scoped short product mention to the active canonical p
       officialName,
     });
 
-    const resolver = createAgentProductEntityResolver({ db, officialDomainProfiles: XINHUA_PROFILES });
+    const resolver = createAgentProductEntityResolver({ db, officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES });
     assert.deepEqual(resolver.resolve({
       mentions: [
         { type: 'insurer', rawText: '新华人寿保险股份有限公司' },
@@ -143,7 +143,8 @@ test('orders equal-confidence candidates by deterministic match precedence', () 
       'company_scoped_normalized',
       'unique_high_confidence',
     ]);
-    assert.equal(result.candidates.every((candidate) => candidate.confidence === 1), true);
+    assert.equal(result.candidates.slice(0, 3).every((candidate) => candidate.confidence === 1), true);
+    assert.ok(result.candidates[3].confidence < 0.9);
   } finally {
     db.close();
   }
@@ -192,7 +193,7 @@ test('reuses an active product only when an explicit insurer resolves to the sam
       company: '甲保险',
       officialName: '甲人寿保险股份有限公司其他保险',
     });
-    const resolver = createAgentProductEntityResolver({ db, officialDomainProfiles: XINHUA_PROFILES });
+    const resolver = createAgentProductEntityResolver({ db, officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES });
     const activeProduct = {
       canonicalProductId: 'product-current',
       company: '新华保险',
@@ -226,7 +227,7 @@ test('returns not_found for unresolved explicit insurers and unmatched products'
       company: '新华保险',
       officialName: '新华人寿保险股份有限公司康健无忧两全保险',
     });
-    const resolver = createAgentProductEntityResolver({ db, officialDomainProfiles: XINHUA_PROFILES });
+    const resolver = createAgentProductEntityResolver({ db, officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES });
 
     assert.deepEqual(resolver.resolve({ mentions: [
       { type: 'insurer', rawText: '不存在保险公司' },
@@ -234,6 +235,89 @@ test('returns not_found for unresolved explicit insurers and unmatched products'
     ] }), { status: 'not_found', entity: null, candidates: [] });
     assert.deepEqual(resolver.resolve({
       mentions: [{ type: 'product', rawText: '完全不存在的产品' }],
+    }), { status: 'not_found', entity: null, candidates: [] });
+  } finally {
+    db.close();
+  }
+});
+
+test('keeps high-overlap character recall below the execution threshold', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-overlap',
+      company: '测试保险',
+      officialName: 'nopqrstuvwxyabcdefghijklm',
+    });
+
+    const result = createAgentProductEntityResolver({ db }).resolve({
+      mentions: [{ type: 'product', rawText: 'abcdefghijklmnopqrstuvwxy' }],
+    });
+
+    assert.notEqual(result.status, 'resolved');
+    assert.ok(result.candidates[0].confidence < 0.9);
+    assert.equal(result.candidates[0].matchType, 'unique_high_confidence');
+  } finally {
+    db.close();
+  }
+});
+
+test('fails closed when duplicate tenant products disagree on canonical id', () => {
+  const db = makeDb();
+  try {
+    const officialName = '新华人寿保险股份有限公司康健无忧两全保险';
+    addProduct(db, {
+      canonicalProductId: 'product-tenant-a',
+      tenantId: 'tenant-a',
+      company: '新华保险',
+      officialName,
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-tenant-b',
+      tenantId: 'tenant-b',
+      company: '新华保险',
+      officialName,
+    });
+
+    const result = createAgentProductEntityResolver({ db }).resolve({
+      mentions: [{ type: 'product', rawText: officialName }],
+    });
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.entity, null);
+    assert.equal(result.candidates[0].canonicalProductId, '');
+    assert.ok(result.candidates[0].confidence < 0.9);
+  } finally {
+    db.close();
+  }
+});
+
+test('public catalog excludes sources missing visibility columns instead of throwing', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE knowledge_records (company TEXT, product_name TEXT);
+      CREATE TABLE product_customer_responsibility_summaries (company TEXT, product_name TEXT);
+      CREATE TABLE insurance_products (
+        canonical_product_id TEXT,
+        company TEXT,
+        official_name TEXT,
+        payload TEXT
+      );
+    `);
+    db.prepare('INSERT INTO knowledge_records (company, product_name) VALUES (?, ?)').run('甲保险', '缺少公开载荷保险');
+    db.prepare('INSERT INTO product_customer_responsibility_summaries (company, product_name) VALUES (?, ?)').run('乙保险', '缺少状态保险');
+    db.prepare('INSERT INTO insurance_products (canonical_product_id, company, official_name, payload) VALUES (?, ?, ?, ?)').run(
+      'product-no-status',
+      '丙保险',
+      '缺少产品状态保险',
+      JSON.stringify({ aliases: ['无状态别名'], aliasReviewStatus: 'approved' }),
+    );
+
+    assert.deepEqual(searchProductCatalog({ db, query: '保险', visibility: 'public' }), []);
+    assert.deepEqual(listProductCatalogCompanies({ db, visibility: 'public' }), []);
+    assert.deepEqual(createAgentProductEntityResolver({ db }).resolve({
+      mentions: [{ type: 'product', rawText: '无状态别名' }],
     }), { status: 'not_found', entity: null, candidates: [] });
   } finally {
     db.close();
