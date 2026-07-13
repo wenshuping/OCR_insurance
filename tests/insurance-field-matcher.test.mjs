@@ -3,6 +3,51 @@ import test from 'node:test';
 
 import { getPolicyFieldAliases, POLICY_FIELD_SCHEMA } from '../ocr-service/insurance-field-schema.mjs';
 import { extractPolicyPlansFromLines, matchPolicyFieldsFromLines } from '../ocr-service/insurance-field-matcher.mjs';
+
+const PING_AN_VL16_INLINE_TABLE_LINES = [
+  '中国平安人寿保险股份有限公司',
+  '保险项目保险期间交费年限基本保险金额/份数/档次保险费保险对象保险费',
+  '投保主险:平安福（1118） 终身 20年 200,000元 3,980.00元',
+  '附加险:平安福重疾14（1131） 终身 20年 200,000元 2,240.00元',
+  '长期意外13（1120） 34年 20年 200,000元 960.00元',
+  '豁免重疾B14（1125） 20年 19年 --- 1,431.05元投保人',
+  '附加一年期短险: 意外医疗A（527） 基本保险金额/份数/档次保险费保险对象',
+  '意外医疗A（527） 10,000元 78.00元被保险人',
+  '健享人生A（521） 2份含可选 390.00元被保险人',
+  '首期保险费合计:（年交）人民币玖仟零柒拾玖元零角伍分整（RMB9079.05）',
+];
+
+test('PaddleOCR-VL-1.6 Ping An inline table keeps the labeled main plan and all riders', () => {
+  const matched = matchPolicyFieldsFromLines(PING_AN_VL16_INLINE_TABLE_LINES, { company: '中国平安保险' });
+  const plans = extractPolicyPlansFromLines(PING_AN_VL16_INLINE_TABLE_LINES, { company: '中国平安保险' });
+
+  assert.equal(matched.fields.name, '平安福（1118）');
+  assert.equal(plans.length, 6);
+  assert.deepEqual(plans.map((plan) => plan.name), [
+    '平安福（1118）',
+    '平安福重疾14（1131）',
+    '长期意外13（1120）',
+    '豁免重疾B14（1125）',
+    '意外医疗A（527）',
+    '健享人生A（521）',
+  ]);
+  assert.deepEqual(plans[0], {
+    company: '中国平安保险',
+    role: 'main',
+    name: '平安福（1118）',
+    productType: plans[0].productType,
+    coveragePeriod: '终身',
+    paymentMode: '',
+    paymentPeriod: '20年',
+    amount: '200000',
+    premium: '3980',
+    premiumText: '3,980.00元',
+  });
+  assert.equal(plans[3].amount, '');
+  assert.equal(plans[3].premium, '1431');
+  assert.equal(plans[4].coveragePeriod, '1年');
+  assert.equal(plans[4].premium, '78');
+});
 import { isPremiumAmountLine, normalizeAmountText } from '../ocr-service/insurance-field-rules.mjs';
 
 const NEW_CHINA_POLICY_LINES = [

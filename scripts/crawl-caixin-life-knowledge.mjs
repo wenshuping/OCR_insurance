@@ -52,6 +52,7 @@ async function main() {
   const maxWorkers = readNumberArg('max-workers', Number(process.env.CAIXIN_LIFE_MAX_WORKERS || 6));
   const knowledgeStore = await createKnowledgeStateStore();
   try {
+    const beforeUrls = new Set(knowledgeStore.knownCompanyUrls('财信人寿'));
     const result = runCrawler({
       mode: 'caixin_life_pages',
       company: '财信人寿',
@@ -59,12 +60,14 @@ async function main() {
       startIndex,
       maxProducts,
       maxWorkers,
+      skipUrls: [...beforeUrls],
     });
 
     const state = knowledgeStore.loadState();
     if (!Number(state.nextId)) state.nextId = 1;
     const before = knowledgeStore.countKnowledgeRecords();
-    const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
+    const recordsToSave = (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)));
+    const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
     knowledgeStore.saveState(state);
     const after = knowledgeStore.countKnowledgeRecords();
 
@@ -84,6 +87,7 @@ async function main() {
           materialTaskCount: result.materialTaskCount || 0,
           crawledRecordCount: (result.records || []).length,
           savedRecordCount: saved.length,
+          newSavedRecordCount: saved.filter((record) => record?.url && !beforeUrls.has(String(record.url))).length,
           localKnowledgeBefore: before,
           localKnowledgeAfter: after,
           dbPath: knowledgeStore.dbPath,

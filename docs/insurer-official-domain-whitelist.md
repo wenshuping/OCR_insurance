@@ -49,7 +49,7 @@
 | guobao_life | 国宝 | 国宝、国宝人寿、国宝人寿保险股份有限公司 | panda-assets.com | panda-assets.com<br>www.panda-assets.com |
 | foresea_life | 前海 | 前海、前海人寿、前海人寿保险股份有限公司 | foresealife.com | foresealife.com |
 | pearl_river_life | 珠江 | 珠江、珠江人寿、珠江人寿保险股份有限公司 | prlife.com.cn | prlife.com.cn |
-| shanghai_life | 上海人寿 | 上海人寿、上海人寿保险股份有限公司 | shanghailife.com.cn | shanghailife.com.cn |
+| shanghai_life | 上海人寿 | 上海人寿、上海人寿保险股份有限公司 | shanghailife.com.cn<br>obs-shlife-website-prd.obs.cn-east-201.jrzq.huaweicloud.com | shanghailife.com.cn<br>www.shanghailife.com.cn<br>obs-shlife-website-prd.obs.cn-east-201.jrzq.huaweicloud.com |
 | guohua_life | 国华 | 国华、国华人寿、国华人寿保险股份有限公司 | 95549.cn | 95549.cn |
 | sinatay_life | 信泰 | 信泰、信泰人寿、信泰人寿保险股份有限公司 | sinatay.com<br>xintai.com | sinatay.com<br>xintai.com |
 | yingda_life | 英大 | 英大、英大人寿、英大泰和、英大泰和人寿、英大泰和人寿保险股份有限公司 | ydthlife.com<br>www.ydthlife.com | ydthlife.com<br>www.ydthlife.com |
@@ -62,7 +62,7 @@
 | hongkang_life | 弘康 | 弘康、弘康人寿、弘康人寿保险股份有限公司 | hongkang-life.com | hongkang-life.com |
 | fosun_prudential_life | 复星保德信 | 复星保德信、复星保德信人寿、复星保德信人寿保险有限公司 | prudentialfosun.com.cn<br>pflife.com.cn<br>www.pflife.com.cn | prudentialfosun.com.cn<br>pflife.com.cn<br>www.pflife.com.cn |
 | fosun_uhi_health | 复星联合健康 | 复星联合健康、复星联合健康保险、复星联合、复星联合健康保险股份有限公司 | fosun-uhi.com<br>www.fosun-uhi.com<br>fosunuhi.com.cn<br>www.fosunuhi.com.cn | fosun-uhi.com<br>www.fosun-uhi.com<br>fosunuhi.com.cn<br>www.fosunuhi.com.cn |
-| three_gorges_life | 三峡 | 三峡、三峡人寿、三峡人寿保险股份有限公司 | tg-life.com | tg-life.com |
+| three_gorges_life | 三峡 | 三峡、三峡人寿、三峡人寿保险股份有限公司 | tg-life.com<br>tg-life.com.cn | tg-life.com<br>tg-life.com.cn<br>www.tg-life.com.cn |
 | beijing_life | 北京人寿 | 北京人寿、北京人寿保险股份有限公司 | blife.com.cn<br>beijinglife.com.cn | blife.com.cn<br>beijinglife.com.cn |
 | ruitai_life | 瑞泰人寿 | 瑞泰人寿、瑞泰人寿保险有限公司 | oldmutual-chnenergy.com<br>oldmutual-guodian.com | oldmutual-chnenergy.com<br>oldmutual-guodian.com |
 | dingcheng_life | 鼎诚 | 鼎诚、鼎诚人寿、鼎诚人寿保险有限责任公司 | dingchenglife.com.cn<br>www.dingchenglife.com.cn<br>dc-life.com.cn | dingchenglife.com.cn<br>www.dingchenglife.com.cn<br>dc-life.com.cn |

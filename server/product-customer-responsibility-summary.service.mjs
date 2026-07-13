@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import { jsonrepair } from 'jsonrepair';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 import { routeInsuranceProductCategory } from './insurance-product-category-router.mjs';
 import {
@@ -705,7 +706,7 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
           'content-type': 'application/json',
         },
         signal: controller.signal,
-        body: JSON.stringify({
+        body: JSON.stringify(sanitizeDeepSeekRequestBody({
           model: requestedModel,
           messages: [
             { role: 'system', content: '你是保险责任摘要助手，只输出合法 JSON。' },
@@ -713,7 +714,7 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
           ],
           temperature: 0.2,
           response_format: { type: 'json_object' },
-        }),
+        })),
       });
     } catch (error) {
       throw deepSeekTransportError(error);

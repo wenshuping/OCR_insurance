@@ -839,6 +839,28 @@ function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/jpeg', quality = 
   });
 }
 
+const mobileReportImageMaxHeight = 6000;
+
+async function canvasToMobileImageBlobs(canvas: HTMLCanvasElement) {
+  if (canvas.height <= mobileReportImageMaxHeight) return [await canvasToBlob(canvas)];
+
+  const pageCanvas = document.createElement('canvas');
+  const pageContext = pageCanvas.getContext('2d');
+  if (!pageContext) throw new Error('REPORT_IMAGE_PAGE_CANVAS_CONTEXT_UNAVAILABLE');
+
+  pageCanvas.width = canvas.width;
+  const blobs: Blob[] = [];
+  for (let sourceY = 0; sourceY < canvas.height; sourceY += mobileReportImageMaxHeight) {
+    const sliceHeight = Math.min(mobileReportImageMaxHeight, canvas.height - sourceY);
+    pageCanvas.height = sliceHeight;
+    pageContext.fillStyle = '#ffffff';
+    pageContext.fillRect(0, 0, pageCanvas.width, sliceHeight);
+    pageContext.drawImage(canvas, 0, sourceY, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+    blobs.push(await canvasToBlob(pageCanvas));
+  }
+  return blobs;
+}
+
 export function addCanvasPagesToPdf(pdf: import('jspdf').jsPDF, canvas: HTMLCanvasElement) {
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
@@ -1192,14 +1214,25 @@ export function createInPageReportExportPanel(fileName: string) {
       `);
     },
     showResult(reportImage: string, downloadHref = reportImage) {
+      this.showResults([reportImage], [downloadHref]);
+    },
+    showResults(reportImages: string[], downloadHrefs = reportImages) {
       const safeFileName = escapeHtml(fileName);
-      const safeReportImage = escapeHtml(reportImage);
-      const safeDownloadHref = escapeHtml(downloadHref);
       const useLongPressSave = isWeChatBrowser() || isWeChatMiniProgramWebView();
+      const imageCount = reportImages.length;
       const primaryAction = useLongPressSave
-        ? '<span style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800">长按图片保存</span>'
-        : `<a href="${safeDownloadHref}" download="${safeFileName}.jpg" style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800;text-decoration:none">下载长图</a>`;
-      const saveHint = useLongPressSave ? '下面是一张包含整份报告的长图，长按下面图片保存到相册。' : '下面是一张包含整份报告的长图，点击“下载长图”保存。';
+        ? '<span style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800">逐张长按图片保存</span>'
+        : `<a href="${escapeHtml(downloadHrefs[0])}" download="${safeFileName}.jpg" style="flex:1;border:0;border-radius:12px;background:#2563eb;color:#fff;padding:12px;text-align:center;font-size:15px;font-weight:800;text-decoration:none">下载长图</a>`;
+      const saveHint = useLongPressSave
+        ? imageCount > 1
+          ? `报告较长，已拆成 ${imageCount} 张图片以兼容微信相册，请按顺序逐张长按保存。`
+          : '下面是一张包含整份报告的长图，长按下面图片保存到相册。'
+        : '下面是一张包含整份报告的长图，点击“下载长图”保存。';
+      const imagePreviews = reportImages.map((reportImage, index) => `
+            <figure style="margin:14px 0 0">
+              <img src="${escapeHtml(reportImage)}" alt="报告图片第 ${index + 1} 张" style="display:block;width:100%;border:1px solid #dbe4ef;border-radius:12px;background:#fff;box-sizing:border-box" />
+              <figcaption style="margin-top:6px;color:#64748b;font-size:12px;text-align:center">第 ${index + 1} / ${imageCount} 张</figcaption>
+            </figure>`).join('');
       setHtml(`
         <main style="box-sizing:border-box;padding:16px 14px 32px">
           <section style="position:sticky;top:0;z-index:1;margin:0 auto 14px;max-width:520px;border:1px solid #e2e8f0;border-radius:18px;background:#fff;padding:18px;box-shadow:0 12px 30px rgba(15,23,42,.08);box-sizing:border-box">
@@ -1212,10 +1245,7 @@ export function createInPageReportExportPanel(fileName: string) {
             <p style="margin:10px 0 0;color:#64748b;font-size:12px;line-height:1.7">${saveHint}</p>
           </section>
           <section style="margin:0 auto;max-width:min(1180px,calc(100vw - 28px))">
-            <figure style="margin:14px 0 0">
-              <img src="${safeReportImage}" alt="完整报告长图" style="display:block;width:100%;border:1px solid #dbe4ef;border-radius:12px;background:#fff;box-sizing:border-box" />
-              <figcaption style="margin-top:6px;color:#64748b;font-size:12px;text-align:center">完整报告长图预览</figcaption>
-            </figure>
+            ${imagePreviews}
           </section>
         </main>
       `);
@@ -1225,6 +1255,12 @@ export function createInPageReportExportPanel(fileName: string) {
       objectUrls.push(imageUrl);
       this.showResult(imageUrl, imageUrl);
       return imageUrl;
+    },
+    showBlobResults(imageBlobs: Blob[]) {
+      const imageUrls = imageBlobs.map((imageBlob) => URL.createObjectURL(imageBlob));
+      objectUrls.push(...imageUrls);
+      this.showResults(imageUrls, imageUrls);
+      return imageUrls;
     },
     showError(message = '报告生成失败') {
       setHtml(`
@@ -1260,17 +1296,17 @@ async function exportReportInCurrentPage(target: HTMLElement, fileName: string) 
 
 async function exportScreenStyledReportImageInCurrentPage(target: HTMLElement, fileName: string, options?: ReportExportOptions) {
   const panel = createInPageReportExportPanel(fileName);
-  let reportImage = '';
+  let reportImages: string[] = [];
   try {
     await new Promise((resolve) => requestAnimationFrame(resolve));
     panel.update('正在生成完整报告长图', '生成完成后会在本页显示一张与当前报告样式一致的长图。');
     const canvas = await captureReportImageCanvas(target, fileName, options);
-    const imageBlob = await canvasToBlob(canvas);
-    reportImage = panel.showBlobResult(imageBlob);
+    const imageBlobs = await canvasToMobileImageBlobs(canvas);
+    reportImages = panel.showBlobResults(imageBlobs);
   } catch (error) {
     console.error('[policy-ocr-app] in-page styled report image export failed', error);
-    if (reportImage) {
-      panel.showResult(reportImage);
+    if (reportImages.length) {
+      panel.showResults(reportImages);
     } else {
       panel.showError();
     }

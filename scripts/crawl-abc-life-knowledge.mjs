@@ -1,31 +1,16 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { allocateId, createInitialState } from '../server/policy-ocr.domain.mjs';
+import { allocateId } from '../server/policy-ocr.domain.mjs';
 import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
 const scraplingCwd = process.env.SCRAPLING_PROJECT_DIR || '/Users/wenshuping/Documents/Scrapling';
 const outputMarker = '__POLICY_KNOWLEDGE_JSON__';
-
-function readJson(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
-}
 
 function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -99,9 +84,14 @@ async function main() {
   const maxPages = readNumberArg('max-pages', Number(process.env.ABC_LIFE_MAX_PAGES || 0));
   const maxWorkers = readNumberArg('max-workers', Number(process.env.ABC_LIFE_MAX_WORKERS || 6));
 
-  const result = await runCrawler({
+  const knowledgeStore = await createKnowledgeStateStore();
+  try {
+    const beforeUrls = new Set(knowledgeStore.knownCompanyUrls('农银人寿'));
+
+    const result = await runCrawler({
     mode: 'abc_life_pages',
     company: '农银人寿',
+      skipUrls: [...beforeUrls],
     source,
     saleStatus,
     maxProducts,
@@ -110,15 +100,15 @@ async function main() {
     maxWorkers,
   });
 
-  const state = readJson(statePath, createInitialState());
+  const state = knowledgeStore.loadState();
   if (!Number(state.nextId)) state.nextId = 1;
-  const before = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const beforeUrls = new Set((state.knowledgeRecords || []).map((record) => String(record.url || '')).filter(Boolean));
-  const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
+  const before = knowledgeStore.countKnowledgeRecords();
+  const recordsToSave = (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)));
+  const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
   const after = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
   const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(String(record.url)));
   const newSavedIds = newSaved.map((record) => Number(record.id)).filter(Number.isFinite).sort((left, right) => left - right);
-  writeJson(statePath, state);
+  knowledgeStore.saveState(state);
 
   console.log(
     JSON.stringify(
@@ -143,12 +133,15 @@ async function main() {
         newSavedMaxId: newSavedIds.at(-1) || null,
         localKnowledgeBefore: before,
         localKnowledgeAfter: after,
-        statePath,
+        statePath: knowledgeStore.dbPath,
       },
       null,
       2,
     ),
   );
+  } finally {
+    knowledgeStore.close();
+  }
 }
 
 main().catch((error) => {

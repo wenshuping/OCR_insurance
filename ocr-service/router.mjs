@@ -1,6 +1,6 @@
 import express from 'express';
 import { respondInsurancePolicyScanError } from './insurance-scan-error.mjs';
-import { scanCashValueTable, scanInsurancePolicyLocal } from './insurance-ocr.service.mjs';
+import { recognizeDocumentText, scanCashValueTable, scanInsurancePolicyLocal } from './insurance-ocr.service.mjs';
 import { scanPolicyBodySchema } from './insurance.schemas.mjs';
 import { validateBody } from './middleware.mjs';
 import { resolvePolicyOcrRuntimePayload } from './ocr-config.service.mjs';
@@ -24,6 +24,7 @@ export function createOcrServiceRouter() {
         uploadItem: req.body.uploadItem,
         ocrText: req.body.ocrText,
         ocrContext: req.body.ocrContext,
+        provider: req.body.provider,
       });
       return res.json(payload);
     } catch (err) {
@@ -42,7 +43,7 @@ export function createOcrServiceRouter() {
       if (!uploadItem) {
         return res.status(400).json({ ok: false, error: 'MISSING_UPLOAD', message: '缺少上传图片' });
       }
-      const result = await scanCashValueTable({ uploadItem });
+      const result = await scanCashValueTable({ uploadItem, provider: req.body?.provider });
       return res.json(result);
     } catch (err) {
       return res.status(500).json({
@@ -50,6 +51,19 @@ export function createOcrServiceRouter() {
         error: 'CASH_VALUE_SCAN_FAILED',
         message: err instanceof Error ? err.message : '现金价值表扫描失败',
       });
+    }
+  });
+
+  router.post('/internal/ocr/text/recognize', requireOcrServiceToken, async (req, res) => {
+    try {
+      const { uploadItem } = req.body || {};
+      if (!uploadItem) {
+        return res.status(400).json({ ok: false, code: 'MISSING_UPLOAD', message: '缺少上传文件' });
+      }
+      const ocrText = await recognizeDocumentText(uploadItem, { provider: req.body?.provider });
+      return res.json({ ok: true, ocrText });
+    } catch (err) {
+      return respondInsurancePolicyScanError(res, err);
     }
   });
 

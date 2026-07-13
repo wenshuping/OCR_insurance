@@ -1,4 +1,6 @@
 import {
+  enforceVerifiedCashflowAmounts,
+  familySalesReviewDirectIdentifiers,
   privacySafeFamilySalesReviewInputJson,
   restoreFamilySalesReviewDisplayText,
 } from './family-sales-review.service.mjs';
@@ -6,6 +8,10 @@ import {
   selectAgentSkillPrompt,
   selectAgentSkillPromptWithDeepSeek,
 } from './agent-skill-router.service.mjs';
+import {
+  redactDeepSeekDirectIdentifiers,
+  sanitizeDeepSeekRequestBody,
+} from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-pro';
@@ -189,6 +195,7 @@ export function buildFamilySalesChatMessages({
         '7. 客户话术要温和、专业、可复制，避免恐吓式销售。',
         `8. 对身份、模型、厂商、API、底层大模型等问题，只能回答“${FAMILY_SALES_CHAT_IDENTITY_REPLY}”，不得自称任何底层模型或模型品牌。`,
         '9. 如果上下文包含 salesMemoryContext，只能把它当作当前家庭的跟进记忆，用于沟通风格、已确认异议、策略偏好和待办；保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准。',
+        '10. 如果上下文包含 policyImportContext，它是 OCR Insurance 输出的脱敏保单草稿；只能引用其中已提供字段，并明确提示 missingFields。不得推测被掩码身份、保单号、证件号或原始图片内容。',
         '',
         '本轮 skill 规则：',
         ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),
@@ -237,9 +244,10 @@ export async function generateFamilySalesChatReply({
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
+    const directIdentifiers = familySalesReviewDirectIdentifiers(context?.familyInput || {});
     const skillPrompt = await selectAgentSkillPromptWithDeepSeek({
       scene: 'family_sales_chat',
-      question: userQuestion,
+      question: redactDeepSeekDirectIdentifiers(userQuestion, directIdentifiers),
       fetchImpl,
       config: {
         apiKey: config.apiKey,
@@ -247,6 +255,7 @@ export async function generateFamilySalesChatReply({
         model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
         timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
       },
+      privacyOptions: directIdentifiers,
     });
     const body = {
       model: config.model,
@@ -267,7 +276,10 @@ export async function generateFamilySalesChatReply({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(
+        body,
+        directIdentifiers,
+      )),
     });
     if (!response.ok) {
       const bodyText = trim(await response.text());
@@ -284,7 +296,10 @@ export async function generateFamilySalesChatReply({
     }
     return {
       content: sanitizeFamilySalesChatPublicIdentity(
-        restoreFamilySalesReviewDisplayText(upstreamContent, context?.familyInput || {}),
+        restoreFamilySalesReviewDisplayText(
+          enforceVerifiedCashflowAmounts(upstreamContent, context?.familyInput || {}),
+          context?.familyInput || {},
+        ),
       ),
       model: trim(payload?.model || config.model) || config.model,
       generatedAt: new Date().toISOString(),

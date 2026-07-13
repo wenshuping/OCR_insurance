@@ -280,6 +280,25 @@ test('OCR extraction ignores insurer logo text and combines split product table 
   assert.equal(data.firstPremium, '3000');
 });
 
+test('OCR extraction removes a merged Ping An table-header plan when labeled rows are present', () => {
+  const data = extractPolicyFieldsFromText([
+    '中国平安人寿保险股份有限公司',
+    '保险项目保险期间交费年限基本保险金额/份数/档次保险费保险对象保险费',
+    '投保主险:平安福（1118） 终身 20年 200,000元 3,980.00元',
+    '附加险:平安福重疾14（1131） 终身 20年 200,000元 2,240.00元',
+    '长期意外13（1120） 34年 20年 200,000元 960.00元',
+    '豁免重疾B14（1125） 20年 19年 --- 1,431.05元投保人',
+    '附加一年期短险: 意外医疗A（527） 基本保险金额/份数/档次保险费保险对象',
+    '意外医疗A（527） 10,000元 78.00元被保险人',
+    '健享人生A（521） 2份含可选 390.00元被保险人',
+    '首期保险费合计:（年交）人民币玖仟零柒拾玖元零角伍分整（RMB9079.05）',
+  ].join('\n'));
+
+  assert.equal(data.name, '平安福（1118）');
+  assert.equal(data.plans.length, 6);
+  assert.ok(!data.plans.some((plan) => plan.name === '交费年限保险'));
+});
+
 test('OCR extraction ignores app section title before applicant name', () => {
   const data = extractPolicyFieldsFromText(`
 20:27 淘
@@ -3763,6 +3782,31 @@ test('OCR extraction strips same-line identity labels before matching insured id
   assert.equal(data.plans[2].premium, '1100');
 });
 
+test('OCR extraction keeps applicant and insured birthdays in their labeled sections', () => {
+  const data = extractPolicyFieldsFromText(`
+保险合同号码:P120100002043042
+投保人:余贵祥
+保险合同生效日:2008年11月28日 00:00
+性别:男
+生日:1973年08月18日
+被保险人:张正涛
+性别:男
+证件号码:350428197308180010
+生日:2005年10月05日
+生存保险金受益人:张正涛 100%
+证件号码:330106200510052414
+身故保险金受益人:张洪珍 50%, 余贵祥 50%
+投保主险:世纪天使（906） 终身 20年 50,000元 6,895.00元
+首期保险费合计:RMB7357.81
+  `);
+
+  assert.equal(data.applicant, '余贵祥');
+  assert.equal(data.applicantBirthday, '1973-08-18');
+  assert.equal(data.insured, '张正涛');
+  assert.equal(data.insuredIdNumber, '330106200510052414');
+  assert.equal(data.insuredBirthday, '2005-10-05');
+});
+
 test('OCR extraction keeps receipt product rows as main policy plus rider plans', () => {
   const data = extractPolicyFieldsFromText(`
 保险业务收据
@@ -4071,6 +4115,26 @@ test('OCR extraction does not treat policy document titles as insurer names', ()
 
   assert.notEqual(data.company, '保险单');
   assert.notEqual(data.company, '合同');
+});
+
+test('base policy scan rejects a terms-only page instead of filling policy fields from clauses', async () => {
+  await assert.rejects(
+    scanInsurancePolicyLocal({
+      ocrText: `
+中国平安保险股份有限公司
+平安鸿盛终身寿险（分红型）条款
+第一条 保险合同构成
+本保险合同由保险单、所附条款、投保单及其他书面协议构成。
+第二条 保险责任
+被保险人因意外伤害事故身故，本公司按保险金额给付身故保险金。
+第三条 保单红利
+投保人在投保时可选择累积生息或抵交保险费。
+第四条 责任免除
+投保人、受益人对被保险人故意杀害、伤害。
+      `,
+    }),
+    (error) => error?.message === 'POLICY_OCR_TERMS_PAGE',
+  );
 });
 
 test('OCR extraction keeps China Life single-plan OCR as one plan with annual payment period', () => {
@@ -8719,7 +8783,7 @@ test('responsibility assistant returns fuzzy local product matches before analys
   }
 });
 
-test('product knowledge photo scan saves parsed responsibility pages as trusted customer terms candidates', async () => {
+test('product knowledge photo scan keeps parsed responsibility pages pending until operations approval', async () => {
   const state = {
     users: [],
     sessions: [],
@@ -8784,18 +8848,18 @@ test('product knowledge photo scan saves parsed responsibility pages as trusted 
     assert.equal(scanned.payload.uploadedCount, 5);
     assert.equal(scanned.payload.status, 'candidates');
     assert.equal(scanned.payload.knowledgeRecordIds.length, 1);
-    assert.equal(scanned.payload.scan.data.name, '测试多倍保障重大疾病保险');
+    assert.equal(scanned.payload.scan.data.name, '找不到的产品');
     assert.match(scanned.payload.scan.ocrText, /本保单载明已选择可选责任一/u);
     const optionalOne = scanned.payload.optionalResponsibilities.find((item) => item.liability === '可选责任一');
     assert.equal(optionalOne.selectionStatus, 'selected');
     assert.equal(optionalOne.selectionEvidence, 'policy_ocr');
 
     const termsRecord = state.knowledgeRecords[0];
-    assert.equal(termsRecord.sourceKind, 'customer_policy_terms');
-    assert.equal(termsRecord.reviewStatus, 'approved');
-    assert.equal(termsRecord.globalSearchable, true);
-    assert.equal(termsRecord.verificationStatus, 'verified');
-    assert.equal(termsRecord.referenceOnly, false);
+    assert.equal(termsRecord.sourceKind, 'customer_policy_photo');
+    assert.equal(termsRecord.reviewStatus, 'pending');
+    assert.equal(termsRecord.globalSearchable, false);
+    assert.equal(termsRecord.verificationStatus, 'pending_review');
+    assert.equal(termsRecord.referenceOnly, true);
     assert.doesNotMatch(termsRecord.pageText, /张三|330106198712072413|已选择可选责任一/u);
     assert.match(termsRecord.pageText, /轻度疾病保险金/u);
 
@@ -8803,11 +8867,11 @@ test('product knowledge photo scan saves parsed responsibility pages as trusted 
       method: 'POST',
       body: JSON.stringify({
         company: '新华保险',
-        name: '测试多倍保障重大疾病保险',
+        name: '找不到的产品',
       }),
     });
     assert.equal(beforeApproval.response.status, 200);
-    assert.equal(beforeApproval.payload.matches.some((match) => match.sourceKind === 'customer_policy_terms'), true);
+    assert.equal(beforeApproval.payload.matches.some((match) => match.sourceKind === 'customer_policy_terms'), false);
 
     const login = await jsonFetch(server.baseUrl, '/api/admin/login', {
       method: 'POST',
@@ -8826,7 +8890,7 @@ test('product knowledge photo scan saves parsed responsibility pages as trusted 
       method: 'POST',
       body: JSON.stringify({
         company: '新华保险',
-        name: '测试多倍保障重大疾病保险',
+        name: '找不到的产品',
       }),
     });
     const termsMatch = afterApproval.payload.matches.find((match) => match.sourceKind === 'customer_policy_terms');
@@ -9107,6 +9171,54 @@ test('responsibility product suggestions include canonical product id', async ()
 	  } finally {
 	    await server.close();
 	  }
+});
+
+test('responsibility product suggestions prioritize a parenthetical product code', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '中国平安',
+          productName: '平安平安福终身寿险',
+          title: '平安平安福终身寿险产品条款',
+          url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1118&versionNo=1118-1&attachmentType=1',
+          pageText: '保险责任包括身故保险金。',
+          official: true,
+        },
+        {
+          id: 2,
+          company: '中国平安',
+          productName: '平安福耀人生年金保险（分红型）',
+          url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=2049&versionNo=2049-1&attachmentType=1',
+          pageText: '保险责任包括年金。',
+          official: true,
+        },
+      ],
+      policies: [],
+      nextId: 3,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const suggested = await jsonFetch(
+      server.baseUrl,
+      '/api/policy-responsibilities/product-suggestions?company=中国平安保险&q=平安福（1118）',
+    );
+    assert.equal(suggested.response.status, 200);
+    assert.equal(suggested.payload.suggestions[0].productName, '平安平安福终身寿险');
+    assert.equal(suggested.payload.suggestions[0].productCode, '1118');
+  } finally {
+    await server.close();
+  }
 });
 
 test('responsibility product suggestions include library names but omit policy-only and external review names', async () => {
@@ -11116,6 +11228,45 @@ test('admin responsibility generation config save persists only state document',
   }
 });
 
+test('admin OCR routing saves independent providers for each upload scenario', async () => {
+  const persistedDocuments = [];
+  const app = createPolicyOcrApp({
+    adminPassword: 'admin-pass',
+    state: {
+      ...createInitialState(),
+      adminSessions: [{
+        token: 'admin-token',
+        createdAt: '2026-07-10T00:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }],
+    },
+    now: () => '2026-07-10T01:00:00.000Z',
+    persistStateDocument: async ({ key, value }) => persistedDocuments.push({ key, value }),
+  });
+  const server = await listen(app);
+  try {
+    const saved = await jsonFetch(server.baseUrl, '/api/admin/ocr-scenario-routing', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer admin-token' },
+      body: JSON.stringify({
+        routes: {
+          policy_entry: 'deepseek_ocr_vllm',
+          insurance_material: 'unlimited_ocr_vllm',
+          cash_value: 'paddle_local',
+        },
+      }),
+    });
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.payload.config.routes.insurance_material, 'unlimited_ocr_vllm');
+    assert.ok(saved.payload.models.some((item) => item.value === 'unlimited_ocr_vllm'));
+    assert.equal(persistedDocuments.length, 1);
+    assert.equal(persistedDocuments[0].key, 'ocrScenarioRouting');
+    assert.equal(app.locals.state.ocrScenarioRouting.routes.cash_value, 'paddle_local');
+  } finally {
+    await server.close();
+  }
+});
+
 test('admin can crawl official product materials into local knowledge base', async () => {
   const persisted = [];
   const calls = [];
@@ -12777,7 +12928,8 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(state.familySalesMemories.length, 3);
     const currentOwnerMemory = state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat');
     assert.equal(currentOwnerMemory?.content, '客户预算敏感，优先基础方案');
-    assert.deepEqual(currentOwnerMemory?.evidenceMessageIds, [21, 22]);
+    assert.deepEqual(currentOwnerMemory?.evidenceMessageIds, [21]);
+    assert.equal(currentOwnerMemory?.status, 'confirmed');
     assert.deepEqual(persistCalls.map((call) => call.includePolicies), [false]);
 
     const continued = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages?guestId=guest-sales-chat', {
@@ -12794,8 +12946,8 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他登录人的偏好/u);
     assert.equal(state.familySalesChatMessages.length, 4);
     assert.equal(memoryCalls.length, 2);
-    assert.equal(state.familySalesMemories.filter((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat' && memory.status === 'active').length, 1);
-    assert.deepEqual(state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat')?.evidenceMessageIds, [21, 22, 24, 25]);
+    assert.equal(state.familySalesMemories.filter((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat' && memory.status === 'confirmed').length, 1);
+    assert.deepEqual(state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat')?.evidenceMessageIds, [21, 24]);
 
     const listed = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat');
     assert.equal(listed.response.status, 200);
@@ -12807,6 +12959,53 @@ test('family sales chat creates threads continues with history and enforces owne
 
     const otherOwner = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-other');
     assert.equal(otherOwner.response.status, 404);
+  } finally {
+    await server.close();
+  }
+});
+
+test('family sales chat recognizes uploaded context files for the family owner', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({
+    id: 16,
+    ownerGuestId: 'guest-sales-attachment',
+    familyName: '附件识别家庭',
+    status: 'active',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  const recognizedNames = [];
+  const app = createPolicyOcrApp({
+    state,
+    recognizeDocumentText: async (uploadItem) => {
+      recognizedNames.push(uploadItem.name);
+      return `${uploadItem.name} 的识别文字`;
+    },
+  });
+  const server = await listen(app);
+  try {
+    const recognized = await jsonFetch(server.baseUrl, '/api/family-profiles/16/sales-chat/attachments/recognize?guestId=guest-sales-attachment', {
+      method: 'POST',
+      body: JSON.stringify({
+        uploadItems: [
+          { name: '聊天截图.png', type: 'image/png', size: 12, dataUrl: 'data:image/png;base64,AA==' },
+          { name: '计划书.pdf', type: 'application/pdf', size: 24, dataUrl: 'data:application/pdf;base64,AA==' },
+        ],
+      }),
+    });
+    assert.equal(recognized.response.status, 200);
+    assert.deepEqual(recognizedNames, ['聊天截图.png', '计划书.pdf']);
+    assert.deepEqual(recognized.payload.documents, [
+      { name: '聊天截图.png', ocrText: '聊天截图.png 的识别文字' },
+      { name: '计划书.pdf', ocrText: '计划书.pdf 的识别文字' },
+    ]);
+
+    const forbidden = await jsonFetch(server.baseUrl, '/api/family-profiles/16/sales-chat/attachments/recognize?guestId=guest-other', {
+      method: 'POST',
+      body: JSON.stringify({ uploadItems: [{ name: 'other.png' }] }),
+    });
+    assert.equal(forbidden.response.status, 404);
+    assert.deepEqual(recognizedNames, ['聊天截图.png', '计划书.pdf']);
   } finally {
     await server.close();
   }

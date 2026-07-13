@@ -13,6 +13,7 @@ import {
   selectAgentSkillPromptWithDeepSeek,
 } from './agent-skill-router.service.mjs';
 import { evidenceVerificationFields } from './evidence-classification.service.mjs';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -188,6 +189,12 @@ function removeSensitiveTokens(text = '') {
 
 export function privacySafeFamilySalesReviewInputJson(input = {}) {
   return privacySafeInputJson(input);
+}
+
+export function familySalesReviewDirectIdentifiers(input = {}) {
+  return {
+    names: displayReplacementsForInput(input).map((item) => item.value),
+  };
 }
 
 export function restoreFamilySalesReviewDisplayText(text = '', input = {}) {
@@ -483,11 +490,34 @@ function resolvePolicyPerson(policy = {}, role = 'insured', memberContext = {}, 
   };
 }
 
+function calculationResultAmount(calculationText = '') {
+  const match = trim(calculationText).match(/=\s*([0-9][0-9,]*(?:\.\d+)?)\s*(万)?\s*(?:元|圆)?\s*$/u);
+  if (!match) return null;
+  const amount = Number(String(match[1]).replace(/,/gu, '')) * (match[2] ? 10_000 : 1);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function cashflowEntryCheck(row = {}) {
+  const amount = asNumber(row?.amount);
+  const calculatedAmount = calculationResultAmount(row?.calcText || row?.calculationText);
+  if (amount <= 0) return { verified: false, amount, warning: '' };
+  if (calculatedAmount !== null && Math.abs(calculatedAmount - amount) >= 0.001) {
+    return {
+      verified: false,
+      amount,
+      warning: `第${trim(row?.year) || '未知'}年${trim(row?.liability) || '现金流'}金额与计算公式不一致，已从自动分析中排除`,
+    };
+  }
+  return { verified: true, amount, warning: '' };
+}
+
 function policySummary(policy = {}, memberContext = {}, generatedAt = new Date().toISOString()) {
   const cashflowEntries = Array.isArray(policy.cashflowEntries) ? policy.cashflowEntries : [];
   const scenarioEntries = Array.isArray(policy.scenarioEntries) ? policy.scenarioEntries : [];
   const cashValues = Array.isArray(policy.cashValues) ? policy.cashValues : [];
-  const positiveCashflowTotal = cashflowEntries.reduce((sum, row) => sum + Math.max(0, asNumber(row?.amount)), 0);
+  const checkedCashflowEntries = cashflowEntries.map((row) => ({ row, check: cashflowEntryCheck(row) }));
+  const verifiedCashflowEntries = checkedCashflowEntries.filter(({ check }) => check.verified);
+  const positiveCashflowTotal = verifiedCashflowEntries.reduce((sum, { check }) => sum + check.amount, 0);
   const applicant = resolvePolicyPerson(policy, 'applicant', memberContext, generatedAt);
   const insured = resolvePolicyPerson(policy, 'insured', memberContext, generatedAt);
   return {
@@ -543,8 +573,9 @@ function policySummary(policy = {}, memberContext = {}, generatedAt = new Date()
     },
     cashflow: {
       rowCount: cashflowEntries.length,
+      verifiedRowCount: verifiedCashflowEntries.length,
       positiveTotal: positiveCashflowTotal,
-      samples: take(cashflowEntries, 12).map((row) => ({
+      samples: take(verifiedCashflowEntries, 12).map(({ row }) => ({
         year: row?.year ?? '',
         age: row?.age ?? '',
         amount: asNumber(row?.amount),
@@ -552,6 +583,16 @@ function policySummary(policy = {}, memberContext = {}, generatedAt = new Date()
         calcText: trim(row?.calcText),
       })),
     },
+    verifiedCashflow: verifiedCashflowEntries
+      .filter(({ row }) => Number.isFinite(Number(row?.year)))
+      .map(({ row }) => ({
+        year: Number(row.year),
+        amount: asNumber(row.amount),
+        liability: trim(row.liability),
+        calcText: trim(row.calcText),
+      }))
+      .sort((left, right) => left.year - right.year || left.amount - right.amount),
+    financialDataWarnings: checkedCashflowEntries.map(({ check }) => check.warning).filter(Boolean),
     scenarioEntries: take(scenarioEntries, 12).map((row) => ({
       type: trim(row?.type || row?.coverageType),
       label: trim(row?.label || row?.liability),
@@ -559,6 +600,78 @@ function policySummary(policy = {}, memberContext = {}, generatedAt = new Date()
       calcText: trim(row?.calcText),
     })),
   };
+}
+
+function formatVerifiedCashflowAmount(amount) {
+  const numeric = asNumber(amount);
+  if (numeric > 0 && Number.isInteger(numeric) && numeric % 10_000 === 0) return `${numeric / 10_000}万元`;
+  return `${Number.isInteger(numeric) ? numeric : numeric.toFixed(2)}元`;
+}
+
+function buildFinancialFacts(policies = []) {
+  return (Array.isArray(policies) ? policies : [])
+    .map((policy) => ({
+      policyId: policy.id,
+      productName: policy.name,
+      entries: (Array.isArray(policy.verifiedCashflow) ? policy.verifiedCashflow : []).map((entry) => ({
+        year: entry.year,
+        liability: entry.liability,
+        amount: entry.amount,
+        amountText: formatVerifiedCashflowAmount(entry.amount),
+        calculationText: entry.calcText,
+      })),
+    }))
+    .filter((policy) => policy.entries.length);
+}
+
+function uniqueVerifiedCashflowAmountsByYear(input = {}) {
+  const amountsByYear = new Map();
+  for (const policy of Array.isArray(input?.policies) ? input.policies : []) {
+    for (const entry of Array.isArray(policy?.verifiedCashflow) ? policy.verifiedCashflow : []) {
+      const year = Number(entry?.year);
+      const amount = asNumber(entry?.amount);
+      if (!Number.isInteger(year) || amount <= 0) continue;
+      const amounts = amountsByYear.get(year) || new Set();
+      amounts.add(amount);
+      amountsByYear.set(year, amounts);
+    }
+  }
+  return amountsByYear;
+}
+
+const YEARLY_CASHFLOW_CLAIM_PATTERN = /((?:19|20)\d{2}\s*年(?:(?![。\n]).){0,40}?(?:确定(?:性)?\s*)?(?:给付|领取)\s*(?:约\s*)?)([0-9]+(?:\.[0-9]+)?)\s*(万元|万|元)/gu;
+
+export function reconcileVerifiedCashflowAmounts(content = '', input = {}) {
+  const amountsByYear = uniqueVerifiedCashflowAmountsByYear(input);
+  if (!amountsByYear.size) return { content: String(content || ''), changed: false };
+  let changed = false;
+  const reconciledContent = String(content || '').replace(YEARLY_CASHFLOW_CLAIM_PATTERN, (match, prefix, amountText, unit) => {
+    const year = Number(prefix.match(/(?:19|20)\d{2}/u)?.[0]);
+    const amounts = amountsByYear.get(year);
+    if (!amounts || amounts.size !== 1) {
+      changed = true;
+      return `${prefix}金额待核实`;
+    }
+    const expectedAmount = Array.from(amounts)[0];
+    const claimedAmount = Number(amountText) * (String(unit).startsWith('万') ? 10_000 : 1);
+    if (Math.abs(claimedAmount - expectedAmount) < 0.001) return match;
+    changed = true;
+    return `${prefix}${formatVerifiedCashflowAmount(expectedAmount)}`;
+  });
+  return { content: reconciledContent, changed };
+}
+
+export function enforceVerifiedCashflowAmounts(content = '', input = {}) {
+  return reconcileVerifiedCashflowAmounts(content, input).content;
+}
+
+function financialReanalysisRequest() {
+  return [
+    '刚才的报告至少有一笔年度给付金额与已核实金额事实表不一致。',
+    '不能只替换数字，因为财富价值、销售机会、保单重整和方案排序可能已经被错误金额带偏。',
+    '请从头重写整份报告，重新评估所有涉及财富、现金流、产品价值和销售策略的结论；只能使用 financialFacts 中的金额。',
+    '不要提及校验、重试或上一版错误。',
+  ].join('\n');
 }
 
 function memberSummaries({ policies = [], family = {}, memberContext = {}, generatedAt = new Date().toISOString() } = {}) {
@@ -956,6 +1069,12 @@ export function buildFamilySalesReviewInput({
     }));
   const uninsuredMembers = summarizedMembers.filter((member) => !member.hasPolicy);
   const topPillarMemberRef = memberContext.refById?.get(Number(family.coreMemberId || 0)) || '';
+  const financialFacts = buildFinancialFacts(summarizedPolicies);
+  const financialDataWarnings = summarizedPolicies.flatMap((policy) => (
+    Array.isArray(policy.financialDataWarnings)
+      ? policy.financialDataWarnings.map((warning) => `${policy.name || '保单'}：${warning}`)
+      : []
+  ));
 
   const input = {
     generatedAt,
@@ -978,6 +1097,7 @@ export function buildFamilySalesReviewInput({
     },
     members: summarizedMembers,
     policies: summarizedPolicies,
+    financialFacts,
     report: sanitizeFamilyReport(familyReport),
     officialEvidence: buildOfficialEvidence({
       policies,
@@ -995,6 +1115,7 @@ export function buildFamilySalesReviewInput({
       })),
       expiredOrInactivePolicies: expiredPolicies,
       duplicatePolicyHints: duplicatePolicyHints(summarizedPolicies),
+      financialDataWarnings,
     },
   };
   Object.defineProperty(input, DISPLAY_REPLACEMENTS, {
@@ -1044,6 +1165,7 @@ export function buildFamilySalesReviewMessages(input = {}, { skillPrompt = null 
         '23. evidence 中 verificationStatus=verified 且 sourceKind/evidenceLevel 为 insurer_official 或 customer_policy_terms 的内容，可以作为已核实责任依据。',
         '24. regulatory_industry_terms 只能表述为“行业条款来源/中国保险行业协会条款线索”，不得写成保险公司官网资料。',
         '25. referenceOnly=true 或 verificationStatus=pending_review 的第三方网页、开放网页搜索、老产品非官方资料，只能作为“待核实参考/需保险公司确认”的销售沟通线索，不得计入已确认保障、保障合计、缺口抵扣或确定性销售承诺。',
+        '26. financialFacts 是已核实的年度金额事实表，必须作为财富分析、产品对比、销售结论和话术中金额判断的唯一依据。正文只要写到某年某项给付或领取金额，必须逐项照抄其中的年份、责任和金额；不得除以10、四舍五入、合并金额或自行换算单位。dataQuality.financialDataWarnings 中涉及的保单存在金额异常，不能据此判断产品价值、财富规划意义或替换建议，只能写“数据待核实”。没有对应 financialFacts 时，也只能写“金额待核实”，不得写具体金额。',
         ...(resolvedSkillPrompt ? [
           '',
           '本轮 skill 规则：',
@@ -1117,6 +1239,7 @@ export async function generateFamilySalesReview({
           model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
           timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
         },
+        privacyOptions: familySalesReviewDirectIdentifiers(input),
       })
       : null;
     const url = new URL('/chat/completions', config.baseUrl);
@@ -1140,7 +1263,7 @@ export async function generateFamilySalesReview({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(body, familySalesReviewDirectIdentifiers(input))),
     });
 
     if (!response.ok) {
@@ -1157,13 +1280,46 @@ export async function generateFamilySalesReview({
     if (!upstreamContent) {
       throw withCode(new Error('FAMILY_SALES_REVIEW_EMPTY_RESPONSE'), 'FAMILY_SALES_REVIEW_EMPTY_RESPONSE', 502);
     }
+    const initialContent = ensureFamilySalesReviewSalesEnablement(upstreamContent, input);
+    const initialReconciliation = reconcileVerifiedCashflowAmounts(initialContent, input);
+    let reviewedContent = initialReconciliation.content;
+    let responseModel = trim(payload?.model || config.model) || config.model;
+    if (initialReconciliation.changed) {
+      const retryResponse = await fetchImpl(url, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify(sanitizeDeepSeekRequestBody({
+          ...body,
+          messages: [
+            ...body.messages,
+            { role: 'assistant', content: upstreamContent },
+            { role: 'user', content: financialReanalysisRequest() },
+          ],
+        }, familySalesReviewDirectIdentifiers(input))),
+      });
+      if (retryResponse.ok) {
+        const retryPayload = await retryResponse.json();
+        const retryContent = trim(retryPayload?.choices?.[0]?.message?.content);
+        if (retryContent) {
+          reviewedContent = reconcileVerifiedCashflowAmounts(
+            ensureFamilySalesReviewSalesEnablement(retryContent, input),
+            input,
+          ).content;
+          responseModel = trim(retryPayload?.model || responseModel) || responseModel;
+        }
+      }
+    }
     const content = restoreFamilySalesReviewDisplayText(
-      ensureFamilySalesReviewSalesEnablement(upstreamContent, input),
+      reviewedContent,
       input,
     );
     return {
       content,
-      model: trim(payload?.model || config.model) || config.model,
+      model: responseModel,
       generatedAt: new Date().toISOString(),
       inputSummary: {
         familyId: input?.family?.id ?? null,

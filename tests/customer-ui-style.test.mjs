@@ -938,6 +938,29 @@ test('responsibility assistant floats at the bottom right of the screen', () => 
   assert.doesNotMatch(source, /bottom-28|sm:bottom-6/);
 });
 
+test('customer product suggestions use a short mobile debounce without a result cap', () => {
+  const suggestionRequests = normalizedCustomerAppSource.match(/listPolicyResponsibility(?:Company|Product)Suggestions\(\{[^}]+\}\)/gu) || [];
+  const suggestionDebounces = normalizedCustomerAppSource.match(/\}, 80\);/gu) || [];
+
+  assert.ok(suggestionRequests.length >= 5);
+  assert.ok(suggestionDebounces.length >= 5);
+  assert.doesNotMatch(normalizedCustomerAppSource, /listPolicyResponsibility(?:Company|Product)Suggestions\(\{[^}]*limit: (?:12|50)[^}]*\}\)/u);
+});
+
+test('customer company and product dropdowns expose all results in touch-scrollable lists', () => {
+  const sources = [
+    componentSource('UploadPolicyPage', null),
+    componentSource('ResponsibilityAssistant', null),
+    componentSource('PolicyDetailSheet', null),
+  ];
+
+  for (const source of sources) {
+    assert.doesNotMatch(source, /\.slice\(0, 8\)/);
+    assert.match(source, /max-h-72 overflow-y-auto overscroll-contain/);
+    assert.match(source, /\[-webkit-overflow-scrolling:touch\]/);
+  }
+});
+
 test('responsibility assistant shows DeepSeek summary blocks and structured responsibility rows', () => {
   const source = componentSource('ResponsibilityAssistant', null);
   assert.match(source, /customerSummaryHasContent/);
@@ -1370,6 +1393,7 @@ test('policy edit dialog offers insurer and product suggestions', () => {
 
 test('policy edit dialog includes rider editing controls and plan product suggestions', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
+  const editorSource = componentSource('PolicyPlanEditor', 'PolicyPlanSummary');
   assert.match(detailSource, /PolicyPlanEditor/);
   assert.match(detailSource, /editPlanProductSuggestions/);
   assert.match(detailSource, /editPlanProductSuggestionLoading/);
@@ -1379,6 +1403,10 @@ test('policy edit dialog includes rider editing controls and plan product sugges
 	  assert.match(detailSource, /selectDraftPlanProduct/);
 	  assert.match(detailSource, /productCode,\s*productCodes:/);
 	  assert.match(detailSource, /onUpdateProductQuery=\{\(index, company, q\) => setEditPlanProductQuery\(\{ index, company, q \}\)\}/);
+	  assert.doesNotMatch(editorSource, /\.slice\(0, 8\)/);
+	  assert.match(editorSource, /aria-label="附加险产品候选"/);
+	  assert.match(editorSource, /max-h-72 overflow-y-auto overscroll-contain/);
+	  assert.match(editorSource, /\[-webkit-overflow-scrolling:touch\]/);
 	});
 
 test('customer app exposes family report from family cards and policy dashboard', () => {
@@ -1841,6 +1869,11 @@ test('family report export downloads a desktop H5 styled image instead of pagina
   assert.match(reportExportSource, /triggerImageBlobDownload\(imageBlob,\s*fileName\)/);
   assert.match(reportExportSource, /link\.download = `\$\{fileName\}\.jpg`/);
   assert.match(reportExportSource, /showBlobResult\(imageBlob: Blob\)/);
+  assert.match(reportExportSource, /const mobileReportImageMaxHeight = 6000/);
+  assert.match(reportExportSource, /canvasToMobileImageBlobs\(canvas\)/);
+  assert.match(reportExportSource, /showBlobResults\(imageBlobs\)/);
+  assert.match(reportExportSource, /逐张长按图片保存/);
+  assert.match(reportExportSource, /已拆成 \$\{imageCount\} 张图片以兼容微信相册/);
   assert.match(reportExportSource, /download="\$\{safeFileName\}\.jpg"/);
   assert.match(reportExportSource, /const useLongPressSave = isWeChatBrowser\(\) \|\| isWeChatMiniProgramWebView\(\)/);
   assert.match(reportExportSource, /长按图片保存/);
@@ -1997,9 +2030,30 @@ test('policy entry exposes supplement product photo upload when product matching
   assert.match(policyApiSource, /scanPolicyProductKnowledge/);
   assert.match(customerAppSource, /productKnowledgeFileInputRef/);
   assert.match(customerAppSource, /scanPolicyProductKnowledge\(/);
+  assert.match(customerAppSource, /productKnowledgeTargetRef/);
+  assert.match(customerAppSource, /manualData: \{ \.\.\.formData, company: knowledgeTarget\.company, name: knowledgeTarget\.name \}/);
   assert.match(customerAppSource, /formProductMatchStatus === 'not_found'/);
+  assert.match(customerAppSource, /setFormProductMatchStatus\(matches\.length \? matchStatus : 'not_found'\)/);
   assert.match(policyEntrySource, /上传产品页\/保险利益表照片/);
+  assert.match(policyEntrySource, /onSupplementClick=\{\(plan\) => onProductKnowledgeScanClick/);
+  assert.match(customerPolicyComponentsSource, /上传附加险保单详细信息页/);
   assert.match(policyEntrySource, /已补充 \{Number\(props\.supplementCount \|\| 0\)\}\/5 张/);
   assert.match(adminKnowledgeSource, /客户补充照片线索/);
   assert.match(adminKnowledgeSource, /通过为非官方候选/);
+  assert.match(adminKnowledgeSource, /record\.sourceKind === 'customer_policy_photo' \|\| record\.sourceKind === 'customer_policy_terms'/);
+});
+
+test('admin exposes a dedicated customer product review workflow', () => {
+  const pagesSource = fs.readFileSync(new URL('../src/apps/admin/adminPages.ts', import.meta.url), 'utf8');
+  const reviewPageSource = fs.readFileSync(new URL('../src/apps/admin/pages/AdminCustomerKnowledgeReviewPage.tsx', import.meta.url), 'utf8');
+
+  assert.match(pagesSource, /客户产品审核/);
+  assert.match(reviewPageSource, /客户上传图片/);
+  assert.match(reviewPageSource, /OCR 解析的保险责任/);
+  assert.match(reviewPageSource, /结构化保险指标/);
+  assert.match(reviewPageSource, /通过并全局生效/);
+  assert.match(reviewPageSource, /拒绝/);
+  assert.match(reviewPageSource, /产品名称：\{record\.reviewProductName \|\| '待确认'\}/);
+  assert.match(reviewPageSource, /record\.reviewStatus === 'approved'/);
+  assert.match(reviewPageSource, /record\.reviewStatus === 'rejected'/);
 });

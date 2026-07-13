@@ -7,6 +7,11 @@ import {
   normalizeResponsibilityGenerationGovernanceConfig,
 } from '../responsibility-generation-governance.service.mjs';
 import {
+  OCR_SCENARIO_ROUTING_STATE_KEY,
+  buildAdminOcrScenarioRoutingPayload,
+  normalizeOcrScenarioRoutingConfig,
+} from '../ocr-scenario-routing.service.mjs';
+import {
   AGENT_QUESTION_POLICIES,
   validateAgentQuestionPolicy,
 } from '../agent-question-policy.service.mjs';
@@ -958,6 +963,30 @@ export function createAdminRoutes(context) {
     const session = requireAdmin(req, res, state, adminPassword);
     if (!session) return;
     res.json({ ok: true, config: getMembershipConfig(state) });
+  });
+
+  router.get('/ocr-scenario-routing', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    res.json({ ok: true, ...buildAdminOcrScenarioRoutingPayload(state) });
+  });
+
+  router.patch('/ocr-scenario-routing', async (req, res) => {
+    const session = requireAdmin(req, res, state, adminPassword);
+    if (!session) return;
+    try {
+      const config = normalizeOcrScenarioRoutingConfig({
+        routes: req.body?.routes,
+        updatedAt: typeof nowIso === 'function' ? nowIso() : new Date().toISOString(),
+      });
+      state[OCR_SCENARIO_ROUTING_STATE_KEY] = config;
+      if (typeof persistStateDocument === 'function') {
+        await persistStateDocument({ key: OCR_SCENARIO_ROUTING_STATE_KEY, value: config });
+      }
+      res.json({ ok: true, ...buildAdminOcrScenarioRoutingPayload(state) });
+    } catch (error) {
+      sendError(res, error, 400);
+    }
   });
 
   router.patch('/membership-config', async (req, res) => {

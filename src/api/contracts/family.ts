@@ -1,4 +1,4 @@
-import type { Policy } from './policy';
+import type { Policy, UploadItem } from './policy';
 import type { FamilyPlanningProfile, FamilyReport } from '../../family-report-engine.mjs';
 import { authQuery, request } from '../client';
 
@@ -71,6 +71,44 @@ export type FamilyProfile = {
   policyCount?: number;
   policySummary?: FamilyPolicySummary;
   planningProfile?: FamilyPlanningProfile;
+};
+
+export type AgentPolicyImportTask = {
+  taskId: number;
+  familyId: number;
+  targetAgent: 'sales_champion' | 'insurance_expert';
+  status: 'field_completion' | 'final_confirmation' | 'completed' | 'cancelled';
+  stateVersion: number;
+  policyDraft: {
+    company: string;
+    productName: string;
+    insured: string;
+    date: string;
+    paymentPeriod: string;
+    coveragePeriod: string;
+    amount: string | number;
+    firstPremium: string | number;
+    policyNumber: string;
+    insuredIdNumber: string;
+    planCount: number;
+  };
+  missingFields: string[];
+  interaction: null | {
+    type: 'text_input' | 'confirm';
+    interactionId: string;
+    taskId: number;
+    stateVersion: number;
+    field?: string;
+    title: string;
+    actions?: string[];
+  };
+  privacy: {
+    maskedForChannel: true;
+    containsSensitiveData: true;
+    originalImageIncluded: false;
+    ocrTextIncluded: false;
+    hermesMemoryAllowed: false;
+  };
 };
 
 export type FamilyReportShare = {
@@ -344,12 +382,86 @@ export function listFamilySalesChatThreads(input: { token?: string; guestId?: st
   });
 }
 
-export function createFamilySalesChatThread(input: { token?: string; guestId?: string; familyId: number; message?: string }) {
+export function recognizeFamilySalesChatAttachments(input: { token?: string; guestId?: string; familyId: number; uploadItems: UploadItem[] }) {
+  return request<{ ok: true; documents: Array<{ name: string; ocrText: string }> }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/attachments/recognize${authQuery(input)}`,
+    {
+      token: input.token,
+      body: { uploadItems: input.uploadItems },
+    },
+  );
+}
+
+export function createAgentPolicyImport(input: {
+  token?: string;
+  guestId?: string;
+  familyId: number;
+  uploadItem: UploadItem;
+  channel?: 'web' | 'dingtalk';
+  targetAgent?: 'sales_champion' | 'insurance_expert';
+}) {
+  return request<{ ok: true; task: AgentPolicyImportTask }>(
+    `/api/family-profiles/${input.familyId}/agent-policy-imports${authQuery(input)}`,
+    {
+      token: input.token,
+      body: {
+        uploadItem: input.uploadItem,
+        channel: input.channel || 'web',
+        targetAgent: input.targetAgent || 'sales_champion',
+      },
+    },
+  );
+}
+
+export function getAgentPolicyImport(input: { token?: string; guestId?: string; familyId: number; taskId: number }) {
+  return request<{ ok: true; task: AgentPolicyImportTask }>(
+    `/api/family-profiles/${input.familyId}/agent-policy-imports/${input.taskId}${authQuery(input)}`,
+    { token: input.token },
+  );
+}
+
+export function updateAgentPolicyImport(input: {
+  token?: string;
+  guestId?: string;
+  familyId: number;
+  taskId: number;
+  stateVersion: number;
+  action: 'set_field' | 'confirm' | 'cancel';
+  field?: string;
+  value?: string;
+}) {
+  return request<{ ok: true; task: AgentPolicyImportTask }>(
+    `/api/family-profiles/${input.familyId}/agent-policy-imports/${input.taskId}/actions${authQuery(input)}`,
+    {
+      token: input.token,
+      body: {
+        stateVersion: input.stateVersion,
+        action: input.action,
+        field: input.field || '',
+        value: input.value || '',
+      },
+    },
+  );
+}
+
+export function askInsuranceExpertForPolicyImport(input: {
+  token?: string;
+  guestId?: string;
+  familyId: number;
+  taskId: number;
+}) {
+  return request<{ ok: true; agent: 'insurance_expert'; task: AgentPolicyImportTask; analysis: unknown }>(
+    `/api/family-profiles/${input.familyId}/agent-policy-imports/${input.taskId}/insurance-expert${authQuery(input)}`,
+    { token: input.token, body: {} },
+  );
+}
+
+export function createFamilySalesChatThread(input: { token?: string; guestId?: string; familyId: number; message?: string; policyImportTaskId?: number }) {
   return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
     `/api/family-profiles/${input.familyId}/sales-chat/threads${authQuery(input)}`,
     {
       token: input.token,
-      body: { message: input.message || '' },
+      body: { message: input.message || '', policyImportTaskId: input.policyImportTaskId || null },
     },
   );
 }
@@ -363,12 +475,12 @@ export function getFamilySalesChatThread(input: { token?: string; guestId?: stri
   );
 }
 
-export function sendFamilySalesChatMessage(input: { token?: string; guestId?: string; familyId: number; threadId: number; message: string }) {
+export function sendFamilySalesChatMessage(input: { token?: string; guestId?: string; familyId: number; threadId: number; message: string; policyImportTaskId?: number }) {
   return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
     `/api/family-profiles/${input.familyId}/sales-chat/threads/${input.threadId}/messages${authQuery(input)}`,
     {
       token: input.token,
-      body: { message: input.message },
+      body: { message: input.message, policyImportTaskId: input.policyImportTaskId || null },
     },
   );
 }

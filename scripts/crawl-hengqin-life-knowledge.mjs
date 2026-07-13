@@ -1,31 +1,16 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { allocateId, createInitialState } from '../server/policy-ocr.domain.mjs';
+import { allocateId } from '../server/policy-ocr.domain.mjs';
 import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
 const scraplingCwd = process.env.SCRAPLING_PROJECT_DIR || '/Users/wenshuping/Documents/Scrapling';
 const outputMarker = '__POLICY_KNOWLEDGE_JSON__';
-
-function readJson(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
-}
 
 function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -71,32 +56,31 @@ function runCrawler(payload) {
   return JSON.parse(line.slice(line.indexOf(outputMarker) + outputMarker.length));
 }
 
-function main() {
+async function main() {
   const saleStatus = readArg('sale-status', process.env.HENGQIN_LIFE_SALE_STATUS || 'all');
   const maxProducts = readNumberArg('max-products', Number(process.env.HENGQIN_LIFE_MAX_PRODUCTS || 0));
   const productOffset = readNonNegativeNumberArg('product-offset', Number(process.env.HENGQIN_LIFE_PRODUCT_OFFSET || 0));
   const maxWorkers = readNumberArg('max-workers', Number(process.env.HENGQIN_LIFE_MAX_WORKERS || 6));
   const newOnly = readBooleanArg('new-only', process.env.HENGQIN_LIFE_NEW_ONLY === '1');
 
-  const stateBefore = readJson(statePath, createInitialState());
-  const beforeUrls = new Set((stateBefore.knowledgeRecords || []).map((record) => String(record.url || '')).filter(Boolean));
+  const knowledgeStore = await createKnowledgeStateStore();
+  try {
+    const beforeUrls = new Set(knowledgeStore.knownCompanyUrls('横琴人寿'));
 
-  const result = runCrawler({
+    const result = runCrawler({
     mode: 'hengqin_life_pages',
     company: '横琴人寿',
+      skipUrls: [...beforeUrls],
     saleStatus,
     maxProducts,
     productOffset,
     maxWorkers,
-    skipUrls: newOnly ? [...beforeUrls] : [],
   });
 
-  const state = readJson(statePath, createInitialState());
+  const state = knowledgeStore.loadState();
   if (!Number(state.nextId)) state.nextId = 1;
-  const before = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const recordsToSave = newOnly
-    ? (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)))
-    : result.records || [];
+  const before = knowledgeStore.countKnowledgeRecords();
+  const recordsToSave = (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)));
   const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
   const after = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
   const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(String(record.url)));
@@ -106,7 +90,7 @@ function main() {
     acc[status] = (acc[status] || 0) + 1;
     return acc;
   }, {});
-  writeJson(statePath, state);
+  knowledgeStore.saveState(state);
 
   console.log(
     JSON.stringify(
@@ -135,12 +119,18 @@ function main() {
         responsibilityQualitySplit: qualitySplit,
         localKnowledgeBefore: before,
         localKnowledgeAfter: after,
-        statePath,
+        statePath: knowledgeStore.dbPath,
       },
       null,
       2,
     ),
   );
+  } finally {
+    knowledgeStore.close();
+  }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

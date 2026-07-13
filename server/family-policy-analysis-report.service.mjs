@@ -9,6 +9,7 @@ import {
   resolveRecordProductName,
 } from './canonical-product-id.mjs';
 import { evidenceVerificationFields } from './evidence-classification.service.mjs';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -424,7 +425,7 @@ export async function generateFamilyPolicyAnalysisReport({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(body)),
     });
 
     if (!response.ok) {

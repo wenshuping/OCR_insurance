@@ -327,6 +327,22 @@ AEON_LIFE_PRODUCT_INFO_URL = "https://www.aeonlife.com.cn/product/information/in
 AEON_LIFE_PRODUCT_LIST_ENDPOINT = "https://www.aeonlife.com.cn/product/information/getProductInfoList.shtml"
 AEON_LIFE_DOWNLOAD_ENDPOINT = "https://www.aeonlife.com.cn/product/information/downLoadProductInfo.shtml"
 AEON_LIFE_INTERNET_DISCLOSURE_URL = "https://www.aeonlife.com.cn/info/internet/12477.shtml"
+FORESEA_LIFE_OFFICIAL_BASE_URL = "https://www.foresealife.com/"
+FORESEA_LIFE_PRODUCT_INFO_URL = "https://www.foresealife.com/publicInfo.html"
+FORESEA_LIFE_OFFICIAL_DOMAINS = {"foresealife.com", "www.foresealife.com"}
+THREE_GORGES_LIFE_OFFICIAL_BASE_URL = "https://www.tg-life.com.cn/"
+THREE_GORGES_LIFE_PRODUCT_INFO_URL = "https://www.tg-life.com.cn/bxcpmljtk/75.html"
+THREE_GORGES_LIFE_OFFICIAL_DOMAINS = {"tg-life.com.cn", "www.tg-life.com.cn"}
+AIXIN_LIFE_OFFICIAL_BASE_URL = "https://www.aixin-ins.com/"
+AIXIN_LIFE_PRODUCT_LIST_ENDPOINT = "https://www.aixin-ins.com/server-front/front/content/page?pageSize=100&channelIdStr=113&orderBy=0"
+AIXIN_LIFE_OFFICIAL_DOMAINS = {"aixin-ins.com", "www.aixin-ins.com"}
+SHANGHAI_LIFE_OFFICIAL_BASE_URL = "https://www.shanghailife.com.cn/"
+SHANGHAI_LIFE_PRODUCT_CLAUSE_ENDPOINT = "https://www.shanghailife.com.cn/api/face/productClause/findPageByCodition"
+SHANGHAI_LIFE_OFFICIAL_DOMAINS = {
+    "shanghailife.com.cn",
+    "www.shanghailife.com.cn",
+    "obs-shlife-website-prd.obs.cn-east-201.jrzq.huaweicloud.com",
+}
 METLIFE_OFFICIAL_BASE_URL = "https://www.metlife.com.cn/"
 METLIFE_PRODUCT_PAGES = {
     "available": {
@@ -4203,7 +4219,10 @@ def crawl_sunshine_life_browser_pages(payload: dict[str, Any]) -> dict[str, Any]
     if not browser_result.get("ok"):
         return {"ok": False, "company": company, **browser_result, "records": []}
 
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products, tasks = sunshine_life_material_tasks(company, browser_result.get("products") or [])
+    if skip_urls:
+        tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
     records = crawl_sunshine_life_material_records(tasks, max_workers=max_workers)
     record_counts_by_page: dict[str, int] = {}
     task_page_by_url = {trim(task.get("url")): trim(task.get("sourcePage")) for task in tasks}
@@ -4262,6 +4281,7 @@ def zhongan_material_tasks(payload: dict[str, Any]) -> tuple[list[dict[str, Any]
     page_limit = max(0, int(payload.get("maxPages") or 0))
     product_offset = max(0, int(payload.get("productOffset") or 0))
     max_products = max(0, int(payload.get("maxProducts") or 0))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages = ZHONGAN_PRODUCT_PAGES[:page_limit] if page_limit else ZHONGAN_PRODUCT_PAGES
     tasks: list[dict[str, Any]] = []
     page_results: list[dict[str, str]] = []
@@ -4276,7 +4296,7 @@ def zhongan_material_tasks(payload: dict[str, Any]) -> tuple[list[dict[str, Any]
         for link in soup.find_all("a", href=True):
             title = clean_text(link.get_text(" "))
             material_url = urljoin(page_url, trim(link.get("href")))
-            if not title or material_url in seen_urls:
+            if not title or material_url in seen_urls or material_url in skip_urls:
                 continue
             if ".pdf" not in material_url.lower():
                 continue
@@ -4595,8 +4615,11 @@ def crawl_hongkang_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     statuses = hongkang_life_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products, pages = hongkang_life_products(statuses)
     tasks = hongkang_life_material_tasks(products, max_products=max_products)
+    skipped_existing_url_count = sum(1 for task in tasks if trim(task.get("url")) in skip_urls)
+    tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
     records = crawl_hongkang_life_material_records(tasks, max_workers=max_workers)
     quality_split: dict[str, int] = {}
     for record in records:
@@ -4613,6 +4636,7 @@ def crawl_hongkang_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "pages": pages,
         "productCount": len(products),
         "materialTaskCount": len(tasks),
+        "skippedExistingUrlCount": skipped_existing_url_count,
         "qualitySplit": quality_split,
         "records": records,
     }
@@ -4769,7 +4793,7 @@ def guohua_life_detail_materials(detail_url: str, product_name: str) -> list[dic
     return materials
 
 
-def guohua_life_material_tasks(products: list[dict[str, Any]], max_workers: int) -> list[dict[str, str]]:
+def guohua_life_material_tasks(products: list[dict[str, Any]], max_workers: int, skip_urls: set[str] | None = None) -> list[dict[str, str]]:
     direct_tasks: list[dict[str, str]] = []
     detail_jobs: list[tuple[dict[str, Any], dict[str, str]]] = []
 
@@ -4829,9 +4853,10 @@ def guohua_life_material_tasks(products: list[dict[str, Any]], max_workers: int)
 
     tasks: list[dict[str, str]] = []
     seen_urls: set[str] = set()
+    skipped = skip_urls or set()
     for task in [*direct_tasks, *detail_tasks]:
         material_url = trim(task.get("url"))
-        if not material_url or material_url in seen_urls:
+        if not material_url or material_url in seen_urls or material_url in skipped:
             continue
         seen_urls.add(material_url)
         tasks.append(task)
@@ -4901,7 +4926,8 @@ def crawl_guohua_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "company": company, "pages": [page_meta], "products": [], "records": []}
 
     products = guohua_life_product_rows(company, html, sale_status_filter, max_products)
-    tasks = guohua_life_material_tasks(products, max_workers=max_workers)
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    tasks = guohua_life_material_tasks(products, max_workers=max_workers, skip_urls=skip_urls)
     records = crawl_guohua_life_material_records(tasks, max_workers=max_workers)
     page_meta["productCount"] = len(products)
     page_meta["materialTaskCount"] = len(tasks)
@@ -5075,6 +5101,7 @@ def crawl_happy_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_pages = max(0, int(payload.get("maxPages") or 0))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
 
@@ -5121,7 +5148,7 @@ def crawl_happy_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     for product in products:
         for material in product.get("materials", []):
             material_url = trim(material.get("url"))
-            if not material_url or material_url in seen_urls:
+            if not material_url or material_url in seen_urls or material_url in skip_urls:
                 continue
             seen_urls.add(material_url)
             tasks.append(
@@ -5530,6 +5557,7 @@ def crawl_caixin_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     start_index = max(1, int(payload.get("startIndex") or payload.get("offset") or 1))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
 
@@ -5571,7 +5599,7 @@ def crawl_caixin_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     for product in products:
         for material in product.get("materials", []):
             material_url = trim(material.get("url"))
-            if not material_url or material_url in seen_urls:
+            if not material_url or material_url in seen_urls or material_url in skip_urls:
                 continue
             seen_urls.add(material_url)
             tasks.append(
@@ -5820,9 +5848,12 @@ def crawl_guobao_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     sale_status_filter = guobao_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products, tasks, page_meta = guobao_life_products_and_tasks(payload)
     if page_meta.get("status", 0) < 200 or page_meta.get("status", 0) >= 300:
         return {"ok": False, "company": company, "pages": [page_meta], "products": [], "records": []}
+    skipped_existing_url_count = sum(1 for task in tasks if trim(task.get("url")) in skip_urls)
+    tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
     records = crawl_guobao_life_material_records(tasks, max_workers=max_workers)
     page_meta["recordCount"] = len(records)
     return {
@@ -5836,6 +5867,7 @@ def crawl_guobao_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "pages": [page_meta],
         "products": [{key: value for key, value in product.items() if key != "materials"} for product in products],
         "materialTaskCount": len(tasks),
+        "skippedExistingUrlCount": skipped_existing_url_count,
         "records": records,
     }
 
@@ -6548,6 +6580,7 @@ def crawl_aia_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     tasks: list[dict[str, str]] = []
     seen_product_keys: set[str] = set()
     seen_task_urls: set[str] = set()
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
 
     for page_info in status_pages:
         page_index = 0
@@ -6811,8 +6844,11 @@ def crawl_ccb_life_material_records(tasks: list[dict[str, str]], max_workers: in
 def crawl_ccb_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     company = trim(payload.get("company")) or "建信人寿"
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     page_result = extract_ccb_life_product_page({**payload, "company": company})
     tasks = page_result["tasks"]
+    skipped_existing_url_count = sum(1 for task in tasks if trim(task.get("url")) in skip_urls)
+    tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
     records = crawl_ccb_life_material_records(tasks, max_workers=max_workers)
     page_meta = page_result["page"]
     page_meta["recordCount"] = len(records)
@@ -6824,6 +6860,7 @@ def crawl_ccb_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "pages": [page_meta],
         "products": page_result["products"],
         "materialTaskCount": len(tasks),
+        "skippedExistingUrlCount": skipped_existing_url_count,
         "records": records,
     }
 
@@ -7207,6 +7244,7 @@ def crawl_hsbc_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     status_filter = hsbc_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     status, html = fetch_html_direct(HSBC_LIFE_PRODUCT_INFO_URL)
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
@@ -7246,7 +7284,7 @@ def crawl_hsbc_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
             products.append({key: value for key, value in product.items() if key != "materials"})
             for material in product.get("materials", []):
                 material_url = trim(material.get("url"))
-                if not material_url or material_url in seen_task_urls:
+                if not material_url or material_url in seen_task_urls or material_url in skip_urls:
                     continue
                 seen_task_urls.add(material_url)
                 tasks.append(
@@ -7793,6 +7831,7 @@ def crawl_huagui_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     status_filter = huagui_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     status, html = fetch_html_direct(HUAGUI_LIFE_PRODUCT_INFO_URL, referer=HUAGUI_LIFE_OFFICIAL_BASE_URL)
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -7801,6 +7840,7 @@ def crawl_huagui_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         products = [product for product in products if product["salesStatus"] in status_filter]
         product_names = {product["productName"] for product in products}
         tasks = [task for task in tasks if task["salesStatus"] in status_filter and task["productName"] in product_names]
+        tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
     records = crawl_huagui_life_material_records(tasks, max_workers=max_workers)
     return {
         "ok": True,
@@ -7988,6 +8028,7 @@ def crawl_minsheng_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_products = max(0, int(payload.get("maxProducts") or 0))
     page_size = max(1, int(payload.get("pageSize") or 100))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     status_pages = minsheng_life_status_pages(trim(payload.get("saleStatus") or payload.get("status")))
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -8047,7 +8088,7 @@ def crawl_minsheng_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 for task in minsheng_life_product_material_tasks(product, page_info, company):
                     material_url = trim(task.get("url"))
-                    if not material_url or material_url in seen_urls:
+                    if not material_url or material_url in skip_urls or material_url in seen_urls:
                         continue
                     seen_urls.add(material_url)
                     tasks.append(task)
@@ -9021,11 +9062,13 @@ def crawl_china_united_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     page_size = max(1, int(payload.get("pageSize") or 20))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     profiles = china_united_life_source_profiles(source, trim(payload.get("saleStatus") or payload.get("status")))
     products: list[dict[str, str]] = []
     tasks: list[dict[str, str]] = []
     pages: list[dict[str, Any]] = []
     seen_task_keys: set[str] = set()
+    skipped_existing_url_count = 0
     stop = False
     for profile in profiles:
         page_number = 1
@@ -9057,6 +9100,12 @@ def crawl_china_united_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 products.append(product)
                 page_meta["productCount"] += 1
                 for task in china_united_life_material_tasks_from_item(company, profile, item):
+                    material_url = trim(task.get("url"))
+                    if not material_url:
+                        continue
+                    if material_url in skip_urls:
+                        skipped_existing_url_count += 1
+                        continue
                     if trim(task.get("materialType")) == "terms":
                         key = f"terms|{trim(task.get('productName'))}|{trim(task.get('recordNo')) or trim(task.get('url'))}"
                     else:
@@ -9084,6 +9133,7 @@ def crawl_china_united_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         "pages": pages,
         "products": products,
         "materialTaskCount": len(tasks),
+        "skippedExistingUrlCount": skipped_existing_url_count,
         "records": records,
     }
 
@@ -9257,6 +9307,7 @@ def crawl_lian_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     page_size = max(1, int(payload.get("pageSize") or 100))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
     pages: list[dict[str, Any]] = []
@@ -9304,6 +9355,8 @@ def crawl_lian_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                     products.append(product)
                     page_meta["productCount"] += 1
                 for task in lian_life_material_tasks_from_item(company, status_code, item):
+                    if trim(task.get("url")) in skip_urls:
+                        continue
                     task_key = f"{product_key}|{task.get('materialType')}|{task.get('url')}"
                     if task_key in seen_tasks:
                         continue
@@ -9864,6 +9917,7 @@ def crawl_hengansl_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_pages = max(0, int(payload.get("maxPages") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pdf_archive_dir = resolve_pdf_archive_dir(payload)
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -9928,7 +9982,7 @@ def crawl_hengansl_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 products.append({key: value for key, value in product.items() if key != "materials"})
                 for material in product.get("materials", []):
                     material_url = trim(material.get("url"))
-                    if not material_url or material_url in seen_task_urls:
+                    if not material_url or material_url in skip_urls or material_url in seen_task_urls:
                         continue
                     seen_task_urls.add(material_url)
                     page_meta["materialTaskCount"] += 1
@@ -10279,6 +10333,7 @@ def crawl_pearl_river_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_pages = max(0, int(payload.get("maxPages") or 0))
     page_size = max(1, min(500, int(payload.get("pageSize") or 500)))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pdf_archive_dir = resolve_pdf_archive_dir(payload)
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -10314,7 +10369,7 @@ def crawl_pearl_river_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 products.append({key: value for key, value in product.items() if key != "materials"})
                 for material in product.get("materials", []):
                     material_url = trim(material.get("url"))
-                    if not material_url or material_url in seen_task_urls:
+                    if not material_url or material_url in seen_task_urls or material_url in skip_urls:
                         continue
                     seen_task_urls.add(material_url)
                     page_meta["materialTaskCount"] += 1
@@ -12013,6 +12068,7 @@ def crawl_bocomm_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_pages = max(0, int(payload.get("maxPages") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
     max_detail_workers = max(1, int(payload.get("maxDetailWorkers") or payload.get("detailConcurrency") or max_workers))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, str]] = []
     direct_tasks: list[dict[str, str]] = []
@@ -12073,7 +12129,7 @@ def crawl_bocomm_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     deduped_tasks: list[dict[str, str]] = []
     for task in tasks:
         material_url = trim(task.get("url"))
-        if not material_url or material_url in seen_task_urls:
+        if not material_url or material_url in skip_urls or material_url in seen_task_urls:
             continue
         seen_task_urls.add(material_url)
         deduped_tasks.append(task)
@@ -12682,6 +12738,7 @@ def crawl_xintai_life_product_info(payload: dict[str, Any]) -> dict[str, Any]:
     status_filter = xintai_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     status, data = fetch_xintai_life_products(keyword)
     page_meta = {
         "url": XINTAI_LIFE_PRODUCT_LIST_ENDPOINT,
@@ -12700,7 +12757,7 @@ def crawl_xintai_life_product_info(payload: dict[str, Any]) -> dict[str, Any]:
     seen_tasks: set[str] = set()
     for product in products:
         material_url = trim(product.get("materialUrl"))
-        if not material_url:
+        if not material_url or material_url in skip_urls:
             continue
         task_key = f"{product['salesStatus']}|{product['productName']}|{material_url}"
         if task_key in seen_tasks:
@@ -13290,6 +13347,7 @@ def crawl_metlife_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     status_keys = metlife_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -13299,7 +13357,9 @@ def crawl_metlife_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         if page_key not in status_keys:
             continue
         page = METLIFE_PRODUCT_PAGES[page_key]
-        status, html = fetch_html(page["url"])
+        status, html = fetch_html_direct(page["url"], referer=METLIFE_OFFICIAL_BASE_URL)
+        if status < 200 or status >= 300 or not html:
+            status, html = fetch_html(page["url"])
         page_meta = {
             "url": page["url"],
             "status": status,
@@ -13318,7 +13378,7 @@ def crawl_metlife_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
             products.append({key: value for key, value in product.items() if key != "materials"})
             for material in product.get("materials", []):
                 material_url = trim(material.get("url"))
-                if not material_url or material_url in seen_task_urls:
+                if not material_url or material_url in skip_urls or material_url in seen_task_urls:
                     continue
                 seen_task_urls.add(material_url)
                 tasks.append(
@@ -13341,7 +13401,9 @@ def crawl_metlife_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
 
     if (not max_products or len(products) < max_products) and "dmtm" in status_keys:
         page = METLIFE_DMTM_PAGE
-        status, html = fetch_html(page["url"])
+        status, html = fetch_html_direct(page["url"], referer=METLIFE_OFFICIAL_BASE_URL)
+        if status < 200 or status >= 300 or not html:
+            status, html = fetch_html(page["url"])
         page_meta = {
             "url": page["url"],
             "status": status,
@@ -13360,7 +13422,7 @@ def crawl_metlife_china_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 products.append({key: value for key, value in product.items() if key != "materials"})
                 for material in product.get("materials", []):
                     material_url = trim(material.get("url"))
-                    if not material_url or material_url in seen_task_urls:
+                    if not material_url or material_url in skip_urls or material_url in seen_task_urls:
                         continue
                     seen_task_urls.add(material_url)
                     tasks.append(
@@ -13872,6 +13934,7 @@ def crawl_yingda_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     start_page = max(1, int(payload.get("startPage") or 1))
     max_pages = max(0, int(payload.get("maxPages") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -13926,7 +13989,7 @@ def crawl_yingda_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 for task in yingda_life_material_tasks(product, detail_html):
                     material_url = trim(task.get("url"))
-                    if not material_url or material_url in seen_task_urls:
+                    if not material_url or material_url in seen_task_urls or material_url in skip_urls:
                         continue
                     seen_task_urls.add(material_url)
                     tasks.append(task)
@@ -14026,6 +14089,7 @@ def crawl_abc_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     start_page = max(1, int(payload.get("startPage") or 1))
     max_pages = max(0, int(payload.get("maxPages") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -14071,7 +14135,7 @@ def crawl_abc_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
             page_task_count = 0
             for task in page_tasks:
                 material_url = trim(task.get("url"))
-                if not material_url or material_url in seen_task_urls:
+                if not material_url or material_url in skip_urls or material_url in seen_task_urls:
                     continue
                 seen_task_urls.add(material_url)
                 tasks.append(task)
@@ -14465,6 +14529,7 @@ def crawl_aviva_cofco_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     status_filter = aviva_cofco_life_sale_status_filter(trim(payload.get("saleStatus") or payload.get("status")))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -14493,7 +14558,7 @@ def crawl_aviva_cofco_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
             products.append({key: value for key, value in product.items() if key != "materials"})
             for material in product.get("materials", []):
                 material_url = trim(material.get("url"))
-                if not material_url or material_url in seen_task_urls:
+                if not material_url or material_url in skip_urls or material_url in seen_task_urls:
                     continue
                 seen_task_urls.add(material_url)
                 tasks.append(
@@ -14716,6 +14781,7 @@ def crawl_greatwall_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_pages = max(1, int(payload.get("maxPages") or 100))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -14749,7 +14815,7 @@ def crawl_greatwall_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                     selected_products += 1
                 for material in product.get("materials", []):
                     material_url = trim(material.get("url"))
-                    if not material_url or material_url in seen_task_urls:
+                    if not material_url or material_url in skip_urls or material_url in seen_task_urls:
                         continue
                     seen_task_urls.add(material_url)
                     tasks.append(
@@ -14994,6 +15060,7 @@ def crawl_guofu_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_products = max(0, int(payload.get("maxProducts") or 0))
     product_offset = max(0, int(payload.get("productOffset") or payload.get("offset") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -15008,7 +15075,7 @@ def crawl_guofu_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
         products.extend(page_result["products"])
         for task in page_result["tasks"]:
             material_url = trim(task.get("url"))
-            if not material_url or material_url in seen_urls:
+            if not material_url or material_url in seen_urls or material_url in skip_urls:
                 continue
             seen_urls.add(material_url)
             tasks.append(task)
@@ -15194,7 +15261,9 @@ def crawl_beijing_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     offset = max(0, int(payload.get("offset") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
     skip_urls = {trim(item) for item in payload.get("skipUrls", []) if trim(item)}
-    status, html = fetch_html(BEIJING_LIFE_PRODUCT_INFO_URL)
+    status, html = fetch_html_direct(BEIJING_LIFE_PRODUCT_INFO_URL, referer=BEIJING_LIFE_OFFICIAL_BASE_URL)
+    if status < 200 or status >= 300 or not html:
+        status, html = fetch_html(BEIJING_LIFE_PRODUCT_INFO_URL)
     products, tasks = beijing_life_product_rows(company, html, max_products=max_products, offset=offset)
     if skip_urls:
         tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
@@ -15739,6 +15808,7 @@ def crawl_china_post_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     tasks: list[dict[str, str]] = []
     seen_products: set[str] = set()
     seen_urls: set[str] = set()
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
 
     for page_profile in CHINA_POST_LIFE_PRODUCT_LIST_PAGES:
         first_page = extract_china_post_life_listing_products(page_profile, 1)
@@ -15754,7 +15824,7 @@ def crawl_china_post_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                     products.append({**product, "company": company})
                 for task in extract_china_post_life_detail_tasks(product):
                     material_url = trim(task.get("url"))
-                    if not material_url or material_url in seen_urls:
+                    if not material_url or material_url in seen_urls or material_url in skip_urls:
                         continue
                     seen_urls.add(material_url)
                     task = {**task, "company": company}
@@ -15779,7 +15849,7 @@ def crawl_china_post_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 products.append(product)
         for task in internet_page["tasks"]:
             material_url = trim(task.get("url"))
-            if not material_url or material_url in seen_urls:
+            if not material_url or material_url in seen_urls or material_url in skip_urls:
                 continue
             seen_urls.add(material_url)
             tasks.append(task)
@@ -15798,7 +15868,7 @@ def crawl_china_post_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 products.append(product)
         for task in center_page["tasks"]:
             material_url = trim(task.get("url"))
-            if not material_url or material_url in seen_urls:
+            if not material_url or material_url in seen_urls or material_url in skip_urls:
                 continue
             seen_urls.add(material_url)
             tasks.append(task)
@@ -16512,6 +16582,343 @@ def crawl_aeon_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def official_life_product_type(product_name: str) -> str:
+    name = trim(product_name)
+    if "医疗" in name:
+        return "医疗险"
+    if "护理" in name or "重大疾病" in name or "疾病" in name or "防癌" in name:
+        return "健康险"
+    if "意外" in name:
+        return "意外险"
+    if "年金" in name or "养老" in name:
+        return "年金险"
+    if "两全" in name:
+        return "两全保险"
+    if "终身寿险" in name or "定期寿险" in name or name.endswith("寿险"):
+        return "寿险"
+    if "团体" in name:
+        return "团体保险"
+    return ""
+
+
+def official_life_responsibility_quality(page_text: str) -> tuple[str, str]:
+    text = clean_text(page_text)
+    if not text:
+        return "invalid_empty", "保险责任正文为空"
+    if re.match(r"^(?:保险责任继续有效|上述|该保险金|本项责任|前述|同时|此外|其中)", text):
+        return "valid_partial", "疑似从条款中段开始"
+    if not has_actual_responsibility_text(text):
+        return "suspect_needs_source_check", "缺少明确保险责任触发条件或给付规则"
+    return "valid_complete", ""
+
+
+def official_life_material_record(task: dict[str, str], default_company: str, official_domains: set[str], parser: str) -> dict[str, Any] | None:
+    material_url = trim(task.get("url"))
+    hostname = (urlsplit(material_url).hostname or "").lower()
+    if not material_url or hostname not in official_domains:
+        return None
+    status, data = fetch_bytes_direct(material_url, referer=trim(task.get("sourcePage")))
+    if status < 200 or status >= 300 or len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+        return None
+    extracted = extract_pdf_text_with_system_python(data)
+    page_text = focused_responsibility_excerpt(extracted.get("text", ""))
+    quality_status, quality_reason = official_life_responsibility_quality(page_text)
+    if quality_status in {"invalid_empty", "invalid_non_responsibility"}:
+        return None
+    product_name = trim(task.get("productName"))
+    label = trim(task.get("label")) or "产品条款"
+    return {
+        "company": trim(task.get("company")) or default_company,
+        "productName": product_name,
+        "productType": trim(task.get("productType")) or official_life_product_type(product_name),
+        "salesStatus": trim(task.get("salesStatus")),
+        "title": f"{product_name}{label}",
+        "url": material_url,
+        "snippet": f"{default_company}官网{label}，已截取保险责任正文段。",
+        "pageText": page_text,
+        "sourceType": "pdf",
+        "materialType": trim(task.get("materialType")) or "terms",
+        "official": True,
+        "officialDomain": hostname,
+        "parser": parser,
+        "qualityStatus": quality_status,
+        "qualityReason": quality_reason,
+        "responsibilityQualityStatus": quality_status,
+        "responsibilityQualityIssue": quality_reason,
+        "sourcePage": trim(task.get("sourcePage")),
+        "pages": extracted.get("pages", 0),
+        "bytes": len(data),
+    }
+
+
+def official_life_material_records(tasks: list[dict[str, str]], default_company: str, official_domains: set[str], parser: str, max_workers: int) -> list[dict[str, Any]]:
+    if max_workers <= 1:
+        return [record for record in (official_life_material_record(task, default_company, official_domains, parser) for task in tasks) if record]
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(official_life_material_record, task, default_company, official_domains, parser) for task in tasks]
+        for future in as_completed(futures):
+            record = future.result()
+            if record:
+                records.append(record)
+    return records
+
+
+def crawl_browser_material_tasks(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company"))
+    official_domains = {trim(item).lower() for item in (payload.get("officialDomains") or []) if trim(item)}
+    tasks = [task for task in (payload.get("tasks") or []) if isinstance(task, dict)]
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
+    records = official_life_material_records(
+        tasks,
+        company,
+        official_domains,
+        trim(payload.get("parser")) or "scrapling_browser_material_discovery",
+        max_workers,
+    )
+    return {
+        "ok": True,
+        "company": company,
+        "materialTaskCount": len(tasks),
+        "records": records,
+    }
+
+
+def foresea_life_tasks_from_html(company: str, html: str, skip_urls: set[str], max_products: int) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    pattern = re.compile(r"title\s*:\s*['\"](?P<title>[^'\"]+)['\"](?:(?!title\s*:).){0,1800}?url_0\s*:\s*['\"](?P<url>[^'\"]+\.pdf)['\"](?:(?!title\s*:).){0,900}?sellType\s*:\s*['\"](?P<status>[^'\"]+)['\"]", re.S)
+    for match in pattern.finditer(html):
+        product_name = clean_text(html_lib.unescape(match.group("title")))
+        material_url = urljoin(FORESEA_LIFE_OFFICIAL_BASE_URL, html_lib.unescape(trim(match.group("url"))))
+        hostname = (urlsplit(material_url).hostname or "").lower()
+        if not product_name or hostname not in FORESEA_LIFE_OFFICIAL_DOMAINS or material_url in skip_urls or material_url in seen_urls:
+            continue
+        if max_products and len(products) >= max_products:
+            break
+        seen_urls.add(material_url)
+        sales_status = trim(match.group("status")) or "未标明"
+        product_type = official_life_product_type(product_name)
+        products.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": sales_status, "sourcePage": FORESEA_LIFE_PRODUCT_INFO_URL})
+        tasks.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": sales_status, "label": "产品条款", "materialType": "terms", "url": material_url, "sourcePage": FORESEA_LIFE_PRODUCT_INFO_URL})
+    return products, tasks
+
+
+def crawl_foresea_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "前海人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    status, html = fetch_html_direct(FORESEA_LIFE_PRODUCT_INFO_URL, referer=FORESEA_LIFE_OFFICIAL_BASE_URL)
+    products, tasks = foresea_life_tasks_from_html(company, html if 200 <= status < 300 else "", skip_urls, max_products)
+    records = official_life_material_records(tasks, company, FORESEA_LIFE_OFFICIAL_DOMAINS, "scrapling_foresea_life_public_info", max_workers)
+    return {"ok": True, "company": company, "source": FORESEA_LIFE_PRODUCT_INFO_URL, "officialDomain": "www.foresealife.com", "maxProducts": max_products, "maxWorkers": max_workers, "pages": [{"url": FORESEA_LIFE_PRODUCT_INFO_URL, "status": status, "productCount": len(products), "materialTaskCount": len(tasks), "recordCount": len(records)}], "products": products, "materialTaskCount": len(tasks), "records": records}
+
+
+def three_gorges_life_tasks_from_html(company: str, html: str, page_url: str, skip_urls: set[str], max_products: int) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    soup = BeautifulSoup(html, "html.parser")
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 4:
+            continue
+        product_name = clean_text(cells[1].get_text(" ", strip=True))
+        sales_status = clean_text(cells[2].get_text(" ", strip=True))
+        terms = next((anchor for anchor in cells[3].find_all("a", href=True) if "条款" in clean_text(anchor.get_text(" ", strip=True))), None)
+        material_url = urljoin(page_url, html_lib.unescape(trim(terms.get("href")))) if terms else ""
+        hostname = (urlsplit(material_url).hostname or "").lower()
+        if not product_name or hostname not in THREE_GORGES_LIFE_OFFICIAL_DOMAINS or material_url in skip_urls or material_url in seen_urls:
+            continue
+        if max_products and len(products) >= max_products:
+            break
+        seen_urls.add(material_url)
+        product_type = official_life_product_type(product_name)
+        products.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": sales_status, "sourcePage": page_url})
+        tasks.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": sales_status, "label": "产品条款", "materialType": "terms", "url": material_url, "sourcePage": page_url})
+    return products, tasks
+
+
+def crawl_three_gorges_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "三峡人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    page_urls = [THREE_GORGES_LIFE_PRODUCT_INFO_URL, "https://www.tg-life.com.cn/index.php?a=lists&catid=203?sale_status=3"]
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for page_url in page_urls:
+        status, html = fetch_html_direct(page_url, referer=THREE_GORGES_LIFE_OFFICIAL_BASE_URL)
+        remaining = max(0, max_products - len(products)) if max_products else 0
+        page_products, page_tasks = three_gorges_life_tasks_from_html(company, html if 200 <= status < 300 else "", page_url, skip_urls, remaining)
+        page_tasks = [task for task in page_tasks if task["url"] not in seen_urls]
+        seen_urls.update(task["url"] for task in page_tasks)
+        products.extend(page_products)
+        tasks.extend(page_tasks)
+        pages.append({"url": page_url, "status": status, "productCount": len(page_products), "materialTaskCount": len(page_tasks), "recordCount": 0})
+        if max_products and len(products) >= max_products:
+            break
+    records = official_life_material_records(tasks, company, THREE_GORGES_LIFE_OFFICIAL_DOMAINS, "scrapling_three_gorges_life_product_info", max_workers)
+    source_by_url = {task["url"]: task["sourcePage"] for task in tasks}
+    for page in pages:
+        page["recordCount"] = sum(1 for record in records if source_by_url.get(trim(record.get("url"))) == page["url"])
+    return {"ok": True, "company": company, "source": THREE_GORGES_LIFE_PRODUCT_INFO_URL, "officialDomain": "www.tg-life.com.cn", "maxProducts": max_products, "maxWorkers": max_workers, "pages": pages, "products": products, "materialTaskCount": len(tasks), "records": records}
+
+
+def aixin_life_tasks_from_rows(company: str, rows: list[dict[str, Any]], skip_urls: set[str], max_products: int) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        product_name = clean_text(row.get("title"))
+        attachments = row.get("extend", {}).get("enclosureUpload") if isinstance(row.get("extend"), dict) else []
+        attachments = attachments if isinstance(attachments, list) else []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            label = clean_text(attachment.get("oriFileName"))
+            if not label.lower().endswith(".pdf") or not re.search(r"条款|说明书", label):
+                continue
+            material_url = urljoin(AIXIN_LIFE_OFFICIAL_BASE_URL, trim(attachment.get("url")))
+            hostname = (urlsplit(material_url).hostname or "").lower()
+            if not product_name or hostname not in AIXIN_LIFE_OFFICIAL_DOMAINS or material_url in skip_urls or material_url in seen_urls:
+                continue
+            if max_products and len(products) >= max_products:
+                return products, tasks
+            seen_urls.add(material_url)
+            product_type = official_life_product_type(product_name)
+            material_type = "product_manual" if "说明" in label else "terms"
+            products.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": "官网产品页", "sourcePage": AIXIN_LIFE_PRODUCT_LIST_ENDPOINT, "contentId": row.get("id")})
+            tasks.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": "官网产品页", "label": "产品说明书" if material_type == "product_manual" else "产品条款", "materialType": material_type, "url": material_url, "sourcePage": AIXIN_LIFE_PRODUCT_LIST_ENDPOINT})
+    return products, tasks
+
+
+def crawl_aixin_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "爱心人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
+    status, data = fetch_json(AIXIN_LIFE_PRODUCT_LIST_ENDPOINT)
+    rows = data.get("data", {}).get("records") if isinstance(data.get("data"), dict) else []
+    rows = rows if isinstance(rows, list) else []
+    products, tasks = aixin_life_tasks_from_rows(company, rows if 200 <= status < 300 else [], skip_urls, max_products)
+    records = official_life_material_records(tasks, company, AIXIN_LIFE_OFFICIAL_DOMAINS, "scrapling_aixin_life_product_api", max_workers)
+    return {"ok": True, "company": company, "source": AIXIN_LIFE_PRODUCT_LIST_ENDPOINT, "officialDomain": "www.aixin-ins.com", "maxProducts": max_products, "maxWorkers": max_workers, "pages": [{"url": AIXIN_LIFE_PRODUCT_LIST_ENDPOINT, "status": status, "productCount": len(products), "materialTaskCount": len(tasks), "recordCount": len(records)}], "products": products, "materialTaskCount": len(tasks), "records": records}
+
+
+def shanghai_life_material_key(url: str) -> str:
+    parts = urlsplit(trim(url))
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def fetch_shanghai_life_clause_page(page_num: int, page_size: int) -> tuple[int, dict[str, Any]]:
+    payload = {"pageNum": str(page_num), "pageSize": str(page_size), "params": {"status": 4}}
+    page = Fetcher.post(
+        SHANGHAI_LIFE_PRODUCT_CLAUSE_ENDPOINT,
+        json=payload,
+        timeout=30,
+        impersonate="chrome",
+        headers={
+            "Content-Type": "application/json",
+            "Origin": SHANGHAI_LIFE_OFFICIAL_BASE_URL.rstrip("/"),
+            "Referer": f"{SHANGHAI_LIFE_OFFICIAL_BASE_URL}productClause",
+        },
+    )
+    body = getattr(page, "body", b"") or b""
+    status = int(getattr(page, "status", 0) or 0)
+    try:
+        return status, json.loads(body.decode("utf-8", "ignore"))
+    except Exception:
+        return status, {}
+
+
+def shanghai_life_tasks_from_rows(company: str, rows: list[dict[str, Any]], skip_urls: set[str], max_products: int) -> tuple[list[dict[str, Any]], list[dict[str, str]], int]:
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    skipped_existing_url_count = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        product_name = clean_text(row.get("mainTitle"))
+        attachments = row.get("pluginDTOList")
+        attachments = attachments if isinstance(attachments, list) else []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            label = clean_text(attachment.get("fileName"))
+            material_url = trim(attachment.get("pluginUrl"))
+            material_key = shanghai_life_material_key(material_url)
+            hostname = (urlsplit(material_url).hostname or "").lower()
+            if not product_name or not label.lower().endswith(".pdf") or "保险条款" not in label or hostname not in SHANGHAI_LIFE_OFFICIAL_DOMAINS or not material_key:
+                continue
+            if material_key in skip_urls:
+                skipped_existing_url_count += 1
+                continue
+            if material_key in seen_keys:
+                continue
+            if max_products and len(products) >= max_products:
+                return products, tasks, skipped_existing_url_count
+            seen_keys.add(material_key)
+            product_type = official_life_product_type(product_name)
+            products.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": "官网产品条款", "sourcePage": SHANGHAI_LIFE_PRODUCT_CLAUSE_ENDPOINT, "clauseUniqueCode": trim(row.get("clauseUniquecode"))})
+            tasks.append({"company": company, "productName": product_name, "productType": product_type, "salesStatus": "官网产品条款", "label": "产品条款", "materialType": "terms", "url": material_url, "sourcePage": SHANGHAI_LIFE_PRODUCT_CLAUSE_ENDPOINT})
+    return products, tasks, skipped_existing_url_count
+
+
+def crawl_shanghai_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
+    company = trim(payload.get("company")) or "上海人寿"
+    max_products = max(0, int(payload.get("maxProducts") or 0))
+    max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    page_size = max(1, min(100, int(payload.get("pageSize") or 100)))
+    skip_urls = {shanghai_life_material_key(trim(item)) for item in (payload.get("skipUrls") or []) if shanghai_life_material_key(trim(item))}
+    pages: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    tasks: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    task_page_by_key: dict[str, int] = {}
+    skipped_existing_url_count = 0
+    page_num = 1
+    total_count: int | None = None
+
+    while True:
+        status, data = fetch_shanghai_life_clause_page(page_num, page_size)
+        result = data.get("data") if isinstance(data.get("data"), dict) else {}
+        rows = result.get("list") if isinstance(result.get("list"), list) else []
+        page_products, page_tasks, page_skipped_existing_url_count = shanghai_life_tasks_from_rows(company, rows if 200 <= status < 300 else [], skip_urls, max(0, max_products - len(products)) if max_products else 0)
+        page_tasks = [task for task in page_tasks if shanghai_life_material_key(task["url"]) not in seen_keys]
+        for task in page_tasks:
+            material_key = shanghai_life_material_key(task["url"])
+            seen_keys.add(material_key)
+            task_page_by_key[material_key] = page_num
+        products.extend(page_products)
+        tasks.extend(page_tasks)
+        skipped_existing_url_count += page_skipped_existing_url_count
+        pages.append({"url": SHANGHAI_LIFE_PRODUCT_CLAUSE_ENDPOINT, "pageNum": page_num, "status": status, "returnedRowCount": len(rows), "productCount": len(page_products), "materialTaskCount": len(page_tasks), "skippedExistingUrlCount": page_skipped_existing_url_count, "recordCount": 0})
+        total_count = int(result.get("totalCount") or 0) if result else total_count
+        if status < 200 or status >= 300 or not rows or (max_products and len(products) >= max_products) or (total_count is not None and page_num * page_size >= total_count):
+            break
+        page_num += 1
+
+    records = official_life_material_records(tasks, company, SHANGHAI_LIFE_OFFICIAL_DOMAINS, "scrapling_shanghai_life_product_clause_api", max_workers)
+    record_count_by_page: dict[int, int] = {}
+    for record in records:
+        page_num_for_record = task_page_by_key.get(shanghai_life_material_key(trim(record.get("url"))))
+        if page_num_for_record:
+            record_count_by_page[page_num_for_record] = record_count_by_page.get(page_num_for_record, 0) + 1
+    for page in pages:
+        page["recordCount"] = record_count_by_page.get(page["pageNum"], 0)
+    return {"ok": True, "company": company, "source": SHANGHAI_LIFE_PRODUCT_CLAUSE_ENDPOINT, "officialDomain": "www.shanghailife.com.cn", "maxProducts": max_products, "maxWorkers": max_workers, "pageSize": page_size, "knownUrlCount": len(skip_urls), "skippedExistingUrlCount": skipped_existing_url_count, "pages": pages, "products": products, "materialTaskCount": len(tasks), "records": records}
+
+
 def manulife_sinochem_page_filter(value: str) -> set[str]:
     text = trim(value).lower()
     if text in {"", "all", "全部"}:
@@ -16723,6 +17130,7 @@ def crawl_manulife_sinochem_life_pages(payload: dict[str, Any]) -> dict[str, Any
     sale_filter = trim(payload.get("saleStatus") or payload.get("status")).lower()
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -16756,7 +17164,7 @@ def crawl_manulife_sinochem_life_pages(payload: dict[str, Any]) -> dict[str, Any
             products.append({key: value for key, value in product.items() if key != "materials"})
             for material in product.get("materials", []):
                 material_url = trim(material.get("url"))
-                if not material_url or material_url in seen_task_urls:
+                if not material_url or material_url in skip_urls or material_url in seen_task_urls:
                     continue
                 seen_task_urls.add(material_url)
                 tasks.append(
@@ -17043,6 +17451,7 @@ def crawl_sunlife_everbright_life_pages(payload: dict[str, Any]) -> dict[str, An
     product_offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     status, html = fetch_html_direct(SUNLIFE_EVERBRIGHT_PRODUCT_INFO_URL, referer=SUNLIFE_EVERBRIGHT_OFFICIAL_BASE_URL)
     if status < 200 or status >= 300 or "审批或者备案的保险产品目录" not in html:
         try:
@@ -17095,7 +17504,7 @@ def crawl_sunlife_everbright_life_pages(payload: dict[str, Any]) -> dict[str, An
     for task in tasks:
         material_url = trim(task.get("url"))
         key = f"{trim(task.get('productName'))}|{trim(task.get('materialType'))}|{material_url}"
-        if not material_url or key in seen_urls:
+        if not material_url or material_url in skip_urls or key in seen_urls:
             continue
         seen_urls.add(key)
         unique_tasks.append(task)
@@ -18058,6 +18467,7 @@ def crawl_fosun_prudential_life_pages(payload: dict[str, Any]) -> dict[str, Any]
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
     product_name_filter = trim(payload.get("productName"))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -18088,6 +18498,8 @@ def crawl_fosun_prudential_life_pages(payload: dict[str, Any]) -> dict[str, Any]
             products.extend([{key: value for key, value in product.items() if key != "materials"} for product in page_products])
             for product in page_products:
                 for material in product["materials"]:
+                    if trim(material.get("url")) in skip_urls:
+                        continue
                     tasks.append(
                         {
                             "company": company,
@@ -18385,6 +18797,7 @@ def crawl_fosun_uhi_health_pages(payload: dict[str, Any]) -> dict[str, Any]:
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 4))
     product_name_filter = trim(payload.get("productName"))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -18414,6 +18827,8 @@ def crawl_fosun_uhi_health_pages(payload: dict[str, Any]) -> dict[str, Any]:
             products.extend([{key: value for key, value in product.items() if key != "materials"} for product in page_products])
             for product in page_products:
                 for material in product["materials"]:
+                    if trim(material.get("url")) in skip_urls:
+                        continue
                     tasks.append(
                         {
                             "company": company,
@@ -18659,6 +19074,7 @@ def crawl_citic_prudential_life_pages(payload: dict[str, Any]) -> dict[str, Any]
     offset = max(0, int(payload.get("offset") or payload.get("productOffset") or 0))
     max_products = max(0, int(payload.get("maxProducts") or 0))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     page_meta = {
         "url": CITIC_PRUDENTIAL_PRODUCT_INFO_URL,
         "status": 0,
@@ -18675,7 +19091,7 @@ def crawl_citic_prudential_life_pages(payload: dict[str, Any]) -> dict[str, Any]
     tasks, total_candidate_products = citic_prudential_material_tasks_from_page(company, html, status_filter)
     page_meta["productCount"] = total_candidate_products
     page_meta["materialTaskCount"] = len(tasks)
-    selected_tasks = tasks[offset:]
+    selected_tasks = [task for task in tasks[offset:] if trim(task.get("url")) not in skip_urls]
     if max_products:
         selected_tasks = selected_tasks[:max_products]
     products = [
@@ -19757,7 +20173,9 @@ def crawl_pku_founder_life_material_record(task: dict[str, str]) -> list[dict[st
 def crawl_pku_founder_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     company = trim(payload.get("company")) or "北大方正人寿"
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 2))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products, tasks, pages = pku_founder_life_product_entries({**payload, "company": company})
+    tasks = [task for task in tasks if trim(task.get("url")) not in skip_urls]
     records: list[dict[str, Any]] = []
     if max_workers <= 1:
         for task in tasks:
@@ -20109,6 +20527,7 @@ def crawl_boc_samsung_life_material_record(task: dict[str, Any]) -> dict[str, An
 def crawl_boc_samsung_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     company = trim(payload.get("company")) or "中银三星人寿"
     max_products = max(0, int(payload.get("maxProducts") or 0))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     products, page_meta = boc_samsung_life_products(payload)
     if max_products:
         products = products[:max_products]
@@ -20132,7 +20551,7 @@ def crawl_boc_samsung_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
                 "goodsId": goods_id,
             }
         )
-        tasks.extend(detail_tasks)
+        tasks.extend(task for task in detail_tasks if trim(task.get("url")) not in skip_urls)
         detail_pages.append(
             {
                 "url": f"{BOC_SAMSUNG_LIFE_GOODS_DETAIL_ENDPOINT}/{goods_id}",
@@ -22020,6 +22439,7 @@ def crawl_soochow_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
     product_offset = max(0, int(payload.get("productOffset") or 0))
     max_pages = max(1, int(payload.get("maxPages") or 1))
     max_workers = max(1, int(payload.get("maxWorkers") or payload.get("concurrency") or 6))
+    skip_urls = {trim(item) for item in (payload.get("skipUrls") or []) if trim(item)}
     pages: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     tasks: list[dict[str, str]] = []
@@ -22048,7 +22468,7 @@ def crawl_soochow_life_pages(payload: dict[str, Any]) -> dict[str, Any]:
             if max_products and trim(task.get("productName")) not in allowed_names:
                 continue
             material_url = trim(task.get("url"))
-            if not material_url or material_url in seen_urls:
+            if not material_url or material_url in seen_urls or material_url in skip_urls:
                 continue
             seen_urls.add(material_url)
             tasks.append(task)
@@ -23080,6 +23500,8 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_guofu_life_pages(payload)
     if trim(payload.get("mode")) == "beijing_life_pages":
         return crawl_beijing_life_pages(payload)
+    if trim(payload.get("mode")) == "browser_material_tasks":
+        return crawl_browser_material_tasks(payload)
     if trim(payload.get("mode")) == "ruitai_life_pages":
         return crawl_ruitai_life_pages(payload)
     if trim(payload.get("mode")) == "china_post_life_pages":
@@ -23088,6 +23510,14 @@ def crawl_policy(payload: dict[str, Any]) -> dict[str, Any]:
         return crawl_cmrh_life_pages(payload)
     if trim(payload.get("mode")) == "aeon_life_pages":
         return crawl_aeon_life_pages(payload)
+    if trim(payload.get("mode")) == "foresea_life_pages":
+        return crawl_foresea_life_pages(payload)
+    if trim(payload.get("mode")) == "three_gorges_life_pages":
+        return crawl_three_gorges_life_pages(payload)
+    if trim(payload.get("mode")) == "aixin_life_pages":
+        return crawl_aixin_life_pages(payload)
+    if trim(payload.get("mode")) == "shanghai_life_pages":
+        return crawl_shanghai_life_pages(payload)
     if trim(payload.get("mode")) == "manulife_sinochem_life_pages":
         return crawl_manulife_sinochem_life_pages(payload)
     if trim(payload.get("mode")) == "sunlife_everbright_life_pages":

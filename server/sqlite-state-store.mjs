@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
+import { ensureProductKnowledgeTables } from './product-knowledge-store.mjs';
 
 const SCHEMA_VERSION = '3';
 
@@ -511,6 +512,12 @@ function setMeta(db, key, value) {
     VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, String(value ?? ''));
+}
+
+function ensureFamilySalesMemoryVersionSchema(db) {
+  const columns = db.prepare('PRAGMA table_info(family_sales_memories)').all();
+  if (!columns.length || columns.some((column) => column.name === 'version')) return;
+  db.exec('ALTER TABLE family_sales_memories ADD COLUMN version INTEGER');
 }
 
 function createSchema(db) {
@@ -1040,8 +1047,10 @@ function createSchema(db) {
   `);
   ensureAgentRouteAuditSchema(db);
   ensureAgentTransferOutboxLeaseSchema(db);
+  ensureFamilySalesMemoryVersionSchema(db);
   ensureCashflowTable(db);
   ensureCashValueTable(db);
+  ensureProductKnowledgeTables(db);
   setMeta(db, 'schema_version', SCHEMA_VERSION);
 }
 
@@ -1501,8 +1510,8 @@ function insertRows(db, state) {
   }
 
   const insertFamilySalesMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, version, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const memory of normalizeArray(state.familySalesMemories)) {
     insertFamilySalesMemory.run(
@@ -1515,6 +1524,7 @@ function insertRows(db, state) {
       Number(memory.sourceThreadId || 0) || null,
       String(memory.createdAt || ''),
       String(memory.updatedAt || ''),
+      Number(memory.version || 0) || 1,
       jsonPayload(memory),
     );
   }
@@ -2365,8 +2375,8 @@ function replaceFamilySalesChats(db, state) {
 function replaceFamilySalesMemories(db, state) {
   db.prepare('DELETE FROM family_sales_memories').run();
   const insertMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, version, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const memory of normalizeArray(state.familySalesMemories)) {
     insertMemory.run(
@@ -2379,6 +2389,7 @@ function replaceFamilySalesMemories(db, state) {
       Number(memory.sourceThreadId || 0) || null,
       String(memory.createdAt || ''),
       String(memory.updatedAt || ''),
+      Number(memory.version || 0) || 1,
       jsonPayload(memory),
     );
   }

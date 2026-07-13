@@ -1,3 +1,5 @@
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+
 function trim(value) {
   return String(value || '').trim();
 }
@@ -229,6 +231,7 @@ export async function selectAgentSkillPromptWithDeepSeek({
   salesChatContext = null,
   fetchImpl = fetch,
   config = {},
+  privacyOptions = {},
 } = {}) {
   if (!config.apiKey) {
     return selectAgentSkillPrompt({ scene, question, salesChatContext });
@@ -249,7 +252,7 @@ export async function selectAgentSkillPromptWithDeepSeek({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(body, privacyOptions)),
     });
     if (!response.ok) {
       const bodyText = trim(await response.text());

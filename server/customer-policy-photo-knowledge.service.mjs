@@ -134,20 +134,26 @@ export function buildCustomerPolicyPhotoKnowledgeRecord({
     url: termsEvidence ? `customer-policy-terms://knowledge/${digest}` : `customer-policy-photo://knowledge/${digest}`,
     snippet: safePageText.slice(0, 220),
     pageText: safePageText,
-    sourceType: termsEvidence ? 'customer_policy_terms' : 'customer_policy_photo',
+    sourceType: 'customer_policy_photo',
     materialType: termsEvidence ? 'policy_terms' : 'policy_photo',
-    official: termsEvidence,
-    evidenceLabel: termsEvidence ? CUSTOMER_POLICY_TERMS_EVIDENCE_LABEL : '客户上传保单照片（待审核）',
-    evidenceLevel: termsEvidence ? CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL : CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
-    sourceLevel: termsEvidence ? CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL : CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
-    sourceKind: termsEvidence ? CUSTOMER_POLICY_TERMS_SOURCE_KIND : CUSTOMER_POLICY_PHOTO_SOURCE_KIND,
+    official: false,
+    evidenceLabel: '客户上传保单照片（待审核）',
+    evidenceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
+    sourceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
+    sourceKind: CUSTOMER_POLICY_PHOTO_SOURCE_KIND,
     parser: 'policy_product_knowledge_scan',
-    reviewStatus: termsEvidence ? 'approved' : 'pending',
-    globalSearchable: termsEvidence,
-    responsibilityDeferred: !termsEvidence,
+    reviewStatus: 'pending',
+    globalSearchable: false,
+    responsibilityDeferred: true,
     ownerUserId: Number(ownerUserId || 0) || 0,
     ownerGuestId: text(ownerGuestId),
     uploadNames: normalizeArray(uploadItems).map((item) => text(item?.name)).filter(Boolean),
+    uploadImages: normalizeArray(uploadItems).map((item) => ({
+      name: text(item?.name),
+      type: text(item?.type) || 'image/jpeg',
+      size: Number(item?.size || 0) || 0,
+      dataUrl: text(item?.dataUrl),
+    })).filter((item) => item.dataUrl.startsWith('data:image/')),
     discoveredAt: createdAt,
     lastFetchedAt: createdAt,
     updatedAt: createdAt,
@@ -213,8 +219,7 @@ export function normalizeCustomerPolicyPhotoUploadItems(value = []) {
 
 function preferredProductName(scan = {}, manualData = {}, fallbackName = '') {
   const scanName = text(scan?.data?.name);
-  if (scanName && scanName !== 'OCR识别保单') return scanName;
-  return firstText(manualData?.name, fallbackName, scanName);
+  return firstText(manualData?.name, scanName === 'OCR识别保单' ? '' : scanName, fallbackName);
 }
 
 export function mergeCustomerPolicyPhotoScans({ baseScan = null, supplementScans = [], manualData = {}, fallback = {} } = {}) {

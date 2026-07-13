@@ -82,7 +82,7 @@ function loadDevProductNames(db) {
   `).all().map((row) => text(row.product_name)));
 }
 
-function loadOldProducts(oldDb, devProductNames) {
+function loadOldProducts(oldDb, devProductNames, includedProductNames = new Set()) {
   const rows = oldDb.prepare(`
     SELECT TRIM(company) AS company,
            TRIM(product_name) AS product_name,
@@ -101,7 +101,8 @@ function loadOldProducts(oldDb, devProductNames) {
       knowledgeRows: Number(row.knowledge_rows || 0),
       rowsWithPageText: Number(row.rows_with_page_text || 0),
     }))
-    .filter((row) => !devProductNames.has(row.productName));
+    .filter((row) => !devProductNames.has(row.productName))
+    .filter((row) => !includedProductNames.size || includedProductNames.has(row.productName));
 }
 
 function loadKnowledgeRows(oldDb, targetKeys) {
@@ -190,6 +191,7 @@ export function migrateOldRuntimeExtraProductsToDev({
   devDbPath = DEFAULT_DEV_DB_PATH,
   write = false,
   backupPath = '',
+  productNames = [],
   now = new Date().toISOString(),
 } = {}) {
   const resolvedOldDbPath = path.resolve(oldDbPath);
@@ -199,7 +201,8 @@ export function migrateOldRuntimeExtraProductsToDev({
   try {
     ensureTables(devDb);
     const devProductNames = loadDevProductNames(devDb);
-    const targetProducts = loadOldProducts(oldDb, devProductNames);
+    const includedProductNames = new Set((Array.isArray(productNames) ? productNames : [productNames]).map(text).filter(Boolean));
+    const targetProducts = loadOldProducts(oldDb, devProductNames, includedProductNames);
     const targetKeys = new Set(targetProducts.map((row) => productKey(row.company, row.productName)));
     const knowledgeRows = loadKnowledgeRows(oldDb, targetKeys);
     const indicatorRows = loadIndicatorRows(oldDb, targetKeys);
@@ -294,6 +297,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     devDbPath: readArg('dev-db-path', DEFAULT_DEV_DB_PATH),
     write: hasFlag('write'),
     backupPath: readArg('backup-path', ''),
+    productNames: [readArg('product-name', '')].filter(Boolean),
   });
   console.log(JSON.stringify(result, null, 2));
 }

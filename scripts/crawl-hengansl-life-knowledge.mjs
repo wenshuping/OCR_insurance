@@ -62,7 +62,7 @@ async function main() {
 
   const knowledgeStore = await createKnowledgeStateStore();
   try {
-    const beforeUrls = new Set(knowledgeStore.allKnownUrls());
+    const beforeUrls = new Set(knowledgeStore.knownCompanyUrls('恒安标准'));
     const result = runCrawler({
       mode: 'hengansl_life_pages',
       company: '恒安标准',
@@ -72,14 +72,13 @@ async function main() {
       maxPages,
       maxWorkers,
       archivePdf: true,
+      skipUrls: [...beforeUrls],
     });
 
     const state = knowledgeStore.loadState();
     if (!Number(state.nextId)) state.nextId = 1;
     const before = knowledgeStore.countKnowledgeRecords();
-    const recordsToSave = newOnly
-      ? (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)))
-      : result.records || [];
+    const recordsToSave = (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)));
     const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
     knowledgeStore.saveState(state);
     const after = knowledgeStore.countKnowledgeRecords();

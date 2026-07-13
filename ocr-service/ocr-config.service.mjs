@@ -7,6 +7,9 @@ export const POLICY_OCR_MODE_QWEN25_VL_3B_INSTRUCT_MLX_VLM = 'qwen25_vl_3b_instr
 export const POLICY_OCR_MODE_PADDLEOCR_VL_1_5 = 'paddleocr_vl_1_5';
 export const POLICY_OCR_MODE_REMOTE_GPU_VISION = 'remote_gpu_vision';
 export const POLICY_OCR_MODE_DEEPSEEK_OCR_VLLM = 'deepseek_ocr_vllm';
+export const POLICY_OCR_MODE_UNLIMITED_OCR_VLLM = 'unlimited_ocr_vllm';
+export const POLICY_OCR_MODE_GLM_OCR_VLLM = 'glm_ocr_vllm';
+export const POLICY_OCR_MODE_PADDLEOCR_VL16_AUTODL = 'paddleocr_vl16_autodl';
 export const POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE = 'huawei_cloud_insurance';
 export const POLICY_OCR_MODE_MINICPM_V_4X_LOCAL = 'minicpm_v_4x_local';
 export const POLICY_OCR_MODE_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
@@ -19,6 +22,9 @@ export const OCR_PROVIDER_OLLAMA_VISION_LOCAL = 'ollama_vision_local';
 export const OCR_PROVIDER_MLX_QWEN25_VL_LOCAL = 'mlx_qwen25_vl_local';
 export const OCR_PROVIDER_REMOTE_GPU_VISION = 'remote_gpu_vision';
 export const OCR_PROVIDER_DEEPSEEK_OCR_VLLM = 'deepseek_ocr_vllm';
+export const OCR_PROVIDER_UNLIMITED_OCR_VLLM = 'unlimited_ocr_vllm';
+export const OCR_PROVIDER_GLM_OCR_VLLM = 'glm_ocr_vllm';
+export const OCR_PROVIDER_PADDLEOCR_VL16_AUTODL = 'paddleocr_vl16_autodl';
 export const OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE = 'huawei_cloud_insurance';
 export const OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL = 'pdf_extract_kit_local';
 
@@ -70,6 +76,24 @@ const MODE_META = [
     description: '使用 AutoDL 本机 vLLM DeepSeek-OCR 解析为 Markdown，再进入本系统字段匹配。',
   },
   {
+    value: POLICY_OCR_MODE_UNLIMITED_OCR_VLLM,
+    implemented: true,
+    selectable: true,
+    description: '使用 AutoDL 本机 vLLM Unlimited-OCR 解析长文档为 Markdown，再进入本系统字段匹配。',
+  },
+  {
+    value: POLICY_OCR_MODE_GLM_OCR_VLLM,
+    implemented: true,
+    selectable: true,
+    description: '使用 AutoDL 本机 vLLM GLM-OCR 识别保险文档，再进入本系统字段匹配。',
+  },
+  {
+    value: POLICY_OCR_MODE_PADDLEOCR_VL16_AUTODL,
+    implemented: true,
+    selectable: true,
+    description: '使用 AutoDL 本地部署的 PaddleOCR-VL-1.6 完成版面分析与文字识别。',
+  },
+  {
     value: POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE,
     implemented: true,
     selectable: true,
@@ -99,6 +123,18 @@ function hasHuaweiCloudInsuranceRuntimeConfig(env = process.env) {
 
 function hasDeepSeekOcrVllmRuntimeConfig(env = process.env) {
   return Boolean(String(env.POLICY_OCR_DEEPSEEK_OCR_BASE_URL || '').trim());
+}
+
+function hasUnlimitedOcrVllmRuntimeConfig(env = process.env) {
+  return Boolean(String(env.POLICY_OCR_UNLIMITED_OCR_BASE_URL || '').trim());
+}
+
+function hasGlmOcrVllmRuntimeConfig(env = process.env) {
+  return Boolean(String(env.POLICY_OCR_GLM_OCR_BASE_URL || '').trim());
+}
+
+function hasPaddleOcrVl16RuntimeConfig(env = process.env) {
+  return Boolean(String(env.POLICY_OCR_PADDLEOCR_VL16_BASE_URL || '').trim());
 }
 
 export function resolveLocalVisionFallbackRuntime(env = process.env) {
@@ -239,6 +275,21 @@ export function resolvePolicyOcrModeReadiness(mode, env = process.env) {
       ? { ready: true, notReadyReason: '' }
       : { ready: false, notReadyReason: '请先配置 POLICY_OCR_DEEPSEEK_OCR_BASE_URL 指向 AutoDL 本机 DeepSeek-OCR vLLM 服务。' };
   }
+  if (normalizedMode === POLICY_OCR_MODE_UNLIMITED_OCR_VLLM) {
+    return hasUnlimitedOcrVllmRuntimeConfig(env)
+      ? { ready: true, notReadyReason: '' }
+      : { ready: false, notReadyReason: '请先配置 POLICY_OCR_UNLIMITED_OCR_BASE_URL 指向 AutoDL Unlimited-OCR vLLM 服务。' };
+  }
+  if (normalizedMode === POLICY_OCR_MODE_GLM_OCR_VLLM) {
+    return hasGlmOcrVllmRuntimeConfig(env)
+      ? { ready: true, notReadyReason: '' }
+      : { ready: false, notReadyReason: '请先配置 POLICY_OCR_GLM_OCR_BASE_URL 指向 AutoDL GLM-OCR vLLM 服务。' };
+  }
+  if (normalizedMode === POLICY_OCR_MODE_PADDLEOCR_VL16_AUTODL) {
+    return hasPaddleOcrVl16RuntimeConfig(env)
+      ? { ready: true, notReadyReason: '' }
+      : { ready: false, notReadyReason: '请先配置 POLICY_OCR_PADDLEOCR_VL16_BASE_URL 指向 AutoDL PaddleOCR-VL-1.6 服务。' };
+  }
   if (normalizedMode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
     return hasHuaweiCloudInsuranceRuntimeConfig(env)
       ? { ready: true, notReadyReason: '' }
@@ -288,6 +339,15 @@ export function resolvePolicyOcrModeAdminReadiness(mode, env = process.env) {
     return { ready: true, notReadyReason: '' };
   }
   if (normalizedMode === POLICY_OCR_MODE_DEEPSEEK_OCR_VLLM) {
+    return { ready: true, notReadyReason: '' };
+  }
+  if (normalizedMode === POLICY_OCR_MODE_UNLIMITED_OCR_VLLM) {
+    return { ready: true, notReadyReason: '' };
+  }
+  if (normalizedMode === POLICY_OCR_MODE_GLM_OCR_VLLM) {
+    return { ready: true, notReadyReason: '' };
+  }
+  if (normalizedMode === POLICY_OCR_MODE_PADDLEOCR_VL16_AUTODL) {
     return { ready: true, notReadyReason: '' };
   }
   if (normalizedMode === POLICY_OCR_MODE_HUAWEI_CLOUD_INSURANCE) {
@@ -340,6 +400,9 @@ export function policyOcrProviderLabel(provider) {
   if (normalized === OCR_PROVIDER_MLX_QWEN25_VL_LOCAL) return 'Qwen2.5-VL-3B-Instruct + MLX-VLM';
   if (normalized === OCR_PROVIDER_REMOTE_GPU_VISION) return '4080 远程视觉识别';
   if (normalized === OCR_PROVIDER_DEEPSEEK_OCR_VLLM) return 'DeepSeek-OCR 本机 vLLM';
+  if (normalized === OCR_PROVIDER_UNLIMITED_OCR_VLLM) return 'Unlimited-OCR 本机 vLLM';
+  if (normalized === OCR_PROVIDER_GLM_OCR_VLLM) return 'GLM-OCR 本机 vLLM';
+  if (normalized === OCR_PROVIDER_PADDLEOCR_VL16_AUTODL) return 'PaddleOCR-VL-1.6（AutoDL 本地）';
   if (normalized === OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE) return '华为云保险单识别';
   if (normalized === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) return 'PDF-Extract-Kit / MinerU 本地识别';
   return '当前本地默认识别';

@@ -656,6 +656,12 @@ test('sqlite state store incrementally persists family state without rewriting k
     { id: 24, threadId: 23, familyId: 8, role: 'user', content: '预算不够怎么办', status: 'complete', createdAt: '2026-06-08T00:03:00.000Z' },
     { id: 25, threadId: 23, familyId: 8, role: 'assistant', content: '先拆基础方案', status: 'complete', createdAt: '2026-06-08T00:04:00.000Z' },
   );
+  store.db.exec(`
+    CREATE TRIGGER family_sales_memories_requires_version
+      BEFORE INSERT ON family_sales_memories
+      WHEN COALESCE(NEW.version, 0) <= 0
+      BEGIN SELECT RAISE(ABORT, 'family sales memory version is required'); END;
+  `);
   state.familySalesMemories.push({
     id: 6,
     familyId: 8,
@@ -687,6 +693,7 @@ test('sqlite state store incrementally persists family state without rewriting k
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_sales_chat_messages WHERE id = ?').get(25).payload).content, '先拆基础方案');
     assert.equal(db.prepare('SELECT count(*) AS count FROM family_sales_memories WHERE family_id = ?').get(8).count, 1);
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM family_sales_memories WHERE id = ?').get(6).payload).content, '预算异议先拆基础方案');
+    assert.equal(db.prepare('SELECT version FROM family_sales_memories WHERE id = ?').get(6).version, 1);
     assert.equal(JSON.parse(db.prepare('SELECT payload FROM policies WHERE id = ?').get(3).payload).insuredMemberId, 20);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records').get().count, 2);
     assert.equal(db.prepare('SELECT count(*) AS count FROM knowledge_records WHERE id = ?').get(99).count, 1);

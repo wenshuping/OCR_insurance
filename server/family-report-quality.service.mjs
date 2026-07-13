@@ -1,3 +1,5 @@
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_FAMILY_REPORT_MODEL = 'deepseek-v4-pro';
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -600,7 +602,7 @@ export async function generateFamilyReportQualityIssues({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(body)),
     });
 
     if (!response.ok) {

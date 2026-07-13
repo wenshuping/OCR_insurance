@@ -678,23 +678,23 @@ export function createResponsibilityRoutes(context) {
 
   router.get('/company-suggestions', async (req, res) => {
     const q = trim(req.query?.q);
-    const limit = Number(req.query?.limit || 12);
+    const limit = Number(req.query?.limit);
     res.json({
       ok: true,
-      suggestions: buildResponsibilityCompanySuggestions(state, q, Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 12),
+      suggestions: buildResponsibilityCompanySuggestions(state, q, Number.isFinite(limit) && limit > 0 ? limit : undefined),
     });
   });
 
   router.get('/product-suggestions', async (req, res) => {
     const company = trim(req.query?.company);
     const q = trim(req.query?.q);
-    const limit = Number(req.query?.limit || 12);
+    const limit = Number(req.query?.limit);
     res.json({
       ok: true,
       suggestions: buildResponsibilityProductSuggestions(state, {
         company,
         query: q,
-        maxResults: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 12,
+        maxResults: Number.isFinite(limit) && limit > 0 ? limit : undefined,
       }),
     });
   });

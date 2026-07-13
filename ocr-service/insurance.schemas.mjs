@@ -43,6 +43,8 @@ export const updatePolicyBodySchema = createPolicyBodySchema;
 export const scanPolicyBodySchema = z
   .object({
     ocrText: z.string().trim().optional(),
+    scenario: z.string().trim().optional(),
+    provider: z.string().trim().optional(),
     ocrContext: z
       .object({
         companyHints: z.array(z.string().trim().min(1)).max(8).optional(),

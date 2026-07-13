@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
   buildFamilySalesReviewInput,
   buildFamilySalesReviewMessages,
+  enforceVerifiedCashflowAmounts,
+  reconcileVerifiedCashflowAmounts,
   generateFamilySalesReview,
   resolveFamilySalesReviewFreshness,
 } from '../server/family-sales-review.service.mjs';
@@ -248,6 +250,89 @@ test('family sales review requests DeepSeek pro by default with thinking enabled
   assert.equal(review.inputSummary.familyId, null);
 });
 
+test('family sales review keeps yearly deterministic cashflow amounts instead of model-rewritten units', async () => {
+  const input = buildFamilySalesReviewInput({
+    family: { id: 1, status: 'active' },
+    members: [],
+    policies: [{
+      id: 101,
+      company: '测试保险',
+      name: '测试两全险',
+      amount: 200000,
+      cashflowEntries: [{ year: 2052, amount: 200000, liability: '满期保险金', calcText: '满期给付基本保险金额' }],
+    }],
+  });
+
+  assert.deepEqual(input.policies[0].verifiedCashflow, [{
+    year: 2052,
+    amount: 200000,
+    liability: '满期保险金',
+    calcText: '满期给付基本保险金额',
+  }]);
+  assert.deepEqual(input.financialFacts, [{
+    policyId: 101,
+    productName: '测试两全险',
+    entries: [{
+      year: 2052,
+      liability: '满期保险金',
+      amount: 200000,
+      amountText: '20万元',
+      calculationText: '满期给付基本保险金额',
+    }],
+  }]);
+  assert.match(buildFamilySalesReviewMessages(input).map((message) => message.content).join('\n'), /不得除以10/u);
+  assert.match(enforceVerifiedCashflowAmounts('2052年确定给付 2 万元。', input), /2052年确定给付 20万元/u);
+  assert.match(enforceVerifiedCashflowAmounts('2053年确定给付 2 万元。', input), /2053年确定给付 金额待核实/u);
+  assert.equal(reconcileVerifiedCashflowAmounts('2052年确定给付 2 万元。', input).changed, true);
+
+  let reportRequestCount = 0;
+  const review = await generateFamilySalesReview({
+    input,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async (_url, options = {}) => {
+      reportRequestCount += 1;
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => ({
+          model: 'deepseek-v4-pro',
+          choices: [{ message: { content: reportRequestCount === 1
+            ? '## 一、销售结论摘要\n- 现有两全险满期金（2052年确定给付 2 万元），仅具象征性规划意义。'
+            : '## 一、销售结论摘要\n- 现有两全险在2052年确定给付20万元，是否足以支持养老目标仍需结合家庭财务目标核实。' } }],
+        }),
+      };
+    },
+  });
+  assert.equal(reportRequestCount, 2);
+  assert.match(review.content, /2052年确定给付\s*20万元/u);
+  assert.doesNotMatch(review.content, /2052年确定给付\s*2 万元/u);
+  assert.doesNotMatch(review.content, /仅具象征性规划意义/u);
+});
+
+test('family sales review excludes conflicting cached cashflow data before analysis', () => {
+  const input = buildFamilySalesReviewInput({
+    family: { id: 1, status: 'active' },
+    policies: [{
+      id: 102,
+      name: '金额待核实两全险',
+      amount: 200000,
+      cashflowEntries: [{
+        year: 2052,
+        amount: 20000,
+        liability: '满期保险金',
+        calcText: '基本保险金额200,000元 × 100% = 200,000元',
+      }],
+    }],
+  });
+
+  assert.deepEqual(input.policies[0].verifiedCashflow, []);
+  assert.match(input.dataQuality.financialDataWarnings[0], /金额与计算公式不一致/u);
+  assert.deepEqual(input.financialFacts, []);
+  const prompt = buildFamilySalesReviewMessages(input).map((message) => message.content).join('\n');
+  assert.match(prompt, /金额异常/u);
+  assert.match(prompt, /不能据此判断产品价值/u);
+});
+
 test('family sales chat prompt uses privacy-safe context and restores display names', async () => {
   const requestBodies = [];
   const input = buildFamilySalesReviewInput({
@@ -351,11 +436,43 @@ test('family sales chat answers identity questions as insurance marketing expert
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
 });
 
+test('family sales chat corrects a product comparison cashflow amount from the verified ledger', async () => {
+  const familyInput = buildFamilySalesReviewInput({
+    family: { id: 1, status: 'active' },
+    policies: [{
+      id: 101,
+      name: '测试两全险',
+      cashflowEntries: [{ year: 2052, amount: 200000, liability: '满期保险金' }],
+    }],
+  });
+  let callCount = 0;
+  const reply = await generateFamilySalesChatReply({
+    context: { familyInput },
+    question: '帮我对比这份计划书和现有保单',
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          model: callCount === 1 ? 'deepseek-v4-flash' : 'deepseek-v4-pro',
+          choices: [{ message: { content: callCount === 1
+            ? JSON.stringify({ intent: 'product_comparison', skills: ['product_comparison', 'policy_evidence'], reason: '产品对比' })
+            : '现有保单在2052年确定给付 2 万元。' } }],
+        }),
+      };
+    },
+  });
+
+  assert.match(reply.content, /2052年确定给付 20万元/u);
+  assert.doesNotMatch(reply.content, /2052年确定给付 2 万元/u);
+});
+
 test('family sales memory context is sanitized, deduplicated, and available to chat and review prompts', () => {
   const normalized = normalizeExtractedFamilySalesMemories({
     memories: [
-      { kind: 'objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.91 },
-      { kind: 'objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.9 },
+      { kind: 'objection', memoryKey: 'budget_objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.91 },
+      { kind: 'objection', memoryKey: 'budget_objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.9 },
       { kind: 'strategy', content: '先讲基础方案，再约二次面谈', confidence: 0.83 },
       { kind: 'noise', content: '无效类型', confidence: 1 },
       { kind: 'todo', content: '置信度太低的不保存', confidence: 0.3 },
@@ -383,7 +500,9 @@ test('family sales memory context is sanitized, deduplicated, and available to c
   });
   assert.equal(result.changed, true);
   assert.equal(state.familySalesMemories.length, 2);
-  assert.deepEqual(state.familySalesMemories[0].evidenceMessageIds, [31, 32]);
+  assert.deepEqual(state.familySalesMemories[0].evidenceMessageIds, [31]);
+  assert.equal(state.familySalesMemories[0].status, 'confirmed');
+  assert.equal(state.familySalesMemories[1].status, 'candidate');
 
   const salesMemoryContext = buildFamilySalesMemoryContext(state.familySalesMemories);
   const chatPrompt = buildFamilySalesChatMessages({
@@ -409,6 +528,60 @@ test('family sales memory context is sanitized, deduplicated, and available to c
   }).map((message) => message.content).join('\n');
   assert.match(reviewPrompt, /salesMemoryContext/u);
   assert.match(reviewPrompt, /salesChatContext 与 salesMemoryContext 同时存在，顾问本次勾选的 salesChatContext 优先/u);
+});
+
+test('family sales memory marks same-slot changes as conflicts and excludes them from context', () => {
+  const state = { familySalesMemories: [], nextId: 200 };
+  const allocateId = (target) => target.nextId++;
+  upsertFamilySalesMemories({
+    state,
+    familyId: 8,
+    owner: { ownerGuestId: 'guest-memory' },
+    sourceThreadId: 30,
+    userMessage: { id: 41 },
+    assistantMessage: { id: 42 },
+    extractedMemories: [{
+      kind: 'preference',
+      memoryKey: 'plan_display_order',
+      content: '客户希望先看基础方案',
+      normalizedValue: '基础方案优先',
+      confidence: 0.92,
+    }],
+    allocateId,
+    nowIso: () => '2026-07-10T08:00:00.000Z',
+  });
+  upsertFamilySalesMemories({
+    state,
+    familyId: 8,
+    owner: { ownerGuestId: 'guest-memory' },
+    sourceThreadId: 30,
+    userMessage: { id: 43 },
+    assistantMessage: { id: 44 },
+    extractedMemories: [{
+      kind: 'preference',
+      memoryKey: 'plan_display_order',
+      content: '客户改为先比较标准方案和完善方案',
+      normalizedValue: '标准与完善方案优先',
+      confidence: 0.95,
+    }],
+    allocateId,
+    nowIso: () => '2026-07-11T08:00:00.000Z',
+  });
+
+  assert.deepEqual(state.familySalesMemories.map((memory) => memory.status), ['conflicted', 'conflicted']);
+  assert.deepEqual(state.familySalesMemories.map((memory) => memory.evidenceMessageIds), [[41], [43]]);
+  assert.equal(buildFamilySalesMemoryContext(state.familySalesMemories), null);
+});
+
+test('family sales memory context accepts legacy active rows but filters invalidated and future memories', () => {
+  const context = buildFamilySalesMemoryContext([
+    { id: 1, kind: 'objection', content: '旧数据仍可使用', status: 'active', createdAt: '2026-07-01T00:00:00.000Z' },
+    { id: 2, kind: 'todo', content: '已经失效', status: 'confirmed', invalidatedAt: '2026-07-05T00:00:00.000Z' },
+    { id: 3, kind: 'preference', content: '未来才生效', status: 'confirmed', validFrom: '2026-08-01T00:00:00.000Z' },
+  ], { asOf: '2026-07-11T00:00:00.000Z' });
+
+  assert.equal(context.memoryCount, 1);
+  assert.equal(context.memories[0].content, '旧数据仍可使用');
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {

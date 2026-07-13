@@ -16,6 +16,7 @@ import { createClientPerformanceRoutes } from './routes/client-performance.route
 import { createFamilyRoutes } from './routes/families.routes.mjs';
 import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
+import { createProductKnowledgeRoutes } from './routes/product-knowledge.routes.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
@@ -47,7 +48,8 @@ import {
   selectedCoverageIndicators,
   publicUser,
 } from './policy-ocr.domain.mjs';
-import { scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
+import { recognizeDocumentTextWithConfiguredRuntime, scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
+import { resolveOcrProviderForScenario } from './ocr-scenario-routing.service.mjs';
 import { buildPolicyOcrVisionContext, enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
 import {
   buildLocalKnowledgeResponsibilityAnalysis,
@@ -87,6 +89,7 @@ import {
   buildPolicyDerivedResult,
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
+import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
 import { generateProductCustomerResponsibilitySummary } from './product-customer-responsibility-summary.service.mjs';
 import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 import {
@@ -1295,7 +1298,54 @@ function buildAdminKnowledgeRecords(state) {
   return (state.knowledgeRecords || [])
     .map((record) => normalizeKnowledgeRecord(record, { officialDomainProfiles }))
     .filter(Boolean)
+    .map((record) => ({
+      ...record,
+      ...resolveCustomerReviewProductIdentity(record, state.policies || []),
+      reviewIndicators: record.sourceKind === 'customer_policy_photo' || record.sourceKind === 'customer_policy_terms'
+        ? (state.insuranceIndicatorRecords || []).filter((indicator) => (
+          trim(indicator?.company) === trim(record.company)
+          && trim(indicator?.productName) === trim(record.productName)
+        ))
+        : [],
+    }))
     .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+}
+
+function customerReviewTitleProductName(pageText = '') {
+  for (const rawLine of String(pageText || '').split(/\r?\n/u)) {
+    const line = trim(rawLine).replace(/^[“"'《]+|[”"'》]+$/gu, '');
+    const match = line.match(/^(.{4,80}保险(?:[（(][^）)]{1,20}[）)])?)条款$/u);
+    if (match?.[1]) return trim(match[1]);
+  }
+  return '';
+}
+
+function suspiciousCustomerReviewProductName(value = '') {
+  const name = trim(value);
+  if (!name) return true;
+  if (['重大疾病保险', '医疗保险', '意外伤害保险', '终身寿险', '两全保险', '年金保险'].includes(name)) return true;
+  return !/(?:保险|寿险|年金|医疗|重疾|意外|护理|万能|常青树)/u.test(name);
+}
+
+function resolveCustomerReviewProductIdentity(record = {}, policies = []) {
+  if (!['customer_policy_photo', 'customer_policy_terms'].includes(trim(record.sourceKind))) return {};
+  const titleProductName = customerReviewTitleProductName(record.pageText);
+  if (titleProductName) return { reviewProductName: titleProductName, productNameNeedsReview: false, productNameSource: 'policy_terms_title' };
+  if (!suspiciousCustomerReviewProductName(record.productName)) {
+    return { reviewProductName: trim(record.productName), productNameNeedsReview: false, productNameSource: 'uploaded_product' };
+  }
+  const recordTime = Date.parse(String(record.discoveredAt || record.updatedAt || ''));
+  const related = policies
+    .filter((policy) => (
+      (Number(record.ownerUserId || 0) && Number(policy?.userId || 0) === Number(record.ownerUserId))
+      || (trim(record.ownerGuestId) && trim(policy?.guestId) === trim(record.ownerGuestId))
+    ))
+    .map((policy) => ({ policy, distance: Math.abs(Date.parse(String(policy?.createdAt || policy?.updatedAt || '')) - recordTime) }))
+    .filter((item) => Number.isFinite(item.distance) && item.distance <= 2 * 60 * 60 * 1000)
+    .sort((left, right) => left.distance - right.distance)[0]?.policy;
+  const relatedName = trim(related?.name || related?.productName);
+  if (relatedName) return { reviewProductName: relatedName, productNameNeedsReview: false, productNameSource: 'related_policy' };
+  return { reviewProductName: '', productNameNeedsReview: true, productNameSource: 'unresolved' };
 }
 
 function normalizeSuggestionText(value) {
@@ -1461,11 +1511,11 @@ function getResponsibilitySuggestionIndex(state = {}) {
   return next;
 }
 
-function buildResponsibilityCompanySuggestions(state, query = '', maxResults = 12) {
+function buildResponsibilityCompanySuggestions(state, query = '', maxResults) {
   const normalizedQuery = normalizeSuggestionText(query);
   const suggestionIndex = getResponsibilitySuggestionIndex(state);
 
-  return suggestionIndex.companyRows
+  const suggestions = suggestionIndex.companyRows
     .map((item) => {
       const match = normalizedQuery
         ? scoreCompanySuggestionMatch(query, item.company, suggestionIndex.officialDomainProfiles)
@@ -1484,8 +1534,8 @@ function buildResponsibilityCompanySuggestions(state, query = '', maxResults = 1
         right.recordCount - left.recordCount ||
         left.company.localeCompare(right.company, 'zh-CN'),
     )
-    .slice(0, maxResults)
     .map(({ company, recordCount, matchType }) => ({ company, recordCount, matchType }));
+  return Number.isFinite(maxResults) && maxResults > 0 ? suggestions.slice(0, maxResults) : suggestions;
 }
 
 function isProductSuggestionKnowledgeRecord(record = {}) {
@@ -1506,9 +1556,17 @@ function isProductSuggestionKnowledgeRecord(record = {}) {
   );
 }
 
-function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults = 12 } = {}) {
+function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults } = {}) {
   if (!normalizeSuggestionText(company)) return [];
   const normalizedQuery = normalizeSuggestionText(query);
+  const parentheticalCode = String(query || '')
+    .normalize('NFKC')
+    .match(/\(([A-Z0-9][A-Z0-9_-]{1,23})\)/iu)?.[1] || '';
+  const normalizedCodeQuery = normalizeSuggestionText(parentheticalCode);
+  const nameQuery = parentheticalCode
+    ? String(query || '').normalize('NFKC').replace(/\([A-Z0-9][A-Z0-9_-]{1,23}\)/iu, '')
+    : query;
+  const normalizedNameQuery = normalizeSuggestionText(nameQuery) || normalizedQuery;
   const suggestionIndex = getResponsibilitySuggestionIndex(state);
   const candidatesByKey = new Map();
   for (const companyKey of companyKeysForSuggestionIndex(company, suggestionIndex.officialDomainProfiles)) {
@@ -1520,24 +1578,32 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
     ? [...candidatesByKey.values()]
     : suggestionIndex.productRows.filter((row) => companiesMatch(company, row.company, suggestionIndex.officialDomainProfiles));
 
-  return candidates
+  const suggestions = candidates
     .map((item) => {
-      const matchIndex = normalizedQuery ? item.normalizedProduct.indexOf(normalizedQuery) : 0;
+      const matchIndex = normalizedNameQuery ? item.normalizedProduct.indexOf(normalizedNameQuery) : 0;
       const codeMatchIndex = normalizedQuery
         ? item.normalizedCodes.findIndex(
-          (code) => code === normalizedQuery || code.startsWith(normalizedQuery) || code.includes(normalizedQuery),
+          (code) => [normalizedCodeQuery, normalizedQuery].filter(Boolean).some(
+            (queryCode) => code === queryCode || code.startsWith(queryCode) || code.includes(queryCode),
+          ),
         )
         : -1;
-      const fuzzyScore = normalizedQuery ? scoreProductNameMatch(query, item.productName, company) : 1;
+      const fuzzyScore = normalizedQuery ? scoreProductNameMatch(nameQuery, item.productName, company) : 1;
       return {
         ...item,
         fuzzyScore,
         matchIndex,
         effectiveMatchIndex: matchIndex >= 0 ? matchIndex : codeMatchIndex >= 0 ? 0 : 9999,
-        exact: Boolean(normalizedQuery && item.normalizedProduct === normalizedQuery),
-        codeExact: Boolean(normalizedQuery && item.normalizedCodes.includes(normalizedQuery)),
-        startsWith: Boolean(normalizedQuery && item.normalizedProduct.startsWith(normalizedQuery)),
-        codeStartsWith: Boolean(normalizedQuery && item.normalizedCodes.some((code) => code.startsWith(normalizedQuery))),
+        exact: Boolean(normalizedNameQuery && item.normalizedProduct === normalizedNameQuery),
+        codeExact: Boolean(
+          normalizedQuery
+          && item.normalizedCodes.some((code) => code === normalizedCodeQuery || code === normalizedQuery),
+        ),
+        startsWith: Boolean(normalizedNameQuery && item.normalizedProduct.startsWith(normalizedNameQuery)),
+        codeStartsWith: Boolean(
+          normalizedQuery
+          && item.normalizedCodes.some((code) => code.startsWith(normalizedCodeQuery || normalizedQuery)),
+        ),
         codeMatched: codeMatchIndex >= 0,
       };
     })
@@ -1552,7 +1618,6 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
         right.recordCount - left.recordCount ||
         left.productName.localeCompare(right.productName, 'zh-CN'),
     )
-    .slice(0, maxResults)
     .map(({ company: itemCompany, productName, canonicalProductId, productCodes, recordCount }) => {
       const resolvedProductCodes = productCodes;
       return {
@@ -1564,6 +1629,7 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
         recordCount,
       };
     });
+  return Number.isFinite(maxResults) && maxResults > 0 ? suggestions.slice(0, maxResults) : suggestions;
 }
 
 function assertUploadItemSize(uploadItem) {
@@ -1710,6 +1776,7 @@ async function recognizePolicyInput({ scanner, body, state, applyManualData = tr
     uploadItem: body?.uploadItem || null,
     ocrText: scanInputOcrText(body),
     ocrContext,
+    scenario: body?.ocrScenario || 'policy_entry',
   });
   const scanWithText = {
     ...scan,
@@ -2173,6 +2240,7 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.familySalesChatThreads)) state.familySalesChatThreads = [];
   if (!Array.isArray(state.familySalesChatMessages)) state.familySalesChatMessages = [];
   if (!Array.isArray(state.familySalesMemories)) state.familySalesMemories = [];
+  if (!Array.isArray(state.agentPolicyImportTasks)) state.agentPolicyImportTasks = [];
   if (!state.membershipConfig) state.membershipConfig = null;
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
   if (!Array.isArray(state.memberships)) state.memberships = [];
@@ -2180,7 +2248,11 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.wechatOAuthStates)) state.wechatOAuthStates = [];
   if (!Number(state.nextId)) state.nextId = 1;
 
-  const scanner = options.scanner || ((input) => scanPolicyWithConfiguredRuntime(input));
+  const scanner = options.scanner || ((input) => scanPolicyWithConfiguredRuntime({
+    ...input,
+    scenario: input?.scenario || 'policy_entry',
+    provider: input?.provider || resolveOcrProviderForScenario(state, input?.scenario || 'policy_entry'),
+  }));
   const resolveFeishuKnowledgeRecords =
     options.resolveFeishuKnowledgeRecords === undefined
       ? options.policyResponsibilityQuery
@@ -2401,6 +2473,7 @@ export function createPolicyOcrApp(options = {}) {
     upsertProductIndicatorVersions,
     recordIndicatorUpdateBatch,
     agentQuestionPolicyStore: options.agentStore || options.agentTransferRegenerationStore || null,
+    allowDingTalkPolicyUpload: options.allowDingTalkPolicyUpload === true || process.env.DINGTALK_POLICY_UPLOAD_MODE === 'raw_allowed',
     scanner,
     analyzer,
     adminPassword,
@@ -2413,10 +2486,17 @@ export function createPolicyOcrApp(options = {}) {
     nowMs,
     elapsedMs,
     resolveOcrServiceUrl,
+    resolveOcrProviderForScenario,
     computeAndStoreCashflow,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
     generateFamilySalesChatReply: options.generateFamilySalesChatReply,
+    recognizeDocumentText: options.recognizeDocumentText || ((uploadItem) => recognizeDocumentTextWithConfiguredRuntime(
+      uploadItem,
+      fetch,
+      process.env,
+      resolveOcrProviderForScenario(state, 'insurance_material'),
+    )),
     extractFamilySalesMemories: options.extractFamilySalesMemories,
     generateFamilyPolicyAnalysisReport: options.generateFamilyPolicyAnalysisReport,
     generateFamilyReportQualityIssues: options.generateFamilyReportQualityIssues || generateFamilyReportQualityIssues,
@@ -2572,6 +2652,8 @@ export function createPolicyOcrApp(options = {}) {
   });
 
   const app = express();
+  const productKnowledgeStore = options.productKnowledgeStore
+    || (options.db ? createProductKnowledgeStore(options.db) : null);
   app.locals.state = state;
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -2685,6 +2767,10 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/membership', createMembershipRoutes(routeContext));
   app.use('/api', createPolicyRoutes(routeContext));
   app.use('/api', createCashflowRoutes(routeContext));
+  app.use('/api/admin/product-knowledge', createProductKnowledgeRoutes({
+    ...routeContext,
+    productKnowledgeStore,
+  }));
   app.use('/api/admin', createAdminRoutes(routeContext));
 
   app.recomputeAllCashflow = recomputeAllCashflow;

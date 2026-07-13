@@ -16,6 +16,31 @@
     ]
   },
   {
+    "name": "deepseek-privacy",
+    "patterns": [
+      "server/deepseek-privacy-gateway.mjs",
+      "server/agent-skill-router.service.mjs",
+      "server/c-policy-analysis.service.mjs",
+      "server/family-policy-analysis-report.service.mjs",
+      "server/family-report-quality.service.mjs",
+      "server/family-sales-chat.service.mjs",
+      "server/family-sales-memory.service.mjs",
+      "server/family-sales-review.service.mjs",
+      "server/policy-knowledge.service.mjs",
+      "server/product-customer-responsibility-summary.service.mjs",
+      "server/responsibility-planner.service.mjs",
+      "server/routes/families.routes.mjs",
+      "tests/deepseek-privacy-gateway.test.mjs",
+      "tests/deepseek-privacy-integration.test.mjs",
+      "tests/family-sales-review.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/deepseek-privacy-gateway.test.mjs",
+      "node --test tests/deepseek-privacy-integration.test.mjs",
+      "node --test tests/family-sales-review.test.mjs"
+    ]
+  },
+  {
     "name": "optional-responsibility",
     "patterns": [
       "server/optional-responsibility-governance.mjs",
@@ -193,6 +218,40 @@
     ],
     "commands": [
       "node --check scripts/local-stack.mjs"
+    ]
+  },
+  {
+    "name": "admin-knowledge-upload",
+    "patterns": [
+      "server/product-document-upload.service.mjs",
+      "server/product-document-parser.service.mjs",
+      "server/product-boundary.service.mjs",
+      "server/product-chunker.service.mjs",
+      "server/product-ingestion.service.mjs",
+      "server/product-knowledge-store.mjs",
+      "server/product-rag.service.mjs",
+      "server/routes/product-knowledge.routes.mjs",
+      "server/app.mjs",
+      "server/sqlite-state-store.mjs",
+      "src/api/contracts/admin.ts",
+      "src/apps/admin/AdminApp.tsx",
+      "src/apps/admin/adminPages.ts",
+      "src/apps/admin/pages/AdminKnowledgeUploadPage.tsx",
+      "package.json",
+      "tests/admin-knowledge-upload.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/admin-knowledge-upload.test.mjs"
+    ]
+  },
+  {
+    "name": "agent-policy-import",
+    "patterns": [
+      "server/agent-policy-import.service.mjs",
+      "tests/agent-policy-import.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/agent-policy-import.test.mjs"
     ]
   },
   {

@@ -23,7 +23,8 @@ async function loadCustomerPolicyFormModule() {
   const sanitizeAmountSource = functionSource(source, 'sanitizeAmount', 'hasRequiredText');
   const hasRequiredTextSource = functionSource(source, 'hasRequiredText', 'hasPlanPremiumEvidence');
   const hasPlanPremiumEvidenceSource = functionSource(source, 'hasPlanPremiumEvidence', 'hasConfirmedRelation');
-  const hasConfirmedRelationSource = functionSource(source, 'hasConfirmedRelation', 'validatePolicyEntryForm');
+  const hasConfirmedRelationSource = functionSource(source, 'hasConfirmedRelation', 'resolveBoundParticipantRelation');
+  const resolveBoundParticipantRelationSource = functionSource(source, 'resolveBoundParticipantRelation', 'validatePolicyEntryForm');
   const validatePolicyEntryFormSource = functionSource(source, 'validatePolicyEntryForm', 'productLookupKey');
   const syncMainPolicyPlanFieldsSource = functionSource(source, 'syncMainPolicyPlanFields', 'syncMainPolicyPlanAmount');
   const buildPolicyUpdateDataSource = functionSource(source, 'buildPolicyUpdateData', 'scanToForm');
@@ -63,8 +64,9 @@ async function loadCustomerPolicyFormModule() {
     ${hasRequiredTextSource}
     ${hasPlanPremiumEvidenceSource}
     ${hasConfirmedRelationSource}
+    ${resolveBoundParticipantRelationSource}
     ${validatePolicyEntryFormSource}
-    export { scanToForm, mergeScanToForm, validatePolicyEntryForm, buildPolicyUpdateData, normalizeDateInputValue, sharePolicyPersonInfo };
+    export { scanToForm, mergeScanToForm, resolveBoundParticipantRelation, validatePolicyEntryForm, buildPolicyUpdateData, normalizeDateInputValue, sharePolicyPersonInfo };
   `;
   const output = ts.transpileModule(moduleSource, {
     compilerOptions: {
@@ -365,6 +367,42 @@ test('mergeScanToForm shares birthday across same-name policy people', async () 
   assert.equal(merged.beneficiaryRelation, '母亲');
 });
 
+test('mergeScanToForm clears stale beneficiary details when OCR changes beneficiary name', async () => {
+  const { mergeScanToForm } = await loadCustomerPolicyFormModule();
+  const merged = mergeScanToForm(
+    {
+      ocrText: '受益人:故意杀害',
+      data: {
+        company: '中国平安保险',
+        name: '终身寿险',
+        applicant: '在投保时可选择以',
+        insured: '因意外伤害事故身',
+        beneficiary: '故意杀害',
+      },
+    },
+    {
+      company: '中国平安保险',
+      name: '世纪天使（906）',
+      applicant: '余贵祥',
+      insured: '张正涛',
+      beneficiary: '张正涛',
+      beneficiaryRelation: '子女',
+      beneficiaryBirthday: '2005-10-05',
+      applicantRelation: '本人',
+      insuredRelation: '子女',
+      date: '2008-11-28',
+      paymentPeriod: '20年交',
+      coveragePeriod: '终身',
+      amount: '50000',
+      firstPremium: '7357.81',
+    },
+  );
+
+  assert.equal(merged.beneficiary, '故意杀害');
+  assert.equal(merged.beneficiaryRelation, '');
+  assert.equal(merged.beneficiaryBirthday, '');
+});
+
 test('validatePolicyEntryForm accepts riders when OCR proves only total premium is printed', async () => {
   const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
   const errors = validatePolicyEntryForm({
@@ -467,6 +505,37 @@ test('validatePolicyEntryForm can allow pending top-pillar relations before core
   const relaxedErrors = validatePolicyEntryForm(form, { requireParticipantRelations: false });
   assert.ok(!relaxedErrors.includes('投保人与顶梁柱的关系'));
   assert.ok(!relaxedErrors.includes('被保险人与顶梁柱的关系'));
+});
+
+test('validatePolicyEntryForm requires beneficiary relation when saving a policy', async () => {
+  const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
+  const form = {
+    familyId: 1,
+    company: '新华保险',
+    name: '学生平安意外伤害保险',
+    applicant: '楼媛媛',
+    applicantRelation: '本人',
+    insured: '王後曦',
+    insuredRelation: '子女',
+    beneficiary: '法定',
+    beneficiaryRelation: '待确认',
+    date: '2024-08-16',
+    paymentPeriod: '趸交',
+    coveragePeriod: '至2025年08月15日',
+    amount: '80000',
+    firstPremium: '298',
+    plans: [],
+  };
+
+  assert.ok(validatePolicyEntryForm(form).includes('受益人与顶梁柱的关系'));
+  assert.ok(!validatePolicyEntryForm({ ...form, beneficiaryRelation: '配偶' }).includes('受益人与顶梁柱的关系'));
+});
+
+test('manual participant relation is not overwritten by a bound member awaiting confirmation', async () => {
+  const { resolveBoundParticipantRelation } = await loadCustomerPolicyFormModule();
+
+  assert.equal(resolveBoundParticipantRelation('配偶', '待确认'), '配偶');
+  assert.equal(resolveBoundParticipantRelation('待确认', '母亲'), '母亲');
 });
 
 test('scanToForm preserves linked account role from visual OCR plans', async () => {

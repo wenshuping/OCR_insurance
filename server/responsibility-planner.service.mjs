@@ -1,4 +1,5 @@
 import { jsonrepair } from 'jsonrepair';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const PLANNER_MODE_SET = new Set(['auto', 'all', 'off']);
 const COMPLEX_CATEGORIES = new Set([
@@ -267,7 +268,7 @@ export async function callDeepSeekForResponsibilityPlanner({
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({
+    body: JSON.stringify(sanitizeDeepSeekRequestBody({
       model,
       messages: [
         { role: 'system', content: '你只返回可解析 JSON。' },
@@ -275,7 +276,7 @@ export async function callDeepSeekForResponsibilityPlanner({
       ],
       temperature: 0.1,
       response_format: { type: 'json_object' },
-    }),
+    })),
   });
 
   const payload = await response.json().catch(() => null);

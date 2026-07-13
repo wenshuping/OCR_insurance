@@ -52,6 +52,22 @@ test('parsePolicyBasicInfoFromLayoutBoxes tolerates common OCR mistakes in perso
   assert.equal(result.fields.insuredBirthday, '1987-12-07');
 });
 
+test('parsePolicyBasicInfoFromLayoutBoxes pairs insured identity with the insured birthday', () => {
+  const result = parsePolicyBasicInfoFromLayoutBoxes([
+    { text: '投保人：余贵祥', box: [168, 307, 357, 338], confidence: 1 },
+    { text: '生日：1973年08月18日', box: [465, 312, 565, 342], confidence: 1 },
+    { text: '被保险人：张正涛', box: [168, 341, 356, 371], confidence: 1 },
+    { text: '证件号码：350428197308180010', box: [835, 323, 1143, 372], confidence: 1 },
+    { text: '生日：2005年10月05日', box: [579, 349, 816, 381], confidence: 1 },
+    { text: '证件号码：330106200510052414', box: [834, 354, 1143, 405], confidence: 1 },
+    { text: '生存保险金受益人：张正涛 100%', box: [166, 375, 512, 407], confidence: 1 },
+  ]);
+
+  assert.equal(result.fields.insured, '张正涛');
+  assert.equal(result.fields.insuredIdNumber, '330106200510052414');
+  assert.equal(result.fields.insuredBirthday, '2005-10-05');
+});
+
 test('parsePolicyBasicInfoFromLayoutBoxes refuses to source core fields from rider table', () => {
   const result = parsePolicyBasicInfoFromLayoutBoxes([
     box('投保人', 70, 120, 140, 145),

@@ -410,6 +410,9 @@ export function PolicyPlanEditor(props: {
   onUpdate: (index: number, key: string, value: string) => void;
   onUpdateProductQuery?: (index: number, company: string, q: string) => void;
   onUpdateOptionalResponsibility?: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
+  onSupplementClick?: (plan: NonNullable<PolicyFormData['plans']>[number]) => void;
+  supplementUploading?: boolean;
+  supplementCount?: number;
 }) {
   const {
     company,
@@ -424,6 +427,9 @@ export function PolicyPlanEditor(props: {
     onUpdate,
     onUpdateProductQuery,
     onUpdateOptionalResponsibility,
+    onSupplementClick,
+    supplementUploading = false,
+    supplementCount = 0,
   } = props;
   const [focusedProductPlanIndex, setFocusedProductPlanIndex] = useState<number | null>(null);
   const editablePlans = normalizePolicyPlanListWithIndex(plans, company, { keepEmpty: true })
@@ -431,8 +437,7 @@ export function PolicyPlanEditor(props: {
     .filter((plan) => String(plan.role || '') !== 'main');
   function productSuggestionsForPlan(plan: NonNullable<PolicyFormData['plans']>[number]) {
     if (!String(plan.company || company || '').trim()) return [];
-    return (Array.isArray(productSuggestions) ? productSuggestions : [])
-      .slice(0, 8);
+    return Array.isArray(productSuggestions) ? productSuggestions : [];
   }
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -482,7 +487,7 @@ export function PolicyPlanEditor(props: {
                     className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
                   />
                   {focusedProductPlanIndex === plan.originalIndex && productSuggestionTargetIndex === plan.originalIndex && (productSuggestionLoading || productSuggestionsForPlan(plan).length) ? (
-                    <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="附加险产品候选">
+                    <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-72 overflow-y-auto overscroll-contain rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)] [-webkit-overflow-scrolling:touch]" role="listbox" aria-label="附加险产品候选">
                       {productSuggestionLoading ? (
                         <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
                           正在加载保险产品
@@ -519,6 +524,16 @@ export function PolicyPlanEditor(props: {
                   <p className="rounded-xl bg-white px-3 py-2 text-xs font-bold leading-5 text-blue-700 ring-1 ring-blue-100">
                     已按 {plan.company || company || '保险公司'} 匹配：{planProductDisplayName(plan)}
                   </p>
+                ) : null}
+                {!plan.matchedProductName && String(plan.name || '').trim() && onSupplementClick ? (
+                  <button
+                    type="button"
+                    disabled={supplementUploading || supplementCount >= 5}
+                    onClick={() => onSupplementClick(plan)}
+                    className="flex w-full items-center justify-center rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-black text-white shadow-sm transition active:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    {supplementUploading ? '正在识别附加险详细页面' : '上传附加险保单详细信息页'}
+                  </button>
                 ) : null}
                 <div className="grid grid-cols-2 gap-3">
                   <TextField label="保额 (元)" value={String(plan.amount || '')} onChange={(value) => onUpdate(plan.originalIndex, 'amount', value)} inputMode="decimal" placeholder="0.00" required />

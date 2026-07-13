@@ -16,6 +16,7 @@ export function createCashflowRoutes(context) {
     normalizeGuestId,
     resolveOcrServiceUrl,
     archiveFamilyGeneratedReportsForPolicy,
+    resolveOcrProviderForScenario,
   } = context;
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
 
@@ -117,7 +118,13 @@ export function createCashflowRoutes(context) {
               'x-internal-service': 'policy-ocr-app',
               ...(process.env.POLICY_OCR_SERVICE_TOKEN ? { 'x-ocr-service-token': process.env.POLICY_OCR_SERVICE_TOKEN } : {}),
             },
-            body: JSON.stringify({ uploadItem }),
+            body: JSON.stringify({
+              uploadItem,
+              scenario: 'cash_value',
+              provider: typeof resolveOcrProviderForScenario === 'function'
+                ? resolveOcrProviderForScenario(state, 'cash_value')
+                : undefined,
+            }),
             signal: AbortSignal.timeout(120000),
           });
           if (ocrResponse.ok) {

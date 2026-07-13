@@ -87,6 +87,13 @@ test('migrates old runtime products missing from dev by product name', () => {
         url: 'https://official.example.com/existing.pdf',
         pageText: '不应迁移。',
       });
+      insertKnowledge(oldDb, {
+        id: 103,
+        company: '旧库保险',
+        productName: '未选择迁移的医疗保险',
+        url: 'https://official.example.com/not-selected.pdf',
+        pageText: '这条产品不在本次指定范围内。',
+      });
       insertIndicator(oldDb, {
         id: 'old_ind_1',
         company: '旧库保险',
@@ -115,6 +122,7 @@ test('migrates old runtime products missing from dev by product name', () => {
     const dryRun = migrateOldRuntimeExtraProductsToDev({
       oldDbPath,
       devDbPath,
+      productNames: ['新增年金保险'],
       now: '2026-06-29T00:00:00.000Z',
     });
     assert.equal(dryRun.dryRun, true);
@@ -126,6 +134,7 @@ test('migrates old runtime products missing from dev by product name', () => {
     const write = migrateOldRuntimeExtraProductsToDev({
       oldDbPath,
       devDbPath,
+      productNames: ['新增年金保险'],
       write: true,
       backupPath,
       now: '2026-06-29T00:00:00.000Z',

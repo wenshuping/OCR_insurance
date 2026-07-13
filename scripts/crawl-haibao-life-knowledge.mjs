@@ -7,7 +7,6 @@ import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const localRuntimeDir = path.join(projectRoot, '.runtime', 'local');
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
 const scraplingCwd = process.env.SCRAPLING_PROJECT_DIR || '/Users/wenshuping/Documents/Scrapling';
@@ -50,12 +49,10 @@ async function main() {
   const saleStatus = readArg('sale-status', process.env.HAIBAO_LIFE_SALE_STATUS || 'all');
   const maxProducts = readNumberArg('max-products', Number(process.env.HAIBAO_LIFE_MAX_PRODUCTS || 0));
   const maxWorkers = readNumberArg('max-workers', Number(process.env.HAIBAO_LIFE_MAX_WORKERS || 6));
-  const knowledgeStore = await createKnowledgeStateStore({
-    dbPath: process.env.POLICY_OCR_APP_DB_PATH || path.join(localRuntimeDir, 'policy-ocr.sqlite'),
-    seedStatePath: process.env.POLICY_OCR_APP_STATE_PATH || path.join(localRuntimeDir, 'state.json'),
-  });
+  const knowledgeStore = await createKnowledgeStateStore();
 
   try {
+    const beforeUrls = new Set(knowledgeStore.knownCompanyUrls('海保人寿'));
     const result = runCrawler({
       mode: 'haibao_life_pages',
       company: '海保人寿',
@@ -63,13 +60,14 @@ async function main() {
       maxProducts,
       maxWorkers,
       archivePdf: true,
+      skipUrls: [...beforeUrls],
     });
 
     const state = knowledgeStore.loadState();
     if (!Number(state.nextId)) state.nextId = 1;
     const before = knowledgeStore.countKnowledgeRecords();
-    const beforeUrls = new Set(knowledgeStore.allKnownUrls());
-    const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
+    const recordsToSave = (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)));
+    const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
     knowledgeStore.saveState(state);
     const after = knowledgeStore.countKnowledgeRecords();
     const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(String(record.url)));

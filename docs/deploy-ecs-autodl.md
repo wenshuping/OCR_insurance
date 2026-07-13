@@ -90,6 +90,26 @@ POLICY_OCR_DEEPSEEK_OCR_BASE_URL=http://127.0.0.1:6008
 POLICY_OCR_DEEPSEEK_OCR_MODEL=deepseek-ai/DeepSeek-OCR
 ```
 
+Install Unlimited-OCR as a second local model service:
+
+```bash
+chmod +x scripts/install-autodl-unlimited-ocr.sh
+scripts/install-autodl-unlimited-ocr.sh
+```
+
+Then add to `deploy/autodl-ocr.env`:
+
+```bash
+POLICY_OCR_UNLIMITED_OCR_BASE_URL=http://127.0.0.1:6009
+POLICY_OCR_UNLIMITED_OCR_MODEL=baidu/Unlimited-OCR
+POLICY_OCR_UNLIMITED_OCR_TIMEOUT_MS=1200000
+POLICY_OCR_UNLIMITED_OCR_MAX_TOKENS=8192
+```
+
+The operations platform stores scenario routing in SQLite. `policy_entry`,
+`insurance_material`, and `cash_value` can independently select Unlimited-OCR,
+DeepSeek-OCR, PaddleOCR, or the remote vision model without restarting the OCR service.
+
 Start OCR service:
 
 ```bash

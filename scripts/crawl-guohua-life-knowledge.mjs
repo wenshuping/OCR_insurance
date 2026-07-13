@@ -51,18 +51,21 @@ async function main() {
   const maxWorkers = readNumberArg('max-workers', Number(process.env.GUOHUA_LIFE_MAX_WORKERS || 6));
   const knowledgeStore = await createKnowledgeStateStore();
   try {
+    const beforeUrls = new Set(knowledgeStore.knownCompanyUrls('国华人寿'));
     const result = runCrawler({
       mode: 'guohua_life_pages',
       company: '国华人寿',
       saleStatus,
       maxProducts,
       maxWorkers,
+      skipUrls: [...beforeUrls],
     });
 
     const state = knowledgeStore.loadState();
     if (!Number(state.nextId)) state.nextId = 1;
     const before = knowledgeStore.countKnowledgeRecords();
-    const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
+    const recordsToSave = (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)));
+    const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
     knowledgeStore.saveState(state);
     const after = knowledgeStore.countKnowledgeRecords();
 
@@ -81,6 +84,7 @@ async function main() {
           materialTaskCount: result.materialTaskCount || 0,
           crawledRecordCount: (result.records || []).length,
           savedRecordCount: saved.length,
+          newSavedRecordCount: saved.filter((record) => record?.url && !beforeUrls.has(String(record.url))).length,
           localKnowledgeBefore: before,
           localKnowledgeAfter: after,
           dbPath: knowledgeStore.dbPath,

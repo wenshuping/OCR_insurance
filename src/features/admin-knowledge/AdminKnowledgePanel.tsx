@@ -117,7 +117,7 @@ export function AdminKnowledgePanel({
       </div>
       <div className="mt-2 space-y-2">
         {pageRecords.map((record) => {
-          const customerPhoto = record.sourceKind === 'customer_policy_photo';
+          const customerPhoto = record.sourceKind === 'customer_policy_photo' || record.sourceKind === 'customer_policy_terms';
           const pendingReview = customerPhoto && record.reviewStatus === 'pending';
           const Wrapper = record.url?.startsWith('http') ? 'a' : 'div';
           return (

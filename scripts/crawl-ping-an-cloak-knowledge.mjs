@@ -3,13 +3,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
-import { allocateId, createInitialState } from '../server/policy-ocr.domain.mjs';
+import { allocateId } from '../server/policy-ocr.domain.mjs';
 import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
 const scraplingCwd = process.env.SCRAPLING_PROJECT_DIR || '/Users/wenshuping/Documents/Scrapling';
@@ -20,14 +20,6 @@ const planPdfEndpoint = 'https://life.pingan.com/ilife-home/product/getPlanClaus
 
 function trim(value) {
   return String(value || '').trim();
-}
-
-function readJson(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
-  }
 }
 
 function writeJson(filePath, value) {
@@ -177,10 +169,11 @@ async function main() {
   const includeExisting = process.argv.includes('--include-existing');
   const headless = !process.argv.includes('--headed');
 
-  const state = readJson(statePath, createInitialState());
-  if (!Number(state.nextId)) state.nextId = 1;
-  const before = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const knownUrls = new Set((state.knowledgeRecords || []).map((record) => trim(record.url)).filter(Boolean));
+  const knowledgeStore = await createKnowledgeStateStore();
+  try {
+  const state = knowledgeStore.loadState();
+  const before = knowledgeStore.countKnowledgeRecords();
+  const knownUrls = new Set(knowledgeStore.allKnownUrls());
   const response = await fetchPingAnProducts({ saleType, headless });
   const data = response.data && typeof response.data.data === 'object' ? response.data.data : response.data;
   const code = trim(data?.CODE || data?.code);
@@ -224,7 +217,7 @@ async function main() {
           selectedTaskCount: tasks.length,
           tasksPath,
           localKnowledgeBefore: before,
-          statePath,
+          dbPath: knowledgeStore.dbPath,
         },
         null,
         2,
@@ -239,8 +232,8 @@ async function main() {
     parser: 'scrapling_ping_an_cloak_product_info',
   }));
   const saved = upsertKnowledgeRecords(state, records, { allocateId });
-  writeJson(statePath, state);
-  const after = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
+  knowledgeStore.saveState(state);
+  const after = knowledgeStore.countKnowledgeRecords();
 
   console.log(
     JSON.stringify(
@@ -262,7 +255,7 @@ async function main() {
         newSavedRecordCount: saved.filter((record) => !knownUrls.has(trim(record.url))).length,
         localKnowledgeBefore: before,
         localKnowledgeAfter: after,
-        statePath,
+        dbPath: knowledgeStore.dbPath,
         tasksPath,
         pdfArchiveDir: result.pdfArchiveDir || '',
         archivedPdfCount: result.archivedPdfCount || 0,
@@ -271,6 +264,9 @@ async function main() {
       2,
     ),
   );
+  } finally {
+    knowledgeStore.close();
+  }
 }
 
 main().catch((error) => {

@@ -439,6 +439,17 @@ function applyInsuredIdentityCandidate(fields, fieldConfidence, evidence, rows) 
 
   const applicantRow = nearestLabelRow(rows, 'applicant');
   const insuredRow = nearestLabelRow(rows, 'insured');
+  const insuredRowIndex = rows.indexOf(insuredRow);
+  const beneficiaryRowOffset = insuredRowIndex >= 0
+    ? rows.slice(insuredRowIndex + 1).findIndex((row) => /(?:生存保险金受益人|身故保险金受益人|身故受益人|受益人)/u.test(compactText(rowText(row))))
+    : -1;
+  const insuredSectionEnd = beneficiaryRowOffset < 0 ? rows.length : insuredRowIndex + 1 + beneficiaryRowOffset;
+  const explicitInsuredBirthday = insuredRowIndex < 0
+    ? ''
+    : rows.slice(insuredRowIndex, insuredSectionEnd)
+      .filter((row) => /(?:出生日期|出生年月|生日)/u.test(compactText(rowText(row))))
+      .map((row) => normalizeDateOnly(rowText(row)))
+      .find(Boolean) || '';
   const scored = candidates
     .map((candidate) => {
       let score = 0;
@@ -447,6 +458,9 @@ function applyInsuredIdentityCandidate(fields, fieldConfidence, evidence, rows) 
       score += distanceScore(candidate.row, insuredRow);
       score -= distanceScore(candidate.row, applicantRow);
       if (fields.insured && compactText(rowText(candidate.row)).includes(compactText(fields.insured))) score += 40;
+      const idBirthday = birthdayFromIdNumber(candidate.value);
+      if (explicitInsuredBirthday && idBirthday === explicitInsuredBirthday) score += 200;
+      else if (explicitInsuredBirthday && idBirthday) score -= 100;
       return { candidate, score };
     })
     .sort((left, right) => right.score - left.score || right.candidate.row.yMid - left.candidate.row.yMid);

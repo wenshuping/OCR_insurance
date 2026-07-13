@@ -5,6 +5,7 @@ import {
   clusterIntoRows,
   detectTableHeader,
   extractCashValueRows,
+  parseCashValueStructuredTables,
   parseCashValueTable,
   parseCashValueText,
 } from '../ocr-service/cash-value-parser.mjs';
@@ -329,6 +330,26 @@ describe('cash-value-parser', () => {
       const result = parseCashValueTable(boxes);
       assert.equal(result.ok, false);
       assert.equal(result.error, 'CASH_VALUE_TABLE_NOT_DETECTED');
+    });
+  });
+
+  describe('parseCashValueStructuredTables', () => {
+    it('parses Paddle-style table rows before coordinate fallback', () => {
+      const result = parseCashValueStructuredTables([{
+        headers: ['保单年度', '被保险人年龄', '现金价值'],
+        rows: [
+          ['1', '30', '8,500'],
+          ['2', '31', '19,200'],
+          ['3', '32', '31,800'],
+          ['4', '33', '45,600'],
+          ['5', '34', '60,500'],
+        ],
+      }], { source: 'paddleocr_vl16' });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.source, 'paddleocr_vl16');
+      assert.equal(result.rows.length, 5);
+      assert.deepEqual(result.rows[0], { policyYear: 1, age: 30, cashValue: 8500 });
     });
   });
 

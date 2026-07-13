@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import {
   CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
   CUSTOMER_POLICY_PHOTO_REVIEWED_EVIDENCE_LEVEL,
@@ -1159,7 +1160,7 @@ export async function callDeepSeekForOpenWebSearchPlan({
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
+      body: JSON.stringify(sanitizeDeepSeekRequestBody({
         model,
         temperature: 0.1,
         max_tokens: 700,
@@ -1179,7 +1180,7 @@ export async function callDeepSeekForOpenWebSearchPlan({
             content: `保险公司：${trimString(policy.company)}\n客户输入产品名：${trimString(policy.name || policy.productName)}\n请给 3-6 个中文搜索关键词和 5-10 个优先域名。`,
           },
         ],
-      }),
+      })),
     });
     if (!response.ok) return fallbackOpenWebSearchPlan(policy);
     const payload = await response.json().catch(() => ({}));
@@ -1723,6 +1724,14 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     ownerUserId: Number(record.ownerUserId || 0) || 0,
     ownerGuestId: trimString(record.ownerGuestId),
     uploadNames: Array.isArray(record.uploadNames) ? record.uploadNames.map(trimString).filter(Boolean) : [],
+    uploadImages: Array.isArray(record.uploadImages)
+      ? record.uploadImages.map((item) => ({
+        name: trimString(item?.name),
+        type: trimString(item?.type) || 'image/jpeg',
+        size: Number(item?.size || 0) || 0,
+        dataUrl: trimString(item?.dataUrl),
+      })).filter((item) => item.dataUrl.startsWith('data:image/'))
+      : [],
     detailFields: record.detailFields && typeof record.detailFields === 'object' && !Array.isArray(record.detailFields)
       ? record.detailFields
       : undefined,

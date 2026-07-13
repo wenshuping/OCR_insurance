@@ -15,6 +15,9 @@ export function respondInsurancePolicyScanError(res, err) {
   if (code === 'POLICY_OCR_EMPTY') {
     return res.status(422).json({ code, message: '未识别到有效保单信息，请重新拍照' });
   }
+  if (code === 'POLICY_OCR_TERMS_PAGE') {
+    return res.status(422).json({ code, message: '这张图片是保险条款页，请将保单首页上传到“保单基本页”，条款页上传到“补充产品页”' });
+  }
   if (code === 'POLICY_PDF_TEXT_EMPTY') {
     return res.status(422).json({ code, message: '这个 PDF 未提取到文字，请上传清晰图片或保单截图' });
   }
