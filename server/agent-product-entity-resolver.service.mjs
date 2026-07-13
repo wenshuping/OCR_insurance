@@ -28,9 +28,11 @@ function comparable(value) {
 }
 
 function companyIdentity(value) {
-  return comparable(value)
-    .replace(/(?:人寿保险|财产保险|健康保险|养老保险|再保险|保险)(?:股份有限公司|有限公司|有限责任公司)$/gu, '')
-    .replace(/(?:人寿|保险)$/gu, '');
+  const withoutOrganization = comparable(value)
+    .replace(/(?:股份有限公司|有限责任公司|有限公司|股份公司|公司)$/gu, '');
+  return withoutOrganization.endsWith('再保险')
+    ? withoutOrganization
+    : withoutOrganization.replace(/保险$/gu, '');
 }
 
 function tableColumns(db, table) {

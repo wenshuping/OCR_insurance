@@ -79,6 +79,31 @@ test('resolves an insurer-scoped short product mention to the active canonical p
   }
 });
 
+test('does not collapse distinct insurer business lines during company normalization', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-pingan-life',
+      company: '平安人寿',
+      officialName: '平安人寿保险股份有限公司测试两全保险',
+    });
+
+    const result = createAgentProductEntityResolver({
+      db,
+      officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES,
+    }).resolve({
+      mentions: [
+        { type: 'insurer', rawText: '平安财产保险股份有限公司' },
+        { type: 'product', rawText: '测试两全保险' },
+      ],
+    });
+
+    assert.notEqual(result.status, 'resolved');
+  } finally {
+    db.close();
+  }
+});
+
 test('returns ambiguity instead of choosing a shared short name across companies', () => {
   const db = makeDb();
   try {
