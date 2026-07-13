@@ -60,9 +60,8 @@ function availableSources(db, visibility) {
 function productDocumentSourceSql(db, visibility) {
   const columns = tableColumns(db, 'product_documents');
   if (!columns.has('payload') || !columns.has('source_authority')) return '';
-  const reviewCondition = visibility === 'public' && columns.has('review_status')
-    ? " AND documents.review_status = 'published'"
-    : '';
+  if (visibility === 'public' && !columns.has('review_status')) return '';
+  const reviewCondition = visibility === 'public' ? " AND documents.review_status = 'published'" : '';
   const validPayload = "CASE WHEN json_valid(documents.payload) THEN documents.payload ELSE '{}' END";
   const baseWhere = `documents.source_authority = 'company_material'${reviewCondition}`;
   return `

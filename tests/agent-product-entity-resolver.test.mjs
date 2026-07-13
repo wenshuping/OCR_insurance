@@ -324,6 +324,27 @@ test('public catalog excludes sources missing visibility columns instead of thro
   }
 });
 
+test('public catalog excludes product documents when review status is unavailable', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE product_documents (
+        source_authority TEXT,
+        payload TEXT NOT NULL
+      );
+    `);
+    db.prepare('INSERT INTO product_documents (source_authority, payload) VALUES (?, ?)').run(
+      'company_material',
+      JSON.stringify({ company: '未审核保险', productNames: ['未审核文档保险'] }),
+    );
+
+    assert.deepEqual(searchProductCatalog({ db, query: '未审核文档保险', visibility: 'public' }), []);
+    assert.deepEqual(listProductCatalogCompanies({ db, visibility: 'public' }), []);
+  } finally {
+    db.close();
+  }
+});
+
 test('does not invent a canonical id when only public knowledge has the product', () => {
   const db = makeDb();
   try {
