@@ -130,6 +130,23 @@ test('semantic proposal rejects version, length, and collection bound violations
   }));
 });
 
+test('semantic proposal rejects sparse arrays in every collection field', () => {
+  const sparseCollections = [
+    ['queryAspects', Array(1)],
+    ['queryAspects', ['renewal', , 'exclusions']],
+    ['mentions', Array(1)],
+    ['mentions', [{ type: 'product', rawText: '这个保险' }, ,]],
+    ['references', Array(1)],
+    ['references', [{ type: 'current_product', rawText: '这个保险' }, ,]],
+    ['requestedSteps', Array(1)],
+    ['requestedSteps', ['lookup', , 'continue']],
+  ];
+
+  for (const [field, value] of sparseCollections) {
+    assertInvalid(validProposal({ [field]: value }));
+  }
+});
+
 test('semantic proposal de-duplicates controlled string lists in encounter order', () => {
   const proposal = normalizeSemanticProposal(validProposal({
     queryAspects: ['renewal', 'renewal', 'exclusions'],
@@ -156,13 +173,27 @@ test('pre-parser recognizes only high-certainty selection and upload signals', (
 });
 
 test('pre-parser accepts bounded complete selections and rejects weak or out-of-range forms', () => {
-  for (const [input, index] of [['选2', 1], ['第2款', 1], ['1', 0], ['20', 19]]) {
+  for (const [input, index] of [
+    ['选2', 1],
+    ['第2款', 1],
+    ['选择第2款', 1],
+    ['选第2个', 1],
+    ['1', 0],
+    ['20', 19],
+  ]) {
     assert.deepEqual(preparseAgentMessage(input), {
       candidateSelection: { index, rawText: input },
       operationHint: null,
     });
   }
-  for (const input of ['选择 0', '选择 21', '我选择 2', '2号产品怎么样']) {
+  for (const input of [
+    '选择 0',
+    '选择 21',
+    '01',
+    '第01款',
+    '我选择 2',
+    '2号产品怎么样',
+  ]) {
     assert.deepEqual(preparseAgentMessage(input), {
       candidateSelection: null,
       operationHint: null,
@@ -174,4 +205,16 @@ test('pre-parser requires both an upload action and an upload subject', () => {
   assert.equal(preparseAgentMessage('录入资料').operationHint, 'upload_link');
   assert.equal(preparseAgentMessage('上传一下').operationHint, null);
   assert.equal(preparseAgentMessage('看看保单').operationHint, null);
+});
+
+test('pre-parser does not treat explicitly negated upload actions as an operation hint', () => {
+  for (const input of [
+    '不要上传保单',
+    '暂时别录入资料',
+    '不用再上传保单',
+    '无需把资料录入',
+    '暂不上传保单',
+  ]) {
+    assert.equal(preparseAgentMessage(input).operationHint, null);
+  }
 });
