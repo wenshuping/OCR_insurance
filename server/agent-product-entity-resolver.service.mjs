@@ -11,6 +11,12 @@ const MATCH_TYPES = new Set([
   'company_scoped_normalized',
   'unique_high_confidence',
 ]);
+const MATCH_TYPE_PRIORITY = new Map([
+  ['exact_official_name', 0],
+  ['approved_alias', 1],
+  ['company_scoped_normalized', 2],
+  ['unique_high_confidence', 3],
+]);
 
 function clean(value) {
   return String(value || '').trim();
@@ -159,12 +165,21 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
   return {
     resolve({ mentions = [], activeProduct = null } = {}) {
       const productText = mentionText(mentions, 'product');
+      const insurerText = mentionText(mentions, 'insurer');
       if (!productText) {
         const entity = boundedActiveProduct(activeProduct);
-        return entity ? { status: 'resolved', entity, candidates: [] } : emptyResult('missing');
+        if (!entity) return emptyResult('missing');
+        if (insurerText) {
+          const companies = listProductCatalogCompanies({ db, visibility: 'public' }).map((row) => row.company);
+          const mentionedCompany = resolveCompany(insurerText, companies, profiles);
+          const activeCompany = resolveCompany(entity.company, companies, profiles);
+          if (!mentionedCompany || !activeCompany || mentionedCompany !== activeCompany) {
+            return emptyResult('not_found');
+          }
+        }
+        return { status: 'resolved', entity, candidates: [] };
       }
 
-      const insurerText = mentionText(mentions, 'insurer');
       const companies = listProductCatalogCompanies({ db, visibility: 'public' }).map((row) => row.company);
       const company = resolveCompany(insurerText, companies, profiles);
       if (insurerText && company === null) return emptyResult('not_found');
@@ -198,15 +213,22 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
 
       const ranked = candidates
         .filter((candidate) => candidate.confidence > 0)
-        .sort((left, right) => right.confidence - left.confidence)
+        .map((candidate, index) => ({ candidate, index }))
+        .sort((left, right) => (
+          (MATCH_TYPE_PRIORITY.get(left.candidate.matchType) ?? Number.MAX_SAFE_INTEGER)
+            - (MATCH_TYPE_PRIORITY.get(right.candidate.matchType) ?? Number.MAX_SAFE_INTEGER)
+          || right.candidate.confidence - left.candidate.confidence
+          || left.index - right.index
+        ))
         .slice(0, 10);
       if (!ranked.length) return emptyResult('not_found');
-      const first = ranked[0];
-      const second = ranked[1];
+      const rankedCandidates = ranked.map((item) => item.candidate);
+      const first = rankedCandidates[0];
+      const second = rankedCandidates[1];
       if (first.confidence >= 0.9 && (!second || first.confidence - second.confidence >= 0.15)) {
         return { status: 'resolved', entity: first, candidates: [] };
       }
-      return { status: 'ambiguous', entity: null, candidates: ranked };
+      return { status: 'ambiguous', entity: null, candidates: rankedCandidates };
     },
   };
 }

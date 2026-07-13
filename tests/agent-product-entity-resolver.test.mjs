@@ -106,6 +106,49 @@ test('returns ambiguity instead of choosing a shared short name across companies
   }
 });
 
+test('orders equal-confidence candidates by deterministic match precedence', () => {
+  const db = makeDb();
+  try {
+    const productText = 'abcdefghijklmnopqrstuvwxy';
+    addProduct(db, {
+      canonicalProductId: 'product-normalized',
+      company: '丙保险',
+      officialName: `丙人寿保险股份有限公司${productText}`,
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-alias',
+      company: '乙保险',
+      officialName: '乙人寿保险股份有限公司另一款长期保险',
+      payload: { aliases: [productText], aliasReviewStatus: 'approved' },
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-fuzzy',
+      company: '丁保险',
+      officialName: 'nopqrstuvwxyabcdefghijklm',
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-exact',
+      company: '甲保险',
+      officialName: productText,
+    });
+
+    const result = createAgentProductEntityResolver({ db }).resolve({
+      mentions: [{ type: 'product', rawText: productText }],
+    });
+
+    assert.equal(result.status, 'ambiguous');
+    assert.deepEqual(result.candidates.map((candidate) => candidate.matchType), [
+      'exact_official_name',
+      'approved_alias',
+      'company_scoped_normalized',
+      'unique_high_confidence',
+    ]);
+    assert.equal(result.candidates.every((candidate) => candidate.confidence === 1), true);
+  } finally {
+    db.close();
+  }
+});
+
 test('reuses only the bounded fields of an already confirmed active product', () => {
   const db = makeDb();
   try {
@@ -131,6 +174,45 @@ test('reuses only the bounded fields of an already confirmed active product', ()
       candidates: [],
     });
     assert.deepEqual(resolver.resolve(), { status: 'missing', entity: null, candidates: [] });
+  } finally {
+    db.close();
+  }
+});
+
+test('reuses an active product only when an explicit insurer resolves to the same company', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-current',
+      company: '新华保险',
+      officialName: '新华人寿保险股份有限公司康健无忧两全保险',
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-other',
+      company: '甲保险',
+      officialName: '甲人寿保险股份有限公司其他保险',
+    });
+    const resolver = createAgentProductEntityResolver({ db, officialDomainProfiles: XINHUA_PROFILES });
+    const activeProduct = {
+      canonicalProductId: 'product-current',
+      company: '新华保险',
+      officialName: '新华人寿保险股份有限公司康健无忧两全保险',
+      matchType: 'company_scoped_normalized',
+      confidence: 1,
+    };
+
+    assert.equal(resolver.resolve({
+      mentions: [{ type: 'insurer', rawText: '新华人寿保险股份有限公司' }],
+      activeProduct,
+    }).status, 'resolved');
+    assert.deepEqual(resolver.resolve({
+      mentions: [{ type: 'insurer', rawText: '甲保险' }],
+      activeProduct,
+    }), { status: 'not_found', entity: null, candidates: [] });
+    assert.deepEqual(resolver.resolve({
+      mentions: [{ type: 'insurer', rawText: '不存在保险公司' }],
+      activeProduct,
+    }), { status: 'not_found', entity: null, candidates: [] });
   } finally {
     db.close();
   }
