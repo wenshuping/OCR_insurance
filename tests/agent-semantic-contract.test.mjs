@@ -147,6 +147,11 @@ test('semantic proposal rejects sparse arrays in every collection field', () => 
   }
 });
 
+test('semantic proposal rejects oversized dense and sparse arrays', () => {
+  assertInvalid(validProposal({ queryAspects: Array(10_000).fill('renewal') }));
+  assertInvalid(validProposal({ requestedSteps: Array(10_000) }));
+});
+
 test('semantic proposal de-duplicates controlled string lists in encounter order', () => {
   const proposal = normalizeSemanticProposal(validProposal({
     queryAspects: ['renewal', 'renewal', 'exclusions'],
@@ -218,7 +223,16 @@ test('pre-parser does not treat explicitly negated upload actions as an operatio
     '无需把资料录入',
     '暂不上传保单',
     '不知道怎么上传保单',
+    '拒绝上传保单',
+    '取消上传保单',
+    '停止上传保单',
+    '无法上传保单',
   ]) {
     assert.equal(preparseAgentMessage(input).operationHint, null);
   }
+});
+
+test('pre-parser preserves explicit positive upload expressions containing 不', () => {
+  assert.equal(preparseAgentMessage('不得不上传保单').operationHint, 'upload_link');
+  assert.equal(preparseAgentMessage('不但要上传保单').operationHint, 'upload_link');
 });

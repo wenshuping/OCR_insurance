@@ -76,7 +76,6 @@ function hasOnlyFields(value, fields) {
 }
 
 function isDenseArray(value) {
-  if (!Array.isArray(value)) return false;
   for (let index = 0; index < value.length; index += 1) {
     if (!Object.prototype.hasOwnProperty.call(value, index)) return false;
   }
@@ -97,7 +96,7 @@ function normalizeConfidence(value) {
 }
 
 function normalizeControlledList(value, allowed, limit) {
-  if (!isDenseArray(value) || value.length > limit) invalid();
+  if (!Array.isArray(value) || value.length > limit || !isDenseArray(value)) invalid();
   const normalized = value.map((item) => boundedString(item, 80));
   if (normalized.some((item) => !allowed.includes(item))) invalid();
   return [...new Set(normalized)];
@@ -110,7 +109,7 @@ function normalizeTextEntries(value, {
   maxTextLength,
   question,
 }) {
-  if (!isDenseArray(value) || value.length > maxItems) invalid();
+  if (!Array.isArray(value) || value.length > maxItems || !isDenseArray(value)) invalid();
   return value.map((entry) => {
     if (!isRecord(entry) || !hasOnlyFields(entry, allowedFields)) invalid();
     const type = boundedString(entry.type, 40);
