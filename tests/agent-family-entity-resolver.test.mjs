@@ -19,6 +19,25 @@ test('family resolver requires an injected authorization loader and a positive u
   await assert.rejects(() => resolver.resolve({ internalUserId: 0 }), TypeError);
 });
 
+test('accepts only safe decimal positive identifiers at every authorization boundary', async () => {
+  const invalidIds = [true, [], '0x10', '1e2', '+1', '-1', '01', Number.MAX_SAFE_INTEGER + 1,
+    String(Number.MAX_SAFE_INTEGER + 1)];
+  const resolver = createAgentFamilyEntityResolver({
+    listAuthorizedFamilies: async () => invalidIds.map((id) => ({ id, familyName: `家庭${String(id)}` })),
+  });
+  for (const internalUserId of invalidIds) {
+    await assert.rejects(() => resolver.resolve({ internalUserId }), TypeError);
+  }
+  assert.deepEqual(await resolver.resolve({
+    internalUserId: '7',
+    activeFamily: { familyId: '0x10' },
+  }), { status: 'missing', entity: null, candidates: [] });
+  assert.deepEqual(await resolver.resolve({
+    internalUserId: 7,
+    mentions: [{ type: 'family', rawText: '家庭true' }],
+  }), { status: 'not_found', entity: null, candidates: [] });
+});
+
 test('resolves one exact normalized family name from the current authorized set', async () => {
   let calls = 0;
   const resolver = createAgentFamilyEntityResolver({
@@ -64,6 +83,17 @@ test('keeps a single prefix recall ambiguous instead of auto executing it', asyn
     entity: null,
     candidates: [{ familyId: 8, displayName: '王小明家庭', matchType: 'prefix', confidence: 0.8 }],
   });
+});
+
+test('preserves semantic name symbols instead of collapsing them into an exact match', async () => {
+  const resolver = createAgentFamilyEntityResolver({
+    listAuthorizedFamilies: async () => [{ id: 8, familyName: 'AB家庭' }],
+  });
+  const result = await resolver.resolve({
+    internalUserId: 3,
+    mentions: [{ type: 'family', rawText: 'A+B家庭' }],
+  });
+  assert.notEqual(result.status, 'resolved');
 });
 
 test('reauthorizes active family context on every turn and rejects stale context', async () => {
@@ -117,6 +147,34 @@ test('treats a non-array loader response as no authorized families', async () =>
   }), { status: 'not_found', entity: null, candidates: [] });
 });
 
+test('bounds local mention and authorization inputs and filters oversized display names', async () => {
+  const resolver = createAgentFamilyEntityResolver({ listAuthorizedFamilies: async () => [] });
+  await assert.rejects(() => resolver.resolve({ internalUserId: 1, mentions: null }), TypeError);
+  await assert.rejects(() => resolver.resolve({
+    internalUserId: 1,
+    mentions: Array.from({ length: 21 }, () => ({ type: 'family', rawText: '甲' })),
+  }), TypeError);
+  await assert.rejects(() => resolver.resolve({
+    internalUserId: 1,
+    mentions: [{ type: 'family', rawText: '甲'.repeat(201) }],
+  }), TypeError);
+
+  const tooManyRows = createAgentFamilyEntityResolver({
+    listAuthorizedFamilies: async () => Array.from({ length: 1001 }, (_, index) => ({
+      id: index + 1, familyName: `家庭${index}`,
+    })),
+  });
+  await assert.rejects(() => tooManyRows.resolve({ internalUserId: 1 }), TypeError);
+
+  const oversizedName = createAgentFamilyEntityResolver({
+    listAuthorizedFamilies: async () => [{ id: 1, familyName: '甲'.repeat(201) }],
+  });
+  assert.deepEqual(await oversizedName.resolve({
+    internalUserId: 1,
+    activeFamily: { familyId: 1, displayName: 'caller label' },
+  }), { status: 'missing', entity: null, candidates: [] });
+});
+
 test('readiness clarifies when a required product is missing despite high intent confidence', () => {
   assert.deepEqual(decideSemanticReadiness({
     proposal: familyProposal({ intent: 'insurance_product_knowledge' }),
@@ -152,11 +210,52 @@ test('direct and rule runtimes cannot advance write operations', () => {
 test('Hermes write proposals may advance only to the existing confirmation router', () => {
   assert.deepEqual(decideSemanticReadiness({
     proposal: familyProposal({ operation: 'write' }),
-    resolutions: { family: { status: 'resolved' } },
+    resolutions: {
+      family: { status: 'resolved', entity: { familyId: 1, displayName: '甲家庭' } },
+    },
     runtime: 'hermes',
   }), {
     decision: 'execute', decisionReason: 'unique_authorized_entity', missingFields: [], ambiguities: [],
   });
+});
+
+test('resolved readiness entities must contain their minimal bounded public identity', () => {
+  const malformedFamilies = [
+    null,
+    {},
+    { familyId: true, displayName: '甲家庭' },
+    { familyId: '0x10', displayName: '甲家庭' },
+    { familyId: 1, displayName: '' },
+    { familyId: 1, displayName: '甲'.repeat(201) },
+  ];
+  for (const entity of malformedFamilies) {
+    assert.equal(decideSemanticReadiness({
+      proposal: familyProposal(),
+      resolutions: { family: { status: 'resolved', entity } },
+      runtime: 'hermes',
+    }).decisionReason, 'family_required');
+  }
+
+  const malformedProducts = [
+    null,
+    {},
+    { officialName: '' },
+    { officialName: '产品', canonicalProductId: true },
+    { officialName: '产品', company: '甲'.repeat(201) },
+  ];
+  for (const entity of malformedProducts) {
+    assert.equal(decideSemanticReadiness({
+      proposal: familyProposal({ intent: 'insurance_product_knowledge' }),
+      resolutions: { product: { status: 'resolved', entity } },
+      runtime: 'hermes',
+    }).decisionReason, 'product_required');
+  }
+
+  assert.equal(decideSemanticReadiness({
+    proposal: familyProposal({ intent: 'insurance_product_knowledge' }),
+    resolutions: { product: { status: 'resolved', entity: { officialName: '合规产品', canonicalProductId: '' } } },
+    runtime: 'hermes',
+  }).decision, 'execute');
 });
 
 test('low or invalid intent confidence cannot execute', () => {

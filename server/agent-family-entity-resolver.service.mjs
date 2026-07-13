@@ -1,5 +1,8 @@
 const INACTIVE_STATUSES = new Set(['archived', 'deleted', 'disabled', 'inactive']);
 const MAX_CANDIDATES = 10;
+const MAX_AUTHORIZED_FAMILIES = 1_000;
+const MAX_MENTIONS = 20;
+const MAX_TEXT_LENGTH = 200;
 
 function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -9,21 +12,33 @@ function normalizeFamilyName(value) {
   return clean(value)
     .normalize('NFKC')
     .toLowerCase()
-    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    .replace(/[\s《》,，。:：;；、()（）【】\[\]-]+/gu, '')
     .replace(/家庭$/u, '');
 }
 
+function positiveSafeInteger(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+  }
+  if (typeof value !== 'string' || !/^[1-9]\d*$/u.test(value)) return 0;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : 0;
+}
+
 function familyId(row) {
-  const value = Number(row?.familyId ?? row?.id);
-  return Number.isInteger(value) && value > 0 ? value : 0;
+  return positiveSafeInteger(row?.familyId ?? row?.id);
 }
 
 function displayName(row) {
-  return clean(row?.displayName ?? row?.familyName ?? row?.name);
+  const value = clean(row?.displayName ?? row?.familyName ?? row?.name);
+  return value.length <= MAX_TEXT_LENGTH ? value : '';
 }
 
 function authorizedFamilies(value) {
   if (!Array.isArray(value)) return [];
+  if (value.length > MAX_AUTHORIZED_FAMILIES) {
+    throw new TypeError('authorized family result exceeds limit');
+  }
   const seen = new Set();
   const families = [];
   for (const row of value) {
@@ -51,8 +66,17 @@ function empty(status) {
 }
 
 function familyMention(mentions) {
-  const mention = (Array.isArray(mentions) ? mentions : [])
-    .find((item) => item?.type === 'family');
+  if (!Array.isArray(mentions) || mentions.length > MAX_MENTIONS) {
+    throw new TypeError('mentions must be a bounded array');
+  }
+  for (const mention of mentions) {
+    if (!mention || typeof mention !== 'object' || Array.isArray(mention)
+      || typeof mention.type !== 'string' || typeof mention.rawText !== 'string'
+      || mention.rawText.length > MAX_TEXT_LENGTH) {
+      throw new TypeError('mention is invalid');
+    }
+  }
+  const mention = mentions.find((item) => item.type === 'family');
   return clean(mention?.rawText);
 }
 
@@ -63,8 +87,8 @@ export function createAgentFamilyEntityResolver({ listAuthorizedFamilies } = {})
 
   return {
     async resolve({ internalUserId, mentions = [], activeFamily = null } = {}) {
-      const userId = Number(internalUserId);
-      if (!Number.isInteger(userId) || userId <= 0) {
+      const userId = positiveSafeInteger(internalUserId);
+      if (!userId) {
         throw new TypeError('internalUserId must be a positive integer');
       }
 
