@@ -1,0 +1,313 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  semanticFrameToRouterCandidate,
+} from '../server/agent-semantic-contract.mjs';
+import { createAgentSemanticResolver } from '../server/agent-semantic-resolver.service.mjs';
+
+const NOW = 1_800_000_000_000;
+const PRODUCT = {
+  canonicalProductId: 'product-kjwy',
+  company: '新华保险',
+  officialName: '新华人寿保险股份有限公司康健无忧两全保险',
+  matchType: 'exact_official_name',
+  confidence: 1,
+};
+
+function proposal(overrides = {}) {
+  return {
+    semanticContractVersion: 1,
+    intent: 'insurance_product_knowledge',
+    operation: 'read',
+    queryAspects: ['main_responsibilities'],
+    mentions: [],
+    references: [],
+    requestedSteps: ['lookup'],
+    confidence: { intent: 0.98, mentions: 1, references: 1 },
+    ...overrides,
+  };
+}
+
+function harness({ productResult, familyResult } = {}) {
+  const productCalls = [];
+  const familyCalls = [];
+  const productResolver = {
+    resolve(input) {
+      productCalls.push(input);
+      return productResult || { status: 'resolved', entity: PRODUCT, candidates: [] };
+    },
+  };
+  const familyResolver = {
+    async resolve(input) {
+      familyCalls.push(input);
+      return familyResult || {
+        status: 'resolved',
+        entity: { familyId: 12, displayName: '张三家庭', matchType: 'contextual', confidence: 1 },
+        candidates: [],
+      };
+    },
+  };
+  return {
+    resolver: createAgentSemanticResolver({ productResolver, familyResolver, clock: () => NOW }),
+    productCalls,
+    familyCalls,
+  };
+}
+
+function activeProduct(overrides = {}) {
+  return { ...PRODUCT, updatedAt: NOW - 1_000, expiresAt: NOW + 60_000, ...overrides };
+}
+
+test('current_product uses a live confirmed product and projects its formal identity', async () => {
+  const { resolver, productCalls } = harness();
+  const question = '主要保啥的呀，这个保险';
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({ references: [{ type: 'current_product', rawText: '这个保险' }] }),
+    context: { taskState: { activeEntities: { product: activeProduct({ secret: 'drop' }) } } },
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.deepEqual(productCalls[0].activeProduct, PRODUCT);
+  assert.deepEqual(result.candidate, {
+    intent: 'insurance_product_knowledge',
+    question,
+    confidence: 0.98,
+    requestedOperation: 'read',
+    entities: {
+      productName: PRODUCT.officialName,
+      productCanonicalId: PRODUCT.canonicalProductId,
+      productCompany: PRODUCT.company,
+    },
+  });
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+});
+
+test('does not inherit an active product without a current_product reference', async () => {
+  const { resolver, productCalls } = harness({
+    productResult: { status: 'missing', entity: null, candidates: [] },
+  });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '主要保啥',
+    runtime: 'hermes',
+    proposal: proposal(),
+    context: { taskState: { activeEntities: { product: activeProduct() } } },
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'product_required');
+  assert.equal(productCalls[0].activeProduct, null);
+});
+
+test('explicit product mention takes priority over active context', async () => {
+  const { resolver, productCalls } = harness();
+  const question = '新华康健无忧两全保险主要保什么，这个保险';
+  await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({
+      mentions: [{ type: 'product', rawText: '新华康健无忧两全保险' }],
+      references: [{ type: 'current_product', rawText: '这个保险' }],
+    }),
+    context: { taskState: { activeEntities: { product: activeProduct() } } },
+  });
+
+  assert.equal(productCalls[0].activeProduct, null);
+  assert.deepEqual(productCalls[0].mentions, [{ type: 'product', rawText: '新华康健无忧两全保险' }]);
+});
+
+test('passes formal and short product mentions to the product resolver unchanged', async () => {
+  for (const productName of [PRODUCT.officialName, '康健无忧两全保险']) {
+    const { resolver, productCalls } = harness();
+    const question = `${productName}主要保什么`;
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question,
+      runtime: 'hermes',
+      proposal: proposal({ mentions: [{ type: 'product', rawText: productName }] }),
+    });
+    assert.equal(productCalls[0].mentions[0].rawText, productName);
+    assert.equal(result.candidate.entities.productName, PRODUCT.officialName);
+  }
+});
+
+test('current_family is reauthorized and family id never enters router candidate', async () => {
+  const { resolver, familyCalls } = harness();
+  const question = '这个家庭的保障报告';
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({
+      intent: 'coverage_report',
+      queryAspects: ['coverage_gap'],
+      references: [{ type: 'current_family', rawText: '这个家庭' }],
+      requestedSteps: ['generate'],
+    }),
+    context: { taskState: { activeEntities: { family: {
+      familyId: 12, displayName: '旧标签', updatedAt: NOW - 1_000, expiresAt: NOW + 1_000,
+      privateNotes: 'drop',
+    } } } },
+  });
+
+  assert.deepEqual(familyCalls[0].activeFamily, { familyId: 12, displayName: '旧标签' });
+  assert.deepEqual(result.candidate.entities, { familyName: '张三家庭' });
+  assert.equal(JSON.stringify(result.candidate).includes('familyId'), false);
+});
+
+test('expired active references clarify instead of entering a resolver as context', async () => {
+  const { resolver, productCalls } = harness({
+    productResult: { status: 'missing', entity: null, candidates: [] },
+  });
+  const question = '这个保险保什么';
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({ references: [{ type: 'current_product', rawText: '这个保险' }] }),
+    context: { taskState: { activeEntities: { product: activeProduct({ expiresAt: NOW }) } } },
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(productCalls[0].activeProduct, null);
+});
+
+test('ambiguous product stores typed candidates and selection 2 resumes the saved proposal', async () => {
+  const candidates = [
+    { ...PRODUCT, canonicalProductId: 'product-1', officialName: '第一款保险', extra: 'drop' },
+    { ...PRODUCT, canonicalProductId: 'product-2', officialName: '第二款保险', extra: 'drop' },
+  ];
+  const first = harness({ productResult: { status: 'ambiguous', entity: null, candidates } });
+  const originalQuestion = '康健无忧保什么';
+  const originalProposal = proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] });
+  const clarified = await first.resolver.resolve({
+    internalUserId: 7, question: originalQuestion, runtime: 'hermes', proposal: originalProposal,
+  });
+
+  assert.equal(clarified.decision, 'clarify');
+  assert.equal(clarified.nextTaskState.pendingClarification.entityType, 'product');
+  assert.equal(clarified.nextTaskState.candidateSets.product.length, 2);
+  assert.equal(JSON.stringify(clarified.nextTaskState).includes('extra'), false);
+
+  const second = harness();
+  const selected = await second.resolver.resolve({
+    internalUserId: 7,
+    question: '选择2',
+    runtime: 'rule',
+    proposal: null,
+    context: { taskState: clarified.nextTaskState },
+  });
+  assert.equal(selected.decision, 'execute');
+  assert.equal(selected.candidate.question, '选择2');
+  assert.equal(second.productCalls[0].activeProduct.officialName, '第二款保险');
+  assert.equal(second.productCalls[0].mentions.some((item) => item.type === 'product'), false);
+  assert.equal(selected.nextTaskState.pendingClarification, null);
+  assert.deepEqual(selected.nextTaskState.candidateSets.product, []);
+});
+
+test('family selection is reauthorized through the family resolver', async () => {
+  const savedProposal = proposal({
+    intent: 'family_summary',
+    mentions: [{ type: 'family', rawText: '张家' }],
+    queryAspects: ['family_overview'],
+  });
+  const { resolver, familyCalls } = harness();
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '第1个',
+    runtime: 'hermes',
+    context: { taskState: {
+      activeEntities: { product: activeProduct() },
+      candidateSets: { family: [{ familyId: 12, displayName: '张三家庭', secret: 'drop' }] },
+      pendingClarification: {
+        entityType: 'family', proposal: savedProposal, originalQuestion: '张家有几张保单', expiresAt: NOW + 10_000,
+      },
+    } },
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.deepEqual(familyCalls[0].activeFamily, { familyId: 12, displayName: '张三家庭' });
+  assert.deepEqual(result.nextTaskState.activeEntities.product, activeProduct());
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+});
+
+test('expired, out-of-range, and unbound selections fail with candidate_selection_expired', async () => {
+  const stored = {
+    entityType: 'product',
+    proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+    originalQuestion: '康健无忧保什么',
+    expiresAt: NOW + 1,
+  };
+  const contexts = [
+    { taskState: { candidateSets: { product: [PRODUCT] }, pendingClarification: { ...stored, expiresAt: NOW } } },
+    { taskState: { candidateSets: { product: [PRODUCT] }, pendingClarification: stored } },
+    { taskState: { candidateSets: { product: [PRODUCT] }, pendingClarification: null } },
+  ];
+  const questions = ['选择1', '选择2', '2'];
+  for (let index = 0; index < contexts.length; index += 1) {
+    const { resolver } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7, question: questions[index], runtime: 'rule', proposal: null, context: contexts[index],
+    });
+    assert.equal(result.decision, 'clarify');
+    assert.equal(result.decisionReason, 'candidate_selection_expired');
+    assert.equal(result.candidate, null);
+  }
+});
+
+test('proposal-free fallback executes only an explicit positive upload signal', async () => {
+  const { resolver, productCalls, familyCalls } = harness();
+  const upload = await resolver.resolve({
+    internalUserId: 7, question: '我要上传保单资料', runtime: 'rule', proposal: null,
+  });
+  assert.equal(upload.decision, 'execute');
+  assert.equal(upload.candidate.intent, 'upload_link');
+
+  const unavailable = await resolver.resolve({
+    internalUserId: 7, question: '帮我看看产品', runtime: 'rule', proposal: null,
+  });
+  assert.equal(unavailable.decision, 'retry_later');
+  assert.equal(unavailable.decisionReason, 'semantic_proposal_unavailable');
+  assert.equal(productCalls.length, 0);
+  assert.equal(familyCalls.length, 0);
+});
+
+test('direct write readiness prevents execution', async () => {
+  const { resolver } = harness();
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '修改张三家庭',
+    runtime: 'direct',
+    proposal: proposal({
+      intent: 'family_summary', operation: 'write', queryAspects: ['family_overview'],
+      mentions: [{ type: 'family', rawText: '张三家庭' }],
+    }),
+  });
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'unsafe_fallback_operation');
+  assert.equal(result.candidate, null);
+});
+
+test('router conversion is strict, bounded, and drops family authority fields', () => {
+  const frame = {
+    ...proposal({ intent: 'family_summary', queryAspects: ['family_overview'] }),
+    resolvedEntities: {
+      family: { familyId: 12, displayName: '张三家庭', secret: 'drop' },
+    },
+    authority: { admin: true },
+  };
+  assert.deepEqual(semanticFrameToRouterCandidate(frame, ' 查看家庭 '), {
+    intent: 'family_summary', question: '查看家庭', confidence: 0.98, requestedOperation: 'read',
+    entities: { familyName: '张三家庭' },
+  });
+  assert.throws(
+    () => semanticFrameToRouterCandidate({ ...frame, intent: 'invented' }, '查看家庭'),
+    (error) => error?.code === 'SEMANTIC_FRAME_INVALID',
+  );
+  assert.throws(() => semanticFrameToRouterCandidate(frame, '   '), /SEMANTIC_FRAME_INVALID/u);
+});

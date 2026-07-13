@@ -67,6 +67,12 @@ function invalid() {
   throw error;
 }
 
+function invalidFrame() {
+  const error = new Error('SEMANTIC_FRAME_INVALID');
+  error.code = 'SEMANTIC_FRAME_INVALID';
+  throw error;
+}
+
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -159,5 +165,56 @@ export function normalizeSemanticProposal(value, originalQuestion) {
       mentions: normalizeConfidence(scores.mentions),
       references: normalizeConfidence(scores.references),
     },
+  };
+}
+
+function frameString(value, limit, { optional = false } = {}) {
+  if (optional && (value === undefined || value === '')) return '';
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized || normalized.length > limit) invalidFrame();
+  return normalized;
+}
+
+export function semanticFrameToRouterCandidate(frame, question) {
+  if (!isRecord(frame)) invalidFrame();
+  const intent = frameString(frame.intent, 80);
+  const operation = frameString(frame.operation, 20);
+  const normalizedQuestion = frameString(question, 1_000);
+  const confidence = frame?.confidence?.intent;
+  if (!SEMANTIC_INTENTS.includes(intent)
+    || !OPERATIONS.includes(operation)
+    || typeof confidence !== 'number'
+    || !Number.isFinite(confidence)
+    || confidence < 0
+    || confidence > 1) {
+    invalidFrame();
+  }
+
+  const resolvedEntities = frame.resolvedEntities ?? {};
+  if (!isRecord(resolvedEntities)) invalidFrame();
+  const entities = {};
+  if (resolvedEntities.product !== undefined && resolvedEntities.product !== null) {
+    if (!isRecord(resolvedEntities.product)) invalidFrame();
+    entities.productName = frameString(resolvedEntities.product.officialName, 200);
+    const canonicalProductId = frameString(
+      resolvedEntities.product.canonicalProductId,
+      200,
+      { optional: true },
+    );
+    const productCompany = frameString(resolvedEntities.product.company, 200, { optional: true });
+    if (canonicalProductId) entities.productCanonicalId = canonicalProductId;
+    if (productCompany) entities.productCompany = productCompany;
+  }
+  if (resolvedEntities.family !== undefined && resolvedEntities.family !== null) {
+    if (!isRecord(resolvedEntities.family)) invalidFrame();
+    entities.familyName = frameString(resolvedEntities.family.displayName, 200);
+  }
+
+  return {
+    intent,
+    question: normalizedQuestion,
+    confidence,
+    requestedOperation: operation,
+    ...(Object.keys(entities).length ? { entities } : {}),
   };
 }
