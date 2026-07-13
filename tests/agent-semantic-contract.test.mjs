@@ -209,11 +209,15 @@ test('pre-parser requires both an upload action and an upload subject', () => {
 
 test('pre-parser does not treat explicitly negated upload actions as an operation hint', () => {
   for (const input of [
+    '不上传保单',
     '不要上传保单',
+    '请勿上传保单',
+    '禁止录入资料',
     '暂时别录入资料',
     '不用再上传保单',
     '无需把资料录入',
     '暂不上传保单',
+    '不知道怎么上传保单',
   ]) {
     assert.equal(preparseAgentMessage(input).operationHint, null);
   }
