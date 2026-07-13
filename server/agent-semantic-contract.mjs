@@ -1,0 +1,156 @@
+export const SEMANTIC_CONTRACT_VERSION = 1;
+
+export const SEMANTIC_INTENTS = Object.freeze([
+  'chat',
+  'family_list',
+  'family_summary',
+  'coverage_report',
+  'sales_report',
+  'sales_coaching',
+  'upload_link',
+  'insurance_product_knowledge',
+]);
+
+export const SEMANTIC_QUERY_ASPECTS = Object.freeze([
+  'main_responsibilities',
+  'exclusions',
+  'waiting_period',
+  'deductible',
+  'reimbursement_ratio',
+  'renewal',
+  'sales_status',
+  'comparison',
+  'family_overview',
+  'coverage_gap',
+  'report_status',
+  'sales_guidance',
+  'upload',
+]);
+
+export const SEMANTIC_MENTION_TYPES = Object.freeze(['insurer', 'product', 'family']);
+
+export const SEMANTIC_REFERENCE_TYPES = Object.freeze([
+  'current_product',
+  'current_family',
+  'candidate_index',
+  'previous_result',
+  'comparison_left',
+  'comparison_right',
+]);
+
+export const SEMANTIC_DECISIONS = Object.freeze([
+  'execute',
+  'clarify',
+  'reject',
+  'retry_later',
+]);
+
+const OPERATIONS = Object.freeze(['read', 'write']);
+const REQUESTED_STEPS = Object.freeze(['lookup', 'compare', 'generate', 'upload', 'continue']);
+const ROOT_FIELDS = new Set([
+  'semanticContractVersion',
+  'intent',
+  'operation',
+  'queryAspects',
+  'mentions',
+  'references',
+  'requestedSteps',
+  'confidence',
+]);
+const CONFIDENCE_FIELDS = new Set(['intent', 'mentions', 'references']);
+const MAX_MENTIONS = 20;
+const MAX_REFERENCES = 20;
+
+function invalid() {
+  const error = new Error('SEMANTIC_PROPOSAL_INVALID');
+  error.code = 'SEMANTIC_PROPOSAL_INVALID';
+  throw error;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyFields(value, fields) {
+  return Object.keys(value).every((key) => fields.has(key));
+}
+
+function boundedString(value, limit) {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized || normalized.length > limit) invalid();
+  return normalized;
+}
+
+function normalizeConfidence(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    invalid();
+  }
+  return value;
+}
+
+function normalizeControlledList(value, allowed, limit) {
+  if (!Array.isArray(value) || value.length > limit) invalid();
+  const normalized = value.map((item) => boundedString(item, 80));
+  if (normalized.some((item) => !allowed.includes(item))) invalid();
+  return [...new Set(normalized)];
+}
+
+function normalizeTextEntries(value, {
+  allowedTypes,
+  allowedFields,
+  maxItems,
+  maxTextLength,
+  question,
+}) {
+  if (!Array.isArray(value) || value.length > maxItems) invalid();
+  return value.map((entry) => {
+    if (!isRecord(entry) || !hasOnlyFields(entry, allowedFields)) invalid();
+    const type = boundedString(entry.type, 40);
+    const rawText = boundedString(entry.rawText, maxTextLength);
+    if (!allowedTypes.includes(type) || !question.includes(rawText)) invalid();
+    return { type, rawText };
+  });
+}
+
+export function normalizeSemanticProposal(value, originalQuestion) {
+  if (!isRecord(value) || !hasOnlyFields(value, ROOT_FIELDS)) invalid();
+  if (value.semanticContractVersion !== SEMANTIC_CONTRACT_VERSION) invalid();
+
+  const question = boundedString(originalQuestion, 1_000);
+  const intent = boundedString(value.intent, 80);
+  const operation = boundedString(value.operation, 20);
+  if (!SEMANTIC_INTENTS.includes(intent) || !OPERATIONS.includes(operation)) invalid();
+
+  const mentions = normalizeTextEntries(value.mentions, {
+    allowedTypes: SEMANTIC_MENTION_TYPES,
+    allowedFields: new Set(['type', 'rawText']),
+    maxItems: MAX_MENTIONS,
+    maxTextLength: 200,
+    question,
+  });
+  const references = normalizeTextEntries(value.references, {
+    allowedTypes: SEMANTIC_REFERENCE_TYPES,
+    allowedFields: new Set(['type', 'rawText']),
+    maxItems: MAX_REFERENCES,
+    maxTextLength: 100,
+    question,
+  });
+
+  const scores = value.confidence;
+  if (!isRecord(scores) || !hasOnlyFields(scores, CONFIDENCE_FIELDS)) invalid();
+
+  return {
+    semanticContractVersion: SEMANTIC_CONTRACT_VERSION,
+    intent,
+    operation,
+    queryAspects: normalizeControlledList(value.queryAspects ?? [], SEMANTIC_QUERY_ASPECTS, 8),
+    mentions,
+    references,
+    requestedSteps: normalizeControlledList(value.requestedSteps ?? [], REQUESTED_STEPS, 4),
+    confidence: {
+      intent: normalizeConfidence(scores.intent),
+      mentions: normalizeConfidence(scores.mentions),
+      references: normalizeConfidence(scores.references),
+    },
+  };
+}
