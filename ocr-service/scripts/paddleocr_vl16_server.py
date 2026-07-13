@@ -14,8 +14,20 @@ from paddleocr import PaddleOCRVL
 
 
 MODEL_NAME = "PaddleOCR-VL-1.6"
+VLLM_MODEL_NAME = os.environ.get(
+    "PADDLEOCR_VL16_VLLM_MODEL", "PaddleOCR-VL-1.6-0.9B"
+)
+VLLM_SERVER_URL = os.environ.get(
+    "PADDLEOCR_VL16_VLLM_SERVER_URL", "http://127.0.0.1:8118/v1"
+)
 inference_lock = threading.Lock()
-pipeline = PaddleOCRVL(pipeline_version="v1.6", device="gpu:0")
+pipeline = PaddleOCRVL(
+    pipeline_version="v1.6",
+    device="gpu:0",
+    vl_rec_backend="vllm-server",
+    vl_rec_server_url=VLLM_SERVER_URL,
+    vl_rec_api_model_name=VLLM_MODEL_NAME,
+)
 
 
 def extract_image(messages):
