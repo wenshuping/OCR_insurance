@@ -442,3 +442,29 @@ test('links and knowledge sources reject external, userinfo, and unverified URLs
   assert.equal(knowledge.facts.certainty, 'unverified');
   assert.deepEqual(knowledge.provenance.sources, []);
 });
+
+test('knowledge origin provider reloads each request and fails closed', async () => {
+  let origins = ['https://first.example'];
+  let fail = false;
+  const { handlers } = harness({}, {
+    allowedKnowledgeOrigins: ['https://static.example'],
+    async allowedKnowledgeOriginsProvider() {
+      if (fail) throw new Error('private profile store failure');
+      return origins;
+    },
+    productKnowledge: { async search() { return {
+      answer: '已核验事实',
+      sources: [{ verified: true, title: '正式资料', url: `${origins[0]}/terms`, provenance: 'official' }],
+    }; } },
+  });
+
+  const first = await handlers.execute('insurance_product_knowledge', { question: '查询' });
+  assert.equal(first.facts.certainty, 'supported');
+  origins = ['https://second.example'];
+  const second = await handlers.execute('insurance_product_knowledge', { question: '查询' });
+  assert.equal(second.provenance.sources[0].url, 'https://second.example/terms');
+  fail = true;
+  const failed = await handlers.execute('insurance_product_knowledge', { question: '查询' });
+  assert.equal(failed.facts.certainty, 'unverified');
+  assert.deepEqual(failed.provenance.sources, []);
+});

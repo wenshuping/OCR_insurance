@@ -1,9 +1,16 @@
-import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
+import { SEMANTIC_INTENTS, SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
 import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
 
 const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
 const RESOLVER_DECISIONS = new Set(['execute', 'clarify', 'reject', 'retry_later']);
 const CONFLICT_CODE = 'AGENT_SEMANTIC_CONVERSATION_CONFLICT';
+const LEGACY_CANDIDATE_FIELDS = new Set([
+  'intent', 'question', 'confidence', 'requestedOperation', 'entities', 'contextRefs',
+]);
+const AUTHORITY_ENTITY_KEYS = new Set([
+  'authority', 'authorizedResourceIds', 'familyId', 'internalUserId', 'permissions',
+  'resolvedEntities', 'userId',
+]);
 
 function clean(value, limit = 200) {
   const normalized = typeof value === 'string' ? value.trim() : '';
@@ -129,11 +136,48 @@ function projectTaskState(value) {
   }
 }
 
+function projectExecuteCandidate(candidate, proposal) {
+  if (!isPlainObject(candidate) || !isPlainObject(proposal) || !isPlainObject(proposal.confidence)
+    || Object.keys(candidate).some((key) => !LEGACY_CANDIDATE_FIELDS.has(key))) return null;
+  const intent = clean(candidate.intent, 80);
+  const question = clean(candidate.question, 1_000);
+  const operation = clean(candidate.requestedOperation, 20);
+  const confidence = candidate.confidence;
+  if (!SEMANTIC_INTENTS.includes(intent) || intent !== proposal.intent || !question
+    || !['read', 'write'].includes(operation) || operation !== proposal.operation
+    || typeof confidence !== 'number' || !Number.isFinite(confidence)
+    || confidence < 0 || confidence > 1 || confidence !== proposal.confidence.intent) return null;
+
+  const projected = { intent, question, confidence, requestedOperation: operation };
+  if (candidate.entities !== undefined) {
+    if (!isPlainObject(candidate.entities) || Object.keys(candidate.entities).length > 12) return null;
+    const entities = {};
+    for (const [rawKey, rawValue] of Object.entries(candidate.entities)) {
+      const key = clean(rawKey, 40);
+      const value = clean(rawValue, 200);
+      if (!key || key !== rawKey || AUTHORITY_ENTITY_KEYS.has(key) || !value
+        || typeof rawValue !== 'string' || Object.hasOwn(entities, key)) return null;
+      entities[key] = value;
+    }
+    projected.entities = entities;
+  }
+  if (candidate.contextRefs !== undefined) {
+    if (!Array.isArray(candidate.contextRefs) || candidate.contextRefs.length > 10) return null;
+    const contextRefs = candidate.contextRefs.map((value) => clean(value, 100));
+    if (contextRefs.some((value, index) => !value || value !== candidate.contextRefs[index])) return null;
+    projected.contextRefs = contextRefs;
+  }
+  return projected;
+}
+
 function normalizedResolution(value) {
   if (!isPlainObject(value) || !RESOLVER_DECISIONS.has(value.decision)) return null;
-  if (value.decision === 'execute' && !isPlainObject(value.candidate)) return null;
+  const candidate = value.decision === 'execute'
+    ? projectExecuteCandidate(value.candidate, value.proposal)
+    : null;
+  if (value.decision === 'execute' && !candidate) return null;
   const nextTaskState = projectTaskState(value.nextTaskState);
-  return nextTaskState ? { ...value, nextTaskState } : null;
+  return nextTaskState ? { ...value, ...(candidate ? { candidate } : {}), nextTaskState } : null;
 }
 
 function persistenceError(error) {

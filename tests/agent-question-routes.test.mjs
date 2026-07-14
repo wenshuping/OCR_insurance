@@ -754,7 +754,11 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
       async resolve() {
         return {
           decision: 'execute',
-          proposal: { queryAspects: ['main_responsibilities'] },
+          proposal: {
+            intent: 'insurance_product_knowledge', operation: 'read',
+            queryAspects: ['main_responsibilities'],
+            confidence: { intent: 1, mentions: 1, references: 1 },
+          },
           resolvedEntities: { product },
           candidate: {
             intent: 'insurance_product_knowledge', question: '主要保什么', confidence: 1,
@@ -790,6 +794,64 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
   assert.equal(saved.length, 1);
 });
 
+test('Hermes semantic chat writes are denied instead of executing a read handler', async (t) => {
+  let handlerCalls = 0;
+  const app = createPolicyOcrApp({
+    recomputeCashflowOnStartup: false,
+    agentStore: {
+      async load() { return { familyProfiles: [], policies: [] }; },
+      async getPublishedAgentQuestionPolicyVersion() { return null; },
+      async recordAgentRouteAudit() {},
+      async appendAgentUnknownQuestion() {},
+    },
+    agentQuestionHandlers: {
+      async sales_champion() { handlerCalls += 1; return { interaction: { type: 'answer', text: 'unsafe' } }; },
+    },
+    agentSemanticResolver: {
+      async resolve() {
+        return {
+          decision: 'execute', resolvedEntities: {},
+          proposal: {
+            intent: 'chat', operation: 'write', queryAspects: [],
+            confidence: { intent: 1, mentions: 1, references: 1 },
+          },
+          candidate: {
+            intent: 'chat', question: '替我修改资料', confidence: 1, requestedOperation: 'write',
+          },
+          nextTaskState: { activeIntent: 'chat' },
+        };
+      },
+    },
+    agentSemanticConversationService: {
+      async load() { return { version: 0, taskState: {} }; },
+      async save(input) { return { persisted: true, version: 1, taskState: input.taskState }; },
+    },
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+
+  const result = await post(
+    { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+    '/api/agent/questions/route',
+    semanticBody({
+      question: '替我修改资料',
+      proposal: {
+        semanticContractVersion: 1, intent: 'chat', operation: 'write', queryAspects: [],
+        mentions: [], references: [], requestedSteps: ['continue'],
+        confidence: { intent: 1, mentions: 1, references: 1 },
+      },
+    }),
+  );
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.payload.decision, 'deny');
+  assert.equal(handlerCalls, 0);
+});
+
 test('default semantic product resolver reloads custom official company aliases', async (t) => {
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
@@ -815,14 +877,14 @@ test('default semantic product resolver reloads custom official company aliases'
     VALUES ('summary-custom', '测试保险有限公司', '安心产品', 'ready', '自定义责任摘要', ?, ?, '2026-07-14')`)
     .run(
       JSON.stringify({ headline: '自定义责任摘要', mainResponsibilities: [{ title: '约定责任', plainText: '以正式资料为准。' }] }),
-      JSON.stringify(['https://insurance.example/terms']),
+      JSON.stringify(['https://old.insurance.example/terms']),
     );
   const state = {
     familyProfiles: [], policies: [],
     officialDomainProfiles: [{
       id: 'custom_insurer', company: '测试保险有限公司',
       aliases: ['自定义保司'], companyAliases: ['测试保险有限公司', '自定义保司'],
-      officialDomains: ['insurance.example'], siteDomains: ['insurance.example'],
+      officialDomains: ['old.insurance.example'], siteDomains: ['old.insurance.example'],
     }],
   };
   const store = {
@@ -844,7 +906,7 @@ test('default semantic product resolver reloads custom official company aliases'
   });
   t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
   const question = '自定义保司安心产品主要保什么';
-  const result = await post(
+  const request = () => post(
     { baseUrl: `http://127.0.0.1:${listener.address().port}` },
     '/api/agent/questions/route',
     semanticBody({
@@ -862,9 +924,26 @@ test('default semantic product resolver reloads custom official company aliases'
     }),
   );
 
-  assert.equal(result.response.status, 200);
-  assert.match(result.payload.interaction.text, /自定义责任摘要/u);
-  assert.doesNotMatch(result.payload.interaction.text, /当前没有可核验来源/u);
+  const first = await request();
+  assert.equal(first.response.status, 200);
+  assert.match(first.payload.interaction.text, /自定义责任摘要/u);
+  assert.doesNotMatch(first.payload.interaction.text, /当前没有可核验来源/u);
+
+  state.officialDomainProfiles = [{
+    ...state.officialDomainProfiles[0],
+    officialDomains: ['new.insurance.example'], siteDomains: ['new.insurance.example'],
+  }];
+  db.prepare(`UPDATE product_customer_responsibility_summaries
+    SET source_urls_json = ? WHERE id = 'summary-custom'`)
+    .run(JSON.stringify(['https://new.insurance.example/terms']));
+  const updated = await request();
+  assert.doesNotMatch(updated.payload.interaction.text, /当前没有可核验来源/u);
+
+  db.prepare(`UPDATE product_customer_responsibility_summaries
+    SET source_urls_json = ? WHERE id = 'summary-custom'`)
+    .run(JSON.stringify(['https://old.insurance.example/terms']));
+  const retired = await request();
+  assert.match(retired.payload.interaction.text, /当前没有可核验来源/u);
 });
 
 test('authorized family count resolves once and preserves exact safe facts without PII', async () => {

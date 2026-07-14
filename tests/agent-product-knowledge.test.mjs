@@ -103,6 +103,28 @@ test('non-official URLs never become verified sources', async (t) => {
   assert.deepEqual(result.sources, []);
 });
 
+test('official domain profiles are reloaded for every search', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  insert(db, { sourceUrlsJson: JSON.stringify(['https://old.example/terms']) });
+  let domains = ['old.example'];
+  let loads = 0;
+  const dynamic = createAgentProductKnowledgeService({
+    db,
+    async loadOfficialDomainProfiles() {
+      loads += 1;
+      return [{ company: product.company, aliases: [product.company], officialDomains: domains }];
+    },
+  });
+
+  const first = await dynamic.search({ scope: 'public_read_only', product });
+  assert.equal(first.sources.length, 1);
+  domains = ['new.example'];
+  const second = await dynamic.search({ scope: 'public_read_only', product });
+  assert.deepEqual(second.sources, []);
+  assert.equal(loads, 2);
+});
+
 test('non-ready status and exact product mismatch return no result', async (t) => {
   const db = database();
   t.after(() => db.close());

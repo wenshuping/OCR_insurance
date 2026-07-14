@@ -148,6 +148,7 @@ export function createAgentQuestionHandlers({
   links = {},
   allowedLinkOrigins = [],
   allowedKnowledgeOrigins = [],
+  allowedKnowledgeOriginsProvider,
   pendingJobTtlMs = 300_000,
   clock = () => new Date(),
 } = {}) {
@@ -311,11 +312,22 @@ export function createAgentQuestionHandlers({
         ...(semantic || {}),
       })
       : null;
+    let trustedKnowledgeOrigins = allowedKnowledgeOrigins;
+    if (typeof allowedKnowledgeOriginsProvider === 'function') {
+      try {
+        const loaded = await allowedKnowledgeOriginsProvider();
+        trustedKnowledgeOrigins = Array.isArray(loaded)
+          ? loaded.filter((origin) => typeof origin === 'string')
+          : [];
+      } catch {
+        trustedKnowledgeOrigins = [];
+      }
+    }
     const sources = (Array.isArray(result?.sources) ? result.sources : [])
       .filter((source) => source?.verified === true)
       .map((source) => ({
         title: text(source.title),
-        url: safeLink(source.url, allowedKnowledgeOrigins),
+        url: safeLink(source.url, trustedKnowledgeOrigins),
         provenance: text(source.provenance || source.sourceKind),
       }))
       .filter((source) => source.url && source.title.length <= 500 && source.provenance.length <= 200);

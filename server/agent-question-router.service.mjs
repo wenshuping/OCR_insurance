@@ -154,7 +154,7 @@ function safeFallback(operation) {
     : AGENT_QUESTION_POLICIES.find((policy) => policy.key === 'unknown_read');
 }
 
-function selectPolicy(candidate, published) {
+function selectPolicyUnchecked(candidate, published) {
   const policies = Array.isArray(published?.policies) ? published.policies : AGENT_QUESTION_POLICIES;
   const exact = published?.version
     ? policies.find((policy) => normalizeIntent(policy?.intent) === candidate.intent)
@@ -186,6 +186,14 @@ function selectPolicy(candidate, published) {
       policySource: 'built_in',
     };
   }
+}
+
+function selectPolicy(candidate, published) {
+  const selected = selectPolicyUnchecked(candidate, published);
+  if (candidate.requestedOperation === 'write' && selected.policy?.operation !== 'write') {
+    return { policy: { ...safeFallback('write') }, policySource: 'built_in' };
+  }
+  return selected;
 }
 
 function publicResult(result, fallbackDecision = 'execute') {

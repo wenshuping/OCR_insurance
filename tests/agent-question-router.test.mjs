@@ -273,6 +273,27 @@ test('unknown write is denied, recorded, and never invokes a handler', async () 
   assert.equal(calls.unknown[0].question, '删除资料');
 });
 
+test('a write candidate can never execute through a read policy', async () => {
+  for (const published of [null, { version: 12, policies: [{
+    key: 'chat', intent: 'chat', decision: 'execute', handler: 'sales_champion',
+    operation: 'read', confirmation: 'not_required', outputMode: 'direct', tool: null,
+  }] }]) {
+    const { router, calls } = createHarness({
+      published,
+      handlers: { sales_champion: async () => ({ interaction: { type: 'answer', text: 'unsafe' } }) },
+    });
+    const result = await router.route(routeInput({
+      intent: 'chat', question: '替我修改资料', entities: {}, requestedOperation: 'write',
+    }));
+
+    assert.equal(result.decision, 'deny');
+    assert.equal(calls.handlers.length, 0);
+    assert.equal(calls.unknown.length, 1);
+    assert.equal(calls.audits[0].policyKey, 'unknown_write');
+    assert.equal(calls.audits[0].operation, 'write');
+  }
+});
+
 test('candidate fields and lengths are bounded before reaching handlers', async () => {
   const { router, calls } = createHarness({
     handlers: { sales_champion: async () => ({ interaction: { type: 'answer' } }) },

@@ -252,7 +252,10 @@ test('execute save conflict preserves the successful read result', async () => {
       decision: 'execute', decisionReason: 'semantic_ready', missingFields: [], ambiguities: [],
       resolvedEntities: {}, candidate: {
         intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read',
-      }, nextTaskState: { activeIntent: 'chat' }, proposal: { queryAspects: [] },
+      }, nextTaskState: { activeIntent: 'chat' }, proposal: {
+        intent: 'chat', operation: 'read', queryAspects: [],
+        confidence: { intent: 1, mentions: 1, references: 1 },
+      },
     }; } },
     conversationService: {
       async load() { return { version: 1, taskState: {} }; },
@@ -270,14 +273,45 @@ test('execute save conflict preserves the successful read result', async () => {
 });
 
 test('malformed or cyclic resolver results never execute or clear conversation state', async () => {
+  const validProposal = {
+    intent: 'chat', operation: 'read', queryAspects: [],
+    confidence: { intent: 1, mentions: 1, references: 1 },
+  };
   const malformedResults = [
     { decision: 'execute', candidate: { intent: 'chat' } },
     { decision: 'unknown', candidate: {}, nextTaskState: {} },
-    { decision: 'execute', candidate: [], nextTaskState: {} },
+    { decision: 'execute', candidate: [], proposal: validProposal, nextTaskState: {} },
+    {
+      decision: 'execute', proposal: validProposal, nextTaskState: {},
+      candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'delete' },
+    },
+    {
+      decision: 'execute', proposal: validProposal, nextTaskState: {},
+      candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'write' },
+    },
+    {
+      decision: 'execute', proposal: { ...validProposal, operation: 'write' }, nextTaskState: {},
+      candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read' },
+    },
+    {
+      decision: 'execute', proposal: validProposal, nextTaskState: {},
+      candidate: { intent: 'family_list', question: '你好', confidence: 1, requestedOperation: 'read' },
+    },
+    {
+      decision: 'execute', proposal: validProposal, nextTaskState: {},
+      candidate: { intent: 'chat', question: '你好', confidence: 0.9, requestedOperation: 'read' },
+    },
+    {
+      decision: 'execute', proposal: validProposal, nextTaskState: {},
+      candidate: {
+        intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read',
+        entities: { familyId: '71' },
+      },
+    },
   ];
   const cyclicState = {};
   cyclicState.self = cyclicState;
-  malformedResults.push({ decision: 'execute', candidate: {}, nextTaskState: cyclicState });
+  malformedResults.push({ decision: 'execute', candidate: {}, proposal: validProposal, nextTaskState: cyclicState });
 
   for (const resolved of malformedResults) {
     let saves = 0;
@@ -383,7 +417,10 @@ test('post-execute persistence hook receives redacted conflict classification', 
         return { decision: 'execute', interaction: { type: 'answer', text: 'ok' } };
       } },
       semanticResolver: { async resolve() { return {
-        decision: 'execute', proposal: { queryAspects: [] }, resolvedEntities: {},
+        decision: 'execute', proposal: {
+          intent: 'chat', operation: 'read', queryAspects: [],
+          confidence: { intent: 1, mentions: 1, references: 1 },
+        }, resolvedEntities: {},
         candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read' },
         nextTaskState: { activeIntent: 'chat' },
       }; } },

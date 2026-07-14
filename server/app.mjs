@@ -2673,16 +2673,22 @@ export function createPolicyOcrApp(options = {}) {
   });
 
   const app = express();
+  const agentStore = options.agentStore || options.agentTransferRegenerationStore || null;
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
-  const agentOfficialDomainProfiles = mergeOfficialDomainProfiles(state.officialDomainProfiles || []);
+  const loadAgentOfficialDomainProfiles = async () => {
+    const current = agentStore && typeof agentStore.load === 'function'
+      ? await agentStore.load()
+      : state;
+    return mergeOfficialDomainProfiles(current?.officialDomainProfiles || []);
+  };
   const agentProductKnowledge = options.agentProductKnowledge
     || (options.db ? createAgentProductKnowledgeService({
       db: options.db,
-      officialDomainProfiles: agentOfficialDomainProfiles,
+      loadOfficialDomainProfiles: loadAgentOfficialDomainProfiles,
     }) : null);
-  const agentKnowledgeAllowedOrigins = [...new Set([
-    ...officialProfileOrigins(agentOfficialDomainProfiles),
+  const loadAgentKnowledgeAllowedOrigins = async () => [...new Set([
+    ...officialProfileOrigins(await loadAgentOfficialDomainProfiles()),
     ...(Array.isArray(options.agentKnowledgeAllowedOrigins) ? options.agentKnowledgeAllowedOrigins : []),
     ...(Array.isArray(options.agentAllowedKnowledgeOrigins) ? options.agentAllowedKnowledgeOrigins : []),
   ])];
@@ -2701,7 +2707,6 @@ export function createPolicyOcrApp(options = {}) {
     ...routeContext,
     registerFamilyReportRegenerationService(service) { familyRegenerationWorkflow = service; },
   });
-  const agentStore = options.agentStore || options.agentTransferRegenerationStore || null;
   const agentReportQueue = options.agentReportQueue || (agentStore && familyRegenerationWorkflow
     ? createAgentReportRegenerationQueue({ state, workflow: familyRegenerationWorkflow, familyOwnerMatches, loadFreshState: () => agentStore.load() })
     : null);
@@ -2753,7 +2758,7 @@ export function createPolicyOcrApp(options = {}) {
       },
       generateFamilySalesChatReply: options.generateFamilySalesChatReply,
       productKnowledge: agentProductKnowledge,
-      allowedKnowledgeOrigins: agentKnowledgeAllowedOrigins,
+      allowedKnowledgeOriginsProvider: loadAgentKnowledgeAllowedOrigins,
     })
     : null);
   const agentHandlers = baseAgentHandlers && agentConfirmationService ? {

@@ -66,6 +66,22 @@ function profileAliases(profile) {
   ].map(comparable).filter((alias) => alias.length >= 2);
 }
 
+function normalizedProfiles(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((profile) => profile && typeof profile === 'object' && !Array.isArray(profile))
+    .map((profile) => ({
+      company: clean(profile.company, 200),
+      aliases: Array.isArray(profile.aliases)
+        ? profile.aliases.map((item) => clean(item, 200)).filter(Boolean) : [],
+      companyAliases: Array.isArray(profile.companyAliases)
+        ? profile.companyAliases.map((item) => clean(item, 200)).filter(Boolean) : [],
+      officialDomains: Array.isArray(profile.officialDomains)
+        ? profile.officialDomains.map((item) => clean(item, 253)).filter(Boolean) : [],
+      siteDomains: Array.isArray(profile.siteDomains)
+        ? profile.siteDomains.map((item) => clean(item, 253)).filter(Boolean) : [],
+    })).filter((profile) => profile.company || profile.aliases.length || profile.companyAliases.length);
+}
+
 function profileForCompany(company, profiles) {
   const target = comparable(company);
   if (!target) return null;
@@ -116,11 +132,15 @@ function answerFromSummary(summary, rowHeadline, queryAspects) {
   return [headline, ...lines].filter(Boolean).join('\n').slice(0, MAX_ANSWER_CHARS);
 }
 
-export function createAgentProductKnowledgeService({ db, officialDomainProfiles = [] } = {}) {
+export function createAgentProductKnowledgeService({
+  db,
+  officialDomainProfiles = [],
+  loadOfficialDomainProfiles,
+} = {}) {
   if (!db) throw new TypeError('db is required');
   const columns = tableColumns(db);
   const ready = [...REQUIRED_COLUMNS].every((column) => columns.has(column));
-  const profiles = Array.isArray(officialDomainProfiles) ? officialDomainProfiles : [];
+  const staticProfiles = normalizedProfiles(officialDomainProfiles);
 
   return {
     async search({ scope, product, queryAspects = [] } = {}) {
@@ -131,6 +151,15 @@ export function createAgentProductKnowledgeService({ db, officialDomainProfiles 
       const company = clean(product.company, 200);
       const officialName = clean(product.officialName, 200);
       if (!company || !officialName) return { answer: '', sources: [] };
+
+      let profiles = staticProfiles;
+      if (typeof loadOfficialDomainProfiles === 'function') {
+        try {
+          profiles = normalizedProfiles(await loadOfficialDomainProfiles());
+        } catch {
+          return { answer: '', sources: [] };
+        }
+      }
 
       let row;
       try {
