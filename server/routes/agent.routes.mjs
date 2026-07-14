@@ -239,6 +239,7 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
   const isCandidateSelection = Boolean(preparsed.candidateSelection);
   const isRuleUpload = runtime === 'rule' && preparsed.operationHint === 'upload_link';
   if (isCandidateSelection) {
+    if (runtime !== 'hermes') return null;
     if (proposal !== null && proposal !== undefined) return null;
     if (fallbackReasonProvided) return null;
   } else if (runtime === 'rule') {

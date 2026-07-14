@@ -227,6 +227,9 @@ test('reuses only the bounded fields of an already confirmed active product', ()
       },
       candidates: [],
     });
+    assert.deepEqual(resolver.resolve({
+      activeProduct: { company: '新华保险', officialName: '康健无忧两全保险' },
+    }), { status: 'missing', entity: null, candidates: [] });
     assert.deepEqual(resolver.resolve(), { status: 'missing', entity: null, candidates: [] });
   } finally {
     db.close();
@@ -403,7 +406,7 @@ test('public catalog excludes product documents when review status is unavailabl
   }
 });
 
-test('does not invent a canonical id when only public knowledge has the product', () => {
+test('does not resolve public knowledge without a canonical product id', () => {
   const db = makeDb();
   try {
     addPublicKnowledge(db, '新华保险', '新华人寿保险股份有限公司康健无忧两全保险');
@@ -411,9 +414,7 @@ test('does not invent a canonical id when only public knowledge has the product'
       mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.entity.canonicalProductId, '');
-    assert.equal(result.entity.officialName, '新华人寿保险股份有限公司康健无忧两全保险');
+    assert.deepEqual(result, { status: 'not_found', entity: null, candidates: [] });
   } finally {
     db.close();
   }
@@ -456,6 +457,7 @@ test('resolves exact active filing names and controlled product identifiers', ()
       canonicalProductId: 'product-filing',
       company: '甲保险',
       officialName: '甲保险正式产品',
+      status: ' ACTIVE ',
       productCode: 'PRD-001',
       payload: {
         filingName: '甲保险备案产品',
@@ -498,6 +500,18 @@ test('filing identifiers require insurer scope when shared and exclude inactive 
       canonicalProductId: 'product-disabled', company: '丙保险', officialName: '丙保险停用产品',
       status: 'disabled', productCode: 'DISABLED-01', payload: { filingName: '停用备案产品' },
     });
+    addProduct(db, {
+      canonicalProductId: 'product-archived', company: '丙保险', officialName: '丙保险归档产品',
+      status: 'archived', productCode: 'ARCHIVED-01', payload: { clauseCode: 'ARCHIVED-CLAUSE-01' },
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-unknown', company: '丙保险', officialName: '丙保险未知产品',
+      status: 'unknown', payload: { filingName: '未知状态备案产品' },
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-blank', company: '丙保险', officialName: '丙保险空状态产品',
+      status: '', productCode: 'BLANK-01', payload: { clauseCode: 'BLANK-CLAUSE-01' },
+    });
     const resolver = createAgentProductEntityResolver({ db });
 
     const ambiguous = resolver.resolve({ mentions: [{ type: 'product', rawText: 'SHARED-01' }] });
@@ -512,11 +526,18 @@ test('filing identifiers require insurer scope when shared and exclude inactive 
     ] });
     assert.equal(scoped.status, 'resolved');
     assert.equal(scoped.entity.canonicalProductId, 'product-a');
-    for (const rawText of ['DISABLED-01', '停用备案产品']) {
+    for (const rawText of [
+      'DISABLED-01', '停用备案产品',
+      'ARCHIVED-01', 'ARCHIVED-CLAUSE-01',
+      '未知状态备案产品', 'BLANK-01', 'BLANK-CLAUSE-01',
+    ]) {
       const inactive = resolver.resolve({ mentions: [{ type: 'product', rawText }] });
       assert.notEqual(inactive.status, 'resolved');
       assert.equal(inactive.entity, null);
-      assert.equal(inactive.candidates.some((candidate) => candidate.canonicalProductId === 'product-disabled'), false);
+      assert.equal(inactive.candidates.some((candidate) => (
+        ['product-disabled', 'product-archived', 'product-unknown', 'product-blank']
+          .includes(candidate.canonicalProductId)
+      )), false);
     }
   } finally {
     db.close();

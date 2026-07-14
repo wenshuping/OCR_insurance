@@ -4,7 +4,6 @@ import {
   searchProductCatalog,
 } from './product-catalog-search.mjs';
 
-const INACTIVE_PRODUCT_STATUSES = ['draft', 'pending', 'disabled', 'rejected'];
 const MATCH_TYPES = new Set([
   'exact_official_name',
   'filing_name',
@@ -63,14 +62,14 @@ function publicProductRows(db) {
   const canonicalId = columns.has('canonical_product_id') ? 'canonical_product_id' : "''";
   const productCode = columns.has('product_code') ? 'product_code' : "''";
   const payload = columns.has('payload') ? 'payload' : "'{}'";
-  const statusWhere = `WHERE COALESCE(status, '') NOT IN (${INACTIVE_PRODUCT_STATUSES.map(() => '?').join(', ')})`;
+  const statusWhere = "WHERE LOWER(TRIM(COALESCE(status, ''))) = 'active'";
   return db.prepare(`
     SELECT ${canonicalId} AS canonical_product_id, company, official_name,
       ${productCode} AS product_code, ${payload} AS payload
     FROM insurance_products
     ${statusWhere}
     ORDER BY company, official_name
-  `).all(...INACTIVE_PRODUCT_STATUSES).map((row) => ({
+  `).all().map((row) => ({
     canonicalProductId: clean(row.canonical_product_id),
     company: clean(row.company),
     officialName: clean(row.official_name),
@@ -227,13 +226,14 @@ function boundedActiveProduct(activeProduct) {
   if (!activeProduct || typeof activeProduct !== 'object' || Array.isArray(activeProduct)) return null;
   const officialName = clean(activeProduct.officialName);
   const company = clean(activeProduct.company);
-  if (!officialName || !company) return null;
+  const canonicalProductId = clean(activeProduct.canonicalProductId);
+  if (!officialName || !company || !canonicalProductId) return null;
   const matchType = MATCH_TYPES.has(activeProduct.matchType)
     ? activeProduct.matchType
     : 'exact_official_name';
   const confidence = Number(activeProduct.confidence);
   return {
-    canonicalProductId: clean(activeProduct.canonicalProductId),
+    canonicalProductId,
     company,
     officialName,
     matchType,
@@ -403,6 +403,7 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
       const candidates = recalled.map((row) => {
         const canonicalMatch = canonicalProductForCatalogRow(row, products);
         const canonical = canonicalMatch.product;
+        if (!canonical?.canonicalProductId && !canonicalMatch.identityConflict) return null;
         return matchCandidate({
           company: canonical?.company || row.company,
           officialName: canonical?.officialName || row.productName,
@@ -411,7 +412,7 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
           score: row.score,
           identityConflict: canonicalMatch.identityConflict,
         }, productText);
-      });
+      }).filter(Boolean);
 
       for (const product of products) {
         if (company && product.company !== company) continue;

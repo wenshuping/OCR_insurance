@@ -240,6 +240,7 @@ test('resolved readiness entities must contain their minimal bounded public iden
     null,
     {},
     { officialName: '' },
+    { officialName: '产品', canonicalProductId: '' },
     { officialName: '产品', canonicalProductId: true },
     { officialName: '产品', company: '甲'.repeat(201) },
   ];
@@ -253,7 +254,7 @@ test('resolved readiness entities must contain their minimal bounded public iden
 
   assert.equal(decideSemanticReadiness({
     proposal: familyProposal({ intent: 'insurance_product_knowledge' }),
-    resolutions: { product: { status: 'resolved', entity: { officialName: '合规产品', canonicalProductId: '' } } },
+    resolutions: { product: { status: 'resolved', entity: { officialName: '合规产品', canonicalProductId: 'product-1' } } },
     runtime: 'hermes',
   }).decision, 'execute');
 });

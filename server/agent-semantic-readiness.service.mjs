@@ -40,7 +40,7 @@ function validResolvedEntity(key, resolution) {
   }
   if (key === 'product') {
     return boundedNonemptyString(resolution.entity.officialName)
-      && boundedOptionalString(resolution.entity.canonicalProductId)
+      && boundedNonemptyString(resolution.entity.canonicalProductId)
       && boundedOptionalString(resolution.entity.company);
   }
   return false;

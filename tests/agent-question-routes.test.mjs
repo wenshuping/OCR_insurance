@@ -194,6 +194,24 @@ test('HTTP candidate selection keeps fallback inference inside the semantic wrap
   assert.equal(server.calls.route[0].proposal, null);
 });
 
+test('HTTP candidate selection rejects proposal-free direct and rule runtimes', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  for (const runtime of ['direct', 'rule']) {
+    for (const proposal of [null, undefined]) {
+      const result = await post(server, '/api/agent/questions/route', semanticBody({
+        messageRef: `invalid-selection-${runtime}-${String(proposal)}`,
+        question: '选择2',
+        runtime,
+        proposal,
+      }));
+      assert.equal(result.response.status, 400);
+      assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+    }
+  }
+  assert.equal(server.calls.route.length, 0);
+});
+
 test('semantic proposals are strictly normalized at the HTTP boundary', async (t) => {
   const server = await startServer();
   t.after(server.close);
