@@ -77,6 +77,31 @@ function projectSemanticProduct(candidate, semanticContext) {
   };
 }
 
+function projectSemanticProducts(candidate, semanticContext) {
+  const values = semanticContext?.resolvedEntities?.products;
+  if (!Array.isArray(values) || values.length !== 2) return null;
+  const products = values.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const suffix = index + 1;
+    const officialName = boundedString(value.officialName, 200);
+    const company = boundedString(value.company, 200);
+    const canonicalProductId = boundedString(value.canonicalProductId, 200);
+    if (!officialName || !company || !canonicalProductId
+      || candidate.entities[`product${suffix}Name`] !== officialName
+      || candidate.entities[`product${suffix}Company`] !== company
+      || candidate.entities[`product${suffix}CanonicalId`] !== canonicalProductId) return null;
+    return { canonicalProductId, company, officialName };
+  });
+  if (products.some((product) => !product)
+    || new Set(products.map((product) => product.canonicalProductId)).size !== 2) return null;
+  return {
+    products,
+    queryAspects: [...new Set((Array.isArray(semanticContext?.queryAspects)
+      ? semanticContext.queryAspects : [])
+      .filter((value) => typeof value === 'string' && QUERY_ASPECTS.has(value)))].slice(0, 8),
+  };
+}
+
 async function defaultFamilyResolver({ store, state, internalUserId }) {
   if (typeof store.listAuthorizedFamilyProfiles === 'function') {
     return store.listAuthorizedFamilyProfiles({ internalUserId });
@@ -389,7 +414,8 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     };
     if (policy.intent === 'insurance_product_knowledge') {
       const semanticProduct = projectSemanticProduct(candidate, semanticContext);
-      if (semanticContext && !semanticProduct) {
+      const semanticProducts = projectSemanticProducts(candidate, semanticContext);
+      if (semanticContext && !semanticProduct && !semanticProducts) {
         return finish({
           decision: 'deny',
           interaction: { type: 'denied', text: '当前无法安全确认要查询的保险产品。' },
@@ -398,6 +424,9 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       if (semanticProduct) {
         authorizedContext.resolvedProduct = semanticProduct.product;
         authorizedContext.queryAspects = semanticProduct.queryAspects;
+      } else if (semanticProducts) {
+        authorizedContext.resolvedProducts = semanticProducts.products;
+        authorizedContext.queryAspects = semanticProducts.queryAspects;
       }
     }
     let handled;

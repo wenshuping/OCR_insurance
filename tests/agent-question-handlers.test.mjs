@@ -218,6 +218,46 @@ test('semantic product knowledge searches only the resolved product and controll
   });
 });
 
+test('product comparison returns only a sourced factual side-by-side summary', async () => {
+  const products = [
+    { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },
+    { canonicalProductId: 'b', company: '乙保险', officialName: '乙产品' },
+  ];
+  const { handlers, calls } = harness({}, { productKnowledge: { async search(input) {
+    calls.knowledge.push(input);
+    return {
+      answer: input.product.officialName === '甲产品' ? '甲责任摘要' : '乙责任摘要',
+      sources: [{ verified: true, title: `${input.product.officialName}官方条款`, url: `https://example.test/${input.product.canonicalProductId}`, provenance: 'official' }],
+    };
+  } } });
+  const result = await handlers.execute('insurance_product_knowledge', {
+    question: '甲产品和乙产品有什么区别', internalUserId: 9, resolvedProducts: products,
+    queryAspects: ['comparison'],
+  });
+  assert.deepEqual(calls.knowledge.map((call) => call.queryAspects), [
+    ['main_responsibilities'], ['main_responsibilities'],
+  ]);
+  assert.match(result.presentation.message, /甲产品\n甲责任摘要[\s\S]*乙产品\n乙责任摘要/u);
+  assert.equal(result.provenance.sources.length, 2);
+  assert.doesNotMatch(result.presentation.message, /哪个好|更适合|推荐/u);
+});
+
+test('product comparison fails closed when either product lacks a verified source', async () => {
+  const products = [
+    { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },
+    { canonicalProductId: 'b', company: '乙保险', officialName: '乙产品' },
+  ];
+  const { handlers } = harness({}, { productKnowledge: { async search({ product }) {
+    return { answer: `${product.officialName}摘要`, sources: product.canonicalProductId === 'a'
+      ? [{ verified: true, title: '官方条款', url: 'https://example.test/a', provenance: 'official' }] : [] };
+  } } });
+  const result = await handlers.execute('insurance_product_knowledge', {
+    question: '比较', internalUserId: 9, resolvedProducts: products, queryAspects: ['comparison'],
+  });
+  assert.equal(result.facts.certainty, 'unverified');
+  assert.equal(result.provenance.sources.length, 0);
+});
+
 test('sales coaching adapts authorized context to the existing family sales chat agent', async () => {
   const { handlers, calls } = harness({
     familyMembers: [{ familyId: 7, name: '张三', status: 'active' }],

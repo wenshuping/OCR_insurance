@@ -192,14 +192,18 @@ export function semanticFrameToRouterCandidate(frame, question) {
 
   const resolvedEntities = frame.resolvedEntities ?? {};
   if (!isRecord(resolvedEntities)) invalidFrame();
+  if (Object.keys(resolvedEntities).some((key) => !['product', 'products', 'family'].includes(key))) {
+    invalidFrame();
+  }
   const hasProduct = resolvedEntities.product !== undefined && resolvedEntities.product !== null;
+  const hasProducts = resolvedEntities.products !== undefined && resolvedEntities.products !== null;
   const hasFamily = resolvedEntities.family !== undefined && resolvedEntities.family !== null;
   const requiresProduct = intent === 'insurance_product_knowledge';
   const requiresFamily = ['family_summary', 'coverage_report', 'sales_report', 'sales_coaching']
     .includes(intent);
-  if ((requiresProduct && (!hasProduct || hasFamily))
-    || (requiresFamily && (!hasFamily || hasProduct))
-    || (!requiresProduct && !requiresFamily && (hasProduct || hasFamily))) {
+  if ((requiresProduct && ((hasProduct === hasProducts) || hasFamily))
+    || (requiresFamily && (!hasFamily || hasProduct || hasProducts))
+    || (!requiresProduct && !requiresFamily && (hasProduct || hasProducts || hasFamily))) {
     invalidFrame();
   }
   const entities = {};
@@ -214,6 +218,19 @@ export function semanticFrameToRouterCandidate(frame, question) {
     const productCompany = frameString(resolvedEntities.product.company, 200, { optional: true });
     if (canonicalProductId) entities.productCanonicalId = canonicalProductId;
     if (productCompany) entities.productCompany = productCompany;
+  }
+  if (hasProducts) {
+    if (!Array.isArray(resolvedEntities.products) || resolvedEntities.products.length !== 2) invalidFrame();
+    const canonicalIds = new Set();
+    resolvedEntities.products.forEach((product, index) => {
+      if (!isRecord(product)) invalidFrame();
+      const suffix = index + 1;
+      entities[`product${suffix}Name`] = frameString(product.officialName, 200);
+      entities[`product${suffix}CanonicalId`] = frameString(product.canonicalProductId, 200);
+      entities[`product${suffix}Company`] = frameString(product.company, 200);
+      canonicalIds.add(entities[`product${suffix}CanonicalId`]);
+    });
+    if (canonicalIds.size !== 2) invalidFrame();
   }
   if (hasFamily) {
     if (!isRecord(resolvedEntities.family)) invalidFrame();

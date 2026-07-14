@@ -152,11 +152,18 @@ function projectProduct(value) {
 
 function semanticContext(result) {
   const product = projectProduct(result?.resolvedEntities?.product);
+  const products = Array.isArray(result?.resolvedEntities?.products)
+    && result.resolvedEntities.products.length === 2
+    ? result.resolvedEntities.products.map(projectProduct)
+    : [];
   const queryAspects = (Array.isArray(result?.proposal?.queryAspects)
     ? result.proposal.queryAspects : [])
     .filter((value) => typeof value === 'string' && QUERY_ASPECTS.has(value));
   return {
-    resolvedEntities: { ...(product ? { product } : {}) },
+    resolvedEntities: {
+      ...(product ? { product } : {}),
+      ...(products.length === 2 && products.every(Boolean) ? { products } : {}),
+    },
     queryAspects: [...new Set(queryAspects)].slice(0, 8),
   };
 }

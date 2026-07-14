@@ -357,7 +357,7 @@ test('non-execute decisions are stable and never call the legacy router', async 
   }
 });
 
-test('unsupported product comparison returns a controlled clarification and never reaches legacy execution', async () => {
+test('unresolved product comparison returns a controlled clarification and never reaches legacy execution', async () => {
   const question = '甲产品和乙产品有什么区别';
   const comparisonProposal = proposal(question, {
     queryAspects: ['comparison'],
@@ -368,7 +368,7 @@ test('unsupported product comparison returns a controlled clarification and neve
     requestedSteps: ['compare'],
   });
   const semanticResolver = createAgentSemanticResolver({
-    productResolver: { resolve() { throw new Error('comparison must not resolve one product'); } },
+    productResolver: { resolve() { return { status: 'not_found', entity: null, candidates: [] }; } },
     familyResolver: { async resolve() { return { status: 'missing', entity: null, candidates: [] }; } },
   });
   const { router, calls, audits } = wrapperHarness({

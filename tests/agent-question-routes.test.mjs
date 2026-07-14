@@ -1050,7 +1050,7 @@ test('default semantic composition preserves the canonical product across a foll
       operation: 'read',
       queryAspects: ['main_responsibilities'],
       mentions: [],
-      references: [{ type: 'current_product', rawText: '这个保险' }],
+      references: [],
       requestedSteps: ['lookup'],
       confidence: { intent: 1, mentions: 1, references: 1 },
     },
@@ -1410,7 +1410,7 @@ test('default semantic product resolver reloads custom official company aliases'
   assert.match(retired.payload.interaction.text, /当前没有可核验来源/u);
 });
 
-test('default semantic resolver scans the full question when Hermes omits a second product mention', async (t) => {
+test('default semantic resolver executes a confirmed two-product comparison when Hermes omits a mention', async (t) => {
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
   db.exec(`
@@ -1431,28 +1431,31 @@ test('default semantic resolver scans the full question when Hermes omits a seco
     VALUES (?, 'default', ?, ?, 'active', '2026-07-14', '2026-07-14', '{}')`);
   insertProduct.run('product-a', '甲保险', '甲保障计划');
   insertProduct.run('product-b', '乙保险', '乙保障计划');
+  const insertSummary = db.prepare(`INSERT INTO product_customer_responsibility_summaries
+    (id, company, product_name, status, headline, summary_json, source_urls_json, updated_at)
+    VALUES (?, ?, ?, 'ready', ?, ?, ?, '2026-07-14')`);
+  insertSummary.run('summary-a', '甲保险', '甲保障计划', '甲责任摘要', JSON.stringify({
+    headline: '甲责任摘要', mainResponsibilities: [{ title: '甲责任', plainText: '甲责任事实' }],
+  }), JSON.stringify(['https://a.example/terms']));
+  insertSummary.run('summary-b', '乙保险', '乙保障计划', '乙责任摘要', JSON.stringify({
+    headline: '乙责任摘要', mainResponsibilities: [{ title: '乙责任', plainText: '乙责任事实' }],
+  }), JSON.stringify(['https://b.example/terms']));
   const state = {
     familyProfiles: [], policies: [],
     officialDomainProfiles: [
-      { company: '甲保险', aliases: ['共同保司'] },
-      { company: '乙保险', aliases: ['共同保司'] },
+      { company: '甲保险', aliases: ['共同保司'], officialDomains: ['a.example'] },
+      { company: '乙保险', aliases: ['共同保司'], officialDomains: ['b.example'] },
     ],
   };
+  const semanticAudits = [];
   const store = {
     async load() { return state; },
     async getPublishedAgentQuestionPolicyVersion() { return null; },
     async recordAgentRouteAudit() {},
-    async recordAgentSemanticAudit(input) { return input; },
+    async recordAgentSemanticAudit(input) { semanticAudits.push(structuredClone(input)); return input; },
   };
-  let handlerCalls = 0;
   const app = createPolicyOcrApp({
     state, db, agentStore: store, recomputeCashflowOnStartup: false,
-    agentQuestionHandlers: {
-      async insurance_expert() {
-        handlerCalls += 1;
-        return { interaction: { type: 'answer', text: 'must not execute' } };
-      },
-    },
     agentSemanticConversationService: {
       async load() { return { version: 0, taskState: {} }; },
       async save(input) { return { persisted: true, version: 1, taskState: input.taskState }; },
@@ -1484,9 +1487,12 @@ test('default semantic resolver scans the full question when Hermes omits a seco
   );
 
   assert.equal(result.response.status, 200);
-  assert.equal(result.payload.decision, 'clarify');
-  assert.match(result.payload.interaction.text, /产品比较暂不支持直接执行/u);
-  assert.equal(handlerCalls, 0);
+  assert.equal(result.payload.decision, 'execute');
+  assert.match(result.payload.interaction.text, /甲保障计划[\s\S]*甲责任摘要[\s\S]*乙保障计划[\s\S]*乙责任摘要/u);
+  assert.deepEqual(semanticAudits[0].payload.productResolution, {
+    count: 2, matchTypes: ['exact_official_name'],
+  });
+  assert.doesNotMatch(JSON.stringify(semanticAudits), /product-a|product-b|甲保障计划|乙保障计划/u);
 
   for (const [messageRef, secondInsurer] of [
     ['msg-invalid-unknown', '未知保险'],
@@ -1515,7 +1521,7 @@ test('default semantic resolver scans the full question when Hermes omits a seco
     assert.equal(invalid.response.status, 200, secondInsurer);
     assert.equal(invalid.payload.decision, 'clarify', secondInsurer);
     assert.match(invalid.payload.interaction.text, /产品比较暂不支持直接执行/u);
-    assert.equal(handlerCalls, 0, secondInsurer);
+    assert.equal(semanticAudits.at(-1).decision, 'clarify', secondInsurer);
   }
 });
 

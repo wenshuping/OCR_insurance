@@ -303,6 +303,30 @@ function explicitlyRequestsProductComparison(proposal, question) {
     )));
 }
 
+function comparisonState(state, proposal) {
+  const pendingType = clean(state.pendingClarification?.entityType, 20);
+  if (pendingType === 'product' || pendingType === 'family') state.candidateSets[pendingType] = [];
+  state.candidateSets.product = [];
+  state.pendingClarification = null;
+  state.activeIntent = proposal.intent;
+  state.lastCompletedAction = { intent: proposal.intent, entityType: 'product' };
+  return publicState(state);
+}
+
+function resolvedComparisonResult({ state, proposal, products, question }) {
+  const resolvedEntities = { products };
+  return {
+    decision: 'execute',
+    decisionReason: 'unique_authorized_entity',
+    missingFields: [],
+    ambiguities: [],
+    proposal,
+    resolvedEntities,
+    candidate: semanticFrameToRouterCandidate({ ...proposal, resolvedEntities }, question),
+    nextTaskState: comparisonState(state, proposal),
+  };
+}
+
 function projectProductScan(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || typeof value.overflow !== 'boolean'
@@ -453,10 +477,6 @@ export function createAgentSemanticResolver({
         effectiveProposal = uploadProposal();
       }
 
-      if (explicitlyRequestsProductComparison(effectiveProposal, normalizedQuestion)) {
-        return unsupportedComparisonResult({ state, proposal: effectiveProposal });
-      }
-
       const blocked = preflightResult({ state, proposal: effectiveProposal, runtime });
       if (blocked) return blocked;
 
@@ -464,6 +484,81 @@ export function createAgentSemanticResolver({
       if (effectiveProposal?.intent === PRODUCT_INTENT) {
         const explicitProduct = hasMention(effectiveProposal, 'product');
         const currentProductReference = hasReference(effectiveProposal, 'current_product');
+        const explicitInsurers = effectiveProposal.mentions
+          .filter((mention) => mention.type === 'insurer');
+        let scan = { entities: [], overflow: false, invalidInsurer: false };
+        if (!selection && typeof productResolver.resolveAllFromText === 'function') {
+          try {
+            scan = projectProductScan(await productResolver.resolveAllFromText({
+              question: normalizedQuestion,
+              insurerMentions: explicitInsurers,
+            }));
+          } catch {
+            return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          }
+          if (!scan) return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          if (scan.invalidInsurer || scan.overflow || scan.entities.length > 2) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+          }
+        }
+
+        const forcedComparison = explicitlyRequestsProductComparison(
+          effectiveProposal,
+          normalizedQuestion,
+        );
+        const comparisonRequested = forcedComparison
+          || effectiveProposal.mentions.filter((mention) => mention.type === 'product').length > 1
+          || scan.entities.length > 1;
+        if (comparisonRequested) {
+          const productMentions = effectiveProposal.mentions
+            .filter((mention) => mention.type === 'product')
+            .filter((mention, index, values) => values
+              .findIndex((value) => value.rawText === mention.rawText) === index);
+          if (selection || productMentions.length > 2) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+          }
+          const evidence = [];
+          try {
+            if (scan.entities.length === 2) {
+              for (const product of scan.entities) {
+                evidence.push(projectResolution(await productResolver.resolve({
+                  mentions: [
+                    { type: 'insurer', rawText: product.company },
+                    { type: 'product', rawText: product.officialName },
+                  ],
+                  activeProduct: null,
+                }), 'product'));
+              }
+            } else if (productMentions.length === 2) {
+              for (const mention of productMentions) {
+                evidence.push(projectResolution(await productResolver.resolve({
+                  mentions: [...(explicitInsurers.length <= 1 ? explicitInsurers : []), mention],
+                  activeProduct: null,
+                }), 'product'));
+              }
+            }
+          } catch {
+            return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          }
+          const products = evidence.filter((item) => item.status === 'resolved')
+            .map((item) => item.entity);
+          const distinctProductCount = new Set(products
+            .map((item) => clean(item.canonicalProductId))).size;
+          if (products.length === 2 && distinctProductCount === 1
+            && !forcedComparison && scan.entities.length <= 1) {
+            // A formal name plus its parenthetical alias is one product, not a comparison.
+          } else if (products.length !== 2 || distinctProductCount !== 2) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+          } else {
+            return resolvedComparisonResult({
+              state,
+              proposal: effectiveProposal,
+              products,
+              question: normalizedQuestion,
+            });
+          }
+        }
+
         const selectedProduct = selection?.entityType === 'product'
           ? projectProduct(selection.candidate)
           : null;
@@ -471,21 +566,33 @@ export function createAgentSemanticResolver({
           && currentProductReference
           ? projectProduct(state.activeEntities.product)
           : null;
-        const explicitInsurers = effectiveProposal.mentions
-          .filter((mention) => mention.type === 'insurer');
+        const omittedActiveProduct = !explicitProduct
+          && !currentProductReference
+          && !state.pendingClarification
+          && state.activeIntent === PRODUCT_INTENT
+          ? projectProduct(state.activeEntities.product, { active: true })
+          : null;
+        const scannedProduct = !explicitProduct && !currentProductReference && scan.entities.length === 1
+          ? scan.entities[0]
+          : null;
         const mentions = selectedProduct
           ? [
             { type: 'insurer', rawText: selectedProduct.company },
             { type: 'product', rawText: selectedProduct.officialName },
           ]
-          : referencedProduct
+            : referencedProduct
             ? [
               ...(explicitInsurers.length
                 ? explicitInsurers
                 : [{ type: 'insurer', rawText: referencedProduct.company }]),
               { type: 'product', rawText: referencedProduct.officialName },
             ]
-            : effectiveProposal.mentions;
+            : scannedProduct
+              ? [
+                { type: 'insurer', rawText: scannedProduct.company },
+                { type: 'product', rawText: scannedProduct.officialName },
+              ]
+              : effectiveProposal.mentions;
         if (!selectedProduct && !explicitProduct && currentProductReference && !referencedProduct) {
           resolutions.product = { status: 'missing', entity: null, candidates: [] };
         } else if (!selectedProduct && explicitProduct) {
@@ -520,6 +627,15 @@ export function createAgentSemanticResolver({
           }
 
           resolutions.product = evidence[0] || { status: 'missing', entity: null, candidates: [] };
+        } else if (omittedActiveProduct && !scannedProduct) {
+          try {
+            resolutions.product = projectResolution(await productResolver.resolve({
+              mentions: [],
+              activeProduct: omittedActiveProduct,
+            }), 'product');
+          } catch {
+            return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          }
         } else {
           try {
             resolutions.product = projectResolution(await productResolver.resolve({
@@ -531,21 +647,7 @@ export function createAgentSemanticResolver({
           }
         }
 
-        if (!selectedProduct && (explicitProduct || referencedProduct)
-          && typeof productResolver.resolveAllFromText === 'function') {
-          let scan;
-          try {
-            scan = projectProductScan(await productResolver.resolveAllFromText({
-              question: normalizedQuestion,
-              insurerMentions: explicitInsurers,
-            }));
-          } catch {
-            return resolverUnavailableResult({ state, proposal: effectiveProposal });
-          }
-          if (!scan) return resolverUnavailableResult({ state, proposal: effectiveProposal });
-          if (scan.invalidInsurer || scan.overflow) {
-            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
-          }
+        if (!selectedProduct && (explicitProduct || referencedProduct)) {
           const primaryCanonicalId = resolutions.product?.status === 'resolved'
             ? clean(resolutions.product.entity.canonicalProductId)
             : '';

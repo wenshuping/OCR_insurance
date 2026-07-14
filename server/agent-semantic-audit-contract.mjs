@@ -53,11 +53,12 @@ const ROOT_FIELDS = new Set([
   'semanticContractVersion', 'runtime', 'fallbackReason', 'phase', 'errorCode',
   'intent', 'operation', 'queryAspects', 'confidence', 'mentionTypes', 'referenceTypes',
   'resolvedEntityTypes', 'candidateCounts', 'decision', 'decisionReason',
-  'missingFields', 'ambiguities',
+  'missingFields', 'ambiguities', 'productResolution',
 ]);
 const CONFIDENCE_FIELDS = new Set(['intent', 'mentions', 'references']);
 const ENTITY_FIELDS = new Set(['status', 'matchType', 'confidence', 'hasCanonicalId']);
 const CANDIDATE_COUNT_FIELDS = new Set(ENTITY_TYPES);
+const PRODUCT_RESOLUTION_FIELDS = new Set(['count', 'matchTypes']);
 
 function invalid() {
   const error = new Error('AGENT_SEMANTIC_AUDIT_INVALID');
@@ -157,6 +158,14 @@ function candidateCountProjection(value) {
   return result;
 }
 
+function productResolutionProjection(value) {
+  const object = exactFields(value, PRODUCT_RESOLUTION_FIELDS);
+  if (!Number.isSafeInteger(object.count) || object.count < 0 || object.count > 2) invalid();
+  const matchTypes = enumArray(object.matchTypes, MATCH_TYPES, 2);
+  if (matchTypes.length > object.count) invalid();
+  return { count: object.count, matchTypes };
+}
+
 export function normalizeAgentSemanticAuditPayload(value) {
   const object = exactFields(value, ROOT_FIELDS);
   if (object.semanticContractVersion !== null && object.semanticContractVersion !== 1) invalid();
@@ -174,6 +183,7 @@ export function normalizeAgentSemanticAuditPayload(value) {
     referenceTypes: enumArray(object.referenceTypes, REFERENCE_TYPES, 8),
     resolvedEntityTypes: resolvedEntityProjection(object.resolvedEntityTypes),
     candidateCounts: candidateCountProjection(object.candidateCounts),
+    productResolution: productResolutionProjection(object.productResolution),
     decision: enumValue(object.decision, DECISIONS),
     decisionReason: enumValue(object.decisionReason, REASONS),
     missingFields: enumArray(object.missingFields, ENTITY_TYPE_SET, 2),
@@ -247,6 +257,28 @@ function sourceEntityProjection(resolution, entityType) {
   };
 }
 
+function sourceProductResolution(resolution) {
+  if (resolution?.resolvedEntities !== undefined) plainObject(resolution.resolvedEntities);
+  const products = resolution?.resolvedEntities?.products;
+  if (products !== undefined) {
+    const bounded = sourceArray(products, 2);
+    const matchTypes = [];
+    for (const product of bounded) {
+      plainObject(product);
+      const matchType = product.matchType === undefined ? 'unknown' : product.matchType;
+      enumValue(matchType, MATCH_TYPES);
+      if (!matchTypes.includes(matchType)) matchTypes.push(matchType);
+    }
+    return { count: bounded.length, matchTypes };
+  }
+  const product = resolution?.resolvedEntities?.product;
+  if (!product) return { count: 0, matchTypes: [] };
+  plainObject(product);
+  const matchType = product.matchType === undefined ? 'unknown' : product.matchType;
+  enumValue(matchType, MATCH_TYPES);
+  return { count: 1, matchTypes: [matchType] };
+}
+
 export function projectAgentSemanticAuditPayload({
   runtime,
   fallbackReason = 'none',
@@ -284,6 +316,7 @@ export function projectAgentSemanticAuditPayload({
       product: sourceCandidateCount(resolution, 'product'),
       family: sourceCandidateCount(resolution, 'family'),
     },
+    productResolution: sourceProductResolution(resolution),
     decision: resolution?.decision === undefined ? 'retry_later' : resolution.decision,
     decisionReason: resolution?.decisionReason === undefined ? 'unknown' : resolution.decisionReason,
     missingFields: sourceControlledList(resolution?.missingFields, ENTITY_TYPE_SET, 2),

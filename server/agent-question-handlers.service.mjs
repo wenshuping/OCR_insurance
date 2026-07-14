@@ -27,6 +27,25 @@ function resolvedProductQuery(context) {
   return { product: { canonicalProductId, company, officialName }, queryAspects };
 }
 
+function resolvedProductComparison(context) {
+  if (!Array.isArray(context?.resolvedProducts) || context.resolvedProducts.length !== 2) return null;
+  const products = context.resolvedProducts.map((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const canonicalProductId = text(value.canonicalProductId);
+    const company = text(value.company);
+    const officialName = text(value.officialName);
+    return canonicalProductId && company && officialName
+      && canonicalProductId.length <= 200 && company.length <= 200 && officialName.length <= 200
+      ? { canonicalProductId, company, officialName }
+      : null;
+  });
+  if (products.some((product) => !product)
+    || new Set(products.map((product) => product.canonicalProductId)).size !== 2) return null;
+  const queryAspects = (Array.isArray(context.queryAspects) ? context.queryAspects : [])
+    .filter((item) => typeof item === 'string' && item !== 'comparison').slice(0, 8);
+  return { products, queryAspects: queryAspects.length ? queryAspects : ['main_responsibilities'] };
+}
+
 function positiveInteger(value, label) {
   const number = Number(value);
   if (!Number.isInteger(number) || number <= 0) throw new TypeError(`${label} is required`);
@@ -305,13 +324,19 @@ export function createAgentQuestionHandlers({
   async function answerProductKnowledge(context) {
     const question = text(context?.question).slice(0, 2_000);
     const semantic = resolvedProductQuery(context);
-    const result = productKnowledge && typeof productKnowledge.search === 'function'
-      ? await productKnowledge.search({
-        question,
-        scope: 'public_read_only',
-        ...(semantic || {}),
-      })
-      : null;
+    const comparison = resolvedProductComparison(context);
+    const requests = comparison
+      ? comparison.products.map((product) => ({ product, queryAspects: comparison.queryAspects }))
+      : semantic ? [{ product: semantic.product, queryAspects: semantic.queryAspects }] : [{}];
+    const results = productKnowledge && typeof productKnowledge.search === 'function'
+      ? await Promise.all(requests.map((request) => (
+        productKnowledge.search({
+          question,
+          scope: 'public_read_only',
+          ...request,
+        })
+      )))
+      : [];
     let trustedKnowledgeOrigins = allowedKnowledgeOrigins;
     if (typeof allowedKnowledgeOriginsProvider === 'function') {
       try {
@@ -323,14 +348,34 @@ export function createAgentQuestionHandlers({
         trustedKnowledgeOrigins = [];
       }
     }
-    const sources = (Array.isArray(result?.sources) ? result.sources : [])
-      .filter((source) => source?.verified === true)
-      .map((source) => ({
+    const projectSources = (result) => (Array.isArray(result?.sources) ? result.sources : [])
+      .filter((source) => source?.verified === true).map((source) => ({
         title: text(source.title),
         url: safeLink(source.url, trustedKnowledgeOrigins),
         provenance: text(source.provenance || source.sourceKind),
       }))
-      .filter((source) => source.url && source.title.length <= 500 && source.provenance.length <= 200);
+      .filter((source) => source.url && source.title.length <= 500 && source.provenance.length <= 200)
+      .slice(0, 20);
+    if (comparison) {
+      const sourcesByProduct = results.map(projectSources);
+      if (results.length !== 2 || sourcesByProduct.some((sources) => sources.length === 0)) {
+        return stableResult(
+          { certainty: 'unverified', answer: '' },
+          { source: 'public_product_knowledge', sources: [] },
+          { message: '当前没有可核验来源，无法给出确定的产品事实。' },
+        );
+      }
+      const answer = comparison.products.map((product, index) => (
+        `${product.officialName}\n${text(results[index]?.answer)}`.trim()
+      )).join('\n\n');
+      return stableResult(
+        { certainty: 'supported', answer, comparedProductCount: 2 },
+        { source: 'public_product_knowledge', sources: sourcesByProduct.flat().slice(0, 20) },
+        { message: answer },
+      );
+    }
+    const result = results[0] || null;
+    const sources = projectSources(result);
     if (!sources.length) {
       return stableResult(
         { certainty: 'unverified', answer: '' },

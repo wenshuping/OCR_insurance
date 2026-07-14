@@ -145,6 +145,27 @@ test('semantic product context is projected only when it matches the routed cand
   assert.equal(calls.handlers.length, 1);
 });
 
+test('semantic comparison context projects exactly two matching confirmed products', async () => {
+  const { router, calls } = createHarness({
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer', text: 'ok' } }) },
+  });
+  const products = [
+    { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },
+    { canonicalProductId: 'b', company: '乙保险', officialName: '乙产品' },
+  ];
+  const entities = Object.fromEntries(products.flatMap((product, index) => {
+    const suffix = index + 1;
+    return [[`product${suffix}Name`, product.officialName], [`product${suffix}Company`, product.company], [`product${suffix}CanonicalId`, product.canonicalProductId]];
+  }));
+  const input = routeInput({ intent: 'insurance_product_knowledge', question: '比较', entities });
+  const result = await router.route({
+    ...input, semanticContext: { resolvedEntities: { products }, queryAspects: ['comparison'] },
+  });
+  assert.equal(result.decision, 'execute');
+  assert.deepEqual(calls.handlers[0].input.resolvedProducts, products);
+  assert.deepEqual(calls.handlers[0].input.queryAspects, ['comparison']);
+});
+
 test('semantic family ids never bypass the legacy authorized family resolution', async () => {
   const { router, calls } = createHarness({
     families: [

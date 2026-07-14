@@ -76,6 +76,7 @@ test('semantic audit persists a bounded redacted projection and survives reopen'
   assert.deepEqual(row.payload.resolvedEntityTypes.product, {
     status: 'resolved', matchType: 'exact_official_name', confidence: 1, hasCanonicalId: true,
   });
+  assert.deepEqual(row.payload.productResolution, { count: 1, matchTypes: ['exact_official_name'] });
   const serialized = JSON.stringify(row);
   for (const probe of Object.values(probes)) assert.equal(serialized.includes(probe), false, probe);
   const rawPayload = store.db.prepare('SELECT payload FROM agent_semantic_audit_events').get().payload;
@@ -89,6 +90,29 @@ test('semantic audit persists a bounded redacted projection and survives reopen'
   assert.equal(persisted.messageRef, 'msg-semantic-audit');
   assert.equal(persisted.createdAt, 1_721_000_000_000);
   reopened.close();
+});
+
+test('comparison audit records only bounded product count and match types', () => {
+  const payload = projectAgentSemanticAuditPayload({
+    runtime: 'hermes',
+    proposal: {
+      semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+      queryAspects: ['comparison'], mentions: [], references: [],
+      confidence: { intent: 1, mentions: 1, references: 1 },
+    },
+    resolution: {
+      decision: 'execute', decisionReason: 'unique_authorized_entity', missingFields: [], ambiguities: [],
+      resolvedEntities: { products: [
+        { canonicalProductId: 'secret-a', officialName: '甲产品', matchType: 'exact_official_name' },
+        { canonicalProductId: 'secret-b', officialName: '乙产品', matchType: 'approved_alias' },
+      ] },
+      nextTaskState: {},
+    },
+  });
+  assert.deepEqual(payload.productResolution, {
+    count: 2, matchTypes: ['exact_official_name', 'approved_alias'],
+  });
+  assert.doesNotMatch(JSON.stringify(payload), /secret|甲产品|乙产品/u);
 });
 
 test('semantic audit filters by user and rejects invalid or corrupted events', async () => {

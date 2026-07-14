@@ -207,9 +207,12 @@ test('orders equal-confidence candidates by deterministic match precedence', () 
   }
 });
 
-test('reuses only the bounded fields of an already confirmed active product', () => {
+test('revalidates an active product against the current tenant active catalog', () => {
   const db = makeDb();
   try {
+    addProduct(db, {
+      canonicalProductId: 'product-current', company: '新华保险', officialName: '康健无忧两全保险',
+    });
     const resolver = createAgentProductEntityResolver({ db });
     assert.deepEqual(resolver.resolve({
       activeProduct: {
@@ -235,6 +238,10 @@ test('reuses only the bounded fields of an already confirmed active product', ()
       activeProduct: { company: '新华保险', officialName: '康健无忧两全保险' },
     }), { status: 'missing', entity: null, candidates: [] });
     assert.deepEqual(resolver.resolve(), { status: 'missing', entity: null, candidates: [] });
+    db.prepare("UPDATE insurance_products SET status = 'inactive' WHERE canonical_product_id = 'product-current'").run();
+    assert.deepEqual(resolver.resolve({ activeProduct: {
+      canonicalProductId: 'product-current', company: '新华保险', officialName: '康健无忧两全保险',
+    } }), { status: 'not_found', entity: null, candidates: [] });
   } finally {
     db.close();
   }

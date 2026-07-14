@@ -394,15 +394,24 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
       if (!productText) {
         const entity = boundedActiveProduct(activeProduct);
         if (!entity) return emptyResult('missing');
+        const products = publicProductRows(db, scopedTenantId);
+        const current = products.find((product) => (
+          product.canonicalProductId === entity.canonicalProductId
+        ));
+        if (!current) return emptyResult('not_found');
         if (insurerText) {
-          const companies = [...new Set(publicProductRows(db, scopedTenantId).map((row) => row.company))];
+          const companies = [...new Set(products.map((row) => row.company))];
           const mentionedCompany = resolveCompany(insurerText, companies, profiles);
-          const activeCompany = resolveCompany(entity.company, companies, profiles);
+          const activeCompany = resolveCompany(current.company, companies, profiles);
           if (!mentionedCompany || !activeCompany || mentionedCompany !== activeCompany) {
             return emptyResult('not_found');
           }
         }
-        return { status: 'resolved', entity, candidates: [] };
+        return { status: 'resolved', entity: { ...entity,
+          canonicalProductId: current.canonicalProductId,
+          company: current.company,
+          officialName: current.officialName,
+        }, candidates: [] };
       }
 
       const products = publicProductRows(db, scopedTenantId);

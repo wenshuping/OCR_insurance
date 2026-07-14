@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   normalizeSemanticProposal,
+  semanticFrameToRouterCandidate,
   SEMANTIC_CONTRACT_VERSION,
   SEMANTIC_DECISIONS,
   SEMANTIC_INTENTS,
@@ -160,6 +161,25 @@ test('semantic proposal de-duplicates controlled string lists in encounter order
 
   assert.deepEqual(proposal.queryAspects, ['renewal', 'exclusions']);
   assert.deepEqual(proposal.requestedSteps, ['lookup', 'continue']);
+});
+
+test('router candidate projects exactly two distinct resolved products for comparison', () => {
+  const frame = validProposal({ queryAspects: ['comparison'], requestedSteps: ['compare'] });
+  const products = [
+    { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },
+    { canonicalProductId: 'b', company: '乙保险', officialName: '乙产品' },
+  ];
+  const candidate = semanticFrameToRouterCandidate({ ...frame, resolvedEntities: { products } }, '查询');
+  assert.equal(candidate.entities.product1CanonicalId, 'a');
+  assert.equal(candidate.entities.product2CanonicalId, 'b');
+  for (const resolvedEntities of [
+    { products: products.slice(0, 1) },
+    { products: [products[0], { ...products[1], canonicalProductId: 'a' }] },
+    { products, secret: 'drop' },
+  ]) assert.throws(
+    () => semanticFrameToRouterCandidate({ ...frame, resolvedEntities }, '查询'),
+    /SEMANTIC_FRAME_INVALID/u,
+  );
 });
 
 test('pre-parser recognizes only high-certainty selection and upload signals', () => {

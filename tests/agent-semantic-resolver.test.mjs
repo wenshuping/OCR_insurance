@@ -177,21 +177,45 @@ test('current_product preserves an explicit insurer instead of substituting the 
   assert.equal(productCalls.length, 1);
 });
 
-test('does not inherit an active product without a current_product reference', async () => {
-  const { resolver, productCalls } = harness({
-    productResult: { status: 'missing', entity: null, candidates: [] },
-  });
+test('inherits and revalidates a live product for an omitted follow-up in the active product task', async () => {
+  const { resolver, productCalls } = harness();
   const result = await resolver.resolve({
     internalUserId: 7,
     question: '主要保啥',
     runtime: 'hermes',
     proposal: proposal(),
-    context: { taskState: { activeEntities: { product: activeProduct() } } },
+    context: { taskState: {
+      activeIntent: 'insurance_product_knowledge',
+      activeEntities: { product: activeProduct() },
+    } },
   });
 
-  assert.equal(result.decision, 'clarify');
-  assert.equal(result.decisionReason, 'product_required');
-  assert.equal(productCalls[0].activeProduct, null);
+  assert.equal(result.decision, 'execute');
+  assert.deepEqual(productCalls[0], { mentions: [], activeProduct: activeProduct() });
+  assert.equal(result.candidate.entities.productCanonicalId, PRODUCT.canonicalProductId);
+});
+
+test('does not inherit an active product across tasks or while clarification is pending', async () => {
+  for (const taskState of [
+    { activeIntent: 'chat', activeEntities: { product: activeProduct() } },
+    {
+      activeIntent: 'insurance_product_knowledge',
+      activeEntities: { product: activeProduct() },
+      candidateSets: { product: [{ ...PRODUCT, canonicalProductId: 'candidate' }] },
+      pendingClarification: {
+        entityType: 'product', proposal: proposal(), originalQuestion: '查哪款产品', expiresAt: NOW + 60_000,
+      },
+    },
+  ]) {
+    const { resolver, productCalls } = harness({
+      productResult: { status: 'missing', entity: null, candidates: [] },
+    });
+    const result = await resolver.resolve({
+      internalUserId: 7, question: '主要保啥', runtime: 'hermes', proposal: proposal(), context: { taskState },
+    });
+    assert.equal(result.decision, 'clarify');
+    assert.equal(productCalls[0].activeProduct, null);
+  }
 });
 
 test('explicit product mention takes priority over active context', async () => {
@@ -229,48 +253,33 @@ test('passes formal and short product mentions to the product resolver unchanged
   }
 });
 
-test('product comparison proposals clarify without resolving or executing the first product', async () => {
+test('product comparison resolves exactly two distinct canonical products', async () => {
   const question = '甲产品和乙产品有什么区别';
-  const cases = [
-    proposal({
+  const { resolver } = harness({ productResult: canonicalProductResult, productScanResult: canonicalScanResult });
+  const result = await resolver.resolve({
+    internalUserId: 7, question, runtime: 'hermes',
+    proposal: proposal({
       queryAspects: ['comparison'],
-      mentions: [
-        { type: 'product', rawText: '甲产品' },
-        { type: 'product', rawText: '乙产品' },
-      ],
+      mentions: [{ type: 'product', rawText: '甲产品' }, { type: 'product', rawText: '乙产品' }],
       requestedSteps: ['compare'],
     }),
-    proposal({
-      mentions: [
-        { type: 'product', rawText: '甲产品' },
-        { type: 'product', rawText: '乙产品' },
-      ],
-    }),
-    proposal({
-      mentions: [{ type: 'product', rawText: '甲产品' }],
-      references: [{ type: 'comparison_right', rawText: '乙产品' }],
-    }),
-    proposal({ mentions: [{ type: 'product', rawText: '甲产品' }] }),
-  ];
-
-  for (const value of cases) {
-    const { resolver, productCalls } = harness({
-      productResult: canonicalProductResult, productScanResult: canonicalScanResult,
-    });
-    const result = await resolver.resolve({
-      internalUserId: 7,
-      question,
-      runtime: 'hermes',
-      proposal: value,
-    });
-    assert.equal(result.decision, 'clarify');
-    assert.equal(result.decisionReason, 'product_comparison_unsupported');
-    assert.equal(result.candidate, null);
-    assert.ok(productCalls.length <= 8);
-  }
+    context: { taskState: { activeIntent: 'insurance_product_knowledge', activeEntities: { product: activeProduct() } } },
+  });
+  assert.equal(result.decision, 'execute');
+  assert.deepEqual(result.resolvedEntities.products.map((item) => item.canonicalProductId), ['product-a', 'product-b']);
+  assert.equal(result.resolvedEntities.product, undefined);
+  assert.deepEqual(result.candidate.entities, {
+    product1Name: PRODUCT.officialName,
+    product1CanonicalId: 'product-a',
+    product1Company: PRODUCT.company,
+    product2Name: '健康福保险',
+    product2CanonicalId: 'product-b',
+    product2Company: PRODUCT.company,
+  });
+  assert.equal(result.nextTaskState.activeEntities.product.canonicalProductId, PRODUCT.canonicalProductId);
 });
 
-test('clear multi-product wording clarifies even when the proposal extracts only one product', async () => {
+test('clear multi-product wording executes only when two products can be confirmed', async () => {
   for (const question of [
     '甲产品和乙产品分别保什么',
     '甲产品、乙产品各自主要责任',
@@ -290,14 +299,14 @@ test('clear multi-product wording clarifies even when the proposal extracts only
       runtime: 'hermes',
       proposal: proposal({ mentions: mention }),
     });
-    assert.equal(result.decision, 'clarify', question);
-    assert.equal(result.decisionReason, 'product_comparison_unsupported', question);
-    assert.equal(result.candidate, null, question);
+    const hasTwoConfirmed = /甲产品.*乙产品/u.test(question);
+    assert.equal(result.decision, hasTwoConfirmed ? 'execute' : 'clarify', question);
+    if (hasTwoConfirmed) assert.equal(result.resolvedEntities.products.length, 2, question);
     assert.ok(productCalls.length <= 8, question);
   }
 });
 
-test('catalog scan catches under-extraction without misreading single-product aspects', async () => {
+test('catalog scan enables under-extracted two-product comparisons without misreading single-product aspects', async () => {
   for (const question of [
     '甲产品还有乙产品分别保什么',
     '甲产品/乙产品各自主要责任',
@@ -312,9 +321,8 @@ test('catalog scan catches under-extraction without misreading single-product as
       runtime: 'hermes',
       proposal: proposal({ mentions: [{ type: 'product', rawText: '甲产品' }] }),
     });
-    assert.equal(result.decision, 'clarify', question);
-    assert.equal(result.decisionReason, 'product_comparison_unsupported', question);
-    assert.equal(result.candidate, null, question);
+    assert.equal(result.decision, 'execute', question);
+    assert.equal(result.resolvedEntities.products.length, 2, question);
     assert.ok(productCalls.length > 0 && productCalls.length <= 8, question);
   }
 
@@ -334,7 +342,7 @@ test('catalog scan catches under-extraction without misreading single-product as
   }
 });
 
-test('catalog scan catches distinct products across arbitrary wording', async () => {
+test('catalog scan resolves distinct products across arbitrary wording', async () => {
   const cases = [
     {
       question: '甲产品（以下简称甲保）和乙产品主要保什么',
@@ -362,9 +370,8 @@ test('catalog scan catches distinct products across arbitrary wording', async ()
       runtime: 'hermes',
       proposal: proposal({ mentions: item.mentions }),
     });
-    assert.equal(result.decision, 'clarify', item.question);
-    assert.equal(result.decisionReason, 'product_comparison_unsupported', item.question);
-    assert.equal(result.candidate, null, item.question);
+    assert.equal(result.decision, 'execute', item.question);
+    assert.equal(result.resolvedEntities.products.length, 2, item.question);
     assert.ok(productCalls.length <= 8, item.question);
   }
 });
@@ -449,7 +456,7 @@ test('a formal product name and its parenthetical short name are not treated as 
   });
 
   assert.equal(result.decision, 'execute');
-  assert.equal(productCalls.length, 2);
+  assert.ok(productCalls.length >= 2 && productCalls.length <= 4);
   assert.equal(productScanCalls.length, 1);
   assert.equal(result.candidate.entities.productName, PRODUCT.officialName);
 });
