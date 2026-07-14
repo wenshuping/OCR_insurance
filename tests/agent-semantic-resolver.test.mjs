@@ -92,6 +92,7 @@ test('current_product uses a live confirmed product and projects its formal iden
   });
 
   assert.equal(result.decision, 'execute');
+  assert.equal(productCalls.length, 1);
   assert.equal(productCalls[0].activeProduct, null);
   assert.deepEqual(productCalls[0].mentions, [
     { type: 'insurer', rawText: PRODUCT.company },
@@ -254,13 +255,8 @@ test('clear multi-product wording clarifies even when the proposal extracts only
     '这两款主要保什么',
     '二者主要责任是什么',
   ]) {
-    const mention = question === '甲产品和乙产品主要保什么'
-      ? [
-        { type: 'product', rawText: '甲产品' },
-        { type: 'product', rawText: '乙产品' },
-      ]
-      : question.includes('甲产品')
-        ? [{ type: 'product', rawText: '甲产品' }]
+    const mention = question.includes('甲产品')
+      ? [{ type: 'product', rawText: '甲产品' }]
       : [];
     const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
     const result = await resolver.resolve({
@@ -324,6 +320,10 @@ test('canonical evidence catches distinct products across alias wording and boun
     { question: '康健无忧 VS 健康福哪个好', mentions: [{ type: 'product', rawText: '康健无忧' }] },
     { question: '康健无忧相比健康福哪个好', mentions: [{ type: 'product', rawText: '康健无忧' }] },
     { question: '康健无忧同健康福哪个划算', mentions: [{ type: 'product', rawText: '康健无忧' }] },
+    { question: '康健无忧跟健康福哪个好', mentions: [{ type: 'product', rawText: '康健无忧' }] },
+    { question: '康健无忧比健康福哪个好', mentions: [{ type: 'product', rawText: '康健无忧' }] },
+    { question: '康健无忧+健康福哪个好', mentions: [{ type: 'product', rawText: '康健无忧' }] },
+    { question: '康健无忧搭着健康福哪个好', mentions: [{ type: 'product', rawText: '康健无忧' }] },
   ];
   for (const item of cases) {
     const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
@@ -385,6 +385,28 @@ test('a formal product name and its parenthetical short name are not treated as 
   assert.equal(result.decision, 'execute');
   assert.equal(productCalls.length, 2);
   assert.equal(result.candidate.entities.productName, PRODUCT.officialName);
+});
+
+test('current_product reference checks a residual second product before execution', async () => {
+  const question = '这个保险跟乙产品哪个好';
+  const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({
+      mentions: [],
+      references: [{ type: 'current_product', rawText: '这个保险' }],
+    }),
+    context: { taskState: { activeEntities: { product: activeProduct({
+      canonicalProductId: 'product-a',
+    }) } } },
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'product_comparison_unsupported');
+  assert.equal(result.candidate, null);
+  assert.equal(productCalls.length, 2);
 });
 
 test('current_family is reauthorized and family id never enters router candidate', async () => {
