@@ -292,6 +292,44 @@ test('ambiguous products are persisted and choice two executes without exposing 
   assert.equal(audits[1].runtime, 'rule');
 });
 
+test('pending choice with a current Hermes proposal keeps current aspects and provenance', async () => {
+  const conversations = memoryConversationService();
+  const candidates = [1, 2].map((index) => ({
+    canonicalProductId: `product-${index}`, company: '测试保险', officialName: `正式产品${index}`,
+    matchType: 'company_scoped_normalized', confidence: 1,
+  }));
+  const semanticResolver = createAgentSemanticResolver({
+    productResolver: { resolve({ mentions }) {
+      const selected = candidates.find((item) => mentions.some((mention) => mention.rawText === item.officialName));
+      return selected ? { status: 'resolved', entity: selected, candidates: [] }
+        : { status: 'ambiguous', entity: null, candidates };
+    } },
+    familyResolver: { async resolve() { return { status: 'missing', entity: null, candidates: [] }; } },
+    clock: () => 2_500,
+  });
+  const { router, calls, audits } = wrapperHarness({ semanticResolver, conversationService: conversations });
+  const originalQuestion = '康健无忧';
+  await router.route({
+    internalUserId: 7, conversationId: 'pending-current', messageRef: 'pending-current-1',
+    runtime: 'hermes', question: originalQuestion, proposal: proposal(originalQuestion),
+  });
+  const question = '第二款等待期呢';
+  const currentProposal = proposal(question, {
+    queryAspects: ['waiting_period'], mentions: [],
+    references: [{ type: 'candidate_index', rawText: '第二款' }],
+  });
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'pending-current', messageRef: 'pending-current-2',
+    runtime: 'hermes', question, proposal: currentProposal,
+  });
+  assert.equal(result.decision, 'execute');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].candidate.question, question);
+  assert.deepEqual(calls[0].semanticContext.queryAspects, ['waiting_period']);
+  assert.equal(audits[1].runtime, 'hermes');
+  assert.equal(audits[1].fallbackReason, 'none');
+});
+
 test('family ambiguity labels are generic and no-conversation choices require a full name', async () => {
   const resolved = {
     decision: 'clarify', decisionReason: 'entity_ambiguous', missingFields: [], ambiguities: ['family'],

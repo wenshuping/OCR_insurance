@@ -46,7 +46,7 @@ function stableRetry() {
 }
 
 function resolveFallbackReason(input, preparsed) {
-  if (preparsed.candidateSelection) return 'candidate_selection';
+  if (preparsed.candidateSelection && !input.proposal) return 'candidate_selection';
   const explicit = clean(input.fallbackReason, 40);
   if (input.runtime === 'rule') {
     if (['direct_unavailable', 'direct_invalid_output'].includes(explicit)) return explicit;
@@ -349,7 +349,7 @@ export function createAgentSemanticQuestionRouter({
         internalUserId: input.internalUserId,
         question: input.question,
         runtime: input.runtime,
-        proposal: expectedProposal,
+        proposal: pendingProposal ? trustedInputProposal : expectedProposal,
         context: { taskState: conversation.taskState },
       });
       const normalized = normalizedResolution(rawResolution, {
@@ -537,13 +537,14 @@ export function createAgentSemanticQuestionRouter({
         }
       }
       const preparsed = preparseAgentMessage(question);
-      const localRuleRuntime = Boolean(preparsed.candidateSelection)
+      const localRuleRuntime = Boolean(preparsed.candidateSelection && !trustedInputProposal)
         || (!trustedInputProposal && preparsed.operationHint === 'upload_link' && input.runtime === 'hermes');
       const runtimeInput = localRuleRuntime
         ? {
           ...input,
           runtime: 'rule',
-          fallbackReason: preparsed.candidateSelection ? 'candidate_selection' : 'rule_preparse',
+          fallbackReason: preparsed.candidateSelection && !trustedInputProposal
+            ? 'candidate_selection' : 'rule_preparse',
         }
         : input;
       const fallbackReason = resolveFallbackReason(runtimeInput, preparsed);

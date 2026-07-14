@@ -507,7 +507,20 @@ export function createAgentSemanticResolver({
             proposal: effectiveProposal,
           });
         }
-        if (!selection.comparison) {
+        if (effectiveProposal) {
+          const boundCurrentSelection = requiredEntityType(effectiveProposal.intent) === selection.entityType
+            && effectiveProposal.references.some((reference) => (
+              reference.type === 'candidate_index'
+              && reference.rawText === preparsed.candidateSelection.rawText
+            ));
+          if (!boundCurrentSelection) {
+            return expiredSelectionResult({
+              state,
+              entityType: selection.entityType,
+              proposal: effectiveProposal,
+            });
+          }
+        } else if (!selection.comparison && proposalUnavailable) {
           effectiveProposal = selection.proposal;
           proposalQuestion = selection.originalQuestion;
         }

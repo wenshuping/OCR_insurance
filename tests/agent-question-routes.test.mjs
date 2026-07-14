@@ -208,6 +208,7 @@ test('HTTP leading candidate selection preserves a bound current semantic propos
   const result = await post(server, '/api/agent/questions/route', semanticBody({ question, proposal }));
   assert.equal(result.response.status, 200);
   assert.equal(server.calls.route[0].runtime, 'hermes');
+  assert.equal(server.calls.route[0].fallbackReason, undefined);
   assert.deepEqual(server.calls.route[0].proposal, proposal);
 });
 

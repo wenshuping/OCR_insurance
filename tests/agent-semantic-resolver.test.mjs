@@ -763,6 +763,34 @@ test('ambiguous product selection revalidates formal identity and ignores stored
   assert.deepEqual(selected.nextTaskState.candidateSets.product, []);
 });
 
+test('pending selection keeps a bound current Hermes proposal and follow-up aspects', async () => {
+  const candidates = [
+    { ...PRODUCT, canonicalProductId: 'product-1', officialName: '第一款保险' },
+    { ...PRODUCT, canonicalProductId: 'product-2', officialName: '第二款保险' },
+  ];
+  const first = harness({ productResult: { status: 'ambiguous', entity: null, candidates } });
+  const clarified = await first.resolver.resolve({
+    internalUserId: 7, question: '康健无忧保什么', runtime: 'hermes',
+    proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+  });
+  const second = harness({ productResult: {
+    status: 'resolved', entity: candidates[1], candidates: [],
+  } });
+  const question = '第二款等待期呢';
+  const selected = await second.resolver.resolve({
+    internalUserId: 7, question, runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['waiting_period'], mentions: [],
+      references: [{ type: 'candidate_index', rawText: '第二款' }],
+    }),
+    context: { taskState: clarified.nextTaskState },
+  });
+  assert.equal(selected.decision, 'execute');
+  assert.equal(selected.candidate.question, question);
+  assert.deepEqual(selected.proposal.queryAspects, ['waiting_period']);
+  assert.equal(selected.resolvedEntities.product.canonicalProductId, 'product-2');
+});
+
 test('Chinese ordinal product selection is consumed only by a live pending clarification', async () => {
   const savedProposal = proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] });
   const context = { taskState: {
