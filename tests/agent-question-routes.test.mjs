@@ -164,6 +164,25 @@ test('semantic fallback reason is allowlisted and rule preparse is explicit', as
   assert.equal(invalid.response.status, 400);
 });
 
+test('semantic fallback reasons must match runtime and proposal shape', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const invalidBodies = [
+    semanticBody({ fallbackReason: 'candidate_selection' }),
+    semanticBody({ fallbackReason: 'rule_preparse' }),
+    semanticBody({ runtime: 'direct', fallbackReason: 'rule_preparse' }),
+    semanticBody({ runtime: 'rule', fallbackReason: 'hermes_unavailable', proposal: null, question: '上传保单' }),
+    semanticBody({ runtime: 'rule', fallbackReason: 'direct_unavailable', proposal: null, question: '上传保单' }),
+  ];
+  for (const [index, body] of invalidBodies.entries()) {
+    body.messageRef = `invalid-fallback-${index}`;
+    const result = await post(server, '/api/agent/questions/route', body);
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  }
+  assert.equal(server.calls.route.length, 0);
+});
+
 test('HTTP candidate selection keeps fallback inference inside the semantic wrapper', async (t) => {
   const server = await startServer();
   t.after(server.close);

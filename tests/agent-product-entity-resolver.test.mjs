@@ -15,6 +15,7 @@ function makeDb() {
       tenant_id TEXT,
       company TEXT,
       official_name TEXT,
+      product_code TEXT,
       status TEXT,
       payload TEXT NOT NULL DEFAULT '{}'
     );
@@ -37,11 +38,12 @@ function addProduct(db, {
   status = 'active',
   payload = {},
   tenantId = 'tenant-default',
+  productCode = '',
 }) {
   db.prepare(`
-    INSERT INTO insurance_products (canonical_product_id, tenant_id, company, official_name, status, payload)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(canonicalProductId, tenantId, company, officialName, status, JSON.stringify(payload));
+    INSERT INTO insurance_products (canonical_product_id, tenant_id, company, official_name, product_code, status, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(canonicalProductId, tenantId, company, officialName, productCode, status, JSON.stringify(payload));
 }
 
 const OFFICIAL_DOMAIN_PROFILES = getDefaultOfficialDomainProfiles();
@@ -442,6 +444,108 @@ test('accepts only explicitly approved product aliases', () => {
     const pending = resolver.resolve({ mentions: [{ type: 'product', rawText: '医无忧' }] });
     assert.notEqual(pending.status, 'resolved');
     assert.equal(pending.candidates.some((candidate) => candidate.matchType === 'approved_alias'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('resolves exact active filing names and controlled product identifiers', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-filing',
+      company: '甲保险',
+      officialName: '甲保险正式产品',
+      productCode: 'PRD-001',
+      payload: {
+        filingName: '甲保险备案产品',
+        filingNames: ['甲保险历史备案产品'],
+        clauseCode: 'CLAUSE-001',
+        arbitraryCode: 'MUST-NOT-MATCH',
+      },
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+
+    for (const rawText of ['甲保险备案产品', '甲保险历史备案产品', 'PRD-001', 'CLAUSE-001']) {
+      const result = resolver.resolve({ mentions: [{ type: 'product', rawText }] });
+      assert.equal(result.status, 'resolved', rawText);
+      assert.equal(result.entity.canonicalProductId, 'product-filing', rawText);
+      assert.equal(result.entity.matchType, 'filing_name', rawText);
+      assert.equal(result.entity.confidence, 1, rawText);
+    }
+    assert.deepEqual(resolver.resolve({ mentions: [{ type: 'product', rawText: 'MUST-NOT-MATCH' }] }), {
+      status: 'not_found', entity: null, candidates: [],
+    });
+    assert.notEqual(
+      resolver.resolve({ mentions: [{ type: 'product', rawText: 'PRD-00' }] }).status,
+      'resolved',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('filing identifiers require insurer scope when shared and exclude inactive rows', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-a', company: '甲保险', officialName: '甲保险甲产品', productCode: 'SHARED-01',
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-b', company: '乙保险', officialName: '乙保险乙产品', productCode: 'SHARED-01',
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-disabled', company: '丙保险', officialName: '丙保险停用产品',
+      status: 'disabled', productCode: 'DISABLED-01', payload: { filingName: '停用备案产品' },
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+
+    const ambiguous = resolver.resolve({ mentions: [{ type: 'product', rawText: 'SHARED-01' }] });
+    assert.equal(ambiguous.status, 'ambiguous');
+    assert.deepEqual(
+      new Set(ambiguous.candidates.map((candidate) => candidate.canonicalProductId)),
+      new Set(['product-a', 'product-b']),
+    );
+    const scoped = resolver.resolve({ mentions: [
+      { type: 'insurer', rawText: '甲保险' },
+      { type: 'product', rawText: 'SHARED-01' },
+    ] });
+    assert.equal(scoped.status, 'resolved');
+    assert.equal(scoped.entity.canonicalProductId, 'product-a');
+    for (const rawText of ['DISABLED-01', '停用备案产品']) {
+      const inactive = resolver.resolve({ mentions: [{ type: 'product', rawText }] });
+      assert.notEqual(inactive.status, 'resolved');
+      assert.equal(inactive.entity, null);
+      assert.equal(inactive.candidates.some((candidate) => candidate.canonicalProductId === 'product-disabled'), false);
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('duplicate tenant filing identifiers fail closed when canonical ids disagree', () => {
+  const db = makeDb();
+  try {
+    for (const [tenantId, canonicalProductId] of [['tenant-a', 'product-a'], ['tenant-b', 'product-b']]) {
+      addProduct(db, {
+        tenantId,
+        canonicalProductId,
+        company: '甲保险',
+        officialName: '甲保险正式产品',
+        productCode: 'TENANT-CONFLICT-01',
+      });
+    }
+    const result = createAgentProductEntityResolver({ db }).resolve({ mentions: [
+      { type: 'insurer', rawText: '甲保险' },
+      { type: 'product', rawText: 'TENANT-CONFLICT-01' },
+    ] });
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.entity, null);
+    assert.deepEqual(
+      new Set(result.candidates.map((candidate) => candidate.canonicalProductId)),
+      new Set(['product-a', 'product-b']),
+    );
   } finally {
     db.close();
   }

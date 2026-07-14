@@ -7,15 +7,17 @@ import {
 const INACTIVE_PRODUCT_STATUSES = ['draft', 'pending', 'disabled', 'rejected'];
 const MATCH_TYPES = new Set([
   'exact_official_name',
+  'filing_name',
   'approved_alias',
   'company_scoped_normalized',
   'unique_high_confidence',
 ]);
 const MATCH_TYPE_PRIORITY = new Map([
   ['exact_official_name', 0],
-  ['approved_alias', 1],
-  ['company_scoped_normalized', 2],
-  ['unique_high_confidence', 3],
+  ['filing_name', 1],
+  ['approved_alias', 2],
+  ['company_scoped_normalized', 3],
+  ['unique_high_confidence', 4],
 ]);
 const HEURISTIC_CONFIDENCE_CEILING = 0.89;
 const SCAN_DENYLIST = new Set([
@@ -59,10 +61,12 @@ function publicProductRows(db) {
   const columns = tableColumns(db, 'insurance_products');
   if (!columns.has('company') || !columns.has('official_name') || !columns.has('status')) return [];
   const canonicalId = columns.has('canonical_product_id') ? 'canonical_product_id' : "''";
+  const productCode = columns.has('product_code') ? 'product_code' : "''";
   const payload = columns.has('payload') ? 'payload' : "'{}'";
   const statusWhere = `WHERE COALESCE(status, '') NOT IN (${INACTIVE_PRODUCT_STATUSES.map(() => '?').join(', ')})`;
   return db.prepare(`
-    SELECT ${canonicalId} AS canonical_product_id, company, official_name, ${payload} AS payload
+    SELECT ${canonicalId} AS canonical_product_id, company, official_name,
+      ${productCode} AS product_code, ${payload} AS payload
     FROM insurance_products
     ${statusWhere}
     ORDER BY company, official_name
@@ -70,6 +74,7 @@ function publicProductRows(db) {
     canonicalProductId: clean(row.canonical_product_id),
     company: clean(row.company),
     officialName: clean(row.official_name),
+    productCode: clean(row.product_code),
     payload: parsePayload(row.payload),
   })).filter((row) => row.company && row.officialName);
 }
@@ -119,6 +124,35 @@ function filingNames(product) {
     product.payload?.filingName,
     ...(Array.isArray(product.payload?.filingNames) ? product.payload.filingNames : []),
   ].map(clean).filter(Boolean);
+}
+
+function filingIdentifiers(product) {
+  return [
+    ...filingNames(product),
+    product.productCode,
+    product.payload?.clauseCode,
+  ].map(clean).filter(Boolean);
+}
+
+function exactFilingCandidates(products, productText, company) {
+  const target = comparable(productText);
+  const candidates = [];
+  const seen = new Set();
+  for (const product of products) {
+    if (company && product.company !== company) continue;
+    if (!filingIdentifiers(product).some((value) => comparable(value) === target)) continue;
+    const key = [product.canonicalProductId, product.company, product.officialName].join('\u0000');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      canonicalProductId: product.canonicalProductId,
+      company: product.company,
+      officialName: product.officialName,
+      matchType: product.canonicalProductId ? 'filing_name' : 'unique_high_confidence',
+      confidence: product.canonicalProductId ? 1 : HEURISTIC_CONFIDENCE_CEILING,
+    });
+  }
+  return candidates;
 }
 
 function termOccurrences(question, term) {
@@ -352,6 +386,13 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
       if (insurerText && company === null) return emptyResult('not_found');
 
       const products = publicProductRows(db);
+      const exactFiling = exactFilingCandidates(products, productText, company);
+      if (exactFiling.length === 1 && exactFiling[0].confidence === 1) {
+        return { status: 'resolved', entity: exactFiling[0], candidates: [] };
+      }
+      if (exactFiling.length) {
+        return { status: 'ambiguous', entity: null, candidates: exactFiling.slice(0, 10) };
+      }
       const recalled = searchProductCatalog({
         db,
         company: company || '',

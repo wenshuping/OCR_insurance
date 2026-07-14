@@ -622,7 +622,7 @@ test('proposal-free rule upload is the only locally synthesized execution', asyn
     familyResolver: { async resolve() { throw new Error('must not resolve family'); } },
     clock: () => 5_000,
   });
-  const { router, calls } = wrapperHarness({
+  const { router, calls, audits } = wrapperHarness({
     semanticResolver,
     conversationService: memoryConversationService(),
   });
@@ -635,6 +635,7 @@ test('proposal-free rule upload is the only locally synthesized execution', asyn
   assert.equal(result.decision, 'execute');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].candidate.intent, 'upload_link');
+  assert.equal(audits[0].fallbackReason, 'rule_preparse');
 });
 
 test('expired pending selection remains a clarification without extending state', async () => {
