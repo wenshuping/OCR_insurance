@@ -1006,10 +1006,9 @@ test('default semantic composition preserves the canonical product across a foll
     { expectedVersion: 1, previousVersion: 1 },
   ]);
 
-  const executeAudits = semanticAudits.filter((audit) => audit.decision === 'execute');
-  assert.equal(executeAudits.length, 2);
-  const auditPayloads = JSON.stringify(executeAudits.map((audit) => audit.payload));
-  assert.doesNotMatch(auditPayloads, new RegExp([
+  assert.equal(semanticAudits.length, 2);
+  assert.deepEqual(semanticAudits.map((audit) => audit.decision), ['execute', 'execute']);
+  assert.doesNotMatch(JSON.stringify(semanticAudits), new RegExp([
     firstQuestion, secondQuestion, company, officialName, formalProductName, canonicalProductId,
   ].join('|'), 'u'));
 });
