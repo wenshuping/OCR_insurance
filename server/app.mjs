@@ -2237,7 +2237,7 @@ function resolveDefaultWechatPayMode(options = {}) {
 export function resolveAgentSemanticMode(options = {}, env = process.env) {
   const value = trim(options.agentSemanticMode ?? env.POLICY_AGENT_SEMANTIC_MODE ?? 'enforced');
   if (value === 'enforced' || value === 'off') return value;
-  throw new Error(`POLICY_AGENT_SEMANTIC_MODE must be "enforced" or "off"; received ${JSON.stringify(value)}`);
+  throw new Error('POLICY_AGENT_SEMANTIC_MODE must be "enforced" or "off"');
 }
 
 function createAgentSemanticOffRouter(legacyRouter) {
@@ -2848,12 +2848,11 @@ export function createPolicyOcrApp(options = {}) {
         },
       };
   }
-  const configuredAgentQuestionRouter = injectedQuestionRouter
+  const agentQuestionRouter = injectedQuestionRouter
     ? options.agentQuestionRouter
-    : defaultAgentQuestionRouter;
-  const agentQuestionRouter = agentSemanticMode === 'off' && configuredAgentQuestionRouter
-    ? createAgentSemanticOffRouter(configuredAgentQuestionRouter)
-    : configuredAgentQuestionRouter;
+    : (agentSemanticMode === 'off' && defaultAgentQuestionRouter
+      ? createAgentSemanticOffRouter(defaultAgentQuestionRouter)
+      : defaultAgentQuestionRouter);
   const recoveryOptions = {
     intervalMs: options.agentTransferRecoveryIntervalMs,
     disabled: options.disableAgentTransferRecovery === true,

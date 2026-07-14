@@ -842,9 +842,25 @@ test('agent semantic mode defaults to enforced, honors option precedence, and re
   assert.equal(resolveAgentSemanticMode({}, {}), 'enforced');
   assert.equal(resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: 'enforced' }), 'enforced');
   assert.equal(resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: 'off' }), 'off');
+  assert.equal(resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: ' off ' }), 'off');
   assert.equal(
     resolveAgentSemanticMode({ agentSemanticMode: 'enforced' }, { POLICY_AGENT_SEMANTIC_MODE: 'off' }),
     'enforced',
+  );
+  assert.equal(
+    resolveAgentSemanticMode({ agentSemanticMode: ' off ' }, { POLICY_AGENT_SEMANTIC_MODE: 'enforced' }),
+    'off',
+  );
+  for (const invalid of ['', '   ']) {
+    assert.throws(
+      () => resolveAgentSemanticMode({ agentSemanticMode: invalid }, { POLICY_AGENT_SEMANTIC_MODE: 'off' }),
+      /must be "enforced" or "off"/u,
+    );
+  }
+  const sentinel = 'db-password=SECRET';
+  assert.throws(
+    () => resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: sentinel }),
+    (error) => /must be "enforced" or "off"/u.test(error.message) && !error.message.includes(sentinel),
   );
   assert.throws(
     () => resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: 'invalid' }),
@@ -914,6 +930,37 @@ test('agent semantic off returns a safe clarification without semantic side effe
   assert.equal(calls.load, 0);
   assert.equal(calls.save, 0);
   assert.equal(calls.audit, 0);
+});
+
+test('agent semantic off preserves an explicitly injected question router for candidate and semantic requests', async (t) => {
+  const calls = [];
+  const app = createPolicyOcrApp({
+    agentSemanticMode: 'off',
+    recomputeCashflowOnStartup: false,
+    agentQuestionRouter: {
+      async route(input) {
+        calls.push(input);
+        return { decision: 'execute', interaction: { type: 'answer', text: 'injected-ok' } };
+      },
+    },
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+  const server = { baseUrl: `http://127.0.0.1:${listener.address().port}` };
+
+  const candidate = await post(server, '/api/agent/questions/route', validBody());
+  const semantic = await post(server, '/api/agent/questions/route', semanticBody());
+
+  assert.equal(candidate.payload.interaction.text, 'injected-ok');
+  assert.equal(semantic.payload.interaction.text, 'injected-ok');
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].candidate);
+  assert.equal(calls[1].question, semanticBody().question);
+  assert.ok(calls[1].proposal);
 });
 
 test('createPolicyOcrApp wires the real semantic mode environment without leaking it', { concurrency: false }, async (t) => {
