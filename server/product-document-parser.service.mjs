@@ -1,4 +1,5 @@
 import { parseOffice } from 'officeparser';
+import { strFromU8, unzipSync } from 'fflate';
 
 const PLAIN_TEXT_EXTENSIONS = new Set(['txt', 'md']);
 const OFFICEPARSER_EXTENSIONS = new Set(['pdf', 'pptx', 'docx', 'xlsx']);
@@ -37,6 +38,173 @@ function tableFromNode(node) {
     rows,
     metadata: node?.metadata && typeof node.metadata === 'object' ? node.metadata : {},
   };
+}
+
+function decodeXmlText(value) {
+  return String(value || '')
+    .replace(/&#x([0-9a-f]+);/giu, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/gu, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&lt;/gu, '<')
+    .replace(/&gt;/gu, '>')
+    .replace(/&quot;/gu, '"')
+    .replace(/&apos;/gu, "'")
+    .replace(/&amp;/gu, '&');
+}
+
+function pptxSlideXmlText(bytes, pageNumbers = []) {
+  const requested = new Set(pageNumbers.map(Number).filter((value) => Number.isInteger(value) && value > 0));
+  if (!requested.size) return new Map();
+  const archive = unzipSync(new Uint8Array(bytes));
+  const slides = new Map();
+  for (const pageNo of requested) {
+    const source = archive[`ppt/slides/slide${pageNo}.xml`];
+    if (!source) continue;
+    const xml = strFromU8(source);
+    const fragments = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/gu)]
+      .map((match) => text(decodeXmlText(match[1])))
+      .filter(Boolean);
+    if (fragments.length) slides.set(pageNo, text(fragments.join('\n')));
+  }
+  return slides;
+}
+
+function pptxXmlFallbackPages(bytes) {
+  const archive = unzipSync(new Uint8Array(bytes));
+  return Object.keys(archive)
+    .map((path) => ({ path, match: path.match(/^ppt\/slides\/slide(\d+)\.xml$/u) }))
+    .filter((entry) => entry.match)
+    .sort((left, right) => Number(left.match[1]) - Number(right.match[1]))
+    .map((entry) => {
+      const pageNo = Number(entry.match[1]);
+      const xml = strFromU8(archive[entry.path]);
+      const rawText = text([...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/gu)]
+        .map((match) => text(decodeXmlText(match[1])))
+        .filter(Boolean)
+        .join('\n'));
+      const extraction = pageExtractionState(rawText);
+      const table = planComparisonTable(rawText);
+      return {
+        pageNo,
+        rawText,
+        layout: {
+          sourceType: 'pptx',
+          sourceLabel: `幻灯片 ${pageNo}`,
+          metadata: { slideNumber: pageNo },
+          notes: [],
+          extraction: {
+            method: 'pptx_xml_fallback',
+            nativeCharacterCount: 0,
+            recoveredCharacterCount: [...rawText].length,
+            expectedPointCount: extraction.expectedPoints,
+            extractedPointCount: extraction.extractedPoints,
+            incomplete: extraction.incomplete,
+            needsVisualOcr: extraction.incomplete,
+          },
+        },
+        tables: table ? [table] : [],
+        headings: [],
+        sourceLabel: `幻灯片 ${pageNo}`,
+      };
+    })
+    .filter((page) => page.rawText);
+}
+
+function numberedPointCount(value) {
+  return new Set([...text(value).matchAll(/(?:^|\n)\s*([1-9]\d*)[.．、](?!\d)\s*(?:\n|\S)/gu)]
+    .map((match) => Number(match[1]))).size;
+}
+
+function expectedPointCount(value) {
+  const match = text(value).match(/([2-9]|10)\s*点(?:区别|差异|不同)/u);
+  return match ? Number(match[1]) : 0;
+}
+
+function pageExtractionState(value) {
+  const expectedPoints = expectedPointCount(value);
+  const extractedPoints = numberedPointCount(value);
+  return {
+    expectedPoints,
+    extractedPoints,
+    incomplete: expectedPoints > 0 && extractedPoints < expectedPoints,
+  };
+}
+
+function planComparisonTable(value) {
+  const content = text(value);
+  const sections = [...content.matchAll(/(?:^|\n)\s*[1-9]\d*[.．、](?!\d)\s*\n?([\s\S]*?)(?=(?:\n\s*[1-9]\d*[.．、](?!\d)\s*(?:\n|\S))|$)/gu)]
+    .map((match) => text(match[1]));
+  const rows = [];
+  let ratioNote = '';
+  for (const section of sections) {
+    let label = '';
+    if (/小额医疗[\s\S]{0,30}(?:年度)?给付限额/u.test(section)) {
+      label = '小额医疗（可选责任）年度给付限额';
+    } else if (/康护责任[\s\S]{0,20}(?:年度)?给付限额/u.test(section)) {
+      label = '康护责任年度给付限额';
+    } else if (/(?:年度)?免赔额/u.test(section)) {
+      label = '年度免赔额';
+    }
+    const values = [...section.matchAll(/计划([一二三])\s*[：:]?\s*(\d+(?:\.\d+)?)\s*(万元|元)/gu)];
+    if (label && values.length >= 2) {
+      const byPlan = new Map(values.map((match) => [`计划${match[1]}`, `${match[2]}${match[3]}`]));
+      rows.push([
+        label,
+        `计划一 ${byPlan.get('计划一') || ''}`.trim(),
+        `计划二 ${byPlan.get('计划二') || ''}`.trim(),
+        `计划三 ${byPlan.get('计划三') || ''}`.trim(),
+      ]);
+    }
+    const ratio = section.match(/对应年度免赔额[，,\s]*(\d+(?:\.\d+)?)\s*%\s*赔付/u);
+    if (ratio && /小额医疗/u.test(section)) ratioNote = `小额医疗对应年度免赔额后${ratio[1]}%赔付`;
+  }
+  if (rows.length < 2) return null;
+  if (ratioNote) rows.push([ratioNote, '', '', '']);
+  return {
+    text: rows.map((row) => row.join(' | ')).join('\n'),
+    rows: [['保障项目', '计划一', '计划二', '计划三'], ...rows],
+    metadata: {
+      kind: 'plan_comparison',
+      extractionMethod: 'pptx_xml',
+      notes: ratioNote ? [ratioNote] : [],
+    },
+  };
+}
+
+function recoverPptxPages(bytes, pages) {
+  const candidates = pages.filter((page) => pageExtractionState(page.rawText).incomplete);
+  let recovered = new Map();
+  if (candidates.length) {
+    try {
+      recovered = pptxSlideXmlText(bytes, candidates.map((page) => page.pageNo));
+    } catch {
+      recovered = new Map();
+    }
+  }
+  return pages.map((page) => {
+    const nativeText = text(page.rawText);
+    const xmlText = text(recovered.get(Number(page.pageNo)));
+    const useRecoveredText = [...xmlText].length > [...nativeText].length;
+    const rawText = useRecoveredText ? xmlText : nativeText;
+    const extraction = pageExtractionState(rawText);
+    const recoveredTable = useRecoveredText ? planComparisonTable(rawText) : null;
+    return {
+      ...page,
+      rawText,
+      layout: {
+        ...page.layout,
+        extraction: {
+          method: useRecoveredText ? 'officeparser+pptx_xml' : 'officeparser',
+          nativeCharacterCount: [...nativeText].length,
+          recoveredCharacterCount: useRecoveredText ? [...xmlText].length : 0,
+          expectedPointCount: extraction.expectedPoints,
+          extractedPointCount: extraction.extractedPoints,
+          incomplete: extraction.incomplete,
+          needsVisualOcr: extraction.incomplete,
+        },
+      },
+      tables: recoveredTable ? [...page.tables, recoveredTable] : page.tables,
+    };
+  });
 }
 
 function sourceUnits(ast) {
@@ -136,9 +304,26 @@ export async function parseProductDocument(input = {}) {
     });
   } catch (cause) {
     if (cause?.name === 'AbortError') throw cause;
+    if (extension === 'pptx') {
+      try {
+        const pages = pptxXmlFallbackPages(bytes);
+        if (pages.length) {
+          return {
+            parser: 'pptx-xml-fallback',
+            documentType: classifyDocumentType({ extension, pages }),
+            metadata: {},
+            warnings: ['officeparser_failed_pptx_xml_fallback'],
+            pages,
+          };
+        }
+      } catch {
+        // Fall through to the normal parse error when the PPTX archive is also unreadable.
+      }
+    }
     throw parserError('PRODUCT_DOCUMENT_PARSE_FAILED', '产品资料结构解析失败，请检查文件是否损坏');
   }
-  const pages = sourceUnits(ast).map((unit, index) => normalizeUnit(unit, index, text(ast?.type) || extension));
+  let pages = sourceUnits(ast).map((unit, index) => normalizeUnit(unit, index, text(ast?.type) || extension));
+  if (extension === 'pptx') pages = recoverPptxPages(bytes, pages);
   if (!pages.some((page) => page.rawText)) {
     throw parserError('PRODUCT_DOCUMENT_OCR_REQUIRED', '资料没有可提取文字，需要进入OCR识别队列');
   }

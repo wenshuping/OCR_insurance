@@ -101,3 +101,56 @@ test('product chunker keeps table rows structured without indexing flattened pag
   assert.match(table.content, /就医服务 \| 电话咨询 \| 1次\/年 \| √/u);
   assert.doesNotMatch(parent.content, /服务类别\n服务项目\n服务次数/u);
 });
+
+test('training deck chunks stay page-local and carry business topics', () => {
+  const chunks = chunkProductDocument({
+    document: {
+      id: 'doc_training_1',
+      fileName: '医疗险培训课件.pptx',
+      documentType: 'training_deck',
+      sourceAuthority: 'company_material',
+      payload: {},
+    },
+    product: { company: '测试保险公司', productName: '安心医疗保险' },
+    pages: [
+      {
+        pageNo: 1,
+        sourceLabel: '幻灯片 1',
+        headings: [],
+        rawText: '产品特色：健康告知宽松，高龄客户也可投保。',
+        tables: [],
+      },
+      {
+        pageNo: 2,
+        sourceLabel: '幻灯片 2',
+        headings: [],
+        rawText: '适合人群：关注大额医疗支出和就医品质的客户。',
+        tables: [],
+      },
+      {
+        pageNo: 3,
+        sourceLabel: '幻灯片 3',
+        headings: [],
+        rawText: '健康管理服务适用人群',
+        tables: [{
+          rows: [
+            ['服务项目', '适用人群'],
+            ['高尿酸管理', '高尿酸血症或痛风患者'],
+          ],
+        }],
+      },
+    ],
+  });
+
+  const children = chunks.filter((chunk) => chunk.chunkType === 'child');
+  assert.equal(children.length, 2);
+  assert.deepEqual(children.map((chunk) => [chunk.pageStart, chunk.pageEnd]), [[1, 1], [2, 2]]);
+  assert.deepEqual(children[0].payload.businessTopics, ['product_advantage', 'underwriting']);
+  assert.match(children[0].contextualPrefix, /切片主题：产品优势、投保规则/u);
+  assert.deepEqual(children[1].payload.businessTopics, ['target_audience']);
+  assert.match(children[1].contextualPrefix, /切片主题：适用人群/u);
+  const serviceTable = chunks.find((chunk) => chunk.pageStart === 3 && chunk.chunkType === 'table');
+  assert.ok(serviceTable);
+  assert.deepEqual(serviceTable.payload.businessTopics, ['health_services']);
+  assert.doesNotMatch(serviceTable.contextualPrefix, /切片主题：适用人群/u);
+});

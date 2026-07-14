@@ -39,6 +39,12 @@ test('development dotenv skip still permits DeepSeek review configuration', () =
   assert.match(serverIndexSource, /POLICY_OCR_SKIP_PROJECT_DOTENV_LOCAL/u);
 });
 
+test('development stack keeps the DingTalk gateway alive when its credentials are configured', () => {
+  assert.match(localStackSource, /name:\s*'dingtalk'[\s\S]+?server\/dingtalk-agent-gateway\.mjs/u);
+  assert.match(localStackSource, /skip:\s*profile\.name\s*!==\s*'dev'\s*\|\|\s*!hasDingtalkGatewayConfig\(\)/u);
+  assert.match(localStackSource, /DINGTALK_CHANNEL_API_BASE_URL:\s*`http:\/\/127\.0\.0\.1:\$\{profile\.apiPort\}`/u);
+});
+
 test('production Docker runtime copies src modules imported by the API server', () => {
   assert.match(dockerfileSource, /COPY src\/family-report-engine\.mjs \.\/src\/family-report-engine\.mjs/u);
   assert.match(dockerfileSource, /COPY src\/policy-plan-filter\.mjs \.\/src\/policy-plan-filter\.mjs/u);

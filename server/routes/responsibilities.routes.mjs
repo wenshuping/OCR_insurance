@@ -108,6 +108,8 @@ export function createResponsibilityRoutes(context) {
     generateProductCustomerResponsibilitySummary,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
     generateProductCustomerResponsibilityPlannerWithDeepSeek,
+    registerResponsibilityAssistantQuery,
+    registerCustomerResponsibilitySummaryQuery,
   } = context;
 
   function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
@@ -595,52 +597,64 @@ export function createResponsibilityRoutes(context) {
       .slice(0, maxResults);
   }
 
-  router.post('/query', async (req, res) => {
+  async function queryResponsibilityAssistant({
+    company,
+    name,
+    preferLocalKnowledgeAnswer = true,
+    allowExternalReferences = false,
+  } = {}) {
     const routeStartedAt = nowMs();
+    const input = normalizeResponsibilityQueryInput({ company, name });
+    const policy = { company: input.company, name: input.name };
+    const scan = { ocrText: `${input.company} ${input.name}`, data: input };
+    const analysisStartedAt = nowMs();
+    const existingCardAnalysis = !allowExternalReferences && preferLocalKnowledgeAnswer
+      ? existingResponsibilityCardAnalysis(policy)
+      : null;
+    const analysis = existingCardAnalysis || await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer, allowExternalReferences });
+    const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
+    const analysisWithCards = allowExternalReferences || existingCardAnalysis ? analysis : attachResponsibilityCards(analysis, policy);
+    const effectiveAnalysis = allowExternalReferences ? withExternalReviewWarning(analysisWithCards) : analysisWithCards;
+    const reusedResponsibilityCardCount = Number(effectiveAnalysis?.rawAnalysis?.reusedResponsibilityCardCount || 0);
+    const persistence = reusedResponsibilityCardCount
+      ? {
+          knowledgeRecordCount: 0,
+          indicatorRecordCount: 0,
+          responsibilityCardCount: 0,
+          reusedResponsibilityCardCount,
+        }
+      : allowExternalReferences
+      ? await persistExternalReviewAnalysisArtifacts(policy, effectiveAnalysis, officialDomainProfiles)
+      : await persistResponsibilityAnalysisArtifacts(policy, effectiveAnalysis, officialDomainProfiles);
+    logPerformance(performanceLogger, 'policy.responsibility.assistant.analysis', {
+      route: '/api/policy-responsibilities/query',
+      durationMs: elapsedMs(analysisStartedAt),
+      inputOcrChars: scan.ocrText.length,
+      outputOcrChars: scan.ocrText.length,
+      responsibilityCount: Array.isArray(effectiveAnalysis?.coverageTable) ? effectiveAnalysis.coverageTable.length : 0,
+    });
+    logPerformance(performanceLogger, 'policy.responsibility.assistant.complete', {
+      route: '/api/policy-responsibilities/query',
+      durationMs: elapsedMs(routeStartedAt),
+      inputOcrChars: scan.ocrText.length,
+    });
+    return { analysis: effectiveAnalysis, persistence };
+  }
+
+  if (typeof registerResponsibilityAssistantQuery === 'function') {
+    registerResponsibilityAssistantQuery(queryResponsibilityAssistant);
+  }
+
+  router.post('/query', async (req, res) => {
     try {
       const input = normalizeResponsibilityQueryInput(req.body);
-      const policy = {
+      const result = await queryResponsibilityAssistant({
         company: input.company,
         name: input.name,
-      };
-      const scan = {
-        ocrText: `${input.company} ${input.name}`,
-        data: input,
-      };
-      const preferLocalKnowledgeAnswer = req.body?.preferLocalKnowledgeAnswer !== false;
-      const allowExternalReferences = booleanFromBody(req.body?.allowExternalReferences);
-      const analysisStartedAt = nowMs();
-      const existingCardAnalysis = !allowExternalReferences && preferLocalKnowledgeAnswer
-        ? existingResponsibilityCardAnalysis(policy)
-        : null;
-      const analysis = existingCardAnalysis || await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer, allowExternalReferences });
-      const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
-      const analysisWithCards = allowExternalReferences || existingCardAnalysis ? analysis : attachResponsibilityCards(analysis, policy);
-      const effectiveAnalysis = allowExternalReferences ? withExternalReviewWarning(analysisWithCards) : analysisWithCards;
-      const reusedResponsibilityCardCount = Number(effectiveAnalysis?.rawAnalysis?.reusedResponsibilityCardCount || 0);
-      const persistence = reusedResponsibilityCardCount
-        ? {
-            knowledgeRecordCount: 0,
-            indicatorRecordCount: 0,
-            responsibilityCardCount: 0,
-            reusedResponsibilityCardCount,
-          }
-        : allowExternalReferences
-        ? await persistExternalReviewAnalysisArtifacts(policy, effectiveAnalysis, officialDomainProfiles)
-        : await persistResponsibilityAnalysisArtifacts(policy, effectiveAnalysis, officialDomainProfiles);
-      logPerformance(performanceLogger, 'policy.responsibility.assistant.analysis', {
-        route: '/api/policy-responsibilities/query',
-        durationMs: elapsedMs(analysisStartedAt),
-        inputOcrChars: scan.ocrText.length,
-        outputOcrChars: scan.ocrText.length,
-        responsibilityCount: Array.isArray(effectiveAnalysis?.coverageTable) ? effectiveAnalysis.coverageTable.length : 0,
+        preferLocalKnowledgeAnswer: req.body?.preferLocalKnowledgeAnswer !== false,
+        allowExternalReferences: booleanFromBody(req.body?.allowExternalReferences),
       });
-      logPerformance(performanceLogger, 'policy.responsibility.assistant.complete', {
-        route: '/api/policy-responsibilities/query',
-        durationMs: elapsedMs(routeStartedAt),
-        inputOcrChars: scan.ocrText.length,
-      });
-      res.json({ ok: true, analysis: effectiveAnalysis, persistence });
+      res.json({ ok: true, ...result });
     } catch (error) {
       sendError(res, error, 400);
     }
@@ -699,34 +713,44 @@ export function createResponsibilityRoutes(context) {
     });
   });
 
-  router.post('/customer-summary', async (req, res) => {
+  async function queryCustomerResponsibilitySummary({ company, name }) {
     const routeStartedAt = nowMs();
+    const input = normalizeResponsibilityQueryInput({ company, name });
+    const result = await generateProductCustomerResponsibilitySummary({
+      state,
+      db,
+      input,
+      findSummary: findProductCustomerResponsibilitySummary,
+      persistSummary: persistProductCustomerResponsibilitySummary,
+      persistGenerationRun: typeof persistProductCustomerSummaryGenerationRun === 'function'
+        ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
+        : undefined,
+      generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
+      generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,
+      generateOfficialAnalysis: async ({ company: insurer, productName }) => assistantAnalyzer({
+        scan: {
+          ocrText: `${insurer} ${productName}`,
+          data: { company: insurer, name: productName },
+        },
+        preferLocalKnowledgeAnswer: false,
+      }),
+    });
+    logPerformance(performanceLogger, 'policy.responsibility.customer_summary.complete', {
+      route: '/api/policy-responsibilities/customer-summary',
+      durationMs: elapsedMs(routeStartedAt),
+      source: result?.source || result?.status || '',
+    });
+    return result;
+  }
+
+  if (typeof registerCustomerResponsibilitySummaryQuery === 'function') {
+    registerCustomerResponsibilitySummaryQuery(queryCustomerResponsibilitySummary);
+  }
+
+  router.post('/customer-summary', async (req, res) => {
     try {
       const input = normalizeResponsibilityQueryInput(req.body);
-      const result = await generateProductCustomerResponsibilitySummary({
-        state,
-        db,
-        input,
-        findSummary: findProductCustomerResponsibilitySummary,
-        persistSummary: persistProductCustomerResponsibilitySummary,
-        persistGenerationRun: typeof persistProductCustomerSummaryGenerationRun === 'function'
-          ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
-          : undefined,
-        generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
-        generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,
-        generateOfficialAnalysis: async ({ company, productName }) => assistantAnalyzer({
-          scan: {
-            ocrText: `${company} ${productName}`,
-            data: { company, name: productName },
-          },
-          preferLocalKnowledgeAnswer: false,
-        }),
-      });
-      logPerformance(performanceLogger, 'policy.responsibility.customer_summary.complete', {
-        route: '/api/policy-responsibilities/customer-summary',
-        durationMs: elapsedMs(routeStartedAt),
-        source: result?.source || result?.status || '',
-      });
+      const result = await queryCustomerResponsibilitySummary(input);
       res.json(result);
     } catch (error) {
       sendError(res, error, 400);

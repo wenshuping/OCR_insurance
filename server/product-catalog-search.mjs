@@ -99,6 +99,12 @@ export function catalogProductScore(query, productName) {
   if (!needle) return 0;
   if (name === needle) return 1000;
   if (name.includes(needle)) return 800 - Math.max(0, name.length - needle.length);
+  if (needle.length >= 4) {
+    for (let index = 0; index < needle.length - 1; index += 1) {
+      const transposed = `${needle.slice(0, index)}${needle[index + 1]}${needle[index]}${needle.slice(index + 2)}`;
+      if (name.includes(transposed)) return 760 - Math.min(30, Math.max(0, name.length - transposed.length));
+    }
+  }
   const bigrams = catalogSearchTerms(needle).filter((term) => term.length === 2);
   const matchedBigrams = bigrams.filter((term) => name.includes(term)).length;
   const matchedCharacters = [...new Set([...needle])].filter((character) => name.includes(character)).length;
@@ -178,14 +184,19 @@ export function searchProductCatalog({ db, company = '', query = '', limit = 30,
       params.push(...terms.map((term) => `%${term}%`));
     }
     const candidateLimit = normalizedQuery ? 1000 : safeLimit;
+    const priorityPhrase = normalizedQuery.replace(/\s+/gu, '');
+    const priorityOrder = priorityPhrase
+      ? "CASE WHEN replace(product_name, ' ', '') LIKE ? THEN 0 ELSE 1 END,"
+      : '';
+    const priorityParams = priorityPhrase ? [`%${priorityPhrase}%`] : [];
     const rows = db.prepare(`
       SELECT company, product_name, COUNT(*) AS record_count
       FROM (${union})
       WHERE ${conditions.join(' AND ')}
       GROUP BY company, product_name
-      ORDER BY product_name
+      ORDER BY ${priorityOrder} product_name
       LIMIT ?
-    `).all(...params, candidateLimit);
+    `).all(...params, ...priorityParams, candidateLimit);
     return rankProductCatalogRows(rows.map((row) => ({
       company: row.company,
       productName: row.product_name,

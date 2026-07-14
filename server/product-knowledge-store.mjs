@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import { buildCanonicalProductId } from './canonical-product-id.mjs';
+
 function text(value) {
   return String(value ?? '').trim();
 }
@@ -8,6 +10,14 @@ function parseJson(value, fallback = {}) {
   try {
     const parsed = JSON.parse(String(value || ''));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function parseJsonValue(value, fallback = null) {
+  try {
+    return JSON.parse(String(value ?? ''));
   } catch {
     return fallback;
   }
@@ -130,6 +140,26 @@ function linkFromRow(row) {
     relationType: text(row.relation_type),
     matchConfidence: row.match_confidence == null ? null : Number(row.match_confidence),
     reviewStatus: text(row.review_status),
+    createdAt: text(row.created_at),
+    updatedAt: text(row.updated_at),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
+function productFactFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id),
+    tenantId: text(row.tenant_id),
+    canonicalProductId: text(row.canonical_product_id),
+    productVersionId: text(row.product_version_id),
+    fieldKey: text(row.field_key),
+    normalizedValue: parseJsonValue(row.normalized_value_json, null),
+    displayValue: text(row.display_value),
+    status: text(row.status),
+    confidence: row.confidence == null ? null : Number(row.confidence),
+    validFrom: text(row.valid_from),
+    validTo: text(row.valid_to),
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
     payload: parseJson(row.payload, {}),
@@ -534,8 +564,10 @@ export function createProductKnowledgeStore(db) {
     if (!document) return null;
     const pages = Array.isArray(input.pages) ? input.pages : [];
     const chunks = Array.isArray(input.chunks) ? input.chunks : [];
+    const facts = Array.isArray(input.facts) ? input.facts : [];
     const now = text(input.now) || new Date().toISOString();
     const candidateIndexVersion = text(input.indexVersion) || `idx_${crypto.randomUUID()}`;
+    const previousCandidateIndexVersion = text(document.payload?.candidateIndexVersion);
     const publishedChunks = db.prepare(`
       SELECT id, payload FROM knowledge_chunks
       WHERE tenant_id = ? AND document_id = ? AND review_status = 'published'
@@ -563,6 +595,19 @@ export function createProductKnowledgeStore(db) {
         WHERE tenant_id = ? AND document_id = ? AND review_status NOT IN ('published', 'superseded')
       `).run(tenantId, documentId);
       db.prepare('DELETE FROM product_document_pages WHERE tenant_id = ? AND document_id = ?').run(tenantId, documentId);
+      if (previousCandidateIndexVersion) {
+        const staleFactIds = db.prepare(`
+          SELECT id FROM product_facts
+          WHERE tenant_id = ?
+            AND json_extract(payload, '$.documentId') = ?
+            AND json_extract(payload, '$.indexVersion') = ?
+        `).all(tenantId, documentId, previousCandidateIndexVersion).map((row) => row.id);
+        if (staleFactIds.length) {
+          const placeholders = staleFactIds.map(() => '?').join(', ');
+          db.prepare(`DELETE FROM product_fact_evidence WHERE fact_id IN (${placeholders})`).run(...staleFactIds);
+          db.prepare(`DELETE FROM product_facts WHERE id IN (${placeholders})`).run(...staleFactIds);
+        }
+      }
 
       const insertPage = db.prepare(`
         INSERT INTO product_document_pages (
@@ -611,6 +656,15 @@ export function createProductKnowledgeStore(db) {
         const content = text(chunk?.content);
         if (!chunkId || !content) throw new Error('Knowledge chunk requires id and content');
         const chunkType = text(chunk?.chunkType) || 'child';
+        const chunkPayload = chunk?.payload && typeof chunk.payload === 'object' ? chunk.payload : {};
+        const semantic = chunkPayload.semantic && typeof chunkPayload.semantic === 'object'
+          ? {
+              ...chunkPayload.semantic,
+              requiredContextChunkIds: (Array.isArray(chunkPayload.semantic.requiredContextChunkIds)
+                ? chunkPayload.semantic.requiredContextChunkIds : [])
+                .map((id) => chunkIdMap.get(text(id))).filter(Boolean),
+            }
+          : null;
         insertChunk.run(
           chunkId,
           tenantId,
@@ -635,10 +689,78 @@ export function createProductKnowledgeStore(db) {
           text(chunk?.indexStatus) || 'ready',
           now,
           now,
-          jsonPayload({ ...(chunk?.payload || {}), indexVersion: candidateIndexVersion, sourceChunkId }),
+          jsonPayload({
+            ...chunkPayload,
+            ...(semantic ? { semantic } : {}),
+            indexVersion: candidateIndexVersion,
+            sourceChunkId,
+          }),
         );
         if (chunkType !== 'parent' && text(chunk?.indexStatus) !== 'blocked') {
           insertFts.run(chunkId, tenantId, documentId, content, text(chunk?.contextualPrefix));
+        }
+      }
+
+      const sourceChunksById = new Map(chunks.map((chunk) => [text(chunk?.id), chunk]));
+      const insertFact = db.prepare(`
+        INSERT INTO product_facts (
+          id, tenant_id, canonical_product_id, product_version_id, field_key,
+          normalized_value_json, display_value, status, confidence, valid_from,
+          valid_to, created_at, updated_at, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate', ?, NULL, NULL, ?, ?, ?)
+      `);
+      const insertFactEvidence = db.prepare(`
+        INSERT INTO product_fact_evidence (
+          id, tenant_id, fact_id, document_id, page_no, source_text,
+          source_authority, review_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      `);
+      for (const fact of facts) {
+        const canonicalProductId = text(fact?.canonicalProductId);
+        const fieldKey = text(fact?.fieldKey);
+        const sourceChunkIds = (Array.isArray(fact?.evidenceChunkIds) ? fact.evidenceChunkIds : [])
+          .map(text).filter((id) => sourceChunksById.has(id));
+        if (!canonicalProductId || !fieldKey || !sourceChunkIds.length) continue;
+        const factIdentity = JSON.stringify([
+          documentId, candidateIndexVersion, canonicalProductId, text(fact?.productVersionId),
+          fieldKey, fact?.normalizedValue ?? null, fact?.scope || {}, sourceChunkIds,
+        ]);
+        const factId = `pfact_${crypto.createHash('sha256').update(factIdentity).digest('hex').slice(0, 24)}`;
+        const storedChunkIds = sourceChunkIds.map((id) => chunkIdMap.get(id)).filter(Boolean);
+        insertFact.run(
+          factId,
+          tenantId,
+          canonicalProductId,
+          text(fact?.productVersionId) || null,
+          fieldKey,
+          JSON.stringify(fact?.normalizedValue ?? null),
+          text(fact?.displayValue),
+          fact?.confidence == null ? null : Number(fact.confidence),
+          now,
+          now,
+          jsonPayload({
+            documentId,
+            indexVersion: candidateIndexVersion,
+            scope: fact?.scope || {},
+            exceptions: Array.isArray(fact?.exceptions) ? fact.exceptions : [],
+            completeness: text(fact?.completeness) || 'incomplete',
+            evidenceChunkIds: storedChunkIds,
+            extractorVersion: text(fact?.extractorVersion),
+          }),
+        );
+        for (const sourceChunkId of sourceChunkIds) {
+          const sourceChunk = sourceChunksById.get(sourceChunkId);
+          insertFactEvidence.run(
+            `pfev_${crypto.randomUUID()}`,
+            tenantId,
+            factId,
+            documentId,
+            Number(sourceChunk?.pageStart || 0) || null,
+            text(sourceChunk?.content),
+            text(sourceChunk?.sourceAuthority) || document.sourceAuthority,
+            now,
+            now,
+          );
         }
       }
 
@@ -664,6 +786,7 @@ export function createProductKnowledgeStore(db) {
       document: getDocument({ tenantId, documentId }),
       pages: listDocumentPages({ tenantId, documentId }),
       chunks: listDocumentChunks({ tenantId, documentId }),
+      facts: listProductFacts({ tenantId, documentId, indexVersion: candidateIndexVersion }),
       indexVersion: candidateIndexVersion,
     };
   }
@@ -791,6 +914,91 @@ export function createProductKnowledgeStore(db) {
     }));
   }
 
+  function listProductFacts(input = {}) {
+    const tenantId = text(input.tenantId);
+    if (!tenantId) return [];
+    const conditions = ['tenant_id = ?'];
+    const params = [tenantId];
+    if (text(input.documentId)) {
+      conditions.push("json_extract(payload, '$.documentId') = ?");
+      params.push(text(input.documentId));
+    }
+    if (text(input.indexVersion)) {
+      conditions.push("json_extract(payload, '$.indexVersion') = ?");
+      params.push(text(input.indexVersion));
+    }
+    if (text(input.canonicalProductId)) {
+      conditions.push('canonical_product_id = ?');
+      params.push(text(input.canonicalProductId));
+    }
+    if (text(input.productVersionId)) {
+      conditions.push('product_version_id = ?');
+      params.push(text(input.productVersionId));
+    }
+    const fieldKeys = [...new Set((Array.isArray(input.fieldKeys) ? input.fieldKeys : []).map(text).filter(Boolean))];
+    if (fieldKeys.length) {
+      conditions.push(`field_key IN (${fieldKeys.map(() => '?').join(', ')})`);
+      params.push(...fieldKeys);
+    }
+    const statuses = [...new Set((Array.isArray(input.statuses) ? input.statuses : []).map(text).filter(Boolean))];
+    if (statuses.length) {
+      conditions.push(`status IN (${statuses.map(() => '?').join(', ')})`);
+      params.push(...statuses);
+    }
+    return db.prepare(`
+      SELECT * FROM product_facts
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY field_key ASC, display_value ASC, id ASC
+    `).all(...params).map(productFactFromRow);
+  }
+
+  function ensureProducts(input = {}) {
+    const tenantId = text(input.tenantId);
+    const company = text(input.company);
+    const productNames = [...new Set((Array.isArray(input.productNames) ? input.productNames : [input.productName])
+      .map(text).filter(Boolean))];
+    if (!tenantId || !company || !productNames.length) return [];
+    const now = text(input.now) || new Date().toISOString();
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO insurance_products (
+        canonical_product_id, tenant_id, company, official_name, status,
+        created_at, updated_at, payload
+      ) VALUES (?, ?, ?, ?, 'draft', ?, ?, '{}')
+    `);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const productName of productNames) {
+        insert.run(
+          buildCanonicalProductId({ company, productName }),
+          tenantId,
+          company,
+          productName,
+          now,
+          now,
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    const placeholders = productNames.map(() => '?').join(', ');
+    return db.prepare(`
+      SELECT canonical_product_id, company, official_name, product_code, product_type, status, payload
+      FROM insurance_products
+      WHERE tenant_id = ? AND company = ? AND official_name IN (${placeholders})
+      ORDER BY official_name ASC
+    `).all(tenantId, company, ...productNames).map((row) => ({
+      canonicalProductId: text(row.canonical_product_id),
+      company: text(row.company),
+      officialName: text(row.official_name),
+      productCode: text(row.product_code),
+      productType: text(row.product_type),
+      status: text(row.status),
+      payload: parseJson(row.payload, {}),
+    }));
+  }
+
   function reviewDocument(input = {}) {
     const tenantId = text(input.tenantId);
     const documentId = text(input.documentId);
@@ -863,15 +1071,43 @@ export function createProductKnowledgeStore(db) {
           UPDATE knowledge_chunks SET review_status = 'published', updated_at = ?
           WHERE tenant_id = ? AND document_id = ? AND json_extract(payload, '$.indexVersion') = ?
         `).run(now, tenantId, documentId, targetVersion);
+        db.prepare(`
+          UPDATE product_facts SET status = 'expired', updated_at = ?
+          WHERE tenant_id = ?
+            AND json_extract(payload, '$.documentId') = ?
+            AND status = 'confirmed'
+        `).run(now, tenantId, documentId);
+        if (document.sourceAuthority === 'insurer_official') {
+          db.prepare(`
+            UPDATE product_facts SET status = 'confirmed', updated_at = ?
+            WHERE tenant_id = ?
+              AND json_extract(payload, '$.documentId') = ?
+              AND json_extract(payload, '$.indexVersion') = ?
+              AND json_extract(payload, '$.completeness') = 'complete'
+          `).run(now, tenantId, documentId, targetVersion);
+        }
       } else if (action === 'unpublish') {
         db.prepare(`
           UPDATE knowledge_chunks SET review_status = 'rejected', updated_at = ?
           WHERE tenant_id = ? AND document_id = ? AND json_extract(payload, '$.indexVersion') = ?
         `).run(now, tenantId, documentId, activeIndexVersion);
+        db.prepare(`
+          UPDATE product_facts SET status = 'expired', updated_at = ?
+          WHERE tenant_id = ?
+            AND json_extract(payload, '$.documentId') = ?
+            AND json_extract(payload, '$.indexVersion') = ?
+            AND status = 'confirmed'
+        `).run(now, tenantId, documentId, activeIndexVersion);
       } else if (candidateIndexVersion) {
         db.prepare(`
           UPDATE knowledge_chunks SET review_status = 'rejected', updated_at = ?
           WHERE tenant_id = ? AND document_id = ? AND json_extract(payload, '$.indexVersion') = ?
+        `).run(now, tenantId, documentId, candidateIndexVersion);
+        db.prepare(`
+          UPDATE product_facts SET status = 'rejected', updated_at = ?
+          WHERE tenant_id = ?
+            AND json_extract(payload, '$.documentId') = ?
+            AND json_extract(payload, '$.indexVersion') = ?
         `).run(now, tenantId, documentId, candidateIndexVersion);
       }
       db.exec('COMMIT');
@@ -896,6 +1132,34 @@ export function createProductKnowledgeStore(db) {
     if (text(input.canonicalProductId)) {
       conditions.push('chunks.canonical_product_id = ?');
       params.push(text(input.canonicalProductId));
+    }
+    if (text(input.productVersionId)) {
+      conditions.push('chunks.product_version_id = ?');
+      params.push(text(input.productVersionId));
+    }
+    const sourceAuthorities = [...new Set((Array.isArray(input.sourceAuthorities) ? input.sourceAuthorities : []).map(text).filter(Boolean))];
+    if (sourceAuthorities.length) {
+      conditions.push(`chunks.source_authority IN (${sourceAuthorities.map(() => '?').join(', ')})`);
+      params.push(...sourceAuthorities);
+    }
+    const semanticKinds = [...new Set((Array.isArray(input.semanticKinds) ? input.semanticKinds : []).map(text).filter(Boolean))];
+    if (semanticKinds.length) {
+      conditions.push(`(
+        json_extract(chunks.payload, '$.semantic.evidenceKind') IN (${semanticKinds.map(() => '?').join(', ')})
+        OR json_extract(chunks.payload, '$.semantic.evidenceKind') IS NULL
+      )`);
+      params.push(...semanticKinds);
+    }
+    const factKeys = [...new Set((Array.isArray(input.factKeys) ? input.factKeys : []).map(text).filter(Boolean))];
+    if (factKeys.length) {
+      conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM json_each(chunks.payload, '$.semantic.factKeys') AS fact_key
+          WHERE fact_key.value IN (${factKeys.map(() => '?').join(', ')})
+        )
+        OR json_extract(chunks.payload, '$.semantic.factKeys') IS NULL
+      )`);
+      params.push(...factKeys);
     }
     if (query.length < 3) {
       conditions.push('(chunks.content LIKE ? OR chunks.contextual_prefix LIKE ?)');
@@ -929,10 +1193,12 @@ export function createProductKnowledgeStore(db) {
     getChunksByIds,
     getDocumentIndexReview,
     getIngestionJob,
+    ensureProducts,
     listDocumentChunks,
     listDocumentPages,
     listDocumentProductLinks,
     listDocuments,
+    listProductFacts,
     listProducts,
     replaceParsedArtifacts,
     reviewDocument,

@@ -10,7 +10,7 @@ import {
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
 const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_report', 'sales_coaching']);
-const AUDIT_ENTITY_KEYS = new Set(['familyName', 'familyRef', 'policyHint', 'sourceFamilyName', 'targetFamilyName']);
+const AUDIT_ENTITY_KEYS = new Set(['familyName', 'familyRef', 'productName', 'policyHint', 'sourceFamilyName', 'targetFamilyName']);
 const PRONOUN_PATTERN = /(?:这个家庭|刚才那家)/u;
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
@@ -324,9 +324,9 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } }, 'unsafe_policy');
     }
 
-    const state = await store.load();
     let family = null;
     if (FAMILY_INTENTS.has(policy.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy.tool)) {
+      const state = typeof store.listAuthorizedFamilyProfiles === 'function' ? null : await store.load();
       const resolver = typeof familyResolver === 'function' ? familyResolver : defaultFamilyResolver;
       const authorizedFamilies = await resolver({ store, state, internalUserId: userId });
       const resolved = resolveFamily({
@@ -356,6 +356,9 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       intent: candidate.intent,
       question: candidate.question,
       ...(policy?.key === 'transfer_preview' ? { entities: candidate.entities } : {}),
+      ...(policy?.key === 'insurance_product_knowledge' && candidate.entities.productName
+        ? { productName: candidate.entities.productName }
+        : {}),
       ...(family ? { familyId: Number(family.id) } : {}),
     };
     let handled;

@@ -73,6 +73,87 @@ test('question route requires valid service authentication', async (t) => {
   assert.equal(server.calls.route.length, 0);
 });
 
+test('runtime config is service-authenticated and returns only bounded published settings', async (t) => {
+  const server = await startServer({
+    getRuntimeSettings: async () => ({ fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 }),
+  });
+  t.after(server.close);
+  const denied = await post(server, '/api/agent/runtime-config', { channel: 'dingtalk', messageRef: 'config-1' }, 'invalid');
+  assert.equal(denied.response.status, 401);
+  const allowed = await post(server, '/api/agent/runtime-config', { channel: 'dingtalk', messageRef: 'config-2' });
+  assert.deepEqual(allowed.payload, { ok: true, runtimeSettings: { fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 } });
+  const invalid = await post(server, '/api/agent/runtime-config', { channel: 'dingtalk', messageRef: 'config-3', userId: 7 });
+  assert.equal(invalid.response.status, 400);
+});
+
+test('signed message API resolves identity and sends only a raw text envelope to the conversation runtime', async (t) => {
+  const runtimeCalls = [];
+  const server = await startServer({
+    conversationRuntime: {
+      async processMessage(input) {
+        runtimeCalls.push(input);
+        return { decision: 'execute', interaction: { type: 'answer', text: 'Hermes 已处理' } };
+      },
+    },
+    getRuntimeSettings: async () => ({ fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 }),
+  });
+  t.after(server.close);
+  const body = {
+    protocolVersion: '1', channel: 'dingtalk', channelUserId: 'registered',
+    channelMobile: '13800138000', conversationId: 'conv-raw', messageRef: 'raw-1',
+    internalUserId: 999,
+    message: { type: 'text', text: '他和医药安欣对比呢' },
+  };
+  const denied = await post(server, '/api/agent/messages', body, 'invalid');
+  assert.equal(denied.response.status, 401);
+  const accepted = await post(server, '/api/agent/messages', body);
+  assert.equal(accepted.response.status, 200);
+  assert.deepEqual(accepted.payload, {
+    ok: true, decision: 'execute', interaction: { type: 'answer', text: 'Hermes 已处理' },
+  });
+  assert.equal(runtimeCalls[0].verifiedIdentity.internalUserId, 7);
+  assert.deepEqual(runtimeCalls[0].channelEnvelope.message, { type: 'text', text: '他和医药安欣对比呢' });
+  assert.equal(JSON.stringify(runtimeCalls[0]).includes('13800138000'), false);
+  assert.equal(JSON.stringify(runtimeCalls[0]).includes('999'), false);
+  assert.equal((await runtimeCalls[0].refreshVerifiedIdentity()).internalUserId, 7);
+});
+
+test('conversation context endpoints use only the server-resolved identity', async (t) => {
+  const calls = { load: [], commit: [] };
+  const server = await startServer({
+    conversationContext: {
+      async loadContext(input) {
+        calls.load.push(input);
+        return { conversationId: 'conversation-ref-7', version: 1, history: [] };
+      },
+      async commitContext(input) {
+        calls.commit.push(input);
+        return { conversationId: 'conversation-ref-7', version: 2, history: input.history };
+      },
+    },
+  });
+  t.after(server.close);
+  const base = {
+    channel: 'dingtalk', channelUserId: 'registered', channelMobile: '13800138000',
+    conversationId: 'conv-1', messageRef: 'context-1', productContextTtlMinutes: 30,
+    internalUserId: 999,
+  };
+  const loaded = await post(server, '/api/agent/conversation-context/load', base);
+  assert.equal(loaded.response.status, 200);
+  assert.equal(calls.load[0].internalUserId, 7);
+  const committed = await post(server, '/api/agent/conversation-context/commit', {
+    ...base, messageRef: 'context-2', conversationRef: 'conversation-ref-7', expectedVersion: 1,
+    context: {
+      history: [{ role: 'user', content: '第一问' }], product: null,
+      productCandidates: null, question: null, updatedAt: 1_720_000_000_000,
+    },
+  });
+  assert.equal(committed.response.status, 200);
+  assert.equal(calls.commit[0].internalUserId, 7);
+  assert.equal(calls.commit[0].conversationRef, 'conversation-ref-7');
+  assert.equal(JSON.stringify(calls).includes('999'), false);
+});
+
 test('unregistered DingTalk identity returns the same safe registration action', async (t) => {
   const server = await startServer();
   t.after(server.close);

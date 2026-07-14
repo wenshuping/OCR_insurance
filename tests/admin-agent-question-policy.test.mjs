@@ -41,8 +41,9 @@ test('admin policy API requires auth and manages validated immutable versions', 
     assert.equal((await call(h, '/api/admin/agent-question-policies', { auth: false })).status, 401);
     const invalid = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: [{ key: 'x' }] } });
     assert.equal(invalid.status, 400);
-    const first = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES } });
+    const first = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES, runtimeSettings: { fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 } } });
     assert.equal(first.status, 201);
+    assert.deepEqual(first.body.draft.runtimeSettings, { fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 });
     const changed = AGENT_QUESTION_POLICIES.map((p) => p.key === 'chat' ? { ...p, enabled: false } : p);
     assert.equal((await call(h, `/api/admin/agent-question-policies/drafts/${first.body.draft.id}`, { method: 'PATCH', body: { policies: changed } })).status, 200);
     assert.equal((await call(h, `/api/admin/agent-question-policies/drafts/${first.body.draft.id}/publish`, { method: 'POST', body: {} })).status, 200);
@@ -52,10 +53,26 @@ test('admin policy API requires auth and manages validated immutable versions', 
     const rolled = await call(h, `/api/admin/agent-question-policies/versions/${first.body.draft.id}/rollback`, { method: 'POST', body: {} });
     assert.equal(rolled.status, 200);
     assert.notEqual(rolled.body.published.id, first.body.draft.id);
+    assert.deepEqual(rolled.body.published.runtimeSettings, { fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 });
     const listed = await call(h, '/api/admin/agent-question-policies');
     assert.equal(listed.body.published.id, rolled.body.published.id);
     assert.equal(listed.body.history.filter((row) => row.status === 'published').length, 1);
     assert.ok(Array.isArray(listed.body.templates));
+    assert.deepEqual(listed.body.defaultRuntimeSettings, { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 });
+  } finally { await h.close(); }
+});
+
+test('admin runtime settings reject unsupported fields and unsafe ranges', async () => {
+  const h = await harness();
+  try {
+    for (const runtimeSettings of [
+      { fallbackHistoryMessageLimit: 0, productContextTtlMinutes: 30 },
+      { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 1_441 },
+      { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30, sharedMemory: true },
+    ]) {
+      const result = await call(h, '/api/admin/agent-question-policies/drafts', { method: 'POST', body: { policies: AGENT_QUESTION_POLICIES, runtimeSettings } });
+      assert.equal(result.status, 400);
+    }
   } finally { await h.close(); }
 });
 

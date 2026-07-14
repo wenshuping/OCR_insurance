@@ -19,7 +19,7 @@ import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_FAMILY_REVIEW_MODEL = 'deepseek-v4-pro';
 const DEFAULT_TIMEOUT_MS = 600_000;
-const DEFAULT_MAX_TOKENS = 16_000;
+const DEFAULT_MAX_TOKENS = 6_000;
 const DEFAULT_DEEPSEEK_REASONING_EFFORT = 'high';
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const DISPLAY_REPLACEMENTS = Symbol('familySalesReviewDisplayReplacements');
@@ -641,9 +641,37 @@ function uniqueVerifiedCashflowAmountsByYear(input = {}) {
 
 const YEARLY_CASHFLOW_CLAIM_PATTERN = /((?:19|20)\d{2}\s*年(?:(?![。\n]).){0,40}?(?:确定(?:性)?\s*)?(?:给付|领取)\s*(?:约\s*)?)([0-9]+(?:\.[0-9]+)?)\s*(万元|万|元)/gu;
 
+function escapeRegExp(value = '') {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function reconcileProductLiabilityAmounts(content = '', input = {}) {
+  let result = String(content || '');
+  let changed = false;
+  for (const policy of Array.isArray(input?.financialFacts) ? input.financialFacts : []) {
+    const productName = trim(policy?.productName);
+    if (!productName || !normalizeLookupText(result).includes(normalizeLookupText(productName))) continue;
+    for (const entry of Array.isArray(policy?.entries) ? policy.entries : []) {
+      const liability = trim(entry?.liability);
+      const expectedAmount = asNumber(entry?.amount);
+      if (!liability || expectedAmount <= 0) continue;
+      const pattern = new RegExp(
+        `(${escapeRegExp(productName)}(?:(?![。；;\\n]).){0,80}?${escapeRegExp(liability)}(?:(?![。；;\\n]).){0,30}?)([0-9]+(?:\\.[0-9]+)?)\\s*(万元|万|元)`,
+        'gu',
+      );
+      result = result.replace(pattern, (match, prefix, amountText, unit) => {
+        const claimedAmount = Number(amountText) * (String(unit).startsWith('万') ? 10_000 : 1);
+        if (Math.abs(claimedAmount - expectedAmount) < 0.001) return match;
+        changed = true;
+        return `${prefix}${formatVerifiedCashflowAmount(expectedAmount)}`;
+      });
+    }
+  }
+  return { content: result, changed };
+}
+
 export function reconcileVerifiedCashflowAmounts(content = '', input = {}) {
   const amountsByYear = uniqueVerifiedCashflowAmountsByYear(input);
-  if (!amountsByYear.size) return { content: String(content || ''), changed: false };
   let changed = false;
   const reconciledContent = String(content || '').replace(YEARLY_CASHFLOW_CLAIM_PATTERN, (match, prefix, amountText, unit) => {
     const year = Number(prefix.match(/(?:19|20)\d{2}/u)?.[0]);
@@ -658,7 +686,8 @@ export function reconcileVerifiedCashflowAmounts(content = '', input = {}) {
     changed = true;
     return `${prefix}${formatVerifiedCashflowAmount(expectedAmount)}`;
   });
-  return { content: reconciledContent, changed };
+  const productReconciliation = reconcileProductLiabilityAmounts(reconciledContent, input);
+  return { content: productReconciliation.content, changed: changed || productReconciliation.changed };
 }
 
 export function enforceVerifiedCashflowAmounts(content = '', input = {}) {
@@ -745,10 +774,6 @@ function memberLabel(member = {}) {
   return `${trim(member.memberRef) || '家庭成员'}${relation ? `（${relation}）` : ''}`;
 }
 
-function firstMemberByRole(members = [], rolePattern = /core|adult|unknown/u) {
-  return (Array.isArray(members) ? members : []).find((member) => rolePattern.test(trim(member.role || member.relationToCore))) || members?.[0] || {};
-}
-
 function policyDisplayName(policy = {}) {
   return trim([policy.company, policy.name].filter(Boolean).join(' ')) || '现有保单';
 }
@@ -814,13 +839,17 @@ function buildMemberGapSection(input = {}) {
   const policies = Array.isArray(input.policies) ? input.policies : [];
   if (!members.length) {
     return [
-      '## 三、成员级保障缺口',
+      '## 三、最重要的保障问题',
       '- 家庭成员资料未提供，需先补齐成员清单、生日、社保状态和已有保单，再判断个人保障缺口。',
     ].join('\n');
   }
 
-  const lines = ['## 三、成员级保障缺口'];
-  for (const member of members) {
+  const priorityMembers = [...members]
+    .sort((left, right) => Number(Boolean(right.isCore)) - Number(Boolean(left.isCore))
+      || Number(Boolean(left.hasPolicy)) - Number(Boolean(right.hasPolicy)))
+    .slice(0, 3);
+  const lines = ['## 三、最重要的保障问题'];
+  for (const member of priorityMembers) {
     const relatedPolicies = policiesForMember(member, policies);
     const coverageText = memberCoverageText(relatedPolicies);
     const ageText = finiteNumber(member.age) === null ? '年龄待核实' : `${Math.round(Number(member.age))}岁`;
@@ -879,145 +908,26 @@ function buildExistingProductSuggestionsSection(input = {}) {
   const policies = Array.isArray(input.policies) ? input.policies : [];
   if (!policies.length) {
     return [
-      '## 五、已有产品逐项切入建议',
+      '## 四、优先销售机会',
       '- 当前家庭暂无已录入保单，销售动作先放在补录电子保单、确认家庭成员和核实社保/既往症上。',
     ].join('\n');
   }
   return [
-    '## 五、已有产品逐项切入建议',
-    ...policies.slice(0, 20).map((policy) => {
+    '## 四、优先销售机会',
+    ...policies.slice(0, 3).map((policy, index) => {
       const insuredRef = trim(policy.insuredMemberRef) && trim(policy.insuredMemberRef) !== '未匹配成员'
         ? trim(policy.insuredMemberRef)
         : '被保人待匹配';
-      return `- ${policyDisplayName(policy)}：被保人 ${insuredRef}；保额 ${formatMoney(policy.amount)}；首期/年交保费 ${formatMoney(policy.firstPremium)}；${productSuggestionEvidence(policy)}。`;
+      return `- P${index + 1}｜成熟度：待核实｜${policyDisplayName(policy)}：被保人 ${insuredRef}；保额 ${formatMoney(policy.amount)}；首期/年交保费 ${formatMoney(policy.firstPremium)}；${productSuggestionEvidence(policy)}。下一步先核实责任证据和客户关注点，不直接推荐新产品。`;
     }),
-  ].join('\n');
-}
-
-function hasExpandedSalesPlan(content = '') {
-  const text = String(content || '');
-  return /销售方案展开/u.test(text)
-    && /适合对象/u.test(text)
-    && /客户痛点/u.test(text)
-    && /推荐方向/u.test(text)
-    && /预算[\//／]保额口径|预算|保额口径/u.test(text)
-    && /需补资料/u.test(text)
-    && /下一步动作/u.test(text);
-}
-
-function hasSalesScript(content = '') {
-  const text = String(content || '');
-  return /邀约面谈|销售话术/u.test(text)
-    && /见面开场/u.test(text)
-    && /风险洞察/u.test(text)
-    && /保障缺口/u.test(text)
-    && /理财险|养老|教育金/u.test(text)
-    && /已经买过很多保险/u.test(text)
-    && /暂时不想增加预算/u.test(text)
-    && /理财险收益不确定/u.test(text);
-}
-
-function buildExpandedSalesPlanSection(input = {}) {
-  const members = Array.isArray(input.members) ? input.members : [];
-  const policies = Array.isArray(input.policies) ? input.policies : [];
-  const coreMember = firstMemberByRole(members, /core|self|adult/u);
-  const spouseMember = members.find((member) => /spouse|配偶/u.test(`${member.role || ''}${member.relationLabel || ''}${member.relationToCore || ''}`)) || firstMemberByRole(members, /adult/u);
-  const uninsuredMember = Array.isArray(input.dataQuality?.membersWithoutPolicy)
-    ? input.dataQuality.membersWithoutPolicy[0]
-    : null;
-  const wealthPolicy = policies.find(isWealthPolicy) || policies[0] || {};
-  const annualPremium = policies.reduce((sum, policy) => sum + asNumber(policy.firstPremium), 0);
-  const totalCoverage = policies.reduce((sum, policy) => sum + asNumber(policy.amount), 0);
-  const budgetText = annualPremium > 0
-    ? `可先以家庭现有首期/年交保费合计约 ${formatMoney(annualPremium)} 作为预算承受度参考，再让客户确认是否愿意新增预算。`
-    : '客户预算、年收入、负债和现金流未提供，预算必须面谈核实，不直接假设新增保费。';
-  const coverageText = totalCoverage > 0
-    ? `现有录入保额合计约 ${formatMoney(totalCoverage)}，补强方案先围绕缺口责任和家庭收入责任重新测算。`
-    : '现有保额口径不完整，需先补齐重疾、医疗、寿险、意外的保额与责任。';
-  const targetCore = memberLabel(coreMember);
-  const targetSpouse = memberLabel(spouseMember);
-  const targetUninsured = uninsuredMember
-    ? memberLabel(uninsuredMember)
-    : (members.length ? '暂未发现无保单成员，仍需核实家庭成员是否完整' : '家庭成员资料待核实');
-  const wealthPolicyName = policyDisplayName(wealthPolicy);
-
-  return [
-    '## 六、销售方案展开',
-    '- 方案一：全家医疗与意外底座补强',
-    `- 适合对象：${members.length ? members.map(memberLabel).join('、') : '全家成员，尤其是未完成保障核实的成员'}。`,
-    '- 客户痛点：客户已经有部分给付型或财富类保单，但住院医疗、医保外费用、意外医疗和意外伤残责任通常最容易遗漏，容易出现“有保单但不能报销”的落差。',
-    '- 推荐方向：先核实每位成员是否已有百万医疗、门急诊/住院医疗、意外医疗和伤残责任；缺口成员优先补齐医疗险和意外险，再谈重疾或寿险。',
-    `- 预算/保额口径：${budgetText}医疗险重点看免赔额、报销范围、续保条件；意外险重点看伤残保额、意外医疗和职业类别。`,
-    '- 销售话术：“我今天不是直接让您加保费，先帮您把全家的住院报销和意外伤残责任查清楚。很多家庭不是没买保险，而是出事时发现医疗费报销不上、伤残赔付不够。”',
-    '- 需补资料：每位成员的社保/医保状态、已有医疗险保单页、职业类别、近期住院或体检异常。',
-    '- 下一步动作：面谈时用家庭成员清单逐个打勾，确认谁有医疗、谁有意外、谁没有，再输出一页补强清单。',
-    '',
-    '- 方案二：顶梁柱收入成员重疾与定寿补强',
-    `- 适合对象：${targetCore}${targetSpouse && targetSpouse !== targetCore ? `、${targetSpouse}` : ''}。`,
-    '- 客户痛点：家庭收入责任通常集中在成年人身上，一旦重疾、身故或全残，现有财富型保单不一定能覆盖收入中断、贷款、父母赡养和子女教育责任。',
-    '- 推荐方向：先测算顶梁柱的重疾保额、身故/全残保额和保障期限；若重疾不足，优先补足重疾险；若家庭负债或子女教育责任较重，再讨论定寿/高额寿险责任。',
-    `- 预算/保额口径：${coverageText}如客户不愿新增预算，可先做保单精简、责任重配或分阶段补齐。`,
-    '- 销售话术：“您现在不是没有保单，而是要确认这些保单在收入中断时能不能真正替家里扛住三到五年的现金流。我们先把责任缺口算出来，再决定要不要补。”',
-    '- 需补资料：家庭年收入、房贷/车贷余额、子女教育预算、双方单位福利、既往症和体检异常。',
-    '- 下一步动作：现场先定家庭顶梁柱，再用家庭责任清单测算重疾、寿险、医疗三条线的缺口。',
-    '',
-    '- 方案三：养老/教育金与财富传承配置',
-    `- 适合对象：${targetCore || '顶梁柱'}，以及需要规划养老、教育金或传承安排的家庭；可结合 ${wealthPolicyName} 做现有资产复盘。`,
-    '- 客户痛点：已有年金、终身寿、两全、护理险或带现金价值保单时，客户容易只看“交了多少钱”，没有看清未来现金流、保单贷款、减保、领取和传承安排。',
-    '- 推荐方向：先把现有财富类保单的现金价值、未来领取、减保规则和分红/万能账户演示利益核实清楚，再判断是继续持有、做教育金/养老金分层，还是补充增额终身寿/年金类配置。',
-    '- 预算/保额口径：理财险不能承诺收益或确定利率，只能基于合同现金价值、保单利益演示和客户确认的长期闲置资金来设计；新增预算必须来自客户确认的长期资金，不挤占医疗和重疾保障预算。',
-    '- 销售话术：“财富类保单不是只看收益高不高，而是看哪笔钱什么时候确定能用、哪笔钱可以长期放、万一家庭责任变化时怎么调整。我们先把现有保单的现金流图画出来。”',
-    '- 需补资料：现金价值表、利益演示表、万能账户结算利率/保底利率说明、家庭教育金和养老目标、可长期锁定资金规模。',
-    '- 下一步动作：把现有财富类保单整理成年度现金流表，再给客户看“继续持有、减额交清/减保、补充配置”三种路径。',
-    '',
-    '- 方案四：无保单或资料缺口成员补录',
-    `- 适合对象：${targetUninsured}。`,
-    '- 客户痛点：系统里没有保单或资料不完整的成员，可能不是没有保障，而是保单没有录入；如果直接给方案，容易误判缺口。',
-    '- 推荐方向：先补齐成员生日、社保状态、已有保单照片和健康告知情况；确认确实无保障后，再按“医疗险/意外险优先、重疾和寿险按家庭责任补充”的顺序推进。',
-    '- 预算/保额口径：资料未完整前不直接报价；先确认年龄、健康、职业和已有保障，再给区间方案。',
-    '- 销售话术：“这位家庭成员我先不急着建议买什么，第一步是确认是不是有保单没录进来。资料补齐后，我们再判断是真缺口还是系统缺资料。”',
-    '- 需补资料：成员生日、身份证后四位可选、社保状态、现有保单照片、最近体检/就医情况。',
-    '- 下一步动作：把缺资料成员列成补资料清单，约客户下次带保单原件或电子保单一起核对。',
-  ].join('\n');
-}
-
-function buildSalesScriptSection() {
-  return [
-    '## 七、邀约面谈与销售话术',
-    '- 1. 见面开场',
-    '- 销售话术：“我这次不是来推某一款产品，而是先把您家现有保单做一次体检：哪些责任已经有，哪些责任重复，哪些成员还没覆盖，先让您心里有数。”',
-    '- 销售话术：“如果最后发现不用加保，我也会直接告诉您；如果有缺口，我们再按优先级决定先补哪一块。”',
-    '',
-    '- 2. 风险洞察提问',
-    '- 销售话术：“如果家里一个成年人连续一年不能工作，家庭开支、贷款和孩子教育金主要靠哪笔钱支撑？”',
-    '- 销售话术：“您更担心大额医疗费报销不上，还是担心收入中断后家里现金流断掉？这两个问题对应的保险责任不一样。”',
-    '',
-    '- 3. 保障缺口切入',
-    '- 销售话术：“从保单结构看，您家不是没有保险，而是要确认医疗、重疾、寿险、意外这四条线是不是都够用。我们先看缺口最大的成员，不平均加保费。”',
-    '- 销售话术：“我建议先把医保外医疗和顶梁柱收入成员的大病/身故责任核清楚，这两块最影响家庭现金流。”',
-    '',
-    '- 4. 理财险/养老教育金切入',
-    '- 销售话术：“财富类保单我不会跟您讲确定收益，因为合同里能确定的是现金价值、领取规则和保障责任。我们先把哪一年能用多少钱看清楚。”',
-    '- 销售话术：“如果这笔钱是三五年内要用的，就不适合长期锁定；如果是养老或教育金，可以单独做长期账户，不和医疗、重疾预算混在一起。”',
-    '',
-    '- 5. 促成面谈/二次沟通',
-    '- 销售话术：“这次我们先把家庭保障雷达图和现金流表核准，下次我给您带两套方案：一套是不增加预算的责任重配，一套是按优先级逐步补齐。”',
-    '- 销售话术：“您不用今天决定买不买，先把保单和资料补齐。资料越完整，我给您的建议越不会偏。”',
-    '',
-    '- 6. 常见异议处理',
-    '- 客户说“已经买过很多保险”：销售话术：“买过很多不等于责任刚好够。我们先看有没有重复、有没有失效、有没有只保身故不报医疗的情况，确认后再决定是否需要调整。”',
-    '- 客户说“暂时不想增加预算”：销售话术：“可以，我们先做不增加预算的版本，看看现有保费能不能通过责任重配、优先级调整，把最急的缺口先补上。”',
-    '- 客户说“理财险收益不确定”：销售话术：“您这个顾虑是对的，所以我不会按高收益来讲。我们只看合同现金价值、保底规则和领取安排，把能确定和待核实的部分分开。”',
   ].join('\n');
 }
 
 function ensureFamilySalesReviewSalesEnablement(content = '', input = {}) {
   const additions = [];
   const source = trim(content);
-  if (!sectionHasUsableContent(source, /成员级保障缺口/u)) additions.push(buildMemberGapSection(input));
-  if (!sectionHasUsableContent(source, /已有产品逐项切入建议|产品逐项|逐项切入/u)) additions.push(buildExistingProductSuggestionsSection(input));
-  if (!hasExpandedSalesPlan(source)) additions.push(buildExpandedSalesPlanSection(input));
-  if (!hasSalesScript(source)) additions.push(buildSalesScriptSection(input));
+  if (!sectionHasUsableContent(source, /最重要的保障问题|成员级保障缺口/u)) additions.push(buildMemberGapSection(input));
+  if (!sectionHasUsableContent(source, /优先销售机会|已有产品逐项切入建议|产品逐项|逐项切入/u)) additions.push(buildExistingProductSuggestionsSection(input));
   return [source, ...additions].filter(Boolean).join('\n\n');
 }
 
@@ -1078,7 +988,7 @@ export function buildFamilySalesReviewInput({
 
   const input = {
     generatedAt,
-    analysisGoal: '给销售使用的家庭保单复盘、保障缺口、理财险销售机会、邀约面谈话术和销售方案建议。',
+    analysisGoal: '给销售使用的简短行动摘要：核实关键数据、识别最重要保障问题、排序最多三个销售机会并明确本次面谈目标。',
     family: {
       familyRef: '当前家庭',
       coreMemberRef: topPillarMemberRef,
@@ -1143,21 +1053,21 @@ export function buildFamilySalesReviewMessages(input = {}, { skillPrompt = null 
         '1. 只使用输入中的事实；金额、责任、现金价值、分红、领取利益没有证据时必须写“待核实”，不能编造。',
         '2. 保险公司官方资料、客户上传保单责任页/合同页与保单派生分类冲突时，优先参考已核实来源的产品名称、链接和指标；仍不确定就标为“待核实”。',
         '3. 家庭成员清单是完整录入口径，必须覆盖没有保单的成员，并明确他们对应的销售机会或资料缺口。',
-        '4. 保障缺口和理财险/财富类销售机会都必须输出；理财险建议不能承诺收益、分红或确定利率。',
+        '4. 只输出当前家庭最重要的保障问题和销售机会；理财险/财富类机会不属于前三优先级时不要为凑结构强行输出，也不能承诺收益、分红或确定利率。',
         '5. 输出给销售看，语言要直接、可执行，避免给客户看的营销话术泛泛而谈。',
         '6. 成员字段 memberRef 是本地变量，输出中提到家庭成员时必须原样使用 memberRef，例如 {{member_1}}（本人），不要只写关系。',
         '7. 不提供医疗、法律、税务、投资确定收益承诺；涉及核保、既往症、保全、分红实现率、税务传承时提示进一步核实。',
         '8. 不要直接输出输入 JSON 的英文内部字段名或技术标识，例如 duplicatePolicyHints、evidenceWarnings、canonical:product_*、plans；必须改写为“重复保单提示”“条款证据冲突”“险种明细”等中文业务描述。',
-        '9. 必须给出可直接复制给销售使用的邀约面谈话术和销售话术；不要只写“建议沟通”“引导客户重视”这类空泛句。',
-        '10. 销售方案必须展开成完整方案包，不能只写一句方案名称；每个方案必须说明适合对象、客户痛点、推荐方向、预算/保额口径、面谈话术、需补资料和下一步动作。',
+        '9. 主报告只解决“这次最值得谈什么、为什么谈、先核实什么、下一步怎么推进”；不要展开三档方案、完整会议流程或通用异议话术。',
+        '10. 每个保障问题和销售机会必须写清成员、现有保单事实、家庭影响、缺失信息和下一步动作；没有具体事实支撑的套话不要输出。',
         '11. family.notes 是整个家庭层面的备注，不属于某个具体成员；members[].notes 才是成员个人备注。两类备注都是客户工作、收入、喜好、沟通记录等销售线索；必须结合这些备注优化面谈重点，但备注没有写明的事实不能自行补充。',
         '12. family.topPillarMemberRef 明确表示家庭顶梁柱；涉及收入中断、重疾、定寿、家庭责任和优先面谈对象时必须优先参考该成员。',
         '13. {{id_number_1}} 这类证件号码变量只表示本地已脱敏隐私，不得在报告正文中输出、解释或要求销售复述。',
         '14. family.planningProfile 是客户已填写的家庭责任信息，包含家庭年收入、必要支出、总负债、子女教育、父母赡养、现金储备和保费预算；涉及保障缺口、定寿、重疾、失能和预算建议时必须优先使用这些字段。',
         '15. 本次请求只提供结构化保单摘要、分层证据摘要和家庭责任信息，不提供原始 OCR 全文；不得假装读过未提供的条款原文。',
-        '16. 必须融合以下销售分析框架：交叉销售机会、客户复盘会议策略、年金、寿险、养老/教育金机会、家庭财务规划视角和保险重整建议。',
-        '17. 交叉销售机会必须按 P1/P2/P3 标注机会优先级，并说明成功概率、客户痛点、触发依据、切入产品方向和下一步动作。',
-        '18. 客户复盘会议策略必须覆盖会前准备、会中展示顺序和会后跟进动作；会中顺序为先核实数据，再讲保障缺口，再讲保单重整，再展开三档方案。',
+        '16. 必须融合家庭财务规划视角和保险重整建议，但只保留对当前家庭最重要的结论，不为凑篇幅罗列年金、寿险、养老、教育金等所有方向。',
+        '17. 优先销售机会最多 3 个，按 P1/P2/P3 排序；使用“机会成熟度：高/中/低/待核实”，不得编造成功概率。高=客户明确关注且事实完整，中=缺口明确但需求或预算未确认，低=只有系统缺口线索，待核实=保单或家庭资料不足。',
+        '18. 只给出一个本次面谈目标和一句可直接使用的核心话术；其他方案与异议处理留到顾问选择机会后按需生成。',
         '19. 年金、寿险、养老/教育金机会只能基于客户责任、预算、现金流、现有现金价值或官网证据提出；不得承诺收益、分红、利率或理赔结果。',
         '20. 家庭财务规划视角必须结合收入、支出、负债、现金储备和保费预算，判断保障型、储蓄型、养老/教育金安排的先后顺序。',
         '21. 如果输入包含 salesChatContext，表示顾问围绕上一版销售建议的追问、补充想法和客户异议；必须把这些对话内容融入新版销售建议，尤其是话术风格、异议处理、方案排序和下一步动作。',
@@ -1177,34 +1087,26 @@ export function buildFamilySalesReviewMessages(input = {}, { skillPrompt = null 
       role: 'user',
       content: [
         '请按以下结构输出中文 Markdown：',
-        '## 一、销售结论摘要',
-        '## 二、必须先核实的数据风险',
-        '## 三、成员级保障缺口',
-        '## 四、理财险/财富传承销售机会',
-        '## 五、交叉销售机会与保单重整建议',
-        '## 六、已有产品逐项切入建议',
-        '## 七、客户复盘会议策略',
-        '## 八、销售方案展开',
-        '## 九、邀约面谈与销售话术',
-        '## 十、下一步销售动作清单',
+        '## 一、本次销售结论',
+        '## 二、必须先核实的数据',
+        '## 三、最重要的保障问题',
+        '## 四、优先销售机会',
+        '## 五、本次面谈目标与一句核心话术',
+        '## 六、下一步动作',
         '',
         '要求：',
-        '- “成员级保障缺口”按家庭成员逐个写，包含无保单成员；每个成员标题必须包含 memberRef 变量和 relationLabel。',
-        '- “理财险/财富传承销售机会”至少写现有财富类/年金/终身寿/两全/护理险现金价值线索、可补充方案、需要补资料。',
-        '- “交叉销售机会与保单重整建议”必须输出 P1/P2/P3 机会清单；每条包含机会优先级、成功概率、客户痛点、依据、建议产品方向、面谈切入话术和下一步动作。',
-        '- “客户复盘会议策略”必须按会前、会中、会后三段写；会前列资料清单，会中按“数据核实 → 缺口展示 → 保险重整 → 方案选择”展开，会后列跟进任务。',
-        '- “销售方案展开”至少输出 3 个方案；每个方案必须按“适合对象、客户痛点、推荐方向、预算/保额口径、销售话术、需补资料、下一步动作”展开。预算和保额只能基于输入数据给区间或“待核实”，不得编造客户收入。',
-        '- 三档方案必须分别命名为基础方案、标准方案、完善方案；基础方案优先医疗/意外底座，标准方案增加重疾/定寿，完善方案再考虑养老、教育金、年金或财富传承。',
-        '- “邀约面谈与销售话术”必须输出 5 组可直接照读的话术：见面开场、风险洞察提问、保障缺口切入、理财险/养老教育金切入、促成面谈/二次沟通。每组至少 2 句，其中至少 1 句用引号写成销售可直接说出口的话。',
-        '- 邀约面谈要写清楚切入顺序：先核实数据，再展示保障缺口，再展开方案，再约客户补资料或二次面谈。',
-        '- 需要包含常见异议处理话术，至少覆盖“已经买过很多保险”“暂时不想增加预算”“理财险收益不确定”三类。',
+        '- “必须先核实的数据”最多 3 项，只列会改变销售结论的缺失或冲突数据。',
+        '- “最重要的保障问题”最多 3 个；每个问题必须包含成员、现有事实、家庭影响、缺失信息和下一步动作。没有保单的成员只有在确实属于前三优先级时才列入。',
+        '- “优先销售机会”最多 3 个，按 P1/P2/P3 排序；每条包含机会成熟度、客户痛点、事实依据、建议方向和下一步动作。不得输出成功概率。',
+        '- 机会成熟度只能是高、中、低或待核实；客户没有明确表达需求时，不得标为高。',
+        '- “本次面谈目标”只能有一个；核心话术只能有一句，必须围绕该目标和当前家庭事实，不要输出通用话术库。',
+        '- 不展开基础/标准/完善三档方案，不输出完整会议流程；需要时由顾问选择某个机会后另行生成。',
         '- 对疑似重复、失效、产品类型冲突、责任缺少官网指标的保单要放到核实清单。',
-        '- 每条建议尽量说明依据来自“家庭报告/保单字段/官网证据/现金价值或现金流”。',
+        '- 每条保障问题和销售机会必须明确说明依据来自“家庭报告/保单字段/官网证据/现金价值或现金流”；无法对应具体依据时删除该结论。',
         '- 预算建议必须引用 family.planningProfile 中的收入、支出、负债、现金储备和保费预算；缺失时写“待核实”，不得自行补数。',
         '- 如果 salesChatContext 中出现顾问补充的客户关注点、异议或想要的表达方式，新版报告必须吸收这些内容，并在相应章节中体现。',
         '- 如果 salesMemoryContext 中出现当前家庭已确认的异议、沟通偏好、策略或待办，也要在相应章节中体现；但它不能覆盖家庭/保单/官网证据中的事实。',
-        '- 报告正文要像销售经理可直接阅读的策略简报，少用源码字段、ID 堆叠和原始 JSON 字段名。',
-        '- 不要把“邀约面谈”和“销售方案”压缩成几个短句；这两节必须展开，优先保证可执行和可复制话术。',
+        '- 报告正文要像销售经理可在 2 分钟内读完的行动摘要，少用源码字段、ID 堆叠和原始 JSON 字段名。',
         '- 输入 JSON 已是压缩后的结构化保单摘要、RAG/官网证据摘要和家庭责任信息；不要要求原始 OCR 全文，不要编造未提供的条款细节。',
         '',
         '以下是分析输入 JSON：',

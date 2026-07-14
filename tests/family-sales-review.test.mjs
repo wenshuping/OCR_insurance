@@ -110,15 +110,13 @@ test('family sales review input keeps members without policies and official evid
   assert.equal(input.officialEvidence[0].officialIndicators[0].coverageType, '身故或身体全残');
 
   const prompt = buildFamilySalesReviewMessages(input).map((message) => message.content).join('\n');
-  assert.match(prompt, /成员级保障缺口/);
-  assert.match(prompt, /理财险\/财富传承销售机会/);
-  assert.match(prompt, /销售方案展开/);
-  assert.match(prompt, /邀约面谈与销售话术/);
-  assert.match(prompt, /适合对象、客户痛点、推荐方向、预算\/保额口径、销售话术、需补资料、下一步动作/);
-  assert.match(prompt, /见面开场、风险洞察提问、保障缺口切入、理财险\/养老教育金切入、促成面谈\/二次沟通/);
-  assert.match(prompt, /已经买过很多保险/);
-  assert.match(prompt, /暂时不想增加预算/);
-  assert.match(prompt, /理财险收益不确定/);
+  assert.match(prompt, /必须先核实的数据/);
+  assert.match(prompt, /最重要的保障问题/);
+  assert.match(prompt, /优先销售机会/);
+  assert.match(prompt, /本次面谈目标与一句核心话术/);
+  assert.match(prompt, /最多 3 个/u);
+  assert.match(prompt, /不得(?:编造|输出)成功概率/u);
+  assert.doesNotMatch(prompt, /销售方案展开/u);
   assert.match(prompt, /不要直接输出输入 JSON 的英文内部字段名/);
   assert.match(prompt, /family\.notes 是整个家庭层面的备注，不属于某个具体成员/u);
   assert.match(prompt, /members\[\]\.notes 才是成员个人备注/u);
@@ -139,7 +137,7 @@ test('family sales review input keeps members without policies and official evid
   assert.match(prompt, /待核实参考/u);
 });
 
-test('family sales review prompt combines sales skills into executable advisor workflow', () => {
+test('family sales review prompt focuses on a short evidence-led advisor workflow', () => {
   const input = buildFamilySalesReviewInput({
     family: {
       id: 1,
@@ -184,15 +182,14 @@ test('family sales review prompt combines sales skills into executable advisor w
   });
 
   const prompt = buildFamilySalesReviewMessages(input).map((message) => message.content).join('\n');
-  assert.match(prompt, /交叉销售机会/u);
-  assert.match(prompt, /客户复盘会议策略/u);
-  assert.match(prompt, /年金、寿险、养老\/教育金机会/u);
+  assert.match(prompt, /优先销售机会/u);
+  assert.match(prompt, /本次面谈目标/u);
   assert.match(prompt, /家庭财务规划视角/u);
   assert.match(prompt, /保险重整|保险重整建议|保单重整/u);
-  assert.match(prompt, /会前.*会中.*会后|会前准备|会后跟进/u);
   assert.match(prompt, /P1|P2|P3/u);
-  assert.match(prompt, /成功概率|机会优先级/u);
-  assert.match(prompt, /基础方案.*标准方案.*完善方案/us);
+  assert.match(prompt, /机会成熟度/u);
+  assert.match(prompt, /不得(?:编造|输出)成功概率/u);
+  assert.doesNotMatch(prompt, /基础方案.*标准方案.*完善方案/us);
   assert.match(prompt, /收入、支出、负债、现金储备和保费预算/u);
   assert.match(prompt, /不得承诺收益/u);
   assert.match(prompt, /"annualIncome": 800000/u);
@@ -283,7 +280,12 @@ test('family sales review keeps yearly deterministic cashflow amounts instead of
   assert.match(buildFamilySalesReviewMessages(input).map((message) => message.content).join('\n'), /不得除以10/u);
   assert.match(enforceVerifiedCashflowAmounts('2052年确定给付 2 万元。', input), /2052年确定给付 20万元/u);
   assert.match(enforceVerifiedCashflowAmounts('2053年确定给付 2 万元。', input), /2053年确定给付 金额待核实/u);
+  assert.match(
+    enforceVerifiedCashflowAmounts('测试两全险的满期保险金就是2万元，不是20万元。', input),
+    /满期保险金就是20万元/u,
+  );
   assert.equal(reconcileVerifiedCashflowAmounts('2052年确定给付 2 万元。', input).changed, true);
+  assert.equal(reconcileVerifiedCashflowAmounts('测试两全险的满期保险金就是2万元。', input).changed, true);
 
   let reportRequestCount = 0;
   const review = await generateFamilySalesReview({
@@ -297,7 +299,7 @@ test('family sales review keeps yearly deterministic cashflow amounts instead of
         json: async () => ({
           model: 'deepseek-v4-pro',
           choices: [{ message: { content: reportRequestCount === 1
-            ? '## 一、销售结论摘要\n- 现有两全险满期金（2052年确定给付 2 万元），仅具象征性规划意义。'
+            ? '## 一、本次销售结论\n- 测试两全险的满期保险金就是2万元，不是20万元，仅具象征性规划意义。'
             : '## 一、销售结论摘要\n- 现有两全险在2052年确定给付20万元，是否足以支持养老目标仍需结合家庭财务目标核实。' } }],
         }),
       };
@@ -584,7 +586,7 @@ test('family sales memory context accepts legacy active rows but filters invalid
   assert.equal(context.memories[0].content, '旧数据仍可使用');
 });
 
-test('family sales review appends expanded plans and scripts when the model compresses them', async () => {
+test('family sales review keeps compressed output concise instead of appending generic plans and scripts', async () => {
   const input = buildFamilySalesReviewInput({
     family: { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active' },
     members: [
@@ -630,22 +632,15 @@ test('family sales review appends expanded plans and scripts when the model comp
     }),
   });
 
-  assert.match(review.content, /销售方案展开/);
-  assert.match(review.content, /适合对象/);
-  assert.match(review.content, /客户痛点/);
-  assert.match(review.content, /预算\/保额口径/);
-  assert.match(review.content, /需补资料/);
-  assert.match(review.content, /邀约面谈与销售话术/);
-  assert.match(review.content, /“我这次不是来推某一款产品/);
-  assert.match(review.content, /已经买过很多保险/);
-  assert.match(review.content, /暂时不想增加预算/);
-  assert.match(review.content, /理财险收益不确定/);
+  assert.doesNotMatch(review.content, /销售方案展开/);
+  assert.doesNotMatch(review.content, /邀约面谈与销售话术/);
+  assert.doesNotMatch(review.content, /已经买过很多保险/);
   assert.match(review.content, /张三/);
   assert.match(review.content, /李四/);
   assert.doesNotMatch(review.content, /\{\{member_1\}\}|\{\{member_2\}\}/);
 });
 
-test('family sales review backfills empty member gap and product sections', async () => {
+test('family sales review backfills empty priority problem and opportunity sections', async () => {
   const input = buildFamilySalesReviewInput({
     family: { id: 1, familyName: '张三家庭', coreMemberId: 10, status: 'active' },
     members: [
@@ -682,9 +677,9 @@ test('family sales review backfills empty member gap and product sections', asyn
             content: [
               '## 一、销售结论摘要',
               '- 先核实家庭资料。',
-              '## 三、成员级保障缺口',
+              '## 三、最重要的保障问题',
               '-',
-              '## 五、已有产品逐项切入建议',
+              '## 四、优先销售机会',
               '暂无明确结论',
             ].join('\n'),
           },
@@ -693,9 +688,9 @@ test('family sales review backfills empty member gap and product sections', asyn
     }),
   });
 
-  assert.match(review.content, /成员级保障缺口/);
+  assert.match(review.content, /最重要的保障问题/);
   assert.match(review.content, /李四（配偶）.*系统内暂未关联保单/u);
-  assert.match(review.content, /已有产品逐项切入建议/);
+  assert.match(review.content, /优先销售机会/);
   assert.match(review.content, /新华保险 重疾险示例/);
   assert.match(review.content, /重大疾病/);
   assert.doesNotMatch(review.content, /\{\{member_1\}\}|\{\{member_2\}\}/);

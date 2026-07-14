@@ -65,3 +65,25 @@ test('secure link factory and production option builder require an HTTPS public 
   assert.equal(typeof options.agentSecureUploadLinkFactory, 'function');
   assert.deepEqual(options.agentSecureLinkAllowedOrigins, ['https://app.example.test']);
 });
+
+test('production option builder uses the focused identity loader when provided', async () => {
+  let fullStateLoads = 0;
+  let identityStateLoads = 0;
+  const options = createProductionAgentGatewayOptions({
+    env: { AGENT_GATEWAY_HMAC_SECRET: 'secret' },
+    loadState: async () => {
+      fullStateLoads += 1;
+      return { users: [] };
+    },
+    loadIdentityState: async () => {
+      identityStateLoads += 1;
+      return { users: [{ id: 7, mobile: '13800138000', status: 'active' }] };
+    },
+  });
+
+  assert.deepEqual(await options.resolveDingTalkIdentity({
+    channel: 'dingtalk', channelUserId: 'ding-7', channelMobile: '13800138000',
+  }), { internalUserId: 7 });
+  assert.equal(identityStateLoads, 1);
+  assert.equal(fullStateLoads, 0);
+});

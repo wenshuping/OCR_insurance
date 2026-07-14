@@ -79,6 +79,36 @@ test('family summary counts only active members and currently valid family polic
   assert.doesNotMatch(JSON.stringify(result), /张三|P-SECRET/);
 });
 
+test('family summary explains invalid policy reasons on a conversational follow-up', async () => {
+  const { handlers } = harness({
+    policies: [
+      { id: 10, familyId: 7, status: '失效' },
+      { id: 11, familyId: 7, status: 'active', date: '2030-01-01' },
+    ],
+  });
+  const result = await handlers.execute('family_summary', {
+    familyId: 7, internalUserId: 9, question: '为啥0份有效',
+  });
+  assert.match(result.interaction.text, /1 份业务状态/u);
+  assert.match(result.interaction.text, /1 份尚未到生效日期/u);
+  assert.doesNotMatch(result.interaction.text, /保单号|policyNo/u);
+});
+
+test('family list returns only the authorized family count', async () => {
+  const state = {
+    familyProfiles: [
+      { id: 7, ownerUserId: 9, familyName: '授权家庭', status: 'active' },
+      { id: 8, ownerUserId: 10, familyName: '其他家庭', status: 'active' },
+    ],
+    policies: [],
+  };
+  const domain = createAgentQuestionHandlers({ store: { async load() { return state; } } });
+  const result = await domain.execute('family_list', { internalUserId: 9 });
+  assert.equal(result.interaction.text, '当前共有 1 个可访问家庭。');
+  assert.deepEqual(result.facts, { familyCount: 1 });
+  assert.doesNotMatch(JSON.stringify(result), /授权家庭|其他家庭/u);
+});
+
 test('family summary excludes business-inactive and expired policies even when outer status is active', async () => {
   const { handlers } = harness({ policies: [
     { id: 1, familyId: 7, status: 'active', policyState: '失效', coveragePeriod: '终身' },
@@ -185,14 +215,65 @@ test('product knowledge requires public sources for definite facts', async () =>
   } } });
   const noSource = harness();
 
-  const certain = await sourced.handlers.execute('insurance_product_knowledge', { question: '等待期多久', internalUserId: 9 });
+  const certain = await sourced.handlers.execute('insurance_product_knowledge', {
+    question: '这个产品等待期多久', productName: '测试医疗保险', internalUserId: 9,
+  });
   const uncertain = await noSource.handlers.execute('insurance_product_knowledge', { question: '等待期多久', internalUserId: 9 });
 
   assert.equal(certain.facts.certainty, 'supported');
   assert.equal(certain.provenance.sources.length, 1);
+  assert.match(certain.interaction.text, /#### 核验来源/u);
+  assert.match(certain.interaction.text, /\[官方条款\]\(https:\/\/example\.test\/terms\)/u);
   assert.equal(sourced.calls.knowledge[0].scope, 'public_read_only');
+  assert.equal(sourced.calls.knowledge[0].productName, '测试医疗保险');
   assert.equal(uncertain.facts.certainty, 'unverified');
   assert.doesNotMatch(JSON.stringify(uncertain), /等待测试覆盖/);
+});
+
+test('product knowledge explains what evidence is missing instead of ending with an empty refusal', async () => {
+  const { handlers } = harness({}, { productKnowledge: { async search() { return {
+    guidance: true,
+    answer: '### 还差什么才能确认保险责任\n- 保单首页截图\n- 条款 PDF\n- 产品版本',
+    sources: [],
+  }; } } });
+
+  const result = await handlers.execute('insurance_product_knowledge', {
+    question: '国寿惠享保百万医疗险保险责任', productName: '国寿惠享保百万医疗险', internalUserId: 9,
+  });
+
+  assert.equal(result.facts.certainty, 'unverified');
+  assert.match(result.interaction.text, /还差什么/u);
+  assert.match(result.interaction.text, /条款 PDF/u);
+});
+
+test('product knowledge returns a safe clarification for multiple matched products', async () => {
+  const { handlers } = harness({}, { productKnowledge: { async search() { return {
+    answer: '', sources: [], candidates: [
+      { ref: 'product_1', label: '新华保险《荣耀鑫享赢家版终身寿险》' },
+      { ref: 'product_2', label: '新华保险《荣耀鑫享智赢版终身寿险》' },
+    ],
+  }; } } });
+
+  const result = await handlers.execute('insurance_product_knowledge', { question: '荣耀鑫享保险责任', internalUserId: 9 });
+
+  assert.equal(result.facts.certainty, 'ambiguous');
+  assert.equal(result.interaction.type, 'clarification');
+  assert.equal(result.interaction.candidates.length, 2);
+});
+
+test('product knowledge asks the customer to confirm one likely typo correction', async () => {
+  const { handlers } = harness({}, { productKnowledge: { async search() { return {
+    answer: '', sources: [], candidates: [
+      { ref: 'product_1', label: '新华保险《新华人寿保险股份有限公司康健长佑长期医疗保险（费率可调）》' },
+    ],
+  }; } } });
+
+  const result = await handlers.execute('insurance_product_knowledge', { question: '新华保险健康长佑保险是啥内容', internalUserId: 9 });
+
+  assert.equal(result.facts.certainty, 'possible_match');
+  assert.equal(result.interaction.type, 'clarification');
+  assert.match(result.interaction.text, /是否想查询/u);
+  assert.equal(result.interaction.candidates.length, 1);
 });
 
 test('sales coaching adapts authorized context to the existing family sales chat agent', async () => {

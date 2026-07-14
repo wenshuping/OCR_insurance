@@ -1,7 +1,7 @@
 const HANDLER_ACTIONS = Object.freeze({
   insurance_expert: Object.freeze(['family_policy_summary', 'family_summary', 'view_family_coverage_report', 'coverage_report', 'insurance_product_knowledge']),
   sales_champion: Object.freeze(['view_sales_advice_report', 'sales_report', 'sales_coaching', 'chat']),
-  system: Object.freeze(['upload_link', 'system_help', 'unknown_read', 'unknown_write', 'transfer_preview', 'memory_proposal']),
+  system: Object.freeze(['family_list', 'upload_link', 'system_help', 'unknown_read', 'unknown_write', 'transfer_preview', 'memory_proposal']),
 });
 
 const SAFE_SUMMARY_FIELDS = new Set([
@@ -157,7 +157,25 @@ export function createAgentQuestionHandlers({
       .filter((member) => Number(member?.familyId) === id && text(member?.status || 'active') === 'active');
     const policies = (Array.isArray(state.policies) ? state.policies : [])
       .filter((policy) => Number(policy?.familyId) === id);
-    const validPolicies = policies.filter((policy) => policyIsValid(policy, clock()));
+    const validity = policies.map((policy) => resolvePolicyRecordValidity(policy, { now: clock() }));
+    const validPolicies = validity.filter((item) => item.valid);
+    const asksWhy = /(?:为什(?:么)?|为啥|原因|怎么会)/u.test(text(context?.question));
+    const reasonLabels = {
+      business_status: '业务状态已标记为失效、停效、终止或退保等非有效状态',
+      status_unconfirmed: '系统尚未确认有效状态',
+      not_effective: '尚未到生效日期',
+      coverage_ended: '保障期间已经结束',
+    };
+    const reasonCounts = validity.filter((item) => !item.valid).reduce((counts, item) => {
+      counts[item.reason] = (counts[item.reason] || 0) + 1;
+      return counts;
+    }, {});
+    const reasonText = Object.entries(reasonCounts)
+      .map(([reason, count]) => `${count} 份${reasonLabels[reason] || '状态待核实'}`)
+      .join('；');
+    const message = asksWhy && policies.length
+      ? `系统按保单业务状态、生效日期和保障期间判断：${reasonText || '当前状态仍需核实'}。如果记录与实际不符，请到网页修改保单状态或日期。`
+      : `该家庭共有 ${policies.length} 份保单，其中 ${validPolicies.length} 份当前有效。`;
     return stableResult(
       { familyId: id, activeMemberCount: members.length, policyCount: policies.length, validPolicyCount: validPolicies.length },
       {
@@ -165,7 +183,33 @@ export function createAgentQuestionHandlers({
         countedAt: clock().toISOString(),
         validPolicyDefinition: '综合保单状态、合同状态和效力状态排除失效、停效、中止、终止、退保、过期等业务状态，并按保障期间排除已到期保单。',
       },
-      { message: `该家庭共有 ${policies.length} 份保单，其中 ${validPolicies.length} 份当前有效。` },
+      { message },
+    );
+  }
+
+  async function familyList(context) {
+    const internalUserId = positiveInteger(context?.internalUserId, 'internalUserId');
+    let families;
+    if (typeof store.listAuthorizedFamilyProfiles === 'function') {
+      families = await store.listAuthorizedFamilyProfiles({ internalUserId });
+    } else {
+      const state = await store.load();
+      const policyFamilyIds = new Set((Array.isArray(state?.policies) ? state.policies : [])
+        .filter((policy) => Number(policy?.userId || 0) === internalUserId)
+        .map((policy) => Number(policy?.familyId || 0))
+        .filter(Boolean));
+      families = (Array.isArray(state?.familyProfiles) ? state.familyProfiles : []).filter((family) => (
+        text(family?.status || 'active') === 'active' && (
+          Number(family?.ownerUserId || 0) === internalUserId
+          || (!Number(family?.ownerUserId || 0) && policyFamilyIds.has(Number(family?.id || 0)))
+        )
+      ));
+    }
+    const count = Array.isArray(families) ? families.length : 0;
+    return stableResult(
+      { familyCount: count },
+      { source: 'authorized_family_profiles', countedAt: clock().toISOString() },
+      { message: `当前共有 ${count} 个可访问家庭。` },
     );
   }
 
@@ -289,9 +333,30 @@ export function createAgentQuestionHandlers({
 
   async function answerProductKnowledge(context) {
     const question = text(context?.question).slice(0, 2_000);
+    const productName = text(context?.productName).slice(0, 200);
     const result = productKnowledge && typeof productKnowledge.search === 'function'
-      ? await productKnowledge.search({ question, scope: 'public_read_only' })
+      ? await productKnowledge.search({ question, productName, scope: 'public_read_only' })
       : null;
+    const candidates = (Array.isArray(result?.candidates) ? result.candidates : []).slice(0, 10).flatMap((candidate) => {
+      const ref = text(candidate?.ref).slice(0, 200);
+      const label = text(candidate?.label).slice(0, 200);
+      return ref && label ? [{ ref, label }] : [];
+    });
+    if (candidates.length) {
+      const possibleCorrection = candidates.length === 1;
+      return {
+        facts: { certainty: possibleCorrection ? 'possible_match' : 'ambiguous', candidateCount: candidates.length },
+        provenance: { source: 'public_product_knowledge', sources: [] },
+        presentation: { message: possibleCorrection ? '没有找到完全一致的产品，请确认相近产品。' : '查到多个相似产品，请选择要查询的一款。' },
+        interaction: {
+          type: 'clarification',
+          text: possibleCorrection
+            ? '没有找到完全一致的产品，是否想查询下面这款？回复 1 确认：'
+            : '查到多个相似产品，请选择要查询的一款：',
+          candidates,
+        },
+      };
+    }
     const sources = (Array.isArray(result?.sources) ? result.sources : [])
       .filter((source) => source?.verified === true)
       .map((source) => ({
@@ -301,16 +366,22 @@ export function createAgentQuestionHandlers({
       }))
       .filter((source) => source.url && source.title.length <= 500 && source.provenance.length <= 200);
     if (!sources.length) {
+      const guidance = result?.guidance === true ? text(result?.answer) : '';
       return stableResult(
         { certainty: 'unverified', answer: '' },
         { source: 'public_product_knowledge', sources: [] },
-        { message: '当前没有可核验来源，无法给出确定的产品事实。' },
+        { message: guidance || '当前没有可核验来源。请补充保险公司全称、保单上的正式险种名称、产品版本，或发送条款 PDF/官方投保链接后继续核验。' },
       );
     }
+    const sourceLines = sources.slice(0, 3).map((source, index) => (
+      `${index + 1}. [${source.title.replace(/[\[\]\n]/gu, '').slice(0, 100) || `官方来源 ${index + 1}`}](${source.url})`
+    ));
+    const answer = text(result?.answer);
+    const publicAnswer = [answer, '#### 核验来源', ...sourceLines].filter(Boolean).join('\n\n');
     return stableResult(
-      { certainty: 'supported', answer: text(result?.answer) },
+      { certainty: 'supported', answer },
       { source: 'public_product_knowledge', sources },
-      { message: text(result?.answer) },
+      { message: publicAnswer },
     );
   }
 
@@ -354,6 +425,7 @@ export function createAgentQuestionHandlers({
 
   async function execute(action, context = {}) {
     switch (text(action)) {
+      case 'family_list': return familyList(context);
       case 'family_policy_summary':
       case 'family_summary': return familySummary(context);
       case 'view_family_coverage_report':

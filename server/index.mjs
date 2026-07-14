@@ -10,6 +10,8 @@ const projectRoot = path.resolve(__dirname, '..');
 const initialEnvKeys = new Set(Object.keys(process.env));
 const projectDotenvLocalPath = path.join(projectRoot, '.env.local');
 const skippedProjectDotenvLocalAllowKeys = new Set([
+  'AGENT_GATEWAY_HMAC_SECRET',
+  'POLICY_OCR_PUBLIC_APP_URL',
   'DEEPSEEK_API_KEY',
   'DEEPSEEK_BASE_URL',
   'DEEPSEEK_MODEL',
@@ -76,7 +78,10 @@ const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 
 const store = await createSqliteStateStore({ dbPath, seedStatePath: statePath });
 const state = await store.load();
-const agentGatewayOptions = createProductionAgentGatewayOptions({ env: process.env, loadState: () => store.load() });
+const agentGatewayOptions = createProductionAgentGatewayOptions({
+  env: process.env,
+  loadIdentityState: () => store.loadAgentIdentityState(),
+});
 const app = createPolicyOcrApp({
   ...agentGatewayOptions,
   state,

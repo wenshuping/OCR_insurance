@@ -4,10 +4,11 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
+import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from './agent-question-policy.service.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { ensureProductKnowledgeTables } from './product-knowledge-store.mjs';
 
-const SCHEMA_VERSION = '3';
+const SCHEMA_VERSION = '4';
 
 const DB_OWNED_KEYS = new Set([
   'users',
@@ -257,16 +258,29 @@ function normalizeAgentLimit(value) {
 
 function mapAgentPolicyVersion(row) {
   if (!row) return null;
+  let runtimeSettings = DEFAULT_AGENT_RUNTIME_SETTINGS;
+  try {
+    runtimeSettings = normalizeAgentRuntimeSettings(parseJson(row.runtime_settings_json, {}));
+  } catch {
+    runtimeSettings = DEFAULT_AGENT_RUNTIME_SETTINGS;
+  }
   return {
     id: Number(row.id),
     version: Number(row.version),
     status: String(row.status),
     policies: parseJson(row.policy_json, []),
+    runtimeSettings: { ...runtimeSettings },
     actor: String(row.actor || ''),
     createdAt: String(row.created_at || ''),
     publishedAt: String(row.published_at || ''),
     archivedAt: String(row.archived_at || ''),
   };
+}
+
+function ensureAgentQuestionPolicyRuntimeSettingsSchema(db) {
+  const columns = db.prepare('PRAGMA table_info(agent_question_policy_versions)').all();
+  if (!columns.length || columns.some((column) => column.name === 'runtime_settings_json')) return;
+  db.exec("ALTER TABLE agent_question_policy_versions ADD COLUMN runtime_settings_json TEXT NOT NULL DEFAULT '{}'");
 }
 
 function mapAgentUnknownQuestion(row) {
@@ -960,6 +974,7 @@ function createSchema(db) {
       version INTEGER NOT NULL UNIQUE,
       status TEXT NOT NULL CHECK (status IN ('draft', 'published', 'archived')),
       policy_json TEXT NOT NULL,
+      runtime_settings_json TEXT NOT NULL DEFAULT '{}',
       actor TEXT NOT NULL,
       created_at TEXT NOT NULL,
       published_at TEXT,
@@ -1040,6 +1055,36 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_agent_route_audit_events_user_created ON agent_route_audit_events(user_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_route_audit_events_message_ref ON agent_route_audit_events(message_ref);
 
+    CREATE TABLE IF NOT EXISTS agent_conversations (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      internal_user_id INTEGER NOT NULL,
+      channel_user_id TEXT NOT NULL,
+      channel_conversation_id TEXT NOT NULL,
+      context_version INTEGER NOT NULL DEFAULT 1,
+      active_context_expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      UNIQUE (tenant_id, channel, channel_user_id, internal_user_id, channel_conversation_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_conversations_identity
+      ON agent_conversations(tenant_id, channel, channel_user_id, internal_user_id, channel_conversation_id);
+
+    CREATE TABLE IF NOT EXISTS agent_conversation_entities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('current', 'candidate')),
+      ordinal INTEGER NOT NULL DEFAULT 0,
+      display_name TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (conversation_id) REFERENCES agent_conversations(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_conversation_entities_context
+      ON agent_conversation_entities(conversation_id, role, ordinal);
+
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
@@ -1047,6 +1092,7 @@ function createSchema(db) {
   `);
   ensureAgentRouteAuditSchema(db);
   ensureAgentTransferOutboxLeaseSchema(db);
+  ensureAgentQuestionPolicyRuntimeSettingsSchema(db);
   ensureFamilySalesMemoryVersionSchema(db);
   ensureCashflowTable(db);
   ensureCashValueTable(db);
@@ -3166,20 +3212,21 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     };
   }
 
-  async function createAgentQuestionPolicyDraft({ version, policies = [], actor = '', createdAt = '' } = {}) {
+  async function createAgentQuestionPolicyDraft({ version, policies = [], runtimeSettings = DEFAULT_AGENT_RUNTIME_SETTINGS, actor = '', createdAt = '' } = {}) {
     const normalizedActor = String(actor || '').trim();
     if (!normalizedActor) throw new TypeError('Agent question policy actor is required');
     const timestamp = String(createdAt || new Date().toISOString());
     const serializedPolicies = serializeAgentPolicies(policies);
+    const serializedRuntimeSettings = serializeAgentPayload(normalizeAgentRuntimeSettings(runtimeSettings), 'Agent runtime settings');
     db.exec('BEGIN IMMEDIATE');
     try {
       const requestedVersion = version == null ? null : Number(version);
       if (requestedVersion != null && (!Number.isInteger(requestedVersion) || requestedVersion <= 0)) throw new TypeError('Agent question policy version must be a positive integer');
       const numericVersion = requestedVersion ?? Number(db.prepare('SELECT COALESCE(MAX(version), 0) + 1 version FROM agent_question_policy_versions').get().version);
       const result = db.prepare(`
-        INSERT INTO agent_question_policy_versions (version, status, policy_json, actor, created_at, published_at, archived_at)
-        VALUES (?, 'draft', ?, ?, ?, '', '')
-      `).run(numericVersion, serializedPolicies, normalizedActor, timestamp);
+        INSERT INTO agent_question_policy_versions (version, status, policy_json, runtime_settings_json, actor, created_at, published_at, archived_at)
+        VALUES (?, 'draft', ?, ?, ?, ?, '', '')
+      `).run(numericVersion, serializedPolicies, serializedRuntimeSettings, normalizedActor, timestamp);
       db.exec('COMMIT');
       return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
     } catch (error) {
@@ -3200,8 +3247,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       const nextVersion = Number(db.prepare('SELECT COALESCE(MAX(version), 0) + 1 version FROM agent_question_policy_versions').get().version);
       db.prepare("UPDATE agent_question_policy_versions SET status = 'archived', archived_at = ? WHERE status = 'published'").run(timestamp);
       const result = db.prepare(`INSERT INTO agent_question_policy_versions
-        (version, status, policy_json, actor, created_at, published_at, archived_at)
-        VALUES (?, 'published', ?, ?, ?, ?, '')`).run(nextVersion, source.policy_json, normalizedActor, timestamp, timestamp);
+        (version, status, policy_json, runtime_settings_json, actor, created_at, published_at, archived_at)
+        VALUES (?, 'published', ?, ?, ?, ?, ?, '')`).run(nextVersion, source.policy_json, source.runtime_settings_json, normalizedActor, timestamp, timestamp);
       db.exec('COMMIT');
       return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(result.lastInsertRowid));
     } catch (error) {
@@ -3220,12 +3267,13 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(numericId));
   }
 
-  async function updateAgentQuestionPolicyDraft({ id, policies = [], actor = '' } = {}) {
+  async function updateAgentQuestionPolicyDraft({ id, policies = [], runtimeSettings = DEFAULT_AGENT_RUNTIME_SETTINGS, actor = '' } = {}) {
     const numericId = Number(id);
     const normalizedActor = String(actor || '').trim();
     if (!Number.isInteger(numericId) || numericId <= 0 || !normalizedActor) throw new TypeError('Agent question policy draft id and actor are required');
     const serializedPolicies = serializeAgentPolicies(policies);
-    const result = db.prepare("UPDATE agent_question_policy_versions SET policy_json = ?, actor = ? WHERE id = ? AND status = 'draft'").run(serializedPolicies, normalizedActor, numericId);
+    const serializedRuntimeSettings = serializeAgentPayload(normalizeAgentRuntimeSettings(runtimeSettings), 'Agent runtime settings');
+    const result = db.prepare("UPDATE agent_question_policy_versions SET policy_json = ?, runtime_settings_json = ?, actor = ? WHERE id = ? AND status = 'draft'").run(serializedPolicies, serializedRuntimeSettings, normalizedActor, numericId);
     if (result.changes !== 1) throw new Error('Agent question policy version must be a draft');
     return mapAgentPolicyVersion(db.prepare('SELECT * FROM agent_question_policy_versions WHERE id = ?').get(numericId));
   }
@@ -3562,6 +3610,116 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return rows.map(mapAgentRouteAuditEvent);
   }
 
+  async function resolveAgentConversation({
+    id, tenantId, channel, internalUserId, channelUserId, channelConversationId, now = '',
+  } = {}) {
+    const conversationId = String(id || '').trim();
+    const tenant = String(tenantId || '').trim();
+    const normalizedChannel = String(channel || '').trim();
+    const userId = Number(internalUserId);
+    const externalUserId = String(channelUserId || '').trim();
+    const externalConversationId = String(channelConversationId || '').trim();
+    if (!conversationId || !tenant || !normalizedChannel || !Number.isInteger(userId) || userId <= 0 || !externalUserId || !externalConversationId) {
+      throw new TypeError('Agent conversation identity is required');
+    }
+    const timestamp = normalizeAgentTimestamp(now, 'Agent conversation timestamp');
+    db.prepare(`
+      INSERT INTO agent_conversations (
+        id, tenant_id, channel, internal_user_id, channel_user_id, channel_conversation_id,
+        context_version, active_context_expires_at, created_at, updated_at, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, '{}')
+      ON CONFLICT(tenant_id, channel, channel_user_id, internal_user_id, channel_conversation_id)
+      DO UPDATE SET updated_at = excluded.updated_at
+    `).run(conversationId, tenant, normalizedChannel, userId, externalUserId, externalConversationId, timestamp, timestamp, timestamp);
+    return findAgentConversation({ tenantId: tenant, channel: normalizedChannel, channelUserId: externalUserId, internalUserId: userId, channelConversationId: externalConversationId });
+  }
+
+  async function findAgentConversation({ tenantId, channel, internalUserId, channelUserId, channelConversationId } = {}) {
+    const row = db.prepare(`
+      SELECT * FROM agent_conversations
+      WHERE tenant_id = ? AND channel = ? AND channel_user_id = ? AND internal_user_id = ? AND channel_conversation_id = ?
+    `).get(
+      String(tenantId || '').trim(), String(channel || '').trim(), String(channelUserId || '').trim(),
+      Number(internalUserId), String(channelConversationId || '').trim(),
+    );
+    return row ? { id: row.id, contextVersion: Number(row.context_version), updatedAt: row.updated_at } : null;
+  }
+
+  async function loadAgentConversationContext({ conversationId } = {}) {
+    const id = String(conversationId || '').trim();
+    if (!id) throw new TypeError('Agent conversation id is required');
+    const row = db.prepare('SELECT * FROM agent_conversations WHERE id = ?').get(id);
+    if (!row) return null;
+    const payload = parseJson(row.payload, {});
+    const entities = db.prepare(`
+      SELECT role, ordinal, display_name, updated_at
+      FROM agent_conversation_entities WHERE conversation_id = ? ORDER BY role, ordinal
+    `).all(id);
+    const current = entities.find((entity) => entity.role === 'current');
+    const candidates = entities.filter((entity) => entity.role === 'candidate');
+    return {
+      version: Number(row.context_version),
+      hermesSessionId: String(payload.hermesSessionId || ''),
+      history: Array.isArray(payload.history) ? payload.history : [],
+      question: payload.question || null,
+      product: current ? { productName: current.display_name, updatedAt: Number(current.updated_at) } : null,
+      productCandidates: candidates.length ? {
+        products: candidates.map((entity) => entity.display_name),
+        question: String(payload.productCandidatesQuestion || ''),
+        updatedAt: Math.max(...candidates.map((entity) => Number(entity.updated_at))),
+      } : null,
+    };
+  }
+
+  async function saveAgentConversationContext({
+    conversationId, expectedVersion, history = [], product = null, productCandidates = null,
+    question = null, hermesSessionId = '', updatedAt, activeContextExpiresAt,
+  } = {}) {
+    const id = String(conversationId || '').trim();
+    const version = Number(expectedVersion);
+    const timestamp = Number(updatedAt);
+    if (!id || !Number.isInteger(version) || version <= 0 || !Number.isFinite(timestamp)) {
+      throw new TypeError('Agent conversation id, version, and updatedAt are required');
+    }
+    const payload = JSON.stringify({
+      history,
+      question,
+      hermesSessionId: String(hermesSessionId || '').trim().slice(0, 200),
+      productCandidatesQuestion: String(productCandidates?.question || ''),
+    });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const updated = db.prepare(`
+        UPDATE agent_conversations
+        SET context_version = context_version + 1, active_context_expires_at = ?, updated_at = ?, payload = ?
+        WHERE id = ? AND context_version = ?
+      `).run(normalizeAgentTimestamp(activeContextExpiresAt, 'Agent context expiry'), new Date(timestamp).toISOString(), payload, id, version);
+      if (updated.changes !== 1) {
+        const error = new Error('AGENT_CONVERSATION_VERSION_CONFLICT');
+        error.code = 'AGENT_CONVERSATION_VERSION_CONFLICT';
+        error.status = 409;
+        throw error;
+      }
+      db.prepare('DELETE FROM agent_conversation_entities WHERE conversation_id = ?').run(id);
+      const insertEntity = db.prepare(`
+        INSERT INTO agent_conversation_entities (conversation_id, role, ordinal, display_name, updated_at, payload)
+        VALUES (?, ?, ?, ?, ?, '{}')
+      `);
+      const currentProductName = String(product?.productName || '').trim();
+      if (currentProductName) insertEntity.run(id, 'current', 0, currentProductName, Number(product.updatedAt || timestamp));
+      const candidateProducts = Array.isArray(productCandidates?.products) ? productCandidates.products : [];
+      candidateProducts.forEach((name, index) => {
+        const displayName = String(name || '').trim();
+        if (displayName) insertEntity.run(id, 'candidate', index, displayName, Number(productCandidates.updatedAt || timestamp));
+      });
+      db.exec('COMMIT');
+      return loadAgentConversationContext({ conversationId: id });
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async function load() {
     if (!getMeta(db, 'state_initialized_at')) {
       const seedState = await loadSeedState();
@@ -3574,6 +3732,56 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return state;
   }
 
+  async function loadAgentIdentityState() {
+    const users = db.prepare('SELECT payload FROM users ORDER BY id ASC').all()
+      .map((row) => parseJson(row.payload, null)).filter(Boolean);
+    const identities = parseJson(
+      db.prepare("SELECT payload FROM state_documents WHERE key = 'agentChannelIdentities'").get()?.payload,
+      [],
+    );
+    return {
+      users,
+      agentChannelIdentities: Array.isArray(identities) ? identities : [],
+    };
+  }
+
+  async function listAuthorizedFamilyProfiles({ internalUserId } = {}) {
+    const userId = Number(internalUserId);
+    if (!Number.isInteger(userId) || userId <= 0) return [];
+    const policyFamilyIds = new Set(db.prepare('SELECT payload FROM policies WHERE user_id = ?').all(userId)
+      .map((row) => Number(parseJson(row.payload, null)?.familyId || 0)).filter(Boolean));
+    return db.prepare(`
+      SELECT id, owner_user_id, payload FROM family_profiles
+      WHERE COALESCE(NULLIF(status, ''), 'active') = 'active'
+      ORDER BY id ASC
+    `).all().filter((row) => (
+      Number(row.owner_user_id || 0) === userId
+      || (!Number(row.owner_user_id || 0) && policyFamilyIds.has(Number(row.id)))
+    )).map((row) => parseJson(row.payload, null)).filter(Boolean);
+  }
+
+  async function loadAuthorizedFamilyState({ familyId, internalUserId } = {}) {
+    const id = Number(familyId);
+    const families = await listAuthorizedFamilyProfiles({ internalUserId });
+    const family = families.find((row) => Number(row?.id) === id);
+    if (!family) return null;
+    const familyRows = (table, orderBy = 'id ASC') => db.prepare(
+      `SELECT payload FROM ${table} WHERE family_id = ? ORDER BY ${orderBy}`,
+    ).all(id).map((row) => parseJson(row.payload, null)).filter(Boolean);
+    const policies = db.prepare('SELECT payload FROM policies ORDER BY id ASC').all()
+      .map((row) => parseJson(row.payload, null)).filter((row) => Number(row?.familyId) === id);
+    return {
+      family,
+      state: {
+        familyProfiles: [family],
+        familyMembers: familyRows('family_members'),
+        policies,
+        familyReports: familyRows('family_reports', 'generated_at ASC, id ASC'),
+        familySalesReviews: familyRows('family_sales_reviews', 'generated_at ASC, id ASC'),
+      },
+    };
+  }
+
   function close() {
     db.close();
   }
@@ -3583,6 +3791,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     dbPath,
     seedStatePath,
     load,
+    loadAgentIdentityState,
+    listAuthorizedFamilyProfiles,
+    loadAuthorizedFamilyState,
     persist,
     persistAdminSession,
     persistMembershipConfig,
@@ -3624,6 +3835,10 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     appendAgentRouteAuditEvent,
     recordAgentRouteAudit,
     listAgentRouteAuditEvents,
+    resolveAgentConversation,
+    findAgentConversation,
+    loadAgentConversationContext,
+    saveAgentConversationContext,
     close,
   };
 }

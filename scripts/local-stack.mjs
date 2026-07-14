@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
+const projectEnvPath = path.join(projectRoot, '.env.local');
 const cloudflaredConfig = path.join(process.env.HOME || '', '.cloudflared/config.yml');
 const cloudflaredWatchdogPidPath = path.join(process.env.HOME || '', 'Library/Application Support/OCRInsurance/cloudflared.pid');
 const command = process.argv[2] || 'start';
@@ -64,6 +65,12 @@ const runtimeEnvKeys = new Set([
   'POLICY_OCR_PADDLE_PYTHON',
 ]);
 const profileConfigs = createProfileConfigs();
+const dingtalkGatewayEnvKeys = [
+  'DINGTALK_APP_KEY',
+  'DINGTALK_APP_SECRET',
+  'DINGTALK_CORP_ID',
+  'AGENT_GATEWAY_HMAC_SECRET',
+];
 
 function parseCommand(rawCommand) {
   const raw = String(rawCommand || 'start').trim();
@@ -221,6 +228,17 @@ function createServices(profile) {
       healthUrl: `http://127.0.0.1:${profile.apiPort}/api/health`,
     },
     {
+      name: 'dingtalk',
+      label: '钉钉机器人',
+      command: process.execPath,
+      args: ['--env-file=.env.local', 'server/dingtalk-agent-gateway.mjs'],
+      optional: true,
+      skip: profile.name !== 'dev' || !hasDingtalkGatewayConfig(),
+      env: {
+        DINGTALK_CHANNEL_API_BASE_URL: `http://127.0.0.1:${profile.apiPort}`,
+      },
+    },
+    {
       name: 'web',
       label: '前端页面',
       command: process.execPath,
@@ -249,6 +267,20 @@ function createServices(profile) {
       externalCommandPattern: `cloudflared tunnel --config ${cloudflaredConfig} run`,
     },
   ];
+}
+
+function hasDingtalkGatewayConfig(env = process.env) {
+  let projectEnv = '';
+  try {
+    projectEnv = fs.readFileSync(projectEnvPath, 'utf8');
+  } catch {
+    // Environment variables alone are also supported.
+  }
+  return dingtalkGatewayEnvKeys.every((key) => {
+    if (String(env[key] || '').trim()) return true;
+    const match = projectEnv.match(new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*$`, 'mu'));
+    return Boolean(match && String(match[1] || '').trim().replace(/^(['"])(.*)\1$/u, '$2'));
+  });
 }
 
 function findCloudflared() {

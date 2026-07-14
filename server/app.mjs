@@ -10,6 +10,10 @@ import { createAgentConfirmationService } from './agent-confirmation.service.mjs
 import { createAgentReportRegenerationQueue } from './agent-report-regeneration-queue.service.mjs';
 import { createAgentQuestionHandlers } from './agent-question-handlers.service.mjs';
 import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
+import { createAgentConversationContextService } from './agent-conversation-context.service.mjs';
+import { createAgentConversationRuntime } from './agent-conversation-runtime.service.mjs';
+import { createDeepSeekAgentQuestionInterpreter } from './agent-question-interpreter.service.mjs';
+import { createHermesConversationClient } from './hermes-conversation-client.service.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
@@ -73,6 +77,7 @@ import {
   normalizeKnowledgeRecord,
   scoreCompanySuggestionMatch,
   scoreProductNameMatch,
+  searchOfficialProductSalesStatuses,
   upsertKnowledgeRecords,
 } from './policy-knowledge.service.mjs';
 import {
@@ -90,6 +95,8 @@ import {
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
 import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
+import { createProductRagService } from './product-rag.service.mjs';
+import { createAgentProductKnowledgeSearch } from './agent-product-knowledge.service.mjs';
 import { generateProductCustomerResponsibilitySummary } from './product-customer-responsibility-summary.service.mjs';
 import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 import {
@@ -2450,6 +2457,8 @@ export function createPolicyOcrApp(options = {}) {
     recomputeAllCashflow();
   }
 
+  let responsibilityAssistantQuery = null;
+  let customerResponsibilitySummaryQuery = null;
   const routeContext = createRouteContext({
     state,
     persist,
@@ -2603,6 +2612,8 @@ export function createPolicyOcrApp(options = {}) {
     generateProductCustomerResponsibilitySummary,
     generateProductCustomerResponsibilitySummaryWithDeepSeek: options.generateProductCustomerResponsibilitySummaryWithDeepSeek,
     generateProductCustomerResponsibilityPlannerWithDeepSeek: options.generateProductCustomerResponsibilityPlannerWithDeepSeek,
+    registerResponsibilityAssistantQuery(query) { responsibilityAssistantQuery = query; },
+    registerCustomerResponsibilitySummaryQuery(query) { customerResponsibilitySummaryQuery = query; },
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,
@@ -2652,8 +2663,25 @@ export function createPolicyOcrApp(options = {}) {
   });
 
   const app = express();
+  const responsibilityRoutes = createResponsibilityRoutes(routeContext);
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
+  const productRagService = options.productRagService
+    || (productKnowledgeStore ? createProductRagService({ store: productKnowledgeStore }) : null);
+  const agentProductKnowledge = options.agentProductKnowledge
+    || (options.db ? createAgentProductKnowledgeSearch({
+      db: options.db,
+      responsibilityQuery: (input) => responsibilityAssistantQuery?.(input),
+      responsibilitySummaryQuery: (input) => customerResponsibilitySummaryQuery?.(input),
+      productRagRetrieve: (input) => productRagService?.retrieve(input),
+      officialDocumentFetchImpl: knowledgeFetchImpl,
+      officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+      salesStatusLookup: (input) => searchOfficialProductSalesStatuses({
+        ...input,
+        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+        fetchImpl: knowledgeFetchImpl,
+      }),
+    }) : null);
   app.locals.state = state;
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -2670,6 +2698,12 @@ export function createPolicyOcrApp(options = {}) {
     registerFamilyReportRegenerationService(service) { familyRegenerationWorkflow = service; },
   });
   const agentStore = options.agentStore || options.agentTransferRegenerationStore || null;
+  const agentConversationContext = options.agentConversationContext || (
+    agentStore && typeof agentStore.resolveAgentConversation === 'function'
+      && typeof agentStore.findAgentConversation === 'function'
+      ? createAgentConversationContextService({ store: agentStore })
+      : null
+  );
   const agentReportQueue = options.agentReportQueue || (agentStore && familyRegenerationWorkflow
     ? createAgentReportRegenerationQueue({ state, workflow: familyRegenerationWorkflow, familyOwnerMatches, loadFreshState: () => agentStore.load() })
     : null);
@@ -2683,7 +2717,12 @@ export function createPolicyOcrApp(options = {}) {
     ? createAgentQuestionHandlers({
       store: agentStore,
       reportQueue: agentReportQueue,
+      productKnowledge: agentProductKnowledge,
+      allowedKnowledgeOrigins: agentProductKnowledge?.allowedOrigins || [],
       authorizedFamilyDataLoader: async ({ familyId, internalUserId }) => {
+        if (typeof agentStore.loadAuthorizedFamilyState === 'function') {
+          return agentStore.loadAuthorizedFamilyState({ familyId, internalUserId });
+        }
         const current = await agentStore.load();
         const family = (current.familyProfiles || []).find((row) => Number(row.id) === Number(familyId) && familyOwnerMatches(row, { userId: internalUserId }));
         return family ? { family, state: current } : null;
@@ -2731,6 +2770,21 @@ export function createPolicyOcrApp(options = {}) {
   const agentQuestionRouter = options.agentQuestionRouter || (agentStore && agentHandlers
     ? createAgentQuestionRouter({ store: agentStore, handlers: agentHandlers })
     : null);
+  const configuredConversationRuntime = String(
+    options.agentConversationRuntimeMode || process.env.AGENT_CONVERSATION_RUNTIME || 'hermes',
+  ).trim().toLowerCase();
+  const agentConversationRuntime = options.agentConversationRuntime || (
+    agentConversationContext && agentQuestionRouter
+      ? createAgentConversationRuntime({
+        conversationContext: agentConversationContext,
+        questionRouter: agentQuestionRouter,
+        hermesClient: options.hermesConversationClient || createHermesConversationClient({ env: options.env || process.env }),
+        directInterpreter: options.agentQuestionInterpreter || createDeepSeekAgentQuestionInterpreter({ env: options.env || process.env }),
+        runtimeMode: configuredConversationRuntime === 'direct' ? 'direct' : 'hermes',
+        reportError: (code) => console.warn(`[agent-conversation-runtime] ${code}`),
+      })
+      : null
+  );
   const recoveryOptions = {
     intervalMs: options.agentTransferRecoveryIntervalMs,
     disabled: options.disableAgentTransferRecovery === true,
@@ -2749,6 +2803,11 @@ export function createPolicyOcrApp(options = {}) {
     confirmationService: agentConfirmationService,
     resolveChannelIdentity: options.resolveDingTalkIdentity,
     verifyAgentServiceRequest: options.verifyAgentServiceRequest,
+    getRuntimeSettings: async () => (typeof agentStore?.getPublishedAgentQuestionPolicyVersion === 'function'
+      ? (await agentStore.getPublishedAgentQuestionPolicyVersion())?.runtimeSettings
+      : null),
+    conversationContext: agentConversationContext,
+    conversationRuntime: agentConversationRuntime,
     secureUploadLinkFactory: options.agentSecureUploadLinkFactory,
     secureLinkAllowedOrigins: options.agentSecureLinkAllowedOrigins,
     maxBodyBytes: options.agentMaxBodyBytes,
@@ -2762,7 +2821,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/wechat', createWechatRoutes(routeContext));
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
-  app.use('/api/policy-responsibilities', createResponsibilityRoutes(routeContext));
+  app.use('/api/policy-responsibilities', responsibilityRoutes);
   app.use('/api', familyRoutes);
   app.use('/api/membership', createMembershipRoutes(routeContext));
   app.use('/api', createPolicyRoutes(routeContext));
@@ -2770,6 +2829,7 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/admin/product-knowledge', createProductKnowledgeRoutes({
     ...routeContext,
     productKnowledgeStore,
+    productRagService,
   }));
   app.use('/api/admin', createAdminRoutes(routeContext));
 

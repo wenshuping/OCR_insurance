@@ -9,6 +9,7 @@ import {
   catalogProductsFromState,
   createProductIngestionService,
 } from '../product-ingestion.service.mjs';
+import { assessProductPublishReadiness } from '../product-document-quality.service.mjs';
 import { createProductRagService } from '../product-rag.service.mjs';
 
 const DEFAULT_TENANT_ID = 'default';
@@ -109,6 +110,15 @@ function uploadPayload(body, libraryType, extra = {}) {
 function documentProductNames(payload = {}) {
   const names = Array.isArray(payload.productNames) ? payload.productNames : [payload.productName];
   return [...new Set(names.map((item) => cleanText(item)).filter(Boolean))];
+}
+
+function ensureUploadedProducts(store, payload = {}) {
+  if (typeof store?.ensureProducts !== 'function') return [];
+  return store.ensureProducts({
+    tenantId: DEFAULT_TENANT_ID,
+    company: cleanText(payload.company),
+    productNames: documentProductNames(payload),
+  });
 }
 
 function comparableProductName(value) {
@@ -213,15 +223,18 @@ export function createProductKnowledgeRoutes(context = {}) {
     try {
       const upload = normalizeProductDocumentUpload(req.body);
       const libraryType = req.body?.libraryType === 'expert' ? 'expert' : 'company_product';
-      const result = storeOrThrow().createDocumentUpload({
+      const store = storeOrThrow();
+      const payload = uploadPayload(req.body, libraryType);
+      const result = store.createDocumentUpload({
         tenantId: DEFAULT_TENANT_ID,
         createdBy: String(session.token || session.id || 'admin'),
         sourceAuthority: libraryType === 'expert' ? 'expert_training' : 'company_material',
-        payload: uploadPayload(req.body, libraryType),
+        payload,
         ...upload,
         contentHash: `${libraryType}:${upload.contentHash}`,
       });
-      return res.status(result.deduplicated ? 200 : 201).json({ ok: true, ...result });
+      const products = ensureUploadedProducts(store, payload);
+      return res.status(result.deduplicated ? 200 : 201).json({ ok: true, ...result, products });
     } catch (error) {
       return sendError(res, error, 400);
     }
@@ -238,15 +251,18 @@ export function createProductKnowledgeRoutes(context = {}) {
         mediaType: linked.mediaType,
         dataBase64: linked.bytes.toString('base64'),
       });
-      const result = storeOrThrow().createDocumentUpload({
+      const store = storeOrThrow();
+      const payload = uploadPayload(req.body, libraryType, { sourceUrl: linked.sourceUrl });
+      const result = store.createDocumentUpload({
         tenantId: DEFAULT_TENANT_ID,
         createdBy: String(session.token || session.id || 'admin'),
         sourceAuthority: libraryType === 'expert' ? 'expert_training' : 'company_material',
-        payload: uploadPayload(req.body, libraryType, { sourceUrl: linked.sourceUrl }),
+        payload,
         ...upload,
         contentHash: `${libraryType}:${upload.contentHash}`,
       });
-      return res.status(result.deduplicated ? 200 : 201).json({ ok: true, ...result });
+      const products = ensureUploadedProducts(store, payload);
+      return res.status(result.deduplicated ? 200 : 201).json({ ok: true, ...result, products });
     } catch (error) { return sendError(res, error, error?.status || 400); }
   });
 
@@ -357,6 +373,21 @@ export function createProductKnowledgeRoutes(context = {}) {
     try {
       const store = storeOrThrow();
       const pendingDocument = store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId: String(req.params.documentId || '').trim() });
+      if (req.body?.action === 'publish' && pendingDocument) {
+        const documentId = pendingDocument.id;
+        const readiness = assessProductPublishReadiness({
+          document: pendingDocument,
+          links: store.listDocumentProductLinks({ tenantId: DEFAULT_TENANT_ID, documentId }),
+          chunks: store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId })?.candidateChunks || [],
+        });
+        if (readiness.decision === 'blocked') {
+          throw routeError(
+            'PRODUCT_DOCUMENT_BINDING_REQUIRED',
+            readiness.blockingReasons[0]?.message || '产品资料必须先绑定产品才能发布',
+            409,
+          );
+        }
+      }
       if (req.body?.action === 'publish' && isResponsibilityIndicatorMaterial(pendingDocument?.payload) && (!pendingDocument?.payload?.company || !documentProductNames(pendingDocument.payload).length)) {
         throw routeError('PRODUCT_RESPONSIBILITY_MATERIAL_IDENTITY_REQUIRED', '产品责任指标补充资料必须填写保险公司和产品名称', 400);
       }

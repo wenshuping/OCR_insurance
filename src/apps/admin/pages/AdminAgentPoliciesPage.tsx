@@ -11,6 +11,7 @@ import {
   type AdminAgentPolicySimulationResponse,
   type AdminAgentQuestionPolicy,
   type AdminAgentQuestionPolicyVersion,
+  type AdminAgentRuntimeSettings,
   type AdminAgentUnknownQuestion,
 } from '../../../api';
 import { createLatestRequestController, createLifecycleController, createRequestMutex, fallbackPolicyKeys, policyValidationViewModel, shouldDiscardDirty, unknownQuestionViewModel, type AgentPolicyLatestRequestScope, type AgentPolicyLifecycleScope } from './adminAgentPolicies.mjs';
@@ -20,8 +21,9 @@ const OPERATIONS = ['read', 'write'] as const;
 const CONFIRMATIONS = ['not_required', 'required'] as const;
 const OUTPUT_MODES = ['direct', 'structured', 'preview'] as const;
 const DECISIONS = ['execute', 'propose', 'reject'] as const;
-const ALLOWED_TOOLS = ['family_summary', 'coverage_report', 'sales_report', 'product_knowledge_search', 'create_upload_link', 'propose_memory', 'preview_transfer'] as const;
+const ALLOWED_TOOLS = ['list_families', 'family_summary', 'coverage_report', 'sales_report', 'product_knowledge_search', 'create_upload_link', 'propose_memory', 'preview_transfer'] as const;
 const UNKNOWN_LIMIT = 20;
+const DEFAULT_RUNTIME_SETTINGS: AdminAgentRuntimeSettings = { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 };
 
 const selectClass = 'h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800';
 const inputClass = 'h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800';
@@ -34,6 +36,7 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
   const [published, setPublished] = useState<AdminAgentQuestionPolicyVersion | null>(null);
   const [draft, setDraft] = useState<AdminAgentQuestionPolicyVersion | null>(null);
   const [policies, setPolicies] = useState<AdminAgentQuestionPolicy[]>([]);
+  const [runtimeSettings, setRuntimeSettings] = useState<AdminAgentRuntimeSettings>(DEFAULT_RUNTIME_SETTINGS);
   const [history, setHistory] = useState<AdminAgentQuestionPolicyVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [policiesLoaded, setPoliciesLoaded] = useState(false);
@@ -70,6 +73,7 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
         const selectedDraft = response.drafts[0] || null;
         setPublished(response.published); setDraft(selectedDraft);
         setPolicies((selectedDraft?.policies || response.published?.policies || response.templates).map((item) => ({ ...item })));
+        setRuntimeSettings({ ...(selectedDraft?.runtimeSettings || response.published?.runtimeSettings || response.defaultRuntimeSettings) });
         setHistory(response.history); setPoliciesLoaded(true); setDirty(false);
       });
     } catch (requestError) {
@@ -97,7 +101,7 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
     requestMutex.current = createRequestMutex();
     simulationMutex.current = createRequestMutex();
     scope.commit(() => {
-      setPublished(null); setDraft(null); setPolicies([]); setHistory([]);
+      setPublished(null); setDraft(null); setPolicies([]); setRuntimeSettings(DEFAULT_RUNTIME_SETTINGS); setHistory([]);
       setPoliciesLoaded(false); setPolicyLoadError(''); setLoading(true);
       setSaving(false); setDirty(false); setError(''); setSimulation(null); setSimulating(false);
       setCandidateIntent('coverage_report'); setQuestion('查看家庭保障情况'); setConfidence('0.9'); setRequestedOperation('read');
@@ -125,10 +129,20 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
 
   const intentOptions = useMemo(() => [...new Set(policies.map((policy) => policy.intent))], [policies]);
   const validation = useMemo(() => policyValidationViewModel({ loading, loadError: policyLoadError, loaded: policiesLoaded, policies }), [loading, policies, policiesLoaded, policyLoadError]);
-  const validationErrors = validation.errors;
+  const runtimeSettingsError = !Number.isInteger(runtimeSettings.fallbackHistoryMessageLimit) || runtimeSettings.fallbackHistoryMessageLimit < 1 || runtimeSettings.fallbackHistoryMessageLimit > 40
+    ? '降级历史消息上限必须是 1–40 的整数'
+    : !Number.isInteger(runtimeSettings.productContextTtlMinutes) || runtimeSettings.productContextTtlMinutes < 1 || runtimeSettings.productContextTtlMinutes > 1_440
+      ? '产品指代有效期必须是 1–1440 分钟的整数'
+      : '';
+  const validationErrors = runtimeSettingsError ? [runtimeSettingsError, ...validation.errors] : validation.errors;
 
   function changePolicy(index: number, patch: Partial<AdminAgentQuestionPolicy>) {
     setPolicies((current) => current.map((policy, policyIndex) => policyIndex === index ? { ...policy, ...patch } : policy));
+    setDirty(true);
+  }
+
+  function changeRuntimeSetting(patch: Partial<AdminAgentRuntimeSettings>) {
+    setRuntimeSettings((current) => ({ ...current, ...patch }));
     setDirty(true);
   }
 
@@ -139,7 +153,7 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
     await requestMutex.current.run(async () => {
       scope.commit(() => { setSaving(true); setError(''); });
       try {
-        const response = draft ? await updateAdminAgentQuestionPolicyDraft(token, draft.id, policies) : await createAdminAgentQuestionPolicyDraft(token, policies);
+        const response = draft ? await updateAdminAgentQuestionPolicyDraft(token, draft.id, policies, runtimeSettings) : await createAdminAgentQuestionPolicyDraft(token, policies, runtimeSettings);
         if (!scope.commit(() => { setDraft(response.draft); setSimulationSource('draft'); setDirty(false); })) return;
         if (scope.isCurrent()) await loadPolicies({ token, scope });
       } catch (requestError) { scope.commit(() => setError(errorMessage(requestError))); }
@@ -202,6 +216,14 @@ export function AdminAgentPoliciesPage({ adminToken, onDirtyChange }: { adminTok
         {policyLoadError && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{policyLoadError}</p>}
         {validationErrors.length > 0 && <div className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">请修正后保存：{validationErrors[0]}</div>}
         {error && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{error}</p>}
+        {!loading && <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+          <h3 className="font-black text-slate-950">对话运行参数</h3>
+          <p className="mt-1 text-xs font-semibold text-slate-600">Hermes 会话历史由 Hermes 自动维护。以下参数只控制降级解释器和 OCR 产品指代，不会合并不同用户的记忆。</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-bold text-slate-700">降级历史消息上限<input aria-label="降级历史消息上限" className={`${inputClass} mt-1 w-full`} type="number" min="1" max="40" step="1" value={runtimeSettings.fallbackHistoryMessageLimit} onChange={(event) => changeRuntimeSetting({ fallbackHistoryMessageLimit: Number(event.target.value) })} /><span className="mt-1 block font-normal text-slate-500">仅 direct/DeepSeek fallback 使用，默认 6 条。</span></label>
+            <label className="text-xs font-bold text-slate-700">产品指代有效期（分钟）<input aria-label="产品指代有效期（分钟）" className={`${inputClass} mt-1 w-full`} type="number" min="1" max="1440" step="1" value={runtimeSettings.productContextTtlMinutes} onChange={(event) => changeRuntimeSetting({ productContextTtlMinutes: Number(event.target.value) })} /><span className="mt-1 block font-normal text-slate-500">控制“它/这个产品”等 OCR 业务上下文，默认 30 分钟。</span></label>
+          </div>
+        </div>}
         {loading ? <p className="mt-5 text-sm text-slate-500">加载中...</p> : <div className="mt-5 grid gap-3 lg:grid-cols-2">{policies.map((policy, index) => (
           <article key={policy.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center justify-between gap-3"><div><h3 className="font-black text-slate-900">{policy.key}</h3><p className="text-xs text-slate-500">intent: {policy.intent}</p></div><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={policy.enabled !== false} disabled={fallbackPolicyKeys.includes(policy.key)} onChange={(event) => changePolicy(index, { enabled: event.target.checked })} />启用</label></div>

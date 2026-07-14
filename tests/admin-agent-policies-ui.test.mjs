@@ -51,10 +51,22 @@ test('agent strategy page provides constrained editing and explicit guarded life
   assert.match(pageSource, /回滚/u);
   assert.match(pageSource, /window\.confirm/u);
   assert.match(pageSource, /confidenceThreshold/u);
+  assert.match(pageSource, /降级历史消息上限/u);
+  assert.match(pageSource, /产品指代有效期/u);
+  assert.match(pageSource, /Hermes 会话历史由 Hermes 自动维护/u);
   assert.match(pageSource, /confirmation/u);
   assert.match(pageSource, /outputMode/u);
   assert.match(pageSource, /ALLOWED_TOOLS/u);
+  assert.match(pageSource, /list_families/u);
+  assert.match(apiSource, /AdminAgentPolicyTool = 'list_families'/u);
   assert.doesNotMatch(pageSource, /system prompt|系统提示词|Prompt 编辑/iu);
+});
+
+test('family list template passes the same frontend tool validation as the backend', () => {
+  const fallbackRead = { key: 'unknown_read', intent: 'unknown_read', enabled: true, decision: 'execute', handler: 'system', operation: 'read', confirmation: 'not_required', outputMode: 'direct', tool: null, confidenceThreshold: 0 };
+  const fallbackWrite = { ...fallbackRead, key: 'unknown_write', intent: 'unknown_write', decision: 'reject', operation: 'write', confirmation: 'required' };
+  const familyList = { ...fallbackRead, key: 'family_list', intent: 'family_list', outputMode: 'structured', tool: 'list_families' };
+  assert.deepEqual(validatePolicyDraft([familyList, fallbackRead, fallbackWrite]), []);
 });
 
 test('simulation and unknown-question views show safe operational detail and pagination', () => {

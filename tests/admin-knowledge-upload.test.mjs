@@ -86,7 +86,7 @@ test('company product material uploads, parses, publishes and remains queryable'
       materialUsages: ['销售建议资料', '产品责任指标补充资料'],
       company: '测试保险公司',
       productName: '康宁保',
-      productNames: ['康宁保', '医药安'],
+      productNames: ['康宁保'],
       versionLabel: '2026版',
       focusTags: ['产品优势', '高净值客户传承需求', '产品优势'],
       specialInstructions: '重点关注流动性异议；人工说明不是条款证据。',
@@ -98,6 +98,13 @@ test('company product material uploads, parses, publishes and remains queryable'
     assert.equal(uploaded.payload.document.sourceAuthority, 'company_material');
     assert.equal(uploaded.payload.document.payload.libraryType, 'company_product');
     assert.deepEqual(uploaded.payload.document.payload.focusTags, ['产品优势', '高净值客户传承需求']);
+    assert.deepEqual(
+      app.db.prepare('SELECT company, official_name FROM insurance_products ORDER BY official_name').all()
+        .map((row) => ({ ...row })),
+      [
+        { company: '测试保险公司', official_name: '康宁保' },
+      ],
+    );
 
     const documentId = uploaded.payload.document.id;
     const processed = await request(app, `/api/admin/product-knowledge/documents/${documentId}/process`, {});
@@ -109,9 +116,8 @@ test('company product material uploads, parses, publishes and remains queryable'
     const published = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review`, { action: 'publish' });
     assert.equal(published.response.status, 200);
     assert.equal(published.payload.document.reviewStatus, 'published');
-    assert.deepEqual(published.payload.registeredKnowledgeRecords.map((record) => record.productName), ['康宁保', '医药安']);
-    assert.equal(app.state.knowledgeRecords.length, 2);
-    assert.notEqual(app.state.knowledgeRecords[0].url, app.state.knowledgeRecords[1].url);
+    assert.deepEqual(published.payload.registeredKnowledgeRecords.map((record) => record.productName), ['康宁保']);
+    assert.equal(app.state.knowledgeRecords.length, 1);
 
     const listed = await request(app, '/api/admin/product-knowledge/documents');
     assert.equal(listed.payload.documents[0].job.status, 'match_required');
@@ -119,9 +125,33 @@ test('company product material uploads, parses, publishes and remains queryable'
     const chunk = app.db.prepare("SELECT contextual_prefix FROM knowledge_chunks WHERE chunk_type = 'child' LIMIT 1").get();
     assert.match(chunk.contextual_prefix, /保险公司：测试保险公司/u);
     assert.match(chunk.contextual_prefix, /产品：康宁保/u);
-    assert.match(chunk.contextual_prefix, /本资料涉及产品：康宁保、医药安/u);
-    assert.match(chunk.contextual_prefix, /重点关注标签：产品优势、高净值客户传承需求/u);
-    assert.match(chunk.contextual_prefix, /人工检索说明（非事实证据）/u);
+    assert.doesNotMatch(chunk.contextual_prefix, /本资料涉及产品/u);
+    assert.doesNotMatch(chunk.contextual_prefix, /重点关注标签/u);
+    assert.doesNotMatch(chunk.contextual_prefix, /人工检索说明/u);
+  } finally {
+    await app.close();
+  }
+});
+
+test('publishing refuses product material whose chunks are not uniquely bound', async () => {
+  const app = await makeApp();
+  try {
+    const uploaded = await request(app, '/api/admin/product-knowledge/documents', {
+      libraryType: 'company_product',
+      company: '测试保险公司',
+      productNames: ['康宁保', '医药安'],
+      fileName: '未分产品范围.txt',
+      mediaType: 'text/plain',
+      dataBase64: Buffer.from('产品培训资料，等待期以正式条款为准。').toString('base64'),
+    });
+    const documentId = uploaded.payload.document.id;
+    const processed = await request(app, `/api/admin/product-knowledge/documents/${documentId}/process`, {});
+    assert.equal(processed.response.status, 200);
+
+    const published = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review`, { action: 'publish' });
+    assert.equal(published.response.status, 409);
+    assert.equal(published.payload.code, 'PRODUCT_DOCUMENT_BINDING_REQUIRED');
+    assert.equal(app.db.prepare("SELECT count(*) AS count FROM knowledge_chunks WHERE review_status = 'published'").get().count, 0);
   } finally {
     await app.close();
   }

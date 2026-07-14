@@ -212,7 +212,7 @@ export type AdminAgentPolicyHandler = 'system' | 'insurance_expert' | 'sales_cha
 export type AdminAgentPolicyOperation = 'read' | 'write';
 export type AdminAgentPolicyConfirmation = 'not_required' | 'required';
 export type AdminAgentPolicyOutputMode = 'direct' | 'structured' | 'preview';
-export type AdminAgentPolicyTool = 'family_summary' | 'coverage_report' | 'sales_report' | 'product_knowledge_search' | 'create_upload_link' | 'propose_memory' | 'preview_transfer';
+export type AdminAgentPolicyTool = 'list_families' | 'family_summary' | 'coverage_report' | 'sales_report' | 'product_knowledge_search' | 'create_upload_link' | 'propose_memory' | 'preview_transfer';
 
 export type AdminAgentQuestionPolicy = {
   key: string;
@@ -227,11 +227,17 @@ export type AdminAgentQuestionPolicy = {
   confidenceThreshold?: number;
 };
 
+export type AdminAgentRuntimeSettings = {
+  fallbackHistoryMessageLimit: number;
+  productContextTtlMinutes: number;
+};
+
 export type AdminAgentQuestionPolicyVersion = {
   id: number;
   version: number;
   status: 'draft' | 'published' | 'archived';
   policies: AdminAgentQuestionPolicy[];
+  runtimeSettings: AdminAgentRuntimeSettings;
   actor: string;
   createdAt: string;
   publishedAt: string;
@@ -244,6 +250,7 @@ export type AdminAgentQuestionPoliciesResponse = {
   drafts: AdminAgentQuestionPolicyVersion[];
   history: AdminAgentQuestionPolicyVersion[];
   templates: AdminAgentQuestionPolicy[];
+  defaultRuntimeSettings: AdminAgentRuntimeSettings;
 };
 
 export type AdminAgentPolicySimulationCandidate = {
@@ -595,12 +602,12 @@ export function getAdminAgentQuestionPolicies(token: string) {
   return request<AdminAgentQuestionPoliciesResponse>('/api/admin/agent-question-policies', { token });
 }
 
-export function createAdminAgentQuestionPolicyDraft(token: string, policies: AdminAgentQuestionPolicy[]) {
-  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>('/api/admin/agent-question-policies/drafts', { token, body: { policies } });
+export function createAdminAgentQuestionPolicyDraft(token: string, policies: AdminAgentQuestionPolicy[], runtimeSettings: AdminAgentRuntimeSettings) {
+  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>('/api/admin/agent-question-policies/drafts', { token, body: { policies, runtimeSettings } });
 }
 
-export function updateAdminAgentQuestionPolicyDraft(token: string, draftId: number, policies: AdminAgentQuestionPolicy[]) {
-  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/drafts/${draftId}`, { token, method: 'PATCH', body: { policies } });
+export function updateAdminAgentQuestionPolicyDraft(token: string, draftId: number, policies: AdminAgentQuestionPolicy[], runtimeSettings: AdminAgentRuntimeSettings) {
+  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/drafts/${draftId}`, { token, method: 'PATCH', body: { policies, runtimeSettings } });
 }
 
 export function publishAdminAgentQuestionPolicyDraft(token: string, draftId: number) {

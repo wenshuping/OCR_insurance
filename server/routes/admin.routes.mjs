@@ -13,6 +13,8 @@ import {
 } from '../ocr-scenario-routing.service.mjs';
 import {
   AGENT_QUESTION_POLICIES,
+  DEFAULT_AGENT_RUNTIME_SETTINGS,
+  normalizeAgentRuntimeSettings,
   validateAgentQuestionPolicy,
 } from '../agent-question-policy.service.mjs';
 import { simulateAgentQuestionDecision } from '../agent-question-router.service.mjs';
@@ -105,6 +107,11 @@ export function createAdminRoutes(context) {
     for (const policy of policies) { validatePolicyItemSchema(policy); validateAgentQuestionPolicy(policy); }
     return policies;
   };
+  const validateRuntimeSettings = (settings) => normalizeAgentRuntimeSettings(strictObject(
+    settings,
+    ['fallbackHistoryMessageLimit', 'productContextTtlMinutes'],
+    'runtimeSettings',
+  ));
   const sendPolicyError = (res, error) => {
     const message = String(error?.message || '');
     const status = /must be a draft|rollback source must be|constraint/iu.test(message) ? 409 : /not found/iu.test(message) ? 404 : error instanceof TypeError || error instanceof RangeError ? 400 : 500;
@@ -118,16 +125,17 @@ export function createAdminRoutes(context) {
     const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
     try {
       const history = await agentQuestionPolicyStore.listAgentQuestionPolicyVersions();
-      res.json({ ok: true, published: history.find((row) => row.status === 'published') || null, drafts: history.filter((row) => row.status === 'draft'), history, templates: AGENT_QUESTION_POLICIES.map((row) => ({ ...row })) });
+      res.json({ ok: true, published: history.find((row) => row.status === 'published') || null, drafts: history.filter((row) => row.status === 'draft'), history, templates: AGENT_QUESTION_POLICIES.map((row) => ({ ...row })), defaultRuntimeSettings: { ...DEFAULT_AGENT_RUNTIME_SETTINGS } });
     } catch (error) { sendPolicyError(res, error); }
   });
 
   router.post('/agent-question-policies/drafts', async (req, res) => {
     const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
     try {
-      const body = strictObject(req.body, ['policies']);
+      const body = strictObject(req.body, ['policies', 'runtimeSettings']);
       validateDraftPolicies(body.policies);
-      const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ policies: body.policies, actor: policyActor(session), createdAt: policyTimestamp() });
+      const runtimeSettings = validateRuntimeSettings(body.runtimeSettings || DEFAULT_AGENT_RUNTIME_SETTINGS);
+      const draft = await agentQuestionPolicyStore.createAgentQuestionPolicyDraft({ policies: body.policies, runtimeSettings, actor: policyActor(session), createdAt: policyTimestamp() });
       res.status(201).json({ ok: true, draft });
     } catch (error) { sendPolicyError(res, error); }
   });
@@ -135,8 +143,10 @@ export function createAdminRoutes(context) {
   router.patch('/agent-question-policies/drafts/:id', async (req, res) => {
     const session = requireAdmin(req, res, state, adminPassword); if (!session) return;
     try {
-      const body = strictObject(req.body, ['policies']); validateDraftPolicies(body.policies);
-      const draft = await agentQuestionPolicyStore.updateAgentQuestionPolicyDraft({ id: req.params.id, policies: body.policies, actor: policyActor(session) });
+      const body = strictObject(req.body, ['policies', 'runtimeSettings']); validateDraftPolicies(body.policies);
+      const existing = body.runtimeSettings ? null : await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: req.params.id });
+      const runtimeSettings = validateRuntimeSettings(body.runtimeSettings || existing?.runtimeSettings || DEFAULT_AGENT_RUNTIME_SETTINGS);
+      const draft = await agentQuestionPolicyStore.updateAgentQuestionPolicyDraft({ id: req.params.id, policies: body.policies, runtimeSettings, actor: policyActor(session) });
       res.json({ ok: true, draft });
     } catch (error) { sendPolicyError(res, error); }
   });
@@ -148,6 +158,7 @@ export function createAdminRoutes(context) {
       const draft = await agentQuestionPolicyStore.getAgentQuestionPolicyVersion({ id: req.params.id });
       if (!draft) throw new Error('Agent question policy version not found');
       validatePolicySet(draft.policies);
+      validateRuntimeSettings(draft.runtimeSettings);
       const published = await agentQuestionPolicyStore.publishAgentQuestionPolicyVersion({ id: draft.id, actor: policyActor(session), publishedAt: policyTimestamp() });
       res.json({ ok: true, published });
     } catch (error) { sendPolicyError(res, error); }
@@ -161,6 +172,7 @@ export function createAdminRoutes(context) {
       if (!source) throw new Error('Agent question policy version not found');
       if (!['published', 'archived'].includes(source.status)) throw new Error('Agent question policy rollback source must be published or archived');
       validatePolicySet(source.policies);
+      validateRuntimeSettings(source.runtimeSettings);
       const published = await agentQuestionPolicyStore.rollbackAgentQuestionPolicyVersion({ sourceId: source.id, actor: policyActor(session), publishedAt: policyTimestamp() });
       res.json({ ok: true, sourceVersionId: source.id, published });
     } catch (error) { sendPolicyError(res, error); }

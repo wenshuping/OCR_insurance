@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { assessProductChunksQuality } from '../server/product-chunk-quality.service.mjs';
-import { assessProductDocumentQuality } from '../server/product-document-quality.service.mjs';
+import { assessProductDocumentQuality, assessProductPublishReadiness } from '../server/product-document-quality.service.mjs';
 
 test('document quality allows ordinary product material without requiring terms-only fields', () => {
   const quality = assessProductDocumentQuality({
@@ -44,6 +44,24 @@ test('document quality blocks text with severe parser corruption', () => {
 
   assert.equal(quality.decision, 'reprocess_required');
   assert.ok(quality.blockingReasons.some((item) => item.code === 'text_integrity'));
+});
+
+test('document quality blocks a PPTX page with visibly incomplete comparison extraction', () => {
+  const quality = assessProductDocumentQuality({
+    document: { sourceAuthority: 'company_material' },
+    parsed: {
+      documentType: 'training_deck',
+      pages: [{
+        pageNo: 17,
+        rawText: '三档保障计划的3点区别',
+        layout: { extraction: { incomplete: true, needsVisualOcr: true } },
+      }],
+      warnings: [],
+    },
+  });
+
+  assert.equal(quality.decision, 'reprocess_required');
+  assert.deepEqual(quality.blockingReasons.find((item) => item.code === 'page_extraction_incomplete')?.pageNumbers, [17]);
 });
 
 test('chunk quality blocks only unusable chunks and keeps valid siblings ready', () => {
@@ -95,4 +113,36 @@ test('chunk quality blocks later duplicate without discarding the first copy', (
 
   assert.equal(quality.chunks[0].indexStatus, 'ready');
   assert.equal(quality.chunks[1].indexStatus, 'blocked');
+});
+
+test('publish readiness requires every ready chunk to match exactly one bound product range', () => {
+  const base = {
+    chunkType: 'child', indexStatus: 'ready', pageStart: 1, pageEnd: 1,
+    canonicalProductId: 'product-1', productVersionId: '',
+  };
+  const ready = assessProductPublishReadiness({
+    document: { payload: {} },
+    links: [{ canonicalProductId: 'product-1', pageStart: 1, pageEnd: 1 }],
+    chunks: [base],
+  });
+  assert.equal(ready.decision, 'pass');
+
+  const unbound = assessProductPublishReadiness({
+    document: { payload: {} },
+    links: [{ canonicalProductId: '', pageStart: 1, pageEnd: 1 }],
+    chunks: [{ ...base, canonicalProductId: '' }],
+  });
+  assert.equal(unbound.decision, 'blocked');
+  assert.ok(unbound.blockingReasons.some((item) => item.code === 'product_binding_missing'));
+
+  const ambiguous = assessProductPublishReadiness({
+    document: { payload: {} },
+    links: [
+      { canonicalProductId: 'product-1', pageStart: 1, pageEnd: 1 },
+      { canonicalProductId: 'product-2', pageStart: 1, pageEnd: 1 },
+    ],
+    chunks: [base],
+  });
+  assert.equal(ambiguous.decision, 'blocked');
+  assert.ok(ambiguous.blockingReasons.some((item) => item.code === 'product_boundary_ambiguous'));
 });

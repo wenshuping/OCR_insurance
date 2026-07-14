@@ -99,6 +99,22 @@ test('a unique authorized family executes without listing other families', async
   assert.equal(calls.audits[0].policySource, 'built_in');
 });
 
+test('product knowledge passes only the controlled product entity to its handler', async () => {
+  const { router, calls } = createHarness({
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer', text: 'ok' } }) },
+  });
+
+  const result = await router.route(routeInput({
+    intent: 'insurance_product_knowledge',
+    question: '这个产品有啥优势呀',
+    entities: { productName: '尊享人生年金保险（分红型）', arbitrary: 'drop-me' },
+  }));
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(calls.handlers[0].input.productName, '尊享人生年金保险（分红型）');
+  assert.equal('arbitrary' in calls.handlers[0].input, false);
+});
+
 test('duplicate names clarify with matching candidates only', async () => {
   const { router } = createHarness({ families: [
     { id: 21, ownerUserId: 7, familyName: '张三家庭', status: 'active' },
