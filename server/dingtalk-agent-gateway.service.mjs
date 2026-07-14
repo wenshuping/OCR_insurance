@@ -282,6 +282,8 @@ export function createDingtalkAgentGateway({
   createMessageRef = randomUUID,
   reportError = (code) => console.warn(`[dingtalk-agent-gateway] ${code}`),
   replyTimeoutMs = 8_000,
+  progressDelayMs = 5_000,
+  agentRequestTimeoutMs = 120_000,
   useMessagesApi = false,
 } = {}) {
   const configuredCorpId = required(corpId, 'DINGTALK_CORP_ID_REQUIRED');
@@ -345,7 +347,30 @@ export function createDingtalkAgentGateway({
           message: { type: 'text', text },
         };
         const signed = createSignedAgentRequest({ secret: configuredSecret, timestamp: now(), body });
-        const response = await fetchImpl(messagesEndpoint, { method: 'POST', headers: signed.headers, body: signed.rawBody });
+        let progressPromise = null;
+        const progressTimer = setTimeout(() => {
+          progressPromise = reply(sessionWebhook, '正在理解并查询，请稍候…').catch((error) => {
+            reportError(String(error?.code || 'DINGTALK_PROGRESS_REPLY_FAILED'));
+          });
+        }, Math.max(1, Number(progressDelayMs) || 5_000));
+        const controller = new AbortController();
+        const requestTimer = setTimeout(
+          () => controller.abort(),
+          Math.max(1_000, Number(agentRequestTimeoutMs) || 120_000),
+        );
+        let response;
+        try {
+          response = await fetchImpl(messagesEndpoint, {
+            method: 'POST', signal: controller.signal, headers: signed.headers, body: signed.rawBody,
+          });
+        } catch (error) {
+          if (controller.signal.aborted) throw gatewayError('DINGTALK_AGENT_REQUEST_TIMEOUT');
+          throw error;
+        } finally {
+          clearTimeout(progressTimer);
+          clearTimeout(requestTimer);
+          if (progressPromise) await progressPromise;
+        }
         const payload = await response.json().catch(() => ({}));
         const replyText = response.ok ? publicReply(payload) : errorReply(payload);
         await reply(sessionWebhook, response.ok

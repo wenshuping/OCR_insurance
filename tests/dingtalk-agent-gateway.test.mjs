@@ -65,6 +65,33 @@ test('production DingTalk gateway sends only signed raw text to the messages API
   assert.equal(JSON.parse(requests[0].options.body).history, undefined);
 });
 
+test('production DingTalk gateway acknowledges a slow Agent request before the final reply', async () => {
+  const replies = [];
+  const gateway = createDingtalkAgentGateway({
+    corpId: 'corp-1', hmacSecret: 'test-secret', useMessagesApi: true,
+    progressDelayMs: 5,
+    getDingtalkMobile: async () => '13800138000',
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/api/agent/messages')) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { ok: true, json: async () => ({ decision: 'execute', interaction: { type: 'answer', text: '最终答复' } }) };
+      }
+      replies.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  await gateway.handle({
+    senderCorpId: 'corp-1', conversationType: '1', senderStaffId: 'ding-7', conversationId: 'conv-7',
+    sessionWebhook: 'https://api.dingtalk.com/session', msgtype: 'text', msgId: 'slow-7',
+    text: { content: '康健无忧两全保险主要保什么' },
+  });
+
+  assert.equal(replies.length, 2);
+  assert.match(replies[0].text.content, /正在理解并查询/u);
+  assert.equal(replies[1].text.content, '最终答复');
+});
+
 test('production DingTalk gateway retries a timed out session webhook reply', async () => {
   let replyAttempts = 0;
   const gateway = createDingtalkAgentGateway({
