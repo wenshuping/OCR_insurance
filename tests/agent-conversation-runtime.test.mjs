@@ -172,25 +172,58 @@ test('Hermes primary path resolves previous_product and keeps users isolated', a
   assert.doesNotMatch(JSON.stringify(hermesCalls[3].safeRecentContext), /甲产品/u);
 });
 
-test('Hermes provider failure falls back to direct interpretation with the same previous product', async () => {
+test('Hermes provider failure retries once and never invokes Direct', async () => {
   const context = createMemoryContext();
-  const routed = [];
+  let hermesCalls = 0;
+  let directCalls = 0;
+  let routeCalls = 0;
   const runtime = createAgentConversationRuntime({
     conversationContext: context,
-    hermesClient: { async runTurn() { throw Object.assign(new Error('offline'), { code: 'HERMES_PROVIDER_FAILED' }); } },
-    directInterpreter: async ({ question }) => ({
-      intent: 'insurance_product_knowledge', question, confidence: 1, requestedOperation: 'read',
-      ...(question.startsWith('A产品') ? { entities: { productName: 'A产品' } } : {}),
-    }),
-    questionRouter: { async route(input) {
-      routed.push(input);
-      return { decision: 'execute', interaction: { type: 'answer', text: input.candidate.entities?.productName ? '公司《A产品》：已核验。' : '已对比。' } };
+    hermesClient: { async runTurn() {
+      hermesCalls += 1;
+      throw Object.assign(new Error('offline'), { code: 'HERMES_PROVIDER_FAILED' });
     } },
+    directInterpreter: async () => { directCalls += 1; throw new Error('must not use direct'); },
+    questionRouter: { async route() { routeCalls += 1; throw new Error('must not route'); } },
     now: () => 1_720_000_000_000,
   });
-  await runtime.processMessage(envelope('ding-a', 'fallback-conversation', 'f-1', 'A产品保险责任'));
-  await runtime.processMessage(envelope('ding-a', 'fallback-conversation', 'f-2', '他和康健长佑对比呢'));
-  assert.equal(routed[1].candidate.question, 'A产品和康健长佑对比呢');
+  const result = await runtime.processMessage(envelope('ding-a', 'retry-conversation', 'f-1', 'A产品保险责任'));
+  assert.equal(hermesCalls, 2);
+  assert.equal(directCalls, 0);
+  assert.equal(routeCalls, 0);
+  assert.equal(result.runtime, 'hermes');
+  assert.match(result.interaction.text, /Hermes 暂不可用/u);
+});
+
+test('Hermes retry can recover and route the second semantic proposal', async () => {
+  const context = createMemoryContext();
+  let hermesCalls = 0;
+  const routed = [];
+  const proposal = {
+    semanticContractVersion: 1,
+    intent: 'insurance_product_knowledge', operation: 'read',
+    queryAspects: ['main_responsibilities'],
+    mentions: [{ type: 'product', rawText: 'A产品' }], references: [], requestedSteps: ['lookup'],
+    confidence: { intent: 1, mentions: 1, references: 1 },
+  };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    hermesClient: { async runTurn() {
+      hermesCalls += 1;
+      if (hermesCalls === 1) throw Object.assign(new Error('invalid'), { code: 'HERMES_RESPONSE_INVALID' });
+      return { sessionId: 'session-recovered', proposal };
+    } },
+    directInterpreter: async () => { throw new Error('must not use direct'); },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '已核验。' } };
+    } },
+  });
+  const result = await runtime.processMessage(envelope('ding-a', 'retry-success', 'f-2', 'A产品保险责任'));
+  assert.equal(hermesCalls, 2);
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].runtime, 'hermes');
+  assert.equal(result.interaction.text, '已核验。');
 });
 
 test('identity rebind during Hermes wait rejects before routing or context commit', async () => {

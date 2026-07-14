@@ -116,6 +116,7 @@ export function createAgentConversationRuntime({
     let candidate;
     let proposal;
     let semanticFallbackReason = '';
+    let hermesUnavailable = false;
     let hermesSessionId = String(context?.hermesSessionId || '');
     let usedRuntime = 'direct';
     if (selectedProduct) {
@@ -127,25 +128,32 @@ export function createAgentConversationRuntime({
         entities: { productName: selectedProduct },
       };
     } else if (runtimeMode === 'hermes' && hermesClient && typeof hermesClient.runTurn === 'function') {
-      try {
-        const interpreted = await hermesClient.runTurn({
-          sessionId: hermesSessionId,
-          question,
-          safeRecentContext: { history },
-          requestId: String(channelEnvelope?.messageRef || ''),
-        });
-        candidate = interpreted.candidate;
-        proposal = interpreted.proposal;
-        hermesSessionId = interpreted.sessionId;
-        usedRuntime = 'hermes';
-      } catch (error) {
-        reportError(String(error?.code || 'HERMES_PROVIDER_FAILED'));
-        semanticFallbackReason = error?.code === 'HERMES_RESPONSE_INVALID'
-          ? 'hermes_invalid_output'
-          : 'hermes_unavailable';
+      usedRuntime = 'hermes';
+      for (let attempt = 0; attempt < 2 && !candidate && !proposal; attempt += 1) {
+        try {
+          const interpreted = await hermesClient.runTurn({
+            sessionId: hermesSessionId,
+            question,
+            safeRecentContext: { history },
+            requestId: String(channelEnvelope?.messageRef || ''),
+          });
+          candidate = interpreted.candidate;
+          proposal = interpreted.proposal;
+          hermesSessionId = interpreted.sessionId;
+        } catch (error) {
+          reportError(String(error?.code || 'HERMES_PROVIDER_FAILED'));
+          semanticFallbackReason = error?.code === 'HERMES_RESPONSE_INVALID'
+            ? 'hermes_invalid_output'
+            : 'hermes_unavailable';
+        }
       }
+      hermesUnavailable = !candidate && !proposal;
     }
-    if (!candidate && !proposal) {
+    if (!selectedProduct && runtimeMode === 'hermes' && !candidate && !proposal) {
+      usedRuntime = 'hermes';
+      hermesUnavailable = true;
+    }
+    if (!candidate && !proposal && runtimeMode !== 'hermes') {
       const direct = await directCandidate({ question, history, settings });
       if (direct?.semanticContractVersion === 1) proposal = direct;
       else candidate = direct;
@@ -163,7 +171,12 @@ export function createAgentConversationRuntime({
     }
     await ensureIdentityCurrent();
     let result;
-    if (resolved.clarification) {
+    if (hermesUnavailable) {
+      result = {
+        decision: 'clarify',
+        interaction: { type: 'clarification', text: 'Hermes 暂不可用，请稍后重试。' },
+      };
+    } else if (resolved.clarification) {
       result = resolved.clarification;
     } else if (proposal) {
       result = await questionRouter.route({
