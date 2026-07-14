@@ -45,6 +45,14 @@ function stableRetry() {
   };
 }
 
+function resolveFallbackReason(input, preparsed) {
+  if (preparsed.candidateSelection) return 'candidate_selection';
+  const explicit = clean(input.fallbackReason, 40);
+  if (explicit && explicit !== 'none') return explicit;
+  if (input.runtime === 'rule' && preparsed.operationHint === 'upload_link') return 'rule_preparse';
+  return 'none';
+}
+
 function productCandidates(result) {
   const candidates = Array.isArray(result?.nextTaskState?.candidateSets?.product)
     ? result.nextTaskState.candidateSets.product.slice(0, 10)
@@ -355,12 +363,22 @@ export function createAgentSemanticQuestionRouter({
     }
   }
 
-  async function auditPersistenceError(input, resolved, error) {
+  async function auditPersistenceError(input, resolved, error, { postExecute = false } = {}) {
     const classified = persistenceError(error);
+    const auditResolution = postExecute
+      ? { ...resolved, decisionReason: 'semantic_persistence_failed' }
+      : {
+        ...resolved,
+        decision: 'retry_later',
+        decisionReason: 'semantic_persistence_failed',
+        missingFields: [],
+        ambiguities: [],
+        candidate: null,
+      };
     await audit(
       input,
-      resolved?.proposal,
-      { ...resolved, decisionReason: 'semantic_persistence_failed' },
+      auditResolution?.proposal,
+      auditResolution,
       'persistence_error',
       classified.code,
     );
@@ -412,13 +430,28 @@ export function createAgentSemanticQuestionRouter({
           const classified = await auditPersistenceError(input, resolved, error);
           if (classified.conflict && retryConflict) {
             const reloaded = await loadConversation(input);
-            return reloaded
-              ? processSemantic(input, reloaded, trustedInputProposal, {
-                retryConflict: false,
-                primaryAuditRecorded: true,
-                conflictRetry: true,
-              })
-              : stableRetry();
+            if (!reloaded) {
+              await audit(
+                input,
+                resolved.proposal,
+                {
+                  ...resolved,
+                  decision: 'retry_later',
+                  decisionReason: 'semantic_load_failed',
+                  missingFields: [],
+                  ambiguities: [],
+                  candidate: null,
+                },
+                'semantic_retry_final',
+                'SEMANTIC_LOAD_FAILED',
+              );
+              return stableRetry();
+            }
+            return processSemantic(input, reloaded, trustedInputProposal, {
+              retryConflict: false,
+              primaryAuditRecorded: true,
+              conflictRetry: true,
+            });
           }
           return stableRetry();
         }
@@ -441,7 +474,7 @@ export function createAgentSemanticQuestionRouter({
       try {
         await save(input, conversation, resolved.nextTaskState);
       } catch (error) {
-        await auditPersistenceError(input, resolved, error);
+        await auditPersistenceError(input, resolved, error, { postExecute: true });
         await reportPostExecutePersistenceError(error);
       }
     }
@@ -481,10 +514,7 @@ export function createAgentSemanticQuestionRouter({
         }
       }
       const preparsed = preparseAgentMessage(question);
-      const fallbackReason = clean(input.fallbackReason, 40)
-        || (preparsed.candidateSelection
-          ? 'candidate_selection'
-          : input.runtime === 'rule' && trustedInputProposal === null ? 'rule_preparse' : 'none');
+      const fallbackReason = resolveFallbackReason(input, preparsed);
       if (!FALLBACK_REASONS.has(fallbackReason)) {
         await audit(
           { ...input, question, fallbackReason: 'none' },

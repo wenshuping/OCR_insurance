@@ -2,6 +2,7 @@ import express from 'express';
 
 import { normalizeSemanticProposal } from '../agent-semantic-contract.mjs';
 import { AGENT_SEMANTIC_AUDIT_FALLBACK_REASONS } from '../agent-semantic-audit-contract.mjs';
+import { preparseAgentMessage } from '../agent-semantic-preparser.mjs';
 
 const ATTACHMENT_FIELDS = new Set([
   'attachment', 'attachments', 'file', 'files', 'image', 'images', 'pdf', 'document', 'documents',
@@ -219,6 +220,7 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
   const runtime = text(body.runtime, 20).toLowerCase();
   if (!question || !['hermes', 'direct', 'rule'].includes(runtime)) return null;
   const proposalProvided = Object.prototype.hasOwnProperty.call(body, 'proposal');
+  const fallbackReasonProvided = Object.prototype.hasOwnProperty.call(body, 'fallbackReason');
   const proposal = body.proposal;
   let normalizedProposal;
   if (proposal !== null && proposal !== undefined) {
@@ -227,16 +229,15 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
     } catch {
       return null;
     }
-  } else if (runtime !== 'rule') {
+  } else if (runtime !== 'rule' && !preparseAgentMessage(question).candidateSelection) {
     return null;
   }
-  const fallbackReason = body.fallbackReason === undefined
-    ? runtime === 'rule' && (proposal === null || proposal === undefined) ? 'rule_preparse' : 'none'
-    : text(body.fallbackReason, 40).toLowerCase();
-  if (!SEMANTIC_FALLBACK_REASONS.has(fallbackReason)) return null;
+  const fallbackReason = fallbackReasonProvided ? text(body.fallbackReason, 40).toLowerCase() : '';
+  if (fallbackReasonProvided && !SEMANTIC_FALLBACK_REASONS.has(fallbackReason)) return null;
   return {
     channel, channelUserId, channelMobile, messageRef, conversationId,
-    question, runtime, fallbackReason,
+    question, runtime,
+    ...(fallbackReasonProvided ? { fallbackReason } : {}),
     ...(proposalProvided ? { proposal: proposal === null ? null : normalizedProposal } : {}),
   };
 }
@@ -345,7 +346,9 @@ export function createAgentRouter({
           question: input.question,
           runtime: input.runtime,
           ...(Object.prototype.hasOwnProperty.call(input, 'proposal') ? { proposal: input.proposal } : {}),
-          fallbackReason: input.fallbackReason,
+          ...(Object.prototype.hasOwnProperty.call(input, 'fallbackReason')
+            ? { fallbackReason: input.fallbackReason }
+            : {}),
         }),
       });
       res.json({ ok: true, ...normalizePublicResult(result, secureLinkAllowedOrigins) });

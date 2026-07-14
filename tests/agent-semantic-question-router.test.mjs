@@ -267,7 +267,7 @@ test('ambiguous products are persisted and choice two executes without exposing 
     familyResolver: { async resolve() { return { status: 'missing', entity: null, candidates: [] }; } },
     clock: () => 2_000,
   });
-  const { router, calls } = wrapperHarness({ semanticResolver, conversationService: conversations });
+  const { router, calls, audits } = wrapperHarness({ semanticResolver, conversationService: conversations });
   const question = '康健无忧';
   const first = await router.route({
     internalUserId: 7, conversationId: 'conv-2', messageRef: 'ambiguous-1', runtime: 'hermes',
@@ -288,6 +288,7 @@ test('ambiguous products are persisted and choice two executes without exposing 
   assert.equal(selected.decision, 'execute');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].candidate.entities.productName, '正式产品2');
+  assert.equal(audits[1].fallbackReason, 'candidate_selection');
 });
 
 test('family ambiguity labels are generic and no-conversation choices require a full name', async () => {
@@ -833,6 +834,45 @@ test('non-conflict clarification save failure returns stable retry without a sec
   assert.equal(calls.length, 0);
   assert.deepEqual(audits.map((item) => item.phase), ['semantic_resolution', 'persistence_error']);
   assert.equal(audits[1].errorCode, 'SQLITE_IOERR');
+  assert.equal(audits[1].resolution.decision, 'retry_later');
+  assert.equal(audits[1].resolution.decisionReason, 'semantic_persistence_failed');
+});
+
+test('conflict reload failure records a retry final load failure outcome', async () => {
+  let loads = 0;
+  let saves = 0;
+  const { router, calls, audits } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
+      ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
+      nextTaskState: { activeIntent: 'chat' },
+    }; } },
+    conversationService: {
+      async load() {
+        loads += 1;
+        return loads === 1 ? { version: 0, taskState: {} } : { version: -1, taskState: {} };
+      },
+      async save() {
+        saves += 1;
+        throw Object.assign(new Error('conflict'), { code: 'AGENT_SEMANTIC_CONVERSATION_CONFLICT' });
+      },
+    },
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'reload-failure',
+    question: '查询', runtime: 'hermes', proposal: chatProposal('查询'),
+  });
+
+  assert.match(result.interaction.text, /语义解析暂不可用/u);
+  assert.equal(calls.length, 0);
+  assert.equal(saves, 1);
+  assert.deepEqual(audits.map((item) => item.phase), [
+    'semantic_resolution', 'persistence_error', 'semantic_retry_final',
+  ]);
+  assert.equal(audits[2].resolution.decision, 'retry_later');
+  assert.equal(audits[2].resolution.decisionReason, 'semantic_load_failed');
+  assert.equal(audits[2].errorCode, 'SEMANTIC_LOAD_FAILED');
 });
 
 test('post-execute persistence hook receives redacted conflict classification', async () => {

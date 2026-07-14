@@ -140,7 +140,6 @@ test('semantic question route forwards only the proposal contract fields', async
     question: body.question,
     runtime: 'hermes',
     proposal: body.proposal,
-    fallbackReason: 'none',
   });
 });
 
@@ -157,12 +156,23 @@ test('semantic fallback reason is allowlisted and rule preparse is explicit', as
     question: '上传保单', runtime: 'rule', proposal: null,
   }));
   assert.equal(rule.response.status, 200);
-  assert.equal(server.calls.route[1].fallbackReason, 'rule_preparse');
+  assert.equal(Object.hasOwn(server.calls.route[1], 'fallbackReason'), false);
 
   const invalid = await post(server, '/api/agent/questions/route', semanticBody({
     fallbackReason: 'private_customer_name',
   }));
   assert.equal(invalid.response.status, 400);
+});
+
+test('HTTP candidate selection keeps fallback inference inside the semantic wrapper', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const result = await post(server, '/api/agent/questions/route', semanticBody({
+    question: '选择2', runtime: 'hermes', proposal: null,
+  }));
+  assert.equal(result.response.status, 200);
+  assert.equal(Object.hasOwn(server.calls.route[0], 'fallbackReason'), false);
+  assert.equal(server.calls.route[0].proposal, null);
 });
 
 test('semantic proposals are strictly normalized at the HTTP boundary', async (t) => {
