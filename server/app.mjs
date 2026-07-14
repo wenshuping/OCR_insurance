@@ -2240,6 +2240,19 @@ export function resolveAgentSemanticMode(options = {}, env = process.env) {
   throw new Error(`POLICY_AGENT_SEMANTIC_MODE must be "enforced" or "off"; received ${JSON.stringify(value)}`);
 }
 
+function createAgentSemanticOffRouter(legacyRouter) {
+  return {
+    route(input) {
+      return input?.candidate
+        ? legacyRouter.route(input)
+        : Promise.resolve({
+          decision: 'clarify',
+          interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+        });
+    },
+  };
+}
+
 export function createPolicyOcrApp(options = {}) {
   const agentSemanticMode = resolveAgentSemanticMode(options);
   const state = options.state || createInitialState();
@@ -2780,7 +2793,7 @@ export function createPolicyOcrApp(options = {}) {
     ? createAgentQuestionRouter({ store: agentStore, handlers: agentHandlers })
     : null);
   let defaultAgentQuestionRouter = agentLegacyQuestionRouter;
-  if (agentLegacyQuestionRouter) {
+  if (agentSemanticMode === 'enforced' && agentLegacyQuestionRouter) {
     const semanticConversationService = options.agentSemanticConversationService
       || (typeof agentStore?.getAgentSemanticConversation === 'function'
         && typeof agentStore?.saveAgentSemanticConversation === 'function'
@@ -2839,16 +2852,7 @@ export function createPolicyOcrApp(options = {}) {
     ? options.agentQuestionRouter
     : defaultAgentQuestionRouter;
   const agentQuestionRouter = agentSemanticMode === 'off' && configuredAgentQuestionRouter
-    ? {
-      route(input) {
-        return input?.candidate
-          ? configuredAgentQuestionRouter.route(input)
-          : Promise.resolve({
-            decision: 'clarify',
-            interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
-          });
-      },
-    }
+    ? createAgentSemanticOffRouter(configuredAgentQuestionRouter)
     : configuredAgentQuestionRouter;
   const recoveryOptions = {
     intervalMs: options.agentTransferRecoveryIntervalMs,

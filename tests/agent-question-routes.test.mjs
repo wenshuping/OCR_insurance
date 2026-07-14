@@ -856,6 +856,19 @@ test('agent semantic mode defaults to enforced, honors option precedence, and re
   );
 });
 
+test('agent semantic off skips semantic dependency composition', () => {
+  const agentStore = {
+    async load() { return { familyProfiles: [], policies: [] }; },
+    get getAgentSemanticConversation() { throw new Error('semantic conversation composition must not run'); },
+    get saveAgentSemanticConversation() { throw new Error('semantic conversation composition must not run'); },
+    get recordAgentSemanticAudit() { throw new Error('semantic audit composition must not run'); },
+  };
+  assert.doesNotThrow(() => createPolicyOcrApp({
+    agentSemanticMode: 'off', agentStore, recomputeCashflowOnStartup: false,
+    agentLegacyQuestionRouter: { async route() {} },
+  }));
+});
+
 test('agent semantic off returns a safe clarification without semantic side effects and preserves legacy routing', async (t) => {
   const calls = { legacy: [], resolve: 0, load: 0, save: 0, audit: 0 };
   const app = createPolicyOcrApp({
@@ -901,6 +914,56 @@ test('agent semantic off returns a safe clarification without semantic side effe
   assert.equal(calls.load, 0);
   assert.equal(calls.save, 0);
   assert.equal(calls.audit, 0);
+});
+
+test('createPolicyOcrApp wires the real semantic mode environment without leaking it', { concurrency: false }, async (t) => {
+  const previous = process.env.POLICY_AGENT_SEMANTIC_MODE;
+  t.after(() => {
+    if (previous === undefined) delete process.env.POLICY_AGENT_SEMANTIC_MODE;
+    else process.env.POLICY_AGENT_SEMANTIC_MODE = previous;
+  });
+
+  process.env.POLICY_AGENT_SEMANTIC_MODE = 'off';
+  let legacyCalls = 0;
+  const app = createPolicyOcrApp({
+    recomputeCashflowOnStartup: false,
+    agentLegacyQuestionRouter: {
+      async route() {
+        legacyCalls += 1;
+        return { decision: 'execute', interaction: { type: 'answer', text: 'legacy-ok' } };
+      },
+    },
+    agentSemanticResolver: { async resolve() { throw new Error('must not run'); } },
+    agentSemanticConversationService: {
+      async load() { throw new Error('must not run'); },
+      async save() { throw new Error('must not run'); },
+    },
+    agentSemanticAuditService: { async record() { throw new Error('must not run'); } },
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+  const semantic = await post(
+    { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+    '/api/agent/questions/route',
+    semanticBody(),
+  );
+  assert.equal(semantic.response.status, 200);
+  assert.equal(semantic.payload.decision, 'clarify');
+  assert.equal(legacyCalls, 0);
+
+  process.env.POLICY_AGENT_SEMANTIC_MODE = 'invalid';
+  assert.throws(
+    () => createPolicyOcrApp({ recomputeCashflowOnStartup: false }),
+    /must be "enforced" or "off"/u,
+  );
+  assert.doesNotThrow(() => createPolicyOcrApp({
+    agentSemanticMode: 'enforced',
+    recomputeCashflowOnStartup: false,
+  }));
 });
 
 test('Hermes semantic chat writes are denied instead of executing a read handler', async (t) => {
