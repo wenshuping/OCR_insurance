@@ -15,6 +15,15 @@ const FAMILY_INTENTS = new Set([
 ]);
 const MAX_CANDIDATES = 10;
 const MAX_TEXT_LENGTH = 200;
+const MAX_CONTEXT_TTL_MS = 86_400_000;
+const PRODUCT_RESOLVED_MATCH_TYPES = new Set([
+  'exact_official_name',
+  'filing_name',
+  'approved_alias',
+  'company_scoped_normalized',
+  'unique_high_confidence',
+]);
+const FAMILY_RESOLVED_MATCH_TYPES = new Set(['exact', 'contextual']);
 
 function clean(value, limit = MAX_TEXT_LENGTH) {
   const normalized = typeof value === 'string' ? value.trim() : '';
@@ -29,7 +38,7 @@ function positiveSafeInteger(value) {
 }
 
 function finiteTimestamp(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function projectProduct(value, { active = false } = {}) {
@@ -84,7 +93,9 @@ function isLive(entity, now, contextTtlMs) {
   const expiresAt = finiteTimestamp(entity.expiresAt);
   if (expiresAt !== null) return expiresAt > now;
   const updatedAt = finiteTimestamp(entity.updatedAt);
-  return updatedAt !== null && updatedAt + contextTtlMs > now;
+  return updatedAt !== null
+    && Number.isSafeInteger(updatedAt + contextTtlMs)
+    && updatedAt + contextTtlMs > now;
 }
 
 function projectActive(value, type, now, contextTtlMs) {
@@ -104,7 +115,17 @@ function projectResolution(value, type) {
   const status = clean(value?.status, 40);
   if (status === 'resolved') {
     const entity = type === 'product' ? projectProduct(value.entity) : projectFamily(value.entity);
-    return entity
+    const rawConfidence = value?.entity?.confidence;
+    const rawMatchType = clean(value?.entity?.matchType, 80);
+    const valid = entity
+      && typeof rawConfidence === 'number'
+      && Number.isFinite(rawConfidence)
+      && rawConfidence >= 0
+      && rawConfidence <= 1
+      && (type === 'product'
+        ? PRODUCT_RESOLVED_MATCH_TYPES.has(rawMatchType) && rawConfidence >= 0.9
+        : FAMILY_RESOLVED_MATCH_TYPES.has(rawMatchType) && rawConfidence === 1);
+    return valid
       ? { status: 'resolved', entity, candidates: [] }
       : { status: 'missing', entity: null, candidates: [] };
   }
@@ -227,6 +248,32 @@ function expiredSelectionResult({ state, entityType = '', proposal = null }) {
   };
 }
 
+function resolverUnavailableResult({ state, proposal }) {
+  return {
+    decision: 'retry_later',
+    decisionReason: 'entity_resolver_unavailable',
+    missingFields: [],
+    ambiguities: [],
+    proposal,
+    resolvedEntities: {},
+    candidate: null,
+    nextTaskState: publicState(state),
+  };
+}
+
+function preflightResult({ state, proposal, runtime }) {
+  const readiness = decideSemanticReadiness({ proposal, resolutions: {}, runtime });
+  if (['product_required', 'family_required'].includes(readiness.decisionReason)) return null;
+  if (readiness.decision === 'execute') return null;
+  return {
+    ...readiness,
+    proposal,
+    resolvedEntities: {},
+    candidate: null,
+    nextTaskState: publicState(state),
+  };
+}
+
 function pendingSelection(state, selection, now) {
   const pending = state.pendingClarification;
   const entityType = clean(pending?.entityType, 20);
@@ -259,6 +306,9 @@ function stateAfterResolution({ state, proposal, proposalQuestion, resolutions, 
     };
   }
   if (resolution?.status === 'ambiguous') {
+    if (['product', 'family'].includes(priorPendingType)) {
+      state.candidateSets[priorPendingType] = [];
+    }
     state.candidateSets[requiredType] = resolution.candidates.slice(0, MAX_CANDIDATES);
     state.pendingClarification = {
       entityType: requiredType,
@@ -298,8 +348,10 @@ export function createAgentSemanticResolver({
     throw new TypeError('familyResolver.resolve is required');
   }
   if (typeof clock !== 'function') throw new TypeError('clock must be a function');
-  if (!Number.isFinite(contextTtlMs) || contextTtlMs <= 0) {
-    throw new TypeError('contextTtlMs must be positive');
+  if (!Number.isSafeInteger(contextTtlMs)
+    || contextTtlMs <= 0
+    || contextTtlMs > MAX_CONTEXT_TTL_MS) {
+    throw new TypeError('contextTtlMs must be a bounded positive integer');
   }
 
   return {
@@ -310,7 +362,11 @@ export function createAgentSemanticResolver({
       }
       const nowValue = clock();
       const now = nowValue instanceof Date ? nowValue.getTime() : nowValue;
-      if (!Number.isFinite(now)) throw new TypeError('clock must return a finite timestamp');
+      if (!Number.isSafeInteger(now)
+        || now < 0
+        || !Number.isSafeInteger(now + contextTtlMs)) {
+        throw new TypeError('clock must return a safe timestamp');
+      }
 
       const preparsed = preparseAgentMessage(normalizedQuestion);
       const state = sanitizedState(context, now, contextTtlMs);
@@ -339,27 +395,34 @@ export function createAgentSemanticResolver({
         effectiveProposal = uploadProposal();
       }
 
+      const blocked = preflightResult({ state, proposal: effectiveProposal, runtime });
+      if (blocked) return blocked;
+
       const resolutions = {};
       if (effectiveProposal?.intent === PRODUCT_INTENT) {
         const explicitProduct = hasMention(effectiveProposal, 'product');
         const selectedProduct = selection?.entityType === 'product'
           ? projectProduct(selection.candidate)
           : null;
-        const activeProduct = selectedProduct
-          ? null
-          : !explicitProduct && hasReference(effectiveProposal, 'current_product')
-            ? state.activeEntities.product
-            : null;
-        const mentions = selectedProduct
+        const referencedProduct = !explicitProduct
+          && hasReference(effectiveProposal, 'current_product')
+          ? projectProduct(state.activeEntities.product)
+          : null;
+        const productToRevalidate = selectedProduct || referencedProduct;
+        const mentions = productToRevalidate
           ? [
-            { type: 'insurer', rawText: selectedProduct.company },
-            { type: 'product', rawText: selectedProduct.officialName },
+            { type: 'insurer', rawText: productToRevalidate.company },
+            { type: 'product', rawText: productToRevalidate.officialName },
           ]
           : effectiveProposal.mentions;
-        resolutions.product = projectResolution(await productResolver.resolve({
-          mentions,
-          activeProduct: activeProduct ? projectProduct(activeProduct) : null,
-        }), 'product');
+        try {
+          resolutions.product = projectResolution(await productResolver.resolve({
+            mentions,
+            activeProduct: null,
+          }), 'product');
+        } catch {
+          return resolverUnavailableResult({ state, proposal: effectiveProposal });
+        }
       } else if (effectiveProposal && FAMILY_INTENTS.has(effectiveProposal.intent)) {
         const explicitFamily = hasMention(effectiveProposal, 'family');
         const activeFamily = selection?.entityType === 'family'
@@ -370,11 +433,15 @@ export function createAgentSemanticResolver({
         const mentions = selection?.entityType === 'family'
           ? effectiveProposal.mentions.filter((mention) => mention.type !== 'family')
           : effectiveProposal.mentions;
-        resolutions.family = projectResolution(await familyResolver.resolve({
-          internalUserId,
-          mentions,
-          activeFamily: activeFamily ? projectFamily(activeFamily) : null,
-        }), 'family');
+        try {
+          resolutions.family = projectResolution(await familyResolver.resolve({
+            internalUserId,
+            mentions,
+            activeFamily: activeFamily ? projectFamily(activeFamily) : null,
+          }), 'family');
+        } catch {
+          return resolverUnavailableResult({ state, proposal: effectiveProposal });
+        }
       }
 
       const readiness = decideSemanticReadiness({ proposal: effectiveProposal, resolutions, runtime });

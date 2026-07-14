@@ -43,7 +43,9 @@ function harness({ productResult, familyResult } = {}) {
   const familyResolver = {
     async resolve(input) {
       familyCalls.push(input);
-      return familyResult || {
+      return typeof familyResult === 'function'
+        ? familyResult(input)
+        : familyResult || {
         status: 'resolved',
         entity: { familyId: 12, displayName: '张三家庭', matchType: 'contextual', confidence: 1 },
         candidates: [],
@@ -69,11 +71,17 @@ test('current_product uses a live confirmed product and projects its formal iden
     question,
     runtime: 'hermes',
     proposal: proposal({ references: [{ type: 'current_product', rawText: '这个保险' }] }),
-    context: { taskState: { activeEntities: { product: activeProduct({ secret: 'drop' }) } } },
+    context: { taskState: { activeEntities: { product: activeProduct({
+      canonicalProductId: 'untrusted-state-id', secret: 'drop',
+    }) } } },
   });
 
   assert.equal(result.decision, 'execute');
-  assert.deepEqual(productCalls[0].activeProduct, PRODUCT);
+  assert.equal(productCalls[0].activeProduct, null);
+  assert.deepEqual(productCalls[0].mentions, [
+    { type: 'insurer', rawText: PRODUCT.company },
+    { type: 'product', rawText: PRODUCT.officialName },
+  ]);
   assert.deepEqual(result.candidate, {
     intent: 'insurance_product_knowledge',
     question,
@@ -85,7 +93,24 @@ test('current_product uses a live confirmed product and projects its formal iden
       productCompany: PRODUCT.company,
     },
   });
+  assert.equal(JSON.stringify(result).includes('untrusted-state-id'), false);
   assert.equal(JSON.stringify(result).includes('secret'), false);
+});
+
+test('current_product clarifies when authoritative product revalidation reports not found', async () => {
+  const { resolver, productCalls } = harness({
+    productResult: { status: 'not_found', entity: null, candidates: [] },
+  });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '这个保险保什么',
+    runtime: 'hermes',
+    proposal: proposal({ references: [{ type: 'current_product', rawText: '这个保险' }] }),
+    context: { taskState: { activeEntities: { product: activeProduct() } } },
+  });
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.candidate, null);
+  assert.equal(productCalls[0].activeProduct, null);
 });
 
 test('does not inherit an active product without a current_product reference', async () => {
@@ -391,6 +416,166 @@ test('direct write readiness prevents execution', async () => {
   assert.equal(result.candidate, null);
 });
 
+test('preflight failures do not call domain resolvers', async () => {
+  const cases = [
+    {
+      runtime: 'hermes',
+      value: proposal({ confidence: { intent: 0.5, mentions: 1, references: 1 } }),
+      reason: 'low_intent_confidence',
+    },
+    {
+      runtime: 'direct',
+      value: proposal({
+        intent: 'family_summary', operation: 'write', queryAspects: ['family_overview'],
+        mentions: [{ type: 'family', rawText: '张三家庭' }],
+      }),
+      reason: 'unsafe_fallback_operation',
+      question: '修改张三家庭',
+    },
+    { runtime: 'invalid', value: proposal(), reason: 'unsupported_runtime' },
+    { runtime: 'hermes', value: { ...proposal(), intent: 'invented' }, reason: 'semantic_proposal_unavailable' },
+  ];
+  for (const item of cases) {
+    const { resolver, productCalls, familyCalls } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question: item.question || '产品保什么',
+      runtime: item.runtime,
+      proposal: item.value,
+    });
+    assert.equal(result.decisionReason, item.reason);
+    assert.equal(productCalls.length, 0);
+    assert.equal(familyCalls.length, 0);
+  }
+});
+
+test('malformed resolved entities are treated as missing', async () => {
+  const badProducts = [
+    { ...PRODUCT, matchType: 'context', confidence: 1 },
+    { ...PRODUCT, matchType: 'exact_official_name', confidence: 0.89 },
+    { ...PRODUCT, matchType: 'invented', confidence: 1 },
+    { ...PRODUCT, matchType: 'exact_official_name', confidence: Number.NaN },
+    { ...PRODUCT, matchType: 'exact_official_name', confidence: 2 },
+  ];
+  for (const entity of badProducts) {
+    const { resolver } = harness({ productResult: { status: 'resolved', entity, candidates: [] } });
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question: '康健无忧保什么',
+      runtime: 'hermes',
+      proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+    });
+    assert.equal(result.decisionReason, 'product_required');
+    assert.equal(result.candidate, null);
+  }
+
+  const badFamilies = [
+    { familyId: true, displayName: '张三家庭', matchType: 'exact', confidence: 1 },
+    { familyId: 12, displayName: '张三家庭', matchType: 'prefix', confidence: 1 },
+    { familyId: 12, displayName: '张三家庭', matchType: 'exact', confidence: 0.99 },
+    { familyId: 12, displayName: '张三家庭', matchType: 'exact', confidence: 2 },
+  ];
+  for (const entity of badFamilies) {
+    const { resolver } = harness({ familyResult: { status: 'resolved', entity, candidates: [] } });
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question: '张三家庭保单',
+      runtime: 'hermes',
+      proposal: proposal({
+        intent: 'family_summary', queryAspects: ['family_overview'],
+        mentions: [{ type: 'family', rawText: '张三家庭' }],
+      }),
+    });
+    assert.equal(result.decisionReason, 'family_required');
+    assert.equal(result.candidate, null);
+  }
+});
+
+test('domain resolver exceptions retry without advancing projected task state', async () => {
+  const activeFamily = {
+    familyId: 12,
+    displayName: '张三家庭',
+    updatedAt: NOW - 1_000,
+    expiresAt: NOW + 10_000,
+    privateNotes: 'drop',
+  };
+  for (const type of ['product', 'family']) {
+    const failing = () => { throw new Error('unavailable'); };
+    const { resolver } = harness({
+      productResult: type === 'product' ? failing : undefined,
+      familyResult: type === 'family' ? failing : undefined,
+    });
+    const isProduct = type === 'product';
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question: isProduct ? '康健无忧保什么' : '张三家庭保单',
+      runtime: 'hermes',
+      proposal: isProduct
+        ? proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] })
+        : proposal({
+          intent: 'family_summary', queryAspects: ['family_overview'],
+          mentions: [{ type: 'family', rawText: '张三家庭' }],
+        }),
+      context: { taskState: { activeEntities: { family: activeFamily } } },
+    });
+    assert.equal(result.decision, 'retry_later');
+    assert.equal(result.decisionReason, 'entity_resolver_unavailable');
+    assert.deepEqual(result.resolvedEntities, {});
+    assert.equal(result.candidate, null);
+    assert.equal(result.nextTaskState.activeEntities.family.privateNotes, undefined);
+    assert.equal(result.nextTaskState.activeEntities.family.updatedAt, activeFamily.updatedAt);
+  }
+});
+
+test('new ambiguity clears the previous pending entity candidates and preserves unrelated active entity', async () => {
+  const familyPendingProposal = proposal({
+    intent: 'family_summary', queryAspects: ['family_overview'],
+    mentions: [{ type: 'family', rawText: '张家' }],
+  });
+  const activeFamily = {
+    familyId: 12, displayName: '张三家庭', matchType: 'contextual', confidence: 1,
+    updatedAt: NOW - 1_000, expiresAt: NOW + 10_000,
+  };
+  const { resolver } = harness({
+    productResult: { status: 'ambiguous', entity: null, candidates: [PRODUCT] },
+  });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '康健无忧保什么',
+    runtime: 'hermes',
+    proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+    context: { taskState: {
+      activeEntities: { family: activeFamily },
+      candidateSets: { family: [{ familyId: 13, displayName: '张家二号' }] },
+      pendingClarification: {
+        entityType: 'family', proposal: familyPendingProposal,
+        originalQuestion: '张家有几张保单', expiresAt: NOW + 10_000,
+      },
+    } },
+  });
+  assert.equal(result.decisionReason, 'entity_ambiguous');
+  assert.deepEqual(result.nextTaskState.candidateSets.family, []);
+  assert.equal(result.nextTaskState.candidateSets.product.length, 1);
+  assert.deepEqual(result.nextTaskState.activeEntities.family, activeFamily);
+});
+
+test('constructor and clock enforce bounded safe timestamps', async () => {
+  const dependencies = {
+    productResolver: { resolve: () => ({ status: 'missing', entity: null, candidates: [] }) },
+    familyResolver: { resolve: async () => ({ status: 'missing', entity: null, candidates: [] }) },
+  };
+  assert.throws(() => createAgentSemanticResolver({ ...dependencies, clock: null }), TypeError);
+  for (const contextTtlMs of [0, -1, 1.5, Number.MAX_SAFE_INTEGER, 86_400_001]) {
+    assert.throws(() => createAgentSemanticResolver({ ...dependencies, contextTtlMs }), TypeError);
+  }
+  for (const now of [-1, 1.5, Number.MAX_SAFE_INTEGER]) {
+    const resolver = createAgentSemanticResolver({ ...dependencies, clock: () => now });
+    await assert.rejects(() => resolver.resolve({
+      internalUserId: 7, question: '你好', runtime: 'hermes', proposal: proposal({ intent: 'chat' }),
+    }), TypeError);
+  }
+});
+
 test('router conversion is strict, bounded, and drops family authority fields', () => {
   const frame = {
     ...proposal({ intent: 'family_summary', queryAspects: ['family_overview'] }),
@@ -408,4 +593,20 @@ test('router conversion is strict, bounded, and drops family authority fields', 
     (error) => error?.code === 'SEMANTIC_FRAME_INVALID',
   );
   assert.throws(() => semanticFrameToRouterCandidate(frame, '   '), /SEMANTIC_FRAME_INVALID/u);
+
+  const productFrame = { ...proposal(), resolvedEntities: { product: PRODUCT } };
+  const familyFrame = {
+    ...proposal({ intent: 'family_summary', queryAspects: ['family_overview'] }),
+    resolvedEntities: { family: { familyId: 12, displayName: '张三家庭' } },
+  };
+  const chatFrame = { ...proposal({ intent: 'chat' }), resolvedEntities: {} };
+  for (const invalidFrame of [
+    { ...productFrame, resolvedEntities: {} },
+    { ...productFrame, resolvedEntities: { product: PRODUCT, family: familyFrame.resolvedEntities.family } },
+    { ...familyFrame, resolvedEntities: {} },
+    { ...familyFrame, resolvedEntities: { ...familyFrame.resolvedEntities, product: PRODUCT } },
+    { ...chatFrame, resolvedEntities: { product: PRODUCT } },
+  ]) {
+    assert.throws(() => semanticFrameToRouterCandidate(invalidFrame, '查看'), /SEMANTIC_FRAME_INVALID/u);
+  }
 });

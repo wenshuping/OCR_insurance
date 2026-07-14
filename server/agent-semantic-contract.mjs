@@ -192,8 +192,18 @@ export function semanticFrameToRouterCandidate(frame, question) {
 
   const resolvedEntities = frame.resolvedEntities ?? {};
   if (!isRecord(resolvedEntities)) invalidFrame();
+  const hasProduct = resolvedEntities.product !== undefined && resolvedEntities.product !== null;
+  const hasFamily = resolvedEntities.family !== undefined && resolvedEntities.family !== null;
+  const requiresProduct = intent === 'insurance_product_knowledge';
+  const requiresFamily = ['family_summary', 'coverage_report', 'sales_report', 'sales_coaching']
+    .includes(intent);
+  if ((requiresProduct && (!hasProduct || hasFamily))
+    || (requiresFamily && (!hasFamily || hasProduct))
+    || (!requiresProduct && !requiresFamily && (hasProduct || hasFamily))) {
+    invalidFrame();
+  }
   const entities = {};
-  if (resolvedEntities.product !== undefined && resolvedEntities.product !== null) {
+  if (hasProduct) {
     if (!isRecord(resolvedEntities.product)) invalidFrame();
     entities.productName = frameString(resolvedEntities.product.officialName, 200);
     const canonicalProductId = frameString(
@@ -205,7 +215,7 @@ export function semanticFrameToRouterCandidate(frame, question) {
     if (canonicalProductId) entities.productCanonicalId = canonicalProductId;
     if (productCompany) entities.productCompany = productCompany;
   }
-  if (resolvedEntities.family !== undefined && resolvedEntities.family !== null) {
+  if (hasFamily) {
     if (!isRecord(resolvedEntities.family)) invalidFrame();
     entities.familyName = frameString(resolvedEntities.family.displayName, 200);
   }
