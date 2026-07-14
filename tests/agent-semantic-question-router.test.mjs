@@ -763,6 +763,47 @@ test('conflict retry audit failure returns stable retry without a second save', 
   assert.deepEqual(phases, ['semantic_resolution', 'persistence_error', 'semantic_retry_final']);
 });
 
+test('conflict retry execute is audited as blocked and never executes or saves', async () => {
+  let resolves = 0;
+  let saves = 0;
+  const { router, calls, audits } = wrapperHarness({
+    semanticResolver: { async resolve() {
+      resolves += 1;
+      return resolves === 1 ? {
+        decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
+        ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
+        nextTaskState: { activeIntent: 'chat' },
+      } : {
+        decision: 'execute', decisionReason: 'semantic_ready', missingFields: [], ambiguities: [],
+        resolvedEntities: {}, proposal: chatProposal('查询'),
+        candidate: { intent: 'chat', question: '查询', confidence: 1, requestedOperation: 'read' },
+        nextTaskState: { activeIntent: 'chat' },
+      };
+    } },
+    conversationService: {
+      async load() { return { version: saves, taskState: {} }; },
+      async save() {
+        saves += 1;
+        throw Object.assign(new Error('conflict'), { code: 'AGENT_SEMANTIC_CONVERSATION_CONFLICT' });
+      },
+    },
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'retry-execute-blocked',
+    question: '查询', runtime: 'hermes', proposal: chatProposal('查询'),
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.match(result.interaction.text, /语义解析暂不可用/u);
+  assert.equal(calls.length, 0);
+  assert.equal(saves, 1);
+  const finalAudit = audits.find((item) => item.phase === 'semantic_retry_final');
+  assert.equal(finalAudit.resolution.decision, 'retry_later');
+  assert.equal(finalAudit.resolution.decisionReason, 'conflict_retry_execute_blocked');
+  assert.equal(finalAudit.resolution.candidate, null);
+});
+
 test('non-conflict clarification save failure returns stable retry without a second attempt', async () => {
   let loads = 0;
   let saves = 0;

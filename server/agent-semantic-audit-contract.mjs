@@ -39,7 +39,7 @@ const REASONS = new Set([
   'unsupported_intent', 'unsupported_runtime', 'unsupported_operation',
   'unsafe_fallback_operation', 'candidate_selection_expired', 'entity_resolver_unavailable',
   'semantic_load_failed', 'semantic_resolution_failed', 'semantic_validation_failed',
-  'semantic_persistence_failed', 'unknown',
+  'semantic_persistence_failed', 'conflict_retry_execute_blocked', 'unknown',
 ]);
 const ERROR_CODES = new Set([
   '', 'UNKNOWN', 'SQLITE_BUSY', 'SQLITE_IOERR',

@@ -387,7 +387,17 @@ export function createAgentSemanticQuestionRouter({
       return stableRetry();
     }
     if (conflictRetry) {
-      if (!await audit(input, resolved.proposal, resolved, 'semantic_retry_final')) return stableRetry();
+      const retryFinal = resolved.decision === 'execute'
+        ? {
+          ...resolved,
+          decision: 'retry_later',
+          decisionReason: 'conflict_retry_execute_blocked',
+          missingFields: [],
+          ambiguities: [],
+          candidate: null,
+        }
+        : resolved;
+      if (!await audit(input, retryFinal.proposal, retryFinal, 'semantic_retry_final')) return stableRetry();
       if (resolved.decision === 'execute') return stableRetry();
     } else if (!primaryAuditRecorded && !await audit(input, resolved.proposal, resolved)) {
       return stableRetry();
