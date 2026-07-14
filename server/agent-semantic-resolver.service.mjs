@@ -303,23 +303,14 @@ function explicitlyRequestsProductComparison(proposal, question) {
     )));
 }
 
-function substantiveProductResidual(question, proposal) {
-  let remaining = question;
-  const extractedTexts = [
-    ...proposal.mentions.filter((mention) => mention.type === 'product' || mention.type === 'insurer'),
-    ...proposal.references,
-  ]
-    .map((mention) => mention.rawText)
-    .sort((left, right) => right.length - left.length);
-  for (const rawText of extractedTexts) remaining = remaining.split(rawText).join(' ');
-  remaining = remaining
-    .replace(/保险责任|保障责任|责任|保障|身故|满期|豁免|等待期|免责|续保|赔付|赔偿|比例|保额|条款|费用|现金价值/gu, ' ')
-    .replace(/以下简称|简称|又称|也称|主要|保什么|保啥|有什么|有何|是什么|怎么样|哪个好|哪个更好|哪个划算|哪些|哪方面|区别|差异|比较|对比|分别|各自|还有|或者|以及|跟|和|与|及|相比|比|同|VS|PK|请问|帮我|看看|一下|这个|该|它|怎么|如何|多少|多久|是否|的|呢|呀|吗|么/giu, ' ')
-    .replace(/[+\s，。！？、/（）()《》【】\[\]:：;；,.!?_-]+/gu, ' ')
-    .trim();
-  if (remaining.length > 80) return '__overflow__';
-  const tokens = remaining.match(/[\p{Script=Han}A-Za-z0-9]+/gu) || [];
-  return tokens.some((token) => [...token].length >= 2) ? remaining : '';
+function projectProductScan(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || typeof value.overflow !== 'boolean'
+    || !Array.isArray(value.entities)
+    || value.entities.length > 8) return null;
+  const entities = value.entities.map((entity) => projectProduct(entity));
+  if (entities.some((entity) => !entity?.canonicalProductId)) return null;
+  return { entities, overflow: value.overflow };
 }
 
 function unsupportedComparisonResult({ state, proposal }) {
@@ -468,7 +459,6 @@ export function createAgentSemanticResolver({
 
       const resolutions = {};
       if (effectiveProposal?.intent === PRODUCT_INTENT) {
-        let productResolverCalls = 0;
         const explicitProduct = hasMention(effectiveProposal, 'product');
         const currentProductReference = hasReference(effectiveProposal, 'current_product');
         const selectedProduct = selection?.entityType === 'product'
@@ -508,7 +498,6 @@ export function createAgentSemanticResolver({
           const evidence = [];
           try {
             for (const productMention of productMentions) {
-              productResolverCalls += 1;
               evidence.push(projectResolution(await productResolver.resolve({
                 mentions: [...explicitInsurerMentions, productMention],
                 activeProduct: null,
@@ -530,7 +519,6 @@ export function createAgentSemanticResolver({
           resolutions.product = evidence[0] || { status: 'missing', entity: null, candidates: [] };
         } else {
           try {
-            productResolverCalls += 1;
             resolutions.product = projectResolution(await productResolver.resolve({
               mentions,
               activeProduct: null,
@@ -540,34 +528,28 @@ export function createAgentSemanticResolver({
           }
         }
 
-        if (!selectedProduct && (explicitProduct || referencedProduct)) {
-          const residual = substantiveProductResidual(normalizedQuestion, effectiveProposal);
-          if (residual) {
-            if (residual === '__overflow__' || productResolverCalls >= 8) {
-              return unsupportedComparisonResult({ state, proposal: effectiveProposal });
-            }
-            let residualResolution;
-            try {
-              productResolverCalls += 1;
-              residualResolution = projectResolution(await productResolver.resolve({
-                mentions: [
-                  ...explicitInsurers,
-                  { type: 'product', rawText: residual },
-                ],
-                activeProduct: null,
-              }), 'product');
-            } catch {
-              return resolverUnavailableResult({ state, proposal: effectiveProposal });
-            }
-            const primaryCanonicalId = resolutions.product?.status === 'resolved'
-              ? clean(resolutions.product.entity.canonicalProductId)
-              : '';
-            const residualCanonicalId = residualResolution.status === 'resolved'
-              ? clean(residualResolution.entity.canonicalProductId)
-              : '';
-            if (!primaryCanonicalId || residualCanonicalId !== primaryCanonicalId) {
-              return unsupportedComparisonResult({ state, proposal: effectiveProposal });
-            }
+        if (!selectedProduct && (explicitProduct || referencedProduct)
+          && typeof productResolver.resolveAllFromText === 'function') {
+          let scan;
+          try {
+            scan = projectProductScan(await productResolver.resolveAllFromText({
+              question: normalizedQuestion,
+              insurerMentions: explicitInsurers,
+            }));
+          } catch {
+            return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          }
+          if (!scan) return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          if (scan.overflow) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+          }
+          const primaryCanonicalId = resolutions.product?.status === 'resolved'
+            ? clean(resolutions.product.entity.canonicalProductId)
+            : '';
+          const canonicalIds = new Set(scan.entities.map((entity) => entity.canonicalProductId));
+          if (primaryCanonicalId) canonicalIds.add(primaryCanonicalId);
+          if (canonicalIds.size > 1) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
           }
         }
       } else if (effectiveProposal && FAMILY_INTENTS.has(effectiveProposal.intent)) {

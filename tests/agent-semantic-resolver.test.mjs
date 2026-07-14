@@ -29,8 +29,9 @@ function proposal(overrides = {}) {
   };
 }
 
-function harness({ productResult, familyResult } = {}) {
+function harness({ productResult, productScanResult, familyResult } = {}) {
   const productCalls = [];
+  const productScanCalls = [];
   const familyCalls = [];
   const productResolver = {
     resolve(input) {
@@ -40,6 +41,12 @@ function harness({ productResult, familyResult } = {}) {
         : productResult || { status: 'resolved', entity: PRODUCT, candidates: [] };
     },
   };
+  if (productScanResult !== undefined) {
+    productResolver.resolveAllFromText = (input) => {
+      productScanCalls.push(input);
+      return typeof productScanResult === 'function' ? productScanResult(input) : productScanResult;
+    };
+  }
   const familyResolver = {
     async resolve(input) {
       familyCalls.push(input);
@@ -55,6 +62,7 @@ function harness({ productResult, familyResult } = {}) {
   return {
     resolver: createAgentSemanticResolver({ productResolver, familyResolver, clock: () => NOW }),
     productCalls,
+    productScanCalls,
     familyCalls,
   };
 }
@@ -76,6 +84,17 @@ function canonicalProductResult({ mentions }) {
     };
   }
   return { status: 'not_found', entity: null, candidates: [] };
+}
+
+function canonicalScanResult({ question }) {
+  const entities = [];
+  if (/甲产品|康健无忧|康无忧/u.test(question)) {
+    entities.push({ ...PRODUCT, canonicalProductId: 'product-a' });
+  }
+  if (/乙产品|健康福/u.test(question)) {
+    entities.push({ ...PRODUCT, canonicalProductId: 'product-b', officialName: '健康福保险' });
+  }
+  return { entities, overflow: false };
 }
 
 test('current_product uses a live confirmed product and projects its formal identity', async () => {
@@ -195,7 +214,9 @@ test('explicit product mention takes priority over active context', async () => 
 
 test('passes formal and short product mentions to the product resolver unchanged', async () => {
   for (const productName of [PRODUCT.officialName, '康健无忧两全保险']) {
-    const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+    const { resolver, productCalls } = harness({
+      productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+    });
     const question = `${productName}主要保什么`;
     const result = await resolver.resolve({
       internalUserId: 7,
@@ -233,7 +254,9 @@ test('product comparison proposals clarify without resolving or executing the fi
   ];
 
   for (const value of cases) {
-    const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+    const { resolver, productCalls } = harness({
+      productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+    });
     const result = await resolver.resolve({
       internalUserId: 7,
       question,
@@ -258,7 +281,9 @@ test('clear multi-product wording clarifies even when the proposal extracts only
     const mention = question.includes('甲产品')
       ? [{ type: 'product', rawText: '甲产品' }]
       : [];
-    const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+    const { resolver, productCalls } = harness({
+      productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+    });
     const result = await resolver.resolve({
       internalUserId: 7,
       question,
@@ -272,13 +297,15 @@ test('clear multi-product wording clarifies even when the proposal extracts only
   }
 });
 
-test('remaining product evidence catches under-extraction without misreading single-product aspects', async () => {
+test('catalog scan catches under-extraction without misreading single-product aspects', async () => {
   for (const question of [
     '甲产品还有乙产品分别保什么',
     '甲产品/乙产品各自主要责任',
     '甲产品或者乙产品哪个好',
   ]) {
-    const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+    const { resolver, productCalls } = harness({
+      productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+    });
     const result = await resolver.resolve({
       internalUserId: 7,
       question,
@@ -307,7 +334,7 @@ test('remaining product evidence catches under-extraction without misreading sin
   }
 });
 
-test('canonical evidence catches distinct products across alias wording and bounded separators', async () => {
+test('catalog scan catches distinct products across arbitrary wording', async () => {
   const cases = [
     {
       question: '甲产品（以下简称甲保）和乙产品主要保什么',
@@ -326,7 +353,9 @@ test('canonical evidence catches distinct products across alias wording and boun
     { question: '康健无忧搭着健康福哪个好', mentions: [{ type: 'product', rawText: '康健无忧' }] },
   ];
   for (const item of cases) {
-    const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+    const { resolver, productCalls } = harness({
+      productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+    });
     const result = await resolver.resolve({
       internalUserId: 7,
       question: item.question,
@@ -340,9 +369,42 @@ test('canonical evidence catches distinct products across alias wording and boun
   }
 });
 
+test('catalog scan ignores ordinary single-product questions and fails closed on overflow', async () => {
+  for (const suffix of ['适合老人吗', '值得买吗', '有什么优势', '癌症怎么赔', '什么时候生效', '在哪里买']) {
+    const question = `康健无忧${suffix}`;
+    const { resolver, productCalls } = harness({
+      productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+    });
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question,
+      runtime: 'hermes',
+      proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+    });
+    assert.equal(result.decision, 'execute', question);
+    assert.equal(productCalls.length, 1, question);
+  }
+
+  const overflow = harness({
+    productResult: canonicalProductResult,
+    productScanResult: { entities: [], overflow: true },
+  });
+  const result = await overflow.resolver.resolve({
+    internalUserId: 7,
+    question: '康健无忧产品',
+    runtime: 'hermes',
+    proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+  });
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'product_comparison_unsupported');
+  assert.equal(result.candidate, null);
+});
+
 test('canonical evidence fails closed for unresolved explicit products and bounds resolver calls', async () => {
   const mixedQuestion = '甲产品和未知产品主要保什么';
-  const mixed = harness({ productResult: canonicalProductResult });
+  const mixed = harness({
+    productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+  });
   const mixedResult = await mixed.resolver.resolve({
     internalUserId: 7,
     question: mixedQuestion,
@@ -357,7 +419,9 @@ test('canonical evidence fails closed for unresolved explicit products and bound
   assert.equal(mixed.productCalls.length, 2);
 
   const names = Array.from({ length: 9 }, (_value, index) => `产品${index + 1}`);
-  const bounded = harness({ productResult: canonicalProductResult });
+  const bounded = harness({
+    productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+  });
   const boundedResult = await bounded.resolver.resolve({
     internalUserId: 7,
     question: names.join('、'),
@@ -371,7 +435,9 @@ test('canonical evidence fails closed for unresolved explicit products and bound
 
 test('a formal product name and its parenthetical short name are not treated as two products', async () => {
   const question = `${PRODUCT.officialName}（以下简称康无忧）主要保什么`;
-  const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+  const { resolver, productCalls, productScanCalls } = harness({
+    productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+  });
   const result = await resolver.resolve({
     internalUserId: 7,
     question,
@@ -384,12 +450,15 @@ test('a formal product name and its parenthetical short name are not treated as 
 
   assert.equal(result.decision, 'execute');
   assert.equal(productCalls.length, 2);
+  assert.equal(productScanCalls.length, 1);
   assert.equal(result.candidate.entities.productName, PRODUCT.officialName);
 });
 
 test('current_product reference checks a residual second product before execution', async () => {
   const question = '这个保险跟乙产品哪个好';
-  const { resolver, productCalls } = harness({ productResult: canonicalProductResult });
+  const { resolver, productCalls, productScanCalls } = harness({
+    productResult: canonicalProductResult, productScanResult: canonicalScanResult,
+  });
   const result = await resolver.resolve({
     internalUserId: 7,
     question,
@@ -406,7 +475,8 @@ test('current_product reference checks a residual second product before executio
   assert.equal(result.decision, 'clarify');
   assert.equal(result.decisionReason, 'product_comparison_unsupported');
   assert.equal(result.candidate, null);
-  assert.equal(productCalls.length, 2);
+  assert.equal(productCalls.length, 1);
+  assert.equal(productScanCalls.length, 1);
 });
 
 test('current_family is reauthorized and family id never enters router candidate', async () => {

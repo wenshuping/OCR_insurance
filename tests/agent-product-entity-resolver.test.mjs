@@ -442,6 +442,44 @@ test('accepts only explicitly approved product aliases', () => {
   }
 });
 
+test('reverse catalog scan finds only controlled canonical product evidence', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-a',
+      company: '甲保险',
+      officialName: '甲人寿保险股份有限公司和美年金保险',
+      payload: { aliases: ['和美', '保险'], aliasReviewStatus: 'approved' },
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-b',
+      company: '乙保险',
+      officialName: '乙人寿保险股份有限公司同心医疗保险',
+      payload: {
+        aliases: ['同心', '产品'], aliasReviewStatus: 'approved', filingName: '同心医疗保险备案款',
+      },
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+
+    const aliases = resolver.resolveAllFromText({ question: '和美搭着同心哪个好' });
+    assert.equal(aliases.overflow, false);
+    assert.deepEqual(new Set(aliases.entities.map((item) => item.canonicalProductId)), new Set(['product-a', 'product-b']));
+    assert.deepEqual(resolver.resolveAllFromText({
+      question: '甲人寿保险股份有限公司和美年金保险与同心医疗保险备案款比较',
+    }).entities.map((item) => item.canonicalProductId).sort(), ['product-a', 'product-b']);
+
+    for (const question of [
+      '这个保险产品的责任和免责是什么',
+      '两全保险主要保什么',
+      '等待期、续保和赔付比例',
+    ]) {
+      assert.deepEqual(resolver.resolveAllFromText({ question }), { entities: [], overflow: false });
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('does not resolve disabled or non-public catalog rows', () => {
   const db = makeDb();
   try {

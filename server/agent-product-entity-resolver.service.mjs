@@ -18,6 +18,9 @@ const MATCH_TYPE_PRIORITY = new Map([
   ['unique_high_confidence', 3],
 ]);
 const HEURISTIC_CONFIDENCE_CEILING = 0.89;
+const SCAN_DENYLIST = new Set([
+  '保险', '产品', '险种', '寿险', '重疾险', '医疗险', '年金险', '意外险', '两全', '两全保险',
+]);
 
 function clean(value) {
   return String(value || '').trim();
@@ -109,6 +112,19 @@ function approvedAliases(product) {
   return (Array.isArray(product.payload?.aliases) ? product.payload.aliases : []).map(clean).filter(Boolean);
 }
 
+function filingNames(product) {
+  return [
+    product.payload?.filingName,
+    ...(Array.isArray(product.payload?.filingNames) ? product.payload.filingNames : []),
+  ].map(clean).filter(Boolean);
+}
+
+function scannableTerm(value, { approved = false } = {}) {
+  const normalized = comparable(value);
+  if (!normalized || SCAN_DENYLIST.has(normalized)) return '';
+  return [...normalized].length >= (approved ? 2 : 4) ? normalized : '';
+}
+
 function canonicalProductForCatalogRow(row, products) {
   const identity = catalogProductIdentity(row.productName);
   const matches = products.filter((product) => product.company === row.company
@@ -193,6 +209,44 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
   const profiles = Array.isArray(officialDomainProfiles) ? officialDomainProfiles : [];
 
   return {
+    resolveAllFromText({ question, insurerMentions = [] } = {}) {
+      const normalizedQuestion = comparable(clean(question).slice(0, 1_000));
+      if (!normalizedQuestion) return { entities: [], overflow: false };
+      const insurerText = mentionText(insurerMentions, 'insurer');
+      if (insurerText.length > 200) return { entities: [], overflow: false };
+
+      const entities = [];
+      const seen = new Set();
+      for (const product of publicProductRows(db)) {
+        const officialIdentity = catalogProductIdentity(product.officialName);
+        const hasSpecificOfficialIdentity = Boolean(scannableTerm(officialIdentity));
+        const terms = [
+          ...(hasSpecificOfficialIdentity ? [
+            { value: product.officialName, matchType: 'exact_official_name' },
+            { value: officialIdentity, matchType: 'company_scoped_normalized' },
+          ] : []),
+          ...filingNames(product).map((value) => ({ value, matchType: 'filing_name' })),
+          ...approvedAliases(product).map((value) => ({ value, matchType: 'approved_alias', approved: true })),
+        ];
+        const matched = terms.find((term) => {
+          const normalized = scannableTerm(term.value, { approved: term.approved });
+          return normalized && normalizedQuestion.includes(normalized);
+        });
+        const canonicalProductId = clean(product.canonicalProductId);
+        if (!matched || !canonicalProductId || seen.has(canonicalProductId)) continue;
+        seen.add(canonicalProductId);
+        entities.push({
+          canonicalProductId,
+          company: product.company,
+          officialName: product.officialName,
+          matchType: matched.matchType,
+          confidence: 1,
+        });
+        if (entities.length > 8) return { entities: entities.slice(0, 8), overflow: true };
+      }
+      return { entities, overflow: false };
+    },
+
     resolve({ mentions = [], activeProduct = null } = {}) {
       const productText = mentionText(mentions, 'product');
       const insurerText = mentionText(mentions, 'insurer');
