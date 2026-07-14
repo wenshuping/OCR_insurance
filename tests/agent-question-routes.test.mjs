@@ -1344,6 +1344,68 @@ test('default semantic product resolver reloads custom official company aliases'
   assert.match(retired.payload.interaction.text, /当前没有可核验来源/u);
 });
 
+test('default semantic resolver scans the full question when Hermes omits a second product mention', async (t) => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE policies (id INTEGER PRIMARY KEY);
+    CREATE TABLE insurance_products (
+      canonical_product_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL,
+      company TEXT NOT NULL, official_name TEXT NOT NULL, product_code TEXT,
+      product_type TEXT, product_group_key TEXT, status TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL
+    );
+    CREATE TABLE product_customer_responsibility_summaries (
+      id TEXT PRIMARY KEY, company TEXT, product_name TEXT, status TEXT, headline TEXT,
+      summary_json TEXT, source_urls_json TEXT, updated_at TEXT
+    );
+  `);
+  const insertProduct = db.prepare(`INSERT INTO insurance_products
+    (canonical_product_id, tenant_id, company, official_name, status, created_at, updated_at, payload)
+    VALUES (?, 'default', '测试保险有限公司', ?, 'active', '2026-07-14', '2026-07-14', '{}')`);
+  insertProduct.run('product-a', '甲保障计划');
+  insertProduct.run('product-b', '乙保障计划');
+  const state = { familyProfiles: [], policies: [], officialDomainProfiles: [] };
+  const store = {
+    async load() { return state; },
+    async getPublishedAgentQuestionPolicyVersion() { return null; },
+    async recordAgentRouteAudit() {},
+    async recordAgentSemanticAudit(input) { return input; },
+  };
+  const app = createPolicyOcrApp({
+    state, db, agentStore: store, recomputeCashflowOnStartup: false,
+    agentSemanticConversationService: {
+      async load() { return { version: 0, taskState: {} }; },
+      async save(input) { return { persisted: true, version: 1, taskState: input.taskState }; },
+    },
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+
+  const result = await post(
+    { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+    '/api/agent/questions/route',
+    semanticBody({
+      question: '甲保障计划和乙保障计划主要保什么',
+      proposal: {
+        semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+        queryAspects: ['main_responsibilities'],
+        mentions: [{ type: 'product', rawText: '甲保障计划' }],
+        references: [], requestedSteps: ['lookup'],
+        confidence: { intent: 1, mentions: 1, references: 1 },
+      },
+    }),
+  );
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.payload.decision, 'clarify');
+  assert.match(result.payload.interaction.text, /产品比较暂不支持直接执行/u);
+});
+
 test('authorized family count resolves once and preserves exact safe facts without PII', async () => {
   const state = {
     familyProfiles: [

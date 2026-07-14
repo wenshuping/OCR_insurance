@@ -2813,6 +2813,13 @@ export function createPolicyOcrApp(options = {}) {
             officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
           }).resolve(input);
         },
+        async resolveAllFromText(input) {
+          const current = await agentStore.load();
+          return createAgentProductEntityResolver({
+            db: options.db,
+            officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
+          }).resolveAllFromText(input);
+        },
       };
       const familyResolver = createAgentFamilyEntityResolver({
         listAuthorizedFamilies: async ({ internalUserId }) => {

@@ -338,6 +338,11 @@ test('fails closed when duplicate tenant products disagree on canonical id', () 
     assert.equal(result.entity, null);
     assert.equal(result.candidates[0].canonicalProductId, '');
     assert.ok(result.candidates[0].confidence < 0.9);
+    assert.deepEqual(
+      createAgentProductEntityResolver({ db }).resolveAllFromText({ question: `${officialName}主要保什么` })
+        .entities.map((item) => item.canonicalProductId),
+      ['product-tenant-a', 'product-tenant-b'],
+    );
   } finally {
     db.close();
   }
@@ -459,6 +464,13 @@ test('reverse catalog scan finds only controlled canonical product evidence', ()
         aliases: ['同心', '产品'], aliasReviewStatus: 'approved', filingName: '同心医疗保险备案款',
       },
     });
+    addProduct(db, {
+      canonicalProductId: 'product-inactive',
+      company: '丙保险',
+      officialName: '丙人寿保险股份有限公司停用医疗保险',
+      status: 'disabled',
+      payload: { filingName: '停用医疗保险备案款' },
+    });
     const resolver = createAgentProductEntityResolver({ db });
 
     const aliases = resolver.resolveAllFromText({ question: '和美搭着同心哪个好' });
@@ -467,6 +479,9 @@ test('reverse catalog scan finds only controlled canonical product evidence', ()
     assert.deepEqual(resolver.resolveAllFromText({
       question: '甲人寿保险股份有限公司和美年金保险与同心医疗保险备案款比较',
     }).entities.map((item) => item.canonicalProductId).sort(), ['product-a', 'product-b']);
+    assert.deepEqual(resolver.resolveAllFromText({ question: '停用医疗保险备案款主要保什么' }), {
+      entities: [], overflow: false,
+    });
 
     for (const question of [
       '这个保险产品的责任和免责是什么',
@@ -474,6 +489,76 @@ test('reverse catalog scan finds only controlled canonical product evidence', ()
       '等待期、续保和赔付比例',
     ]) {
       assert.deepEqual(resolver.resolveAllFromText({ question }), { entities: [], overflow: false });
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('reverse catalog scan keeps the longest contained product term but retains separate mentions', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-base',
+      company: '甲保险',
+      officialName: '甲保险康健无忧保险',
+      payload: { aliases: ['康健无忧'], aliasReviewStatus: 'approved' },
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-plus',
+      company: '甲保险',
+      officialName: '甲保险康健无忧加强版保险',
+      payload: { aliases: ['康健无忧加强版'], aliasReviewStatus: 'approved' },
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+
+    assert.deepEqual(
+      resolver.resolveAllFromText({ question: '康健无忧加强版主要保什么' }).entities
+        .map((item) => item.canonicalProductId),
+      ['product-plus'],
+    );
+    assert.deepEqual(
+      resolver.resolveAllFromText({ question: '康健无忧和康健无忧加强版有什么区别' }).entities
+        .map((item) => item.canonicalProductId),
+      ['product-base', 'product-plus'],
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('reverse catalog scan applies a uniquely resolved insurer scope and otherwise fails closed', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-a',
+      company: '甲保险',
+      officialName: '甲保险和美年金保险',
+      payload: { aliases: ['和美'], aliasReviewStatus: 'approved' },
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-b',
+      company: '乙保险',
+      officialName: '乙保险和美医疗保险',
+      payload: { aliases: ['和美'], aliasReviewStatus: 'approved' },
+    });
+    const resolver = createAgentProductEntityResolver({
+      db,
+      officialDomainProfiles: [
+        { company: '甲保险', aliases: ['共同保司'] },
+        { company: '乙保险', aliases: ['共同保司'] },
+      ],
+    });
+
+    assert.deepEqual(resolver.resolveAllFromText({
+      question: '和美主要保什么',
+      insurerMentions: [{ type: 'insurer', rawText: '甲保险' }],
+    }).entities.map((item) => item.canonicalProductId), ['product-a']);
+    for (const insurer of ['未知保险', '共同保司']) {
+      assert.deepEqual(resolver.resolveAllFromText({
+        question: '和美主要保什么',
+        insurerMentions: [{ type: 'insurer', rawText: insurer }],
+      }), { entities: [], overflow: false });
     }
   } finally {
     db.close();

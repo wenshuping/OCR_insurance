@@ -113,10 +113,22 @@ function approvedAliases(product) {
 }
 
 function filingNames(product) {
+  // These names are trusted only from the payload of an authoritative, active
+  // insurance_products row selected by publicProductRows().
   return [
     product.payload?.filingName,
     ...(Array.isArray(product.payload?.filingNames) ? product.payload.filingNames : []),
   ].map(clean).filter(Boolean);
+}
+
+function termOccurrences(question, term) {
+  const occurrences = [];
+  let start = question.indexOf(term);
+  while (start !== -1) {
+    occurrences.push({ start, end: start + term.length });
+    start = question.indexOf(term, start + 1);
+  }
+  return occurrences;
 }
 
 function scannableTerm(value, { approved = false } = {}) {
@@ -215,9 +227,13 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
       const insurerText = mentionText(insurerMentions, 'insurer');
       if (insurerText.length > 200) return { entities: [], overflow: false };
 
-      const entities = [];
-      const seen = new Set();
+      const companies = listProductCatalogCompanies({ db, visibility: 'public' }).map((row) => row.company);
+      const company = resolveCompany(insurerText, companies, profiles);
+      if (insurerText && company === null) return { entities: [], overflow: false };
+
+      const matches = [];
       for (const product of publicProductRows(db)) {
+        if (company && product.company !== company) continue;
         const officialIdentity = catalogProductIdentity(product.officialName);
         const hasSpecificOfficialIdentity = Boolean(scannableTerm(officialIdentity));
         const terms = [
@@ -228,20 +244,48 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
           ...filingNames(product).map((value) => ({ value, matchType: 'filing_name' })),
           ...approvedAliases(product).map((value) => ({ value, matchType: 'approved_alias', approved: true })),
         ];
-        const matched = terms.find((term) => {
-          const normalized = scannableTerm(term.value, { approved: term.approved });
-          return normalized && normalizedQuestion.includes(normalized);
-        });
         const canonicalProductId = clean(product.canonicalProductId);
-        if (!matched || !canonicalProductId || seen.has(canonicalProductId)) continue;
-        seen.add(canonicalProductId);
-        entities.push({
-          canonicalProductId,
-          company: product.company,
-          officialName: product.officialName,
-          matchType: matched.matchType,
-          confidence: 1,
-        });
+        if (!canonicalProductId) continue;
+        for (const term of terms) {
+          const normalized = scannableTerm(term.value, { approved: term.approved });
+          if (!normalized) continue;
+          for (const span of termOccurrences(normalizedQuestion, normalized)) {
+            matches.push({
+              ...span,
+              termLength: normalized.length,
+              entity: {
+                canonicalProductId,
+                company: product.company,
+                officialName: product.officialName,
+                matchType: term.matchType,
+                confidence: 1,
+              },
+            });
+          }
+        }
+      }
+
+      const retained = [];
+      for (const match of matches.sort((left, right) => (
+        right.termLength - left.termLength || left.start - right.start || left.end - right.end
+      ))) {
+        const containedByLonger = retained.some((candidate) => (
+          candidate.entity.canonicalProductId !== match.entity.canonicalProductId
+          && candidate.termLength > match.termLength
+          && candidate.start <= match.start
+          && candidate.end >= match.end
+        ));
+        if (!containedByLonger) retained.push(match);
+      }
+
+      const entities = [];
+      const seen = new Set();
+      for (const match of retained.sort((left, right) => (
+        left.start - right.start || right.termLength - left.termLength
+      ))) {
+        if (seen.has(match.entity.canonicalProductId)) continue;
+        seen.add(match.entity.canonicalProductId);
+        entities.push(match.entity);
         if (entities.length > 8) return { entities: entities.slice(0, 8), overflow: true };
       }
       return { entities, overflow: false };
