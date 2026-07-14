@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { normalizeSemanticProposal } from '../agent-semantic-contract.mjs';
+import { AGENT_SEMANTIC_AUDIT_FALLBACK_REASONS } from '../agent-semantic-audit-contract.mjs';
 
 const ATTACHMENT_FIELDS = new Set([
   'attachment', 'attachments', 'file', 'files', 'image', 'images', 'pdf', 'document', 'documents',
@@ -15,8 +16,9 @@ const INTERNAL_ENTITY_FIELDS = new Set([
 const UNTRUSTED_AUTHORITY_FIELDS = new Set(['userId', 'internalUserId', 'familyId', 'permissions']);
 const QUESTION_BODY_FIELDS = new Set([
   'channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId',
-  'candidate', 'question', 'runtime', 'proposal',
+  'candidate', 'question', 'runtime', 'proposal', 'fallbackReason',
 ]);
+const SEMANTIC_FALLBACK_REASONS = new Set(AGENT_SEMANTIC_AUDIT_FALLBACK_REASONS);
 const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId']);
 const PUBLIC_DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const PUBLIC_INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -203,7 +205,8 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
   if (!questionRoute) return { channel, channelUserId, channelMobile, messageRef, conversationId };
 
   const hasCandidate = body.candidate !== undefined;
-  const hasSemantic = body.question !== undefined || body.runtime !== undefined || body.proposal !== undefined;
+  const hasSemantic = body.question !== undefined || body.runtime !== undefined
+    || body.proposal !== undefined || body.fallbackReason !== undefined;
   if (hasCandidate === hasSemantic) return null;
   if (hasCandidate) {
     const candidate = normalizeCandidate(body.candidate);
@@ -227,9 +230,13 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
   } else if (runtime !== 'rule') {
     return null;
   }
+  const fallbackReason = body.fallbackReason === undefined
+    ? runtime === 'rule' && (proposal === null || proposal === undefined) ? 'rule_preparse' : 'none'
+    : text(body.fallbackReason, 40).toLowerCase();
+  if (!SEMANTIC_FALLBACK_REASONS.has(fallbackReason)) return null;
   return {
     channel, channelUserId, channelMobile, messageRef, conversationId,
-    question, runtime,
+    question, runtime, fallbackReason,
     ...(proposalProvided ? { proposal: proposal === null ? null : normalizedProposal } : {}),
   };
 }
@@ -338,6 +345,7 @@ export function createAgentRouter({
           question: input.question,
           runtime: input.runtime,
           ...(Object.prototype.hasOwnProperty.call(input, 'proposal') ? { proposal: input.proposal } : {}),
+          fallbackReason: input.fallbackReason,
         }),
       });
       res.json({ ok: true, ...normalizePublicResult(result, secureLinkAllowedOrigins) });

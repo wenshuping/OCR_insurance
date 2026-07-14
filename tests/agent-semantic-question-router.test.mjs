@@ -105,7 +105,7 @@ test('semantic decisions are audited before execution or state persistence', asy
 test('semantic audit failure prevents execution and state persistence', async () => {
   let saves = 0;
   const question = '你好';
-  const { router, calls } = wrapperHarness({
+  const { router, calls, audits } = wrapperHarness({
     semanticResolver: { async resolve() { return {
       decision: 'execute', decisionReason: 'semantic_ready', missingFields: [], ambiguities: [],
       proposal: chatProposal(question), resolvedEntities: {},
@@ -640,7 +640,7 @@ test('non-execute conversation conflict reloads and retries resolution once', as
   let loads = 0;
   let resolves = 0;
   let saves = 0;
-  const { router, calls } = wrapperHarness({
+  const { router, calls, audits } = wrapperHarness({
     semanticResolver: { async resolve({ context }) {
       resolves += 1;
       return {
@@ -675,12 +675,14 @@ test('non-execute conversation conflict reloads and retries resolution once', as
   assert.equal(resolves, 2);
   assert.equal(saves, 2);
   assert.equal(calls.length, 0);
+  assert.equal(audits.filter((item) => item.phase === 'semantic_resolution').length, 1);
+  assert.equal(audits.filter((item) => item.phase === 'persistence_error').length, 1);
 });
 
 test('non-conflict clarification save failure returns stable retry without a second attempt', async () => {
   let loads = 0;
   let saves = 0;
-  const { router, calls } = wrapperHarness({
+  const { router, calls, audits } = wrapperHarness({
     semanticResolver: { async resolve() { return {
       decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
       ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
@@ -704,6 +706,8 @@ test('non-conflict clarification save failure returns stable retry without a sec
   assert.equal(loads, 1);
   assert.equal(saves, 1);
   assert.equal(calls.length, 0);
+  assert.deepEqual(audits.map((item) => item.phase), ['semantic_resolution', 'persistence_error']);
+  assert.equal(audits[1].errorCode, 'SQLITE_IOERR');
 });
 
 test('post-execute persistence hook receives redacted conflict classification', async () => {
@@ -712,6 +716,7 @@ test('post-execute persistence hook receives redacted conflict classification', 
     ['SQLITE_IOERR', false],
   ]) {
     const persistenceErrors = [];
+    const semanticAudits = [];
     const legacyCalls = [];
     const router = createAgentSemanticQuestionRouter({
       legacyRouter: { async route(input) {
@@ -727,7 +732,7 @@ test('post-execute persistence hook receives redacted conflict classification', 
         async load() { return { version: 0, taskState: {} }; },
         async save() { throw Object.assign(new Error('private database path'), { code }); },
       },
-      auditService: { async record() {} },
+      auditService: { async record(input) { semanticAudits.push(input); } },
       onPersistenceError(input) { persistenceErrors.push(input); },
     });
 
@@ -739,5 +744,10 @@ test('post-execute persistence hook receives redacted conflict classification', 
     assert.equal(legacyCalls.length, 1);
     assert.deepEqual(persistenceErrors, [{ code, conflict, phase: 'post_execute' }]);
     assert.doesNotMatch(JSON.stringify(persistenceErrors), /private database path/u);
+    assert.deepEqual(semanticAudits.map((item) => item.phase), [
+      'semantic_resolution', 'persistence_error',
+    ]);
+    assert.equal(semanticAudits[1].errorCode, code);
+    assert.doesNotMatch(JSON.stringify(semanticAudits), /private database path/u);
   }
 });

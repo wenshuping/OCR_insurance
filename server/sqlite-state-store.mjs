@@ -7,6 +7,7 @@ import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs'
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { ensureProductKnowledgeTables } from './product-knowledge-store.mjs';
 import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
+import { normalizeAgentSemanticAuditPayload } from './agent-semantic-audit-contract.mjs';
 
 const SCHEMA_VERSION = '3';
 
@@ -328,8 +329,7 @@ function parseAgentSemanticAuditPayload(value) {
   }
   let payload;
   try {
-    payload = JSON.parse(serialized);
-    assertStrictJsonValue(payload, 'Agent semantic audit payload');
+    payload = normalizeAgentSemanticAuditPayload(JSON.parse(serialized));
   } catch {
     throw new Error('Agent semantic audit payload is corrupt');
   }
@@ -340,11 +340,12 @@ function parseAgentSemanticAuditPayload(value) {
 }
 
 function mapAgentSemanticAuditEvent(row) {
-  return {
+  const mapped = {
     id: Number(row.id),
     userId: Number(row.user_id),
     messageRef: String(row.message_ref || ''),
     runtime: String(row.runtime || ''),
+    fallbackReason: String(row.fallback_reason || 'none'),
     intent: String(row.intent || ''),
     operation: String(row.operation || ''),
     decision: String(row.decision || ''),
@@ -352,6 +353,30 @@ function mapAgentSemanticAuditEvent(row) {
     createdAt: Number(row.created_at),
     payload: parseAgentSemanticAuditPayload(row.payload),
   };
+  if (mapped.payload.runtime !== mapped.runtime
+    || mapped.payload.fallbackReason !== mapped.fallbackReason
+    || mapped.payload.intent !== mapped.intent
+    || mapped.payload.operation !== mapped.operation
+    || mapped.payload.decision !== mapped.decision
+    || mapped.payload.decisionReason !== mapped.decisionReason
+    || !Number.isSafeInteger(mapped.id) || mapped.id <= 0
+    || !Number.isSafeInteger(mapped.userId) || mapped.userId <= 0
+    || !Number.isSafeInteger(mapped.createdAt) || mapped.createdAt < 0) {
+    throw new Error('Agent semantic audit payload is corrupt');
+  }
+  return mapped;
+}
+
+function ensureAgentSemanticAuditSchema(db) {
+  const columns = db.prepare('PRAGMA table_info(agent_semantic_audit_events)').all();
+  if (!columns.length || columns.some((column) => column.name === 'fallback_reason')) return;
+  db.exec(`
+    ALTER TABLE agent_semantic_audit_events
+      ADD COLUMN fallback_reason TEXT NOT NULL DEFAULT 'none';
+    UPDATE agent_semantic_audit_events
+      SET payload = json_set(payload, '$.fallbackReason', 'none')
+      WHERE json_valid(payload) AND json_type(payload, '$.fallbackReason') IS NULL;
+  `);
 }
 
 function ensureAgentRouteAuditSchema(db) {
@@ -1088,6 +1113,7 @@ function createSchema(db) {
       user_id INTEGER NOT NULL,
       message_ref TEXT NOT NULL,
       runtime TEXT NOT NULL CHECK (runtime IN ('hermes', 'direct', 'rule', 'unknown')),
+      fallback_reason TEXT NOT NULL DEFAULT 'none',
       intent TEXT NOT NULL,
       operation TEXT NOT NULL CHECK (operation IN ('read', 'write', 'unknown')),
       decision TEXT NOT NULL CHECK (decision IN ('execute', 'clarify', 'reject', 'retry_later')),
@@ -1118,6 +1144,7 @@ function createSchema(db) {
     );
   `);
   ensureAgentRouteAuditSchema(db);
+  ensureAgentSemanticAuditSchema(db);
   ensureAgentTransferOutboxLeaseSchema(db);
   ensureFamilySalesMemoryVersionSchema(db);
   ensureCashflowTable(db);
@@ -3772,6 +3799,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     userId,
     messageRef = '',
     runtime = '',
+    fallbackReason = 'none',
     intent = '',
     operation = '',
     decision = '',
@@ -3782,6 +3810,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const numericUserId = userId;
     const normalizedMessageRef = typeof messageRef === 'string' ? messageRef.trim() : '';
     const normalizedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
+    const normalizedFallbackReason = typeof fallbackReason === 'string' ? fallbackReason.trim() : '';
     const normalizedIntent = typeof intent === 'string' ? intent.trim() : '';
     const normalizedOperation = typeof operation === 'string' ? operation.trim() : '';
     const normalizedDecision = typeof decision === 'string' ? decision.trim() : '';
@@ -3797,20 +3826,28 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       || !Number.isSafeInteger(createdAt) || createdAt < 0) {
       throw new TypeError('Agent semantic audit event is invalid');
     }
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      throw new TypeError('Agent semantic audit payload must be an object');
+    const normalizedPayload = normalizeAgentSemanticAuditPayload(payload);
+    if (normalizedPayload.runtime !== normalizedRuntime
+      || normalizedPayload.fallbackReason !== normalizedFallbackReason
+      || normalizedPayload.intent !== normalizedIntent
+      || normalizedPayload.operation !== normalizedOperation
+      || normalizedPayload.decision !== normalizedDecision
+      || normalizedPayload.decisionReason !== normalizedReason) {
+      const error = new Error('AGENT_SEMANTIC_AUDIT_INVALID');
+      error.code = 'AGENT_SEMANTIC_AUDIT_INVALID';
+      throw error;
     }
-    assertStrictJsonValue(payload, 'Agent semantic audit payload');
-    const serializedPayload = JSON.stringify(payload);
+    const serializedPayload = JSON.stringify(normalizedPayload);
     if (Buffer.byteLength(serializedPayload, 'utf8') > AGENT_SEMANTIC_AUDIT_PAYLOAD_MAX_BYTES) {
       throw new RangeError(`Agent semantic audit payload exceeds ${AGENT_SEMANTIC_AUDIT_PAYLOAD_MAX_BYTES} bytes`);
     }
     const result = db.prepare(`
       INSERT INTO agent_semantic_audit_events (
-        user_id, message_ref, runtime, intent, operation, decision, decision_reason, created_at, payload
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, message_ref, runtime, fallback_reason, intent, operation,
+        decision, decision_reason, created_at, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      numericUserId, normalizedMessageRef, normalizedRuntime, normalizedIntent,
+      numericUserId, normalizedMessageRef, normalizedRuntime, normalizedFallbackReason, normalizedIntent,
       normalizedOperation, normalizedDecision, normalizedReason, createdAt, serializedPayload,
     );
     return mapAgentSemanticAuditEvent(
