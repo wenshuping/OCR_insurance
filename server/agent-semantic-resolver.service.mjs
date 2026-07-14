@@ -91,14 +91,24 @@ function projectFamily(value, { active = false } = {}) {
 function isLive(entity, now, contextTtlMs) {
   if (!entity) return false;
   const expiresAt = finiteTimestamp(entity.expiresAt);
-  if (expiresAt !== null) return expiresAt > now;
   const updatedAt = finiteTimestamp(entity.updatedAt);
+  const maxExpiry = now + contextTtlMs;
+  if (expiresAt !== null) {
+    if (expiresAt <= now || expiresAt > maxExpiry) return false;
+    if (updatedAt === null) return true;
+    return updatedAt <= now
+      && Number.isSafeInteger(updatedAt + contextTtlMs)
+      && expiresAt <= updatedAt + contextTtlMs;
+  }
   return updatedAt !== null
+    && updatedAt <= now
     && Number.isSafeInteger(updatedAt + contextTtlMs)
     && updatedAt + contextTtlMs > now;
 }
 
 function projectActive(value, type, now, contextTtlMs) {
+  if (value?.updatedAt !== undefined && finiteTimestamp(value.updatedAt) === null) return null;
+  if (value?.expiresAt !== undefined && finiteTimestamp(value.expiresAt) === null) return null;
   const projected = type === 'product'
     ? projectProduct(value, { active: true })
     : projectFamily(value, { active: true });
@@ -178,12 +188,16 @@ function requiredEntityType(intent) {
   return '';
 }
 
-function projectPendingClarification(value) {
+function projectPendingClarification(value, now, contextTtlMs) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const entityType = clean(value.entityType, 20);
   const originalQuestion = clean(value.originalQuestion, 1_000);
   const expiresAt = finiteTimestamp(value.expiresAt);
-  if (!['product', 'family'].includes(entityType) || !originalQuestion || expiresAt === null) return null;
+  if (!['product', 'family'].includes(entityType)
+    || !originalQuestion
+    || expiresAt === null
+    || expiresAt <= now
+    || expiresAt > now + contextTtlMs) return null;
   const proposal = normalizedProposal(value.proposal, originalQuestion);
   return proposal ? { entityType, proposal, originalQuestion, expiresAt } : null;
 }
@@ -198,6 +212,8 @@ function sanitizedState(context, now, contextTtlMs) {
   const candidateSets = state.candidateSets && typeof state.candidateSets === 'object'
     && !Array.isArray(state.candidateSets) ? state.candidateSets : {};
   return {
+    now,
+    contextTtlMs,
     activeIntent: clean(state.activeIntent, 80),
     activeEntities: {
       product: projectActive(activeEntities.product, 'product', now, contextTtlMs),
@@ -207,7 +223,7 @@ function sanitizedState(context, now, contextTtlMs) {
       product: projectCandidates(candidateSets.product, 'product'),
       family: projectCandidates(candidateSets.family, 'family'),
     },
-    pendingClarification: projectPendingClarification(state.pendingClarification),
+    pendingClarification: projectPendingClarification(state.pendingClarification, now, contextTtlMs),
     lastCompletedAction: state.lastCompletedAction && typeof state.lastCompletedAction === 'object'
       && !Array.isArray(state.lastCompletedAction) ? state.lastCompletedAction : null,
   };
@@ -226,7 +242,11 @@ function publicState(state) {
       product: projectCandidates(state.candidateSets.product, 'product'),
       family: projectCandidates(state.candidateSets.family, 'family'),
     },
-    pendingClarification: projectPendingClarification(state.pendingClarification),
+    pendingClarification: projectPendingClarification(
+      state.pendingClarification,
+      state.now,
+      state.contextTtlMs,
+    ),
     lastCompletedAction: lastIntent && ['product', 'family'].includes(lastEntityType)
       ? { intent: lastIntent, entityType: lastEntityType }
       : null,
@@ -401,11 +421,12 @@ export function createAgentSemanticResolver({
       const resolutions = {};
       if (effectiveProposal?.intent === PRODUCT_INTENT) {
         const explicitProduct = hasMention(effectiveProposal, 'product');
+        const currentProductReference = hasReference(effectiveProposal, 'current_product');
         const selectedProduct = selection?.entityType === 'product'
           ? projectProduct(selection.candidate)
           : null;
         const referencedProduct = !explicitProduct
-          && hasReference(effectiveProposal, 'current_product')
+          && currentProductReference
           ? projectProduct(state.activeEntities.product)
           : null;
         const productToRevalidate = selectedProduct || referencedProduct;
@@ -415,32 +436,41 @@ export function createAgentSemanticResolver({
             { type: 'product', rawText: productToRevalidate.officialName },
           ]
           : effectiveProposal.mentions;
-        try {
-          resolutions.product = projectResolution(await productResolver.resolve({
-            mentions,
-            activeProduct: null,
-          }), 'product');
-        } catch {
-          return resolverUnavailableResult({ state, proposal: effectiveProposal });
+        if (!selectedProduct && !explicitProduct && currentProductReference && !referencedProduct) {
+          resolutions.product = { status: 'missing', entity: null, candidates: [] };
+        } else {
+          try {
+            resolutions.product = projectResolution(await productResolver.resolve({
+              mentions,
+              activeProduct: null,
+            }), 'product');
+          } catch {
+            return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          }
         }
       } else if (effectiveProposal && FAMILY_INTENTS.has(effectiveProposal.intent)) {
         const explicitFamily = hasMention(effectiveProposal, 'family');
+        const currentFamilyReference = hasReference(effectiveProposal, 'current_family');
         const activeFamily = selection?.entityType === 'family'
           ? selection.candidate
-          : !explicitFamily && hasReference(effectiveProposal, 'current_family')
+          : !explicitFamily && currentFamilyReference
             ? state.activeEntities.family
             : null;
         const mentions = selection?.entityType === 'family'
           ? effectiveProposal.mentions.filter((mention) => mention.type !== 'family')
           : effectiveProposal.mentions;
-        try {
-          resolutions.family = projectResolution(await familyResolver.resolve({
-            internalUserId,
-            mentions,
-            activeFamily: activeFamily ? projectFamily(activeFamily) : null,
-          }), 'family');
-        } catch {
-          return resolverUnavailableResult({ state, proposal: effectiveProposal });
+        if (!selection && !explicitFamily && currentFamilyReference && !activeFamily) {
+          resolutions.family = { status: 'missing', entity: null, candidates: [] };
+        } else {
+          try {
+            resolutions.family = projectResolution(await familyResolver.resolve({
+              internalUserId,
+              mentions,
+              activeFamily: activeFamily ? projectFamily(activeFamily) : null,
+            }), 'family');
+          } catch {
+            return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          }
         }
       }
 

@@ -201,7 +201,51 @@ test('expired active references clarify instead of entering a resolver as contex
   });
 
   assert.equal(result.decision, 'clarify');
-  assert.equal(productCalls[0].activeProduct, null);
+  assert.equal(productCalls.length, 0);
+});
+
+test('future active timestamps and overlong expiry windows cannot restore current_product', async () => {
+  const states = [
+    activeProduct({ updatedAt: NOW + 1, expiresAt: undefined }),
+    activeProduct({ updatedAt: NOW - 1_000, expiresAt: NOW + 300_001 }),
+    activeProduct({ updatedAt: undefined, expiresAt: NOW + 300_001 }),
+  ];
+  for (const product of states) {
+    const { resolver, productCalls } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question: '这个保险保什么',
+      runtime: 'hermes',
+      proposal: proposal({ references: [{ type: 'current_product', rawText: '这个保险' }] }),
+      context: { taskState: { activeEntities: { product } } },
+    });
+    assert.equal(result.decision, 'clarify');
+    assert.equal(result.candidate, null);
+    assert.equal(productCalls.length, 0);
+  }
+});
+
+test('far-future pending expiry is rejected before candidate resolution', async () => {
+  const { resolver, productCalls, familyCalls } = harness();
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '选择1',
+    runtime: 'rule',
+    context: { taskState: {
+      candidateSets: { product: [PRODUCT] },
+      pendingClarification: {
+        entityType: 'product',
+        proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+        originalQuestion: '康健无忧保什么',
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      },
+    } },
+  });
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'candidate_selection_expired');
+  assert.equal(result.candidate, null);
+  assert.equal(productCalls.length, 0);
+  assert.equal(familyCalls.length, 0);
 });
 
 test('ambiguous product selection revalidates formal identity and ignores stored canonical id', async () => {
