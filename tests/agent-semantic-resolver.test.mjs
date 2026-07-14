@@ -231,6 +231,49 @@ test('product comparison proposals clarify without resolving or executing the fi
   }
 });
 
+test('clear multi-product wording clarifies even when the proposal extracts only one product', async () => {
+  for (const question of [
+    '甲产品和乙产品分别保什么',
+    '甲产品、乙产品各自主要责任',
+    '甲产品和乙产品主要保什么',
+    '这两款主要保什么',
+    '二者主要责任是什么',
+  ]) {
+    const mention = question.includes('甲产品')
+      ? [{ type: 'product', rawText: '甲产品' }]
+      : [];
+    const { resolver, productCalls } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question,
+      runtime: 'hermes',
+      proposal: proposal({ mentions: mention }),
+    });
+    assert.equal(result.decision, 'clarify', question);
+    assert.equal(result.decisionReason, 'product_comparison_unsupported', question);
+    assert.equal(result.candidate, null, question);
+    assert.equal(productCalls.length, 0, question);
+  }
+});
+
+test('a formal product name and its parenthetical short name are not treated as two products', async () => {
+  const question = `${PRODUCT.officialName}（以下简称康无忧）主要保什么`;
+  const { resolver, productCalls } = harness();
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({ mentions: [
+      { type: 'product', rawText: PRODUCT.officialName },
+      { type: 'product', rawText: '康无忧' },
+    ] }),
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(productCalls.length, 1);
+  assert.equal(result.candidate.entities.productName, PRODUCT.officialName);
+});
+
 test('current_family is reauthorized and family id never enters router candidate', async () => {
   const { resolver, familyCalls } = harness();
   const question = '这个家庭的保障报告';

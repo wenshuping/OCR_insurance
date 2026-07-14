@@ -145,7 +145,8 @@ export function createAgentProductKnowledgeService({
   return {
     async search({ scope, product, queryAspects = [] } = {}) {
       if (!ready || scope !== 'public_read_only'
-        || !product || typeof product !== 'object' || Array.isArray(product)) {
+        || !product || typeof product !== 'object' || Array.isArray(product)
+        || !Array.isArray(queryAspects)) {
         return { answer: '', sources: [] };
       }
       const company = clean(product.company, 200);
@@ -177,8 +178,7 @@ export function createAgentProductKnowledgeService({
       const summary = parseSummary(row.summary_json);
       const storedSourceUrls = parseStringArray(row.source_urls_json);
       if (!summary || !storedSourceUrls) return { answer: '', sources: [] };
-      const requestedAspects = Array.isArray(queryAspects) ? queryAspects : [];
-      if (requestedAspects.some((aspect) => aspect !== 'main_responsibilities')) {
+      if (queryAspects.some((aspect) => aspect !== 'main_responsibilities')) {
         return { answer: '', sources: [] };
       }
 

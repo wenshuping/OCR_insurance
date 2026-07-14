@@ -99,6 +99,31 @@ test('unsupported product aspects never reuse the general responsibility headlin
   }
 });
 
+test('non-array query aspects fail closed while empty and responsibility arrays remain supported', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  insert(db);
+
+  for (const queryAspects of [
+    'main_responsibilities',
+    { 0: 'main_responsibilities', length: 1 },
+    { aspect: 'main_responsibilities' },
+    null,
+  ]) {
+    assert.deepEqual(await service(db).search({
+      scope: 'public_read_only', product, queryAspects,
+    }), { answer: '', sources: [] });
+  }
+
+  for (const queryAspects of [[], ['main_responsibilities']]) {
+    const result = await service(db).search({
+      scope: 'public_read_only', product, queryAspects,
+    });
+    assert.match(result.answer, /身故保险金/u);
+    assert.equal(result.sources.length, 1);
+  }
+});
+
 test('non-official URLs never become verified sources', async (t) => {
   const db = database();
   t.after(() => db.close());
