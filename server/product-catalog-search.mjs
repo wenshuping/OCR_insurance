@@ -1,5 +1,5 @@
 const CATALOG_TABLES = [
-  { table: 'knowledge_records', product: 'product_name', publicWhere: `(
+  { table: 'knowledge_records', product: 'product_name', requiredPublicColumns: ['payload'], publicWhere: `(
       json_valid(payload) = 1 AND (
         COALESCE(json_extract(payload, '$.sourceKind'), '') NOT IN ('open_web_reference', 'legacy_external_reference')
         AND COALESCE(json_extract(payload, '$.evidenceLevel'), '') != 'external_legacy_reference'
@@ -19,8 +19,8 @@ const CATALOG_TABLES = [
   { table: 'insurance_indicator_records', product: 'product_name', public: false },
   { table: 'product_responsibility_cards', product: 'product_name', public: false },
   { table: 'optional_responsibility_records', product: 'product_name', public: false },
-  { table: 'product_customer_responsibility_summaries', product: 'product_name', publicWhere: "status = 'ready'" },
-  { table: 'insurance_products', product: 'official_name', publicWhere: "COALESCE(status, '') NOT IN ('draft', 'pending', 'disabled', 'rejected')" },
+  { table: 'product_customer_responsibility_summaries', product: 'product_name', requiredPublicColumns: ['status'], publicWhere: "status = 'ready'" },
+  { table: 'insurance_products', product: 'official_name', requiredPublicColumns: ['status'], publicWhere: "COALESCE(status, '') NOT IN ('draft', 'pending', 'disabled', 'rejected')" },
 ];
 
 const queryCacheByDb = new WeakMap();
@@ -35,7 +35,7 @@ function comparable(value) {
   return clean(value).normalize('NFKC').replace(/[\s《》（）()【】\[\]·,，。:：;；、-]/gu, '').toLowerCase();
 }
 
-function productIdentity(value) {
+export function catalogProductIdentity(value) {
   return comparable(value).replace(/^[\p{Script=Han}]{2,24}?保险(?:股份)?有限公司/gu, '');
 }
 
@@ -51,16 +51,17 @@ function availableSources(db, visibility) {
   return CATALOG_TABLES.filter((source) => {
     if (visibility === 'public' && source.public === false) return false;
     const columns = tableColumns(db, source.table);
-    return columns.has('company') && columns.has(source.product);
+    const hasPublicColumns = visibility !== 'public'
+      || (source.requiredPublicColumns || []).every((column) => columns.has(column));
+    return columns.has('company') && columns.has(source.product) && hasPublicColumns;
   });
 }
 
 function productDocumentSourceSql(db, visibility) {
   const columns = tableColumns(db, 'product_documents');
   if (!columns.has('payload') || !columns.has('source_authority')) return '';
-  const reviewCondition = visibility === 'public' && columns.has('review_status')
-    ? " AND documents.review_status = 'published'"
-    : '';
+  if (visibility === 'public' && !columns.has('review_status')) return '';
+  const reviewCondition = visibility === 'public' ? " AND documents.review_status = 'published'" : '';
   const validPayload = "CASE WHEN json_valid(documents.payload) THEN documents.payload ELSE '{}' END";
   const baseWhere = `documents.source_authority = 'company_material'${reviewCondition}`;
   return `
@@ -117,7 +118,7 @@ export function rankProductCatalogRows(rows, query, limit = 30) {
     const company = clean(row.company);
     const productName = clean(row.productName || row.product_name);
     if (!company || !productName) continue;
-    const key = `${company}\u001f${productIdentity(productName)}`;
+    const key = `${company}\u001f${catalogProductIdentity(productName)}`;
     const current = deduplicated.get(key);
     if (!current || Number(row.recordCount || 0) > Number(current.recordCount || 0)) {
       deduplicated.set(key, { ...row, company, productName });

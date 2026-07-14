@@ -6,6 +6,7 @@ import {
   chooseAgentQuestionPolicy,
   validateAgentQuestionPolicy,
 } from './agent-question-policy.service.mjs';
+import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -13,6 +14,7 @@ const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_repo
 const AUDIT_ENTITY_KEYS = new Set(['familyName', 'familyRef', 'productName', 'policyHint', 'sourceFamilyName', 'targetFamilyName']);
 const PRONOUN_PATTERN = /(?:这个家庭|刚才那家)/u;
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
+const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
 
 function boundedString(value, limit) {
   return typeof value === 'string' ? value.trim().slice(0, limit) : '';
@@ -54,6 +56,50 @@ function normalizeFamilyName(value) {
     .toLowerCase()
     .replace(/[\s\p{P}\p{S}]+/gu, '')
     .replace(/家庭$/u, '');
+}
+
+function projectSemanticProduct(candidate, semanticContext) {
+  const value = semanticContext?.resolvedEntities?.product;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const officialName = boundedString(value.officialName, 200);
+  const company = boundedString(value.company, 200);
+  const canonicalProductId = boundedString(value.canonicalProductId, 200);
+  const candidateCanonicalProductId = boundedString(candidate.entities.productCanonicalId, 200);
+  if (!officialName || !company
+    || candidate.entities.productName !== officialName
+    || candidate.entities.productCompany !== company
+    || candidateCanonicalProductId !== canonicalProductId) return null;
+  return {
+    product: { canonicalProductId, company, officialName },
+    queryAspects: [...new Set((Array.isArray(semanticContext?.queryAspects)
+      ? semanticContext.queryAspects : [])
+      .filter((value) => typeof value === 'string' && QUERY_ASPECTS.has(value)))].slice(0, 8),
+  };
+}
+
+function projectSemanticProducts(candidate, semanticContext) {
+  const values = semanticContext?.resolvedEntities?.products;
+  if (!Array.isArray(values) || values.length !== 2) return null;
+  const products = values.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const suffix = index + 1;
+    const officialName = boundedString(value.officialName, 200);
+    const company = boundedString(value.company, 200);
+    const canonicalProductId = boundedString(value.canonicalProductId, 200);
+    if (!officialName || !company || !canonicalProductId
+      || candidate.entities[`product${suffix}Name`] !== officialName
+      || candidate.entities[`product${suffix}Company`] !== company
+      || candidate.entities[`product${suffix}CanonicalId`] !== canonicalProductId) return null;
+    return { canonicalProductId, company, officialName };
+  });
+  if (products.some((product) => !product)
+    || new Set(products.map((product) => product.canonicalProductId)).size !== 2) return null;
+  return {
+    products,
+    queryAspects: [...new Set((Array.isArray(semanticContext?.queryAspects)
+      ? semanticContext.queryAspects : [])
+      .filter((value) => typeof value === 'string' && QUERY_ASPECTS.has(value)))].slice(0, 8),
+  };
 }
 
 async function defaultFamilyResolver({ store, state, internalUserId }) {
@@ -133,7 +179,7 @@ function safeFallback(operation) {
     : AGENT_QUESTION_POLICIES.find((policy) => policy.key === 'unknown_read');
 }
 
-function selectPolicy(candidate, published) {
+function selectPolicyUnchecked(candidate, published) {
   const policies = Array.isArray(published?.policies) ? published.policies : AGENT_QUESTION_POLICIES;
   const exact = published?.version
     ? policies.find((policy) => normalizeIntent(policy?.intent) === candidate.intent)
@@ -165,6 +211,14 @@ function selectPolicy(candidate, published) {
       policySource: 'built_in',
     };
   }
+}
+
+function selectPolicy(candidate, published) {
+  const selected = selectPolicyUnchecked(candidate, published);
+  if (candidate.requestedOperation === 'write' && selected.policy?.operation !== 'write') {
+    return { policy: { ...safeFallback('write') }, policySource: 'built_in' };
+  }
+  return selected;
 }
 
 function publicResult(result, fallbackDecision = 'execute') {
@@ -233,7 +287,7 @@ export async function simulateAgentQuestionDecision({ store, policyVersion, inte
 export function createAgentQuestionRouter({ store, handlers = {}, familyResolver, clock = () => new Date() } = {}) {
   if (!store || typeof store.load !== 'function') throw new TypeError('store with load() is required');
 
-  async function route({ internalUserId, candidate: rawCandidate, messageRef, conversationContext } = {}) {
+  async function route({ internalUserId, candidate: rawCandidate, messageRef, conversationContext, semanticContext } = {}) {
     const userId = Number(internalUserId);
     if (!Number.isInteger(userId) || userId <= 0) throw new TypeError('internalUserId is required');
     const normalizedMessageRef = boundedString(messageRef, 200);
@@ -361,6 +415,23 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
         : {}),
       ...(family ? { familyId: Number(family.id) } : {}),
     };
+    if (policy.intent === 'insurance_product_knowledge') {
+      const semanticProduct = projectSemanticProduct(candidate, semanticContext);
+      const semanticProducts = projectSemanticProducts(candidate, semanticContext);
+      if (semanticContext && !semanticProduct && !semanticProducts) {
+        return finish({
+          decision: 'deny',
+          interaction: { type: 'denied', text: '当前无法安全确认要查询的保险产品。' },
+        }, 'semantic_product_mismatch');
+      }
+      if (semanticProduct) {
+        authorizedContext.resolvedProduct = semanticProduct.product;
+        authorizedContext.queryAspects = semanticProduct.queryAspects;
+      } else if (semanticProducts) {
+        authorizedContext.resolvedProducts = semanticProducts.products;
+        authorizedContext.queryAspects = semanticProducts.queryAspects;
+      }
+    }
     let handled;
     try {
       handled = await handler(authorizedContext);

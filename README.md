@@ -38,6 +38,8 @@ npm run local:dev:status
 npm run local:dev:stop
 ```
 
+Agent 语义解析默认以 `enforced` 模式启用。可将 `POLICY_AGENT_SEMANTIC_MODE` 设为 `off`，仅暂停新的 semantic proposal 请求；已有 legacy candidate 请求不受影响。应用代码显式传入的 `agentSemanticMode` 优先于环境变量，且配置只接受 `enforced` 或 `off`，其他值会导致服务启动失败。
+
 如果要分别开三个终端调试：
 
 ```bash

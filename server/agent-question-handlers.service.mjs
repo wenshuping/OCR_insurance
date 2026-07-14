@@ -13,6 +13,39 @@ function text(value) {
   return String(value ?? '').trim();
 }
 
+function resolvedProductQuery(context) {
+  const value = context?.resolvedProduct;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const canonicalProductId = text(value.canonicalProductId);
+  const company = text(value.company);
+  const officialName = text(value.officialName);
+  if (!canonicalProductId || !company || !officialName
+    || canonicalProductId.length > 200 || company.length > 200 || officialName.length > 200) return null;
+  const queryAspects = Array.isArray(context?.queryAspects)
+    ? context.queryAspects.filter((item) => typeof item === 'string').slice(0, 8)
+    : [];
+  return { product: { canonicalProductId, company, officialName }, queryAspects };
+}
+
+function resolvedProductComparison(context) {
+  if (!Array.isArray(context?.resolvedProducts) || context.resolvedProducts.length !== 2) return null;
+  const products = context.resolvedProducts.map((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const canonicalProductId = text(value.canonicalProductId);
+    const company = text(value.company);
+    const officialName = text(value.officialName);
+    return canonicalProductId && company && officialName
+      && canonicalProductId.length <= 200 && company.length <= 200 && officialName.length <= 200
+      ? { canonicalProductId, company, officialName }
+      : null;
+  });
+  if (products.some((product) => !product)
+    || new Set(products.map((product) => product.canonicalProductId)).size !== 2) return null;
+  const queryAspects = (Array.isArray(context.queryAspects) ? context.queryAspects : [])
+    .filter((item) => typeof item === 'string' && item !== 'comparison').slice(0, 8);
+  return { products, queryAspects: queryAspects.length ? queryAspects : ['main_responsibilities'] };
+}
+
 function positiveInteger(value, label) {
   const number = Number(value);
   if (!Number.isInteger(number) || number <= 0) throw new TypeError(`${label} is required`);
@@ -134,6 +167,7 @@ export function createAgentQuestionHandlers({
   links = {},
   allowedLinkOrigins = [],
   allowedKnowledgeOrigins = [],
+  allowedKnowledgeOriginsProvider,
   pendingJobTtlMs = 300_000,
   clock = () => new Date(),
 } = {}) {
@@ -333,6 +367,74 @@ export function createAgentQuestionHandlers({
 
   async function answerProductKnowledge(context) {
     const question = text(context?.question).slice(0, 2_000);
+    const semantic = resolvedProductQuery(context);
+    const comparison = resolvedProductComparison(context);
+    if (semantic || comparison) {
+      const requests = comparison
+        ? comparison.products.map((product) => ({ product, queryAspects: comparison.queryAspects }))
+        : [{ product: semantic.product, queryAspects: semantic.queryAspects }];
+      const results = productKnowledge && typeof productKnowledge.search === 'function'
+        ? await Promise.all(requests.map((request) => productKnowledge.search({
+          question,
+          scope: 'public_read_only',
+          ...request,
+        })))
+        : [];
+      let trustedKnowledgeOrigins = allowedKnowledgeOrigins;
+      if (typeof allowedKnowledgeOriginsProvider === 'function') {
+        try {
+          const loaded = await allowedKnowledgeOriginsProvider();
+          trustedKnowledgeOrigins = Array.isArray(loaded)
+            ? loaded.filter((origin) => typeof origin === 'string')
+            : [];
+        } catch {
+          trustedKnowledgeOrigins = [];
+        }
+      }
+      const projectSources = (result) => (Array.isArray(result?.sources) ? result.sources : [])
+        .filter((source) => source?.verified === true)
+        .map((source) => ({
+          title: text(source.title),
+          url: safeLink(source.url, trustedKnowledgeOrigins),
+          provenance: text(source.provenance || source.sourceKind),
+        }))
+        .filter((source) => source.url && source.title.length <= 500 && source.provenance.length <= 200)
+        .slice(0, 20);
+      if (comparison) {
+        const sourcesByProduct = results.map(projectSources);
+        if (results.length !== 2
+          || results.some((result) => !text(result?.answer))
+          || sourcesByProduct.some((sources) => sources.length === 0)) {
+          return stableResult(
+            { certainty: 'unverified', answer: '' },
+            { source: 'public_product_knowledge', sources: [] },
+            { message: '当前没有可核验来源，无法给出确定的产品事实。' },
+          );
+        }
+        const answer = comparison.products.map((product, index) => (
+          `${product.officialName}\n${text(results[index]?.answer)}`.trim()
+        )).join('\n\n');
+        return stableResult(
+          { certainty: 'supported', answer, comparedProductCount: 2 },
+          { source: 'public_product_knowledge', sources: sourcesByProduct.flat().slice(0, 20) },
+          { message: answer },
+        );
+      }
+      const result = results[0] || null;
+      const sources = projectSources(result);
+      if (!sources.length) {
+        return stableResult(
+          { certainty: 'unverified', answer: '' },
+          { source: 'public_product_knowledge', sources: [] },
+          { message: '当前没有可核验来源，无法给出确定的产品事实。' },
+        );
+      }
+      return stableResult(
+        { certainty: 'supported', answer: text(result?.answer) },
+        { source: 'public_product_knowledge', sources },
+        { message: text(result?.answer) },
+      );
+    }
     const productName = text(context?.productName).slice(0, 200);
     const result = productKnowledge && typeof productKnowledge.search === 'function'
       ? await productKnowledge.search({ question, productName, scope: 'public_read_only' })
@@ -357,11 +459,22 @@ export function createAgentQuestionHandlers({
         },
       };
     }
+    let trustedKnowledgeOrigins = allowedKnowledgeOrigins;
+    if (typeof allowedKnowledgeOriginsProvider === 'function') {
+      try {
+        const loaded = await allowedKnowledgeOriginsProvider();
+        trustedKnowledgeOrigins = Array.isArray(loaded)
+          ? loaded.filter((origin) => typeof origin === 'string')
+          : [];
+      } catch {
+        trustedKnowledgeOrigins = [];
+      }
+    }
     const sources = (Array.isArray(result?.sources) ? result.sources : [])
       .filter((source) => source?.verified === true)
       .map((source) => ({
         title: text(source.title),
-        url: safeLink(source.url, allowedKnowledgeOrigins),
+        url: safeLink(source.url, trustedKnowledgeOrigins),
         provenance: text(source.provenance || source.sourceKind),
       }))
       .filter((source) => source.url && source.title.length <= 500 && source.provenance.length <= 200);

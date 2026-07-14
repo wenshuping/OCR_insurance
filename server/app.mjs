@@ -10,6 +10,13 @@ import { createAgentConfirmationService } from './agent-confirmation.service.mjs
 import { createAgentReportRegenerationQueue } from './agent-report-regeneration-queue.service.mjs';
 import { createAgentQuestionHandlers } from './agent-question-handlers.service.mjs';
 import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
+import { createAgentProductKnowledgeService } from './agent-resolved-product-knowledge.service.mjs';
+import { createAgentFamilyEntityResolver } from './agent-family-entity-resolver.service.mjs';
+import { createAgentProductEntityResolver } from './agent-product-entity-resolver.service.mjs';
+import { createAgentSemanticConversationService } from './agent-semantic-conversation.service.mjs';
+import { createAgentSemanticAuditService } from './agent-semantic-audit.service.mjs';
+import { createAgentSemanticQuestionRouter } from './agent-semantic-question-router.service.mjs';
+import { createAgentSemanticResolver } from './agent-semantic-resolver.service.mjs';
 import { createAgentConversationContextService } from './agent-conversation-context.service.mjs';
 import { createAgentConversationRuntime } from './agent-conversation-runtime.service.mjs';
 import { createDeepSeekAgentQuestionInterpreter } from './agent-question-interpreter.service.mjs';
@@ -1253,6 +1260,21 @@ function buildEffectiveOfficialDomainProfiles(state) {
   return mergeOfficialDomainProfiles(state.officialDomainProfiles || []);
 }
 
+function officialProfileOrigins(profiles = []) {
+  const origins = new Set();
+  for (const profile of profiles) {
+    for (const domain of [...(profile.officialDomains || []), ...(profile.siteDomains || [])]) {
+      try {
+        const url = new URL(String(domain).includes('://') ? String(domain) : `https://${domain}`);
+        if (url.protocol === 'https:' && !url.username && !url.password) origins.add(url.origin);
+      } catch {
+        // Invalid custom domains are excluded from the public evidence allowlist.
+      }
+    }
+  }
+  return [...origins];
+}
+
 function buildAdminOfficialDomainProfiles(state) {
   const customIds = new Set((state.officialDomainProfiles || []).map((profile) => String(profile.id || '')));
   return buildEffectiveOfficialDomainProfiles(state)
@@ -2219,7 +2241,27 @@ function resolveDefaultWechatPayMode(options = {}) {
   return process.env.NODE_ENV === 'production' ? 'live' : 'mock';
 }
 
+export function resolveAgentSemanticMode(options = {}, env = process.env) {
+  const value = trim(options.agentSemanticMode ?? env.POLICY_AGENT_SEMANTIC_MODE ?? 'enforced');
+  if (value === 'enforced' || value === 'off') return value;
+  throw new Error('POLICY_AGENT_SEMANTIC_MODE must be "enforced" or "off"');
+}
+
+function createAgentSemanticOffRouter(legacyRouter) {
+  return {
+    route(input) {
+      return input?.candidate
+        ? legacyRouter.route(input)
+        : Promise.resolve({
+          decision: 'clarify',
+          interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+        });
+    },
+  };
+}
+
 export function createPolicyOcrApp(options = {}) {
+  const agentSemanticMode = resolveAgentSemanticMode(options);
   const state = options.state || createInitialState();
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
@@ -2664,11 +2706,18 @@ export function createPolicyOcrApp(options = {}) {
 
   const app = express();
   const responsibilityRoutes = createResponsibilityRoutes(routeContext);
+  const agentStore = options.agentStore || options.agentTransferRegenerationStore || null;
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
   const productRagService = options.productRagService
     || (productKnowledgeStore ? createProductRagService({ store: productKnowledgeStore }) : null);
-  const agentProductKnowledge = options.agentProductKnowledge
+  const loadAgentOfficialDomainProfiles = async () => {
+    const current = agentStore && typeof agentStore.load === 'function'
+      ? await agentStore.load()
+      : state;
+    return mergeOfficialDomainProfiles(current?.officialDomainProfiles || []);
+  };
+  const legacyAgentProductKnowledge = options.agentProductKnowledge
     || (options.db ? createAgentProductKnowledgeSearch({
       db: options.db,
       responsibilityQuery: (input) => responsibilityAssistantQuery?.(input),
@@ -2682,6 +2731,26 @@ export function createPolicyOcrApp(options = {}) {
         fetchImpl: knowledgeFetchImpl,
       }),
     }) : null);
+  const resolvedAgentProductKnowledge = options.agentResolvedProductKnowledge
+    || (options.db ? createAgentProductKnowledgeService({
+      db: options.db,
+      loadOfficialDomainProfiles: loadAgentOfficialDomainProfiles,
+    }) : null);
+  const agentProductKnowledge = legacyAgentProductKnowledge || resolvedAgentProductKnowledge
+    ? {
+      allowedOrigins: legacyAgentProductKnowledge?.allowedOrigins || [],
+      search(input) {
+        return input?.scope === 'public_read_only' && input?.product
+          ? resolvedAgentProductKnowledge?.search(input)
+          : legacyAgentProductKnowledge?.search(input);
+      },
+    }
+    : null;
+  const loadAgentKnowledgeAllowedOrigins = async () => [...new Set([
+    ...officialProfileOrigins(await loadAgentOfficialDomainProfiles()),
+    ...(Array.isArray(options.agentKnowledgeAllowedOrigins) ? options.agentKnowledgeAllowedOrigins : []),
+    ...(Array.isArray(options.agentAllowedKnowledgeOrigins) ? options.agentAllowedKnowledgeOrigins : []),
+  ])];
   app.locals.state = state;
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -2697,7 +2766,6 @@ export function createPolicyOcrApp(options = {}) {
     ...routeContext,
     registerFamilyReportRegenerationService(service) { familyRegenerationWorkflow = service; },
   });
-  const agentStore = options.agentStore || options.agentTransferRegenerationStore || null;
   const agentConversationContext = options.agentConversationContext || (
     agentStore && typeof agentStore.resolveAgentConversation === 'function'
       && typeof agentStore.findAgentConversation === 'function'
@@ -2719,6 +2787,7 @@ export function createPolicyOcrApp(options = {}) {
       reportQueue: agentReportQueue,
       productKnowledge: agentProductKnowledge,
       allowedKnowledgeOrigins: agentProductKnowledge?.allowedOrigins || [],
+      allowedKnowledgeOriginsProvider: loadAgentKnowledgeAllowedOrigins,
       authorizedFamilyDataLoader: async ({ familyId, internalUserId }) => {
         if (typeof agentStore.loadAuthorizedFamilyState === 'function') {
           return agentStore.loadAuthorizedFamilyState({ familyId, internalUserId });
@@ -2767,9 +2836,80 @@ export function createPolicyOcrApp(options = {}) {
       ? agentConfirmationService.previewPolicyTransfer({ userId: input.internalUserId, ...(input.entities || {}) })
       : baseAgentHandlers.system(input),
   } : baseAgentHandlers;
-  const agentQuestionRouter = options.agentQuestionRouter || (agentStore && agentHandlers
+  const injectedQuestionRouter = Object.prototype.hasOwnProperty.call(options, 'agentQuestionRouter');
+  const agentLegacyQuestionRouter = options.agentLegacyQuestionRouter || (agentStore && agentHandlers
     ? createAgentQuestionRouter({ store: agentStore, handlers: agentHandlers })
     : null);
+  let defaultAgentQuestionRouter = agentLegacyQuestionRouter;
+  if (agentSemanticMode === 'enforced' && agentLegacyQuestionRouter) {
+    const semanticConversationService = options.agentSemanticConversationService
+      || (typeof agentStore?.getAgentSemanticConversation === 'function'
+        && typeof agentStore?.saveAgentSemanticConversation === 'function'
+        ? createAgentSemanticConversationService({ store: agentStore })
+        : null);
+    const semanticAuditService = options.agentSemanticAuditService
+      || (typeof agentStore?.recordAgentSemanticAudit === 'function'
+        ? createAgentSemanticAuditService({ store: agentStore })
+        : null);
+    let semanticResolver = options.agentSemanticResolver || null;
+    if (!semanticResolver && options.db && agentStore && typeof agentStore.load === 'function') {
+      const productResolver = {
+        async resolve(input) {
+          const current = await agentStore.load();
+          return createAgentProductEntityResolver({
+            db: options.db,
+            tenantId: options.agentProductTenantId ?? 'default',
+            officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
+          }).resolve(input);
+        },
+        async resolveAllFromText(input) {
+          const current = await agentStore.load();
+          return createAgentProductEntityResolver({
+            db: options.db,
+            tenantId: options.agentProductTenantId ?? 'default',
+            officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
+          }).resolveAllFromText(input);
+        },
+      };
+      const familyResolver = createAgentFamilyEntityResolver({
+        listAuthorizedFamilies: async ({ internalUserId }) => {
+          const current = await agentStore.load();
+          return (Array.isArray(current.familyProfiles) ? current.familyProfiles : [])
+            .filter((family) => familyOwnerMatches(family, { userId: internalUserId }));
+        },
+      });
+      semanticResolver = createAgentSemanticResolver({ productResolver, familyResolver });
+    }
+    defaultAgentQuestionRouter = semanticResolver && semanticConversationService
+      ? createAgentSemanticQuestionRouter({
+        legacyRouter: agentLegacyQuestionRouter,
+        semanticResolver,
+        conversationService: semanticConversationService,
+        auditService: semanticAuditService,
+        onPersistenceError: options.agentSemanticPersistenceErrorHandler || ((error) => {
+          console.error('[agent-semantic] conversation persistence failed', {
+            code: error.code,
+            conflict: error.conflict,
+            phase: error.phase,
+          });
+        }),
+      })
+      : {
+        route(input) {
+          return input?.candidate
+            ? agentLegacyQuestionRouter.route(input)
+            : Promise.resolve({
+              decision: 'clarify',
+              interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+            });
+        },
+      };
+  }
+  const agentQuestionRouter = injectedQuestionRouter
+    ? options.agentQuestionRouter
+    : (agentSemanticMode === 'off' && defaultAgentQuestionRouter
+      ? createAgentSemanticOffRouter(defaultAgentQuestionRouter)
+      : defaultAgentQuestionRouter);
   const configuredConversationRuntime = String(
     options.agentConversationRuntimeMode || process.env.AGENT_CONVERSATION_RUNTIME || 'hermes',
   ).trim().toLowerCase();

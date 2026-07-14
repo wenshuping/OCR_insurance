@@ -3,6 +3,12 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { redactDeepSeekDirectIdentifiers } from './deepseek-privacy-gateway.mjs';
+import {
+  normalizeSemanticProposal,
+  SEMANTIC_INTENTS,
+  SEMANTIC_QUERY_ASPECTS,
+  SEMANTIC_REFERENCE_TYPES,
+} from './agent-semantic-contract.mjs';
 
 const ALLOWED_INTENTS = new Set([
   'chat', 'family_list', 'family_summary', 'coverage_report', 'sales_report',
@@ -105,16 +111,32 @@ function promptFor({ question, safeRecentContext }) {
       return role && content ? [{ role, content }] : [];
     });
   return [
-    '你是 OCR Insurance 的 Hermes 对话编排器，只做意图和实体解析，不回答保险事实，不调用任何工具。',
+    '你是 OCR Insurance 的 Hermes 语义解析器，只做意图、原文实体提及和上下文引用解析，不回答保险事实，不调用任何工具。',
     '只输出一个 JSON 对象，不要 Markdown、解释或额外字段。',
-    '允许字段：intent, question, confidence, requestedOperation, entities, contextRefs。',
-    `intent 只能是：${[...ALLOWED_INTENTS].join(', ')}。requestedOperation 固定为 read。`,
-    'entities 只允许 familyName, productName, productBText, policyHint, sourceFamilyName, targetFamilyName。',
-    '“他、它、这个产品、上述产品”指上一产品时，不要把整句话当产品名；输出 contextRefs:["previous_product"]，新产品放 productBText。',
+    '固定输出字段：semanticContractVersion, intent, operation, queryAspects, mentions, references, requestedSteps, confidence。',
+    'semanticContractVersion 固定为 1；operation 只能是 read 或 write。',
+    `intent 只能是：${SEMANTIC_INTENTS.join(', ')}。`,
+    `queryAspects 只能从以下值选择：${SEMANTIC_QUERY_ASPECTS.join(', ')}。`,
+    'mentions 是原文中明确出现的实体数组，每项只能含 type 和 rawText；type 只能是 insurer, product, family，rawText 必须逐字来自 USER_QUESTION。',
+    `references 每项只能含 type 和 rawText；type 只能是：${SEMANTIC_REFERENCE_TYPES.join(', ')}；rawText 必须逐字来自 USER_QUESTION。`,
+    'requestedSteps 只能从 lookup, compare, generate, upload, continue 中选择。',
+    'confidence 必须恰好包含 intent, mentions, references 三个 0 到 1 的数字。',
+    '“他、它、这个产品、上述产品”等指代只放入 references，不得猜测或编造规范产品名、公司名、家庭名。',
     '保险结论将由受控保险专家工具核验，你不得凭记忆补充责任、金额、销售状态或来源。',
     `SAFE_RECENT_CONTEXT=${JSON.stringify(history)}`,
     `USER_QUESTION=${JSON.stringify(redactDeepSeekDirectIdentifiers(question))}`,
   ].join('\n');
+}
+
+function normalizeProviderOutput(value, originalQuestion) {
+  if (value?.semanticContractVersion === 1) {
+    try {
+      return { proposal: normalizeSemanticProposal(value, originalQuestion) };
+    } catch {
+      throw Object.assign(new Error('HERMES_RESPONSE_INVALID'), { code: 'HERMES_RESPONSE_INVALID' });
+    }
+  }
+  return { candidate: normalizeCandidate(value, originalQuestion) };
 }
 
 export function createHermesConversationClient({
@@ -145,7 +167,7 @@ export function createHermesConversationClient({
     }
     return {
       sessionId: returnedSessionId,
-      candidate: normalizeCandidate(parseJsonOutput(result.stdout), normalizedQuestion),
+      ...normalizeProviderOutput(parseJsonOutput(result.stdout), normalizedQuestion),
     };
   }
 

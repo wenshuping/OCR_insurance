@@ -72,6 +72,63 @@ test('Hermes CLI client uses strict JSON, resumes the same session, and redacts 
   assert.equal(calls[0].options.timeout, 20_000);
 });
 
+test('Hermes CLI client accepts the strict semantic proposal contract', async () => {
+  const question = '新华人寿康健无忧两全保险主要保什么';
+  const client = createHermesConversationClient({
+    command: '/fake/hermes',
+    env: { HOME: '/tmp' },
+    execFile(_command, _args, _options, callback) {
+      callback(null, JSON.stringify({
+        semanticContractVersion: 1,
+        intent: 'insurance_product_knowledge',
+        operation: 'read',
+        queryAspects: ['main_responsibilities'],
+        mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
+        references: [],
+        requestedSteps: ['lookup'],
+        confidence: { intent: 0.99, mentions: 0.98, references: 1 },
+      }), '\nsession_id: hermes-semantic-a\n');
+    },
+  });
+
+  const result = await client.runTurn({ question });
+
+  assert.equal(result.sessionId, 'hermes-semantic-a');
+  assert.equal(result.proposal.intent, 'insurance_product_knowledge');
+  assert.equal(result.candidate, undefined);
+});
+
+test('Hermes semantic proposal is routed through the semantic boundary', async () => {
+  const context = createMemoryContext();
+  const routed = [];
+  const proposal = {
+    semanticContractVersion: 1,
+    intent: 'insurance_product_knowledge',
+    operation: 'read',
+    queryAspects: ['main_responsibilities'],
+    mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
+    references: [],
+    requestedSteps: ['lookup'],
+    confidence: { intent: 1, mentions: 1, references: 1 },
+  };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    hermesClient: { async runTurn() { return { sessionId: 'semantic-session', proposal }; } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '已核验。' } };
+    } },
+    directInterpreter: async () => { throw new Error('must not use direct'); },
+  });
+
+  await runtime.processMessage(envelope('ding-a', 'semantic-conversation', 's-1', '康健无忧两全保险主要保什么'));
+
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].runtime, 'hermes');
+  assert.deepEqual(routed[0].proposal, proposal);
+  assert.equal(routed[0].candidate, undefined);
+});
+
 test('Hermes primary path resolves previous_product and keeps users isolated', async () => {
   const context = createMemoryContext();
   const hermesCalls = [];

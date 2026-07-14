@@ -114,6 +114,8 @@ export function createAgentConversationRuntime({
     const selectedIndex = selectedCandidateIndex(question);
     const selectedProduct = selectedIndex >= 0 ? context?.productCandidates?.products?.[selectedIndex] : '';
     let candidate;
+    let proposal;
+    let semanticFallbackReason = '';
     let hermesSessionId = String(context?.hermesSessionId || '');
     let usedRuntime = 'direct';
     if (selectedProduct) {
@@ -133,14 +135,22 @@ export function createAgentConversationRuntime({
           requestId: String(channelEnvelope?.messageRef || ''),
         });
         candidate = interpreted.candidate;
+        proposal = interpreted.proposal;
         hermesSessionId = interpreted.sessionId;
         usedRuntime = 'hermes';
       } catch (error) {
         reportError(String(error?.code || 'HERMES_PROVIDER_FAILED'));
+        semanticFallbackReason = error?.code === 'HERMES_RESPONSE_INVALID'
+          ? 'hermes_invalid_output'
+          : 'hermes_unavailable';
       }
     }
-    if (!candidate) candidate = await directCandidate({ question, history, settings });
-    const resolved = resolvePreviousProduct(candidate, question, context);
+    if (!candidate && !proposal) {
+      const direct = await directCandidate({ question, history, settings });
+      if (direct?.semanticContractVersion === 1) proposal = direct;
+      else candidate = direct;
+    }
+    const resolved = candidate ? resolvePreviousProduct(candidate, question, context) : { candidate: null };
     async function ensureIdentityCurrent() {
       if (typeof refreshVerifiedIdentity !== 'function') return;
       const currentIdentity = await refreshVerifiedIdentity();
@@ -155,6 +165,18 @@ export function createAgentConversationRuntime({
     let result;
     if (resolved.clarification) {
       result = resolved.clarification;
+    } else if (proposal) {
+      result = await questionRouter.route({
+        internalUserId: identity.internalUserId,
+        messageRef: String(channelEnvelope?.messageRef || ''),
+        ...(channelEnvelope?.conversationId ? { conversationId: identity.channelConversationId } : {}),
+        question,
+        runtime: usedRuntime,
+        proposal,
+        ...(usedRuntime === 'direct' && semanticFallbackReason
+          ? { fallbackReason: semanticFallbackReason }
+          : {}),
+      });
     } else {
       candidate = resolved.candidate;
       result = await questionRouter.route({
@@ -191,12 +213,12 @@ export function createAgentConversationRuntime({
         productCandidates: products.length
           ? { products, question, updatedAt }
           : context.productCandidates,
-        question: candidate?.intent !== 'chat' ? { candidate, updatedAt } : context.question,
+        question: candidate?.intent && candidate.intent !== 'chat' ? { candidate, updatedAt } : context.question,
       });
     } catch {
       reportError('AGENT_CONVERSATION_COMMIT_FAILED');
     }
-    return { ...result, runtime: usedRuntime, candidate };
+    return { ...result, runtime: usedRuntime, ...(candidate ? { candidate } : {}) };
   }
 
   return { processMessage };

@@ -1,6 +1,9 @@
 import express from 'express';
 
 import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from '../agent-question-policy.service.mjs';
+import { normalizeSemanticProposal } from '../agent-semantic-contract.mjs';
+import { AGENT_SEMANTIC_AUDIT_FALLBACK_REASONS } from '../agent-semantic-audit-contract.mjs';
+import { preparseAgentMessage } from '../agent-semantic-preparser.mjs';
 
 const ATTACHMENT_FIELDS = new Set([
   'attachment', 'attachments', 'file', 'files', 'image', 'images', 'pdf', 'document', 'documents',
@@ -9,8 +12,17 @@ const ATTACHMENT_FIELDS = new Set([
 const CANDIDATE_FIELDS = new Set([
   'intent', 'question', 'confidence', 'requestedOperation', 'entities', 'contextRefs',
 ]);
+const INTERNAL_ENTITY_FIELDS = new Set([
+  'productCanonicalId', 'productCompany', 'familyId', 'resolvedEntities',
+]);
 const UNTRUSTED_AUTHORITY_FIELDS = new Set(['userId', 'internalUserId', 'familyId', 'permissions']);
-const QUESTION_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId', 'candidate']);
+const QUESTION_BODY_FIELDS = new Set([
+  'channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId',
+  'candidate', 'question', 'runtime', 'proposal', 'fallbackReason',
+]);
+const SEMANTIC_FALLBACK_REASONS = new Set(AGENT_SEMANTIC_AUDIT_FALLBACK_REASONS);
+const DIRECT_FALLBACK_REASONS = new Set(['hermes_unavailable', 'hermes_invalid_output']);
+const RULE_DIRECT_FALLBACK_REASONS = new Set(['direct_unavailable', 'direct_invalid_output']);
 const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId']);
 const CONTEXT_LOAD_BODY_FIELDS = new Set([...CONFIRM_BODY_FIELDS, 'productContextTtlMinutes']);
 const CONTEXT_COMMIT_BODY_FIELDS = new Set([...CONTEXT_LOAD_BODY_FIELDS, 'conversationRef', 'expectedVersion', 'context']);
@@ -157,14 +169,24 @@ function normalizeCandidate(value) {
   const question = text(value.question, 1000);
   const requestedOperation = text(value.requestedOperation, 20);
   const confidence = Number(value.confidence);
-  if (!intent || !question || !requestedOperation || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null;
+  if (!intent || !question || !['read', 'write'].includes(requestedOperation)
+    || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null;
 
   const candidate = { intent, question, confidence, requestedOperation };
   if (value.entities !== undefined) {
     if (!value.entities || typeof value.entities !== 'object' || Array.isArray(value.entities)) return null;
     const entries = Object.entries(value.entities);
-    if (entries.length > 12 || entries.some(([key, item]) => !text(key, 40) || !text(item, 200))) return null;
-    candidate.entities = Object.fromEntries(entries.map(([key, item]) => [key.trim(), item.trim()]));
+    if (entries.length > 12) return null;
+    const normalizedEntries = [];
+    const seenKeys = new Set();
+    for (const [key, item] of entries) {
+      const normalizedKey = text(key, 40);
+      const normalizedItem = text(item, 200);
+      if (!normalizedKey || !normalizedItem || seenKeys.has(normalizedKey)) return null;
+      seenKeys.add(normalizedKey);
+      if (!INTERNAL_ENTITY_FIELDS.has(normalizedKey)) normalizedEntries.push([normalizedKey, normalizedItem]);
+    }
+    candidate.entities = Object.fromEntries(normalizedEntries);
   }
   if (value.contextRefs !== undefined) {
     if (!Array.isArray(value.contextRefs) || value.contextRefs.length > 10) return null;
@@ -175,9 +197,9 @@ function normalizeCandidate(value) {
   return candidate;
 }
 
-function normalizeBaseBody(body, { requireCandidate = false, allowedFields } = {}) {
+function normalizeBaseBody(body, { requireCandidate = false, questionRoute = false, allowedFields } = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
-  const fields = allowedFields || (requireCandidate ? QUESTION_BODY_FIELDS : CONFIRM_BODY_FIELDS);
+  const fields = allowedFields || ((requireCandidate || questionRoute) ? QUESTION_BODY_FIELDS : CONFIRM_BODY_FIELDS);
   if (Object.keys(body).some((key) => !fields.has(key) && !UNTRUSTED_AUTHORITY_FIELDS.has(key))) return null;
   const channel = text(body.channel, 20).toLowerCase();
   const channelUserId = text(body.channelUserId, 200);
@@ -185,9 +207,79 @@ function normalizeBaseBody(body, { requireCandidate = false, allowedFields } = {
   const messageRef = text(body.messageRef, 200);
   const conversationId = body.conversationId === undefined ? '' : text(body.conversationId, 200);
   if (!channel || !channelUserId || !messageRef || (body.channelMobile !== undefined && !channelMobile) || (body.conversationId !== undefined && !conversationId)) return null;
-  const candidate = requireCandidate ? normalizeCandidate(body.candidate) : undefined;
-  if (requireCandidate && !candidate) return null;
-  return { channel, channelUserId, channelMobile, messageRef, conversationId, candidate };
+  if (!requireCandidate && !questionRoute) {
+    return { channel, channelUserId, channelMobile, messageRef, conversationId };
+  }
+
+  const hasCandidate = body.candidate !== undefined;
+  const hasSemantic = body.question !== undefined || body.runtime !== undefined
+    || body.proposal !== undefined || body.fallbackReason !== undefined;
+  if (hasCandidate === hasSemantic) return null;
+  if (hasCandidate) {
+    const candidate = normalizeCandidate(body.candidate);
+    return candidate
+      ? { channel, channelUserId, channelMobile, messageRef, conversationId, candidate }
+      : null;
+  }
+
+  const question = text(body.question, 1000);
+  const runtime = text(body.runtime, 20).toLowerCase();
+  if (!question || !['hermes', 'direct', 'rule'].includes(runtime)) return null;
+  const proposalProvided = Object.prototype.hasOwnProperty.call(body, 'proposal');
+  const fallbackReasonProvided = Object.prototype.hasOwnProperty.call(body, 'fallbackReason');
+  const proposal = body.proposal;
+  const fallbackReason = fallbackReasonProvided ? text(body.fallbackReason, 40).toLowerCase() : '';
+  if (fallbackReasonProvided && !SEMANTIC_FALLBACK_REASONS.has(fallbackReason)) return null;
+  const preparsed = preparseAgentMessage(question);
+  const isCandidateSelection = Boolean(preparsed.candidateSelection);
+  const isExplicitUpload = preparsed.operationHint === 'upload_link';
+  let normalizedProposal;
+  if (proposal !== null && proposal !== undefined) {
+    try {
+      normalizedProposal = normalizeSemanticProposal(proposal, question);
+    } catch {
+      return null;
+    }
+  }
+  let effectiveRuntime = runtime;
+  let effectiveFallbackReason = fallbackReason;
+  if (isCandidateSelection) {
+    if (runtime !== 'hermes' || fallbackReasonProvided) return null;
+    if (normalizedProposal) {
+      const boundSelection = normalizedProposal.references.some((reference) => (
+        reference.type === 'candidate_index'
+        && reference.rawText === preparsed.candidateSelection.rawText
+      ));
+      if (!boundSelection) return null;
+    } else {
+      effectiveRuntime = 'rule';
+      effectiveFallbackReason = 'candidate_selection';
+    }
+  } else if (runtime === 'rule') {
+    if (proposal !== null && proposal !== undefined) return null;
+    if (fallbackReasonProvided) {
+      if (!RULE_DIRECT_FALLBACK_REASONS.has(fallbackReason)) return null;
+    } else if (isExplicitUpload) {
+      effectiveFallbackReason = 'rule_preparse';
+    } else {
+      return null;
+    }
+  } else if (runtime === 'direct') {
+    if (!normalizedProposal || !fallbackReasonProvided || !DIRECT_FALLBACK_REASONS.has(fallbackReason)) return null;
+  } else if (!normalizedProposal && isExplicitUpload && !fallbackReasonProvided) {
+    effectiveRuntime = 'rule';
+    effectiveFallbackReason = 'rule_preparse';
+  } else if (fallbackReasonProvided && fallbackReason !== 'none') {
+    return null;
+  } else if (!normalizedProposal) {
+    return null;
+  }
+  return {
+    channel, channelUserId, channelMobile, messageRef, conversationId,
+    question, runtime: effectiveRuntime,
+    ...((fallbackReasonProvided || effectiveFallbackReason) ? { fallbackReason: effectiveFallbackReason } : {}),
+    ...(proposalProvided ? { proposal: proposal === null ? null : normalizedProposal } : {}),
+  };
 }
 
 function normalizeMessageBody(body) {
@@ -443,7 +535,7 @@ export function createAgentRouter({
   });
 
   router.post('/questions/route', async (req, res) => {
-    const input = await prepare(req, res, { requireCandidate: true });
+    const input = await prepare(req, res, { questionRoute: true });
     if (!input) return;
     if (!questionRouter || typeof questionRouter.route !== 'function') {
       send(res, 502, 'AGENT_GATEWAY_UPSTREAM_ERROR');
@@ -454,7 +546,14 @@ export function createAgentRouter({
         internalUserId: input.internalUserId,
         messageRef: input.messageRef,
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
-        candidate: input.candidate,
+        ...(input.candidate ? { candidate: input.candidate } : {
+          question: input.question,
+          runtime: input.runtime,
+          ...(Object.prototype.hasOwnProperty.call(input, 'proposal') ? { proposal: input.proposal } : {}),
+          ...(Object.prototype.hasOwnProperty.call(input, 'fallbackReason')
+            ? { fallbackReason: input.fallbackReason }
+            : {}),
+        }),
       });
       res.json({ ok: true, ...normalizePublicResult(result, secureLinkAllowedOrigins) });
     } catch (error) {
