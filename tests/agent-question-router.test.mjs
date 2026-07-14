@@ -125,10 +125,23 @@ test('semantic product context is projected only when it matches the routed cand
     messageRef: 'product-mismatch',
     semanticContext: { resolvedEntities: { product: { ...product, officialName: '另一产品' } }, queryAspects: ['renewal'] },
   });
+  const missingCandidateId = await router.route({
+    ...base,
+    messageRef: 'product-id-missing',
+    candidate: {
+      ...base.candidate,
+      entities: {
+        productName: product.officialName,
+        productCompany: product.company,
+      },
+    },
+    semanticContext: { resolvedEntities: { product }, queryAspects: ['renewal'] },
+  });
 
   assert.deepEqual(calls.handlers[0].input.resolvedProduct, product);
   assert.deepEqual(calls.handlers[0].input.queryAspects, ['main_responsibilities']);
   assert.equal(mismatch.decision, 'deny');
+  assert.equal(missingCandidateId.decision, 'deny');
   assert.equal(calls.handlers.length, 1);
 });
 

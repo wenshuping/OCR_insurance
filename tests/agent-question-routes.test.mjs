@@ -142,6 +142,46 @@ test('semantic question route forwards only the proposal contract fields', async
   });
 });
 
+test('semantic proposals are strictly normalized at the HTTP boundary', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const normalized = semanticBody();
+  normalized.proposal.queryAspects.push('main_responsibilities');
+  const accepted = await post(server, '/api/agent/questions/route', normalized);
+  assert.equal(accepted.response.status, 200);
+  assert.deepEqual(server.calls.route[0].proposal.queryAspects, ['main_responsibilities']);
+  assert.notStrictEqual(server.calls.route[0].proposal, normalized.proposal);
+
+  const invalidProposals = [
+    { ...semanticBody().proposal, internalUserId: 7 },
+    {
+      ...semanticBody().proposal,
+      mentions: [{
+        ...semanticBody().proposal.mentions[0],
+        productCanonicalId: 'forged-product',
+      }],
+    },
+    {
+      ...semanticBody().proposal,
+      mentions: [{ type: 'product', rawText: '原问题中不存在的产品' }],
+    },
+  ];
+  for (const [index, proposal] of invalidProposals.entries()) {
+    const result = await post(server, '/api/agent/questions/route', semanticBody({
+      messageRef: `invalid-proposal-${index}`,
+      proposal,
+    }));
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  }
+  const invalidRule = await post(server, '/api/agent/questions/route', semanticBody({
+    messageRef: 'invalid-rule-proposal', runtime: 'rule', proposal: invalidProposals[0],
+  }));
+  assert.equal(invalidRule.response.status, 400);
+  assert.equal(invalidRule.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  assert.equal(server.calls.route.length, 1);
+});
+
 test('semantic route rejects mixed modes, invalid runtimes, and missing model proposals', async (t) => {
   const server = await startServer();
   t.after(server.close);
@@ -184,9 +224,9 @@ test('legacy candidate strips semantic authority entities before routing', async
       ...validBody().candidate,
       entities: {
         familyRef: 'family_opaque',
-        productCanonicalId: 'forged-product',
-        productCompany: 'forged-company',
-        familyId: '71',
+        ' productCanonicalId ': 'forged-product',
+        'productCompany ': 'forged-company',
+        ' familyId': '71',
         resolvedEntities: 'forged',
       },
     },
@@ -194,6 +234,21 @@ test('legacy candidate strips semantic authority entities before routing', async
 
   assert.equal(result.response.status, 200);
   assert.deepEqual(server.calls.route[0].candidate.entities, { familyRef: 'family_opaque' });
+});
+
+test('legacy candidate rejects entity keys that collide after trimming', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const result = await post(server, '/api/agent/questions/route', validBody({
+    candidate: {
+      ...validBody().candidate,
+      entities: { familyRef: 'first', ' familyRef ': 'second' },
+    },
+  }));
+
+  assert.equal(result.response.status, 400);
+  assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  assert.equal(server.calls.route.length, 0);
 });
 
 test('channel mobile is available only to the authenticated identity resolver', async (t) => {

@@ -1,5 +1,7 @@
 import express from 'express';
 
+import { normalizeSemanticProposal } from '../agent-semantic-contract.mjs';
+
 const ATTACHMENT_FIELDS = new Set([
   'attachment', 'attachments', 'file', 'files', 'image', 'images', 'pdf', 'document', 'documents',
   'media', 'mediaUrl', 'downloadUrl', 'fileUrl', 'contentBase64', 'base64',
@@ -163,10 +165,20 @@ function normalizeCandidate(value) {
   const candidate = { intent, question, confidence, requestedOperation };
   if (value.entities !== undefined) {
     if (!value.entities || typeof value.entities !== 'object' || Array.isArray(value.entities)) return null;
-    const entries = Object.entries(value.entities)
-      .filter(([key]) => !INTERNAL_ENTITY_FIELDS.has(key));
-    if (entries.length > 12 || entries.some(([key, item]) => !text(key, 40) || !text(item, 200))) return null;
-    candidate.entities = Object.fromEntries(entries.map(([key, item]) => [key.trim(), item.trim()]));
+    const entries = Object.entries(value.entities);
+    if (entries.length > 12) return null;
+    const normalizedEntries = [];
+    const seenKeys = new Set();
+    for (const [key, item] of entries) {
+      const normalizedKey = text(key, 40);
+      const normalizedItem = text(item, 200);
+      if (!normalizedKey || !normalizedItem || seenKeys.has(normalizedKey)) return null;
+      seenKeys.add(normalizedKey);
+      if (!INTERNAL_ENTITY_FIELDS.has(normalizedKey)) {
+        normalizedEntries.push([normalizedKey, normalizedItem]);
+      }
+    }
+    candidate.entities = Object.fromEntries(normalizedEntries);
   }
   if (value.contextRefs !== undefined) {
     if (!Array.isArray(value.contextRefs) || value.contextRefs.length > 10) return null;
@@ -204,16 +216,20 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
   if (!question || !['hermes', 'direct', 'rule'].includes(runtime)) return null;
   const proposalProvided = Object.prototype.hasOwnProperty.call(body, 'proposal');
   const proposal = body.proposal;
-  const proposalIsObject = proposal && typeof proposal === 'object' && !Array.isArray(proposal);
-  if (runtime === 'rule') {
-    if (proposalProvided && proposal !== null && !proposalIsObject) return null;
-  } else if (!proposalIsObject) {
+  let normalizedProposal;
+  if (proposal !== null && proposal !== undefined) {
+    try {
+      normalizedProposal = normalizeSemanticProposal(proposal, question);
+    } catch {
+      return null;
+    }
+  } else if (runtime !== 'rule') {
     return null;
   }
   return {
     channel, channelUserId, channelMobile, messageRef, conversationId,
     question, runtime,
-    ...(proposalProvided ? { proposal } : {}),
+    ...(proposalProvided ? { proposal: proposal === null ? null : normalizedProposal } : {}),
   };
 }
 

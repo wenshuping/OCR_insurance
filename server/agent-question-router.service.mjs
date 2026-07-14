@@ -64,11 +64,11 @@ function projectSemanticProduct(candidate, semanticContext) {
   const officialName = boundedString(value.officialName, 200);
   const company = boundedString(value.company, 200);
   const canonicalProductId = boundedString(value.canonicalProductId, 200);
+  const candidateCanonicalProductId = boundedString(candidate.entities.productCanonicalId, 200);
   if (!officialName || !company
     || candidate.entities.productName !== officialName
     || candidate.entities.productCompany !== company
-    || (candidate.entities.productCanonicalId
-      && candidate.entities.productCanonicalId !== canonicalProductId)) return null;
+    || candidateCanonicalProductId !== canonicalProductId) return null;
   return {
     product: { canonicalProductId, company, officialName },
     queryAspects: [...new Set((Array.isArray(semanticContext?.queryAspects)
