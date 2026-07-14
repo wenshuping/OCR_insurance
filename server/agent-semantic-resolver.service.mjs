@@ -308,9 +308,12 @@ function projectProductScan(value) {
     || typeof value.overflow !== 'boolean'
     || !Array.isArray(value.entities)
     || value.entities.length > 8) return null;
+  const hasInvalidSignal = value.invalid !== undefined || value.status !== undefined;
+  const invalidInsurer = value.invalid === true && value.status === 'invalid_insurer';
+  if (hasInvalidSignal && !invalidInsurer) return null;
   const entities = value.entities.map((entity) => projectProduct(entity));
   if (entities.some((entity) => !entity?.canonicalProductId)) return null;
-  return { entities, overflow: value.overflow };
+  return { entities, overflow: value.overflow, invalidInsurer };
 }
 
 function unsupportedComparisonResult({ state, proposal }) {
@@ -540,7 +543,7 @@ export function createAgentSemanticResolver({
             return resolverUnavailableResult({ state, proposal: effectiveProposal });
           }
           if (!scan) return resolverUnavailableResult({ state, proposal: effectiveProposal });
-          if (scan.overflow) {
+          if (scan.invalidInsurer || scan.overflow) {
             return unsupportedComparisonResult({ state, proposal: effectiveProposal });
           }
           const primaryCanonicalId = resolutions.product?.status === 'resolved'

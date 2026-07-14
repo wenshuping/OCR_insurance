@@ -1365,15 +1365,28 @@ test('default semantic resolver scans the full question when Hermes omits a seco
     VALUES (?, 'default', ?, ?, 'active', '2026-07-14', '2026-07-14', '{}')`);
   insertProduct.run('product-a', '甲保险', '甲保障计划');
   insertProduct.run('product-b', '乙保险', '乙保障计划');
-  const state = { familyProfiles: [], policies: [], officialDomainProfiles: [] };
+  const state = {
+    familyProfiles: [], policies: [],
+    officialDomainProfiles: [
+      { company: '甲保险', aliases: ['共同保司'] },
+      { company: '乙保险', aliases: ['共同保司'] },
+    ],
+  };
   const store = {
     async load() { return state; },
     async getPublishedAgentQuestionPolicyVersion() { return null; },
     async recordAgentRouteAudit() {},
     async recordAgentSemanticAudit(input) { return input; },
   };
+  let handlerCalls = 0;
   const app = createPolicyOcrApp({
     state, db, agentStore: store, recomputeCashflowOnStartup: false,
+    agentQuestionHandlers: {
+      async insurance_expert() {
+        handlerCalls += 1;
+        return { interaction: { type: 'answer', text: 'must not execute' } };
+      },
+    },
     agentSemanticConversationService: {
       async load() { return { version: 0, taskState: {} }; },
       async save(input) { return { persisted: true, version: 1, taskState: input.taskState }; },
@@ -1407,6 +1420,37 @@ test('default semantic resolver scans the full question when Hermes omits a seco
   assert.equal(result.response.status, 200);
   assert.equal(result.payload.decision, 'clarify');
   assert.match(result.payload.interaction.text, /产品比较暂不支持直接执行/u);
+  assert.equal(handlerCalls, 0);
+
+  for (const [messageRef, secondInsurer] of [
+    ['msg-invalid-unknown', '未知保险'],
+    ['msg-invalid-ambiguous', '共同保司'],
+  ]) {
+    const invalid = await post(
+      { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+      '/api/agent/questions/route',
+      semanticBody({
+        messageRef,
+        conversationId: `conv-${messageRef}`,
+        question: `甲保险甲保障计划和${secondInsurer}主要保什么`,
+        proposal: {
+          semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+          queryAspects: ['main_responsibilities'],
+          mentions: [
+            { type: 'insurer', rawText: '甲保险' },
+            { type: 'insurer', rawText: secondInsurer },
+            { type: 'product', rawText: '甲保障计划' },
+          ],
+          references: [], requestedSteps: ['lookup'],
+          confidence: { intent: 1, mentions: 1, references: 1 },
+        },
+      }),
+    );
+    assert.equal(invalid.response.status, 200, secondInsurer);
+    assert.equal(invalid.payload.decision, 'clarify', secondInsurer);
+    assert.match(invalid.payload.interaction.text, /产品比较暂不支持直接执行/u);
+    assert.equal(handlerCalls, 0, secondInsurer);
+  }
 });
 
 test('authorized family count resolves once and preserves exact safe facts without PII', async () => {

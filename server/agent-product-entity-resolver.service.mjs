@@ -249,9 +249,11 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
       for (const mention of (Array.isArray(insurerMentions) ? insurerMentions : [])) {
         if (mention?.type !== 'insurer') continue;
         const insurerText = clean(mention.rawText);
-        if (!insurerText || insurerText.length > 200) return { entities: [], overflow: false };
+        if (!insurerText || insurerText.length > 200) {
+          return { entities: [], overflow: false, invalid: true, status: 'invalid_insurer' };
+        }
         const company = resolveCompany(insurerText, companies, profiles);
-        if (!company) return { entities: [], overflow: false };
+        if (!company) return { entities: [], overflow: false, invalid: true, status: 'invalid_insurer' };
         mentionedCompanies.add(company);
       }
 

@@ -564,7 +564,7 @@ test('reverse catalog scan uses a unique insurer only to disambiguate a shared o
       assert.deepEqual(resolver.resolveAllFromText({
         question: '和美主要保什么',
         insurerMentions: [{ type: 'insurer', rawText: insurer }],
-      }), { entities: [], overflow: false });
+      }), { entities: [], overflow: false, invalid: true, status: 'invalid_insurer' });
     }
   } finally {
     db.close();
