@@ -137,6 +137,25 @@ test('semantic conversation round trips typed product and family state without u
   store.close();
 });
 
+test('semantic conversation preserves only a bounded timed completed-comparison candidate pair', () => {
+  const state = projectAgentSemanticTaskState({
+    activeIntent: 'insurance_product_knowledge', activeEntities: {}, pendingClarification: null,
+    candidateSets: { product: [
+      { ...typedState().activeEntities.product, canonicalProductId: 'a' },
+      { ...typedState().activeEntities.product, canonicalProductId: 'b', officialName: '乙产品' },
+    ] },
+    lastCompletedAction: {
+      intent: 'insurance_product_knowledge', entityType: 'product', comparison: true, secret: 'drop',
+    },
+  });
+  assert.equal(state.candidateSets.product.length, 2);
+  assert.equal(state.candidateSets.product[0].expiresAt, 1_000);
+  assert.deepEqual(state.lastCompletedAction, {
+    intent: 'insurance_product_knowledge', entityType: 'product', comparison: true,
+  });
+  assert.doesNotMatch(JSON.stringify(state), /secret/u);
+});
+
 test('semantic conversation isolates identical conversation ids by internal user', async () => {
   const store = await createStore(await tempDbPath());
   const service = createAgentSemanticConversationService({ store, clock: () => 600 });

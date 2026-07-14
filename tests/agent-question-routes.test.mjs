@@ -195,6 +195,22 @@ test('HTTP candidate selection projects local rule runtime and fallback provenan
   assert.equal(server.calls.route[0].proposal, null);
 });
 
+test('HTTP leading candidate selection preserves a bound current semantic proposal', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const question = '第二款主要保什么';
+  const proposal = {
+    semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+    queryAspects: ['main_responsibilities'], mentions: [],
+    references: [{ type: 'candidate_index', rawText: '第二款' }],
+    requestedSteps: ['lookup'], confidence: { intent: 1, mentions: 1, references: 1 },
+  };
+  const result = await post(server, '/api/agent/questions/route', semanticBody({ question, proposal }));
+  assert.equal(result.response.status, 200);
+  assert.equal(server.calls.route[0].runtime, 'hermes');
+  assert.deepEqual(server.calls.route[0].proposal, proposal);
+});
+
 test('HTTP accepts trusted Direct-to-rule fallback provenance', async (t) => {
   const server = await startServer();
   t.after(server.close);
@@ -1448,6 +1464,8 @@ test('default semantic resolver executes a confirmed two-product comparison when
     ],
   };
   const semanticAudits = [];
+  let semanticTaskState = {};
+  let semanticVersion = 0;
   const store = {
     async load() { return state; },
     async getPublishedAgentQuestionPolicyVersion() { return null; },
@@ -1457,8 +1475,13 @@ test('default semantic resolver executes a confirmed two-product comparison when
   const app = createPolicyOcrApp({
     state, db, agentStore: store, recomputeCashflowOnStartup: false,
     agentSemanticConversationService: {
-      async load() { return { version: 0, taskState: {} }; },
-      async save(input) { return { persisted: true, version: 1, taskState: input.taskState }; },
+      async load() { return { version: semanticVersion, taskState: structuredClone(semanticTaskState) }; },
+      async save(input) {
+        assert.equal(input.expectedVersion, semanticVersion);
+        semanticTaskState = structuredClone(input.taskState);
+        semanticVersion += 1;
+        return { persisted: true, version: semanticVersion, taskState: structuredClone(semanticTaskState) };
+      },
     },
     verifyAgentServiceRequest: async () => true,
     resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
@@ -1468,10 +1491,12 @@ test('default semantic resolver executes a confirmed two-product comparison when
   });
   t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
 
+  const comparisonConversationId = 'comparison-select-conversation';
   const result = await post(
     { baseUrl: `http://127.0.0.1:${listener.address().port}` },
     '/api/agent/questions/route',
     semanticBody({
+      conversationId: comparisonConversationId,
       question: '甲保险甲保障计划和乙保险乙保障计划主要保什么',
       proposal: {
         semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
@@ -1493,6 +1518,28 @@ test('default semantic resolver executes a confirmed two-product comparison when
     count: 2, matchTypes: ['exact_official_name'],
   });
   assert.doesNotMatch(JSON.stringify(semanticAudits), /product-a|product-b|甲保障计划|乙保障计划/u);
+
+  const selected = await post(
+    { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+    '/api/agent/questions/route',
+    semanticBody({
+      messageRef: 'msg-comparison-select-2',
+      conversationId: comparisonConversationId,
+      question: '第二款主要保什么',
+      proposal: {
+        semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+        queryAspects: ['main_responsibilities'], mentions: [],
+        references: [{ type: 'candidate_index', rawText: '第二款' }],
+        requestedSteps: ['lookup'], confidence: { intent: 1, mentions: 1, references: 1 },
+      },
+    }),
+  );
+  assert.equal(selected.response.status, 200, JSON.stringify(selected.payload));
+  assert.equal(selected.payload.decision, 'execute');
+  assert.match(selected.payload.interaction.text, /乙责任摘要|乙责任事实/u);
+  assert.doesNotMatch(selected.payload.interaction.text, /甲责任摘要|甲责任事实/u);
+  assert.equal(semanticTaskState.activeEntities.product.canonicalProductId, 'product-b');
+  assert.deepEqual(semanticTaskState.candidateSets.product, []);
 
   for (const [messageRef, secondInsurer] of [
     ['msg-invalid-unknown', '未知保险'],

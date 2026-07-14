@@ -277,6 +277,107 @@ test('product comparison resolves exactly two distinct canonical products', asyn
     product2Company: PRODUCT.company,
   });
   assert.equal(result.nextTaskState.activeEntities.product, null);
+  assert.deepEqual(result.nextTaskState.candidateSets.product.map((item) => item.canonicalProductId), [
+    'product-a', 'product-b',
+  ]);
+  assert.equal(result.nextTaskState.lastCompletedAction.comparison, true);
+});
+
+test('a leading ordinal selects and revalidates a fresh completed comparison side', async () => {
+  const { resolver } = harness({ productResult: canonicalProductResult, productScanResult: canonicalScanResult });
+  const compared = await resolver.resolve({
+    internalUserId: 7, question: '甲产品和乙产品有什么区别', runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison'], requestedSteps: ['compare'],
+      mentions: [{ type: 'product', rawText: '甲产品' }, { type: 'product', rawText: '乙产品' }],
+    }),
+  });
+  const question = '第二款等待期呢';
+  const selected = await resolver.resolve({
+    internalUserId: 7, question, runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['waiting_period'], mentions: [],
+      references: [{ type: 'candidate_index', rawText: '第二款' }],
+    }),
+    context: { taskState: compared.nextTaskState },
+  });
+  assert.equal(selected.decision, 'execute');
+  assert.equal(selected.candidate.question, question);
+  assert.deepEqual(selected.proposal.queryAspects, ['waiting_period']);
+  assert.equal(selected.resolvedEntities.product.canonicalProductId, 'product-b');
+  assert.equal(selected.nextTaskState.activeEntities.product.canonicalProductId, 'product-b');
+  assert.deepEqual(selected.nextTaskState.candidateSets.product, []);
+});
+
+test('completed comparison ordinal selection fails closed when expired, out of range, or proposal-free', async () => {
+  const fresh = {
+    activeIntent: 'insurance_product_knowledge', activeEntities: { product: null, family: null },
+    candidateSets: { product: [
+      { ...PRODUCT, canonicalProductId: 'product-a', updatedAt: NOW - 1_000, expiresAt: NOW + 60_000 },
+      { ...PRODUCT, canonicalProductId: 'product-b', officialName: '健康福保险', updatedAt: NOW - 1_000, expiresAt: NOW + 60_000 },
+    ], family: [] },
+    pendingClarification: null,
+    lastCompletedAction: { intent: 'insurance_product_knowledge', entityType: 'product', comparison: true },
+  };
+  const { resolver } = harness({ productResult: canonicalProductResult });
+  const proposalFree = await resolver.resolve({
+    internalUserId: 7, question: '第二款等待期呢', runtime: 'rule', proposal: null,
+    context: { taskState: fresh },
+  });
+  assert.equal(proposalFree.decision, 'retry_later');
+  assert.equal(proposalFree.decisionReason, 'semantic_proposal_unavailable');
+  for (const [question, state] of [
+    ['第三款等待期呢', fresh],
+    ['第二款等待期呢', { ...fresh, candidateSets: { ...fresh.candidateSets, product: fresh.candidateSets.product.map((item) => ({ ...item, expiresAt: NOW })) } }],
+  ]) {
+    const result = await resolver.resolve({
+      internalUserId: 7, question, runtime: 'hermes',
+      proposal: proposal({ queryAspects: ['waiting_period'] }), context: { taskState: state },
+    });
+    assert.equal(result.decision, 'clarify', question);
+  }
+});
+
+test('comparison can combine one explicit product with a live current product reference', async () => {
+  for (const [rawText, active, expected] of [
+    ['乙产品', activeProduct(), 'execute'],
+    ['甲产品', activeProduct(), 'clarify'],
+    ['乙产品', activeProduct({ expiresAt: NOW }), 'clarify'],
+  ]) {
+    const question = `${rawText}和这个保险比较`;
+    const { resolver } = harness({ productResult: canonicalProductResult, productScanResult: canonicalScanResult });
+    const result = await resolver.resolve({
+      internalUserId: 7, question, runtime: 'hermes',
+      proposal: proposal({
+        queryAspects: ['comparison'], requestedSteps: ['compare'],
+        mentions: [{ type: 'product', rawText }],
+        references: [{ type: 'current_product', rawText: '这个保险' }],
+      }),
+      context: { taskState: { activeIntent: 'insurance_product_knowledge', activeEntities: { product: active } } },
+    });
+    assert.equal(result.decision, expected, rawText);
+  }
+
+  const thirdProduct = { ...PRODUCT, canonicalProductId: 'product-c', officialName: '第三产品' };
+  const { resolver } = harness({
+    productResult: canonicalProductResult,
+    productScanResult: { entities: [
+      { ...PRODUCT, canonicalProductId: 'product-b', officialName: '健康福保险' },
+      thirdProduct,
+    ], overflow: false },
+  });
+  const conflicted = await resolver.resolve({
+    internalUserId: 7, question: '乙产品和这个保险比较，另有第三产品', runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison'], requestedSteps: ['compare'],
+      mentions: [{ type: 'product', rawText: '乙产品' }],
+      references: [{ type: 'current_product', rawText: '这个保险' }],
+    }),
+    context: { taskState: {
+      activeIntent: 'insurance_product_knowledge', activeEntities: { product: activeProduct() },
+    } },
+  });
+  assert.equal(conflicted.decision, 'clarify');
 });
 
 test('a completed comparison clears the old product so an omitted follow-up cannot pick a side', async () => {

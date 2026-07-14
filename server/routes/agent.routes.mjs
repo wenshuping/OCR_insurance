@@ -241,10 +241,17 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
   let effectiveFallbackReason = fallbackReason;
   if (isCandidateSelection) {
     if (runtime !== 'hermes') return null;
-    if (proposal !== null && proposal !== undefined) return null;
     if (fallbackReasonProvided) return null;
-    effectiveRuntime = 'rule';
-    effectiveFallbackReason = 'candidate_selection';
+    if (normalizedProposal) {
+      const boundSelection = normalizedProposal.references.some((reference) => (
+        reference.type === 'candidate_index'
+        && reference.rawText === preparsed.candidateSelection.rawText
+      ));
+      if (!boundSelection) return null;
+    } else {
+      effectiveRuntime = 'rule';
+      effectiveFallbackReason = 'candidate_selection';
+    }
   } else if (runtime === 'rule') {
     if (proposal !== null && proposal !== undefined) return null;
     if (fallbackReasonProvided) {

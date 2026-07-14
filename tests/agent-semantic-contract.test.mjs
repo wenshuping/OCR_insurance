@@ -232,6 +232,18 @@ test('pre-parser accepts bounded complete selections and rejects weak or out-of-
   }
 });
 
+test('pre-parser accepts only a leading product ordinal before a follow-up query', () => {
+  assert.deepEqual(preparseAgentMessage('第二款等待期呢').candidateSelection, {
+    index: 1, rawText: '第二款',
+  });
+  assert.deepEqual(preparseAgentMessage('选择第二款主要保什么').candidateSelection, {
+    index: 1, rawText: '选择第二款',
+  });
+  for (const input of ['第二年等待期', '第二次查询', '等待期看第二款', '2号产品怎么样']) {
+    assert.equal(preparseAgentMessage(input).candidateSelection, null, input);
+  }
+});
+
 test('pre-parser requires both an upload action and an upload subject', () => {
   assert.equal(preparseAgentMessage('录入资料').operationHint, 'upload_link');
   assert.equal(preparseAgentMessage('上传一下').operationHint, null);

@@ -115,10 +115,12 @@ function projectActive(value, type, now, contextTtlMs) {
   return isLive(projected, now, contextTtlMs) ? projected : null;
 }
 
-function projectCandidates(value, type) {
+function projectCandidates(value, type, { timed = false, now = 0, contextTtlMs = 0 } = {}) {
   if (!Array.isArray(value)) return [];
   const project = type === 'product' ? projectProduct : projectFamily;
-  return value.slice(0, MAX_CANDIDATES).map((item) => project(item)).filter(Boolean);
+  return value.slice(0, MAX_CANDIDATES)
+    .map((item) => project(item, { active: timed }))
+    .filter((item) => item && (!timed || isLive(item, now, contextTtlMs)));
 }
 
 function projectResolution(value, type) {
@@ -211,6 +213,9 @@ function sanitizedState(context, now, contextTtlMs) {
     && !Array.isArray(state.activeEntities) ? state.activeEntities : {};
   const candidateSets = state.candidateSets && typeof state.candidateSets === 'object'
     && !Array.isArray(state.candidateSets) ? state.candidateSets : {};
+  const comparisonCompleted = state.lastCompletedAction?.comparison === true
+    && state.lastCompletedAction?.intent === PRODUCT_INTENT
+    && state.lastCompletedAction?.entityType === 'product';
   return {
     now,
     contextTtlMs,
@@ -220,12 +225,17 @@ function sanitizedState(context, now, contextTtlMs) {
       family: projectActive(activeEntities.family, 'family', now, contextTtlMs),
     },
     candidateSets: {
-      product: projectCandidates(candidateSets.product, 'product'),
+      product: projectCandidates(candidateSets.product, 'product', {
+        timed: comparisonCompleted, now, contextTtlMs,
+      }),
       family: projectCandidates(candidateSets.family, 'family'),
     },
     pendingClarification: projectPendingClarification(state.pendingClarification, now, contextTtlMs),
     lastCompletedAction: state.lastCompletedAction && typeof state.lastCompletedAction === 'object'
-      && !Array.isArray(state.lastCompletedAction) ? state.lastCompletedAction : null,
+      && !Array.isArray(state.lastCompletedAction) ? {
+        ...state.lastCompletedAction,
+        ...(comparisonCompleted ? { comparison: true } : {}),
+      } : null,
   };
 }
 
@@ -239,7 +249,11 @@ function publicState(state) {
       family: state.activeEntities.family ? { ...state.activeEntities.family } : null,
     },
     candidateSets: {
-      product: projectCandidates(state.candidateSets.product, 'product'),
+      product: projectCandidates(state.candidateSets.product, 'product', {
+        timed: state.lastCompletedAction?.comparison === true,
+        now: state.now,
+        contextTtlMs: state.contextTtlMs,
+      }),
       family: projectCandidates(state.candidateSets.family, 'family'),
     },
     pendingClarification: projectPendingClarification(
@@ -248,7 +262,13 @@ function publicState(state) {
       state.contextTtlMs,
     ),
     lastCompletedAction: lastIntent && ['product', 'family'].includes(lastEntityType)
-      ? { intent: lastIntent, entityType: lastEntityType }
+      ? {
+        intent: lastIntent,
+        entityType: lastEntityType,
+        ...(state.lastCompletedAction?.comparison === true
+          && lastIntent === PRODUCT_INTENT && lastEntityType === 'product'
+          ? { comparison: true } : {}),
+      }
       : null,
   };
 }
@@ -303,14 +323,18 @@ function explicitlyRequestsProductComparison(proposal, question) {
     )));
 }
 
-function comparisonState(state, proposal) {
+function comparisonState(state, proposal, products) {
   const pendingType = clean(state.pendingClarification?.entityType, 20);
   if (pendingType === 'product' || pendingType === 'family') state.candidateSets[pendingType] = [];
-  state.candidateSets.product = [];
+  state.candidateSets.product = products.map((product) => ({
+    ...product,
+    updatedAt: state.now,
+    expiresAt: state.now + state.contextTtlMs,
+  }));
   state.pendingClarification = null;
   state.activeEntities.product = null;
   state.activeIntent = proposal.intent;
-  state.lastCompletedAction = { intent: proposal.intent, entityType: 'product' };
+  state.lastCompletedAction = { intent: proposal.intent, entityType: 'product', comparison: true };
   return publicState(state);
 }
 
@@ -324,7 +348,7 @@ function resolvedComparisonResult({ state, proposal, products, question }) {
     proposal,
     resolvedEntities,
     candidate: semanticFrameToRouterCandidate({ ...proposal, resolvedEntities }, question),
-    nextTaskState: comparisonState(state, proposal),
+    nextTaskState: comparisonState(state, proposal, products),
   };
 }
 
@@ -374,6 +398,20 @@ function pendingSelection(state, selection, now) {
     return { valid: false, entityType };
   }
   return { valid: true, entityType, candidate, proposal, originalQuestion };
+}
+
+function completedComparisonSelection(state, selection, now) {
+  if (state.pendingClarification
+    || state.lastCompletedAction?.comparison !== true
+    || state.lastCompletedAction?.intent !== PRODUCT_INTENT
+    || state.lastCompletedAction?.entityType !== 'product'
+    || !Array.isArray(state.candidateSets.product)
+    || state.candidateSets.product.length !== 2
+    || selection.index < 0
+    || selection.index >= 2) return { valid: false, entityType: 'product' };
+  const candidate = state.candidateSets.product[selection.index];
+  if (!isLive(candidate, now, state.contextTtlMs)) return { valid: false, entityType: 'product' };
+  return { valid: true, entityType: 'product', candidate, comparison: true };
 }
 
 function stateAfterResolution({ state, proposal, proposalQuestion, resolutions, readiness, now, contextTtlMs }) {
@@ -459,7 +497,9 @@ export function createAgentSemanticResolver({
       let proposalQuestion = normalizedQuestion;
 
       if (preparsed.candidateSelection) {
-        selection = pendingSelection(state, preparsed.candidateSelection, now);
+        selection = state.pendingClarification
+          ? pendingSelection(state, preparsed.candidateSelection, now)
+          : completedComparisonSelection(state, preparsed.candidateSelection, now);
         if (!selection.valid) {
           return expiredSelectionResult({
             state,
@@ -467,8 +507,10 @@ export function createAgentSemanticResolver({
             proposal: effectiveProposal,
           });
         }
-        effectiveProposal = selection.proposal;
-        proposalQuestion = selection.originalQuestion;
+        if (!selection.comparison) {
+          effectiveProposal = selection.proposal;
+          proposalQuestion = selection.originalQuestion;
+        }
       }
 
       if (!effectiveProposal
@@ -518,9 +560,31 @@ export function createAgentSemanticResolver({
           if (selection || productMentions.length > 2) {
             return unsupportedComparisonResult({ state, proposal: effectiveProposal });
           }
+          const comparesActiveProduct = forcedComparison
+            && productMentions.length === 1
+            && effectiveProposal.references.some((reference) => [
+              'comparison_left', 'comparison_right', 'current_product',
+            ].includes(reference.type));
+          const activeComparisonProduct = comparesActiveProduct
+            ? projectProduct(state.activeEntities.product)
+            : null;
           const evidence = [];
           try {
-            if (scan.entities.length === 2) {
+            if (comparesActiveProduct) {
+              evidence.push(projectResolution(await productResolver.resolve({
+                mentions: [...explicitInsurers, productMentions[0]],
+                activeProduct: null,
+              }), 'product'));
+              if (activeComparisonProduct) {
+                evidence.push(projectResolution(await productResolver.resolve({
+                  mentions: [
+                    { type: 'insurer', rawText: activeComparisonProduct.company },
+                    { type: 'product', rawText: activeComparisonProduct.officialName },
+                  ],
+                  activeProduct: null,
+                }), 'product'));
+              }
+            } else if (scan.entities.length === 2) {
               for (const product of scan.entities) {
                 evidence.push(projectResolution(await productResolver.resolve({
                   mentions: [
@@ -545,10 +609,16 @@ export function createAgentSemanticResolver({
             .map((item) => item.entity);
           const distinctProductCount = new Set(products
             .map((item) => clean(item.canonicalProductId))).size;
+          const scanCanonicalIds = new Set(scan.entities
+            .map((item) => clean(item.canonicalProductId)).filter(Boolean));
+          const comparisonCanonicalIds = new Set(products
+            .map((item) => clean(item.canonicalProductId)).filter(Boolean));
+          const scanConflicts = comparesActiveProduct && [...scanCanonicalIds]
+            .some((canonicalId) => !comparisonCanonicalIds.has(canonicalId));
           if (products.length === 2 && distinctProductCount === 1
             && !forcedComparison && scan.entities.length <= 1) {
             // A formal name plus its parenthetical alias is one product, not a comparison.
-          } else if (products.length !== 2 || distinctProductCount !== 2) {
+          } else if (products.length !== 2 || distinctProductCount !== 2 || scanConflicts) {
             return unsupportedComparisonResult({ state, proposal: effectiveProposal });
           } else {
             return resolvedComparisonResult({

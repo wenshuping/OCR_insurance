@@ -146,7 +146,14 @@ function projectLastCompletedAction(value) {
   const entityType = value.entityType === null
     ? null
     : (value.entityType === 'product' || value.entityType === 'family' ? value.entityType : undefined);
-  return entityType === undefined ? null : { intent: value.intent, entityType };
+  if (entityType === undefined) return null;
+  return {
+    intent: value.intent,
+    entityType,
+    ...(value.comparison === true
+      && value.intent === 'insurance_product_knowledge' && entityType === 'product'
+      ? { comparison: true } : {}),
+  };
 }
 
 export function projectAgentSemanticTaskState(value) {
@@ -173,6 +180,18 @@ export function projectAgentSemanticTaskState(value) {
     if (candidates.length > 0) {
       taskState.pendingClarification = pending;
       taskState.candidateSets[pending.entityType] = candidates;
+    }
+  } else if (taskState.lastCompletedAction?.comparison === true) {
+    const candidates = projectCandidateList(
+      source.candidateSets?.product,
+      (candidate) => projectProduct(candidate, { active: true }),
+      'Product comparison candidate set',
+    );
+    if (candidates.length === 2
+      && new Set(candidates.map((candidate) => candidate.canonicalProductId)).size === 2) {
+      taskState.candidateSets.product = candidates;
+    } else {
+      taskState.lastCompletedAction = null;
     }
   }
   return taskState;
