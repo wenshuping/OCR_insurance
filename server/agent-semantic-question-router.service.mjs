@@ -1,9 +1,11 @@
 import {
   normalizeSemanticProposal,
+  SEMANTIC_CONTRACT_VERSION,
   SEMANTIC_INTENTS,
   SEMANTIC_QUERY_ASPECTS,
 } from './agent-semantic-contract.mjs';
 import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
+import { preparseAgentMessage } from './agent-semantic-preparser.mjs';
 
 const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
 const RESOLVER_DECISIONS = new Set(['execute', 'clarify', 'reject', 'retry_later']);
@@ -15,6 +17,16 @@ const AUTHORITY_ENTITY_KEYS = new Set([
   'authority', 'authorizedResourceIds', 'familyId', 'internalUserId', 'permissions',
   'resolvedEntities', 'userId',
 ]);
+const RULE_UPLOAD_PROPOSAL = Object.freeze({
+  semanticContractVersion: SEMANTIC_CONTRACT_VERSION,
+  intent: 'upload_link',
+  operation: 'read',
+  queryAspects: Object.freeze(['upload']),
+  mentions: Object.freeze([]),
+  references: Object.freeze([]),
+  requestedSteps: Object.freeze(['upload']),
+  confidence: Object.freeze({ intent: 1, mentions: 1, references: 1 }),
+});
 
 function clean(value, limit = 200) {
   const normalized = typeof value === 'string' ? value.trim() : '';
@@ -174,23 +186,44 @@ function projectExecuteCandidate(candidate, proposal, expectedQuestion) {
   return projected;
 }
 
-function normalizedResolution(value, { trustedInputProposal, inputQuestion, proposalQuestion }) {
+function normalizedResolution(value, {
+  expectedProposal,
+  inputQuestion,
+  originalTaskState,
+  pendingSelection,
+  proposalQuestion,
+}) {
   if (!isPlainObject(value) || !RESOLVER_DECISIONS.has(value.decision)) return null;
+  const expiredSelection = pendingSelection
+    && value.decision === 'clarify'
+    && value.decisionReason === 'candidate_selection_expired'
+    && (value.proposal === null || value.proposal === undefined);
   let proposal = null;
   if (value.proposal !== null && value.proposal !== undefined) {
+    if (!expectedProposal) return null;
     try {
       proposal = normalizeSemanticProposal(value.proposal, proposalQuestion);
     } catch {
       return null;
     }
   }
-  if (trustedInputProposal
-    && JSON.stringify(proposal) !== JSON.stringify(trustedInputProposal)) return null;
+  if (expectedProposal && !expiredSelection
+    && JSON.stringify(proposal) !== JSON.stringify(expectedProposal)) return null;
   const candidate = value.decision === 'execute'
     ? projectExecuteCandidate(value.candidate, proposal, inputQuestion)
     : null;
   if (value.decision === 'execute' && !candidate) return null;
   const nextTaskState = projectTaskState(value.nextTaskState);
+  if (expiredSelection) {
+    const cleared = projectTaskState({
+      ...originalTaskState,
+      candidateSets: { product: [], family: [] },
+      pendingClarification: null,
+    });
+    if (!nextTaskState || stateChanged(cleared, nextTaskState)) return null;
+  }
+  if (!expectedProposal && (value.decision === 'execute'
+    || !nextTaskState || stateChanged(originalTaskState, nextTaskState))) return null;
   return nextTaskState
     ? { ...value, proposal, ...(candidate ? { candidate } : {}), nextTaskState }
     : null;
@@ -231,16 +264,32 @@ export function createAgentSemanticQuestionRouter({
 
   async function resolve(input, conversation, trustedInputProposal) {
     try {
-      const proposalQuestion = trustedInputProposal
-        ? input.question
-        : clean(conversation.taskState?.pendingClarification?.originalQuestion, 1_000) || input.question;
+      const preparsed = preparseAgentMessage(input.question);
+      const pending = !trustedInputProposal && preparsed.candidateSelection
+        ? conversation.taskState?.pendingClarification
+        : null;
+      const pendingProposal = pending?.proposal || null;
+      const expectedProposal = trustedInputProposal
+        || pendingProposal
+        || (input.runtime === 'rule' && preparsed.operationHint === 'upload_link'
+          ? RULE_UPLOAD_PROPOSAL
+          : null);
+      const proposalQuestion = pendingProposal
+        ? pending.originalQuestion
+        : input.question;
       return normalizedResolution(await semanticResolver.resolve({
         internalUserId: input.internalUserId,
         question: input.question,
         runtime: input.runtime,
-        proposal: trustedInputProposal,
+        proposal: expectedProposal,
         context: { taskState: conversation.taskState },
-      }), { trustedInputProposal, inputQuestion: input.question, proposalQuestion });
+      }), {
+        expectedProposal,
+        inputQuestion: input.question,
+        originalTaskState: conversation.taskState,
+        pendingSelection: Boolean(pendingProposal),
+        proposalQuestion,
+      });
     } catch {
       return null;
     }

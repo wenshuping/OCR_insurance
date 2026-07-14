@@ -189,13 +189,15 @@ test('family ambiguity labels are generic and no-conversation choices require a 
       lastCompletedAction: null,
     },
   };
+  resolved.proposal = resolved.nextTaskState.pendingClarification.proposal;
   const { router } = wrapperHarness({
     semanticResolver: { async resolve() { return resolved; } },
     conversationService: memoryConversationService(),
   });
 
   const result = await router.route({
-    internalUserId: 7, messageRef: 'family-1', question: '查看家庭', runtime: 'hermes', proposal: null,
+    internalUserId: 7, messageRef: 'family-1', question: '查看家庭', runtime: 'hermes',
+    proposal: resolved.proposal,
   });
 
   assert.match(result.interaction.text, /完整名称/u);
@@ -406,6 +408,110 @@ test('resolver results remain bound to the normalized input proposal and questio
   }
 });
 
+test('proposal-free requests cannot synthesize chat proposals or mutate conversation state', async () => {
+  for (const runtime of ['rule', 'direct', 'hermes']) {
+    let saves = 0;
+    const question = '普通问候';
+    const { router, calls } = wrapperHarness({
+      semanticResolver: { async resolve() { return {
+        decision: 'execute', decisionReason: 'semantic_ready', resolvedEntities: {},
+        proposal: chatProposal(question),
+        candidate: { intent: 'chat', question, confidence: 1, requestedOperation: 'read' },
+        nextTaskState: { activeIntent: 'chat' },
+      }; } },
+      conversationService: {
+        async load() { return { version: 0, taskState: {} }; },
+        async save() { saves += 1; },
+      },
+    });
+
+    const result = await router.route({
+      internalUserId: 7, conversationId: 'no-source', messageRef: `no-source-${runtime}`,
+      question, runtime, proposal: null,
+    });
+    assert.deepEqual(result, {
+      decision: 'clarify',
+      interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+    });
+    assert.equal(calls.length, 0);
+    assert.equal(saves, 0);
+  }
+
+  let stateOnlySaves = 0;
+  const { router: stateOnlyRouter, calls: stateOnlyCalls } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'retry_later', decisionReason: 'resolver_unavailable', proposal: null,
+      resolvedEntities: {}, candidate: null, nextTaskState: { activeIntent: 'chat' },
+    }; } },
+    conversationService: {
+      async load() { return { version: 0, taskState: {} }; },
+      async save() { stateOnlySaves += 1; },
+    },
+  });
+  const stateOnly = await stateOnlyRouter.route({
+    internalUserId: 7, conversationId: 'state-only', messageRef: 'state-only',
+    question: '普通问候', runtime: 'rule', proposal: null,
+  });
+  assert.match(stateOnly.interaction.text, /语义解析暂不可用/u);
+  assert.equal(stateOnlyCalls.length, 0);
+  assert.equal(stateOnlySaves, 0);
+});
+
+test('proposal-free rule upload is the only locally synthesized execution', async () => {
+  const semanticResolver = createAgentSemanticResolver({
+    productResolver: { async resolve() { throw new Error('must not resolve product'); } },
+    familyResolver: { async resolve() { throw new Error('must not resolve family'); } },
+    clock: () => 5_000,
+  });
+  const { router, calls } = wrapperHarness({
+    semanticResolver,
+    conversationService: memoryConversationService(),
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'upload', messageRef: 'upload-rule',
+    question: '我要上传保单资料', runtime: 'rule', proposal: null,
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].candidate.intent, 'upload_link');
+});
+
+test('expired pending selection remains a clarification without extending state', async () => {
+  const conversations = memoryConversationService();
+  const pendingProposal = proposal('康健无忧');
+  conversations.rows.set('expired-selection', {
+    version: 1,
+    taskState: {
+      candidateSets: { product: [{
+        canonicalProductId: 'product-1', company: '新华人寿保险股份有限公司',
+        officialName: '康健无忧两全保险', matchType: 'exact_official_name', confidence: 1,
+      }] },
+      pendingClarification: {
+        entityType: 'product', proposal: pendingProposal,
+        originalQuestion: '康健无忧', expiresAt: 9_000,
+      },
+    },
+  });
+  const semanticResolver = createAgentSemanticResolver({
+    productResolver: { async resolve() { throw new Error('expired selection must not resolve'); } },
+    familyResolver: { async resolve() { throw new Error('expired selection must not resolve'); } },
+    clock: () => 10_000,
+  });
+  const { router, calls } = wrapperHarness({ semanticResolver, conversationService: conversations });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'expired-selection', messageRef: 'expired-selection',
+    question: '选择1', runtime: 'hermes', proposal: null,
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.match(result.interaction.text, /重新说明/u);
+  assert.equal(calls.length, 0);
+  assert.equal(conversations.rows.get('expired-selection').taskState.pendingClarification, null);
+});
+
 test('non-execute conversation conflict reloads and retries resolution once', async () => {
   let loads = 0;
   let resolves = 0;
@@ -415,7 +521,7 @@ test('non-execute conversation conflict reloads and retries resolution once', as
       resolves += 1;
       return {
         decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
-        ambiguities: [], candidate: null, resolvedEntities: {},
+        ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
         nextTaskState: { ...context.taskState, activeIntent: resolves === 1 ? 'chat' : 'insurance_product_knowledge' },
       };
     } },
@@ -436,7 +542,7 @@ test('non-execute conversation conflict reloads and retries resolution once', as
 
   const result = await router.route({
     internalUserId: 7, conversationId: 'conv', messageRef: 'conflict-retry',
-    question: '查询', runtime: 'hermes', proposal: null,
+    question: '查询', runtime: 'hermes', proposal: chatProposal('查询'),
   });
 
   assert.equal(result.decision, 'clarify');
@@ -453,7 +559,8 @@ test('non-conflict clarification save failure returns stable retry without a sec
   const { router, calls } = wrapperHarness({
     semanticResolver: { async resolve() { return {
       decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
-      ambiguities: [], candidate: null, resolvedEntities: {}, nextTaskState: { activeIntent: 'chat' },
+      ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
+      nextTaskState: { activeIntent: 'chat' },
     }; } },
     conversationService: {
       async load() { loads += 1; return { version: 0, taskState: {} }; },
@@ -463,7 +570,7 @@ test('non-conflict clarification save failure returns stable retry without a sec
 
   const result = await router.route({
     internalUserId: 7, conversationId: 'conv', messageRef: 'save-error',
-    question: '查询', runtime: 'hermes', proposal: null,
+    question: '查询', runtime: 'hermes', proposal: chatProposal('查询'),
   });
 
   assert.deepEqual(result, {
