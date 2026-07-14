@@ -527,7 +527,7 @@ test('reverse catalog scan keeps the longest contained product term but retains 
   }
 });
 
-test('reverse catalog scan applies a uniquely resolved insurer scope and otherwise fails closed', () => {
+test('reverse catalog scan uses a unique insurer only to disambiguate a shared occurrence', () => {
   const db = makeDb();
   try {
     addProduct(db, {
@@ -554,12 +554,52 @@ test('reverse catalog scan applies a uniquely resolved insurer scope and otherwi
       question: '和美主要保什么',
       insurerMentions: [{ type: 'insurer', rawText: '甲保险' }],
     }).entities.map((item) => item.canonicalProductId), ['product-a']);
+    assert.deepEqual(resolver.resolveAllFromText({ question: '甲保险的和美主要保什么' })
+      .entities.map((item) => item.canonicalProductId), ['product-a']);
+    assert.deepEqual(new Set(resolver.resolveAllFromText({ question: '和美主要保什么' })
+      .entities.map((item) => item.canonicalProductId)), new Set(['product-a', 'product-b']));
+    assert.deepEqual(new Set(resolver.resolveAllFromText({ question: '甲保险和乙保险的和美哪个好' })
+      .entities.map((item) => item.canonicalProductId)), new Set(['product-a', 'product-b']));
     for (const insurer of ['未知保险', '共同保司']) {
       assert.deepEqual(resolver.resolveAllFromText({
         question: '和美主要保什么',
         insurerMentions: [{ type: 'insurer', rawText: insurer }],
       }), { entities: [], overflow: false });
     }
+  } finally {
+    db.close();
+  }
+});
+
+test('reverse catalog scan retains distinct products across insurer boundaries', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-a',
+      company: '甲保险',
+      officialName: '甲保险甲保障计划',
+      payload: { aliases: ['甲计划'], aliasReviewStatus: 'approved' },
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-b',
+      company: '乙保险',
+      officialName: '乙保险乙保障计划',
+      payload: { aliases: ['乙计划'], aliasReviewStatus: 'approved' },
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+    const question = '甲保险甲计划和乙保险乙计划主要保什么';
+
+    for (const insurerMentions of [
+      [{ type: 'insurer', rawText: '甲保险' }],
+      [{ type: 'insurer', rawText: '甲保险' }, { type: 'insurer', rawText: '乙保险' }],
+    ]) {
+      assert.deepEqual(resolver.resolveAllFromText({ question, insurerMentions })
+        .entities.map((item) => item.canonicalProductId), ['product-a', 'product-b']);
+    }
+    assert.deepEqual(resolver.resolveAllFromText({
+      question: '甲计划和乙计划主要保什么',
+      insurerMentions: [{ type: 'insurer', rawText: '甲保险' }],
+    }).entities.map((item) => item.canonicalProductId), ['product-a', 'product-b']);
   } finally {
     db.close();
   }

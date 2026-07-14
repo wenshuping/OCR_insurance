@@ -1362,9 +1362,9 @@ test('default semantic resolver scans the full question when Hermes omits a seco
   `);
   const insertProduct = db.prepare(`INSERT INTO insurance_products
     (canonical_product_id, tenant_id, company, official_name, status, created_at, updated_at, payload)
-    VALUES (?, 'default', '测试保险有限公司', ?, 'active', '2026-07-14', '2026-07-14', '{}')`);
-  insertProduct.run('product-a', '甲保障计划');
-  insertProduct.run('product-b', '乙保障计划');
+    VALUES (?, 'default', ?, ?, 'active', '2026-07-14', '2026-07-14', '{}')`);
+  insertProduct.run('product-a', '甲保险', '甲保障计划');
+  insertProduct.run('product-b', '乙保险', '乙保障计划');
   const state = { familyProfiles: [], policies: [], officialDomainProfiles: [] };
   const store = {
     async load() { return state; },
@@ -1390,11 +1390,14 @@ test('default semantic resolver scans the full question when Hermes omits a seco
     { baseUrl: `http://127.0.0.1:${listener.address().port}` },
     '/api/agent/questions/route',
     semanticBody({
-      question: '甲保障计划和乙保障计划主要保什么',
+      question: '甲保险甲保障计划和乙保险乙保障计划主要保什么',
       proposal: {
         semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
         queryAspects: ['main_responsibilities'],
-        mentions: [{ type: 'product', rawText: '甲保障计划' }],
+        mentions: [
+          { type: 'insurer', rawText: '甲保险' },
+          { type: 'product', rawText: '甲保障计划' },
+        ],
         references: [], requestedSteps: ['lookup'],
         confidence: { intent: 1, mentions: 1, references: 1 },
       },

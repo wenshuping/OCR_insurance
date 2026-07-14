@@ -216,6 +216,22 @@ function mentionText(mentions, type) {
   return clean(mention?.rawText);
 }
 
+function insurerCompaniesInQuestion({ normalizedQuestion, companies, officialDomainProfiles }) {
+  const resolved = new Set();
+  const terms = [
+    ...companies,
+    ...officialDomainProfiles.flatMap((profile) => companyAliases(profile)),
+  ];
+  for (const value of new Set(terms)) {
+    const normalized = comparable(value);
+    if ([...normalized].length < 2 || SCAN_DENYLIST.has(normalized)) continue;
+    if (!normalizedQuestion.includes(normalized)) continue;
+    const company = resolveCompany(value, companies, officialDomainProfiles);
+    if (company) resolved.add(company);
+  }
+  return resolved;
+}
+
 export function createAgentProductEntityResolver({ db, officialDomainProfiles = [] } = {}) {
   if (!db) throw new TypeError('db is required');
   const profiles = Array.isArray(officialDomainProfiles) ? officialDomainProfiles : [];
@@ -224,16 +240,23 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
     resolveAllFromText({ question, insurerMentions = [] } = {}) {
       const normalizedQuestion = comparable(clean(question).slice(0, 1_000));
       if (!normalizedQuestion) return { entities: [], overflow: false };
-      const insurerText = mentionText(insurerMentions, 'insurer');
-      if (insurerText.length > 200) return { entities: [], overflow: false };
-
       const companies = listProductCatalogCompanies({ db, visibility: 'public' }).map((row) => row.company);
-      const company = resolveCompany(insurerText, companies, profiles);
-      if (insurerText && company === null) return { entities: [], overflow: false };
+      const mentionedCompanies = insurerCompaniesInQuestion({
+        normalizedQuestion,
+        companies,
+        officialDomainProfiles: profiles,
+      });
+      for (const mention of (Array.isArray(insurerMentions) ? insurerMentions : [])) {
+        if (mention?.type !== 'insurer') continue;
+        const insurerText = clean(mention.rawText);
+        if (!insurerText || insurerText.length > 200) return { entities: [], overflow: false };
+        const company = resolveCompany(insurerText, companies, profiles);
+        if (!company) return { entities: [], overflow: false };
+        mentionedCompanies.add(company);
+      }
 
       const matches = [];
       for (const product of publicProductRows(db)) {
-        if (company && product.company !== company) continue;
         const officialIdentity = catalogProductIdentity(product.officialName);
         const hasSpecificOfficialIdentity = Boolean(scannableTerm(officialIdentity));
         const terms = [
@@ -253,6 +276,7 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
             matches.push({
               ...span,
               termLength: normalized.length,
+              normalizedTerm: normalized,
               entity: {
                 canonicalProductId,
                 company: product.company,
@@ -265,8 +289,21 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
         }
       }
 
+      const occurrenceCompanies = new Map();
+      for (const match of matches) {
+        const key = `${match.start}:${match.end}:${match.normalizedTerm}`;
+        if (!occurrenceCompanies.has(key)) occurrenceCompanies.set(key, new Set());
+        occurrenceCompanies.get(key).add(match.entity.company);
+      }
+      const scopedMatches = matches.filter((match) => {
+        if (mentionedCompanies.size !== 1) return true;
+        const key = `${match.start}:${match.end}:${match.normalizedTerm}`;
+        if (occurrenceCompanies.get(key).size < 2) return true;
+        return mentionedCompanies.has(match.entity.company);
+      });
+
       const retained = [];
-      for (const match of matches.sort((left, right) => (
+      for (const match of scopedMatches.sort((left, right) => (
         right.termLength - left.termLength || left.start - right.start || left.end - right.end
       ))) {
         const containedByLonger = retained.some((candidate) => (
