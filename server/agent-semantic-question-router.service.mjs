@@ -1,4 +1,8 @@
-import { SEMANTIC_INTENTS, SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
+import {
+  normalizeSemanticProposal,
+  SEMANTIC_INTENTS,
+  SEMANTIC_QUERY_ASPECTS,
+} from './agent-semantic-contract.mjs';
 import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
 
 const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
@@ -136,14 +140,14 @@ function projectTaskState(value) {
   }
 }
 
-function projectExecuteCandidate(candidate, proposal) {
+function projectExecuteCandidate(candidate, proposal, expectedQuestion) {
   if (!isPlainObject(candidate) || !isPlainObject(proposal) || !isPlainObject(proposal.confidence)
     || Object.keys(candidate).some((key) => !LEGACY_CANDIDATE_FIELDS.has(key))) return null;
   const intent = clean(candidate.intent, 80);
   const question = clean(candidate.question, 1_000);
   const operation = clean(candidate.requestedOperation, 20);
   const confidence = candidate.confidence;
-  if (!SEMANTIC_INTENTS.includes(intent) || intent !== proposal.intent || !question
+  if (!SEMANTIC_INTENTS.includes(intent) || intent !== proposal.intent || question !== expectedQuestion
     || !['read', 'write'].includes(operation) || operation !== proposal.operation
     || typeof confidence !== 'number' || !Number.isFinite(confidence)
     || confidence < 0 || confidence > 1 || confidence !== proposal.confidence.intent) return null;
@@ -170,14 +174,26 @@ function projectExecuteCandidate(candidate, proposal) {
   return projected;
 }
 
-function normalizedResolution(value) {
+function normalizedResolution(value, { trustedInputProposal, inputQuestion, proposalQuestion }) {
   if (!isPlainObject(value) || !RESOLVER_DECISIONS.has(value.decision)) return null;
+  let proposal = null;
+  if (value.proposal !== null && value.proposal !== undefined) {
+    try {
+      proposal = normalizeSemanticProposal(value.proposal, proposalQuestion);
+    } catch {
+      return null;
+    }
+  }
+  if (trustedInputProposal
+    && JSON.stringify(proposal) !== JSON.stringify(trustedInputProposal)) return null;
   const candidate = value.decision === 'execute'
-    ? projectExecuteCandidate(value.candidate, value.proposal)
+    ? projectExecuteCandidate(value.candidate, proposal, inputQuestion)
     : null;
   if (value.decision === 'execute' && !candidate) return null;
   const nextTaskState = projectTaskState(value.nextTaskState);
-  return nextTaskState ? { ...value, ...(candidate ? { candidate } : {}), nextTaskState } : null;
+  return nextTaskState
+    ? { ...value, proposal, ...(candidate ? { candidate } : {}), nextTaskState }
+    : null;
 }
 
 function persistenceError(error) {
@@ -213,15 +229,18 @@ export function createAgentSemanticQuestionRouter({
     }
   }
 
-  async function resolve(input, conversation) {
+  async function resolve(input, conversation, trustedInputProposal) {
     try {
+      const proposalQuestion = trustedInputProposal
+        ? input.question
+        : clean(conversation.taskState?.pendingClarification?.originalQuestion, 1_000) || input.question;
       return normalizedResolution(await semanticResolver.resolve({
         internalUserId: input.internalUserId,
         question: input.question,
         runtime: input.runtime,
-        proposal: input.proposal,
+        proposal: trustedInputProposal,
         context: { taskState: conversation.taskState },
-      }));
+      }), { trustedInputProposal, inputQuestion: input.question, proposalQuestion });
     } catch {
       return null;
     }
@@ -246,8 +265,8 @@ export function createAgentSemanticQuestionRouter({
     }
   }
 
-  async function processSemantic(input, conversation, { retryConflict }) {
-    const resolved = await resolve(input, conversation);
+  async function processSemantic(input, conversation, trustedInputProposal, { retryConflict }) {
+    const resolved = await resolve(input, conversation, trustedInputProposal);
     if (!resolved) return stableRetry();
     const shouldSave = stateChanged(conversation.taskState, resolved.nextTaskState);
 
@@ -259,7 +278,7 @@ export function createAgentSemanticQuestionRouter({
           if (persistenceError(error).conflict && retryConflict) {
             const reloaded = await loadConversation(input);
             return reloaded
-              ? processSemantic(input, reloaded, { retryConflict: false })
+              ? processSemantic(input, reloaded, trustedInputProposal, { retryConflict: false })
               : stableRetry();
           }
           return stableRetry();
@@ -293,9 +312,20 @@ export function createAgentSemanticQuestionRouter({
     async route(input = {}) {
       if (input.candidate) return legacyRouter.route(input);
 
-      const conversation = await loadConversation(input);
+      const question = clean(input.question, 1_000);
+      if (!question) return stableRetry();
+      let trustedInputProposal = null;
+      if (input.proposal !== null && input.proposal !== undefined) {
+        try {
+          trustedInputProposal = normalizeSemanticProposal(input.proposal, question);
+        } catch {
+          return stableRetry();
+        }
+      }
+      const normalizedInput = { ...input, question };
+      const conversation = await loadConversation(normalizedInput);
       if (!conversation) return stableRetry();
-      return processSemantic(input, conversation, { retryConflict: true });
+      return processSemantic(normalizedInput, conversation, trustedInputProposal, { retryConflict: true });
     },
   };
 }

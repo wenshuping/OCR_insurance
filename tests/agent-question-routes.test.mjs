@@ -755,13 +755,17 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
         return {
           decision: 'execute',
           proposal: {
+            semanticContractVersion: 1,
             intent: 'insurance_product_knowledge', operation: 'read',
             queryAspects: ['main_responsibilities'],
+            mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
+            references: [], requestedSteps: ['lookup'],
             confidence: { intent: 1, mentions: 1, references: 1 },
           },
           resolvedEntities: { product },
           candidate: {
-            intent: 'insurance_product_knowledge', question: '主要保什么', confidence: 1,
+            intent: 'insurance_product_knowledge',
+            question: '新华人寿康健无忧两全保险主要保什么', confidence: 1,
             requestedOperation: 'read', entities: {
               productName: product.officialName,
               productCompany: product.company,
@@ -812,7 +816,9 @@ test('Hermes semantic chat writes are denied instead of executing a read handler
         return {
           decision: 'execute', resolvedEntities: {},
           proposal: {
+            semanticContractVersion: 1,
             intent: 'chat', operation: 'write', queryAspects: [],
+            mentions: [], references: [], requestedSteps: ['continue'],
             confidence: { intent: 1, mentions: 1, references: 1 },
           },
           candidate: {

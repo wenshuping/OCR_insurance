@@ -18,6 +18,20 @@ function proposal(question, overrides = {}) {
   };
 }
 
+function chatProposal(question, overrides = {}) {
+  return {
+    semanticContractVersion: 1,
+    intent: 'chat',
+    operation: 'read',
+    queryAspects: [],
+    mentions: [],
+    references: [],
+    requestedSteps: ['continue'],
+    confidence: { intent: 1, mentions: 1, references: 1 },
+    ...overrides,
+  };
+}
+
 function memoryConversationService() {
   const rows = new Map();
   return {
@@ -181,7 +195,7 @@ test('family ambiguity labels are generic and no-conversation choices require a 
   });
 
   const result = await router.route({
-    internalUserId: 7, messageRef: 'family-1', question: '查看家庭', runtime: 'hermes', proposal: {},
+    internalUserId: 7, messageRef: 'family-1', question: '查看家庭', runtime: 'hermes', proposal: null,
   });
 
   assert.match(result.interaction.text, /完整名称/u);
@@ -207,7 +221,7 @@ test('non-execute decisions are stable and never call the legacy router', async 
     });
     const result = await router.route({
       internalUserId: 7, conversationId: 'conv', messageRef: `decision-${decision}`,
-      question: '查询', runtime: 'hermes', proposal: {},
+      question: '查询', runtime: 'hermes', proposal: null,
     });
     assert.equal(result.decision, expectedDecision);
     assert.equal(result.interaction.type, expectedType);
@@ -220,7 +234,7 @@ test('load, resolver, and clarification save failures return stable retry text',
     const { router, calls } = wrapperHarness({ semanticResolver, conversationService });
     const result = await router.route({
       internalUserId: 7, conversationId: 'conv', messageRef: 'failure',
-      question: '查询', runtime: 'hermes', proposal: {},
+      question: '查询', runtime: 'hermes', proposal: null,
     });
     assert.deepEqual(result, {
       decision: 'clarify',
@@ -252,10 +266,7 @@ test('execute save conflict preserves the successful read result', async () => {
       decision: 'execute', decisionReason: 'semantic_ready', missingFields: [], ambiguities: [],
       resolvedEntities: {}, candidate: {
         intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read',
-      }, nextTaskState: { activeIntent: 'chat' }, proposal: {
-        intent: 'chat', operation: 'read', queryAspects: [],
-        confidence: { intent: 1, mentions: 1, references: 1 },
-      },
+      }, nextTaskState: { activeIntent: 'chat' }, proposal: chatProposal('你好'),
     }; } },
     conversationService: {
       async load() { return { version: 1, taskState: {} }; },
@@ -265,7 +276,7 @@ test('execute save conflict preserves the successful read result', async () => {
 
   const result = await router.route({
     internalUserId: 7, conversationId: 'conv', messageRef: 'execute-conflict',
-    question: '你好', runtime: 'hermes', proposal: {},
+    question: '你好', runtime: 'hermes', proposal: chatProposal('你好'),
   });
 
   assert.equal(result.interaction.text, 'authorized answer');
@@ -324,7 +335,67 @@ test('malformed or cyclic resolver results never execute or clear conversation s
     });
     const result = await router.route({
       internalUserId: 7, conversationId: 'conv', messageRef: 'malformed',
-      question: '继续', runtime: 'hermes', proposal: {},
+      question: '继续', runtime: 'hermes', proposal: null,
+    });
+    assert.deepEqual(result, {
+      decision: 'clarify',
+      interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+    });
+    assert.equal(calls.length, 0);
+    assert.equal(saves, 0);
+  }
+});
+
+test('resolver results remain bound to the normalized input proposal and question', async () => {
+  const question = '修改新华资料';
+  const inputProposal = chatProposal(question, { operation: 'write' });
+  const cases = [
+    {
+      proposal: { ...inputProposal, operation: 'read' },
+      candidate: { intent: 'chat', question, confidence: 1, requestedOperation: 'read' },
+    },
+    {
+      proposal: inputProposal,
+      candidate: { intent: 'chat', question: '改写后的问题', confidence: 1, requestedOperation: 'write' },
+    },
+    {
+      proposal: { ...inputProposal, confidence: { ...inputProposal.confidence, intent: 0.8 } },
+      candidate: { intent: 'chat', question, confidence: 0.8, requestedOperation: 'write' },
+    },
+    {
+      proposal: { ...inputProposal, mentions: [{ type: 'insurer', rawText: '新华' }] },
+      candidate: { intent: 'chat', question, confidence: 1, requestedOperation: 'write' },
+    },
+    {
+      proposal: { ...inputProposal, queryAspects: ['upload'] },
+      candidate: { intent: 'chat', question, confidence: 1, requestedOperation: 'write' },
+    },
+    {
+      decision: 'clarify',
+      proposal: { ...inputProposal, queryAspects: ['upload'] },
+      candidate: null,
+    },
+  ];
+
+  for (const item of cases) {
+    let saves = 0;
+    const { router, calls } = wrapperHarness({
+      semanticResolver: { async resolve() { return {
+        decision: item.decision || 'execute',
+        decisionReason: item.decision ? 'product_required' : 'semantic_ready',
+        missingFields: item.decision ? ['product'] : [], ambiguities: [], resolvedEntities: {},
+        proposal: item.proposal, candidate: item.candidate,
+        nextTaskState: { activeIntent: 'chat' },
+      }; } },
+      conversationService: {
+        async load() { return { version: 0, taskState: {} }; },
+        async save() { saves += 1; },
+      },
+    });
+
+    const result = await router.route({
+      internalUserId: 7, conversationId: 'bound', messageRef: 'bound-result',
+      question: `  ${question}  `, runtime: 'hermes', proposal: inputProposal,
     });
     assert.deepEqual(result, {
       decision: 'clarify',
@@ -365,7 +436,7 @@ test('non-execute conversation conflict reloads and retries resolution once', as
 
   const result = await router.route({
     internalUserId: 7, conversationId: 'conv', messageRef: 'conflict-retry',
-    question: '查询', runtime: 'hermes', proposal: {},
+    question: '查询', runtime: 'hermes', proposal: null,
   });
 
   assert.equal(result.decision, 'clarify');
@@ -392,7 +463,7 @@ test('non-conflict clarification save failure returns stable retry without a sec
 
   const result = await router.route({
     internalUserId: 7, conversationId: 'conv', messageRef: 'save-error',
-    question: '查询', runtime: 'hermes', proposal: {},
+    question: '查询', runtime: 'hermes', proposal: null,
   });
 
   assert.deepEqual(result, {
@@ -417,10 +488,7 @@ test('post-execute persistence hook receives redacted conflict classification', 
         return { decision: 'execute', interaction: { type: 'answer', text: 'ok' } };
       } },
       semanticResolver: { async resolve() { return {
-        decision: 'execute', proposal: {
-          intent: 'chat', operation: 'read', queryAspects: [],
-          confidence: { intent: 1, mentions: 1, references: 1 },
-        }, resolvedEntities: {},
+        decision: 'execute', proposal: chatProposal('你好'), resolvedEntities: {},
         candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read' },
         nextTaskState: { activeIntent: 'chat' },
       }; } },
@@ -433,7 +501,7 @@ test('post-execute persistence hook receives redacted conflict classification', 
 
     const result = await router.route({
       internalUserId: 7, conversationId: 'conv', messageRef: `hook-${code}`,
-      question: '你好', runtime: 'hermes', proposal: {},
+      question: '你好', runtime: 'hermes', proposal: chatProposal('你好'),
     });
     assert.equal(result.interaction.text, 'ok');
     assert.equal(legacyCalls.length, 1);
