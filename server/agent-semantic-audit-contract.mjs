@@ -38,6 +38,7 @@ const REASONS = new Set([
   'family_required', 'low_intent_confidence', 'semantic_proposal_unavailable',
   'unsupported_intent', 'unsupported_runtime', 'unsupported_operation',
   'unsafe_fallback_operation', 'candidate_selection_expired', 'entity_resolver_unavailable',
+  'product_comparison_unsupported',
   'semantic_load_failed', 'semantic_resolution_failed', 'semantic_validation_failed',
   'semantic_persistence_failed', 'conflict_retry_execute_blocked', 'unknown',
 ]);

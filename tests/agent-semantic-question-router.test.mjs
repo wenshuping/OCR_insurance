@@ -356,6 +356,40 @@ test('non-execute decisions are stable and never call the legacy router', async 
   }
 });
 
+test('unsupported product comparison returns a controlled clarification and never reaches legacy execution', async () => {
+  const question = '甲产品和乙产品有什么区别';
+  const comparisonProposal = proposal(question, {
+    queryAspects: ['comparison'],
+    mentions: [
+      { type: 'product', rawText: '甲产品' },
+      { type: 'product', rawText: '乙产品' },
+    ],
+    requestedSteps: ['compare'],
+  });
+  const semanticResolver = createAgentSemanticResolver({
+    productResolver: { resolve() { throw new Error('comparison must not resolve one product'); } },
+    familyResolver: { async resolve() { return { status: 'missing', entity: null, candidates: [] }; } },
+  });
+  const { router, calls, audits } = wrapperHarness({
+    semanticResolver,
+    conversationService: memoryConversationService(),
+  });
+
+  const result = await router.route({
+    internalUserId: 7,
+    conversationId: 'comparison-conv',
+    messageRef: 'comparison-1',
+    question,
+    runtime: 'hermes',
+    proposal: comparisonProposal,
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.match(result.interaction.text, /产品比较暂不支持直接执行/u);
+  assert.equal(calls.length, 0);
+  assert.equal(audits[0].resolution.decisionReason, 'product_comparison_unsupported');
+});
+
 test('load, resolver, and clarification save failures return stable retry text', async () => {
   const stable = async (semanticResolver, conversationService) => {
     const { router, calls } = wrapperHarness({ semanticResolver, conversationService });

@@ -107,6 +107,12 @@ function clarification(result, hasConversation) {
       interaction: { type: 'clarification', text: '之前的候选已过期，请重新说明要查询的对象。' },
     };
   }
+  if (reason === 'product_comparison_unsupported') {
+    return {
+      decision: 'clarify',
+      interaction: { type: 'clarification', text: '产品比较暂不支持直接执行，请先分别查询每款产品的正式名称和条款。' },
+    };
+  }
   if (result?.missingFields?.includes('product') || reason === 'product_required') {
     return {
       decision: 'clarify',

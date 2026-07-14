@@ -294,6 +294,36 @@ function preflightResult({ state, proposal, runtime }) {
   };
 }
 
+function requiresUnsupportedProductComparison(proposal, question) {
+  if (!proposal || proposal.intent !== PRODUCT_INTENT) return false;
+  const productMentions = new Set(proposal.mentions
+    .filter((mention) => mention.type === 'product')
+    .map((mention) => mention.rawText.normalize('NFKC').replace(/\s+/gu, '').toLowerCase()));
+  return proposal.queryAspects.includes('comparison')
+    || proposal.requestedSteps.includes('compare')
+    || /对比|比较|区别|差异|哪个更/u.test(question)
+    || proposal.references.some((reference) => (
+      reference.type === 'comparison_left' || reference.type === 'comparison_right'
+    ))
+    || productMentions.size > 1;
+}
+
+function unsupportedComparisonResult({ state, proposal }) {
+  const pendingType = clean(state.pendingClarification?.entityType, 20);
+  if (pendingType === 'product' || pendingType === 'family') state.candidateSets[pendingType] = [];
+  state.pendingClarification = null;
+  return {
+    decision: 'clarify',
+    decisionReason: 'product_comparison_unsupported',
+    missingFields: [],
+    ambiguities: ['product'],
+    proposal,
+    resolvedEntities: {},
+    candidate: null,
+    nextTaskState: publicState(state),
+  };
+}
+
 function pendingSelection(state, selection, now) {
   const pending = state.pendingClarification;
   const entityType = clean(pending?.entityType, 20);
@@ -413,6 +443,10 @@ export function createAgentSemanticResolver({
         && runtime === 'rule'
         && preparsed.operationHint === 'upload_link') {
         effectiveProposal = uploadProposal();
+      }
+
+      if (requiresUnsupportedProductComparison(effectiveProposal, normalizedQuestion)) {
+        return unsupportedComparisonResult({ state, proposal: effectiveProposal });
       }
 
       const blocked = preflightResult({ state, proposal: effectiveProposal, runtime });

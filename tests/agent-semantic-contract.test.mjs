@@ -185,6 +185,9 @@ test('pre-parser accepts bounded complete selections and rejects weak or out-of-
     ['选第2个', 1],
     ['1', 0],
     ['20', 19],
+    ['第一款', 0],
+    ['选择第二款', 1],
+    ['第十款', 9],
   ]) {
     assert.deepEqual(preparseAgentMessage(input), {
       candidateSelection: { index, rawText: input },
@@ -198,6 +201,9 @@ test('pre-parser accepts bounded complete selections and rejects weak or out-of-
     '第01款',
     '我选择 2',
     '2号产品怎么样',
+    '第二年',
+    '第二次',
+    '第十一款',
   ]) {
     assert.deepEqual(preparseAgentMessage(input), {
       candidateSelection: null,

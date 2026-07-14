@@ -79,6 +79,32 @@ test('resolves an insurer-scoped short product mention to the active canonical p
   }
 });
 
+test('does not resolve weak substring mentions even when the insurer has only one product', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-only',
+      company: '新华保险',
+      officialName: '新华人寿保险股份有限公司康健无忧两全保险',
+    });
+    const resolver = createAgentProductEntityResolver({
+      db,
+      officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES,
+    });
+
+    for (const rawText of ['保险', '两全', '产品']) {
+      const result = resolver.resolve({ mentions: [
+        { type: 'insurer', rawText: '新华人寿保险股份有限公司' },
+        { type: 'product', rawText },
+      ] });
+      assert.notEqual(result.status, 'resolved', rawText);
+      assert.equal(result.entity, null, rawText);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('does not collapse distinct insurer business lines during company normalization', () => {
   const db = makeDb();
   try {

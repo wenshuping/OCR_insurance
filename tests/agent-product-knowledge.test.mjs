@@ -83,6 +83,22 @@ test('ready exact product summary returns bounded responsibilities with official
   }]);
 });
 
+test('unsupported product aspects never reuse the general responsibility headline as evidence', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  insert(db);
+
+  for (const queryAspects of [['waiting_period'], ['exclusions'], ['renewal'], ['reimbursement_ratio']]) {
+    const result = await service(db).search({
+      question: '这个产品的具体条款是什么',
+      scope: 'public_read_only',
+      product,
+      queryAspects,
+    });
+    assert.deepEqual(result, { answer: '', sources: [] }, queryAspects[0]);
+  }
+});
+
 test('non-official URLs never become verified sources', async (t) => {
   const db = database();
   t.after(() => db.close());

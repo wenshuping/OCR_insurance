@@ -141,8 +141,7 @@ function matchCandidate({
   } else if (approvedAliases({ payload }).some((alias) => comparable(alias) === target)) {
     matchType = 'approved_alias';
     confidence = 1;
-  } else if (targetIdentity && officialIdentity
-    && (officialIdentity === targetIdentity || officialIdentity.includes(targetIdentity))) {
+  } else if (targetIdentity && officialIdentity && officialIdentity === targetIdentity) {
     matchType = 'company_scoped_normalized';
     confidence = 1;
   }

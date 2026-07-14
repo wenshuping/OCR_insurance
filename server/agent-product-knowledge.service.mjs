@@ -177,6 +177,10 @@ export function createAgentProductKnowledgeService({
       const summary = parseSummary(row.summary_json);
       const storedSourceUrls = parseStringArray(row.source_urls_json);
       if (!summary || !storedSourceUrls) return { answer: '', sources: [] };
+      const requestedAspects = Array.isArray(queryAspects) ? queryAspects : [];
+      if (requestedAspects.some((aspect) => aspect !== 'main_responsibilities')) {
+        return { answer: '', sources: [] };
+      }
 
       const headline = clean(summary.headline, 300) || clean(row.headline, 300) || officialName;
       const profile = profileForCompany(company, profiles);

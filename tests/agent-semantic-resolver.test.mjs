@@ -192,6 +192,45 @@ test('passes formal and short product mentions to the product resolver unchanged
   }
 });
 
+test('product comparison proposals clarify without resolving or executing the first product', async () => {
+  const question = '甲产品和乙产品有什么区别';
+  const cases = [
+    proposal({
+      queryAspects: ['comparison'],
+      mentions: [
+        { type: 'product', rawText: '甲产品' },
+        { type: 'product', rawText: '乙产品' },
+      ],
+      requestedSteps: ['compare'],
+    }),
+    proposal({
+      mentions: [
+        { type: 'product', rawText: '甲产品' },
+        { type: 'product', rawText: '乙产品' },
+      ],
+    }),
+    proposal({
+      mentions: [{ type: 'product', rawText: '甲产品' }],
+      references: [{ type: 'comparison_right', rawText: '乙产品' }],
+    }),
+    proposal({ mentions: [{ type: 'product', rawText: '甲产品' }] }),
+  ];
+
+  for (const value of cases) {
+    const { resolver, productCalls } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question,
+      runtime: 'hermes',
+      proposal: value,
+    });
+    assert.equal(result.decision, 'clarify');
+    assert.equal(result.decisionReason, 'product_comparison_unsupported');
+    assert.equal(result.candidate, null);
+    assert.equal(productCalls.length, 0);
+  }
+});
+
 test('current_family is reauthorized and family id never enters router candidate', async () => {
   const { resolver, familyCalls } = harness();
   const question = '这个家庭的保障报告';
@@ -321,6 +360,35 @@ test('ambiguous product selection revalidates formal identity and ignores stored
   assert.equal(JSON.stringify(selected).includes('attacker-controlled-id'), false);
   assert.equal(selected.nextTaskState.pendingClarification, null);
   assert.deepEqual(selected.nextTaskState.candidateSets.product, []);
+});
+
+test('Chinese ordinal product selection is consumed only by a live pending clarification', async () => {
+  const savedProposal = proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] });
+  const context = { taskState: {
+    candidateSets: { product: [
+      { ...PRODUCT, officialName: '第一款保险' },
+      { ...PRODUCT, officialName: '第二款保险' },
+    ] },
+    pendingClarification: {
+      entityType: 'product', proposal: savedProposal,
+      originalQuestion: '康健无忧保什么', expiresAt: NOW + 10_000,
+    },
+  } };
+  const { resolver, productCalls } = harness({
+    productResult: { status: 'resolved', entity: { ...PRODUCT, officialName: '第二款保险' }, candidates: [] },
+  });
+  const selected = await resolver.resolve({
+    internalUserId: 7, question: '选择第二款', runtime: 'rule', context,
+  });
+  assert.equal(selected.decision, 'execute');
+  assert.equal(productCalls[0].mentions[1].rawText, '第二款保险');
+
+  const unbound = await resolver.resolve({
+    internalUserId: 7, question: '第二款', runtime: 'rule', context: {},
+  });
+  assert.equal(unbound.decision, 'clarify');
+  assert.equal(unbound.decisionReason, 'candidate_selection_expired');
+  assert.equal(unbound.candidate, null);
 });
 
 test('a stored product candidate that catalog revalidation cannot resolve never executes', async () => {
