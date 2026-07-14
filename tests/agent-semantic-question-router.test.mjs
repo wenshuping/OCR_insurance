@@ -51,8 +51,9 @@ function memoryConversationService() {
   };
 }
 
-function wrapperHarness({ semanticResolver, conversationService } = {}) {
+function wrapperHarness({ semanticResolver, conversationService, auditService } = {}) {
   const calls = [];
+  const audits = [];
   const legacyRouter = {
     async route(input) {
       calls.push(input);
@@ -61,9 +62,132 @@ function wrapperHarness({ semanticResolver, conversationService } = {}) {
   };
   return {
     calls,
-    router: createAgentSemanticQuestionRouter({ legacyRouter, semanticResolver, conversationService }),
+    audits,
+    router: createAgentSemanticQuestionRouter({
+      legacyRouter,
+      semanticResolver,
+      conversationService,
+      auditService: auditService || { async record(input) { audits.push(input); } },
+    }),
   };
 }
+
+test('semantic decisions are audited before execution or state persistence', async () => {
+  const order = [];
+  const question = '你好';
+  const router = createAgentSemanticQuestionRouter({
+    legacyRouter: { async route() { order.push('legacy'); return { decision: 'execute' }; } },
+    semanticResolver: { async resolve() { return {
+      decision: 'execute', decisionReason: 'semantic_ready', missingFields: [], ambiguities: [],
+      proposal: chatProposal(question), resolvedEntities: {},
+      candidate: { intent: 'chat', question, confidence: 1, requestedOperation: 'read' },
+      nextTaskState: { activeIntent: 'chat' },
+    }; } },
+    conversationService: {
+      async load() { return { version: 0, taskState: {} }; },
+      async save() { order.push('save'); },
+    },
+    auditService: { async record(input) {
+      order.push('audit');
+      assert.equal(input.phase, 'semantic_resolution');
+      assert.equal(input.resolution.decision, 'execute');
+    } },
+  });
+
+  await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'audit-order',
+    question, runtime: 'hermes', proposal: chatProposal(question),
+  });
+
+  assert.deepEqual(order, ['audit', 'legacy', 'save']);
+});
+
+test('semantic audit failure prevents execution and state persistence', async () => {
+  let saves = 0;
+  const question = '你好';
+  const { router, calls } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'execute', decisionReason: 'semantic_ready', missingFields: [], ambiguities: [],
+      proposal: chatProposal(question), resolvedEntities: {},
+      candidate: { intent: 'chat', question, confidence: 1, requestedOperation: 'read' },
+      nextTaskState: { activeIntent: 'chat' },
+    }; } },
+    conversationService: {
+      async load() { return { version: 0, taskState: {} }; },
+      async save() { saves += 1; },
+    },
+    auditService: { async record() { throw new Error('audit unavailable'); } },
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'audit-failure',
+    question, runtime: 'hermes', proposal: chatProposal(question),
+  });
+
+  assert.match(result.interaction.text, /语义解析暂不可用/u);
+  assert.equal(calls.length, 0);
+  assert.equal(saves, 0);
+});
+
+test('clarifications are audited and legacy candidates are not', async () => {
+  const { router, audits } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
+      ambiguities: [], proposal: chatProposal('查询'), resolvedEntities: {}, candidate: null,
+      nextTaskState: {},
+    }; } },
+    conversationService: memoryConversationService(),
+  });
+
+  await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'clarify-audit',
+    question: '查询', runtime: 'hermes', proposal: chatProposal('查询'),
+  });
+  await router.route({
+    internalUserId: 7, messageRef: 'legacy-no-semantic-audit',
+    candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read' },
+  });
+
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].resolution.decision, 'clarify');
+});
+
+test('missing semantic audit dependency disables semantic routing but preserves legacy routing', async () => {
+  const legacyCalls = [];
+  const router = createAgentSemanticQuestionRouter({
+    legacyRouter: { async route(input) { legacyCalls.push(input); return { decision: 'execute' }; } },
+    semanticResolver: { async resolve() { throw new Error('must not run'); } },
+    conversationService: { async load() { throw new Error('must not load'); }, async save() {} },
+  });
+  const semantic = await router.route({
+    internalUserId: 7, messageRef: 'no-audit', question: '你好', runtime: 'hermes',
+    proposal: chatProposal('你好'),
+  });
+  assert.match(semantic.interaction.text, /语义解析暂不可用/u);
+  await router.route({
+    internalUserId: 7, messageRef: 'legacy',
+    candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read' },
+  });
+  assert.equal(legacyCalls.length, 1);
+});
+
+test('conversation load failures attempt a redacted semantic error audit', async () => {
+  const audits = [];
+  const { router } = wrapperHarness({
+    semanticResolver: { async resolve() { throw new Error('must not run'); } },
+    conversationService: { async load() { throw new Error('private conversation'); }, async save() {} },
+    auditService: { async record(input) { audits.push(input); } },
+  });
+  await router.route({
+    internalUserId: 7, messageRef: 'load-error', question: '你好', runtime: 'hermes',
+    proposal: chatProposal('你好'),
+  });
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].phase, 'semantic_error');
+  assert.equal(audits[0].errorCode, 'SEMANTIC_CONVERSATION_LOAD_FAILED');
+  assert.equal(audits[0].resolution.decisionReason, 'semantic_load_failed');
+  assert.doesNotMatch(JSON.stringify(audits), /private conversation/u);
+});
 
 test('legacy candidates delegate without semantic loading or mutation', async () => {
   let loads = 0;
@@ -603,6 +727,7 @@ test('post-execute persistence hook receives redacted conflict classification', 
         async load() { return { version: 0, taskState: {} }; },
         async save() { throw Object.assign(new Error('private database path'), { code }); },
       },
+      auditService: { async record() {} },
       onPersistenceError(input) { persistenceErrors.push(input); },
     });
 

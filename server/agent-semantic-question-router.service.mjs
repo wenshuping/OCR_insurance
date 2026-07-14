@@ -238,6 +238,7 @@ export function createAgentSemanticQuestionRouter({
   legacyRouter,
   semanticResolver,
   conversationService,
+  auditService,
   onPersistenceError,
 } = {}) {
   if (typeof legacyRouter?.route !== 'function') throw new TypeError('legacyRouter.route is required');
@@ -245,6 +246,36 @@ export function createAgentSemanticQuestionRouter({
   if (typeof conversationService?.load !== 'function'
     || typeof conversationService?.save !== 'function') {
     throw new TypeError('conversationService load/save is required');
+  }
+  const auditAvailable = typeof auditService?.record === 'function';
+
+  async function audit(input, proposal, resolution, phase = 'semantic_resolution', errorCode = '') {
+    if (!auditAvailable) return false;
+    try {
+      await auditService.record({
+        internalUserId: input.internalUserId,
+        messageRef: input.messageRef,
+        runtime: input.runtime,
+        proposal,
+        resolution,
+        phase,
+        errorCode,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function errorResolution(decisionReason) {
+    return {
+      decision: 'retry_later',
+      decisionReason,
+      missingFields: [],
+      ambiguities: [],
+      resolvedEntities: {},
+      nextTaskState: {},
+    };
   }
 
   async function loadConversation(input) {
@@ -277,21 +308,25 @@ export function createAgentSemanticQuestionRouter({
       const proposalQuestion = pendingProposal
         ? pending.originalQuestion
         : input.question;
-      return normalizedResolution(await semanticResolver.resolve({
+      const rawResolution = await semanticResolver.resolve({
         internalUserId: input.internalUserId,
         question: input.question,
         runtime: input.runtime,
         proposal: expectedProposal,
         context: { taskState: conversation.taskState },
-      }), {
+      });
+      const normalized = normalizedResolution(rawResolution, {
         expectedProposal,
         inputQuestion: input.question,
         originalTaskState: conversation.taskState,
         pendingSelection: Boolean(pendingProposal),
         proposalQuestion,
       });
+      return normalized
+        ? { resolution: normalized, errorReason: '' }
+        : { resolution: null, errorReason: 'semantic_validation_failed' };
     } catch {
-      return null;
+      return { resolution: null, errorReason: 'semantic_resolution_failed' };
     }
   }
 
@@ -315,8 +350,21 @@ export function createAgentSemanticQuestionRouter({
   }
 
   async function processSemantic(input, conversation, trustedInputProposal, { retryConflict }) {
-    const resolved = await resolve(input, conversation, trustedInputProposal);
-    if (!resolved) return stableRetry();
+    const outcome = await resolve(input, conversation, trustedInputProposal);
+    const resolved = outcome.resolution;
+    if (!resolved) {
+      await audit(
+        input,
+        trustedInputProposal,
+        errorResolution(outcome.errorReason),
+        'semantic_error',
+        outcome.errorReason === 'semantic_validation_failed'
+          ? 'SEMANTIC_RESULT_INVALID'
+          : 'SEMANTIC_RESOLUTION_FAILED',
+      );
+      return stableRetry();
+    }
+    if (!await audit(input, resolved.proposal, resolved)) return stableRetry();
     const shouldSave = stateChanged(conversation.taskState, resolved.nextTaskState);
 
     if (resolved.decision !== 'execute') {
@@ -361,19 +409,46 @@ export function createAgentSemanticQuestionRouter({
     async route(input = {}) {
       if (input.candidate) return legacyRouter.route(input);
 
+      if (!auditAvailable) return stableRetry();
+
       const question = clean(input.question, 1_000);
-      if (!question) return stableRetry();
+      if (!question) {
+        await audit(
+          input,
+          null,
+          errorResolution('semantic_validation_failed'),
+          'semantic_error',
+          'SEMANTIC_INPUT_INVALID',
+        );
+        return stableRetry();
+      }
       let trustedInputProposal = null;
       if (input.proposal !== null && input.proposal !== undefined) {
         try {
           trustedInputProposal = normalizeSemanticProposal(input.proposal, question);
         } catch {
+          await audit(
+            { ...input, question },
+            null,
+            errorResolution('semantic_validation_failed'),
+            'semantic_error',
+            'SEMANTIC_PROPOSAL_INVALID',
+          );
           return stableRetry();
         }
       }
       const normalizedInput = { ...input, question };
       const conversation = await loadConversation(normalizedInput);
-      if (!conversation) return stableRetry();
+      if (!conversation) {
+        await audit(
+          normalizedInput,
+          trustedInputProposal,
+          errorResolution('semantic_load_failed'),
+          'semantic_error',
+          'SEMANTIC_CONVERSATION_LOAD_FAILED',
+        );
+        return stableRetry();
+      }
       return processSemantic(normalizedInput, conversation, trustedInputProposal, { retryConflict: true });
     },
   };

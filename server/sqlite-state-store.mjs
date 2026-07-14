@@ -181,6 +181,14 @@ const AGENT_POLICY_MAX_ENTRIES = 256;
 const AGENT_POLICY_MAX_FIELDS = 32;
 const AGENT_POLICY_MAX_BYTES = 262_144;
 const AGENT_SEMANTIC_TASK_STATE_MAX_BYTES = 32_768;
+const AGENT_SEMANTIC_AUDIT_PAYLOAD_MAX_BYTES = 8_192;
+const AGENT_SEMANTIC_AUDIT_RUNTIMES = new Set(['hermes', 'direct', 'rule', 'unknown']);
+const AGENT_SEMANTIC_AUDIT_INTENTS = new Set([
+  'chat', 'family_list', 'family_summary', 'coverage_report', 'sales_report',
+  'sales_coaching', 'upload_link', 'insurance_product_knowledge', 'unknown',
+]);
+const AGENT_SEMANTIC_AUDIT_OPERATIONS = new Set(['read', 'write', 'unknown']);
+const AGENT_SEMANTIC_AUDIT_DECISIONS = new Set(['execute', 'clarify', 'reject', 'retry_later']);
 
 function assertStrictJsonValue(value, label, ancestors = new Set()) {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
@@ -310,6 +318,39 @@ function mapAgentRouteAuditEvent(row) {
     actor: String(row.actor || ''),
     createdAt: String(row.created_at || ''),
     payload: parseJson(row.payload, {}),
+  };
+}
+
+function parseAgentSemanticAuditPayload(value) {
+  const serialized = String(value || '');
+  if (!serialized || Buffer.byteLength(serialized, 'utf8') > AGENT_SEMANTIC_AUDIT_PAYLOAD_MAX_BYTES) {
+    throw new Error('Agent semantic audit payload is corrupt');
+  }
+  let payload;
+  try {
+    payload = JSON.parse(serialized);
+    assertStrictJsonValue(payload, 'Agent semantic audit payload');
+  } catch {
+    throw new Error('Agent semantic audit payload is corrupt');
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Agent semantic audit payload is corrupt');
+  }
+  return payload;
+}
+
+function mapAgentSemanticAuditEvent(row) {
+  return {
+    id: Number(row.id),
+    userId: Number(row.user_id),
+    messageRef: String(row.message_ref || ''),
+    runtime: String(row.runtime || ''),
+    intent: String(row.intent || ''),
+    operation: String(row.operation || ''),
+    decision: String(row.decision || ''),
+    decisionReason: String(row.decision_reason || ''),
+    createdAt: Number(row.created_at),
+    payload: parseAgentSemanticAuditPayload(row.payload),
   };
 }
 
@@ -1041,6 +1082,23 @@ function createSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_agent_route_audit_events_user_created ON agent_route_audit_events(user_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_route_audit_events_message_ref ON agent_route_audit_events(message_ref);
+
+    CREATE TABLE IF NOT EXISTS agent_semantic_audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      message_ref TEXT NOT NULL,
+      runtime TEXT NOT NULL CHECK (runtime IN ('hermes', 'direct', 'rule', 'unknown')),
+      intent TEXT NOT NULL,
+      operation TEXT NOT NULL CHECK (operation IN ('read', 'write', 'unknown')),
+      decision TEXT NOT NULL CHECK (decision IN ('execute', 'clarify', 'reject', 'retry_later')),
+      decision_reason TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_semantic_audit_events_user_created
+      ON agent_semantic_audit_events(user_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_semantic_audit_events_message_ref
+      ON agent_semantic_audit_events(message_ref);
 
     CREATE TABLE IF NOT EXISTS agent_semantic_conversations (
       user_id INTEGER NOT NULL,
@@ -3710,6 +3768,73 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return rows.map(mapAgentRouteAuditEvent);
   }
 
+  async function recordAgentSemanticAudit({
+    userId,
+    messageRef = '',
+    runtime = '',
+    intent = '',
+    operation = '',
+    decision = '',
+    decisionReason = '',
+    createdAt,
+    payload,
+  } = {}) {
+    const numericUserId = userId;
+    const normalizedMessageRef = typeof messageRef === 'string' ? messageRef.trim() : '';
+    const normalizedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
+    const normalizedIntent = typeof intent === 'string' ? intent.trim() : '';
+    const normalizedOperation = typeof operation === 'string' ? operation.trim() : '';
+    const normalizedDecision = typeof decision === 'string' ? decision.trim() : '';
+    const normalizedReason = typeof decisionReason === 'string' ? decisionReason.trim() : '';
+    if (!Number.isSafeInteger(numericUserId) || numericUserId <= 0
+      || !normalizedMessageRef || normalizedMessageRef.length > 200
+      || !AGENT_SEMANTIC_AUDIT_RUNTIMES.has(normalizedRuntime)
+      || !AGENT_SEMANTIC_AUDIT_INTENTS.has(normalizedIntent)
+      || !AGENT_SEMANTIC_AUDIT_OPERATIONS.has(normalizedOperation)
+      || !AGENT_SEMANTIC_AUDIT_DECISIONS.has(normalizedDecision)
+      || !normalizedReason || normalizedReason.length > 100
+      || !/^[a-z0-9_:-]+$/u.test(normalizedReason)
+      || !Number.isSafeInteger(createdAt) || createdAt < 0) {
+      throw new TypeError('Agent semantic audit event is invalid');
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new TypeError('Agent semantic audit payload must be an object');
+    }
+    assertStrictJsonValue(payload, 'Agent semantic audit payload');
+    const serializedPayload = JSON.stringify(payload);
+    if (Buffer.byteLength(serializedPayload, 'utf8') > AGENT_SEMANTIC_AUDIT_PAYLOAD_MAX_BYTES) {
+      throw new RangeError(`Agent semantic audit payload exceeds ${AGENT_SEMANTIC_AUDIT_PAYLOAD_MAX_BYTES} bytes`);
+    }
+    const result = db.prepare(`
+      INSERT INTO agent_semantic_audit_events (
+        user_id, message_ref, runtime, intent, operation, decision, decision_reason, created_at, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      numericUserId, normalizedMessageRef, normalizedRuntime, normalizedIntent,
+      normalizedOperation, normalizedDecision, normalizedReason, createdAt, serializedPayload,
+    );
+    return mapAgentSemanticAuditEvent(
+      db.prepare('SELECT * FROM agent_semantic_audit_events WHERE id = ?').get(result.lastInsertRowid),
+    );
+  }
+
+  async function listAgentSemanticAuditEvents({ userId, limit = 20 } = {}) {
+    const boundedLimit = normalizeAgentLimit(limit);
+    if (userId !== undefined) {
+      const numericUserId = userId;
+      if (!Number.isSafeInteger(numericUserId) || numericUserId <= 0) {
+        throw new TypeError('Agent semantic audit userId is invalid');
+      }
+      return db.prepare(`
+        SELECT * FROM agent_semantic_audit_events
+        WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?
+      `).all(numericUserId, boundedLimit).map(mapAgentSemanticAuditEvent);
+    }
+    return db.prepare(`
+      SELECT * FROM agent_semantic_audit_events ORDER BY created_at DESC, id DESC LIMIT ?
+    `).all(boundedLimit).map(mapAgentSemanticAuditEvent);
+  }
+
   async function load() {
     if (!getMeta(db, 'state_initialized_at')) {
       const seedState = await loadSeedState();
@@ -3772,6 +3897,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     appendAgentRouteAuditEvent,
     recordAgentRouteAudit,
     listAgentRouteAuditEvents,
+    recordAgentSemanticAudit,
+    listAgentSemanticAuditEvents,
     getAgentSemanticConversation,
     saveAgentSemanticConversation,
     close,

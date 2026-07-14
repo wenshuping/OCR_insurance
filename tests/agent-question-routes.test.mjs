@@ -715,6 +715,7 @@ test('createPolicyOcrApp default composition routes family facts, report regener
 
 test('createPolicyOcrApp composes semantic resolution before the legacy policy router', async (t) => {
   const saved = [];
+  const semanticAudits = [];
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
   db.exec(`
@@ -749,6 +750,7 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
       async load() { return { familyProfiles: [], policies: [] }; },
       async getPublishedAgentQuestionPolicyVersion() { return null; },
       async recordAgentRouteAudit() {},
+      async recordAgentSemanticAudit(input) { semanticAudits.push(input); return input; },
     },
     agentSemanticResolver: {
       async resolve() {
@@ -796,6 +798,12 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
   assert.match(result.payload.interaction.text, /身故保险金/u);
   assert.doesNotMatch(result.payload.interaction.text, /当前没有可核验来源/u);
   assert.equal(saved.length, 1);
+  assert.equal(semanticAudits.length, 1);
+  assert.equal(semanticAudits[0].decision, 'execute');
+  assert.doesNotMatch(
+    JSON.stringify(semanticAudits),
+    /新华人寿康健无忧两全保险主要保什么|康健无忧两全保险|product-1/u,
+  );
 });
 
 test('Hermes semantic chat writes are denied instead of executing a read handler', async (t) => {
@@ -806,6 +814,7 @@ test('Hermes semantic chat writes are denied instead of executing a read handler
       async load() { return { familyProfiles: [], policies: [] }; },
       async getPublishedAgentQuestionPolicyVersion() { return null; },
       async recordAgentRouteAudit() {},
+      async recordAgentSemanticAudit(input) { return input; },
       async appendAgentUnknownQuestion() {},
     },
     agentQuestionHandlers: {
@@ -897,6 +906,7 @@ test('default semantic product resolver reloads custom official company aliases'
     async load() { return state; },
     async getPublishedAgentQuestionPolicyVersion() { return null; },
     async recordAgentRouteAudit() {},
+    async recordAgentSemanticAudit(input) { return input; },
   };
   const app = createPolicyOcrApp({
     state, db, agentStore: store, recomputeCashflowOnStartup: false,

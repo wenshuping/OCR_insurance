@@ -14,6 +14,7 @@ import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
 import { createAgentFamilyEntityResolver } from './agent-family-entity-resolver.service.mjs';
 import { createAgentProductEntityResolver } from './agent-product-entity-resolver.service.mjs';
 import { createAgentSemanticConversationService } from './agent-semantic-conversation.service.mjs';
+import { createAgentSemanticAuditService } from './agent-semantic-audit.service.mjs';
 import { createAgentSemanticQuestionRouter } from './agent-semantic-question-router.service.mjs';
 import { createAgentSemanticResolver } from './agent-semantic-resolver.service.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
@@ -2778,6 +2779,10 @@ export function createPolicyOcrApp(options = {}) {
         && typeof agentStore?.saveAgentSemanticConversation === 'function'
         ? createAgentSemanticConversationService({ store: agentStore })
         : null);
+    const semanticAuditService = options.agentSemanticAuditService
+      || (typeof agentStore?.recordAgentSemanticAudit === 'function'
+        ? createAgentSemanticAuditService({ store: agentStore })
+        : null);
     let semanticResolver = options.agentSemanticResolver || null;
     if (!semanticResolver && options.db && agentStore && typeof agentStore.load === 'function') {
       const productResolver = {
@@ -2803,6 +2808,7 @@ export function createPolicyOcrApp(options = {}) {
         legacyRouter: agentLegacyQuestionRouter,
         semanticResolver,
         conversationService: semanticConversationService,
+        auditService: semanticAuditService,
         onPersistenceError: options.agentSemanticPersistenceErrorHandler || ((error) => {
           console.error('[agent-semantic] conversation persistence failed', {
             code: error.code,
