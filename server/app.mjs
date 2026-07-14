@@ -2234,7 +2234,14 @@ function resolveDefaultWechatPayMode(options = {}) {
   return process.env.NODE_ENV === 'production' ? 'live' : 'mock';
 }
 
+export function resolveAgentSemanticMode(options = {}, env = process.env) {
+  const value = trim(options.agentSemanticMode ?? env.POLICY_AGENT_SEMANTIC_MODE ?? 'enforced');
+  if (value === 'enforced' || value === 'off') return value;
+  throw new Error(`POLICY_AGENT_SEMANTIC_MODE must be "enforced" or "off"; received ${JSON.stringify(value)}`);
+}
+
 export function createPolicyOcrApp(options = {}) {
+  const agentSemanticMode = resolveAgentSemanticMode(options);
   const state = options.state || createInitialState();
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
@@ -2828,9 +2835,21 @@ export function createPolicyOcrApp(options = {}) {
         },
       };
   }
-  const agentQuestionRouter = injectedQuestionRouter
+  const configuredAgentQuestionRouter = injectedQuestionRouter
     ? options.agentQuestionRouter
     : defaultAgentQuestionRouter;
+  const agentQuestionRouter = agentSemanticMode === 'off' && configuredAgentQuestionRouter
+    ? {
+      route(input) {
+        return input?.candidate
+          ? configuredAgentQuestionRouter.route(input)
+          : Promise.resolve({
+            decision: 'clarify',
+            interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+          });
+      },
+    }
+    : configuredAgentQuestionRouter;
   const recoveryOptions = {
     intervalMs: options.agentTransferRecoveryIntervalMs,
     disabled: options.disableAgentTransferRecovery === true,

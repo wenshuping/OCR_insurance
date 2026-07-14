@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import express from 'express';
 
-import { createPolicyOcrApp } from '../server/app.mjs';
+import { createPolicyOcrApp, resolveAgentSemanticMode } from '../server/app.mjs';
 import { createAgentQuestionHandlers } from '../server/agent-question-handlers.service.mjs';
 import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
 import { createAgentRouter } from '../server/routes/agent.routes.mjs';
@@ -836,6 +836,71 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
     JSON.stringify(semanticAudits),
     /新华人寿康健无忧两全保险主要保什么|康健无忧两全保险|product-1/u,
   );
+});
+
+test('agent semantic mode defaults to enforced, honors option precedence, and rejects invalid values', () => {
+  assert.equal(resolveAgentSemanticMode({}, {}), 'enforced');
+  assert.equal(resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: 'enforced' }), 'enforced');
+  assert.equal(resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: 'off' }), 'off');
+  assert.equal(
+    resolveAgentSemanticMode({ agentSemanticMode: 'enforced' }, { POLICY_AGENT_SEMANTIC_MODE: 'off' }),
+    'enforced',
+  );
+  assert.throws(
+    () => resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: 'invalid' }),
+    /must be "enforced" or "off"/u,
+  );
+  assert.throws(
+    () => createPolicyOcrApp({ agentSemanticMode: 'invalid' }),
+    /must be "enforced" or "off"/u,
+  );
+});
+
+test('agent semantic off returns a safe clarification without semantic side effects and preserves legacy routing', async (t) => {
+  const calls = { legacy: [], resolve: 0, load: 0, save: 0, audit: 0 };
+  const app = createPolicyOcrApp({
+    agentSemanticMode: 'off',
+    recomputeCashflowOnStartup: false,
+    agentLegacyQuestionRouter: {
+      async route(input) {
+        calls.legacy.push(input);
+        return { decision: 'execute', interaction: { type: 'answer', text: 'legacy-ok' } };
+      },
+    },
+    agentSemanticResolver: {
+      async resolve() { calls.resolve += 1; throw new Error('must not run'); },
+    },
+    agentSemanticConversationService: {
+      async load() { calls.load += 1; throw new Error('must not run'); },
+      async save() { calls.save += 1; throw new Error('must not run'); },
+    },
+    agentSemanticAuditService: {
+      async record() { calls.audit += 1; throw new Error('must not run'); },
+    },
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+  const server = { baseUrl: `http://127.0.0.1:${listener.address().port}` };
+
+  const semantic = await post(server, '/api/agent/questions/route', semanticBody());
+  assert.equal(semantic.response.status, 200);
+  assert.equal(semantic.payload.decision, 'clarify');
+  assert.equal(semantic.payload.interaction.type, 'clarification');
+  assert.match(semantic.payload.interaction.text, /语义解析暂不可用/u);
+  assert.deepEqual(calls, { legacy: [], resolve: 0, load: 0, save: 0, audit: 0 });
+
+  const legacy = await post(server, '/api/agent/questions/route', validBody());
+  assert.equal(legacy.response.status, 200);
+  assert.equal(legacy.payload.interaction.text, 'legacy-ok');
+  assert.equal(calls.legacy.length, 1);
+  assert.equal(calls.resolve, 0);
+  assert.equal(calls.load, 0);
+  assert.equal(calls.save, 0);
+  assert.equal(calls.audit, 0);
 });
 
 test('Hermes semantic chat writes are denied instead of executing a read handler', async (t) => {
