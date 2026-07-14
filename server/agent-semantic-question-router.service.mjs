@@ -386,8 +386,12 @@ export function createAgentSemanticQuestionRouter({
       );
       return stableRetry();
     }
-    if (conflictRetry && resolved.decision === 'execute') return stableRetry();
-    if (!primaryAuditRecorded && !await audit(input, resolved.proposal, resolved)) return stableRetry();
+    if (conflictRetry) {
+      if (!await audit(input, resolved.proposal, resolved, 'semantic_retry_final')) return stableRetry();
+      if (resolved.decision === 'execute') return stableRetry();
+    } else if (!primaryAuditRecorded && !await audit(input, resolved.proposal, resolved)) {
+      return stableRetry();
+    }
     const shouldSave = stateChanged(conversation.taskState, resolved.nextTaskState);
 
     if (resolved.decision !== 'execute') {

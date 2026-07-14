@@ -19,7 +19,9 @@ const RUNTIMES = new Set(['hermes', 'direct', 'rule', 'unknown']);
 const INTENTS = new Set([...SEMANTIC_INTENTS, 'unknown']);
 const OPERATIONS = new Set(['read', 'write', 'unknown']);
 const DECISIONS = new Set(['execute', 'clarify', 'reject', 'retry_later']);
-const PHASES = new Set(['semantic_resolution', 'semantic_error', 'persistence_error']);
+const PHASES = new Set([
+  'semantic_resolution', 'semantic_retry_final', 'semantic_error', 'persistence_error',
+]);
 const FALLBACK_REASONS = new Set(AGENT_SEMANTIC_AUDIT_FALLBACK_REASONS);
 const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
 const MENTION_TYPES = new Set(SEMANTIC_MENTION_TYPES);

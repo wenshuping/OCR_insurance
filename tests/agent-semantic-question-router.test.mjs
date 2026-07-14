@@ -676,7 +676,91 @@ test('non-execute conversation conflict reloads and retries resolution once', as
   assert.equal(saves, 2);
   assert.equal(calls.length, 0);
   assert.equal(audits.filter((item) => item.phase === 'semantic_resolution').length, 1);
+  assert.equal(audits.filter((item) => item.phase === 'semantic_retry_final').length, 1);
+  assert.equal(audits.find((item) => item.phase === 'semantic_retry_final').resolution.decisionReason, 'product_required');
   assert.equal(audits.filter((item) => item.phase === 'persistence_error').length, 1);
+});
+
+test('conflict retry audits its final reject outcome before save and returns deny', async () => {
+  let resolves = 0;
+  let saves = 0;
+  const { router, calls, audits } = wrapperHarness({
+    semanticResolver: { async resolve() {
+      resolves += 1;
+      return resolves === 1 ? {
+        decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
+        ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
+        nextTaskState: { activeIntent: 'chat' },
+      } : {
+        decision: 'reject', decisionReason: 'unsupported_intent', missingFields: [],
+        ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
+        nextTaskState: { activeIntent: 'chat' },
+      };
+    } },
+    conversationService: {
+      async load() { return { version: saves, taskState: {} }; },
+      async save() {
+        saves += 1;
+        if (saves === 1) {
+          throw Object.assign(new Error('conflict'), { code: 'AGENT_SEMANTIC_CONVERSATION_CONFLICT' });
+        }
+        return { persisted: true, version: 2, taskState: {} };
+      },
+    },
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'conflict-reject',
+    question: '查询', runtime: 'hermes', proposal: chatProposal('查询'),
+  });
+
+  assert.equal(result.decision, 'deny');
+  assert.equal(calls.length, 0);
+  assert.deepEqual(
+    audits.filter((item) => item.phase !== 'persistence_error').map((item) => [
+      item.phase, item.resolution.decision, item.resolution.decisionReason,
+    ]),
+    [
+      ['semantic_resolution', 'clarify', 'product_required'],
+      ['semantic_retry_final', 'reject', 'unsupported_intent'],
+    ],
+  );
+  for (const phase of ['semantic_resolution', 'semantic_retry_final', 'persistence_error']) {
+    assert.equal(audits.filter((item) => item.phase === phase).length, 1);
+  }
+});
+
+test('conflict retry audit failure returns stable retry without a second save', async () => {
+  let saves = 0;
+  const phases = [];
+  const { router, calls } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
+      ambiguities: [], candidate: null, resolvedEntities: {}, proposal: chatProposal('查询'),
+      nextTaskState: { activeIntent: 'chat' },
+    }; } },
+    conversationService: {
+      async load() { return { version: saves, taskState: {} }; },
+      async save() {
+        saves += 1;
+        throw Object.assign(new Error('conflict'), { code: 'AGENT_SEMANTIC_CONVERSATION_CONFLICT' });
+      },
+    },
+    auditService: { async record(input) {
+      phases.push(input.phase);
+      if (input.phase === 'semantic_retry_final') throw new Error('audit unavailable');
+    } },
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'retry-audit-failure',
+    question: '查询', runtime: 'hermes', proposal: chatProposal('查询'),
+  });
+
+  assert.match(result.interaction.text, /语义解析暂不可用/u);
+  assert.equal(saves, 1);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(phases, ['semantic_resolution', 'persistence_error', 'semantic_retry_final']);
 });
 
 test('non-conflict clarification save failure returns stable retry without a second attempt', async () => {

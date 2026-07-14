@@ -237,3 +237,27 @@ test('semantic audit schema migrates existing rows with a none fallback reason',
   assert.equal(migrated.payload.fallbackReason, 'none');
   store.close();
 });
+
+test('semantic retry final is a controlled persisted phase', async () => {
+  const { store } = await makeStore();
+  const audit = createAgentSemanticAuditService({ store, clock: () => 100 });
+  const input = {
+    internalUserId: 7, messageRef: 'retry-final', runtime: 'hermes',
+    proposal: {
+      semanticContractVersion: 1, intent: 'chat', operation: 'read', queryAspects: [],
+      mentions: [], references: [], confidence: { intent: 1, mentions: 1, references: 1 },
+    },
+    resolution: {
+      decision: 'reject', decisionReason: 'unsupported_intent', missingFields: [],
+      ambiguities: [], resolvedEntities: {}, nextTaskState: {},
+    },
+  };
+  await audit.record({ ...input, phase: 'semantic_retry_final' });
+  const [row] = await store.listAgentSemanticAuditEvents({ userId: 7 });
+  assert.equal(row.payload.phase, 'semantic_retry_final');
+  await assert.rejects(
+    audit.record({ ...input, phase: 'retry_private' }),
+    /AGENT_SEMANTIC_AUDIT_INVALID/u,
+  );
+  store.close();
+});
