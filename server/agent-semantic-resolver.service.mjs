@@ -297,29 +297,27 @@ function preflightResult({ state, proposal, runtime }) {
 function requiresUnsupportedProductComparison(proposal, question) {
   if (!proposal || proposal.intent !== PRODUCT_INTENT) return false;
   const productMentions = proposal.mentions.filter((mention) => mention.type === 'product');
-  const linkedMentions = productMentions.some((left, leftIndex) => productMentions
-    .slice(leftIndex + 1)
-    .some((right) => {
-      const leftStart = question.indexOf(left.rawText);
-      const rightStart = question.indexOf(right.rawText, leftStart + left.rawText.length);
-      if (leftStart < 0 || rightStart < 0) return false;
-      const between = question.slice(leftStart + left.rawText.length, rightStart);
-      return !/以下简称|简称|又称|也称|即/u.test(between)
-        && /和|与|及|、|以及|跟/u.test(between);
-    }));
-  const namedProductPair = /[^，。！？\n]{1,40}(?:产品|保险|险)\s*(?:和|与|及|、|以及|跟)\s*[^，。！？\n]{1,40}(?:产品|保险|险)/u
-    .test(question);
-  const distributedObjects = /分别|各自/u.test(question) && /和|与|及|、|以及|跟/u.test(question);
+  const distinctProducts = new Set(productMentions.map((mention) => (
+    mention.rawText.normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
+  )));
+  const explicitAlias = distinctProducts.size === 2 && /以下简称|简称|又称|也称/u.test(question);
+  let remaining = question;
+  const extractedTexts = proposal.mentions
+    .filter((mention) => mention.type === 'product' || mention.type === 'insurer')
+    .map((mention) => mention.rawText)
+    .sort((left, right) => right.length - left.length);
+  for (const rawText of extractedTexts) remaining = remaining.split(rawText).join(' ');
+  const remainingProduct = /[\p{Script=Han}A-Za-z0-9]{1,30}(?:重大疾病保险|两全保险|重疾险|医疗险|年金险|意外险|寿险|产品|保险)(?=$|[\s，。！？、/（）()]|有|的|是|分别|各自|主要|保什么|哪个|比较|对比|区别|差异)/u
+    .test(remaining);
+  const comparisonSemantics = /分别|各自|对比|比较|区别|差异|哪个(?:更|好)/u.test(question);
   return proposal.queryAspects.includes('comparison')
     || proposal.requestedSteps.includes('compare')
-    || /对比|比较|区别|差异|哪个更/u.test(question)
     || /这(?:两|2)款|二者|两者/u.test(question)
-    || namedProductPair
-    || distributedObjects
     || proposal.references.some((reference) => (
       reference.type === 'comparison_left' || reference.type === 'comparison_right'
     ))
-    || linkedMentions;
+    || (distinctProducts.size > 1 && !explicitAlias)
+    || (remainingProduct && comparisonSemantics);
 }
 
 function unsupportedComparisonResult({ state, proposal }) {

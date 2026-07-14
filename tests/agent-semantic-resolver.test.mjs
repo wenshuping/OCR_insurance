@@ -239,8 +239,13 @@ test('clear multi-product wording clarifies even when the proposal extracts only
     '这两款主要保什么',
     '二者主要责任是什么',
   ]) {
-    const mention = question.includes('甲产品')
-      ? [{ type: 'product', rawText: '甲产品' }]
+    const mention = question === '甲产品和乙产品主要保什么'
+      ? [
+        { type: 'product', rawText: '甲产品' },
+        { type: 'product', rawText: '乙产品' },
+      ]
+      : question.includes('甲产品')
+        ? [{ type: 'product', rawText: '甲产品' }]
       : [];
     const { resolver, productCalls } = harness();
     const result = await resolver.resolve({
@@ -253,6 +258,41 @@ test('clear multi-product wording clarifies even when the proposal extracts only
     assert.equal(result.decisionReason, 'product_comparison_unsupported', question);
     assert.equal(result.candidate, null, question);
     assert.equal(productCalls.length, 0, question);
+  }
+});
+
+test('remaining product evidence catches under-extraction without misreading single-product aspects', async () => {
+  for (const question of [
+    '甲产品还有乙产品分别保什么',
+    '甲产品/乙产品各自主要责任',
+    '甲产品或者乙产品哪个好',
+  ]) {
+    const { resolver, productCalls } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question,
+      runtime: 'hermes',
+      proposal: proposal({ mentions: [{ type: 'product', rawText: '甲产品' }] }),
+    });
+    assert.equal(result.decision, 'clarify', question);
+    assert.equal(result.decisionReason, 'product_comparison_unsupported', question);
+    assert.equal(result.candidate, null, question);
+    assert.equal(productCalls.length, 0, question);
+  }
+
+  for (const question of [
+    '甲产品的身故及满期责任分别是什么',
+    '甲产品的保险责任与免责条款有什么区别',
+  ]) {
+    const { resolver, productCalls } = harness();
+    const result = await resolver.resolve({
+      internalUserId: 7,
+      question,
+      runtime: 'hermes',
+      proposal: proposal({ mentions: [{ type: 'product', rawText: '甲产品' }] }),
+    });
+    assert.equal(result.decision, 'execute', question);
+    assert.equal(productCalls.length, 1, question);
   }
 });
 
