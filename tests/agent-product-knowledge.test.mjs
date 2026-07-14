@@ -83,6 +83,23 @@ test('ready exact product summary returns bounded responsibilities with official
   }]);
 });
 
+test('a ready official record may still have no factual answer text', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  insert(db, {
+    headline: '',
+    summaryJson: JSON.stringify({
+      headline: '', mainResponsibilities: [],
+      sourceUrls: ['https://www.newchinalife.com/product/terms'],
+    }),
+  });
+  const result = await service(db).search({
+    scope: 'public_read_only', product, queryAspects: ['main_responsibilities'],
+  });
+  assert.equal(result.answer, '');
+  assert.equal(result.sources.length, 1);
+});
+
 test('unsupported product aspects never reuse the general responsibility headline as evidence', async (t) => {
   const db = database();
   t.after(() => db.close());

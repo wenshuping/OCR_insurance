@@ -258,6 +258,24 @@ test('product comparison fails closed when either product lacks a verified sourc
   assert.equal(result.provenance.sources.length, 0);
 });
 
+test('product comparison fails closed when either sourced summary answer is empty', async () => {
+  const products = [
+    { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },
+    { canonicalProductId: 'b', company: '乙保险', officialName: '乙产品' },
+  ];
+  const { handlers } = harness({}, { productKnowledge: { async search({ product }) {
+    return {
+      answer: product.canonicalProductId === 'a' ? '甲责任摘要' : '',
+      sources: [{ verified: true, title: '官方条款', url: `https://example.test/${product.canonicalProductId}`, provenance: 'official' }],
+    };
+  } } });
+  const result = await handlers.execute('insurance_product_knowledge', {
+    question: '比较', internalUserId: 9, resolvedProducts: products, queryAspects: ['comparison'],
+  });
+  assert.equal(result.facts.certainty, 'unverified');
+  assert.equal(result.presentation.message, '当前没有可核验来源，无法给出确定的产品事实。');
+});
+
 test('sales coaching adapts authorized context to the existing family sales chat agent', async () => {
   const { handlers, calls } = harness({
     familyMembers: [{ familyId: 7, name: '张三', status: 'active' }],

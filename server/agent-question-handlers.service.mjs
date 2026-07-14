@@ -358,7 +358,9 @@ export function createAgentQuestionHandlers({
       .slice(0, 20);
     if (comparison) {
       const sourcesByProduct = results.map(projectSources);
-      if (results.length !== 2 || sourcesByProduct.some((sources) => sources.length === 0)) {
+      if (results.length !== 2
+        || results.some((result) => !text(result?.answer))
+        || sourcesByProduct.some((sources) => sources.length === 0)) {
         return stableResult(
           { certainty: 'unverified', answer: '' },
           { source: 'public_product_knowledge', sources: [] },

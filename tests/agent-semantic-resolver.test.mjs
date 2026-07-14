@@ -276,7 +276,52 @@ test('product comparison resolves exactly two distinct canonical products', asyn
     product2CanonicalId: 'product-b',
     product2Company: PRODUCT.company,
   });
-  assert.equal(result.nextTaskState.activeEntities.product.canonicalProductId, PRODUCT.canonicalProductId);
+  assert.equal(result.nextTaskState.activeEntities.product, null);
+});
+
+test('a completed comparison clears the old product so an omitted follow-up cannot pick a side', async () => {
+  const { resolver } = harness({ productResult: canonicalProductResult, productScanResult: canonicalScanResult });
+  const compared = await resolver.resolve({
+    internalUserId: 7, question: '甲产品和乙产品有什么区别', runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison'], requestedSteps: ['compare'],
+      mentions: [{ type: 'product', rawText: '甲产品' }, { type: 'product', rawText: '乙产品' }],
+    }),
+    context: { taskState: {
+      activeIntent: 'insurance_product_knowledge', activeEntities: { product: activeProduct() },
+    } },
+  });
+  const followUp = await resolver.resolve({
+    internalUserId: 7, question: '等待期呢', runtime: 'hermes', proposal: proposal({ queryAspects: ['waiting_period'] }),
+    context: { taskState: compared.nextTaskState },
+  });
+  assert.equal(followUp.decision, 'clarify');
+  assert.equal(followUp.resolvedEntities.product, undefined);
+});
+
+test('omitted product follow-up keeps an explicit insurer constraint during revalidation', async () => {
+  for (const [insurer, expected] of [['新华保险', 'execute'], ['平安保险', 'clarify']]) {
+    const { resolver, productCalls } = harness({
+      productResult: ({ mentions }) => mentions.some((mention) => mention.rawText === '平安保险')
+        ? { status: 'not_found', entity: null, candidates: [] }
+        : { status: 'resolved', entity: PRODUCT, candidates: [] },
+    });
+    const question = `${insurer}等待期呢`;
+    const result = await resolver.resolve({
+      internalUserId: 7, question, runtime: 'hermes',
+      proposal: proposal({
+        queryAspects: ['waiting_period'], mentions: [{ type: 'insurer', rawText: insurer }],
+      }),
+      context: { taskState: {
+        activeIntent: 'insurance_product_knowledge', activeEntities: { product: activeProduct() },
+      } },
+    });
+    assert.equal(result.decision, expected, insurer);
+    assert.deepEqual(productCalls[0].mentions, [
+      { type: 'insurer', rawText: insurer },
+      { type: 'product', rawText: PRODUCT.officialName },
+    ]);
+  }
 });
 
 test('clear multi-product wording executes only when two products can be confirmed', async () => {

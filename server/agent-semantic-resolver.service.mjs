@@ -308,6 +308,7 @@ function comparisonState(state, proposal) {
   if (pendingType === 'product' || pendingType === 'family') state.candidateSets[pendingType] = [];
   state.candidateSets.product = [];
   state.pendingClarification = null;
+  state.activeEntities.product = null;
   state.activeIntent = proposal.intent;
   state.lastCompletedAction = { intent: proposal.intent, entityType: 'product' };
   return publicState(state);
@@ -630,8 +631,13 @@ export function createAgentSemanticResolver({
         } else if (omittedActiveProduct && !scannedProduct) {
           try {
             resolutions.product = projectResolution(await productResolver.resolve({
-              mentions: [],
-              activeProduct: omittedActiveProduct,
+              mentions: explicitInsurers.length
+                ? [
+                  ...explicitInsurers,
+                  { type: 'product', rawText: omittedActiveProduct.officialName },
+                ]
+                : [],
+              activeProduct: explicitInsurers.length ? null : omittedActiveProduct,
             }), 'product');
           } catch {
             return resolverUnavailableResult({ state, proposal: effectiveProposal });
