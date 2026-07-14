@@ -429,13 +429,21 @@ export function createAgentSemanticResolver({
           && currentProductReference
           ? projectProduct(state.activeEntities.product)
           : null;
-        const productToRevalidate = selectedProduct || referencedProduct;
-        const mentions = productToRevalidate
+        const explicitInsurers = effectiveProposal.mentions
+          .filter((mention) => mention.type === 'insurer');
+        const mentions = selectedProduct
           ? [
-            { type: 'insurer', rawText: productToRevalidate.company },
-            { type: 'product', rawText: productToRevalidate.officialName },
+            { type: 'insurer', rawText: selectedProduct.company },
+            { type: 'product', rawText: selectedProduct.officialName },
           ]
-          : effectiveProposal.mentions;
+          : referencedProduct
+            ? [
+              ...(explicitInsurers.length
+                ? explicitInsurers
+                : [{ type: 'insurer', rawText: referencedProduct.company }]),
+              { type: 'product', rawText: referencedProduct.officialName },
+            ]
+            : effectiveProposal.mentions;
         if (!selectedProduct && !explicitProduct && currentProductReference && !referencedProduct) {
           resolutions.product = { status: 'missing', entity: null, candidates: [] };
         } else {

@@ -113,6 +113,35 @@ test('current_product clarifies when authoritative product revalidation reports 
   assert.equal(productCalls[0].activeProduct, null);
 });
 
+test('current_product preserves an explicit insurer instead of substituting the active company', async () => {
+  const question = '平安保险的这个保险主要保什么';
+  const { resolver, productCalls } = harness({
+    productResult: ({ mentions, activeProduct: active }) => {
+      assert.equal(active, null);
+      assert.deepEqual(mentions, [
+        { type: 'insurer', rawText: '平安保险' },
+        { type: 'product', rawText: PRODUCT.officialName },
+      ]);
+      return { status: 'not_found', entity: null, candidates: [] };
+    },
+  });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({
+      mentions: [{ type: 'insurer', rawText: '平安保险' }],
+      references: [{ type: 'current_product', rawText: '这个保险' }],
+    }),
+    context: { taskState: { activeEntities: { product: activeProduct() } } },
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'product_required');
+  assert.equal(result.candidate, null);
+  assert.equal(productCalls.length, 1);
+});
+
 test('does not inherit an active product without a current_product reference', async () => {
   const { resolver, productCalls } = harness({
     productResult: { status: 'missing', entity: null, candidates: [] },
