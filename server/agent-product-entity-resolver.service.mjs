@@ -1,6 +1,5 @@
 import {
   catalogProductIdentity,
-  listProductCatalogCompanies,
   searchProductCatalog,
 } from './product-catalog-search.mjs';
 
@@ -19,12 +18,20 @@ const MATCH_TYPE_PRIORITY = new Map([
   ['unique_high_confidence', 4],
 ]);
 const HEURISTIC_CONFIDENCE_CEILING = 0.89;
+const MAX_IDENTITY_TEXT_LENGTH = 200;
+const MAX_FILING_NAMES = 20;
 const SCAN_DENYLIST = new Set([
   '保险', '产品', '险种', '寿险', '重疾险', '医疗险', '年金险', '意外险', '两全', '两全保险',
 ]);
 
 function clean(value) {
   return String(value || '').trim();
+}
+
+function boundedString(value, maxLength = MAX_IDENTITY_TEXT_LENGTH) {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  return normalized && normalized.length <= maxLength ? normalized : '';
 }
 
 function comparable(value) {
@@ -56,24 +63,25 @@ function parsePayload(value) {
   }
 }
 
-function publicProductRows(db) {
+function publicProductRows(db, tenantId) {
   const columns = tableColumns(db, 'insurance_products');
-  if (!columns.has('company') || !columns.has('official_name') || !columns.has('status')) return [];
+  if (!columns.has('tenant_id') || !columns.has('company')
+    || !columns.has('official_name') || !columns.has('status')) return [];
   const canonicalId = columns.has('canonical_product_id') ? 'canonical_product_id' : "''";
   const productCode = columns.has('product_code') ? 'product_code' : "''";
   const payload = columns.has('payload') ? 'payload' : "'{}'";
-  const statusWhere = "WHERE LOWER(TRIM(COALESCE(status, ''))) = 'active'";
+  const statusWhere = "WHERE tenant_id = ? AND LOWER(TRIM(COALESCE(status, ''))) = 'active'";
   return db.prepare(`
     SELECT ${canonicalId} AS canonical_product_id, company, official_name,
       ${productCode} AS product_code, ${payload} AS payload
     FROM insurance_products
     ${statusWhere}
     ORDER BY company, official_name
-  `).all().map((row) => ({
+  `).all(tenantId).map((row) => ({
     canonicalProductId: clean(row.canonical_product_id),
     company: clean(row.company),
     officialName: clean(row.official_name),
-    productCode: clean(row.product_code),
+    productCode: boundedString(row.product_code),
     payload: parsePayload(row.payload),
   })).filter((row) => row.company && row.officialName);
 }
@@ -119,27 +127,40 @@ function approvedAliases(product) {
 function filingNames(product) {
   // These names are trusted only from the payload of an authoritative, active
   // insurance_products row selected by publicProductRows().
-  return [
-    product.payload?.filingName,
-    ...(Array.isArray(product.payload?.filingNames) ? product.payload.filingNames : []),
-  ].map(clean).filter(Boolean);
+  const names = [];
+  const filingName = boundedString(product.payload?.filingName);
+  if (filingName) names.push(filingName);
+  const many = product.payload?.filingNames;
+  if (Array.isArray(many) && many.length <= MAX_FILING_NAMES
+    && many.every((value) => typeof value === 'string')) {
+    names.push(...many.map((value) => boundedString(value)).filter(Boolean));
+  }
+  return names;
 }
 
-function filingIdentifiers(product) {
+function identifierComparable(value) {
+  const bounded = boundedString(value);
+  return bounded ? bounded.normalize('NFKC').toLowerCase() : '';
+}
+
+function filingEvidence(product) {
   return [
-    ...filingNames(product),
-    product.productCode,
-    product.payload?.clauseCode,
-  ].map(clean).filter(Boolean);
+    ...filingNames(product).map((value) => ({ value, kind: 'name' })),
+    { value: product.productCode, kind: 'identifier' },
+    { value: boundedString(product.payload?.clauseCode), kind: 'identifier' },
+  ].filter((item) => item.value);
 }
 
 function exactFilingCandidates(products, productText, company) {
   const target = comparable(productText);
+  const identifierTarget = identifierComparable(productText);
   const candidates = [];
   const seen = new Set();
   for (const product of products) {
     if (company && product.company !== company) continue;
-    if (!filingIdentifiers(product).some((value) => comparable(value) === target)) continue;
+    if (!filingEvidence(product).some(({ value, kind }) => (
+      kind === 'name' ? comparable(value) === target : identifierComparable(value) === identifierTarget
+    ))) continue;
     const key = [product.canonicalProductId, product.company, product.officialName].join('\u0000');
     if (seen.has(key)) continue;
     seen.add(key);
@@ -266,15 +287,18 @@ function insurerCompaniesInQuestion({ normalizedQuestion, companies, officialDom
   return resolved;
 }
 
-export function createAgentProductEntityResolver({ db, officialDomainProfiles = [] } = {}) {
+export function createAgentProductEntityResolver({ db, tenantId, officialDomainProfiles = [] } = {}) {
   if (!db) throw new TypeError('db is required');
+  const scopedTenantId = boundedString(tenantId, 100);
+  if (!scopedTenantId) throw new TypeError('tenantId is required');
   const profiles = Array.isArray(officialDomainProfiles) ? officialDomainProfiles : [];
 
   return {
     resolveAllFromText({ question, insurerMentions = [] } = {}) {
       const normalizedQuestion = comparable(clean(question).slice(0, 1_000));
       if (!normalizedQuestion) return { entities: [], overflow: false };
-      const companies = listProductCatalogCompanies({ db, visibility: 'public' }).map((row) => row.company);
+      const products = publicProductRows(db, scopedTenantId);
+      const companies = [...new Set(products.map((row) => row.company))];
       const mentionedCompanies = insurerCompaniesInQuestion({
         normalizedQuestion,
         companies,
@@ -292,7 +316,7 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
       }
 
       const matches = [];
-      for (const product of publicProductRows(db)) {
+      for (const product of products) {
         const officialIdentity = catalogProductIdentity(product.officialName);
         const hasSpecificOfficialIdentity = Boolean(scannableTerm(officialIdentity));
         const terms = [
@@ -371,7 +395,7 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
         const entity = boundedActiveProduct(activeProduct);
         if (!entity) return emptyResult('missing');
         if (insurerText) {
-          const companies = listProductCatalogCompanies({ db, visibility: 'public' }).map((row) => row.company);
+          const companies = [...new Set(publicProductRows(db, scopedTenantId).map((row) => row.company))];
           const mentionedCompany = resolveCompany(insurerText, companies, profiles);
           const activeCompany = resolveCompany(entity.company, companies, profiles);
           if (!mentionedCompany || !activeCompany || mentionedCompany !== activeCompany) {
@@ -381,11 +405,11 @@ export function createAgentProductEntityResolver({ db, officialDomainProfiles = 
         return { status: 'resolved', entity, candidates: [] };
       }
 
-      const companies = listProductCatalogCompanies({ db, visibility: 'public' }).map((row) => row.company);
+      const products = publicProductRows(db, scopedTenantId);
+      const companies = [...new Set(products.map((row) => row.company))];
       const company = resolveCompany(insurerText, companies, profiles);
       if (insurerText && company === null) return emptyResult('not_found');
 
-      const products = publicProductRows(db);
       const exactFiling = exactFilingCandidates(products, productText, company);
       if (exactFiling.length === 1 && exactFiling[0].confidence === 1) {
         return { status: 'resolved', entity: exactFiling[0], candidates: [] };

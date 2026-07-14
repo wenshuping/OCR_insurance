@@ -283,12 +283,13 @@ test('ambiguous products are persisted and choice two executes without exposing 
 
   const selected = await router.route({
     internalUserId: 7, conversationId: 'conv-2', messageRef: 'ambiguous-2', runtime: 'hermes',
-    question: '选择2', proposal: null,
+    question: '选择2', proposal: null, fallbackReason: 'direct_unavailable',
   });
   assert.equal(selected.decision, 'execute');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].candidate.entities.productName, '正式产品2');
   assert.equal(audits[1].fallbackReason, 'candidate_selection');
+  assert.equal(audits[1].runtime, 'rule');
 });
 
 test('family ambiguity labels are generic and no-conversation choices require a full name', async () => {
@@ -636,6 +637,45 @@ test('proposal-free rule upload is the only locally synthesized execution', asyn
   assert.equal(calls.length, 1);
   assert.equal(calls[0].candidate.intent, 'upload_link');
   assert.equal(audits[0].fallbackReason, 'rule_preparse');
+});
+
+test('Direct-to-rule failure provenance is audited without synthesizing an unsafe proposal', async () => {
+  for (const fallbackReason of ['direct_unavailable', 'direct_invalid_output']) {
+    const { router, calls, audits } = wrapperHarness({
+      semanticResolver: createAgentSemanticResolver({
+        productResolver: { async resolve() { throw new Error('must not resolve'); } },
+        familyResolver: { async resolve() { throw new Error('must not resolve'); } },
+      }),
+      conversationService: memoryConversationService(),
+    });
+    const result = await router.route({
+      internalUserId: 7, conversationId: `direct-rule-${fallbackReason}`,
+      messageRef: `direct-rule-${fallbackReason}`, question: '请继续处理',
+      runtime: 'rule', proposal: null, fallbackReason,
+    });
+    assert.equal(result.decision, 'clarify');
+    assert.equal(calls.length, 0);
+    assert.equal(audits[0].runtime, 'rule');
+    assert.equal(audits[0].fallbackReason, fallbackReason);
+  }
+});
+
+test('Direct-to-rule failure can execute a deterministic upload while preserving provenance', async () => {
+  const { router, calls, audits } = wrapperHarness({
+    semanticResolver: createAgentSemanticResolver({
+      productResolver: { async resolve() { throw new Error('must not resolve'); } },
+      familyResolver: { async resolve() { throw new Error('must not resolve'); } },
+    }),
+    conversationService: memoryConversationService(),
+  });
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'direct-rule-upload', messageRef: 'direct-rule-upload',
+    question: '我要上传保单资料', runtime: 'rule', proposal: null, fallbackReason: 'direct_unavailable',
+  });
+  assert.equal(result.decision, 'execute');
+  assert.equal(calls[0].candidate.intent, 'upload_link');
+  assert.equal(audits[0].runtime, 'rule');
+  assert.equal(audits[0].fallbackReason, 'direct_unavailable');
 });
 
 test('expired pending selection remains a clarification without extending state', async () => {

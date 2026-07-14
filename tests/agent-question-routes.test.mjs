@@ -156,7 +156,8 @@ test('semantic fallback reason is allowlisted and rule preparse is explicit', as
     question: '上传保单', runtime: 'rule', proposal: null,
   }));
   assert.equal(rule.response.status, 200);
-  assert.equal(Object.hasOwn(server.calls.route[1], 'fallbackReason'), false);
+  assert.equal(server.calls.route[1].runtime, 'rule');
+  assert.equal(server.calls.route[1].fallbackReason, 'rule_preparse');
 
   const invalid = await post(server, '/api/agent/questions/route', semanticBody({
     fallbackReason: 'private_customer_name',
@@ -172,7 +173,6 @@ test('semantic fallback reasons must match runtime and proposal shape', async (t
     semanticBody({ fallbackReason: 'rule_preparse' }),
     semanticBody({ runtime: 'direct', fallbackReason: 'rule_preparse' }),
     semanticBody({ runtime: 'rule', fallbackReason: 'hermes_unavailable', proposal: null, question: '上传保单' }),
-    semanticBody({ runtime: 'rule', fallbackReason: 'direct_unavailable', proposal: null, question: '上传保单' }),
   ];
   for (const [index, body] of invalidBodies.entries()) {
     body.messageRef = `invalid-fallback-${index}`;
@@ -183,15 +183,30 @@ test('semantic fallback reasons must match runtime and proposal shape', async (t
   assert.equal(server.calls.route.length, 0);
 });
 
-test('HTTP candidate selection keeps fallback inference inside the semantic wrapper', async (t) => {
+test('HTTP candidate selection projects local rule runtime and fallback provenance', async (t) => {
   const server = await startServer();
   t.after(server.close);
   const result = await post(server, '/api/agent/questions/route', semanticBody({
     question: '选择2', runtime: 'hermes', proposal: null,
   }));
   assert.equal(result.response.status, 200);
-  assert.equal(Object.hasOwn(server.calls.route[0], 'fallbackReason'), false);
+  assert.equal(server.calls.route[0].runtime, 'rule');
+  assert.equal(server.calls.route[0].fallbackReason, 'candidate_selection');
   assert.equal(server.calls.route[0].proposal, null);
+});
+
+test('HTTP accepts trusted Direct-to-rule fallback provenance', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  for (const fallbackReason of ['direct_unavailable', 'direct_invalid_output']) {
+    const result = await post(server, '/api/agent/questions/route', semanticBody({
+      messageRef: `rule-${fallbackReason}`,
+      question: '请继续处理', runtime: 'rule', proposal: null, fallbackReason,
+    }));
+    assert.equal(result.response.status, 200);
+    assert.equal(server.calls.route.at(-1).runtime, 'rule');
+    assert.equal(server.calls.route.at(-1).fallbackReason, fallbackReason);
+  }
 });
 
 test('HTTP candidate selection rejects proposal-free direct and rule runtimes', async (t) => {
@@ -284,6 +299,16 @@ test('rule upload fallback accepts a null or omitted proposal', async (t) => {
   assert.equal(server.calls.route.length, 2);
   assert.equal(server.calls.route[0].proposal, null);
   assert.equal(Object.hasOwn(server.calls.route[1], 'proposal'), false);
+  assert.equal(server.calls.route.every((call) => (
+    call.runtime === 'rule' && call.fallbackReason === 'rule_preparse'
+  )), true);
+
+  const inferred = await post(server, '/api/agent/questions/route', semanticBody({
+    messageRef: 'upload-hermes-inferred', question: '上传保单', runtime: 'hermes', proposal: null,
+  }));
+  assert.equal(inferred.response.status, 200);
+  assert.equal(server.calls.route[2].runtime, 'rule');
+  assert.equal(server.calls.route[2].fallbackReason, 'rule_preparse');
 });
 
 test('legacy candidate strips semantic authority entities before routing', async (t) => {
@@ -902,6 +927,10 @@ test('default semantic composition preserves the canonical product across a foll
     (canonical_product_id, tenant_id, company, official_name, status, created_at, updated_at, payload)
     VALUES (?, 'default', ?, ?, 'active', '2026-07-14', '2026-07-14', '{}')`)
     .run(canonicalProductId, company, officialName);
+  db.prepare(`INSERT INTO insurance_products
+    (canonical_product_id, tenant_id, company, official_name, status, created_at, updated_at, payload)
+    VALUES ('other-tenant-product', 'other', ?, ?, 'active', '2026-07-14', '2026-07-14', '{}')`)
+    .run(company, officialName);
   db.prepare(`INSERT INTO product_customer_responsibility_summaries
     (id, company, product_name, status, headline, summary_json, source_urls_json, updated_at)
     VALUES ('summary-nci-kangjian', ?, ?, 'ready', ?, ?, ?, '2026-07-14')`)

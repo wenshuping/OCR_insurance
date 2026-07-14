@@ -48,9 +48,19 @@ function stableRetry() {
 function resolveFallbackReason(input, preparsed) {
   if (preparsed.candidateSelection) return 'candidate_selection';
   const explicit = clean(input.fallbackReason, 40);
-  if (explicit && explicit !== 'none') return explicit;
-  if (input.runtime === 'rule' && preparsed.operationHint === 'upload_link') return 'rule_preparse';
-  return 'none';
+  if (input.runtime === 'rule') {
+    if (['direct_unavailable', 'direct_invalid_output'].includes(explicit)) return explicit;
+    if (preparsed.operationHint === 'upload_link' && (!explicit || explicit === 'rule_preparse')) {
+      return 'rule_preparse';
+    }
+    return !explicit || explicit === 'none' ? 'none' : 'invalid_runtime_fallback';
+  }
+  if (input.runtime === 'direct') {
+    return ['hermes_unavailable', 'hermes_invalid_output'].includes(explicit)
+      ? explicit
+      : 'invalid_runtime_fallback';
+  }
+  return !explicit || explicit === 'none' ? 'none' : 'invalid_runtime_fallback';
 }
 
 function productCandidates(result) {
@@ -520,10 +530,19 @@ export function createAgentSemanticQuestionRouter({
         }
       }
       const preparsed = preparseAgentMessage(question);
-      const fallbackReason = resolveFallbackReason(input, preparsed);
+      const localRuleRuntime = Boolean(preparsed.candidateSelection)
+        || (!trustedInputProposal && preparsed.operationHint === 'upload_link' && input.runtime === 'hermes');
+      const runtimeInput = localRuleRuntime
+        ? {
+          ...input,
+          runtime: 'rule',
+          fallbackReason: preparsed.candidateSelection ? 'candidate_selection' : 'rule_preparse',
+        }
+        : input;
+      const fallbackReason = resolveFallbackReason(runtimeInput, preparsed);
       if (!FALLBACK_REASONS.has(fallbackReason)) {
         await audit(
-          { ...input, question, fallbackReason: 'none' },
+          { ...runtimeInput, question, fallbackReason: 'none' },
           trustedInputProposal,
           errorResolution('semantic_validation_failed'),
           'semantic_error',
@@ -531,7 +550,7 @@ export function createAgentSemanticQuestionRouter({
         );
         return stableRetry();
       }
-      const normalizedInput = { ...input, question, fallbackReason };
+      const normalizedInput = { ...runtimeInput, question, fallbackReason };
       const conversation = await loadConversation(normalizedInput);
       if (!conversation) {
         await audit(

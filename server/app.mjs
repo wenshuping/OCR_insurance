@@ -2810,6 +2810,7 @@ export function createPolicyOcrApp(options = {}) {
           const current = await agentStore.load();
           return createAgentProductEntityResolver({
             db: options.db,
+            tenantId: options.agentProductTenantId ?? 'default',
             officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
           }).resolve(input);
         },
@@ -2817,6 +2818,7 @@ export function createPolicyOcrApp(options = {}) {
           const current = await agentStore.load();
           return createAgentProductEntityResolver({
             db: options.db,
+            tenantId: options.agentProductTenantId ?? 'default',
             officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
           }).resolveAllFromText(input);
         },

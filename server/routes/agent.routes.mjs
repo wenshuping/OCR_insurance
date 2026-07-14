@@ -21,6 +21,7 @@ const QUESTION_BODY_FIELDS = new Set([
 ]);
 const SEMANTIC_FALLBACK_REASONS = new Set(AGENT_SEMANTIC_AUDIT_FALLBACK_REASONS);
 const DIRECT_FALLBACK_REASONS = new Set(['hermes_unavailable', 'hermes_invalid_output']);
+const RULE_DIRECT_FALLBACK_REASONS = new Set(['direct_unavailable', 'direct_invalid_output']);
 const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId']);
 const PUBLIC_DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const PUBLIC_INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -223,6 +224,11 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
   const proposalProvided = Object.prototype.hasOwnProperty.call(body, 'proposal');
   const fallbackReasonProvided = Object.prototype.hasOwnProperty.call(body, 'fallbackReason');
   const proposal = body.proposal;
+  const fallbackReason = fallbackReasonProvided ? text(body.fallbackReason, 40).toLowerCase() : '';
+  if (fallbackReasonProvided && !SEMANTIC_FALLBACK_REASONS.has(fallbackReason)) return null;
+  const preparsed = preparseAgentMessage(question);
+  const isCandidateSelection = Boolean(preparsed.candidateSelection);
+  const isExplicitUpload = preparsed.operationHint === 'upload_link';
   let normalizedProposal;
   if (proposal !== null && proposal !== undefined) {
     try {
@@ -230,29 +236,38 @@ function normalizeBaseBody(body, { questionRoute = false } = {}) {
     } catch {
       return null;
     }
-  } else if (runtime !== 'rule' && !preparseAgentMessage(question).candidateSelection) {
-    return null;
   }
-  const fallbackReason = fallbackReasonProvided ? text(body.fallbackReason, 40).toLowerCase() : '';
-  if (fallbackReasonProvided && !SEMANTIC_FALLBACK_REASONS.has(fallbackReason)) return null;
-  const preparsed = preparseAgentMessage(question);
-  const isCandidateSelection = Boolean(preparsed.candidateSelection);
-  const isRuleUpload = runtime === 'rule' && preparsed.operationHint === 'upload_link';
+  let effectiveRuntime = runtime;
+  let effectiveFallbackReason = fallbackReason;
   if (isCandidateSelection) {
     if (runtime !== 'hermes') return null;
     if (proposal !== null && proposal !== undefined) return null;
     if (fallbackReasonProvided) return null;
+    effectiveRuntime = 'rule';
+    effectiveFallbackReason = 'candidate_selection';
   } else if (runtime === 'rule') {
-    if (!isRuleUpload || (proposal !== null && proposal !== undefined) || fallbackReasonProvided) return null;
+    if (proposal !== null && proposal !== undefined) return null;
+    if (fallbackReasonProvided) {
+      if (!RULE_DIRECT_FALLBACK_REASONS.has(fallbackReason)) return null;
+    } else if (isExplicitUpload) {
+      effectiveFallbackReason = 'rule_preparse';
+    } else {
+      return null;
+    }
   } else if (runtime === 'direct') {
     if (!normalizedProposal || !fallbackReasonProvided || !DIRECT_FALLBACK_REASONS.has(fallbackReason)) return null;
+  } else if (!normalizedProposal && isExplicitUpload && !fallbackReasonProvided) {
+    effectiveRuntime = 'rule';
+    effectiveFallbackReason = 'rule_preparse';
   } else if (fallbackReasonProvided && fallbackReason !== 'none') {
+    return null;
+  } else if (!normalizedProposal) {
     return null;
   }
   return {
     channel, channelUserId, channelMobile, messageRef, conversationId,
-    question, runtime,
-    ...(fallbackReasonProvided ? { fallbackReason } : {}),
+    question, runtime: effectiveRuntime,
+    ...((fallbackReasonProvided || effectiveFallbackReason) ? { fallbackReason: effectiveFallbackReason } : {}),
     ...(proposalProvided ? { proposal: proposal === null ? null : normalizedProposal } : {}),
   };
 }

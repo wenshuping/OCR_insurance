@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
-import { createAgentProductEntityResolver } from '../server/agent-product-entity-resolver.service.mjs';
+import { createAgentProductEntityResolver as createResolverService } from '../server/agent-product-entity-resolver.service.mjs';
 import { getDefaultOfficialDomainProfiles } from '../server/c-policy-analysis.service.mjs';
 import { listProductCatalogCompanies, searchProductCatalog } from '../server/product-catalog-search.mjs';
 
@@ -47,6 +47,10 @@ function addProduct(db, {
 }
 
 const OFFICIAL_DOMAIN_PROFILES = getDefaultOfficialDomainProfiles();
+
+function createAgentProductEntityResolver(options = {}) {
+  return createResolverService({ tenantId: 'tenant-default', ...options });
+}
 
 test('resolves an insurer-scoped short product mention to the active canonical product', () => {
   const db = makeDb();
@@ -318,7 +322,7 @@ test('keeps high-overlap character recall below the execution threshold', () => 
   }
 });
 
-test('fails closed when duplicate tenant products disagree on canonical id', () => {
+test('same official product in another tenant does not create a canonical conflict', () => {
   const db = makeDb();
   try {
     const officialName = '新华人寿保险股份有限公司康健无忧两全保险';
@@ -335,18 +339,17 @@ test('fails closed when duplicate tenant products disagree on canonical id', () 
       officialName,
     });
 
-    const result = createAgentProductEntityResolver({ db }).resolve({
+    const resolver = createResolverService({ db, tenantId: 'tenant-a' });
+    const result = resolver.resolve({
       mentions: [{ type: 'product', rawText: officialName }],
     });
 
-    assert.equal(result.status, 'ambiguous');
-    assert.equal(result.entity, null);
-    assert.equal(result.candidates[0].canonicalProductId, '');
-    assert.ok(result.candidates[0].confidence < 0.9);
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.entity.canonicalProductId, 'product-tenant-a');
     assert.deepEqual(
-      createAgentProductEntityResolver({ db }).resolveAllFromText({ question: `${officialName}主要保什么` })
+      resolver.resolveAllFromText({ question: `${officialName}主要保什么` })
         .entities.map((item) => item.canonicalProductId),
-      ['product-tenant-a', 'product-tenant-b'],
+      ['product-tenant-a'],
     );
   } finally {
     db.close();
@@ -482,6 +485,57 @@ test('resolves exact active filing names and controlled product identifiers', ()
       resolver.resolve({ mentions: [{ type: 'product', rawText: 'PRD-00' }] }).status,
       'resolved',
     );
+    for (const rawText of ['PRD001', 'CLAUSE001']) {
+      assert.notEqual(resolver.resolve({ mentions: [{ type: 'product', rawText }] }).status, 'resolved');
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('identifier matching preserves punctuation and ignores malformed payload identity fields', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-code', company: '甲保险', officialName: '甲保险代码产品',
+      productCode: 'ABC-(01)',
+      payload: {
+        filingName: 123,
+        filingNames: ['合法备案名', false],
+        clauseCode: { value: 'OBJECT-01' },
+      },
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+    assert.equal(resolver.resolve({ mentions: [{ type: 'product', rawText: 'abc-(01)' }] }).status, 'resolved');
+    for (const rawText of ['ABC01', '合法备案名', '123', 'OBJECT-01']) {
+      assert.notEqual(resolver.resolve({ mentions: [{ type: 'product', rawText }] }).status, 'resolved');
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('product resolution is isolated to the configured tenant', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      tenantId: 'tenant-default', canonicalProductId: 'shared-canonical', company: '甲保险',
+      officialName: '甲保险默认产品', productCode: 'DEFAULT-01',
+    });
+    addProduct(db, {
+      tenantId: 'tenant-other', canonicalProductId: 'shared-canonical', company: '乙保险',
+      officialName: '乙保险其他产品', productCode: 'OTHER-01', payload: { filingName: '其他租户备案名' },
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+    assert.equal(resolver.resolve({ mentions: [{ type: 'product', rawText: 'DEFAULT-01' }] }).status, 'resolved');
+    for (const rawText of ['OTHER-01', '其他租户备案名', '乙保险其他产品']) {
+      const result = resolver.resolve({ mentions: [{ type: 'product', rawText }] });
+      assert.notEqual(result.status, 'resolved');
+      assert.equal(result.candidates.some((candidate) => candidate.company === '乙保险'), false);
+    }
+    assert.deepEqual(resolver.resolveAllFromText({ question: '其他租户备案名主要保什么' }), {
+      entities: [], overflow: false,
+    });
   } finally {
     db.close();
   }
@@ -544,7 +598,7 @@ test('filing identifiers require insurer scope when shared and exclude inactive 
   }
 });
 
-test('duplicate tenant filing identifiers fail closed when canonical ids disagree', () => {
+test('same filing identifier in another tenant stays isolated', () => {
   const db = makeDb();
   try {
     for (const [tenantId, canonicalProductId] of [['tenant-a', 'product-a'], ['tenant-b', 'product-b']]) {
@@ -556,17 +610,13 @@ test('duplicate tenant filing identifiers fail closed when canonical ids disagre
         productCode: 'TENANT-CONFLICT-01',
       });
     }
-    const result = createAgentProductEntityResolver({ db }).resolve({ mentions: [
+    const result = createResolverService({ db, tenantId: 'tenant-a' }).resolve({ mentions: [
       { type: 'insurer', rawText: '甲保险' },
       { type: 'product', rawText: 'TENANT-CONFLICT-01' },
     ] });
 
-    assert.equal(result.status, 'ambiguous');
-    assert.equal(result.entity, null);
-    assert.deepEqual(
-      new Set(result.candidates.map((candidate) => candidate.canonicalProductId)),
-      new Set(['product-a', 'product-b']),
-    );
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.entity.canonicalProductId, 'product-a');
   } finally {
     db.close();
   }
@@ -760,4 +810,10 @@ test('does not resolve disabled or non-public catalog rows', () => {
 
 test('requires a database', () => {
   assert.throws(() => createAgentProductEntityResolver(), TypeError);
+  const db = makeDb();
+  try {
+    assert.throws(() => createResolverService({ db }), /tenantId/u);
+  } finally {
+    db.close();
+  }
 });
