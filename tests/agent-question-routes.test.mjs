@@ -838,6 +838,182 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
   );
 });
 
+test('default semantic composition preserves the canonical product across a follow-up reference', async (t) => {
+  const company = '新华人寿保险股份有限公司';
+  const officialName = '康健无忧两全保险';
+  const formalProductName = `${company}${officialName}`;
+  const canonicalProductId = 'product-nci-kangjian-wuyou';
+  const conversationId = 'conv-semantic-follow-up';
+  const conversations = new Map();
+  const semanticAudits = [];
+  const saveAttempts = [];
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (id INTEGER PRIMARY KEY);
+    CREATE TABLE insurance_products (
+      canonical_product_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL,
+      company TEXT NOT NULL, official_name TEXT NOT NULL, product_code TEXT,
+      product_type TEXT, product_group_key TEXT, status TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL
+    );
+    CREATE TABLE product_customer_responsibility_summaries (
+      id TEXT PRIMARY KEY, company TEXT, product_name TEXT, status TEXT, headline TEXT,
+      summary_json TEXT, source_urls_json TEXT, updated_at TEXT
+    );
+  `);
+  db.prepare(`INSERT INTO insurance_products
+    (canonical_product_id, tenant_id, company, official_name, status, created_at, updated_at, payload)
+    VALUES (?, 'default', ?, ?, 'active', '2026-07-14', '2026-07-14', '{}')`)
+    .run(canonicalProductId, company, officialName);
+  db.prepare(`INSERT INTO product_customer_responsibility_summaries
+    (id, company, product_name, status, headline, summary_json, source_urls_json, updated_at)
+    VALUES ('summary-nci-kangjian', ?, ?, 'ready', ?, ?, ?, '2026-07-14')`)
+    .run(
+      company,
+      officialName,
+      '兼顾身故与满期责任',
+      JSON.stringify({
+        headline: '兼顾身故与满期责任',
+        mainResponsibilities: [{ title: '身故保险金', plainText: '符合约定时按条款给付。' }],
+      }),
+      JSON.stringify(['https://newchinalife.com/terms/kangjian-wuyou']),
+    );
+
+  const state = {
+    familyProfiles: [],
+    policies: [],
+    officialDomainProfiles: [{
+      company,
+      companyAliases: [company],
+      officialDomains: ['newchinalife.com'],
+      siteDomains: ['newchinalife.com'],
+    }],
+  };
+  const agentStore = {
+    async load() { return state; },
+    async getPublishedAgentQuestionPolicyVersion() { return null; },
+    async recordAgentRouteAudit() {},
+    async recordAgentSemanticAudit(input) {
+      semanticAudits.push(structuredClone(input));
+      return input;
+    },
+    async getAgentSemanticConversation({ userId, channel, conversationId: id }) {
+      const row = conversations.get(`${userId}:${channel}:${id}`);
+      return row ? structuredClone(row) : null;
+    },
+    async saveAgentSemanticConversation({
+      userId, channel, conversationId: id, expectedVersion, updatedAt, taskState,
+    }) {
+      const key = `${userId}:${channel}:${id}`;
+      const current = conversations.get(key);
+      saveAttempts.push({ expectedVersion, previousVersion: current?.version || 0 });
+      if ((current?.version || 0) !== expectedVersion) {
+        const error = new Error('Agent semantic conversation version conflict');
+        error.code = 'AGENT_SEMANTIC_CONVERSATION_CONFLICT';
+        throw error;
+      }
+      const saved = {
+        userId, channel, conversationId: id, version: expectedVersion + 1,
+        updatedAt, taskState: structuredClone(taskState),
+      };
+      conversations.set(key, saved);
+      return structuredClone(saved);
+    },
+  };
+  const app = createPolicyOcrApp({
+    state,
+    db,
+    agentStore,
+    recomputeCashflowOnStartup: false,
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(async () => {
+    await new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+    db.close();
+  });
+  const server = { baseUrl: `http://127.0.0.1:${listener.address().port}` };
+
+  const firstQuestion = `${formalProductName} 这个保险主要保啥的`;
+  const firstProposal = {
+    semanticContractVersion: 1,
+    intent: 'insurance_product_knowledge',
+    operation: 'read',
+    queryAspects: ['main_responsibilities'],
+    mentions: [
+      { type: 'insurer', rawText: company },
+      { type: 'product', rawText: formalProductName },
+    ],
+    references: [],
+    requestedSteps: ['lookup'],
+    confidence: { intent: 1, mentions: 1, references: 1 },
+  };
+  assert.equal(JSON.stringify(firstProposal).includes(canonicalProductId), false);
+  const first = await post(server, '/api/agent/questions/route', semanticBody({
+    messageRef: 'msg-semantic-follow-up-1',
+    conversationId,
+    question: firstQuestion,
+    proposal: firstProposal,
+  }));
+
+  assert.equal(first.response.status, 200);
+  assert.equal(first.payload.decision, 'execute');
+  assert.equal(first.payload.interaction.type, 'answer');
+  assert.match(first.payload.interaction.text, /兼顾身故与满期责任/u);
+  assert.match(first.payload.interaction.text, /身故保险金/u);
+  assert.doesNotMatch(first.payload.interaction.text, /暂时无法确认|当前没有可核验来源/u);
+  const afterFirst = conversations.get(`7:dingtalk:${conversationId}`);
+  assert.equal(afterFirst.version, 1);
+  assert.equal(afterFirst.taskState.activeEntities.product.canonicalProductId, canonicalProductId);
+  assert.equal(
+    `${afterFirst.taskState.activeEntities.product.company}${afterFirst.taskState.activeEntities.product.officialName}`,
+    formalProductName,
+  );
+
+  const secondQuestion = '主要保啥的呀 这个保险';
+  const second = await post(server, '/api/agent/questions/route', semanticBody({
+    messageRef: 'msg-semantic-follow-up-2',
+    conversationId,
+    question: secondQuestion,
+    proposal: {
+      semanticContractVersion: 1,
+      intent: 'insurance_product_knowledge',
+      operation: 'read',
+      queryAspects: ['main_responsibilities'],
+      mentions: [],
+      references: [{ type: 'current_product', rawText: '这个保险' }],
+      requestedSteps: ['lookup'],
+      confidence: { intent: 1, mentions: 1, references: 1 },
+    },
+  }));
+
+  assert.equal(second.response.status, 200);
+  assert.equal(second.payload.decision, 'execute');
+  assert.equal(second.payload.interaction.type, 'answer');
+  assert.match(second.payload.interaction.text, /兼顾身故与满期责任/u);
+  assert.match(second.payload.interaction.text, /身故保险金/u);
+  assert.doesNotMatch(second.payload.interaction.text, /暂时无法确认|当前没有可核验来源/u);
+  const afterSecond = conversations.get(`7:dingtalk:${conversationId}`);
+  assert.equal(afterSecond.version, 2);
+  assert.equal(afterSecond.taskState.activeEntities.product.canonicalProductId, canonicalProductId);
+  assert.equal(afterSecond.taskState.activeEntities.product.officialName, officialName);
+  assert.notEqual(afterSecond.taskState.activeEntities.product.officialName, secondQuestion);
+  assert.deepEqual(saveAttempts, [
+    { expectedVersion: 0, previousVersion: 0 },
+    { expectedVersion: 1, previousVersion: 1 },
+  ]);
+
+  const executeAudits = semanticAudits.filter((audit) => audit.decision === 'execute');
+  assert.equal(executeAudits.length, 2);
+  const auditPayloads = JSON.stringify(executeAudits.map((audit) => audit.payload));
+  assert.doesNotMatch(auditPayloads, new RegExp([
+    firstQuestion, secondQuestion, company, officialName, formalProductName, canonicalProductId,
+  ].join('|'), 'u'));
+});
+
 test('agent semantic mode defaults to enforced, honors option precedence, and rejects invalid values', () => {
   assert.equal(resolveAgentSemanticMode({}, {}), 'enforced');
   assert.equal(resolveAgentSemanticMode({}, { POLICY_AGENT_SEMANTIC_MODE: 'enforced' }), 'enforced');
