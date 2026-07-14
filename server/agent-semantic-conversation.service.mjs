@@ -11,13 +11,20 @@ const PRODUCT_ACTIVE_MATCH_TYPES = new Set([
   'approved_alias',
   'company_scoped_alias',
   'company_scoped_normalized',
+  'filing_name',
+  'unique_high_confidence',
 ]);
 const PRODUCT_CANDIDATE_MATCH_TYPES = new Set([
   ...PRODUCT_ACTIVE_MATCH_TYPES,
-  'unique_high_confidence',
 ]);
 const FAMILY_ACTIVE_MATCH_TYPES = new Set(['exact', 'contextual']);
 const FAMILY_CANDIDATE_MATCH_TYPES = new Set([...FAMILY_ACTIVE_MATCH_TYPES, 'prefix']);
+const FAMILY_ENTITY_INTENTS = new Set([
+  'family_summary',
+  'coverage_report',
+  'sales_report',
+  'sales_coaching',
+]);
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -91,6 +98,15 @@ function projectCandidateList(value, projector, label) {
   return value.map((candidate) => projector(candidate)).filter(Boolean);
 }
 
+function assertCandidateSetBounds(value) {
+  if (!isRecord(value)) return;
+  for (const [key, label] of [['product', 'Product'], ['family', 'Family']]) {
+    if (Array.isArray(value[key]) && value[key].length > MAX_CANDIDATES) {
+      throw new RangeError(`${label} candidate set exceeds ${MAX_CANDIDATES} candidates`);
+    }
+  }
+}
+
 function projectPendingClarification(value) {
   if (!isRecord(value)) return { pending: null, entityType: '' };
   const entityType = value.entityType === 'product' || value.entityType === 'family'
@@ -104,10 +120,17 @@ function projectPendingClarification(value) {
     return { pending: null, entityType };
   }
   try {
+    const proposal = normalizeSemanticProposal(value.proposal, originalQuestion);
+    const requiredEntityType = proposal.intent === 'insurance_product_knowledge'
+      ? 'product'
+      : (FAMILY_ENTITY_INTENTS.has(proposal.intent) ? 'family' : '');
+    if (!requiredEntityType || entityType !== requiredEntityType) {
+      return { pending: null, entityType };
+    }
     return {
       pending: {
         entityType,
-        proposal: normalizeSemanticProposal(value.proposal, originalQuestion),
+        proposal,
         originalQuestion,
         expiresAt,
       },
@@ -128,6 +151,7 @@ function projectLastCompletedAction(value) {
 
 export function projectAgentSemanticTaskState(value) {
   const source = isRecord(value) ? value : {};
+  assertCandidateSetBounds(source.candidateSets);
   const taskState = {
     activeIntent: SEMANTIC_INTENTS.includes(source.activeIntent) ? source.activeIntent : '',
     activeEntities: {
@@ -135,19 +159,20 @@ export function projectAgentSemanticTaskState(value) {
       family: projectFamily(source.activeEntities?.family, { active: true }),
     },
     candidateSets: {
-      product: projectCandidateList(source.candidateSets?.product, projectProduct, 'Product candidate set'),
-      family: projectCandidateList(source.candidateSets?.family, projectFamily, 'Family candidate set'),
+      product: [],
+      family: [],
     },
     pendingClarification: null,
     lastCompletedAction: projectLastCompletedAction(source.lastCompletedAction),
   };
-  const { pending, entityType } = projectPendingClarification(source.pendingClarification);
-  taskState.pendingClarification = pending;
-  if (!pending && source.pendingClarification !== null && source.pendingClarification !== undefined) {
-    if (entityType) taskState.candidateSets[entityType] = [];
-    else {
-      taskState.candidateSets.product = [];
-      taskState.candidateSets.family = [];
+  const { pending } = projectPendingClarification(source.pendingClarification);
+  if (pending) {
+    const candidates = pending.entityType === 'product'
+      ? projectCandidateList(source.candidateSets?.product, projectProduct, 'Product candidate set')
+      : projectCandidateList(source.candidateSets?.family, projectFamily, 'Family candidate set');
+    if (candidates.length > 0) {
+      taskState.pendingClarification = pending;
+      taskState.candidateSets[pending.entityType] = candidates;
     }
   }
   return taskState;

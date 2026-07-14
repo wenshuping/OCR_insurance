@@ -32,6 +32,19 @@ function proposal(question = '查一下康健无忧保险') {
   };
 }
 
+function familyProposal() {
+  return {
+    semanticContractVersion: 1,
+    intent: 'family_summary',
+    operation: 'read',
+    queryAspects: ['family_overview'],
+    mentions: [{ type: 'family', rawText: '张三家庭' }],
+    references: [],
+    requestedSteps: ['lookup'],
+    confidence: { intent: 0.98, mentions: 0.96, references: 0.9 },
+  };
+}
+
 function typedState() {
   return {
     activeIntent: 'insurance_product_knowledge',
@@ -40,7 +53,7 @@ function typedState() {
         canonicalProductId: 'product_1',
         company: '新华人寿保险股份有限公司',
         officialName: '康健无忧两全保险',
-        matchType: 'exact_official_name',
+        matchType: 'filing_name',
         confidence: 1,
         updatedAt: 100,
         expiresAt: 1_000,
@@ -99,7 +112,7 @@ test('semantic conversation round trips typed product and family state without u
     canonicalProductId: 'product_1',
     company: '新华人寿保险股份有限公司',
     officialName: '康健无忧两全保险',
-    matchType: 'exact_official_name',
+    matchType: 'filing_name',
     confidence: 1,
     updatedAt: 100,
     expiresAt: 1_000,
@@ -157,7 +170,13 @@ test('semantic conversation survives reopening sqlite', async () => {
   const dbPath = await tempDbPath();
   const firstStore = await createStore(dbPath);
   const firstService = createAgentSemanticConversationService({ store: firstStore, clock: () => 800 });
-  await firstService.save({ internalUserId: 3, channel: 'dingtalk', conversationId: 'reopen', expectedVersion: 0, taskState: typedState() });
+  const state = typedState();
+  state.activeEntities.product = {
+    ...state.activeEntities.product,
+    matchType: 'unique_high_confidence',
+    confidence: 0.95,
+  };
+  await firstService.save({ internalUserId: 3, channel: 'dingtalk', conversationId: 'reopen', expectedVersion: 0, taskState: state });
   firstStore.close();
 
   const reopenedStore = await createStore(dbPath);
@@ -165,6 +184,7 @@ test('semantic conversation survives reopening sqlite', async () => {
   const loaded = await reopenedService.load({ internalUserId: 3, channel: 'dingtalk', conversationId: 'reopen' });
   assert.equal(loaded.version, 1);
   assert.equal(loaded.taskState.activeEntities.product.canonicalProductId, 'product_1');
+  assert.equal(loaded.taskState.activeEntities.product.matchType, 'unique_high_confidence');
   reopenedStore.close();
 });
 
@@ -218,12 +238,7 @@ test('task state projection strictly bounds candidates and pending proposal', ()
     matchType: 'unique_high_confidence',
     confidence: 0.82,
   });
-  assert.deepEqual(projected.candidateSets.family[0], {
-    familyId: 8,
-    displayName: '张三二家庭',
-    matchType: 'prefix',
-    confidence: 0.8,
-  });
+  assert.deepEqual(projected.candidateSets.family, []);
   assert.equal(projected.pendingClarification.entityType, 'product');
 
   const invalidPending = projectAgentSemanticTaskState({
@@ -232,11 +247,71 @@ test('task state projection strictly bounds candidates and pending proposal', ()
   });
   assert.equal(invalidPending.pendingClarification, null);
   assert.deepEqual(invalidPending.candidateSets.product, []);
+  assert.deepEqual(invalidPending.candidateSets.family, []);
 
   assert.throws(() => projectAgentSemanticTaskState({
     ...typedState(),
     candidateSets: { product: Array.from({ length: 11 }, () => typedState().candidateSets.product[0]), family: [] },
   }), RangeError);
+});
+
+test('task state keeps candidates only for one coherent pending clarification', () => {
+  const noPending = projectAgentSemanticTaskState({
+    ...typedState(),
+    pendingClarification: null,
+  });
+  assert.deepEqual(noPending.candidateSets, { product: [], family: [] });
+  assert.equal(noPending.activeEntities.product.matchType, 'filing_name');
+
+  const mismatched = projectAgentSemanticTaskState({
+    ...typedState(),
+    pendingClarification: { ...typedState().pendingClarification, entityType: 'family' },
+  });
+  assert.equal(mismatched.pendingClarification, null);
+  assert.deepEqual(mismatched.candidateSets, { product: [], family: [] });
+  assert.equal(mismatched.activeEntities.family.familyId, 7);
+
+  const emptyRequiredCandidates = projectAgentSemanticTaskState({
+    ...typedState(),
+    candidateSets: { product: [], family: typedState().candidateSets.family },
+  });
+  assert.equal(emptyRequiredCandidates.pendingClarification, null);
+  assert.deepEqual(emptyRequiredCandidates.candidateSets, { product: [], family: [] });
+
+  const familyPending = projectAgentSemanticTaskState({
+    ...typedState(),
+    candidateSets: {
+      product: typedState().candidateSets.product,
+      family: [{ familyId: 8, displayName: '张三二家庭', matchType: 'prefix', confidence: 0.8 }],
+    },
+    pendingClarification: {
+      entityType: 'family',
+      proposal: familyProposal(),
+      originalQuestion: '查看张三家庭报告',
+      expiresAt: 2_000,
+    },
+  });
+  assert.equal(familyPending.pendingClarification.entityType, 'family');
+  assert.deepEqual(familyPending.candidateSets.product, []);
+  assert.equal(familyPending.candidateSets.family.length, 1);
+
+  const orphan = projectAgentSemanticTaskState({
+    ...typedState(),
+    pendingClarification: { entityType: 'product', proposal: null, originalQuestion: '', expiresAt: 2_000 },
+  });
+  assert.equal(orphan.pendingClarification, null);
+  assert.deepEqual(orphan.candidateSets, { product: [], family: [] });
+});
+
+test('filing-name product candidates remain available for coherent clarification', () => {
+  const state = typedState();
+  state.candidateSets.product = [{
+    ...state.candidateSets.product[0],
+    matchType: 'filing_name',
+    confidence: 1,
+  }];
+  const projected = projectAgentSemanticTaskState(state);
+  assert.equal(projected.candidateSets.product[0].matchType, 'filing_name');
 });
 
 test('projection drops invalid active facts and constrains last action', () => {
