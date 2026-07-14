@@ -294,30 +294,41 @@ function preflightResult({ state, proposal, runtime }) {
   };
 }
 
-function requiresUnsupportedProductComparison(proposal, question) {
-  if (!proposal || proposal.intent !== PRODUCT_INTENT) return false;
-  const productMentions = proposal.mentions.filter((mention) => mention.type === 'product');
-  const distinctProducts = new Set(productMentions.map((mention) => (
-    mention.rawText.normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
-  )));
-  const explicitAlias = distinctProducts.size === 2 && /以下简称|简称|又称|也称/u.test(question);
+function explicitlyRequestsProductComparison(proposal, question) {
+  return proposal?.intent === PRODUCT_INTENT && (proposal.queryAspects.includes('comparison')
+    || proposal.requestedSteps.includes('compare')
+    || /这(?:两|2)款|二者|两者/u.test(question)
+    || proposal.references.some((reference) => (
+      reference.type === 'comparison_left' || reference.type === 'comparison_right'
+    )));
+}
+
+function productRecallSnippets(question, proposal, limit) {
   let remaining = question;
   const extractedTexts = proposal.mentions
     .filter((mention) => mention.type === 'product' || mention.type === 'insurer')
     .map((mention) => mention.rawText)
     .sort((left, right) => right.length - left.length);
   for (const rawText of extractedTexts) remaining = remaining.split(rawText).join(' ');
-  const remainingProduct = /[\p{Script=Han}A-Za-z0-9]{1,30}(?:重大疾病保险|两全保险|重疾险|医疗险|年金险|意外险|寿险|产品|保险)(?=$|[\s，。！？、/（）()]|有|的|是|分别|各自|主要|保什么|哪个|比较|对比|区别|差异)/u
-    .test(remaining);
-  const comparisonSemantics = /分别|各自|对比|比较|区别|差异|哪个(?:更|好)/u.test(question);
-  return proposal.queryAspects.includes('comparison')
-    || proposal.requestedSteps.includes('compare')
-    || /这(?:两|2)款|二者|两者/u.test(question)
-    || proposal.references.some((reference) => (
-      reference.type === 'comparison_left' || reference.type === 'comparison_right'
-    ))
-    || (distinctProducts.size > 1 && !explicitAlias)
-    || (remainingProduct && comparisonSemantics);
+  remaining = remaining.replace(/以下简称|简称|又称|也称/gu, ' ');
+  const parts = remaining.split(/(?:和|与|及|还有|或者|、|\/|\bVS\b|相比|同)/iu);
+  if (parts.length < 2) return [];
+  const snippets = [];
+  for (const part of parts) {
+    const snippet = part.trim()
+      .replace(/^[\s，。！？、/（）()的]+|[\s，。！？、/（）()]+$/gu, '')
+      .replace(/(?:分别|各自)(?:主要)?(?:保什么|保障什么|责任)?$/u, '')
+      .replace(/(?:分别|各自)?(?:主要)?(?:保什么|保障什么|责任是什么|哪个好|哪个更好|哪个划算|有什么区别|有何区别|区别是什么)$/u, '')
+      .trim();
+    if (snippet.length < 2 || snippet.length > 80) continue;
+    const hasProductDesignator = /(?:产品|保险|险)$/u.test(snippet);
+    const aspectLike = !hasProductDesignator
+      && /责任|免责|等待期|续保|赔付|身故|满期|豁免|保障|条款|保额|比例|费用|现金价值/u.test(snippet);
+    if (aspectLike || snippets.includes(snippet)) continue;
+    snippets.push(snippet);
+    if (snippets.length >= limit) break;
+  }
+  return snippets;
 }
 
 function unsupportedComparisonResult({ state, proposal }) {
@@ -457,7 +468,7 @@ export function createAgentSemanticResolver({
         effectiveProposal = uploadProposal();
       }
 
-      if (requiresUnsupportedProductComparison(effectiveProposal, normalizedQuestion)) {
+      if (explicitlyRequestsProductComparison(effectiveProposal, normalizedQuestion)) {
         return unsupportedComparisonResult({ state, proposal: effectiveProposal });
       }
 
@@ -492,6 +503,63 @@ export function createAgentSemanticResolver({
             : effectiveProposal.mentions;
         if (!selectedProduct && !explicitProduct && currentProductReference && !referencedProduct) {
           resolutions.product = { status: 'missing', entity: null, candidates: [] };
+        } else if (!selectedProduct && explicitProduct) {
+          const productMentions = effectiveProposal.mentions
+            .filter((mention) => mention.type === 'product')
+            .filter((mention, index, values) => values
+              .findIndex((value) => value.rawText === mention.rawText) === index);
+          if (productMentions.length > 8) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+          }
+          const explicitInsurerMentions = effectiveProposal.mentions
+            .filter((mention) => mention.type === 'insurer');
+          const evidence = [];
+          try {
+            for (const productMention of productMentions) {
+              evidence.push(projectResolution(await productResolver.resolve({
+                mentions: [...explicitInsurerMentions, productMention],
+                activeProduct: null,
+              }), 'product'));
+            }
+          } catch {
+            return resolverUnavailableResult({ state, proposal: effectiveProposal });
+          }
+
+          const explicitCanonicalIds = evidence.map((result) => (
+            result.status === 'resolved' ? clean(result.entity.canonicalProductId) : ''
+          )).filter(Boolean);
+          if (productMentions.length > 1 && (evidence.some((result) => result.status !== 'resolved')
+            || explicitCanonicalIds.length !== productMentions.length
+            || new Set(explicitCanonicalIds).size !== 1)) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+          }
+
+          resolutions.product = evidence[0] || { status: 'missing', entity: null, candidates: [] };
+          const snippets = productRecallSnippets(
+            normalizedQuestion,
+            effectiveProposal,
+            Math.max(0, 8 - productMentions.length),
+          );
+          const primaryCanonicalId = resolutions.product.status === 'resolved'
+            ? clean(resolutions.product.entity.canonicalProductId)
+            : '';
+          for (const snippet of snippets) {
+            let result;
+            try {
+              result = projectResolution(await productResolver.resolve({
+                mentions: [...explicitInsurerMentions, { type: 'product', rawText: snippet }],
+                activeProduct: null,
+              }), 'product');
+            } catch {
+              return resolverUnavailableResult({ state, proposal: effectiveProposal });
+            }
+            const canonicalProductId = result.status === 'resolved'
+              ? clean(result.entity.canonicalProductId)
+              : '';
+            if (!canonicalProductId || !primaryCanonicalId || canonicalProductId !== primaryCanonicalId) {
+              return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+            }
+          }
         } else {
           try {
             resolutions.product = projectResolution(await productResolver.resolve({
