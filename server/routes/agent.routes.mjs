@@ -7,8 +7,14 @@ const ATTACHMENT_FIELDS = new Set([
 const CANDIDATE_FIELDS = new Set([
   'intent', 'question', 'confidence', 'requestedOperation', 'entities', 'contextRefs',
 ]);
+const INTERNAL_ENTITY_FIELDS = new Set([
+  'productCanonicalId', 'productCompany', 'familyId', 'resolvedEntities',
+]);
 const UNTRUSTED_AUTHORITY_FIELDS = new Set(['userId', 'internalUserId', 'familyId', 'permissions']);
-const QUESTION_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId', 'candidate']);
+const QUESTION_BODY_FIELDS = new Set([
+  'channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId',
+  'candidate', 'question', 'runtime', 'proposal',
+]);
 const CONFIRM_BODY_FIELDS = new Set(['channel', 'channelUserId', 'channelMobile', 'messageRef', 'conversationId']);
 const PUBLIC_DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const PUBLIC_INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -157,7 +163,8 @@ function normalizeCandidate(value) {
   const candidate = { intent, question, confidence, requestedOperation };
   if (value.entities !== undefined) {
     if (!value.entities || typeof value.entities !== 'object' || Array.isArray(value.entities)) return null;
-    const entries = Object.entries(value.entities);
+    const entries = Object.entries(value.entities)
+      .filter(([key]) => !INTERNAL_ENTITY_FIELDS.has(key));
     if (entries.length > 12 || entries.some(([key, item]) => !text(key, 40) || !text(item, 200))) return null;
     candidate.entities = Object.fromEntries(entries.map(([key, item]) => [key.trim(), item.trim()]));
   }
@@ -170,9 +177,9 @@ function normalizeCandidate(value) {
   return candidate;
 }
 
-function normalizeBaseBody(body, { requireCandidate = false } = {}) {
+function normalizeBaseBody(body, { questionRoute = false } = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
-  const allowedFields = requireCandidate ? QUESTION_BODY_FIELDS : CONFIRM_BODY_FIELDS;
+  const allowedFields = questionRoute ? QUESTION_BODY_FIELDS : CONFIRM_BODY_FIELDS;
   if (Object.keys(body).some((key) => !allowedFields.has(key) && !UNTRUSTED_AUTHORITY_FIELDS.has(key))) return null;
   const channel = text(body.channel, 20).toLowerCase();
   const channelUserId = text(body.channelUserId, 200);
@@ -180,9 +187,34 @@ function normalizeBaseBody(body, { requireCandidate = false } = {}) {
   const messageRef = text(body.messageRef, 200);
   const conversationId = body.conversationId === undefined ? '' : text(body.conversationId, 200);
   if (!channel || !channelUserId || !messageRef || (body.channelMobile !== undefined && !channelMobile) || (body.conversationId !== undefined && !conversationId)) return null;
-  const candidate = requireCandidate ? normalizeCandidate(body.candidate) : undefined;
-  if (requireCandidate && !candidate) return null;
-  return { channel, channelUserId, channelMobile, messageRef, conversationId, candidate };
+  if (!questionRoute) return { channel, channelUserId, channelMobile, messageRef, conversationId };
+
+  const hasCandidate = body.candidate !== undefined;
+  const hasSemantic = body.question !== undefined || body.runtime !== undefined || body.proposal !== undefined;
+  if (hasCandidate === hasSemantic) return null;
+  if (hasCandidate) {
+    const candidate = normalizeCandidate(body.candidate);
+    return candidate
+      ? { channel, channelUserId, channelMobile, messageRef, conversationId, candidate }
+      : null;
+  }
+
+  const question = text(body.question, 1000);
+  const runtime = text(body.runtime, 20).toLowerCase();
+  if (!question || !['hermes', 'direct', 'rule'].includes(runtime)) return null;
+  const proposalProvided = Object.prototype.hasOwnProperty.call(body, 'proposal');
+  const proposal = body.proposal;
+  const proposalIsObject = proposal && typeof proposal === 'object' && !Array.isArray(proposal);
+  if (runtime === 'rule') {
+    if (proposalProvided && proposal !== null && !proposalIsObject) return null;
+  } else if (!proposalIsObject) {
+    return null;
+  }
+  return {
+    channel, channelUserId, channelMobile, messageRef, conversationId,
+    question, runtime,
+    ...(proposalProvided ? { proposal } : {}),
+  };
 }
 
 function rawBodyBytes(req) {
@@ -274,7 +306,7 @@ export function createAgentRouter({
   }
 
   router.post('/questions/route', async (req, res) => {
-    const input = await prepare(req, res, { requireCandidate: true });
+    const input = await prepare(req, res, { questionRoute: true });
     if (!input) return;
     if (!questionRouter || typeof questionRouter.route !== 'function') {
       send(res, 502, 'AGENT_GATEWAY_UPSTREAM_ERROR');
@@ -285,7 +317,11 @@ export function createAgentRouter({
         internalUserId: input.internalUserId,
         messageRef: input.messageRef,
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
-        candidate: input.candidate,
+        ...(input.candidate ? { candidate: input.candidate } : {
+          question: input.question,
+          runtime: input.runtime,
+          ...(Object.prototype.hasOwnProperty.call(input, 'proposal') ? { proposal: input.proposal } : {}),
+        }),
       });
       res.json({ ok: true, ...normalizePublicResult(result, secureLinkAllowedOrigins) });
     } catch (error) {

@@ -10,6 +10,11 @@ import { createAgentConfirmationService } from './agent-confirmation.service.mjs
 import { createAgentReportRegenerationQueue } from './agent-report-regeneration-queue.service.mjs';
 import { createAgentQuestionHandlers } from './agent-question-handlers.service.mjs';
 import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
+import { createAgentFamilyEntityResolver } from './agent-family-entity-resolver.service.mjs';
+import { createAgentProductEntityResolver } from './agent-product-entity-resolver.service.mjs';
+import { createAgentSemanticConversationService } from './agent-semantic-conversation.service.mjs';
+import { createAgentSemanticQuestionRouter } from './agent-semantic-question-router.service.mjs';
+import { createAgentSemanticResolver } from './agent-semantic-resolver.service.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
@@ -2720,6 +2725,7 @@ export function createPolicyOcrApp(options = {}) {
         };
       },
       generateFamilySalesChatReply: options.generateFamilySalesChatReply,
+      productKnowledge: options.agentProductKnowledge,
     })
     : null);
   const agentHandlers = baseAgentHandlers && agentConfirmationService ? {
@@ -2728,9 +2734,52 @@ export function createPolicyOcrApp(options = {}) {
       ? agentConfirmationService.previewPolicyTransfer({ userId: input.internalUserId, ...(input.entities || {}) })
       : baseAgentHandlers.system(input),
   } : baseAgentHandlers;
-  const agentQuestionRouter = options.agentQuestionRouter || (agentStore && agentHandlers
+  const injectedQuestionRouter = Object.prototype.hasOwnProperty.call(options, 'agentQuestionRouter');
+  const agentLegacyQuestionRouter = options.agentLegacyQuestionRouter || (agentStore && agentHandlers
     ? createAgentQuestionRouter({ store: agentStore, handlers: agentHandlers })
     : null);
+  let defaultAgentQuestionRouter = agentLegacyQuestionRouter;
+  if (agentLegacyQuestionRouter) {
+    const semanticConversationService = options.agentSemanticConversationService
+      || (typeof agentStore?.getAgentSemanticConversation === 'function'
+        && typeof agentStore?.saveAgentSemanticConversation === 'function'
+        ? createAgentSemanticConversationService({ store: agentStore })
+        : null);
+    let semanticResolver = options.agentSemanticResolver || null;
+    if (!semanticResolver && options.db && agentStore && typeof agentStore.load === 'function') {
+      const productResolver = createAgentProductEntityResolver({
+        db: options.db,
+        officialDomainProfiles: getDefaultOfficialDomainProfiles(),
+      });
+      const familyResolver = createAgentFamilyEntityResolver({
+        listAuthorizedFamilies: async ({ internalUserId }) => {
+          const current = await agentStore.load();
+          return (Array.isArray(current.familyProfiles) ? current.familyProfiles : [])
+            .filter((family) => familyOwnerMatches(family, { userId: internalUserId }));
+        },
+      });
+      semanticResolver = createAgentSemanticResolver({ productResolver, familyResolver });
+    }
+    defaultAgentQuestionRouter = semanticResolver && semanticConversationService
+      ? createAgentSemanticQuestionRouter({
+        legacyRouter: agentLegacyQuestionRouter,
+        semanticResolver,
+        conversationService: semanticConversationService,
+      })
+      : {
+        route(input) {
+          return input?.candidate
+            ? agentLegacyQuestionRouter.route(input)
+            : Promise.resolve({
+              decision: 'clarify',
+              interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+            });
+        },
+      };
+  }
+  const agentQuestionRouter = injectedQuestionRouter
+    ? options.agentQuestionRouter
+    : defaultAgentQuestionRouter;
   const recoveryOptions = {
     intervalMs: options.agentTransferRecoveryIntervalMs,
     disabled: options.disableAgentTransferRecovery === true,

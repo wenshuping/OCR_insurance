@@ -13,6 +13,20 @@ function text(value) {
   return String(value ?? '').trim();
 }
 
+function resolvedProductQuery(context) {
+  const value = context?.resolvedProduct;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const canonicalProductId = text(value.canonicalProductId);
+  const company = text(value.company);
+  const officialName = text(value.officialName);
+  if (!company || !officialName
+    || canonicalProductId.length > 200 || company.length > 200 || officialName.length > 200) return null;
+  const queryAspects = Array.isArray(context?.queryAspects)
+    ? context.queryAspects.filter((item) => typeof item === 'string').slice(0, 8)
+    : [];
+  return { product: { canonicalProductId, company, officialName }, queryAspects };
+}
+
 function positiveInteger(value, label) {
   const number = Number(value);
   if (!Number.isInteger(number) || number <= 0) throw new TypeError(`${label} is required`);
@@ -289,8 +303,13 @@ export function createAgentQuestionHandlers({
 
   async function answerProductKnowledge(context) {
     const question = text(context?.question).slice(0, 2_000);
+    const semantic = resolvedProductQuery(context);
     const result = productKnowledge && typeof productKnowledge.search === 'function'
-      ? await productKnowledge.search({ question, scope: 'public_read_only' })
+      ? await productKnowledge.search({
+        question,
+        scope: 'public_read_only',
+        ...(semantic || {}),
+      })
       : null;
     const sources = (Array.isArray(result?.sources) ? result.sources : [])
       .filter((source) => source?.verified === true)

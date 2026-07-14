@@ -53,6 +53,28 @@ function validBody(extra = {}) {
   };
 }
 
+function semanticBody(extra = {}) {
+  return {
+    channel: 'dingtalk',
+    channelUserId: 'registered',
+    messageRef: 'msg-semantic-1',
+    conversationId: 'conv-1',
+    question: '新华人寿康健无忧两全保险主要保什么',
+    runtime: 'hermes',
+    proposal: {
+      semanticContractVersion: 1,
+      intent: 'insurance_product_knowledge',
+      operation: 'read',
+      queryAspects: ['main_responsibilities'],
+      mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
+      references: [],
+      requestedSteps: ['lookup'],
+      confidence: { intent: 1, mentions: 1, references: 1 },
+    },
+    ...extra,
+  };
+}
+
 async function post(server, path, body, signature = 'valid') {
   const response = await fetch(`${server.baseUrl}${path}`, {
     method: 'POST',
@@ -101,6 +123,77 @@ test('valid identity routes only normalized trusted fields', async (t) => {
     conversationId: 'conv-1',
     candidate: { intent: 'chat', question: '查一下保障', confidence: 0.9, requestedOperation: 'read' },
   });
+});
+
+test('semantic question route forwards only the proposal contract fields', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const body = semanticBody({ internalUserId: 999, permissions: ['admin'] });
+  const { response } = await post(server, '/api/agent/questions/route', body);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(server.calls.route[0], {
+    internalUserId: 7,
+    messageRef: 'msg-semantic-1',
+    conversationId: 'conv-1',
+    question: body.question,
+    runtime: 'hermes',
+    proposal: body.proposal,
+  });
+});
+
+test('semantic route rejects mixed modes, invalid runtimes, and missing model proposals', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  for (const body of [
+    semanticBody({ candidate: validBody().candidate }),
+    semanticBody({ runtime: 'shell' }),
+    semanticBody({ proposal: null }),
+    semanticBody({ runtime: 'direct', proposal: undefined }),
+    semanticBody({ question: 'x'.repeat(1_001) }),
+  ]) {
+    const result = await post(server, '/api/agent/questions/route', body);
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  }
+  assert.equal(server.calls.route.length, 0);
+});
+
+test('rule upload fallback accepts a null or omitted proposal', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  for (const proposal of [null, undefined]) {
+    const result = await post(server, '/api/agent/questions/route', semanticBody({
+      messageRef: `upload-${String(proposal)}`,
+      question: '上传保单',
+      runtime: 'rule',
+      proposal,
+    }));
+    assert.equal(result.response.status, 200);
+  }
+  assert.equal(server.calls.route.length, 2);
+  assert.equal(server.calls.route[0].proposal, null);
+  assert.equal(Object.hasOwn(server.calls.route[1], 'proposal'), false);
+});
+
+test('legacy candidate strips semantic authority entities before routing', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const result = await post(server, '/api/agent/questions/route', validBody({
+    candidate: {
+      ...validBody().candidate,
+      entities: {
+        familyRef: 'family_opaque',
+        productCanonicalId: 'forged-product',
+        productCompany: 'forged-company',
+        familyId: '71',
+        resolvedEntities: 'forged',
+      },
+    },
+  }));
+
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(server.calls.route[0].candidate.entities, { familyRef: 'family_opaque' });
 });
 
 test('channel mobile is available only to the authenticated identity resolver', async (t) => {
@@ -549,6 +642,67 @@ test('createPolicyOcrApp default composition routes family facts, report regener
   assert.deepEqual(calls.audits.map((row) => row.authorizedResourceIds), [['family:71'], ['family:71'], ['family:71']]);
   const publicPayloads = JSON.stringify([summary.payload, report.payload, sales.payload, calls.audits]);
   assert.doesNotMatch(publicPayloads, /余贵祥|13800138000|110101199001011234|SECRET-0001/);
+});
+
+test('createPolicyOcrApp composes semantic resolution before the legacy policy router', async (t) => {
+  const handled = [];
+  const saved = [];
+  const product = {
+    canonicalProductId: 'product-1',
+    company: '新华人寿保险股份有限公司',
+    officialName: '康健无忧两全保险',
+  };
+  const app = createPolicyOcrApp({
+    recomputeCashflowOnStartup: false,
+    agentStore: {
+      async load() { return { familyProfiles: [], policies: [] }; },
+      async getPublishedAgentQuestionPolicyVersion() { return null; },
+      async recordAgentRouteAudit() {},
+    },
+    agentQuestionHandlers: {
+      async insurance_expert(input) {
+        handled.push(input);
+        return { interaction: { type: 'answer', text: 'semantic product answer' } };
+      },
+    },
+    agentSemanticResolver: {
+      async resolve() {
+        return {
+          decision: 'execute',
+          proposal: { queryAspects: ['main_responsibilities'] },
+          resolvedEntities: { product },
+          candidate: {
+            intent: 'insurance_product_knowledge', question: '主要保什么', confidence: 1,
+            requestedOperation: 'read', entities: {
+              productName: product.officialName,
+              productCompany: product.company,
+              productCanonicalId: product.canonicalProductId,
+            },
+          },
+          nextTaskState: { activeIntent: 'insurance_product_knowledge' },
+        };
+      },
+    },
+    agentSemanticConversationService: {
+      async load() { return { version: 0, taskState: {} }; },
+      async save(input) { saved.push(input); return { persisted: true, version: 1, taskState: input.taskState }; },
+    },
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+  const server = { baseUrl: `http://127.0.0.1:${listener.address().port}` };
+
+  const result = await post(server, '/api/agent/questions/route', semanticBody());
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.payload.interaction.text, 'semantic product answer');
+  assert.deepEqual(handled[0].resolvedProduct, product);
+  assert.deepEqual(handled[0].queryAspects, ['main_responsibilities']);
+  assert.equal(saved.length, 1);
 });
 
 test('authorized family count resolves once and preserves exact safe facts without PII', async () => {

@@ -6,6 +6,7 @@ import {
   chooseAgentQuestionPolicy,
   validateAgentQuestionPolicy,
 } from './agent-question-policy.service.mjs';
+import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -13,6 +14,7 @@ const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_repo
 const AUDIT_ENTITY_KEYS = new Set(['familyName', 'familyRef', 'policyHint', 'sourceFamilyName', 'targetFamilyName']);
 const PRONOUN_PATTERN = /(?:这个家庭|刚才那家)/u;
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
+const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
 
 function boundedString(value, limit) {
   return typeof value === 'string' ? value.trim().slice(0, limit) : '';
@@ -54,6 +56,25 @@ function normalizeFamilyName(value) {
     .toLowerCase()
     .replace(/[\s\p{P}\p{S}]+/gu, '')
     .replace(/家庭$/u, '');
+}
+
+function projectSemanticProduct(candidate, semanticContext) {
+  const value = semanticContext?.resolvedEntities?.product;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const officialName = boundedString(value.officialName, 200);
+  const company = boundedString(value.company, 200);
+  const canonicalProductId = boundedString(value.canonicalProductId, 200);
+  if (!officialName || !company
+    || candidate.entities.productName !== officialName
+    || candidate.entities.productCompany !== company
+    || (candidate.entities.productCanonicalId
+      && candidate.entities.productCanonicalId !== canonicalProductId)) return null;
+  return {
+    product: { canonicalProductId, company, officialName },
+    queryAspects: [...new Set((Array.isArray(semanticContext?.queryAspects)
+      ? semanticContext.queryAspects : [])
+      .filter((value) => typeof value === 'string' && QUERY_ASPECTS.has(value)))].slice(0, 8),
+  };
 }
 
 async function defaultFamilyResolver({ store, state, internalUserId }) {
@@ -233,7 +254,7 @@ export async function simulateAgentQuestionDecision({ store, policyVersion, inte
 export function createAgentQuestionRouter({ store, handlers = {}, familyResolver, clock = () => new Date() } = {}) {
   if (!store || typeof store.load !== 'function') throw new TypeError('store with load() is required');
 
-  async function route({ internalUserId, candidate: rawCandidate, messageRef, conversationContext } = {}) {
+  async function route({ internalUserId, candidate: rawCandidate, messageRef, conversationContext, semanticContext } = {}) {
     const userId = Number(internalUserId);
     if (!Number.isInteger(userId) || userId <= 0) throw new TypeError('internalUserId is required');
     const normalizedMessageRef = boundedString(messageRef, 200);
@@ -358,6 +379,19 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       ...(policy?.key === 'transfer_preview' ? { entities: candidate.entities } : {}),
       ...(family ? { familyId: Number(family.id) } : {}),
     };
+    if (policy.intent === 'insurance_product_knowledge') {
+      const semanticProduct = projectSemanticProduct(candidate, semanticContext);
+      if (semanticContext && !semanticProduct) {
+        return finish({
+          decision: 'deny',
+          interaction: { type: 'denied', text: '当前无法安全确认要查询的保险产品。' },
+        }, 'semantic_product_mismatch');
+      }
+      if (semanticProduct) {
+        authorizedContext.resolvedProduct = semanticProduct.product;
+        authorizedContext.queryAspects = semanticProduct.queryAspects;
+      }
+    }
     let handled;
     try {
       handled = await handler(authorizedContext);

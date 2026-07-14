@@ -195,6 +195,29 @@ test('product knowledge requires public sources for definite facts', async () =>
   assert.doesNotMatch(JSON.stringify(uncertain), /等待测试覆盖/);
 });
 
+test('semantic product knowledge searches only the resolved product and controlled aspects', async () => {
+  const { handlers, calls } = harness();
+  const resolvedProduct = {
+    canonicalProductId: 'product-1',
+    company: '新华人寿保险股份有限公司',
+    officialName: '康健无忧两全保险',
+  };
+
+  await handlers.execute('insurance_product_knowledge', {
+    question: '这个保险主要保什么',
+    internalUserId: 9,
+    resolvedProduct,
+    queryAspects: ['main_responsibilities'],
+  });
+
+  assert.deepEqual(calls.knowledge[0], {
+    question: '这个保险主要保什么',
+    scope: 'public_read_only',
+    product: resolvedProduct,
+    queryAspects: ['main_responsibilities'],
+  });
+});
+
 test('sales coaching adapts authorized context to the existing family sales chat agent', async () => {
   const { handlers, calls } = harness({
     familyMembers: [{ familyId: 7, name: '张三', status: 'active' }],

@@ -99,6 +99,60 @@ test('a unique authorized family executes without listing other families', async
   assert.equal(calls.audits[0].policySource, 'built_in');
 });
 
+test('semantic product context is projected only when it matches the routed candidate', async () => {
+  const { router, calls } = createHarness({
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer', text: 'ok' } }) },
+  });
+  const product = {
+    canonicalProductId: 'product-1',
+    company: '新华人寿保险股份有限公司',
+    officialName: '康健无忧两全保险',
+  };
+  const base = routeInput({
+    intent: 'insurance_product_knowledge', question: '主要保什么', entities: {
+      productName: product.officialName,
+      productCompany: product.company,
+      productCanonicalId: product.canonicalProductId,
+    },
+  });
+
+  await router.route({
+    ...base,
+    semanticContext: { resolvedEntities: { product }, queryAspects: ['main_responsibilities', 'not_allowed'] },
+  });
+  const mismatch = await router.route({
+    ...base,
+    messageRef: 'product-mismatch',
+    semanticContext: { resolvedEntities: { product: { ...product, officialName: '另一产品' } }, queryAspects: ['renewal'] },
+  });
+
+  assert.deepEqual(calls.handlers[0].input.resolvedProduct, product);
+  assert.deepEqual(calls.handlers[0].input.queryAspects, ['main_responsibilities']);
+  assert.equal(mismatch.decision, 'deny');
+  assert.equal(calls.handlers.length, 1);
+});
+
+test('semantic family ids never bypass the legacy authorized family resolution', async () => {
+  const { router, calls } = createHarness({
+    families: [
+      { id: 71, ownerUserId: 7, familyName: '本人家庭', status: 'active' },
+      { id: 99, ownerUserId: 8, familyName: '他人家庭', status: 'active' },
+    ],
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer', text: 'ok' } }) },
+  });
+
+  await router.route({
+    ...routeInput({ entities: { familyName: '本人家庭' } }),
+    semanticContext: {
+      resolvedEntities: { family: { familyId: 99, displayName: '他人家庭' } },
+      queryAspects: ['family_overview'],
+    },
+  });
+
+  assert.equal(calls.handlers[0].input.familyId, 71);
+  assert.equal(JSON.stringify(calls.handlers[0].input).includes('99'), false);
+});
+
 test('duplicate names clarify with matching candidates only', async () => {
   const { router } = createHarness({ families: [
     { id: 21, ownerUserId: 7, familyName: '张三家庭', status: 'active' },
