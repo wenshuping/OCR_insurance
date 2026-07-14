@@ -1,6 +1,9 @@
 import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
+import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
 
 const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
+const RESOLVER_DECISIONS = new Set(['execute', 'clarify', 'reject', 'retry_later']);
+const CONFLICT_CODE = 'AGENT_SEMANTIC_CONVERSATION_CONFLICT';
 
 function clean(value, limit = 200) {
   const normalized = typeof value === 'string' ? value.trim() : '';
@@ -110,10 +113,39 @@ function stateChanged(previous, next) {
   return JSON.stringify(previous || {}) !== JSON.stringify(next || {});
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function projectTaskState(value) {
+  if (!isPlainObject(value)) return null;
+  try {
+    JSON.stringify(value);
+    return projectAgentSemanticTaskState(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizedResolution(value) {
+  if (!isPlainObject(value) || !RESOLVER_DECISIONS.has(value.decision)) return null;
+  if (value.decision === 'execute' && !isPlainObject(value.candidate)) return null;
+  const nextTaskState = projectTaskState(value.nextTaskState);
+  return nextTaskState ? { ...value, nextTaskState } : null;
+}
+
+function persistenceError(error) {
+  const code = clean(error?.code, 80) || 'UNKNOWN';
+  return { code, conflict: code === CONFLICT_CODE };
+}
+
 export function createAgentSemanticQuestionRouter({
   legacyRouter,
   semanticResolver,
   conversationService,
+  onPersistenceError,
 } = {}) {
   if (typeof legacyRouter?.route !== 'function') throw new TypeError('legacyRouter.route is required');
   if (typeof semanticResolver?.resolve !== 'function') throw new TypeError('semanticResolver.resolve is required');
@@ -122,78 +154,104 @@ export function createAgentSemanticQuestionRouter({
     throw new TypeError('conversationService load/save is required');
   }
 
+  async function loadConversation(input) {
+    try {
+      const conversation = await conversationService.load({
+        internalUserId: input.internalUserId,
+        channel: 'dingtalk',
+        conversationId: input.conversationId,
+      });
+      const taskState = projectTaskState(conversation?.taskState);
+      if (!Number.isSafeInteger(conversation?.version) || conversation.version < 0 || !taskState) return null;
+      return { version: conversation.version, taskState };
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolve(input, conversation) {
+    try {
+      return normalizedResolution(await semanticResolver.resolve({
+        internalUserId: input.internalUserId,
+        question: input.question,
+        runtime: input.runtime,
+        proposal: input.proposal,
+        context: { taskState: conversation.taskState },
+      }));
+    } catch {
+      return null;
+    }
+  }
+
+  async function save(input, conversation, taskState) {
+    return conversationService.save({
+      internalUserId: input.internalUserId,
+      channel: 'dingtalk',
+      conversationId: input.conversationId,
+      expectedVersion: conversation.version,
+      taskState,
+    });
+  }
+
+  async function reportPostExecutePersistenceError(error) {
+    if (typeof onPersistenceError !== 'function') return;
+    try {
+      await onPersistenceError({ ...persistenceError(error), phase: 'post_execute' });
+    } catch {
+      // Observability hooks must not change an already completed read result.
+    }
+  }
+
+  async function processSemantic(input, conversation, { retryConflict }) {
+    const resolved = await resolve(input, conversation);
+    if (!resolved) return stableRetry();
+    const shouldSave = stateChanged(conversation.taskState, resolved.nextTaskState);
+
+    if (resolved.decision !== 'execute') {
+      if (shouldSave) {
+        try {
+          await save(input, conversation, resolved.nextTaskState);
+        } catch (error) {
+          if (persistenceError(error).conflict && retryConflict) {
+            const reloaded = await loadConversation(input);
+            return reloaded
+              ? processSemantic(input, reloaded, { retryConflict: false })
+              : stableRetry();
+          }
+          return stableRetry();
+        }
+      }
+      if (resolved.decision === 'retry_later') return stableRetry();
+      if (resolved.decision === 'reject') {
+        return { decision: 'deny', interaction: { type: 'denied', text: '该请求不能执行。' } };
+      }
+      return clarification(resolved, Boolean(clean(input.conversationId, 200)));
+    }
+
+    const result = await legacyRouter.route({
+      internalUserId: input.internalUserId,
+      messageRef: input.messageRef,
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      candidate: resolved.candidate,
+      semanticContext: semanticContext(resolved),
+    });
+    if (shouldSave) {
+      try {
+        await save(input, conversation, resolved.nextTaskState);
+      } catch (error) {
+        await reportPostExecutePersistenceError(error);
+      }
+    }
+    return result;
+  }
+
   return {
     async route(input = {}) {
       if (input.candidate) return legacyRouter.route(input);
 
-      let conversation;
-      try {
-        conversation = await conversationService.load({
-          internalUserId: input.internalUserId,
-          channel: 'dingtalk',
-          conversationId: input.conversationId,
-        });
-      } catch {
-        return stableRetry();
-      }
-
-      let resolved;
-      try {
-        resolved = await semanticResolver.resolve({
-          internalUserId: input.internalUserId,
-          question: input.question,
-          runtime: input.runtime,
-          proposal: input.proposal,
-          context: { taskState: conversation.taskState },
-        });
-      } catch {
-        return stableRetry();
-      }
-
-      const shouldSave = stateChanged(conversation.taskState, resolved?.nextTaskState);
-      if (resolved?.decision !== 'execute') {
-        if (shouldSave) {
-          try {
-            await conversationService.save({
-              internalUserId: input.internalUserId,
-              channel: 'dingtalk',
-              conversationId: input.conversationId,
-              expectedVersion: conversation.version,
-              taskState: resolved.nextTaskState,
-            });
-          } catch {
-            return stableRetry();
-          }
-        }
-        if (resolved?.decision === 'retry_later') return stableRetry();
-        if (resolved?.decision === 'reject') {
-          return { decision: 'deny', interaction: { type: 'denied', text: '该请求不能执行。' } };
-        }
-        return clarification(resolved, Boolean(clean(input.conversationId, 200)));
-      }
-
-      if (!resolved.candidate) return stableRetry();
-      const result = await legacyRouter.route({
-        internalUserId: input.internalUserId,
-        messageRef: input.messageRef,
-        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
-        candidate: resolved.candidate,
-        semanticContext: semanticContext(resolved),
-      });
-      if (shouldSave) {
-        try {
-          await conversationService.save({
-            internalUserId: input.internalUserId,
-            channel: 'dingtalk',
-            conversationId: input.conversationId,
-            expectedVersion: conversation.version,
-            taskState: resolved.nextTaskState,
-          });
-        } catch {
-          // A read may already have completed. Do not turn a successful answer into a false failure.
-        }
-      }
-      return result;
+      const conversation = await loadConversation(input);
+      if (!conversation) return stableRetry();
+      return processSemantic(input, conversation, { retryConflict: true });
     },
   };
 }

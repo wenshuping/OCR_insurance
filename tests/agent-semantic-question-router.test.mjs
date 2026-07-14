@@ -157,10 +157,22 @@ test('family ambiguity labels are generic and no-conversation choices require a 
     decision: 'clarify', decisionReason: 'entity_ambiguous', missingFields: [], ambiguities: ['family'],
     resolvedEntities: {}, candidate: null,
     nextTaskState: {
+      activeIntent: '',
+      activeEntities: { product: null, family: null },
       candidateSets: { product: [], family: [
-        { familyId: 71, displayName: '张三家庭' },
-        { familyId: 72, displayName: '李四家庭' },
+        { familyId: 71, displayName: '张三家庭', matchType: 'exact', confidence: 1 },
+        { familyId: 72, displayName: '李四家庭', matchType: 'exact', confidence: 1 },
       ] },
+      pendingClarification: {
+        entityType: 'family', originalQuestion: '查看家庭', expiresAt: 10_000,
+        proposal: {
+          semanticContractVersion: 1, intent: 'family_summary', operation: 'read',
+          queryAspects: ['family_overview'], mentions: [{ type: 'family', rawText: '家庭' }],
+          references: [], requestedSteps: ['lookup'],
+          confidence: { intent: 1, mentions: 1, references: 1 },
+        },
+      },
+      lastCompletedAction: null,
     },
   };
   const { router } = wrapperHarness({
@@ -223,7 +235,7 @@ test('load, resolver, and clarification save failures return stable retry text',
   });
   await stable({ async resolve() { return {
     decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
-    ambiguities: [], resolvedEntities: {}, candidate: null, nextTaskState: { activeIntent: 'x' },
+    ambiguities: [], resolvedEntities: {}, candidate: null, nextTaskState: { activeIntent: 'chat' },
   }; } }, {
     async load() { return { version: 1, taskState: {} }; },
     async save() { throw Object.assign(new Error('conflict'), { code: 'AGENT_SEMANTIC_CONVERSATION_CONFLICT' }); },
@@ -255,4 +267,140 @@ test('execute save conflict preserves the successful read result', async () => {
 
   assert.equal(result.interaction.text, 'authorized answer');
   assert.equal(calls.length, 1);
+});
+
+test('malformed or cyclic resolver results never execute or clear conversation state', async () => {
+  const malformedResults = [
+    { decision: 'execute', candidate: { intent: 'chat' } },
+    { decision: 'unknown', candidate: {}, nextTaskState: {} },
+    { decision: 'execute', candidate: [], nextTaskState: {} },
+  ];
+  const cyclicState = {};
+  cyclicState.self = cyclicState;
+  malformedResults.push({ decision: 'execute', candidate: {}, nextTaskState: cyclicState });
+
+  for (const resolved of malformedResults) {
+    let saves = 0;
+    const { router, calls } = wrapperHarness({
+      semanticResolver: { async resolve() { return resolved; } },
+      conversationService: {
+        async load() { return { version: 3, taskState: { activeIntent: 'chat' } }; },
+        async save() { saves += 1; },
+      },
+    });
+    const result = await router.route({
+      internalUserId: 7, conversationId: 'conv', messageRef: 'malformed',
+      question: '继续', runtime: 'hermes', proposal: {},
+    });
+    assert.deepEqual(result, {
+      decision: 'clarify',
+      interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+    });
+    assert.equal(calls.length, 0);
+    assert.equal(saves, 0);
+  }
+});
+
+test('non-execute conversation conflict reloads and retries resolution once', async () => {
+  let loads = 0;
+  let resolves = 0;
+  let saves = 0;
+  const { router, calls } = wrapperHarness({
+    semanticResolver: { async resolve({ context }) {
+      resolves += 1;
+      return {
+        decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
+        ambiguities: [], candidate: null, resolvedEntities: {},
+        nextTaskState: { ...context.taskState, activeIntent: resolves === 1 ? 'chat' : 'insurance_product_knowledge' },
+      };
+    } },
+    conversationService: {
+      async load() {
+        loads += 1;
+        return { version: loads - 1, taskState: {} };
+      },
+      async save() {
+        saves += 1;
+        if (saves === 1) {
+          throw Object.assign(new Error('conflict'), { code: 'AGENT_SEMANTIC_CONVERSATION_CONFLICT' });
+        }
+        return { persisted: true, version: 2, taskState: {} };
+      },
+    },
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'conflict-retry',
+    question: '查询', runtime: 'hermes', proposal: {},
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.match(result.interaction.text, /保险公司/u);
+  assert.equal(loads, 2);
+  assert.equal(resolves, 2);
+  assert.equal(saves, 2);
+  assert.equal(calls.length, 0);
+});
+
+test('non-conflict clarification save failure returns stable retry without a second attempt', async () => {
+  let loads = 0;
+  let saves = 0;
+  const { router, calls } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'clarify', decisionReason: 'product_required', missingFields: ['product'],
+      ambiguities: [], candidate: null, resolvedEntities: {}, nextTaskState: { activeIntent: 'chat' },
+    }; } },
+    conversationService: {
+      async load() { loads += 1; return { version: 0, taskState: {} }; },
+      async save() { saves += 1; throw Object.assign(new Error('disk'), { code: 'SQLITE_IOERR' }); },
+    },
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'conv', messageRef: 'save-error',
+    question: '查询', runtime: 'hermes', proposal: {},
+  });
+
+  assert.deepEqual(result, {
+    decision: 'clarify',
+    interaction: { type: 'clarification', text: '语义解析暂不可用，请稍后重试。' },
+  });
+  assert.equal(loads, 1);
+  assert.equal(saves, 1);
+  assert.equal(calls.length, 0);
+});
+
+test('post-execute persistence hook receives redacted conflict classification', async () => {
+  for (const [code, conflict] of [
+    ['AGENT_SEMANTIC_CONVERSATION_CONFLICT', true],
+    ['SQLITE_IOERR', false],
+  ]) {
+    const persistenceErrors = [];
+    const legacyCalls = [];
+    const router = createAgentSemanticQuestionRouter({
+      legacyRouter: { async route(input) {
+        legacyCalls.push(input);
+        return { decision: 'execute', interaction: { type: 'answer', text: 'ok' } };
+      } },
+      semanticResolver: { async resolve() { return {
+        decision: 'execute', proposal: { queryAspects: [] }, resolvedEntities: {},
+        candidate: { intent: 'chat', question: '你好', confidence: 1, requestedOperation: 'read' },
+        nextTaskState: { activeIntent: 'chat' },
+      }; } },
+      conversationService: {
+        async load() { return { version: 0, taskState: {} }; },
+        async save() { throw Object.assign(new Error('private database path'), { code }); },
+      },
+      onPersistenceError(input) { persistenceErrors.push(input); },
+    });
+
+    const result = await router.route({
+      internalUserId: 7, conversationId: 'conv', messageRef: `hook-${code}`,
+      question: '你好', runtime: 'hermes', proposal: {},
+    });
+    assert.equal(result.interaction.text, 'ok');
+    assert.equal(legacyCalls.length, 1);
+    assert.deepEqual(persistenceErrors, [{ code, conflict, phase: 'post_execute' }]);
+    assert.doesNotMatch(JSON.stringify(persistenceErrors), /private database path/u);
+  }
 });

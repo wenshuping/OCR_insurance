@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 
 import express from 'express';
 
@@ -248,6 +249,19 @@ test('legacy candidate rejects entity keys that collide after trimming', async (
 
   assert.equal(result.response.status, 400);
   assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  assert.equal(server.calls.route.length, 0);
+});
+
+test('legacy candidate accepts only read or write requestedOperation', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  for (const requestedOperation of ['delete', 'execute', 'READ']) {
+    const result = await post(server, '/api/agent/questions/route', validBody({
+      candidate: { ...validBody().candidate, requestedOperation },
+    }));
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.code, 'AGENT_REQUEST_SCHEMA_INVALID');
+  }
   assert.equal(server.calls.route.length, 0);
 });
 
@@ -700,25 +714,41 @@ test('createPolicyOcrApp default composition routes family facts, report regener
 });
 
 test('createPolicyOcrApp composes semantic resolution before the legacy policy router', async (t) => {
-  const handled = [];
   const saved = [];
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE policies (id INTEGER PRIMARY KEY);
+    CREATE TABLE product_customer_responsibility_summaries (
+      id TEXT PRIMARY KEY, company TEXT, product_name TEXT, status TEXT, headline TEXT,
+      summary_json TEXT, source_urls_json TEXT, updated_at TEXT
+    )
+  `);
   const product = {
     canonicalProductId: 'product-1',
     company: '新华人寿保险股份有限公司',
     officialName: '康健无忧两全保险',
   };
+  db.prepare(`
+    INSERT INTO product_customer_responsibility_summaries
+      (id, company, product_name, status, headline, summary_json, source_urls_json, updated_at)
+    VALUES (?, ?, ?, 'ready', ?, ?, ?, ?)
+  `).run(
+    'summary-1', product.company, product.officialName, '兼顾身故与满期责任',
+    JSON.stringify({
+      headline: '兼顾身故与满期责任',
+      mainResponsibilities: [{ title: '身故保险金', plainText: '符合约定时按条款给付。' }],
+    }),
+    JSON.stringify(['https://newchinalife.com/terms']),
+    '2026-07-14T00:00:00.000Z',
+  );
   const app = createPolicyOcrApp({
+    db,
     recomputeCashflowOnStartup: false,
     agentStore: {
       async load() { return { familyProfiles: [], policies: [] }; },
       async getPublishedAgentQuestionPolicyVersion() { return null; },
       async recordAgentRouteAudit() {},
-    },
-    agentQuestionHandlers: {
-      async insurance_expert(input) {
-        handled.push(input);
-        return { interaction: { type: 'answer', text: 'semantic product answer' } };
-      },
     },
     agentSemanticResolver: {
       async resolve() {
@@ -754,10 +784,87 @@ test('createPolicyOcrApp composes semantic resolution before the legacy policy r
   const result = await post(server, '/api/agent/questions/route', semanticBody());
 
   assert.equal(result.response.status, 200);
-  assert.equal(result.payload.interaction.text, 'semantic product answer');
-  assert.deepEqual(handled[0].resolvedProduct, product);
-  assert.deepEqual(handled[0].queryAspects, ['main_responsibilities']);
+  assert.match(result.payload.interaction.text, /兼顾身故与满期责任/u);
+  assert.match(result.payload.interaction.text, /身故保险金/u);
+  assert.doesNotMatch(result.payload.interaction.text, /当前没有可核验来源/u);
   assert.equal(saved.length, 1);
+});
+
+test('default semantic product resolver reloads custom official company aliases', async (t) => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE policies (id INTEGER PRIMARY KEY);
+    CREATE TABLE insurance_products (
+      canonical_product_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL,
+      company TEXT NOT NULL, official_name TEXT NOT NULL, product_code TEXT,
+      product_type TEXT, product_group_key TEXT, status TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL
+    );
+    CREATE TABLE product_customer_responsibility_summaries (
+      id TEXT PRIMARY KEY, company TEXT, product_name TEXT, status TEXT, headline TEXT,
+      summary_json TEXT, source_urls_json TEXT, updated_at TEXT
+    );
+  `);
+  db.prepare(`INSERT INTO insurance_products
+    (canonical_product_id, tenant_id, company, official_name, status, created_at, updated_at, payload)
+    VALUES ('custom-product', 'default', '测试保险有限公司', '安心产品', 'active',
+      '2026-07-14', '2026-07-14', '{}')`).run();
+  db.prepare(`INSERT INTO product_customer_responsibility_summaries
+    (id, company, product_name, status, headline, summary_json, source_urls_json, updated_at)
+    VALUES ('summary-custom', '测试保险有限公司', '安心产品', 'ready', '自定义责任摘要', ?, ?, '2026-07-14')`)
+    .run(
+      JSON.stringify({ headline: '自定义责任摘要', mainResponsibilities: [{ title: '约定责任', plainText: '以正式资料为准。' }] }),
+      JSON.stringify(['https://insurance.example/terms']),
+    );
+  const state = {
+    familyProfiles: [], policies: [],
+    officialDomainProfiles: [{
+      id: 'custom_insurer', company: '测试保险有限公司',
+      aliases: ['自定义保司'], companyAliases: ['测试保险有限公司', '自定义保司'],
+      officialDomains: ['insurance.example'], siteDomains: ['insurance.example'],
+    }],
+  };
+  const store = {
+    async load() { return state; },
+    async getPublishedAgentQuestionPolicyVersion() { return null; },
+    async recordAgentRouteAudit() {},
+  };
+  const app = createPolicyOcrApp({
+    state, db, agentStore: store, recomputeCashflowOnStartup: false,
+    agentSemanticConversationService: {
+      async load() { return { version: 0, taskState: {} }; },
+      async save(input) { return { persisted: true, version: 1, taskState: input.taskState }; },
+    },
+    verifyAgentServiceRequest: async () => true,
+    resolveDingTalkIdentity: async () => ({ internalUserId: 7 }),
+  });
+  const listener = await new Promise((resolve) => {
+    const running = app.listen(0, '127.0.0.1', () => resolve(running));
+  });
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+  const question = '自定义保司安心产品主要保什么';
+  const result = await post(
+    { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+    '/api/agent/questions/route',
+    semanticBody({
+      question,
+      proposal: {
+        semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+        queryAspects: ['main_responsibilities'],
+        mentions: [
+          { type: 'insurer', rawText: '自定义保司' },
+          { type: 'product', rawText: '安心产品' },
+        ],
+        references: [], requestedSteps: ['lookup'],
+        confidence: { intent: 1, mentions: 1, references: 1 },
+      },
+    }),
+  );
+
+  assert.equal(result.response.status, 200);
+  assert.match(result.payload.interaction.text, /自定义责任摘要/u);
+  assert.doesNotMatch(result.payload.interaction.text, /当前没有可核验来源/u);
 });
 
 test('authorized family count resolves once and preserves exact safe facts without PII', async () => {

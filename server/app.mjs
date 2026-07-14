@@ -9,6 +9,7 @@ import { startTransferRegenerationRecovery } from './agent-confirmation.service.
 import { createAgentConfirmationService } from './agent-confirmation.service.mjs';
 import { createAgentReportRegenerationQueue } from './agent-report-regeneration-queue.service.mjs';
 import { createAgentQuestionHandlers } from './agent-question-handlers.service.mjs';
+import { createAgentProductKnowledgeService } from './agent-product-knowledge.service.mjs';
 import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
 import { createAgentFamilyEntityResolver } from './agent-family-entity-resolver.service.mjs';
 import { createAgentProductEntityResolver } from './agent-product-entity-resolver.service.mjs';
@@ -1249,6 +1250,21 @@ function parseProfileList(value) {
 
 function buildEffectiveOfficialDomainProfiles(state) {
   return mergeOfficialDomainProfiles(state.officialDomainProfiles || []);
+}
+
+function officialProfileOrigins(profiles = []) {
+  const origins = new Set();
+  for (const profile of profiles) {
+    for (const domain of [...(profile.officialDomains || []), ...(profile.siteDomains || [])]) {
+      try {
+        const url = new URL(String(domain).includes('://') ? String(domain) : `https://${domain}`);
+        if (url.protocol === 'https:' && !url.username && !url.password) origins.add(url.origin);
+      } catch {
+        // Invalid custom domains are excluded from the public evidence allowlist.
+      }
+    }
+  }
+  return [...origins];
 }
 
 function buildAdminOfficialDomainProfiles(state) {
@@ -2659,6 +2675,17 @@ export function createPolicyOcrApp(options = {}) {
   const app = express();
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
+  const agentOfficialDomainProfiles = mergeOfficialDomainProfiles(state.officialDomainProfiles || []);
+  const agentProductKnowledge = options.agentProductKnowledge
+    || (options.db ? createAgentProductKnowledgeService({
+      db: options.db,
+      officialDomainProfiles: agentOfficialDomainProfiles,
+    }) : null);
+  const agentKnowledgeAllowedOrigins = [...new Set([
+    ...officialProfileOrigins(agentOfficialDomainProfiles),
+    ...(Array.isArray(options.agentKnowledgeAllowedOrigins) ? options.agentKnowledgeAllowedOrigins : []),
+    ...(Array.isArray(options.agentAllowedKnowledgeOrigins) ? options.agentAllowedKnowledgeOrigins : []),
+  ])];
   app.locals.state = state;
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -2725,7 +2752,8 @@ export function createPolicyOcrApp(options = {}) {
         };
       },
       generateFamilySalesChatReply: options.generateFamilySalesChatReply,
-      productKnowledge: options.agentProductKnowledge,
+      productKnowledge: agentProductKnowledge,
+      allowedKnowledgeOrigins: agentKnowledgeAllowedOrigins,
     })
     : null);
   const agentHandlers = baseAgentHandlers && agentConfirmationService ? {
@@ -2747,10 +2775,15 @@ export function createPolicyOcrApp(options = {}) {
         : null);
     let semanticResolver = options.agentSemanticResolver || null;
     if (!semanticResolver && options.db && agentStore && typeof agentStore.load === 'function') {
-      const productResolver = createAgentProductEntityResolver({
-        db: options.db,
-        officialDomainProfiles: getDefaultOfficialDomainProfiles(),
-      });
+      const productResolver = {
+        async resolve(input) {
+          const current = await agentStore.load();
+          return createAgentProductEntityResolver({
+            db: options.db,
+            officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
+          }).resolve(input);
+        },
+      };
       const familyResolver = createAgentFamilyEntityResolver({
         listAuthorizedFamilies: async ({ internalUserId }) => {
           const current = await agentStore.load();
@@ -2765,6 +2798,13 @@ export function createPolicyOcrApp(options = {}) {
         legacyRouter: agentLegacyQuestionRouter,
         semanticResolver,
         conversationService: semanticConversationService,
+        onPersistenceError: options.agentSemanticPersistenceErrorHandler || ((error) => {
+          console.error('[agent-semantic] conversation persistence failed', {
+            code: error.code,
+            conflict: error.conflict,
+            phase: error.phase,
+          });
+        }),
       })
       : {
         route(input) {

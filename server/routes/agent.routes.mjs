@@ -160,7 +160,8 @@ function normalizeCandidate(value) {
   const question = text(value.question, 1000);
   const requestedOperation = text(value.requestedOperation, 20);
   const confidence = Number(value.confidence);
-  if (!intent || !question || !requestedOperation || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null;
+  if (!intent || !question || !['read', 'write'].includes(requestedOperation)
+    || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null;
 
   const candidate = { intent, question, confidence, requestedOperation };
   if (value.entities !== undefined) {
