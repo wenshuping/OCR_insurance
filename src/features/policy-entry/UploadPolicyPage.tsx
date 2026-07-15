@@ -925,14 +925,16 @@ export function UploadPolicyPage(props: {
                 required
               />
             )}
-            <SelectField
-              label="与顶梁柱的关系"
-              value={formData.beneficiaryRelation || ''}
-              onChange={(value) => onUpdateForm('beneficiaryRelation', value)}
-              options={familyRelationOptions(formData.beneficiaryRelation || '')}
-              placeholder="请选择关系"
-              required
-            />
+            {formData.beneficiary !== '法定' ? (
+              <SelectField
+                label="与顶梁柱的关系"
+                value={formData.beneficiaryRelation || ''}
+                onChange={(value) => onUpdateForm('beneficiaryRelation', value)}
+                options={familyRelationOptions(formData.beneficiaryRelation || '')}
+                placeholder="请选择关系"
+                required
+              />
+            ) : null}
             <TextField
               label="受益人生日"
               value={formData.beneficiaryBirthday || ''}

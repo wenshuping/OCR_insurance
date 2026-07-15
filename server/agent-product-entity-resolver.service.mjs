@@ -1,7 +1,9 @@
 import {
   catalogProductIdentity,
+  catalogProductScore,
   searchProductCatalog,
 } from './product-catalog-search.mjs';
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const MATCH_TYPES = new Set([
   'exact_official_name',
@@ -63,27 +65,69 @@ function parsePayload(value) {
   }
 }
 
-function publicProductRows(db, tenantId) {
+function productRowsByStatus(db, tenantId, status) {
   const columns = tableColumns(db, 'insurance_products');
   if (!columns.has('tenant_id') || !columns.has('company')
     || !columns.has('official_name') || !columns.has('status')) return [];
   const canonicalId = columns.has('canonical_product_id') ? 'canonical_product_id' : "''";
   const productCode = columns.has('product_code') ? 'product_code' : "''";
   const payload = columns.has('payload') ? 'payload' : "'{}'";
-  const statusWhere = "WHERE tenant_id = ? AND LOWER(TRIM(COALESCE(status, ''))) = 'active'";
   return db.prepare(`
     SELECT ${canonicalId} AS canonical_product_id, company, official_name,
       ${productCode} AS product_code, ${payload} AS payload
     FROM insurance_products
-    ${statusWhere}
+    WHERE tenant_id = ? AND LOWER(TRIM(COALESCE(status, ''))) = ?
     ORDER BY company, official_name
-  `).all(tenantId).map((row) => ({
+  `).all(tenantId, status).map((row) => ({
     canonicalProductId: clean(row.canonical_product_id),
     company: clean(row.company),
     officialName: clean(row.official_name),
     productCode: boundedString(row.product_code),
     payload: parsePayload(row.payload),
   })).filter((row) => row.company && row.officialName);
+}
+
+function publicProductRows(db, tenantId) {
+  return productRowsByStatus(db, tenantId, 'active');
+}
+
+function readySummaryProductRows(db) {
+  const columns = tableColumns(db, 'product_customer_responsibility_summaries');
+  if (!columns.has('company') || !columns.has('product_name') || !columns.has('status')) return [];
+  const updatedAt = columns.has('updated_at') ? 'updated_at DESC,' : '';
+  const rows = db.prepare(`
+    SELECT company, product_name
+    FROM product_customer_responsibility_summaries
+    WHERE status = 'ready'
+    ORDER BY ${updatedAt} company, product_name
+  `).all();
+  const products = new Map();
+  for (const row of rows) {
+    const company = clean(row.company);
+    const officialName = clean(row.product_name);
+    const identity = catalogProductIdentity(officialName);
+    if (!company || !identity) continue;
+    const key = `${company}\u0000${identity}`;
+    const current = products.get(key);
+    if (current && current.officialName.length <= officialName.length) continue;
+    products.set(key, {
+      canonicalProductId: canonicalProductIdFromOfficialProduct({ company, productName: officialName }),
+      company,
+      officialName,
+      productCode: '',
+      payload: {},
+    });
+  }
+  return [...products.values()].filter((product) => product.canonicalProductId);
+}
+
+function publicResolvableProducts(db, tenantId) {
+  const products = new Map();
+  for (const product of [...publicProductRows(db, tenantId), ...readySummaryProductRows(db)]) {
+    const key = productIdentityKey(product);
+    if (!products.has(key)) products.set(key, product);
+  }
+  return [...products.values()];
 }
 
 function companyAliases(profile) {
@@ -191,6 +235,14 @@ function scannableTerm(value, { approved = false } = {}) {
   return [...normalized].length >= (approved ? 2 : 4) ? normalized : '';
 }
 
+function distinctiveProductName(value) {
+  const withoutCompany = clean(value).normalize('NFKC')
+    .replace(/^[\p{Script=Han}]{2,24}?保险(?:股份)?有限公司/gu, '')
+    .replace(/[（(][^）)\n]{1,24}[）)]/gu, '')
+    .replace(/(?:终身寿险|定期寿险|两全保险|医疗保险|重大疾病保险|疾病保险|年金保险|意外伤害保险|护理保险)$/gu, '');
+  return scannableTerm(withoutCompany);
+}
+
 function canonicalProductForCatalogRow(row, products) {
   const identity = catalogProductIdentity(row.productName);
   const matches = products.filter((product) => product.company === row.company
@@ -200,6 +252,32 @@ function canonicalProductForCatalogRow(row, products) {
     product: matches.find((product) => product.canonicalProductId) || matches[0] || null,
     identityConflict: canonicalIds.size > 1,
   };
+}
+
+function publicCatalogFallbackProduct(db, tenantId, row) {
+  const columns = tableColumns(db, 'insurance_products');
+  if (columns.has('tenant_id') && columns.has('company')
+    && columns.has('official_name') && columns.has('status')) {
+    const belongsToAnotherTenant = db.prepare(`
+      SELECT company, official_name
+      FROM insurance_products
+      WHERE tenant_id != ? AND LOWER(TRIM(COALESCE(status, ''))) IN ('active', 'draft')
+    `).all(tenantId).some((product) => (
+      clean(product.company) === clean(row.company)
+      && catalogProductIdentity(product.official_name) === catalogProductIdentity(row.productName)
+    ));
+    if (belongsToAnotherTenant) return null;
+  }
+  const canonicalProductId = canonicalProductIdFromOfficialProduct({
+    company: row.company,
+    productName: row.productName,
+  });
+  return canonicalProductId ? {
+    canonicalProductId,
+    company: clean(row.company),
+    officialName: clean(row.productName),
+    payload: {},
+  } : null;
 }
 
 function matchCandidate({
@@ -262,6 +340,17 @@ function boundedActiveProduct(activeProduct) {
   };
 }
 
+function confirmedCandidateIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const company = boundedString(value.company);
+  const officialName = boundedString(value.officialName);
+  return company && officialName ? { company, officialName } : null;
+}
+
+function productIdentityKey(value) {
+  return `${clean(value?.company)}\u0000${catalogProductIdentity(value?.officialName)}`;
+}
+
 function emptyResult(status) {
   return { status, entity: null, candidates: [] };
 }
@@ -297,7 +386,7 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
     resolveAllFromText({ question, insurerMentions = [] } = {}) {
       const normalizedQuestion = comparable(clean(question).slice(0, 1_000));
       if (!normalizedQuestion) return { entities: [], overflow: false };
-      const products = publicProductRows(db, scopedTenantId);
+      const products = publicResolvableProducts(db, scopedTenantId);
       const companies = [...new Set(products.map((row) => row.company))];
       const mentionedCompanies = insurerCompaniesInQuestion({
         normalizedQuestion,
@@ -323,6 +412,7 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
           ...(hasSpecificOfficialIdentity ? [
             { value: product.officialName, matchType: 'exact_official_name' },
             { value: officialIdentity, matchType: 'company_scoped_normalized' },
+            { value: distinctiveProductName(product.officialName), matchType: 'company_scoped_normalized' },
           ] : []),
           ...filingNames(product).map((value) => ({ value, matchType: 'filing_name' })),
           ...approvedAliases(product).map((value) => ({ value, matchType: 'approved_alias', approved: true })),
@@ -388,13 +478,14 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
       return { entities, overflow: false };
     },
 
-    resolve({ mentions = [], activeProduct = null } = {}) {
+    resolve({ mentions = [], activeProduct = null, confirmedCandidate = null } = {}) {
       const productText = mentionText(mentions, 'product');
       const insurerText = mentionText(mentions, 'insurer');
+      const confirmedIdentity = confirmedCandidateIdentity(confirmedCandidate);
       if (!productText) {
         const entity = boundedActiveProduct(activeProduct);
         if (!entity) return emptyResult('missing');
-        const products = publicProductRows(db, scopedTenantId);
+        const products = publicResolvableProducts(db, scopedTenantId);
         const current = products.find((product) => (
           product.canonicalProductId === entity.canonicalProductId
         ));
@@ -414,8 +505,9 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
         }, candidates: [] };
       }
 
-      const products = publicProductRows(db, scopedTenantId);
-      const companies = [...new Set(products.map((row) => row.company))];
+      const products = publicResolvableProducts(db, scopedTenantId);
+      const draftProducts = productRowsByStatus(db, scopedTenantId, 'draft');
+      const companies = [...new Set([...products, ...draftProducts].map((row) => row.company))];
       const company = resolveCompany(insurerText, companies, profiles);
       if (insurerText && company === null) return emptyResult('not_found');
 
@@ -430,14 +522,27 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
         db,
         company: company || '',
         query: productText,
-        limit: 20,
+        limit: 50,
         visibility: 'public',
       });
+      const confirmationOnlyKeys = new Set();
       const candidates = recalled.map((row) => {
-        const canonicalMatch = canonicalProductForCatalogRow(row, products);
+        let canonicalMatch = canonicalProductForCatalogRow(row, products);
+        let confirmationOnly = false;
+        if (!canonicalMatch.product && !canonicalMatch.identityConflict) {
+          canonicalMatch = canonicalProductForCatalogRow(row, draftProducts);
+          confirmationOnly = Boolean(canonicalMatch.product || canonicalMatch.identityConflict);
+        }
+        if (!canonicalMatch.product && !canonicalMatch.identityConflict) {
+          const fallbackProduct = publicCatalogFallbackProduct(db, scopedTenantId, row);
+          if (fallbackProduct) {
+            canonicalMatch = { product: fallbackProduct, identityConflict: false };
+            confirmationOnly = true;
+          }
+        }
         const canonical = canonicalMatch.product;
         if (!canonical?.canonicalProductId && !canonicalMatch.identityConflict) return null;
-        return matchCandidate({
+        const candidate = matchCandidate({
           company: canonical?.company || row.company,
           officialName: canonical?.officialName || row.productName,
           canonicalProductId: canonical?.canonicalProductId,
@@ -445,6 +550,12 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
           score: row.score,
           identityConflict: canonicalMatch.identityConflict,
         }, productText);
+        if (confirmationOnly) confirmationOnlyKeys.add(productIdentityKey(candidate));
+        return confirmationOnly ? {
+          ...candidate,
+          matchType: 'unique_high_confidence',
+          confidence: Math.min(HEURISTIC_CONFIDENCE_CEILING, candidate.confidence),
+        } : candidate;
       }).filter(Boolean);
 
       for (const product of products) {
@@ -468,12 +579,21 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
         .sort((left, right) => (
           (MATCH_TYPE_PRIORITY.get(left.candidate.matchType) ?? Number.MAX_SAFE_INTEGER)
             - (MATCH_TYPE_PRIORITY.get(right.candidate.matchType) ?? Number.MAX_SAFE_INTEGER)
+          || catalogProductScore(productText, catalogProductIdentity(right.candidate.officialName))
+            - catalogProductScore(productText, catalogProductIdentity(left.candidate.officialName))
           || right.candidate.confidence - left.candidate.confidence
           || left.index - right.index
         ))
         .slice(0, 10);
       if (!ranked.length) return emptyResult('not_found');
       const rankedCandidates = ranked.map((item) => item.candidate);
+      const confirmed = confirmedIdentity && rankedCandidates.find((candidate) => (
+        candidate.canonicalProductId
+        && confirmationOnlyKeys.has(productIdentityKey(candidate))
+        && clean(candidate.company) === confirmedIdentity.company
+        && comparable(candidate.officialName) === comparable(confirmedIdentity.officialName)
+      ));
+      if (confirmed) return { status: 'resolved', entity: confirmed, candidates: [] };
       const first = rankedCandidates[0];
       const second = rankedCandidates[1];
       if (first.confidence >= 0.9 && (!second || first.confidence - second.confidence >= 0.15)) {

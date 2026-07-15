@@ -94,7 +94,8 @@ test('a unique authorized family executes without listing other families', async
   assert.equal(result.decision, 'execute');
   assert.equal(calls.handlers[0].input.familyId, 11);
   assert.equal(JSON.stringify(calls.handlers[0].input).includes('李四家庭'), false);
-  assert.deepEqual(Object.keys(calls.handlers[0].input).sort(), ['familyId', 'intent', 'internalUserId', 'question']);
+  assert.deepEqual(Object.keys(calls.handlers[0].input).sort(), ['familyId', 'intent', 'internalUserId', 'question', 'tool']);
+  assert.equal(calls.handlers[0].input.tool, 'family_summary');
   assert.equal(calls.audits.length, 1);
   assert.equal(calls.audits[0].policySource, 'built_in');
 });
@@ -531,7 +532,7 @@ test('transfer preview invokes its authorized preview handler while other writes
   assert.equal(calls.length, 1);
 });
 
-test('sales coaching resolves an authorized family before calling the existing sales chat flow', async () => {
+test('sales coaching distinguishes an authorized family from an open consultation', async () => {
   const families = [{ id: 11, ownerUserId: 7, familyName: '张三家庭', status: 'active' }];
   const state = { familyProfiles: families, familyMembers: [], policies: [], familyReports: [], familySalesReviews: [] };
   const calls = [];
@@ -555,11 +556,12 @@ test('sales coaching resolves an authorized family before calling the existing s
     async getPublishedAgentQuestionPolicyVersion() { return null; },
     async recordAgentRouteAudit() {},
   };
-  const missing = await createAgentQuestionRouter({ store: emptyStore, handlers }).route(
+  const open = await createAgentQuestionRouter({ store: emptyStore, handlers }).route(
     routeInput({ intent: 'sales_coaching', question: '怎么继续沟通', entities: {} }),
   );
 
   assert.equal(answered.decision, 'execute');
   assert.equal(calls[0].context.familyId, 11);
-  assert.equal(missing.decision, 'clarify');
+  assert.equal(open.decision, 'execute');
+  assert.equal(calls[1].context.consultationScope, 'open');
 });

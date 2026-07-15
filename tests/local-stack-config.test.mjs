@@ -43,6 +43,8 @@ test('development stack keeps the DingTalk gateway alive when its credentials ar
   assert.match(localStackSource, /name:\s*'dingtalk'[\s\S]+?server\/dingtalk-agent-gateway\.mjs/u);
   assert.match(localStackSource, /skip:\s*profile\.name\s*!==\s*'dev'\s*\|\|\s*!hasDingtalkGatewayConfig\(\)/u);
   assert.match(localStackSource, /DINGTALK_CHANNEL_API_BASE_URL:\s*`http:\/\/127\.0\.0\.1:\$\{profile\.apiPort\}`/u);
+  assert.match(localStackSource, /name:\s*'dingtalk'[\s\S]+?shutdownGraceMs:\s*20_000/u);
+  assert.match(localStackSource, /service\.shutdownGraceMs/u);
 });
 
 test('production Docker runtime copies src modules imported by the API server', () => {

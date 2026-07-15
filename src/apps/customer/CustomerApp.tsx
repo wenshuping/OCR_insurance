@@ -194,6 +194,7 @@ import {
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
+const SELECTED_FAMILY_ID_KEY = 'policy-ocr-app.selectedFamilyId';
 const FAMILY_SALES_REVIEW_RESTORE_KEY = 'policy-ocr-app.familySalesReviewFamilyId';
 const CLIENT_BOOTED_AT = new Date().toISOString();
 const CURRENT_CLIENT_ASSET_PATH = currentClientAssetPath();
@@ -645,7 +646,10 @@ export function CustomerApp() {
   const [familyCreateDialogOpen, setFamilyCreateDialogOpen] = useState(false);
   const [familyCreateLoading, setFamilyCreateLoading] = useState(false);
   const [familyCreateMessage, setFamilyCreateMessage] = useState('');
-  const [selectedFamilyId, setSelectedFamilyId] = useState<number | null>(null);
+  const [selectedFamilyId, setSelectedFamilyId] = useState<number | null>(() => {
+    const storedFamilyId = Number(sessionStorage.getItem(SELECTED_FAMILY_ID_KEY) || 0);
+    return storedFamilyId > 0 ? storedFamilyId : null;
+  });
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [activeTab, setActiveTab] = useState<CustomerTab>('entry');
   const [message, setMessage] = useState('可以直接录入保单');
@@ -938,6 +942,8 @@ export function CustomerApp() {
       const nextId = current && families.some((family) => Number(family.id) === Number(current))
         ? current
         : families[0]?.id ?? null;
+      if (nextId) sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(nextId));
+      else sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
       setFormData((currentForm) => ({ ...currentForm, familyId: nextId }));
       return nextId;
     });
@@ -1018,6 +1024,7 @@ export function CustomerApp() {
   function clearCustomerSession(nextMessage = '已退出登录，当前为游客模式') {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_MOBILE_KEY);
+    sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
     sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
     setToken('');
     setMobile('');
@@ -1396,6 +1403,9 @@ export function CustomerApp() {
         if (['applicant', 'insured', 'beneficiary', 'applicantBirthday', 'insuredBirthday', 'beneficiaryBirthday', 'insuredIdNumber'].includes(key)) {
           return autoBindEntryMembersByName(next);
         }
+        if (['applicantRelation', 'applicantRelationLabel', 'insuredRelation', 'insuredRelationLabel'].includes(key)) {
+          return sharePolicyPersonInfo(next);
+        }
         return next;
       }
       const nextCompany = key === 'company' ? String(value || '') : current.company;
@@ -1648,6 +1658,8 @@ export function CustomerApp() {
   }
 
   function handleSelectFamily(familyId: number | null) {
+    if (familyId) sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(familyId));
+    else sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
     setSelectedFamilyId(familyId);
     setSavedFamilyReportRecord(null);
     setFamilyPolicyAnalysisReport(null);
@@ -2128,7 +2140,7 @@ export function CustomerApp() {
       syncedData.insuredRelationLabel || syncedData.insuredRelation,
       finalInsuredMember ? relationLabelForEntryMember(finalInsuredMember) : '',
     );
-    return {
+    return sharePolicyPersonInfo({
       ...syncedData,
       familyId,
       ...(finalApplicantMember ? {
@@ -2143,7 +2155,7 @@ export function CustomerApp() {
         insuredRelationLabel: insuredRelation,
         insuredBirthday: syncedData.insuredBirthday || finalInsuredMember.birthday || '',
       } : {}),
-    };
+    });
   }
 
   async function ensureFamilyBeforeSave() {
@@ -2175,6 +2187,7 @@ export function CustomerApp() {
   function replaceFamilyProfile(family: FamilyProfile, members: FamilyMember[]) {
     const nextFamily = { ...family, members };
     setFamilyProfiles((current) => [nextFamily, ...current.filter((item) => Number(item.id) !== Number(nextFamily.id))]);
+    sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(nextFamily.id));
     setSelectedFamilyId(nextFamily.id);
     setFormData((current) => ({ ...current, familyId: nextFamily.id }));
     return nextFamily;
@@ -2336,6 +2349,7 @@ export function CustomerApp() {
     setPolicies((current) => current.map((policy) => clearFamilyPolicyBinding(policy, family.id)));
     setSelectedPolicy((current) => (current ? clearFamilyPolicyBinding(current, family.id) : current));
     if (Number(selectedFamilyId || 0) === Number(family.id)) {
+      sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
       setSelectedFamilyId(null);
       setShowFamilyReport(false);
       setShowFamilyPolicies(false);
@@ -3274,6 +3288,7 @@ export function CustomerApp() {
         outputOcrChars: String(payload.policy?.ocrText || '').length,
         responsibilityCount: payload.policy?.responsibilities?.length || 0,
       });
+      sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(submitFamily.id));
       setSelectedFamilyId(submitFamily.id);
       setFormData({
         ...emptyForm,

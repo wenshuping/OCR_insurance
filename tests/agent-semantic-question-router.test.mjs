@@ -72,11 +72,15 @@ function wrapperHarness({ semanticResolver, conversationService, auditService } 
   };
 }
 
-test('semantic decisions are audited before execution or state persistence', async () => {
+test('semantic decisions are audited and server conversation history reaches legacy execution', async () => {
   const order = [];
   const question = '你好';
   const router = createAgentSemanticQuestionRouter({
-    legacyRouter: { async route() { order.push('legacy'); return { decision: 'execute' }; } },
+    legacyRouter: { async route(input) {
+      order.push('legacy');
+      assert.deepEqual(input.conversationHistory, [{ role: 'user', content: '上一问' }]);
+      return { decision: 'execute' };
+    } },
     semanticResolver: { async resolve() { return {
       decision: 'execute', decisionReason: 'semantic_ready', missingFields: [], ambiguities: [],
       proposal: chatProposal(question), resolvedEntities: {},
@@ -97,6 +101,7 @@ test('semantic decisions are audited before execution or state persistence', asy
   await router.route({
     internalUserId: 7, conversationId: 'conv', messageRef: 'audit-order',
     question, runtime: 'hermes', proposal: chatProposal(question),
+    conversationHistory: [{ role: 'user', content: '上一问' }],
   });
 
   assert.deepEqual(order, ['audit', 'legacy', 'save']);
@@ -276,8 +281,8 @@ test('ambiguous products are persisted and choice two executes without exposing 
 
   assert.equal(first.decision, 'clarify');
   assert.deepEqual(first.interaction.candidates, [
-    { ref: 'choice_1', label: '正式产品1' },
-    { ref: 'choice_2', label: '正式产品2' },
+    { ref: 'choice_1', label: '测试保险 《正式产品1》' },
+    { ref: 'choice_2', label: '测试保险 《正式产品2》' },
   ]);
   assert.doesNotMatch(JSON.stringify(first), /private-/u);
 
@@ -290,6 +295,65 @@ test('ambiguous products are persisted and choice two executes without exposing 
   assert.equal(calls[0].candidate.entities.productName, '正式产品2');
   assert.equal(audits[1].fallbackReason, 'candidate_selection');
   assert.equal(audits[1].runtime, 'rule');
+});
+
+test('a single product suggestion asks for friendly numbered confirmation', async () => {
+  const question = '医药安欣主要保什么';
+  const semanticProposal = proposal(question);
+  const product = {
+    canonicalProductId: 'private-draft-id',
+    company: '新华保险',
+    officialName: '医药安欣（易核版）医疗保险',
+    matchType: 'unique_high_confidence',
+    confidence: 0.793,
+  };
+  const { router } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'clarify', decisionReason: 'entity_ambiguous', missingFields: [],
+      ambiguities: ['product'], proposal: semanticProposal, resolvedEntities: {}, candidate: null,
+      nextTaskState: {
+        candidateSets: { product: [product], family: [] },
+        pendingClarification: {
+          entityType: 'product', proposal: semanticProposal, originalQuestion: question, expiresAt: 10_000,
+        },
+      },
+    }; } },
+    conversationService: memoryConversationService(),
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'single-product', messageRef: 'single-product-1',
+    runtime: 'hermes', question, proposal: semanticProposal,
+  });
+
+  assert.equal(result.interaction.text, '你是不是想查询以下产品？请回复 1 确认。');
+  assert.deepEqual(result.interaction.candidates, [{
+    ref: 'choice_1',
+    label: '新华保险 《医药安欣（易核版）医疗保险》',
+  }]);
+  assert.doesNotMatch(JSON.stringify(result), /private-draft-id/u);
+});
+
+test('an empty product ambiguity asks for identifying details instead of a nonexistent choice', async () => {
+  const question = '这个产品是什么';
+  const semanticProposal = proposal(question);
+  const { router } = wrapperHarness({
+    semanticResolver: { async resolve() { return {
+      decision: 'clarify', decisionReason: 'entity_ambiguous', missingFields: [],
+      ambiguities: ['product'], proposal: semanticProposal, resolvedEntities: {}, candidate: null,
+      nextTaskState: { candidateSets: { product: [], family: [] }, pendingClarification: null },
+    }; } },
+    conversationService: memoryConversationService(),
+  });
+
+  const result = await router.route({
+    internalUserId: 7, conversationId: 'empty-product', messageRef: 'empty-product-1',
+    runtime: 'hermes', question, proposal: semanticProposal,
+  });
+
+  assert.match(result.interaction.text, /没能确认/u);
+  assert.match(result.interaction.text, /保险公司/u);
+  assert.equal(result.interaction.candidates, undefined);
 });
 
 test('pending choice with a current Hermes proposal keeps current aspects and provenance', async () => {
@@ -424,9 +488,49 @@ test('unresolved product comparison returns a controlled clarification and never
   });
 
   assert.equal(result.decision, 'clarify');
-  assert.match(result.interaction.text, /产品比较暂不支持直接执行/u);
+  assert.match(result.interaction.text, /无法唯一确定两款产品/u);
   assert.equal(calls.length, 0);
   assert.equal(audits[0].resolution.decisionReason, 'product_comparison_unsupported');
+});
+
+test('unresolved comparison exposes selectable formal products and tracks the selected side', async () => {
+  const semanticProposal = proposal('比较甲产品和乙产品', {
+    queryAspects: ['comparison'], requestedSteps: ['compare'],
+  });
+  const products = [1, 2, 3].map((index) => ({
+    canonicalProductId: `product-${index}`,
+    company: '测试保险',
+    officialName: `正式产品${index}`,
+    matchType: 'exact_official_name',
+    confidence: 1,
+  }));
+  for (const [selectedProducts, expectedText] of [
+    [[], '找到多个可能的正式产品，请先选择要比较的第一款。'],
+    [[products[0]], '已确认第一款产品，请选择要比较的第二款。'],
+  ]) {
+    const { router } = wrapperHarness({
+      semanticResolver: { async resolve() { return {
+        decision: 'clarify', decisionReason: 'product_comparison_unsupported',
+        missingFields: [], ambiguities: ['product'], proposal: semanticProposal,
+        resolvedEntities: {}, candidate: null,
+        nextTaskState: {
+          candidateSets: { product: products, family: [] },
+          pendingClarification: {
+            entityType: 'product', proposal: semanticProposal,
+            originalQuestion: '比较甲产品和乙产品', expiresAt: Date.now() + 60_000,
+            comparison: true, selectedProducts,
+          },
+        },
+      }; } },
+      conversationService: memoryConversationService(),
+    });
+    const result = await router.route({
+      internalUserId: 7, conversationId: 'comparison-choice', messageRef: `choice-${selectedProducts.length}`,
+      question: '比较甲产品和乙产品', runtime: 'hermes', proposal: semanticProposal,
+    });
+    assert.equal(result.interaction.text, expectedText);
+    assert.equal(result.interaction.candidates.length, 3);
+  }
 });
 
 test('load, resolver, and clarification save failures return stable retry text', async () => {

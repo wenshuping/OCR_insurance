@@ -19,9 +19,9 @@ const pagesSource = read('../src/apps/admin/adminPages.ts');
 const appSource = read('../src/apps/admin/AdminApp.tsx');
 const pageSource = read('../src/apps/admin/pages/AdminAgentPoliciesPage.tsx');
 
-test('admin navigation exposes Agent strategy management while page state stays outside AdminApp', () => {
+test('admin navigation exposes Chinese agent strategy management while page state stays outside AdminApp', () => {
   assert.match(pagesSource, /key: 'agentPolicies'/u);
-  assert.match(pagesSource, /label: 'Agent 策略管理'/u);
+  assert.match(pagesSource, /label: '智能体策略管理'/u);
   assert.match(appSource, /<AdminAgentPoliciesPage adminToken=\{adminToken\}/u);
   assert.doesNotMatch(appSource, /agentPolicyDraft/u);
 });
@@ -60,6 +60,18 @@ test('agent strategy page provides constrained editing and explicit guarded life
   assert.match(pageSource, /list_families/u);
   assert.match(apiSource, /AdminAgentPolicyTool = 'list_families'/u);
   assert.doesNotMatch(pageSource, /system prompt|系统提示词|Prompt 编辑/iu);
+});
+
+test('agent strategy display uses Chinese labels while preserving backend enum values', () => {
+  assert.match(pageSource, />智能体策略管理</u);
+  assert.match(pageSource, /family_list: '家庭列表'/u);
+  assert.match(pageSource, /insurance_expert: '保险专家'/u);
+  assert.match(pageSource, /not_required: '无需确认'/u);
+  assert.match(pageSource, /product_knowledge_search: '搜索产品知识'/u);
+  assert.match(pageSource, /value=\{value\}>\{localizedLabel\(HANDLER_LABELS, value\)\}/u);
+  assert.match(pageSource, />置信度阈值</u);
+  assert.match(pageSource, /实际意图/u);
+  assert.match(pageSource, /策略来源/u);
 });
 
 test('family list template passes the same frontend tool validation as the backend', () => {

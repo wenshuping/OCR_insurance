@@ -1,8 +1,12 @@
+import { createInsuranceExpertTool } from './insurance-expert-tool.service.mjs';
+import { createSalesChampionTool } from './sales-champion-tool.service.mjs';
+
 const HANDLER_ACTIONS = Object.freeze({
   insurance_expert: Object.freeze(['family_policy_summary', 'family_summary', 'view_family_coverage_report', 'coverage_report', 'insurance_product_knowledge']),
   sales_champion: Object.freeze(['view_sales_advice_report', 'sales_report', 'sales_coaching', 'chat']),
   system: Object.freeze(['family_list', 'upload_link', 'system_help', 'unknown_read', 'unknown_write', 'transfer_preview', 'memory_proposal']),
 });
+const SYSTEM_TOOLS = new Set(['list_families', 'create_upload_link', 'propose_memory', 'preview_transfer']);
 
 const SAFE_SUMMARY_FIELDS = new Set([
   'memberCount', 'activeMemberCount', 'policyCount', 'validPolicyCount',
@@ -155,6 +159,13 @@ function safeLink(value, allowedOrigins = []) {
   }
 }
 
+function publicKnowledgeAnswer(answer, sources) {
+  const sourceLines = (Array.isArray(sources) ? sources : []).slice(0, 3).map((source, index) => (
+    `${index + 1}. [${text(source.title).replace(/[\[\]\n]/gu, '').slice(0, 100) || `官方来源 ${index + 1}`}](${source.url})`
+  ));
+  return [text(answer), '#### 核验来源', ...sourceLines].filter(Boolean).join('\n\n');
+}
+
 export function createAgentQuestionHandlers({
   store,
   reportQueue,
@@ -168,6 +179,8 @@ export function createAgentQuestionHandlers({
   allowedLinkOrigins = [],
   allowedKnowledgeOrigins = [],
   allowedKnowledgeOriginsProvider,
+  insuranceExpertTool,
+  salesChampionTool,
   pendingJobTtlMs = 300_000,
   clock = () => new Date(),
 } = {}) {
@@ -371,11 +384,15 @@ export function createAgentQuestionHandlers({
     const comparison = resolvedProductComparison(context);
     if (semantic || comparison) {
       const requests = comparison
-        ? comparison.products.map((product) => ({ product, queryAspects: comparison.queryAspects }))
+        ? comparison.products.map((product) => ({
+          product,
+          queryAspects: comparison.queryAspects,
+          question: `${product.officialName}完整保险责任：请完整列出全部责任、触发条件、给付方式、限额和主要限制`,
+        }))
         : [{ product: semantic.product, queryAspects: semantic.queryAspects }];
       const results = productKnowledge && typeof productKnowledge.search === 'function'
         ? await Promise.all(requests.map((request) => productKnowledge.search({
-          question,
+          question: request.question || question,
           scope: 'public_read_only',
           ...request,
         })))
@@ -411,13 +428,21 @@ export function createAgentQuestionHandlers({
             { message: '当前没有可核验来源，无法给出确定的产品事实。' },
           );
         }
-        const answer = comparison.products.map((product, index) => (
-          `${product.officialName}\n${text(results[index]?.answer)}`.trim()
-        )).join('\n\n');
+        const comparedAnswer = typeof productKnowledge.compare === 'function'
+          ? text(await productKnowledge.compare({ question, results, products: comparison.products }))
+          : '';
+        const answer = comparedAnswer || [
+          '## 产品责任对照',
+          ...comparison.products.map((product, index) => (
+            `### ${product.officialName}\n${text(results[index]?.answer)}`.trim()
+          )),
+          '## 对比提示',
+          '以上为两款产品的完整已核验责任。两款产品类型、给付方式和适用需求不同，请结合对应条款限制判断，不能仅按责任数量判断优劣。',
+        ].join('\n\n');
         return stableResult(
           { certainty: 'supported', answer, comparedProductCount: 2 },
           { source: 'public_product_knowledge', sources: sourcesByProduct.flat().slice(0, 20) },
-          { message: answer },
+          { message: publicKnowledgeAnswer(answer, sourcesByProduct.flat()) },
         );
       }
       const result = results[0] || null;
@@ -432,12 +457,13 @@ export function createAgentQuestionHandlers({
       return stableResult(
         { certainty: 'supported', answer: text(result?.answer) },
         { source: 'public_product_knowledge', sources },
-        { message: text(result?.answer) },
+        { message: publicKnowledgeAnswer(result?.answer, sources) },
       );
     }
     const productName = text(context?.productName).slice(0, 200);
+    const company = text(context?.productCompany).slice(0, 200);
     const result = productKnowledge && typeof productKnowledge.search === 'function'
-      ? await productKnowledge.search({ question, productName, scope: 'public_read_only' })
+      ? await productKnowledge.search({ question, productName, company, scope: 'public_read_only' })
       : null;
     const candidates = (Array.isArray(result?.candidates) ? result.candidates : []).slice(0, 10).flatMap((candidate) => {
       const ref = text(candidate?.ref).slice(0, 200);
@@ -486,11 +512,8 @@ export function createAgentQuestionHandlers({
         { message: guidance || '当前没有可核验来源。请补充保险公司全称、保单上的正式险种名称、产品版本，或发送条款 PDF/官方投保链接后继续核验。' },
       );
     }
-    const sourceLines = sources.slice(0, 3).map((source, index) => (
-      `${index + 1}. [${source.title.replace(/[\[\]\n]/gu, '').slice(0, 100) || `官方来源 ${index + 1}`}](${source.url})`
-    ));
     const answer = text(result?.answer);
-    const publicAnswer = [answer, '#### 核验来源', ...sourceLines].filter(Boolean).join('\n\n');
+    const publicAnswer = publicKnowledgeAnswer(answer, sources);
     return stableResult(
       { certainty: 'supported', answer },
       { source: 'public_product_knowledge', sources },
@@ -499,9 +522,46 @@ export function createAgentQuestionHandlers({
   }
 
   async function coach(context) {
-    if (!await loadFamilyState(context)) return denial('AUTHORIZED_FAMILY_DATA_REQUIRED');
-    const familyId = positiveInteger(context?.familyId, 'familyId');
     const internalUserId = positiveInteger(context?.internalUserId, 'internalUserId');
+    const familyId = Number(context?.familyId || 0);
+    if (!familyId) {
+      let result;
+      try {
+        result = await generateFamilySalesChatReply({
+          context: {
+            consultationScope: 'open',
+            generatedAt: clock().toISOString(),
+            sourceUpdated: false,
+            familyInput: {},
+            latestSalesReview: null,
+            latestFamilyReport: null,
+          },
+          history: safeSalesChatHistory(context?.history),
+          question: text(context?.question).replace(/\s+/gu, ' ').slice(0, 2_000),
+        });
+      } catch (error) {
+        console.warn('[agent-question-handlers] sales coaching unavailable', {
+          code: text(error?.code || 'SALES_COACHING_FAILED').slice(0, 100),
+        });
+        return stableResult(
+          { answer: '', status: 'unavailable' },
+          { agent: 'existing_family_sales_chat', sources: [] },
+          { message: '保险营销专家暂时不可用，请稍后重试。' },
+        );
+      }
+      return stableResult(
+        { answer: text(result?.content), generatedAt: text(result?.generatedAt) },
+        {
+          agent: 'existing_family_sales_chat',
+          model: text(result?.model),
+          sources: safeSalesChatSources(result?.sources),
+        },
+        { message: text(result?.content) },
+      );
+    }
+    if (!Number.isSafeInteger(familyId) || familyId <= 0 || !await loadFamilyState(context)) {
+      return denial('AUTHORIZED_FAMILY_DATA_REQUIRED');
+    }
     if (typeof authorizedFamilySalesDataLoader !== 'function') {
       return stableResult(
         { answer: '', status: 'unavailable' },
@@ -522,7 +582,10 @@ export function createAgentQuestionHandlers({
     });
     const result = await generateFamilySalesChatReply({
       context: chatContext,
-      history: safeSalesChatHistory(trusted.history),
+      history: safeSalesChatHistory([
+        ...(Array.isArray(trusted.history) ? trusted.history : []),
+        ...(Array.isArray(context?.history) ? context.history : []),
+      ]),
       question: text(context?.question).replace(/\s+/gu, ' ').slice(0, 2_000),
     });
     return stableResult(
@@ -539,15 +602,18 @@ export function createAgentQuestionHandlers({
   async function execute(action, context = {}) {
     switch (text(action)) {
       case 'family_list': return familyList(context);
+      case 'list_families': return familyList(context);
       case 'family_policy_summary':
       case 'family_summary': return familySummary(context);
       case 'view_family_coverage_report':
       case 'coverage_report': return viewReport(context, { collection: 'familyReports', jobType: 'family_policy_analysis', link: 'familyReport' });
       case 'view_sales_advice_report':
       case 'sales_report': return viewReport(context, { collection: 'familySalesReviews', jobType: 'family_sales_review', link: 'salesReview' });
-      case 'insurance_product_knowledge': return answerProductKnowledge(context);
+      case 'insurance_product_knowledge':
+      case 'product_knowledge_search': return answerProductKnowledge(context);
       case 'sales_coaching': return coach(context);
-      case 'upload_link': {
+      case 'upload_link':
+      case 'create_upload_link': {
         const internalUserId = positiveInteger(context?.internalUserId, 'internalUserId');
         const secureLink = safeLink(typeof links.upload === 'function' ? links.upload({ internalUserId }) : '', allowedLinkOrigins);
         return stableResult(
@@ -565,7 +631,9 @@ export function createAgentQuestionHandlers({
       );
       case 'unknown_write': return denial('UNKNOWN_WRITE_DENIED');
       case 'transfer_preview':
-      case 'memory_proposal': return stableResult(
+      case 'preview_transfer':
+      case 'memory_proposal':
+      case 'propose_memory': return stableResult(
         { denied: true, confirmationRequired: true },
         { source: 'agent_question_handler_allowlist' },
         { message: '该操作需要在安全页面明确确认后才能继续。' },
@@ -574,10 +642,25 @@ export function createAgentQuestionHandlers({
     }
   }
 
-  const registry = Object.freeze(Object.fromEntries(Object.entries(HANDLER_ACTIONS).map(([handler, actions]) => [
-    handler,
-    Object.freeze(async (context = {}) => execute(actions.includes(text(context.intent)) ? text(context.intent) : '', context)),
-  ])));
+  const insuranceExpert = insuranceExpertTool || createInsuranceExpertTool({ execute });
+  const salesChampion = salesChampionTool || createSalesChampionTool({ execute });
+  if (typeof insuranceExpert.askInsuranceExpertTool !== 'function') {
+    throw new TypeError('insuranceExpertTool.askInsuranceExpertTool is required');
+  }
+  if (typeof salesChampion.askSalesChampionTool !== 'function') {
+    throw new TypeError('salesChampionTool.askSalesChampionTool is required');
+  }
+  const registry = Object.freeze({
+    system: Object.freeze(async (context = {}) => {
+      const tool = text(context.tool);
+      const action = tool
+        ? (SYSTEM_TOOLS.has(tool) ? tool : '')
+        : (HANDLER_ACTIONS.system.includes(text(context.intent)) ? text(context.intent) : '');
+      return execute(action, context);
+    }),
+    insurance_expert: Object.freeze(async (context = {}) => insuranceExpert.askInsuranceExpertTool({ context })),
+    sales_champion: Object.freeze(async (context = {}) => salesChampion.askSalesChampionTool({ context })),
+  });
   return Object.freeze({ ...registry, registry, execute });
 }
 import { resolveFamilyPolicyAnalysisReportFreshness } from './family-policy-analysis-report.service.mjs';

@@ -40,6 +40,8 @@ npm run local:dev:stop
 
 Agent 语义解析默认以 `enforced` 模式启用。可将 `POLICY_AGENT_SEMANTIC_MODE` 设为 `off`，仅暂停新的 semantic proposal 请求；已有 legacy candidate 请求不受影响。应用代码显式传入的 `agentSemanticMode` 优先于环境变量，且配置只接受 `enforced` 或 `off`，其他值会导致服务启动失败。
 
+钉钉默认使用独立 `HERMES_OCR_HOME` 执行单轮语义解析：Hermes 只输出受控意图、实体和上下文引用，运营策略再把保险与销售专业任务分别交给保险专家或销冠，领域结果直接返回，不经过 Hermes 二次改写。配置与兼容说明见 [`docs/hermes-agent-loop-runtime.md`](docs/hermes-agent-loop-runtime.md)；未配置时使用 Direct 安全降级。
+
 如果要分别开三个终端调试：
 
 ```bash

@@ -30,6 +30,7 @@ const MESSAGE_BODY_FIELDS = new Set(['protocolVersion', 'channel', 'channelUserI
 const PUBLIC_DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const PUBLIC_INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
 const SECURE_LINK_ACTIONS = new Set(['open_web', 'register_or_login', 'policy_upload']);
+const MAX_PUBLIC_INTERACTION_TEXT_LENGTH = 48_000;
 
 function text(value, maxLength) {
   if (typeof value !== 'string') return '';
@@ -96,7 +97,7 @@ function normalizeCandidates(value) {
 
 function normalizeInteraction(interaction, type, allowedOrigins) {
   const interactionText = typeof interaction?.text === 'string'
-    ? interaction.text.trim().slice(0, 2000)
+    ? interaction.text.trim().slice(0, MAX_PUBLIC_INTERACTION_TEXT_LENGTH)
     : '';
   const normalized = { type, ...(interactionText ? { text: interactionText } : {}) };
   if (type === 'clarification') {
@@ -293,7 +294,7 @@ function normalizeMessageBody(body) {
 
 function normalizeConversationContext(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).some((key) => !['history', 'product', 'productCandidates', 'question', 'hermesSessionId', 'updatedAt'].includes(key))) return null;
+    || Object.keys(value).some((key) => !['history', 'product', 'productCandidates', 'question', 'hermesSessionId', 'agentLoopSessionId', 'updatedAt'].includes(key))) return null;
   const history = Array.isArray(value.history) ? value.history.slice(-40).map((message) => {
     const role = ['user', 'assistant'].includes(message?.role) ? message.role : '';
     const content = text(message?.content, 2_000);
@@ -327,7 +328,11 @@ function normalizeConversationContext(value) {
   const updatedAt = Number(value.updatedAt);
   const hermesSessionId = value.hermesSessionId === undefined ? '' : text(value.hermesSessionId, 200);
   if (value.hermesSessionId !== undefined && !hermesSessionId) return null;
-  return Number.isFinite(updatedAt) ? { history, product, productCandidates, question, hermesSessionId, updatedAt } : null;
+  const agentLoopSessionId = value.agentLoopSessionId === undefined ? '' : text(value.agentLoopSessionId, 200);
+  if (value.agentLoopSessionId !== undefined && !agentLoopSessionId) return null;
+  return Number.isFinite(updatedAt) ? {
+    history, product, productCandidates, question, hermesSessionId, agentLoopSessionId, updatedAt,
+  } : null;
 }
 
 function rawBodyBytes(req) {
@@ -343,6 +348,8 @@ export function createAgentRouter({
   getRuntimeSettings,
   conversationContext,
   conversationRuntime,
+  toolCapabilityService,
+  domainToolGateway,
   secureUploadLinkFactory,
   secureLinkAllowedOrigins = [],
   maxBodyBytes: requestedMaxBodyBytes = 16 * 1024,
@@ -376,6 +383,41 @@ export function createAgentRouter({
     if (!valid) send(res, 401, 'AGENT_SERVICE_UNAUTHORIZED');
     return valid;
   }
+
+  router.post('/hermes-tools', async (req, res) => {
+    if (!toolCapabilityService || typeof toolCapabilityService.consume !== 'function'
+      || !domainToolGateway || typeof domainToolGateway.execute !== 'function') {
+      send(res, 503, 'AGENT_TOOL_GATEWAY_UNAVAILABLE');
+      return;
+    }
+    const authorization = text(req.get('authorization'), 600);
+    const token = authorization.match(/^Bearer ([A-Za-z0-9_-]{16,500})$/u)?.[1] || '';
+    const body = req.body;
+    if (!token || !body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some((key) => !['tool', 'input'].includes(key))
+      || !text(body.tool, 100) || !body.input || typeof body.input !== 'object' || Array.isArray(body.input)) {
+      send(res, token ? 400 : 401, token ? 'AGENT_REQUEST_SCHEMA_INVALID' : 'AGENT_TOOL_CAPABILITY_REQUIRED');
+      return;
+    }
+    try {
+      const claims = toolCapabilityService.consume({ token, tool: text(body.tool, 100) });
+      const result = await domainToolGateway.execute({ tool: body.tool, input: body.input, claims });
+      toolCapabilityService.recordResult?.({ token, tool: body.tool, result });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      const code = String(error?.code || '');
+      if (code.startsWith('AGENT_TOOL_CAPABILITY_')) {
+        send(res, code.endsWith('_BUDGET_EXHAUSTED') ? 429 : 403, code);
+        return;
+      }
+      if (code === 'OCR_AGENT_TOOL_INPUT_INVALID' || code === 'OCR_AGENT_TOOL_NOT_ALLOWED'
+        || code === 'AGENT_DOMAIN_TOOL_OPERATION_FORBIDDEN') {
+        send(res, 400, 'AGENT_REQUEST_SCHEMA_INVALID');
+        return;
+      }
+      send(res, 502, 'AGENT_TOOL_GATEWAY_FAILED');
+    }
+  });
 
   async function lookupIdentity(input) {
     let identity = null;
@@ -458,10 +500,20 @@ export function createAgentRouter({
       send(res, 502, 'AGENT_GATEWAY_UPSTREAM_ERROR');
       return;
     }
+    let toolCapability = '';
     try {
+      if (toolCapabilityService && typeof toolCapabilityService.issue === 'function') {
+        toolCapability = toolCapabilityService.issue({
+          tenant: 'default', channel: input.channel, channelUserId: input.channelUserId,
+          channelMobile: input.channelMobile, internalUserId: input.internalUserId,
+          conversationId: input.conversationId || 'direct', messageRef: input.messageRef,
+          allowedTools: ['ask_insurance_expert', 'ask_sales_champion'], maxCalls: 4, ttlMs: 120_000,
+        }).token;
+      }
       const configured = typeof getRuntimeSettings === 'function' ? await getRuntimeSettings() : null;
       const result = await conversationRuntime.processMessage({
         verifiedIdentity: { tenantId: 'default', internalUserId: input.internalUserId },
+        ...(toolCapability ? { toolCapability } : {}),
         channelEnvelope: {
           protocolVersion: '1', channel: input.channel, channelUserId: input.channelUserId,
           conversationId: input.conversationId || 'direct', messageRef: input.messageRef,
@@ -481,6 +533,10 @@ export function createAgentRouter({
         return;
       }
       send(res, 502, 'AGENT_GATEWAY_UPSTREAM_ERROR');
+    } finally {
+      if (toolCapability && typeof toolCapabilityService?.revoke === 'function') {
+        toolCapabilityService.revoke(toolCapability);
+      }
     }
   });
 

@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import test from 'node:test';
 
 import { candidateFromText, createDingtalkAgentGateway, createSignedAgentRequest } from '../server/dingtalk-agent-gateway.service.mjs';
+import * as dingtalkRuntime from '../server/dingtalk-agent-gateway.mjs';
 
 test('natural DingTalk questions route to distinct safe intents', () => {
   assert.deepEqual(candidateFromText('余贵祥家庭有几个保单'), {
@@ -31,6 +32,42 @@ test('signed agent request signs the exact serialized body', () => {
   assert.equal(request.headers['x-agent-timestamp'], '1720000000000');
   assert.equal(request.headers['x-agent-signature'], createHmac('sha256', 'test-secret')
     .update(`1720000000000.${request.rawBody}`).digest('hex'));
+});
+
+test('DingTalk mobile resolver reuses a recent verified profile lookup', async () => {
+  let now = 1_720_000_000_000;
+  let profileLookups = 0;
+  const resolver = dingtalkRuntime.createDingtalkMobileResolver({
+    client: { async getAccessToken() { return 'token'; } },
+    now: () => now,
+    cacheTtlMs: 300_000,
+    fetchImpl: async () => {
+      profileLookups += 1;
+      return { ok: true, json: async () => ({ errcode: 0, result: { mobile: '13800138000' } }) };
+    },
+  });
+  assert.equal(await resolver('ding-7'), '13800138000');
+  assert.equal(await resolver('ding-7'), '13800138000');
+  assert.equal(profileLookups, 1);
+  now += 300_000;
+  assert.equal(await resolver('ding-7'), '13800138000');
+  assert.equal(profileLookups, 2);
+});
+
+test('DingTalk runtime wires process termination to gateway shutdown', async () => {
+  assert.equal(typeof dingtalkRuntime.installDingtalkShutdownHandlers, 'function');
+  const handlers = {};
+  const events = [];
+  const stop = dingtalkRuntime.installDingtalkShutdownHandlers({
+    processLike: { once(signal, handler) { handlers[signal] = handler; } },
+    client: { disconnect() { events.push('disconnect'); } },
+    gateway: { async shutdown() { events.push('shutdown'); } },
+  });
+
+  assert.equal(typeof handlers.SIGTERM, 'function');
+  assert.equal(typeof handlers.SIGINT, 'function');
+  await stop();
+  assert.deepEqual(events, ['disconnect', 'shutdown']);
 });
 
 test('production DingTalk gateway sends only signed raw text to the messages API', async () => {
@@ -90,6 +127,40 @@ test('production DingTalk gateway acknowledges a slow Agent request before the f
   assert.equal(replies.length, 2);
   assert.match(replies[0].text.content, /正在理解并查询/u);
   assert.equal(replies[1].text.content, '最终答复');
+});
+
+test('production DingTalk gateway notifies an active customer when shutdown interrupts the request', async () => {
+  const replies = [];
+  let requestStarted;
+  const started = new Promise((resolve) => { requestStarted = resolve; });
+  const gateway = createDingtalkAgentGateway({
+    corpId: 'corp-1', hmacSecret: 'test-secret', useMessagesApi: true,
+    progressDelayMs: 60_000, agentRequestTimeoutMs: 20,
+    getDingtalkMobile: async () => '13800138000',
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/api/agent/messages')) {
+        requestStarted();
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }
+      replies.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const handling = gateway.handle({
+    senderCorpId: 'corp-1', conversationType: '1', senderStaffId: 'ding-7', conversationId: 'conv-7',
+    sessionWebhook: 'https://api.dingtalk.com/session', msgtype: 'text', msgId: 'shutdown-7',
+    text: { content: '医药安欣保险责任' },
+  });
+
+  await started;
+  await gateway.shutdown();
+  await handling;
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].text.content, /服务正在更新/u);
+  assert.match(replies[0].text.content, /重新发送/u);
 });
 
 test('production DingTalk gateway retries a timed out session webhook reply', async () => {
@@ -356,6 +427,9 @@ test('DingTalk gateway renders a responsibility answer with the responsibility a
             '新华保险《康健无忧两全保险》：',
             '### 产品主要做什么',
             '提供满期生存和身故保障。',
+            '### 健康管理服务',
+            '上传资料补充了健康咨询服务。',
+            '来源：M1',
             '### 责任明细（4项）',
             '1. **满期生存保险金**',
             '被保险人生存至保险期间届满时按约定给付。',
@@ -385,6 +459,9 @@ test('DingTalk gateway renders a responsibility answer with the responsibility a
   assert.match(replies[0].markdown.text, /### 🛡️ 保险责任助手/u);
   assert.match(replies[0].markdown.text, /> 已生成 \*\*4 项责任摘要\*\*/u);
   assert.match(replies[0].markdown.text, /### 责任明细　4 项/u);
+  assert.match(replies[0].markdown.text, /#### 健康管理服务/u);
+  assert.match(replies[0].markdown.text, /上传资料补充了健康咨询服务/u);
+  assert.match(replies[0].markdown.text, /来源：M1/u);
   assert.match(replies[0].markdown.text, /> \*\*①　满期生存保险金\*\*/u);
   assert.match(replies[0].markdown.text, /> \*\*触发条件：\*\*/u);
   assert.match(replies[0].markdown.text, /> \*\*给付金额 = 主险保费 \+ 附加险保费\*\*/u);
@@ -392,6 +469,50 @@ test('DingTalk gateway renders a responsibility answer with the responsibility a
   assert.match(replies[0].markdown.text, /> \*\*来源：\*\* `src_2`/u);
   assert.match(replies[0].markdown.text, /> \*\*所需保单信息：\*\* `已交保险费` `保险期间`/u);
   assert.match(replies[0].markdown.text, /---/u);
+});
+
+test('DingTalk gateway splits long responsibility cards without losing the answer tail', async () => {
+  const replies = [];
+  const longAnswer = [
+    '新华保险《长文本测试保险》：',
+    '### 产品主要做什么',
+    ...Array.from({ length: 24 }, (_, index) => `第${index + 1}段产品说明：${'保障内容完整呈现。'.repeat(32)}`),
+    '### 责任明细（1项）',
+    '1. **身故保险金**',
+    '被保险人身故时按合同约定给付。',
+    '触发条件：被保险人身故',
+    '给付金额 = 基本保险金额',
+    'calculationStatus: claim_contingent',
+    '来源：src_1#保险责任',
+    '计算所需保单信息：基本保险金额、出险日期',
+    '### 注意事项',
+    '尾部完整标记：本段必须发送，不得截断。',
+  ].join('\n');
+  const gateway = createDingtalkAgentGateway({
+    corpId: 'corp-1', hmacSecret: 'test-secret', getDingtalkMobile: async () => '13800138000',
+    interpretQuestion: async ({ question }) => ({
+      intent: 'insurance_product_knowledge', question, confidence: 1, requestedOperation: 'read',
+    }),
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/api/agent/questions/route')) {
+        return { ok: true, json: async () => ({ interaction: { type: 'answer', text: longAnswer } }) };
+      }
+      replies.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  await gateway.handle({
+    senderCorpId: 'corp-1', conversationType: '1', senderStaffId: 'ding-7',
+    sessionWebhook: 'https://api.dingtalk.com/session', msgtype: 'text',
+    text: { content: '长文本测试保险的保险责任' },
+  });
+
+  assert.ok(replies.length > 1);
+  assert.ok(replies.every((reply) => reply.msgtype === 'markdown'));
+  assert.ok(replies.every((reply) => reply.markdown.text.length <= 6_000));
+  assert.match(replies.at(-1).markdown.text, /尾部完整标记：本段必须发送，不得截断。/u);
+  assert.match(replies[1].markdown.title, /续 2\//u);
 });
 
 test('DingTalk gateway preserves verified product source links in the markdown reply', async () => {

@@ -106,8 +106,11 @@ export function createResponsibilityRoutes(context) {
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,
     generateProductCustomerResponsibilitySummary,
+    enrichCustomerResponsibilitySummaryWithMaterials,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
+    generateCustomerResponsibilityMaterialSummaryWithDeepSeek,
     generateProductCustomerResponsibilityPlannerWithDeepSeek,
+    retrieveCustomerResponsibilityMaterials,
     registerResponsibilityAssistantQuery,
     registerCustomerResponsibilitySummaryQuery,
   } = context;
@@ -735,6 +738,22 @@ export function createResponsibilityRoutes(context) {
         preferLocalKnowledgeAnswer: false,
       }),
     });
+    if (result?.ok && result?.summary && typeof retrieveCustomerResponsibilityMaterials === 'function'
+      && typeof enrichCustomerResponsibilitySummaryWithMaterials === 'function') {
+      try {
+        const evidencePackage = await retrieveCustomerResponsibilityMaterials({
+          company: result.summary.company || input.company,
+          productName: result.summary.productName || input.name,
+        });
+        result.summary = await enrichCustomerResponsibilitySummaryWithMaterials({
+          summary: result.summary,
+          evidencePackage,
+          generateWithDeepSeek: generateCustomerResponsibilityMaterialSummaryWithDeepSeek,
+        });
+      } catch {
+        // Uploaded material enrichment is optional; keep the canonical official summary available.
+      }
+    }
     logPerformance(performanceLogger, 'policy.responsibility.customer_summary.complete', {
       route: '/api/policy-responsibilities/customer-summary',
       durationMs: elapsedMs(routeStartedAt),

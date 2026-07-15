@@ -5565,6 +5565,7 @@ test('customer responsibility summary generates once and then reads from databas
   };
   const persistedSummaries = new Map();
   let modelCalls = 0;
+  let materialModelCalls = 0;
   const app = createPolicyOcrApp({
     state,
     db,
@@ -5596,6 +5597,28 @@ test('customer responsibility summary generates once and then reads from databas
         missingOrUnclear: [],
       };
     },
+    productRagService: {
+      retrieve: () => ({
+        evidenceChunks: [{
+          evidenceId: 'M1',
+          content: '上传课件介绍了保单检视服务。',
+          sourceAuthority: 'company_material',
+          reviewStatus: 'published',
+          pageStart: 6,
+          pageEnd: 6,
+          citation: { fileName: '产品培训课件.pptx', pageStart: 6, pageEnd: 6 },
+        }],
+      }),
+    },
+    generateCustomerResponsibilityMaterialSummaryWithDeepSeek: async ({ prompt }) => {
+      materialModelCalls += 1;
+      assert.match(prompt, /上传课件介绍了保单检视服务/u);
+      return {
+        contentBlocks: [{ title: '保单服务', content: '上传资料介绍了保单检视服务。', sourceRefs: ['M1'] }],
+        additionalResponsibilities: [],
+        notices: [],
+      };
+    },
   });
   const server = await listen(app);
 
@@ -5608,7 +5631,10 @@ test('customer responsibility summary generates once and then reads from databas
     assert.equal(first.payload.ok, true);
     assert.equal(first.payload.source, 'generated');
     assert.equal(first.payload.summary.headline, '这是一份以身故或身体全残保障为主的终身寿险。');
+    assert.equal(first.payload.summary.contentBlocks.at(-1).title, '保单服务');
+    assert.deepEqual(first.payload.summary.contentBlocks.at(-1).sourceRefs, ['M1']);
     assert.equal(modelCalls, 1);
+    assert.equal(materialModelCalls, 1);
     assert.equal(persistedSummaries.size, 1);
 
     const second = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
@@ -5619,7 +5645,9 @@ test('customer responsibility summary generates once and then reads from databas
     assert.equal(second.payload.ok, true);
     assert.equal(second.payload.source, 'database');
     assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(second.payload.summary.contentBlocks.at(-1).title, '保单服务');
     assert.equal(modelCalls, 1);
+    assert.equal(materialModelCalls, 2);
   } finally {
     await server.close();
     db.close();
@@ -16684,6 +16712,50 @@ test('registered user over free quota must buy membership before saving another 
     assert.equal(result.response.status, 402);
     assert.equal(result.payload.code, 'MEMBERSHIP_REQUIRED');
     assert.deepEqual(result.payload.membership, { savedPolicyCount: 1, freeQuota: 1, annualPriceCents: 30000 });
+    assert.equal(state.policies.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('manual policy entry saves without calling OCR when no image or OCR text is provided', async () => {
+  const state = createInitialState();
+  let scannerCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    scanner: async () => {
+      scannerCalls += 1;
+      throw new Error('manual policy entry must not call OCR');
+    },
+    analyzer: async () => ({ report: '后台报告', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-manual-policy',
+        ocrText: '',
+        uploadItem: null,
+        manualData: {
+          company: '新华保险',
+          name: '手动录入测试保单',
+          applicant: '张三',
+          insured: '张三',
+          date: '2026-07-14',
+          paymentPeriod: '10年交',
+          coveragePeriod: '终身',
+          amount: '500000',
+          firstPremium: '12000',
+        },
+      }),
+    });
+
+    assert.equal(result.response.status, 201);
+    assert.equal(scannerCalls, 0);
+    assert.equal(result.payload.policy.company, '新华保险');
+    assert.equal(result.payload.policy.name, '手动录入测试保单');
+    assert.equal(result.payload.policy.amount, 500000);
     assert.equal(state.policies.length, 1);
   } finally {
     await server.close();

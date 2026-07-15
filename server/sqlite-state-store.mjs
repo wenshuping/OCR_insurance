@@ -3960,6 +3960,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     return {
       version: Number(row.context_version),
       hermesSessionId: String(payload.hermesSessionId || ''),
+      agentLoopSessionId: String(payload.agentLoopSessionId || ''),
       history: Array.isArray(payload.history) ? payload.history : [],
       question: payload.question || null,
       product: current ? { productName: current.display_name, updatedAt: Number(current.updated_at) } : null,
@@ -3973,7 +3974,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
 
   async function saveAgentConversationContext({
     conversationId, expectedVersion, history = [], product = null, productCandidates = null,
-    question = null, hermesSessionId = '', updatedAt, activeContextExpiresAt,
+    question = null, hermesSessionId = '', agentLoopSessionId = '', updatedAt, activeContextExpiresAt,
   } = {}) {
     const id = String(conversationId || '').trim();
     const version = Number(expectedVersion);
@@ -3985,6 +3986,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       history,
       question,
       hermesSessionId: String(hermesSessionId || '').trim().slice(0, 200),
+      agentLoopSessionId: String(agentLoopSessionId || '').trim().slice(0, 200),
       productCandidatesQuestion: String(productCandidates?.question || ''),
     });
     db.exec('BEGIN IMMEDIATE');
@@ -4045,6 +4047,10 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     };
   }
 
+  async function loadOfficialDomainProfiles() {
+    return loadPayloadRows(db, 'official_domain_profiles', 'id ASC');
+  }
+
   async function listAuthorizedFamilyProfiles({ internalUserId } = {}) {
     const userId = Number(internalUserId);
     if (!Number.isInteger(userId) || userId <= 0) return [];
@@ -4062,13 +4068,20 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
 
   async function loadAuthorizedFamilyState({ familyId, internalUserId } = {}) {
     const id = Number(familyId);
-    const families = await listAuthorizedFamilyProfiles({ internalUserId });
+    const userId = Number(internalUserId);
+    const families = await listAuthorizedFamilyProfiles({ internalUserId: userId });
     const family = families.find((row) => Number(row?.id) === id);
     if (!family) return null;
     const familyRows = (table, orderBy = 'id ASC') => db.prepare(
       `SELECT payload FROM ${table} WHERE family_id = ? ORDER BY ${orderBy}`,
     ).all(id).map((row) => parseJson(row.payload, null)).filter(Boolean);
-    const policies = db.prepare('SELECT payload FROM policies ORDER BY id ASC').all()
+    const authorizedOwnedRows = (table, orderBy = 'id ASC') => db.prepare(`
+      SELECT payload FROM ${table}
+      WHERE family_id = ?
+        AND (owner_user_id = ? OR (owner_user_id IS NULL AND COALESCE(owner_guest_id, '') = ''))
+      ORDER BY ${orderBy}
+    `).all(id, userId).map((row) => parseJson(row.payload, null)).filter(Boolean);
+    const policies = db.prepare('SELECT payload FROM policies WHERE user_id = ? ORDER BY id ASC').all(userId)
       .map((row) => parseJson(row.payload, null)).filter((row) => Number(row?.familyId) === id);
     return {
       family,
@@ -4076,8 +4089,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         familyProfiles: [family],
         familyMembers: familyRows('family_members'),
         policies,
-        familyReports: familyRows('family_reports', 'generated_at ASC, id ASC'),
-        familySalesReviews: familyRows('family_sales_reviews', 'generated_at ASC, id ASC'),
+        familyReports: authorizedOwnedRows('family_reports', 'generated_at ASC, id ASC'),
+        familySalesReviews: authorizedOwnedRows('family_sales_reviews', 'generated_at ASC, id ASC'),
       },
     };
   }
@@ -4092,6 +4105,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     seedStatePath,
     load,
     loadAgentIdentityState,
+    loadOfficialDomainProfiles,
     listAuthorizedFamilyProfiles,
     loadAuthorizedFamilyState,
     persist,

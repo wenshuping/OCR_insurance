@@ -57,6 +57,16 @@ test('validation rejects tools outside the whitelist', () => {
   assert.equal(AGENT_QUESTION_POLICY_TOOLS.includes('shell'), false);
 });
 
+test('validation rejects tools assigned to the wrong workflow handler', () => {
+  assert.throws(
+    () => validateAgentQuestionPolicy({
+      ...AGENT_QUESTION_POLICIES.find((policy) => policy.key === 'insurance_product_knowledge'),
+      tool: 'sales_report',
+    }),
+    /tool is not allowed for handler/i,
+  );
+});
+
 test('validation rejects write operations without confirmation', () => {
   assert.throws(
     () => validateAgentQuestionPolicy({

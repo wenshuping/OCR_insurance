@@ -190,6 +190,8 @@ test('product knowledge requires public sources for definite facts', async () =>
 
   assert.equal(certain.facts.certainty, 'supported');
   assert.equal(certain.provenance.sources.length, 1);
+  assert.match(certain.presentation.message, /#### 核验来源/u);
+  assert.match(certain.presentation.message, /https:\/\/example\.test\/terms/u);
   assert.equal(sourced.calls.knowledge[0].scope, 'public_read_only');
   assert.equal(uncertain.facts.certainty, 'unverified');
   assert.doesNotMatch(JSON.stringify(uncertain), /等待测试覆盖/);
@@ -218,18 +220,25 @@ test('semantic product knowledge searches only the resolved product and controll
   });
 });
 
-test('product comparison returns only a sourced factual side-by-side summary', async () => {
+test('product comparison requests complete evidence and uses the comparison generator', async () => {
   const products = [
     { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },
     { canonicalProductId: 'b', company: '乙保险', officialName: '乙产品' },
   ];
-  const { handlers, calls } = harness({}, { productKnowledge: { async search(input) {
-    calls.knowledge.push(input);
-    return {
-      answer: input.product.officialName === '甲产品' ? '甲责任摘要' : '乙责任摘要',
-      sources: [{ verified: true, title: `${input.product.officialName}官方条款`, url: `https://example.test/${input.product.canonicalProductId}`, provenance: 'official' }],
-    };
-  } } });
+  const { handlers, calls } = harness({}, { productKnowledge: {
+    async search(input) {
+      calls.knowledge.push(input);
+      return {
+        answer: input.product.officialName === '甲产品' ? '甲完整责任' : '乙完整责任',
+        sources: [{ verified: true, title: `${input.product.officialName}官方条款`, url: `https://example.test/${input.product.canonicalProductId}`, provenance: 'official' }],
+      };
+    },
+    async compare({ question, results }) {
+      assert.equal(question, '甲产品和乙产品有什么区别');
+      assert.deepEqual(results.map((result) => result.answer), ['甲完整责任', '乙完整责任']);
+      return '两款不是同类产品：甲侧重医疗报销，乙侧重定额给付。';
+    },
+  } });
   const result = await handlers.execute('insurance_product_knowledge', {
     question: '甲产品和乙产品有什么区别', internalUserId: 9, resolvedProducts: products,
     queryAspects: ['comparison'],
@@ -237,9 +246,11 @@ test('product comparison returns only a sourced factual side-by-side summary', a
   assert.deepEqual(calls.knowledge.map((call) => call.queryAspects), [
     ['main_responsibilities'], ['main_responsibilities'],
   ]);
-  assert.match(result.presentation.message, /甲产品\n甲责任摘要[\s\S]*乙产品\n乙责任摘要/u);
+  assert.ok(calls.knowledge.every((call) => /完整保险责任/u.test(call.question)));
+  assert.match(result.presentation.message, /^两款不是同类产品：甲侧重医疗报销，乙侧重定额给付。/u);
+  assert.match(result.presentation.message, /#### 核验来源/u);
+  assert.match(result.presentation.message, /https:\/\/example\.test\/a/u);
   assert.equal(result.provenance.sources.length, 2);
-  assert.doesNotMatch(result.presentation.message, /哪个好|更适合|推荐/u);
 });
 
 test('product comparison fails closed when either product lacks a verified source', async () => {
@@ -447,10 +458,22 @@ test('upload link ignores attachments and unknown actions are denied', async () 
     attachment: { bytes: 'raw' },
     image: 'base64',
   });
+  const configuredUpload = await handlers.system({
+    internalUserId: 9,
+    intent: 'system_help',
+    tool: 'create_upload_link',
+  });
+  const wrongHandlerTool = await handlers.system({
+    internalUserId: 9,
+    intent: 'system_help',
+    tool: 'product_knowledge_search',
+  });
   const unknown = await handlers.execute('destroy_database', { internalUserId: 9 });
   const write = await handlers.execute('transfer_preview', { internalUserId: 9 });
 
   assert.equal(upload.presentation.secureLink, '/customer/upload?user=9');
+  assert.equal(configuredUpload.presentation.secureLink, '/customer/upload?user=9');
+  assert.equal(wrongHandlerTool.facts.denied, true);
   assert.equal(calls.upload.length, 0);
   assert.equal(JSON.stringify(upload).includes('raw'), false);
   assert.equal(unknown.facts.denied, true);
@@ -525,4 +548,37 @@ test('knowledge origin provider reloads each request and fails closed', async ()
   const failed = await handlers.execute('insurance_product_knowledge', { question: '查询' });
   assert.equal(failed.facts.certainty, 'unverified');
   assert.deepEqual(failed.provenance.sources, []);
+});
+
+test('operational handler registry delegates domain policies to Agent-as-Tool entries', async () => {
+  const calls = [];
+  const { handlers } = harness({}, {
+    insuranceExpertTool: {
+      async askInsuranceExpertTool({ context }) {
+        calls.push({ agent: 'insurance_expert', context });
+        return { interaction: { type: 'answer', text: '保险专家回答' } };
+      },
+    },
+    salesChampionTool: {
+      async askSalesChampionTool({ context }) {
+        calls.push({ agent: 'sales_champion', context });
+        return { interaction: { type: 'answer', text: '营销专家回答' } };
+      },
+    },
+  });
+
+  await handlers.insurance_expert({
+    internalUserId: 9,
+    intent: 'insurance_product_knowledge',
+    tool: 'product_knowledge_search',
+    question: '产品责任',
+  });
+  await handlers.sales_champion({
+    internalUserId: 9,
+    intent: 'sales_coaching',
+    question: '怎么沟通',
+  });
+
+  assert.deepEqual(calls.map(({ agent }) => agent), ['insurance_expert', 'sales_champion']);
+  assert.equal(calls[0].context.tool, 'product_knowledge_search');
 });

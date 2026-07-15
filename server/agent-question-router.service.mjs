@@ -10,7 +10,7 @@ import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
-const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_report', 'sales_coaching']);
+const FAMILY_INTENTS = new Set(['family_summary', 'coverage_report', 'sales_report']);
 const AUDIT_ENTITY_KEYS = new Set(['familyName', 'familyRef', 'productName', 'policyHint', 'sourceFamilyName', 'targetFamilyName']);
 const PRONOUN_PATTERN = /(?:这个家庭|刚才那家)/u;
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
@@ -56,6 +56,22 @@ function normalizeFamilyName(value) {
     .toLowerCase()
     .replace(/[\s\p{P}\p{S}]+/gu, '')
     .replace(/家庭$/u, '');
+}
+
+function projectConversationHistory(value) {
+  return (Array.isArray(value) ? value : []).slice(-12).flatMap((message) => {
+    const role = boundedString(message?.role, 20);
+    const content = boundedString(message?.content, 4_000);
+    return ['user', 'assistant'].includes(role) && content ? [{ role, content }] : [];
+  });
+}
+
+function requiresFamilyScope(policy, candidate) {
+  return FAMILY_INTENTS.has(policy?.intent)
+    || ['family_summary', 'coverage_report', 'sales_report'].includes(policy?.tool)
+    || (policy?.intent === 'sales_coaching'
+      && Boolean(candidate?.entities?.familyName || candidate?.entities?.familyRef
+        || candidate?.contextRefs?.includes('current_family')));
 }
 
 function projectSemanticProduct(candidate, semanticContext) {
@@ -266,7 +282,7 @@ export async function simulateAgentQuestionDecision({ store, policyVersion, inte
     return { policy, policySource, decision: 'deny', result: 'unsafe_policy', explanation: `${policy.key} is unavailable.` };
   }
   let family = null;
-  if (FAMILY_INTENTS.has(policy.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy.tool)) {
+  if (requiresFamilyScope(policy, candidate)) {
     const state = await store.load();
     const resolver = typeof familyResolver === 'function' ? familyResolver : defaultFamilyResolver;
     const families = await resolver({ store, state, internalUserId: Number(internalUserId), candidate });
@@ -287,7 +303,14 @@ export async function simulateAgentQuestionDecision({ store, policyVersion, inte
 export function createAgentQuestionRouter({ store, handlers = {}, familyResolver, clock = () => new Date() } = {}) {
   if (!store || typeof store.load !== 'function') throw new TypeError('store with load() is required');
 
-  async function route({ internalUserId, candidate: rawCandidate, messageRef, conversationContext, semanticContext } = {}) {
+  async function route({
+    internalUserId,
+    candidate: rawCandidate,
+    messageRef,
+    conversationContext,
+    conversationHistory,
+    semanticContext,
+  } = {}) {
     const userId = Number(internalUserId);
     if (!Number.isInteger(userId) || userId <= 0) throw new TypeError('internalUserId is required');
     const normalizedMessageRef = boundedString(messageRef, 200);
@@ -346,7 +369,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
 
     const initialDecision = resolvePolicyExecutionDecision(policy, candidate);
     if (initialDecision.result === 'low_confidence') {
-      const familyRelated = FAMILY_INTENTS.has(policy?.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy?.tool);
+      const familyRelated = requiresFamilyScope(policy, candidate);
       return finish(familyRelated
         ? genericFamilyClarification()
         : { decision: 'clarify', interaction: { type: 'clarification', text: '请更明确地说明想查询或办理的事项。' } }, 'low_confidence');
@@ -379,7 +402,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     }
 
     let family = null;
-    if (FAMILY_INTENTS.has(policy.intent) || ['family_summary', 'coverage_report', 'sales_report'].includes(policy.tool)) {
+    if (requiresFamilyScope(policy, candidate)) {
       const state = typeof store.listAuthorizedFamilyProfiles === 'function' ? null : await store.load();
       const resolver = typeof familyResolver === 'function' ? familyResolver : defaultFamilyResolver;
       const authorizedFamilies = await resolver({ store, state, internalUserId: userId });
@@ -409,11 +432,18 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       internalUserId: userId,
       intent: candidate.intent,
       question: candidate.question,
+      ...(policy?.tool ? { tool: policy.tool } : {}),
       ...(policy?.key === 'transfer_preview' ? { entities: candidate.entities } : {}),
       ...(policy?.key === 'insurance_product_knowledge' && candidate.entities.productName
-        ? { productName: candidate.entities.productName }
+        ? {
+          productName: candidate.entities.productName,
+          ...(candidate.entities.productCompany ? { productCompany: candidate.entities.productCompany } : {}),
+        }
         : {}),
       ...(family ? { familyId: Number(family.id) } : {}),
+      ...(policy.intent === 'sales_coaching'
+        ? { history: projectConversationHistory(conversationHistory) }
+        : {}),
     };
     if (policy.intent === 'insurance_product_knowledge') {
       const semanticProduct = projectSemanticProduct(candidate, semanticContext);

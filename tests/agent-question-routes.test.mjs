@@ -141,6 +141,74 @@ test('signed message API resolves identity and sends only a raw text envelope to
   assert.equal((await runtimeCalls[0].refreshVerifiedIdentity()).internalUserId, 7);
 });
 
+test('message API binds a short-lived tool capability without exposing the mobile to the runtime', async (t) => {
+  const issued = [];
+  const revoked = [];
+  const runtimeCalls = [];
+  const server = await startServer({
+    toolCapabilityService: {
+      issue(input) { issued.push(input); return { token: 'opaque-capability-token' }; },
+      revoke(token) { revoked.push(token); },
+    },
+    conversationRuntime: { async processMessage(input) {
+      runtimeCalls.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: 'ok' } };
+    } },
+  });
+  t.after(server.close);
+  const result = await post(server, '/api/agent/messages', {
+    protocolVersion: '1', channel: 'dingtalk', channelUserId: 'registered',
+    channelMobile: '13800138000', conversationId: 'conv-capability', messageRef: 'capability-1',
+    message: { type: 'text', text: '查询保障' },
+  });
+  assert.equal(result.response.status, 200);
+  assert.equal(issued[0].internalUserId, 7);
+  assert.equal(issued[0].channelMobile, '13800138000');
+  assert.deepEqual(issued[0].allowedTools, ['ask_insurance_expert', 'ask_sales_champion']);
+  assert.equal(runtimeCalls[0].toolCapability, 'opaque-capability-token');
+  assert.equal(JSON.stringify(runtimeCalls[0]).includes('13800138000'), false);
+  assert.deepEqual(revoked, ['opaque-capability-token']);
+});
+
+test('Hermes tool callback consumes its capability and uses the trusted claims', async (t) => {
+  const consumed = [];
+  const executed = [];
+  const server = await startServer({
+    toolCapabilityService: {
+      consume(input) {
+        consumed.push(input);
+        return {
+          tenant: 'default', channel: 'dingtalk', channelUserId: 'registered', channelMobile: '13800138000',
+          internalUserId: 7, conversationId: 'conv-tool', messageRef: 'tool-1', callCount: 1,
+        };
+      },
+    },
+    domainToolGateway: { async execute(input) {
+      executed.push(input);
+      return { status: 'ok', decision: 'execute', interaction: { type: 'answer', text: '已核验' } };
+    } },
+  });
+  t.after(server.close);
+  const denied = await post(server, '/api/agent/hermes-tools', {
+    tool: 'ask_insurance_expert', input: { question: '查询', operation: 'product_knowledge' },
+  }, null);
+  assert.equal(denied.response.status, 401);
+  const response = await fetch(`${server.baseUrl}/api/agent/hermes-tools`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer opaque_capability_12345', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tool: 'ask_insurance_expert',
+      input: { question: '医药安欣计划区别', operation: 'product_knowledge', names: ['医药安欣'] },
+    }),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, 'ok');
+  assert.deepEqual(consumed, [{ token: 'opaque_capability_12345', tool: 'ask_insurance_expert' }]);
+  assert.equal(executed[0].claims.internalUserId, 7);
+  assert.equal(Object.hasOwn(executed[0].input, 'internalUserId'), false);
+});
+
 test('conversation context endpoints use only the server-resolved identity', async (t) => {
   const calls = { load: [], commit: [] };
   const server = await startServer({
@@ -482,7 +550,7 @@ test('upstream results are reduced to bounded public interaction fields', async 
           requestRef: 'request-1',
           interaction: {
             type: 'answer',
-            text: `${'答'.repeat(2000)}secret-tail`,
+            text: `${'答'.repeat(48_000)}secret-tail`,
             secret: 'identity-card',
             options: [{ id: 'choice-1', label: '家庭一', secret: 'private' }],
           },
@@ -499,11 +567,40 @@ test('upstream results are reduced to bounded public interaction fields', async 
     requestRef: 'request-1',
     interaction: {
       type: 'answer',
-      text: '答'.repeat(2000),
+      text: '答'.repeat(48_000),
     },
   });
   assert.equal(JSON.stringify(result.payload).includes('secret'), false);
   assert.equal(JSON.stringify(result.payload).includes('13800138000'), false);
+});
+
+test('message API preserves a complete long recommendation below the DingTalk limit', async (t) => {
+  const recommendation = [
+    '## 选择建议',
+    '优先推荐医药安欣（易核版）医疗保险。',
+    '## 需进一步澄清的信息',
+    ...Array.from({ length: 120 }, (_, index) => `${index + 1}. 需要确认具体疾病、治疗经过、复查结果和当前用药等健康告知信息`),
+    '完整结尾：确认具体基础疾病、既往治疗和当前用药。',
+  ].join('\n');
+  assert.ok(recommendation.length > 2_000);
+  const server = await startServer({
+    conversationRuntime: {
+      async processMessage() {
+        return { decision: 'execute', interaction: { type: 'answer', text: recommendation } };
+      },
+    },
+  });
+  t.after(server.close);
+
+  const result = await post(server, '/api/agent/messages', {
+    protocolVersion: '1', channel: 'dingtalk', channelUserId: 'registered',
+    channelMobile: '13800138000', messageRef: 'long-recommendation',
+    message: { type: 'text', text: '请给出完整推荐' },
+  });
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.payload.interaction.text, recommendation);
+  assert.match(result.payload.interaction.text, /完整结尾：确认具体基础疾病/u);
 });
 
 test('real family router preserves opaque clarification candidates for the authorized next turn', async (t) => {
@@ -1454,8 +1551,22 @@ test('default semantic product resolver reloads custom official company aliases'
     async recordAgentRouteAudit() {},
     async recordAgentSemanticAudit(input) { return input; },
   };
+  const legacyKnowledgeCalls = [];
   const app = createPolicyOcrApp({
     state, db, agentStore: store, recomputeCashflowOnStartup: false,
+    agentProductKnowledge: {
+      allowedOrigins: ['https://old.insurance.example'],
+      async search(input) {
+        legacyKnowledgeCalls.push(input);
+        return {
+          answer: '主要优势是提供长期现金流安排，同时需要注意分红并不保证。',
+          sources: [{
+            verified: true, title: '安心产品官方资料',
+            url: 'https://old.insurance.example/terms', provenance: 'insurer_official',
+          }],
+        };
+      },
+    },
     agentSemanticConversationService: {
       async load() { return { version: 0, taskState: {} }; },
       async save(input) { return { persisted: true, version: 1, taskState: input.taskState }; },
@@ -1490,6 +1601,29 @@ test('default semantic product resolver reloads custom official company aliases'
   assert.equal(first.response.status, 200);
   assert.match(first.payload.interaction.text, /自定义责任摘要/u);
   assert.doesNotMatch(first.payload.interaction.text, /当前没有可核验来源/u);
+
+  const advantage = await post(
+    { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+    '/api/agent/questions/route',
+    semanticBody({
+      messageRef: 'msg-product-advantage',
+      question: '测试保险有限公司安心产品有什么优势',
+      proposal: {
+        semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+        queryAspects: [],
+        mentions: [
+          { type: 'insurer', rawText: '测试保险有限公司' },
+          { type: 'product', rawText: '安心产品' },
+        ],
+        references: [], requestedSteps: ['lookup'],
+        confidence: { intent: 1, mentions: 1, references: 1 },
+      },
+    }),
+  );
+  assert.equal(advantage.response.status, 200);
+  assert.match(advantage.payload.interaction.text, /主要优势是提供长期现金流安排/u);
+  assert.doesNotMatch(advantage.payload.interaction.text, /自定义责任摘要/u);
+  assert.deepEqual(legacyKnowledgeCalls[0].queryAspects, []);
 
   state.officialDomainProfiles = [{
     ...state.officialDomainProfiles[0],
@@ -1595,11 +1729,33 @@ test('default semantic resolver executes a confirmed two-product comparison when
 
   assert.equal(result.response.status, 200);
   assert.equal(result.payload.decision, 'execute');
+  assert.match(result.payload.interaction.text, /核心差异/u);
+  assert.match(result.payload.interaction.text, /怎么选/u);
+  assert.match(result.payload.interaction.text, /两款产品完整已核验责任/u);
   assert.match(result.payload.interaction.text, /甲保障计划[\s\S]*甲责任摘要[\s\S]*乙保障计划[\s\S]*乙责任摘要/u);
   assert.deepEqual(semanticAudits[0].payload.productResolution, {
     count: 2, matchTypes: ['exact_official_name'],
   });
   assert.doesNotMatch(JSON.stringify(semanticAudits), /product-a|product-b|甲保障计划|乙保障计划/u);
+
+  const recommendation = await post(
+    { baseUrl: `http://127.0.0.1:${listener.address().port}` },
+    '/api/agent/questions/route',
+    semanticBody({
+      messageRef: 'msg-comparison-recommendation',
+      conversationId: comparisonConversationId,
+      question: '客户情况比较复杂，这两款推荐哪个',
+      proposal: {
+        semanticContractVersion: 1, intent: 'insurance_product_knowledge', operation: 'read',
+        queryAspects: ['sales_guidance'], mentions: [], references: [],
+        requestedSteps: ['compare'], confidence: { intent: 1, mentions: 1, references: 1 },
+      },
+    }),
+  );
+  assert.equal(recommendation.response.status, 200);
+  assert.equal(recommendation.payload.decision, 'execute');
+  assert.match(recommendation.payload.interaction.text, /做出推荐前还需要确认/u);
+  assert.match(recommendation.payload.interaction.text, /甲保障计划[\s\S]*乙保障计划/u);
 
   const selected = await post(
     { baseUrl: `http://127.0.0.1:${listener.address().port}` },
@@ -1649,7 +1805,7 @@ test('default semantic resolver executes a confirmed two-product comparison when
     );
     assert.equal(invalid.response.status, 200, secondInsurer);
     assert.equal(invalid.payload.decision, 'clarify', secondInsurer);
-    assert.match(invalid.payload.interaction.text, /产品比较暂不支持直接执行/u);
+    assert.match(invalid.payload.interaction.text, /无法唯一确定两款产品/u);
     assert.equal(semanticAudits.at(-1).decision, 'clarify', secondInsurer);
   }
 });

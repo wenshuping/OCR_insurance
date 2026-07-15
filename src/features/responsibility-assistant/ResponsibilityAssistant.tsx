@@ -162,6 +162,7 @@ export function ResponsibilityAssistant(props: {
       enabled: block?.enabled !== false,
       content: cleanSummaryText(block?.content),
       order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
+      sourceRefs: cleanSummaryList(block?.sourceRefs),
     }))
     .filter((block) => block.enabled && (block.title || block.content))
     .sort((left, right) => left.order - right.order);
@@ -185,6 +186,14 @@ export function ResponsibilityAssistant(props: {
   const customerSummaryNotices = cleanSummaryList(customerSummary?.notices);
   const customerSummaryRequiredPolicyFields = cleanSummaryList(customerSummary?.requiredPolicyFields);
   const customerSummarySourceUrls = cleanSummaryList(customerSummary?.sourceUrls);
+  const customerSummaryMaterialSources = (Array.isArray(customerSummary?.materialSources) ? customerSummary.materialSources : [])
+    .map((source) => ({
+      evidenceId: cleanSummaryText(source?.evidenceId),
+      fileName: cleanSummaryText(source?.fileName),
+      pageStart: Number(source?.pageStart || 0),
+      pageEnd: Number(source?.pageEnd || source?.pageStart || 0),
+    }))
+    .filter((source) => source.evidenceId || source.fileName);
   const shouldShowOfficialResponsibilityTextFallback = !customerSummaryLoading && !customerSummary && Boolean(officialResponsibilityText);
   const shouldShowResponsibilityRows = !customerSummaryLoading && !customerSummary && !customerSummaryMessage && !shouldShowOfficialResponsibilityTextFallback && responsibilities.length > 0;
   const displayedResponsibilityCount = customerSummaryHasContent
@@ -482,6 +491,13 @@ export function ResponsibilityAssistant(props: {
                           <section key={`${block.blockKey}-${index}`} className="space-y-1">
                             {block.title ? <h4 className="break-words font-black text-slate-950">{block.title}</h4> : null}
                             {block.content ? <p className="whitespace-pre-wrap break-words font-semibold text-slate-600">{block.content}</p> : null}
+                            {block.sourceRefs.length ? (
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {block.sourceRefs.map((sourceRef) => (
+                                  <span key={sourceRef} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">{sourceRef}</span>
+                                ))}
+                              </div>
+                            ) : null}
                           </section>
                         ))
                       ) : cleanSummaryText(customerSummary.headline) ? (
@@ -562,6 +578,18 @@ export function ResponsibilityAssistant(props: {
                             <span className="block truncate">{hostFromUrl(url)}</span>
                             <span className="mt-1 block truncate font-medium text-slate-400">{url}</span>
                           </a>
+                        ))}
+                      </section>
+                    ) : null}
+
+                    {customerSummaryMaterialSources.length ? (
+                      <section className="space-y-2">
+                        <h4 className="text-xs font-black text-slate-950">上传材料依据</h4>
+                        {customerSummaryMaterialSources.map((source) => (
+                          <p key={`${source.evidenceId}-${source.fileName}`} className="rounded-[16px] border border-blue-100 bg-blue-50 px-3 py-2.5 text-xs font-bold text-blue-700">
+                            {source.evidenceId} · {source.fileName}
+                            {source.pageStart ? ` · 第${source.pageStart}${source.pageEnd !== source.pageStart ? `-${source.pageEnd}` : ''}页` : ''}
+                          </p>
                         ))}
                       </section>
                     ) : null}

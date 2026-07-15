@@ -69,7 +69,9 @@ function productCandidates(result) {
     : [];
   return candidates.map((candidate, index) => ({
     ref: `choice_${index + 1}`,
-    label: clean(candidate?.officialName) || `候选产品 ${index + 1}`,
+    label: clean(candidate?.officialName)
+      ? `${clean(candidate?.company) ? `${clean(candidate.company)} ` : ''}《${clean(candidate.officialName)}》`
+      : `候选产品 ${index + 1}`,
   })).filter((candidate) => candidate.label);
 }
 
@@ -92,8 +94,14 @@ function clarification(result, hasConversation) {
       interaction: {
         type: 'clarification',
         text: hasConversation
-          ? '找到多个可能的正式产品，请选择一项。'
-          : '找到多个可能的正式产品，请回复完整名称。',
+          ? candidates.length === 0
+            ? '我暂时没能确认你说的是哪款产品。请补充保险公司，以及保单或条款上的完整产品名称。'
+            : candidates.length === 1
+            ? '你是不是想查询以下产品？请回复 1 确认。'
+            : '找到多个可能的正式产品，请选择一项。'
+          : candidates.length
+            ? '找到多个可能的正式产品，请回复完整名称。'
+            : '请补充保险公司，以及保单或条款上的完整产品名称。',
         ...(candidates.length ? { candidates } : {}),
       },
     };
@@ -118,9 +126,23 @@ function clarification(result, hasConversation) {
     };
   }
   if (reason === 'product_comparison_unsupported') {
+    const candidates = productCandidates(result);
+    const selectedCount = Array.isArray(result?.nextTaskState?.pendingClarification?.selectedProducts)
+      ? result.nextTaskState.pendingClarification.selectedProducts.length
+      : 0;
     return {
       decision: 'clarify',
-      interaction: { type: 'clarification', text: '产品比较暂不支持直接执行，请先分别查询每款产品的正式名称和条款。' },
+      interaction: {
+        type: 'clarification',
+        text: candidates.length
+          ? selectedCount > 0
+            ? '已确认第一款产品，请选择要比较的第二款。'
+            : '找到多个可能的正式产品，请先选择要比较的第一款。'
+          : result?.proposal?.queryAspects?.includes('sales_guidance')
+            ? '你想在具体哪些产品之间为客户做选择？请回复产品正式名称；确认产品后，我会再根据保障目标、预算、期限、已有保障及必要的投保条件补充提问。'
+            : '目前无法唯一确定两款产品，请补充保险公司或回复两款产品的正式名称，我会继续比较。',
+        ...(candidates.length ? { candidates } : {}),
+      },
     };
   }
   if (result?.missingFields?.includes('product') || reason === 'product_required') {
@@ -486,12 +508,14 @@ export function createAgentSemanticQuestionRouter({
       return clarification(resolved, Boolean(clean(input.conversationId, 200)));
     }
 
+    const resolvedSemanticContext = semanticContext(resolved);
     const result = await legacyRouter.route({
       internalUserId: input.internalUserId,
       messageRef: input.messageRef,
+      conversationHistory: input.conversationHistory,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),
       candidate: resolved.candidate,
-      semanticContext: semanticContext(resolved),
+      semanticContext: resolvedSemanticContext,
     });
     if (shouldSave) {
       try {
@@ -501,7 +525,7 @@ export function createAgentSemanticQuestionRouter({
         await reportPostExecutePersistenceError(error);
       }
     }
-    return result;
+    return { ...result, semanticContext: resolvedSemanticContext };
   }
 
   return {

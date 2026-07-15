@@ -113,8 +113,9 @@ function comparisonProductQueries(question) {
   const value = text(question);
   if (!/(?:对比|比较|区别|相比|哪款|哪个好|\bVS\.?\b)/iu.test(value)) return [];
   const parts = value.split(PRODUCT_COMPARISON_SEPARATOR).map((item) => item
-    .replace(/^(?:请|帮我|帮忙|看看|分析一下)/u, '')
+    .replace(/^(?:请|你|帮我|帮忙|看看|分析一下)/u, '')
     .replace(/(?:有什么)?(?:区别|差异|哪个好|哪款好)[？?]?$/u, '')
+    .replace(/[啊呀呢哦吧嘛啦了]+[？?]?$/u, '')
     .trim()).filter(Boolean);
   return parts.length === 2 ? parts : [];
 }
@@ -303,6 +304,7 @@ function customerResponsibilitySummaryEvidence(result = {}, product = {}, allowe
       editable: block?.editable !== false,
       order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
       content: text(block?.content),
+      sourceRefs: (Array.isArray(block?.sourceRefs) ? block.sourceRefs : []).map(text).filter(Boolean),
     }))
     .filter((block) => block.blockKey || block.title || block.content);
   if (!responsibilities.length && !contentBlocks.length && !text(summary.headline)) return null;
@@ -323,6 +325,12 @@ function customerResponsibilitySummaryEvidence(result = {}, product = {}, allowe
     notices: (Array.isArray(summary.notices) ? summary.notices : []).map(text).filter(Boolean),
     requiredPolicyFields: (Array.isArray(summary.requiredPolicyFields) ? summary.requiredPolicyFields : []).map(text).filter(Boolean),
     sourceUrls: (Array.isArray(summary.sourceUrls) ? summary.sourceUrls : []).map(text).filter(Boolean),
+    materialSources: (Array.isArray(summary.materialSources) ? summary.materialSources : []).map((source) => ({
+      evidenceId: text(source?.evidenceId),
+      fileName: text(source?.fileName),
+      pageStart: Number(source?.pageStart || 0),
+      pageEnd: Number(source?.pageEnd || source?.pageStart || 0),
+    })).filter((source) => source.evidenceId || source.fileName),
   };
   return {
     directAnswer: answerFromCustomerResponsibilitySummary(normalizedSummary),
@@ -340,6 +348,8 @@ function answerFromCustomerResponsibilitySummary(summary = {}) {
     for (const block of blocks) {
       if (text(block?.title)) lines.push(`### ${text(block.title)}`);
       if (text(block?.content)) lines.push(text(block.content));
+      const sourceRefs = (Array.isArray(block?.sourceRefs) ? block.sourceRefs : []).map(text).filter(Boolean);
+      if (sourceRefs.length) lines.push(`来源：${sourceRefs.join('、')}`);
       lines.push('');
     }
   } else if (text(summary.headline)) {
@@ -368,6 +378,16 @@ function answerFromCustomerResponsibilitySummary(summary = {}) {
   const notices = (Array.isArray(summary.notices) ? summary.notices : []).map(text).filter(Boolean);
   if (notices.length) {
     lines.push('### 注意事项', ...notices.map((notice, index) => `${index + 1}. ${notice}`));
+  }
+  const materialSources = Array.isArray(summary.materialSources) ? summary.materialSources : [];
+  if (materialSources.length) {
+    lines.push('', '### 上传资料来源');
+    materialSources.forEach((source) => {
+      const pageStart = Number(source?.pageStart || 0);
+      const pageEnd = Number(source?.pageEnd || pageStart || 0);
+      const pages = pageStart ? `（第${pageStart}${pageEnd && pageEnd !== pageStart ? `-${pageEnd}` : ''}页）` : '';
+      lines.push(`- ${text(source?.evidenceId)}：${text(source?.fileName) || '已审核上传资料'}${pages}`);
+    });
   }
   return lines.join('\n').trim();
 }
@@ -653,18 +673,6 @@ function removeUnknownEvidenceReferences(answer, validEvidenceIds) {
   );
 }
 
-async function settleWithin(promise, timeoutMs) {
-  let timeout;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((resolve) => { timeout = setTimeout(() => resolve(null), timeoutMs); }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 export function createAgentProductKnowledgeSearch({
   db,
   env = process.env,
@@ -705,10 +713,6 @@ export function createAgentProductKnowledgeSearch({
   const baseUrl = text(env.DEEPSEEK_BASE_URL) || 'https://api.deepseek.com';
   const model = text(env.DINGTALK_PRODUCT_EXPERT_MODEL || env.DEEPSEEK_MODEL) || 'deepseek-v4-flash';
   const timeoutMs = Math.max(1_000, Number(env.DINGTALK_PRODUCT_EXPERT_TIMEOUT_MS) || 20_000);
-  const responsibilitySummaryTimeoutMs = Math.max(
-    10,
-    Number(env.DINGTALK_RESPONSIBILITY_SUMMARY_TIMEOUT_MS) || 5_000,
-  );
   const officialDocumentTimeoutMs = Math.max(
     1_000,
     Number(env.DINGTALK_OFFICIAL_DOCUMENT_TIMEOUT_MS) || 8_000,
@@ -773,7 +777,15 @@ export function createAgentProductKnowledgeSearch({
         ...officialEvidence.map((item) => text(item.evidenceId)).filter(Boolean),
         ...materialEvidence.map((item) => text(item.evidenceId)).filter(Boolean),
       ]);
-      return removeUnknownEvidenceReferences(payload?.choices?.[0]?.message?.content, validEvidenceIds) || fallback;
+      const answer = removeUnknownEvidenceReferences(payload?.choices?.[0]?.message?.content, validEvidenceIds);
+      if (RESPONSIBILITY_QUESTION_PATTERN.test(text(question))) {
+        const responsibilitySummary = customerResponsibilitySummary || summary;
+        const titles = (Array.isArray(responsibilitySummary?.mainResponsibilities)
+          ? responsibilitySummary.mainResponsibilities : [])
+          .map((item) => text(item?.title)).filter(Boolean).slice(0, 12);
+        if (titles.some((title) => !answer.includes(title))) return fallback;
+      }
+      return answer || fallback;
     } catch {
       return fallback;
     } finally {
@@ -781,60 +793,86 @@ export function createAgentProductKnowledgeSearch({
     }
   }
 
-  async function answerMaterialSupplement({ question, product, customerResponsibilitySummary, materialEvidence }) {
-    if (!apiKey || !materialEvidence.length) return '';
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
-        method: 'POST',
-        signal: controller.signal,
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(sanitizeDeepSeekRequestBody({
-          model,
-          temperature: 0.1,
-          max_tokens: 600,
-          messages: [
-            {
-              role: 'system',
-              content: [
-                '你只负责给保险责任助手的完整答案补充已审核公司资料中的额外说明。',
-                '只可补充产品定位、适用场景、客户理解、健康服务或销售说明，不得重复、改写、合并或新增任何保险责任，不得补充合同金额、比例、等待期、免责或续保结论。',
-                '如果公司资料没有真正新增的非合同说明，只输出 NO_SUPPLEMENT。',
-                '每项补充必须引用真实培训资料 evidenceId，格式如【培训资料M1·第3页】；不得创造编号或页码。',
-                '输出简洁中文，不要标题，不提模型、接口、数据库或内部字段。',
-              ].join('\n'),
-            },
-            {
-              role: 'user',
-              content: JSON.stringify({
-                question: text(question).slice(0, 1_000),
-                product: { company: product.company, productName: product.productName },
-                allowedResponsibilityTitles: (Array.isArray(customerResponsibilitySummary?.mainResponsibilities)
-                  ? customerResponsibilitySummary.mainResponsibilities
-                  : []).map((item) => text(item?.title)).filter(Boolean),
-                approvedCompanyMaterialEvidence: materialEvidence,
-              }),
-            },
-          ],
-        })),
-      });
-      if (!response.ok) return '';
-      const payload = await response.json();
-      const validEvidenceIds = new Set(materialEvidence.map((item) => text(item.evidenceId)).filter(Boolean));
-      const supplement = removeUnknownEvidenceReferences(payload?.choices?.[0]?.message?.content, validEvidenceIds);
-      if (!supplement || supplement === 'NO_SUPPLEMENT' || /(?:责任|保险金)/u.test(supplement)) return '';
-      return supplement;
-    } catch {
-      return '';
-    } finally {
-      clearTimeout(timeout);
-    }
+  function comparisonProfile(answer) {
+    const value = text(answer);
+    if (/医疗费用|住院医疗|门急诊|外购药|报销|免赔额/u.test(value)) return {
+      type: '医疗费用补偿型保障',
+      payment: '按符合约定的实际医疗费用、限额和比例报销',
+      advantage: '覆盖就医费用场景，适合转移大额医疗支出风险',
+      fit: '更关注住院、重疾治疗和院外药械费用的人群',
+      limit: '需重点核对免赔额、赔付比例、医院范围、医保结算和续保条件',
+    };
+    if (/满期生存保险金|两全保险|生存至保险期间届满/u.test(value)) return {
+      type: '两全保险定额给付保障',
+      payment: '满足满期生存或身故条件后按合同约定金额给付',
+      advantage: '同时安排满期生存与身故给付，并可与明确附加的疾病险组合',
+      fit: '更关注长期定额保障、身故责任及满期安排的人群',
+      limit: '不是医疗费用报销；具体金额依赖基本保额、已交保费、保险期间及附加险配置',
+    };
+    if (/重大疾病保险金|轻症疾病保险金|中症疾病保险金/u.test(value)) return {
+      type: '疾病定额给付保障',
+      payment: '达到合同约定疾病定义和触发条件后按基本保额或保费倍数给付',
+      advantage: '确诊达到条件后提供定额资金支持，不以实际医疗费用为给付上限',
+      fit: '更关注重大疾病发生后的收入损失和康复资金安排的人群',
+      limit: '需核对疾病定义、等待期、给付次数、分组和责任终止条件',
+    };
+    return {
+      type: '现有证据未能归入同一保障类型',
+      payment: '以对应条款列明的给付方式为准',
+      advantage: '应结合完整责任和限制逐项判断',
+      fit: '现有资料无法确认',
+      limit: '不能只按责任数量判断优劣',
+    };
   }
 
-  async function answerComparison({ question, compared }) {
-    const fallback = compared.map((item) => item.answer).filter(Boolean).join('\n\n');
-    if (!apiKey) return fallback;
+  function deterministicComparison(compared, products = [], question = '') {
+    const names = compared.map((item, index) => text(products[index]?.officialName || products[index]?.productName) || `产品${index + 1}`);
+    const profiles = compared.map((item) => comparisonProfile(item.answer));
+    const asksForRecommendation = /推荐|怎么选|选哪个|选哪款|哪个好|更适合|客户|配置/u.test(text(question));
+    const mentionsHealth = /基础病|慢性病|既往症|健康异常|疾病|用药|住院|手术/u.test(text(question));
+    const clientGuidance = asksForRecommendation ? [
+      '',
+      '## 做出推荐前还需要确认',
+      '- 产品责任只能说明“保什么、怎么赔”，不能单独决定哪款更适合客户。还需确认客户的保障目标、预算、期望保障期限、已有保障和风险优先级。',
+      '- 还需核验候选产品当前是否在售，以及客户是否符合投保年龄、职业和其他投保条件。',
+      ...(mentionsHealth ? [
+        '- 你提到了健康情况，请补充正式诊断、确诊时间、当前指标、用药、近年住院或手术及并发症；健康告知不完整时不能判断承保、除外、加费或拒保结果。',
+      ] : []),
+      '- 补齐上述信息后，才能给出“优先考虑、备选或不适合”的条件式建议；不能仅凭产品名称直接推荐购买。',
+    ] : [];
+    return [
+      '## 核心差异',
+      '| 对比维度 | ' + names.join(' | ') + ' |',
+      '| --- | --- | --- |',
+      `| 产品性质 | ${profiles.map((profile) => profile.type).join(' | ')} |`,
+      `| 给付方式 | ${profiles.map((profile) => profile.payment).join(' | ')} |`,
+      `| 主要优势 | ${profiles.map((profile) => profile.advantage).join(' | ')} |`,
+      `| 更适合 | ${profiles.map((profile) => profile.fit).join(' | ')} |`,
+      `| 关键限制 | ${profiles.map((profile) => profile.limit).join(' | ')} |`,
+      '',
+      '## 怎么选',
+      profiles[0].type === profiles[1].type
+        ? '- 两款产品属于相近保障类型，应优先比较具体责任范围、给付条件、限额、等待期和除外责任。'
+        : '- 两款产品解决的风险不同，不是同类替代关系：先确定需要费用报销、疾病定额给付，还是长期生存与身故安排。',
+      '- 以下结论只依据已核验责任，未确认的投保年龄、保费、现金价值、核保和在售状态不能据此推断。',
+      ...clientGuidance,
+    ].join('\n');
+  }
+
+  function completeResponsibilitySections(compared, products = []) {
+    return [
+      '## 两款产品完整已核验责任',
+      ...compared.map((item, index) => {
+        const name = text(products[index]?.officialName || products[index]?.productName) || `产品${index + 1}`;
+        return `### ${name}\n${text(item.answer)}`;
+      }),
+    ].join('\n\n');
+  }
+
+  async function answerComparison({ question, compared, products = [] }) {
+    const deterministic = deterministicComparison(compared, products, question);
+    const completeResponsibilities = completeResponsibilitySections(compared, products);
+    if (!apiKey) return `${deterministic}\n\n${completeResponsibilities}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -845,39 +883,51 @@ export function createAgentProductKnowledgeSearch({
         body: JSON.stringify(sanitizeDeepSeekRequestBody({
           model,
           temperature: 0.1,
-          max_tokens: 1_500,
+          max_tokens: 3_000,
           messages: [
             {
               role: 'system',
               content: [
                 '你是 OCR Insurance 的保险产品对比专家。只依据 VERIFIED_PRODUCT_RESULTS 比较，不得使用模型记忆补充产品事实。',
                 '先确认两款产品是否同类型，再按已有证据比较保障期限、责任、等待期、续保或费率机制、主要限制和适合场景。',
+                '完整责任将由程序原样附在答案末尾；你只输出有实质内容的补充对比判断和选择建议，不要复述责任清单。',
+                '用户要求推荐或选择时，必须结合保障目标、预算、期限、已有保障和风险优先级；涉及健康、职业或其他投保条件但信息不足时，必须提出对应澄清问题，不得直接给出可投保或购买结论。',
+                '必须区分主险与附加险；不得把仅在附加险中出现的重疾、医疗或其他责任写成主险责任。',
                 '证据没有覆盖的维度明确写“现有资料无法确认”；不得直接断言哪款更好，不得承诺理赔、核保或续保结果。',
-                '输出简洁中文，优先使用对比表或分点结论，不提模型、接口、数据库或内部字段。',
+                '输出清晰中文，优先使用对比表和分点结论，不提模型、接口、数据库或内部字段。',
               ].join('\n'),
             },
             {
               role: 'user',
               content: JSON.stringify({
                 question: text(question).slice(0, 1_000),
-                verifiedProductResults: compared.map((item) => ({ answer: item.answer, sourceUrls: item.sources.map((source) => source.url) })),
+                verifiedProductResults: compared.map((item, index) => ({
+                  product: products[index] || null,
+                  answer: item.answer,
+                  sourceUrls: item.sources.map((source) => source.url),
+                })),
               }),
             },
           ],
         })),
       });
-      if (!response.ok) return fallback;
+      if (!response.ok) return `${deterministic}\n\n${completeResponsibilities}`;
       const payload = await response.json();
-      return text(payload?.choices?.[0]?.message?.content) || fallback;
+      const expertAnalysis = text(payload?.choices?.[0]?.message?.content);
+      return [
+        deterministic,
+        ...(expertAnalysis ? ['## 保险专家补充判断', expertAnalysis] : []),
+        completeResponsibilities,
+      ].join('\n\n');
     } catch {
-      return fallback;
+      return `${deterministic}\n\n${completeResponsibilities}`;
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  async function searchSingle({ question, productName } = {}) {
-    const query = [text(productName), text(question)].filter(Boolean).join(' ');
+  async function searchSingle({ question, productName, company: requestedCompany } = {}) {
+    const query = [text(requestedCompany), text(productName), text(question)].filter(Boolean).join(' ');
     const companies = listProductCatalogCompanies({ db, visibility: 'public' });
     const company = companyFromQuery(query, companies, officialDomainProfiles);
     const productQuery = text(productName) || query;
@@ -909,7 +959,8 @@ export function createAgentProductKnowledgeSearch({
           AND json_valid(payload) = 1
           AND json_extract(payload, '$.evidenceLevel') = 'insurer_official'
       `).all(requestedProductName) : []),
-    ].map((product) => ({ ...product, score: 1_000 })) : [];
+    ].filter((product) => !company || text(product.company) === company)
+      .map((product) => ({ ...product, score: 1_000 })) : [];
     const rankedProducts = exactProducts.length
       ? exactProducts
       : explicitProductQuery
@@ -1044,10 +1095,10 @@ export function createAgentProductKnowledgeSearch({
           if (assistant) {
             if (RESPONSIBILITY_QUESTION_PATTERN.test(text(question)) && typeof responsibilitySummaryQuery === 'function') {
               try {
-                const summaryResult = await settleWithin(
-                  responsibilitySummaryQuery({ company: product.company, name: product.productName }),
-                  responsibilitySummaryTimeoutMs,
-                );
+                const summaryResult = await responsibilitySummaryQuery({
+                  company: product.company,
+                  name: product.productName,
+                });
                 const customerSummary = customerResponsibilitySummaryEvidence(summaryResult, product, allowedOrigins);
                 if (customerSummary) {
                   assistant.directAnswer = customerSummary.directAnswer;
@@ -1084,6 +1135,13 @@ export function createAgentProductKnowledgeSearch({
     if (!selected) return { ...missingProductEvidenceGuidance({ productName: requestedProductName, question }), sources: [] };
     const { product, summary, sources, customerResponsibilitySummary = null, responsibilityCardEvidence = [] } = selected;
     const responsibilityQuestion = RESPONSIBILITY_QUESTION_PATTERN.test(text(question));
+    if (responsibilityQuestion && customerResponsibilitySummary) {
+      const answer = answerFromCustomerResponsibilitySummary(customerResponsibilitySummary);
+      return {
+        answer: answer ? `${product.company}《${product.productName}》：\n${answer}` : '',
+        sources,
+      };
+    }
     let material = { evidence: [], sources: [] };
     const canonicalProductId = text(product.canonicalProductId)
       || text(productIdentityStatement?.get(product.company, product.productName)?.canonical_product_id);
@@ -1100,23 +1158,6 @@ export function createAgentProductKnowledgeSearch({
       } catch {
         material = { evidence: [], sources: [] };
       }
-    }
-    if (responsibilityQuestion && customerResponsibilitySummary) {
-      const directAnswer = answerFromCustomerResponsibilitySummary(customerResponsibilitySummary);
-      const supplement = await answerMaterialSupplement({
-        question,
-        product,
-        customerResponsibilitySummary,
-        materialEvidence: material.evidence,
-      });
-      const answer = [
-        directAnswer,
-        supplement ? `### 已审核产品资料补充\n${supplement}` : '',
-      ].filter(Boolean).join('\n\n');
-      return {
-        answer: answer ? `${product.company}《${product.productName}》：\n${answer}` : '',
-        sources: [...sources, ...material.sources],
-      };
     }
     const fallback = answerFromSummary(summary);
     const customerResponsibilityFallback = customerResponsibilitySummary
@@ -1192,7 +1233,20 @@ export function createAgentProductKnowledgeSearch({
     };
   }
 
-  async function search({ question, productName } = {}) {
+  async function compare({ question, results, products = [] } = {}) {
+    const compared = Array.isArray(results) ? results.slice(0, 2) : [];
+    if (compared.length !== 2
+      || compared.some((result) => !text(result?.answer)
+        || !Array.isArray(result?.sources) || !result.sources.length)) return '';
+    return answerComparison({ question, compared, products });
+  }
+
+  async function search({ question, productName, company, product } = {}) {
+    const resolvedProductName = text(product?.officialName);
+    if (resolvedProductName) {
+      return searchSingle({ question, productName: resolvedProductName });
+    }
+    if (text(productName)) return searchSingle({ question, productName, company });
     const productQueries = comparisonProductQueries(question);
     if (productQueries.length !== 2) return searchSingle({ question, productName });
     const compared = await Promise.all(productQueries.map((query) => searchSingle({
@@ -1206,10 +1260,14 @@ export function createAgentProductKnowledgeSearch({
     }
     const sources = [...new Map(compared.flatMap((result) => result.sources).map((source) => [source.url, source])).values()];
     return {
-      answer: await answerComparison({ question, compared }),
+      answer: await answerComparison({
+        question,
+        compared,
+        products: productQueries.map((officialName) => ({ officialName })),
+      }),
       sources,
     };
   }
 
-  return { search, allowedOrigins };
+  return { search, compare, allowedOrigins };
 }

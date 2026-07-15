@@ -42,7 +42,7 @@ test('semantic contract exports the versioned controlled vocabularies', () => {
     'sales_coaching', 'upload_link', 'insurance_product_knowledge',
   ]);
   assert.deepEqual(SEMANTIC_QUERY_ASPECTS, [
-    'main_responsibilities', 'exclusions', 'waiting_period', 'deductible',
+    'main_responsibilities', 'product_advantages', 'exclusions', 'waiting_period', 'deductible',
     'reimbursement_ratio', 'renewal', 'sales_status', 'comparison',
     'family_overview', 'coverage_gap', 'report_status', 'sales_guidance', 'upload',
   ]);
@@ -77,6 +77,25 @@ test('semantic proposal preserves exact mentions and separate confidence scores'
     mentions: 0.95,
     references: 0.92,
   });
+});
+
+test('semantic proposal permits implicit context references but keeps candidate selection explicit', () => {
+  const proposal = normalizeSemanticProposal(validProposal({
+    queryAspects: ['comparison'],
+    references: [
+      { type: 'current_product', rawText: '' },
+      { type: 'comparison_left', rawText: '' },
+    ],
+    requestedSteps: ['compare'],
+  }), '和另一款产品对比');
+
+  assert.deepEqual(proposal.references, [
+    { type: 'current_product', rawText: '' },
+    { type: 'comparison_left', rawText: '' },
+  ]);
+  assertInvalid(validProposal({
+    references: [{ type: 'candidate_index', rawText: '' }],
+  }), '选择一个产品');
 });
 
 test('semantic proposal rejects invented mention text and extra root fields', () => {
@@ -180,6 +199,38 @@ test('router candidate projects exactly two distinct resolved products for compa
     () => semanticFrameToRouterCandidate({ ...frame, resolvedEntities }, '查询'),
     /SEMANTIC_FRAME_INVALID/u,
   );
+});
+
+test('router candidate permits open sales coaching without a family entity', () => {
+  const frame = validProposal({
+    intent: 'sales_coaching',
+    queryAspects: ['sales_guidance'],
+    requestedSteps: ['generate'],
+    resolvedEntities: {},
+  });
+  assert.deepEqual(semanticFrameToRouterCandidate(frame, '给客户推荐产品'), {
+    intent: 'sales_coaching',
+    question: '给客户推荐产品',
+    confidence: 0.98,
+    requestedOperation: 'read',
+  });
+});
+
+test('router candidate permits family-scoped sales coaching with a resolved family', () => {
+  const frame = validProposal({
+    intent: 'sales_coaching',
+    queryAspects: ['sales_guidance'],
+    mentions: [{ type: 'family', rawText: '张三家庭' }],
+    requestedSteps: ['generate'],
+    resolvedEntities: { family: { familyId: 12, displayName: '张三家庭' } },
+  });
+  assert.deepEqual(semanticFrameToRouterCandidate(frame, '张三家庭怎么沟通'), {
+    intent: 'sales_coaching',
+    question: '张三家庭怎么沟通',
+    confidence: 0.98,
+    requestedOperation: 'read',
+    entities: { familyName: '张三家庭' },
+  });
 });
 
 test('pre-parser recognizes only high-certainty selection and upload signals', () => {

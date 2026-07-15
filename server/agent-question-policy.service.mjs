@@ -17,6 +17,11 @@ export const AGENT_QUESTION_POLICY_TOOLS = Object.freeze([
   'propose_memory',
   'preview_transfer',
 ]);
+export const AGENT_QUESTION_POLICY_HANDLER_TOOLS = Object.freeze({
+  system: Object.freeze(['list_families', 'create_upload_link', 'propose_memory', 'preview_transfer']),
+  insurance_expert: Object.freeze(['family_summary', 'coverage_report', 'product_knowledge_search']),
+  sales_champion: Object.freeze(['sales_report', 'propose_memory']),
+});
 export const DEFAULT_AGENT_RUNTIME_SETTINGS = Object.freeze({
   fallbackHistoryMessageLimit: 6,
   productContextTtlMinutes: 30,
@@ -78,6 +83,9 @@ export function validateAgentQuestionPolicy(policy) {
   if (!includes(AGENT_QUESTION_POLICY_CONFIRMATIONS, policy.confirmation)) throw new TypeError('invalid policy confirmation');
   if (!includes(AGENT_QUESTION_POLICY_OUTPUT_MODES, policy.outputMode)) throw new TypeError('invalid policy output mode');
   if (policy.tool !== null && !includes(AGENT_QUESTION_POLICY_TOOLS, policy.tool)) throw new TypeError('tool is not allowed');
+  if (policy.tool !== null && !AGENT_QUESTION_POLICY_HANDLER_TOOLS[policy.handler].includes(policy.tool)) {
+    throw new TypeError('tool is not allowed for handler');
+  }
   if (policy.operation === 'write' && policy.confirmation !== 'required') {
     throw new TypeError('write operations require confirmation');
   }

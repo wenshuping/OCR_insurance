@@ -33,6 +33,7 @@ test('agent conversation context survives a SQLite store restart', async (t) => 
     ...identity(), conversationRef: loaded.conversationId, expectedVersion: loaded.version,
     history: [{ role: 'user', content: '国寿惠享保保险责任' }],
     hermesSessionId: 'hermes-session-user-7',
+    agentLoopSessionId: 'agent-loop-session-user-7',
     product: { productName: '国寿惠享保（免健告）百万医疗险', updatedAt: 1_720_000_000_000 },
     productCandidates: null,
     question: {
@@ -49,6 +50,7 @@ test('agent conversation context survives a SQLite store restart', async (t) => 
     .loadContext(identity());
   assert.deepEqual(restored.history, [{ role: 'user', content: '国寿惠享保保险责任' }]);
   assert.equal(restored.hermesSessionId, 'hermes-session-user-7');
+  assert.equal(restored.agentLoopSessionId, 'agent-loop-session-user-7');
   assert.equal(restored.product.productName, '国寿惠享保（免健告）百万医疗险');
   assert.equal(restored.version, 2);
 });

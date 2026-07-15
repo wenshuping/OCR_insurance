@@ -398,7 +398,7 @@ test('family sales chat prompt uses privacy-safe context and restores display na
             message: {
               content: body.max_tokens === 300
                 ? JSON.stringify({ intent: 'sales_script', skills: ['sales_script', 'objection_handling'], reason: '微信话术' })
-                : '我是DeepSeek大模型，可以对{{member_1}}说：“我们先核实预算，再拆基础方案。” {{id_number_1}}',
+                : '我是DeepSeek大模型。familyInput为空时，先对{{member_1}}说：“我们先核实预算，再拆基础方案。” {{id_number_1}}',
             },
           }],
         }),
@@ -418,6 +418,8 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   assert.match(reply.content, /张三/);
   assert.match(reply.content, /身份证号已脱敏/);
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
+  assert.doesNotMatch(reply.content, /familyInput|consultationScope|sourceUpdated/u);
+  assert.match(reply.content, /现有资料为空/u);
   assert.doesNotMatch(reply.content, /\{\{member_1\}\}|\{\{id_number_1\}\}|110101198606141234/);
 });
 

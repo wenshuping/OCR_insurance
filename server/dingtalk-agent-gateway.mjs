@@ -21,6 +21,18 @@ async function getUserMobile({ client, dingUserId, fetchImpl = fetch }) {
   return String(payload?.result?.mobile || '').trim();
 }
 
+export function createDingtalkMobileResolver({ client, fetchImpl = fetch, now = Date.now, cacheTtlMs = 5 * 60_000 } = {}) {
+  const cache = new Map();
+  return async function resolveDingtalkMobile(dingUserId) {
+    const userId = String(dingUserId || '').trim();
+    const cached = cache.get(userId);
+    if (cached && Number(now()) - cached.cachedAt < cacheTtlMs) return cached.mobile;
+    const mobile = await getUserMobile({ client, dingUserId: userId, fetchImpl });
+    cache.set(userId, { mobile, cachedAt: Number(now()) });
+    return mobile;
+  };
+}
+
 export function createDingtalkRuntimeSettingsLoader({ apiBaseUrl, hmacSecret, fetchImpl = fetch, now = Date.now } = {}) {
   const endpoint = `${String(apiBaseUrl || '').replace(/\/$/u, '')}/api/agent/runtime-config`;
   return async ({ messageRef } = {}) => {
@@ -67,6 +79,24 @@ export function createDingtalkConversationContextClient({ apiBaseUrl, hmacSecret
   };
 }
 
+export function installDingtalkShutdownHandlers({ gateway, client, processLike = process } = {}) {
+  if (typeof gateway?.shutdown !== 'function' || typeof client?.disconnect !== 'function'
+    || typeof processLike?.once !== 'function') {
+    throw new TypeError('DingTalk shutdown dependencies are required');
+  }
+  let stopping = null;
+  const stop = () => {
+    if (stopping) return stopping;
+    client.disconnect();
+    stopping = gateway.shutdown();
+    return stopping;
+  };
+  const onSignal = () => { void stop().catch(() => {}); };
+  processLike.once('SIGTERM', onSignal);
+  processLike.once('SIGINT', onSignal);
+  return stop;
+}
+
 export async function startDingtalkAgentGateway({ env = process.env, Client = DWClient } = {}) {
   const hmacSecret = requiredEnv(env, 'AGENT_GATEWAY_HMAC_SECRET');
   const apiBaseUrl = String(env.DINGTALK_CHANNEL_API_BASE_URL || '').trim() || 'http://127.0.0.1:4207';
@@ -75,11 +105,12 @@ export async function startDingtalkAgentGateway({ env = process.env, Client = DW
     clientSecret: requiredEnv(env, 'DINGTALK_APP_SECRET'),
     keepAlive: true,
   });
+  const getDingtalkMobile = createDingtalkMobileResolver({ client });
   const gateway = createDingtalkAgentGateway({
     corpId: requiredEnv(env, 'DINGTALK_CORP_ID'),
     hmacSecret,
     apiBaseUrl,
-    getDingtalkMobile: (dingUserId) => getUserMobile({ client, dingUserId }),
+    getDingtalkMobile,
     useMessagesApi: true,
   });
   client.registerCallbackListener(TOPIC_ROBOT, (event) => {
@@ -91,12 +122,14 @@ export async function startDingtalkAgentGateway({ env = process.env, Client = DW
     });
   });
   await client.connect();
-  return client;
+  return { client, gateway };
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
-  startDingtalkAgentGateway().catch((error) => {
-    console.error(`[dingtalk-agent-gateway] ${error?.message || 'START_FAILED'}`);
-    process.exitCode = 1;
-  });
+  startDingtalkAgentGateway()
+    .then(({ client, gateway }) => installDingtalkShutdownHandlers({ client, gateway }))
+    .catch((error) => {
+      console.error(`[dingtalk-agent-gateway] ${error?.message || 'START_FAILED'}`);
+      process.exitCode = 1;
+    });
 }

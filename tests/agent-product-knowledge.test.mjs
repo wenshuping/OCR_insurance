@@ -34,8 +34,10 @@ test('Agent product knowledge answers a natural responsibility question from a r
   const followUp = await knowledge.search({
     question: '这个产品有啥优势呀',
     productName: '尊享人生年金保险（分红型）',
+    company: '新华保险',
   });
   assert.match(followUp.answer, /尊享人生年金保险/u);
+  assert.equal(followUp.candidates, undefined);
   assert.equal(result.sources[0].verified, true);
   assert.deepEqual(knowledge.allowedOrigins, ['https://official.test']);
   db.close();
@@ -75,9 +77,49 @@ test('Agent product knowledge compares two explicitly named products with verifi
   });
 
   assert.match(result.answer, /主要差异/u);
+  assert.match(result.answer, /核心差异/u);
+  assert.match(result.answer, /怎么选/u);
+  assert.match(result.answer, /一般医疗/u);
+  assert.match(result.answer, /费率可以调整/u);
+  assert.match(result.answer, /两款产品完整已核验责任/u);
   assert.equal(result.sources.length, 2);
   assert.match(JSON.stringify(requestBody.messages), /国寿如E康悦百万医疗保险（A款）/u);
   assert.match(JSON.stringify(requestBody.messages), /康健长佑长期医疗保险（费率可调）/u);
+  assert.match(JSON.stringify(requestBody.messages), /完整责任将由程序原样附在答案末尾/u);
+  assert.equal(requestBody.max_tokens, 3_000);
+  db.close();
+});
+
+test('resolved product search does not reparse the full comparison question', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+  `);
+  const insert = db.prepare('INSERT INTO product_customer_responsibility_summaries VALUES (?, ?, ?, ?, ?, ?)');
+  insert.run(
+    '新华保险', '医药安欣（易核版）医疗保险', 'ready', '2026-07-13T00:00:00.000Z',
+    JSON.stringify({ headline: '医疗保障', mainResponsibilities: [{ title: '一般医疗', plainText: '医疗费用报销。' }] }),
+    JSON.stringify(['https://official.test/medical.pdf']),
+  );
+  insert.run(
+    '新华保险', '新华人寿保险股份有限公司康健无忧两全保险', 'ready', '2026-07-13T00:00:00.000Z',
+    JSON.stringify({ headline: '两全保障', mainResponsibilities: [{ title: '满期生存保险金', plainText: '满期给付。' }] }),
+    JSON.stringify(['https://official.test/endowment.pdf']),
+  );
+  const knowledge = createAgentProductKnowledgeSearch({ db });
+  const result = await knowledge.search({
+    question: '医药安欣和康健无忧哪个好',
+    product: {
+      canonicalProductId: 'medical', company: '新华保险',
+      officialName: '医药安欣（易核版）医疗保险',
+    },
+  });
+  assert.match(result.answer, /一般医疗/u);
+  assert.doesNotMatch(result.answer, /满期生存保险金/u);
+  assert.equal(result.sources[0].url, 'https://official.test/medical.pdf');
   db.close();
 });
 
@@ -241,7 +283,7 @@ test('Agent product knowledge falls back to exact-product official terms when a 
   db.close();
 });
 
-test('Agent product knowledge returns the complete C-end responsibility view and appends approved material context', async () => {
+test('Agent product knowledge returns the complete enriched C-end responsibility view without regenerating it', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
     CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
@@ -262,30 +304,13 @@ test('Agent product knowledge returns the complete C-end responsibility view and
   const calls = [];
   const summaryCalls = [];
   let modelCalls = 0;
-  let supplementRequest;
   const knowledge = createAgentProductKnowledgeSearch({
     db,
     env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://model.test' },
     fetchImpl: async (_url, options) => {
       modelCalls += 1;
-      const messages = JSON.parse(options.body).messages;
-      const prompt = messages.map((message) => message.content).join('\n');
-      supplementRequest = JSON.parse(messages[1].content);
-      assert.match(prompt, /只负责给保险责任助手的完整答案补充/u);
-      assert.match(prompt, /不得重复、改写、合并或新增任何保险责任/u);
-      return { ok: true, async json() { return { choices: [{ message: { content: '培训资料补充了家庭保障场景说明【培训资料M1·第3页】。' } }] }; } };
+      return { ok: true, async json() { return { choices: [] }; } };
     },
-    productRagRetrieve: async () => ({
-      evidenceChunks: [{
-        documentId: 'uploaded-product-material',
-        content: '客户上传并审核的产品说明，仅用于补充适用场景。',
-        pageStart: 3,
-        pageEnd: 3,
-        sourceAuthority: 'company_material',
-        reviewStatus: 'published',
-        citation: { fileName: '客户上传资料.pdf', pageStart: 3, pageEnd: 3 },
-      }],
-    }),
     responsibilityQuery: async (input) => {
       calls.push(input);
       return { analysis: {
@@ -306,6 +331,7 @@ test('Agent product knowledge returns the complete C-end responsibility view and
             { blockKey: 'responsibilities', title: '主要保险责任', content: '提供身故保障。', enabled: true, order: 2 },
             { blockKey: 'productFunctions', title: '产品功能', content: '不展示。', enabled: false, order: 3 },
             { blockKey: 'attentionNotes', title: '注意事项', content: '具体金额以保险合同为准。', enabled: true, order: 4 },
+            { blockKey: 'uploadedMaterial1', title: '家庭保障场景', content: '培训资料补充了家庭责任拆解说明。', enabled: true, order: 5, sourceRefs: ['M1'] },
           ],
           mainResponsibilities: [{
             title: '身故保险金',
@@ -318,6 +344,7 @@ test('Agent product knowledge returns the complete C-end responsibility view and
           }],
           notices: ['具体金额以保险合同为准。'],
           sourceUrls: ['https://official.test/terms.pdf'],
+          materialSources: [{ evidenceId: 'M1', fileName: '客户上传资料.pdf', pageStart: 3, pageEnd: 3 }],
         },
       };
     },
@@ -335,15 +362,14 @@ test('Agent product knowledge returns the complete C-end responsibility view and
   assert.match(result.answer, /calculationStatus: claim_contingent/u);
   assert.match(result.answer, /来源：src_1/u);
   assert.match(result.answer, /计算所需保单信息：基本保险金额/u);
-  assert.match(result.answer, /### 已审核产品资料补充/u);
-  assert.match(result.answer, /家庭保障场景说明/u);
+  assert.match(result.answer, /### 家庭保障场景/u);
+  assert.match(result.answer, /培训资料补充了家庭责任拆解说明/u);
+  assert.match(result.answer, /来源：M1/u);
+  assert.match(result.answer, /M1：客户上传资料.pdf（第3页）/u);
   assert.doesNotMatch(result.answer, /不展示/u);
   assert.doesNotMatch(result.answer, /共享保险责任助手结果/u);
-  assert.deepEqual(supplementRequest.allowedResponsibilityTitles, ['身故保险金']);
-  assert.equal(supplementRequest.approvedCompanyMaterialEvidence[0].fileName, '客户上传资料.pdf');
-  assert.equal(modelCalls, 1);
+  assert.equal(modelCalls, 0);
   assert.equal(result.sources[0].provenance, 'insurer_official');
-  assert.equal(result.sources.some((source) => source.provenance === 'company_material'), true);
   db.close();
 });
 
@@ -412,7 +438,7 @@ test('Agent product knowledge falls back to the complete C-end responsibility se
   db.close();
 });
 
-test('Agent product knowledge returns verified responsibility rows when the customer summary is slow', async () => {
+test('Agent product knowledge waits for the shared customer summary instead of returning a different fallback', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
     CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
@@ -427,7 +453,6 @@ test('Agent product knowledge returns verified responsibility rows when the cust
   let summaryResolved = false;
   const knowledge = createAgentProductKnowledgeSearch({
     db,
-    env: { DINGTALK_RESPONSIBILITY_SUMMARY_TIMEOUT_MS: '20' },
     responsibilityQuery: async () => ({ analysis: {
       report: '官方条款责任结果',
       coverageTable: [{ coverageType: '一般医疗保险金', scenario: '被保险人住院治疗', payout: '按合同约定报销' }],
@@ -444,11 +469,11 @@ test('Agent product knowledge returns verified responsibility rows when the cust
   const startedAt = Date.now();
   const result = await knowledge.search({ question: '保险责任', productName: '国寿惠享保百万医疗险' });
 
-  assert.ok(Date.now() - startedAt < 90);
-  assert.match(result.answer, /一般医疗保险金/u);
-  assert.doesNotMatch(result.answer, /迟到的摘要/u);
+  assert.ok(Date.now() - startedAt >= 90);
+  assert.match(result.answer, /迟到的摘要/u);
+  assert.doesNotMatch(result.answer, /一般医疗保险金/u);
   assert.equal(result.sources[0].verified, true);
-  assert.equal(summaryResolved, false);
+  assert.equal(summaryResolved, true);
   db.close();
 });
 

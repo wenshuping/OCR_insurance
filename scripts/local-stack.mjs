@@ -233,6 +233,7 @@ function createServices(profile) {
       command: process.execPath,
       args: ['--env-file=.env.local', 'server/dingtalk-agent-gateway.mjs'],
       optional: true,
+      shutdownGraceMs: 20_000,
       skip: profile.name !== 'dev' || !hasDingtalkGatewayConfig(),
       env: {
         DINGTALK_CHANNEL_API_BASE_URL: `http://127.0.0.1:${profile.apiPort}`,
@@ -480,7 +481,10 @@ async function stop(profile) {
       continue;
     }
     process.kill(pid, 'SIGTERM');
-    await wait(1000);
+    const shutdownDeadline = Date.now() + Math.max(1_000, Number(service.shutdownGraceMs) || 1_000);
+    while (isPidRunning(pid) && Date.now() < shutdownDeadline) {
+      await wait(Math.min(100, shutdownDeadline - Date.now()));
+    }
     if (isPidRunning(pid)) {
       process.kill(pid, 'SIGKILL');
     }

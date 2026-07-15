@@ -13,6 +13,7 @@ export const SEMANTIC_INTENTS = Object.freeze([
 
 export const SEMANTIC_QUERY_ASPECTS = Object.freeze([
   'main_responsibilities',
+  'product_advantages',
   'exclusions',
   'waiting_period',
   'deductible',
@@ -60,6 +61,13 @@ const ROOT_FIELDS = new Set([
 const CONFIDENCE_FIELDS = new Set(['intent', 'mentions', 'references']);
 const MAX_MENTIONS = 20;
 const MAX_REFERENCES = 20;
+const IMPLICIT_REFERENCE_TYPES = new Set([
+  'current_product',
+  'current_family',
+  'previous_result',
+  'comparison_left',
+  'comparison_right',
+]);
 
 function invalid() {
   const error = new Error('SEMANTIC_PROPOSAL_INVALID');
@@ -114,12 +122,15 @@ function normalizeTextEntries(value, {
   maxItems,
   maxTextLength,
   question,
+  implicitTypes = new Set(),
 }) {
   if (!Array.isArray(value) || value.length > maxItems || !isDenseArray(value)) invalid();
   return value.map((entry) => {
     if (!isRecord(entry) || !hasOnlyFields(entry, allowedFields)) invalid();
     const type = boundedString(entry.type, 40);
-    const rawText = boundedString(entry.rawText, maxTextLength);
+    const rawText = implicitTypes.has(type) && entry.rawText === ''
+      ? ''
+      : boundedString(entry.rawText, maxTextLength);
     if (!allowedTypes.includes(type) || !question.includes(rawText)) invalid();
     return { type, rawText };
   });
@@ -147,6 +158,7 @@ export function normalizeSemanticProposal(value, originalQuestion) {
     maxItems: MAX_REFERENCES,
     maxTextLength: 100,
     question,
+    implicitTypes: IMPLICIT_REFERENCE_TYPES,
   });
 
   const scores = value.confidence;
@@ -199,11 +211,14 @@ export function semanticFrameToRouterCandidate(frame, question) {
   const hasProducts = resolvedEntities.products !== undefined && resolvedEntities.products !== null;
   const hasFamily = resolvedEntities.family !== undefined && resolvedEntities.family !== null;
   const requiresProduct = intent === 'insurance_product_knowledge';
-  const requiresFamily = ['family_summary', 'coverage_report', 'sales_report', 'sales_coaching']
+  const requiresFamily = ['family_summary', 'coverage_report', 'sales_report']
     .includes(intent);
+  const allowsOptionalFamily = intent === 'sales_coaching';
   if ((requiresProduct && ((hasProduct === hasProducts) || hasFamily))
     || (requiresFamily && (!hasFamily || hasProduct || hasProducts))
-    || (!requiresProduct && !requiresFamily && (hasProduct || hasProducts || hasFamily))) {
+    || (!requiresProduct && !requiresFamily && !allowsOptionalFamily
+      && (hasProduct || hasProducts || hasFamily))
+    || (allowsOptionalFamily && (hasProduct || hasProducts))) {
     invalidFrame();
   }
   const entities = {};

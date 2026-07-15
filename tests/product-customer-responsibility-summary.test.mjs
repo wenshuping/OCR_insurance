@@ -5,6 +5,7 @@ import {
   CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
   buildCustomerResponsibilitySourceDigest,
   callDeepSeekForCustomerResponsibilitySummary,
+  enrichCustomerResponsibilitySummaryWithMaterials,
   generateProductCustomerResponsibilitySummary,
   validateCustomerResponsibilitySummaryJson,
 } from '../server/product-customer-responsibility-summary.service.mjs';
@@ -14,7 +15,97 @@ const company = '新华保险';
 const productName = '盛世荣耀';
 const productKey = `company_product:${company}:${productName}`;
 const sourceUrl = 'https://example.test/terms.pdf';
-const currentSummaryVersion = 'customer-summary-v24-planner-blocks';
+const currentSummaryVersion = 'customer-summary-v25-planner-routing';
+
+test('material enrichment dynamically adds grounded blocks and responsibilities from published chunks', async () => {
+  let receivedPrompt = '';
+  const summary = {
+    company,
+    productName: '医药安欣（易核版）医疗保险',
+    headline: '提供医疗费用保障。',
+    contentBlocks: [
+      { blockKey: 'productPurpose', title: '产品主要做什么', enabled: true, editable: true, order: 1, content: '提供医疗费用保障。' },
+      { blockKey: 'responsibilities', title: '主要保险责任', enabled: true, editable: true, order: 2, content: '包含一般医疗费用保险金。' },
+    ],
+    mainResponsibilities: [{ title: '一般医疗费用保险金', plainText: '按合同约定报销。' }],
+    notices: [],
+    requiredPolicyFields: [],
+    sourceUrls: ['https://example.test/terms.pdf'],
+  };
+  const enriched = await enrichCustomerResponsibilitySummaryWithMaterials({
+    summary,
+    evidencePackage: {
+      evidenceChunks: [
+        {
+          evidenceId: 'M1',
+          content: '培训资料介绍了院外药械直付服务和异地就医协助。',
+          sourceAuthority: 'company_material',
+          reviewStatus: 'published',
+          pageStart: 16,
+          pageEnd: 16,
+          citation: { fileName: '产品培训课件.pptx', pageStart: 16, pageEnd: 16 },
+        },
+        {
+          evidenceId: 'M2',
+          content: '可选责任包含小额医疗费用保险金。',
+          sourceAuthority: 'company_material',
+          reviewStatus: 'published',
+          pageStart: 18,
+          pageEnd: 18,
+          citation: { fileName: '产品培训课件.pptx', pageStart: 18, pageEnd: 18 },
+        },
+        {
+          evidenceId: 'M3',
+          content: '这份资料尚未发布。',
+          sourceAuthority: 'company_material',
+          reviewStatus: 'quarantined',
+        },
+      ],
+    },
+    generateWithDeepSeek: async ({ prompt }) => {
+      receivedPrompt = prompt;
+      return {
+        contentBlocks: [{ title: '就医与药械服务', content: '提供院外药械直付和异地就医协助。', sourceRefs: ['M1'] }],
+        additionalResponsibilities: [{
+          title: '小额医疗费用保险金',
+          plainText: '属于可选责任。',
+          calculationStatus: 'claim_contingent',
+          sourceRefs: ['M2'],
+        }],
+        notices: [],
+      };
+    },
+  });
+
+  assert.match(receivedPrompt, /上传资料内容不固定/u);
+  assert.match(receivedPrompt, /院外药械直付服务/u);
+  assert.doesNotMatch(receivedPrompt, /尚未发布/u);
+  assert.equal(enriched.contentBlocks.at(-1).title, '就医与药械服务');
+  assert.deepEqual(enriched.contentBlocks.at(-1).sourceRefs, ['M1']);
+  assert.equal(enriched.mainResponsibilities.at(-1).title, '小额医疗费用保险金');
+  assert.deepEqual(enriched.mainResponsibilities.at(-1).sourceRefs, ['M2']);
+  assert.deepEqual(enriched.materialSources, [
+    { evidenceId: 'M1', fileName: '产品培训课件.pptx', pageStart: 16, pageEnd: 16 },
+    { evidenceId: 'M2', fileName: '产品培训课件.pptx', pageStart: 18, pageEnd: 18 },
+  ]);
+});
+
+test('material enrichment leaves the official summary unchanged without published chunks', async () => {
+  const summary = { company, productName, headline: '官网摘要', contentBlocks: [], mainResponsibilities: [] };
+  let modelCalls = 0;
+  const result = await enrichCustomerResponsibilitySummaryWithMaterials({
+    summary,
+    evidencePackage: {
+      evidenceChunks: [{ content: '未审核资料', sourceAuthority: 'company_material', reviewStatus: 'quarantined' }],
+    },
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      return {};
+    },
+  });
+  assert.equal(result, summary);
+  assert.equal(modelCalls, 0);
+});
 
 function baseState() {
   return {
@@ -1802,6 +1893,77 @@ test('generateProductCustomerResponsibilitySummary calls Planner for complex pro
   assert.equal(result.summary.contentBlocks.some((block) => block.blockKey === 'productFunctions'), true);
 });
 
+test('Planner classification overrides a wrong local category caused by stale product metadata', async () => {
+  const endowmentProductName = '新华人寿保险股份有限公司康健无忧两全保险';
+  let saved = null;
+  const state = {
+    knowledgeRecords: [{
+      id: 1,
+      company,
+      productName: endowmentProductName,
+      productType: '重疾险',
+      title: `${endowmentProductName}条款`,
+      url: sourceUrl,
+      official: true,
+      pageText: [
+        '保险责任',
+        '满期生存保险金 被保险人生存至保险期间届满，本公司按实际交纳的保险费给付满期生存保险金。',
+        '身故保险金 被保险人身故，本公司按基本保险金额给付身故保险金。',
+        '保单贷款利息根据贷款利率按年复利计算。',
+        '责任免除',
+      ].join('\n'),
+    }],
+    insuranceIndicatorRecords: [],
+  };
+
+  const result = await generateProductCustomerResponsibilitySummary({
+    state,
+    db: dbWithCards([]),
+    input: { company, name: endowmentProductName, plannerMode: 'auto' },
+    findSummary: async () => null,
+    persistSummary: async (row) => {
+      saved = row;
+      return row;
+    },
+    generatePlannerWithDeepSeek: async () => JSON.stringify({
+      productCategory: 'endowment',
+      categoryLabel: '两全保险',
+      confidence: 'high',
+      recommendedTemplate: 'basic_endowment',
+    }),
+    generateWithDeepSeek: async ({ prompt }) => {
+      const payload = structuredPromptPayload(prompt);
+      assert.equal(payload.routing.productCategory, 'endowment');
+      assert.equal(payload.routing.categoryLabel, '两全保险');
+      return structuredLifeSummary({
+        productCategory: 'endowment',
+        categoryLabel: '两全保险',
+        headline: '这是一款提供满期生存保险金和身故保险金的两全保险。',
+        responsibilities: [
+          {
+            title: '满期生存保险金',
+            plainText: '生存至保险期间届满时给付满期生存保险金。',
+            triggerCondition: '被保险人生存至保险期间届满。',
+            paymentRule: '按实际交纳的保险费给付。',
+            calculationStatus: 'scheduled_cashflow',
+          },
+          {
+            title: '身故保险金',
+            plainText: '被保险人身故时给付身故保险金。',
+            triggerCondition: '被保险人身故。',
+            paymentRule: '按基本保险金额给付。',
+            calculationStatus: 'claim_contingent',
+          },
+        ],
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(saved?.payload?.routing?.productCategory, 'endowment');
+  assert.equal(saved?.payload?.routing?.categoryLabel, '两全保险');
+});
+
 test('generateProductCustomerResponsibilitySummary honors plannerMode all and off', async () => {
   let allCalls = 0;
   await generateProductCustomerResponsibilitySummary({
@@ -2264,6 +2426,11 @@ test('generateProductCustomerResponsibilitySummary seed product prompts include 
       findSummary: async () => null,
       persistSummary: async (row) => row,
       persistGenerationRun: async (run) => run,
+      generatePlannerWithDeepSeek: async () => JSON.stringify({
+        productCategory: item.expectedCategory,
+        categoryLabel: item.response.categoryLabel,
+        confidence: 'high',
+      }),
       generateWithDeepSeek: async ({ prompt }) => {
         for (const term of item.expectedPromptTerms) assert.match(prompt, term);
         const payload = structuredPromptPayload(prompt);

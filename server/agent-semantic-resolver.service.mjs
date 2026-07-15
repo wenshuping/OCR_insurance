@@ -11,9 +11,9 @@ const FAMILY_INTENTS = new Set([
   'family_summary',
   'coverage_report',
   'sales_report',
-  'sales_coaching',
 ]);
 const MAX_CANDIDATES = 10;
+const MAX_PRODUCT_ALIASES = 5;
 const MAX_TEXT_LENGTH = 200;
 const MAX_CONTEXT_TTL_MS = 86_400_000;
 const PRODUCT_RESOLVED_MATCH_TYPES = new Set([
@@ -57,12 +57,34 @@ function projectProduct(value, { active = false } = {}) {
     entity.confidence = Math.max(0, Math.min(1, value.confidence));
   }
   if (active) {
+    const aliases = Array.isArray(value.aliases)
+      ? [...new Set(value.aliases.map((alias) => clean(alias)).filter(Boolean))]
+        .slice(0, MAX_PRODUCT_ALIASES)
+      : [];
+    if (aliases.length) entity.aliases = aliases;
     const updatedAt = finiteTimestamp(value.updatedAt);
     const expiresAt = finiteTimestamp(value.expiresAt);
     if (updatedAt !== null) entity.updatedAt = updatedAt;
     if (expiresAt !== null) entity.expiresAt = expiresAt;
   }
   return entity;
+}
+
+function contextualProductMention(mention, activeProduct) {
+  const rawText = clean(mention?.rawText);
+  if (!rawText || !activeProduct?.aliases?.includes(rawText)) return mention;
+  return { type: 'product', rawText: activeProduct.officialName };
+}
+
+function confirmedProductAliases(proposal, entity, priorProduct) {
+  const priorAliases = priorProduct?.canonicalProductId === entity.canonicalProductId
+    ? priorProduct.aliases || []
+    : [];
+  const mentionedAliases = proposal.mentions
+    .filter((mention) => mention.type === 'product')
+    .map((mention) => clean(mention.rawText))
+    .filter(Boolean);
+  return [...new Set([...priorAliases, ...mentionedAliases])].slice(0, MAX_PRODUCT_ALIASES);
 }
 
 function projectFamily(value, { active = false } = {}) {
@@ -184,9 +206,11 @@ function hasReference(proposal, type) {
   return proposal.references.some((reference) => reference.type === type);
 }
 
-function requiredEntityType(intent) {
-  if (intent === PRODUCT_INTENT) return 'product';
-  if (FAMILY_INTENTS.has(intent)) return 'family';
+function requiredEntityType(proposal) {
+  if (proposal?.intent === PRODUCT_INTENT) return 'product';
+  if (FAMILY_INTENTS.has(proposal?.intent)
+    || (proposal?.intent === 'sales_coaching'
+      && (hasMention(proposal, 'family') || hasReference(proposal, 'current_family')))) return 'family';
   return '';
 }
 
@@ -201,7 +225,22 @@ function projectPendingClarification(value, now, contextTtlMs) {
     || expiresAt <= now
     || expiresAt > now + contextTtlMs) return null;
   const proposal = normalizedProposal(value.proposal, originalQuestion);
-  return proposal ? { entityType, proposal, originalQuestion, expiresAt } : null;
+  if (!proposal) return null;
+  const comparison = value.comparison === true
+    && entityType === 'product'
+    && proposal.intent === PRODUCT_INTENT;
+  return {
+    entityType,
+    proposal,
+    originalQuestion,
+    expiresAt,
+    ...(comparison
+      ? {
+        comparison: true,
+        selectedProducts: projectCandidates(value.selectedProducts, 'product').slice(0, 1),
+      }
+      : {}),
+  };
 }
 
 function sanitizedState(context, now, contextTtlMs) {
@@ -365,10 +404,34 @@ function projectProductScan(value) {
   return { entities, overflow: value.overflow, invalidInsurer };
 }
 
-function unsupportedComparisonResult({ state, proposal }) {
+function unsupportedComparisonResult({
+  state,
+  proposal,
+  question = '',
+  candidates = [],
+  selectedProducts = [],
+}) {
   const pendingType = clean(state.pendingClarification?.entityType, 20);
   if (pendingType === 'product' || pendingType === 'family') state.candidateSets[pendingType] = [];
-  state.pendingClarification = null;
+  const distinctCandidates = candidates.filter((candidate, index, values) => candidate
+    && values.findIndex((value) => value.canonicalProductId === candidate.canonicalProductId) === index)
+    .slice(0, MAX_CANDIDATES);
+  const enoughChoices = selectedProducts.length > 0
+    ? distinctCandidates.length > 0
+    : distinctCandidates.length > 1;
+  if (enoughChoices && clean(question, 1_000)) {
+    state.candidateSets.product = distinctCandidates;
+    state.pendingClarification = {
+      entityType: 'product',
+      proposal,
+      originalQuestion: question,
+      expiresAt: state.now + state.contextTtlMs,
+      comparison: true,
+      selectedProducts: selectedProducts.slice(0, 1),
+    };
+  } else {
+    state.pendingClarification = null;
+  }
   return {
     decision: 'clarify',
     decisionReason: 'product_comparison_unsupported',
@@ -394,10 +457,18 @@ function pendingSelection(state, selection, now) {
   }
   const candidate = state.candidateSets[entityType]?.[selection.index] || null;
   const proposal = normalizedProposal(pending.proposal, originalQuestion);
-  if (!candidate || !proposal || requiredEntityType(proposal.intent) !== entityType) {
+  if (!candidate || !proposal || requiredEntityType(proposal) !== entityType) {
     return { valid: false, entityType };
   }
-  return { valid: true, entityType, candidate, proposal, originalQuestion };
+  return {
+    valid: true,
+    entityType,
+    candidate,
+    proposal,
+    originalQuestion,
+    comparison: pending.comparison === true && entityType === 'product',
+    selectedProducts: projectCandidates(pending.selectedProducts, 'product').slice(0, 1),
+  };
 }
 
 function completedComparisonSelection(state, selection, now) {
@@ -416,12 +487,16 @@ function completedComparisonSelection(state, selection, now) {
 
 function stateAfterResolution({ state, proposal, proposalQuestion, resolutions, readiness, now, contextTtlMs }) {
   const priorPendingType = clean(state.pendingClarification?.entityType, 20);
-  const requiredType = requiredEntityType(proposal.intent);
+  const requiredType = requiredEntityType(proposal);
   const resolution = requiredType ? resolutions[requiredType] : null;
 
   if (resolution?.status === 'resolved') {
+    const aliases = requiredType === 'product'
+      ? confirmedProductAliases(proposal, resolution.entity, state.activeEntities.product)
+      : [];
     state.activeEntities[requiredType] = {
       ...resolution.entity,
+      ...(aliases.length ? { aliases } : {}),
       updatedAt: now,
       expiresAt: now + contextTtlMs,
     };
@@ -508,7 +583,7 @@ export function createAgentSemanticResolver({
           });
         }
         if (effectiveProposal) {
-          const boundCurrentSelection = requiredEntityType(effectiveProposal.intent) === selection.entityType
+          const boundCurrentSelection = requiredEntityType(effectiveProposal) === selection.entityType
             && effectiveProposal.references.some((reference) => (
               reference.type === 'candidate_index'
               && reference.rawText === preparsed.candidateSelection.rawText
@@ -520,7 +595,7 @@ export function createAgentSemanticResolver({
               proposal: effectiveProposal,
             });
           }
-        } else if (!selection.comparison && proposalUnavailable) {
+        } else if (proposalUnavailable && selection.proposal) {
           effectiveProposal = selection.proposal;
           proposalQuestion = selection.originalQuestion;
         }
@@ -562,15 +637,39 @@ export function createAgentSemanticResolver({
           effectiveProposal,
           normalizedQuestion,
         );
+        const retainedComparisonProducts = state.lastCompletedAction?.comparison === true
+          && state.lastCompletedAction?.intent === PRODUCT_INTENT
+          && state.lastCompletedAction?.entityType === 'product'
+          && state.candidateSets.product.length === 2
+          ? state.candidateSets.product
+          : [];
+        const proposalProductMentionCount = effectiveProposal.mentions
+          .filter((mention) => mention.type === 'product').length;
+        const continuesPreviousComparison = retainedComparisonProducts.length === 2
+          && proposalProductMentionCount === 0
+          && explicitInsurers.length === 0
+          && (effectiveProposal.queryAspects.includes('sales_guidance')
+            || /它们|这两款|两者|二者|各自|分别|哪个|哪款|推荐|更适合|怎么选|二选一/u.test(normalizedQuestion));
         const comparisonRequested = forcedComparison
+          || continuesPreviousComparison
           || effectiveProposal.mentions.filter((mention) => mention.type === 'product').length > 1
           || scan.entities.length > 1;
         if (comparisonRequested) {
           const productMentions = effectiveProposal.mentions
             .filter((mention) => mention.type === 'product')
             .filter((mention, index, values) => values
-              .findIndex((value) => value.rawText === mention.rawText) === index);
-          if (selection || productMentions.length > 2) {
+              .findIndex((value) => value.rawText === mention.rawText) === index)
+            .map((mention) => contextualProductMention(mention, state.activeEntities.product));
+          const previousComparisonProducts = (forcedComparison || continuesPreviousComparison)
+            && productMentions.length === 0
+            && explicitInsurers.length === 0
+            && retainedComparisonProducts.length === 2
+            ? retainedComparisonProducts
+            : [];
+          if (selection && !selection.comparison) {
+            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+          }
+          if (productMentions.length > 2) {
             return unsupportedComparisonResult({ state, proposal: effectiveProposal });
           }
           const comparesActiveProduct = forcedComparison
@@ -583,7 +682,28 @@ export function createAgentSemanticResolver({
             : null;
           const evidence = [];
           try {
-            if (comparesActiveProduct) {
+            if (selection?.comparison) {
+              for (const product of [...selection.selectedProducts, selection.candidate]) {
+                evidence.push(projectResolution(await productResolver.resolve({
+                  mentions: [
+                    { type: 'insurer', rawText: product.company },
+                    { type: 'product', rawText: product.officialName },
+                  ],
+                  activeProduct: null,
+                  ...(product === selection.candidate ? { confirmedCandidate: product } : {}),
+                }), 'product'));
+              }
+            } else if (previousComparisonProducts.length === 2) {
+              for (const product of previousComparisonProducts) {
+                evidence.push(projectResolution(await productResolver.resolve({
+                  mentions: [
+                    { type: 'insurer', rawText: product.company },
+                    { type: 'product', rawText: product.officialName },
+                  ],
+                  activeProduct: null,
+                }), 'product'));
+              }
+            } else if (comparesActiveProduct) {
               evidence.push(projectResolution(await productResolver.resolve({
                 mentions: [...explicitInsurers, productMentions[0]],
                 activeProduct: null,
@@ -620,6 +740,22 @@ export function createAgentSemanticResolver({
           }
           const products = evidence.filter((item) => item.status === 'resolved')
             .map((item) => item.entity);
+          if (selection?.comparison && selection.selectedProducts.length === 0) {
+            const selectedProduct = products[0] || null;
+            if (!selectedProduct) {
+              return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+            }
+            const remainingCandidates = state.candidateSets.product.filter((candidate) => (
+              candidate.canonicalProductId !== selectedProduct.canonicalProductId
+            ));
+            return unsupportedComparisonResult({
+              state,
+              proposal: effectiveProposal,
+              question: selection.originalQuestion,
+              candidates: remainingCandidates,
+              selectedProducts: [selectedProduct],
+            });
+          }
           const distinctProductCount = new Set(products
             .map((item) => clean(item.canonicalProductId))).size;
           const scanCanonicalIds = new Set(scan.entities
@@ -632,13 +768,23 @@ export function createAgentSemanticResolver({
             && !forcedComparison && scan.entities.length <= 1) {
             // A formal name plus its parenthetical alias is one product, not a comparison.
           } else if (products.length !== 2 || distinctProductCount !== 2 || scanConflicts) {
-            return unsupportedComparisonResult({ state, proposal: effectiveProposal });
+            const comparisonCandidates = evidence.flatMap((item) => (
+              item.status === 'ambiguous'
+                ? item.candidates
+                : (item.status === 'resolved' ? [item.entity] : [])
+            ));
+            return unsupportedComparisonResult({
+              state,
+              proposal: effectiveProposal,
+              question: normalizedQuestion,
+              candidates: comparisonCandidates,
+            });
           } else {
             return resolvedComparisonResult({
               state,
               proposal: effectiveProposal,
               products,
-              question: normalizedQuestion,
+              question: selection?.comparison ? selection.originalQuestion : normalizedQuestion,
             });
           }
         }
@@ -683,7 +829,8 @@ export function createAgentSemanticResolver({
           const productMentions = effectiveProposal.mentions
             .filter((mention) => mention.type === 'product')
             .filter((mention, index, values) => values
-              .findIndex((value) => value.rawText === mention.rawText) === index);
+              .findIndex((value) => value.rawText === mention.rawText) === index)
+            .map((mention) => contextualProductMention(mention, state.activeEntities.product));
           if (productMentions.length > 7) {
             return unsupportedComparisonResult({ state, proposal: effectiveProposal });
           }
@@ -711,6 +858,29 @@ export function createAgentSemanticResolver({
           }
 
           resolutions.product = evidence[0] || { status: 'missing', entity: null, candidates: [] };
+          if (resolutions.product.status === 'ambiguous' && scan.entities.length === 1) {
+            const scannedProduct = scan.entities[0];
+            const scannedCandidateIsCompatible = resolutions.product.candidates.some((candidate) => (
+              candidate.canonicalProductId === scannedProduct.canonicalProductId
+            ));
+            if (scannedCandidateIsCompatible) {
+              try {
+                const scannedResolution = projectResolution(await productResolver.resolve({
+                  mentions: [
+                    { type: 'insurer', rawText: scannedProduct.company },
+                    { type: 'product', rawText: scannedProduct.officialName },
+                  ],
+                  activeProduct: null,
+                }), 'product');
+                if (scannedResolution.status === 'resolved'
+                  && scannedResolution.entity.canonicalProductId === scannedProduct.canonicalProductId) {
+                  resolutions.product = scannedResolution;
+                }
+              } catch {
+                return resolverUnavailableResult({ state, proposal: effectiveProposal });
+              }
+            }
+          }
         } else if (omittedActiveProduct && !scannedProduct) {
           try {
             resolutions.product = projectResolution(await productResolver.resolve({
@@ -730,6 +900,7 @@ export function createAgentSemanticResolver({
             resolutions.product = projectResolution(await productResolver.resolve({
               mentions,
               activeProduct: null,
+              ...(selectedProduct ? { confirmedCandidate: selectedProduct } : {}),
             }), 'product');
           } catch {
             return resolverUnavailableResult({ state, proposal: effectiveProposal });
@@ -746,7 +917,7 @@ export function createAgentSemanticResolver({
             return unsupportedComparisonResult({ state, proposal: effectiveProposal });
           }
         }
-      } else if (effectiveProposal && FAMILY_INTENTS.has(effectiveProposal.intent)) {
+      } else if (effectiveProposal && requiredEntityType(effectiveProposal) === 'family') {
         const explicitFamily = hasMention(effectiveProposal, 'family');
         const currentFamilyReference = hasReference(effectiveProposal, 'current_family');
         const activeFamily = selection?.entityType === 'family'

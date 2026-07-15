@@ -17,7 +17,10 @@ function database() {
       summary_json TEXT,
       source_urls_json TEXT,
       updated_at TEXT
-    )
+    );
+    CREATE TABLE knowledge_records (
+      id INTEGER PRIMARY KEY, company TEXT, product_name TEXT, url TEXT, payload TEXT
+    );
   `);
   return db;
 }
@@ -73,6 +76,8 @@ test('ready exact product summary returns bounded responsibilities with official
   });
 
   assert.match(result.answer, /兼顾身故与满期责任/u);
+  assert.match(result.answer, /### 责任明细（2项）/u);
+  assert.match(result.answer, /1\. \*\*身故保险金\*\*/u);
   assert.match(result.answer, /身故保险金/u);
   assert.match(result.answer, /满期保险金/u);
   assert.deepEqual(result.sources, [{
@@ -81,6 +86,98 @@ test('ready exact product summary returns bounded responsibilities with official
     url: 'https://www.newchinalife.com/product/terms',
     provenance: 'verified_product_summary',
   }]);
+});
+
+test('resolved product responsibility uses the complete responsibility assistant output contract', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  insert(db, {
+    summaryJson: JSON.stringify({
+      headline: '完整责任摘要',
+      contentBlocks: [
+        { blockKey: 'productPurpose', title: '产品主要做什么', content: '提供身故保障。', enabled: true, order: 1 },
+        { blockKey: 'responsibilities', title: '主要保险责任', content: '核心为身故保险金。', enabled: true, order: 2 },
+      ],
+      mainResponsibilities: [{
+        title: '身故保险金', plainText: '被保险人身故时按约定给付。',
+        triggerCondition: '被保险人身故', howItPays: '给付金额 = 基本保险金额',
+        calculationStatus: 'claim_contingent', sourceRefs: ['src_1'],
+        requiredPolicyFields: ['基本保险金额'],
+      }],
+      notices: ['具体金额以合同为准。'],
+      requiredPolicyFields: ['基本保险金额'],
+      sourceUrls: ['https://www.newchinalife.com/product/terms'],
+    }),
+  });
+
+  const result = await service(db).search({
+    question: '保险责任', scope: 'public_read_only', product,
+    queryAspects: ['main_responsibilities'],
+  });
+
+  assert.match(result.answer, /### 产品主要做什么\n提供身故保障/u);
+  assert.match(result.answer, /### 主要保险责任\n核心为身故保险金/u);
+  assert.match(result.answer, /### 责任明细（1项）/u);
+  assert.match(result.answer, /1\. \*\*身故保险金\*\*/u);
+  assert.match(result.answer, /触发条件：被保险人身故/u);
+  assert.match(result.answer, /calculationStatus: claim_contingent/u);
+  assert.match(result.answer, /来源：src_1/u);
+  assert.match(result.answer, /计算所需保单信息：基本保险金额/u);
+  assert.match(result.answer, /### 注意事项/u);
+});
+
+test('a main policy summary expands an explicitly referenced rider from official terms', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  insert(db, {
+    company: '新华保险',
+    productName: '新华人寿保险股份有限公司康健无忧两全保险',
+    headline: '满期生存和身故保障的两全保险',
+    summaryJson: JSON.stringify({
+      headline: '满期生存和身故保障的两全保险',
+      mainResponsibilities: [{
+        title: '满期生存保险金',
+        plainText: '满期时给付主险与附加康健无忧重大疾病保险合同实际交纳的保险费之和。',
+      }],
+      notices: [
+        '附加康健无忧重大疾病保险需另行核对。',
+        '本保险的路由分类曾被标记为其他险种。',
+        '某项责任来源未提及，视为无。',
+      ],
+      sourceUrls: ['https://static-cdn.newchinalife.com/main.pdf'],
+    }),
+    sourceUrlsJson: JSON.stringify(['https://static-cdn.newchinalife.com/main.pdf']),
+  });
+  db.prepare('INSERT INTO knowledge_records VALUES (1, ?, ?, ?, ?)').run(
+    '新华保险',
+    '新华人寿保险股份有限公司附加康健无忧重大疾病保险',
+    'https://static-cdn.newchinalife.com/rider.pdf',
+    JSON.stringify({
+      evidenceLevel: 'insurer_official',
+      title: '附加康健无忧重大疾病保险条款',
+      pageText: '轻症疾病保险金：等待期后按基本保险金额的20%给付。重大疾病保险金：符合约定时按基本保险金额给付。',
+    }),
+  );
+  const result = await createAgentProductKnowledgeService({
+    db,
+    officialDomainProfiles: mergeOfficialDomainProfiles(),
+  }).search({
+    question: '完整保险责任',
+    scope: 'public_read_only',
+    product: {
+      canonicalProductId: 'product-1',
+      company: '新华保险',
+      officialName: '新华人寿保险股份有限公司康健无忧两全保险',
+    },
+    queryAspects: ['main_responsibilities'],
+  });
+
+  assert.match(result.answer, /关联附加险责任（不属于两全主险责任）/u);
+  assert.match(result.answer, /轻症疾病保险金/u);
+  assert.match(result.answer, /重大疾病保险金/u);
+  assert.match(result.answer, /20%/u);
+  assert.doesNotMatch(result.answer, /路由分类|来源未提及，视为无|需另行核对/u);
+  assert.equal(result.sources.some((source) => source.url.endsWith('/rider.pdf')), true);
 });
 
 test('a ready official record may still have no factual answer text', async (t) => {
@@ -116,7 +213,23 @@ test('unsupported product aspects never reuse the general responsibility headlin
   }
 });
 
-test('non-array query aspects fail closed while empty and responsibility arrays remain supported', async (t) => {
+test('sales guidance may reuse verified responsibilities without inventing unsupported product facts', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  insert(db);
+
+  const result = await service(db).search({
+    question: '客户更适合哪个', scope: 'public_read_only', product,
+    queryAspects: ['sales_guidance'],
+  });
+
+  assert.match(result.answer, /身故保险金/u);
+  assert.match(result.answer, /满期保险金/u);
+  assert.equal(result.sources.length, 1);
+  assert.doesNotMatch(result.answer, /等待期|续保/u);
+});
+
+test('non-array and unspecified query aspects fail closed while responsibility arrays remain supported', async (t) => {
   const db = database();
   t.after(() => db.close());
   insert(db);
@@ -132,13 +245,15 @@ test('non-array query aspects fail closed while empty and responsibility arrays 
     }), { answer: '', sources: [] });
   }
 
-  for (const queryAspects of [[], ['main_responsibilities']]) {
-    const result = await service(db).search({
-      scope: 'public_read_only', product, queryAspects,
-    });
-    assert.match(result.answer, /身故保险金/u);
-    assert.equal(result.sources.length, 1);
-  }
+  assert.deepEqual(await service(db).search({
+    scope: 'public_read_only', product, queryAspects: [],
+  }), { answer: '', sources: [] });
+
+  const result = await service(db).search({
+    scope: 'public_read_only', product, queryAspects: ['main_responsibilities'],
+  });
+  assert.match(result.answer, /身故保险金/u);
+  assert.equal(result.sources.length, 1);
 });
 
 test('non-official URLs never become verified sources', async (t) => {
@@ -175,10 +290,14 @@ test('official domain profiles are reloaded for every search', async (t) => {
     },
   });
 
-  const first = await dynamic.search({ scope: 'public_read_only', product });
+  const first = await dynamic.search({
+    scope: 'public_read_only', product, queryAspects: ['main_responsibilities'],
+  });
   assert.equal(first.sources.length, 1);
   domains = ['new.example'];
-  const second = await dynamic.search({ scope: 'public_read_only', product });
+  const second = await dynamic.search({
+    scope: 'public_read_only', product, queryAspects: ['main_responsibilities'],
+  });
   assert.deepEqual(second.sources, []);
   assert.equal(loads, 2);
 });

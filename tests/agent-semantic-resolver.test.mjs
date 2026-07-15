@@ -14,6 +14,13 @@ const PRODUCT = {
   matchType: 'exact_official_name',
   confidence: 1,
 };
+const MEDICINE_PRODUCT = {
+  canonicalProductId: 'product-yyax',
+  company: '新华保险',
+  officialName: '医药安欣（易核版）医疗保险',
+  matchType: 'exact_official_name',
+  confidence: 1,
+};
 
 function proposal(overrides = {}) {
   return {
@@ -96,6 +103,40 @@ function canonicalScanResult({ question }) {
   }
   return { entities, overflow: false };
 }
+
+test('a unique exact text scan outranks a compatible fuzzy whole-utterance mention', async () => {
+  const noise = {
+    canonicalProductId: 'product-noise',
+    company: '其他保险',
+    officialName: '其他相似产品',
+    matchType: 'unique_high_confidence',
+    confidence: 0.1,
+  };
+  const { resolver, productCalls } = harness({
+    productScanResult: { entities: [MEDICINE_PRODUCT], overflow: false },
+    productResult: ({ mentions }) => {
+      const productText = mentions.find((mention) => mention.type === 'product')?.rawText;
+      return productText === MEDICINE_PRODUCT.officialName
+        ? { status: 'resolved', entity: MEDICINE_PRODUCT, candidates: [] }
+        : {
+          status: 'ambiguous', entity: null,
+          candidates: [{ ...MEDICINE_PRODUCT, matchType: 'unique_high_confidence', confidence: 0.79 }, noise],
+        };
+    },
+  });
+  const question = '医药安欣的不同计划分别有什么区别';
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({ mentions: [{ type: 'product', rawText: question }] }),
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(result.resolvedEntities.product.canonicalProductId, MEDICINE_PRODUCT.canonicalProductId);
+  assert.equal(result.candidate.entities.productName, MEDICINE_PRODUCT.officialName);
+  assert.equal(productCalls.length, 2);
+});
 
 test('current_product uses a live confirmed product and projects its formal identity', async () => {
   const { resolver, productCalls } = harness();
@@ -283,6 +324,157 @@ test('product comparison resolves exactly two distinct canonical products', asyn
   assert.equal(result.nextTaskState.lastCompletedAction.comparison, true);
 });
 
+test('comparison reuses a confirmed conversational short name and revalidates both formal products', async () => {
+  const productResult = ({ mentions }) => {
+    const rawText = mentions.find((mention) => mention.type === 'product')?.rawText || '';
+    if (rawText === MEDICINE_PRODUCT.officialName || rawText === '医药安欣') {
+      return { status: 'resolved', entity: MEDICINE_PRODUCT, candidates: [] };
+    }
+    if (/康健无忧/u.test(rawText)) {
+      return { status: 'resolved', entity: PRODUCT, candidates: [] };
+    }
+    return { status: 'not_found', entity: null, candidates: [] };
+  };
+  const productScanResult = ({ question }) => ({
+    entities: /康健无忧/u.test(question) ? [PRODUCT] : [],
+    overflow: false,
+  });
+  const { resolver } = harness({ productResult, productScanResult });
+  const selected = await resolver.resolve({
+    internalUserId: 7,
+    question: '医药安欣产品责任',
+    runtime: 'hermes',
+    proposal: proposal({ mentions: [{ type: 'product', rawText: '医药安欣' }] }),
+  });
+  assert.equal(selected.decision, 'execute');
+  assert.deepEqual(selected.nextTaskState.activeEntities.product.aliases, ['医药安欣']);
+
+  const compared = await resolver.resolve({
+    internalUserId: 7,
+    question: '对比一下医药安欣和康健无忧产品的优劣',
+    runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison'],
+      mentions: [
+        { type: 'product', rawText: '医药安欣' },
+        { type: 'product', rawText: '康健无忧' },
+      ],
+      requestedSteps: ['compare'],
+    }),
+    context: { taskState: selected.nextTaskState },
+  });
+  assert.equal(compared.decision, 'execute');
+  assert.deepEqual(compared.resolvedEntities.products.map((item) => item.officialName), [
+    MEDICINE_PRODUCT.officialName,
+    PRODUCT.officialName,
+  ]);
+});
+
+test('comparison works without conversation context when the catalog scan finds two formal products', async () => {
+  const productResult = ({ mentions }) => {
+    const rawText = mentions.find((mention) => mention.type === 'product')?.rawText || '';
+    if (rawText === MEDICINE_PRODUCT.officialName) {
+      return { status: 'resolved', entity: MEDICINE_PRODUCT, candidates: [] };
+    }
+    if (rawText === PRODUCT.officialName) {
+      return { status: 'resolved', entity: PRODUCT, candidates: [] };
+    }
+    return { status: 'not_found', entity: null, candidates: [] };
+  };
+  const { resolver } = harness({
+    productResult,
+    productScanResult: { entities: [MEDICINE_PRODUCT, PRODUCT], overflow: false },
+  });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '对比一下医药安欣和康健无忧产品的优劣',
+    runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison'],
+      mentions: [{ type: 'product', rawText: '医药安欣' }],
+      requestedSteps: ['compare'],
+    }),
+  });
+  assert.equal(result.decision, 'execute');
+  assert.deepEqual(result.resolvedEntities.products.map((item) => item.canonicalProductId), [
+    MEDICINE_PRODUCT.canonicalProductId,
+    PRODUCT.canonicalProductId,
+  ]);
+});
+
+test('comparison without prior context lets the customer confirm two formal products in sequence', async () => {
+  const candidates = ['甲正式一', '甲正式二', '乙正式一', '乙正式二'].map((officialName, index) => ({
+    ...PRODUCT,
+    canonicalProductId: `choice-${index + 1}`,
+    officialName,
+  }));
+  const productResult = ({ mentions }) => {
+    const rawText = mentions.find((mention) => mention.type === 'product')?.rawText || '';
+    const exact = candidates.find((candidate) => candidate.officialName === rawText);
+    if (exact) return { status: 'resolved', entity: exact, candidates: [] };
+    if (rawText === '甲简称') {
+      return { status: 'ambiguous', entity: null, candidates: candidates.slice(0, 2) };
+    }
+    if (rawText === '乙简称') {
+      return { status: 'ambiguous', entity: null, candidates: candidates.slice(2) };
+    }
+    return { status: 'not_found', entity: null, candidates: [] };
+  };
+  const first = harness({
+    productResult,
+    productScanResult: { entities: [], overflow: false },
+  });
+  const question = '比较甲简称和乙简称';
+  const comparisonProposal = proposal({
+    queryAspects: ['comparison'],
+    mentions: [
+      { type: 'product', rawText: '甲简称' },
+      { type: 'product', rawText: '乙简称' },
+    ],
+    requestedSteps: ['compare'],
+  });
+  const chooseFirst = await first.resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: comparisonProposal,
+  });
+  assert.equal(chooseFirst.decisionReason, 'product_comparison_unsupported');
+  assert.equal(chooseFirst.nextTaskState.pendingClarification.comparison, true);
+  assert.deepEqual(chooseFirst.nextTaskState.candidateSets.product.map((item) => item.officialName), [
+    '甲正式一', '甲正式二', '乙正式一', '乙正式二',
+  ]);
+
+  const second = harness({ productResult });
+  const chooseSecond = await second.resolver.resolve({
+    internalUserId: 7,
+    question: '选择2',
+    runtime: 'rule',
+    proposal: null,
+    context: { taskState: chooseFirst.nextTaskState },
+  });
+  assert.equal(chooseSecond.decision, 'clarify', JSON.stringify(chooseSecond));
+  assert.deepEqual(chooseSecond.nextTaskState.pendingClarification.selectedProducts
+    .map((item) => item.officialName), ['甲正式二']);
+  assert.deepEqual(chooseSecond.nextTaskState.candidateSets.product.map((item) => item.officialName), [
+    '甲正式一', '乙正式一', '乙正式二',
+  ]);
+
+  const third = harness({ productResult });
+  const compared = await third.resolver.resolve({
+    internalUserId: 7,
+    question: '选择3',
+    runtime: 'rule',
+    proposal: null,
+    context: { taskState: chooseSecond.nextTaskState },
+  });
+  assert.equal(compared.decision, 'execute');
+  assert.equal(compared.candidate.question, question);
+  assert.deepEqual(compared.resolvedEntities.products.map((item) => item.officialName), [
+    '甲正式二', '乙正式二',
+  ]);
+});
+
 test('a leading ordinal selects and revalidates a fresh completed comparison side', async () => {
   const { resolver } = harness({ productResult: canonicalProductResult, productScanResult: canonicalScanResult });
   const compared = await resolver.resolve({
@@ -398,6 +590,35 @@ test('a completed comparison clears the old product so an omitted follow-up cann
   });
   assert.equal(followUp.decision, 'clarify');
   assert.equal(followUp.resolvedEntities.product, undefined);
+});
+
+test('a generic recommendation follow-up reuses both products from the completed comparison', async () => {
+  const { resolver } = harness({ productResult: canonicalProductResult, productScanResult: canonicalScanResult });
+  const compared = await resolver.resolve({
+    internalUserId: 7, question: '甲产品和乙产品有什么区别', runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison'], requestedSteps: ['compare'],
+      mentions: [{ type: 'product', rawText: '甲产品' }, { type: 'product', rawText: '乙产品' }],
+    }),
+  });
+
+  for (const question of ['我的客户更适合哪个', '这两款怎么选', '分别有什么优缺点']) {
+    const followUp = await resolver.resolve({
+      internalUserId: 7,
+      question,
+      runtime: 'hermes',
+      proposal: proposal({
+        queryAspects: ['sales_guidance'], requestedSteps: ['compare'], mentions: [],
+      }),
+      context: { taskState: compared.nextTaskState },
+    });
+    assert.equal(followUp.decision, 'execute', question);
+    assert.deepEqual(followUp.resolvedEntities.products.map((item) => item.canonicalProductId), [
+      'product-a', 'product-b',
+    ], question);
+    assert.equal(followUp.nextTaskState.lastCompletedAction.comparison, true, question);
+    assert.equal(followUp.nextTaskState.candidateSets.product.length, 2, question);
+  }
 });
 
 test('omitted product follow-up keeps an explicit insurer constraint during revalidation', async () => {
@@ -735,12 +956,13 @@ test('ambiguous product selection revalidates formal identity and ignores stored
   assert.equal(JSON.stringify(clarified.nextTaskState).includes('extra'), false);
 
   const second = harness({
-    productResult: ({ mentions, activeProduct: selectedActive }) => {
+    productResult: ({ mentions, activeProduct: selectedActive, confirmedCandidate }) => {
       assert.equal(selectedActive, null);
       assert.deepEqual(mentions, [
         { type: 'insurer', rawText: PRODUCT.company },
         { type: 'product', rawText: '第二款保险' },
       ]);
+      assert.equal(confirmedCandidate.officialName, '第二款保险');
       return {
         status: 'resolved',
         entity: { ...PRODUCT, canonicalProductId: 'catalog-canonical-id', officialName: '第二款保险' },
@@ -1059,6 +1281,53 @@ test('malformed resolved entities are treated as missing', async () => {
     assert.equal(result.decisionReason, 'family_required');
     assert.equal(result.candidate, null);
   }
+});
+
+test('open sales coaching executes without resolving a family', async () => {
+  const { resolver, productCalls, familyCalls } = harness();
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '现在50岁手里有100万，有什么好的产品推荐吗',
+    runtime: 'hermes',
+    proposal: proposal({
+      intent: 'sales_coaching',
+      queryAspects: ['sales_guidance'],
+      requestedSteps: ['generate'],
+      confidence: { intent: 0.9, mentions: 1, references: 1 },
+    }),
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(result.decisionReason, 'semantic_ready');
+  assert.deepEqual(result.resolvedEntities, {});
+  assert.deepEqual(result.candidate, {
+    intent: 'sales_coaching',
+    question: '现在50岁手里有100万，有什么好的产品推荐吗',
+    confidence: 0.9,
+    requestedOperation: 'read',
+  });
+  assert.equal(productCalls.length, 0);
+  assert.equal(familyCalls.length, 0);
+});
+
+test('family-scoped sales coaching reauthorizes the named family', async () => {
+  const { resolver, familyCalls } = harness();
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '张三家庭下一步该怎么沟通',
+    runtime: 'hermes',
+    proposal: proposal({
+      intent: 'sales_coaching',
+      queryAspects: ['sales_guidance'],
+      mentions: [{ type: 'family', rawText: '张三家庭' }],
+      requestedSteps: ['generate'],
+    }),
+  });
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(result.resolvedEntities.family.displayName, '张三家庭');
+  assert.equal(result.candidate.entities.familyName, '张三家庭');
+  assert.equal(familyCalls.length, 1);
 });
 
 test('domain resolver exceptions retry without advancing projected task state', async () => {

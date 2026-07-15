@@ -156,6 +156,18 @@ test('semantic conversation preserves only a bounded timed completed-comparison 
   assert.doesNotMatch(JSON.stringify(state), /secret/u);
 });
 
+test('semantic conversation preserves only bounded confirmed product aliases', () => {
+  const state = typedState();
+  state.activeEntities.product.aliases = [
+    '医药安欣', '医药安欣', '', '简称二', '简称三', '简称四', '简称五', '简称六', { secret: 'drop' },
+  ];
+  const projected = projectAgentSemanticTaskState(state);
+  assert.deepEqual(projected.activeEntities.product.aliases, [
+    '医药安欣', '简称二', '简称三', '简称四', '简称五',
+  ]);
+  assert.doesNotMatch(JSON.stringify(projected), /secret/u);
+});
+
 test('semantic conversation isolates identical conversation ids by internal user', async () => {
   const store = await createStore(await tempDbPath());
   const service = createAgentSemanticConversationService({ store, clock: () => 600 });

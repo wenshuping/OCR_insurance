@@ -195,6 +195,27 @@ test('readiness prioritizes ambiguity over another missing required resolution',
   });
 });
 
+test('sales coaching requires family resolution only when Hermes identified a family scope', () => {
+  const openProposal = familyProposal({ intent: 'sales_coaching', queryAspects: ['sales_guidance'] });
+  assert.equal(decideSemanticReadiness({ proposal: openProposal, runtime: 'hermes' }).decision, 'execute');
+
+  const scopedProposal = familyProposal({
+    intent: 'sales_coaching',
+    queryAspects: ['sales_guidance'],
+    mentions: [{ type: 'family', rawText: '张三家庭' }],
+  });
+  assert.deepEqual(decideSemanticReadiness({ proposal: scopedProposal, runtime: 'hermes' }), {
+    decision: 'clarify', decisionReason: 'family_required', missingFields: ['family'], ambiguities: [],
+  });
+  assert.equal(decideSemanticReadiness({
+    proposal: scopedProposal,
+    resolutions: {
+      family: { status: 'resolved', entity: { familyId: 1, displayName: '张三家庭' } },
+    },
+    runtime: 'hermes',
+  }).decision, 'execute');
+});
+
 test('direct and rule runtimes cannot advance write operations', () => {
   for (const runtime of ['direct', 'rule']) {
     assert.deepEqual(decideSemanticReadiness({
@@ -286,7 +307,7 @@ test('unsupported intent is rejected and entity-free intents are ready', () => {
   }), {
     decision: 'reject', decisionReason: 'unsupported_intent', missingFields: [], ambiguities: [],
   });
-  for (const intent of ['chat', 'family_list', 'upload_link']) {
+  for (const intent of ['chat', 'family_list', 'sales_coaching', 'upload_link']) {
     assert.deepEqual(decideSemanticReadiness({
       proposal: familyProposal({ intent }), runtime: 'hermes',
     }), {

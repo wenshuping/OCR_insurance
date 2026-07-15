@@ -4,6 +4,7 @@ import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from '.
 
 const DIRECT_CONVERSATION = '1';
 const MAX_TEXT_LENGTH = 1_000;
+const MAX_REPLY_TEXT_LENGTH = 6_000;
 const PRODUCT_PRONOUN_PATTERN = /(?:这个|那个|该|上述|刚才(?:说的)?)(?:保险)?产品|它(?:有|的|是|适合|保)/u;
 const PRODUCT_SCOPE_FOLLOWUP_PATTERN = /在售|停售|销售中|还(?:在)?卖|还能买|可以买/u;
 const PRODUCT_COMPARISON_PATTERN = /对比|比较|区别|差异|哪款|哪个好|\bVS\.?\b/iu;
@@ -210,7 +211,22 @@ function responsibilityCardMarkdown(value) {
   return output.join('\n').replace(/\n{3,}/gu, '\n\n').trim();
 }
 
-function dingtalkReplyMessage({ payload, candidate, replyText }) {
+function splitReplyText(value, limit = MAX_REPLY_TEXT_LENGTH) {
+  const chunks = [];
+  let remaining = String(value || '').trim();
+  while (remaining.length > limit) {
+    const window = remaining.slice(0, limit + 1);
+    const boundaries = [window.lastIndexOf('\n\n'), window.lastIndexOf('\n')]
+      .filter((index) => index >= Math.floor(limit / 2));
+    const boundary = boundaries.length ? Math.max(...boundaries) : limit;
+    chunks.push(remaining.slice(0, boundary).trim());
+    remaining = remaining.slice(boundary).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function dingtalkReplyMessages({ payload, candidate, replyText }) {
   const interaction = payload?.interaction || {};
   const isComparison = candidate?.intent === 'insurance_product_knowledge' && PRODUCT_COMPARISON_PATTERN.test(candidate?.question || '');
   const isResponsibilityAnswer = RESPONSIBILITY_ANSWER_PATTERN.test(replyText);
@@ -218,7 +234,13 @@ function dingtalkReplyMessage({ payload, candidate, replyText }) {
     || isResponsibilityAnswer
     || MARKDOWN_CONTENT_PATTERN.test(replyText)
     || (interaction.type === 'clarification' && Array.isArray(interaction.candidates) && interaction.candidates.length > 0);
-  if (!useMarkdown) return { msgtype: 'text', text: { content: replyText } };
+  if (!useMarkdown) {
+    const chunks = splitReplyText(replyText, MAX_REPLY_TEXT_LENGTH - 40);
+    return chunks.map((content, index) => ({
+      msgtype: 'text',
+      text: { content: index ? `（续 ${index + 1}/${chunks.length}）\n${content}` : content },
+    }));
+  }
   const title = isComparison
     ? '保险产品对比'
     : isResponsibilityAnswer
@@ -230,13 +252,27 @@ function dingtalkReplyMessage({ payload, candidate, replyText }) {
         : 'OCR Insurance';
   const renderedText = isResponsibilityAnswer ? responsibilityCardMarkdown(replyText) : mobileMarkdownTables(replyText);
   const markdown = safeMarkdownLinks(renderedText)
-    .replace(/^#{1,2}\s+/gmu, '### ')
-    .slice(0, 18_000);
-  return { msgtype: 'markdown', markdown: { title, text: markdown } };
+    .replace(/^#{1,2}\s+/gmu, '### ');
+  const chunks = splitReplyText(markdown, MAX_REPLY_TEXT_LENGTH - 60);
+  return chunks.map((text, index) => ({
+    msgtype: 'markdown',
+    markdown: {
+      title: index ? `${title}（续 ${index + 1}/${chunks.length}）` : title,
+      text: index ? `### ${title}（续 ${index + 1}/${chunks.length}）\n\n${text}` : text,
+    },
+  }));
 }
 
 function productNameFromReply(value) {
   return String(value || '').match(/《([^》\n]{2,200})》/u)?.[1]?.trim() || '';
+}
+
+function candidateProduct(value) {
+  const label = String(value || '').trim();
+  if (!label) return null;
+  const productName = productNameFromReply(label) || label;
+  const company = productNameFromReply(label) ? label.split('《', 1)[0].trim() : '';
+  return { label, productName, company };
 }
 
 function errorReply(payload) {
@@ -290,6 +326,10 @@ export function createDingtalkAgentGateway({
   const configuredSecret = required(hmacSecret, 'AGENT_GATEWAY_HMAC_SECRET_REQUIRED');
   const endpoint = `${String(apiBaseUrl).replace(/\/$/u, '')}/api/agent/questions/route`;
   const messagesEndpoint = `${String(apiBaseUrl).replace(/\/$/u, '')}/api/agent/messages`;
+  const activeHandles = new Set();
+  const activeRequestControllers = new Set();
+  let draining = false;
+  let shutdownPromise = null;
 
   async function reply(sessionWebhook, message) {
     const body = typeof message === 'string'
@@ -320,7 +360,11 @@ export function createDingtalkAgentGateway({
     throw lastError;
   }
 
-  async function handle(message) {
+  async function replyAll(sessionWebhook, messages) {
+    for (const message of messages) await reply(sessionWebhook, message);
+  }
+
+  async function handleMessage(message) {
     const sessionWebhook = message?.sessionWebhook;
     if (String(message?.senderCorpId || '') !== configuredCorpId) return;
     if (String(message?.conversationType || '') !== DIRECT_CONVERSATION) {
@@ -354,6 +398,7 @@ export function createDingtalkAgentGateway({
           });
         }, Math.max(1, Number(progressDelayMs) || 5_000));
         const controller = new AbortController();
+        activeRequestControllers.add(controller);
         const requestTimer = setTimeout(
           () => controller.abort(),
           Math.max(1_000, Number(agentRequestTimeoutMs) || 120_000),
@@ -369,13 +414,14 @@ export function createDingtalkAgentGateway({
         } finally {
           clearTimeout(progressTimer);
           clearTimeout(requestTimer);
+          activeRequestControllers.delete(controller);
           if (progressPromise) await progressPromise;
         }
         const payload = await response.json().catch(() => ({}));
         const replyText = response.ok ? publicReply(payload) : errorReply(payload);
-        await reply(sessionWebhook, response.ok
-          ? dingtalkReplyMessage({ payload, candidate: null, replyText })
-          : replyText);
+        await replyAll(sessionWebhook, response.ok
+          ? dingtalkReplyMessages({ payload, candidate: null, replyText })
+          : [replyText]);
         return;
       }
       let runtimeSettings = DEFAULT_AGENT_RUNTIME_SETTINGS;
@@ -404,13 +450,16 @@ export function createDingtalkAgentGateway({
       const selectedProduct = selectedIndex >= 0
         && rememberedCandidates
         && now() - rememberedCandidates.updatedAt <= productContextTtlMs
-        ? rememberedCandidates.products[selectedIndex]
+        ? candidateProduct(rememberedCandidates.products[selectedIndex])
         : null;
       let candidate;
       if (selectedProduct) {
         candidate = {
           intent: 'insurance_product_knowledge', question: rememberedCandidates.question || text, confidence: 1, requestedOperation: 'read',
-          entities: { productName: selectedProduct },
+          entities: {
+            productName: selectedProduct.productName,
+            ...(selectedProduct.company ? { productCompany: selectedProduct.company } : {}),
+          },
         };
       } else if (
         UNDERSTANDING_CHALLENGE_PATTERN.test(text)
@@ -493,7 +542,7 @@ export function createDingtalkAgentGateway({
           nextQuestion = { candidate, updatedAt: now() };
         }
         if (payload?.interaction?.type === 'clarification' && Array.isArray(payload.interaction.candidates)) {
-          const products = payload.interaction.candidates.map((item) => productNameFromReply(item?.label)).filter(Boolean);
+          const products = payload.interaction.candidates.map((item) => String(item?.label || '').trim()).filter(Boolean);
           if (products.length) {
             nextProductCandidates = { products, question: text, updatedAt: now() };
             nextProduct = null;
@@ -502,6 +551,8 @@ export function createDingtalkAgentGateway({
           const canonicalProductName = productNameFromReply(replyText);
           if (canonicalProductName) {
             nextProduct = { productName: canonicalProductName, updatedAt: now() };
+            nextProductCandidates = null;
+          } else if (selectedProduct) {
             nextProductCandidates = null;
           }
         }
@@ -522,17 +573,45 @@ export function createDingtalkAgentGateway({
           reportError('DINGTALK_CONTEXT_COMMIT_FAILED');
         }
       }
-      await reply(sessionWebhook, response.ok
-        ? dingtalkReplyMessage({ payload, candidate, replyText })
-        : replyText);
+      await replyAll(sessionWebhook, response.ok
+        ? dingtalkReplyMessages({ payload, candidate, replyText })
+        : [replyText]);
     } catch (error) {
       reportError(String(error?.code || 'DINGTALK_AGENT_REQUEST_FAILED'));
       if (/^DINGTALK_REPLY_/u.test(String(error?.code || ''))) throw error;
+      if (draining) {
+        await reply(sessionWebhook, '服务正在更新，本次查询已中断，请稍后重新发送。');
+        return;
+      }
       await reply(sessionWebhook, error?.code === 'DINGTALK_MOBILE_UNAVAILABLE'
         ? '无法读取当前钉钉手机号，请确认企业已授权成员手机号权限。'
         : '服务暂时不可用，请稍后重试。');
     }
   }
 
-  return { handle };
+  async function handle(message) {
+    if (draining) {
+      await reply(message?.sessionWebhook, '服务正在更新，请稍后重新发送。');
+      return;
+    }
+    const task = handleMessage(message);
+    activeHandles.add(task);
+    try {
+      await task;
+    } finally {
+      activeHandles.delete(task);
+    }
+  }
+
+  function shutdown() {
+    if (shutdownPromise) return shutdownPromise;
+    draining = true;
+    shutdownPromise = (async () => {
+      for (const controller of activeRequestControllers) controller.abort();
+      await Promise.allSettled([...activeHandles]);
+    })();
+    return shutdownPromise;
+  }
+
+  return { handle, shutdown };
 }

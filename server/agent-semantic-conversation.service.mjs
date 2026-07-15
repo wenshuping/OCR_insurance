@@ -6,6 +6,7 @@ import {
 const MAX_TEXT_LENGTH = 200;
 const MAX_QUESTION_LENGTH = 1_000;
 const MAX_CANDIDATES = 10;
+const MAX_PRODUCT_ALIASES = 5;
 const PRODUCT_ACTIVE_MATCH_TYPES = new Set([
   'exact_official_name',
   'approved_alias',
@@ -23,8 +24,14 @@ const FAMILY_ENTITY_INTENTS = new Set([
   'family_summary',
   'coverage_report',
   'sales_report',
-  'sales_coaching',
 ]);
+
+function requiresFamilyEntity(proposal) {
+  return FAMILY_ENTITY_INTENTS.has(proposal?.intent)
+    || (proposal?.intent === 'sales_coaching'
+      && (proposal.mentions?.some((mention) => mention?.type === 'family')
+        || proposal.references?.some((reference) => reference?.type === 'current_family')));
+}
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -66,10 +73,14 @@ function projectProduct(value, { active = false } = {}) {
   }
   const projected = { canonicalProductId, company, officialName, matchType, confidence };
   if (!active) return projected;
+  const aliases = Array.isArray(value.aliases)
+    ? [...new Set(value.aliases.map((alias) => boundedString(alias, { required: true })).filter(Boolean))]
+      .slice(0, MAX_PRODUCT_ALIASES)
+    : [];
   const updatedAt = nonnegativeSafeInteger(value.updatedAt);
   const expiresAt = nonnegativeSafeInteger(value.expiresAt);
   if (updatedAt === null || expiresAt === null) return null;
-  return { ...projected, updatedAt, expiresAt };
+  return { ...projected, ...(aliases.length ? { aliases } : {}), updatedAt, expiresAt };
 }
 
 function projectFamily(value, { active = false } = {}) {
@@ -123,7 +134,7 @@ function projectPendingClarification(value) {
     const proposal = normalizeSemanticProposal(value.proposal, originalQuestion);
     const requiredEntityType = proposal.intent === 'insurance_product_knowledge'
       ? 'product'
-      : (FAMILY_ENTITY_INTENTS.has(proposal.intent) ? 'family' : '');
+      : (requiresFamilyEntity(proposal) ? 'family' : '');
     if (!requiredEntityType || entityType !== requiredEntityType) {
       return { pending: null, entityType };
     }
@@ -133,6 +144,16 @@ function projectPendingClarification(value) {
         proposal,
         originalQuestion,
         expiresAt,
+        ...(value.comparison === true && entityType === 'product'
+          ? {
+            comparison: true,
+            selectedProducts: projectCandidateList(
+              value.selectedProducts,
+              projectProduct,
+              'Selected comparison product',
+            ).slice(0, 1),
+          }
+          : {}),
       },
       entityType,
     };

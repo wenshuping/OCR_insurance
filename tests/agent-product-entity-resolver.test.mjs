@@ -19,8 +19,21 @@ function makeDb() {
       status TEXT,
       payload TEXT NOT NULL DEFAULT '{}'
     );
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT,
+      product_name TEXT,
+      status TEXT,
+      updated_at TEXT
+    );
   `);
   return db;
+}
+
+function addReadySummary(db, company, productName) {
+  db.prepare(`
+    INSERT INTO product_customer_responsibility_summaries (company, product_name, status, updated_at)
+    VALUES (?, ?, 'ready', '2026-07-14T00:00:00.000Z')
+  `).run(company, productName);
 }
 
 function addPublicKnowledge(db, company, productName) {
@@ -416,15 +429,84 @@ test('public catalog excludes product documents when review status is unavailabl
   }
 });
 
-test('does not resolve public knowledge without a canonical product id', () => {
+test('offers an official public knowledge product when the canonical catalog has not been backfilled', () => {
   const db = makeDb();
   try {
-    addPublicKnowledge(db, '新华保险', '新华人寿保险股份有限公司康健无忧两全保险');
-    const result = createAgentProductEntityResolver({ db }).resolve({
-      mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
+    const officialName = '新华人寿保险股份有限公司康健无忧两全保险';
+    addPublicKnowledge(db, '新华保险', officialName);
+    const resolver = createAgentProductEntityResolver({ db });
+    const result = resolver.resolve({
+      mentions: [{ type: 'product', rawText: '康健无忧' }],
     });
 
-    assert.deepEqual(result, { status: 'not_found', entity: null, candidates: [] });
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.entity, null);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].company, '新华保险');
+    assert.equal(result.candidates[0].officialName, officialName);
+    assert.match(result.candidates[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
+
+    const confirmed = resolver.resolve({
+      mentions: [{ type: 'product', rawText: officialName }],
+      confirmedCandidate: result.candidates[0],
+    });
+    assert.equal(confirmed.status, 'resolved');
+    assert.equal(confirmed.entity.officialName, officialName);
+  } finally {
+    db.close();
+  }
+});
+
+test('offers a public catalog match backed by a draft canonical product for explicit confirmation', () => {
+  const db = makeDb();
+  try {
+    const officialName = '医药安欣（易核版）医疗保险';
+    addProduct(db, {
+      canonicalProductId: 'product-medical-anxin',
+      company: '新华保险',
+      officialName,
+      status: 'draft',
+    });
+    addProduct(db, {
+      canonicalProductId: 'product-private-draft',
+      company: '新华保险',
+      officialName: '未公开草稿保险',
+      status: 'draft',
+    });
+    const resolver = createAgentProductEntityResolver({ db });
+
+    assert.deepEqual(resolver.resolve({
+      mentions: [{ type: 'product', rawText: '未公开草稿保险' }],
+    }), { status: 'not_found', entity: null, candidates: [] });
+
+    addPublicKnowledge(db, '新华保险', officialName);
+    const result = resolver.resolve({
+      mentions: [{ type: 'product', rawText: '医药安欣' }],
+    });
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.entity, null);
+    assert.deepEqual(result.candidates, [{
+      canonicalProductId: 'product-medical-anxin',
+      company: '新华保险',
+      officialName,
+      matchType: 'unique_high_confidence',
+      confidence: 0.793,
+    }]);
+
+    const confirmed = resolver.resolve({
+      mentions: [
+        { type: 'insurer', rawText: '新华保险' },
+        { type: 'product', rawText: officialName },
+      ],
+      confirmedCandidate: {
+        ...result.candidates[0],
+        canonicalProductId: 'untrusted-stored-id',
+      },
+    });
+    assert.equal(confirmed.status, 'resolved');
+    assert.equal(confirmed.entity.canonicalProductId, 'product-medical-anxin');
+    assert.equal(confirmed.entity.officialName, officialName);
   } finally {
     db.close();
   }
@@ -704,6 +786,42 @@ test('reverse catalog scan keeps the longest contained product term but retains 
         .map((item) => item.canonicalProductId),
       ['product-base', 'product-plus'],
     );
+  } finally {
+    db.close();
+  }
+});
+
+test('reverse catalog scan resolves unique short names in a natural two-product comparison', () => {
+  const db = makeDb();
+  try {
+    addProduct(db, {
+      canonicalProductId: 'product-medical-anxin',
+      company: '新华保险',
+      officialName: '医药安欣（易核版）医疗保险',
+      status: 'draft',
+    });
+    addReadySummary(db, '新华保险', '医药安欣（易核版）医疗保险');
+    addReadySummary(db, '新华保险', '新华人寿保险股份有限公司康健无忧两全保险');
+    const resolver = createAgentProductEntityResolver({
+      db,
+      officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES,
+    });
+
+    const entities = resolver.resolveAllFromText({
+      question: '你对比一下 医药安欣和康健无忧产品的优劣',
+    }).entities;
+    assert.deepEqual(entities.map((item) => item.officialName), [
+      '医药安欣（易核版）医疗保险',
+      '新华人寿保险股份有限公司康健无忧两全保险',
+    ]);
+    for (const entity of entities) {
+      assert.equal(resolver.resolve({
+        mentions: [
+          { type: 'insurer', rawText: entity.company },
+          { type: 'product', rawText: entity.officialName },
+        ],
+      }).status, 'resolved');
+    }
   } finally {
     db.close();
   }

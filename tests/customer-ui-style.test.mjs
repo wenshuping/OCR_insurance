@@ -415,6 +415,15 @@ test('family profile entry keeps the selected family but clears stale member bin
   assert.match(customerSource, /onBackToEntry=\{\(\) => \{\s*startEntryForm\(\{ preserveSelectedFamily: true \}\);/);
 });
 
+test('policy entry restores the selected family after a page refresh', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  assert.match(normalizedCustomerAppSource, /SELECTED_FAMILY_ID_KEY = 'policy-ocr-app\.selectedFamilyId'/);
+  assert.match(customerSource, /useState<number \| null>\(\(\) => \{[\s\S]*sessionStorage\.getItem\(SELECTED_FAMILY_ID_KEY\)/);
+  assert.match(customerSource, /function handleSelectFamily\(familyId: number \| null\)[\s\S]*sessionStorage\.setItem\(SELECTED_FAMILY_ID_KEY, String\(familyId\)\)/);
+  assert.match(customerSource, /setSelectedFamilyId\(\(current\) => \{[\s\S]*families\.some[\s\S]*sessionStorage\.setItem\(SELECTED_FAMILY_ID_KEY, String\(nextId\)\)/);
+  assert.match(customerSource, /clearCustomerSession[\s\S]*sessionStorage\.removeItem\(SELECTED_FAMILY_ID_KEY\)/);
+});
+
 test('entry form uses the effective family selection for both display and save', () => {
   const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
   assert.match(customerSource, /const entryFamilyId = formData\.familyId \?\? selectedFamilyId \?\? null/);
@@ -881,6 +890,7 @@ test('entry form separates legal beneficiary from beneficiary name before saving
   assert.match(formSource, /checked=\{formData\.beneficiary === '法定'\}/);
   assert.match(formSource, /onUpdateForm\('beneficiary', event\.target\.checked \? '法定' : ''\)/);
   assert.match(formSource, /label="受益人姓名"/);
+  assert.match(formSource, /formData\.beneficiary !== '法定'[\s\S]*label="与顶梁柱的关系"/);
 });
 
 test('family overview prefers local product indicators over raw OCR responsibility years', () => {

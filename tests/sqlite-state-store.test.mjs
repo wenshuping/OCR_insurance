@@ -58,12 +58,28 @@ test('sqlite store loads only authorized family rows for Agent queries', async (
   const seedStatePath = path.join(dir, 'state.json');
   await writeJson(seedStatePath, {
     users: [{ id: 7, mobile: '13800138000', status: 'active' }],
+    officialDomainProfiles: [{ id: 'profile-1', company: '测试保险', officialDomains: ['example.test'] }],
     familyProfiles: [
       { id: 71, ownerUserId: 7, familyName: '授权家庭', status: 'active' },
       { id: 72, ownerUserId: 8, familyName: '其他家庭', status: 'active' },
     ],
     familyMembers: [{ id: 711, familyId: 71, name: '成员', status: 'active' }],
-    policies: [{ id: 712, userId: 7, familyId: 71, company: '测试保险', name: '测试保单', status: 'active' }],
+    policies: [
+      { id: 712, userId: 7, familyId: 71, company: '测试保险', name: '测试保单', status: 'active' },
+      { id: 713, userId: 8, familyId: 71, company: '其他保险', name: '越权保单', status: 'active' },
+    ],
+    familyReports: [
+      { id: 714, familyId: 71, ownerUserId: 7, status: 'active', generatedAt: '2026-07-14T01:00:00.000Z' },
+      { id: 715, familyId: 71, ownerUserId: 8, status: 'active', generatedAt: '2026-07-14T02:00:00.000Z' },
+      { id: 716, familyId: 71, ownerUserId: null, ownerGuestId: '', status: 'active', generatedAt: '2026-07-14T03:00:00.000Z' },
+      { id: 717, familyId: 71, ownerUserId: null, ownerGuestId: 'guest-other', status: 'active', generatedAt: '2026-07-14T04:00:00.000Z' },
+    ],
+    familySalesReviews: [
+      { id: 718, familyId: 71, ownerUserId: 7, status: 'active', generatedAt: '2026-07-14T01:00:00.000Z' },
+      { id: 719, familyId: 71, ownerUserId: 8, status: 'active', generatedAt: '2026-07-14T02:00:00.000Z' },
+      { id: 720, familyId: 71, ownerUserId: null, ownerGuestId: '', status: 'active', generatedAt: '2026-07-14T03:00:00.000Z' },
+      { id: 721, familyId: 71, ownerUserId: null, ownerGuestId: 'guest-other', status: 'active', generatedAt: '2026-07-14T04:00:00.000Z' },
+    ],
   });
   const store = await createSqliteStateStore({ dbPath, seedStatePath });
   t.after(() => store.close());
@@ -71,11 +87,14 @@ test('sqlite store loads only authorized family rows for Agent queries', async (
   const identityState = await store.loadAgentIdentityState();
   assert.deepEqual(identityState.users.map((row) => row.id), [7]);
   assert.deepEqual(identityState.agentChannelIdentities, []);
+  assert.deepEqual((await store.loadOfficialDomainProfiles()).map((row) => row.id), ['profile-1']);
   assert.deepEqual((await store.listAuthorizedFamilyProfiles({ internalUserId: 7 })).map((row) => row.id), [71]);
   const loaded = await store.loadAuthorizedFamilyState({ familyId: 71, internalUserId: 7 });
   assert.equal(loaded.family.id, 71);
   assert.equal(loaded.state.familyMembers.length, 1);
-  assert.equal(loaded.state.policies.length, 1);
+  assert.deepEqual(loaded.state.policies.map((row) => row.id), [712]);
+  assert.deepEqual(loaded.state.familyReports.map((row) => row.id), [714, 716]);
+  assert.deepEqual(loaded.state.familySalesReviews.map((row) => row.id), [718, 720]);
   assert.equal(await store.loadAuthorizedFamilyState({ familyId: 72, internalUserId: 7 }), null);
 });
 

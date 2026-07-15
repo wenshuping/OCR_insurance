@@ -361,6 +361,52 @@ test('sales coaching can use the production family sales chat context builder un
   assert.equal(generateInput.question, '继续分析');
 });
 
+test('open sales coaching uses the sales champion without loading family data', async () => {
+  let generateInput;
+  const { handlers } = harness({}, {
+    authorizedFamilyDataLoader: async () => { throw new Error('must not load family data'); },
+    authorizedFamilySalesDataLoader: async () => { throw new Error('must not load family sales data'); },
+    async generateFamilySalesChatReply(input) {
+      generateInput = input;
+      return { content: '先确认养老目标、资金使用期限和流动性要求。', model: 'stub-model' };
+    },
+  });
+
+  const result = await handlers.sales_champion({
+    intent: 'sales_coaching',
+    internalUserId: 9,
+    question: '现在50岁手里有100万，有什么好的产品推荐吗',
+    history: [
+      { role: 'user', content: '我有100万存款到期' },
+      { role: 'assistant', content: '请补充身体情况' },
+    ],
+  });
+
+  assert.equal(result.presentation.message, '先确认养老目标、资金使用期限和流动性要求。');
+  assert.equal(generateInput.context.consultationScope, 'open');
+  assert.deepEqual(generateInput.context.familyInput, {});
+  assert.deepEqual(generateInput.history, [
+    { role: 'user', content: '我有100万存款到期' },
+    { role: 'assistant', content: '请补充身体情况' },
+  ]);
+  assert.equal(generateInput.question, '现在50岁手里有100万，有什么好的产品推荐吗');
+});
+
+test('open sales coaching returns an explicit expert availability message on provider failure', async () => {
+  const { handlers } = harness({}, {
+    async generateFamilySalesChatReply() {
+      throw Object.assign(new Error('upstream failed'), { code: 'FAMILY_SALES_CHAT_UPSTREAM_FAILED' });
+    },
+  });
+
+  const result = await handlers.sales_champion({
+    intent: 'sales_coaching', internalUserId: 9, question: '继续分析', history: [],
+  });
+
+  assert.equal(result.facts.status, 'unavailable');
+  assert.match(result.presentation.message, /保险营销专家暂时不可用/u);
+});
+
 test('safe summaries do not copy numeric phone, identity, or account fields', async () => {
   const { handlers } = harness({ familySalesReviews: [{
     id: 31,

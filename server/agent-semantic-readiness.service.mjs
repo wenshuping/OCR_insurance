@@ -9,8 +9,16 @@ const REQUIRED_ENTITY = new Map([
   ['family_summary', 'family'],
   ['coverage_report', 'family'],
   ['sales_report', 'family'],
-  ['sales_coaching', 'family'],
 ]);
+
+function requiredEntity(proposal) {
+  if (proposal?.intent === 'sales_coaching'
+    && (proposal.mentions?.some((mention) => mention?.type === 'family')
+      || proposal.references?.some((reference) => reference?.type === 'current_family'))) {
+    return 'family';
+  }
+  return REQUIRED_ENTITY.get(proposal?.intent);
+}
 
 function result(decision, decisionReason, missingFields = [], ambiguities = []) {
   return { decision, decisionReason, missingFields, ambiguities };
@@ -69,16 +77,16 @@ export function decideSemanticReadiness({ proposal, resolutions = {}, runtime = 
     return result('clarify', 'unsafe_fallback_operation');
   }
 
-  const requiredEntity = REQUIRED_ENTITY.get(proposal.intent);
-  if (!requiredEntity) return result('execute', 'semantic_ready');
+  const requiredEntityKey = requiredEntity(proposal);
+  if (!requiredEntityKey) return result('execute', 'semantic_ready');
   const resolution = resolutions && typeof resolutions === 'object'
-    ? resolutions[requiredEntity]
+    ? resolutions[requiredEntityKey]
     : null;
   if (resolution?.status === 'ambiguous') {
-    return result('clarify', 'entity_ambiguous', [], [requiredEntity]);
+    return result('clarify', 'entity_ambiguous', [], [requiredEntityKey]);
   }
-  if (!validResolvedEntity(requiredEntity, resolution)) {
-    return result('clarify', `${requiredEntity}_required`, [requiredEntity]);
+  if (!validResolvedEntity(requiredEntityKey, resolution)) {
+    return result('clarify', `${requiredEntityKey}_required`, [requiredEntityKey]);
   }
   return result('execute', 'unique_authorized_entity');
 }
