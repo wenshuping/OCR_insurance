@@ -189,6 +189,60 @@ test('family policy analysis orchestrator isolates in-flight work by owner', asy
   assert.notEqual(left.content, right.content);
 });
 
+test('family policy analysis orchestrator retries the latest version after input drifts during generation', async () => {
+  const record = { familyId: 10, status: 'active', report: {} };
+  let version = 'sha256:old';
+  let releaseOld;
+  const calls = [];
+  const orchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: () => record,
+    buildInput: () => ({ expertInputVersion: version }),
+    generateReport: async ({ input }) => {
+      calls.push(input.expertInputVersion);
+      if (input.expertInputVersion === 'sha256:old') await new Promise((resolve) => { releaseOld = resolve; });
+      return { status: 'complete', content: input.expertInputVersion, expertInputVersion: input.expertInputVersion };
+    },
+    persistReport: async () => {},
+  });
+  const resultPromise = orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  version = 'sha256:new';
+  releaseOld();
+  const result = await resultPromise;
+  assert.deepEqual(calls, ['sha256:old', 'sha256:new']);
+  assert.equal(result.content, 'sha256:new');
+  assert.equal(record.report.familyPolicyAnalysisReport.content, 'sha256:new');
+});
+
+test('late failed persistence cannot roll back a newer successfully persisted report', async () => {
+  const record = { familyId: 10, status: 'active', report: {} };
+  let version = 'sha256:old';
+  let rejectOldPersist;
+  let persisted = null;
+  const orchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: () => record,
+    buildInput: () => ({ expertInputVersion: version }),
+    generateReport: async ({ input }) => ({
+      status: 'complete', content: input.expertInputVersion, expertInputVersion: input.expertInputVersion,
+      generatedAt: input.expertInputVersion === 'sha256:old' ? '2026-07-15T00:00:01.000Z' : '2026-07-15T00:00:02.000Z',
+    }),
+    persistReport: async ({ record: current }) => {
+      const content = current.report.familyPolicyAnalysisReport.content;
+      if (content === 'sha256:old') await new Promise((_resolve, reject) => { rejectOldPersist = reject; });
+      else persisted = structuredClone(current.report.familyPolicyAnalysisReport);
+    },
+  });
+  const oldWork = orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 7 } });
+  while (!rejectOldPersist) await new Promise((resolve) => setImmediate(resolve));
+  version = 'sha256:new';
+  const latest = await orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 7 } });
+  rejectOldPersist(new Error('old persist failed'));
+  await assert.rejects(oldWork, /old persist failed/u);
+  assert.equal(latest.content, 'sha256:new');
+  assert.equal(record.report.familyPolicyAnalysisReport.content, 'sha256:new');
+  assert.equal(persisted.content, 'sha256:new');
+});
+
 function allocateSequence(start = 100) {
   let value = start;
   return () => {

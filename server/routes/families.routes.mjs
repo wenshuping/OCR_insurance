@@ -749,7 +749,7 @@ export function createFamilyRoutes(context) {
     getReportRecord: (family, owner) => latestFamilyReport(family.id, owner),
     buildInput: (family, owner) => {
       const reportRecord = latestFamilyReport(family.id, owner);
-      const planningProfile = family.planningProfile || reportRecord?.planningProfile || null;
+      const planningProfile = reportRecord?.planningProfile || family.planningProfile || null;
       return buildFamilyPolicyAnalysisInput({
         family,
         members: listFamilyMembers(state, family.id),
@@ -1556,6 +1556,7 @@ export function createFamilyRoutes(context) {
       const members = listFamilyMembers(state, family.id);
       const policies = policiesForFamilyReport(family, owner);
       let reportRecord = latestFamilyReport(family.id, owner);
+      const hadReportRecord = Boolean(reportRecord);
       const planningProfile = req.body?.planningProfile || family.planningProfile || reportRecord?.planningProfile || null;
       const familyReport = buildFamilyReport(policies, planningProfile, { familyId: family.id });
       if (!reportRecord) {
@@ -1585,6 +1586,25 @@ export function createFamilyRoutes(context) {
       ) {
         await saveFamilyReportState();
         reportRecord = latestFamilyReport(family.id, owner);
+      }
+
+      if (hadReportRecord && hasOwn(req.body, 'planningProfile')) {
+        const expertInputVersion = familyPolicyAnalysisInputVersion({
+          family,
+          members,
+          policies,
+          report: familyReport,
+          planningProfile,
+        });
+        updateFamilyReportRecordReport({
+          record: reportRecord,
+          members,
+          policies,
+          report: familyReport,
+          expertInputVersion,
+        });
+        reportRecord.planningProfile = planningProfile;
+        await saveFamilyReportState();
       }
 
       await familyPolicyAnalysisOrchestrator.ensureFresh({ family, owner, explicitRefresh: true });

@@ -13430,6 +13430,72 @@ test('family policy analysis POST explicitly refreshes, shares concurrent work, 
   }
 });
 
+test('family policy analysis POST follows the latest input when policy changes during generation', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({ id: 83, ownerGuestId: 'guest-expert-race', familyName: '竞态家庭', status: 'active' });
+  state.policies.push({ id: 84, guestId: 'guest-expert-race', familyId: 83, name: '旧保单', status: 'active', coverageIndicators: [] });
+  const inputs = [];
+  let releaseFirst;
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilyPolicyAnalysisReport: async ({ input }) => {
+      inputs.push(input);
+      if (inputs.length === 1) await new Promise((resolve) => { releaseFirst = resolve; });
+      return { status: 'complete', content: `race:${inputs.length}`, expertInputVersion: input.expertInputVersion };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const path = '/api/family-profiles/83/policy-analysis-report?guestId=guest-expert-race';
+    const request = jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    while (!releaseFirst) await new Promise((resolve) => setImmediate(resolve));
+    state.policies.find((policy) => policy.id === 84).name = '新保单';
+    releaseFirst();
+    const response = await request;
+    assert.equal(response.response.status, 200);
+    assert.equal(inputs.length, 2);
+    assert.notEqual(inputs[0].expertInputVersion, inputs[1].expertInputVersion);
+    assert.equal(response.payload.analysisReport.content, 'race:2');
+    const current = await jsonFetch(server.baseUrl, path);
+    assert.equal(current.payload.analysisReport.status, 'fresh');
+    assert.equal(current.payload.analysisReport.content, 'race:2');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family policy analysis POST applies requested planning profile to an existing report', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({ id: 85, ownerGuestId: 'guest-expert-planning', familyName: '规划家庭', status: 'active' });
+  state.policies.push({ id: 86, guestId: 'guest-expert-planning', familyId: 85, name: '规划保单', status: 'active', coverageIndicators: [] });
+  const inputs = [];
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilyPolicyAnalysisReport: async ({ input }) => {
+      inputs.push(input);
+      return { status: 'complete', content: `planning:${inputs.length}`, expertInputVersion: input.expertInputVersion };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const path = '/api/family-profiles/85/policy-analysis-report?guestId=guest-expert-planning';
+    const first = await jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(first.response.status, 200);
+    const second = await jsonFetch(server.baseUrl, path, {
+      method: 'POST', body: JSON.stringify({ planningProfile: { annualIncome: 300000 } }),
+    });
+    assert.equal(second.response.status, 200);
+    assert.equal(inputs.length, 2);
+    assert.equal(inputs[1].planningProfile.annualIncome.value, 300000);
+    assert.notEqual(inputs[0].expertInputVersion, inputs[1].expertInputVersion);
+    const current = await jsonFetch(server.baseUrl, path);
+    assert.equal(current.payload.analysisReport.status, 'fresh');
+    assert.equal(current.payload.analysisReport.content, 'planning:2');
+  } finally {
+    await server.close();
+  }
+});
+
 test('family report daily refresh limit ignores automatic generations', async () => {
   const state = createInitialState();
   state.membershipConfig = {

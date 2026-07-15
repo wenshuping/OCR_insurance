@@ -24,12 +24,12 @@ export function createFamilyPolicyAnalysisOrchestrator({
   }
   const inFlight = new Map();
 
-  function inputFor({ family, owner }) {
-    return buildInput(family, owner);
+  function inputFor({ family, owner, ...requestContext }) {
+    return buildInput(family, owner, requestContext);
   }
 
-  function currentInputVersion({ family, owner }) {
-    return String(inputFor({ family, owner })?.expertInputVersion || '').trim();
+  function currentInputVersion({ family, owner, ...requestContext }) {
+    return String(inputFor({ family, owner, ...requestContext })?.expertInputVersion || '').trim();
   }
 
   function currentReport({ family, owner }) {
@@ -50,13 +50,13 @@ export function createFamilyPolicyAnalysisOrchestrator({
     return { status: report ? 'stale' : 'missing', expertInputVersion: version, report };
   }
 
-  async function generateAndSave({ family, owner, input }) {
+  async function generateAndSave({ family, owner, input, requestContext }) {
     const generated = await generateReport({ input });
     if (!completeReport({ ...generated, expertInputVersion: generated.expertInputVersion || input.expertInputVersion })) {
       throw new Error('FAMILY_POLICY_ANALYSIS_GENERATION_FAILED');
     }
     const version = String(input.expertInputVersion || '').trim();
-    if (currentInputVersion({ family, owner }) !== version) return generated;
+    if (currentInputVersion({ family, owner, ...requestContext }) !== version) return null;
     const record = getReportRecord(family, owner);
     if (!record) throw new Error('FAMILY_REPORT_NOT_FOUND');
     record.report = record.report || {};
@@ -75,16 +75,22 @@ export function createFamilyPolicyAnalysisOrchestrator({
     try {
       await persistReport({ record, family, owner });
     } catch (error) {
-      if (previousReport === undefined) delete record.report.familyPolicyAnalysisReport;
-      else record.report.familyPolicyAnalysisReport = previousReport;
-      record.updatedAt = previousUpdatedAt;
+      if (record.report.familyPolicyAnalysisReport === saved && record.updatedAt === saved.generatedAt) {
+        if (previousReport === undefined) delete record.report.familyPolicyAnalysisReport;
+        else record.report.familyPolicyAnalysisReport = previousReport;
+        record.updatedAt = previousUpdatedAt;
+      }
       throw error;
     }
     return saved;
   }
 
-  function ensureFresh({ family, owner, explicitRefresh = false }) {
-    const input = inputFor({ family, owner });
+  function ensureFresh(request) {
+    return ensureFreshAttempt(request, 0);
+  }
+
+  function ensureFreshAttempt({ family, owner, explicitRefresh = false, ...requestContext }, attempt) {
+    const input = inputFor({ family, owner, ...requestContext });
     const version = String(input?.expertInputVersion || '').trim();
     const key = `${ownerKey(owner)}|family:${Number(family?.id || 0)}|version:${version}`;
     const existingWork = inFlight.get(key);
@@ -93,7 +99,16 @@ export function createFamilyPolicyAnalysisOrchestrator({
     if (!explicitRefresh && completeReport(report) && report.expertInputVersion === version) {
       return Promise.resolve(report);
     }
-    const work = generateAndSave({ family, owner, input });
+    const work = generateAndSave({ family, owner, input, requestContext }).then((saved) => {
+      if (saved) return saved;
+      if (attempt >= 3) {
+        const error = new Error('FAMILY_POLICY_ANALYSIS_INPUT_CHANGED');
+        error.code = 'FAMILY_POLICY_ANALYSIS_INPUT_CHANGED';
+        error.status = 409;
+        throw error;
+      }
+      return ensureFreshAttempt({ family, owner, ...requestContext }, attempt + 1);
+    });
     inFlight.set(key, work);
     work.finally(() => {
       if (inFlight.get(key) === work) inFlight.delete(key);
