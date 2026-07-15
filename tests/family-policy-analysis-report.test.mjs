@@ -94,9 +94,17 @@ test('expert input version is stable and tracks only expert business facts', () 
     family: { id: 10, familyName: '张先生家庭', notes: '有房贷', ownerUserId: 99, updatedAt: 'yesterday' },
     members: [{ id: 1, name: '张先生', notes: '经济支柱', idNumber: 'secret', uiExpanded: true }],
     planningProfile: buildExpertPlanningProfile({ debt: 1_000_000 }),
-    policies: [{ id: 11, productName: '重疾险', coverageAmount: 300_000, updatedAt: 'today' }],
-    groupedCoverageIndicators: [{ memberRef: 'member_1', category: 'critical', confirmedItems: [], notIdentifiedItems: ['轻症'] }],
-    evidenceReferences: [{ policyRef: 'policy_1', verificationStatus: 'verified', sourceKind: 'customer_policy_terms' }],
+    policies: [{
+      id: 11,
+      productName: '重疾险',
+      coverageAmount: 300_000,
+      updatedAt: 'today',
+      editing: false,
+      responsibilities: [{ name: '重大疾病保险金', amount: 300_000, verifiedAt: 'today', idNumberMasked: '****1234' }],
+      evidence: { knowledgeEvidence: [{ title: '保险条款', verificationStatus: 'verified', fetchedAt: 'today', activeTab: 'terms' }] },
+    }],
+    groupedCoverageIndicators: [{ memberRef: 'member_1', category: 'critical', confirmedItems: [], notIdentifiedItems: ['轻症'], activeTab: 'gap' }],
+    evidenceReferences: [{ policyRef: 'policy_1', verificationStatus: 'verified', sourceKind: 'customer_policy_terms', fetchedAt: 'today', editing: false }],
     salesMemory: { objection: '贵' },
     salesChat: [{ content: '换个说法' }],
   };
@@ -105,6 +113,17 @@ test('expert input version is stable and tracks only expert business facts', () 
   assert.match(first, /^sha256:[0-9a-f]{64}$/u);
   assert.equal(computeExpertInputVersion({ ...input, salesMemory: { objection: '不急' }, salesChat: [] }), first);
   assert.equal(computeExpertInputVersion({ ...input, family: { ...input.family, updatedAt: 'tomorrow' } }), first);
+  assert.equal(computeExpertInputVersion({
+    ...input,
+    policies: [{
+      ...input.policies[0],
+      editing: true,
+      responsibilities: [{ ...input.policies[0].responsibilities[0], verifiedAt: 'tomorrow', idNumberMasked: '****9999' }],
+      evidence: { knowledgeEvidence: [{ ...input.policies[0].evidence.knowledgeEvidence[0], fetchedAt: 'tomorrow', activeTab: 'summary' }] },
+    }],
+    groupedCoverageIndicators: [{ ...input.groupedCoverageIndicators[0], activeTab: 'coverage' }],
+    evidenceReferences: [{ ...input.evidenceReferences[0], fetchedAt: 'tomorrow', editing: true }],
+  }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, family: { ...input.family, notes: '新增房贷' } }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, members: [{ ...input.members[0], notes: '准备退休' }] }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, planningProfile: buildExpertPlanningProfile({ debt: 900_000 }) }), first);

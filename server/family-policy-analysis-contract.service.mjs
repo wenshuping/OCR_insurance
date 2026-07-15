@@ -18,12 +18,20 @@ const STATUS_ITEM_KEYS = {
   not_applicable: 'notApplicableItems',
 };
 
-const EXCLUDED_VERSION_KEYS = new Set([
-  'createdAt', 'updatedAt', 'generatedAt', 'sourceUpdatedAt',
-  'ownerUserId', 'userId', 'idNumber', 'idNumberTail', 'phone', 'mobile', 'email',
-  'birthday', 'applicant', 'insured',
-  'salesMemory', 'salesMemoryContext', 'salesChat', 'salesChatContext',
-  'uiState', 'uiExpanded', 'selected', 'expanded',
+const VERSION_FACT_KEYS = new Set([
+  'notes', 'relationLabel', 'role',
+  ...PLANNING_FIELDS, 'status', 'value',
+  'id', 'company', 'productName', 'annualPremium', 'coverageAmount', 'effectiveDate',
+  'paymentPeriod', 'coveragePeriod', 'type', 'responsibilities', 'evidence',
+  'name', 'amount', 'condition', 'payout',
+  'knowledgeEvidence', 'indicatorEvidence', 'optionalResponsibilityEvidence', 'policySourceEvidence',
+  'productType', 'title', 'official', 'sourceKind', 'evidenceLevel', 'verificationStatus',
+  'verificationLabel', 'referenceOnly', 'url', 'excerpt', 'coverageType', 'liability',
+  'formulaText', 'unit', 'responsibilityScope', 'selectionStatus', 'quantificationStatus',
+  'sourceUrl', 'sourceExcerpt',
+  'memberRef', 'category', 'confirmedItems', 'notFoundInRecordedPoliciesItems',
+  'notIdentifiedItems', 'conflictedItems', 'missingSourceItems', 'notApplicableItems', 'itemName',
+  'evidenceReferences', 'policyRef',
 ]);
 
 function trim(value) {
@@ -49,12 +57,12 @@ function canonicalize(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]));
 }
 
-function versionSafe(value) {
-  if (Array.isArray(value)) return value.map(versionSafe);
+function versionFacts(value) {
+  if (Array.isArray(value)) return value.map(versionFacts);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !EXCLUDED_VERSION_KEYS.has(key))
-    .map(([key, child]) => [key, versionSafe(child)]));
+    .filter(([key]) => VERSION_FACT_KEYS.has(key))
+    .map(([key, child]) => [key, versionFacts(child)]));
 }
 
 export function buildExpertPlanningProfile(planning = {}) {
@@ -100,18 +108,19 @@ export function groupExpertCoverageIndicators(indicators = []) {
 }
 
 export function computeExpertInputVersion(input = {}) {
-  const versionInput = versionSafe({
+  const versionInput = {
     family: { notes: input.family?.notes || '' },
     members: (Array.isArray(input.members) ? input.members : []).map((member) => ({
       relationLabel: member.relationLabel || '',
       role: member.role || '',
       notes: member.notes || '',
     })),
-    planningProfile: input.planningProfile || {},
-    policies: input.policies || [],
-    groupedCoverageIndicators: input.groupedCoverageIndicators || [],
-    evidenceReferences: input.evidenceReferences || [],
-  });
+    planningProfile: versionFacts(input.planningProfile || {}),
+    policies: (Array.isArray(input.policies) ? input.policies : []).map(versionFacts),
+    groupedCoverageIndicators: (Array.isArray(input.groupedCoverageIndicators)
+      ? input.groupedCoverageIndicators : []).map(versionFacts),
+    evidenceReferences: (Array.isArray(input.evidenceReferences) ? input.evidenceReferences : []).map(versionFacts),
+  };
   const json = JSON.stringify(canonicalize(versionInput));
   return `sha256:${createHash('sha256').update(json).digest('hex')}`;
 }
