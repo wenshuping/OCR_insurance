@@ -12869,6 +12869,7 @@ test('family sales chat creates threads continues with history and enforces owne
     ownerGuestId: 'guest-sales-chat',
     status: 'active',
     content: '## 销售建议\n先和{{member_1}}核实预算。',
+    structuredSummary: { conclusion: '优先沟通终身寿', salesOpportunities: ['测试终身寿'], refs: { policies: ['policy:11'] } },
     generatedAt: '2026-06-15T00:03:00.000Z',
     createdAt: '2026-06-15T00:03:00.000Z',
     updatedAt: '2026-06-15T00:03:00.000Z',
@@ -12921,9 +12922,9 @@ test('family sales chat creates threads continues with history and enforces owne
   try {
     const created = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat', {
       method: 'POST',
-      body: JSON.stringify({ message: '帮我改成微信话术' }),
+      body: JSON.stringify({ message: '测试终身寿怎么聊' }),
     });
-    assert.equal(created.response.status, 201);
+    assert.equal(created.response.status, 201, JSON.stringify(created.payload));
     assert.equal(created.payload.thread.id, 20);
     assert.equal(created.payload.messages.length, 2);
     assert.equal(created.payload.messages[0].role, 'user');
@@ -12931,9 +12932,9 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(state.familySalesChatThreads.length, 1);
     assert.equal(state.familySalesChatMessages.length, 2);
     assert.equal(state.familySalesChatThreads[0].ownerGuestId, 'guest-sales-chat');
-    assert.equal(generationCalls[0].question, '帮我改成微信话术');
-    assert.equal(generationCalls[0].context.latestSalesReview.id, 12);
-    assert.equal(generationCalls[0].context.salesMemoryContext, undefined);
+    assert.equal(generationCalls[0].question, '测试终身寿怎么聊');
+    assert.equal(generationCalls[0].context.salesSummary.conclusion, '优先沟通终身寿');
+    assert.deepEqual(generationCalls[0].context.conversationTargets.activeOpportunity, { policyRef: 'policy:11' });
     assert.doesNotMatch(JSON.stringify(generationCalls[0].context), /其他家庭的偏好/u);
     assert.doesNotMatch(JSON.stringify(generationCalls[0].context), /其他登录人的偏好/u);
     assert.equal(generationCalls[0].history.length, 0);
@@ -12947,13 +12948,17 @@ test('family sales chat creates threads continues with history and enforces owne
 
     const continued = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages?guestId=guest-sales-chat', {
       method: 'POST',
-      body: JSON.stringify({ message: '客户说预算不够怎么回应' }),
+      body: JSON.stringify({ message: '这张保单续保怎么样' }),
     });
     assert.equal(continued.response.status, 200);
     assert.equal(continued.payload.messages.length, 2);
-    assert.equal(generationCalls[1].question, '客户说预算不够怎么回应');
+    assert.equal(generationCalls[1].question, '这张保单续保怎么样');
     assert.equal(generationCalls[1].history.length, 2);
-    assert.equal(generationCalls[1].context.salesMemoryContext.memoryCount, 1);
+    assert.equal(generationCalls[1].context.salesMemoryContext.length, 1);
+    assert.equal(generationCalls[1].context.salesMemoryContext[0].status, 'confirmed');
+    assert.deepEqual(generationCalls[1].context.conversationTargets.lastExplicitTarget, { policyRef: 'policy:11', memberRef: 'member:9', category: '增额终身寿险' });
+    assert.equal(generationCalls[1].context.topicPack.type, 'policy_indicators');
+    assert.deepEqual(generationCalls[1].context.topicPack.policyRefs, ['policy:11']);
     assert.match(JSON.stringify(generationCalls[1].context.salesMemoryContext), /客户预算敏感/u);
     assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他家庭的偏好/u);
     assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他登录人的偏好/u);
@@ -12967,8 +12972,8 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(listed.payload.threads.length, 1);
     assert.equal(listed.payload.threads[0].messageCount, 4);
     assert.equal(listed.payload.threads[0].messages.length, 4);
-    assert.equal(listed.payload.threads[0].messages[0].content, '帮我改成微信话术');
-    assert.equal(listed.payload.threads[0].messages[3].content, '回复 2: 客户说预算不够怎么回应');
+    assert.equal(listed.payload.threads[0].messages[0].content, '测试终身寿怎么聊');
+    assert.equal(listed.payload.threads[0].messages[3].content, '回复 2: 这张保单续保怎么样');
 
     const otherOwner = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-other');
     assert.equal(otherOwner.response.status, 404);

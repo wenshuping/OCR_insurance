@@ -343,6 +343,8 @@ export function buildFamilySalesMemoryContext(memories = [], { asOf = new Date()
     ))
     .slice(0, FAMILY_SALES_MEMORY_LIMIT)
     .map((memory) => ({
+      status: memoryStatus(memory),
+      isCurrent: true,
       kind: normalizeKind(memory?.kind),
       memoryKey: normalizeProvidedMemoryKey(memory?.kind, memory?.memoryKey, memory?.content),
       content: sanitizeMemoryContent(memory?.content),

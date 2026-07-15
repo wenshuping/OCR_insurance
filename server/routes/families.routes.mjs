@@ -8,6 +8,7 @@ import {
 } from '../family-sales-review.service.mjs';
 import {
   buildLightweightSalesChatContext,
+  deriveSalesConversationTargets,
   generateFamilySalesChatReply,
   selectSalesTopicPack,
 } from '../family-sales-chat.service.mjs';
@@ -655,8 +656,13 @@ export function createFamilyRoutes(context) {
     const latestSalesReview = latestRecord(state.familySalesReviews);
     const latestFamilyReport = latestRecord(state.familyReports);
     const expertReport = latestFamilyReport?.report?.familyPolicyAnalysisReport || latestFamilyReport?.report || null;
-    const lastExplicitTarget = salesMemoryContext?.lastExplicitTarget || null;
-    const activeOpportunity = salesMemoryContext?.activeOpportunity || null;
+    const { lastExplicitTarget, activeOpportunity } = deriveSalesConversationTargets({
+      salesReview: latestSalesReview,
+      memories: salesMemoryContext,
+      history,
+      members,
+      policies,
+    });
     const topicPack = selectSalesTopicPack(question, { members, policies, activeOpportunity, lastExplicitTarget });
     const baseline = latestSalesReview?.generatedAt || latestSalesReview?.updatedAt || latestSalesReview?.createdAt || '';
     const sourceUpdated = [family, ...members, ...policies].some((record) => record?.updatedAt && baseline && record.updatedAt > baseline);
@@ -670,6 +676,8 @@ export function createFamilyRoutes(context) {
       topicPack,
       members,
       policies,
+      financeSummary: family.planningProfile || null,
+      conversationTargets: { lastExplicitTarget, activeOpportunity },
       sourceUpdated,
       generatedAt: nowIso(),
       displayReplacements,

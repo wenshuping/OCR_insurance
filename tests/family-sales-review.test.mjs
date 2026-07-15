@@ -11,6 +11,7 @@ import {
 import {
   buildFamilySalesChatMessages,
   buildLightweightSalesChatContext,
+  deriveSalesConversationTargets,
   generateFamilySalesChatReply,
   selectSalesTopicPack,
 } from '../server/family-sales-chat.service.mjs';
@@ -688,6 +689,73 @@ test('sales topic selection uses recent explicit policy for renewal indicators',
   assert.deepEqual(topicPack, { type: 'policy_indicators', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' });
 });
 
+test('sales topic selection does not expand an ambiguous category to multiple policies', () => {
+  const topicPack = selectSalesTopicPack('医疗险续保怎么样', {
+    members: [{ id: 10, relationLabel: '本人' }, { id: 11, relationLabel: '女儿' }],
+    policies: [
+      { id: 20, insuredMemberId: 10, name: '成人医疗险', category: '医疗险' },
+      { id: 21, insuredMemberId: 11, name: '少儿医疗险', category: '医疗险' },
+    ],
+  });
+  assert.equal(topicPack, null);
+});
+
+test('topic packs project bounded indicators and responsibility evidence', () => {
+  const policies = [{ id: 21, insuredMemberId: 11, name: '少儿医疗险', category: '医疗险', validityStatus: '有效', renewalType: '保证续保20年', waitingPeriod: '30天', evidence: '全文不得带入' }];
+  const expertReport = { structuredResult: {
+    summary: '摘要',
+    priorityFindings: [], memberFindings: [], confirmedFacts: [], verificationItems: [],
+    policyIndicators: [{ policyRef: 'policy:21', indicator: '保证续保', status: 'confirmed', source: '条款第3页' }, { policyRef: 'policy:99', indicator: '无关' }],
+    responsibilityFindings: [{ policyRef: 'policy:21', responsibility: '住院医疗', evidenceStatus: 'identified', evidenceRef: 'evidence:1' }],
+  } };
+  const indicatorContext = buildLightweightSalesChatContext({ question: '这张医疗险续保怎么样', topicPack: { type: 'policy_indicators', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' }, policies, expertReport });
+  assert.ok(indicatorContext.topicData.policyIndicators.length <= 8);
+  assert.match(JSON.stringify(indicatorContext.topicData), /保证续保20年|条款第3页/u);
+  assert.doesNotMatch(JSON.stringify(indicatorContext), /全文不得带入|policy:99/u);
+  const evidenceContext = buildLightweightSalesChatContext({ question: '这张医疗险住院责任怎么赔', topicPack: { type: 'responsibility_evidence', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' }, policies, expertReport });
+  assert.equal(evidenceContext.topicData.responsibilityEvidence.length, 1);
+  assert.equal(evidenceContext.topicData.responsibilityEvidence[0].evidenceStatus, 'identified');
+  const missingEvidence = buildLightweightSalesChatContext({ question: '责任呢', topicPack: { type: 'responsibility_evidence', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' }, policies });
+  assert.equal(missingEvidence.topicData.absenceMessage, '暂按未配置关注，需核对合同');
+  const financeContext = buildLightweightSalesChatContext({ question: '预算怎么安排', topicPack: { type: 'family_finance', memberRefs: [], policyRefs: [], category: null }, financeSummary: { annualIncome: 300000, annualExpense: 150000, debt: 500000, privateNote: '不得带入' } });
+  assert.deepEqual(financeContext.topicData.finance, { annualIncome: 300000, annualExpense: 150000, debt: 500000 });
+  assert.doesNotMatch(JSON.stringify(financeContext), /不得带入|privateNote/u);
+});
+
+test('lightweight context excludes candidate and completed memories but preserves current status', () => {
+  const context = buildLightweightSalesChatContext({
+    question: '怎么继续聊',
+    memories: { memories: [
+      { content: '已确认预算', status: 'confirmed', isCurrent: true },
+      { content: '候选偏好', status: 'candidate', isCurrent: false },
+      { content: '已拒绝偏好', status: 'rejected', isCurrent: false },
+      { content: '已过期偏好', status: 'expired', isCurrent: false },
+      { content: '已完成待办', status: 'completed', isCurrent: false },
+    ] },
+  });
+  assert.deepEqual(context.salesMemoryContext.map((item) => item.content), ['已确认预算']);
+  assert.equal(context.salesMemoryContext[0].status, 'confirmed');
+  assert.equal(context.salesMemoryContext[0].isCurrent, true);
+});
+
+test('conversation targets prefer recent explicit target and retain structured active opportunity', () => {
+  const targets = deriveSalesConversationTargets({
+    salesReview: { structuredSummary: { refs: { policies: ['policy:21'] } } },
+    history: [{ role: 'user', content: '先聊孩子的少儿意外险', createdAt: '2026-07-01T00:00:00.000Z' }],
+    members: [{ id: 11, relationLabel: '孩子' }],
+    policies: [{ id: 21, insuredMemberId: 11, name: '少儿意外险', category: '意外险' }],
+  });
+  assert.deepEqual(targets.lastExplicitTarget, { policyRef: 'policy:21', memberRef: 'member:11', category: '意外险' });
+  assert.deepEqual(targets.activeOpportunity, { policyRef: 'policy:21' });
+});
+
+test('sales chat prompt states the two evidence absence levels', () => {
+  const prompt = buildFamilySalesChatMessages({ context: { clarificationNeeded: true }, question: '责任怎么样' }).map((message) => message.content).join('\n');
+  assert.match(prompt, /当前已录入保单中未发现/u);
+  assert.match(prompt, /暂按未配置关注，需核对合同/u);
+  assert.match(prompt, /禁止写.*客户确认没有/u);
+});
+
 test('lightweight sales context asks for clarification without falling back to family detail', () => {
   const context = buildLightweightSalesChatContext({
     salesReview: { structuredSummary: { conclusion: '先补齐医疗保障' }, content: '完整销售 Markdown 不应出现' },
@@ -877,6 +945,8 @@ test('family sales memory context accepts legacy active rows but filters invalid
 
   assert.equal(context.memoryCount, 1);
   assert.equal(context.memories[0].content, '旧数据仍可使用');
+  assert.equal(context.memories[0].status, 'active');
+  assert.equal(context.memories[0].isCurrent, true);
 });
 
 test('family sales review appends expanded plans and scripts when the model compresses them', async () => {

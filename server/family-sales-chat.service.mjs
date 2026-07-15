@@ -147,7 +147,9 @@ export function selectSalesTopicPack(question, {
   if (!selectedPolicies.length && fallbackPolicyRef) selectedPolicies = normalizedPolicies.filter((policy) => policy.ref === fallbackPolicyRef || String(policy.id) === fallbackPolicyRef);
   if (!selectedMembers.length && fallbackMemberRef) selectedMembers = normalizedMembers.filter((member) => member.ref === fallbackMemberRef || String(member.id) === fallbackMemberRef);
   if (!selectedPolicies.length && (selectedMembers.length || category)) {
-    selectedPolicies = normalizedPolicies.filter((policy) => (!category || policy.category === category) && (!selectedMembers.length || selectedMembers.some((member) => Number(policy.insuredMemberId) === Number(member.id))));
+    const categoryMatches = normalizedPolicies.filter((policy) => (!category || policy.category === category) && (!selectedMembers.length || selectedMembers.some((member) => Number(policy.insuredMemberId) === Number(member.id))));
+    if (categoryMatches.length === 1 || selectedMembers.length) selectedPolicies = categoryMatches;
+    else if (categoryMatches.length > 1) return null;
   }
   if (!selectedMembers.length && selectedPolicies.length) {
     selectedMembers = normalizedMembers.filter((member) => selectedPolicies.some((policy) => Number(policy.insuredMemberId) === Number(member.id)));
@@ -171,6 +173,28 @@ export function selectSalesTopicPack(question, {
   };
 }
 
+export function deriveSalesConversationTargets({ salesReview = null, memories = null, history = [], members = [], policies = [] } = {}) {
+  const targetFromText = (text) => {
+    const pack = selectSalesTopicPack(text, { members, policies });
+    if (!pack) return null;
+    if (pack.policyRefs.length === 1) return { policyRef: pack.policyRefs[0], memberRef: pack.memberRefs[0] || '', category: pack.category || '' };
+    if (pack.memberRefs.length === 1) return { memberRef: pack.memberRefs[0], category: pack.category || '' };
+    return null;
+  };
+  const recentMessages = normalizeHistory(history).slice().reverse();
+  const memoryList = Array.isArray(memories) ? memories : (memories?.memories || []);
+  const confirmedMemories = memoryList.filter((item) => ['confirmed', 'active'].includes(trim(item?.status)) && item?.isCurrent !== false).slice(0, 8);
+  const lastExplicitTarget = [...recentMessages.map((item) => item.content), ...confirmedMemories.map((item) => item.content)]
+    .map(targetFromText).find(Boolean) || null;
+  const refs = salesReview?.structuredSummary?.refs || {};
+  const policyRefs = (Array.isArray(refs.policies) ? refs.policies : []).map(trim).filter(Boolean);
+  let activeOpportunity = policyRefs.length === 1 ? { policyRef: policyRefs[0] } : null;
+  if (!activeOpportunity) {
+    activeOpportunity = (salesReview?.structuredSummary?.salesOpportunities || []).map(targetFromText).find(Boolean) || null;
+  }
+  return { lastExplicitTarget, activeOpportunity };
+}
+
 function boundedItems(items, limit = 6) {
   return (Array.isArray(items) ? items : []).slice(0, limit);
 }
@@ -192,9 +216,45 @@ function relevantFindings(expertReport = {}, topicPack = null) {
   };
 }
 
+function topicDataForPack({ topicPack, policies = [], expertReport = {}, financeSummary = null } = {}) {
+  if (!topicPack) return null;
+  const policyRefs = new Set(topicPack.policyRefs || []);
+  const findings = expertReport?.structuredResult || expertReport?.expertFindings || {};
+  const selectedPolicies = (Array.isArray(policies) ? policies : []).filter((policy) => policyRefs.has(entityRef('policy', policy))).slice(0, 3);
+  const matchesPolicy = (item = {}) => policyRefs.has(trim(item.policyRef)) || (item.policyRefs || []).some((ref) => policyRefs.has(trim(ref)));
+  if (topicPack.type === 'policy_indicators') {
+    const expertIndicators = boundedItems(findings.policyIndicators?.filter(matchesPolicy), 6);
+    return {
+      policyIndicators: [
+        ...selectedPolicies.map((policy) => ({
+          policyRef: entityRef('policy', policy), validityStatus: trim(policy.validityStatus ?? policy.status), renewalType: trim(policy.renewalType ?? policy.renewal), waitingPeriod: trim(policy.waitingPeriod),
+        })),
+        ...expertIndicators,
+      ].slice(0, 8),
+      absenceMessage: selectedPolicies.length && expertIndicators.length ? null : '当前已录入保单中未发现',
+    };
+  }
+  if (topicPack.type === 'responsibility_evidence') {
+    const responsibilityEvidence = boundedItems((findings.responsibilityFindings || findings.responsibilityEvidence)?.filter(matchesPolicy), 6).map((item) => ({
+      policyRef: trim(item.policyRef), responsibility: trim(item.responsibility ?? item.name), evidenceStatus: trim(item.evidenceStatus ?? item.status) || 'not_identified', evidenceRef: trim(item.evidenceRef),
+    }));
+    return {
+      responsibilityEvidence,
+      absenceMessage: !selectedPolicies.length ? '当前已录入保单中未发现' : responsibilityEvidence.length ? null : '暂按未配置关注，需核对合同',
+    };
+  }
+  if (topicPack.type === 'family_finance' || topicPack.type === 'wealth_cashflow') {
+    const source = financeSummary && typeof financeSummary === 'object' ? financeSummary : {};
+    return { finance: Object.fromEntries(['annualIncome', 'annualExpense', 'debt', 'premiumBudget', 'availableAssets', 'cashflowConclusion'].filter((key) => source[key] !== undefined).map((key) => [key, source[key]])) };
+  }
+  return null;
+}
+
 export function buildLightweightSalesChatContext({
   salesReview = null, expertReport = null, memories = null, history = [], question = '', topicPack = null,
   members = [], policies = [], sourceUpdated = false, generatedAt = new Date().toISOString(), displayReplacements = null,
+  financeSummary = null,
+  conversationTargets = null,
 } = {}) {
   const ambiguous = !topicPack && /这份|这个|这张|怎么样|如何/u.test(trim(question));
   const memberRefs = new Set(topicPack?.memberRefs || []);
@@ -217,6 +277,8 @@ export function buildLightweightSalesChatContext({
     clarificationNeeded: ambiguous,
     minimalIndexes: { members: memberIndex, policies: policyIndex },
     topicPack: topicPack || null,
+    topicData: topicDataForPack({ topicPack, policies, expertReport, financeSummary }),
+    conversationTargets: conversationTargets || { lastExplicitTarget: null, activeOpportunity: null },
     ...(displayReplacements ? { displayReplacements } : {}),
   };
   const publicLength = JSON.stringify({ ...context, displayReplacements: undefined }).length;
@@ -343,6 +405,7 @@ export function buildFamilySalesChatMessages({
         '9. 如果上下文包含 salesMemoryContext，只能把它当作当前家庭的跟进记忆，用于沟通风格、已确认异议、策略偏好和待办；保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准。',
         '10. 如果上下文包含 policyImportContext，它是 OCR Insurance 输出的脱敏保单草稿；只能引用其中已提供字段，并明确提示 missingFields。不得推测被掩码身份、保单号、证件号或原始图片内容。',
         '11. 如果 clarificationNeeded=true 或专题包无法定位对象，请先请顾问明确具体成员、保单或险种，不得回退猜测全家详情。',
+        '12. 两级缺失措辞必须严格区分：无关联保单或指标时写“当前已录入保单中未发现”；已有相关保单但责任未识别时写“暂按未配置关注，需核对合同”。禁止写“客户确认没有”。',
         '',
         '本轮 skill 规则：',
         ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),
