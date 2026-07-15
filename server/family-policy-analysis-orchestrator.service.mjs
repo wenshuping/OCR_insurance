@@ -86,13 +86,21 @@ export function createFamilyPolicyAnalysisOrchestrator({
   }
 
   function ensureFresh(request) {
-    return ensureFreshAttempt(request, 0);
+    return ensureFreshAttempt(request, 0, new Set());
   }
 
-  function ensureFreshAttempt({ family, owner, explicitRefresh = false, ...requestContext }, attempt) {
+  function inputChangedError() {
+    const error = new Error('FAMILY_POLICY_ANALYSIS_INPUT_CHANGED');
+    error.code = 'FAMILY_POLICY_ANALYSIS_INPUT_CHANGED';
+    error.status = 409;
+    return error;
+  }
+
+  function ensureFreshAttempt({ family, owner, explicitRefresh = false, ...requestContext }, attempt, visitedKeys) {
     const input = inputFor({ family, owner, ...requestContext });
     const version = String(input?.expertInputVersion || '').trim();
     const key = `${ownerKey(owner)}|family:${Number(family?.id || 0)}|version:${version}`;
+    if (visitedKeys.has(key)) return Promise.reject(inputChangedError());
     const existingWork = inFlight.get(key);
     if (existingWork) return existingWork;
     const report = currentReport({ family, owner });
@@ -101,13 +109,10 @@ export function createFamilyPolicyAnalysisOrchestrator({
     }
     const work = generateAndSave({ family, owner, input, requestContext }).then((saved) => {
       if (saved) return saved;
-      if (attempt >= 3) {
-        const error = new Error('FAMILY_POLICY_ANALYSIS_INPUT_CHANGED');
-        error.code = 'FAMILY_POLICY_ANALYSIS_INPUT_CHANGED';
-        error.status = 409;
-        throw error;
-      }
-      return ensureFreshAttempt({ family, owner, ...requestContext }, attempt + 1);
+      if (attempt >= 3) throw inputChangedError();
+      const nextVisitedKeys = new Set(visitedKeys);
+      nextVisitedKeys.add(key);
+      return ensureFreshAttempt({ family, owner, ...requestContext }, attempt + 1, nextVisitedKeys);
     });
     inFlight.set(key, work);
     work.finally(() => {

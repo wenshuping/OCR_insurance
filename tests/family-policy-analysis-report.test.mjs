@@ -243,6 +243,32 @@ test('late failed persistence cannot roll back a newer successfully persisted re
   assert.equal(persisted.content, 'sha256:new');
 });
 
+test('family policy analysis orchestrator rejects A-B-A version oscillation without leaving pending work', async () => {
+  const record = { familyId: 10, status: 'active', report: {} };
+  let version = 'sha256:A';
+  let calls = 0;
+  const orchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: () => record,
+    buildInput: () => ({ expertInputVersion: version }),
+    generateReport: async ({ input }) => {
+      calls += 1;
+      version = input.expertInputVersion === 'sha256:A' ? 'sha256:B' : 'sha256:A';
+      return { status: 'complete', content: input.expertInputVersion, expertInputVersion: input.expertInputVersion };
+    },
+    persistReport: async () => {},
+  });
+  const result = await Promise.race([
+    orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 7 } })
+      .then(() => ({ status: 'resolved' }), (error) => ({ status: 'rejected', error })),
+    new Promise((resolve) => setTimeout(() => resolve({ status: 'timeout' }), 100)),
+  ]);
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error.code, 'FAMILY_POLICY_ANALYSIS_INPUT_CHANGED');
+  assert.equal(calls, 2);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(orchestrator.getStatus({ family: { id: 10 }, owner: { userId: 7 } }).status, 'pending');
+});
+
 function allocateSequence(start = 100) {
   let value = start;
   return () => {
