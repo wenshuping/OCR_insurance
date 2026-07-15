@@ -152,12 +152,18 @@ test('stale and missing reports enqueue once per family and job type while in fl
 });
 
 test('sales advice freshness uses the same generated-versus-source boundary', async () => {
-  const fresh = harness({ familySalesReviews: [{
+  const fresh = harness({ familyReports: [{
+    id: 21, familyId: 7, status: 'active', sourceUpdatedAt: '2026-07-10T00:00:00.000Z',
+    report: { familyPolicyAnalysisReport: { status: 'complete', generatedAt: '2026-07-11T00:00:00.000Z', expertInputVersion: 'expert-v1', structuredResult: { summary: '保障分析完成' } } },
+  }], familySalesReviews: [{
     id: 31,
     familyId: 7,
     status: 'active',
     sourceUpdatedAt: '2026-07-10T00:00:00.000Z',
     generatedAt: '2026-07-11T00:00:00.000Z',
+    expertReportId: 21,
+    expertInputVersion: 'expert-v1',
+    structuredSummary: { conclusion: '优先完善基础保障', verificationItems: [], coverageConcerns: [], salesOpportunities: [], meetingObjective: '确认需求', nextActions: [], refs: { facts: [], indicators: [], policies: [] } },
     inputSummary: { policyCount: 4 },
   }] });
   const stale = harness({ familySalesReviews: [{
@@ -281,11 +287,17 @@ test('sales coaching can use the production family sales chat context builder un
 });
 
 test('safe summaries do not copy numeric phone, identity, or account fields', async () => {
-  const { handlers } = harness({ familySalesReviews: [{
+  const { handlers } = harness({ familyReports: [{
+    id: 21, familyId: 7, status: 'active',
+    report: { familyPolicyAnalysisReport: { status: 'complete', generatedAt: '2026-07-11T00:00:00.000Z', expertInputVersion: 'expert-v1', structuredResult: { summary: '保障分析完成' } } },
+  }], familySalesReviews: [{
     id: 31,
     familyId: 7,
     status: 'active',
     generatedAt: '2026-07-11T00:00:00.000Z',
+    expertReportId: 21,
+    expertInputVersion: 'expert-v1',
+    structuredSummary: { conclusion: '优先完善基础保障', verificationItems: [], coverageConcerns: [], salesOpportunities: [], meetingObjective: '确认需求', nextActions: [], refs: { facts: [], indicators: [], policies: [] } },
     inputSummary: {
       policyCount: 2,
       mobile: 13800138000,
