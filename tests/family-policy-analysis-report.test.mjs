@@ -16,6 +16,7 @@ import {
   createFamilyReportRecord,
   updateFamilyReportRecordReport,
 } from '../server/family-report-record.service.mjs';
+import { createFamilyPolicyAnalysisOrchestrator } from '../server/family-policy-analysis-orchestrator.service.mjs';
 
 function makeFamilyReport(policyId) {
   return {
@@ -43,6 +44,140 @@ function makeFamilyMembers(notes = '负责家庭收入') {
     status: 'active',
   }];
 }
+
+function createOrchestratorHarness({ owner = { userId: 7 }, version = 'sha256:v1', report = null } = {}) {
+  const record = { id: 20, familyId: 10, status: 'active', report: report ? { familyPolicyAnalysisReport: report } : {} };
+  const calls = [];
+  let currentVersion = version;
+  let release = null;
+  const orchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: () => record,
+    buildInput: () => ({ expertInputVersion: currentVersion }),
+    generateReport: async ({ input }) => {
+      calls.push(input.expertInputVersion);
+      if (release) await new Promise((resolve) => { release.resolve = resolve; });
+      return {
+        status: 'complete',
+        content: `report:${input.expertInputVersion}:${calls.length}`,
+        structuredResult: { version: input.expertInputVersion },
+        expertInputVersion: input.expertInputVersion,
+        model: 'test-model',
+        generatedAt: `2026-07-15T00:00:0${calls.length}.000Z`,
+      };
+    },
+    persistReport: async () => {},
+  });
+  return {
+    calls,
+    family: { id: 10 },
+    owner,
+    orchestrator,
+    record,
+    setVersion(next) { currentVersion = next; },
+    block() { release = {}; return release; },
+  };
+}
+
+test('family policy analysis orchestrator reuses a fresh matching report', async () => {
+  const harness = createOrchestratorHarness({
+    report: {
+      status: 'complete', content: 'cached', expertInputVersion: 'sha256:v1', generatedAt: '2026-07-15T00:00:00.000Z',
+    },
+  });
+  const result = await harness.orchestrator.ensureFresh({ family: harness.family, owner: harness.owner });
+  assert.equal(result.content, 'cached');
+  assert.equal(harness.calls.length, 0);
+});
+
+test('family policy analysis orchestrator generates missing and stale reports', async () => {
+  const missing = createOrchestratorHarness();
+  assert.equal((await missing.orchestrator.ensureFresh({ family: missing.family, owner: missing.owner })).content, 'report:sha256:v1:1');
+  assert.equal(missing.calls.length, 1);
+
+  const stale = createOrchestratorHarness({
+    report: { status: 'complete', content: 'old', expertInputVersion: 'sha256:old', generatedAt: '2026-07-14T00:00:00.000Z' },
+  });
+  assert.equal((await stale.orchestrator.ensureFresh({ family: stale.family, owner: stale.owner })).content, 'report:sha256:v1:1');
+  assert.equal(stale.calls.length, 1);
+});
+
+test('family policy analysis orchestrator shares concurrent work and explicit refresh generation', async () => {
+  const harness = createOrchestratorHarness({
+    report: { status: 'complete', content: 'cached', expertInputVersion: 'sha256:v1', generatedAt: '2026-07-15T00:00:00.000Z' },
+  });
+  const gate = harness.block();
+  const first = harness.orchestrator.ensureFresh({ family: harness.family, owner: harness.owner, explicitRefresh: true });
+  const second = harness.orchestrator.ensureFresh({ family: harness.family, owner: harness.owner, explicitRefresh: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.calls.length, 1);
+  gate.resolve();
+  assert.strictEqual(await first, await second);
+  assert.equal(harness.calls.length, 1);
+});
+
+test('family policy analysis orchestrator does not save failures or let an old version replace current', async () => {
+  const record = { id: 20, familyId: 10, status: 'active', report: {} };
+  let version = 'sha256:old';
+  let releaseOld;
+  const orchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: () => record,
+    buildInput: () => ({ expertInputVersion: version }),
+    generateReport: async ({ input }) => {
+      if (input.expertInputVersion === 'sha256:old') await new Promise((resolve) => { releaseOld = resolve; });
+      return { status: 'complete', content: input.expertInputVersion, structuredResult: {}, expertInputVersion: input.expertInputVersion };
+    },
+    persistReport: async () => {},
+  });
+  const oldWork = orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  version = 'sha256:new';
+  const current = await orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 7 } });
+  releaseOld();
+  await oldWork;
+  assert.equal(current.content, 'sha256:new');
+  assert.equal(record.report.familyPolicyAnalysisReport.content, 'sha256:new');
+
+  const failedRecord = { id: 21, familyId: 11, status: 'active', report: {} };
+  const failed = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: () => failedRecord,
+    buildInput: () => ({ expertInputVersion: 'sha256:fail' }),
+    generateReport: async () => { throw new Error('generation failed'); },
+    persistReport: async () => {},
+  });
+  await assert.rejects(failed.ensureFresh({ family: { id: 11 }, owner: { userId: 7 } }), /generation failed/u);
+  assert.equal(failedRecord.report.familyPolicyAnalysisReport, undefined);
+
+  const rejectedRecord = { id: 22, familyId: 12, status: 'active', report: {} };
+  const rejected = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: () => rejectedRecord,
+    buildInput: () => ({ expertInputVersion: 'sha256:rejected' }),
+    generateReport: async () => ({ status: 'failed', content: '', expertInputVersion: 'sha256:rejected' }),
+    persistReport: async () => {},
+  });
+  await assert.rejects(rejected.ensureFresh({ family: { id: 12 }, owner: { userId: 7 } }), /GENERATION_FAILED/u);
+  assert.equal(rejectedRecord.report.familyPolicyAnalysisReport, undefined);
+});
+
+test('family policy analysis orchestrator isolates in-flight work by owner', async () => {
+  const records = new Map();
+  let calls = 0;
+  const orchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: (_family, owner) => {
+      const key = owner.userId;
+      if (!records.has(key)) records.set(key, { familyId: 10, status: 'active', report: {} });
+      return records.get(key);
+    },
+    buildInput: (_family, owner) => ({ expertInputVersion: `sha256:${owner.userId}` }),
+    generateReport: async ({ input }) => ({ status: 'complete', content: input.expertInputVersion, expertInputVersion: input.expertInputVersion, call: ++calls }),
+    persistReport: async () => {},
+  });
+  const [left, right] = await Promise.all([
+    orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 7 } }),
+    orchestrator.ensureFresh({ family: { id: 10 }, owner: { userId: 8 } }),
+  ]);
+  assert.equal(calls, 2);
+  assert.notEqual(left.content, right.content);
+});
 
 function allocateSequence(start = 100) {
   let value = start;
@@ -357,7 +492,7 @@ test('family policy analysis envelope validates version, assessments, and eviden
   }
 });
 
-test('family report refresh preserves generated policy analysis report', () => {
+test('family report refresh preserves only matching-version policy analysis report', () => {
   const record = {
     summary: { issueCount: 0 },
     report: {
@@ -365,6 +500,7 @@ test('family report refresh preserves generated policy analysis report', () => {
         status: 'complete',
         content: '已生成的家庭保单分析报告正文',
         model: 'deepseek-v4-pro',
+        expertInputVersion: 'sha256:current',
         generatedAt: '2026-07-03T00:00:00.000Z',
       },
     },
@@ -379,10 +515,17 @@ test('family report refresh preserves generated policy analysis report', () => {
       wealth: { memberReports: [] },
       radar: { members: [], hiddenMembers: [] },
     },
+    expertInputVersion: 'sha256:current',
   });
 
   assert.equal(record.report.familyPolicyAnalysisReport.content, '已生成的家庭保单分析报告正文');
   assert.equal(record.report.familyPolicyAnalysisReport.model, 'deepseek-v4-pro');
+});
+
+test('family report refresh drops legacy policy analysis report without an input version', () => {
+  const record = { summary: {}, report: { familyPolicyAnalysisReport: { status: 'complete', content: 'legacy' } } };
+  updateFamilyReportRecordReport({ record, report: makeFamilyReport(11) });
+  assert.equal(record.report.familyPolicyAnalysisReport, undefined);
 });
 
 test('family report regeneration reuses policy analysis report when policy set is unchanged', () => {
@@ -407,6 +550,7 @@ test('family report regeneration reuses policy analysis report when policy set i
     status: 'complete',
     content: '已生成的家庭保单分析报告正文',
     model: 'deepseek-v4-pro',
+    expertInputVersion: 'sha256:current',
     generatedAt: '2026-07-03T00:00:00.000Z',
   };
 
@@ -417,6 +561,7 @@ test('family report regeneration reuses policy analysis report when policy set i
     members,
     policies: [{ id: 11, name: '重疾险' }],
     report: makeFamilyReport(11),
+    expertInputVersion: 'sha256:current',
     allocateId,
   });
 

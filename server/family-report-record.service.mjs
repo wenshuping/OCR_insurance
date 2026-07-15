@@ -481,10 +481,11 @@ function sameFamilyMemberSnapshot(left = null, right = null) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function reusableFamilyPolicyAnalysisReport({ state, familyId, owner, policies = [], memberSnapshot = null } = {}) {
+function reusableFamilyPolicyAnalysisReport({ state, familyId, owner, policies = [], memberSnapshot = null, expertInputVersion = '' } = {}) {
   const targetFamilyId = Number(familyId || 0);
   const nextPolicyIds = sortedPolicyIds(policies);
-  if (!targetFamilyId || !nextPolicyIds.length) return null;
+  const targetVersion = trim(expertInputVersion);
+  if (!targetFamilyId || !nextPolicyIds.length || !targetVersion) return null;
   const activeReports = (Array.isArray(state?.familyReports) ? state.familyReports : [])
     .filter((record) => (
       Number(record?.familyId || 0) === targetFamilyId &&
@@ -498,6 +499,7 @@ function reusableFamilyPolicyAnalysisReport({ state, familyId, owner, policies =
   for (const record of activeReports) {
     const analysisReport = record?.report?.familyPolicyAnalysisReport;
     if (!analysisReport || String(analysisReport.status || 'complete') === 'failed' || !trim(analysisReport.content)) continue;
+    if (trim(analysisReport.expertInputVersion) !== targetVersion) continue;
     if (!samePolicyIds(nextPolicyIds, reportPolicyIds(record.report))) continue;
     if (!sameFamilyMemberSnapshot(memberSnapshot, record.memberSnapshot)) continue;
     return structuredClone(analysisReport);
@@ -515,6 +517,7 @@ export function createFamilyReportRecord({
   planningProfile = null,
   allocateId,
   allowEmptyPolicies = false,
+  expertInputVersion = '',
 } = {}) {
   if (!family || !report) throw new Error('FAMILY_REPORT_INPUT_REQUIRED');
   const policyRows = Array.isArray(policies) ? policies : [];
@@ -536,6 +539,7 @@ export function createFamilyReportRecord({
     owner,
     policies: policyRows,
     memberSnapshot: nextMemberSnapshot,
+    expertInputVersion,
   });
   if (previousPolicyAnalysisReport && !finalReport.familyPolicyAnalysisReport) {
     finalReport.familyPolicyAnalysisReport = previousPolicyAnalysisReport;
@@ -856,11 +860,16 @@ export function updateFamilyReportCorrectionStatus(state = {}, correctionId, sta
   return correction;
 }
 
-export function updateFamilyReportRecordReport({ record, report, members = [], policies = [] } = {}) {
+export function updateFamilyReportRecordReport({ record, report, members = [], policies = [], expertInputVersion = '' } = {}) {
   if (!record || !report) return null;
   const familyPolicyAnalysisReport = record.report?.familyPolicyAnalysisReport;
   const finalReport = addMissingMemberReports(structuredClone(report), members, policies);
-  if (familyPolicyAnalysisReport && !finalReport.familyPolicyAnalysisReport) {
+  if (
+    familyPolicyAnalysisReport &&
+    trim(expertInputVersion) &&
+    trim(familyPolicyAnalysisReport.expertInputVersion) === trim(expertInputVersion) &&
+    !finalReport.familyPolicyAnalysisReport
+  ) {
     finalReport.familyPolicyAnalysisReport = familyPolicyAnalysisReport;
   }
   const openIssueCount = Number(record.summary?.issueCount || 0);

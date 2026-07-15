@@ -19,6 +19,7 @@ import {
   buildFamilyPolicyAnalysisInput,
   generateFamilyPolicyAnalysisReport,
 } from '../family-policy-analysis-report.service.mjs';
+import { createFamilyPolicyAnalysisOrchestrator } from '../family-policy-analysis-orchestrator.service.mjs';
 import { sanitizeStoredPolicyAnalysis } from '../c-policy-analysis.service.mjs';
 import {
   agentPolicyImportMatchesOwner,
@@ -705,10 +706,31 @@ export function createFamilyRoutes(context) {
       content: report.content || '',
       model: '',
       generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
+      expertInputVersion: report.expertInputVersion || '',
       error: report.error || '',
       stale: String(record?.status || 'active') !== 'active',
     };
   }
+
+  const familyPolicyAnalysisOrchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: (family, owner) => latestFamilyReport(family.id, owner),
+    buildInput: (family, owner) => {
+      const reportRecord = latestFamilyReport(family.id, owner);
+      const planningProfile = family.planningProfile || reportRecord?.planningProfile || null;
+      return buildFamilyPolicyAnalysisInput({
+        family,
+        members: listFamilyMembers(state, family.id),
+        policies: policiesForFamilyReport(family, owner),
+        familyReport: reportRecord?.report || {},
+        planningProfile,
+        knowledgeRecords: state.knowledgeRecords || [],
+        indicatorRecords: state.insuranceIndicatorRecords || [],
+        optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
+      });
+    },
+    generateReport: generateFamilyPolicyAnalysisReportImpl,
+    persistReport: saveFamilyReportState,
+  });
 
   async function appendDeepSeekReportIssues({
     record,
@@ -1519,26 +1541,8 @@ export function createFamilyRoutes(context) {
         reportRecord = latestFamilyReport(family.id, owner);
       }
 
-      const input = buildFamilyPolicyAnalysisInput({
-        family,
-        members,
-        policies,
-        familyReport,
-        planningProfile,
-        knowledgeRecords: state.knowledgeRecords || [],
-        indicatorRecords: state.insuranceIndicatorRecords || [],
-        optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
-      });
-      const analysisReport = await generateFamilyPolicyAnalysisReportImpl({ input });
-      reportRecord.report = reportRecord.report || {};
-      reportRecord.report.familyPolicyAnalysisReport = {
-        status: analysisReport.status || 'complete',
-        content: analysisReport.content || '',
-        model: analysisReport.model || '',
-        generatedAt: analysisReport.generatedAt || nowIso(),
-      };
-      reportRecord.updatedAt = nowIso();
-      await saveFamilyReportState();
+      await familyPolicyAnalysisOrchestrator.ensureFresh({ family, owner, explicitRefresh: true });
+      reportRecord = latestFamilyReport(family.id, owner);
       return res.json({ ok: true, analysisReport: clientFamilyPolicyAnalysisReport(reportRecord) });
     } catch (error) {
       return sendError(res, error, error?.status || 500);

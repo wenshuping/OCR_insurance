@@ -13353,6 +13353,52 @@ test('family report reads archived fallback with stale policy analysis content',
   }
 });
 
+test('family policy analysis POST explicitly refreshes, shares concurrent work, and hides structured result', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({ id: 81, ownerGuestId: 'guest-expert-refresh', familyName: '专家报告家庭', status: 'active' });
+  state.policies.push({
+    id: 82, guestId: 'guest-expert-refresh', familyId: 81, company: '测试保险', name: '测试重疾险', insured: '张三',
+    coverage: 500000, annualPremium: 10000, status: 'active', coverageIndicators: [],
+  });
+  let calls = 0;
+  let release;
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilyPolicyAnalysisReport: async ({ input }) => {
+      calls += 1;
+      if (calls === 1) await new Promise((resolve) => { release = resolve; });
+      return {
+        status: 'complete', content: `专家报告${calls}`, structuredResult: { secret: true },
+        expertInputVersion: input.expertInputVersion, model: 'test', generatedAt: `2026-07-15T00:00:0${calls}.000Z`,
+      };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const path = '/api/family-profiles/81/policy-analysis-report?guestId=guest-expert-refresh';
+    const first = jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    const second = jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    while (!release) await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    const callsBeforeRelease = calls;
+    release();
+    const [left, right] = await Promise.all([first, second]);
+    assert.equal(callsBeforeRelease, 1);
+    assert.equal(left.response.status, 200);
+    assert.equal(right.response.status, 200);
+    assert.equal(left.payload.analysisReport.content, right.payload.analysisReport.content);
+    assert.match(left.payload.analysisReport.expertInputVersion, /^sha256:/u);
+    assert.equal('structuredResult' in left.payload.analysisReport, false);
+
+    const refreshed = await jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(refreshed.response.status, 200);
+    assert.equal(calls, 2);
+    assert.equal(refreshed.payload.analysisReport.content, '专家报告2');
+  } finally {
+    await server.close();
+  }
+});
+
 test('family report daily refresh limit ignores automatic generations', async () => {
   const state = createInitialState();
   state.membershipConfig = {
