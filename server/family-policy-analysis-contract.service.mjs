@@ -41,7 +41,7 @@ const REPORT_FACT_KEYS = new Set([
   'rows', 'key', 'label', 'amount', 'amountText', 'countText', 'status', 'conditionText',
   'sourcePolicies', 'sourcePolicyRefs', 'attentionItems', 'notes', 'gap', 'formulaText', 'liabilities',
   'score', 'effectiveAmount', 'effectiveAmountText', 'coveragePresent', 'policyCount',
-  'adequacyRate', 'adequacyText', 'target', 'targetText', 'targetSource', 'note', 'amountDetails',
+  'adequacyRate', 'adequacyText', 'target', 'targetText', 'targetSource', 'gapText', 'note', 'amountDetails',
   'applicant', 'company', 'productName', 'typeLabel', 'coverageText', 'annualPremiumText',
   'coveragePeriod', 'paymentPeriod', 'policyStatusText', 'dataStatus',
   'memberReports', 'policies', 'policyRef', 'policyId', 'conclusion', 'cashflowRows',
@@ -53,7 +53,7 @@ const REPORT_FACT_KEYS = new Set([
   'cashValueTotal', 'totalValue', 'cumulative', 'liability', 'calculationText', 'details', 'type',
   'keyPoints', 'uncertaintyItems', 'uncertaintyNote', 'hasUncertainWealthFactors',
   'excludedCashflowRows', 'excludedCashValueRows', 'excludedPolicies', 'statisticsScopeNote',
-  'value', 'unit', 'reason', 'reasons', 'policyholder', 'isMaturityPayout',
+  'value', 'unit', 'increase', 'reason', 'reasons', 'policyholder', 'isMaturityPayout',
   'isContractTerminatingPayout',
 ]);
 
