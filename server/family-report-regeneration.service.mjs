@@ -7,19 +7,41 @@ function completeStructuredExpertReport(report = null) {
 
 function sectionItems(content, headingPattern, limit) {
   const source = String(content || '');
-  const match = source.match(new RegExp(`^##[^\\n]*(?:${headingPattern})[^\\n]*\\n([\\s\\S]*?)(?=^##|$)`, 'mu'));
+  const match = source.match(new RegExp(`^##[^\\n]*(?:${headingPattern})[^\\n]*\\n([\\s\\S]*?)(?=^##|(?![\\s\\S]))`, 'mu'));
   if (!match) return [];
   return match[1].split('\n').map((line) => line.replace(/^\s*[-*\d.、]+\s*/u, '').trim()).filter(Boolean).slice(0, limit);
 }
 
-function buildStructuredSalesSummary(content = '', expertFindings = {}) {
-  const conclusion = sectionItems(content, '销售结论摘要', 1)[0] || String(expertFindings.summary || '').trim();
-  const verificationItems = sectionItems(content, '核实', 3);
-  const coverageConcerns = sectionItems(content, '保障缺口|保障关注点', 3);
-  const salesOpportunities = sectionItems(content, '销售机会|交叉销售', 3);
-  const meetingObjective = sectionItems(content, '面谈', 1)[0] || '';
-  const nextActions = sectionItems(content, '下一步销售动作', 3);
-  return { conclusion, verificationItems, coverageConcerns, salesOpportunities, meetingObjective, nextActions, refs: expertFindings.evidenceRefs || {} };
+function normalizedStrings(candidate, fallback = [], limit = 3) {
+  const source = Array.isArray(candidate) ? candidate : fallback;
+  return [...new Set(source.map((item) => String(item ?? '').trim()).filter(Boolean))].slice(0, limit);
+}
+
+function normalizedRefs(candidate = {}, allowed = {}) {
+  return Object.fromEntries(['facts', 'indicators', 'policies'].map((key) => {
+    const allowedRefs = new Set(normalizedStrings(allowed[key], [], Number.MAX_SAFE_INTEGER));
+    return [key, normalizedStrings(candidate?.[key], [], Number.MAX_SAFE_INTEGER).filter((ref) => allowedRefs.has(ref))];
+  }));
+}
+
+function buildStructuredSalesSummary(content = '', expertFindings = {}, candidate = {}) {
+  const extracted = {
+    conclusion: sectionItems(content, '销售结论摘要', 1)[0] || String(expertFindings.summary || '').trim(),
+    verificationItems: sectionItems(content, '核实', 3),
+    coverageConcerns: sectionItems(content, '保障缺口|保障关注点', 3),
+    salesOpportunities: sectionItems(content, '销售机会|交叉销售', 3),
+    meetingObjective: sectionItems(content, '面谈', 1)[0] || '',
+    nextActions: sectionItems(content, '下一步销售动作', 3),
+  };
+  return {
+    conclusion: String(candidate?.conclusion ?? '').trim() || extracted.conclusion,
+    verificationItems: normalizedStrings(candidate?.verificationItems, extracted.verificationItems),
+    coverageConcerns: normalizedStrings(candidate?.coverageConcerns, extracted.coverageConcerns),
+    salesOpportunities: normalizedStrings(candidate?.salesOpportunities, extracted.salesOpportunities),
+    meetingObjective: String(candidate?.meetingObjective ?? '').trim() || extracted.meetingObjective,
+    nextActions: normalizedStrings(candidate?.nextActions, extracted.nextActions),
+    refs: normalizedRefs(candidate?.refs || expertFindings.evidenceRefs, expertFindings.evidenceRefs),
+  };
 }
 
 export function createFamilyReportRegenerationService(deps = {}) {
@@ -32,6 +54,8 @@ export function createFamilyReportRegenerationService(deps = {}) {
     ownerFields, persistFamilyReportState, persistFamilyState, familyPolicyAnalysisOrchestrator,
     getExpertReportRecord, nowIso = () => new Date().toISOString(),
   } = deps;
+  const salesReviewInFlight = new Map();
+  const salesReviewLocks = new Map();
 
   async function regenerateCoverage({ family, owner, planningProfile = null, stateSnapshot = state, system = false } = {}) {
     await repairFamilyMembersBeforeReview(family, { stateSnapshot });
@@ -60,7 +84,7 @@ export function createFamilyReportRegenerationService(deps = {}) {
     return record;
   }
 
-  async function regenerateSalesReview({ family, owner, salesChatContext = null, salesMemoryContext = null, stateSnapshot = state } = {}) {
+  async function regenerateSalesReviewOnce({ family, owner, salesChatContext = null, salesMemoryContext = null, stateSnapshot = state } = {}) {
     await repairFamilyMembersBeforeReview(family, { stateSnapshot });
     refreshFamilyCashflowsForAnalysis(family, owner, stateSnapshot);
     if (typeof getExpertReportRecord === 'function' && !getExpertReportRecord(family, owner, stateSnapshot)) {
@@ -85,7 +109,7 @@ export function createFamilyReportRegenerationService(deps = {}) {
       inputSummary: { ...(review.inputSummary || {}), familyId: Number(family.id) },
       expertReportId: expertReport.id,
       expertInputVersion: expertReport.expertInputVersion,
-      structuredSummary: review.structuredSummary || buildStructuredSalesSummary(review.content, expertReport.structuredResult),
+      structuredSummary: buildStructuredSalesSummary(review.content, expertReport.structuredResult, review.structuredSummary),
     };
     stateSnapshot.familySalesReviews = Array.isArray(stateSnapshot.familySalesReviews) ? stateSnapshot.familySalesReviews : [];
     if (stateSnapshot === state) archiveSalesReviewForFamily(family.id, owner);
@@ -95,6 +119,25 @@ export function createFamilyReportRegenerationService(deps = {}) {
     stateSnapshot.familySalesReviews.push(record);
     await persistFamilyState(stateSnapshot);
     return record;
+  }
+
+  function regenerateSalesReview(request = {}) {
+    const familyId = Number(request.family?.id || 0);
+    const ownerKey = Number(request.owner?.userId || 0)
+      ? `user:${Number(request.owner.userId)}`
+      : `guest:${String(request.owner?.guestId || '').trim()}`;
+    const lockKey = `${ownerKey}|family:${familyId}`;
+    const inputKey = `${lockKey}|${JSON.stringify([request.salesChatContext || null, request.salesMemoryContext || null])}`;
+    if (salesReviewInFlight.has(inputKey)) return salesReviewInFlight.get(inputKey);
+    const previous = salesReviewLocks.get(lockKey) || Promise.resolve();
+    const work = previous.catch(() => {}).then(() => regenerateSalesReviewOnce(request));
+    salesReviewInFlight.set(inputKey, work);
+    salesReviewLocks.set(lockKey, work);
+    work.finally(() => {
+      if (salesReviewInFlight.get(inputKey) === work) salesReviewInFlight.delete(inputKey);
+      if (salesReviewLocks.get(lockKey) === work) salesReviewLocks.delete(lockKey);
+    }).catch(() => {});
+    return work;
   }
 
   return { regenerateCoverage, regenerateSalesReview };

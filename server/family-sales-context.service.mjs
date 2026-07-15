@@ -1,16 +1,17 @@
-function trim(value) {
-  return String(value || '').trim();
+function trimText(value) {
+  if (value === null || value === undefined) return null;
+  return String(value).trim();
 }
 
 function policyRef(policy = {}) {
-  return trim(policy.policyRef) || `policy:${policy.id}`;
+  return trimText(policy.policyRef) || `policy:${policy.id}`;
 }
 
 function findingPolicyRefs(findings = {}) {
   const refs = new Set(findings?.evidenceRefs?.policies || []);
   for (const collection of [findings?.priorityFindings, findings?.memberFindings, findings?.verificationItems]) {
     for (const item of Array.isArray(collection) ? collection : []) {
-      for (const ref of Array.isArray(item?.policyRefs) ? item.policyRefs : []) refs.add(trim(ref));
+      for (const ref of Array.isArray(item?.policyRefs) ? item.policyRefs : []) refs.add(trimText(ref));
     }
   }
   refs.delete('');
@@ -39,24 +40,27 @@ export function buildExpertBackedSalesReviewContext({
   return {
     generatedAt,
     expertReportId: expertReport.id ?? null,
-    expertInputVersion: trim(expertReport.expertInputVersion),
+    expertInputVersion: trimText(expertReport.expertInputVersion) || '',
     family: {
       coreMemberRef: memberRefs.get(Number(family.coreMemberId || 0)) || '',
-      notes: trim(family.notes),
+      notes: trimText(family.notes),
       planningSummary: planningSummary(family),
     },
     members: activeMembers.map((member) => ({
       memberRef: memberRefs.get(Number(member.id)),
-      relationLabel: trim(member.relationLabel),
-      role: trim(member.role),
-      notes: trim(member.notes),
+      relationLabel: trimText(member.relationLabel),
+      role: trimText(member.role),
+      notes: trimText(member.notes),
+      age: member.age ?? null,
     })),
     policyIndex: selectedPolicies.map((policy) => ({
       policyRef: policyRef(policy),
-      company: trim(policy.company),
-      productName: trim(policy.name || policy.productName),
+      company: trimText(policy.company),
+      productName: trimText(policy.name ?? policy.productName),
       insuredMemberRef: memberRefs.get(Number(policy.insuredMemberId || 0)) || '',
-      validityStatus: trim(policy.validityStatus || policy.status),
+      validityStatus: trimText(policy.validityStatus ?? policy.status),
+      coverageAmount: policy.amount ?? null,
+      annualPremium: policy.firstPremium ?? policy.annualPremium ?? null,
     })),
     expertFindings: findings,
     ...(salesMemoryContext ? { salesMemoryContext } : {}),
