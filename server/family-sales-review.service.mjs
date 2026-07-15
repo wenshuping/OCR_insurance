@@ -641,8 +641,40 @@ function uniqueVerifiedCashflowAmountsByYear(input = {}) {
 }
 
 const YEARLY_CASHFLOW_CLAIM_PATTERN = /((?:19|20)\d{2}\s*年(?:(?![。\n]).){0,40}?(?:确定(?:性)?\s*)?(?:给付|领取)\s*(?:约\s*)?)([0-9]+(?:\.[0-9]+)?)\s*(万元|万|元)/gu;
+const EXPERT_BACKED_MONEY_CLAIM_PATTERN = /([0-9]+(?:\.[0-9]+)?)\s*(万元|万|元)/gu;
+
+function formatExpertBackedAmount(amount) {
+  const numeric = Number(amount);
+  if (numeric >= 10_000) return `${Number((numeric / 10_000).toFixed(4))}万元`;
+  return `${Number.isInteger(numeric) ? numeric : numeric.toFixed(2)}元`;
+}
+
+function reconcileExpertBackedAmounts(content = '', input = {}) {
+  const facts = (Array.isArray(input?.allowedAmountFacts) ? input.allowedAmountFacts : [])
+    .filter((fact) => Number.isFinite(Number(fact?.amount)) && Number(fact.amount) >= 0);
+  let changed = false;
+  const source = String(content || '');
+  const reconciled = source.replace(EXPERT_BACKED_MONEY_CLAIM_PATTERN, (match, amountText, unit, offset) => {
+    const claimed = Number(amountText) * (String(unit).startsWith('万') ? 10_000 : 1);
+    const prefix = source.slice(Math.max(0, offset - 30), offset).split(/[，。；：\n]/u).pop() || '';
+    let candidates = [];
+    if (/保额/u.test(prefix)) candidates = facts.filter((fact) => fact.kind === 'coverageAmount');
+    else if (/保费/u.test(prefix)) candidates = facts.filter((fact) => fact.kind === 'annualPremium');
+    else candidates = facts.filter((fact) => fact.kind === 'expertConfirmedAmount' && prefix.includes(String(fact.label || '')));
+    const amounts = [...new Set(candidates.map((fact) => Number(fact.amount)))];
+    if (amounts.length !== 1) {
+      changed = true;
+      return '金额待核实';
+    }
+    if (Math.abs(amounts[0] - claimed) < 0.001) return match;
+    changed = true;
+    return formatExpertBackedAmount(amounts[0]);
+  });
+  return { content: reconciled, changed };
+}
 
 export function reconcileVerifiedCashflowAmounts(content = '', input = {}) {
+  if (input?.expertFindings) return reconcileExpertBackedAmounts(content, input);
   const amountsByYear = uniqueVerifiedCashflowAmountsByYear(input);
   if (!amountsByYear.size) return { content: String(content || ''), changed: false };
   let changed = false;
@@ -1311,7 +1343,7 @@ export async function generateFamilySalesReview({
     const initialReconciliation = reconcileVerifiedCashflowAmounts(initialContent, input);
     let reviewedContent = initialReconciliation.content;
     let responseModel = trim(payload?.model || config.model) || config.model;
-    if (initialReconciliation.changed) {
+    if (initialReconciliation.changed && !input?.expertFindings) {
       const retryResponse = await fetchImpl(url, {
         method: 'POST',
         signal: controller.signal,

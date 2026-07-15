@@ -34,7 +34,7 @@ test('expert-backed sales context contains findings and only referenced policy i
       structuredResult: {
         summary: '专家结论',
         priorityFindings: [{ title: '优先核实', policyRefs: ['policy:101'] }],
-        memberFindings: [], verificationItems: [], confirmedFacts: [],
+        memberFindings: [], verificationItems: [], confirmedFacts: [{ id: 'fact:1', label: '给付金额', amount: 5, unit: '万元' }],
         evidenceRefs: { policies: ['policy:101'], facts: [], indicators: [] }, dataQualityWarnings: [],
       },
     },
@@ -52,10 +52,47 @@ test('expert-backed sales context contains findings and only referenced policy i
   assert.equal(context.policyIndex[0].coverageAmount, 0);
   assert.equal(context.policyIndex[0].annualPremium, null);
   assert.equal(context.policyIndex[0].validityStatus, null);
+  assert.deepEqual(context.allowedAmountFacts.map((fact) => [fact.kind, fact.amount]), [['expertConfirmedAmount', 50000]]);
   assert.deepEqual(context.policyIndex.map((policy) => policy.policyRef), ['policy:101']);
   assert.equal(JSON.stringify(context).includes('officialEvidence'), false);
   assert.equal(JSON.stringify(context).includes('coverageIndicators'), false);
   assert.equal(JSON.stringify(context).includes('110101198606141234'), false);
+});
+
+test('expert-backed amount reconciliation corrects bounded facts and downgrades unsupported money claims', () => {
+  const input = {
+    expertFindings: { summary: '结论' },
+    allowedAmountFacts: [
+      { kind: 'coverageAmount', amount: 300000, label: '保额' },
+      { kind: 'annualPremium', amount: 12000, label: '年交保费' },
+      { kind: 'expertConfirmedAmount', amount: 50000, label: '给付金额', factRef: 'fact:1' },
+    ],
+  };
+  const result = reconcileVerifiedCashflowAmounts('1. 保额 50万元，年交保费 2万元，给付金额 8万元。建议另备 9万元。第2步核实。', input);
+  assert.equal(result.changed, true);
+  assert.match(result.content, /保额 30万元/u);
+  assert.match(result.content, /年交保费 1\.2万元/u);
+  assert.match(result.content, /给付金额 5万元/u);
+  assert.match(result.content, /建议另备 金额待核实/u);
+  assert.match(result.content, /第2步/u);
+});
+
+test('expert-backed generation corrects money before returning without a second model call', async () => {
+  let fetchCalls = 0;
+  const review = await generateFamilySalesReview({
+    input: {
+      expertFindings: { summary: '结论' }, members: [], policyIndex: [],
+      allowedAmountFacts: [{ kind: 'coverageAmount', amount: 300000, label: '保额' }],
+    },
+    env: { DEEPSEEK_API_KEY: 'test', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return { ok: true, json: async () => ({ model: 'test', choices: [{ message: { content: '## 一、销售结论摘要\n建议保额 50万元，另备 8万元。' } }] }) };
+    },
+  });
+  assert.equal(fetchCalls, 1);
+  assert.match(review.content, /保额 30万元/u);
+  assert.match(review.content, /另备 金额待核实/u);
 });
 
 test('sales regeneration awaits fresh structured expert report and binds its version', async () => {
@@ -125,6 +162,80 @@ test('concurrent identical sales regeneration shares one model call and one save
   assert.equal(left, right);
   assert.equal(salesCalls, 1);
   assert.equal(state.familySalesReviews.length, 1);
+});
+
+test('sales regeneration rolls back review mutations when persistence fails', async () => {
+  const previous = { id: 1, familyId: 9, ownerGuestId: 'guest-a', status: 'active', updatedAt: 'before' };
+  const other = { id: 2, familyId: 9, ownerGuestId: 'guest-b', status: 'active' };
+  const state = { familySalesReviews: [previous, other] };
+  const beforeFailure = structuredClone(state.familySalesReviews);
+  const expert = { id: 7, status: 'complete', content: '专家', expertInputVersion: 'v1', structuredResult: { summary: '结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [] } };
+  let persistCalls = 0;
+  const service = createFamilyReportRegenerationService({
+    state, allocateId: () => 3, listFamilyMembers: () => [], policiesForSalesReview: () => [], repairFamilyMembersBeforeReview: async () => {}, refreshFamilyCashflowsForAnalysis: () => {},
+    familyPolicyAnalysisOrchestrator: { ensureFresh: async () => expert }, generateFamilySalesReview: async () => ({ content: '## 一、销售结论摘要\n结论' }),
+    archiveSalesReviewForFamily: () => { previous.status = 'archived'; previous.updatedAt = 'changed'; },
+    ownerFields: () => ({ ownerGuestId: 'guest-a' }), persistFamilyState: async () => { persistCalls += 1; if (persistCalls === 1) throw new Error('disk failed'); },
+  });
+  const request = { family: { id: 9 }, owner: { guestId: 'guest-a' }, stateSnapshot: state };
+  await assert.rejects(() => service.regenerateSalesReview(request), /disk failed/);
+  assert.deepEqual(state.familySalesReviews, beforeFailure);
+  assert.equal(previous.status, 'active');
+  assert.equal(other.status, 'active');
+  const record = await service.regenerateSalesReview(request);
+  assert.equal(record.status, 'active');
+  assert.equal(state.familySalesReviews.length, 3);
+  assert.equal(previous.status, 'archived');
+  assert.equal(other.status, 'active');
+});
+
+test('snapshot sales regeneration archives only the matching guest owner', async () => {
+  const own = { id: 1, familyId: 9, ownerGuestId: 'guest-a', status: 'active' };
+  const other = { id: 2, familyId: 9, ownerGuestId: 'guest-b', status: 'active' };
+  const snapshot = { familySalesReviews: [own, other] };
+  const expert = { id: 7, status: 'complete', content: '专家', expertInputVersion: 'v1', structuredResult: { summary: '结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [] } };
+  const service = createFamilyReportRegenerationService({
+    state: { familySalesReviews: [] }, allocateId: () => 3, listFamilyMembers: () => [], policiesForSalesReview: () => [], repairFamilyMembersBeforeReview: async () => {}, refreshFamilyCashflowsForAnalysis: () => {},
+    familyPolicyAnalysisOrchestrator: { ensureFresh: async () => expert }, generateFamilySalesReview: async () => ({ content: '## 一、销售结论摘要\n结论' }),
+    ownerFields: () => ({ ownerGuestId: 'guest-a' }), persistFamilyState: async () => {},
+  });
+  await service.regenerateSalesReview({ family: { id: 9 }, owner: { guestId: 'guest-a' }, stateSnapshot: snapshot });
+  assert.equal(own.status, 'archived');
+  assert.equal(other.status, 'active');
+});
+
+test('sales regeneration serializes different inputs, cleans rejected work, and does not block another owner', async () => {
+  const state = { familySalesReviews: [] };
+  const expert = { id: 7, status: 'complete', content: '专家', expertInputVersion: 'v1', structuredResult: { summary: '结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [] } };
+  let calls = 0;
+  let activeA = 0;
+  let maxActiveA = 0;
+  let releaseFirstA;
+  const firstAGate = new Promise((resolve) => { releaseFirstA = resolve; });
+  const service = createFamilyReportRegenerationService({
+    state, allocateId: () => calls + 10, listFamilyMembers: () => [], policiesForSalesReview: () => [], repairFamilyMembersBeforeReview: async () => {}, refreshFamilyCashflowsForAnalysis: () => {},
+    familyPolicyAnalysisOrchestrator: { ensureFresh: async () => expert },
+    generateFamilySalesReview: async ({ input }) => {
+      calls += 1;
+      if (input.salesChatContext?.fail) throw new Error('first failed');
+      if (input.salesChatContext?.owner === 'a') { activeA += 1; maxActiveA = Math.max(maxActiveA, activeA); }
+      if (input.salesChatContext?.owner === 'a' && input.salesChatContext?.id === 1) await firstAGate;
+      else await new Promise((resolve) => setImmediate(resolve));
+      if (input.salesChatContext?.owner === 'a') activeA -= 1;
+      return { content: `## 一、销售结论摘要\n${calls}` };
+    },
+    archiveSalesReviewForFamily: () => {}, ownerFields: (owner) => ({ ownerUserId: owner.userId }), persistFamilyState: async () => {},
+  });
+  await assert.rejects(() => service.regenerateSalesReview({ family: { id: 1 }, owner: { userId: 1 }, salesChatContext: { fail: true } }), /first failed/);
+  const a1 = service.regenerateSalesReview({ family: { id: 1 }, owner: { userId: 1 }, salesChatContext: { owner: 'a', id: 1 } });
+  const a2 = service.regenerateSalesReview({ family: { id: 1 }, owner: { userId: 1 }, salesChatContext: { owner: 'a', id: 2 } });
+  const b = service.regenerateSalesReview({ family: { id: 1 }, owner: { userId: 2 }, salesChatContext: { owner: 'b' } });
+  await b;
+  assert.equal(activeA, 1, '另一 owner 在首个 owner 的任务仍阻塞时已经完成');
+  releaseFirstA();
+  await Promise.all([a1, a2]);
+  assert.equal(calls, 4);
+  assert.equal(maxActiveA, 1);
 });
 
 test('sales regeneration stops when expert report lacks structured result', async () => {

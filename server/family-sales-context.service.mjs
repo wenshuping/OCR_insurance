@@ -25,6 +25,37 @@ function planningSummary(family = {}) {
   ].map((key) => [key, profile[key] === undefined ? null : profile[key]]));
 }
 
+function finiteAmount(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+function allowedAmountFacts(policyIndex = [], findings = {}) {
+  const facts = [];
+  for (const policy of policyIndex) {
+    for (const [kind, label, value] of [
+      ['coverageAmount', '保额', policy.coverageAmount],
+      ['annualPremium', '年交保费', policy.annualPremium],
+    ]) {
+      const amount = finiteAmount(value);
+      if (amount !== null && amount > 0) facts.push({ kind, label, amount, policyRef: policy.policyRef });
+    }
+  }
+  for (const fact of Array.isArray(findings?.confirmedFacts) ? findings.confirmedFacts : []) {
+    const amount = finiteAmount(fact?.amount ?? fact?.value);
+    const unit = trimText(fact?.unit);
+    if (amount === null || amount <= 0 || (unit && !/元|万/u.test(unit))) continue;
+    facts.push({
+      kind: 'expertConfirmedAmount',
+      label: trimText(fact.label ?? fact.title ?? fact.name ?? fact.itemName) || '专家确认金额',
+      amount: unit && /^万/u.test(unit) ? amount * 10_000 : amount,
+      factRef: trimText(fact.id),
+    });
+  }
+  return facts;
+}
+
 export function buildExpertBackedSalesReviewContext({
   family = {}, members = [], policies = [], expertReport = {}, generatedAt = new Date().toISOString(),
   salesMemoryContext = null, salesChatContext = null,
@@ -37,6 +68,15 @@ export function buildExpertBackedSalesReviewContext({
   const selectedPolicies = referenced.size
     ? allPolicies.filter((policy) => referenced.has(policyRef(policy)))
     : allPolicies.slice(0, 3);
+  const policyIndex = selectedPolicies.map((policy) => ({
+    policyRef: policyRef(policy),
+    company: trimText(policy.company),
+    productName: trimText(policy.name ?? policy.productName),
+    insuredMemberRef: memberRefs.get(Number(policy.insuredMemberId || 0)) || '',
+    validityStatus: trimText(policy.validityStatus ?? policy.status),
+    coverageAmount: policy.amount ?? null,
+    annualPremium: policy.firstPremium ?? policy.annualPremium ?? null,
+  }));
   return {
     generatedAt,
     expertReportId: expertReport.id ?? null,
@@ -53,15 +93,8 @@ export function buildExpertBackedSalesReviewContext({
       notes: trimText(member.notes),
       age: member.age ?? null,
     })),
-    policyIndex: selectedPolicies.map((policy) => ({
-      policyRef: policyRef(policy),
-      company: trimText(policy.company),
-      productName: trimText(policy.name ?? policy.productName),
-      insuredMemberRef: memberRefs.get(Number(policy.insuredMemberId || 0)) || '',
-      validityStatus: trimText(policy.validityStatus ?? policy.status),
-      coverageAmount: policy.amount ?? null,
-      annualPremium: policy.firstPremium ?? policy.annualPremium ?? null,
-    })),
+    policyIndex,
+    allowedAmountFacts: allowedAmountFacts(policyIndex, findings),
     expertFindings: findings,
     ...(salesMemoryContext ? { salesMemoryContext } : {}),
     ...(salesChatContext ? { salesChatContext } : {}),

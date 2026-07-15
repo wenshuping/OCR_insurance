@@ -111,13 +111,35 @@ export function createFamilyReportRegenerationService(deps = {}) {
       expertInputVersion: expertReport.expertInputVersion,
       structuredSummary: buildStructuredSalesSummary(review.content, expertReport.structuredResult, review.structuredSummary),
     };
-    stateSnapshot.familySalesReviews = Array.isArray(stateSnapshot.familySalesReviews) ? stateSnapshot.familySalesReviews : [];
+    const hadReviews = Array.isArray(stateSnapshot.familySalesReviews);
+    stateSnapshot.familySalesReviews = hadReviews ? stateSnapshot.familySalesReviews : [];
+    const reviews = stateSnapshot.familySalesReviews;
+    const previousReviews = [...reviews];
+    const previousMetadata = new Map(previousReviews.map((existing) => [existing, {
+      status: existing?.status,
+      updatedAt: existing?.updatedAt,
+    }]));
     if (stateSnapshot === state) archiveSalesReviewForFamily(family.id, owner);
-    else for (const existing of stateSnapshot.familySalesReviews) {
-      if (Number(existing?.familyId) === Number(family.id) && Number(existing?.ownerUserId || 0) === Number(ownership.ownerUserId || 0) && String(existing?.status || 'active') === 'active') existing.status = 'archived';
+    else for (const existing of reviews) {
+      const sameOwner = Number(ownership.ownerUserId || 0)
+        ? Number(existing?.ownerUserId || 0) === Number(ownership.ownerUserId) && !String(existing?.ownerGuestId || '').trim()
+        : !Number(existing?.ownerUserId || 0) && String(existing?.ownerGuestId || '').trim() === String(ownership.ownerGuestId || '').trim();
+      if (Number(existing?.familyId) === Number(family.id) && sameOwner && String(existing?.status || 'active') === 'active') existing.status = 'archived';
     }
-    stateSnapshot.familySalesReviews.push(record);
-    await persistFamilyState(stateSnapshot);
+    reviews.push(record);
+    try {
+      await persistFamilyState(stateSnapshot);
+    } catch (error) {
+      for (const [existing, metadata] of previousMetadata) {
+        if (metadata.status === undefined) delete existing.status;
+        else existing.status = metadata.status;
+        if (metadata.updatedAt === undefined) delete existing.updatedAt;
+        else existing.updatedAt = metadata.updatedAt;
+      }
+      reviews.splice(0, reviews.length, ...previousReviews);
+      if (!hadReviews) delete stateSnapshot.familySalesReviews;
+      throw error;
+    }
     return record;
   }
 
