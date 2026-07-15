@@ -10,7 +10,9 @@ import {
 } from '../server/family-sales-review.service.mjs';
 import {
   buildFamilySalesChatMessages,
+  buildLightweightSalesChatContext,
   generateFamilySalesChatReply,
+  selectSalesTopicPack,
 } from '../server/family-sales-chat.service.mjs';
 import {
   buildFamilySalesMemoryContext,
@@ -657,6 +659,59 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   assert.match(reply.content, /身份证号已脱敏/);
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
   assert.doesNotMatch(reply.content, /\{\{member_1\}\}|\{\{id_number_1\}\}|110101198606141234/);
+});
+
+test('sales topic selection keeps generic script requests free of insurance detail', () => {
+  assert.equal(selectSalesTopicPack('帮我改成微信话术', {
+    members: [{ id: 11, name: '孩子', relationLabel: '女儿' }],
+    policies: [{ id: 21, insuredMemberId: 11, name: '少儿意外险', category: '意外险' }],
+  }), null);
+});
+
+test('sales topic selection scopes child accident question to matching member coverage', () => {
+  const topicPack = selectSalesTopicPack('孩子的意外险怎么聊', {
+    members: [{ id: 10, name: '爸爸', relationLabel: '本人' }, { id: 11, name: '孩子', relationLabel: '女儿' }],
+    policies: [
+      { id: 20, insuredMemberId: 10, name: '成人重疾险', category: '重疾险' },
+      { id: 21, insuredMemberId: 11, name: '少儿意外险', category: '意外险' },
+    ],
+  });
+  assert.deepEqual(topicPack, { type: 'member_coverage', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '意外险' });
+});
+
+test('sales topic selection uses recent explicit policy for renewal indicators', () => {
+  const topicPack = selectSalesTopicPack('这张医疗险续保怎么样', {
+    members: [{ id: 11, name: '孩子', relationLabel: '女儿' }],
+    policies: [{ id: 21, insuredMemberId: 11, name: '安心医疗险', category: '医疗险' }],
+    lastExplicitTarget: { policyRef: 'policy:21' },
+  });
+  assert.deepEqual(topicPack, { type: 'policy_indicators', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' });
+});
+
+test('lightweight sales context asks for clarification without falling back to family detail', () => {
+  const context = buildLightweightSalesChatContext({
+    salesReview: { structuredSummary: { conclusion: '先补齐医疗保障' }, content: '完整销售 Markdown 不应出现' },
+    expertReport: { structuredResult: { summary: '专家摘要', memberFindings: [{ memberRef: 'member:11', detail: '孩子细节' }] }, markdownContent: '完整专家 Markdown 不应出现' },
+    question: '这份方案怎么样',
+    topicPack: null,
+  });
+  assert.equal(context.clarificationNeeded, true);
+  assert.equal(context.topicPack, null);
+  const json = JSON.stringify(context);
+  assert.doesNotMatch(json, /孩子细节|完整销售 Markdown|完整专家 Markdown/u);
+});
+
+test('lightweight sales context is at least sixty percent smaller and excludes unrelated member detail', () => {
+  const members = [{ id: 10, name: '爸爸', relationLabel: '本人', notes: '爸爸'.repeat(800) }, { id: 11, name: '孩子', relationLabel: '女儿', notes: '孩子'.repeat(800) }];
+  const policies = [{ id: 20, insuredMemberId: 10, name: '成人重疾险', category: '重疾险', evidence: '无关'.repeat(1200) }, { id: 21, insuredMemberId: 11, name: '少儿意外险', category: '意外险', evidence: '相关'.repeat(1200) }];
+  const fullFixture = { familyInput: { members, policies }, latestSalesReview: { content: '完整报告'.repeat(1500) } };
+  const topicPack = selectSalesTopicPack('孩子的意外险怎么聊', { members, policies });
+  const context = buildLightweightSalesChatContext({ salesReview: { structuredSummary: { conclusion: '先聊意外保障' } }, question: '孩子的意外险怎么聊', topicPack, members, policies });
+  const json = JSON.stringify(context);
+  assert.ok(json.length <= JSON.stringify(fullFixture).length * 0.4);
+  assert.doesNotMatch(json, /成人重疾险|爸爸爸爸|无关无关/u);
+  assert.equal(context.minimalIndexes.members.length, 1);
+  assert.equal(context.minimalIndexes.policies.length, 1);
 });
 
 test('family sales chat answers identity questions as insurance marketing expert without upstream model', async () => {

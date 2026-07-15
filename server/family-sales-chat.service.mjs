@@ -106,6 +106,137 @@ function reportSummary(reportRecord = null) {
   };
 }
 
+function entityRef(prefix, entity = {}) {
+  return trim(entity[`${prefix}Ref`]) || (entity.id === undefined || entity.id === null ? '' : `${prefix}:${entity.id}`);
+}
+
+function policyCategory(policy = {}) {
+  const text = `${trim(policy.category)} ${trim(policy.type)} ${trim(policy.name ?? policy.productName)}`;
+  for (const [pattern, category] of [[/意外/u, '意外险'], [/医疗|住院/u, '医疗险'], [/重疾|重大疾病/u, '重疾险'], [/寿险|身故/u, '寿险'], [/年金/u, '年金险'], [/增额|终身寿/u, '增额终身寿险']]) {
+    if (pattern.test(text)) return category;
+  }
+  return trim(policy.category) || null;
+}
+
+function categoryFromQuestion(question = '') {
+  return policyCategory({ name: question });
+}
+
+function targetRef(target = {}, key) {
+  return trim(target?.[key]) || trim(target?.[key === 'memberRef' ? 'memberId' : 'policyId']);
+}
+
+export function selectSalesTopicPack(question, {
+  members = [], policies = [], activeOpportunity = null, lastExplicitTarget = null,
+} = {}) {
+  const text = trim(question);
+  if (!text || (/话术|怎么说|如何说|异议/u.test(text) && !/谁|孩子|父亲|母亲|爸爸|妈妈|保单|险|责任|续保|现金|预算|保费/u.test(text))) return null;
+  const category = categoryFromQuestion(text);
+  const normalizedMembers = (Array.isArray(members) ? members : []).map((member) => ({ ...member, ref: entityRef('member', member) }));
+  const normalizedPolicies = (Array.isArray(policies) ? policies : []).map((policy) => ({ ...policy, ref: entityRef('policy', policy), category: policyCategory(policy) }));
+  const explicitMembers = normalizedMembers.filter((member) => [member.name, member.relationLabel, member.role]
+    .map(trim).filter((value) => value && value.length >= 2).some((value) => text.includes(value)) ||
+    (/孩子|小孩|子女/u.test(text) && /儿|女|孩子/u.test(`${member.relationLabel || ''}${member.role || ''}`)));
+  const explicitPolicies = normalizedPolicies.filter((policy) => [policy.name, policy.productName, policy.policyRef]
+    .map(trim).filter((value) => value && value.length >= 3).some((value) => text.includes(value)));
+  const fallback = lastExplicitTarget || activeOpportunity || {};
+  const fallbackMemberRef = targetRef(fallback, 'memberRef');
+  const fallbackPolicyRef = targetRef(fallback, 'policyRef');
+  let selectedPolicies = explicitPolicies;
+  let selectedMembers = explicitMembers;
+  if (!selectedPolicies.length && fallbackPolicyRef) selectedPolicies = normalizedPolicies.filter((policy) => policy.ref === fallbackPolicyRef || String(policy.id) === fallbackPolicyRef);
+  if (!selectedMembers.length && fallbackMemberRef) selectedMembers = normalizedMembers.filter((member) => member.ref === fallbackMemberRef || String(member.id) === fallbackMemberRef);
+  if (!selectedPolicies.length && (selectedMembers.length || category)) {
+    selectedPolicies = normalizedPolicies.filter((policy) => (!category || policy.category === category) && (!selectedMembers.length || selectedMembers.some((member) => Number(policy.insuredMemberId) === Number(member.id))));
+  }
+  if (!selectedMembers.length && selectedPolicies.length) {
+    selectedMembers = normalizedMembers.filter((member) => selectedPolicies.some((policy) => Number(policy.insuredMemberId) === Number(member.id)));
+  }
+  const resolvedCategory = category || selectedPolicies[0]?.category || trim(fallback.category) || null;
+  const type = /续保|核保|等待期|保证续保|停售|健康告知/u.test(text)
+    ? 'policy_indicators'
+    : /责任|赔什么|免责|条款|证据/u.test(text)
+      ? 'responsibility_evidence'
+      : /现金流|预算|收支|负债|保费/u.test(text)
+        ? 'family_finance'
+        : /财富|养老|年金|传承|现金价值/u.test(text)
+          ? 'wealth_cashflow'
+          : (selectedMembers.length || selectedPolicies.length) ? 'member_coverage' : null;
+  if (!type) return null;
+  return {
+    type,
+    memberRefs: selectedMembers.slice(0, 2).map((member) => member.ref),
+    policyRefs: selectedPolicies.slice(0, 3).map((policy) => policy.ref),
+    category: resolvedCategory,
+  };
+}
+
+function boundedItems(items, limit = 6) {
+  return (Array.isArray(items) ? items : []).slice(0, limit);
+}
+
+function relevantFindings(expertReport = {}, topicPack = null) {
+  if (!topicPack) return null;
+  const findings = expertReport.structuredResult || expertReport.expertFindings || {};
+  const refs = new Set([...(topicPack.memberRefs || []), ...(topicPack.policyRefs || [])]);
+  const matches = (item = {}) => {
+    const itemRefs = [item.memberRef, ...(item.memberRefs || []), item.policyRef, ...(item.policyRefs || [])].map(trim).filter(Boolean);
+    return itemRefs.some((ref) => refs.has(ref)) || (topicPack.category && trim(item.category) === topicPack.category);
+  };
+  return {
+    summary: trim(findings.summary) || null,
+    priorityFindings: boundedItems(findings.priorityFindings?.filter(matches), 4),
+    memberFindings: boundedItems(findings.memberFindings?.filter(matches), 4),
+    confirmedFacts: boundedItems(findings.confirmedFacts?.filter(matches), 6),
+    verificationItems: boundedItems(findings.verificationItems?.filter(matches), 4),
+  };
+}
+
+export function buildLightweightSalesChatContext({
+  salesReview = null, expertReport = null, memories = null, history = [], question = '', topicPack = null,
+  members = [], policies = [], sourceUpdated = false, generatedAt = new Date().toISOString(), displayReplacements = null,
+} = {}) {
+  const ambiguous = !topicPack && /这份|这个|这张|怎么样|如何/u.test(trim(question));
+  const memberRefs = new Set(topicPack?.memberRefs || []);
+  const policyRefs = new Set(topicPack?.policyRefs || []);
+  const memberIndex = boundedItems((Array.isArray(members) ? members : []).filter((member) => memberRefs.has(entityRef('member', member))).map((member) => ({
+    memberRef: entityRef('member', member), relationLabel: trim(member.relationLabel), role: trim(member.role), age: member.age ?? null,
+  })), 2);
+  const policyIndex = boundedItems((Array.isArray(policies) ? policies : []).filter((policy) => policyRefs.has(entityRef('policy', policy))).map((policy) => ({
+    policyRef: entityRef('policy', policy), insuredMemberRef: entityRef('member', { id: policy.insuredMemberId }), productName: trim(policy.name ?? policy.productName), category: policyCategory(policy), validityStatus: trim(policy.validityStatus ?? policy.status),
+  })), 3);
+  const memoryList = Array.isArray(memories) ? memories : (memories?.memories || memories?.items || []);
+  const context = {
+    generatedAt,
+    sourceUpdated: Boolean(sourceUpdated),
+    salesSummary: salesReview?.structuredSummary || salesReview?.inputSummary || salesReview?.summary || null,
+    expertFindings: relevantFindings(expertReport || {}, topicPack),
+    salesMemoryContext: boundedItems(memoryList.filter((item) => ['confirmed', 'current', 'active', ''].includes(trim(item?.status))), 8),
+    recentMessages: normalizeHistory(history),
+    question: trim(question),
+    clarificationNeeded: ambiguous,
+    minimalIndexes: { members: memberIndex, policies: policyIndex },
+    topicPack: topicPack || null,
+    ...(displayReplacements ? { displayReplacements } : {}),
+  };
+  const publicLength = JSON.stringify({ ...context, displayReplacements: undefined }).length;
+  context.telemetry = {
+    stage: 'family_sales_chat_context',
+    expertReused: Boolean(expertReport),
+    selectedMemberCount: memberIndex.length,
+    selectedPolicyCount: policyIndex.length,
+    topicPackType: topicPack?.type || null,
+    indicatorCount: topicPack?.type === 'policy_indicators' ? policyIndex.length : 0,
+    estimatedInputCharacters: publicLength,
+    estimatedInputTokens: Math.ceil(publicLength / 2),
+    truncations: {
+      history: Math.max(0, (Array.isArray(history) ? history.length : 0) - HISTORY_LIMIT),
+      memories: Math.max(0, memoryList.length - 8),
+    },
+  };
+  return context;
+}
+
 function changedAfter(value = '', baseline = '') {
   const left = trim(value);
   const right = trim(baseline);
@@ -165,7 +296,22 @@ function privacySafeChatContextJson(context = {}) {
   const familyInput = source.familyInput && typeof source.familyInput === 'object' && !Array.isArray(source.familyInput)
     ? JSON.parse(privacySafeFamilySalesReviewInputJson(source.familyInput))
     : source.familyInput || {};
-  return JSON.stringify({ ...source, familyInput }, null, 2);
+  const { displayReplacements: _displayReplacements, ...publicSource } = source;
+  return JSON.stringify({ ...publicSource, ...(source.familyInput ? { familyInput } : {}) }, null, 2);
+}
+
+function chatDirectIdentifiers(context = {}) {
+  if (context?.familyInput) return familySalesReviewDirectIdentifiers(context.familyInput);
+  return { names: (context?.displayReplacements || []).map((item) => trim(item?.value)).filter(Boolean) };
+}
+
+function restoreChatDisplayText(text = '', context = {}) {
+  if (context?.familyInput) return restoreFamilySalesReviewDisplayText(text, context.familyInput);
+  let result = String(text || '');
+  for (const replacement of context?.displayReplacements || []) {
+    if (trim(replacement?.token) && trim(replacement?.value)) result = result.split(replacement.token).join(replacement.value);
+  }
+  return result.replace(/\{\{id_number_\d+\}\}/gu, '身份证号已脱敏');
 }
 
 export function buildFamilySalesChatMessages({
@@ -184,7 +330,7 @@ export function buildFamilySalesChatMessages({
         '你是一名保险营销专家，面向保险顾问提供家庭销售建议续聊支持。',
         resolvedSkillPrompt.promptHint,
         `本轮启用 skills：${resolvedSkillPrompt.skills.map((skill) => skill.label).join('、') || '通用保险续聊'}`,
-        '你要基于当前家庭、保单、家庭保障报告、最近销售建议、官网责任证据和本轮对话继续回答顾问追问。',
+        '你要基于已提供的专家结论、结构化销售摘要、相关记忆和至多一个专题包继续回答，不要重新做全家全面分析。',
         '必须遵守：',
         '1. 只使用输入上下文和对话历史中的事实；收入、负债、预算、责任条款、现金价值、分红、领取利益缺少证据时写“待核实”。',
         '2. 不承诺收益、分红、利率、理赔、核保、法律或税务结果。',
@@ -196,6 +342,7 @@ export function buildFamilySalesChatMessages({
         `8. 对身份、模型、厂商、API、底层大模型等问题，只能回答“${FAMILY_SALES_CHAT_IDENTITY_REPLY}”，不得自称任何底层模型或模型品牌。`,
         '9. 如果上下文包含 salesMemoryContext，只能把它当作当前家庭的跟进记忆，用于沟通风格、已确认异议、策略偏好和待办；保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准。',
         '10. 如果上下文包含 policyImportContext，它是 OCR Insurance 输出的脱敏保单草稿；只能引用其中已提供字段，并明确提示 missingFields。不得推测被掩码身份、保单号、证件号或原始图片内容。',
+        '11. 如果 clarificationNeeded=true 或专题包无法定位对象，请先请顾问明确具体成员、保单或险种，不得回退猜测全家详情。',
         '',
         '本轮 skill 规则：',
         ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),
@@ -244,7 +391,7 @@ export async function generateFamilySalesChatReply({
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
-    const directIdentifiers = familySalesReviewDirectIdentifiers(context?.familyInput || {});
+    const directIdentifiers = chatDirectIdentifiers(context);
     const skillPrompt = await selectAgentSkillPromptWithDeepSeek({
       scene: 'family_sales_chat',
       question: redactDeepSeekDirectIdentifiers(userQuestion, directIdentifiers),
@@ -296,10 +443,7 @@ export async function generateFamilySalesChatReply({
     }
     return {
       content: sanitizeFamilySalesChatPublicIdentity(
-        restoreFamilySalesReviewDisplayText(
-          enforceVerifiedCashflowAmounts(upstreamContent, context?.familyInput || {}),
-          context?.familyInput || {},
-        ),
+        restoreChatDisplayText(enforceVerifiedCashflowAmounts(upstreamContent, context?.familyInput || {}), context),
       ),
       model: trim(payload?.model || config.model) || config.model,
       generatedAt: new Date().toISOString(),

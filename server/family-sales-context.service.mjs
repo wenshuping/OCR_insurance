@@ -3,6 +3,10 @@ function trimText(value) {
   return String(value).trim();
 }
 
+// Kept here as the public context-selection entry point for callers that build
+// sales context without invoking the chat provider.
+export { selectSalesTopicPack } from './family-sales-chat.service.mjs';
+
 function policyRef(policy = {}) {
   return trimText(policy.policyRef) || `policy:${policy.id}`;
 }

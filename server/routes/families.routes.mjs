@@ -7,8 +7,9 @@ import {
   generateFamilySalesReview,
 } from '../family-sales-review.service.mjs';
 import {
-  buildFamilySalesChatContext,
+  buildLightweightSalesChatContext,
   generateFamilySalesChatReply,
+  selectSalesTopicPack,
 } from '../family-sales-chat.service.mjs';
 import {
   buildFamilySalesMemoryContext,
@@ -645,33 +646,34 @@ export function createFamilyRoutes(context) {
     return message;
   }
 
-  function buildSalesChatRuntimeContext({ family, owner, policyImportTask = null }) {
+  function buildSalesChatRuntimeContext({ family, owner, question = '', history = [], policyImportTask = null }) {
     const members = listFamilyMembers(state, family.id);
     const policies = policiesForFamilyReport(family, owner);
-    const planningProfile = family.planningProfile || null;
-    const familyReport = buildFamilyReport(policies, planningProfile, { familyId: family.id });
-    const input = buildFamilySalesReviewInput({
-      family,
-      members,
-      policies,
-      familyReport,
-      planningProfile,
-      knowledgeRecords: state.knowledgeRecords || [],
-      indicatorRecords: state.insuranceIndicatorRecords || [],
-      optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
-      generatedAt: nowIso(),
-    });
-    const context = buildFamilySalesChatContext({
-      input,
-      family,
-      members,
-      policies,
-      familyReports: state.familyReports || [],
-      familySalesReviews: state.familySalesReviews || [],
-      generatedAt: nowIso(),
-    });
     const salesMemoryContext = salesMemoryContextForFamily(family.id, owner);
-    if (salesMemoryContext) context.salesMemoryContext = salesMemoryContext;
+    const latestRecord = (records = []) => records.filter((record) => Number(record?.familyId) === Number(family.id) && String(record?.status || 'active') === 'active')
+      .sort((left, right) => String(right.generatedAt || right.updatedAt || right.createdAt || '').localeCompare(String(left.generatedAt || left.updatedAt || left.createdAt || '')))[0] || null;
+    const latestSalesReview = latestRecord(state.familySalesReviews);
+    const latestFamilyReport = latestRecord(state.familyReports);
+    const expertReport = latestFamilyReport?.report?.familyPolicyAnalysisReport || latestFamilyReport?.report || null;
+    const lastExplicitTarget = salesMemoryContext?.lastExplicitTarget || null;
+    const activeOpportunity = salesMemoryContext?.activeOpportunity || null;
+    const topicPack = selectSalesTopicPack(question, { members, policies, activeOpportunity, lastExplicitTarget });
+    const baseline = latestSalesReview?.generatedAt || latestSalesReview?.updatedAt || latestSalesReview?.createdAt || '';
+    const sourceUpdated = [family, ...members, ...policies].some((record) => record?.updatedAt && baseline && record.updatedAt > baseline);
+    const displayReplacements = members.map((member, index) => ({ token: `{{member_${index + 1}}}`, value: member.name })).filter((item) => item.value);
+    const context = buildLightweightSalesChatContext({
+      salesReview: latestSalesReview,
+      expertReport,
+      memories: salesMemoryContext,
+      history,
+      question,
+      topicPack,
+      members,
+      policies,
+      sourceUpdated,
+      generatedAt: nowIso(),
+      displayReplacements,
+    });
     if (policyImportTask) context.policyImportContext = buildAgentPolicyImportContext(policyImportTask);
     return context;
   }
@@ -707,7 +709,7 @@ export function createFamilyRoutes(context) {
 
   async function generateAndAppendSalesChatReply({ thread, family, owner, question, history, userMessage, policyImportTask = null }) {
     refreshFamilyCashflowsForAnalysis(family, owner);
-    const chatContext = buildSalesChatRuntimeContext({ family, owner, policyImportTask });
+    const chatContext = buildSalesChatRuntimeContext({ family, owner, question, history, policyImportTask });
     const reply = await generateFamilySalesChatReplyImpl({
       context: chatContext,
       history,
