@@ -10,6 +10,11 @@ import {
 } from './canonical-product-id.mjs';
 import { evidenceVerificationFields } from './evidence-classification.service.mjs';
 import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import {
+  buildExpertPlanningProfile,
+  computeExpertInputVersion,
+  groupExpertCoverageIndicators,
+} from './family-policy-analysis-contract.service.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -266,21 +271,19 @@ export function buildFamilyPolicyAnalysisInput({
 } = {}) {
   const report = familyReport || {};
   const evidenceOptions = { knowledgeRecords, indicatorRecords, optionalResponsibilityRecords };
-  return {
+  const policySummaries = (Array.isArray(policies) ? policies : []).map((policy) => policyBrief(policy, evidenceOptions));
+  const coverageIndicators = (Array.isArray(policies) ? policies : []).flatMap((policy) =>
+    (Array.isArray(policy.coverageIndicators) ? policy.coverageIndicators : []).map((indicator) => ({
+      ...indicator,
+      memberRef: indicator.memberRef || policy.insuredMemberRef || policy.insured || '',
+    })));
+  const input = {
     family: {
       id: family?.id ?? null,
       familyName: trim(family?.familyName || family?.name),
       notes: trim(family?.notes),
     },
-    planningProfile: {
-      annualIncome: numberOrZero(planningProfile?.annualIncome),
-      annualExpense: numberOrZero(planningProfile?.annualExpense),
-      debt: numberOrZero(planningProfile?.debt),
-      educationGoal: numberOrZero(planningProfile?.educationGoal),
-      parentSupportGoal: numberOrZero(planningProfile?.parentSupportGoal),
-      availableAssets: numberOrZero(planningProfile?.availableAssets),
-      premiumBudget: numberOrZero(planningProfile?.premiumBudget),
-    },
+    planningProfile: buildExpertPlanningProfile(planningProfile),
     members: (Array.isArray(members) ? members : []).map((member) => ({
       id: member.id ?? null,
       name: trim(member.name),
@@ -289,7 +292,8 @@ export function buildFamilyPolicyAnalysisInput({
       birthday: trim(member.birthday),
       notes: trim(member.notes),
     })),
-    policies: (Array.isArray(policies) ? policies : []).map((policy) => policyBrief(policy, evidenceOptions)),
+    policies: policySummaries,
+    groupedCoverageIndicators: groupExpertCoverageIndicators(coverageIndicators),
     report: {
       summary: report.summary || {},
       radar: {
@@ -321,6 +325,8 @@ export function buildFamilyPolicyAnalysisInput({
       wealth: report.wealth || {},
     },
   };
+  input.expertInputVersion = computeExpertInputVersion(input);
+  return input;
 }
 
 export function buildFamilyPolicyAnalysisMessages(input = {}) {

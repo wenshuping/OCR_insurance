@@ -7,6 +7,11 @@ import {
   resolveFamilyPolicyAnalysisReportFreshness,
 } from '../server/family-policy-analysis-report.service.mjs';
 import {
+  buildExpertPlanningProfile,
+  computeExpertInputVersion,
+  groupExpertCoverageIndicators,
+} from '../server/family-policy-analysis-contract.service.mjs';
+import {
   createFamilyReportRecord,
   updateFamilyReportRecordReport,
 } from '../server/family-report-record.service.mjs';
@@ -45,6 +50,68 @@ function allocateSequence(start = 100) {
     return value;
   };
 }
+
+test('expert planning profile distinguishes unknown values from confirmed zero', () => {
+  const profile = buildExpertPlanningProfile({ debt: 0, annualIncome: '' });
+
+  assert.deepEqual(profile, {
+    annualIncome: { status: 'unknown', value: null },
+    annualExpense: { status: 'unknown', value: null },
+    debt: { status: 'confirmed', value: 0 },
+    educationGoal: { status: 'unknown', value: null },
+    parentSupportGoal: { status: 'unknown', value: null },
+    availableAssets: { status: 'unknown', value: null },
+    premiumBudget: { status: 'unknown', value: null },
+  });
+});
+
+test('expert coverage groups retain all missing item names without empty technical fields', () => {
+  const groups = groupExpertCoverageIndicators([
+    { memberRef: 'member_1', category: 'medical', itemName: '住院医疗', status: 'not_identified', sourceUrl: '' },
+    { memberRef: 'member_1', category: 'medical', itemName: '外购药', status: 'not_identified', sourceUrl: '' },
+    { memberRef: 'member_1', category: 'medical', itemName: '住院医疗', status: 'not_identified', sourceUrl: '' },
+    { memberRef: 'member_1', category: 'medical', itemName: '一般医疗', status: 'confirmed', value: 2_000_000, unit: '元', sourceUrl: '' },
+    { memberRef: 'member_1', category: 'medical', itemName: '门诊', status: 'not_found_in_recorded_policies' },
+    { memberRef: 'member_1', category: 'medical', itemName: '免赔额', status: 'conflicted' },
+    { memberRef: 'member_1', category: 'medical', itemName: '特药', status: 'missing_source' },
+    { memberRef: 'member_1', category: 'medical', itemName: '生育', status: 'not_applicable' },
+  ]);
+
+  assert.deepEqual(groups, [{
+    memberRef: 'member_1',
+    category: 'medical',
+    confirmedItems: [{ itemName: '一般医疗', value: 2_000_000, unit: '元' }],
+    notFoundInRecordedPoliciesItems: ['门诊'],
+    notIdentifiedItems: ['住院医疗', '外购药'],
+    conflictedItems: ['免赔额'],
+    missingSourceItems: ['特药'],
+    notApplicableItems: ['生育'],
+  }]);
+});
+
+test('expert input version is stable and tracks only expert business facts', () => {
+  const input = {
+    family: { id: 10, familyName: '张先生家庭', notes: '有房贷', ownerUserId: 99, updatedAt: 'yesterday' },
+    members: [{ id: 1, name: '张先生', notes: '经济支柱', idNumber: 'secret', uiExpanded: true }],
+    planningProfile: buildExpertPlanningProfile({ debt: 1_000_000 }),
+    policies: [{ id: 11, productName: '重疾险', coverageAmount: 300_000, updatedAt: 'today' }],
+    groupedCoverageIndicators: [{ memberRef: 'member_1', category: 'critical', confirmedItems: [], notIdentifiedItems: ['轻症'] }],
+    evidenceReferences: [{ policyRef: 'policy_1', verificationStatus: 'verified', sourceKind: 'customer_policy_terms' }],
+    salesMemory: { objection: '贵' },
+    salesChat: [{ content: '换个说法' }],
+  };
+  const first = computeExpertInputVersion(input);
+
+  assert.match(first, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(computeExpertInputVersion({ ...input, salesMemory: { objection: '不急' }, salesChat: [] }), first);
+  assert.equal(computeExpertInputVersion({ ...input, family: { ...input.family, updatedAt: 'tomorrow' } }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, family: { ...input.family, notes: '新增房贷' } }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, members: [{ ...input.members[0], notes: '准备退休' }] }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, planningProfile: buildExpertPlanningProfile({ debt: 900_000 }) }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, policies: [{ ...input.policies[0], coverageAmount: 500_000 }] }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, groupedCoverageIndicators: [{ ...input.groupedCoverageIndicators[0], notIdentifiedItems: ['轻症', '中症'] }] }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, evidenceReferences: [{ ...input.evidenceReferences[0], verificationStatus: 'pending_review' }] }), first);
+});
 
 test('policy analysis freshness follows nested report status and current source timestamp', () => {
   const record = {
@@ -114,8 +181,10 @@ test('family policy analysis prompt asks for full customer report with emphasize
   });
 
   assert.equal(input.family.familyName, '张先生家庭');
-  assert.equal(input.planningProfile.annualIncome, 300000);
-  assert.equal(input.planningProfile.parentSupportGoal, 300000);
+  assert.match(input.expertInputVersion, /^sha256:[0-9a-f]{64}$/u);
+  assert.deepEqual(input.groupedCoverageIndicators, []);
+  assert.deepEqual(input.planningProfile.annualIncome, { status: 'confirmed', value: 300000 });
+  assert.deepEqual(input.planningProfile.parentSupportGoal, { status: 'confirmed', value: 300000 });
   assert.equal(input.policies[0].productName, '重疾险');
   assert.equal(input.policies[0].evidence.knowledgeEvidence.length, 2);
   assert.equal(input.policies[0].evidence.knowledgeEvidence[0].verificationStatus, 'verified');
