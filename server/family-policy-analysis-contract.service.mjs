@@ -85,6 +85,31 @@ function findingRefs(finding, key) {
   return finding[key].map(trim).filter(Boolean);
 }
 
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateFinding(finding, label, validRefs) {
+  if (!isRecord(finding)) throw invalidResult(`${label} must be an object`);
+  for (const key of ['memberRef', 'category', 'finding', 'assessment', 'confidence']) {
+    if (!trim(finding[key])) throw invalidResult(`${label} ${key} is required`);
+  }
+  if (!Array.isArray(finding.missingInformation) || !('nextVerification' in finding)) {
+    throw invalidResult(`${label} verification fields are required`);
+  }
+  if (!FINDING_ASSESSMENTS.has(finding.assessment)) throw invalidResult(`${label} assessment is invalid`);
+  const refs = Object.fromEntries(Object.keys(validRefs).map((key) => [key, findingRefs(finding, key)]));
+  for (const [key, ids] of Object.entries(refs)) {
+    if (ids.some((id) => !validRefs[key].has(id))) throw invalidResult(`${label} contains invalid ${key}`);
+  }
+  const hasEvidence = Object.values(refs).some((ids) => ids.length);
+  const hasVerification = trim(finding.nextVerification)
+    || finding.missingInformation.some((item) => trim(item));
+  if (!hasEvidence && !(finding.assessment === 'needs_verification' && hasVerification)) {
+    throw invalidResult(`${label} must reference evidence`);
+  }
+}
+
 export function parseFamilyPolicyAnalysisEnvelope(rawContent, expectedVersion) {
   let envelope;
   try {
@@ -105,37 +130,33 @@ export function parseFamilyPolicyAnalysisEnvelope(rawContent, expectedVersion) {
     if (!Array.isArray(result[key])) throw invalidResult(`structuredResult.${key} must be an array`);
   }
   if (!result.evidenceRefs || typeof result.evidenceRefs !== 'object' || Array.isArray(result.evidenceRefs)) throw invalidResult('structuredResult.evidenceRefs must be an object');
+  if (!trim(result.summary) || typeof result.summary !== 'string') throw invalidResult('structuredResult.summary must be a non-empty string');
+  for (const key of ['facts', 'indicators', 'policies']) {
+    if (!Array.isArray(result.evidenceRefs[key]) || result.evidenceRefs[key].some((id) => !trim(id))) {
+      throw invalidResult(`structuredResult.evidenceRefs.${key} must be an array of ids`);
+    }
+  }
+  if (result.confirmedFacts.some((item) => !isRecord(item) || !trim(item.id))) {
+    throw invalidResult('structuredResult.confirmedFacts must contain objects with ids');
+  }
+  if (result.verificationItems.some((item) => !isRecord(item))) {
+    throw invalidResult('structuredResult.verificationItems must contain objects');
+  }
+  if (result.dataQualityWarnings.some((item) => !(isRecord(item) || (typeof item === 'string' && trim(item))))) {
+    throw invalidResult('structuredResult.dataQualityWarnings contains an invalid item');
+  }
 
   const validRefs = {
-    confirmedFactRefs: referenceIds(result.evidenceRefs.facts || result.confirmedFacts),
+    confirmedFactRefs: referenceIds(result.evidenceRefs.facts),
     indicatorRefs: referenceIds(result.evidenceRefs.indicators),
     policyRefs: referenceIds(result.evidenceRefs.policies),
   };
-  for (const memberFinding of result.memberFindings) {
-    if (memberFinding?.assessment !== undefined && !FINDING_ASSESSMENTS.has(memberFinding.assessment)) {
-      throw invalidResult('member finding assessment is invalid');
-    }
+  const confirmedFactIds = referenceIds(result.confirmedFacts);
+  if ([...validRefs.confirmedFactRefs].some((id) => !confirmedFactIds.has(id))) {
+    throw invalidResult('structuredResult.evidenceRefs.facts contains an unknown fact id');
   }
-  for (const finding of result.priorityFindings) {
-    if (!finding || typeof finding !== 'object') throw invalidResult('priority finding must be an object');
-    for (const key of ['memberRef', 'category', 'finding', 'assessment', 'confidence']) {
-      if (!trim(finding[key])) throw invalidResult(`priority finding ${key} is required`);
-    }
-    if (!Array.isArray(finding.missingInformation) || !('nextVerification' in finding)) {
-      throw invalidResult('priority finding verification fields are required');
-    }
-    if (!FINDING_ASSESSMENTS.has(finding.assessment)) throw invalidResult('priority finding assessment is invalid');
-    const refs = Object.fromEntries(Object.keys(validRefs).map((key) => [key, findingRefs(finding, key)]));
-    for (const [key, ids] of Object.entries(refs)) {
-      if (ids.some((id) => !validRefs[key].has(id))) throw invalidResult(`priority finding contains invalid ${key}`);
-    }
-    const hasEvidence = Object.values(refs).some((ids) => ids.length);
-    const hasVerification = trim(finding.nextVerification)
-      || (Array.isArray(finding.missingInformation) && finding.missingInformation.some((item) => trim(item)));
-    if (!hasEvidence && !(finding.assessment === 'needs_verification' && hasVerification)) {
-      throw invalidResult('priority finding must reference evidence');
-    }
-  }
+  result.priorityFindings.forEach((finding) => validateFinding(finding, 'priority finding', validRefs));
+  result.memberFindings.forEach((finding) => validateFinding(finding, 'member finding', validRefs));
   return envelope;
 }
 

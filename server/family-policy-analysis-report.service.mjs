@@ -384,7 +384,7 @@ export function buildFamilyPolicyAnalysisMessages(input = {}) {
         '- 输入 JSON 已经做过压缩，只保留分析必要的保单字段、家庭责任信息和分层证据摘要；不要要求客户提供原始 OCR 文本，也不要编造未提供的条款细节。',
         '- 如果使用非官方网页或老产品第三方资料，必须显式标注“待核实参考”，并提醒以保险公司确认或补发合同条款为准。',
         '- structuredResult 必须包含 summary, priorityFindings, confirmedFacts, verificationItems, memberFindings, evidenceRefs, dataQualityWarnings。',
-        '- 每个 priorityFinding 包含 memberRef/category/finding/assessment/confidence/confirmedFactRefs/indicatorRefs/policyRefs/missingInformation/nextVerification。',
+        '- 每个 priorityFinding 和 memberFinding 都包含 memberRef/category/finding/assessment/confidence/confirmedFactRefs/indicatorRefs/policyRefs/missingInformation/nextVerification。',
         '- confirmedFacts 中每项使用唯一 id；evidenceRefs 必须是 {facts:[id], indicators:[id], policies:[id]}，finding 的三类 *Refs 只能引用这些已列出的 id。',
         '- assessment 只能是 confirmed_gap、likely_insufficient、needs_verification、currently_reasonable。',
         '- 有合同或已确认事实支撑时使用“当前已录入保单中未发现”；仅因资料未录入而无法确认时使用“暂按未配置关注，需核对合同”，不得把未识别直接断言为没有保障。',

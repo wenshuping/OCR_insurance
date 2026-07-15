@@ -334,9 +334,18 @@ test('family policy analysis envelope validates version, assessments, and eviden
   assert.deepEqual(parseFamilyPolicyAnalysisEnvelope(JSON.stringify(envelope), expertInputVersion), envelope);
   for (const invalid of [
     { ...envelope, expertInputVersion: 'sha256:stale' },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, summary: null } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, summary: '  ' } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, evidenceRefs: {} } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, evidenceRefs: { facts: {}, indicators: [], policies: [] } } },
     { ...envelope, structuredResult: { ...envelope.structuredResult, priorityFindings: [{ ...envelope.structuredResult.priorityFindings[0], assessment: 'unknown' }] } },
     { ...envelope, structuredResult: { ...envelope.structuredResult, priorityFindings: [{ ...envelope.structuredResult.priorityFindings[0], confirmedFactRefs: ['missing'], policyRefs: [] }] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, memberFindings: [null] } },
     { ...envelope, structuredResult: { ...envelope.structuredResult, memberFindings: [{ memberRef: 'member_1', assessment: 'unknown' }] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, memberFindings: [{ ...envelope.structuredResult.priorityFindings[0], confirmedFactRefs: ['missing'], policyRefs: [] }] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, confirmedFacts: [null] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, verificationItems: [null] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, dataQualityWarnings: [null] } },
   ]) {
     assert.throws(
       () => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(invalid), expertInputVersion),
