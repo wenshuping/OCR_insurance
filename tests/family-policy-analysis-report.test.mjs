@@ -420,6 +420,29 @@ test('expert input version is stable and tracks only expert business facts', () 
   ]) assert.notEqual(computeExpertInputVersion({ ...input, report }), first, label);
 });
 
+test('expert input version is stable when business collections are reordered', () => {
+  const input = {
+    members: [{ id: 2, name: '乙' }, { id: 1, name: '甲' }],
+    policies: [{ id: 2, productName: '乙险' }, { id: 1, productName: '甲险' }],
+    groupedCoverageIndicators: [{ memberRef: 'm2', category: 'medical' }, { memberRef: 'm1', category: 'critical' }],
+    evidenceReferences: [{ policyRef: 'p2', title: '乙' }, { policyRef: 'p1', title: '甲' }],
+    report: { radar: { family: { scores: [{ key: 'medical', score: 2 }, { key: 'critical', score: 1 }] } }, inventoryRows: [{ policyId: 2 }, { policyId: 1 }] },
+  };
+  const reordered = { ...input, members: [...input.members].reverse(), policies: [...input.policies].reverse(), groupedCoverageIndicators: [...input.groupedCoverageIndicators].reverse(), evidenceReferences: [...input.evidenceReferences].reverse(), report: { ...input.report, radar: { family: { scores: [...input.report.radar.family.scores].reverse() } }, inventoryRows: [...input.report.inventoryRows].reverse() } };
+  assert.equal(computeExpertInputVersion(reordered), computeExpertInputVersion(input));
+  assert.notEqual(computeExpertInputVersion({ ...reordered, members: [{ id: 2, name: '丙' }, input.members[1]] }), computeExpertInputVersion(input));
+});
+
+test('expert input preserves unknown numeric values and confirms explicit zero', () => {
+  const input = buildFamilyPolicyAnalysisInput({ family: { id: 1 }, policies: [{ id: 1, premium: null, amount: 0, responsibilities: [{ name: '责任', amount: null }] }], familyReport: { radar: { family: { scores: [{ key: 'critical', score: null, target: 0, gap: undefined }] } } } });
+  assert.deepEqual([input.policies[0].annualPremium, input.policies[0].annualPremiumStatus], [null, 'unknown']);
+  assert.deepEqual([input.policies[0].coverageAmount, input.policies[0].coverageAmountStatus], [0, 'confirmed']);
+  assert.deepEqual([input.policies[0].responsibilities[0].amount, input.policies[0].responsibilities[0].amountStatus], [null, 'unknown']);
+  const score = input.report.radar.family.scores[0];
+  assert.deepEqual([score.score, score.scoreStatus], [null, 'unknown']);
+  assert.deepEqual([score.target, score.targetStatus], [0, 'confirmed']);
+});
+
 test('policy analysis freshness follows nested report status and current source timestamp', () => {
   const record = {
     status: 'active',
@@ -547,7 +570,7 @@ test('family policy analysis envelope validates version, assessments, and eviden
         memberRef: 'member_1', category: 'critical', finding: '重疾保额偏低',
         assessment: 'likely_insufficient', confidence: 'high',
         confirmedFactRefs: ['fact_1'], indicatorRefs: [], policyRefs: ['policy_1'],
-        missingInformation: [], nextVerification: '核对附加责任',
+        missingInformation: ['家庭责任目标'], nextVerification: '核对附加责任',
       }],
       confirmedFacts: [{ id: 'fact_1', statement: '已录入30万元重疾保额' }],
       verificationItems: [], memberFindings: [],
@@ -580,6 +603,42 @@ test('family policy analysis envelope validates version, assessments, and eviden
       (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT',
     );
   }
+});
+
+test('expert semantic gate normalizes unsafe certainty and rejects unsupported likely insufficiency', () => {
+  const version = 'sha256:semantic';
+  const base = {
+    markdownContent: '客户确认没有医疗保障。保障完全足够。', expertInputVersion: version,
+    structuredResult: {
+      summary: '客户确定没有医疗保障，当前保障充足',
+      priorityFindings: [{ memberRef: 'm1', category: 'medical', finding: '客户确认没有医疗保障', assessment: 'needs_verification', confidence: 'medium', confirmedFactRefs: [], indicatorRefs: [], policyRefs: [], missingInformation: ['医疗合同'], nextVerification: '核对合同' }],
+      confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [],
+    },
+  };
+  const normalized = parseFamilyPolicyAnalysisEnvelope(JSON.stringify(base), version, { policies: [], indicators: [] });
+  assert.doesNotMatch(JSON.stringify(normalized), /客户(?:确认|确定)没有|保障充足|完全足够/u);
+  assert.match(normalized.markdownContent, /暂按未配置关注，需核对合同|当前配置相对合理/u);
+
+  const unsupported = structuredClone(base);
+  unsupported.structuredResult.priorityFindings[0] = { ...unsupported.structuredResult.priorityFindings[0], assessment: 'likely_insufficient', missingInformation: [], confirmedFactRefs: [], policyRefs: [] };
+  assert.throws(() => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(unsupported), version, { policies: [], indicators: [] }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
+});
+
+test('expert semantic gate injects a confirmed planning gap into markdown and structured conclusions', () => {
+  const version = 'sha256:gap';
+  const envelope = {
+    markdownContent: '## 四、重点保障缺口分析\n需要完善重疾保障', expertInputVersion: version,
+    structuredResult: { summary: '需要完善', priorityFindings: [{ memberRef: 'm1', category: 'critical', finding: '需要完善', assessment: 'confirmed_gap', confidence: 'high', confirmedFactRefs: ['f1'], indicatorRefs: [], policyRefs: [], missingInformation: [], nextVerification: '' }], confirmedFacts: [{ id: 'f1', statement: '现有30万元' }], verificationItems: [], memberFindings: [], evidenceRefs: { facts: ['f1'], indicators: [], policies: [] }, dataQualityWarnings: [] },
+  };
+  const planningProfile = Object.fromEntries(['annualIncome', 'annualExpense', 'debt', 'educationGoal', 'parentSupportGoal', 'availableAssets', 'premiumBudget'].map((key) => [key, { status: 'confirmed', value: 1 }]));
+  const result = parseFamilyPolicyAnalysisEnvelope(JSON.stringify(envelope), version, { policies: [], indicators: [] }, { planningProfile, report: { radar: { family: { scores: [{ key: 'critical', gap: 200000, gapStatus: 'confirmed' }] } } } });
+  assert.match(result.markdownContent, /缺口20万元/u);
+  assert.match(result.structuredResult.summary, /缺口20万元/u);
+  assert.match(result.structuredResult.priorityFindings[0].finding, /缺口20万元/u);
+
+  const unsafe = structuredClone(envelope);
+  unsafe.markdownContent += '\n需增加20万元';
+  assert.throws(() => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(unsafe), version, { policies: [], indicators: [] }, { planningProfile: { annualIncome: { status: 'unknown', value: null } } }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
 });
 
 test('family report refresh preserves only matching-version policy analysis report', () => {

@@ -57,6 +57,18 @@ function numberOrZero(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function numericFact(value) {
+  const missing = value === undefined || value === null || (typeof value === 'string' && !value.trim());
+  const number = Number(value);
+  return missing || !Number.isFinite(number)
+    ? { value: null, status: 'unknown' }
+    : { value: number, status: 'confirmed' };
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
+}
+
 function withCode(error, code, status) {
   error.code = code;
   if (status) error.status = status;
@@ -218,14 +230,18 @@ function compactPolicyEvidence(policy = {}, {
 
 function policyBrief(policy = {}, evidenceOptions = {}) {
   const evidence = compactPolicyEvidence(policy, evidenceOptions);
+  const annualPremium = numericFact(firstDefined(policy.premium, policy.annualPremium));
+  const coverageAmount = numericFact(firstDefined(policy.amount, policy.coverage));
   return {
     id: policy.id ?? null,
     company: trim(policy.company),
     productName: trim(policy.name || policy.productName),
     applicant: trim(policy.applicant || policy.applicantMemberName),
     insured: trim(policy.insured || policy.insuredMemberName),
-    annualPremium: numberOrZero(policy.premium || policy.annualPremium),
-    coverageAmount: numberOrZero(policy.amount || policy.coverage),
+    annualPremium: annualPremium.value,
+    annualPremiumStatus: annualPremium.status,
+    coverageAmount: coverageAmount.value,
+    coverageAmountStatus: coverageAmount.status,
     effectiveDate: trim(policy.effectiveDate),
     paymentPeriod: trim(policy.paymentPeriod || policy.payPeriod),
     coveragePeriod: trim(policy.coveragePeriod || policy.insurancePeriod),
@@ -235,9 +251,11 @@ function policyBrief(policy = {}, evidenceOptions = {}) {
       .slice(0, 12)
       .map((item) => {
         const evidence = evidenceVerificationFields(item);
+        const amount = numericFact(firstDefined(item.amount, item.coverageAmount));
         return {
           name: trim(item.name || item.liability || item.title || item.coverageType),
-          amount: numberOrZero(item.amount || item.coverageAmount),
+          amount: amount.value,
+          amountStatus: amount.status,
           condition: trim(item.condition || item.description || item.scenario),
           payout: trim(item.payout),
           sourceKind: trim(item.sourceKind),
@@ -253,23 +271,23 @@ function policyBrief(policy = {}, evidenceOptions = {}) {
 }
 
 function reportScoreBrief(score = {}) {
-  return {
+  const result = {
     key: trim(score.key),
     label: trim(score.label || score.name),
-    score: numberOrZero(score.score),
-    amount: numberOrZero(score.amount),
     amountText: trim(score.amountText),
-    effectiveAmount: numberOrZero(score.effectiveAmount),
     effectiveAmountText: trim(score.effectiveAmountText),
-    adequacyRate: numberOrZero(score.adequacyRate),
     adequacyText: trim(score.adequacyText),
-    target: numberOrZero(score.target),
     targetText: trim(score.targetText),
     targetSource: trim(score.targetSource),
-    gap: numberOrZero(score.gap),
     gapText: trim(score.gapText),
     note: trim(score.note),
   };
+  for (const key of ['score', 'amount', 'effectiveAmount', 'adequacyRate', 'target', 'gap']) {
+    const fact = numericFact(score[key]);
+    result[key] = fact.value;
+    result[`${key}Status`] = fact.status;
+  }
+  return result;
 }
 
 export function buildFamilyPolicyAnalysisInput({
@@ -493,7 +511,7 @@ export async function generateFamilyPolicyAnalysisReport({
           policies: (input?.policies || []).map((policy, index) => policy.policyRef || `policy:${policy?.id ?? index}`),
           indicators: (input?.groupedCoverageIndicators || []).map((group, index) => group.indicatorRef || `indicator:${index}`),
         };
-        const envelope = parseFamilyPolicyAnalysisEnvelope(result.rawContent, input?.expertInputVersion, allowedEvidenceRefs);
+        const envelope = parseFamilyPolicyAnalysisEnvelope(result.rawContent, input?.expertInputVersion, allowedEvidenceRefs, input);
         const markdownContent = sanitizeGeneratedContent(envelope.markdownContent);
         if (isInsufficientReport(markdownContent)) throw withCode(new Error('Markdown sections are incomplete'), 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT', 502);
         return {

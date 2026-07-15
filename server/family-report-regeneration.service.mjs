@@ -44,6 +44,41 @@ function buildStructuredSalesSummary(content = '', expertFindings = {}, candidat
   };
 }
 
+function stableBusinessSnapshot({ family, members, policies, expertReport }) {
+  const canonical = (value) => {
+    if (Array.isArray(value)) return value.map(canonical).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.keys(value).sort().filter((key) => !['createdAt', 'updatedAt', 'generatedAt'].includes(key)).map((key) => [key, canonical(value[key])]));
+  };
+  const memberFacts = (members || []).map((member) => Object.fromEntries([
+    'id', 'name', 'relationLabel', 'relationToCore', 'role', 'birthday', 'notes', 'status',
+  ].map((key) => [key, member?.[key]])));
+  const policyFacts = (policies || []).map((policy) => Object.fromEntries([
+    'id', 'company', 'name', 'productName', 'applicant', 'applicantMemberId', 'applicantMemberName',
+    'insured', 'insuredMemberId', 'insuredMemberName', 'premium', 'annualPremium', 'firstPremium',
+    'amount', 'coverage', 'effectiveDate', 'paymentPeriod', 'payPeriod', 'coveragePeriod',
+    'insurancePeriod', 'status', 'policyStatus', 'type', 'category', 'responsibilities', 'coverageIndicators',
+  ].map((key) => [key, policy?.[key]])));
+  return JSON.stringify(canonical({
+    family: { id: family?.id, notes: family?.notes, planningProfile: family?.planningProfile },
+    members: memberFacts, policies: policyFacts,
+    expertReport: { id: expertReport?.id, expertInputVersion: expertReport?.expertInputVersion },
+  }));
+}
+
+function inputDriftError() {
+  const error = new Error('Family sales inputs changed during generation');
+  error.code = 'FAMILY_SALES_INPUT_DRIFT';
+  error.status = 409;
+  return error;
+}
+
+function boundExpertReport(record, fallback) {
+  if (!record) return fallback;
+  const nested = record?.report?.familyPolicyAnalysisReport;
+  return nested ? { ...nested, id: record.id ?? nested.id ?? null } : record;
+}
+
 export function createFamilyReportRegenerationService(deps = {}) {
   const {
     state, allocateId, listFamilyMembers, policiesForFamilyReport, policiesForSalesReview,
@@ -97,10 +132,22 @@ export function createFamilyReportRegenerationService(deps = {}) {
     if (!completeStructuredExpertReport(ensuredReport)) throw new Error('FAMILY_POLICY_ANALYSIS_STRUCTURED_RESULT_REQUIRED');
     const expertRecord = typeof getExpertReportRecord === 'function' ? getExpertReportRecord(family, owner, stateSnapshot) : null;
     const expertReport = { ...ensuredReport, id: expertRecord?.id ?? ensuredReport.id ?? null };
+    const sourceSnapshot = stableBusinessSnapshot({ family, members, policies, expertReport });
     const input = buildExpertBackedSalesReviewContext({
       family, members, policies, expertReport, salesMemoryContext, salesChatContext, generatedAt: nowIso(),
     });
     const review = await generateFamilySalesReview({ input });
+    const currentExpertRecord = boundExpertReport(
+      typeof getExpertReportRecord === 'function' ? getExpertReportRecord(family, owner, stateSnapshot) : null,
+      expertReport,
+    );
+    const currentSnapshot = stableBusinessSnapshot({
+      family,
+      members: listFamilyMembers(stateSnapshot, family.id),
+      policies: policiesForSalesReview(family, owner, stateSnapshot),
+      expertReport: currentExpertRecord,
+    });
+    if (currentSnapshot !== sourceSnapshot) throw inputDriftError();
     const ownership = ownerFields(owner);
     const now = nowIso();
     const record = {

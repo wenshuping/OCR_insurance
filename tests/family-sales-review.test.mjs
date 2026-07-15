@@ -169,6 +169,23 @@ test('concurrent identical sales regeneration shares one model call and one save
   assert.equal(state.familySalesReviews.length, 1);
 });
 
+test('late sales generation rejects drift without archiving or saving stale output', async () => {
+  const previous = { id: 3, familyId: 1, ownerUserId: 1, status: 'active' };
+  const state = { familySalesReviews: [previous] };
+  let members = [{ id: 1, name: '甲' }];
+  let expert = { id: 7, status: 'complete', expertInputVersion: 'v1', structuredResult: { summary: '旧结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [] } };
+  const service = createFamilyReportRegenerationService({
+    state, allocateId: () => 9, listFamilyMembers: () => members, policiesForSalesReview: () => [],
+    repairFamilyMembersBeforeReview: async () => {}, refreshFamilyCashflowsForAnalysis: () => {},
+    getExpertReportRecord: () => expert, familyPolicyAnalysisOrchestrator: { ensureFresh: async () => expert },
+    generateFamilySalesReview: async () => { members = [{ id: 1, name: '乙' }]; expert = { ...expert, id: 8, expertInputVersion: 'v2' }; return { content: '## 一、销售结论摘要\n旧销售结果' }; },
+    archiveSalesReviewForFamily: () => { previous.status = 'archived'; }, ownerFields: () => ({ ownerUserId: 1 }), persistFamilyState: async () => {},
+  });
+  await assert.rejects(() => service.regenerateSalesReview({ family: { id: 1 }, owner: { userId: 1 } }), (error) => error.code === 'FAMILY_SALES_INPUT_DRIFT' && error.status === 409);
+  assert.equal(previous.status, 'active');
+  assert.deepEqual(state.familySalesReviews, [previous]);
+});
+
 test('sales regeneration rolls back review mutations when persistence fails', async () => {
   const previous = { id: 1, familyId: 9, ownerGuestId: 'guest-a', status: 'active', updatedAt: 'before' };
   const other = { id: 2, familyId: 9, ownerGuestId: 'guest-b', status: 'active' };
