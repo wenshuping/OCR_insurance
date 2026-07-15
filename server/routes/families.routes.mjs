@@ -5,6 +5,7 @@ import { buildFamilyReport } from '../../src/family-report-engine.mjs';
 import {
   buildFamilySalesReviewInput,
   generateFamilySalesReview,
+  resolveFamilySalesReviewFreshness,
 } from '../family-sales-review.service.mjs';
 import {
   buildLightweightSalesChatContext,
@@ -451,8 +452,28 @@ export function createFamilyRoutes(context) {
     return true;
   }
 
+  function salesReviewFreshness(review = null) {
+    if (!review) return { freshness: '', freshnessReason: '' };
+    if (String(review.status || 'active') === 'archived') {
+      return { freshness: 'archived', freshnessReason: 'source_updated' };
+    }
+    if (!review.expertReportId || !String(review.expertInputVersion || '').trim()) {
+      return { freshness: 'legacy', freshnessReason: 'legacy_missing_binding' };
+    }
+    const expertRecord = (state.familyReports || []).find((record) => Number(record?.id) === Number(review.expertReportId));
+    const currentExpertVersion = String(expertRecord?.report?.familyPolicyAnalysisReport?.expertInputVersion || '').trim();
+    if (!currentExpertVersion || currentExpertVersion !== String(review.expertInputVersion).trim()) {
+      return { freshness: 'stale', freshnessReason: 'expert_version_changed' };
+    }
+    const resolved = resolveFamilySalesReviewFreshness(review, { sourceUpdatedAt: review.sourceUpdatedAt || '' });
+    return resolved.status === 'fresh'
+      ? { freshness: 'fresh', freshnessReason: '' }
+      : { freshness: 'stale', freshnessReason: 'source_updated' };
+  }
+
   function clientSalesReview(review = null) {
     if (!review) return null;
+    const freshness = salesReviewFreshness(review);
     return {
       id: review.id,
       familyId: review.familyId,
@@ -464,6 +485,7 @@ export function createFamilyRoutes(context) {
       expertReportId: review.expertReportId ?? null,
       expertInputVersion: review.expertInputVersion || '',
       structuredSummary: review.structuredSummary || null,
+      ...freshness,
       createdAt: review.createdAt || '',
       updatedAt: review.updatedAt || '',
     };

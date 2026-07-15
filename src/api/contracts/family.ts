@@ -174,6 +174,8 @@ export type FamilySalesReview = {
   expertReportId?: number | null;
   expertInputVersion?: string;
   structuredSummary?: FamilySalesReviewSummary | null;
+  freshness?: 'fresh' | 'stale' | 'legacy' | 'archived' | string;
+  freshnessReason?: 'legacy_missing_binding' | 'source_updated' | 'expert_version_changed' | string;
   inputSummary?: {
     familyId?: number | null;
     memberCount?: number;

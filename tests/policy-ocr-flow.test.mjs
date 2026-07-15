@@ -12584,6 +12584,9 @@ test('family sales review is generated once persisted and returned by latest rep
     assert.equal(generated.payload.review.model, '');
     assert.equal(generated.payload.review.content.includes('第 1 次销售建议'), true);
     assert.equal(generated.payload.review.inputSummary.memberCount, 2);
+    assert.equal(generated.payload.review.freshness, 'fresh');
+    assert.equal(generated.payload.review.freshnessReason, '');
+    assert.equal('structuredResult' in generated.payload.review, false);
     assert.equal(state.familySalesReviews.length, 1);
     assert.equal(state.familySalesReviews[0].content, generated.payload.review.content);
     assert.equal(state.familySalesReviews[0].ownerGuestId, 'guest-sales-review');
@@ -12616,6 +12619,8 @@ test('family sales review is generated once persisted and returned by latest rep
     assert.equal(afterNotesGet.response.status, 200);
     assert.equal(afterNotesGet.payload.review.id, generated.payload.review.id);
     assert.equal(afterNotesGet.payload.review.status, 'archived');
+    assert.equal(afterNotesGet.payload.review.freshness, 'archived');
+    assert.equal(afterNotesGet.payload.review.freshnessReason, 'source_updated');
 
     const regenerated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
       method: 'POST',

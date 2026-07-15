@@ -1853,15 +1853,13 @@ export function CustomerApp() {
       const saved = await getFamilySalesReview(authInput);
       if (saved.review?.content) {
         setFamilySalesReview(saved.review);
-        const stale = saved.review.status === 'archived'
-          || saved.review.status === 'stale'
-          || !saved.review.expertReportId
-          || !saved.review.expertInputVersion;
-        setFamilySalesReviewMessage(
-          stale
-            ? '已读取旧版销售建议，资料已更新，可点击重算；当前显示的是上次保存的结果，资料或专家报告已更新'
-            : '已读取最近一次专家研判',
-        );
+        if (saved.review.freshness === 'legacy') {
+          setFamilySalesReviewMessage('已读取旧版报告，建议重算');
+        } else if (['source_updated', 'expert_version_changed'].includes(saved.review.freshnessReason || '')) {
+          setFamilySalesReviewMessage('资料或专家报告已更新，建议重算');
+        } else {
+          setFamilySalesReviewMessage('已读取最近一次专家研判');
+        }
         await loadFamilySalesChatThreads(familyId);
         return;
       }
@@ -1897,10 +1895,14 @@ export function CustomerApp() {
       setFamilySalesReviewMessage(familySalesChatReviewMessageIds.length ? '专家研判已按所选续聊内容重算并保存' : '专家研判已完成并保存');
       await loadFamilySalesChatThreads(familySalesReviewFamilyId);
     } catch (error) {
-      const staleNotice = familySalesReview?.content
-        ? '；当前显示的是上次保存的结果，资料或专家报告已更新'
+      const savedResultNotice = familySalesReview?.content
+        ? '；生成失败，当前显示上次保存的结果'
         : '';
-      setFamilySalesReviewMessage(`${familySalesReviewFailureMessage(error)}${staleNotice}`);
+      const freshnessNotice = familySalesReview?.freshness === 'stale'
+        && ['source_updated', 'expert_version_changed'].includes(familySalesReview.freshnessReason || '')
+        ? '；资料或专家报告已更新'
+        : '';
+      setFamilySalesReviewMessage(`${familySalesReviewFailureMessage(error)}${savedResultNotice}${freshnessNotice}`);
     } finally {
       setFamilySalesReviewBusy(false);
     }
