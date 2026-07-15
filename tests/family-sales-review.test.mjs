@@ -17,13 +17,91 @@ import {
   normalizeExtractedFamilySalesMemories,
   upsertFamilySalesMemories,
 } from '../server/family-sales-memory.service.mjs';
+import { buildExpertBackedSalesReviewContext } from '../server/family-sales-context.service.mjs';
+import { createFamilyReportRegenerationService } from '../server/family-report-regeneration.service.mjs';
 
-test('sales review freshness follows active status, generatedAt, and current source timestamp', () => {
-  const review = { status: 'active', generatedAt: '2026-07-11T00:00:00.000Z' };
+test('expert-backed sales context contains findings and only referenced policy indexes', () => {
+  const context = buildExpertBackedSalesReviewContext({
+    family: { id: 1, coreMemberId: 10, notes: '稳健', planningProfile: { annualIncome: null, debt: 0 } },
+    members: [{ id: 10, name: '张三', relationLabel: '本人', role: 'core', idNumber: '110101198606141234' }],
+    policies: [
+      { id: 101, company: '甲公司', name: '甲产品', insuredMemberId: 10, coverageIndicators: [{ liability: '不应传入' }] },
+      { id: 102, company: '乙公司', name: '乙产品', insuredMemberId: 10, coverageIndicators: [{ liability: '不应传入' }] },
+    ],
+    expertReport: {
+      id: 88,
+      expertInputVersion: 'sha256:v1',
+      structuredResult: {
+        summary: '专家结论',
+        priorityFindings: [{ title: '优先核实', policyRefs: ['policy:101'] }],
+        memberFindings: [], verificationItems: [], confirmedFacts: [],
+        evidenceRefs: { policies: ['policy:101'], facts: [], indicators: [] }, dataQualityWarnings: [],
+      },
+    },
+    generatedAt: '2026-07-15T00:00:00.000Z',
+    salesMemoryContext: { preferences: ['简洁'] },
+    salesChatContext: { messages: ['先讲养老'] },
+  });
+  assert.equal(context.expertReportId, 88);
+  assert.equal(context.expertInputVersion, 'sha256:v1');
+  assert.equal(context.family.planningSummary.annualIncome, null);
+  assert.equal(context.family.planningSummary.debt, 0);
+  assert.deepEqual(context.policyIndex.map((policy) => policy.policyRef), ['policy:101']);
+  assert.equal(JSON.stringify(context).includes('officialEvidence'), false);
+  assert.equal(JSON.stringify(context).includes('coverageIndicators'), false);
+  assert.equal(JSON.stringify(context).includes('110101198606141234'), false);
+});
+
+test('sales regeneration awaits fresh structured expert report and binds its version', async () => {
+  const calls = [];
+  const state = { familySalesReviews: [] };
+  const expert = {
+    id: 7, status: 'complete', content: '# full markdown must not be forwarded', expertInputVersion: 'sha256:fresh',
+    structuredResult: { summary: '专家结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [] },
+  };
+  const service = createFamilyReportRegenerationService({
+    state, allocateId: () => 99, listFamilyMembers: () => [{ id: 10, name: '张三', relationLabel: '本人' }],
+    policiesForFamilyReport: () => [], policiesForSalesReview: () => [{ id: 101, name: '保单', coverageIndicators: [{ liability: 'full' }] }],
+    repairFamilyMembersBeforeReview: async () => {}, refreshFamilyCashflowsForAnalysis: () => {}, buildFamilyReport: () => ({ secret: true }),
+    createFamilyReportRecord: () => ({}), appendDeepSeekReportIssues: async () => {}, refreshFamilyReportWithTrustedCorrections: () => {},
+    buildFamilyPolicyAnalysisInput: () => ({ expertInputVersion: 'sha256:fresh' }),
+    familyPolicyAnalysisOrchestrator: { ensureFresh: async (request) => { calls.push(['expert', request.explicitRefresh]); return expert; } },
+    generateFamilySalesReview: async ({ input }) => {
+      calls.push(['sales', input]);
+      assert.equal(input.expertFindings.summary, '专家结论');
+      assert.equal(JSON.stringify(input).includes('full markdown'), false);
+      return { content: '## 一、销售结论摘要\n结论\n## 二、必须先核实的数据风险\n核实A\n## 四、销售机会\n机会A\n## 十、下一步销售动作清单\n行动A', model: 'test', generatedAt: '2026-07-15T01:00:00.000Z' };
+    },
+    archiveSalesReviewForFamily: () => {}, ownerFields: () => ({ ownerUserId: 1, ownerGuestId: '' }),
+    persistFamilyReportState: async () => {}, persistFamilyState: async () => {}, nowIso: () => '2026-07-15T01:00:00.000Z',
+  });
+  const record = await service.regenerateSalesReview({ family: { id: 1, coreMemberId: 10 }, owner: { userId: 1 } });
+  assert.deepEqual(calls.map((call) => call[0]), ['expert', 'sales']);
+  assert.equal(record.expertReportId, 7);
+  assert.equal(record.expertInputVersion, 'sha256:fresh');
+  assert.equal(record.structuredSummary.conclusion, '结论');
+});
+
+test('sales regeneration stops when expert report lacks structured result', async () => {
+  let salesCalls = 0;
+  const state = { familySalesReviews: [] };
+  const service = createFamilyReportRegenerationService({
+    state, listFamilyMembers: () => [], policiesForSalesReview: () => [], repairFamilyMembersBeforeReview: async () => {},
+    refreshFamilyCashflowsForAnalysis: () => {}, familyPolicyAnalysisOrchestrator: { ensureFresh: async () => ({ status: 'complete', content: 'markdown', expertInputVersion: 'v1' }) },
+    generateFamilySalesReview: async () => { salesCalls += 1; }, ownerFields: () => ({}), persistFamilyState: async () => {},
+  });
+  await assert.rejects(() => service.regenerateSalesReview({ family: { id: 1 }, owner: {} }), /STRUCTURED_RESULT/);
+  assert.equal(salesCalls, 0);
+  assert.equal(state.familySalesReviews.length, 0);
+});
+
+test('sales review freshness follows expert binding, active status, generatedAt, and current source timestamp', () => {
+  const review = { status: 'active', generatedAt: '2026-07-11T00:00:00.000Z', expertInputVersion: 'sha256:v1' };
   assert.equal(resolveFamilySalesReviewFreshness(review, { sourceUpdatedAt: '2026-07-10T00:00:00.000Z' }).status, 'fresh');
   assert.equal(resolveFamilySalesReviewFreshness(review, { sourceUpdatedAt: '2026-07-12T00:00:00.000Z' }).status, 'stale');
   assert.equal(resolveFamilySalesReviewFreshness(review, { sourceUpdatedAt: '2026-07-11T09:00:00+08:00' }).status, 'stale');
   assert.equal(resolveFamilySalesReviewFreshness({ status: 'archived', generatedAt: '2026-07-11T00:00:00.000Z' }).status, 'missing');
+  assert.equal(resolveFamilySalesReviewFreshness({ status: 'active', generatedAt: '2026-07-11T00:00:00.000Z' }).status, 'stale');
 });
 
 test('family sales review input keeps members without policies and official evidence', () => {

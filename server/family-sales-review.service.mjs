@@ -31,6 +31,7 @@ export function resolveFamilySalesReviewFreshness(review = null, { sourceUpdated
   if (!review || String(review.status || 'active') !== 'active') return { status: 'missing', review: null, generatedAt: '' };
   const generatedAt = String(review.generatedAt || '').trim();
   if (!generatedAt) return { status: 'stale', review, generatedAt: '' };
+  if (!String(review.expertInputVersion || '').trim()) return { status: 'stale', review, generatedAt };
   const latestSourceAt = String(sourceUpdatedAt || review.sourceUpdatedAt || '').trim();
   const generatedTime = Date.parse(generatedAt);
   if (!Number.isFinite(generatedTime)) return { status: 'stale', review, generatedAt };
@@ -1127,6 +1128,32 @@ export function buildFamilySalesReviewInput({
 
 export function buildFamilySalesReviewMessages(input = {}, { skillPrompt = null } = {}) {
   const inputJson = privacySafeInputJson(input);
+  if (input?.expertFindings) {
+    return [{
+      role: 'system',
+      content: [
+        '你是资深保险销售赋能顾问。专家已经完成保险分析；你不得重新计算保障缺口、重新判断责任或扩写成完整保险分析报告。',
+        '只把 expertFindings 转成销售可执行建议：最多3个销售机会、最多3个核实项、1个面谈目标和明确下一步。',
+        '金额、保障责任、现金流只能引用 expertFindings 和精简 policyIndex 中明确提供的事实；未知必须写“待核实”。',
+        '不得承诺收益、分红、利率、核保或理赔结果。memberRef 必须原样使用，证件号码变量不得输出。',
+        'salesChatContext 优先于 salesMemoryContext，但两者不得覆盖专家事实。',
+      ].join('\n'),
+    }, {
+      role: 'user',
+      content: [
+        '请输出中文 Markdown，且只包含以下章节：',
+        '## 一、销售结论摘要',
+        '## 二、必须先核实的数据风险（最多3条）',
+        '## 三、保障关注点（最多3条，仅转述专家结论）',
+        '## 四、销售机会（最多3条）',
+        '## 五、面谈目标（仅1个）',
+        '## 六、下一步销售动作清单',
+        '',
+        '以下是精简输入 JSON：',
+        inputJson,
+      ].join('\n'),
+    }];
+  }
   const resolvedSkillPrompt = skillPrompt || (input?.salesChatContext
     ? selectAgentSkillPrompt({ scene: 'family_sales_review', question: '重新生成销售建议报告', salesChatContext: input.salesChatContext })
     : null);
@@ -1280,7 +1307,7 @@ export async function generateFamilySalesReview({
     if (!upstreamContent) {
       throw withCode(new Error('FAMILY_SALES_REVIEW_EMPTY_RESPONSE'), 'FAMILY_SALES_REVIEW_EMPTY_RESPONSE', 502);
     }
-    const initialContent = ensureFamilySalesReviewSalesEnablement(upstreamContent, input);
+    const initialContent = input?.expertFindings ? upstreamContent : ensureFamilySalesReviewSalesEnablement(upstreamContent, input);
     const initialReconciliation = reconcileVerifiedCashflowAmounts(initialContent, input);
     let reviewedContent = initialReconciliation.content;
     let responseModel = trim(payload?.model || config.model) || config.model;
@@ -1306,7 +1333,7 @@ export async function generateFamilySalesReview({
         const retryContent = trim(retryPayload?.choices?.[0]?.message?.content);
         if (retryContent) {
           reviewedContent = reconcileVerifiedCashflowAmounts(
-            ensureFamilySalesReviewSalesEnablement(retryContent, input),
+            input?.expertFindings ? retryContent : ensureFamilySalesReviewSalesEnablement(retryContent, input),
             input,
           ).content;
           responseModel = trim(retryPayload?.model || responseModel) || responseModel;
@@ -1324,7 +1351,7 @@ export async function generateFamilySalesReview({
       inputSummary: {
         familyId: input?.family?.id ?? null,
         memberCount: Array.isArray(input?.members) ? input.members.length : 0,
-        policyCount: Array.isArray(input?.policies) ? input.policies.length : 0,
+        policyCount: Array.isArray(input?.policyIndex) ? input.policyIndex.length : (Array.isArray(input?.policies) ? input.policies.length : 0),
         membersWithoutPolicyCount: Array.isArray(input?.dataQuality?.membersWithoutPolicy)
           ? input.dataQuality.membersWithoutPolicy.length
           : 0,

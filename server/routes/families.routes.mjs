@@ -459,6 +459,9 @@ export function createFamilyRoutes(context) {
       model: '',
       generatedAt: review.generatedAt || review.createdAt || '',
       inputSummary: review.inputSummary || {},
+      expertReportId: review.expertReportId ?? null,
+      expertInputVersion: review.expertInputVersion || '',
+      structuredSummary: review.structuredSummary || null,
       createdAt: review.createdAt || '',
       updatedAt: review.updatedAt || '',
     };
@@ -864,7 +867,9 @@ export function createFamilyRoutes(context) {
     repairFamilyMembersBeforeReview, refreshFamilyCashflowsForAnalysis, buildFamilyReport,
     createFamilyReportRecord, appendDeepSeekReportIssues, refreshFamilyReportWithTrustedCorrections,
     buildFamilyPolicyAnalysisInput,
-    buildFamilySalesReviewInput, generateFamilySalesReview: generateFamilySalesReviewImpl,
+    generateFamilySalesReview: generateFamilySalesReviewImpl,
+    familyPolicyAnalysisOrchestrator,
+    getExpertReportRecord: (family, owner) => latestFamilyReport(family.id, owner),
     archiveSalesReviewForFamily, ownerFields, persistFamilyReportState: persistFreshFamilyReportState,
     persistFamilyState: persistFreshFamilyState, nowIso,
   });
