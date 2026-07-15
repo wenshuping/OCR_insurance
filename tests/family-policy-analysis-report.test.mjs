@@ -71,6 +71,8 @@ test('expert coverage groups retain all missing item names without empty technic
     { memberRef: 'member_1', category: 'medical', itemName: '外购药', status: 'not_identified', sourceUrl: '' },
     { memberRef: 'member_1', category: 'medical', itemName: '住院医疗', status: 'not_identified', sourceUrl: '' },
     { memberRef: 'member_1', category: 'medical', itemName: '一般医疗', status: 'confirmed', value: 2_000_000, unit: '元', sourceUrl: '' },
+    { memberRef: 'member_1', category: 'medical', itemName: '一般医疗', status: 'confirmed', value: 2_000_000, unit: '元' },
+    { memberRef: 'member_1', category: 'medical', itemName: '', status: 'confirmed', value: 50_000 },
     { memberRef: 'member_1', category: 'medical', itemName: '门诊', status: 'not_found_in_recorded_policies' },
     { memberRef: 'member_1', category: 'medical', itemName: '免赔额', status: 'conflicted' },
     { memberRef: 'member_1', category: 'medical', itemName: '特药', status: 'missing_source' },
@@ -92,11 +94,13 @@ test('expert coverage groups retain all missing item names without empty technic
 test('expert input version is stable and tracks only expert business facts', () => {
   const input = {
     family: { id: 10, familyName: '张先生家庭', notes: '有房贷', ownerUserId: 99, updatedAt: 'yesterday' },
-    members: [{ id: 1, name: '张先生', notes: '经济支柱', idNumber: 'secret', uiExpanded: true }],
+    members: [{ id: 1, name: '张先生', birthday: '1988-01-01', notes: '经济支柱', idNumber: 'secret', uiExpanded: true }],
     planningProfile: buildExpertPlanningProfile({ debt: 1_000_000 }),
     policies: [{
       id: 11,
       productName: '重疾险',
+      applicant: '张先生',
+      insured: '张先生',
       coverageAmount: 300_000,
       updatedAt: 'today',
       editing: false,
@@ -105,6 +109,14 @@ test('expert input version is stable and tracks only expert business facts', () 
     }],
     groupedCoverageIndicators: [{ memberRef: 'member_1', category: 'critical', confirmedItems: [], notIdentifiedItems: ['轻症'], activeTab: 'gap' }],
     evidenceReferences: [{ policyRef: 'policy_1', verificationStatus: 'verified', sourceKind: 'customer_policy_terms', fetchedAt: 'today', editing: false }],
+    report: {
+      summary: { memberCount: 1, policyCount: 1, refreshedAt: 'today' },
+      radar: { family: { scores: [{ key: 'critical', score: 60, activeTab: 'detail' }] } },
+      inventoryRows: [{ member: '张先生', productName: '重疾险', coverageText: '30万元', editing: false }],
+      criticalIllness: { members: [{ member: '张先生', gap: 500_000 }] },
+      accident: { members: [{ member: '张先生', gap: 1_000_000 }] },
+      wealth: { memberReports: [{ member: '张先生', conclusion: '待完善' }] },
+    },
     salesMemory: { objection: '贵' },
     salesChat: [{ content: '换个说法' }],
   };
@@ -123,13 +135,33 @@ test('expert input version is stable and tracks only expert business facts', () 
     }],
     groupedCoverageIndicators: [{ ...input.groupedCoverageIndicators[0], activeTab: 'coverage' }],
     evidenceReferences: [{ ...input.evidenceReferences[0], fetchedAt: 'tomorrow', editing: true }],
+    report: {
+      ...input.report,
+      summary: { ...input.report.summary, refreshedAt: 'tomorrow' },
+      radar: { family: { scores: [{ ...input.report.radar.family.scores[0], activeTab: 'overview' }] } },
+      inventoryRows: [{ ...input.report.inventoryRows[0], editing: true }],
+    },
   }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, family: { ...input.family, notes: '新增房贷' } }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, members: [{ ...input.members[0], notes: '准备退休' }] }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, members: [{ ...input.members[0], name: '李先生' }] }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, members: [{ ...input.members[0], birthday: '1989-01-01' }] }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, planningProfile: buildExpertPlanningProfile({ debt: 900_000 }) }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, policies: [{ ...input.policies[0], coverageAmount: 500_000 }] }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, policies: [{ ...input.policies[0], applicant: '李先生' }] }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, policies: [{ ...input.policies[0], insured: '李先生' }] }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, groupedCoverageIndicators: [{ ...input.groupedCoverageIndicators[0], notIdentifiedItems: ['轻症', '中症'] }] }), first);
   assert.notEqual(computeExpertInputVersion({ ...input, evidenceReferences: [{ ...input.evidenceReferences[0], verificationStatus: 'pending_review' }] }), first);
+  for (const [section, changed] of [
+    ['summary', { ...input.report.summary, policyCount: 2 }],
+    ['radar', { family: { scores: [{ key: 'critical', score: 80 }] } }],
+    ['inventoryRows', [{ ...input.report.inventoryRows[0], coverageText: '50万元' }]],
+    ['criticalIllness', { members: [{ member: '张先生', gap: 300_000 }] }],
+    ['accident', { members: [{ member: '张先生', gap: 800_000 }] }],
+    ['wealth', { memberReports: [{ member: '张先生', conclusion: '充足' }] }],
+  ]) {
+    assert.notEqual(computeExpertInputVersion({ ...input, report: { ...input.report, [section]: changed } }), first, section);
+  }
 });
 
 test('policy analysis freshness follows nested report status and current source timestamp', () => {

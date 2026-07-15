@@ -19,10 +19,10 @@ const STATUS_ITEM_KEYS = {
 };
 
 const VERSION_FACT_KEYS = new Set([
-  'notes', 'relationLabel', 'role',
+  'notes', 'relationLabel', 'role', 'birthday',
   ...PLANNING_FIELDS, 'status', 'value',
   'id', 'company', 'productName', 'annualPremium', 'coverageAmount', 'effectiveDate',
-  'paymentPeriod', 'coveragePeriod', 'type', 'responsibilities', 'evidence',
+  'paymentPeriod', 'coveragePeriod', 'type', 'applicant', 'insured', 'responsibilities', 'evidence',
   'name', 'amount', 'condition', 'payout',
   'knowledgeEvidence', 'indicatorEvidence', 'optionalResponsibilityEvidence', 'policySourceEvidence',
   'productType', 'title', 'official', 'sourceKind', 'evidenceLevel', 'verificationStatus',
@@ -32,6 +32,14 @@ const VERSION_FACT_KEYS = new Set([
   'memberRef', 'category', 'confirmedItems', 'notFoundInRecordedPoliciesItems',
   'notIdentifiedItems', 'conflictedItems', 'missingSourceItems', 'notApplicableItems', 'itemName',
   'evidenceReferences', 'policyRef',
+  'summary', 'radar', 'inventoryRows', 'criticalIllness', 'accident', 'wealth',
+  'memberCount', 'policyCount', 'issueCount', 'family', 'scores', 'members', 'hiddenMembers',
+  'key', 'label', 'score', 'amountText', 'target', 'targetText', 'gap', 'gapText', 'note', 'member',
+  'rows', 'attentionItems', 'conditionText', 'sourcePolicies', 'sourcePolicyRefs',
+  'typeLabel', 'coverageText', 'annualPremiumText', 'policyStatusText', 'dataStatus',
+  'memberReports', 'policies', 'cashflowRows', 'annualCashflowRows', 'year', 'age',
+  'cumulative', 'calculationText', 'payoutInflow', 'cumulativePayoutInflow', 'cashValueTotal',
+  'totalValue', 'conclusion', 'mode', 'dimensions', 'coveragePresent',
 ]);
 
 function trim(value) {
@@ -78,6 +86,7 @@ export function buildExpertPlanningProfile(planning = {}) {
 
 export function groupExpertCoverageIndicators(indicators = []) {
   const groups = new Map();
+  const confirmedKeys = new Map();
   for (const indicator of Array.isArray(indicators) ? indicators : []) {
     const memberRef = trim(indicator?.memberRef);
     const category = trim(indicator?.category || indicator?.coverageCategory || indicator?.coverageType);
@@ -93,11 +102,18 @@ export function groupExpertCoverageIndicators(indicators = []) {
         missingSourceItems: [],
         notApplicableItems: [],
       });
+      confirmedKeys.set(key, new Set());
     }
     const group = groups.get(key);
     const status = trim(indicator?.status || indicator?.indicatorStatus || 'confirmed');
     if (status === 'confirmed') {
-      group.confirmedItems.push(compactConfirmedItem(indicator));
+      const item = compactConfirmedItem(indicator);
+      if (!item.itemName) continue;
+      const semanticKey = JSON.stringify(canonicalize(item));
+      if (!confirmedKeys.get(key).has(semanticKey)) {
+        confirmedKeys.get(key).add(semanticKey);
+        group.confirmedItems.push(item);
+      }
       continue;
     }
     const target = STATUS_ITEM_KEYS[status];
@@ -111,6 +127,8 @@ export function computeExpertInputVersion(input = {}) {
   const versionInput = {
     family: { notes: input.family?.notes || '' },
     members: (Array.isArray(input.members) ? input.members : []).map((member) => ({
+      name: member.name || '',
+      birthday: member.birthday || '',
       relationLabel: member.relationLabel || '',
       role: member.role || '',
       notes: member.notes || '',
@@ -120,6 +138,7 @@ export function computeExpertInputVersion(input = {}) {
     groupedCoverageIndicators: (Array.isArray(input.groupedCoverageIndicators)
       ? input.groupedCoverageIndicators : []).map(versionFacts),
     evidenceReferences: (Array.isArray(input.evidenceReferences) ? input.evidenceReferences : []).map(versionFacts),
+    report: versionFacts(input.report || {}),
   };
   const json = JSON.stringify(canonicalize(versionInput));
   return `sha256:${createHash('sha256').update(json).digest('hex')}`;
