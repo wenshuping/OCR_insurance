@@ -623,6 +623,19 @@ test('expert semantic gate normalizes unsafe certainty and rejects unsupported l
   assert.match(normalized.structuredResult.priorityFindings[0].finding, /暂按未配置关注，需核对合同/u);
   assert.match(normalized.markdownContent, /暂按未配置关注，需核对合同/u);
 
+  for (const summary of ['客户确认没有负债', '客户确认没有吸烟史', '客户确认没有既往症']) {
+    const legal = structuredClone(base);
+    legal.structuredResult.summary = summary;
+    assert.equal(parseFamilyPolicyAnalysisEnvelope(JSON.stringify(legal), version, { policies: [], indicators: [] }).structuredResult.summary, summary);
+  }
+  const invalidSummary = structuredClone(base);
+  invalidSummary.structuredResult.summary = '客户确认没有医疗保障';
+  assert.throws(() => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(invalidSummary), version, { policies: [], indicators: [] }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
+  const allowedSummary = parseFamilyPolicyAnalysisEnvelope(JSON.stringify(invalidSummary), version, { policies: [], indicators: [] }, {
+    groupedCoverageIndicators: [{ category: 'medical', notFoundInRecordedPoliciesItems: ['住院医疗'] }],
+  });
+  assert.equal(allowedSummary.structuredResult.summary, '客户确认没有医疗保障');
+
   const unsupported = structuredClone(base);
   unsupported.structuredResult.priorityFindings[0] = { ...unsupported.structuredResult.priorityFindings[0], assessment: 'likely_insufficient', missingInformation: [], confirmedFactRefs: [], policyRefs: [] };
   assert.throws(() => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(unsupported), version, { policies: [], indicators: [] }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
@@ -847,7 +860,7 @@ test('family report regeneration does not reuse legacy policy analysis report wi
   assert.equal(record.report.familyPolicyAnalysisReport, undefined);
 });
 
-test('family policy analysis retries pro model after empty pro response', async () => {
+test('family policy analysis retries pro model after empty and unsafe coverage summary responses', async () => {
   const requestedModels = [];
   const markdownContent = [
     '## 一、报告结论摘要',
@@ -889,6 +902,10 @@ test('family policy analysis retries pro model after empty pro response', async 
       evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [],
     },
   });
+  const unsafeReport = JSON.stringify({
+    ...JSON.parse(completeReport),
+    structuredResult: { ...JSON.parse(completeReport).structuredResult, summary: '客户确认没有医疗保障' },
+  });
 
   const result = await generateFamilyPolicyAnalysisReport({
     input: { expertInputVersion },
@@ -901,13 +918,13 @@ test('family policy analysis retries pro model after empty pro response', async 
         ok: true,
         json: async () => ({
           model: body.model,
-          choices: [{ message: { content: requestedModels.length === 1 ? '' : completeReport } }],
+          choices: [{ message: { content: requestedModels.length === 1 ? '' : requestedModels.length === 2 ? unsafeReport : completeReport } }],
         }),
       };
     },
   });
 
-  assert.deepEqual(requestedModels, ['deepseek-v4-pro', 'deepseek-v4-pro']);
+  assert.deepEqual(requestedModels, ['deepseek-v4-pro', 'deepseek-v4-pro', 'deepseek-v4-pro']);
   assert.equal(result.status, 'complete');
   assert.equal(result.model, 'deepseek-v4-pro');
   assert.match(result.content, /重点保障缺口分析/u);

@@ -143,6 +143,30 @@ function normalizeCoverageFindings(envelope, context = {}) {
   }
 }
 
+function coverageSummaryKind(summary) {
+  if (/医疗保障/u.test(summary)) return 'medical';
+  if (/意外保障/u.test(summary)) return 'accident';
+  if (/重疾保障/u.test(summary)) return 'critical';
+  if (/寿险|身故保障/u.test(summary)) return 'life';
+  if (/保障责任|保险保障/u.test(summary)) return 'coverage';
+  return '';
+}
+
+function summaryCoverageAbsenceIsAllowed(summary, context = {}) {
+  const kind = coverageSummaryKind(summary);
+  if (!kind) return true;
+  const hasAssertion = /客户(?:确认|确定)没有|客户确认无/u.test(summary);
+  if (!hasAssertion) return true;
+  return (context.groupedCoverageIndicators || []).some((group) => {
+    const category = trim(group.category).toLowerCase();
+    const categoryMatches = kind === 'coverage' || category.includes(kind)
+      || (kind === 'critical' && /重疾/u.test(category))
+      || (kind === 'life' && /寿险|身故/u.test(category));
+    return categoryMatches && Array.isArray(group.notFoundInRecordedPoliciesItems)
+      && group.notFoundInRecordedPoliciesItems.length > 0;
+  });
+}
+
 function formatWan(amount) {
   const value = Number(amount) / 10_000;
   return `${Number.isInteger(value) ? value : value.toFixed(2).replace(/0+$/u, '').replace(/\.$/u, '')}万元`;
@@ -223,6 +247,9 @@ export function parseFamilyPolicyAnalysisEnvelope(rawContent, expectedVersion, a
   }
   result.priorityFindings.forEach((finding) => validateFinding(finding, 'priority finding', validRefs));
   result.memberFindings.forEach((finding) => validateFinding(finding, 'member finding', validRefs));
+  if (!summaryCoverageAbsenceIsAllowed(result.summary, semanticContext)) {
+    throw invalidResult('coverage absence in summary requires confirmed recorded-policy evidence');
+  }
   if (hasUnknownPlanning(semanticContext) && containsUnsupportedExactGap(envelope)) {
     throw invalidResult('exact planning gap requires confirmed planning inputs');
   }
