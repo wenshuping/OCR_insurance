@@ -331,7 +331,8 @@ test('family policy analysis envelope validates version, assessments, and eviden
     },
   };
 
-  assert.deepEqual(parseFamilyPolicyAnalysisEnvelope(JSON.stringify(envelope), expertInputVersion), envelope);
+  const allowedEvidenceRefs = { policies: ['policy_1'], indicators: [] };
+  assert.deepEqual(parseFamilyPolicyAnalysisEnvelope(JSON.stringify(envelope), expertInputVersion, allowedEvidenceRefs), envelope);
   for (const invalid of [
     { ...envelope, expertInputVersion: 'sha256:stale' },
     { ...envelope, structuredResult: { ...envelope.structuredResult, summary: null } },
@@ -346,9 +347,11 @@ test('family policy analysis envelope validates version, assessments, and eviden
     { ...envelope, structuredResult: { ...envelope.structuredResult, confirmedFacts: [null] } },
     { ...envelope, structuredResult: { ...envelope.structuredResult, verificationItems: [null] } },
     { ...envelope, structuredResult: { ...envelope.structuredResult, dataQualityWarnings: [null] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, confirmedFacts: [{ id: 'fact_1' }, { id: 'fact_1' }] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, evidenceRefs: { ...envelope.structuredResult.evidenceRefs, policies: ['ghost'] }, priorityFindings: [{ ...envelope.structuredResult.priorityFindings[0], policyRefs: ['ghost'] }] } },
   ]) {
     assert.throws(
-      () => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(invalid), expertInputVersion),
+      () => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(invalid), expertInputVersion, allowedEvidenceRefs),
       (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT',
     );
   }
@@ -614,4 +617,70 @@ test('family policy analysis rejects malformed structured output after pro retri
     },
   }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
   assert.equal(attempts, 2);
+});
+
+test('family policy analysis retries transient upstream and JSON decode failures', async () => {
+  const expertInputVersion = 'sha256:retry';
+  const markdownContent = [
+    '## 一、报告结论摘要', '结论', '## 二、家庭成员与保单全景', '全景',
+    '## 三、现有保障结构评价', '评价', '## 四、重点保障缺口分析', '缺口',
+    '## 五、风险场景影响', '影响', '## 六、配置优先级与预算建议', '建议',
+    '## 七、需要补充核实的信息', '核实', '## 八、动态复盘建议', '复盘',
+  ].join('\n');
+  const validPayload = {
+    choices: [{ message: { content: JSON.stringify({
+      markdownContent, expertInputVersion,
+      structuredResult: {
+        summary: '结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [],
+        evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [],
+      },
+    }) } }],
+  };
+
+  for (const firstResponse of [
+    { ok: false, status: 503, text: async () => 'busy' },
+    { ok: true, json: async () => { throw new SyntaxError('bad json'); } },
+  ]) {
+    let attempts = 0;
+    const result = await generateFamilyPolicyAnalysisReport({
+      input: { expertInputVersion },
+      env: { DEEPSEEK_API_KEY: 'test-key', FAMILY_POLICY_ANALYSIS_RETRY_ATTEMPTS: '2' },
+      fetchImpl: async () => {
+        attempts += 1;
+        return attempts === 1 ? firstResponse : { ok: true, json: async () => validPayload };
+      },
+    });
+    assert.equal(attempts, 2);
+    assert.equal(result.status, 'complete');
+  }
+});
+
+test('family policy analysis does not retry non-429 upstream 4xx responses', async () => {
+  let attempts = 0;
+  await assert.rejects(generateFamilyPolicyAnalysisReport({
+    input: { expertInputVersion: 'sha256:client-error' },
+    env: { DEEPSEEK_API_KEY: 'test-key', FAMILY_POLICY_ANALYSIS_RETRY_ATTEMPTS: '3' },
+    fetchImpl: async () => {
+      attempts += 1;
+      return { ok: false, status: 400, text: async () => 'bad request' };
+    },
+  }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_UPSTREAM_FAILED');
+  assert.equal(attempts, 1);
+});
+
+test('family policy analysis rejects incomplete or unordered markdown sections', async () => {
+  const expertInputVersion = 'sha256:sections';
+  for (const markdownContent of [
+    ['## 一、报告结论摘要', '## 二、家庭成员与保单全景', '## 三、现有保障结构评价', '## 四、重点保障缺口分析', '## 五、风险场景影响', '## 六、配置优先级与预算建议', '## 七、需要补充核实的信息', '## 八、动态复盘建议'].join('\n'),
+    ['## 二、家庭成员与保单全景', '正文', '## 一、报告结论摘要', '正文', '## 三、现有保障结构评价', '正文', '## 四、重点保障缺口分析', '正文', '## 五、风险场景影响', '正文', '## 六、配置优先级与预算建议', '正文', '## 七、需要补充核实的信息', '正文', '## 八、动态复盘建议', '正文'].join('\n'),
+  ]) {
+    await assert.rejects(generateFamilyPolicyAnalysisReport({
+      input: { expertInputVersion },
+      env: { DEEPSEEK_API_KEY: 'test-key', FAMILY_POLICY_ANALYSIS_RETRY_ATTEMPTS: '1' },
+      fetchImpl: async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({
+        markdownContent, expertInputVersion,
+        structuredResult: { summary: '结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [] },
+      }) } }] }) }),
+    }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
+  }
 });

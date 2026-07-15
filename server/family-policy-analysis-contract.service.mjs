@@ -110,7 +110,7 @@ function validateFinding(finding, label, validRefs) {
   }
 }
 
-export function parseFamilyPolicyAnalysisEnvelope(rawContent, expectedVersion) {
+export function parseFamilyPolicyAnalysisEnvelope(rawContent, expectedVersion, allowedEvidenceRefs = {}) {
   let envelope;
   try {
     envelope = JSON.parse(trim(rawContent));
@@ -154,6 +154,15 @@ export function parseFamilyPolicyAnalysisEnvelope(rawContent, expectedVersion) {
   const confirmedFactIds = referenceIds(result.confirmedFacts);
   if ([...validRefs.confirmedFactRefs].some((id) => !confirmedFactIds.has(id))) {
     throw invalidResult('structuredResult.evidenceRefs.facts contains an unknown fact id');
+  }
+  for (const [key, allowedKey] of [['indicatorRefs', 'indicators'], ['policyRefs', 'policies']]) {
+    const allowed = referenceIds(allowedEvidenceRefs[allowedKey]);
+    if ([...validRefs[key]].some((id) => !allowed.has(id))) {
+      throw invalidResult(`structuredResult.evidenceRefs.${allowedKey} contains an input-external id`);
+    }
+  }
+  if (confirmedFactIds.size !== result.confirmedFacts.length) {
+    throw invalidResult('structuredResult.confirmedFacts ids must be unique');
   }
   result.priorityFindings.forEach((finding) => validateFinding(finding, 'priority finding', validRefs));
   result.memberFindings.forEach((finding) => validateFinding(finding, 'member finding', validRefs));

@@ -71,10 +71,17 @@ function sanitizeGeneratedContent(value) {
 
 function isInsufficientReport(content = '') {
   const text = trim(content);
-  return [
+  const expected = [
     '一、报告结论摘要', '二、家庭成员与保单全景', '三、现有保障结构评价', '四、重点保障缺口分析',
     '五、风险场景影响', '六、配置优先级与预算建议', '七、需要补充核实的信息', '八、动态复盘建议',
-  ].some((heading) => !text.includes(heading));
+  ];
+  const headings = [...text.matchAll(/^##\s+(.+?)\s*$/gmu)];
+  if (headings.length !== expected.length || headings.some((match, index) => match[1] !== expected[index])) return true;
+  return headings.some((match, index) => {
+    const bodyStart = match.index + match[0].length;
+    const bodyEnd = headings[index + 1]?.index ?? text.length;
+    return !trim(text.slice(bodyStart, bodyEnd));
+  });
 }
 
 function resolveConfig(env = process.env) {
@@ -277,12 +284,17 @@ export function buildFamilyPolicyAnalysisInput({
 } = {}) {
   const report = familyReport || {};
   const evidenceOptions = { knowledgeRecords, indicatorRecords, optionalResponsibilityRecords };
-  const policySummaries = (Array.isArray(policies) ? policies : []).map((policy) => policyBrief(policy, evidenceOptions));
+  const policySummaries = (Array.isArray(policies) ? policies : []).map((policy, index) => ({
+    ...policyBrief(policy, evidenceOptions),
+    policyRef: `policy:${policy?.id ?? index}`,
+  }));
   const coverageIndicators = (Array.isArray(policies) ? policies : []).flatMap((policy) =>
     (Array.isArray(policy.coverageIndicators) ? policy.coverageIndicators : []).map((indicator) => ({
       ...indicator,
       memberRef: indicator.memberRef || policy.insuredMemberRef || policy.insured || '',
     })));
+  const groupedCoverageIndicators = groupExpertCoverageIndicators(coverageIndicators)
+    .map((group, index) => ({ ...group, indicatorRef: `indicator:${index}` }));
   const input = {
     family: {
       id: family?.id ?? null,
@@ -299,7 +311,11 @@ export function buildFamilyPolicyAnalysisInput({
       notes: trim(member.notes),
     })),
     policies: policySummaries,
-    groupedCoverageIndicators: groupExpertCoverageIndicators(coverageIndicators),
+    groupedCoverageIndicators,
+    allowedEvidenceRefs: {
+      policies: policySummaries.map((policy) => policy.policyRef),
+      indicators: groupedCoverageIndicators.map((group) => group.indicatorRef),
+    },
     report: {
       summary: report.summary || {},
       radar: {
@@ -386,6 +402,7 @@ export function buildFamilyPolicyAnalysisMessages(input = {}) {
         '- structuredResult 必须包含 summary, priorityFindings, confirmedFacts, verificationItems, memberFindings, evidenceRefs, dataQualityWarnings。',
         '- 每个 priorityFinding 和 memberFinding 都包含 memberRef/category/finding/assessment/confidence/confirmedFactRefs/indicatorRefs/policyRefs/missingInformation/nextVerification。',
         '- confirmedFacts 中每项使用唯一 id；evidenceRefs 必须是 {facts:[id], indicators:[id], policies:[id]}，finding 的三类 *Refs 只能引用这些已列出的 id。',
+        '- policyRefs 和 indicatorRefs 只能使用输入 allowedEvidenceRefs 中提供的稳定 ref，不得自行创造；每张保单和每组指标也带有对应 ref。',
         '- assessment 只能是 confirmed_gap、likely_insufficient、needs_verification、currently_reasonable。',
         '- 有合同或已确认事实支撑时使用“当前已录入保单中未发现”；仅因资料未录入而无法确认时使用“暂按未配置关注，需核对合同”，不得把未识别直接断言为没有保障。',
         '',
@@ -447,11 +464,13 @@ export async function generateFamilyPolicyAnalysisReport({
 
     if (!response.ok) {
       const bodyText = trim(await response.text());
-      throw withCode(
+      const error = withCode(
         new Error(`FAMILY_POLICY_ANALYSIS_UPSTREAM_${response.status}:${bodyText || 'upstream_error'}`),
         'FAMILY_POLICY_ANALYSIS_UPSTREAM_FAILED',
         502,
       );
+      error.retryable = response.status === 429 || response.status >= 500;
+      throw error;
     }
 
     const payload = await response.json();
@@ -468,9 +487,13 @@ export async function generateFamilyPolicyAnalysisReport({
   try {
     let lastError;
     for (let attempt = 0; attempt < config.retryAttempts; attempt += 1) {
-      const result = await requestReport(config.model, attempt ? 'JSON 结构无效、证据引用无效，或缺少八个 Markdown 章节' : '');
       try {
-        const envelope = parseFamilyPolicyAnalysisEnvelope(result.rawContent, input?.expertInputVersion);
+        const result = await requestReport(config.model, attempt ? 'JSON 结构无效、证据引用无效，或缺少八个 Markdown 章节' : '');
+        const allowedEvidenceRefs = input?.allowedEvidenceRefs || {
+          policies: (input?.policies || []).map((policy, index) => policy.policyRef || `policy:${policy?.id ?? index}`),
+          indicators: (input?.groupedCoverageIndicators || []).map((group, index) => group.indicatorRef || `indicator:${index}`),
+        };
+        const envelope = parseFamilyPolicyAnalysisEnvelope(result.rawContent, input?.expertInputVersion, allowedEvidenceRefs);
         const markdownContent = sanitizeGeneratedContent(envelope.markdownContent);
         if (isInsufficientReport(markdownContent)) throw withCode(new Error('Markdown sections are incomplete'), 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT', 502);
         return {
@@ -484,9 +507,14 @@ export async function generateFamilyPolicyAnalysisReport({
         };
       } catch (error) {
         lastError = error;
+        const retryable = error?.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT'
+          || error?.retryable === true
+          || error instanceof SyntaxError;
+        if (!retryable) throw error;
       }
     }
-    throw withCode(lastError instanceof Error ? lastError : new Error('Invalid family policy analysis result'), 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT', 502);
+    if (lastError?.code) throw lastError;
+    throw withCode(lastError instanceof Error ? lastError : new Error('Invalid upstream response'), 'FAMILY_POLICY_ANALYSIS_UPSTREAM_FAILED', 502);
   } catch (error) {
     if (error?.name === 'AbortError') {
       throw withCode(new Error('保单分析报告生成超时'), 'FAMILY_POLICY_ANALYSIS_TIMEOUT', 504);
