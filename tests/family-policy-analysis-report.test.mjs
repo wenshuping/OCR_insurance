@@ -636,6 +636,27 @@ test('expert semantic gate normalizes unsafe certainty and rejects unsupported l
   });
   assert.equal(allowedSummary.structuredResult.summary, '客户确认没有医疗保障');
 
+  const mixedSummary = structuredClone(base);
+  mixedSummary.structuredResult.summary = '客户确认没有医疗保障和意外保障';
+  assert.throws(() => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(mixedSummary), version, { policies: [], indicators: [] }, {
+    groupedCoverageIndicators: [
+      { category: 'medical', notFoundInRecordedPoliciesItems: ['住院医疗'] },
+      { category: 'accident', notIdentifiedItems: ['意外身故'] },
+    ],
+  }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
+
+  const unrelatedSummary = structuredClone(base);
+  unrelatedSummary.structuredResult.summary = '客户确认没有负债，医疗保障需核实';
+  assert.equal(parseFamilyPolicyAnalysisEnvelope(JSON.stringify(unrelatedSummary), version, { policies: [], indicators: [] }).structuredResult.summary, unrelatedSummary.structuredResult.summary);
+
+  const confirmedMulti = parseFamilyPolicyAnalysisEnvelope(JSON.stringify(mixedSummary), version, { policies: [], indicators: [] }, {
+    groupedCoverageIndicators: [
+      { category: 'medical', notFoundInRecordedPoliciesItems: ['住院医疗'] },
+      { category: 'accident', notFoundInRecordedPoliciesItems: ['意外身故'] },
+    ],
+  });
+  assert.equal(confirmedMulti.structuredResult.summary, mixedSummary.structuredResult.summary);
+
   const unsupported = structuredClone(base);
   unsupported.structuredResult.priorityFindings[0] = { ...unsupported.structuredResult.priorityFindings[0], assessment: 'likely_insufficient', missingInformation: [], confirmedFactRefs: [], policyRefs: [] };
   assert.throws(() => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(unsupported), version, { policies: [], indicators: [] }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');

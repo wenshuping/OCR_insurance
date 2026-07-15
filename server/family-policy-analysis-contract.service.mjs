@@ -143,28 +143,29 @@ function normalizeCoverageFindings(envelope, context = {}) {
   }
 }
 
-function coverageSummaryKind(summary) {
-  if (/医疗保障/u.test(summary)) return 'medical';
-  if (/意外保障/u.test(summary)) return 'accident';
-  if (/重疾保障/u.test(summary)) return 'critical';
-  if (/寿险|身故保障/u.test(summary)) return 'life';
-  if (/保障责任|保险保障/u.test(summary)) return 'coverage';
-  return '';
+function coverageKindsInAssertion(text) {
+  const kinds = [];
+  if (/医疗保障/u.test(text)) kinds.push('medical');
+  if (/意外保障/u.test(text)) kinds.push('accident');
+  if (/重疾保障/u.test(text)) kinds.push('critical');
+  if (/寿险|身故保障/u.test(text)) kinds.push('life');
+  if (/保障责任|保险保障/u.test(text)) kinds.push('coverage');
+  return kinds;
 }
 
 function summaryCoverageAbsenceIsAllowed(summary, context = {}) {
-  const kind = coverageSummaryKind(summary);
-  if (!kind) return true;
-  const hasAssertion = /客户(?:确认|确定)没有|客户确认无/u.test(summary);
-  if (!hasAssertion) return true;
-  return (context.groupedCoverageIndicators || []).some((group) => {
+  const assertedKinds = [...String(summary).matchAll(/(?:客户(?:确认|确定)没有|客户确认无)([^，。；\n]*)/gu)]
+    .flatMap((match) => coverageKindsInAssertion(match[1]));
+  return assertedKinds.every((kind) => (context.groupedCoverageIndicators || []).some((group) => {
     const category = trim(group.category).toLowerCase();
     const categoryMatches = kind === 'coverage' || category.includes(kind)
+      || (kind === 'medical' && /医疗/u.test(category))
+      || (kind === 'accident' && /意外/u.test(category))
       || (kind === 'critical' && /重疾/u.test(category))
       || (kind === 'life' && /寿险|身故/u.test(category));
     return categoryMatches && Array.isArray(group.notFoundInRecordedPoliciesItems)
       && group.notFoundInRecordedPoliciesItems.length > 0;
-  });
+  }));
 }
 
 function formatWan(amount) {
