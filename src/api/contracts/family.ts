@@ -139,23 +139,41 @@ export type FamilyReportRecord = {
 };
 
 export type FamilyPolicyAnalysisReport = {
-  status: 'complete' | 'failed' | 'empty' | string;
+  status?: 'complete' | 'failed' | 'empty' | 'stale' | string;
   content: string;
   model?: string;
   generatedAt: string;
+  expertInputVersion?: string;
   error?: string;
   stale?: boolean;
+};
+
+export type FamilySalesReviewSummary = {
+  conclusion: string;
+  verificationItems: string[];
+  coverageConcerns: string[];
+  salesOpportunities: string[];
+  meetingObjective: string;
+  nextActions: string[];
+  refs: {
+    facts: string[];
+    indicators: string[];
+    policies: string[];
+  };
 };
 
 export type FamilySalesReview = {
   id?: number;
   familyId?: number;
-  status?: 'active' | 'archived';
+  status?: 'active' | 'archived' | 'fresh' | 'stale' | 'failed' | string;
   content: string;
   model: string;
   generatedAt: string;
   createdAt?: string;
   updatedAt?: string;
+  expertReportId?: number | null;
+  expertInputVersion?: string;
+  structuredSummary?: FamilySalesReviewSummary | null;
   inputSummary?: {
     familyId?: number | null;
     memberCount?: number;

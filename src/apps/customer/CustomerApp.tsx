@@ -862,6 +862,11 @@ export function CustomerApp() {
     }, 900);
     return () => window.clearInterval(progressTimer);
   }, [familySalesReviewLoading]);
+  const familySalesReviewProgressMessage = familySalesReviewProgress < 38
+    ? '正在更新保障分析'
+    : familySalesReviewProgress < 68
+      ? '正在生成或更新保单专家报告'
+      : '正在生成销售建议';
   const selectedFamilyMembers = useMemo(
     () => (Array.isArray(selectedFamily?.members) ? selectedFamily.members : []),
     [selectedFamily],
@@ -1848,9 +1853,13 @@ export function CustomerApp() {
       const saved = await getFamilySalesReview(authInput);
       if (saved.review?.content) {
         setFamilySalesReview(saved.review);
+        const stale = saved.review.status === 'archived'
+          || saved.review.status === 'stale'
+          || !saved.review.expertReportId
+          || !saved.review.expertInputVersion;
         setFamilySalesReviewMessage(
-          saved.review.status === 'archived'
-            ? '已读取旧版销售建议，资料已更新，可点击重算'
+          stale
+            ? '已读取旧版销售建议，资料已更新，可点击重算；当前显示的是上次保存的结果，资料或专家报告已更新'
             : '已读取最近一次专家研判',
         );
         await loadFamilySalesChatThreads(familyId);
@@ -1875,7 +1884,7 @@ export function CustomerApp() {
       return;
     }
     setFamilySalesReviewBusy(true);
-    setFamilySalesReviewMessage('正在请求专家系统生成策略简报');
+    setFamilySalesReviewMessage('正在请求专家系统生成策略简报：正在更新保障分析');
     try {
       const payload = await createFamilySalesReview({
         token: token || undefined,
@@ -1888,7 +1897,10 @@ export function CustomerApp() {
       setFamilySalesReviewMessage(familySalesChatReviewMessageIds.length ? '专家研判已按所选续聊内容重算并保存' : '专家研判已完成并保存');
       await loadFamilySalesChatThreads(familySalesReviewFamilyId);
     } catch (error) {
-      setFamilySalesReviewMessage(familySalesReviewFailureMessage(error));
+      const staleNotice = familySalesReview?.content
+        ? '；当前显示的是上次保存的结果，资料或专家报告已更新'
+        : '';
+      setFamilySalesReviewMessage(`${familySalesReviewFailureMessage(error)}${staleNotice}`);
     } finally {
       setFamilySalesReviewBusy(false);
     }
@@ -4082,6 +4094,7 @@ export function CustomerApp() {
                             <span className="rounded-full bg-cyan-300/12 px-2.5 py-1 text-[11px] font-black text-cyan-100 ring-1 ring-cyan-200/25">实时生成中</span>
                           </div>
                           <p className="mt-1 text-xs font-semibold leading-5 text-slate-300">正在交叉研判家庭成员、保障缺口、条款证据与财富线索。</p>
+                          <p className="mt-1 text-xs font-black text-cyan-100" aria-live="polite">{familySalesReviewProgressMessage}</p>
                         </div>
                       </div>
                       <div className="rounded-2xl bg-white/8 px-3 py-2 ring-1 ring-white/10">

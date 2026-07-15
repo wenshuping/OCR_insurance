@@ -495,6 +495,10 @@ test('customer app exposes family profile management surface', () => {
   assert.match(normalizedCustomerAppSource, /生成销售建议/);
   assert.match(normalizedCustomerAppSource, /已读取旧版销售建议，资料已更新，可点击重算/);
   assert.match(normalizedCustomerAppSource, /正在请求专家系统生成策略简报/);
+  assert.match(normalizedCustomerAppSource, /正在更新保障分析/);
+  assert.match(normalizedCustomerAppSource, /正在生成或更新保单专家报告/);
+  assert.match(normalizedCustomerAppSource, /正在生成销售建议/);
+  assert.match(normalizedCustomerAppSource, /当前显示的是上次保存的结果，资料或专家报告已更新/);
   assert.match(normalizedCustomerAppSource, /专家研判控制台/);
   assert.match(normalizedCustomerAppSource, /实时生成中/);
   assert.match(normalizedCustomerAppSource, /策略生成进度/);
