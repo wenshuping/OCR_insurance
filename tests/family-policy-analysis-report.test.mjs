@@ -608,20 +608,36 @@ test('family policy analysis envelope validates version, assessments, and eviden
 test('expert semantic gate normalizes unsafe certainty and rejects unsupported likely insufficiency', () => {
   const version = 'sha256:semantic';
   const base = {
-    markdownContent: '客户确认没有医疗保障。保障完全足够。', expertInputVersion: version,
+    markdownContent: '客户确认没有负债。客户确认没有医疗保障。', expertInputVersion: version,
     structuredResult: {
-      summary: '客户确定没有医疗保障，当前保障充足',
+      summary: '客户确认没有吸烟史',
       priorityFindings: [{ memberRef: 'm1', category: 'medical', finding: '客户确认没有医疗保障', assessment: 'needs_verification', confidence: 'medium', confirmedFactRefs: [], indicatorRefs: [], policyRefs: [], missingInformation: ['医疗合同'], nextVerification: '核对合同' }],
-      confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [],
+      confirmedFacts: [{ id: 'health', statement: '客户确认没有既往症' }], verificationItems: [{ item: '客户确认没有负债' }], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [],
     },
   };
   const normalized = parseFamilyPolicyAnalysisEnvelope(JSON.stringify(base), version, { policies: [], indicators: [] });
-  assert.doesNotMatch(JSON.stringify(normalized), /客户(?:确认|确定)没有|保障充足|完全足够/u);
-  assert.match(normalized.markdownContent, /暂按未配置关注，需核对合同|当前配置相对合理/u);
+  assert.match(normalized.markdownContent, /客户确认没有负债/u);
+  assert.match(normalized.structuredResult.summary, /客户确认没有吸烟史/u);
+  assert.match(normalized.structuredResult.confirmedFacts[0].statement, /客户确认没有既往症/u);
+  assert.match(normalized.structuredResult.verificationItems[0].item, /客户确认没有负债/u);
+  assert.match(normalized.structuredResult.priorityFindings[0].finding, /暂按未配置关注，需核对合同/u);
+  assert.match(normalized.markdownContent, /暂按未配置关注，需核对合同/u);
 
   const unsupported = structuredClone(base);
   unsupported.structuredResult.priorityFindings[0] = { ...unsupported.structuredResult.priorityFindings[0], assessment: 'likely_insufficient', missingInformation: [], confirmedFactRefs: [], policyRefs: [] };
   assert.throws(() => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(unsupported), version, { policies: [], indicators: [] }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
+});
+
+test('policy validity aliases are projected and each changes expert input version', () => {
+  const aliases = ['status', 'policyStatus', 'policyState', 'contractStatus', 'validityStatus'];
+  const basePolicy = { id: 1, status: 'active', policyStatus: 'issued', policyState: 'in_force', contractStatus: 'effective', validityStatus: 'valid' };
+  const build = (policy) => buildFamilyPolicyAnalysisInput({ family: { id: 1 }, policies: [policy] });
+  const base = build(basePolicy);
+  assert.equal(base.policies[0].statusText, 'active | issued | in_force | effective | valid');
+  assert.equal(base.policies[0].validityStatus, 'valid');
+  for (const alias of aliases) {
+    assert.notEqual(build({ ...basePolicy, [alias]: `${basePolicy[alias]}-changed` }).expertInputVersion, base.expertInputVersion, alias);
+  }
 });
 
 test('expert semantic gate injects a confirmed planning gap into markdown and structured conclusions', () => {

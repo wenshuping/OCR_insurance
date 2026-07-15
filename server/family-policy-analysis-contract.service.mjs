@@ -26,7 +26,7 @@ const FINDING_ASSESSMENTS = new Set([
 ]);
 
 const VERSION_FACT_KEYS = new Set([
-  'notes', 'relationLabel', 'role', 'birthday',
+  'notes', 'relationLabel', 'role', 'birthday', 'statusText', 'policyStatus', 'policyState', 'contractStatus', 'validityStatus',
   ...PLANNING_FIELDS, 'status', 'value', 'annualPremiumStatus', 'coverageAmountStatus', 'amountStatus',
   'scoreStatus', 'effectiveAmountStatus', 'adequacyRateStatus', 'targetStatus', 'gapStatus',
   'id', 'company', 'productName', 'annualPremium', 'coverageAmount', 'effectiveDate',
@@ -115,16 +115,32 @@ function validateFinding(finding, label, validRefs) {
   }
 }
 
-function normalizeSemanticText(value) {
-  return String(value)
-    .replace(/客户(?:确认|确定)没有/gu, '暂按未配置关注，需核对合同：未识别到')
-    .replace(/(?:当前)?保障充足|完全足够|肯定够/gu, '当前配置相对合理');
+function findingHasUncertainIndicator(finding, context = {}) {
+  const refs = new Set(finding.indicatorRefs || []);
+  return (context.groupedCoverageIndicators || []).some((group) => refs.has(group.indicatorRef)
+    && ['notIdentifiedItems', 'missingSourceItems', 'notFoundInRecordedPoliciesItems']
+      .some((key) => Array.isArray(group[key]) && group[key].length));
 }
 
-function normalizeSemanticStrings(value) {
-  if (Array.isArray(value)) return value.map(normalizeSemanticStrings);
-  if (!value || typeof value !== 'object') return typeof value === 'string' ? normalizeSemanticText(value) : value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, normalizeSemanticStrings(child)]));
+function normalizeCoverageFindings(envelope, context = {}) {
+  const findings = [
+    ...(envelope.structuredResult.priorityFindings || []),
+    ...(envelope.structuredResult.memberFindings || []),
+  ];
+  for (const finding of findings) {
+    const original = finding.finding;
+    let normalized = original;
+    if (finding.assessment === 'needs_verification' || findingHasUncertainIndicator(finding, context)) {
+      normalized = normalized.replace(/客户(?:确认|确定)没有/gu, '暂按未配置关注，需核对合同：未识别到');
+    }
+    if (finding.assessment === 'currently_reasonable') {
+      normalized = normalized.replace(/(?:当前)?保障充足|完全足够|肯定够/gu, '当前配置相对合理');
+    }
+    if (normalized !== original) {
+      finding.finding = normalized;
+      envelope.markdownContent = envelope.markdownContent.split(original).join(normalized);
+    }
+  }
 }
 
 function formatWan(amount) {
@@ -210,7 +226,7 @@ export function parseFamilyPolicyAnalysisEnvelope(rawContent, expectedVersion, a
   if (hasUnknownPlanning(semanticContext) && containsUnsupportedExactGap(envelope)) {
     throw invalidResult('exact planning gap requires confirmed planning inputs');
   }
-  envelope = normalizeSemanticStrings(envelope);
+  normalizeCoverageFindings(envelope, semanticContext);
   for (const score of confirmedGaps(semanticContext)) {
     const phrase = `缺口${formatWan(score.gap)}`;
     if (!envelope.markdownContent.includes(phrase)) envelope.markdownContent += `\n- ${trim(score.label || score.key) || '保障'}${phrase}`;

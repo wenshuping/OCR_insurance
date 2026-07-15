@@ -186,6 +186,25 @@ test('late sales generation rejects drift without archiving or saving stale outp
   assert.deepEqual(state.familySalesReviews, [previous]);
 });
 
+test('sales generation rejects every policy validity alias drift', async () => {
+  for (const alias of ['policyState', 'contractStatus', 'validityStatus']) {
+    const previous = { id: 3, familyId: 1, ownerUserId: 1, status: 'active' };
+    const state = { familySalesReviews: [previous] };
+    const policy = { id: 2, [alias]: 'before' };
+    const expert = { id: 7, status: 'complete', expertInputVersion: 'v1', structuredResult: { summary: '结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [], evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [] } };
+    const service = createFamilyReportRegenerationService({
+      state, allocateId: () => 9, listFamilyMembers: () => [], policiesForSalesReview: () => [policy],
+      repairFamilyMembersBeforeReview: async () => {}, refreshFamilyCashflowsForAnalysis: () => {},
+      getExpertReportRecord: () => expert, familyPolicyAnalysisOrchestrator: { ensureFresh: async () => expert },
+      generateFamilySalesReview: async () => { policy[alias] = 'after'; return { content: '## 一、销售结论摘要\n旧结果' }; },
+      archiveSalesReviewForFamily: () => { previous.status = 'archived'; }, ownerFields: () => ({ ownerUserId: 1 }), persistFamilyState: async () => {},
+    });
+    await assert.rejects(() => service.regenerateSalesReview({ family: { id: 1 }, owner: { userId: 1 } }), (error) => error.code === 'FAMILY_SALES_INPUT_DRIFT', alias);
+    assert.equal(previous.status, 'active', alias);
+    assert.equal(state.familySalesReviews.length, 1, alias);
+  }
+});
+
 test('sales regeneration rolls back review mutations when persistence fails', async () => {
   const previous = { id: 1, familyId: 9, ownerGuestId: 'guest-a', status: 'active', updatedAt: 'before' };
   const other = { id: 2, familyId: 9, ownerGuestId: 'guest-b', status: 'active' };

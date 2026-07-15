@@ -232,6 +232,8 @@ function policyBrief(policy = {}, evidenceOptions = {}) {
   const evidence = compactPolicyEvidence(policy, evidenceOptions);
   const annualPremium = numericFact(firstDefined(policy.premium, policy.annualPremium));
   const coverageAmount = numericFact(firstDefined(policy.amount, policy.coverage));
+  const policyStatuses = ['status', 'policyStatus', 'policyState', 'contractStatus', 'validityStatus']
+    .map((key) => trim(policy[key])).filter(Boolean);
   return {
     id: policy.id ?? null,
     company: trim(policy.company),
@@ -245,7 +247,12 @@ function policyBrief(policy = {}, evidenceOptions = {}) {
     effectiveDate: trim(policy.effectiveDate),
     paymentPeriod: trim(policy.paymentPeriod || policy.payPeriod),
     coveragePeriod: trim(policy.coveragePeriod || policy.insurancePeriod),
-    status: trim(policy.status || policy.policyStatus),
+    status: trim(policy.status),
+    policyStatus: trim(policy.policyStatus),
+    policyState: trim(policy.policyState),
+    contractStatus: trim(policy.contractStatus),
+    validityStatus: trim(policy.validityStatus),
+    statusText: [...new Set(policyStatuses)].join(' | '),
     type: trim(policy.type || policy.category),
     responsibilities: (Array.isArray(policy.responsibilities) ? policy.responsibilities : [])
       .slice(0, 12)

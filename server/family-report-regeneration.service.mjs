@@ -57,7 +57,8 @@ function stableBusinessSnapshot({ family, members, policies, expertReport }) {
     'id', 'company', 'name', 'productName', 'applicant', 'applicantMemberId', 'applicantMemberName',
     'insured', 'insuredMemberId', 'insuredMemberName', 'premium', 'annualPremium', 'firstPremium',
     'amount', 'coverage', 'effectiveDate', 'paymentPeriod', 'payPeriod', 'coveragePeriod',
-    'insurancePeriod', 'status', 'policyStatus', 'type', 'category', 'responsibilities', 'coverageIndicators',
+    'insurancePeriod', 'status', 'policyStatus', 'policyState', 'contractStatus', 'validityStatus',
+    'type', 'category', 'responsibilities', 'coverageIndicators',
   ].map((key) => [key, policy?.[key]])));
   return JSON.stringify(canonical({
     family: { id: family?.id, notes: family?.notes, planningProfile: family?.planningProfile },
