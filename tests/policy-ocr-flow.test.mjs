@@ -13306,7 +13306,7 @@ test('family report generation persists report records and exposes issues only i
   }
 });
 
-test('family report reads archived fallback with stale policy analysis content', async () => {
+test('family policy analysis GET ignores archived fallback and reports current status as missing', async () => {
   const state = createInitialState();
   state.familyProfiles.push({
     id: 8,
@@ -13346,8 +13346,16 @@ test('family report reads archived fallback with stale policy analysis content',
 
     const analysis = await jsonFetch(server.baseUrl, '/api/family-profiles/8/policy-analysis-report?guestId=guest-family-report-stale');
     assert.equal(analysis.response.status, 200);
-    assert.equal(analysis.payload.analysisReport.content, '旧版家庭保单分析报告正文');
-    assert.equal(analysis.payload.analysisReport.stale, true);
+    assert.equal(analysis.payload.analysisReport.status, 'missing');
+    assert.equal(analysis.payload.analysisReport.content, '');
+
+    state.familyReports.push({
+      id: 13, familyId: 8, ownerGuestId: 'guest-family-report-stale', status: 'active',
+      report: { familyPolicyAnalysisReport: { status: 'complete', content: 'legacy without version' } },
+    });
+    const legacy = await jsonFetch(server.baseUrl, '/api/family-profiles/8/policy-analysis-report?guestId=guest-family-report-stale');
+    assert.equal(legacy.payload.analysisReport.status, 'stale');
+    assert.equal(legacy.payload.analysisReport.content, 'legacy without version');
   } finally {
     await server.close();
   }
@@ -13381,6 +13389,8 @@ test('family policy analysis POST explicitly refreshes, shares concurrent work, 
     while (!release) await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     const callsBeforeRelease = calls;
+    const pending = await jsonFetch(server.baseUrl, path);
+    assert.equal(pending.payload.analysisReport.status, 'pending');
     release();
     const [left, right] = await Promise.all([first, second]);
     assert.equal(callsBeforeRelease, 1);
@@ -13394,6 +13404,27 @@ test('family policy analysis POST explicitly refreshes, shares concurrent work, 
     assert.equal(refreshed.response.status, 200);
     assert.equal(calls, 2);
     assert.equal(refreshed.payload.analysisReport.content, '专家报告2');
+
+    const current = await jsonFetch(server.baseUrl, path);
+    assert.equal(current.response.status, 200);
+    assert.equal(current.payload.analysisReport.status, 'fresh');
+    assert.equal(current.payload.analysisReport.content, '专家报告2');
+
+    const sameVersionRegeneration = await jsonFetch(server.baseUrl, '/api/family-profiles/81/report?guestId=guest-expert-refresh', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    assert.equal(sameVersionRegeneration.response.status, 200);
+    const preserved = await jsonFetch(server.baseUrl, path);
+    assert.equal(preserved.payload.analysisReport.status, 'fresh');
+    assert.equal(preserved.payload.analysisReport.content, '专家报告2');
+
+    state.policies.find((policy) => policy.id === 82).name = '变更后的重疾险';
+    const changedVersionRegeneration = await jsonFetch(server.baseUrl, '/api/family-profiles/81/report?guestId=guest-expert-refresh', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    assert.equal(changedVersionRegeneration.response.status, 200);
+    const invalidated = await jsonFetch(server.baseUrl, path);
+    assert.equal(invalidated.payload.analysisReport.status, 'missing');
   } finally {
     await server.close();
   }

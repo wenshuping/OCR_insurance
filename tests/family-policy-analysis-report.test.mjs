@@ -89,6 +89,16 @@ test('family policy analysis orchestrator reuses a fresh matching report', async
   assert.equal(harness.calls.length, 0);
 });
 
+test('family policy analysis orchestrator reports stored pending and legacy reports accurately', () => {
+  const pending = createOrchestratorHarness({
+    report: { status: 'pending', content: '', expertInputVersion: 'sha256:v1' },
+  });
+  assert.equal(pending.orchestrator.getStatus({ family: pending.family, owner: pending.owner }).status, 'pending');
+
+  const legacy = createOrchestratorHarness({ report: { status: 'complete', content: 'legacy' } });
+  assert.equal(legacy.orchestrator.getStatus({ family: legacy.family, owner: legacy.owner }).status, 'stale');
+});
+
 test('family policy analysis orchestrator generates missing and stale reports', async () => {
   const missing = createOrchestratorHarness();
   assert.equal((await missing.orchestrator.ensureFresh({ family: missing.family, owner: missing.owner })).content, 'report:sha256:v1:1');

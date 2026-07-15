@@ -3,6 +3,7 @@ export function createFamilyReportRegenerationService(deps = {}) {
     state, allocateId, listFamilyMembers, policiesForFamilyReport, policiesForSalesReview,
     repairFamilyMembersBeforeReview, refreshFamilyCashflowsForAnalysis, buildFamilyReport,
     createFamilyReportRecord, appendDeepSeekReportIssues, refreshFamilyReportWithTrustedCorrections,
+    buildFamilyPolicyAnalysisInput,
     buildFamilySalesReviewInput, generateFamilySalesReview, archiveSalesReviewForFamily,
     ownerFields, persistFamilyReportState, persistFamilyState, nowIso = () => new Date().toISOString(),
   } = deps;
@@ -13,7 +14,19 @@ export function createFamilyReportRegenerationService(deps = {}) {
     const members = listFamilyMembers(stateSnapshot, family.id);
     const policies = policiesForFamilyReport(family, owner, stateSnapshot);
     const report = buildFamilyReport(policies, planningProfile, { familyId: family.id });
-    const { record } = createFamilyReportRecord({ state: stateSnapshot, family, owner, members, policies, report, planningProfile, allocateId, allowEmptyPolicies: system });
+    const expertInputVersion = buildFamilyPolicyAnalysisInput({
+      family,
+      members,
+      policies,
+      familyReport: report,
+      planningProfile,
+      knowledgeRecords: stateSnapshot.knowledgeRecords || [],
+      indicatorRecords: stateSnapshot.insuranceIndicatorRecords || [],
+      optionalResponsibilityRecords: stateSnapshot.optionalResponsibilityRecords || [],
+    }).expertInputVersion;
+    const { record } = createFamilyReportRecord({
+      state: stateSnapshot, family, owner, members, policies, report, planningProfile, expertInputVersion, allocateId, allowEmptyPolicies: system,
+    });
     if (stateSnapshot === state) {
       await appendDeepSeekReportIssues({ record, family, members, policies, report: record.report, planningProfile });
       refreshFamilyReportWithTrustedCorrections({ record, family, owner, members, policies });

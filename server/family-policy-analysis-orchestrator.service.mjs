@@ -41,6 +41,9 @@ export function createFamilyPolicyAnalysisOrchestrator({
     const key = `${ownerKey(owner)}|family:${Number(family?.id || 0)}|version:${version}`;
     if (inFlight.has(key)) return { status: 'pending', expertInputVersion: version, report: currentReport({ family, owner }) };
     const report = currentReport({ family, owner });
+    if (['pending', 'queued', 'running', 'processing'].includes(String(report?.status || '').trim().toLowerCase())) {
+      return { status: 'pending', expertInputVersion: version, report };
+    }
     if (completeReport(report) && report.expertInputVersion === version) {
       return { status: 'fresh', expertInputVersion: version, report };
     }

@@ -357,6 +357,19 @@ export function createFamilyRoutes(context) {
     }
   }
 
+  function familyPolicyAnalysisInputVersion({ family, members, policies, report, planningProfile, snapshot = state }) {
+    return buildFamilyPolicyAnalysisInput({
+      family,
+      members,
+      policies,
+      familyReport: report,
+      planningProfile,
+      knowledgeRecords: snapshot.knowledgeRecords || [],
+      indicatorRecords: snapshot.insuranceIndicatorRecords || [],
+      optionalResponsibilityRecords: snapshot.optionalResponsibilityRecords || [],
+    }).expertInputVersion;
+  }
+
   function refreshFamilyReportWithTrustedCorrections({ record, family, owner, members, policies, force = false } = {}) {
     if (!record || typeof trustedFamilyReportCorrections !== 'function' || typeof updateFamilyReportRecordReport !== 'function') {
       return false;
@@ -364,12 +377,20 @@ export function createFamilyRoutes(context) {
     const corrections = trustedFamilyReportCorrections(state, { familyId: family.id, reportId: record.id });
     if (!force && !corrections.length) return false;
     const reportMembers = members || listFamilyMembers(state, family.id);
+    const sourcePolicies = policies || policiesForFamilyReport(family, owner);
     const reportPolicies = typeof applyFamilyReportPolicyCorrections === 'function'
-      ? applyFamilyReportPolicyCorrections(policies || policiesForFamilyReport(family, owner), corrections)
-      : (policies || policiesForFamilyReport(family, owner));
+      ? applyFamilyReportPolicyCorrections(sourcePolicies, corrections)
+      : sourcePolicies;
     const nextReport = buildFamilyReport(reportPolicies, record.planningProfile || null, {
       familyId: family.id,
       corrections,
+    });
+    const expertInputVersion = familyPolicyAnalysisInputVersion({
+      family,
+      members: reportMembers,
+      policies: sourcePolicies,
+      report: nextReport,
+      planningProfile: record.planningProfile || null,
     });
     const draftRecord = { summary: record.summary || {} };
     updateFamilyReportRecordReport({
@@ -377,6 +398,7 @@ export function createFamilyRoutes(context) {
       members: reportMembers,
       policies: reportPolicies,
       report: nextReport,
+      expertInputVersion,
     });
     let changed = false;
     if (reportJson(draftRecord.report) !== reportJson(record.report)) {
@@ -385,6 +407,7 @@ export function createFamilyRoutes(context) {
         members: reportMembers,
         policies: reportPolicies,
         report: nextReport,
+        expertInputVersion,
       });
       changed = true;
     }
@@ -698,17 +721,27 @@ export function createFamilyRoutes(context) {
     return assistantMessage;
   }
 
-  function clientFamilyPolicyAnalysisReport(record = null) {
+  function clientFamilyPolicyAnalysisReport(record = null, freshnessStatus = '', currentInputVersion = '') {
     const report = record?.report?.familyPolicyAnalysisReport || null;
-    if (!report) return null;
+    if (!report) {
+      return freshnessStatus ? {
+        status: freshnessStatus,
+        content: '',
+        model: '',
+        generatedAt: '',
+        expertInputVersion: currentInputVersion,
+        error: '',
+        stale: freshnessStatus === 'stale',
+      } : null;
+    }
     return {
-      status: report.status || 'complete',
+      status: freshnessStatus || report.status || 'complete',
       content: report.content || '',
       model: '',
       generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
       expertInputVersion: report.expertInputVersion || '',
       error: report.error || '',
-      stale: String(record?.status || 'active') !== 'active',
+      stale: freshnessStatus === 'stale' || String(record?.status || 'active') !== 'active',
     };
   }
 
@@ -830,6 +863,7 @@ export function createFamilyRoutes(context) {
     state, allocateId, listFamilyMembers, policiesForFamilyReport, policiesForSalesReview,
     repairFamilyMembersBeforeReview, refreshFamilyCashflowsForAnalysis, buildFamilyReport,
     createFamilyReportRecord, appendDeepSeekReportIssues, refreshFamilyReportWithTrustedCorrections,
+    buildFamilyPolicyAnalysisInput,
     buildFamilySalesReviewInput, generateFamilySalesReview: generateFamilySalesReviewImpl,
     archiveSalesReviewForFamily, ownerFields, persistFamilyReportState: persistFreshFamilyReportState,
     persistFamilyState: persistFreshFamilyState, nowIso,
@@ -1163,8 +1197,12 @@ export function createFamilyRoutes(context) {
     if (!family) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
-    const reportRecord = latestFamilyReport(family.id, owner, { includeArchivedFallback: true });
-    return res.json({ ok: true, analysisReport: clientFamilyPolicyAnalysisReport(reportRecord) });
+    const reportRecord = latestFamilyReport(family.id, owner);
+    const current = familyPolicyAnalysisOrchestrator.getStatus({ family, owner });
+    return res.json({
+      ok: true,
+      analysisReport: clientFamilyPolicyAnalysisReport(reportRecord, current.status, current.expertInputVersion),
+    });
   });
 
   router.post('/family-profiles/:id/report', async (req, res) => {
@@ -1521,6 +1559,13 @@ export function createFamilyRoutes(context) {
       const planningProfile = req.body?.planningProfile || family.planningProfile || reportRecord?.planningProfile || null;
       const familyReport = buildFamilyReport(policies, planningProfile, { familyId: family.id });
       if (!reportRecord) {
+        const expertInputVersion = familyPolicyAnalysisInputVersion({
+          family,
+          members,
+          policies,
+          report: familyReport,
+          planningProfile,
+        });
         const created = createFamilyReportRecord({
           state,
           family,
@@ -1529,6 +1574,7 @@ export function createFamilyRoutes(context) {
           policies,
           report: familyReport,
           planningProfile,
+          expertInputVersion,
           allocateId,
         });
         reportRecord = created.record;
