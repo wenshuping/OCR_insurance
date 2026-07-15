@@ -1898,8 +1898,7 @@ export function CustomerApp() {
       const savedResultNotice = familySalesReview?.content
         ? '；生成失败，当前显示上次保存的结果'
         : '';
-      const freshnessNotice = familySalesReview?.freshness === 'stale'
-        && ['source_updated', 'expert_version_changed'].includes(familySalesReview.freshnessReason || '')
+      const freshnessNotice = ['source_updated', 'expert_version_changed'].includes(familySalesReview?.freshnessReason || '')
         ? '；资料或专家报告已更新'
         : '';
       setFamilySalesReviewMessage(`${familySalesReviewFailureMessage(error)}${savedResultNotice}${freshnessNotice}`);

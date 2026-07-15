@@ -502,6 +502,8 @@ test('customer app exposes family profile management surface', () => {
   assert.match(normalizedCustomerAppSource, /资料或专家报告已更新，建议重算/);
   assert.match(normalizedCustomerAppSource, /生成失败，当前显示上次保存的结果/);
   assert.match(customerSource, /freshnessReason/);
+  assert.doesNotMatch(customerSource, /familySalesReview\?\.freshness === 'stale'/);
+  assert.match(customerSource, /\['source_updated', 'expert_version_changed'\]\.includes\(familySalesReview\?\.freshnessReason \|\| ''\)/);
   assert.match(familyApiSource, /freshness\?: 'fresh' \| 'stale' \| 'legacy' \| 'archived'/);
   assert.match(familyApiSource, /freshnessReason\?: 'legacy_missing_binding' \| 'source_updated' \| 'expert_version_changed'/);
   assert.match(familyRoutesSource, /freshness: 'legacy', freshnessReason: 'legacy_missing_binding'/);
