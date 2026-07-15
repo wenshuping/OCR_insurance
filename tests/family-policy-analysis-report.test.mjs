@@ -10,6 +10,7 @@ import {
   buildExpertPlanningProfile,
   computeExpertInputVersion,
   groupExpertCoverageIndicators,
+  parseFamilyPolicyAnalysisEnvelope,
 } from '../server/family-policy-analysis-contract.service.mjs';
 import {
   createFamilyReportRecord,
@@ -210,7 +211,7 @@ test('policy analysis freshness follows nested report status and current source 
   }).status, 'pending');
 });
 
-test('family policy analysis prompt asks for full customer report with emphasized gap section', () => {
+test('family policy analysis prompt asks for qualitative customer and structured expert conclusions', () => {
   const input = buildFamilyPolicyAnalysisInput({
     family: { id: 1, familyName: '张先生家庭' },
     planningProfile: {
@@ -291,10 +292,57 @@ test('family policy analysis prompt asks for full customer report with emphasize
   assert.match(prompt, /父母赡养责任/u);
   assert.match(prompt, /整个家庭保单结构/u);
   assert.match(prompt, /重点保障缺口分析/u);
-  assert.match(prompt, /医疗、意外、重疾、寿险\/身故责任、收入中断\/失能/u);
+  assert.match(prompt, /confirmed_gap/u);
+  assert.match(prompt, /likely_insufficient/u);
+  assert.match(prompt, /needs_verification/u);
+  assert.match(prompt, /currently_reasonable/u);
+  assert.match(prompt, /当前已录入保单中未发现/u);
+  assert.match(prompt, /暂按未配置关注，需核对合同/u);
+  assert.doesNotMatch(prompt, /缺口分析篇幅不少于全文 40%/u);
+  assert.doesNotMatch(prompt, /年收入5-10倍/u);
+  assert.doesNotMatch(prompt, /基础版、标准版、完善版/u);
   assert.match(prompt, /不能出现“AI”/u);
   assert.match(prompt, /referenceOnly=true/u);
   assert.match(prompt, /待核实参考/u);
+});
+
+test('family policy analysis envelope validates version, assessments, and evidence references', () => {
+  const expertInputVersion = 'sha256:expected';
+  const envelope = {
+    markdownContent: [
+      '## 一、报告结论摘要', '结论', '## 二、家庭成员与保单全景', '全景',
+      '## 三、现有保障结构评价', '评价', '## 四、重点保障缺口分析', '缺口',
+      '## 五、风险场景影响', '影响', '## 六、配置优先级与预算建议', '建议',
+      '## 七、需要补充核实的信息', '核实', '## 八、动态复盘建议', '复盘',
+    ].join('\n'),
+    expertInputVersion,
+    structuredResult: {
+      summary: '经济支柱保障需优先复核',
+      priorityFindings: [{
+        memberRef: 'member_1', category: 'critical', finding: '重疾保额偏低',
+        assessment: 'likely_insufficient', confidence: 'high',
+        confirmedFactRefs: ['fact_1'], indicatorRefs: [], policyRefs: ['policy_1'],
+        missingInformation: [], nextVerification: '核对附加责任',
+      }],
+      confirmedFacts: [{ id: 'fact_1', statement: '已录入30万元重疾保额' }],
+      verificationItems: [], memberFindings: [],
+      evidenceRefs: { facts: ['fact_1'], indicators: [], policies: ['policy_1'] },
+      dataQualityWarnings: [],
+    },
+  };
+
+  assert.deepEqual(parseFamilyPolicyAnalysisEnvelope(JSON.stringify(envelope), expertInputVersion), envelope);
+  for (const invalid of [
+    { ...envelope, expertInputVersion: 'sha256:stale' },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, priorityFindings: [{ ...envelope.structuredResult.priorityFindings[0], assessment: 'unknown' }] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, priorityFindings: [{ ...envelope.structuredResult.priorityFindings[0], confirmedFactRefs: ['missing'], policyRefs: [] }] } },
+    { ...envelope, structuredResult: { ...envelope.structuredResult, memberFindings: [{ memberRef: 'member_1', assessment: 'unknown' }] } },
+  ]) {
+    assert.throws(
+      () => parseFamilyPolicyAnalysisEnvelope(JSON.stringify(invalid), expertInputVersion),
+      (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT',
+    );
+  }
 });
 
 test('family report refresh preserves generated policy analysis report', () => {
@@ -479,7 +527,7 @@ test('family report regeneration does not reuse legacy policy analysis report wi
 
 test('family policy analysis retries pro model after empty pro response', async () => {
   const requestedModels = [];
-  const completeReport = [
+  const markdownContent = [
     '## 一、报告结论摘要',
     '本报告基于现有保单字段、责任指标和家庭责任信息形成。',
     '## 二、家庭成员与保单全景',
@@ -488,8 +536,8 @@ test('family policy analysis retries pro model after empty pro response', async 
     '每张保单均需确认保障对象、主要责任、保额、保障期限、缴费压力和条款限制。',
     '## 四、重点保障缺口分析',
     '| 保障类型 | 建议额度/口径 | 已有保障 | 缺口判断 | 严重度 | 优先级 |',
-    '| 医疗 | 300-600万医疗额度 | 待补充核实 | 存在缺口 | 高 | 高 |',
-    '| 意外 | 年收入5-10倍 | 待补充核实 | 存在缺口 | 中 | 中 |',
+    '| 医疗 | 定性核对 | 待补充核实 | 存在缺口 | 高 | 高 |',
+    '| 意外 | 定性核对 | 待补充核实 | 存在缺口 | 中 | 中 |',
     '| 重疾 | 治疗费用+康复费用+收入补偿 | 待补充核实 | 存在缺口 | 高 | 高 |',
     '| 寿险/身故责任 | 负债+教育+赡养+支出 | 待补充核实 | 存在缺口 | 高 | 高 |',
     '| 收入中断/失能 | 3-5年家庭支出 | 待补充核实 | 存在缺口 | 中 | 中 |',
@@ -504,13 +552,29 @@ test('family policy analysis retries pro model after empty pro response', async 
     '每年复盘家庭责任和保单变化。本报告仅供家庭保障规划参考，具体投保、责任范围、等待期、除外责任、理赔和核保结果以保险合同条款及保险公司结论为准。',
     '以上内容用于补足长度。'.repeat(120),
   ].join('\n');
+  const expertInputVersion = 'sha256:test';
+  const completeReport = JSON.stringify({
+    markdownContent,
+    expertInputVersion,
+    structuredResult: {
+      summary: '需优先核实医疗责任',
+      priorityFindings: [{
+        memberRef: 'member_1', category: 'medical', finding: '暂按未配置关注，需核对合同',
+        assessment: 'needs_verification', confidence: 'medium', confirmedFactRefs: [], indicatorRefs: [], policyRefs: [],
+        missingInformation: ['医疗险合同'], nextVerification: '核对合同责任页',
+      }],
+      confirmedFacts: [], verificationItems: [], memberFindings: [],
+      evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [],
+    },
+  });
 
   const result = await generateFamilyPolicyAnalysisReport({
-    input: {},
+    input: { expertInputVersion },
     env: { DEEPSEEK_API_KEY: 'test-key' },
     fetchImpl: async (_url, init) => {
       const body = JSON.parse(init.body);
       requestedModels.push(body.model);
+      assert.deepEqual(body.response_format, { type: 'json_object' });
       return {
         ok: true,
         json: async () => ({
@@ -525,4 +589,20 @@ test('family policy analysis retries pro model after empty pro response', async 
   assert.equal(result.status, 'complete');
   assert.equal(result.model, 'deepseek-v4-pro');
   assert.match(result.content, /重点保障缺口分析/u);
+  assert.equal(result.content, result.markdownContent);
+  assert.equal(result.expertInputVersion, expertInputVersion);
+  assert.equal(result.structuredResult.priorityFindings[0].assessment, 'needs_verification');
+});
+
+test('family policy analysis rejects malformed structured output after pro retries', async () => {
+  let attempts = 0;
+  await assert.rejects(generateFamilyPolicyAnalysisReport({
+    input: { expertInputVersion: 'sha256:test' },
+    env: { DEEPSEEK_API_KEY: 'test-key', FAMILY_POLICY_ANALYSIS_RETRY_ATTEMPTS: '2' },
+    fetchImpl: async () => {
+      attempts += 1;
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '{"markdownContent":"broken"}' } }] }) };
+    },
+  }), (error) => error.code === 'FAMILY_POLICY_ANALYSIS_INVALID_RESULT');
+  assert.equal(attempts, 2);
 });
