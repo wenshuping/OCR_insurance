@@ -35,11 +35,11 @@ const VERSION_FACT_KEYS = new Set([
 ]);
 
 const REPORT_FACT_KEYS = new Set([
-  'memberCount', 'policyCount', 'issueCount', 'totalAnnualPremium', 'totalCoverageAmount',
-  'futurePayoutTotal', 'futurePayoutCount',
+  'memberCount', 'policyCount', 'issueCount', 'annualPremium', 'totalCoverage', 'cashValueTotal',
+  'futurePayoutTotal',
   'family', 'members', 'hiddenMembers', 'scores', 'member', 'name', 'relationLabel', 'role',
   'rows', 'key', 'label', 'amount', 'amountText', 'countText', 'status', 'conditionText',
-  'sourcePolicies', 'sourcePolicyRefs', 'attentionItems', 'notes', 'gap',
+  'sourcePolicies', 'sourcePolicyRefs', 'attentionItems', 'notes', 'gap', 'formulaText', 'liabilities',
   'score', 'effectiveAmount', 'effectiveAmountText', 'coveragePresent', 'policyCount',
   'adequacyRate', 'adequacyText', 'target', 'targetText', 'targetSource', 'note', 'amountDetails',
   'applicant', 'company', 'productName', 'typeLabel', 'coverageText', 'annualPremiumText',
@@ -47,9 +47,14 @@ const REPORT_FACT_KEYS = new Set([
   'memberReports', 'policies', 'policyRef', 'policyId', 'conclusion', 'cashflowRows',
   'annualCashflowRows', 'cashValueRows', 'aggregateRows', 'year', 'calendarYear', 'policyYear',
   'age', 'cashValueDate', 'cashValueDateLabel', 'premiumOutflow', 'payoutInflow',
-  'cashValueInflow', 'netCashflow', 'cumulativeNetCashflow', 'cumulativePayoutInflow',
+  'cashValue', 'cashValueTime', 'cashValueReferenceType', 'cashValueIsNonAdditiveReference',
+  'cashValueIsPreMaturityReference', 'cashValueNote', 'cashValueIncrease',
+  'netCashflow', 'cumulativeNetCashflow', 'cumulativePayoutInflow',
   'cashValueTotal', 'totalValue', 'cumulative', 'liability', 'calculationText', 'details', 'type',
-  'keyPoints', 'uncertaintyItems', 'value', 'unit', 'reason',
+  'keyPoints', 'uncertaintyItems', 'uncertaintyNote', 'hasUncertainWealthFactors',
+  'excludedCashflowRows', 'excludedCashValueRows', 'excludedPolicies', 'statisticsScopeNote',
+  'value', 'unit', 'reason', 'reasons', 'policyholder', 'isMaturityPayout',
+  'isContractTerminatingPayout',
 ]);
 
 function trim(value) {

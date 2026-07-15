@@ -110,13 +110,15 @@ test('expert input version is stable and tracks only expert business facts', () 
     groupedCoverageIndicators: [{ memberRef: 'member_1', category: 'critical', confirmedItems: [], notIdentifiedItems: ['轻症'], activeTab: 'gap' }],
     evidenceReferences: [{ policyRef: 'policy_1', verificationStatus: 'verified', sourceKind: 'customer_policy_terms', fetchedAt: 'today', editing: false }],
     report: {
-      summary: { memberCount: 1, policyCount: 1, futurePayoutTotal: 100_000, refreshedAt: 'today' },
+      summary: { memberCount: 1, policyCount: 1, annualPremium: 20_000, totalCoverage: 300_000, cashValueTotal: 10_000, futurePayoutTotal: 100_000, refreshedAt: 'today' },
       radar: { family: { scores: [{ key: 'critical', score: 60, effectiveAmount: 300_000, effectiveAmountText: '30万元', adequacyRate: 0.6, adequacyText: '偏低', targetSource: 'system_estimate', activeTab: 'detail' }] } },
       inventoryRows: [{ member: '张先生', productName: '重疾险', coverageText: '30万元', editing: false }],
-      criticalIllness: { members: [{ member: '张先生', gap: 500_000, rows: [{ key: 'critical', countText: '1次' }] }] },
+      criticalIllness: { members: [{ member: '张先生', gap: 500_000, rows: [{ key: 'critical', countText: '1次', formulaText: '基本保额×1', liabilities: ['重大疾病保险金'] }] }] },
       accident: { members: [{ member: '张先生', gap: 1_000_000 }] },
       wealth: {
-        memberReports: [{ member: '张先生', conclusion: '待完善', policies: [{ cashValueRows: [{ policyYear: 1, amount: 10_000 }], uncertaintyItems: ['分红不确定'] }] }],
+        memberReports: [{ member: '张先生', conclusion: '待完善', policies: [{ cashValueRows: [{ policyYear: 1, cashValue: 10_000 }], uncertaintyItems: [{ key: 'dividend', label: '分红不确定' }], uncertaintyNote: '分红不确定', hasUncertainWealthFactors: true }] }],
+        excludedPolicies: [{ policyId: 11, productName: '重疾险', reasons: ['分红不确定'], note: '不纳入统计' }],
+        statisticsScopeNote: '仅统计确定现金流',
         aggregateRows: [{ year: 2030, premiumOutflow: 20_000, netCashflow: -10_000, cumulativeNetCashflow: -30_000 }],
         keyPoints: ['2030年现金流为负'],
       },
@@ -166,6 +168,8 @@ test('expert input version is stable and tracks only expert business facts', () 
   ]) {
     assert.notEqual(computeExpertInputVersion({ ...input, report: { ...input.report, [section]: changed } }), first, section);
   }
+  assert.notEqual(computeExpertInputVersion({ ...input, report: { ...input.report, summary: { ...input.report.summary, annualPremium: 30_000 } } }), first);
+  assert.notEqual(computeExpertInputVersion({ ...input, report: { ...input.report, summary: { ...input.report.summary, totalCoverage: 500_000 } } }), first);
   for (const [label, report] of [
     ['countText', { ...input.report, criticalIllness: { members: [{ ...input.report.criticalIllness.members[0], rows: [{ key: 'critical', countText: '2次' }] }] } }],
     ['radar amounts', { ...input.report, radar: { family: { scores: [{ ...input.report.radar.family.scores[0], effectiveAmount: 500_000 }] } } }],
@@ -173,12 +177,18 @@ test('expert input version is stable and tracks only expert business facts', () 
     ['radar adequacy rate', { ...input.report, radar: { family: { scores: [{ ...input.report.radar.family.scores[0], adequacyRate: 0.8 }] } } }],
     ['radar adequacy text', { ...input.report, radar: { family: { scores: [{ ...input.report.radar.family.scores[0], adequacyText: '一般' }] } } }],
     ['radar target source', { ...input.report, radar: { family: { scores: [{ ...input.report.radar.family.scores[0], targetSource: 'customer_input' }] } } }],
-    ['wealth cash values', { ...input.report, wealth: { ...input.report.wealth, memberReports: [{ ...input.report.wealth.memberReports[0], policies: [{ cashValueRows: [{ policyYear: 1, amount: 20_000 }], uncertaintyItems: ['分红不确定'] }] }] } }],
+    ['wealth cash values', { ...input.report, wealth: { ...input.report.wealth, memberReports: [{ ...input.report.wealth.memberReports[0], policies: [{ ...input.report.wealth.memberReports[0].policies[0], cashValueRows: [{ policyYear: 1, cashValue: 20_000 }] }] }] } }],
     ['wealth aggregate', { ...input.report, wealth: { ...input.report.wealth, aggregateRows: [{ ...input.report.wealth.aggregateRows[0], premiumOutflow: 30_000 }] } }],
     ['wealth net cashflow', { ...input.report, wealth: { ...input.report.wealth, aggregateRows: [{ ...input.report.wealth.aggregateRows[0], netCashflow: -20_000 }] } }],
     ['wealth cumulative cashflow', { ...input.report, wealth: { ...input.report.wealth, aggregateRows: [{ ...input.report.wealth.aggregateRows[0], cumulativeNetCashflow: -40_000 }] } }],
     ['wealth key points', { ...input.report, wealth: { ...input.report.wealth, keyPoints: ['2031年现金流转正'] } }],
-    ['wealth uncertainty', { ...input.report, wealth: { ...input.report.wealth, memberReports: [{ ...input.report.wealth.memberReports[0], policies: [{ cashValueRows: [{ policyYear: 1, amount: 10_000 }], uncertaintyItems: ['万能账户不确定'] }] }] } }],
+    ['wealth uncertainty', { ...input.report, wealth: { ...input.report.wealth, memberReports: [{ ...input.report.wealth.memberReports[0], policies: [{ ...input.report.wealth.memberReports[0].policies[0], uncertaintyItems: [{ key: 'universal_account', label: '万能账户不确定' }] }] }] } }],
+    ['wealth uncertainty note', { ...input.report, wealth: { ...input.report.wealth, memberReports: [{ ...input.report.wealth.memberReports[0], policies: [{ ...input.report.wealth.memberReports[0].policies[0], uncertaintyNote: '万能账户不确定' }] }] } }],
+    ['wealth uncertainty flag', { ...input.report, wealth: { ...input.report.wealth, memberReports: [{ ...input.report.wealth.memberReports[0], policies: [{ ...input.report.wealth.memberReports[0].policies[0], hasUncertainWealthFactors: false }] }] } }],
+    ['wealth exclusions', { ...input.report, wealth: { ...input.report.wealth, excludedPolicies: [{ ...input.report.wealth.excludedPolicies[0], reasons: ['万能账户不确定'] }] } }],
+    ['wealth scope', { ...input.report, wealth: { ...input.report.wealth, statisticsScopeNote: '包含全部现金流' } }],
+    ['responsibility formula', { ...input.report, criticalIllness: { members: [{ ...input.report.criticalIllness.members[0], rows: [{ ...input.report.criticalIllness.members[0].rows[0], formulaText: '基本保额×2' }] }] } }],
+    ['responsibility liabilities', { ...input.report, criticalIllness: { members: [{ ...input.report.criticalIllness.members[0], rows: [{ ...input.report.criticalIllness.members[0].rows[0], liabilities: ['重大疾病保险金', '额外给付'] }] }] } }],
   ]) assert.notEqual(computeExpertInputVersion({ ...input, report }), first, label);
 });
 
@@ -238,7 +248,11 @@ test('family policy analysis prompt asks for full customer report with emphasize
       summary: { memberCount: 1, policyCount: 1 },
       radar: {
         family: {
-          scores: [{ key: 'criticalIllness', label: '重疾', amount: 300000, target: 800000, gap: 500000 }],
+          scores: [{
+            key: 'criticalIllness', label: '重疾', amount: 300000, effectiveAmount: 280000,
+            effectiveAmountText: '28万元', adequacyRate: 0.35, adequacyText: '不足',
+            target: 800000, targetSource: 'customer_input', gap: 500000,
+          }],
         },
         members: [],
       },
@@ -260,6 +274,9 @@ test('family policy analysis prompt asks for full customer report with emphasize
   assert.equal(input.policies[0].evidence.knowledgeEvidence[1].referenceOnly, true);
   assert.equal(input.policies[0].evidence.knowledgeEvidence[1].verificationLabel, '非官方资料，待保险公司确认');
   assert.equal(input.policies[0].evidence.indicatorEvidence.length, 1);
+  assert.equal(input.report.radar.family.scores[0].effectiveAmount, 280000);
+  assert.equal(input.report.radar.family.scores[0].adequacyRate, 0.35);
+  assert.equal(input.report.radar.family.scores[0].targetSource, 'customer_input');
 
   const messages = buildFamilyPolicyAnalysisMessages(input);
   const prompt = messages.map((message) => message.content).join('\n');
