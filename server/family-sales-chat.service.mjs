@@ -251,6 +251,38 @@ function projectSalesSummary(salesReview = {}) {
   return result;
 }
 
+const TOPIC_PACK_TYPES = new Set(['member_coverage', 'policy_indicators', 'responsibility_evidence', 'family_finance', 'wealth_cashflow', 'expert_findings']);
+
+function projectTopicPack(topicPack = null) {
+  if (!topicPack || !TOPIC_PACK_TYPES.has(trim(topicPack.type))) return null;
+  return {
+    type: trim(topicPack.type),
+    memberRefs: boundedItems(topicPack.memberRefs, 2).map((value) => safeExpertString(value, 80)).filter(Boolean),
+    policyRefs: boundedItems(topicPack.policyRefs, 3).map((value) => safeExpertString(value, 80)).filter(Boolean),
+    category: safeExpertString(topicPack.category, 40) || null,
+  };
+}
+
+function projectConversationTargets(targets = null) {
+  const projectTarget = (target) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) return null;
+    const projected = Object.fromEntries(['policyRef', 'memberRef', 'category', 'label'].map((key) => [key, safeExpertString(target[key], key === 'label' ? 80 : 60)]).filter(([, value]) => value));
+    return Object.keys(projected).length ? projected : null;
+  };
+  return { lastExplicitTarget: projectTarget(targets?.lastExplicitTarget), activeOpportunity: projectTarget(targets?.activeOpportunity) };
+}
+
+function projectFinanceSummary(source = null) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+  return Object.fromEntries(['annualIncome', 'annualExpense', 'debt', 'premiumBudget', 'availableAssets', 'cashflowConclusion'].map((key) => {
+    const value = source[key];
+    if (Array.isArray(value)) return [key, value.slice(0, 6).map((item) => typeof item === 'number' ? item : safeExpertString(item, 80)).filter((item) => item !== '')];
+    if (typeof value === 'number' && Number.isFinite(value)) return [key, value];
+    if (typeof value === 'boolean') return [key, value];
+    return [key, safeExpertString(value, key === 'cashflowConclusion' ? 240 : 80)];
+  }).filter(([, value]) => value !== '' && (!Array.isArray(value) || value.length)));
+}
+
 function relevantFindings(expertReport = {}, topicPack = null) {
   if (!topicPack) return null;
   const findings = expertReport.structuredResult || expertReport.expertFindings || {};
@@ -277,7 +309,7 @@ function topicDataForPack({ topicPack, policies = [], expertReport = {}, finance
   if (topicPack.type === 'policy_indicators') {
     const expertIndicators = boundedItems(findings.policyIndicators?.filter(matchesPolicy), 6).map(projectExpertItem);
     const policyIndicators = selectedPolicies.map((policy) => ({
-      policyRef: entityRef('policy', policy), validityStatus: trim(policy.validityStatus ?? policy.status), renewalType: trim(policy.renewalType ?? policy.renewal), waitingPeriod: trim(policy.waitingPeriod),
+      policyRef: safeExpertString(entityRef('policy', policy), 80), validityStatus: safeExpertString(policy.validityStatus ?? policy.status, 80), renewalType: safeExpertString(policy.renewalType ?? policy.renewal, 120), waitingPeriod: safeExpertString(policy.waitingPeriod, 80),
     }));
     const hasActualIndicator = expertIndicators.some((item) => Object.keys(item).some((key) => key !== 'policyRef')) || policyIndicators.some((item) => item.validityStatus || item.renewalType || item.waitingPeriod);
     return {
@@ -298,8 +330,7 @@ function topicDataForPack({ topicPack, policies = [], expertReport = {}, finance
     };
   }
   if (topicPack.type === 'family_finance' || topicPack.type === 'wealth_cashflow') {
-    const source = financeSummary && typeof financeSummary === 'object' ? financeSummary : {};
-    return { finance: Object.fromEntries(['annualIncome', 'annualExpense', 'debt', 'premiumBudget', 'availableAssets', 'cashflowConclusion'].filter((key) => source[key] !== undefined).map((key) => [key, source[key]])) };
+    return { finance: projectFinanceSummary(financeSummary) };
   }
   return null;
 }
@@ -311,14 +342,16 @@ export function buildLightweightSalesChatContext({
   conversationTargets = null,
   topicResolution = null,
 } = {}) {
-  const ambiguous = Boolean(topicResolution?.ambiguous) || (!topicPack && /这份|这个|这张|怎么样|如何/u.test(trim(question)));
-  const memberRefs = new Set(topicPack?.memberRefs || []);
-  const policyRefs = new Set(topicPack?.policyRefs || []);
+  const safeTopicPack = projectTopicPack(topicPack);
+  const safeConversationTargets = projectConversationTargets(conversationTargets);
+  const ambiguous = Boolean(topicResolution?.ambiguous) || (!safeTopicPack && /这份|这个|这张|怎么样|如何/u.test(trim(question)));
+  const memberRefs = new Set(safeTopicPack?.memberRefs || []);
+  const policyRefs = new Set(safeTopicPack?.policyRefs || []);
   const memberIndex = boundedItems((Array.isArray(members) ? members : []).filter((member) => memberRefs.has(entityRef('member', member))).map((member) => ({
-    memberRef: entityRef('member', member), relationLabel: trim(member.relationLabel), role: trim(member.role), age: member.age ?? null,
+    memberRef: safeExpertString(entityRef('member', member), 80), relationLabel: safeExpertString(member.relationLabel, 40), role: safeExpertString(member.role, 40), age: Number.isFinite(Number(member.age)) ? Number(member.age) : null,
   })), 2);
   const policyIndex = boundedItems((Array.isArray(policies) ? policies : []).filter((policy) => policyRefs.has(entityRef('policy', policy))).map((policy) => ({
-    policyRef: entityRef('policy', policy), insuredMemberRef: entityRef('member', { id: policy.insuredMemberId }), productName: trim(policy.name ?? policy.productName), category: policyCategory(policy), validityStatus: trim(policy.validityStatus ?? policy.status),
+    policyRef: safeExpertString(entityRef('policy', policy), 80), insuredMemberRef: safeExpertString(entityRef('member', { id: policy.insuredMemberId }), 80), productName: safeExpertString(policy.name ?? policy.productName, 100), category: safeExpertString(policyCategory(policy), 40), validityStatus: safeExpertString(policy.validityStatus ?? policy.status, 40),
   })), 3);
   const memoryList = Array.isArray(memories) ? memories : (memories?.memories || memories?.items || []);
   const asOf = Date.parse(generatedAt);
@@ -346,18 +379,20 @@ export function buildLightweightSalesChatContext({
     generatedAt,
     sourceUpdated: Boolean(sourceUpdated),
     salesSummary: projectSalesSummary(salesReview),
-    expertFindings: relevantFindings(expertReport || {}, topicPack),
+    expertFindings: relevantFindings(expertReport || {}, safeTopicPack),
     salesMemoryContext: currentMemories,
     recentMessages,
     question: trim(question).slice(0, 2_000),
     clarificationNeeded: ambiguous,
     minimalIndexes: { members: memberIndex, policies: policyIndex },
-    topicPack: topicPack || null,
-    topicData: topicDataForPack({ topicPack, policies, expertReport, financeSummary }),
-    conversationTargets: conversationTargets || { lastExplicitTarget: null, activeOpportunity: null },
+    topicPack: safeTopicPack,
+    topicData: topicDataForPack({ topicPack: safeTopicPack, policies, expertReport, financeSummary }),
+    conversationTargets: safeConversationTargets,
     ...(displayReplacements ? { displayReplacements: boundedItems(displayReplacements, 20).map((item) => ({ token: safeExpertString(item.token, 40), value: safeExpertString(item.value, 40) })).filter((item) => item.token && item.value) } : {}),
   };
   const truncatedSections = new Set();
+  if (trim(question).length > 2_000) truncatedSections.add('question');
+  if ((topicPack?.memberRefs?.length || 0) > 2 || (topicPack?.policyRefs?.length || 0) > 3 || (Array.isArray(members) && members.length > 2) || (Array.isArray(policies) && policies.length > 3)) truncatedSections.add('projectionLimits');
   const publicLengthOf = () => JSON.stringify(context).length;
   while (publicLengthOf() > 10_500 && context.recentMessages.length) {
     context.recentMessages.shift();
@@ -372,6 +407,22 @@ export function buildLightweightSalesChatContext({
   while (publicLengthOf() > 10_500 && context.salesMemoryContext.length) {
     context.salesMemoryContext.pop();
     truncatedSections.add('salesMemoryContext');
+  }
+  if (publicLengthOf() > 10_500 && context.topicData) {
+    context.topicData = null;
+    truncatedSections.add('topicData');
+  }
+  while (publicLengthOf() > 10_500 && context.minimalIndexes.policies.length) {
+    context.minimalIndexes.policies.pop();
+    truncatedSections.add('minimalIndexes');
+  }
+  while (publicLengthOf() > 10_500 && context.minimalIndexes.members.length) {
+    context.minimalIndexes.members.pop();
+    truncatedSections.add('minimalIndexes');
+  }
+  if (publicLengthOf() > 10_500 && (context.conversationTargets.lastExplicitTarget || context.conversationTargets.activeOpportunity)) {
+    context.conversationTargets = { lastExplicitTarget: null, activeOpportunity: null };
+    truncatedSections.add('conversationTargets');
   }
   const publicLength = publicLengthOf();
   context.telemetry = {
@@ -389,6 +440,26 @@ export function buildLightweightSalesChatContext({
       memories: Math.max(0, memoryList.length - 8),
     },
   };
+  if (JSON.stringify(context).length > 12_000) {
+    truncatedSections.add('minimalFallback');
+    const minimalContext = {
+      generatedAt: context.generatedAt,
+      sourceUpdated: context.sourceUpdated,
+      salesSummary: context.salesSummary?.conclusion ? { conclusion: context.salesSummary.conclusion } : null,
+      question: context.question,
+      clarificationNeeded: context.clarificationNeeded,
+      topicPack: null,
+      ...(context.displayReplacements ? { displayReplacements: context.displayReplacements.slice(0, 12) } : {}),
+      telemetry: { ...context.telemetry, selectedMemberCount: 0, selectedPolicyCount: 0, topicPackType: null, indicatorCount: 0, truncatedSections: [...truncatedSections] },
+    };
+    minimalContext.telemetry.estimatedInputCharacters = JSON.stringify(minimalContext).length;
+    minimalContext.telemetry.estimatedInputTokens = Math.ceil(minimalContext.telemetry.estimatedInputCharacters / 2);
+    if (JSON.stringify(minimalContext).length > 12_000) {
+      delete minimalContext.displayReplacements;
+      minimalContext.telemetry.truncatedSections.push('displayReplacements');
+    }
+    return minimalContext;
+  }
   return context;
 }
 

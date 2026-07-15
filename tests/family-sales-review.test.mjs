@@ -806,6 +806,23 @@ test('sales summary and expert findings are projected, PII-safe, and context is 
   assert.ok(context.telemetry.truncatedSections.length > 0);
 });
 
+test('finance indexes targets and topic descriptor cannot bypass the context limit', () => {
+  const huge = '超长恶意字段'.repeat(10_000);
+  const context = buildLightweightSalesChatContext({
+    question: `预算安排${huge}`,
+    topicPack: { type: 'family_finance', memberRefs: Array(100).fill(`member:${huge}`), policyRefs: Array(100).fill(`policy:${huge}`), category: huge, unknown: huge },
+    financeSummary: { annualIncome: 300000, cashflowConclusion: huge, availableAssets: Array(100).fill(huge), unknown: huge },
+    members: Array.from({ length: 100 }, (_, id) => ({ id, relationLabel: huge, role: huge, age: huge })),
+    policies: Array.from({ length: 100 }, (_, id) => ({ id, insuredMemberId: id, name: huge, category: huge, validityStatus: huge })),
+    conversationTargets: { lastExplicitTarget: { policyRef: huge, memberRef: huge, category: huge, label: huge, unknown: huge }, activeOpportunity: { policyRef: huge, unknown: huge }, unknown: huge },
+  });
+  const json = JSON.stringify(context);
+  assert.ok(json.length <= 12_000, `context length ${json.length}`);
+  assert.doesNotMatch(json, /unknown/u);
+  assert.ok(context.question.length <= 2_000);
+  assert.ok(context.telemetry.truncatedSections.length > 0);
+});
+
 test('lightweight context excludes candidate and completed memories but preserves current status', () => {
   const context = buildLightweightSalesChatContext({
     question: '怎么继续聊',
