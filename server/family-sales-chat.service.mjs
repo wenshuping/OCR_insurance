@@ -112,7 +112,7 @@ function entityRef(prefix, entity = {}) {
 
 function policyCategory(policy = {}) {
   const text = `${trim(policy.category)} ${trim(policy.type)} ${trim(policy.name ?? policy.productName)}`;
-  for (const [pattern, category] of [[/意外/u, '意外险'], [/医疗|住院/u, '医疗险'], [/重疾|重大疾病/u, '重疾险'], [/寿险|身故/u, '寿险'], [/年金/u, '年金险'], [/增额|终身寿/u, '增额终身寿险']]) {
+  for (const [pattern, category] of [[/增额|终身寿/u, '增额终身寿险'], [/意外/u, '意外险'], [/医疗|住院/u, '医疗险'], [/重疾|重大疾病/u, '重疾险'], [/寿险|身故/u, '寿险'], [/年金/u, '年金险']]) {
     if (pattern.test(text)) return category;
   }
   return trim(policy.category) || null;
@@ -139,6 +139,7 @@ export function resolveSalesTopicPack(question, {
     (/孩子|小孩|子女/u.test(text) && /儿|女|孩子/u.test(`${member.relationLabel || ''}${member.role || ''}`)));
   const explicitPolicies = normalizedPolicies.filter((policy) => [policy.name, policy.productName, policy.policyRef]
     .map(trim).filter((value) => value && value.length >= 3).some((value) => text.includes(value)));
+  if (explicitMembers.length > 1) return { topicPack: null, ambiguous: true, category, reason: 'multiple_explicit_members', candidateMemberRefs: explicitMembers.slice(0, 4).map((member) => member.ref) };
   const fallback = lastExplicitTarget || activeOpportunity || {};
   const fallbackMemberRef = targetRef(fallback, 'memberRef');
   const fallbackPolicyRef = targetRef(fallback, 'policyRef');
@@ -215,7 +216,7 @@ function boundedItems(items, limit = 6) {
 
 const SAFE_EXPERT_ITEM_FIELDS = new Set([
   'id', 'ref', 'item', 'label', 'category', 'status', 'amount', 'value', 'unit', 'count', 'method',
-  'policyRef', 'verificationStatus', 'sourceKind', 'indicator', 'responsibility', 'name', 'evidenceStatus', 'evidenceRef',
+  'policyRef', 'policyRefs', 'memberRef', 'memberRefs', 'verificationStatus', 'sourceKind', 'indicator', 'responsibility', 'name', 'title', 'finding', 'recommendation', 'evidenceStatus', 'evidenceRef',
 ]);
 
 function safeExpertString(value, limit = 120) {
@@ -226,9 +227,28 @@ function safeExpertString(value, limit = 120) {
 
 function projectExpertItem(item = {}) {
   return Object.fromEntries(Object.entries(item).filter(([key]) => SAFE_EXPERT_ITEM_FIELDS.has(key)).map(([key, value]) => {
+    if (Array.isArray(value)) return [key, value.slice(0, 6).map((entry) => safeExpertString(entry)).filter(Boolean)];
     if (typeof value === 'number' || typeof value === 'boolean' || value === null) return [key, value];
     return [key, safeExpertString(value)];
   }).filter(([, value]) => value !== ''));
+}
+
+function projectSalesSummary(salesReview = {}) {
+  const source = salesReview?.structuredSummary || salesReview?.inputSummary || salesReview?.summary;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  const result = {};
+  for (const key of ['conclusion', 'meetingObjective']) {
+    const value = safeExpertString(source[key], 600);
+    if (value) result[key] = value;
+  }
+  for (const key of ['verificationItems', 'coverageConcerns', 'salesOpportunities', 'nextActions']) {
+    const values = boundedItems(source[key], 6).map((value) => safeExpertString(value, 180)).filter(Boolean);
+    if (values.length) result[key] = values;
+  }
+  if (source.refs && typeof source.refs === 'object') {
+    result.refs = Object.fromEntries(['facts', 'indicators', 'policies'].map((key) => [key, boundedItems(source.refs[key], 8).map((value) => safeExpertString(value, 80)).filter(Boolean)]));
+  }
+  return result;
 }
 
 function relevantFindings(expertReport = {}, topicPack = null) {
@@ -240,11 +260,11 @@ function relevantFindings(expertReport = {}, topicPack = null) {
     return itemRefs.some((ref) => refs.has(ref)) || (topicPack.category && trim(item.category) === topicPack.category);
   };
   return {
-    summary: trim(findings.summary) || null,
-    priorityFindings: boundedItems(findings.priorityFindings?.filter(matches), 4),
-    memberFindings: boundedItems(findings.memberFindings?.filter(matches), 4),
-    confirmedFacts: boundedItems(findings.confirmedFacts?.filter(matches), 6),
-    verificationItems: boundedItems(findings.verificationItems?.filter(matches), 4),
+    summary: safeExpertString(findings.summary, 600) || null,
+    priorityFindings: boundedItems(findings.priorityFindings?.filter(matches), 4).map(projectExpertItem),
+    memberFindings: boundedItems(findings.memberFindings?.filter(matches), 4).map(projectExpertItem),
+    confirmedFacts: boundedItems(findings.confirmedFacts?.filter(matches), 6).map(projectExpertItem),
+    verificationItems: boundedItems(findings.verificationItems?.filter(matches), 4).map(projectExpertItem),
   };
 }
 
@@ -256,14 +276,16 @@ function topicDataForPack({ topicPack, policies = [], expertReport = {}, finance
   const matchesPolicy = (item = {}) => policyRefs.has(trim(item.policyRef)) || (item.policyRefs || []).some((ref) => policyRefs.has(trim(ref)));
   if (topicPack.type === 'policy_indicators') {
     const expertIndicators = boundedItems(findings.policyIndicators?.filter(matchesPolicy), 6).map(projectExpertItem);
+    const policyIndicators = selectedPolicies.map((policy) => ({
+      policyRef: entityRef('policy', policy), validityStatus: trim(policy.validityStatus ?? policy.status), renewalType: trim(policy.renewalType ?? policy.renewal), waitingPeriod: trim(policy.waitingPeriod),
+    }));
+    const hasActualIndicator = expertIndicators.some((item) => Object.keys(item).some((key) => key !== 'policyRef')) || policyIndicators.some((item) => item.validityStatus || item.renewalType || item.waitingPeriod);
     return {
       policyIndicators: [
-        ...selectedPolicies.map((policy) => ({
-          policyRef: entityRef('policy', policy), validityStatus: trim(policy.validityStatus ?? policy.status), renewalType: trim(policy.renewalType ?? policy.renewal), waitingPeriod: trim(policy.waitingPeriod),
-        })),
+        ...policyIndicators,
         ...expertIndicators,
       ].slice(0, 8),
-      absenceMessage: selectedPolicies.length && expertIndicators.length ? null : '当前已录入保单中未发现',
+      absenceMessage: hasActualIndicator ? null : selectedPolicies.length ? '暂按未配置关注，需核对合同' : '当前已录入保单中未发现',
     };
   }
   if (topicPack.type === 'responsibility_evidence') {
@@ -299,22 +321,59 @@ export function buildLightweightSalesChatContext({
     policyRef: entityRef('policy', policy), insuredMemberRef: entityRef('member', { id: policy.insuredMemberId }), productName: trim(policy.name ?? policy.productName), category: policyCategory(policy), validityStatus: trim(policy.validityStatus ?? policy.status),
   })), 3);
   const memoryList = Array.isArray(memories) ? memories : (memories?.memories || memories?.items || []);
+  const asOf = Date.parse(generatedAt);
+  const currentMemories = memoryList.filter((item) => {
+    if (!['confirmed', 'active'].includes(trim(item?.status)) || item?.isCurrent === false) return false;
+    if (item?.invalidatedAt) return false;
+    const validFrom = Date.parse(item?.validFrom || '');
+    const validTo = Date.parse(item?.validTo || '');
+    if (!Number.isFinite(asOf)) return true;
+    if (Number.isFinite(validFrom) && validFrom > asOf) return false;
+    return !Number.isFinite(validTo) || validTo > asOf;
+  }).slice(0, 8).map((item) => ({
+    status: trim(item.status),
+    isCurrent: true,
+    kind: safeExpertString(item.kind, 40),
+    memoryKey: safeExpertString(item.memoryKey, 120),
+    content: safeExpertString(item.content, 300),
+    confidence: Number.isFinite(Number(item.confidence)) ? Number(item.confidence) : undefined,
+    validFrom: safeExpertString(item.validFrom, 40),
+    validTo: safeExpertString(item.validTo, 40),
+    updatedAt: safeExpertString(item.updatedAt, 40),
+  }));
+  const recentMessages = normalizeHistory(history).map((item) => ({ role: item.role, content: safeExpertString(item.content, 800) })).filter((item) => item.content);
   const context = {
     generatedAt,
     sourceUpdated: Boolean(sourceUpdated),
-    salesSummary: salesReview?.structuredSummary || salesReview?.inputSummary || salesReview?.summary || null,
+    salesSummary: projectSalesSummary(salesReview),
     expertFindings: relevantFindings(expertReport || {}, topicPack),
-    salesMemoryContext: boundedItems(memoryList.filter((item) => ['confirmed', 'current', 'active', ''].includes(trim(item?.status))), 8),
-    recentMessages: normalizeHistory(history),
-    question: trim(question),
+    salesMemoryContext: currentMemories,
+    recentMessages,
+    question: trim(question).slice(0, 2_000),
     clarificationNeeded: ambiguous,
     minimalIndexes: { members: memberIndex, policies: policyIndex },
     topicPack: topicPack || null,
     topicData: topicDataForPack({ topicPack, policies, expertReport, financeSummary }),
     conversationTargets: conversationTargets || { lastExplicitTarget: null, activeOpportunity: null },
-    ...(displayReplacements ? { displayReplacements } : {}),
+    ...(displayReplacements ? { displayReplacements: boundedItems(displayReplacements, 20).map((item) => ({ token: safeExpertString(item.token, 40), value: safeExpertString(item.value, 40) })).filter((item) => item.token && item.value) } : {}),
   };
-  const publicLength = JSON.stringify({ ...context, displayReplacements: undefined }).length;
+  const truncatedSections = new Set();
+  const publicLengthOf = () => JSON.stringify(context).length;
+  while (publicLengthOf() > 10_500 && context.recentMessages.length) {
+    context.recentMessages.shift();
+    truncatedSections.add('history');
+  }
+  for (const key of ['priorityFindings', 'memberFindings', 'confirmedFacts', 'verificationItems']) {
+    while (publicLengthOf() > 10_500 && context.expertFindings?.[key]?.length) {
+      context.expertFindings[key].pop();
+      truncatedSections.add('expertFindings');
+    }
+  }
+  while (publicLengthOf() > 10_500 && context.salesMemoryContext.length) {
+    context.salesMemoryContext.pop();
+    truncatedSections.add('salesMemoryContext');
+  }
+  const publicLength = publicLengthOf();
   context.telemetry = {
     stage: 'family_sales_chat_context',
     expertReused: Boolean(expertReport),
@@ -324,6 +383,7 @@ export function buildLightweightSalesChatContext({
     indicatorCount: topicPack?.type === 'policy_indicators' ? policyIndex.length : 0,
     estimatedInputCharacters: publicLength,
     estimatedInputTokens: Math.ceil(publicLength / 2),
+    truncatedSections: [...truncatedSections],
     truncations: {
       history: Math.max(0, (Array.isArray(history) ? history.length : 0) - HISTORY_LIMIT),
       memories: Math.max(0, memoryList.length - 8),

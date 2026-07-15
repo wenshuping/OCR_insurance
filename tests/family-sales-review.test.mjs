@@ -9,6 +9,7 @@ import {
   resolveFamilySalesReviewFreshness,
 } from '../server/family-sales-review.service.mjs';
 import {
+  buildFamilySalesChatContext,
   buildFamilySalesChatMessages,
   buildLightweightSalesChatContext,
   deriveSalesConversationTargets,
@@ -719,6 +720,24 @@ test('explicit product overrides a conflicting fallback policy', () => {
   assert.deepEqual(topicPack, { type: 'policy_indicators', memberRefs: ['member:10'], policyRefs: ['policy:20'], category: '医疗险' });
 });
 
+test('category matching prefers增额终身寿险 over generic寿险', () => {
+  const topicPack = selectSalesTopicPack('这张增额终身寿险现金价值怎么样', {
+    members: [{ id: 10, relationLabel: '本人' }],
+    policies: [{ id: 20, insuredMemberId: 10, name: '增额终身寿险', category: '增额终身寿险' }],
+  });
+  assert.equal(topicPack.category, '增额终身寿险');
+});
+
+test('duplicate child relations are ambiguous and short labels do not substring match', () => {
+  const duplicate = resolveSalesTopicPack('孩子的意外险', {
+    members: [{ id: 11, relationLabel: '孩子' }, { id: 12, relationLabel: '孩子' }],
+    policies: [{ id: 21, insuredMemberId: 11, name: '大宝意外险' }, { id: 22, insuredMemberId: 12, name: '二宝意外险' }],
+  });
+  assert.equal(duplicate.ambiguous, true);
+  assert.equal(duplicate.topicPack, null);
+  assert.equal(selectSalesTopicPack('意外险怎么聊', { members: [{ id: 11, relationLabel: '女' }, { id: 12, relationLabel: '本人' }], policies: [{ id: 21, insuredMemberId: 11, name: '意外险A' }, { id: 22, insuredMemberId: 12, name: '意外险B' }] }), null);
+});
+
 test('ambiguous category resolution forces clarification without relying on question wording', () => {
   const resolution = resolveSalesTopicPack('医疗险续保情况', {
     members: [{ id: 10, relationLabel: '爸爸' }, { id: 11, relationLabel: '孩子' }],
@@ -740,6 +759,7 @@ test('topic packs project bounded indicators and responsibility evidence', () =>
   } };
   const indicatorContext = buildLightweightSalesChatContext({ question: '这张医疗险续保怎么样', topicPack: { type: 'policy_indicators', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' }, policies, expertReport });
   assert.ok(indicatorContext.topicData.policyIndicators.length <= 8);
+  assert.equal(indicatorContext.topicData.absenceMessage, null);
   assert.match(JSON.stringify(indicatorContext.topicData), /保证续保20年|条款第3页/u);
   assert.doesNotMatch(JSON.stringify(indicatorContext), /全文不得带入|policy:99/u);
   const evidenceContext = buildLightweightSalesChatContext({ question: '这张医疗险住院责任怎么赔', topicPack: { type: 'responsibility_evidence', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' }, policies, expertReport });
@@ -768,6 +788,24 @@ test('expert indicator projection drops unknown evidence PII and long fields', (
   assert.ok(context.topicData.policyIndicators.find((item) => item.id === 'indicator:1').method.length <= 120);
 });
 
+test('sales summary and expert findings are projected, PII-safe, and context is hard bounded', () => {
+  const malicious = '13800138000 '.repeat(1000);
+  const history = Array.from({ length: 40 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: `历史${index}${'很长'.repeat(500)}`, createdAt: `2026-07-01T00:${String(index).padStart(2, '0')}:00.000Z` }));
+  const context = buildLightweightSalesChatContext({
+    question: '孩子的意外险怎么聊',
+    topicPack: { type: 'member_coverage', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '意外险' },
+    salesReview: { structuredSummary: { conclusion: `关键结论${'结论'.repeat(5000)}`, phone: '13800138000', unknownDetail: malicious, nextActions: Array(30).fill('行动'.repeat(300)), refs: { policies: Array(30).fill('policy:21'), secret: malicious } } },
+    expertReport: { structuredResult: { summary: `专家摘要${'摘要'.repeat(5000)}`, memberFindings: Array(30).fill({ memberRef: 'member:11', label: '意外缺口', detail: malicious, phone: '13800138000' }) } },
+    memories: { memories: Array(30).fill({ status: 'confirmed', isCurrent: true, content: '记忆'.repeat(500) }) },
+    history,
+  });
+  const json = JSON.stringify(context);
+  assert.ok(json.length <= 12_000, `context length ${json.length}`);
+  assert.match(json, /关键结论/u);
+  assert.doesNotMatch(json, /13800138000|unknownDetail|phone|secret/u);
+  assert.ok(context.telemetry.truncatedSections.length > 0);
+});
+
 test('lightweight context excludes candidate and completed memories but preserves current status', () => {
   const context = buildLightweightSalesChatContext({
     question: '怎么继续聊',
@@ -777,6 +815,8 @@ test('lightweight context excludes candidate and completed memories but preserve
       { content: '已拒绝偏好', status: 'rejected', isCurrent: false },
       { content: '已过期偏好', status: 'expired', isCurrent: false },
       { content: '已完成待办', status: 'completed', isCurrent: false },
+      { content: '过期确认', status: 'confirmed', isCurrent: true, validTo: '2020-01-01T00:00:00.000Z' },
+      { content: '空状态', status: '', isCurrent: true },
     ] },
   });
   assert.deepEqual(context.salesMemoryContext.map((item) => item.content), ['已确认预算']);
@@ -818,11 +858,14 @@ test('lightweight sales context asks for clarification without falling back to f
 test('lightweight sales context is at least sixty percent smaller and excludes unrelated member detail', () => {
   const members = [{ id: 10, name: '爸爸', relationLabel: '本人', notes: '爸爸'.repeat(800) }, { id: 11, name: '孩子', relationLabel: '女儿', notes: '孩子'.repeat(800) }];
   const policies = [{ id: 20, insuredMemberId: 10, name: '成人重疾险', category: '重疾险', evidence: '无关'.repeat(1200) }, { id: 21, insuredMemberId: 11, name: '少儿意外险', category: '意外险', evidence: '相关'.repeat(1200) }];
-  const fullFixture = { familyInput: { members, policies }, latestSalesReview: { content: '完整报告'.repeat(1500) } };
+  const fullContext = buildFamilySalesChatContext({
+    input: { members, policies }, family: { id: 1 }, members, policies,
+    familySalesReviews: [{ id: 1, familyId: 1, status: 'active', content: '完整报告'.repeat(1500), generatedAt: '2026-07-01T00:00:00.000Z' }],
+  });
   const topicPack = selectSalesTopicPack('孩子的意外险怎么聊', { members, policies });
   const context = buildLightweightSalesChatContext({ salesReview: { structuredSummary: { conclusion: '先聊意外保障' } }, question: '孩子的意外险怎么聊', topicPack, members, policies });
   const json = JSON.stringify(context);
-  assert.ok(json.length <= JSON.stringify(fullFixture).length * 0.4);
+  assert.ok(json.length <= JSON.stringify(fullContext).length * 0.4);
   assert.doesNotMatch(json, /成人重疾险|爸爸爸爸|无关无关/u);
   assert.equal(context.minimalIndexes.members.length, 1);
   assert.equal(context.minimalIndexes.policies.length, 1);
