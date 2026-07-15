@@ -13,6 +13,7 @@ import {
   buildLightweightSalesChatContext,
   deriveSalesConversationTargets,
   generateFamilySalesChatReply,
+  resolveSalesTopicPack,
   selectSalesTopicPack,
 } from '../server/family-sales-chat.service.mjs';
 import {
@@ -700,6 +701,35 @@ test('sales topic selection does not expand an ambiguous category to multiple po
   assert.equal(topicPack, null);
 });
 
+test('explicit member rejects a conflicting fallback policy', () => {
+  const topicPack = selectSalesTopicPack('孩子的医疗险怎么聊', {
+    members: [{ id: 10, relationLabel: '爸爸' }, { id: 11, relationLabel: '孩子' }],
+    policies: [{ id: 20, insuredMemberId: 10, name: '爸爸医疗险', category: '医疗险' }, { id: 21, insuredMemberId: 11, name: '孩子医疗险', category: '医疗险' }],
+    lastExplicitTarget: { policyRef: 'policy:20' },
+  });
+  assert.deepEqual(topicPack, { type: 'member_coverage', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' });
+});
+
+test('explicit product overrides a conflicting fallback policy', () => {
+  const topicPack = selectSalesTopicPack('爸爸医疗险续保情况', {
+    members: [{ id: 10, relationLabel: '爸爸' }, { id: 11, relationLabel: '孩子' }],
+    policies: [{ id: 20, insuredMemberId: 10, name: '爸爸医疗险', category: '医疗险' }, { id: 21, insuredMemberId: 11, name: '孩子医疗险', category: '医疗险' }],
+    lastExplicitTarget: { policyRef: 'policy:21' },
+  });
+  assert.deepEqual(topicPack, { type: 'policy_indicators', memberRefs: ['member:10'], policyRefs: ['policy:20'], category: '医疗险' });
+});
+
+test('ambiguous category resolution forces clarification without relying on question wording', () => {
+  const resolution = resolveSalesTopicPack('医疗险续保情况', {
+    members: [{ id: 10, relationLabel: '爸爸' }, { id: 11, relationLabel: '孩子' }],
+    policies: [{ id: 20, insuredMemberId: 10, name: '爸爸医疗险', category: '医疗险' }, { id: 21, insuredMemberId: 11, name: '孩子医疗险', category: '医疗险' }],
+  });
+  assert.equal(resolution.topicPack, null);
+  assert.equal(resolution.ambiguous, true);
+  const context = buildLightweightSalesChatContext({ question: '医疗险续保情况', topicPack: resolution.topicPack, topicResolution: resolution });
+  assert.equal(context.clarificationNeeded, true);
+});
+
 test('topic packs project bounded indicators and responsibility evidence', () => {
   const policies = [{ id: 21, insuredMemberId: 11, name: '少儿医疗险', category: '医疗险', validityStatus: '有效', renewalType: '保证续保20年', waitingPeriod: '30天', evidence: '全文不得带入' }];
   const expertReport = { structuredResult: {
@@ -720,6 +750,22 @@ test('topic packs project bounded indicators and responsibility evidence', () =>
   const financeContext = buildLightweightSalesChatContext({ question: '预算怎么安排', topicPack: { type: 'family_finance', memberRefs: [], policyRefs: [], category: null }, financeSummary: { annualIncome: 300000, annualExpense: 150000, debt: 500000, privateNote: '不得带入' } });
   assert.deepEqual(financeContext.topicData.finance, { annualIncome: 300000, annualExpense: 150000, debt: 500000 });
   assert.doesNotMatch(JSON.stringify(financeContext), /不得带入|privateNote/u);
+});
+
+test('expert indicator projection drops unknown evidence PII and long fields', () => {
+  const context = buildLightweightSalesChatContext({
+    question: '这张医疗险续保怎么样',
+    topicPack: { type: 'policy_indicators', memberRefs: ['member:11'], policyRefs: ['policy:21'], category: '医疗险' },
+    policies: [{ id: 21, insuredMemberId: 11, name: '少儿医疗险', category: '医疗险' }],
+    expertReport: { structuredResult: { policyIndicators: [{
+      id: 'indicator:1', policyRef: 'policy:21', label: '保证续保', status: 'confirmed', sourceKind: 'policy_clause',
+      evidence: '完整证据不得进入', sourceExcerpt: '条款全文不得进入', markdown: '# 报告不得进入', phone: '13800138000', unknown: '未知字段', method: '合同核对'.repeat(200),
+    }] } },
+  });
+  const json = JSON.stringify(context);
+  assert.match(json, /indicator:1|保证续保|policy_clause/u);
+  assert.doesNotMatch(json, /完整证据|条款全文|报告不得|13800138000|未知字段|unknown|sourceExcerpt|markdown/u);
+  assert.ok(context.topicData.policyIndicators.find((item) => item.id === 'indicator:1').method.length <= 120);
 });
 
 test('lightweight context excludes candidate and completed memories but preserves current status', () => {

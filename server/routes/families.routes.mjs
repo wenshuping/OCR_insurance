@@ -10,7 +10,7 @@ import {
   buildLightweightSalesChatContext,
   deriveSalesConversationTargets,
   generateFamilySalesChatReply,
-  selectSalesTopicPack,
+  resolveSalesTopicPack,
 } from '../family-sales-chat.service.mjs';
 import {
   buildFamilySalesMemoryContext,
@@ -663,7 +663,8 @@ export function createFamilyRoutes(context) {
       members,
       policies,
     });
-    const topicPack = selectSalesTopicPack(question, { members, policies, activeOpportunity, lastExplicitTarget });
+    const topicResolution = resolveSalesTopicPack(question, { members, policies, activeOpportunity, lastExplicitTarget });
+    const topicPack = topicResolution.topicPack;
     const baseline = latestSalesReview?.generatedAt || latestSalesReview?.updatedAt || latestSalesReview?.createdAt || '';
     const sourceUpdated = [family, ...members, ...policies].some((record) => record?.updatedAt && baseline && record.updatedAt > baseline);
     const displayReplacements = members.map((member, index) => ({ token: `{{member_${index + 1}}}`, value: member.name })).filter((item) => item.value);
@@ -678,6 +679,7 @@ export function createFamilyRoutes(context) {
       policies,
       financeSummary: family.planningProfile || null,
       conversationTargets: { lastExplicitTarget, activeOpportunity },
+      topicResolution,
       sourceUpdated,
       generatedAt: nowIso(),
       displayReplacements,

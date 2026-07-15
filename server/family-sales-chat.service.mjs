@@ -126,11 +126,11 @@ function targetRef(target = {}, key) {
   return trim(target?.[key]) || trim(target?.[key === 'memberRef' ? 'memberId' : 'policyId']);
 }
 
-export function selectSalesTopicPack(question, {
+export function resolveSalesTopicPack(question, {
   members = [], policies = [], activeOpportunity = null, lastExplicitTarget = null,
 } = {}) {
   const text = trim(question);
-  if (!text || (/话术|怎么说|如何说|异议/u.test(text) && !/谁|孩子|父亲|母亲|爸爸|妈妈|保单|险|责任|续保|现金|预算|保费/u.test(text))) return null;
+  if (!text || (/话术|怎么说|如何说|异议/u.test(text) && !/谁|孩子|父亲|母亲|爸爸|妈妈|保单|险|责任|续保|现金|预算|保费/u.test(text))) return { topicPack: null, ambiguous: false, category: null };
   const category = categoryFromQuestion(text);
   const normalizedMembers = (Array.isArray(members) ? members : []).map((member) => ({ ...member, ref: entityRef('member', member) }));
   const normalizedPolicies = (Array.isArray(policies) ? policies : []).map((policy) => ({ ...policy, ref: entityRef('policy', policy), category: policyCategory(policy) }));
@@ -144,12 +144,22 @@ export function selectSalesTopicPack(question, {
   const fallbackPolicyRef = targetRef(fallback, 'policyRef');
   let selectedPolicies = explicitPolicies;
   let selectedMembers = explicitMembers;
-  if (!selectedPolicies.length && fallbackPolicyRef) selectedPolicies = normalizedPolicies.filter((policy) => policy.ref === fallbackPolicyRef || String(policy.id) === fallbackPolicyRef);
+  if (selectedPolicies.length && selectedMembers.length) {
+    selectedPolicies = selectedPolicies.filter((policy) => selectedMembers.some((member) => Number(policy.insuredMemberId) === Number(member.id)) && (!category || policy.category === category));
+    if (!selectedPolicies.length) return { topicPack: null, ambiguous: true, category, reason: 'conflicting_explicit_targets' };
+  }
+  if (!selectedPolicies.length && fallbackPolicyRef) {
+    selectedPolicies = normalizedPolicies.filter((policy) => (
+      (policy.ref === fallbackPolicyRef || String(policy.id) === fallbackPolicyRef) &&
+      (!selectedMembers.length || selectedMembers.some((member) => Number(policy.insuredMemberId) === Number(member.id))) &&
+      (!category || policy.category === category)
+    ));
+  }
   if (!selectedMembers.length && fallbackMemberRef) selectedMembers = normalizedMembers.filter((member) => member.ref === fallbackMemberRef || String(member.id) === fallbackMemberRef);
   if (!selectedPolicies.length && (selectedMembers.length || category)) {
     const categoryMatches = normalizedPolicies.filter((policy) => (!category || policy.category === category) && (!selectedMembers.length || selectedMembers.some((member) => Number(policy.insuredMemberId) === Number(member.id))));
     if (categoryMatches.length === 1 || selectedMembers.length) selectedPolicies = categoryMatches;
-    else if (categoryMatches.length > 1) return null;
+    else if (categoryMatches.length > 1) return { topicPack: null, ambiguous: true, category, candidatePolicyRefs: categoryMatches.slice(0, 4).map((policy) => policy.ref) };
   }
   if (!selectedMembers.length && selectedPolicies.length) {
     selectedMembers = normalizedMembers.filter((member) => selectedPolicies.some((policy) => Number(policy.insuredMemberId) === Number(member.id)));
@@ -164,13 +174,17 @@ export function selectSalesTopicPack(question, {
         : /财富|养老|年金|传承|现金价值/u.test(text)
           ? 'wealth_cashflow'
           : (selectedMembers.length || selectedPolicies.length) ? 'member_coverage' : null;
-  if (!type) return null;
-  return {
+  if (!type) return { topicPack: null, ambiguous: false, category: resolvedCategory };
+  return { topicPack: {
     type,
     memberRefs: selectedMembers.slice(0, 2).map((member) => member.ref),
     policyRefs: selectedPolicies.slice(0, 3).map((policy) => policy.ref),
     category: resolvedCategory,
-  };
+  }, ambiguous: false, category: resolvedCategory };
+}
+
+export function selectSalesTopicPack(question, options = {}) {
+  return resolveSalesTopicPack(question, options).topicPack;
 }
 
 export function deriveSalesConversationTargets({ salesReview = null, memories = null, history = [], members = [], policies = [] } = {}) {
@@ -199,6 +213,24 @@ function boundedItems(items, limit = 6) {
   return (Array.isArray(items) ? items : []).slice(0, limit);
 }
 
+const SAFE_EXPERT_ITEM_FIELDS = new Set([
+  'id', 'ref', 'item', 'label', 'category', 'status', 'amount', 'value', 'unit', 'count', 'method',
+  'policyRef', 'verificationStatus', 'sourceKind', 'indicator', 'responsibility', 'name', 'evidenceStatus', 'evidenceRef',
+]);
+
+function safeExpertString(value, limit = 120) {
+  const text = trim(value);
+  if (/\b1[3-9]\d{9}\b|\b[1-9]\d{5}(?:18|19|20)\d{2}\d{8}[\dXx]\b/u.test(text)) return '';
+  return text.slice(0, limit);
+}
+
+function projectExpertItem(item = {}) {
+  return Object.fromEntries(Object.entries(item).filter(([key]) => SAFE_EXPERT_ITEM_FIELDS.has(key)).map(([key, value]) => {
+    if (typeof value === 'number' || typeof value === 'boolean' || value === null) return [key, value];
+    return [key, safeExpertString(value)];
+  }).filter(([, value]) => value !== ''));
+}
+
 function relevantFindings(expertReport = {}, topicPack = null) {
   if (!topicPack) return null;
   const findings = expertReport.structuredResult || expertReport.expertFindings || {};
@@ -223,7 +255,7 @@ function topicDataForPack({ topicPack, policies = [], expertReport = {}, finance
   const selectedPolicies = (Array.isArray(policies) ? policies : []).filter((policy) => policyRefs.has(entityRef('policy', policy))).slice(0, 3);
   const matchesPolicy = (item = {}) => policyRefs.has(trim(item.policyRef)) || (item.policyRefs || []).some((ref) => policyRefs.has(trim(ref)));
   if (topicPack.type === 'policy_indicators') {
-    const expertIndicators = boundedItems(findings.policyIndicators?.filter(matchesPolicy), 6);
+    const expertIndicators = boundedItems(findings.policyIndicators?.filter(matchesPolicy), 6).map(projectExpertItem);
     return {
       policyIndicators: [
         ...selectedPolicies.map((policy) => ({
@@ -236,7 +268,7 @@ function topicDataForPack({ topicPack, policies = [], expertReport = {}, finance
   }
   if (topicPack.type === 'responsibility_evidence') {
     const responsibilityEvidence = boundedItems((findings.responsibilityFindings || findings.responsibilityEvidence)?.filter(matchesPolicy), 6).map((item) => ({
-      policyRef: trim(item.policyRef), responsibility: trim(item.responsibility ?? item.name), evidenceStatus: trim(item.evidenceStatus ?? item.status) || 'not_identified', evidenceRef: trim(item.evidenceRef),
+      policyRef: safeExpertString(item.policyRef), responsibility: safeExpertString(item.responsibility ?? item.name), evidenceStatus: safeExpertString(item.evidenceStatus ?? item.status) || 'not_identified', evidenceRef: safeExpertString(item.evidenceRef),
     }));
     return {
       responsibilityEvidence,
@@ -255,8 +287,9 @@ export function buildLightweightSalesChatContext({
   members = [], policies = [], sourceUpdated = false, generatedAt = new Date().toISOString(), displayReplacements = null,
   financeSummary = null,
   conversationTargets = null,
+  topicResolution = null,
 } = {}) {
-  const ambiguous = !topicPack && /这份|这个|这张|怎么样|如何/u.test(trim(question));
+  const ambiguous = Boolean(topicResolution?.ambiguous) || (!topicPack && /这份|这个|这张|怎么样|如何/u.test(trim(question)));
   const memberRefs = new Set(topicPack?.memberRefs || []);
   const policyRefs = new Set(topicPack?.policyRefs || []);
   const memberIndex = boundedItems((Array.isArray(members) ? members : []).filter((member) => memberRefs.has(entityRef('member', member))).map((member) => ({
