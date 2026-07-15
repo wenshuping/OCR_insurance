@@ -32,14 +32,24 @@ const VERSION_FACT_KEYS = new Set([
   'memberRef', 'category', 'confirmedItems', 'notFoundInRecordedPoliciesItems',
   'notIdentifiedItems', 'conflictedItems', 'missingSourceItems', 'notApplicableItems', 'itemName',
   'evidenceReferences', 'policyRef',
-  'summary', 'radar', 'inventoryRows', 'criticalIllness', 'accident', 'wealth',
-  'memberCount', 'policyCount', 'issueCount', 'family', 'scores', 'members', 'hiddenMembers',
-  'key', 'label', 'score', 'amountText', 'target', 'targetText', 'gap', 'gapText', 'note', 'member',
-  'rows', 'attentionItems', 'conditionText', 'sourcePolicies', 'sourcePolicyRefs',
-  'typeLabel', 'coverageText', 'annualPremiumText', 'policyStatusText', 'dataStatus',
-  'memberReports', 'policies', 'cashflowRows', 'annualCashflowRows', 'year', 'age',
-  'cumulative', 'calculationText', 'payoutInflow', 'cumulativePayoutInflow', 'cashValueTotal',
-  'totalValue', 'conclusion', 'mode', 'dimensions', 'coveragePresent',
+]);
+
+const REPORT_FACT_KEYS = new Set([
+  'memberCount', 'policyCount', 'issueCount', 'totalAnnualPremium', 'totalCoverageAmount',
+  'futurePayoutTotal', 'futurePayoutCount',
+  'family', 'members', 'hiddenMembers', 'scores', 'member', 'name', 'relationLabel', 'role',
+  'rows', 'key', 'label', 'amount', 'amountText', 'countText', 'status', 'conditionText',
+  'sourcePolicies', 'sourcePolicyRefs', 'attentionItems', 'notes', 'gap',
+  'score', 'effectiveAmount', 'effectiveAmountText', 'coveragePresent', 'policyCount',
+  'adequacyRate', 'adequacyText', 'target', 'targetText', 'targetSource', 'note', 'amountDetails',
+  'applicant', 'company', 'productName', 'typeLabel', 'coverageText', 'annualPremiumText',
+  'coveragePeriod', 'paymentPeriod', 'policyStatusText', 'dataStatus',
+  'memberReports', 'policies', 'policyRef', 'policyId', 'conclusion', 'cashflowRows',
+  'annualCashflowRows', 'cashValueRows', 'aggregateRows', 'year', 'calendarYear', 'policyYear',
+  'age', 'cashValueDate', 'cashValueDateLabel', 'premiumOutflow', 'payoutInflow',
+  'cashValueInflow', 'netCashflow', 'cumulativeNetCashflow', 'cumulativePayoutInflow',
+  'cashValueTotal', 'totalValue', 'cumulative', 'liability', 'calculationText', 'details', 'type',
+  'keyPoints', 'uncertaintyItems', 'value', 'unit', 'reason',
 ]);
 
 function trim(value) {
@@ -71,6 +81,25 @@ function versionFacts(value) {
   return Object.fromEntries(Object.entries(value)
     .filter(([key]) => VERSION_FACT_KEYS.has(key))
     .map(([key, child]) => [key, versionFacts(child)]));
+}
+
+function reportValueFacts(value) {
+  if (Array.isArray(value)) return value.map(reportValueFacts);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => REPORT_FACT_KEYS.has(key))
+    .map(([key, child]) => [key, reportValueFacts(child)]));
+}
+
+function reportVersionFacts(report = {}) {
+  return {
+    summary: reportValueFacts(report.summary || {}),
+    radar: reportValueFacts(report.radar || {}),
+    inventoryRows: reportValueFacts(report.inventoryRows || []),
+    criticalIllness: reportValueFacts(report.criticalIllness || {}),
+    accident: reportValueFacts(report.accident || {}),
+    wealth: reportValueFacts(report.wealth || {}),
+  };
 }
 
 export function buildExpertPlanningProfile(planning = {}) {
@@ -138,7 +167,7 @@ export function computeExpertInputVersion(input = {}) {
     groupedCoverageIndicators: (Array.isArray(input.groupedCoverageIndicators)
       ? input.groupedCoverageIndicators : []).map(versionFacts),
     evidenceReferences: (Array.isArray(input.evidenceReferences) ? input.evidenceReferences : []).map(versionFacts),
-    report: versionFacts(input.report || {}),
+    report: reportVersionFacts(input.report || {}),
   };
   const json = JSON.stringify(canonicalize(versionInput));
   return `sha256:${createHash('sha256').update(json).digest('hex')}`;
