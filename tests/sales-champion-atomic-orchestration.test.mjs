@@ -43,7 +43,6 @@ test('sales turn contract accepts grounded multi-concern proposals', () => {
   const proposal = validateSalesTurnProposal(validProposal(), {
     sourceTexts: ['客户说钱放二十年太久，但是家里人还没有讨论。'],
   });
-
   assert.equal(proposal.stage.value, 'objection');
   assert.deepEqual(proposal.concerns.map((concern) => concern.type), ['liquidity', 'family_decision']);
 });
@@ -72,7 +71,6 @@ test('sales turn contract rejects unknown fields and invalid enums', () => {
 
 test('skill registry selects a primary skill, supporting skills, and mandatory fact routing', () => {
   const selection = selectSalesChampionSkills(validProposal());
-
   assert.equal(selection.primary.key, 'tradeoff_disclosure');
   assert.deepEqual(selection.supporting.map((skill) => skill.key), [
     'family_joint_decision',
@@ -82,6 +80,7 @@ test('skill registry selects a primary skill, supporting skills, and mandatory f
   assert.equal(selection.confidence, 0.91);
   assert.equal(selection.executionContract, SALES_CHAMPION_SKILL_CONTRACT);
   assert.match(selection.executionContract.outputContract, /完整客户语义包/u);
+  assert.match(selection.executionContract.outputContract, /客户已表达事实 \+ 销售阶段\/异议解读 \+ 可执行沟通建议\/话术 \+ 需要保险专家核验的事实点 \+ 不确定边界/u);
 });
 
 test('skill registry rejects a capability whose stage and concern prerequisites do not match', () => {
@@ -91,7 +90,6 @@ test('skill registry rejects a capability whose stage and concern prerequisites 
     signals: { explicitRefusal: false, stopContact: false, factSensitive: false },
     proposedCapabilities: ['tradeoff_disclosure', 'follow_up_consent'],
   }));
-
   assert.equal(selection.primary.key, 'follow_up_consent');
   assert.deepEqual(selection.rejected, [
     { key: 'tradeoff_disclosure', reason: 'stage_or_concern_mismatch' },
@@ -115,7 +113,6 @@ test('readiness gate stops on refusal before selecting promotional skills', () =
   const readiness = evaluateSalesTurnReadiness(validProposal({
     signals: { explicitRefusal: true, stopContact: false, factSensitive: false },
   }));
-
   assert.equal(readiness.decision, 'stop_contact');
   assert.equal(readiness.reason, 'explicit_refusal');
 });
@@ -125,7 +122,6 @@ test('readiness gate clarifies low-confidence or missing concern interpretation'
     stage: { value: 'objection', confidence: 0.52 },
   }));
   const missingConcern = evaluateSalesTurnReadiness(validProposal({ concerns: [] }));
-
   assert.equal(lowConfidence.decision, 'clarify');
   assert.equal(lowConfidence.reason, 'low_stage_confidence');
   assert.equal(missingConcern.decision, 'clarify');
@@ -134,7 +130,6 @@ test('readiness gate clarifies low-confidence or missing concern interpretation'
 
 test('readiness gate marks official facts required without blocking a well-grounded turn', () => {
   const readiness = evaluateSalesTurnReadiness(validProposal());
-
   assert.equal(readiness.decision, 'execute');
   assert.equal(readiness.officialFactsRequired, true);
 });
@@ -144,7 +139,6 @@ test('shadow router returns an auditable route without producing a customer answ
     proposal: validProposal(),
     sourceTexts: ['客户说钱放二十年太久，家里也还没有商量。'],
   });
-
   assert.equal(result.status, 'routed');
   assert.equal(result.readiness.decision, 'execute');
   assert.equal(result.selection.primary.key, 'tradeoff_disclosure');
@@ -163,7 +157,6 @@ test('shadow router contains invalid model proposals instead of guessing a route
     proposal: { ...validProposal(), hiddenPlan: 'close_now' },
     sourceTexts: ['钱放二十年太久'],
   });
-
   assert.equal(result.status, 'invalid_proposal');
   assert.equal(result.readiness, null);
   assert.equal(result.selection, null);
