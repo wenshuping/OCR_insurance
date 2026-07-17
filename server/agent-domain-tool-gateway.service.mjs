@@ -11,7 +11,6 @@ const OPERATION_INTENTS = Object.freeze({
     sales_coaching: 'sales_coaching',
   }),
 });
-
 function gatewayError(code, status = 400) {
   return Object.assign(new Error(code), { code, status });
 }
@@ -56,8 +55,10 @@ function productMentions(names, question) {
     while (end >= 0) {
       end += '保险'.length;
       const insurer = name.slice(0, end).trim();
-      const product = name.slice(end).trim();
-      if (insurer && product && question.includes(`${insurer}的${product}`)) {
+      const product = name.slice(end).trim().replace(/^的/u, '');
+      if (insurer && product && (
+        question.includes(`${insurer}的${product}`) || question.includes(`${insurer}${product}`)
+      )) {
         split = { insurer, product };
         break;
       }
@@ -120,7 +121,21 @@ function productClarification(resolutions) {
   };
 }
 
-async function verifiedProductRouteInput(input, productResolver) {
+function salesProductClarification(resolutions) {
+  const result = productClarification(resolutions);
+  return {
+    ...result,
+    candidateType: 'product',
+    interaction: {
+      ...result.interaction,
+      text: result.interaction.candidates?.length
+        ? '我先确认一下客户购买的具体产品。请选择一项；确认后会由保险专家解析，再继续给出销冠跟进建议。'
+        : result.interaction.text,
+    },
+  };
+}
+
+async function verifiedProductRouteInput(input, productResolver, confirmedProduct = null) {
   const names = Array.isArray(input.names) ? input.names : [];
   if (!names.length) return candidateFor('ask_insurance_expert', input);
   if (names.length > 2 || typeof productResolver?.resolve !== 'function') {
@@ -131,6 +146,7 @@ async function verifiedProductRouteInput(input, productResolver) {
     resolutions.push(await productResolver.resolve({
       mentions: productResolutionMentions(name, input.question),
       activeProduct: null,
+      ...(name === confirmedProduct?.officialName ? { confirmedCandidate: confirmedProduct } : {}),
     }));
   }
   if (resolutions.some((resolution) => resolution?.status !== 'resolved')) {
@@ -168,7 +184,53 @@ async function verifiedProductRouteInput(input, productResolver) {
   };
 }
 
-export function createAgentDomainToolGateway({ questionRouter, resolveChannelIdentity, productResolver } = {}) {
+async function salesProductContext(input, productResolver, confirmedProduct = null) {
+  const productMentions = Array.isArray(input.productMentions) ? input.productMentions : [];
+  const officialFactNeeds = Array.isArray(input.officialFactNeeds) ? input.officialFactNeeds : [];
+  if (!productMentions.length) {
+    return officialFactNeeds.length ? { productMentions: [], officialFactNeeds, resolvedProducts: [] } : null;
+  }
+  const resolvedProducts = [];
+  const unresolved = [];
+  if (typeof productResolver?.resolve === 'function') {
+    for (const name of productMentions) {
+      try {
+        const resolution = await productResolver.resolve({
+          mentions: productResolutionMentions(name, input.question),
+          activeProduct: null,
+          ...(name === confirmedProduct?.officialName ? { confirmedCandidate: confirmedProduct } : {}),
+        });
+        const product = resolution?.status === 'resolved' ? productEntity(resolution.entity) : null;
+        if (product && !resolvedProducts.some((candidate) => (
+          candidate.canonicalProductId === product.canonicalProductId
+            && candidate.company === product.company
+            && candidate.officialName === product.officialName
+        ))) resolvedProducts.push(product);
+        if (!product && Array.isArray(resolution?.candidates) && resolution.candidates.length) {
+          unresolved.push(resolution);
+        }
+      } catch {
+        // An unresolved supporting product must not replace the primary sales task.
+      }
+    }
+  }
+  if (unresolved.length && officialFactNeeds.length) {
+    return { result: salesProductClarification(unresolved) };
+  }
+  return {
+    productMentions,
+    officialFactNeeds,
+    resolvedProducts,
+  };
+}
+
+export function createAgentDomainToolGateway({
+  questionRouter,
+  resolveChannelIdentity,
+  productResolver,
+  conversationContext,
+  productContextTtlMinutes = 30,
+} = {}) {
   if (!questionRouter || typeof questionRouter.route !== 'function') {
     throw new TypeError('Agent domain tool questionRouter is required');
   }
@@ -193,10 +255,39 @@ export function createAgentDomainToolGateway({ questionRouter, resolveChannelIde
         interaction: { type: 'denied', text: '当前账号已无权继续访问该数据。' },
       };
     }
+    const hasProductTask = (tool === 'ask_insurance_expert' && input.operation === 'product_knowledge')
+      || (tool === 'ask_sales_champion' && input.operation === 'sales_coaching'
+        && Array.isArray(input.productMentions) && input.productMentions.length > 0);
+    let confirmedProduct = hasProductTask ? productEntity(claims.confirmedProduct) : null;
+    if (hasProductTask
+      && !confirmedProduct
+      && conversationContext && typeof conversationContext.loadContext === 'function') {
+      try {
+        const context = await conversationContext.loadContext({
+          tenantId: claims.tenant,
+          channel: claims.channel,
+          channelUserId: claims.channelUserId,
+          channelConversationId: claims.conversationId,
+          internalUserId: Number(claims.internalUserId),
+          productContextTtlMinutes,
+        });
+        confirmedProduct = productEntity({
+          officialName: context?.product?.productName,
+          company: context?.product?.company,
+          canonicalProductId: context?.product?.canonicalProductId,
+        });
+      } catch {
+        confirmedProduct = null;
+      }
+    }
     const routed = tool === 'ask_insurance_expert' && input.operation === 'product_knowledge'
-      ? await verifiedProductRouteInput(input, productResolver)
+      ? await verifiedProductRouteInput(input, productResolver, confirmedProduct)
       : candidateFor(tool, input);
     if (routed.result) return routed.result;
+    const supportingSalesContext = tool === 'ask_sales_champion' && input.operation === 'sales_coaching'
+      ? await salesProductContext(input, productResolver, confirmedProduct)
+      : null;
+    if (supportingSalesContext?.result) return supportingSalesContext.result;
     const verifiedEntities = routed.verifiedEntities || {};
     const result = await questionRouter.route({
       internalUserId: Number(claims.internalUserId),
@@ -204,6 +295,7 @@ export function createAgentDomainToolGateway({ questionRouter, resolveChannelIde
       conversationId: claims.conversationId,
       candidate: routed.candidate,
       ...(routed.semanticContext ? { semanticContext: routed.semanticContext } : {}),
+      ...(supportingSalesContext ? { salesContext: supportingSalesContext } : {}),
     });
     const interaction = result?.interaction || { type: 'denied', text: '该请求当前不可用。' };
     const preserveExpertAnswer = tool === 'ask_insurance_expert'

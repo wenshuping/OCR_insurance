@@ -371,6 +371,9 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   }).map((message) => message.content).join('\n');
 
   assert.match(prompt, /你是一名保险营销专家/u);
+  assert.match(prompt, /产品名称线索本身不能证明保险责任/u);
+  assert.match(prompt, /本轮最终回答始终围绕顾问的销售问题/u);
+  assert.match(prompt, /没有已核验证据时.*待核实.*仍要给出不依赖这些事实的跟进策略/u);
   assert.match(prompt, /只能回答“我是保险营销专家/u);
   assert.match(prompt, /sourceUpdated=true/);
   assert.match(prompt, /客户说预算不够怎么办/);
@@ -438,6 +441,21 @@ test('family sales chat answers identity questions as insurance marketing expert
   assert.equal(reply.model, 'identity_guard');
   assert.match(reply.content, /^我是保险营销专家/u);
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
+});
+
+test('open sales coaching keeps the full customer narrative and requires a complete customer profile', () => {
+  const question = '客户五十多岁，是普通职员，估计月收入七八千，夫妻分居，在杭州租房且没有孩子，已有新华保险康建华尊和平安年金险或增额终身寿险，比较在意养老，我怎么跟进？';
+  const messages = buildFamilySalesChatMessages({
+    context: { consultationScope: 'open', familyInput: {} },
+    question,
+  });
+  const prompt = messages.map((message) => message.content).join('\n');
+
+  assert.equal(messages.at(-1).content, question);
+  assert.match(prompt, /年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标/u);
+  assert.match(prompt, /严格区分客户事实、顾问估计和待核实项/u);
+  assert.match(prompt, /不得因产品名称模糊而忽略其余客户信息/u);
+  assert.match(prompt, /五十多岁.*月收入七八千.*夫妻分居.*杭州租房.*没有孩子.*在意养老/u);
 });
 
 test('family sales chat corrects a product comparison cashflow amount from the verified ledger', async () => {

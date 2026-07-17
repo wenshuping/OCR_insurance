@@ -4,7 +4,7 @@
 
 ## 独立 Profile
 
-独立目录的 `config.yaml` 只保留实际模型提供方配置，并注册名为 `ocr-insurance-domain` 的 stdio MCP，入口为当前代码版本的 `server/hermes-domain-mcp-server.mjs`。该 MCP 只暴露上述两个领域工具；终端、文件、网页和个人 MCP 不参与客户请求。
+独立目录的 `config.yaml` 只保留实际模型提供方配置，并注册名为 `ocr-insurance-domain` 的 stdio MCP，入口为当前代码版本的 `server/hermes-domain-mcp-server.mjs`。钉钉主路径启用 `ocr-insurance-domain,web`：领域 MCP 只暴露上述两个领域工具，`web` 只检索公开网页；终端、文件、浏览器自动化和个人 MCP 不参与客户请求。客户、家庭、保单、身份和健康信息不得进入网页查询，网页结果也不能取代领域工具的权限校验、保险事实核验或证据结论。
 
 开发栈默认使用 `~/.hermes/profiles/insuranceagent`，也可以在启动时显式覆盖这个目录：
 

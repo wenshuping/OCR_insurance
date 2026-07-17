@@ -378,6 +378,80 @@ test('Agent Loop receives the previous verified product as structured active con
   );
 });
 
+test('Agent Loop restores a confirmed product capability from the last authoritative answer after context expiry', async () => {
+  const context = createMemoryContext();
+  const officialName = '新华人寿保险股份有限公司尊佑金悦庆典版养老年金保险（分红型）';
+  context.rows.set('default:dingtalk:ding-a:7:expired-product', {
+    conversationId: 'expired-product-ref',
+    version: 3,
+    hermesSessionId: '',
+    agentLoopSessionId: 'expired-product-session',
+    history: [
+      { role: 'user', content: '介绍一下尊佑金悦庆典版' },
+      { role: 'assistant', content: `新华保险《${officialName}》：已核验。` },
+      { role: 'user', content: '怎么样呀' },
+      { role: 'assistant', content: `你是不是想查询以下产品？请回复 1 确认。\n\n1. 新华保险《${officialName}》` },
+    ],
+    product: null,
+    productCandidates: null,
+    question: null,
+    factBlock: null,
+  });
+  const boundProducts = [];
+  const authoritative = {
+    status: 'ok',
+    decision: 'execute',
+    interaction: { type: 'answer', text: '这款产品适合重视养老现金流的人群。', delivery: 'verbatim' },
+    resolvedEntities: { product: {
+      canonicalProductId: 'product_8395b4bee1d6c762',
+      company: '新华保险',
+      officialName,
+    } },
+  };
+  const agentLoopCalls = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { async runTurn(input) {
+      agentLoopCalls.push(input);
+      return { sessionId: 'recovered-product-session', finalReply: '模型草稿不会覆盖专家回答。' };
+    } },
+    toolCapabilityService: {
+      bindConfirmedProduct(token, product) {
+        assert.equal(token, 'opaque-capability');
+        boundProducts.push(product);
+      },
+      inspect() {
+        return { callCount: 1, toolResults: [{ tool: 'ask_insurance_expert', result: authoritative }] };
+      },
+    },
+    questionRouter: { async route() { throw new Error('Agent Loop should use the insurance expert tool'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'expired-product', 'expired-product-2', '怎么样呀'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.deepEqual(boundProducts, [{
+    canonicalProductId: 'product_8395b4bee1d6c762',
+    company: '新华保险',
+    officialName,
+  }]);
+  assert.equal(agentLoopCalls[0].safeRecentContext.activeEntities.product.officialName, officialName);
+  assert.equal(result.interaction.text, authoritative.interaction.text);
+  const committedProduct = context.rows.get('default:dingtalk:ding-a:7:expired-product').product;
+  assert.deepEqual({
+    productName: committedProduct.productName,
+    company: committedProduct.company,
+    canonicalProductId: committedProduct.canonicalProductId,
+  }, {
+    productName: officialName,
+    company: '新华保险',
+    canonicalProductId: 'product_8395b4bee1d6c762',
+  });
+  assert.equal(Number.isFinite(committedProduct.updatedAt), true);
+});
+
 test('explicit Direct mode binds an omitted product role from verified conversation context', async () => {
   const context = createMemoryContext();
   context.rows.set('default:dingtalk:ding-a:7:contextual-direct', {
@@ -814,6 +888,7 @@ test('Hermes Agent Loop preserves a complete authoritative product answer instea
       } } },
     }] }; } },
     toolGatewayUrl: 'http://127.0.0.1:4207/api/agent/hermes-tools',
+    now: () => 1_720_000_000_000,
     questionRouter: { async route() { throw new Error('must not route'); } },
   });
 
@@ -825,7 +900,12 @@ test('Hermes Agent Loop preserves a complete authoritative product answer instea
   assert.equal(result.interaction.text, authoritative);
   const stored = [...context.rows.values()][0];
   assert.equal(stored.history.at(-1).content, authoritative);
-  assert.equal(stored.product.productName, '新华人寿保险股份有限公司荣耀鑫享终身寿险');
+  assert.deepEqual(stored.product, {
+    productName: '新华人寿保险股份有限公司荣耀鑫享终身寿险',
+    company: '新华人寿保险股份有限公司',
+    canonicalProductId: 'product-glory',
+    updatedAt: 1_720_000_000_000,
+  });
 });
 
 test('Agent Loop never resumes a legacy Hermes classifier session', async () => {
@@ -944,6 +1024,8 @@ test('selecting a numbered product candidate keeps its company and original ques
   assert.equal(result.interaction.text, '已查询新华保险正式产品。');
   const stored = context.rows.get('default:dingtalk:ding-a:7:numbered-candidate');
   assert.equal(stored.productCandidates, null);
+  assert.equal(stored.product.company, '新华保险');
+  assert.equal(stored.product.canonicalProductId, 'product_dbc543be71a333f6');
   assert.equal(stored.question.candidate.entities.productCompany, '新华保险');
 });
 
@@ -1275,6 +1357,79 @@ test('Agent Loop returns an authoritative tool result without waiting for final 
     officialName: '寰宇尊悦高端医疗保险',
     canonicalProductId: 'product_10460b52297874bb',
   }]);
+});
+
+test('a confirmed sales product is parsed as insurance evidence and then resumes the original sales task', async () => {
+  const context = createMemoryContext();
+  const originalQuestion = '客户买了新华保险的康健华尊，很在意养老，我怎么跟进？';
+  const claims = { callCount: 1, toolResults: [{
+    tool: 'ask_sales_champion',
+    result: {
+      status: 'needs_clarification', decision: 'clarify',
+      interaction: {
+        type: 'clarification', text: '请先确认产品，之后继续给出销冠建议。',
+        candidates: [
+          { ref: 'product-1', label: '新华保险《康健华尊医疗保险A款》' },
+          { ref: 'product-2', label: '新华保险《康健华尊医疗保险B款》' },
+        ],
+      },
+    },
+  }] };
+  const firstRuntime = createAgentConversationRuntime({
+    conversationContext: context,
+    runtimeMode: 'agent_loop',
+    agentLoopClient: { runTurn({ signal }) {
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+        reject(Object.assign(new Error('aborted'), { code: 'HERMES_ABORTED' }));
+      }, { once: true }));
+    } },
+    toolCapabilityService: {
+      inspect() { return claims; },
+      async waitForResult() { return claims; },
+    },
+    toolGatewayUrl: 'http://127.0.0.1:4207/api/agent/hermes-tools',
+    questionRouter: { async route() { throw new Error('must not route before confirmation'); } },
+  });
+
+  const clarification = await firstRuntime.processMessage({
+    ...envelope('ding-a', 'sales-product-choice', 'sales-choice-1', originalQuestion),
+    toolCapability: 'opaque-capability',
+  });
+  assert.equal(clarification.decision, 'clarify');
+  const pending = context.rows.get('default:dingtalk:ding-a:7:sales-product-choice');
+  assert.equal(pending.question.candidate.intent, 'sales_coaching');
+  assert.equal(pending.question.candidate.question, originalQuestion);
+
+  const routed = [];
+  const secondRuntime = createAgentConversationRuntime({
+    conversationContext: context,
+    runtimeMode: 'agent_loop',
+    agentLoopClient: { async runTurn() { throw new Error('must not reinterpret a controlled selection'); } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '保险专家已解析产品，销冠建议先确认养老缺口和沟通许可。' } };
+    } },
+  });
+
+  const result = await secondRuntime.processMessage(envelope(
+    'ding-a', 'sales-product-choice', 'sales-choice-2', '2',
+  ));
+
+  assert.equal(result.interaction.text, '保险专家已解析产品，销冠建议先确认养老缺口和沟通许可。');
+  assert.equal(routed[0].candidate.intent, 'sales_coaching');
+  assert.equal(routed[0].candidate.question, originalQuestion);
+  assert.deepEqual(routed[0].salesContext, {
+    productMentions: ['康健华尊医疗保险B款'],
+    officialFactNeeds: ['main_responsibilities', 'product_advantages'],
+    resolvedProducts: [{
+      canonicalProductId: 'product_b35f2cdbb1fa60c0',
+      company: '新华保险',
+      officialName: '康健华尊医疗保险B款',
+    }],
+  });
+  const stored = context.rows.get('default:dingtalk:ding-a:7:sales-product-choice');
+  assert.equal(stored.productCandidates, null);
+  assert.equal(stored.product.productName, '康健华尊医疗保险B款');
 });
 
 test('Agent Loop retries one provider failure with a fresh session and never calls Direct', async () => {

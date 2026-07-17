@@ -99,6 +99,115 @@ test('open sales coaching reaches sales champion without family selection', asyn
   assert.deepEqual(harness.calls.audits[0].authorizedResourceIds, []);
 });
 
+test('customer follow-up remains a sales answer even when the story names an insurance product', async () => {
+  const harness = createHarness({
+    handlers: {
+      insurance_expert: async () => ({
+        facts: { certainty: 'supported' },
+        interaction: { type: 'answer', text: '不应调用的产品答案' },
+      }),
+      sales_champion: async () => ({ interaction: { type: 'answer', text: '先确认养老目标、夫妻决策关系和下一次见面的许可。' } }),
+    },
+  });
+  const question = '我昨天见了一个客户，他买了新华保险的康健华尊，然后他自己在平安有几个年金险或者增额终身寿险，夫妻关系不太好，现在是分居状态，怎么去跟进这个客户';
+
+  const result = await harness.router.route(routeInput({
+    intent: 'sales_coaching', question, entities: {}, confidence: 0.95,
+  }, {
+    messageRef: 'msg-sales-product-context',
+    salesContext: {
+      productMentions: ['新华保险的康健华尊'],
+      officialFactNeeds: [],
+      resolvedProducts: [{
+        canonicalProductId: 'product-kjhz', company: '新华保险', officialName: '新华人寿康健华尊医疗保险',
+      }],
+    },
+  }));
+
+  assert.equal(result.interaction.text, '先确认养老目标、夫妻决策关系和下一次见面的许可。');
+  assert.deepEqual(harness.calls.handlers.map((call) => call.key), ['sales_champion']);
+  assert.deepEqual(harness.calls.handlers[0].input.productMentions, ['新华保险的康健华尊']);
+  assert.deepEqual(harness.calls.handlers[0].input.officialFactNeeds, []);
+});
+
+test('fact-sensitive sales coaching gets verified insurance evidence but keeps the sales champion as final owner', async () => {
+  const harness = createHarness({
+    handlers: {
+      insurance_expert: async () => ({
+        facts: { certainty: 'supported' },
+        interaction: { type: 'answer', text: '已核验：续保条件以合同约定和届时规则为准。' },
+      }),
+      sales_champion: async (context) => ({
+        interaction: {
+          type: 'answer',
+          text: context.insuranceExpertEvidence?.length ? '销冠结合已核验事实给出沟通话术。' : '缺少事实证据。',
+        },
+      }),
+    },
+  });
+
+  const result = await harness.router.route(routeInput({
+    intent: 'sales_coaching',
+    question: '客户老婆问康健华尊怎么续保，我下一步应该怎么说？',
+    entities: {},
+    confidence: 0.95,
+  }, {
+    messageRef: 'msg-sales-fact-support',
+    salesContext: {
+      productMentions: ['康健华尊'],
+      officialFactNeeds: ['renewal'],
+      resolvedProducts: [{
+        canonicalProductId: 'product-kjhz', company: '新华保险', officialName: '新华人寿康健华尊医疗保险',
+      }],
+    },
+  }));
+
+  assert.equal(result.interaction.text, '销冠结合已核验事实给出沟通话术。');
+  assert.deepEqual(harness.calls.handlers.map((call) => call.key), ['insurance_expert', 'sales_champion']);
+  assert.equal(harness.calls.handlers[0].input.intent, 'insurance_product_knowledge');
+  assert.deepEqual(harness.calls.handlers[0].input.queryAspects, ['renewal']);
+  assert.deepEqual(harness.calls.handlers[1].input.insuranceExpertEvidence, [{
+    status: 'verified',
+    products: [{ company: '新华保险', officialName: '新华人寿康健华尊医疗保险' }],
+    answer: '已核验：续保条件以合同约定和届时规则为准。',
+  }]);
+  assert.equal(harness.calls.handlers[1].input.insuranceExpertEvidence[0].products[0].canonicalProductId, undefined);
+});
+
+test('unverified product lookup never becomes sales evidence and does not interrupt coaching', async () => {
+  const harness = createHarness({
+    handlers: {
+      insurance_expert: async () => ({
+        facts: { certainty: 'unverified' },
+        interaction: { type: 'answer', text: '模型猜测的续保信息' },
+      }),
+      sales_champion: async (context) => ({
+        interaction: {
+          type: 'answer',
+          text: context.insuranceExpertEvidence?.length ? '错误使用未核验内容' : '续保事实待核实，先这样跟进客户。',
+        },
+      }),
+    },
+  });
+
+  const result = await harness.router.route(routeInput({
+    intent: 'sales_coaching', question: '客户问康健华尊怎么续保，我应该怎么沟通？', entities: {}, confidence: 0.95,
+  }, {
+    messageRef: 'msg-sales-unverified-support',
+    salesContext: {
+      productMentions: ['康健华尊'],
+      officialFactNeeds: ['renewal'],
+      resolvedProducts: [{
+        canonicalProductId: 'product-kjhz', company: '新华保险', officialName: '新华人寿康健华尊医疗保险',
+      }],
+    },
+  }));
+
+  assert.equal(result.interaction.text, '续保事实待核实，先这样跟进客户。');
+  assert.deepEqual(harness.calls.handlers.map((call) => call.key), ['insurance_expert', 'sales_champion']);
+  assert.deepEqual(harness.calls.handlers[1].input.insuranceExpertEvidence, []);
+});
+
 const readPolicy = {
   key: 'family_summary',
   intent: 'family_summary',

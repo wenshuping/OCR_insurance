@@ -59,7 +59,7 @@ function sanitizeFamilySalesChatPublicIdentity(content = '') {
 
 function sanitizeFamilySalesChatInternalFields(content = '') {
   return trim(content).replace(
-    /`?(?:familyInput|consultationScope|sourceUpdated|latestSalesReview|latestFamilyReport|salesMemoryContext|policyImportContext)`?/gu,
+    /`?(?:familyInput|consultationScope|sourceUpdated|latestSalesReview|latestFamilyReport|salesMemoryContext|policyImportContext|productMentions|officialFactNeeds|insuranceExpertEvidence)`?/gu,
     '现有资料',
   );
 }
@@ -210,6 +210,9 @@ export function buildFamilySalesChatMessages({
         '10. 如果上下文包含 policyImportContext，它是 OCR Insurance 输出的脱敏保单草稿；只能引用其中已提供字段，并明确提示 missingFields。不得推测被掩码身份、保单号、证件号或原始图片内容。',
         '11. 开放式产品推荐不得从历史对话中擅自绑定某一款产品；缺少已核验候选产品及客户目标时，先给产品方向和需要确认的问题，再由受控产品知识流程核验具体产品。',
         '12. 不得向用户展示上下文 JSON 的字段名、内部变量名、数据结构或系统实现；只能用自然语言说明“现有资料”“已提供信息”或“待补充信息”。',
+        '13. 用户提到的保险公司或产品名称只是客户背景线索，不得因此把客户跟进、需求分析、异议处理或沟通话术改成产品检索；本轮最终回答始终围绕顾问的销售问题。',
+        '14. 产品名称线索本身不能证明保险责任。只有保险专家证据中标记为 verified 的内容可以作为官方产品事实；没有已核验证据时，把相关责任、续保、领取、现金价值或收益写成“待核实”，但仍要给出不依赖这些事实的跟进策略。',
+        '15. 开放式客户跟进要先根据顾问本轮原话形成客户画像，逐项覆盖已明确的年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标；严格区分客户事实、顾问估计和待核实项，不得因产品名称模糊而忽略其余客户信息。',
         '',
         '本轮 skill 规则：',
         ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),

@@ -28,6 +28,15 @@ function isFresh(value, asOf, ttlMs) {
   return value && Number.isFinite(Number(value.updatedAt)) && asOf - Number(value.updatedAt) <= ttlMs;
 }
 
+function recoverConfirmedProductIdentity(product, question) {
+  if (!product || (product.company && product.canonicalProductId)) return product;
+  const entities = question?.candidate?.entities;
+  if (String(entities?.productName || '').trim() !== String(product.productName || '').trim()) return product;
+  const company = String(entities?.productCompany || '').trim();
+  const canonicalProductId = String(entities?.productCanonicalId || '').trim();
+  return company && canonicalProductId ? { ...product, company, canonicalProductId } : product;
+}
+
 export function createAgentConversationContextService({ store, clock = Date.now, createId = randomUUID } = {}) {
   if (!store || typeof store.resolveAgentConversation !== 'function'
     || typeof store.findAgentConversation !== 'function'
@@ -59,7 +68,9 @@ export function createAgentConversationContextService({ store, clock = Date.now,
     const stored = await store.loadAgentConversationContext({ conversationId: conversation.id });
     const asOf = Number(input.asOf ?? clock());
     const ttlMs = validTtlMinutes(input.productContextTtlMinutes) * 60_000;
-    const product = isFresh(stored?.product, asOf, ttlMs) ? stored.product : null;
+    const product = isFresh(stored?.product, asOf, ttlMs)
+      ? recoverConfirmedProductIdentity(stored.product, stored?.question)
+      : null;
     const productCandidates = isFresh(stored?.productCandidates, asOf, ttlMs) ? stored.productCandidates : null;
     const question = isFresh(stored?.question, asOf, ttlMs) ? stored.question : null;
     const factBlock = product || productCandidates || question

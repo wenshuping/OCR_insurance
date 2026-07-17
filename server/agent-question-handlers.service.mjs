@@ -1,5 +1,6 @@
 import { createInsuranceExpertTool } from './insurance-expert-tool.service.mjs';
 import { createSalesChampionTool } from './sales-champion-tool.service.mjs';
+import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
 
 const HANDLER_ACTIONS = Object.freeze({
   insurance_expert: Object.freeze(['family_policy_summary', 'family_summary', 'view_family_coverage_report', 'coverage_report', 'insurance_product_knowledge']),
@@ -7,6 +8,8 @@ const HANDLER_ACTIONS = Object.freeze({
   system: Object.freeze(['family_list', 'upload_link', 'system_help', 'unknown_read', 'unknown_write', 'transfer_preview', 'memory_proposal']),
 });
 const SYSTEM_TOOLS = new Set(['list_families', 'create_upload_link', 'propose_memory', 'preview_transfer']);
+const SALES_QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
+const SALES_EVIDENCE_STATUSES = new Set(['verified', 'unavailable', 'unresolved']);
 
 const SAFE_SUMMARY_FIELDS = new Set([
   'memberCount', 'activeMemberCount', 'policyCount', 'validPolicyCount',
@@ -154,6 +157,33 @@ function safeSalesChatHistory(history = []) {
     const content = text(message?.content).slice(0, 4_000);
     return ['user', 'assistant'].includes(role) && content ? [{ role, content }] : [];
   });
+}
+
+function safeSalesProductSupport(context = {}) {
+  const productMentions = [...new Set((Array.isArray(context.productMentions) ? context.productMentions : [])
+    .map((item) => text(item).slice(0, 200))
+    .filter(Boolean))].slice(0, 5);
+  const officialFactNeeds = [...new Set((Array.isArray(context.officialFactNeeds) ? context.officialFactNeeds : [])
+    .map((item) => text(item))
+    .filter((item) => SALES_QUERY_ASPECTS.has(item)))].slice(0, 8);
+  const insuranceExpertEvidence = (Array.isArray(context.insuranceExpertEvidence)
+    ? context.insuranceExpertEvidence : []).slice(0, 2).flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const status = text(item.status).slice(0, 40);
+    if (!SALES_EVIDENCE_STATUSES.has(status)) return [];
+    const products = (Array.isArray(item.products) ? item.products : []).slice(0, 5).flatMap((product) => {
+      const company = text(product?.company).slice(0, 200);
+      const officialName = text(product?.officialName).slice(0, 200);
+      return company && officialName ? [{ company, officialName }] : [];
+    });
+    const answer = status === 'verified' ? text(item.answer).slice(0, 12_000) : '';
+    return status ? [{ status, products, ...(answer ? { answer } : {}) }] : [];
+  });
+  return {
+    ...(productMentions.length ? { productMentions } : {}),
+    ...(officialFactNeeds.length ? { officialFactNeeds } : {}),
+    ...(insuranceExpertEvidence.length ? { insuranceExpertEvidence } : {}),
+  };
 }
 
 function denial(reason = 'ACTION_NOT_ALLOWED') {
@@ -556,6 +586,7 @@ export function createAgentQuestionHandlers({
   async function coach(context) {
     const internalUserId = positiveInteger(context?.internalUserId, 'internalUserId');
     const familyId = Number(context?.familyId || 0);
+    const productSupport = safeSalesProductSupport(context);
     if (!familyId) {
       let result;
       try {
@@ -567,6 +598,7 @@ export function createAgentQuestionHandlers({
             familyInput: {},
             latestSalesReview: null,
             latestFamilyReport: null,
+            ...productSupport,
           },
           history: safeSalesChatHistory(context?.history),
           question: text(context?.question).replace(/\s+/gu, ' ').slice(0, 2_000),
@@ -613,7 +645,7 @@ export function createAgentQuestionHandlers({
       generatedAt: clock().toISOString(),
     });
     const result = await generateFamilySalesChatReply({
-      context: chatContext,
+      context: { ...chatContext, ...productSupport },
       history: safeSalesChatHistory([
         ...(Array.isArray(trusted.history) ? trusted.history : []),
         ...(Array.isArray(context?.history) ? context.history : []),

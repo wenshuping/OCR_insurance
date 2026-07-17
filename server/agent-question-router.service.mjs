@@ -119,6 +119,42 @@ function projectSemanticProducts(candidate, semanticContext) {
   };
 }
 
+function projectSalesContext(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { productMentions: [], officialFactNeeds: [], resolvedProducts: [] };
+  }
+  const productMentions = [...new Set((Array.isArray(value.productMentions) ? value.productMentions : [])
+    .map((item) => boundedString(item, 200))
+    .filter(Boolean))].slice(0, 5);
+  const officialFactNeeds = [...new Set((Array.isArray(value.officialFactNeeds) ? value.officialFactNeeds : [])
+    .filter((item) => typeof item === 'string' && QUERY_ASPECTS.has(item)))].slice(0, 8);
+  const resolvedProducts = (Array.isArray(value.resolvedProducts) ? value.resolvedProducts : [])
+    .slice(0, 5)
+    .flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const canonicalProductId = boundedString(item.canonicalProductId, 200);
+      const company = boundedString(item.company, 200);
+      const officialName = boundedString(item.officialName, 200);
+      return canonicalProductId && company && officialName
+        ? [{ canonicalProductId, company, officialName }]
+        : [];
+    })
+    .filter((product, index, products) => products.findIndex((candidate) => (
+      candidate.canonicalProductId === product.canonicalProductId
+    )) === index);
+  return { productMentions, officialFactNeeds, resolvedProducts };
+}
+
+function supportingInsuranceEvidence(result, product) {
+  const answer = boundedString(result?.interaction?.text, 12_000);
+  if (result?.facts?.certainty !== 'supported' || result?.interaction?.type !== 'answer' || !answer) return null;
+  return {
+    status: 'verified',
+    products: [{ company: product.company, officialName: product.officialName }],
+    answer,
+  };
+}
+
 async function defaultFamilyResolver({ store, state, internalUserId }) {
   if (typeof store.listAuthorizedFamilyProfiles === 'function') {
     return store.listAuthorizedFamilyProfiles({ internalUserId });
@@ -311,6 +347,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     conversationContext,
     conversationHistory,
     semanticContext,
+    salesContext,
   } = {}) {
     const userId = Number(internalUserId);
     if (!Number.isInteger(userId) || userId <= 0) throw new TypeError('internalUserId is required');
@@ -450,6 +487,31 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
         ? { history: projectConversationHistory(conversationHistory) }
         : {}),
     };
+    if (policy.intent === 'sales_coaching') {
+      const trustedSalesContext = projectSalesContext(salesContext);
+      authorizedContext.productMentions = trustedSalesContext.productMentions;
+      authorizedContext.officialFactNeeds = trustedSalesContext.officialFactNeeds;
+      const officialFactsRequired = trustedSalesContext.officialFactNeeds.length > 0
+        || salesChampionShadow?.readiness?.officialFactsRequired === true;
+      if (officialFactsRequired && trustedSalesContext.resolvedProducts.length > 0
+        && typeof handlers?.insurance_expert === 'function') {
+        const evidence = await Promise.all(trustedSalesContext.resolvedProducts.slice(0, 2).map(async (product) => {
+          try {
+            const result = await handlers.insurance_expert({
+              internalUserId: userId,
+              intent: 'insurance_product_knowledge',
+              question: candidate.question,
+              resolvedProduct: product,
+              queryAspects: trustedSalesContext.officialFactNeeds,
+            });
+            return supportingInsuranceEvidence(result, product);
+          } catch {
+            return null;
+          }
+        }));
+        authorizedContext.insuranceExpertEvidence = evidence.filter(Boolean);
+      }
+    }
     if (policy.intent === 'insurance_product_knowledge') {
       const semanticProduct = projectSemanticProduct(candidate, semanticContext);
       const semanticProducts = projectSemanticProducts(candidate, semanticContext);

@@ -53,6 +53,37 @@ test('sales champion drops raw family facts and rejects insurance expert actions
   } }), /tool is not allowed/u);
 });
 
+test('sales champion keeps bounded product clues and verified expert evidence without internal product ids', async () => {
+  let received;
+  const tool = createSalesChampionTool({ execute(_action, context) { received = context; return result(); } });
+  await tool.askSalesChampionTool({ context: {
+    internalUserId: 7,
+    intent: 'sales_coaching',
+    question: '客户问续保时怎么沟通',
+    productMentions: ['新华保险的康健华尊', '新华保险的康健华尊'],
+    officialFactNeeds: ['renewal', 'unknown'],
+    insuranceExpertEvidence: [{
+      status: 'verified',
+      products: [{
+        canonicalProductId: 'internal-product-id',
+        company: '新华保险',
+        officialName: '新华人寿保险股份有限公司康健华尊医疗保险',
+      }],
+      answer: '续保结论以已核验条款为准。',
+      rawChunks: ['drop'],
+    }],
+  } });
+
+  assert.deepEqual(received.productMentions, ['新华保险的康健华尊']);
+  assert.deepEqual(received.officialFactNeeds, ['renewal']);
+  assert.deepEqual(received.insuranceExpertEvidence, [{
+    status: 'verified',
+    products: [{ company: '新华保险', officialName: '新华人寿保险股份有限公司康健华尊医疗保险' }],
+    answer: '续保结论以已核验条款为准。',
+  }]);
+  assert.doesNotMatch(JSON.stringify(received), /internal-product-id|rawChunks/u);
+});
+
 test('sales champion returns a structured timeout error', async () => {
   const tool = createSalesChampionTool({ timeoutMs: 5, execute: () => new Promise(() => {}) });
   await assert.rejects(

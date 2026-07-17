@@ -151,6 +151,40 @@ test('domain gateway preserves an unspecified aspect instead of inventing respon
   assert.deepEqual(routed[0].semanticContext.queryAspects, []);
 });
 
+test('domain gateway reuses the exact product bound to the current tool capability', async () => {
+  const product = {
+    canonicalProductId: 'product-zjy',
+    company: '新华保险',
+    officialName: '新华人寿保险股份有限公司尊佑金悦庆典版养老年金保险（分红型）',
+  };
+  const routed = [];
+  const gateway = createAgentDomainToolGateway({
+    async resolveChannelIdentity() { return { internalUserId: 7 }; },
+    productResolver: { async resolve(input) {
+      assert.deepEqual(input.confirmedCandidate, product);
+      return { status: 'resolved', entity: { ...product, matchType: 'confirmed_candidate', confidence: 1 }, candidates: [] };
+    } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '直接回答产品评价。' } };
+    } },
+  });
+
+  const result = await gateway.execute({
+    tool: 'ask_insurance_expert',
+    input: { question: '怎么样呀', operation: 'product_knowledge', names: [product.officialName] },
+    claims: claims({ confirmedProduct: product }),
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.interaction.text, '直接回答产品评价。');
+  assert.deepEqual(routed[0].candidate.entities, {
+    productName: product.officialName,
+    productCanonicalId: product.canonicalProductId,
+    productCompany: product.company,
+  });
+});
+
 test('domain gateway separates a natural insurer prefix from the product name chosen by Hermes', async () => {
   const routed = [];
   const gateway = createAgentDomainToolGateway({
@@ -213,6 +247,136 @@ test('domain gateway returns product candidates without sending the question thr
   assert.deepEqual(result.interaction.candidates.map((item) => item.label), [
     '甲公司《甲产品》', '乙公司《乙产品》',
   ]);
+});
+
+test('an ambiguous supporting product does not block a customer follow-up sales task', async () => {
+  const routed = [];
+  const question = '我昨天见了一个客户，他买了新华保险的康健华尊，然后他自己在那个平安有几个年金险或者增额终身寿险，问怎么去跟进这个客户';
+  const gateway = createAgentDomainToolGateway({
+    async resolveChannelIdentity() { return { internalUserId: 7 }; },
+    productResolver: { async resolve({ mentions }) {
+      assert.deepEqual(mentions, [
+        { type: 'insurer', rawText: '新华保险' },
+        { type: 'product', rawText: '康健华尊' },
+      ]);
+      return { status: 'ambiguous', entity: null, candidates: [
+        { canonicalProductId: 'product-a', company: '新华保险', officialName: '候选产品甲' },
+        { canonicalProductId: 'product-b', company: '新华保险', officialName: '候选产品乙' },
+      ] };
+    } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '先围绕养老目标和夫妻决策关系做需求访谈。' } };
+    } },
+  });
+
+  const result = await gateway.execute({
+    tool: 'ask_sales_champion',
+    input: {
+      question,
+      operation: 'sales_coaching',
+      productMentions: ['新华保险的康健华尊'],
+    },
+    claims: claims(),
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.interaction.text, '先围绕养老目标和夫妻决策关系做需求访谈。');
+  assert.equal(routed[0].candidate.question, question);
+  assert.deepEqual(routed[0].salesContext, {
+    productMentions: ['新华保险的康健华尊'],
+    officialFactNeeds: [],
+    resolvedProducts: [],
+  });
+});
+
+test('an ambiguous sales product still requires confirmation when advice needs official product facts', async () => {
+  let routeCalls = 0;
+  const gateway = createAgentDomainToolGateway({
+    async resolveChannelIdentity() { return { internalUserId: 7 }; },
+    productResolver: { async resolve() {
+      return { status: 'ambiguous', entity: null, candidates: [
+        { canonicalProductId: 'product-a', company: '新华保险', officialName: '康健华尊医疗保险A款' },
+        { canonicalProductId: 'product-b', company: '新华保险', officialName: '康健华尊医疗保险B款' },
+      ] };
+    } },
+    questionRouter: { async route() { routeCalls += 1; } },
+  });
+
+  const result = await gateway.execute({
+    tool: 'ask_sales_champion',
+    input: {
+      question: '客户问康健华尊续保时，我下一步怎么沟通？',
+      operation: 'sales_coaching',
+      productMentions: ['康健华尊'],
+      officialFactNeeds: ['renewal'],
+    },
+    claims: claims(),
+  });
+
+  assert.equal(result.status, 'needs_clarification');
+  assert.equal(result.candidateType, 'product');
+  assert.equal(result.interaction.candidates.length, 2);
+  assert.equal(routeCalls, 0);
+});
+
+test('sales coaching carries a uniquely resolved product only as optional insurance evidence context', async () => {
+  const routed = [];
+  const gateway = createAgentDomainToolGateway({
+    async resolveChannelIdentity() { return { internalUserId: 7 }; },
+    productResolver: { async resolve() {
+      return resolvedProduct('康健华尊医疗保险');
+    } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '销冠回答' } };
+    } },
+  });
+
+  await gateway.execute({
+    tool: 'ask_sales_champion',
+    input: {
+      question: '客户问康健华尊续保时，我下一步怎么沟通？',
+      operation: 'sales_coaching',
+      productMentions: ['康健华尊医疗保险'],
+      officialFactNeeds: ['renewal'],
+    },
+    claims: claims(),
+  });
+
+  assert.deepEqual(routed[0].salesContext, {
+    productMentions: ['康健华尊医疗保险'],
+    officialFactNeeds: ['renewal'],
+    resolvedProducts: [{
+      canonicalProductId: 'product-康健华尊医疗保险',
+      company: '甲公司',
+      officialName: '康健华尊医疗保险',
+    }],
+  });
+});
+
+test('a uniquely resolved supporting product does not invent official fact needs', async () => {
+  const routed = [];
+  const gateway = createAgentDomainToolGateway({
+    async resolveChannelIdentity() { return { internalUserId: 7 }; },
+    productResolver: { async resolve() { return resolvedProduct('康健华尊医疗保险'); } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '销冠回答' } };
+    } },
+  });
+
+  await gateway.execute({
+    tool: 'ask_sales_champion',
+    input: {
+      question: '客户买了康健华尊医疗保险，我怎么跟进？',
+      operation: 'sales_coaching',
+      productMentions: ['康健华尊医疗保险'],
+    },
+    claims: claims(),
+  });
+
+  assert.deepEqual(routed[0].salesContext.officialFactNeeds, []);
 });
 
 test('domain gateway rejects model-supplied authority and cross-domain operations', async () => {

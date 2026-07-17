@@ -69,8 +69,10 @@ function resolvedEntities(value) {
   };
 }
 
-function publicProductCandidates(value, tool) {
-  if (tool !== 'ask_insurance_expert' || !Array.isArray(value)) return [];
+function publicProductCandidates(value, tool, candidateType) {
+  const productCandidatesAllowed = tool === 'ask_insurance_expert'
+    || (tool === 'ask_sales_champion' && candidateType === 'product');
+  if (!productCandidatesAllowed || !Array.isArray(value)) return [];
   return value.slice(0, 10).flatMap((candidate) => {
     const ref = typeof candidate?.ref === 'string' ? candidate.ref.trim().slice(0, 200) : '';
     const label = typeof candidate?.label === 'string' ? candidate.label.trim().slice(0, 200) : '';
@@ -82,6 +84,7 @@ function copyClaims(claims) {
   return {
     ...claims,
     allowedTools: [...claims.allowedTools],
+    ...(claims.confirmedProduct ? { confirmedProduct: { ...claims.confirmedProduct } } : {}),
     toolResults: (Array.isArray(claims.toolResults) ? claims.toolResults : []).map((item) => structuredClone(item)),
   };
 }
@@ -167,6 +170,28 @@ export function createAgentToolCapabilityService({
     return copyClaims(claims);
   }
 
+  function bindConfirmedProduct(tokenValue, productValue) {
+    const token = requiredText(tokenValue, 'token', 500);
+    const product = record(productValue, 'AGENT_TOOL_CAPABILITY_CONFIRMED_PRODUCT_INVALID');
+    if (Object.keys(product).some((key) => !['canonicalProductId', 'company', 'officialName'].includes(key))) {
+      throw capabilityError('AGENT_TOOL_CAPABILITY_CONFIRMED_PRODUCT_INVALID');
+    }
+    const now = timestamp(clock);
+    cleanup(now);
+    const claims = capabilities.get(token);
+    if (!claims) throw capabilityError('AGENT_TOOL_CAPABILITY_NOT_FOUND');
+    if (claims.expiresAt <= now) {
+      capabilities.delete(token);
+      throw capabilityError('AGENT_TOOL_CAPABILITY_EXPIRED');
+    }
+    claims.confirmedProduct = {
+      canonicalProductId: requiredText(product.canonicalProductId, 'confirmed_product_canonical_id'),
+      company: requiredText(product.company, 'confirmed_product_company'),
+      officialName: requiredText(product.officialName, 'confirmed_product_official_name'),
+    };
+    return copyClaims(claims);
+  }
+
   function revoke(tokenValue) {
     const token = requiredText(tokenValue, 'token', 500);
     const now = timestamp(clock);
@@ -183,7 +208,7 @@ export function createAgentToolCapabilityService({
     }
     const interaction = result?.interaction;
     const interactionText = typeof interaction?.text === 'string' ? interaction.text.trim().slice(0, 48_000) : '';
-    const candidates = publicProductCandidates(interaction?.candidates, toolName);
+    const candidates = publicProductCandidates(interaction?.candidates, toolName, result?.candidateType);
     const entities = resolvedEntities(result?.resolvedEntities);
     claims.toolResults.push({
       tool: toolName,
@@ -235,5 +260,5 @@ export function createAgentToolCapabilityService({
     return copyClaims(claims);
   }
 
-  return Object.freeze({ issue, consume, inspect, recordResult, waitForResult, revoke });
+  return Object.freeze({ issue, bindConfirmedProduct, consume, inspect, recordResult, waitForResult, revoke });
 }

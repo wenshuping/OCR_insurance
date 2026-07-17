@@ -3002,6 +3002,7 @@ export function createPolicyOcrApp(options = {}) {
         questionRouter: agentQuestionRouter,
         resolveChannelIdentity: options.resolveDingTalkIdentity,
         productResolver: agentProductResolver,
+        conversationContext: agentConversationContext,
       })
       : null
   );

@@ -36,16 +36,25 @@ function candidateProduct(value) {
   return { ...stored, label, productName, company, canonicalProductId };
 }
 
-function recentFormalProductName(history) {
+function recentFormalProduct(history) {
   const messages = Array.isArray(history) ? history : [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.role !== 'assistant') continue;
-    const names = [...new Set([...String(messages[index]?.content || '').matchAll(/《([^》\n]{2,200})》/gu)]
-      .map((match) => String(match[1] || '').trim())
-      .filter(Boolean))];
-    if (names.length) return names.length === 1 ? names[0] : '';
+    const content = String(messages[index]?.content || '');
+    const formalNames = [...new Set([...content.matchAll(/《([^》\n]{2,200})》/gu)]
+      .map((match) => String(match[1] || '').trim()).filter(Boolean))];
+    const match = content.match(/^\s*(?:#{1,6}\s*)?([^《》\n]{1,100}?)\s*《([^》\n]{2,200})》/u);
+    if (!match || formalNames.length !== 1) continue;
+    const company = String(match[1] || '').trim();
+    const productName = String(match[2] || '').trim();
+    if (!company || company.length > 50 || /^\d+[.、)]/u.test(company) || /[，。！？：:；]/u.test(company)) continue;
+    return candidateProduct({
+      label: `${company}《${productName}》`,
+      company,
+      officialName: productName,
+    });
   }
-  return '';
+  return null;
 }
 
 function bindActiveProductReference(proposal, question, activeProductName) {
@@ -78,17 +87,33 @@ function bindActiveProductReference(proposal, question, activeProductName) {
   };
 }
 
-function authoritativeProductName(toolResults) {
-  const names = [...new Set((Array.isArray(toolResults) ? toolResults : []).flatMap((item) => {
+function authoritativeProduct(toolResults) {
+  const products = (Array.isArray(toolResults) ? toolResults : []).flatMap((item) => {
     const interaction = item?.result?.interaction;
     if (item?.tool !== 'ask_insurance_expert'
       || item?.result?.status !== 'ok'
       || item?.result?.decision !== 'execute'
       || interaction?.delivery !== 'verbatim') return [];
-    const officialName = String(item?.result?.resolvedEntities?.product?.officialName || '').trim();
-    return officialName ? [officialName] : [];
-  }))];
-  return names.length === 1 ? names[0] : '';
+    const product = candidateProduct(item?.result?.resolvedEntities?.product);
+    return product ? [product] : [];
+  });
+  const unique = products.filter((product, index) => products.findIndex((candidate) => (
+    candidate.canonicalProductId === product.canonicalProductId
+      && candidate.company === product.company
+      && candidate.productName === product.productName
+  )) === index);
+  return unique.length === 1 ? unique[0] : null;
+}
+
+function rememberedProduct(product, updatedAt) {
+  const candidate = candidateProduct(product);
+  if (!candidate) return null;
+  return {
+    productName: candidate.productName,
+    ...(candidate.company ? { company: candidate.company } : {}),
+    ...(candidate.canonicalProductId ? { canonicalProductId: candidate.canonicalProductId } : {}),
+    updatedAt,
+  };
 }
 
 function authoritativeToolInteraction(toolResults) {
@@ -283,9 +308,24 @@ export function createAgentConversationRuntime({
       reportError('HERMES_CLIENT_UNAVAILABLE');
       return hermesUnavailableResult('HERMES_CLIENT_UNAVAILABLE');
     }
-    const activeProductName = (
-      String(context?.product?.productName || '').trim() || recentFormalProductName(history)
-    ).slice(0, 200);
+    const storedProduct = candidateProduct(context?.product);
+    const recentProduct = recentFormalProduct(history);
+    const activeProductName = String(storedProduct?.productName || recentProduct?.productName || '').trim().slice(0, 200);
+    const hasStoredProductIdentity = String(context?.product?.company || '').trim()
+      && String(context?.product?.canonicalProductId || '').trim();
+    const confirmedActiveProduct = hasStoredProductIdentity && storedProduct
+      ? {
+        canonicalProductId: storedProduct.canonicalProductId,
+        company: storedProduct.company,
+        officialName: storedProduct.productName,
+      }
+      : recentProduct?.productName === activeProductName && recentProduct.company && recentProduct.canonicalProductId
+        ? {
+          canonicalProductId: recentProduct.canonicalProductId,
+          company: recentProduct.company,
+          officialName: recentProduct.productName,
+        }
+        : null;
     async function ensureIdentityCurrent() {
       if (typeof refreshVerifiedIdentity !== 'function') return;
       const currentIdentity = await refreshVerifiedIdentity();
@@ -298,20 +338,34 @@ export function createAgentConversationRuntime({
     }
     async function commitAgentReply(replyText, agentLoopSessionId, toolResults = []) {
       const updatedAt = Number(now());
-      const productName = authoritativeProductName(toolResults);
-      const toolInteraction = [...toolResults].reverse()
-        .find((item) => item?.tool === 'ask_insurance_expert')?.result?.interaction;
+      const product = authoritativeProduct(toolResults);
+      const candidateToolResult = [...toolResults].reverse()
+        .find((item) => Array.isArray(item?.result?.interaction?.candidates));
+      const toolInteraction = candidateToolResult?.result?.interaction;
       const products = candidateProducts(toolInteraction);
-      const recoveredProduct = !context.product && activeProductName
-        ? { productName: activeProductName, updatedAt }
+      const pendingSalesQuestion = products.length && candidateToolResult?.tool === 'ask_sales_champion'
+        ? {
+          candidate: {
+            intent: 'sales_coaching',
+            question,
+            confidence: 1,
+            requestedOperation: 'read',
+          },
+          updatedAt,
+        }
         : null;
-      const committedProduct = productName ? { productName, updatedAt } : (context.product || recoveredProduct);
+      const recoveredProduct = !context.product && confirmedActiveProduct
+        ? rememberedProduct(confirmedActiveProduct, updatedAt)
+        : !context.product && activeProductName
+          ? { productName: activeProductName, updatedAt }
+        : null;
+      const committedProduct = product ? rememberedProduct(product, updatedAt) : (context.product || recoveredProduct);
       const owner = toolResults.some((item) => item?.tool === 'ask_insurance_expert')
         ? 'insurance_expert'
         : toolResults.some((item) => item?.tool === 'ask_sales_champion') ? 'sales_champion' : 'hermes';
       const committedCandidates = products.length
         ? { products, question, updatedAt }
-        : productName ? null : context.productCandidates;
+        : product ? null : context.productCandidates;
       try {
         await conversationContext.commitContext({
           ...identity,
@@ -328,14 +382,14 @@ export function createAgentConversationRuntime({
           ].slice(-settings.fallbackHistoryMessageLimit),
           product: committedProduct,
           productCandidates: committedCandidates,
-          question: context.question,
+          question: pendingSalesQuestion || context.question,
           factBlock: compileAgentContextFactBlock({
             previous: context.factBlock,
             currentQuestion: question,
             taskStatus: products.length ? 'needs_clarification' : 'completed',
             owner,
             product: committedProduct,
-            productSource: productName ? 'domain_agent' : 'conversation_context',
+            productSource: product ? 'domain_agent' : 'conversation_context',
             productCandidates: committedCandidates,
             updatedAt,
           }),
@@ -351,8 +405,20 @@ export function createAgentConversationRuntime({
     let mustUseToolAfterContextRetry = false;
     let retryAfterContextCollision = false;
     const selectedProduct = selectedCandidateProduct(question, context?.productCandidates?.products);
+    const pendingSalesCandidate = context?.question?.candidate?.intent === 'sales_coaching'
+      ? context.question.candidate
+      : null;
+    const resumesSalesCoaching = Boolean(selectedProduct && pendingSalesCandidate);
     const controlledCandidateSelection = Boolean((agentLoopMode || semanticMode)
       && (selectedProduct || selectedCandidateIndex(question) >= 0));
+    if (agentLoopMode && toolCapability && confirmedActiveProduct
+      && typeof toolCapabilityService?.bindConfirmedProduct === 'function') {
+      try {
+        toolCapabilityService.bindConfirmedProduct(toolCapability, confirmedActiveProduct);
+      } catch {
+        reportError('AGENT_TOOL_CONTEXT_BIND_FAILED');
+      }
+    }
     if (agentLoopMode && !controlledCandidateSelection) {
       try {
         let agentResult;
@@ -479,19 +545,38 @@ export function createAgentConversationRuntime({
     let semanticFallbackReason = agentLoopFallbackReason;
     let hermesSessionId = String(context?.hermesSessionId || '');
     let usedRuntime = 'direct';
+    let selectedSalesContext;
     if (selectedProduct && !semanticCandidateSelection) {
       proposal = undefined;
-      candidate = {
-        intent: 'insurance_product_knowledge',
-        question: selectedProductQuestion(context.productCandidates.question || '', selectedProduct),
-        confidence: 1,
-        requestedOperation: 'read',
-        entities: {
-          productName: selectedProduct.productName,
-          ...(selectedProduct.company ? { productCompany: selectedProduct.company } : {}),
-          ...(selectedProduct.canonicalProductId ? { productCanonicalId: selectedProduct.canonicalProductId } : {}),
-        },
-      };
+      if (resumesSalesCoaching) {
+        candidate = {
+          intent: 'sales_coaching',
+          question: String(pendingSalesCandidate.question || context.productCandidates.question || '').trim().slice(0, 1_000),
+          confidence: 1,
+          requestedOperation: 'read',
+        };
+        selectedSalesContext = {
+          productMentions: [selectedProduct.productName],
+          officialFactNeeds: ['main_responsibilities', 'product_advantages'],
+          resolvedProducts: [{
+            canonicalProductId: selectedProduct.canonicalProductId,
+            company: selectedProduct.company,
+            officialName: selectedProduct.productName,
+          }],
+        };
+      } else {
+        candidate = {
+          intent: 'insurance_product_knowledge',
+          question: selectedProductQuestion(context.productCandidates.question || '', selectedProduct),
+          confidence: 1,
+          requestedOperation: 'read',
+          entities: {
+            productName: selectedProduct.productName,
+            ...(selectedProduct.company ? { productCompany: selectedProduct.company } : {}),
+            ...(selectedProduct.canonicalProductId ? { productCanonicalId: selectedProduct.canonicalProductId } : {}),
+          },
+        };
+      }
     } else if (!semanticCandidateSelection
       && semanticMode && hermesClient && typeof hermesClient.runTurn === 'function') {
       usedRuntime = 'hermes';
@@ -576,7 +661,8 @@ export function createAgentConversationRuntime({
       });
     } else {
       candidate = resolved.candidate;
-      const selectedSemanticContext = selectedProduct?.canonicalProductId && selectedProduct?.company
+      const selectedSemanticContext = !resumesSalesCoaching
+        && selectedProduct?.canonicalProductId && selectedProduct?.company
         ? {
           resolvedEntities: { product: {
             canonicalProductId: selectedProduct.canonicalProductId,
@@ -593,6 +679,7 @@ export function createAgentConversationRuntime({
         ...(channelEnvelope?.conversationId ? { conversationId: identity.channelConversationId } : {}),
         candidate,
         ...(selectedSemanticContext ? { semanticContext: selectedSemanticContext } : {}),
+        ...(selectedSalesContext ? { salesContext: selectedSalesContext } : {}),
       });
     }
     await ensureIdentityCurrent();
@@ -602,9 +689,26 @@ export function createAgentConversationRuntime({
     const explicitProduct = !isComparison ? String(candidate?.entities?.productName || '').trim() : '';
     const canonicalProduct = !isComparison ? (productNameFromReply(replyText) || explicitProduct) : '';
     const updatedAt = Number(now());
+    const explicitProductContext = explicitProduct ? rememberedProduct({
+      officialName: explicitProduct,
+      company: candidate?.entities?.productCompany,
+      canonicalProductId: candidate?.entities?.productCanonicalId,
+    }, updatedAt) : null;
+    const selectedProductContext = selectedProduct ? rememberedProduct(selectedProduct, updatedAt) : null;
     const committedProduct = canonicalProduct
-      ? { productName: canonicalProduct, updatedAt }
-      : (context.product || (activeProductName ? { productName: activeProductName, updatedAt } : null));
+      ? {
+        productName: canonicalProduct,
+        ...(explicitProductContext?.productName === canonicalProduct && explicitProductContext.company
+          ? { company: explicitProductContext.company }
+          : {}),
+        ...(explicitProductContext?.productName === canonicalProduct && explicitProductContext.canonicalProductId
+          ? { canonicalProductId: explicitProductContext.canonicalProductId }
+          : {}),
+        updatedAt,
+      }
+      : (selectedProductContext || context.product || (confirmedActiveProduct
+        ? rememberedProduct(confirmedActiveProduct, updatedAt)
+        : activeProductName ? { productName: activeProductName, updatedAt } : null));
     const committedCandidates = products.length
       ? { products, question, updatedAt }
       : (selectedProduct || clarificationCandidate) ? null : context.productCandidates;

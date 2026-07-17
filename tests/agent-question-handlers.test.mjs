@@ -456,11 +456,25 @@ test('open sales coaching uses the sales champion without loading family data', 
       { role: 'user', content: '我有100万存款到期' },
       { role: 'assistant', content: '请补充身体情况' },
     ],
+    productMentions: ['新华保险的康健华尊'],
+    officialFactNeeds: ['renewal'],
+    insuranceExpertEvidence: [{
+      status: 'verified',
+      products: [{ company: '新华保险', officialName: '康健华尊医疗保险', canonicalProductId: 'drop-id' }],
+      answer: '已核验续保信息。',
+    }],
   });
 
   assert.equal(result.presentation.message, '先确认养老目标、资金使用期限和流动性要求。');
   assert.equal(generateInput.context.consultationScope, 'open');
   assert.deepEqual(generateInput.context.familyInput, {});
+  assert.deepEqual(generateInput.context.productMentions, ['新华保险的康健华尊']);
+  assert.deepEqual(generateInput.context.officialFactNeeds, ['renewal']);
+  assert.deepEqual(generateInput.context.insuranceExpertEvidence, [{
+    status: 'verified',
+    products: [{ company: '新华保险', officialName: '康健华尊医疗保险' }],
+    answer: '已核验续保信息。',
+  }]);
   assert.deepEqual(generateInput.history, [
     { role: 'user', content: '我有100万存款到期' },
     { role: 'assistant', content: '请补充身体情况' },
