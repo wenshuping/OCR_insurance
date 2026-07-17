@@ -7,7 +7,6 @@ import {
   validateAgentQuestionPolicy,
 } from './agent-question-policy.service.mjs';
 import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
-import { routeSalesChampionShadowTurn } from './sales-champion-shadow-interpreter.service.mjs';
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -143,16 +142,6 @@ function projectSalesContext(value) {
       candidate.canonicalProductId === product.canonicalProductId
     )) === index);
   return { productMentions, officialFactNeeds, resolvedProducts };
-}
-
-function supportingInsuranceEvidence(result, product) {
-  const answer = boundedString(result?.interaction?.text, 12_000);
-  if (result?.facts?.certainty !== 'supported' || result?.interaction?.type !== 'answer' || !answer) return null;
-  return {
-    status: 'verified',
-    products: [{ company: product.company, officialName: product.officialName }],
-    answer,
-  };
 }
 
 async function defaultFamilyResolver({ store, state, internalUserId }) {
@@ -361,10 +350,6 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       : null;
     const selected = selectPolicy(candidate, published);
     const policy = selected.policy;
-    const salesChampionShadow = candidate.intent === 'sales_coaching'
-      ? routeSalesChampionShadowTurn({ question: candidate.question })
-      : null;
-
     let authorizedResourceIds = [];
     const finish = async (result, resultCode = 'completed') => {
       const safe = publicResult(result, result?.decision || 'deny');
@@ -387,7 +372,6 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
         decision: safe.decision,
         fallback: policy?.key === 'unknown_read' || policy?.key === 'unknown_write',
         result: resultCode,
-        ...(salesChampionShadow ? { salesChampionShadow } : {}),
         actor: 'agent_question_router',
         createdAt: now.toISOString(),
       };
@@ -491,26 +475,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       const trustedSalesContext = projectSalesContext(salesContext);
       authorizedContext.productMentions = trustedSalesContext.productMentions;
       authorizedContext.officialFactNeeds = trustedSalesContext.officialFactNeeds;
-      const officialFactsRequired = trustedSalesContext.officialFactNeeds.length > 0
-        || salesChampionShadow?.readiness?.officialFactsRequired === true;
-      if (officialFactsRequired && trustedSalesContext.resolvedProducts.length > 0
-        && typeof handlers?.insurance_expert === 'function') {
-        const evidence = await Promise.all(trustedSalesContext.resolvedProducts.slice(0, 2).map(async (product) => {
-          try {
-            const result = await handlers.insurance_expert({
-              internalUserId: userId,
-              intent: 'insurance_product_knowledge',
-              question: candidate.question,
-              resolvedProduct: product,
-              queryAspects: trustedSalesContext.officialFactNeeds,
-            });
-            return supportingInsuranceEvidence(result, product);
-          } catch {
-            return null;
-          }
-        }));
-        authorizedContext.insuranceExpertEvidence = evidence.filter(Boolean);
-      }
+      authorizedContext.resolvedProducts = trustedSalesContext.resolvedProducts;
     }
     if (policy.intent === 'insurance_product_knowledge') {
       const semanticProduct = projectSemanticProduct(candidate, semanticContext);

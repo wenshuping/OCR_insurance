@@ -7,6 +7,7 @@ import { createAdminRoutes } from './routes/admin.routes.mjs';
 import { createAgentRouter } from './routes/agent.routes.mjs';
 import { startTransferRegenerationRecovery } from './agent-confirmation.service.mjs';
 import { createAgentConfirmationService } from './agent-confirmation.service.mjs';
+import { interpretSalesChampionTurn } from './sales-champion-turn-interpreter.service.mjs';
 import { createAgentReportRegenerationQueue } from './agent-report-regeneration-queue.service.mjs';
 import { createAgentQuestionHandlers } from './agent-question-handlers.service.mjs';
 import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
@@ -2865,6 +2866,8 @@ export function createPolicyOcrApp(options = {}) {
       allowedKnowledgeOriginsProvider: loadAgentKnowledgeAllowedOrigins,
       insuranceExpertPlanner,
       insuranceExpertSkillRegistry,
+      salesChampionTurnInterpreter: options.salesChampionTurnInterpreter
+        || (insuranceExpertEnv.DEEPSEEK_API_KEY ? interpretSalesChampionTurn : undefined),
       authorizedFamilyDataLoader: async ({ familyId, internalUserId }) => {
         if (typeof agentStore.loadAuthorizedFamilyState === 'function') {
           return agentStore.loadAuthorizedFamilyState({ familyId, internalUserId });

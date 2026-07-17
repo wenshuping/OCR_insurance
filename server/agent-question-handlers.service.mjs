@@ -179,10 +179,20 @@ function safeSalesProductSupport(context = {}) {
     const answer = status === 'verified' ? text(item.answer).slice(0, 12_000) : '';
     return status ? [{ status, products, ...(answer ? { answer } : {}) }] : [];
   });
+  let salesTurn = null;
+  if (context.salesTurn && typeof context.salesTurn === 'object' && !Array.isArray(context.salesTurn)) {
+    try {
+      const serialized = JSON.stringify(context.salesTurn);
+      if (serialized.length <= 20_000) salesTurn = JSON.parse(serialized);
+    } catch {
+      salesTurn = null;
+    }
+  }
   return {
     ...(productMentions.length ? { productMentions } : {}),
     ...(officialFactNeeds.length ? { officialFactNeeds } : {}),
     ...(insuranceExpertEvidence.length ? { insuranceExpertEvidence } : {}),
+    ...(salesTurn ? { salesTurn } : {}),
   };
 }
 
@@ -230,6 +240,7 @@ export function createAgentQuestionHandlers({
   insuranceExpertPlanner,
   insuranceExpertSkillRegistry,
   salesChampionTool,
+  salesChampionTurnInterpreter,
   pendingJobTtlMs = 300_000,
   clock = () => new Date(),
 } = {}) {
@@ -712,7 +723,11 @@ export function createAgentQuestionHandlers({
     timeoutMs: 90_000,
     skillRegistry: insuranceExpertSkillRegistry,
   });
-  const salesChampion = salesChampionTool || createSalesChampionTool({ execute });
+  const salesChampion = salesChampionTool || createSalesChampionTool({
+    execute,
+    interpretTurn: salesChampionTurnInterpreter,
+    askInsuranceExpert: (input) => insuranceExpert.askInsuranceExpertTool(input),
+  });
   if (typeof insuranceExpert.askInsuranceExpertTool !== 'function') {
     throw new TypeError('insuranceExpertTool.askInsuranceExpertTool is required');
   }

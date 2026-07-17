@@ -130,19 +130,14 @@ test('customer follow-up remains a sales answer even when the story names an ins
   assert.deepEqual(harness.calls.handlers[0].input.officialFactNeeds, []);
 });
 
-test('fact-sensitive sales coaching gets verified insurance evidence but keeps the sales champion as final owner', async () => {
+test('fact-sensitive sales coaching delegates resolved products to the sales champion', async () => {
   const harness = createHarness({
     handlers: {
       insurance_expert: async () => ({
         facts: { certainty: 'supported' },
         interaction: { type: 'answer', text: '已核验：续保条件以合同约定和届时规则为准。' },
       }),
-      sales_champion: async (context) => ({
-        interaction: {
-          type: 'answer',
-          text: context.insuranceExpertEvidence?.length ? '销冠结合已核验事实给出沟通话术。' : '缺少事实证据。',
-        },
-      }),
+      sales_champion: async () => ({ interaction: { type: 'answer', text: '由销冠决定是否调用保险专家。' } }),
     },
   });
 
@@ -162,19 +157,14 @@ test('fact-sensitive sales coaching gets verified insurance evidence but keeps t
     },
   }));
 
-  assert.equal(result.interaction.text, '销冠结合已核验事实给出沟通话术。');
-  assert.deepEqual(harness.calls.handlers.map((call) => call.key), ['insurance_expert', 'sales_champion']);
-  assert.equal(harness.calls.handlers[0].input.intent, 'insurance_product_knowledge');
-  assert.deepEqual(harness.calls.handlers[0].input.queryAspects, ['renewal']);
-  assert.deepEqual(harness.calls.handlers[1].input.insuranceExpertEvidence, [{
-    status: 'verified',
-    products: [{ company: '新华保险', officialName: '新华人寿康健华尊医疗保险' }],
-    answer: '已核验：续保条件以合同约定和届时规则为准。',
+  assert.equal(result.interaction.text, '由销冠决定是否调用保险专家。');
+  assert.deepEqual(harness.calls.handlers.map((call) => call.key), ['sales_champion']);
+  assert.deepEqual(harness.calls.handlers[0].input.resolvedProducts, [{
+    canonicalProductId: 'product-kjhz', company: '新华保险', officialName: '新华人寿康健华尊医疗保险',
   }]);
-  assert.equal(harness.calls.handlers[1].input.insuranceExpertEvidence[0].products[0].canonicalProductId, undefined);
 });
 
-test('unverified product lookup never becomes sales evidence and does not interrupt coaching', async () => {
+test('question router never pre-calls the insurance expert for sales coaching', async () => {
   const harness = createHarness({
     handlers: {
       insurance_expert: async () => ({
@@ -204,8 +194,8 @@ test('unverified product lookup never becomes sales evidence and does not interr
   }));
 
   assert.equal(result.interaction.text, '续保事实待核实，先这样跟进客户。');
-  assert.deepEqual(harness.calls.handlers.map((call) => call.key), ['insurance_expert', 'sales_champion']);
-  assert.deepEqual(harness.calls.handlers[1].input.insuranceExpertEvidence, []);
+  assert.deepEqual(harness.calls.handlers.map((call) => call.key), ['sales_champion']);
+  assert.equal(harness.calls.handlers[0].input.insuranceExpertEvidence, undefined);
 });
 
 const readPolicy = {

@@ -9,6 +9,7 @@ const SKILLS = [
   { key: 'responsibility_detail', label: 'C端保险责任助理', description: '保险责任' },
   { key: 'plan_comparison', label: '保障计划对比', description: '计划对比' },
   { key: 'product_comparison', label: '产品对比', description: '产品对比' },
+  { key: 'renewal_lookup', label: '续保查询', description: '续保查询' },
   { key: 'official_terms_retrieval', label: '官方条款检索', description: '官方条款' },
   { key: 'approved_material_retrieval', label: '已审核资料检索', description: '已审核资料' },
   { key: 'evidence_validation', label: '证据校验', description: '证据校验' },
@@ -19,22 +20,24 @@ const SKILLS = [
 function keys(question, context = {}) {
   return selectInsuranceExpertSkillCandidates({
     intent: 'insurance_product_knowledge',
-    question,
     context: { question, ...context },
     skills: SKILLS,
   }).map((skill) => skill.key);
 }
 
-test('insurance expert skill router exposes only responsibility skills for responsibility questions', () => {
-  assert.deepEqual(keys('寰宇尊悦保险责任'), [
+test('insurance expert skill router exposes responsibility skills from controlled semantic aspects', () => {
+  assert.deepEqual(keys('寰宇尊悦保险责任', { queryAspects: ['main_responsibilities'] }), [
     'responsibility_detail',
     'official_terms_retrieval',
     'evidence_validation',
   ]);
 });
 
-test('insurance expert skill router exposes plan comparison with responsibility support', () => {
-  assert.deepEqual(keys('保障计划（计划一/二/三）分别是啥'), [
+test('insurance expert skill router exposes comparison candidates from controlled semantic aspects', () => {
+  assert.deepEqual(keys('保障计划（计划一/二/三）分别是啥', {
+    queryAspects: ['comparison', 'main_responsibilities'],
+  }), [
+    'product_comparison',
     'plan_comparison',
     'responsibility_detail',
     'official_terms_retrieval',
@@ -42,11 +45,8 @@ test('insurance expert skill router exposes plan comparison with responsibility 
   ]);
 });
 
-test('insurance expert skill router keeps local record management separate from product facts', () => {
-  assert.deepEqual(keys('帮我记录这张保单，后面提醒续期'), [
-    'insurance',
-    'evidence_validation',
-  ]);
+test('insurance expert skill router does not infer record management from raw product questions', () => {
+  assert.equal(keys('帮我记录这张保单，后面提醒续期').includes('insurance'), false);
 });
 
 test('insurance expert skill router uses generic QA for common product questions', () => {
@@ -63,7 +63,9 @@ test('insurance expert skill router uses generic QA for common product questions
 test('insurance expert skill router keeps specific skills ahead of generic QA', () => {
   assert.deepEqual(keys('保障计划（计划一/二/三）分别是啥', {
     resolvedProduct: { company: '新华保险', officialName: '寰宇尊悦高端医疗保险' },
+    queryAspects: ['comparison', 'main_responsibilities'],
   }), [
+    'product_comparison',
     'plan_comparison',
     'responsibility_detail',
     'official_terms_retrieval',
@@ -72,5 +74,15 @@ test('insurance expert skill router keeps specific skills ahead of generic QA', 
 });
 
 test('insurance expert skill router keeps generic downloaded skills hidden unless selected by manifest', () => {
-  assert.equal(keys('寰宇尊悦保险责任').includes('claims_clause_locator_assistant'), false);
+  assert.equal(keys('寰宇尊悦保险责任', {
+    queryAspects: ['main_responsibilities'],
+  }).includes('claims_clause_locator_assistant'), false);
+});
+
+test('sales-framed questions cannot override the requested insurance fact aspect', () => {
+  const selected = keys('客户问这份产品怎么续保，我应该怎么跟进？', {
+    queryAspects: ['renewal'],
+  });
+  assert.deepEqual(selected, ['renewal_lookup', 'official_terms_retrieval', 'evidence_validation']);
+  assert.equal(selected.includes('sales_champion'), false);
 });

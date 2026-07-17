@@ -1,3 +1,5 @@
+import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
+
 const CONTRACT_VERSION = 1;
 
 const STAGES = new Set([
@@ -14,6 +16,8 @@ const MISSING_INFORMATION = new Set([
   'customer_goal', 'future_fund_use', 'budget', 'existing_coverage', 'product_contract',
   'cash_value_schedule', 'family_decision_process', 'health_information', 'contact_preference',
 ]);
+const INSURANCE_NEED_TYPES = new Set(['product_facts', 'coverage_gap']);
+const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
 export const SALES_CHAMPION_CAPABILITY_KEYS = Object.freeze([
   'appointment_scope',
   'tradeoff_disclosure',
@@ -61,7 +65,7 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
   assertObject(proposal, 'proposal');
   assertExactKeys(proposal, [
     'contractVersion', 'customerStatements', 'stage', 'concerns', 'signals',
-    'missingInformation', 'proposedCapabilities',
+    'missingInformation', 'proposedCapabilities', 'insuranceNeeds',
   ], 'proposal');
   if (proposal.contractVersion !== CONTRACT_VERSION) {
     throw new TypeError(`contractVersion must be ${CONTRACT_VERSION}`);
@@ -120,5 +124,29 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
   for (const value of proposal.proposedCapabilities) {
     if (!CAPABILITY_KEYS.has(value)) throw new TypeError(`proposedCapabilities contains invalid value: ${value}`);
   }
+
+  if (!Array.isArray(proposal.insuranceNeeds) || proposal.insuranceNeeds.length > 2) {
+    throw new TypeError('insuranceNeeds must be an array with at most 2 items');
+  }
+  const insuranceNeedTypes = new Set();
+  proposal.insuranceNeeds.forEach((need, index) => {
+    assertObject(need, `insuranceNeeds[${index}]`);
+    assertExactKeys(need, ['type', 'queryAspects'], `insuranceNeeds[${index}]`);
+    if (!INSURANCE_NEED_TYPES.has(need.type)) {
+      throw new TypeError(`insuranceNeeds[${index}].type is invalid`);
+    }
+    if (insuranceNeedTypes.has(need.type)) {
+      throw new TypeError(`insuranceNeeds[${index}].type is duplicated`);
+    }
+    insuranceNeedTypes.add(need.type);
+    if (!Array.isArray(need.queryAspects) || need.queryAspects.length > 8) {
+      throw new TypeError(`insuranceNeeds[${index}].queryAspects is invalid`);
+    }
+    for (const aspect of need.queryAspects) {
+      if (!QUERY_ASPECTS.has(aspect)) {
+        throw new TypeError(`insuranceNeeds[${index}].queryAspects contains invalid value: ${aspect}`);
+      }
+    }
+  });
   return structuredClone(proposal);
 }

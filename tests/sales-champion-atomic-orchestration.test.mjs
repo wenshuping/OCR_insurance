@@ -6,7 +6,7 @@ import {
   selectSalesChampionSkills,
 } from '../server/sales-champion-skill-registry.mjs';
 import { evaluateSalesTurnReadiness } from '../server/sales-champion-readiness.service.mjs';
-import { evaluateSalesChampionShadowRoute } from '../server/sales-champion-shadow-router.service.mjs';
+import { evaluateSalesChampionRoute } from '../server/sales-champion-router.service.mjs';
 
 function validProposal(overrides = {}) {
   return {
@@ -20,6 +20,7 @@ function validProposal(overrides = {}) {
     signals: { explicitRefusal: false, stopContact: false, factSensitive: true },
     missingInformation: ['future_fund_use', 'product_contract'],
     proposedCapabilities: ['tradeoff_disclosure', 'family_joint_decision'],
+    insuranceNeeds: [{ type: 'product_facts', queryAspects: [] }],
     ...overrides,
   };
 }
@@ -118,8 +119,8 @@ test('readiness gate marks official facts required without blocking a well-groun
   assert.equal(readiness.officialFactsRequired, true);
 });
 
-test('shadow router returns an auditable route without producing a customer answer', () => {
-  const result = evaluateSalesChampionShadowRoute({
+test('sales champion router returns a controlled route without producing a customer answer', () => {
+  const result = evaluateSalesChampionRoute({
     proposal: validProposal(),
     sourceTexts: ['客户说钱放二十年太久，家里也还没有商量。'],
   });
@@ -130,8 +131,8 @@ test('shadow router returns an auditable route without producing a customer answ
   assert.equal(result.contractVersion, 1);
 });
 
-test('shadow router contains invalid model proposals instead of guessing a route', () => {
-  const result = evaluateSalesChampionShadowRoute({
+test('sales champion router contains invalid model proposals instead of guessing a route', () => {
+  const result = evaluateSalesChampionRoute({
     proposal: { ...validProposal(), hiddenPlan: 'close_now' },
     sourceTexts: ['钱放二十年太久'],
   });

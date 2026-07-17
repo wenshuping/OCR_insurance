@@ -54,36 +54,8 @@ const BUILTIN_FAMILY_SKILLS = Object.freeze([
   skill({ key: 'evidence_validation', label: '证据校验', description: '校验证据完整性。' }),
 ]);
 
-const QUERY_MATCHERS = Object.freeze([
-  ['保险责任', 'responsibility_detail'],
-  ['保障内容', 'responsibility_detail'],
-  ['保什么', 'responsibility_detail'],
-  ['责任', 'responsibility_detail'],
-  ['计划', 'plan_comparison'],
-  ['分别', 'plan_comparison'],
-  ['对比', 'product_comparison'],
-  ['比较', 'product_comparison'],
-  ['免责', 'exclusion_lookup'],
-  ['不保', 'exclusion_lookup'],
-  ['等待期', 'waiting_period_lookup'],
-  ['免赔', 'deductible_lookup'],
-  ['报销', 'reimbursement_lookup'],
-  ['赔付', 'reimbursement_lookup'],
-  ['续保', 'renewal_lookup'],
-  ['记录', 'insurance'],
-  ['保单记录', 'insurance'],
-  ['理赔记录', 'insurance'],
-  ['续期', 'insurance'],
-  ['renewal', 'insurance'],
-  ['claim', 'insurance'],
-]);
-
 function text(value, limit = 2_000) {
   return typeof value === 'string' ? value.trim().slice(0, limit) : '';
-}
-
-function compact(value) {
-  return text(value).normalize('NFKC').toLowerCase().replace(/\s+/gu, '');
 }
 
 function skill({
@@ -173,28 +145,6 @@ export function loadLocalInsuranceExpertSkills({
   return skills;
 }
 
-function scoreSkillForContext(definition, contextText) {
-  const target = compact(contextText);
-  if (!target) return definition.source === 'builtin' ? 1 : 0;
-  let score = definition.source === 'builtin' ? 1 : 0;
-  const haystack = compact([
-    definition.key,
-    definition.label,
-    definition.description,
-    ...(definition.tags || []),
-  ].join(' '));
-  if (target.includes(compact(definition.label)) || target.includes(compact(definition.key))) score += 5;
-  for (const [keyword, skillKey] of QUERY_MATCHERS) {
-    if (!target.includes(compact(keyword))) continue;
-    if (definition.key === skillKey) score += 8;
-    if (haystack.includes(compact(keyword))) score += 2;
-  }
-  for (const token of target.match(/[a-z0-9]{4,}|[\u4e00-\u9fa5]{2,}/gu) || []) {
-    if (haystack.includes(token)) score += 1;
-  }
-  return score;
-}
-
 function mergeSkills(skills) {
   const byKey = new Map();
   for (const item of skills) {
@@ -219,31 +169,12 @@ export function createInsuranceExpertSkillRegistry({
     if (intent === 'insurance_product_knowledge') {
       return selectInsuranceExpertSkillCandidates({
         intent,
-        question: context.question,
         context,
         skills: base,
         maxSkills: 8,
       });
     }
-    const contextText = [
-      context.question,
-      ...(Array.isArray(context.queryAspects) ? context.queryAspects : []),
-    ].join(' ');
-    const required = new Set(['official_terms_retrieval', 'evidence_validation']);
-    const ranked = base
-      .map((definition) => ({ definition, score: scoreSkillForContext(definition, contextText) }))
-      .filter((item) => item.score > 0 || required.has(item.definition.key))
-      .sort((left, right) => right.score - left.score || left.definition.key.localeCompare(right.definition.key));
-    const selected = [];
-    for (const item of ranked) {
-      if (selected.length >= 18 && !required.has(item.definition.key)) continue;
-      selected.push(item.definition);
-    }
-    for (const key of required) {
-      const definition = base.find((item) => item.key === key);
-      if (definition && !selected.some((item) => item.key === key)) selected.push(definition);
-    }
-    return selected;
+    return base;
   }
 
   return Object.freeze({
