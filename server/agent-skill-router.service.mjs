@@ -103,7 +103,21 @@ function routeIntent(question = '', scene = '') {
   if (includesAny(text, [/预算/u, /太贵/u, /买很多/u, /不够/u, /异议/u, /拒绝/u, /回应/u, /怎么回/u])) {
     return 'objection_handling';
   }
-  if (includesAny(text, [/对比/u, /比较/u, /哪个好/u, /哪款/u, /替换/u, /换保/u, /转保/u, /退保/u, /竞品/u, /优劣/u, /差异/u, /产品.*产品/u])) {
+  if (includesAny(text, [
+    /对比/u,
+    /(?:产品|险种|方案).{0,12}比较/u,
+    /比较.{0,12}(?:产品|险种|方案)/u,
+    /哪个好/u,
+    /哪款/u,
+    /替换/u,
+    /换保/u,
+    /转保/u,
+    /退保/u,
+    /竞品/u,
+    /优劣/u,
+    /差异/u,
+    /产品.*产品/u,
+  ])) {
     return 'product_comparison';
   }
   if (includesAny(text, [/缺口/u, /补哪/u, /优先/u, /保障/u, /重疾/u, /医疗/u, /定寿/u, /意外/u, /失能/u])) {

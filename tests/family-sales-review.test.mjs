@@ -451,11 +451,67 @@ test('open sales coaching keeps the full customer narrative and requires a compl
   });
   const prompt = messages.map((message) => message.content).join('\n');
 
-  assert.equal(messages.at(-1).content, question);
-  assert.match(prompt, /年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标/u);
-  assert.match(prompt, /严格区分客户事实、顾问估计和待核实项/u);
-  assert.match(prompt, /不得因产品名称模糊而忽略其余客户信息/u);
+  assert.ok(messages.some((message) => message.role === 'user' && message.content === question));
+  assert.match(prompt, /画像分清“客户明确事实”“顾问估计”“待核实”/u);
+  assert.match(prompt, /不得根据名称猜险种/u);
+  assert.match(prompt, /“年金险或者增额终身寿险”必须保留尚未确定的状态/u);
+  assert.match(prompt, /分居只是一条客户事实/u);
+  assert.match(prompt, /不得虚构客户姓名、称谓、性别、健康、社保、负债、预算、退休金额/u);
+  assert.match(prompt, /不得判定任何保障严重缺失，不得推荐具体险种、产品、保费比例或退换保/u);
+  assert.match(prompt, /当前完整问题优先于历史里的旧产品确认或候选列表/u);
+  assert.match(prompt, /输出不超过1200个中文字符/u);
+  assert.match(prompt, /不得在“当前判断”或话术中把它写成医疗险、年金、储蓄、健康保障或任何其他险种\/功能/u);
   assert.match(prompt, /五十多岁.*月收入七八千.*夫妻分居.*杭州租房.*没有孩子.*在意养老/u);
+});
+
+test('open sales coaching skips the remote skill router and caps the response size', async () => {
+  const requestBodies = [];
+  const reply = await generateFamilySalesChatReply({
+    context: { consultationScope: 'open', familyInput: {} },
+    question: '客户五十多岁，夫妻分居，比较在意养老，我怎么跟进？',
+    env: {
+      DEEPSEEK_API_KEY: 'test-key',
+      DEEPSEEK_BASE_URL: 'https://deepseek.test',
+      FAMILY_SALES_CHAT_MAX_TOKENS: '8000',
+    },
+    fetchImpl: async (_url, options = {}) => {
+      requestBodies.push(JSON.parse(options.body));
+      return {
+        ok: true,
+        json: async () => ({
+          model: 'deepseek-v4-pro',
+          choices: [{ message: { content: '先核实客户的养老目标和现有保单。' } }],
+        }),
+      };
+    },
+  });
+
+  assert.equal(requestBodies.length, 1);
+  assert.equal(requestBodies[0].model, 'deepseek-v4-pro');
+  assert.equal(requestBodies[0].max_tokens, 2500);
+  assert.equal(requestBodies[0].reasoning_effort, 'low');
+  assert.match(JSON.stringify(requestBodies[0]), /本轮唯一任务是理解顾问描述的客户/u);
+  assert.doesNotMatch(JSON.stringify(requestBodies[0]), /产品比对与替换评估/u);
+  assert.equal(reply.content, '先核实客户的养老目标和现有保单。');
+});
+
+test('open sales coaching replaces a model answer that crosses the fact boundary', async () => {
+  const reply = await generateFamilySalesChatReply({
+    context: { consultationScope: 'open', familyInput: {} },
+    question: '客户处于分居状态，比较在意养老，我怎么跟进？',
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        model: 'deepseek-v4-pro',
+        choices: [{ message: { content: '客户有养老焦虑，应先确认保单控制权和财产归属。' } }],
+      }),
+    }),
+  });
+
+  assert.match(reply.content, /婚姻、居住、房产和子女等信息如本轮有提到，也只作为背景/u);
+  assert.match(reply.content, /先不要急着推荐或比较产品/u);
+  assert.doesNotMatch(reply.content, /养老焦虑|保单控制权|财产归属/u);
 });
 
 test('family sales chat corrects a product comparison cashflow amount from the verified ledger', async () => {

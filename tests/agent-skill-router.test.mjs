@@ -41,3 +41,13 @@ test('agent skill prompt keeps router-selected product comparison rules', () => 
   assert.match(prompt.systemRules.join('\n'), /官网证据/);
   assert.match(prompt.systemRules.join('\n'), /顾问话术/);
 });
+
+test('agent skill router does not treat degree adverbs as product comparison', () => {
+  const prompt = selectAgentSkillPrompt({
+    scene: 'family_sales_chat',
+    question: '客户五十多岁，夫妻分居，比较在意养老，我怎么跟进？',
+  });
+
+  assert.equal(prompt.intent, 'sales_script');
+  assert.deepEqual(prompt.skills.map((skill) => skill.key), ['sales_script']);
+});

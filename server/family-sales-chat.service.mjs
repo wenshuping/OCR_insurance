@@ -17,7 +17,9 @@ const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-pro';
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOKENS = 8_000;
+const OPEN_CONSULTATION_MAX_TOKENS = 2_500;
 const DEFAULT_REASONING_EFFORT = 'high';
+const OPEN_CONSULTATION_REASONING_EFFORT = 'low';
 const HISTORY_LIMIT = 12;
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const FAMILY_SALES_CHAT_PUBLIC_IDENTITY = '保险营销专家';
@@ -62,6 +64,39 @@ function sanitizeFamilySalesChatInternalFields(content = '') {
     /`?(?:familyInput|consultationScope|sourceUpdated|latestSalesReview|latestFamilyReport|salesMemoryContext|policyImportContext|productMentions|officialFactNeeds|insuranceExpertEvidence)`?/gu,
     '现有资料',
   );
+}
+
+function openConsultationReplyCrossesFactBoundary(content = '') {
+  const text = trim(content);
+  return [
+    /(?:从名称看|推断为|初步判断为)[^。\n]{0,30}(?:医疗险|重疾险|年金险|增额终身寿险|储蓄险)/u,
+    /客户已(?:拥有|配置|购买)[^。\n]{0,50}(?:医疗险|重疾险|年金险|增额终身寿险|储蓄险)/u,
+    /(?:养老焦虑|孤独养老|财产(?:归属|分割|独立)|保单(?:所有权|控制权)|法律风险)/u,
+    /共同决策[^。\n]{0,15}(?:较低|不需要|由本人)/u,
+    /收入(?:属|属于)(?:中等|较低|较高)水平/u,
+    /缴费能力(?:强|弱|有限|不足)/u,
+    /房产[^。\n]{0,20}(?:退路|变现|补充养老金)/u,
+  ].some((pattern) => pattern.test(text));
+}
+
+function safeOpenConsultationReply() {
+  return [
+    '客户画像',
+    '本轮提供的客户背景、现有保单线索和关注点都已按原话保留。凡是顾问估计的信息仍按估计处理；产品的准确名称、险种和责任都要以保单为准。',
+    '',
+    '当前判断',
+    '这次先不要急着推荐或比较产品。下一次沟通的目标，是确认客户想要怎样的养老生活、目前已经做了哪些准备、真实收支能否支持长期安排，以及后续决策需要谁参与。婚姻、居住、房产和子女等信息如本轮有提到，也只作为背景，不直接推出财产、保障缺口或购买能力结论。',
+    '',
+    '下次沟通话术',
+    '“您好，上次您提到比较在意养老，我想先不急着谈新产品，先帮您把现在的准备理清楚。您希望以后在哪里生活、每个月大概需要多少生活费？您提到的几份保单也可以一起看一下，确认它们分别是什么、现在交到哪一步。把这些信息弄清楚后，我们再判断有没有需要调整的地方，您看可以吗？”',
+    '',
+    '优先核实',
+    '1. 理想养老地点、时间和生活方式。',
+    '2. 现有保单的准确名称、保单状态、缴费和领取信息。',
+    '3. 实际收入、固定开支、社保和可持续预算。',
+    '4. 房产未来是自住、出租还是暂未决定。',
+    '5. 养老安排是否需要与家人共同商量。',
+  ].join('\n');
 }
 
 function resolveFamilySalesChatConfig(env = process.env) {
@@ -185,6 +220,46 @@ export function buildFamilySalesChatMessages({
   const normalizedHistory = normalizeHistory(history);
   const resolvedSkillPrompt = skillPrompt || selectAgentSkillPrompt({ scene: 'family_sales_chat', question });
   const openConsultation = context?.consultationScope === 'open';
+  if (openConsultation) {
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是一名保险营销专家。本轮唯一任务是理解顾问描述的客户，并设计下一次跟进沟通；不是查询产品、判断保障缺口、出保险方案或分析婚姻法律关系。',
+          '严格遵守以下规则：',
+          '1. 只使用本轮原话中的事实。画像分清“客户明确事实”“顾问估计”“待核实”，不得把推测写成事实。',
+          '2. 产品只按顾问原话记录为“客户提到的产品线索”。没有 verified 保险专家证据时，不得根据名称猜险种，不得描述责任、续保、收益、现金价值、领取或替换建议；“年金险或者增额终身寿险”必须保留尚未确定的状态。',
+          '3. 分居只是一条客户事实。不得推断财产归属、保单控制权、配偶是否参与决策、法律风险或客户心理；可以中性询问未来养老安排是否需要与家人共同商量。',
+          '4. 不得虚构客户姓名、称谓、性别、健康、社保、负债、预算、退休金额、缴费能力、传承需求或养老恐惧。话术统一使用“您好”或“您”。',
+          '5. 资料不足时，不得判定任何保障严重缺失，不得推荐具体险种、产品、保费比例或退换保。当前目标是弄清客户想要的养老生活、现有保单、实际收支和下一步决策方式。',
+          '6. 当前完整问题优先于历史里的旧产品确认或候选列表；不得要求顾问继续回复产品序号，除非本轮就是数字选择。',
+          '7. 输出不超过1200个中文字符，不使用表格，固定为四段：客户画像、当前判断、下次沟通话术、优先核实（最多5项）。话术只给一段，语气自然，不制造焦虑。',
+          `8. 对身份、模型、厂商、API、底层大模型等问题，只能回答“${FAMILY_SALES_CHAT_IDENTITY_REPLY}”。`,
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          '以下是可用的辅助线索；其中产品名称不代表已核实的保险事实：',
+          contextJson,
+        ].join('\n'),
+      },
+      ...normalizedHistory,
+      {
+        role: 'user',
+        content: trim(question),
+      },
+      {
+        role: 'system',
+        content: [
+          '输出前做最后事实检查：',
+          '- 若辅助线索中没有已核验产品证据，所有产品名称最多只能在“客户画像”中原样记为产品线索；不得在“当前判断”或话术中把它写成医疗险、年金、储蓄、健康保障或任何其他险种/功能。',
+          '- 不得根据分居、租房、有房、无子女推导财产、缴费能力、传承需求或心理结论。',
+          '- 删除所有不是客户原话、顾问明确估计或中性待核实问题的陈述。',
+        ].join('\n'),
+      },
+    ];
+  }
   return [
     {
       role: 'system',
@@ -262,26 +337,33 @@ export async function generateFamilySalesChatReply({
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
     const directIdentifiers = familySalesReviewDirectIdentifiers(context?.familyInput || {});
-    const skillPrompt = await selectAgentSkillPromptWithDeepSeek({
-      scene: 'family_sales_chat',
-      question: redactDeepSeekDirectIdentifiers(userQuestion, directIdentifiers),
-      fetchImpl,
-      config: {
-        apiKey: config.apiKey,
-        baseUrl: config.baseUrl,
-        model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
-        timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
-      },
-      privacyOptions: directIdentifiers,
-    });
+    const openConsultation = context?.consultationScope === 'open';
+    const skillPrompt = openConsultation
+      ? null
+      : await selectAgentSkillPromptWithDeepSeek({
+        scene: 'family_sales_chat',
+        question: redactDeepSeekDirectIdentifiers(userQuestion, directIdentifiers),
+        fetchImpl,
+        config: {
+          apiKey: config.apiKey,
+          baseUrl: config.baseUrl,
+          model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
+          timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
+        },
+        privacyOptions: directIdentifiers,
+      });
     const body = {
       model: config.model,
-      max_tokens: config.maxTokens,
+      max_tokens: openConsultation
+        ? Math.min(config.maxTokens, OPEN_CONSULTATION_MAX_TOKENS)
+        : config.maxTokens,
       messages: buildFamilySalesChatMessages({ context, history, question: userQuestion, skillPrompt }),
     };
     if (DEEPSEEK_V4_MODELS.has(config.model)) {
       body.thinking = { type: 'enabled' };
-      body.reasoning_effort = DEFAULT_REASONING_EFFORT;
+      body.reasoning_effort = openConsultation
+        ? OPEN_CONSULTATION_REASONING_EFFORT
+        : DEFAULT_REASONING_EFFORT;
     } else {
       body.temperature = 0.2;
     }
@@ -311,15 +393,18 @@ export async function generateFamilySalesChatReply({
     if (!upstreamContent) {
       throw withCode(new Error('FAMILY_SALES_CHAT_EMPTY_RESPONSE'), 'FAMILY_SALES_CHAT_EMPTY_RESPONSE', 502);
     }
-    return {
-      content: sanitizeFamilySalesChatInternalFields(
-        sanitizeFamilySalesChatPublicIdentity(
-          restoreFamilySalesReviewDisplayText(
-            enforceVerifiedCashflowAmounts(upstreamContent, context?.familyInput || {}),
-            context?.familyInput || {},
-          ),
+    const content = sanitizeFamilySalesChatInternalFields(
+      sanitizeFamilySalesChatPublicIdentity(
+        restoreFamilySalesReviewDisplayText(
+          enforceVerifiedCashflowAmounts(upstreamContent, context?.familyInput || {}),
+          context?.familyInput || {},
         ),
       ),
+    );
+    return {
+      content: openConsultation && openConsultationReplyCrossesFactBoundary(content)
+        ? safeOpenConsultationReply()
+        : content,
       model: trim(payload?.model || config.model) || config.model,
       generatedAt: new Date().toISOString(),
     };
