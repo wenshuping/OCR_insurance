@@ -69,6 +69,15 @@ function resolvedEntities(value) {
   };
 }
 
+function publicProductCandidates(value, tool) {
+  if (tool !== 'ask_insurance_expert' || !Array.isArray(value)) return [];
+  return value.slice(0, 10).flatMap((candidate) => {
+    const ref = typeof candidate?.ref === 'string' ? candidate.ref.trim().slice(0, 200) : '';
+    const label = typeof candidate?.label === 'string' ? candidate.label.trim().slice(0, 200) : '';
+    return ref && label ? [{ ref, label }] : [];
+  });
+}
+
 function copyClaims(claims) {
   return {
     ...claims,
@@ -87,7 +96,15 @@ export function createAgentToolCapabilityService({
   }
   positiveSafeInteger(cleanupIntervalMs, 'cleanup_interval_ms', MAX_TTL_MS);
   const capabilities = new Map();
+  const resultWaiters = new Map();
   let lastCleanupAt = 0;
+
+  function notifyResultWaiters(token, claims) {
+    const waiters = resultWaiters.get(token);
+    if (!waiters) return;
+    resultWaiters.delete(token);
+    for (const waiter of waiters) waiter(copyClaims(claims));
+  }
 
   function cleanup(now) {
     if (now - lastCleanupAt < cleanupIntervalMs) return;
@@ -166,6 +183,7 @@ export function createAgentToolCapabilityService({
     }
     const interaction = result?.interaction;
     const interactionText = typeof interaction?.text === 'string' ? interaction.text.trim().slice(0, 48_000) : '';
+    const candidates = publicProductCandidates(interaction?.candidates, toolName);
     const entities = resolvedEntities(result?.resolvedEntities);
     claims.toolResults.push({
       tool: toolName,
@@ -176,11 +194,36 @@ export function createAgentToolCapabilityService({
           type: typeof interaction?.type === 'string' ? interaction.type.slice(0, 40) : 'denied',
           ...(interactionText ? { text: interactionText } : {}),
           ...(interaction?.delivery === 'verbatim' ? { delivery: 'verbatim' } : {}),
+          ...(candidates.length ? { candidates } : {}),
         },
         ...(Object.keys(entities).length ? { resolvedEntities: entities } : {}),
       },
     });
+    notifyResultWaiters(token, claims);
     return copyClaims(claims);
+  }
+
+  function waitForResult(tokenValue, { signal } = {}) {
+    const token = requiredText(tokenValue, 'token', 500);
+    const claims = capabilities.get(token);
+    if (!claims) return Promise.reject(capabilityError('AGENT_TOOL_CAPABILITY_NOT_FOUND'));
+    if (claims.toolResults.length > 0) return Promise.resolve(copyClaims(claims));
+    if (signal?.aborted) return Promise.reject(capabilityError('AGENT_TOOL_CAPABILITY_WAIT_ABORTED'));
+    return new Promise((resolve, reject) => {
+      const waiters = resultWaiters.get(token) || new Set();
+      const finish = (value) => {
+        signal?.removeEventListener?.('abort', onAbort);
+        resolve(value);
+      };
+      const onAbort = () => {
+        waiters.delete(finish);
+        if (waiters.size === 0) resultWaiters.delete(token);
+        reject(capabilityError('AGENT_TOOL_CAPABILITY_WAIT_ABORTED'));
+      };
+      waiters.add(finish);
+      resultWaiters.set(token, waiters);
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+    });
   }
 
   function inspect(tokenValue) {
@@ -192,5 +235,5 @@ export function createAgentToolCapabilityService({
     return copyClaims(claims);
   }
 
-  return Object.freeze({ issue, consume, inspect, recordResult, revoke });
+  return Object.freeze({ issue, consume, inspect, recordResult, waitForResult, revoke });
 }

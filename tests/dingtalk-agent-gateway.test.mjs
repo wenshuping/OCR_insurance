@@ -732,7 +732,7 @@ test('DingTalk gateway routes a numbered product choice to the selected exact pr
   await gateway.handle({ ...base, msgId: 'choice-2', text: { content: '2' } });
 
   assert.equal(interpreted, 1);
-  assert.equal(routedCandidates[1].question, '荣耀鑫享保险责任');
+  assert.equal(routedCandidates[1].question, '荣耀鑫享智赢版终身寿险保险责任');
   assert.equal(routedCandidates[1].entities.productName, '荣耀鑫享智赢版终身寿险');
 });
 

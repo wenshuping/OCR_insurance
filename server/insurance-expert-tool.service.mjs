@@ -1,4 +1,6 @@
 import { attachDomainAgentProvenance } from './domain-agent-tool-contract.service.mjs';
+import { createInsuranceExpertAgentLoop } from './insurance-expert-agent-loop.service.mjs';
+import { insuranceExpertSkillsForIntent } from './insurance-expert-agent-planner.service.mjs';
 
 const ALLOWED_INTENTS = new Set([
   'family_policy_summary',
@@ -46,7 +48,12 @@ async function withTimeout(operation, timeoutMs) {
   }
 }
 
-export function createInsuranceExpertTool({ execute, timeoutMs = 30_000 } = {}) {
+export function createInsuranceExpertTool({
+  execute,
+  planner,
+  timeoutMs = 30_000,
+  skillRegistry = null,
+} = {}) {
   if (typeof execute !== 'function') throw new TypeError('insurance expert execute is required');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
     throw new TypeError('insurance expert timeoutMs is invalid');
@@ -55,7 +62,40 @@ export function createInsuranceExpertTool({ execute, timeoutMs = 30_000 } = {}) 
   async function askInsuranceExpertTool({ context } = {}) {
     const trustedContext = validateContext(context);
     const result = await withTimeout(
-      () => execute(trustedContext.tool || trustedContext.intent, trustedContext),
+      async () => {
+        const expertPlan = planner && typeof planner.plan === 'function'
+          ? await planner.plan(trustedContext)
+          : null;
+        if (!expertPlan) return execute(trustedContext.tool || trustedContext.intent, trustedContext);
+        const roundResults = new Map();
+        const executeRound = (round) => {
+          if (!roundResults.has(round)) {
+            roundResults.set(round, execute(trustedContext.tool || trustedContext.intent, {
+              ...trustedContext,
+              expertPlan: { ...expertPlan, maxRetrievalRounds: round },
+            }));
+          }
+          return roundResults.get(round);
+        };
+        const loop = createInsuranceExpertAgentLoop({
+          allowedSkills: insuranceExpertSkillsForIntent(trustedContext.intent, trustedContext, skillRegistry),
+          async executeSkill({ skill, round }) {
+            const domainResult = await executeRound(round);
+            if (skill !== 'evidence_validation') return { executed: true };
+            const completeness = domainResult?.retrieval?.completeness;
+            const missingEvidence = Array.isArray(domainResult?.retrieval?.missingEvidence)
+              ? domainResult.retrieval.missingEvidence : [];
+            return {
+              complete: completeness ? completeness === 'complete' : true,
+              missingEvidence,
+            };
+          },
+          async composeAnswer({ rounds }) {
+            return executeRound(rounds);
+          },
+        });
+        return loop.run({ context: trustedContext, plan: expertPlan });
+      },
       timeoutMs,
     );
     return attachDomainAgentProvenance(result, 'insurance_expert');

@@ -123,6 +123,162 @@ test('resolved product search does not reparse the full comparison question', as
   db.close();
 });
 
+test('resolved product search preserves its verified company when the formal name contains a longer insurer name', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+  `);
+  const productName = '新华人寿保险股份有限公司寰宇尊悦高端医疗保险';
+  db.prepare('INSERT INTO knowledge_records VALUES (1, ?, ?, ?, ?)').run(
+    '新华保险', productName, 'https://static-cdn.newchinalife.com/terms.pdf',
+    JSON.stringify({
+      evidenceLevel: 'insurer_official',
+      title: '寰宇尊悦高端医疗保险官方条款',
+      pageText: '保险责任根据保障计划确定：计划一承担第二款至第十款，计划二承担第二款至第九款，计划三承担第二款至第八款。',
+    }),
+  );
+  db.prepare('INSERT INTO knowledge_records VALUES (2, ?, ?, ?, ?)').run(
+    '新华人寿保险股份有限公司', '新华人寿保险股份有限公司其他医疗保险',
+    'https://static-cdn.newchinalife.com/other.pdf',
+    JSON.stringify({
+      evidenceLevel: 'insurer_official',
+      title: '其他医疗保险官方条款',
+      pageText: '这是另一款产品的保险责任资料，不应覆盖已解析产品携带的受控公司名称。',
+    }),
+  );
+  const knowledge = createAgentProductKnowledgeSearch({
+    db,
+    officialDomainProfiles: [{
+      company: '新华保险', aliases: ['新华人寿'],
+      officialDomains: ['static-cdn.newchinalife.com'], siteDomains: [],
+    }],
+  });
+  const result = await knowledge.search({
+    question: '寰宇尊悦',
+    product: { canonicalProductId: 'product-medical', company: '新华保险', officialName: productName },
+  });
+
+  assert.match(result.answer, /计划一承担第二款至第十款/u);
+  assert.equal(result.sources[0].url, 'https://static-cdn.newchinalife.com/terms.pdf');
+  db.close();
+});
+
+test('insurance expert expands an outline-only responsibility record through an official web skill', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+  `);
+  const productName = '新华人寿保险股份有限公司测试高端医疗保险';
+  db.prepare('INSERT INTO knowledge_records VALUES (1, ?, ?, ?, ?)').run(
+    '新华保险', productName, 'https://static-cdn.newchinalife.com/terms.pdf',
+    JSON.stringify({
+      evidenceLevel: 'insurer_official', official: true,
+      pageText: '保险责任根据计划确定：计划一承担第2款至第10款，计划二承担第2款至第9款，计划三承担第2款至第8款。',
+    }),
+  );
+  let lookupInput;
+  const knowledge = createAgentProductKnowledgeSearch({
+    db,
+    officialDocumentFetchImpl: async () => { throw new Error('official pdf unavailable'); },
+    officialReferenceLookup: async (input) => {
+      lookupInput = input;
+      return { records: [{
+        official: true,
+        evidenceLevel: 'insurer_official',
+        title: '测试高端医疗保险官方产品页',
+        url: 'https://www.newchinalife.com/product/test',
+        pageText: [
+          '保险责任根据计划确定：计划一承担第2款至第10款，计划二承担第2款至第9款，计划三承担第2款至第8款。',
+          '2. 一般住院医疗费用保险金：承担符合约定的住院医疗费用。',
+          '3. 延伸医疗费用保险金：承担符合约定的延伸医疗费用。',
+          '4. 恶性肿瘤院外特定医疗费用保险金：承担符合约定的院外特定医疗费用。',
+          '9. 普通门急诊医疗费用保险金：计划一和计划二适用，计划三不适用。',
+          '10. 牙科医疗费用保险金：仅计划一适用。',
+        ].join('\n'),
+      }] };
+    },
+  });
+
+  const result = await knowledge.search({
+    question: '计划一、计划二、计划三分别是啥',
+    product: { canonicalProductId: 'product-test', company: '新华保险', officialName: productName },
+    queryAspects: [],
+    expertPlan: {
+      skills: ['plan_comparison', 'official_terms_retrieval', 'evidence_validation'],
+      maxRetrievalRounds: 2,
+    },
+  });
+
+  assert.equal(lookupInput.productName, '测试高端医疗保险');
+  assert.match(result.answer, /一般住院医疗费用保险金/u);
+  assert.match(result.answer, /牙科医疗费用保险金/u);
+  assert.ok(result.sources.some((source) => source.url === 'https://www.newchinalife.com/product/test'));
+  assert.equal(result.retrieval.rounds, 2);
+  db.close();
+});
+
+test('responsibility detail keeps the complete official responsibility chapter across chunk limits', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+  `);
+  const productName = '新华人寿保险股份有限公司完整责任测试医疗保险';
+  const outline = '计划一承担第2款至第10款，计划二承担第2款至第9款，计划三承担第2款至第8款。';
+  db.prepare('INSERT INTO knowledge_records VALUES (1, ?, ?, ?, ?)').run(
+    '新华保险', productName, 'https://static-cdn.newchinalife.com/complete-terms.pdf',
+    JSON.stringify({ evidenceLevel: 'insurer_official', official: true, pageText: outline }),
+  );
+  const responsibilities = [
+    [2, '一般住院医疗费用保险金'],
+    [3, '延伸医疗费用保险金'],
+    [4, '恶性肿瘤院外特定医疗费用保险金'],
+    [5, '特定门急诊医疗费用保险金'],
+    [6, '保障区域外紧急医疗费用保险金'],
+    [7, '全球紧急救援费用保险金'],
+    [8, '无理赔住院津贴保险金'],
+    [9, '普通门急诊医疗费用保险金'],
+    [10, '牙科医疗费用保险金'],
+  ];
+  const longDetail = '承担符合合同约定且医疗必需合理的费用，具体给付条件、限额和除外责任以正式条款为准。'.repeat(30);
+  const knowledge = createAgentProductKnowledgeSearch({
+    db,
+    officialDocumentFetchImpl: async () => { throw new Error('use reference evidence'); },
+    officialReferenceLookup: async () => ({ records: [{
+      official: true,
+      evidenceLevel: 'insurer_official',
+      title: '完整责任测试医疗保险官方条款',
+      url: 'https://www.newchinalife.com/product/complete-test',
+      pageText: [
+        outline,
+        ...responsibilities.map(([number, title]) => `${number}. ${title}\n${longDetail}`),
+      ].join('\n'),
+    }] }),
+  });
+
+  const result = await knowledge.search({
+    question: '完整责任测试医疗保险',
+    product: { canonicalProductId: 'product-complete', company: '新华保险', officialName: productName },
+    queryAspects: [],
+    expertPlan: {
+      skills: ['product_overview', 'responsibility_detail', 'official_terms_retrieval', 'evidence_validation'],
+      maxRetrievalRounds: 2,
+    },
+  });
+
+  for (const [, title] of responsibilities) assert.match(result.answer, new RegExp(title, 'u'));
+  assert.equal(result.retrieval.completeness, 'complete');
+  db.close();
+});
+
 test('product catalog tolerates one adjacent-character transposition in a natural product name', () => {
   const productName = '新华人寿保险股份有限公司康健长佑长期医疗保险（费率可调）';
   assert.ok(catalogProductScore('健康长佑', productName) >= 700);
@@ -283,7 +439,7 @@ test('Agent product knowledge falls back to exact-product official terms when a 
   db.close();
 });
 
-test('Agent product knowledge returns the complete enriched C-end responsibility view without regenerating it', async () => {
+test('Agent product knowledge gives the expert model the complete enriched C-end responsibility evidence', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
     CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
@@ -368,7 +524,7 @@ test('Agent product knowledge returns the complete enriched C-end responsibility
   assert.match(result.answer, /M1：客户上传资料.pdf（第3页）/u);
   assert.doesNotMatch(result.answer, /不展示/u);
   assert.doesNotMatch(result.answer, /共享保险责任助手结果/u);
-  assert.equal(modelCalls, 0);
+  assert.equal(modelCalls, 1);
   assert.equal(result.sources[0].provenance, 'insurer_official');
   db.close();
 });
@@ -640,6 +796,162 @@ test('Agent product knowledge asks DeepSeek to fuse official and approved upload
   db.close();
 });
 
+test('generic insurance expert QA interprets suitability from verified product facts without refusing the whole question', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+    CREATE TABLE insurance_products (
+      canonical_product_id TEXT, company TEXT, official_name TEXT, status TEXT
+    );
+  `);
+  const productName = '医药安欣（易核版）医疗保险';
+  db.prepare('INSERT INTO product_customer_responsibility_summaries VALUES (?, ?, ?, ?, ?, ?)').run(
+    '新华保险', productName, 'ready', '2026-07-13T00:00:00.000Z',
+    JSON.stringify({
+      headline: '提供一般医疗、重疾医疗、外购药械、康护医疗等保障。',
+      mainResponsibilities: [{ title: '一般医疗费用保险金', plainText: '年度给付限额200万元。' }],
+      importantNotes: ['投保年龄0周岁（出生满28日）至75周岁。', '等待期60天。'],
+    }),
+    JSON.stringify(['https://official.test/medical-anxin']),
+  );
+  db.prepare('INSERT INTO insurance_products VALUES (?, ?, ?, ?)').run(
+    'product_medical_anxin', '新华保险', productName, 'active',
+  );
+  let requestBody;
+  const knowledge = createAgentProductKnowledgeSearch({
+    db,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://model.test' },
+    productRagRetrieve() {
+      return {
+        queryType: 'product_advantage',
+        evidenceChunks: [{
+          evidenceId: 'M1',
+          documentId: 'training',
+          content: '培训资料介绍：健康告知宽松，高龄可投，次标体可承保，并配套外购药械、康复护理和健康管理服务。',
+          contextualPrefix: '切片主题：产品优势、投保规则',
+          pageStart: 4,
+          pageEnd: 6,
+          sourceAuthority: 'company_material',
+          reviewStatus: 'published',
+          citation: { fileName: '医药安欣（易核版）医疗保险官方资料', pageStart: 4, pageEnd: 6 },
+        }],
+      };
+    },
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [{
+              message: {
+                content: '官方明确投保年龄覆盖出生满28日至75周岁【官方资料O1】；结合培训资料的健康告知宽松、高龄可投和次标体可承保介绍，更适合关注医疗费用报销、外购药械和康护服务，同时希望核保门槛相对友好的人群【培训资料M1·第4–6页】。具体能否投保仍以健康告知和核保结果为准。',
+              },
+            }],
+          };
+        },
+      };
+    },
+  });
+
+  const result = await knowledge.search({
+    question: '这个产品适合什么人群',
+    product: { canonicalProductId: 'product_medical_anxin', company: '新华保险', officialName: productName },
+    expertPlan: {
+      skills: ['insurance_expert_qa', 'official_terms_retrieval', 'approved_material_retrieval', 'evidence_validation'],
+      evidenceGoals: ['回答适合人群时区分官方明确事实和基于证据的专业解读'],
+      maxRetrievalRounds: 2,
+    },
+  });
+  const prompt = JSON.stringify(requestBody.messages);
+
+  assert.match(prompt, /所有保险专家 Skills 都必须使用完整语义包回答/u);
+  assert.match(prompt, /不能因为资料没有“适用人群”标题就整段拒答/u);
+  assert.match(prompt, /投保年龄/u);
+  assert.match(prompt, /健康告知宽松/u);
+  assert.match(result.answer, /更适合关注医疗费用报销/u);
+  assert.doesNotMatch(result.answer, /无法确认该产品具体适合什么人群/u);
+  db.close();
+});
+
+test('Agent product knowledge retrieves the original and grounded queries then retries once for missing advantage material', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+    CREATE TABLE insurance_products (
+      canonical_product_id TEXT, company TEXT, official_name TEXT, status TEXT
+    );
+  `);
+  const productName = '医药安欣（易核版）医疗保险';
+  db.prepare('INSERT INTO product_customer_responsibility_summaries VALUES (?, ?, ?, ?, ?, ?)').run(
+    '新华保险', productName, 'ready', '2026-07-15T00:00:00.000Z',
+    JSON.stringify({
+      headline: '提供医疗费用保障。',
+      mainResponsibilities: [{ title: '一般医疗费用保险金', plainText: '按正式条款约定报销。' }],
+    }),
+    JSON.stringify(['https://official.test/medical-anxin']),
+  );
+  db.prepare('INSERT INTO insurance_products VALUES (?, ?, ?, ?)').run(
+    'product_medical_anxin', '新华保险', productName, 'active',
+  );
+  const queries = [];
+  const knowledge = createAgentProductKnowledgeSearch({
+    db,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://model.test' },
+    productRagRetrieve(input) {
+      queries.push(input.query);
+      if (!input.query.includes('客户价值')) return { queryType: 'product_advantage', evidenceChunks: [] };
+      return {
+        queryType: 'product_advantage',
+        evidenceChunks: [{
+          evidenceId: 'M1',
+          documentId: 'training',
+          content: '培训资料介绍了健康告知和适用客户场景。',
+          contextualPrefix: '切片主题：产品优势、适用场景',
+          pageStart: 12,
+          pageEnd: 12,
+          sourceAuthority: 'company_material',
+          reviewStatus: 'published',
+          citation: { fileName: '产品培训资料.pptx', pageStart: 12, pageEnd: 12 },
+        }],
+      };
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        return { choices: [{ message: { content: '产品优势来自医疗责任与适用客户资料【官方资料O1】【培训资料M1·第12页】。' } }] };
+      },
+    }),
+  });
+
+  const result = await knowledge.search({
+    question: '他有什么优势？',
+    product: { canonicalProductId: 'product_medical_anxin', company: '新华保险', officialName: productName },
+    queryAspects: ['product_advantages'],
+  });
+
+  assert.deepEqual(queries, [
+    '他有什么优势？',
+    `新华保险《${productName}》 他有什么优势？`,
+    `新华保险《${productName}》 产品优势 客户价值 适用场景 投保规则 服务权益 必要限制`,
+  ]);
+  assert.deepEqual(result.retrieval, {
+    mode: 'bounded_agentic_retrieval',
+    rounds: 2,
+    queryCount: 3,
+    completeness: 'complete',
+    missingEvidence: [],
+  });
+  assert.equal(result.sources.some((source) => source.provenance === 'company_material'), true);
+  db.close();
+});
+
 test('Agent product knowledge automatically chunks official terms and balances advantage evidence four to four', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
@@ -812,7 +1124,7 @@ test('Agent product knowledge reports critical conflicts and silently removes un
   db.close();
 });
 
-test('Agent product knowledge reads the matched official document when the stored excerpt misses the deductible values', async () => {
+test('Agent product knowledge uses the semantic aspect to supplement a vague deductible follow-up', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
     CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
@@ -872,10 +1184,16 @@ test('Agent product knowledge reads the matched official document when the store
     },
   });
 
-  const result = await knowledge.search({ question: '康健长佑的免赔额多少？', productName });
+  const result = await knowledge.search({
+    question: '这个怎么算？',
+    productName,
+    queryAspects: ['deductible'],
+  });
   const prompt = JSON.stringify(requestBody.messages);
 
   assert.equal(officialFetchCount, 1);
+  assert.match(prompt, /不得只复述“第几款至第几款”、责任数量或条款编号/u);
+  assert.match(prompt, /没有保费证据时不得推断某计划保费更高或更低/u);
   assert.match(prompt, /计划一的年度免赔额为1万元/u);
   assert.match(prompt, /计划二的年度免赔额为2万元/u);
   assert.match(result.answer, /计划一年度免赔额为1万元/u);

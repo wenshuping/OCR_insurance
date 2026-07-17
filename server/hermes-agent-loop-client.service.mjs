@@ -3,8 +3,11 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { redactDeepSeekDirectIdentifiers } from './deepseek-privacy-gateway.mjs';
+import { normalizeAgentContextFactBlock } from './agent-context-fact-block.service.mjs';
 
 const DEFAULT_MAX_TURNS = 4;
+const DEFAULT_DECISION_TIMEOUT_MS = 30_000;
+const DEFAULT_STARTUP_GRACE_MS = 10_000;
 const TOOLSET = 'ocr-insurance-domain';
 
 function clientError(code) {
@@ -47,7 +50,15 @@ function invoke(execFile, command, args, options) {
   return new Promise((resolve, reject) => {
     execFile(command, args, options, (error, stdout, stderr) => {
       if (error) {
-        reject(Object.assign(clientError('HERMES_PROVIDER_FAILED'), { cause: error }));
+        const detail = String(stderr || '');
+        const code = error?.name === 'AbortError' || error?.code === 'ABORT_ERR'
+          ? 'HERMES_ABORTED'
+          : /Session not found:/u.test(detail)
+          ? 'HERMES_SESSION_NOT_FOUND'
+          : error?.code === 'ENOENT' ? 'HERMES_CLI_UNAVAILABLE'
+            : error?.killed || ['SIGTERM', 'SIGKILL'].includes(error?.signal)
+              ? 'HERMES_TIMEOUT' : 'HERMES_PROVIDER_FAILED';
+        reject(Object.assign(clientError(code), { cause: error }));
         return;
       }
       resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
@@ -66,15 +77,26 @@ function promptFor({ question, safeRecentContext }) {
   const activeProductName = boundedText(redactDeepSeekDirectIdentifiers(
     safeRecentContext?.activeEntities?.product?.officialName,
   ), 200);
-  const activeEntities = activeProductName
-    ? { product: { officialName: activeProductName } }
-    : {};
+  const previousProductName = boundedText(redactDeepSeekDirectIdentifiers(
+    safeRecentContext?.activeEntities?.previousProduct?.officialName,
+  ), 200);
+  const activeEntities = {
+    ...(activeProductName ? { product: { officialName: activeProductName } } : {}),
+    ...(previousProductName ? { previousProduct: { officialName: previousProductName } } : {}),
+  };
+  const factBlock = safeRecentContext?.factBlock
+    ? normalizeAgentContextFactBlock(safeRecentContext.factBlock)
+    : null;
   return [
     '你是 OCR Insurance 的受控对话 Agent。请理解当前问题和最近对话，自主完成本轮回答。',
     '你只有两个保险业务工具：ask_insurance_expert 和 ask_sales_champion。不得假设存在其他业务工具。',
     '涉及保险产品、责任、条款、保单、保障、家庭保险数据或销售建议等事实时，必须调用合适的领域工具；不得凭模型记忆臆造。',
+    ...(factBlock ? [`VERIFIED_FACT_BLOCK=${JSON.stringify(factBlock)}`] : []),
     '先结合当前问题、最近对话和 ACTIVE_ENTITIES 消解省略的主语与指代，再决定任务和工具参数；ACTIVE_ENTITIES 是当前会话已核验且仍有效的实体。',
     '用户延续上一任务且省略实体时，应补用对应的 ACTIVE_ENTITIES；任务需要多个实体时，只补齐缺失角色，不得覆盖用户本轮明确提供的实体。',
+    'ACTIVE_ENTITIES 只能补齐本轮省略的实体；只要用户本轮出现新的产品名称、简称、俗称或其他产品线索，就必须优先按该新线索调用工具，不得把它覆盖到本轮新出现的产品线索。',
+    'ACTIVE_ENTITIES.previousProduct 表示上一轮确认过的产品，只是可供语义理解的历史事实。你应根据用户本轮原话自行判断它是主语、比较对象还是与本轮无关；不得默认把它当作当前产品。',
+    '用户提供的产品简称、俗称、残缺名称、疑似错别字或仅一段产品线索，也属于已提供产品实体；必须将该线索原样放入 names 调用 ask_insurance_expert，由工具检索正式产品和候选项，不得先要求用户补充正式名称。用户只发送这一段产品线索时，也视为产品查询。',
     '如果完成任务所需的实体没有可用上下文、存在多个可能解释或无法确定指代，直接提出一个具体澄清问题，不得猜测。',
     '调用产品知识时，names 只填写彼此独立的保险产品名称；同一产品下的计划、版本、档位或可选责任不是多款产品，names 应只填写一次共同的产品名称，并在 question 中保留要比较的计划或版本。',
     '调用产品知识时必须原样保留用户的问题；明确时可填写 queryAspects 作为语义提示，不确定时省略，由保险专家依据原问题判断。不得把优势问题改写成责任问题。',
@@ -105,8 +127,10 @@ export function createHermesAgentLoopClient({
   execFile = nodeExecFile,
   command = defaultCommand(env),
   hermesHome = env?.HERMES_HOME,
+  toolset = env?.HERMES_AGENT_LOOP_TOOLSET || TOOLSET,
   maxTurns = DEFAULT_MAX_TURNS,
-  timeoutMs = Number(env?.HERMES_AGENT_LOOP_TIMEOUT_MS) || 120_000,
+  timeoutMs = Number(env?.HERMES_AGENT_LOOP_TIMEOUT_MS) || DEFAULT_DECISION_TIMEOUT_MS,
+  startupGraceMs = Number(env?.HERMES_AGENT_LOOP_STARTUP_GRACE_MS) || DEFAULT_STARTUP_GRACE_MS,
   failureThreshold = 5,
   circuitResetMs = 30_000,
   now = Date.now,
@@ -116,13 +140,23 @@ export function createHermesAgentLoopClient({
     throw clientError('HERMES_AGENT_LOOP_UNAVAILABLE');
   }
   const configuredMaxTurns = normalizeMaxTurns(maxTurns);
-  const configuredTimeoutMs = Math.min(120_000, Math.max(1_000, Number(timeoutMs) || 60_000));
+  const configuredToolset = boundedText(toolset, 100);
+  if (!configuredToolset) throw clientError('HERMES_AGENT_LOOP_UNAVAILABLE');
+  const configuredTimeoutMs = Math.min(
+    120_000,
+    Math.max(1_000, Number(timeoutMs) || DEFAULT_DECISION_TIMEOUT_MS),
+  );
+  const configuredStartupGraceMs = Math.min(
+    20_000,
+    Math.max(0, Number(startupGraceMs) || 0),
+  );
+  const processTimeoutMs = configuredTimeoutMs + configuredStartupGraceMs;
   let consecutiveFailures = 0;
   let circuitOpenedAt = null;
   let halfOpenProbeRunning = false;
 
   async function runTurn({
-    sessionId = '', question, capability, gatewayUrl, safeRecentContext = {},
+    sessionId = '', question, capability, gatewayUrl, safeRecentContext = {}, signal,
   } = {}) {
     const normalizedQuestion = boundedText(question, 1_000);
     if (!normalizedQuestion) throw new TypeError('Hermes agent question is required');
@@ -142,14 +176,15 @@ export function createHermesAgentLoopClient({
     const args = [
       'chat', '-q', promptFor({ question: normalizedQuestion, safeRecentContext }),
       '-Q', '--source', 'tool', '--max-turns', String(configuredMaxTurns),
-      '--ignore-rules', '-t', TOOLSET,
+      '--ignore-rules', '-t', configuredToolset,
       ...(normalizedSessionId ? ['--resume', normalizedSessionId] : []),
     ];
     try {
       const result = await invoke(execFile, command, args, {
-        timeout: configuredTimeoutMs,
+        timeout: processTimeoutMs,
         maxBuffer: 256 * 1_024,
         windowsHide: true,
+        ...(signal ? { signal } : {}),
         env: {
           ...env,
           HERMES_HOME: dedicatedHome,

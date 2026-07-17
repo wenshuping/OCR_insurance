@@ -88,6 +88,35 @@ test('ready exact product summary returns bounded responsibilities with official
   }]);
 });
 
+test('resolved product rejects a responsibility index that lacks the named responsibility details', async (t) => {
+  const db = database();
+  t.after(() => db.close());
+  db.prepare('INSERT INTO knowledge_records VALUES (1, ?, ?, ?, ?)').run(
+    '新华保险',
+    '新华人寿保险股份有限公司测试高端医疗保险',
+    'https://static-cdn.newchinalife.com/terms.pdf',
+    JSON.stringify({
+      evidenceLevel: 'insurer_official',
+      title: '测试高端医疗保险官方条款',
+      pageText: '保险责任根据保障计划确定：计划一承担第二款至第十款，计划二承担第二款至第九款，计划三承担第二款至第八款。',
+    }),
+  );
+
+  const result = await service(db).search({
+    question: '计划一、计划二、计划三分别是什么',
+    scope: 'public_read_only',
+    product: {
+      canonicalProductId: 'product-official-record',
+      company: '新华保险',
+      officialName: '新华人寿保险股份有限公司测试高端医疗保险',
+    },
+    queryAspects: ['main_responsibilities'],
+  });
+
+  assert.equal(result.answer, '');
+  assert.deepEqual(result.sources, []);
+});
+
 test('resolved product responsibility uses the complete responsibility assistant output contract', async (t) => {
   const db = database();
   t.after(() => db.close());

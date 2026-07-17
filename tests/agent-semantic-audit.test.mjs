@@ -45,7 +45,7 @@ test('semantic audit persists a bounded redacted projection and survives reopen'
       resolvedEntities: {
         product: {
           canonicalProductId: probes.canonical, officialName: probes.product,
-          company: '新华人寿保险股份有限公司', matchType: 'exact_official_name', confidence: 1,
+          company: '新华人寿保险股份有限公司', matchType: 'confirmed_candidate', confidence: 1,
         },
       },
       nextTaskState: {
@@ -74,9 +74,9 @@ test('semantic audit persists a bounded redacted projection and survives reopen'
   assert.deepEqual(row.payload.referenceTypes, ['current_product']);
   assert.deepEqual(row.payload.candidateCounts, { product: 2, family: 1 });
   assert.deepEqual(row.payload.resolvedEntityTypes.product, {
-    status: 'resolved', matchType: 'exact_official_name', confidence: 1, hasCanonicalId: true,
+    status: 'resolved', matchType: 'confirmed_candidate', confidence: 1, hasCanonicalId: true,
   });
-  assert.deepEqual(row.payload.productResolution, { count: 1, matchTypes: ['exact_official_name'] });
+  assert.deepEqual(row.payload.productResolution, { count: 1, matchTypes: ['confirmed_candidate'] });
   const serialized = JSON.stringify(row);
   for (const probe of Object.values(probes)) assert.equal(serialized.includes(probe), false, probe);
   const rawPayload = store.db.prepare('SELECT payload FROM agent_semantic_audit_events').get().payload;

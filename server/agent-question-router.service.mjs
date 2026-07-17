@@ -7,6 +7,7 @@ import {
   validateAgentQuestionPolicy,
 } from './agent-question-policy.service.mjs';
 import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
+import { routeSalesChampionShadowTurn } from './sales-champion-shadow-interpreter.service.mjs';
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -323,6 +324,9 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       : null;
     const selected = selectPolicy(candidate, published);
     const policy = selected.policy;
+    const salesChampionShadow = candidate.intent === 'sales_coaching'
+      ? routeSalesChampionShadowTurn({ question: candidate.question })
+      : null;
 
     let authorizedResourceIds = [];
     const finish = async (result, resultCode = 'completed') => {
@@ -346,6 +350,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
         decision: safe.decision,
         fallback: policy?.key === 'unknown_read' || policy?.key === 'unknown_write',
         result: resultCode,
+        ...(salesChampionShadow ? { salesChampionShadow } : {}),
         actor: 'agent_question_router',
         createdAt: now.toISOString(),
       };

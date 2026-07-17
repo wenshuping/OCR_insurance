@@ -3952,7 +3952,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     if (!row) return null;
     const payload = parseJson(row.payload, {});
     const entities = db.prepare(`
-      SELECT role, ordinal, display_name, updated_at
+      SELECT role, ordinal, display_name, updated_at, payload
       FROM agent_conversation_entities WHERE conversation_id = ? ORDER BY role, ordinal
     `).all(id);
     const current = entities.find((entity) => entity.role === 'current');
@@ -3963,9 +3963,23 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       agentLoopSessionId: String(payload.agentLoopSessionId || ''),
       history: Array.isArray(payload.history) ? payload.history : [],
       question: payload.question || null,
+      factBlock: payload.factBlock || null,
       product: current ? { productName: current.display_name, updatedAt: Number(current.updated_at) } : null,
       productCandidates: candidates.length ? {
-        products: candidates.map((entity) => entity.display_name),
+        products: candidates.map((entity) => {
+          const candidate = parseJson(entity.payload, {});
+          const company = String(candidate.company || '').trim();
+          const officialName = String(candidate.officialName || '').trim();
+          const canonicalProductId = String(candidate.canonicalProductId || '').trim();
+          if (!company || !officialName || !canonicalProductId) return entity.display_name;
+          return {
+            ...(String(candidate.ref || '').trim() ? { ref: String(candidate.ref).trim() } : {}),
+            label: entity.display_name,
+            company,
+            officialName,
+            canonicalProductId,
+          };
+        }),
         question: String(payload.productCandidatesQuestion || ''),
         updatedAt: Math.max(...candidates.map((entity) => Number(entity.updated_at))),
       } : null,
@@ -3974,7 +3988,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
 
   async function saveAgentConversationContext({
     conversationId, expectedVersion, history = [], product = null, productCandidates = null,
-    question = null, hermesSessionId = '', agentLoopSessionId = '', updatedAt, activeContextExpiresAt,
+    question = null, factBlock = null, hermesSessionId = '', agentLoopSessionId = '', updatedAt, activeContextExpiresAt,
   } = {}) {
     const id = String(conversationId || '').trim();
     const version = Number(expectedVersion);
@@ -3985,6 +3999,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const payload = JSON.stringify({
       history,
       question,
+      factBlock,
       hermesSessionId: String(hermesSessionId || '').trim().slice(0, 200),
       agentLoopSessionId: String(agentLoopSessionId || '').trim().slice(0, 200),
       productCandidatesQuestion: String(productCandidates?.question || ''),
@@ -4005,14 +4020,24 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       db.prepare('DELETE FROM agent_conversation_entities WHERE conversation_id = ?').run(id);
       const insertEntity = db.prepare(`
         INSERT INTO agent_conversation_entities (conversation_id, role, ordinal, display_name, updated_at, payload)
-        VALUES (?, ?, ?, ?, ?, '{}')
+        VALUES (?, ?, ?, ?, ?, ?)
       `);
       const currentProductName = String(product?.productName || '').trim();
-      if (currentProductName) insertEntity.run(id, 'current', 0, currentProductName, Number(product.updatedAt || timestamp));
+      if (currentProductName) insertEntity.run(id, 'current', 0, currentProductName, Number(product.updatedAt || timestamp), '{}');
       const candidateProducts = Array.isArray(productCandidates?.products) ? productCandidates.products : [];
-      candidateProducts.forEach((name, index) => {
-        const displayName = String(name || '').trim();
-        if (displayName) insertEntity.run(id, 'candidate', index, displayName, Number(productCandidates.updatedAt || timestamp));
+      candidateProducts.forEach((value, index) => {
+        const candidate = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        const displayName = String(candidate.label || value || '').trim();
+        const candidatePayload = JSON.stringify({
+          ref: String(candidate.ref || '').trim().slice(0, 200),
+          company: String(candidate.company || '').trim().slice(0, 200),
+          officialName: String(candidate.officialName || '').trim().slice(0, 200),
+          canonicalProductId: String(candidate.canonicalProductId || '').trim().slice(0, 200),
+        });
+        if (displayName) insertEntity.run(
+          id, 'candidate', index, displayName.slice(0, 500),
+          Number(productCandidates.updatedAt || timestamp), candidatePayload,
+        );
       });
       db.exec('COMMIT');
       return loadAgentConversationContext({ conversationId: id });

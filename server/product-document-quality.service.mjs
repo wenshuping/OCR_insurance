@@ -83,20 +83,22 @@ export function assessProductPublishReadiness(input = {}) {
   const readyChunks = (Array.isArray(input.chunks) ? input.chunks : [])
     .filter((chunk) => text(chunk?.chunkType) !== 'parent' && text(chunk?.indexStatus) === 'ready');
   const boundLinks = links.filter((link) => text(link?.canonicalProductId));
+  const publishableChunks = readyChunks.filter((chunk) => text(chunk?.canonicalProductId));
   const checks = [];
 
-  checks.push(boundLinks.length
+  checks.push(publishableChunks.length
     ? check('product_binding', 'passed', '资料已关联产品')
-    : check('product_binding_missing', 'blocked', '资料尚未关联到确定产品，不能发布'));
+    : check('product_binding_missing', 'blocked', '没有已绑定产品的可用切片，不能发布'));
 
   const unboundChunks = readyChunks.filter((chunk) => !text(chunk?.canonicalProductId));
   if (unboundChunks.length) {
-    checks.push(check('chunk_product_binding_missing', 'blocked', '部分可检索切片尚未绑定产品', {
+    checks.push(check('chunk_product_binding_missing', 'warning', '未绑定产品的切片将在本次发布时继续隔离', {
       affectedCount: unboundChunks.length,
     }));
   }
 
-  const ambiguousChunks = readyChunks.filter((chunk) => {
+  const ambiguousChunks = publishableChunks.filter((chunk) => {
+    if (chunk?.payload?.manualBinding?.action === 'bind') return false;
     const pageStart = Number(chunk?.pageStart || 0);
     const pageEnd = Number(chunk?.pageEnd || pageStart);
     const applicable = boundLinks.filter((link) => (
@@ -127,6 +129,8 @@ export function assessProductPublishReadiness(input = {}) {
     decision: blockingReasons.length ? 'blocked' : 'pass',
     checks,
     blockingReasons,
+    publishableChunkCount: publishableChunks.length,
+    isolatedChunkCount: unboundChunks.length,
     qualityRuleVersion: 'product-publish-readiness-v1',
   };
 }

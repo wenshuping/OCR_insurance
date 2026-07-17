@@ -40,6 +40,14 @@ test('agent conversation context survives a SQLite store restart', async (t) => 
       candidate: { intent: 'insurance_product_knowledge', question: '国寿惠享保保险责任', confidence: 1, requestedOperation: 'read' },
       updatedAt: 1_720_000_000_000,
     },
+    factBlock: {
+      version: 1,
+      goal: { question: '国寿惠享保保险责任', status: 'completed', owner: 'insurance_expert' },
+      verifiedEntities: {
+        product: { officialName: '国寿惠享保（免健告）百万医疗险', source: 'domain_agent', verifiedAt: 1_720_000_000_000 },
+      },
+      conflicts: [],
+    },
     updatedAt: 1_720_000_000_000,
   });
   store.close();
@@ -52,6 +60,8 @@ test('agent conversation context survives a SQLite store restart', async (t) => 
   assert.equal(restored.hermesSessionId, 'hermes-session-user-7');
   assert.equal(restored.agentLoopSessionId, 'agent-loop-session-user-7');
   assert.equal(restored.product.productName, '国寿惠享保（免健告）百万医疗险');
+  assert.equal(restored.factBlock.goal.owner, 'insurance_expert');
+  assert.equal(restored.factBlock.verifiedEntities.product.source, 'domain_agent');
   assert.equal(restored.version, 2);
 });
 
@@ -82,12 +92,23 @@ test('agent conversation context applies the configured product TTL', async (t) 
   await service.commitContext({
     ...identity({ productContextTtlMinutes: 1 }), conversationRef: loaded.conversationId,
     expectedVersion: loaded.version, history: [],
-    product: { productName: '测试医疗险', updatedAt: now }, updatedAt: now,
+    product: { productName: '测试医疗险', updatedAt: now },
+    factBlock: {
+      goal: { question: '它保什么', status: 'completed', owner: 'insurance_expert' },
+      verifiedEntities: {
+        product: { officialName: '测试医疗险', source: 'domain_agent', verifiedAt: now },
+      },
+    },
+    updatedAt: now,
   });
   now += 59_000;
-  assert.equal((await service.loadContext(identity({ productContextTtlMinutes: 1 }))).product.productName, '测试医疗险');
+  const fresh = await service.loadContext(identity({ productContextTtlMinutes: 1 }));
+  assert.equal(fresh.product.productName, '测试医疗险');
+  assert.equal(fresh.factBlock.verifiedEntities.product.officialName, '测试医疗险');
   now += 2_000;
-  assert.equal((await service.loadContext(identity({ productContextTtlMinutes: 1 }))).product, null);
+  const expired = await service.loadContext(identity({ productContextTtlMinutes: 1 }));
+  assert.equal(expired.product, null);
+  assert.equal(expired.factBlock, null);
 });
 
 test('commit rejects a conversation loaded before the channel identity was rebound', async (t) => {
@@ -121,7 +142,7 @@ test('numbered product candidates remain selectable after gateway restart', asyn
     }),
     fetchImpl: async (url, options) => {
       if (String(url).includes('/api/agent/questions/route')) {
-        routed.push(JSON.parse(options.body).candidate);
+        routed.push(JSON.parse(options.body));
         return routed.length === 1
           ? { ok: true, json: async () => ({ interaction: { type: 'clarification', text: '请选择：', candidates: [
             { ref: 'one', label: '新华保险《荣耀鑫享赢家版终身寿险》' },
@@ -139,6 +160,11 @@ test('numbered product candidates remain selectable after gateway restart', asyn
   await createDingtalkAgentGateway(gatewayOptions(adapter(service))).handle({
     ...message, msgId: 'choice-1', text: { content: '荣耀鑫享保险责任' },
   });
+  const persistedCandidate = store.db.prepare(`
+    SELECT payload FROM agent_conversation_entities WHERE role = 'candidate' AND ordinal = 1
+  `).get();
+  assert.equal(JSON.parse(persistedCandidate.payload).officialName, '荣耀鑫享智赢版终身寿险');
+  assert.match(JSON.parse(persistedCandidate.payload).canonicalProductId, /^product_[a-f0-9]{16}$/u);
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath });
@@ -147,6 +173,11 @@ test('numbered product candidates remain selectable after gateway restart', asyn
   await createDingtalkAgentGateway(gatewayOptions(adapter(restartedService))).handle({
     ...message, msgId: 'choice-2', text: { content: '2' },
   });
-  assert.equal(routed[1].question, '荣耀鑫享保险责任');
-  assert.equal(routed[1].entities.productName, '荣耀鑫享智赢版终身寿险');
+  assert.equal(routed[1].candidate.question, '荣耀鑫享智赢版终身寿险保险责任');
+  assert.equal(routed[1].candidate.entities.productName, '荣耀鑫享智赢版终身寿险');
+  const saved = await restartedService.loadContext({
+    ...identity({ internalUserId: 7 }),
+    channelConversationId: 'choice-restart',
+  });
+  assert.equal(saved.productCandidates, null);
 });

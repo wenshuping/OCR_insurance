@@ -10,6 +10,9 @@ import {
   createProductIngestionService,
 } from '../product-ingestion.service.mjs';
 import { assessProductPublishReadiness } from '../product-document-quality.service.mjs';
+import { buildProductDocumentCorrectionPlan } from '../product-document-correction.service.mjs';
+import { createProductDocumentPreviewService } from '../product-document-preview.service.mjs';
+import { createProductDocumentReviewService } from '../product-document-review.service.mjs';
 import { createProductRagService } from '../product-rag.service.mjs';
 
 const DEFAULT_TENANT_ID = 'default';
@@ -121,6 +124,20 @@ function ensureUploadedProducts(store, payload = {}) {
   });
 }
 
+function bindingProductsForDocument(store, document = {}) {
+  const selectedNames = new Set(documentProductNames(document.payload).map(comparableProductName));
+  const company = cleanText(document.payload?.company);
+  return store.listProducts({ tenantId: DEFAULT_TENANT_ID })
+    .filter((product) => (!company || cleanText(product.company) === company)
+      && selectedNames.has(comparableProductName(product.officialName)))
+    .map((product) => ({
+      canonicalProductId: product.canonicalProductId,
+      productVersionId: '',
+      company: product.company,
+      officialName: product.officialName,
+    }));
+}
+
 function comparableProductName(value) {
   return String(value || '').replace(/[\s（）()·]/gu, '').toLowerCase();
 }
@@ -158,7 +175,10 @@ export function createProductKnowledgeRoutes(context = {}) {
     requireAdmin,
     productKnowledgeStore,
     productIngestionService,
+    productDocumentPreviewService,
+    productDocumentReviewService,
     productRagService,
+    recognizeDocumentText,
     productMaterialFetchImpl,
     upsertKnowledgeRecords,
     persistResponsibilityLookupArtifacts,
@@ -166,11 +186,13 @@ export function createProductKnowledgeRoutes(context = {}) {
     db,
   } = context;
   const ingestionService = productIngestionService || (productKnowledgeStore
-    ? createProductIngestionService({ store: productKnowledgeStore })
+    ? createProductIngestionService({ store: productKnowledgeStore, recognizeDocumentText })
     : null);
   const ragService = productRagService || (productKnowledgeStore
     ? createProductRagService({ store: productKnowledgeStore })
     : null);
+  const reviewService = productDocumentReviewService || createProductDocumentReviewService();
+  const previewService = productDocumentPreviewService || createProductDocumentPreviewService();
   function authorize(req, res) {
     if (typeof requireAdmin !== 'function') {
       res.status(503).json({
@@ -192,6 +214,31 @@ export function createProductKnowledgeRoutes(context = {}) {
       );
     }
     return productKnowledgeStore;
+  }
+
+  async function runAndSaveDocumentReview(documentId) {
+    const store = storeOrThrow();
+    const document = store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId });
+    if (!document) throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
+    const pages = store.listDocumentPages({ tenantId: DEFAULT_TENANT_ID, documentId });
+    const indexReview = store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId });
+    const review = await reviewService.reviewDocument({
+      document,
+      pages,
+      chunks: indexReview?.candidateChunks || [],
+    });
+    const saved = store.saveDocumentReviewResult({
+      tenantId: DEFAULT_TENANT_ID,
+      documentId,
+      indexVersion: indexReview?.candidateIndexVersion || document.payload?.candidateIndexVersion,
+      reviewType: 'ai_pre_review',
+      model: review.model,
+      status: 'completed',
+      issues: review.issues,
+      summary: review.summary,
+      payload: { decision: review.decision, reviewVersion: review.reviewVersion },
+    });
+    return { review, run: saved?.run || null, issues: saved?.issues || [] };
   }
 
   router.get('/catalog/companies', (req, res) => {
@@ -270,20 +317,29 @@ export function createProductKnowledgeRoutes(context = {}) {
     const session = authorize(req, res);
     if (!session) return;
     try {
-      const documents = storeOrThrow().listDocuments({
+      const store = storeOrThrow();
+      const includeReviewChunks = String(req.query?.includeChunks || '') === 'review';
+      const documents = store.listDocuments({
         tenantId: DEFAULT_TENANT_ID,
         limit: req.query?.limit,
       }).map((document) => ({
         ...document,
-        job: storeOrThrow().getIngestionJob({
+        job: store.getIngestionJob({
           tenantId: DEFAULT_TENANT_ID,
           documentId: document.id,
         }),
-        ...(String(req.query?.includeChunks || '') === 'review' ? (() => {
-          const indexReview = storeOrThrow().getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId: document.id });
+        ...(includeReviewChunks ? (() => {
+          const indexReview = store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId: document.id });
+          const reviewChunks = indexReview?.candidateChunks?.length ? indexReview.candidateChunks : indexReview?.activeChunks || [];
           return {
             indexReview: indexReview ? { ...indexReview, activeChunks: undefined, candidateChunks: undefined } : null,
-            reviewChunks: indexReview?.candidateChunks?.length ? indexReview.candidateChunks : indexReview?.activeChunks || [],
+            reviewChunks,
+            bindingProducts: bindingProductsForDocument(store, document),
+            publishReadiness: indexReview?.candidateIndexVersion ? assessProductPublishReadiness({
+              document,
+              links: store.listDocumentProductLinks({ tenantId: DEFAULT_TENANT_ID, documentId: document.id }),
+              chunks: reviewChunks,
+            }) : null,
           };
         })() : {}),
       }));
@@ -333,6 +389,164 @@ export function createProductKnowledgeRoutes(context = {}) {
     }
   });
 
+  router.get('/documents/:documentId/review-workspace', (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const store = storeOrThrow();
+      const documentId = String(req.params.documentId || '').trim();
+      const document = store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId });
+      if (!document) throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
+      const pages = store.listDocumentPages({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const indexReview = store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const reviewRuns = store.listDocumentReviewRuns({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const issues = reviewRuns[0]
+        ? store.listDocumentReviewIssues({ tenantId: DEFAULT_TENANT_ID, documentId, runId: reviewRuns[0].id })
+        : [];
+      const corrections = store.listDocumentCorrections({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const pageReviews = store.listDocumentPageReviews({
+        tenantId: DEFAULT_TENANT_ID,
+        documentId,
+        indexVersion: indexReview?.candidateIndexVersion,
+      });
+      return res.json({ ok: true, document, pages, indexReview, reviewRuns, issues, corrections, pageReviews });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  router.post('/documents/:documentId/pages/:pageNo/review', (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const store = storeOrThrow();
+      const documentId = String(req.params.documentId || '').trim();
+      const pageNo = Number(req.params.pageNo || 0);
+      const pages = store.listDocumentPages({ tenantId: DEFAULT_TENANT_ID, documentId });
+      if (!pages.some((page) => page.pageNo === pageNo)) {
+        throw routeError('PRODUCT_DOCUMENT_PAGE_NOT_FOUND', '产品资料页面不存在', 404);
+      }
+      const review = store.saveDocumentPageReview({
+        tenantId: DEFAULT_TENANT_ID,
+        documentId,
+        pageNo,
+        indexVersion: req.body?.indexVersion,
+        status: req.body?.status,
+        note: req.body?.note,
+        reviewer: String(session.token || session.id || 'admin'),
+      });
+      if (!review) throw routeError('PRODUCT_DOCUMENT_PAGE_REVIEW_INVALID', '页面审核状态无效', 400);
+      return res.json({ ok: true, review });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  router.get('/documents/:documentId/source', (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const documentId = String(req.params.documentId || '').trim();
+      const document = storeOrThrow().getDocument({
+        tenantId: DEFAULT_TENANT_ID,
+        documentId,
+        includeBytes: true,
+      });
+      if (!document) throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
+      const fileName = cleanText(document.fileName, 240) || 'document';
+      const mediaType = cleanText(document.mediaType, 120);
+      res.setHeader('Content-Type', /^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/u.test(mediaType) ? mediaType : 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+      return res.send(document.bytes);
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  router.get('/documents/:documentId/pages/:pageNo/preview', async (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const documentId = String(req.params.documentId || '').trim();
+      const pageNo = Number(req.params.pageNo || 0);
+      const store = storeOrThrow();
+      const document = store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId, includeBytes: true });
+      if (!document) throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
+      const pages = store.listDocumentPages({ tenantId: DEFAULT_TENANT_ID, documentId });
+      if (!pages.some((page) => page.pageNo === pageNo)) {
+        throw routeError('PRODUCT_DOCUMENT_PAGE_NOT_FOUND', '产品资料页面不存在', 404);
+      }
+      const image = await previewService.getPagePreview({ document, pageNo });
+      res.setHeader('Content-Type', document.mediaType.startsWith('image/') ? document.mediaType : 'image/png');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      return res.send(image);
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  router.post('/documents/:documentId/pre-review', async (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const documentId = String(req.params.documentId || '').trim();
+      return res.json({ ok: true, ...await runAndSaveDocumentReview(documentId) });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  router.post('/documents/:documentId/corrections/plan', (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const store = storeOrThrow();
+      const documentId = String(req.params.documentId || '').trim();
+      if (!store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId })) {
+        throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
+      }
+      return res.json({ ok: true, plan: buildProductDocumentCorrectionPlan(req.body) });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  router.post('/documents/:documentId/corrections/confirm', async (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const store = storeOrThrow();
+      const documentId = String(req.params.documentId || '').trim();
+      const plan = buildProductDocumentCorrectionPlan(req.body?.plan || req.body);
+      const correction = store.saveDocumentCorrection({
+        tenantId: DEFAULT_TENANT_ID,
+        documentId,
+        sourceIssueId: req.body?.sourceIssueId,
+        indexVersion: req.body?.indexVersion,
+        reasonCode: plan.reasonCode,
+        note: plan.note,
+        scope: plan.scope,
+        operations: plan.operations,
+        status: 'approved',
+        createdBy: String(session.token || session.id || 'admin'),
+      });
+      if (!correction) throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
+      let reprocessed = null;
+      if (ingestionService) {
+        reprocessed = await ingestionService.ingestDocument({
+          tenantId: DEFAULT_TENANT_ID,
+          documentId,
+          catalogProducts: catalogProductsFromState(state),
+          correctionIds: [correction.id],
+          correctionOperations: correction.operations,
+        });
+      }
+      return res.json({ ok: true, correction, reprocessed });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
   router.post('/documents/:documentId/process', async (req, res) => {
     const session = authorize(req, res);
     if (!session) return;
@@ -345,7 +559,33 @@ export function createProductKnowledgeRoutes(context = {}) {
         documentId: String(req.params.documentId || '').trim(),
         catalogProducts: catalogProductsFromState(state),
       });
-      return res.json({ ok: true, ...result });
+      const documentId = String(req.params.documentId || '').trim();
+      let preReview;
+      try {
+        preReview = { status: 'completed', ...await runAndSaveDocumentReview(documentId) };
+      } catch (reviewError) {
+        const store = storeOrThrow();
+        const document = store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId });
+        const saved = store.saveDocumentReviewResult({
+          tenantId: DEFAULT_TENANT_ID,
+          documentId,
+          indexVersion: document?.payload?.candidateIndexVersion,
+          reviewType: 'ai_pre_review',
+          status: 'failed',
+          errorCode: cleanText(reviewError?.code) || 'PRODUCT_DOCUMENT_PRE_REVIEW_FAILED',
+          errorMessage: cleanText(reviewError?.message, 1000) || '产品资料预审失败',
+          payload: { degraded: true },
+        });
+        preReview = {
+          status: 'failed',
+          degraded: true,
+          code: cleanText(reviewError?.code) || 'PRODUCT_DOCUMENT_PRE_REVIEW_FAILED',
+          message: cleanText(reviewError?.message, 1000) || '产品资料预审失败',
+          run: saved?.run || null,
+          issues: saved?.issues || [],
+        };
+      }
+      return res.json({ ok: true, ...result, preReview });
     } catch (error) {
       return sendError(res, error);
     }
@@ -367,6 +607,44 @@ export function createProductKnowledgeRoutes(context = {}) {
     }
   });
 
+  router.patch('/documents/:documentId/chunks/:chunkId/binding', async (req, res) => {
+    const session = authorize(req, res);
+    if (!session) return;
+    try {
+      const store = storeOrThrow();
+      const documentId = String(req.params.documentId || '').trim();
+      const document = store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId });
+      if (!document) throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
+      const action = cleanText(req.body?.action);
+      const canonicalProductId = cleanText(req.body?.canonicalProductId);
+      const products = bindingProductsForDocument(store, document);
+      const product = products.find((item) => item.canonicalProductId === canonicalProductId);
+      if (action === 'bind' && !product) {
+        throw routeError('PRODUCT_CHUNK_BINDING_PRODUCT_INVALID', '请选择这份资料已经标注的产品', 400);
+      }
+      const chunk = store.updateCandidateChunkBinding({
+        tenantId: DEFAULT_TENANT_ID,
+        documentId,
+        chunkId: String(req.params.chunkId || '').trim(),
+        action,
+        canonicalProductId: product?.canonicalProductId,
+        productVersionId: product?.productVersionId,
+        officialName: product?.officialName,
+        reviewer: String(session.token || session.id || 'admin'),
+      });
+      if (!chunk) throw routeError('PRODUCT_CHUNK_NOT_FOUND', '当前候选版本中没有这个切片', 404);
+      const indexReview = store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const publishReadiness = assessProductPublishReadiness({
+        document,
+        links: store.listDocumentProductLinks({ tenantId: DEFAULT_TENANT_ID, documentId }),
+        chunks: indexReview?.candidateChunks || [],
+      });
+      return res.json({ ok: true, chunk, publishReadiness });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
   router.post('/documents/:documentId/review', async (req, res) => {
     const session = authorize(req, res);
     if (!session) return;
@@ -381,9 +659,11 @@ export function createProductKnowledgeRoutes(context = {}) {
           chunks: store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId })?.candidateChunks || [],
         });
         if (readiness.decision === 'blocked') {
+          const reason = readiness.blockingReasons[0];
+          const affectedCount = Number(reason?.affectedCount || 0);
           throw routeError(
             'PRODUCT_DOCUMENT_BINDING_REQUIRED',
-            readiness.blockingReasons[0]?.message || '产品资料必须先绑定产品才能发布',
+            `${reason?.message || '产品资料必须先绑定产品才能发布'}${affectedCount ? `（影响 ${affectedCount} 个切片）` : ''}，请先修正产品绑定后再发布`,
             409,
           );
         }

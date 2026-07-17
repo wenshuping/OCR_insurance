@@ -283,7 +283,29 @@ export async function parseProductDocument(input = {}) {
     throw parserError('PRODUCT_DOCUMENT_CONVERSION_REQUIRED', '旧版Office格式请先转换为PPTX、DOCX或XLSX后再解析');
   }
   if (IMAGE_EXTENSIONS.has(extension)) {
-    throw parserError('PRODUCT_DOCUMENT_OCR_REQUIRED', '图片资料需要进入OCR识别队列');
+    const rawText = text(input.ocrText);
+    if (!rawText) throw parserError('PRODUCT_DOCUMENT_OCR_REQUIRED', '图片资料需要进入OCR识别队列');
+    const pages = [{
+      pageNo: 1,
+      rawText,
+      layout: {
+        sourceType: 'image',
+        sourceLabel: '第 1 页',
+        metadata: { fileName: text(input.document?.fileName), mediaType: text(input.document?.mediaType) },
+        notes: [],
+        extraction: { method: 'ocr_service', needsVisualOcr: false },
+      },
+      tables: [],
+      headings: [],
+      sourceLabel: '第 1 页',
+    }];
+    return {
+      parser: 'ocr-service',
+      documentType: classifyDocumentType({ extension, pages }),
+      metadata: { sourceType: 'image' },
+      warnings: [],
+      pages,
+    };
   }
   if (AUDIO_EXTENSIONS.has(extension)) {
     throw parserError('PRODUCT_DOCUMENT_TRANSCRIPTION_REQUIRED', '语音资料已保存，等待语音转写服务处理');

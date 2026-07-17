@@ -3,13 +3,20 @@ import { detectProductBoundaries, matchProductCandidates } from './product-bound
 import { assessProductChunksQuality } from './product-chunk-quality.service.mjs';
 import { annotateProductChunks } from './product-chunk-semantics.service.mjs';
 import { chunkProductDocument } from './product-chunker.service.mjs';
+import { applyChunkCorrectionOperations } from './product-document-correction.service.mjs';
 import { parseProductDocument } from './product-document-parser.service.mjs';
 import { assessProductDocumentQuality } from './product-document-quality.service.mjs';
+import {
+  annotatePagesWithSourceElements,
+  attachChunkSourceRegions,
+} from './product-document-source-elements.service.mjs';
 import { extractProductFactCandidates } from './product-fact-extractor.service.mjs';
 
 function text(value) {
   return String(value ?? '').trim();
 }
+
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png']);
 
 function uniqueCatalog(records = []) {
   const products = new Map();
@@ -82,6 +89,22 @@ function bindChunksToMatchedProducts(chunks = [], matches = []) {
   });
 }
 
+function correctionOperationsForSourceChunks(corrections = [], storedChunks = []) {
+  const sourceIds = new Map((Array.isArray(storedChunks) ? storedChunks : []).map((chunk) => [
+    text(chunk?.id),
+    text(chunk?.payload?.sourceChunkId) || text(chunk?.id),
+  ]));
+  const sourceId = (value) => sourceIds.get(text(value)) || text(value);
+  return (Array.isArray(corrections) ? corrections : []).flatMap((correction) => (
+    Array.isArray(correction?.operations) ? correction.operations : []
+  )).map((operation) => ({
+    ...operation,
+    ...(text(operation?.targetChunkId) ? { targetChunkId: sourceId(operation.targetChunkId) } : {}),
+    ...(Array.isArray(operation?.targetChunkIds) ? { targetChunkIds: operation.targetChunkIds.map(sourceId) } : {}),
+    ...(text(operation?.relatedChunkId) ? { relatedChunkId: sourceId(operation.relatedChunkId) } : {}),
+  }));
+}
+
 export function createProductIngestionService(options = {}) {
   const store = options.store;
   const parseDocument = options.parseDocument || parseProductDocument;
@@ -92,6 +115,7 @@ export function createProductIngestionService(options = {}) {
   const assessDocumentQuality = options.assessDocumentQuality || assessProductDocumentQuality;
   const assessChunksQuality = options.assessChunksQuality || assessProductChunksQuality;
   const extractFacts = options.extractFacts || extractProductFactCandidates;
+  const recognizeDocumentText = options.recognizeDocumentText;
 
   async function ingestDocument(input = {}) {
     const tenantId = text(input.tenantId) || 'default';
@@ -112,11 +136,35 @@ export function createProductIngestionService(options = {}) {
       errorMessage: '',
     });
     try {
-      const parsed = await parseDocument({
-        bytes: document.bytes,
-        extension: document.extension,
-        document,
-      });
+      let parsedResult;
+      try {
+        parsedResult = await parseDocument({
+          bytes: document.bytes,
+          extension: document.extension,
+          document,
+        });
+      } catch (error) {
+        const needsImageOcr = error?.code === 'PRODUCT_DOCUMENT_OCR_REQUIRED'
+          && IMAGE_EXTENSIONS.has(text(document.extension).toLowerCase())
+          && typeof recognizeDocumentText === 'function';
+        if (!needsImageOcr) throw error;
+        const mediaType = text(document.mediaType) || `image/${document.extension === 'jpg' ? 'jpeg' : document.extension}`;
+        const ocrText = await recognizeDocumentText({
+          name: document.fileName,
+          type: mediaType,
+          dataUrl: `data:${mediaType};base64,${Buffer.from(document.bytes).toString('base64')}`,
+        });
+        parsedResult = await parseDocument({
+          bytes: document.bytes,
+          extension: document.extension,
+          document,
+          ocrText,
+        });
+      }
+      const parsed = {
+        ...parsedResult,
+        pages: annotatePagesWithSourceElements(parsedResult.pages),
+      };
       const documentQuality = assessDocumentQuality({ document, parsed });
       if (documentQuality.decision === 'reprocess_required') {
         throw ingestionError('PRODUCT_DOCUMENT_QUALITY_REPROCESS_REQUIRED', '产品资料质量不合格，需要重新解析', 422);
@@ -170,9 +218,22 @@ export function createProductIngestionService(options = {}) {
         product,
         pages: parsed.pages,
       });
+      const corrections = typeof store.listDocumentCorrections === 'function'
+        ? store.listDocumentCorrections({ tenantId, documentId, statuses: ['approved', 'applied'] })
+        : [];
+      const correctionOperations = correctionOperationsForSourceChunks(
+        corrections,
+        typeof store.listDocumentChunks === 'function' ? store.listDocumentChunks({ tenantId, documentId }) : [],
+      );
+      const correctedChunks = applyChunkCorrectionOperations({
+        chunks: rawChunks,
+        pages: parsed.pages,
+        operations: correctionOperations,
+      });
+      const tracedChunks = attachChunkSourceRegions(correctedChunks, parsed.pages);
       const semanticChunks = annotateChunks({
         document: { ...document, documentType: parsed.documentType },
-        chunks: rawChunks,
+        chunks: tracedChunks,
       });
       const chunkQuality = assessChunksQuality(semanticChunks);
       const links = resolvedMatches.map((entry) => {
@@ -219,6 +280,14 @@ export function createProductIngestionService(options = {}) {
           productCandidateCount: detection.candidates.length,
         },
       });
+      if (corrections.length && typeof store.markDocumentCorrectionsApplied === 'function') {
+        store.markDocumentCorrectionsApplied({
+          tenantId,
+          documentId,
+          correctionIds: corrections.map((correction) => correction.id),
+          indexVersion: artifacts.indexVersion,
+        });
+      }
       const savedLinks = store.saveDocumentProductLinks({ tenantId, documentId, links });
       const sectionReviewCount = chunks.filter((chunk) => chunk?.payload?.reviewRequired === true).length;
       const requiresReview = detection.requiresReview

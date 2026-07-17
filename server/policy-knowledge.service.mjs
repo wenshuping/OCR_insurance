@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { extractInsurancePlanMatrixEvidence } from './insurance-plan-matrix-evidence.service.mjs';
 import {
   CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
   CUSTOMER_POLICY_PHOTO_REVIEWED_EVIDENCE_LEVEL,
@@ -847,8 +848,12 @@ async function fetchMaterialPageText({ url, policy, fetchImpl, signal } = {}) {
       };
     }
     if (!/(application\/msword|officedocument)/iu.test(contentType)) {
+      const html = await response.text();
+      const matrixEvidence = extractInsurancePlanMatrixEvidence(html).text;
+      const relevantText = extractRelevantText(stripHtml(html), policy);
       return {
-        pageText: extractRelevantText(stripHtml(await response.text()), policy),
+        pageText: [matrixEvidence, relevantText].filter(Boolean).join('\n\n')
+          .slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS),
         sourceType,
         contentType,
       };

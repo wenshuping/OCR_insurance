@@ -14,6 +14,26 @@ const FACT_RULES = [
 const CONTRACT_DOCUMENT_TYPES = new Set(['terms', 'benefit_terms', 'basic_terms', 'plan_table', 'rate_table']);
 const NON_CONTRACT_DOCUMENT_TYPES = new Set(['training_deck', 'sales_manual', 'marketing_material']);
 const REQUIRED_CONTEXT_PATTERN = /^(?:注|说明|其中)|但(?:是|若)?|除外|不适用|另有约定|以.+为准|前述/u;
+const FACT_KEY_LABELS = new Map([
+  ['waiting_period', '等待期'],
+  ['annual_deductible', '免赔额'],
+  ['reimbursement_ratio', '给付比例'],
+  ['benefit_limit', '保障限额'],
+  ['entry_age', '投保年龄'],
+  ['renewal_period', '续保条件'],
+]);
+const TOPIC_LABELS = new Map([
+  ['product_overview', '产品概览'], ['target_audience', '适用人群'], ['product_advantage', '产品优势'],
+  ['underwriting', '投保规则'], ['coverage', '保障责任'], ['exclusions', '责任免除'],
+  ['plan_pricing', '计划与价格'], ['health_services', '健康服务'], ['claims', '理赔规则'],
+]);
+const KEYWORD_RULES = [
+  ['产品培训', /产品培训/u], ['产品定位', /产品定位/u], ['产品特色', /产品特色|产品优势|产品亮点/u],
+  ['适合客户', /适合客户|适用人群|目标客户/u], ['保险责任', /保险责任|保障责任/u],
+  ['健康服务', /健康服务|健康管理/u], ['长期护理', /长期护理/u], ['医疗保险', /医疗保险|医疗险/u],
+  ['重大疾病', /重大疾病|重疾/u], ['恶性肿瘤', /恶性肿瘤|癌症/u], ['责任免除', /责任免除|免责/u],
+  ['理赔', /理赔|保险金申请/u], ['保费费率', /保费|费率/u], ['保障计划', /保障计划/u],
+];
 
 function factKeys(content) {
   return FACT_RULES.filter(([, pattern]) => pattern.test(content)).map(([key]) => key);
@@ -30,6 +50,20 @@ function responsibilityName(chunk) {
   return text(chunk?.content).match(/(?:^|\n)((?:[^\n，。；]{2,30})(?:保险金|医疗费用保险金|豁免保险费))/u)?.[1]?.trim() || '';
 }
 
+function keywordsForChunk(chunk, content, topics, keys, responsibility, plans) {
+  const heading = (Array.isArray(chunk?.headingPath) ? chunk.headingPath : [])
+    .map(text).filter(Boolean).at(-1) || '';
+  return [...new Set([
+    ...(Array.isArray(chunk?.payload?.businessTopicLabels) ? chunk.payload.businessTopicLabels : []),
+    ...keys.map((key) => FACT_KEY_LABELS.get(key)),
+    responsibility,
+    ...plans,
+    ...KEYWORD_RULES.filter(([, pattern]) => pattern.test(content)).map(([label]) => label),
+    ...topics.map((topic) => TOPIC_LABELS.get(text(topic)) || text(topic)),
+    heading && !/^(?:目录|未识别章节)$/u.test(heading) && heading.length <= 24 ? heading : '',
+  ].map(text).filter(Boolean))].slice(0, 8);
+}
+
 function semanticForChunk(document, chunk) {
   const content = [
     ...(Array.isArray(chunk?.headingPath) ? chunk.headingPath : []),
@@ -39,6 +73,8 @@ function semanticForChunk(document, chunk) {
     ? chunk.payload.businessTopics.map(text).filter(Boolean)
     : [];
   const keys = factKeys(content);
+  const responsibility = responsibilityName(chunk);
+  const plans = planNames(content);
   const documentType = text(document?.documentType);
   const sourceAuthority = text(document?.sourceAuthority || chunk?.sourceAuthority);
   const contractual = CONTRACT_DOCUMENT_TYPES.has(documentType);
@@ -62,8 +98,9 @@ function semanticForChunk(document, chunk) {
     evidenceKind,
     topics,
     factKeys: keys,
-    responsibility: responsibilityName(chunk),
-    planNames: planNames(content),
+    responsibility,
+    planNames: plans,
+    keywords: keywordsForChunk(chunk, content, topics, keys, responsibility, plans),
     contractual,
     nonContractual,
     requiredContextChunkIds: [],
@@ -75,11 +112,16 @@ export function annotateProductChunks(input = {}) {
   const document = input.document || {};
   const annotated = (Array.isArray(input.chunks) ? input.chunks : []).map((chunk) => {
     if (text(chunk?.chunkType) === 'parent') return chunk;
+    const semantic = semanticForChunk(document, chunk);
+    const prefixLines = text(chunk?.contextualPrefix).split('\n')
+      .filter((line) => !/^切片关键词：/u.test(line));
     return {
       ...chunk,
+      contextualPrefix: [...prefixLines, semantic.keywords.length ? `切片关键词：${semantic.keywords.join('、')}` : '']
+        .filter(Boolean).join('\n'),
       payload: {
         ...(chunk?.payload && typeof chunk.payload === 'object' ? chunk.payload : {}),
-        semantic: semanticForChunk(document, chunk),
+        semantic,
       },
     };
   });

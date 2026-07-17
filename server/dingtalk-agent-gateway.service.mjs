@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 
 import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from './agent-question-policy.service.mjs';
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const DIRECT_CONVERSATION = '1';
 const MAX_TEXT_LENGTH = 1_000;
@@ -13,6 +14,8 @@ const UNDERSTANDING_CHALLENGE_PATTERN = /(?:你)?(?:听懂|看懂|明白|理解)
 const MARKDOWN_CONTENT_PATTERN = /(?:^|\n)\s*(?:#{1,6}\s|[-*]\s|\d+\.\s|>\s|\|.*\|)|\*\*[^*]+\*\*/u;
 const RESPONSIBILITY_ANSWER_PATTERN = /(?:^|\n)### 责任明细（(\d+)项）/u;
 const COMPARISON_PRODUCT_PRONOUN_PATTERN = /^(?:他|它|这个产品|该产品|上述产品)(?=\s*(?:和|与|对比|比较|VS\.?))/iu;
+const PRODUCT_QUESTION_ASPECT_PATTERN = /产品责任|保险责任|保障责任|保什么|保哪些|怎么赔|赔什么|优势|亮点|卖点|在售|停售|还能买|等待期|免责/u;
+const QUESTION_CONTENT_PATTERN = /(?:计划|方案|分别|各自|每个|是啥|是什么|有哪些|有什么|包含|包括|怎么|多少|吗|呢|\?)/u;
 
 function gatewayError(code, status = 502) {
   return Object.assign(new Error(code), { code, status });
@@ -56,6 +59,18 @@ function productNameFromText(value) {
 function selectedCandidateIndex(value) {
   const match = String(value || '').trim().match(/^(?:选择|选|第)?\s*(\d{1,2})(?:\s*(?:个|项|款|号))?$/u);
   return match ? Number(match[1]) - 1 : -1;
+}
+
+function selectedProductQuestion(originalQuestion, selectedProduct) {
+  const original = String(originalQuestion || '').trim().slice(0, MAX_TEXT_LENGTH);
+  const product = String(selectedProduct?.productName || selectedProduct || '').trim();
+  if (!product) return original;
+  const aspect = original.match(PRODUCT_QUESTION_ASPECT_PATTERN)?.[0] || '';
+  if (!original || original === product || product.includes(original)) return product;
+  if (original.includes(product)) return original;
+  if (!aspect && QUESTION_CONTENT_PATTERN.test(original)) return `${product} ${original}`;
+  if (!aspect) return product;
+  return `${product}${aspect}`;
 }
 
 export function createInMemoryAgentConversationContext() {
@@ -268,11 +283,14 @@ function productNameFromReply(value) {
 }
 
 function candidateProduct(value) {
-  const label = String(value || '').trim();
+  const stored = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const label = String(stored.label || value || '').trim();
   if (!label) return null;
-  const productName = productNameFromReply(label) || label;
-  const company = productNameFromReply(label) ? label.split('《', 1)[0].trim() : '';
-  return { label, productName, company };
+  const productName = String(stored.officialName || productNameFromReply(label) || label).trim();
+  const company = String(stored.company || (productNameFromReply(label) ? label.split('《', 1)[0].trim() : '')).trim();
+  const canonicalProductId = String(stored.canonicalProductId
+    || canonicalProductIdFromOfficialProduct({ company, productName })).trim();
+  return { ...stored, label, productName, company, canonicalProductId };
 }
 
 function errorReply(payload) {
@@ -455,7 +473,10 @@ export function createDingtalkAgentGateway({
       let candidate;
       if (selectedProduct) {
         candidate = {
-          intent: 'insurance_product_knowledge', question: rememberedCandidates.question || text, confidence: 1, requestedOperation: 'read',
+          intent: 'insurance_product_knowledge',
+          question: selectedProductQuestion(rememberedCandidates.question || '', selectedProduct),
+          confidence: 1,
+          requestedOperation: 'read',
           entities: {
             productName: selectedProduct.productName,
             ...(selectedProduct.company ? { productCompany: selectedProduct.company } : {}),
@@ -542,7 +563,16 @@ export function createDingtalkAgentGateway({
           nextQuestion = { candidate, updatedAt: now() };
         }
         if (payload?.interaction?.type === 'clarification' && Array.isArray(payload.interaction.candidates)) {
-          const products = payload.interaction.candidates.map((item) => String(item?.label || '').trim()).filter(Boolean);
+          const products = payload.interaction.candidates.map((item) => {
+            const product = candidateProduct(item);
+            return product ? {
+              ...(String(item?.ref || '').trim() ? { ref: String(item.ref).trim() } : {}),
+              label: product.label,
+              company: product.company,
+              officialName: product.productName,
+              canonicalProductId: product.canonicalProductId,
+            } : null;
+          }).filter(Boolean);
           if (products.length) {
             nextProductCandidates = { products, question: text, updatedAt: now() };
             nextProduct = null;

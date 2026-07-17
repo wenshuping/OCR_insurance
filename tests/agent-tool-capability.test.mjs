@@ -76,6 +76,50 @@ test('returns claims copies and rejects tools outside the issued allowlist', () 
   );
 });
 
+test('notifies a bounded waiter as soon as a domain tool records its result', async () => {
+  const service = createAgentToolCapabilityService({ clock: () => 2_500, createToken: () => 'opaque-token-wait' });
+  const issued = service.issue(request());
+  const waiting = service.waitForResult(issued.token);
+  service.consume({ token: issued.token, tool: 'ask_insurance_expert' });
+  service.recordResult({
+    token: issued.token,
+    tool: 'ask_insurance_expert',
+    result: {
+      status: 'needs_clarification',
+      decision: 'clarify',
+      interaction: {
+        type: 'clarification', text: '请确认正式产品。',
+        candidates: [
+          { ref: 'product-1', label: '新华保险《寰宇尊悦高端医疗保险》' },
+          { ref: '', label: '无效候选' },
+        ],
+      },
+    },
+  });
+  const claims = await waiting;
+  assert.equal(claims.toolResults[0].result.interaction.text, '请确认正式产品。');
+  assert.deepEqual(claims.toolResults[0].result.interaction.candidates, [
+    { ref: 'product-1', label: '新华保险《寰宇尊悦高端医疗保险》' },
+  ]);
+});
+
+test('does not preserve candidates from the sales champion tool', () => {
+  const service = createAgentToolCapabilityService({ clock: () => 2_600, createToken: () => 'opaque-token-sales' });
+  const issued = service.issue(request());
+  service.recordResult({
+    token: issued.token,
+    tool: 'ask_sales_champion',
+    result: {
+      status: 'needs_clarification', decision: 'clarify',
+      interaction: {
+        type: 'clarification', text: '请补充信息。',
+        candidates: [{ ref: 'private-family', label: '不应透传' }],
+      },
+    },
+  });
+  assert.equal(service.inspect(issued.token).toolResults[0].result.interaction.candidates, undefined);
+});
+
 test('expires, revokes, and lazily cleans capabilities', () => {
   let now = 10_000;
   let tokenId = 0;

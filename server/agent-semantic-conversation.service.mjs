@@ -8,6 +8,7 @@ const MAX_QUESTION_LENGTH = 1_000;
 const MAX_CANDIDATES = 10;
 const MAX_PRODUCT_ALIASES = 5;
 const PRODUCT_ACTIVE_MATCH_TYPES = new Set([
+  'confirmed_candidate',
   'exact_official_name',
   'approved_alias',
   'company_scoped_alias',

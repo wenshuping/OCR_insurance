@@ -48,40 +48,36 @@ function resolvedEntities(result) {
   };
 }
 
-function routeInputFor(tool, input) {
+function productMentions(names, question) {
+  const mentions = [];
+  for (const name of names) {
+    let split = null;
+    let end = name.indexOf('保险');
+    while (end >= 0) {
+      end += '保险'.length;
+      const insurer = name.slice(0, end).trim();
+      const product = name.slice(end).trim();
+      if (insurer && product && question.includes(`${insurer}的${product}`)) {
+        split = { insurer, product };
+        break;
+      }
+      end = name.indexOf('保险', end);
+    }
+    if (split) {
+      mentions.push({ type: 'insurer', rawText: split.insurer }, { type: 'product', rawText: split.product });
+    } else if (question.includes(name)) {
+      mentions.push({ type: 'product', rawText: name });
+    }
+  }
+  return mentions;
+}
+
+function candidateFor(tool, input, entities = {}) {
   const intent = OPERATION_INTENTS[tool]?.[input.operation];
   if (!intent) throw gatewayError('AGENT_DOMAIN_TOOL_OPERATION_FORBIDDEN');
-  const names = Array.isArray(input.names) ? input.names : [];
   const refs = Array.isArray(input.contextRefs) ? input.contextRefs : [];
-  if (!refs.length) {
-    const mentionType = input.operation === 'product_knowledge' ? 'product' : 'family';
-    const mentions = names.filter((name) => input.question.includes(name))
-      .map((rawText) => ({ type: mentionType, rawText }));
-    return {
-      question: input.question,
-      runtime: 'hermes',
-      proposal: {
-        semanticContractVersion: 1,
-        intent,
-        operation: 'read',
-        queryAspects: input.operation === 'product_knowledge'
-          ? (input.queryAspects || [])
-          : input.operation === 'family_summary' ? ['family_overview']
-            : input.operation === 'coverage_report' ? ['coverage_gap']
-              : input.operation === 'sales_report' ? ['report_status'] : ['sales_guidance'],
-        mentions,
-        references: [],
-        requestedSteps: [input.operation === 'product_knowledge' && names.length > 1 ? 'compare'
-          : input.operation.startsWith('sales_') ? 'generate' : 'lookup'],
-        confidence: { intent: 1, mentions: 1, references: 1 },
-      },
-    };
-  }
-  const entities = {};
-  if (input.operation === 'product_knowledge') {
-    if (names[0]) entities.productName = names[0];
-    if (names[1]) entities.productBText = names[1];
-  } else {
+  if (input.operation !== 'product_knowledge') {
+    const names = Array.isArray(input.names) ? input.names : [];
     if (names[0]) entities.familyName = names[0];
     if (refs[0]) entities.familyRef = refs[0];
   }
@@ -91,7 +87,88 @@ function routeInputFor(tool, input) {
   } };
 }
 
-export function createAgentDomainToolGateway({ questionRouter, resolveChannelIdentity } = {}) {
+function productResolutionMentions(name, question) {
+  const mentions = productMentions([name], question);
+  return mentions.length ? mentions : [{ type: 'product', rawText: name }];
+}
+
+function productClarification(resolutions) {
+  const candidates = resolutions.flatMap((resolution) => (
+    Array.isArray(resolution?.candidates) ? resolution.candidates : []
+  )).map(productEntity).filter(Boolean)
+    .filter((candidate, index, values) => values.findIndex((value) => (
+      value.canonicalProductId === candidate.canonicalProductId
+      && value.company === candidate.company
+      && value.officialName === candidate.officialName
+    )) === index)
+    .slice(0, 10);
+  return {
+    status: 'needs_clarification',
+    decision: 'clarify',
+    interaction: {
+      type: 'clarification',
+      text: candidates.length
+        ? candidates.length === 1
+          ? '你是不是想查询以下产品？请回复 1 确认。'
+          : '找到多个可能的正式产品，请选择一项。'
+        : '我暂时没能确认你说的是哪款产品。请补充保险公司，以及保单或条款上的完整产品名称。',
+      ...(candidates.length ? { candidates: candidates.map((candidate, index) => ({
+        ref: `product_${index + 1}`,
+        label: `${candidate.company ? `${candidate.company}` : ''}《${candidate.officialName}》`,
+      })) } : {}),
+    },
+  };
+}
+
+async function verifiedProductRouteInput(input, productResolver) {
+  const names = Array.isArray(input.names) ? input.names : [];
+  if (!names.length) return candidateFor('ask_insurance_expert', input);
+  if (names.length > 2 || typeof productResolver?.resolve !== 'function') {
+    return { result: productClarification([]) };
+  }
+  const resolutions = [];
+  for (const name of names) {
+    resolutions.push(await productResolver.resolve({
+      mentions: productResolutionMentions(name, input.question),
+      activeProduct: null,
+    }));
+  }
+  if (resolutions.some((resolution) => resolution?.status !== 'resolved')) {
+    return { result: productClarification(resolutions) };
+  }
+  const products = resolutions.map((resolution) => productEntity(resolution.entity));
+  if (products.some((product) => !product)
+    || (products.length === 2 && products[0].canonicalProductId === products[1].canonicalProductId)) {
+    return { result: productClarification(resolutions) };
+  }
+  const queryAspects = Array.isArray(input.queryAspects) ? input.queryAspects : [];
+  if (products.length === 1) {
+    const [product] = products;
+    return {
+      ...candidateFor('ask_insurance_expert', input, {
+        productName: product.officialName,
+        productCanonicalId: product.canonicalProductId,
+        productCompany: product.company,
+      }),
+      semanticContext: { resolvedEntities: { product }, queryAspects },
+      verifiedEntities: { product },
+    };
+  }
+  const entities = {};
+  products.forEach((product, index) => {
+    const suffix = index + 1;
+    entities[`product${suffix}Name`] = product.officialName;
+    entities[`product${suffix}CanonicalId`] = product.canonicalProductId;
+    entities[`product${suffix}Company`] = product.company;
+  });
+  return {
+    ...candidateFor('ask_insurance_expert', input, entities),
+    semanticContext: { resolvedEntities: { products }, queryAspects },
+    verifiedEntities: { products },
+  };
+}
+
+export function createAgentDomainToolGateway({ questionRouter, resolveChannelIdentity, productResolver } = {}) {
   if (!questionRouter || typeof questionRouter.route !== 'function') {
     throw new TypeError('Agent domain tool questionRouter is required');
   }
@@ -116,24 +193,29 @@ export function createAgentDomainToolGateway({ questionRouter, resolveChannelIde
         interaction: { type: 'denied', text: '当前账号已无权继续访问该数据。' },
       };
     }
+    const routed = tool === 'ask_insurance_expert' && input.operation === 'product_knowledge'
+      ? await verifiedProductRouteInput(input, productResolver)
+      : candidateFor(tool, input);
+    if (routed.result) return routed.result;
+    const verifiedEntities = routed.verifiedEntities || {};
     const result = await questionRouter.route({
       internalUserId: Number(claims.internalUserId),
       messageRef: toolMessageRef(claims),
       conversationId: claims.conversationId,
-      ...routeInputFor(tool, input),
+      candidate: routed.candidate,
+      ...(routed.semanticContext ? { semanticContext: routed.semanticContext } : {}),
     });
     const interaction = result?.interaction || { type: 'denied', text: '该请求当前不可用。' };
-    const preserveProductAnswer = tool === 'ask_insurance_expert'
-      && input.operation === 'product_knowledge'
+    const preserveExpertAnswer = tool === 'ask_insurance_expert'
       && result?.decision === 'execute'
       && interaction.type === 'answer';
-    const entities = resolvedEntities(result);
+    const entities = Object.keys(verifiedEntities).length ? verifiedEntities : resolvedEntities(result);
     return {
       status: result?.decision === 'deny' ? 'forbidden'
         : result?.decision === 'clarify' ? 'needs_clarification'
           : result?.decision === 'confirm' ? 'confirmation_required' : 'ok',
       decision: result?.decision || 'deny',
-      interaction: preserveProductAnswer ? { ...interaction, delivery: 'verbatim' } : interaction,
+      interaction: preserveExpertAnswer ? { ...interaction, delivery: 'verbatim' } : interaction,
       ...(Object.keys(entities).length ? { resolvedEntities: entities } : {}),
     };
   }

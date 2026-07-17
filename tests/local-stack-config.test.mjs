@@ -47,6 +47,12 @@ test('development stack keeps the DingTalk gateway alive when its credentials ar
   assert.match(localStackSource, /service\.shutdownGraceMs/u);
 });
 
+test('development stack refuses start and stop commands from a different source tree', () => {
+  assert.match(localStackSource, /assertDevSourceOwner\(\{ runtimeDir: profile\.runtimeDir, projectRoot, claimIfMissing: true \}\)/u);
+  assert.match(localStackSource, /assertDevSourceOwner\(\{ runtimeDir: profile\.runtimeDir, projectRoot \}\)/u);
+  assert.match(localStackSource, /源码目录:/u);
+});
+
 test('production Docker runtime copies src modules imported by the API server', () => {
   assert.match(dockerfileSource, /COPY src\/family-report-engine\.mjs \.\/src\/family-report-engine\.mjs/u);
   assert.match(dockerfileSource, /COPY src\/policy-plan-filter\.mjs \.\/src\/policy-plan-filter\.mjs/u);

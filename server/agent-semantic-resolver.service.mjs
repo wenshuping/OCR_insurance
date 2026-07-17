@@ -17,6 +17,7 @@ const MAX_PRODUCT_ALIASES = 5;
 const MAX_TEXT_LENGTH = 200;
 const MAX_CONTEXT_TTL_MS = 86_400_000;
 const PRODUCT_RESOLVED_MATCH_TYPES = new Set([
+  'confirmed_candidate',
   'exact_official_name',
   'filing_name',
   'approved_alias',
@@ -200,6 +201,24 @@ function normalizedProposal(value, originalQuestion) {
 
 function hasMention(proposal, type) {
   return proposal.mentions.some((mention) => mention.type === type);
+}
+
+function isGenericProductPlanLabel(value) {
+  return /^(?:保障|保险)?(?:计划|方案)(?:[一二三四五六七八九十百\dA-Za-z]+)?$/u.test(clean(value));
+}
+
+function semanticProductMentions(proposal) {
+  return proposal.mentions.filter((mention) => (
+    mention.type === 'product' && !isGenericProductPlanLabel(mention.rawText)
+  ));
+}
+
+function comparesPlansWithinOneProduct(question) {
+  const normalizedQuestion = clean(question, 1_000);
+  const labels = normalizedQuestion.match(/(?:计划|方案)[一二三四五六七八九十百\dA-Za-z]+/gu) || [];
+  return new Set(labels).size >= 2
+    || /(?:计划|方案)[一二三四五六七八九十百\dA-Za-z]+(?:\s*[/／、,，和与及]\s*[一二三四五六七八九十百\dA-Za-z]+)+/u
+      .test(normalizedQuestion);
 }
 
 function hasReference(proposal, type) {
@@ -613,12 +632,25 @@ export function createAgentSemanticResolver({
 
       const resolutions = {};
       if (effectiveProposal?.intent === PRODUCT_INTENT) {
-        const explicitProduct = hasMention(effectiveProposal, 'product');
+        const explicitProductMentions = semanticProductMentions(effectiveProposal);
+        const explicitProduct = explicitProductMentions.length > 0;
         const currentProductReference = hasReference(effectiveProposal, 'current_product');
+        const semanticQuestion = selection?.originalQuestion || normalizedQuestion;
         const explicitInsurers = effectiveProposal.mentions
           .filter((mention) => mention.type === 'insurer');
+        const singleMentionCoversWholeQuestion = explicitProductMentions.length === 1
+          && explicitProductMentions[0].rawText.trim() === semanticQuestion;
+        const internalPlanQuery = comparesPlansWithinOneProduct(semanticQuestion)
+          && ((explicitProductMentions.length === 1
+            && !singleMentionCoversWholeQuestion
+            && !currentProductReference)
+            || (explicitProductMentions.length === 0
+              && Boolean(state.activeEntities.product)));
+        const requiresResidualProductScan = !internalPlanQuery;
         let scan = { entities: [], overflow: false, invalidInsurer: false };
-        if (!selection && typeof productResolver.resolveAllFromText === 'function') {
+        if (!selection
+          && requiresResidualProductScan
+          && typeof productResolver.resolveAllFromText === 'function') {
           try {
             scan = projectProductScan(await productResolver.resolveAllFromText({
               question: normalizedQuestion,
@@ -635,28 +667,26 @@ export function createAgentSemanticResolver({
 
         const forcedComparison = explicitlyRequestsProductComparison(
           effectiveProposal,
-          normalizedQuestion,
-        );
+          semanticQuestion,
+        ) && !internalPlanQuery;
         const retainedComparisonProducts = state.lastCompletedAction?.comparison === true
           && state.lastCompletedAction?.intent === PRODUCT_INTENT
           && state.lastCompletedAction?.entityType === 'product'
           && state.candidateSets.product.length === 2
           ? state.candidateSets.product
           : [];
-        const proposalProductMentionCount = effectiveProposal.mentions
-          .filter((mention) => mention.type === 'product').length;
+        const proposalProductMentionCount = explicitProductMentions.length;
         const continuesPreviousComparison = retainedComparisonProducts.length === 2
           && proposalProductMentionCount === 0
           && explicitInsurers.length === 0
           && (effectiveProposal.queryAspects.includes('sales_guidance')
-            || /它们|这两款|两者|二者|各自|分别|哪个|哪款|推荐|更适合|怎么选|二选一/u.test(normalizedQuestion));
+            || /它们|这两款|两者|二者|各自|分别|哪个|哪款|推荐|更适合|怎么选|二选一/u.test(semanticQuestion));
         const comparisonRequested = forcedComparison
           || continuesPreviousComparison
-          || effectiveProposal.mentions.filter((mention) => mention.type === 'product').length > 1
+          || proposalProductMentionCount > 1
           || scan.entities.length > 1;
         if (comparisonRequested) {
-          const productMentions = effectiveProposal.mentions
-            .filter((mention) => mention.type === 'product')
+          const productMentions = explicitProductMentions
             .filter((mention, index, values) => values
               .findIndex((value) => value.rawText === mention.rawText) === index)
             .map((mention) => contextualProductMention(mention, state.activeEntities.product));
@@ -776,7 +806,7 @@ export function createAgentSemanticResolver({
             return unsupportedComparisonResult({
               state,
               proposal: effectiveProposal,
-              question: normalizedQuestion,
+              question: semanticQuestion,
               candidates: comparisonCandidates,
             });
           } else {
@@ -784,7 +814,7 @@ export function createAgentSemanticResolver({
               state,
               proposal: effectiveProposal,
               products,
-              question: selection?.comparison ? selection.originalQuestion : normalizedQuestion,
+              question: semanticQuestion,
             });
           }
         }
@@ -807,7 +837,6 @@ export function createAgentSemanticResolver({
           : null;
         const mentions = selectedProduct
           ? [
-            { type: 'insurer', rawText: selectedProduct.company },
             { type: 'product', rawText: selectedProduct.officialName },
           ]
             : referencedProduct
@@ -826,8 +855,7 @@ export function createAgentSemanticResolver({
         if (!selectedProduct && !explicitProduct && currentProductReference && !referencedProduct) {
           resolutions.product = { status: 'missing', entity: null, candidates: [] };
         } else if (!selectedProduct && explicitProduct) {
-          const productMentions = effectiveProposal.mentions
-            .filter((mention) => mention.type === 'product')
+          const productMentions = explicitProductMentions
             .filter((mention, index, values) => values
               .findIndex((value) => value.rawText === mention.rawText) === index)
             .map((mention) => contextualProductMention(mention, state.activeEntities.product));
@@ -836,12 +864,16 @@ export function createAgentSemanticResolver({
           }
           const explicitInsurerMentions = effectiveProposal.mentions
             .filter((mention) => mention.type === 'insurer');
+          const activeConfirmedProduct = projectProduct(state.activeEntities.product);
           const evidence = [];
           try {
             for (const productMention of productMentions) {
+              const confirmsActiveProduct = activeConfirmedProduct
+                && clean(productMention.rawText) === activeConfirmedProduct.officialName;
               evidence.push(projectResolution(await productResolver.resolve({
                 mentions: [...explicitInsurerMentions, productMention],
                 activeProduct: null,
+                ...(confirmsActiveProduct ? { confirmedCandidate: activeConfirmedProduct } : {}),
               }), 'product'));
             }
           } catch {
@@ -947,19 +979,34 @@ export function createAgentSemanticResolver({
       const resolvedEntities = {};
       if (resolutions.product?.status === 'resolved') resolvedEntities.product = resolutions.product.entity;
       if (resolutions.family?.status === 'resolved') resolvedEntities.family = resolutions.family.entity;
+      const candidateQuestion = selection ? proposalQuestion : normalizedQuestion;
+      const resolvedProposal = resolvedEntities.product
+        && comparesPlansWithinOneProduct(candidateQuestion)
+        && effectiveProposal.queryAspects.includes('comparison')
+        ? {
+          ...effectiveProposal,
+          queryAspects: [...new Set([
+            ...effectiveProposal.queryAspects.filter((aspect) => aspect !== 'comparison'),
+            'main_responsibilities',
+          ])],
+        }
+        : effectiveProposal;
       const candidate = readiness.decision === 'execute'
-        ? semanticFrameToRouterCandidate({ ...effectiveProposal, resolvedEntities }, normalizedQuestion)
+        ? semanticFrameToRouterCandidate(
+          { ...resolvedProposal, resolvedEntities },
+          candidateQuestion,
+        )
         : null;
 
       return {
         ...readiness,
-        proposal: effectiveProposal,
+        proposal: resolvedProposal,
         resolvedEntities,
         candidate,
         nextTaskState: effectiveProposal
           ? stateAfterResolution({
             state,
-            proposal: effectiveProposal,
+            proposal: resolvedProposal,
             proposalQuestion,
             resolutions,
             readiness,

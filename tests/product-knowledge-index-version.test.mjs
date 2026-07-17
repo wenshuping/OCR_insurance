@@ -9,8 +9,8 @@ function artifacts(content) {
     documentType: 'terms',
     pages: [{ pageNo: 1, rawText: content, tables: [], headings: [], sourceLabel: '第 1 页' }],
     chunks: [
-      { id: 'parent', chunkType: 'parent', pageStart: 1, pageEnd: 1, content, contentHash: `parent-${content}`, indexStatus: 'ready' },
-      { id: 'child', parentChunkId: 'parent', chunkType: 'child', pageStart: 1, pageEnd: 1, content, contentHash: `child-${content}`, indexStatus: 'ready' },
+      { id: 'parent', canonicalProductId: 'product-1', chunkType: 'parent', pageStart: 1, pageEnd: 1, content, contentHash: `parent-${content}`, indexStatus: 'ready' },
+      { id: 'child', canonicalProductId: 'product-1', parentChunkId: 'parent', chunkType: 'child', pageStart: 1, pageEnd: 1, content, contentHash: `child-${content}`, indexStatus: 'ready' },
     ],
   };
 }

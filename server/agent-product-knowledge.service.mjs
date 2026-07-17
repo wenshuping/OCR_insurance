@@ -2,6 +2,12 @@ import { listProductCatalogCompanies, searchProductCatalog } from './product-cat
 import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { chunkProductDocument } from './product-chunker.service.mjs';
 import { parseProductDocument } from './product-document-parser.service.mjs';
+import {
+  assessProductEvidenceCompleteness,
+  createProductRetrievalPlan,
+  isResponsibilityOutlineOnly,
+  validateProductRetrievalPlan,
+} from './agent-product-retrieval-plan.service.mjs';
 
 const RESPONSIBILITY_QUESTION_PATTERN = /(?:保险|保障)?责任|保什么|保哪些|赔什么|怎么赔/u;
 const SALES_STATUS_QUESTION_PATTERN = /在售|停售|销售中|还(?:在)?卖|还能买|可以买/u;
@@ -400,7 +406,7 @@ function approvedMaterialEvidence(result = {}) {
       && ['company_material', 'approved_company_material', 'expert_training'].includes(text(chunk?.sourceAuthority)))
     .slice(0, evidenceLimit);
   const evidence = evidenceChunks.map((chunk, index) => ({
-    evidenceId: text(chunk.evidenceId) || `M${index + 1}`,
+    evidenceId: `M${index + 1}`,
     documentId: text(chunk.documentId),
     fileName: text(chunk?.citation?.fileName) || '已审核产品资料',
     pageStart: Number(chunk.pageStart || chunk?.citation?.pageStart || 0),
@@ -426,6 +432,26 @@ function approvedMaterialEvidence(result = {}) {
     evidenceIds: source.evidenceIds,
   }));
   return { evidence, sources };
+}
+
+function mergedApprovedMaterialEvidence(results = []) {
+  const chunks = [];
+  const seen = new Set();
+  let queryType = '';
+  for (const result of Array.isArray(results) ? results : []) {
+    if (text(result?.queryType) === 'product_advantage') queryType = 'product_advantage';
+    for (const chunk of Array.isArray(result?.evidenceChunks) ? result.evidenceChunks : []) {
+      const key = [
+        text(chunk?.documentId),
+        Number(chunk?.pageStart || chunk?.citation?.pageStart || 0),
+        text(chunk?.content).slice(0, 500),
+      ].join(':');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      chunks.push(chunk);
+    }
+  }
+  return approvedMaterialEvidence({ queryType, evidenceChunks: chunks });
 }
 
 const OFFICIAL_EVIDENCE_TERMS = [
@@ -460,6 +486,7 @@ function officialPages(content) {
 
 function officialChunkScore(chunk, question, materialEvidence) {
   const content = text(chunk?.content);
+  const customerQuestion = text(question);
   const materialText = materialEvidence.map((item) => text(item?.content)).join('\n');
   let score = 0;
   for (const term of OFFICIAL_EVIDENCE_TERMS) {
@@ -469,6 +496,10 @@ function officialChunkScore(chunk, question, materialEvidence) {
     score += 1;
   }
   const topics = Array.isArray(chunk?.payload?.businessTopicLabels) ? chunk.payload.businessTopicLabels : [];
+  if (/(?:计划|方案|保险责任|保障责任|保什么|分别|各自)/u.test(customerQuestion)
+    && /(?:保险金|保险责任|保障计划)/u.test(content)) score += 6;
+  const requestedPlans = customerQuestion.match(/(?:计划|方案)[一二三四五六七八九十百\dA-Za-z]+/gu) || [];
+  for (const plan of new Set(requestedPlans)) if (content.includes(plan)) score += 2;
   if (/优势|亮点|卖点|好在哪里/u.test(text(question))) {
     if (topics.includes('保障责任')) score += 3;
     if (topics.includes('投保规则')) score += 2;
@@ -477,6 +508,80 @@ function officialChunkScore(chunk, question, materialEvidence) {
   const materialNumbers = new Set(materialText.match(/\d+(?:\.\d+)?\s*(?:万元|万|元|%|天|周岁|年)/gu) || []);
   for (const value of materialNumbers) if (content.includes(value)) score += 2;
   return score;
+}
+
+function clauseNumber(value) {
+  const normalized = text(value).replace(/\s+/gu, '');
+  if (/^\d+$/u.test(normalized)) return Number(normalized);
+  const digits = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (normalized === '十') return 10;
+  const tenIndex = normalized.indexOf('十');
+  if (tenIndex >= 0) {
+    const tens = tenIndex === 0 ? 1 : digits[normalized[tenIndex - 1]];
+    const units = tenIndex === normalized.length - 1 ? 0 : digits[normalized[tenIndex + 1]];
+    if (Number.isInteger(tens) && Number.isInteger(units)) return tens * 10 + units;
+  }
+  return Number.NaN;
+}
+
+function responsibilityRanges(value) {
+  const ranges = [];
+  for (const match of String(value || '').matchAll(
+    /第\s*([一二三四五六七八九十零〇两\d]+)\s*款\s*至\s*第\s*([一二三四五六七八九十零〇两\d]+)\s*款/gu,
+  )) {
+    const from = clauseNumber(match[1]);
+    const to = clauseNumber(match[2]);
+    if (Number.isInteger(from) && Number.isInteger(to) && from > 0 && to >= from) ranges.push({ from, to });
+  }
+  return ranges;
+}
+
+function responsibilityHeadingNumbers(value) {
+  const numbers = new Set();
+  for (const match of String(value || '').matchAll(
+    /(?:^|\n)\s*([一二三四五六七八九十零〇两\d]+)\s*[.．、]\s*[^\n。；]{2,100}?(?:保险金|医疗费用|救援费用)/gu,
+  )) {
+    const number = clauseNumber(match[1]);
+    if (Number.isInteger(number) && number > 0) numbers.add(number);
+  }
+  return numbers;
+}
+
+function completeResponsibilityChunkWindow(chunks) {
+  const values = Array.isArray(chunks) ? chunks : [];
+  const ranges = values.flatMap((chunk, index) => responsibilityRanges(chunk?.content)
+    .map((range) => ({ ...range, index })));
+  const widest = ranges.sort((left, right) => (
+    (right.to - right.from) - (left.to - left.from) || left.index - right.index
+  ))[0];
+  if (!widest) return [];
+  const expected = new Set();
+  for (let number = widest.from; number <= widest.to; number += 1) expected.add(number);
+  const covered = new Set();
+  const selectedIndexes = new Set([widest.index]);
+  values.forEach((chunk, index) => {
+    const headings = responsibilityHeadingNumbers(chunk?.content);
+    for (const number of headings) {
+      if (!expected.has(number)) continue;
+      covered.add(number);
+      selectedIndexes.add(index);
+    }
+  });
+  if ([...expected].some((number) => !covered.has(number)) || selectedIndexes.size > 12) return [];
+  return [...selectedIndexes].sort((left, right) => left - right).map((index) => values[index]);
+}
+
+function selectOfficialChunks({ chunks, question, materialEvidence, requireCompleteResponsibilities }) {
+  if (requireCompleteResponsibilities) {
+    const completeWindow = completeResponsibilityChunkWindow(chunks);
+    if (completeWindow.length) return completeWindow;
+  }
+  return chunks
+    .map((chunk, index) => ({ chunk, index, score: officialChunkScore(chunk, question, materialEvidence) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 4)
+    .map(({ chunk }) => chunk);
 }
 
 function officialEvidenceFromSummary({ summary, sources, product, question, materialEvidence }) {
@@ -513,6 +618,10 @@ function officialEvidenceFromSummary({ summary, sources, product, question, mate
 function questionNeedsOfficialDocument(question, summary) {
   const value = text(question);
   const summaryText = officialSummaryText(summary);
+  if (isResponsibilityOutlineOnly(summaryText)
+    && /分别|各自|具体|明细|第\s*[一二三四五六七八九十百\d]+\s*款|保什么|保险责任|保障责任/u.test(value)) {
+    return true;
+  }
   for (const rule of CRITICAL_FACT_RULES) {
     const asksField = rule.field === '给付或报销比例'
       ? /(?:给付|赔付|报销)比例/u.test(value)
@@ -565,6 +674,7 @@ async function officialEvidenceFromFullDocuments({
   materialEvidence,
   fetchImpl,
   timeoutMs,
+  requireCompleteResponsibilities = false,
 }) {
   const candidates = officialKnowledgeRows(rows).slice(0, 3);
   for (const { payload, url } of candidates) {
@@ -591,12 +701,9 @@ async function officialEvidenceFromFullDocuments({
         product: { company: product.company, productName: product.productName },
         pages,
       }).filter((chunk) => chunk.chunkType === 'child' && text(chunk.content));
-      const evidence = chunks
-        .map((chunk, index) => ({ chunk, index, score: officialChunkScore(chunk, question, materialEvidence) }))
-        .filter((item) => item.score > 0)
-        .sort((left, right) => right.score - left.score || left.index - right.index)
-        .slice(0, 4)
-        .map(({ chunk }, index) => ({
+      const evidence = selectOfficialChunks({
+        chunks, question, materialEvidence, requireCompleteResponsibilities,
+      }).map((chunk, index) => ({
           evidenceId: `O${index + 1}`,
           sourceAuthority: 'insurer_official',
           sourceTitle,
@@ -622,6 +729,67 @@ async function officialEvidenceFromFullDocuments({
       // Continue with the next official document or the persisted excerpt.
     } finally {
       clearTimeout(timeout);
+    }
+  }
+  return { evidence: [], sources: [] };
+}
+
+function productLookupName(product) {
+  const officialName = text(product?.productName);
+  const company = text(product?.company);
+  const withoutKnownCompany = company && officialName.startsWith(company)
+    ? officialName.slice(company.length).trim()
+    : officialName;
+  return withoutKnownCompany.replace(
+    /^[\p{Script=Han}A-Za-z0-9（）()·]{2,40}?(?:人寿保险股份有限公司|保险股份有限公司|人寿保险有限公司|保险有限公司)/u,
+    '',
+  ).trim() || officialName;
+}
+
+function officialEvidenceFromReferenceRecords({
+  records, product, question, materialEvidence, requireCompleteResponsibilities = false,
+}) {
+  for (const record of Array.isArray(records) ? records : []) {
+    if (record?.official !== true || text(record?.evidenceLevel) !== 'insurer_official') continue;
+    let url;
+    try {
+      url = new URL(record.url);
+      if (url.protocol !== 'https:' || url.username || url.password) continue;
+    } catch {
+      continue;
+    }
+    const pageText = text(record.pageText);
+    if (pageText.length < 40) continue;
+    const sourceTitle = text(record.title) || `${product.productName}官方资料`;
+    const chunks = chunkProductDocument({
+      document: {
+        id: `official_reference_${text(product.company)}_${text(product.productName)}`,
+        fileName: sourceTitle,
+        documentType: 'terms',
+        sourceAuthority: 'insurer_official',
+        payload: {},
+      },
+      product: { company: product.company, productName: product.productName },
+      pages: officialPages(pageText),
+    }).filter((chunk) => chunk.chunkType === 'child' && text(chunk.content));
+    const evidence = selectOfficialChunks({
+      chunks, question, materialEvidence, requireCompleteResponsibilities,
+    }).map((chunk, index) => ({
+        evidenceId: `O${index + 1}`,
+        sourceAuthority: 'insurer_official',
+        sourceTitle,
+        sourceUrl: url.href,
+        pageStart: Number(chunk.pageStart || 0),
+        pageEnd: Number(chunk.pageEnd || chunk.pageStart || 0),
+        topics: Array.isArray(chunk?.payload?.businessTopicLabels)
+          ? chunk.payload.businessTopicLabels.join('、') : '',
+        content: text(chunk.content),
+      }));
+    if (evidence.length) {
+      return {
+        evidence,
+        sources: [{ title: sourceTitle, url: url.href, provenance: 'insurer_official', verified: true }],
+      };
     }
   }
   return { evidence: [], sources: [] };
@@ -682,6 +850,7 @@ export function createAgentProductKnowledgeSearch({
   responsibilitySummaryQuery,
   productRagRetrieve,
   salesStatusLookup,
+  officialReferenceLookup,
   officialDomainProfiles = [],
 } = {}) {
   if (!db) return null;
@@ -718,8 +887,9 @@ export function createAgentProductKnowledgeSearch({
     Number(env.DINGTALK_OFFICIAL_DOCUMENT_TIMEOUT_MS) || 8_000,
   );
 
-  async function answerQuestion({ question, product, summary, sources, customerResponsibilitySummary = null, responsibilityCardEvidence = [], officialEvidence = [], materialEvidence = [], fallback }) {
+  async function answerQuestion({ question, product, summary, sources, customerResponsibilitySummary = null, responsibilityCardEvidence = [], officialEvidence = [], materialEvidence = [], expertPlan = null, fallback }) {
     if (!apiKey) return fallback;
+    const plannedSkills = new Set(Array.isArray(expertPlan?.skills) ? expertPlan.skills.map(text).filter(Boolean) : []);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -744,7 +914,12 @@ export function createAgentProductKnowledgeSearch({
                 '已审核上传资料只可补充产品说明、客户场景和责任解释；若与 CUSTOMER_RESPONSIBILITY_SUMMARY 不一致，不采用上传资料的冲突内容。',
                 '责任卡与官网原文冲突时以官网原文为准；每项责任卡结论写作【责任卡R1】，并在涉及合同数字时同时引用对应官网证据。',
                 '两类证据冲突时采用官方证据，并简短提示公司资料与正式条款存在差异。',
+                '所有保险专家 Skills 都必须使用完整语义包回答：保留用户原问题、已确认产品、上下文、官方证据、责任摘要、责任卡和已审核资料，综合输出“官方明确事实 + 基于证据的专业解读 + 不确定边界”。不得把问题降级成字段查找，也不得因为没有同名字段就忽略其他相关证据。',
+                '专业解读必须从证据推导：可以把投保年龄、健康告知、保障范围、等待期、续保、免赔、报销比例、服务权益和已审核产品资料综合成客户能理解的场景说明；不能新增证据没有支持的产品事实。',
                 '必须直接回答用户实际询问的维度；问优势时提炼3至5项有证据的客户价值、适合场景和必要限制，不能只重复保险责任。',
+                '若用户问适合人群、适合谁、产品亮点、怎么样、注意事项等，不能因为资料没有“适用人群”标题就整段拒答。应先列官方明确事实（如投保年龄、等待期、续保、保障范围、责任限制），再基于已审核资料和官方事实给出“更适合关注哪些需求的人群/场景”的谨慎专业解读，并明确健康告知、职业、既往症、核保、预算和销售状态等仍需以投保时审核为准。',
+                '比较同一产品的多个保障计划时，先用责任名称说明共同保障，再说明较高计划比下一计划具体多出的责任；不得只复述“第几款至第几款”、责任数量或条款编号。',
+                '用户没有询问推荐或选择建议时，不得追加“适合谁”或购买建议；没有保费证据时不得推断某计划保费更高或更低。',
                 '问保险责任时只输出一段概述、核心责任和必要限制；不要再输出“产品主要做什么”“主要保险责任”“责任明细”等内容重复的章节。',
                 '每项结论后必须引用真实 evidenceId：官方证据写作【官方资料O1·第2页】，公司资料写作【培训资料M1·第14页】；不得创造证据编号或页码。',
                 '金额、比例、等待期、续保、投保年龄、责任和免责等合同事实必须引用官方证据；只有培训资料支持时必须明确说是培训资料介绍。',
@@ -764,6 +939,10 @@ export function createAgentProductKnowledgeSearch({
                   approvedCompanyMaterialEvidence: materialEvidence,
                   conflicts,
                 },
+                expertPlan: expertPlan ? {
+                  skills: Array.isArray(expertPlan.skills) ? expertPlan.skills : [],
+                  evidenceGoals: Array.isArray(expertPlan.evidenceGoals) ? expertPlan.evidenceGoals : [],
+                } : null,
                 verifiedSourceUrls: sources.map((source) => source.url),
               }),
             },
@@ -926,10 +1105,19 @@ export function createAgentProductKnowledgeSearch({
     }
   }
 
-  async function searchSingle({ question, productName, company: requestedCompany } = {}) {
+  async function searchSingle({
+    question,
+    productName,
+    company: requestedCompany,
+    queryAspects = [],
+    expertPlan = null,
+  } = {}) {
     const query = [text(requestedCompany), text(productName), text(question)].filter(Boolean).join(' ');
     const companies = listProductCatalogCompanies({ db, visibility: 'public' });
-    const company = companyFromQuery(query, companies, officialDomainProfiles);
+    const verifiedCompany = text(requestedCompany);
+    const company = companies.some((item) => text(item.company) === verifiedCompany)
+      ? verifiedCompany
+      : companyFromQuery(query, companies, officialDomainProfiles);
     const productQuery = text(productName) || query;
     const catalogQuery = searchText(productQuery, company);
     const requestedProductName = text(productName);
@@ -1135,33 +1323,56 @@ export function createAgentProductKnowledgeSearch({
     if (!selected) return { ...missingProductEvidenceGuidance({ productName: requestedProductName, question }), sources: [] };
     const { product, summary, sources, customerResponsibilitySummary = null, responsibilityCardEvidence = [] } = selected;
     const responsibilityQuestion = RESPONSIBILITY_QUESTION_PATTERN.test(text(question));
-    if (responsibilityQuestion && customerResponsibilitySummary) {
-      const answer = answerFromCustomerResponsibilitySummary(customerResponsibilitySummary);
-      return {
-        answer: answer ? `${product.company}《${product.productName}》：\n${answer}` : '',
-        sources,
-      };
-    }
-    let material = { evidence: [], sources: [] };
     const canonicalProductId = text(product.canonicalProductId)
       || text(productIdentityStatement?.get(product.company, product.productName)?.canonical_product_id);
-    if (canonicalProductId && typeof productRagRetrieve === 'function') {
-      try {
-        material = approvedMaterialEvidence(await productRagRetrieve({
-          tenantId: 'default',
-          query: question,
-          canonicalProductId,
-          sourceAuthorities: ['company_material', 'approved_company_material', 'expert_training'],
-          products: [{ company: product.company, productName: product.productName }],
-          tokenBudget: 3_000,
-        }));
-      } catch {
-        material = { evidence: [], sources: [] };
-      }
+    const retrievalProduct = {
+      canonicalProductId,
+      company: product.company,
+      officialName: product.productName,
+    };
+    const retrievalPlan = createProductRetrievalPlan({ question, product: retrievalProduct, queryAspects });
+    const safeRetrievalPlan = validateProductRetrievalPlan(retrievalPlan, retrievalProduct)
+      ? retrievalPlan
+      : null;
+    const materialRetrievals = [];
+    let queryCount = 0;
+    let retrievalRounds = 0;
+    const retrieveMaterials = async (queries) => {
+      if (!canonicalProductId || typeof productRagRetrieve !== 'function') return [];
+      const boundedQueries = [...new Set((Array.isArray(queries) ? queries : []).map(text).filter(Boolean))].slice(0, 2);
+      if (!boundedQueries.length) return [];
+      queryCount += boundedQueries.length;
+      const retrieved = await Promise.all(boundedQueries.map(async (retrievalQuery) => {
+        try {
+          return await productRagRetrieve({
+            tenantId: 'default',
+            query: retrievalQuery,
+            canonicalProductId,
+            sourceAuthorities: ['company_material', 'approved_company_material', 'expert_training'],
+            products: [{ company: product.company, productName: product.productName }],
+            tokenBudget: 3_000,
+          });
+        } catch {
+          return null;
+        }
+      }));
+      return retrieved.filter(Boolean);
+    };
+    const plannedSkills = new Set(Array.isArray(expertPlan?.skills) ? expertPlan.skills : []);
+    const hasAgentPlan = plannedSkills.size > 0;
+    const allowsMaterialRetrieval = !hasAgentPlan || plannedSkills.has('approved_material_retrieval');
+    const allowsOfficialRetrieval = !hasAgentPlan || plannedSkills.has('official_terms_retrieval');
+    const maxRetrievalRounds = hasAgentPlan
+      ? Math.max(1, Math.min(2, Number(expertPlan?.maxRetrievalRounds) || 1))
+      : 2;
+    if (safeRetrievalPlan && allowsMaterialRetrieval) {
+      retrievalRounds = 1;
+      materialRetrievals.push(...await retrieveMaterials(safeRetrievalPlan.queries));
     }
+    let material = mergedApprovedMaterialEvidence(materialRetrievals);
     const fallback = answerFromSummary(summary);
     const customerResponsibilityFallback = customerResponsibilitySummary
-      ? answerFromSummary(customerResponsibilitySummary)
+      ? answerFromCustomerResponsibilitySummary(customerResponsibilitySummary)
       : '';
     const responsibilityFallback = responsibilityQuestion && customerResponsibilityFallback
       ? customerResponsibilityFallback
@@ -1187,15 +1398,61 @@ export function createAgentProductKnowledgeSearch({
       question,
       materialEvidence: material.evidence,
     });
-    if (knowledgeStatement && questionNeedsOfficialDocument(question, officialSummary)) {
-      const fullDocument = await officialEvidenceFromFullDocuments({
-        rows: knowledgeStatement.all(product.company, product.productName),
+    let completeness = assessProductEvidenceCompleteness({
+      queryAspects,
+      expertPlan,
+      customerResponsibilitySummary,
+      officialEvidence,
+      materialEvidence: material.evidence,
+      verifiedSources: [...sources, ...officialSources, ...material.sources],
+      retrievalRound: 1,
+    });
+    const needsOfficialSupplement = allowsOfficialRetrieval && knowledgeStatement && (hasAgentPlan
+      ? plannedSkills.has('official_terms_retrieval')
+      : questionNeedsOfficialDocument(question, officialSummary)
+        || completeness.missingEvidence.includes('complete_responsibility_summary')
+        || completeness.missingEvidence.some((item) => item.startsWith('official_')));
+    const needsMaterialSupplement = allowsMaterialRetrieval && completeness.shouldRetry
+      && safeRetrievalPlan?.supplementalQuery
+      && !safeRetrievalPlan.queries.includes(safeRetrievalPlan.supplementalQuery);
+    const requireCompleteResponsibilities = plannedSkills.has('responsibility_detail')
+      || plannedSkills.has('plan_comparison')
+      || completeness.missingEvidence.includes('complete_responsibility_summary');
+    if (maxRetrievalRounds >= 2 && (needsOfficialSupplement || needsMaterialSupplement)) {
+      retrievalRounds = Math.max(2, retrievalRounds);
+      const [persistedDocument, referenceResult, supplementalMaterials] = await Promise.all([
+        needsOfficialSupplement
+          ? officialEvidenceFromFullDocuments({
+            rows: knowledgeStatement.all(product.company, product.productName),
+            product,
+            question: safeRetrievalPlan?.standaloneQuestion || question,
+            materialEvidence: material.evidence,
+            fetchImpl: officialDocumentFetchImpl,
+            timeoutMs: officialDocumentTimeoutMs,
+            requireCompleteResponsibilities,
+          })
+          : Promise.resolve({ evidence: [], sources: [] }),
+        needsOfficialSupplement && typeof officialReferenceLookup === 'function'
+          ? Promise.resolve(officialReferenceLookup({
+            company: product.company,
+            productName: productLookupName(product),
+            question: safeRetrievalPlan?.standaloneQuestion || question,
+          })).catch(() => ({ records: [] }))
+          : Promise.resolve({ records: [] }),
+        needsMaterialSupplement
+          ? retrieveMaterials([safeRetrievalPlan.supplementalQuery])
+          : Promise.resolve([]),
+      ]);
+      const discoveredDocument = officialEvidenceFromReferenceRecords({
+        records: referenceResult?.records,
         product,
-        question,
+        question: safeRetrievalPlan?.standaloneQuestion || question,
         materialEvidence: material.evidence,
-        fetchImpl: officialDocumentFetchImpl,
-        timeoutMs: officialDocumentTimeoutMs,
+        requireCompleteResponsibilities,
       });
+      const fullDocument = persistedDocument.evidence.length ? persistedDocument : discoveredDocument;
+      materialRetrievals.push(...supplementalMaterials);
+      material = mergedApprovedMaterialEvidence(materialRetrievals);
       if (fullDocument.evidence.length) {
         officialEvidence = fullDocument.evidence;
         officialSources = fullDocument.sources;
@@ -1204,7 +1461,24 @@ export function createAgentProductKnowledgeSearch({
           const origin = new URL(source.url).origin;
           if (!allowedOrigins.includes(origin)) allowedOrigins.push(origin);
         }
+      } else if (supplementalMaterials.length) {
+        officialEvidence = officialEvidenceFromSummary({
+          summary: officialSummary,
+          sources: officialSources,
+          product,
+          question,
+          materialEvidence: material.evidence,
+        });
       }
+      completeness = assessProductEvidenceCompleteness({
+        queryAspects,
+        expertPlan,
+        customerResponsibilitySummary,
+        officialEvidence,
+        materialEvidence: material.evidence,
+        verifiedSources: [...sources, ...officialSources, ...material.sources],
+        retrievalRound: 2,
+      });
     }
     const answer = await answerQuestion({
       question,
@@ -1215,6 +1489,7 @@ export function createAgentProductKnowledgeSearch({
       responsibilityCardEvidence,
       officialEvidence,
       materialEvidence: material.evidence,
+      expertPlan,
       fallback: answerFallback,
     });
     return {
@@ -1230,6 +1505,13 @@ export function createAgentProductKnowledgeSearch({
           })),
         ...material.sources,
       ],
+      retrieval: {
+        mode: 'bounded_agentic_retrieval',
+        rounds: retrievalRounds,
+        queryCount,
+        completeness: completeness.status,
+        missingEvidence: completeness.missingEvidence,
+      },
     };
   }
 
@@ -1241,14 +1523,20 @@ export function createAgentProductKnowledgeSearch({
     return answerComparison({ question, compared, products });
   }
 
-  async function search({ question, productName, company, product } = {}) {
+  async function search({ question, productName, company, product, queryAspects = [], expertPlan = null } = {}) {
     const resolvedProductName = text(product?.officialName);
     if (resolvedProductName) {
-      return searchSingle({ question, productName: resolvedProductName });
+      return searchSingle({
+        question,
+        productName: resolvedProductName,
+        company: text(product?.company),
+        queryAspects,
+        expertPlan,
+      });
     }
-    if (text(productName)) return searchSingle({ question, productName, company });
+    if (text(productName)) return searchSingle({ question, productName, company, queryAspects, expertPlan });
     const productQueries = comparisonProductQueries(question);
-    if (productQueries.length !== 2) return searchSingle({ question, productName });
+    if (productQueries.length !== 2) return searchSingle({ question, productName, queryAspects, expertPlan });
     const compared = await Promise.all(productQueries.map((query) => searchSingle({
       question: `${query}的保险责任、保障期限、等待期、续保和费率机制`,
       productName: query,

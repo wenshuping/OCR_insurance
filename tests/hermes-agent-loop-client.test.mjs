@@ -20,14 +20,28 @@ test('Hermes Agent Loop uses the dedicated profile, bounded turns, and only the 
     capability: 'secret-capability', gatewayUrl: GATEWAY,
     safeRecentContext: {
       history: [{ role: 'user', content: '身份证110101199001011234' }],
-      activeEntities: { product: { officialName: '新华人寿保险股份有限公司医药安欣医疗保险' } },
+      activeEntities: {
+        product: { officialName: '新华人寿保险股份有限公司医药安欣医疗保险' },
+        previousProduct: { officialName: '新华人寿保险股份有限公司荣耀鑫享终身寿险' },
+      },
+      factBlock: {
+        version: 1,
+        goal: { question: '比较计划一和计划二', status: 'active', owner: 'insurance_expert' },
+        verifiedEntities: {
+          product: { officialName: '新华人寿保险股份有限公司医药安欣医疗保险', source: 'domain_agent' },
+        },
+        conflicts: [{ topic: '等待期', sources: [
+          { source: '官方条款O1', conclusion: '30天' },
+          { source: '培训资料M1', conclusion: '无等待期' },
+        ] }],
+      },
     },
   });
 
   assert.deepEqual(result, { sessionId: 'agent-session-a', finalReply: '这是最终回复。' });
   assert.deepEqual(calls[0].args.slice(0, 2), ['chat', '-q']);
   assert.equal(calls[0].args[calls[0].args.indexOf('--max-turns') + 1], '4');
-  assert.equal(calls[0].options.timeout, 120_000);
+  assert.equal(calls[0].options.timeout, 40_000);
   assert.equal(calls[0].args[calls[0].args.indexOf('-t') + 1], 'ocr-insurance-domain');
   assert.equal(calls[0].options.env.HERMES_HOME, HOME);
   assert.equal(calls[0].options.env.OCR_AGENT_TOOL_CAPABILITY, 'secret-capability');
@@ -38,7 +52,15 @@ test('Hermes Agent Loop uses the dedicated profile, bounded turns, and only the 
   assert.match(prompt, /必须调用合适的领域工具|不得凭模型记忆臆造/u);
   assert.match(prompt, /同一产品下的计划、版本、档位或可选责任不是多款产品/u);
   assert.match(prompt, /ACTIVE_ENTITIES=.*新华人寿保险股份有限公司医药安欣医疗保险/u);
+  assert.match(prompt, /previousProduct.*新华人寿保险股份有限公司荣耀鑫享终身寿险/u);
+  assert.match(prompt, /VERIFIED_FACT_BLOCK=.*比较计划一和计划二/u);
+  assert.match(prompt, /官方条款O1.*30天.*培训资料M1.*无等待期/u);
+  assert.ok(prompt.indexOf('VERIFIED_FACT_BLOCK=') < prompt.indexOf('SAFE_RECENT_CONTEXT='));
   assert.match(prompt, /消解省略的主语与指代/u);
+  assert.match(prompt, /产品简称、俗称、残缺名称、疑似错别字.*原样.*ask_insurance_expert/u);
+  assert.match(prompt, /ACTIVE_ENTITIES 只能补齐本轮省略的实体.*不得把它覆盖到本轮新出现的产品线索/u);
+  assert.match(prompt, /previousProduct 表示上一轮确认过的产品.*主语、比较对象还是与本轮无关/u);
+  assert.match(prompt, /不得先要求用户补充正式名称/u);
   assert.match(prompt, /没有可用上下文、存在多个可能解释或无法确定指代/u);
   assert.match(prompt, /工具返回.*权威/u);
   assert.match(prompt, /相同工具和相同参数.*不得重复调用/u);
@@ -97,10 +119,10 @@ test('Hermes Agent Loop requires a dedicated HERMES_HOME and per-turn gateway au
   );
 });
 
-test('Hermes Agent Loop applies its timeout and rejects empty or sessionless output', async () => {
+test('Hermes Agent Loop preserves the model timeout after bounded CLI startup grace', async () => {
   const calls = [];
   const client = createHermesAgentLoopClient({
-    command: '/fake/hermes', hermesHome: HOME, timeoutMs: 12_345,
+    command: '/fake/hermes', hermesHome: HOME, timeoutMs: 12_345, startupGraceMs: 4_000,
     execFile(_command, _args, options, callback) {
       calls.push(options);
       callback(null, '', 'session_id: session-a\n');
@@ -110,7 +132,18 @@ test('Hermes Agent Loop applies its timeout and rejects empty or sessionless out
     client.runTurn({ question: '查询', capability: 'capability', gatewayUrl: GATEWAY }),
     (error) => error?.code === 'HERMES_RESPONSE_INVALID',
   );
-  assert.equal(calls[0].timeout, 12_345);
+  assert.equal(calls[0].timeout, 16_345);
+
+  const boundedGraceCalls = [];
+  const boundedGrace = createHermesAgentLoopClient({
+    command: '/fake/hermes', hermesHome: HOME, timeoutMs: 12_345, startupGraceMs: 30_000,
+    execFile(_command, _args, options, callback) {
+      boundedGraceCalls.push(options);
+      callback(null, '有回复', 'session_id: bounded-grace-session\n');
+    },
+  });
+  await boundedGrace.runTurn({ question: '查询', capability: 'capability', gatewayUrl: GATEWAY });
+  assert.equal(boundedGraceCalls[0].timeout, 32_345);
 
   const sessionless = createHermesAgentLoopClient({
     command: '/fake/hermes', hermesHome: HOME,

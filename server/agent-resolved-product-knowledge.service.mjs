@@ -1,3 +1,5 @@
+import { isResponsibilityOutlineOnly } from './agent-product-retrieval-plan.service.mjs';
+
 const REQUIRED_COLUMNS = new Set([
   'company', 'product_name', 'status', 'headline', 'summary_json', 'source_urls_json',
 ]);
@@ -67,6 +69,16 @@ function parseStringArray(value) {
     return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')
       ? parsed.map((item) => clean(item, 2_048)).filter(Boolean)
       : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseObject(value) {
+  if (typeof value !== 'string' || !value || value.length > MAX_JSON_CHARS) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -142,6 +154,38 @@ function responsibilityBlock(value, index) {
   ].filter((item, detailIndex, items) => item && items.indexOf(item) === detailIndex);
   if (!title && !details.length) return '';
   return [`${index + 1}. **${title || '保险责任'}**`, ...details].join('\n');
+}
+
+function answerFromOfficialRecords(rows, profile, queryAspects) {
+  const sources = [];
+  const excerpts = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const payload = parseObject(row?.payload);
+    if (!payload || clean(payload.evidenceLevel, 100) !== 'insurer_official') continue;
+    const url = officialSource(row?.url, profile);
+    const pageText = normalizeOfficialTerms(payload.pageText);
+    if (!url || pageText.length < 40) continue;
+    if (!sources.some((source) => source.url === url)) {
+      sources.push({
+        verified: true,
+        title: clean(payload.title, 300) || clean(row?.product_name, 300) || '保险公司官方条款',
+        url,
+        provenance: 'insurer_official',
+      });
+    }
+    if (!excerpts.includes(pageText)) excerpts.push(pageText);
+    if (sources.length >= MAX_SOURCES) break;
+  }
+  const responsibilityRequested = Array.isArray(queryAspects)
+    && queryAspects.includes('main_responsibilities');
+  if (responsibilityRequested && excerpts.length
+    && excerpts.every((excerpt) => isResponsibilityOutlineOnly(excerpt))) {
+    return { answer: '', sources: [] };
+  }
+  return {
+    answer: excerpts.length ? ['### 官方条款内容', ...excerpts].join('\n\n').slice(0, MAX_ANSWER_CHARS) : '',
+    sources,
+  };
 }
 
 function linkedProductNames(summary) {
@@ -227,6 +271,15 @@ export function createAgentProductKnowledgeService({
     ORDER BY id
     LIMIT 20
   `) : null;
+  const exactKnowledgeStatement = hasKnowledgeTable ? db.prepare(`
+    SELECT company, product_name, url, payload
+    FROM knowledge_records
+    WHERE company = ? AND product_name = ?
+      AND json_valid(payload) = 1
+      AND json_extract(payload, '$.evidenceLevel') = 'insurer_official'
+    ORDER BY id
+    LIMIT 20
+  `) : null;
 
   return {
     async search({ scope, product, queryAspects = [] } = {}) {
@@ -238,6 +291,10 @@ export function createAgentProductKnowledgeService({
       const company = clean(product.company, 200);
       const officialName = clean(product.officialName, 200);
       if (!company || !officialName) return { answer: '', sources: [] };
+      if (!queryAspects.length
+        || queryAspects.some((aspect) => !['main_responsibilities', 'sales_guidance'].includes(aspect))) {
+        return { answer: '', sources: [] };
+      }
 
       let profiles = staticProfiles;
       if (typeof loadOfficialDomainProfiles === 'function') {
@@ -260,17 +317,21 @@ export function createAgentProductKnowledgeService({
       } catch {
         return { answer: '', sources: [] };
       }
-      if (!row) return { answer: '', sources: [] };
+      const profile = profileForCompany(company, profiles);
+      if (!row) {
+        return exactKnowledgeStatement
+          ? answerFromOfficialRecords(
+            exactKnowledgeStatement.all(company, officialName),
+            profile,
+            queryAspects,
+          )
+          : { answer: '', sources: [] };
+      }
       const summary = parseSummary(row.summary_json);
       const storedSourceUrls = parseStringArray(row.source_urls_json);
       if (!summary || !storedSourceUrls) return { answer: '', sources: [] };
-      if (!queryAspects.length
-        || queryAspects.some((aspect) => !['main_responsibilities', 'sales_guidance'].includes(aspect))) {
-        return { answer: '', sources: [] };
-      }
 
       const headline = clean(summary.headline, 300) || clean(row.headline, 300) || officialName;
-      const profile = profileForCompany(company, profiles);
       const urls = [
         ...storedSourceUrls,
         ...(Array.isArray(summary.sourceUrls) ? summary.sourceUrls : []),

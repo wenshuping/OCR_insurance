@@ -166,6 +166,72 @@ function productFactFromRow(row) {
   };
 }
 
+function reviewRunFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id),
+    tenantId: text(row.tenant_id),
+    documentId: text(row.document_id),
+    indexVersion: text(row.index_version),
+    reviewType: text(row.review_type),
+    model: text(row.model),
+    status: text(row.status),
+    errorCode: text(row.error_code),
+    errorMessage: text(row.error_message),
+    startedAt: text(row.started_at),
+    completedAt: text(row.completed_at),
+    createdAt: text(row.created_at),
+    updatedAt: text(row.updated_at),
+    summary: parseJson(row.summary_json, {}),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
+function reviewIssueFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id),
+    tenantId: text(row.tenant_id),
+    runId: text(row.run_id),
+    documentId: text(row.document_id),
+    type: text(row.issue_type),
+    severity: text(row.severity),
+    confidence: row.confidence == null ? null : Number(row.confidence),
+    reason: text(row.reason),
+    status: text(row.status),
+    reviewer: text(row.reviewer),
+    resolution: text(row.resolution),
+    pageNos: parseJsonValue(row.page_nos_json, []),
+    sourceRegions: parseJsonValue(row.source_regions_json, []),
+    affectedChunkIds: parseJsonValue(row.affected_chunk_ids_json, []),
+    proposedOperations: parseJsonValue(row.proposed_operations_json, []),
+    createdAt: text(row.created_at),
+    updatedAt: text(row.updated_at),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
+function correctionFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id),
+    tenantId: text(row.tenant_id),
+    documentId: text(row.document_id),
+    sourceIssueId: text(row.source_issue_id),
+    indexVersion: text(row.index_version),
+    appliedIndexVersion: text(row.applied_index_version),
+    reasonCode: text(row.reason_code),
+    note: text(row.note),
+    scope: text(row.scope),
+    operations: parseJsonValue(row.operations_json, []),
+    status: text(row.status),
+    createdBy: text(row.created_by),
+    createdAt: text(row.created_at),
+    updatedAt: text(row.updated_at),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
 export function ensureProductKnowledgeTables(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS product_documents (
@@ -365,6 +431,74 @@ export function ensureProductKnowledgeTables(db) {
       contextual_prefix,
       tokenize='trigram'
     );
+
+    CREATE TABLE IF NOT EXISTS product_document_review_runs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      index_version TEXT,
+      review_type TEXT NOT NULL,
+      model TEXT,
+      status TEXT NOT NULL,
+      error_code TEXT,
+      error_message TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      payload TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (document_id) REFERENCES product_documents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_document_review_runs_document
+      ON product_document_review_runs(tenant_id, document_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS product_document_review_issues (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      confidence REAL,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      reviewer TEXT,
+      resolution TEXT,
+      page_nos_json TEXT NOT NULL DEFAULT '[]',
+      source_regions_json TEXT NOT NULL DEFAULT '[]',
+      affected_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+      proposed_operations_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (run_id) REFERENCES product_document_review_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (document_id) REFERENCES product_documents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_document_review_issues_document
+      ON product_document_review_issues(tenant_id, document_id, status, severity);
+
+    CREATE TABLE IF NOT EXISTS product_document_corrections (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      source_issue_id TEXT,
+      index_version TEXT,
+      applied_index_version TEXT,
+      reason_code TEXT NOT NULL,
+      note TEXT,
+      scope TEXT NOT NULL DEFAULT 'current_chunk',
+      operations_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'approved',
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (document_id) REFERENCES product_documents(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_issue_id) REFERENCES product_document_review_issues(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_document_corrections_document
+      ON product_document_corrections(tenant_id, document_id, status, created_at);
   `);
 }
 
@@ -555,6 +689,45 @@ export function createProductKnowledgeStore(db) {
       documentId,
     );
     return getDocument({ tenantId, documentId });
+  }
+
+  function listDocumentPageReviews({ tenantId, documentId, indexVersion = '' } = {}) {
+    const document = getDocument({ tenantId, documentId });
+    if (!document) return [];
+    const reviews = document.payload?.pageReviews;
+    return Object.values(reviews && typeof reviews === 'object' && !Array.isArray(reviews) ? reviews : {})
+      .filter((review) => !text(indexVersion) || text(review?.indexVersion) === text(indexVersion))
+      .sort((left, right) => Number(left?.pageNo || 0) - Number(right?.pageNo || 0));
+  }
+
+  function saveDocumentPageReview(input = {}) {
+    const tenantId = text(input.tenantId);
+    const documentId = text(input.documentId);
+    const document = getDocument({ tenantId, documentId });
+    const pageNo = Math.trunc(Number(input.pageNo || 0));
+    const status = text(input.status);
+    if (!document || pageNo < 1 || !['passed', 'needs_correction'].includes(status)) return null;
+    const candidateIndexVersion = text(document.payload?.candidateIndexVersion);
+    const indexVersion = text(input.indexVersion) || candidateIndexVersion;
+    if (!indexVersion || indexVersion !== candidateIndexVersion) return null;
+    const now = text(input.now) || new Date().toISOString();
+    const current = document.payload?.pageReviews;
+    const pageReviews = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
+    const review = {
+      pageNo,
+      indexVersion,
+      status,
+      note: text(input.note).slice(0, 2000),
+      reviewer: text(input.reviewer).slice(0, 200),
+      reviewedAt: now,
+    };
+    updateDocumentState({
+      tenantId,
+      documentId,
+      now,
+      payload: { pageReviews: { ...pageReviews, [`${indexVersion}:${pageNo}`]: review } },
+    });
+    return review;
   }
 
   function replaceParsedArtifacts(input = {}) {
@@ -848,6 +1021,83 @@ export function createProductKnowledgeStore(db) {
     `).all(text(tenantId), ...ids).map(chunkFromRow);
   }
 
+  function updateCandidateChunkBinding(input = {}) {
+    const tenantId = text(input.tenantId);
+    const documentId = text(input.documentId);
+    const chunkId = text(input.chunkId);
+    const action = text(input.action);
+    const document = getDocument({ tenantId, documentId });
+    const candidateIndexVersion = text(document?.payload?.candidateIndexVersion);
+    if (!document || !candidateIndexVersion) return null;
+    if (!['bind', 'exclude'].includes(action)) {
+      const error = new Error('切片标注动作必须是 bind 或 exclude');
+      error.code = 'PRODUCT_CHUNK_BINDING_ACTION_INVALID';
+      error.status = 400;
+      throw error;
+    }
+    const chunk = db.prepare(`
+      SELECT * FROM knowledge_chunks
+      WHERE tenant_id = ? AND document_id = ? AND id = ?
+        AND json_extract(payload, '$.indexVersion') = ?
+    `).get(tenantId, documentId, chunkId, candidateIndexVersion);
+    if (!chunk || text(chunk.chunk_type) === 'parent') return null;
+    const currentPayload = parseJson(chunk.payload, {});
+    if (action === 'bind' && text(chunk.index_status) === 'blocked' && currentPayload?.manualBinding?.action !== 'exclude') {
+      const error = new Error('该切片因质量问题被隔离，不能通过产品绑定直接恢复');
+      error.code = 'PRODUCT_CHUNK_QUALITY_BLOCKED';
+      error.status = 409;
+      throw error;
+    }
+    const now = text(input.now) || new Date().toISOString();
+    const canonicalProductId = action === 'bind' ? text(input.canonicalProductId) : '';
+    const productVersionId = action === 'bind' ? text(input.productVersionId) : '';
+    const officialName = action === 'bind' ? text(input.officialName) : '';
+    const prefixLines = text(chunk.contextual_prefix).split('\n')
+      .filter((line) => !/^产品：/u.test(line));
+    const contextualPrefix = [officialName ? `产品：${officialName}` : '', ...prefixLines].filter(Boolean).join('\n');
+    const payload = {
+      ...currentPayload,
+      manualBinding: {
+        action,
+        canonicalProductId,
+        officialName,
+        reviewer: text(input.reviewer),
+        updatedAt: now,
+      },
+    };
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(`
+        UPDATE knowledge_chunks
+        SET canonical_product_id = ?, product_version_id = ?, index_status = ?,
+            contextual_prefix = ?, updated_at = ?, payload = ?
+        WHERE tenant_id = ? AND document_id = ? AND id = ?
+      `).run(
+        canonicalProductId || null,
+        productVersionId || null,
+        action === 'exclude' ? 'blocked' : 'ready',
+        contextualPrefix,
+        now,
+        jsonPayload(payload),
+        tenantId,
+        documentId,
+        chunkId,
+      );
+      db.prepare('DELETE FROM knowledge_chunks_fts WHERE chunk_id = ?').run(chunkId);
+      if (action === 'bind') {
+        db.prepare(`
+          INSERT INTO knowledge_chunks_fts (chunk_id, tenant_id, document_id, content, contextual_prefix)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(chunkId, tenantId, documentId, text(chunk.content), contextualPrefix);
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return getChunksByIds({ tenantId, chunkIds: [chunkId] })[0] || null;
+  }
+
   function saveDocumentProductLinks(input = {}) {
     const tenantId = text(input.tenantId);
     const documentId = text(input.documentId);
@@ -999,6 +1249,190 @@ export function createProductKnowledgeStore(db) {
     }));
   }
 
+  function listDocumentReviewRuns({ tenantId, documentId, limit = 20 } = {}) {
+    const boundedLimit = Math.max(1, Math.min(100, Math.trunc(Number(limit || 20)) || 20));
+    return db.prepare(`
+      SELECT * FROM product_document_review_runs
+      WHERE tenant_id = ? AND document_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(text(tenantId), text(documentId), boundedLimit).map(reviewRunFromRow);
+  }
+
+  function listDocumentReviewIssues({ tenantId, documentId, runId = '', statuses = [] } = {}) {
+    const conditions = ['tenant_id = ?', 'document_id = ?'];
+    const params = [text(tenantId), text(documentId)];
+    if (text(runId)) {
+      conditions.push('run_id = ?');
+      params.push(text(runId));
+    }
+    const normalizedStatuses = [...new Set((Array.isArray(statuses) ? statuses : []).map(text).filter(Boolean))];
+    if (normalizedStatuses.length) {
+      conditions.push(`status IN (${normalizedStatuses.map(() => '?').join(', ')})`);
+      params.push(...normalizedStatuses);
+    }
+    return db.prepare(`
+      SELECT * FROM product_document_review_issues
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+        created_at ASC, id ASC
+    `).all(...params).map(reviewIssueFromRow);
+  }
+
+  function saveDocumentReviewResult(input = {}) {
+    const tenantId = text(input.tenantId);
+    const documentId = text(input.documentId);
+    if (!getDocument({ tenantId, documentId })) return null;
+    const now = text(input.now) || new Date().toISOString();
+    const runId = `preview_${crypto.randomUUID()}`;
+    const status = text(input.status) || 'completed';
+    const issues = Array.isArray(input.issues) ? input.issues : [];
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(`
+        INSERT INTO product_document_review_runs (
+          id, tenant_id, document_id, index_version, review_type, model, status,
+          error_code, error_message, started_at, completed_at, created_at, updated_at,
+          summary_json, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        runId,
+        tenantId,
+        documentId,
+        text(input.indexVersion) || null,
+        text(input.reviewType) || 'ai_pre_review',
+        text(input.model) || null,
+        status,
+        text(input.errorCode) || null,
+        text(input.errorMessage) || null,
+        text(input.startedAt) || now,
+        status === 'completed' ? text(input.completedAt) || now : null,
+        now,
+        now,
+        jsonPayload(input.summary),
+        jsonPayload(input.payload),
+      );
+      const insertIssue = db.prepare(`
+        INSERT INTO product_document_review_issues (
+          id, tenant_id, run_id, document_id, issue_type, severity, confidence,
+          reason, status, reviewer, resolution, page_nos_json, source_regions_json,
+          affected_chunk_ids_json, proposed_operations_json, created_at, updated_at, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const issue of issues) {
+        if (!text(issue?.type) || !text(issue?.reason)) continue;
+        insertIssue.run(
+          `pissue_${crypto.randomUUID()}`,
+          tenantId,
+          runId,
+          documentId,
+          text(issue.type),
+          text(issue.severity) || 'medium',
+          issue.confidence == null ? null : Number(issue.confidence),
+          text(issue.reason),
+          text(issue.status) || 'open',
+          text(issue.reviewer) || null,
+          text(issue.resolution) || null,
+          JSON.stringify(Array.isArray(issue.pageNos) ? issue.pageNos : []),
+          JSON.stringify(Array.isArray(issue.sourceRegions) ? issue.sourceRegions : []),
+          JSON.stringify(Array.isArray(issue.affectedChunkIds) ? issue.affectedChunkIds : []),
+          JSON.stringify(Array.isArray(issue.proposedOperations) ? issue.proposedOperations : []),
+          now,
+          now,
+          jsonPayload({ source: text(issue.source), missingElements: issue.missingElements || [] }),
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return {
+      run: reviewRunFromRow(db.prepare('SELECT * FROM product_document_review_runs WHERE id = ?').get(runId)),
+      issues: listDocumentReviewIssues({ tenantId, documentId, runId }),
+    };
+  }
+
+  function listDocumentCorrections({ tenantId, documentId, statuses = [] } = {}) {
+    const conditions = ['tenant_id = ?', 'document_id = ?'];
+    const params = [text(tenantId), text(documentId)];
+    const normalizedStatuses = [...new Set((Array.isArray(statuses) ? statuses : []).map(text).filter(Boolean))];
+    if (normalizedStatuses.length) {
+      conditions.push(`status IN (${normalizedStatuses.map(() => '?').join(', ')})`);
+      params.push(...normalizedStatuses);
+    }
+    return db.prepare(`
+      SELECT * FROM product_document_corrections
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY created_at ASC, id ASC
+    `).all(...params).map(correctionFromRow);
+  }
+
+  function saveDocumentCorrection(input = {}) {
+    const tenantId = text(input.tenantId);
+    const documentId = text(input.documentId);
+    const document = getDocument({ tenantId, documentId });
+    if (!document) return null;
+    const operations = Array.isArray(input.operations) ? input.operations : [];
+    if (!text(input.reasonCode) || !operations.length) {
+      const error = new Error('修正记录必须包含原因和至少一个操作');
+      error.code = 'PRODUCT_DOCUMENT_CORRECTION_INVALID';
+      error.status = 400;
+      throw error;
+    }
+    const now = text(input.now) || new Date().toISOString();
+    const correctionId = `pcorrection_${crypto.randomUUID()}`;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(`
+        INSERT INTO product_document_corrections (
+          id, tenant_id, document_id, source_issue_id, index_version,
+          reason_code, note, scope, operations_json, status, created_by,
+          created_at, updated_at, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        correctionId,
+        tenantId,
+        documentId,
+        text(input.sourceIssueId) || null,
+        text(input.indexVersion) || text(document.payload?.candidateIndexVersion) || null,
+        text(input.reasonCode),
+        text(input.note) || null,
+        text(input.scope) || 'current_chunk',
+        JSON.stringify(operations),
+        text(input.status) || 'approved',
+        text(input.createdBy) || null,
+        now,
+        now,
+        jsonPayload(input.payload),
+      );
+      if (text(input.sourceIssueId)) {
+        db.prepare(`
+          UPDATE product_document_review_issues
+          SET status = 'correction_planned', reviewer = ?, resolution = ?, updated_at = ?
+          WHERE tenant_id = ? AND document_id = ? AND id = ?
+        `).run(text(input.createdBy) || null, text(input.note) || null, now, tenantId, documentId, text(input.sourceIssueId));
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return correctionFromRow(db.prepare('SELECT * FROM product_document_corrections WHERE id = ?').get(correctionId));
+  }
+
+  function markDocumentCorrectionsApplied({ tenantId, documentId, correctionIds = [], indexVersion, now = '' } = {}) {
+    const ids = [...new Set((Array.isArray(correctionIds) ? correctionIds : []).map(text).filter(Boolean))];
+    if (!ids.length) return [];
+    const updatedAt = text(now) || new Date().toISOString();
+    db.prepare(`
+      UPDATE product_document_corrections
+      SET status = 'applied', applied_index_version = ?, updated_at = ?
+      WHERE tenant_id = ? AND document_id = ? AND id IN (${ids.map(() => '?').join(', ')})
+    `).run(text(indexVersion) || null, updatedAt, text(tenantId), text(documentId), ...ids);
+    return listDocumentCorrections({ tenantId, documentId });
+  }
+
   function reviewDocument(input = {}) {
     const tenantId = text(input.tenantId);
     const documentId = text(input.documentId);
@@ -1024,10 +1458,11 @@ export function createProductKnowledgeStore(db) {
       const count = db.prepare(`
         SELECT count(*) AS count FROM knowledge_chunks
         WHERE tenant_id = ? AND document_id = ? AND chunk_type != 'parent' AND index_status = 'ready'
+          AND canonical_product_id IS NOT NULL
           AND json_extract(payload, '$.indexVersion') = ?
       `).get(tenantId, documentId, candidateIndexVersion)?.count || 0;
       if (!count) {
-        const error = new Error('资料尚未完成解析和切片，不能发布');
+        const error = new Error('资料没有已绑定产品的可用切片，不能发布');
         error.code = 'PRODUCT_DOCUMENT_NOT_READY';
         error.status = 409;
         throw error;
@@ -1068,7 +1503,11 @@ export function createProductKnowledgeStore(db) {
           WHERE tenant_id = ? AND document_id = ? AND review_status = 'published'
         `).run(now, tenantId, documentId);
         db.prepare(`
-          UPDATE knowledge_chunks SET review_status = 'published', updated_at = ?
+          UPDATE knowledge_chunks
+          SET review_status = CASE
+            WHEN index_status = 'ready' AND canonical_product_id IS NOT NULL THEN 'published'
+            ELSE 'rejected'
+          END, updated_at = ?
           WHERE tenant_id = ? AND document_id = ? AND json_extract(payload, '$.indexVersion') = ?
         `).run(now, tenantId, documentId, targetVersion);
         db.prepare(`
@@ -1194,17 +1633,26 @@ export function createProductKnowledgeStore(db) {
     getDocumentIndexReview,
     getIngestionJob,
     ensureProducts,
+    listDocumentCorrections,
+    listDocumentPageReviews,
     listDocumentChunks,
     listDocumentPages,
     listDocumentProductLinks,
+    listDocumentReviewIssues,
+    listDocumentReviewRuns,
     listDocuments,
     listProductFacts,
     listProducts,
     replaceParsedArtifacts,
     reviewDocument,
+    saveDocumentCorrection,
+    saveDocumentPageReview,
+    saveDocumentReviewResult,
     saveDocumentProductLinks,
     searchChunks,
+    markDocumentCorrectionsApplied,
     updateDocumentState,
+    updateCandidateChunkBinding,
     updateIngestionJob,
   };
 }

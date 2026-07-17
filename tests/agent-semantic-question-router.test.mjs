@@ -217,7 +217,7 @@ test('confirmed product is reused by a current-product reference on the next req
   const conversations = memoryConversationService();
   const product = {
     canonicalProductId: 'product-1', company: '新华人寿保险股份有限公司',
-    officialName: '康健无忧两全保险', matchType: 'exact_official_name', confidence: 1,
+    officialName: '康健无忧两全保险', matchType: 'confirmed_candidate', confidence: 1,
   };
   const semanticResolver = createAgentSemanticResolver({
     productResolver: { resolve({ mentions }) {
@@ -293,6 +293,7 @@ test('ambiguous products are persisted and choice two executes without exposing 
   assert.equal(selected.decision, 'execute');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].candidate.entities.productName, '正式产品2');
+  assert.equal(calls[0].candidate.question, question);
   assert.equal(audits[1].fallbackReason, 'candidate_selection');
   assert.equal(audits[1].runtime, 'rule');
 });

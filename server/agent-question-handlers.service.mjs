@@ -47,7 +47,7 @@ function resolvedProductComparison(context) {
     || new Set(products.map((product) => product.canonicalProductId)).size !== 2) return null;
   const queryAspects = (Array.isArray(context.queryAspects) ? context.queryAspects : [])
     .filter((item) => typeof item === 'string' && item !== 'comparison').slice(0, 8);
-  return { products, queryAspects: queryAspects.length ? queryAspects : ['main_responsibilities'] };
+  return { products, queryAspects };
 }
 
 function positiveInteger(value, label) {
@@ -120,6 +120,23 @@ function stableResult(facts, provenance = {}, presentation = {}) {
   return { facts, provenance, presentation, interaction };
 }
 
+function boundedRetrievalStatus(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const completeness = text(value.completeness);
+  if (!['complete', 'incomplete', 'partial'].includes(completeness)) return null;
+  const mode = text(value.mode).slice(0, 80);
+  const missingEvidence = [...new Set((Array.isArray(value.missingEvidence) ? value.missingEvidence : [])
+    .map((item) => text(item))
+    .filter((item) => /^[a-z0-9_]{1,100}$/u.test(item)))].slice(0, 20);
+  return {
+    mode,
+    rounds: Math.max(0, Math.min(2, Number(value.rounds) || 0)),
+    queryCount: Math.max(0, Math.min(3, Number(value.queryCount) || 0)),
+    completeness,
+    missingEvidence,
+  };
+}
+
 function safeSalesChatSources(sources = []) {
   const allowed = new Set(['kind', 'ref', 'title', 'url', 'provenance']);
   return (Array.isArray(sources) ? sources : []).slice(0, 12).map((source) => (
@@ -180,6 +197,8 @@ export function createAgentQuestionHandlers({
   allowedKnowledgeOrigins = [],
   allowedKnowledgeOriginsProvider,
   insuranceExpertTool,
+  insuranceExpertPlanner,
+  insuranceExpertSkillRegistry,
   salesChampionTool,
   pendingJobTtlMs = 300_000,
   clock = () => new Date(),
@@ -382,14 +401,23 @@ export function createAgentQuestionHandlers({
     const question = text(context?.question).slice(0, 2_000);
     const semantic = resolvedProductQuery(context);
     const comparison = resolvedProductComparison(context);
+    const expertPlan = context?.expertPlan && typeof context.expertPlan === 'object'
+      ? context.expertPlan : null;
+    const plannedAspects = Array.isArray(expertPlan?.queryAspects)
+      ? expertPlan.queryAspects.filter((item) => typeof item === 'string').slice(0, 8) : [];
     if (semantic || comparison) {
       const requests = comparison
         ? comparison.products.map((product) => ({
           product,
-          queryAspects: comparison.queryAspects,
-          question: `${product.officialName}完整保险责任：请完整列出全部责任、触发条件、给付方式、限额和主要限制`,
+          queryAspects: plannedAspects.length ? plannedAspects : comparison.queryAspects,
+          ...(expertPlan ? { expertPlan } : {}),
+          question,
         }))
-        : [{ product: semantic.product, queryAspects: semantic.queryAspects }];
+        : [{
+          product: semantic.product,
+          queryAspects: plannedAspects.length ? plannedAspects : semantic.queryAspects,
+          ...(expertPlan ? { expertPlan } : {}),
+        }];
       const results = productKnowledge && typeof productKnowledge.search === 'function'
         ? await Promise.all(requests.map((request) => productKnowledge.search({
           question: request.question || question,
@@ -454,11 +482,13 @@ export function createAgentQuestionHandlers({
           { message: '当前没有可核验来源，无法给出确定的产品事实。' },
         );
       }
-      return stableResult(
+      const response = stableResult(
         { certainty: 'supported', answer: text(result?.answer) },
         { source: 'public_product_knowledge', sources },
         { message: publicKnowledgeAnswer(result?.answer, sources) },
       );
+      const retrieval = boundedRetrievalStatus(result?.retrieval);
+      return retrieval ? { ...response, retrieval } : response;
     }
     const productName = text(context?.productName).slice(0, 200);
     const company = text(context?.productCompany).slice(0, 200);
@@ -514,11 +544,13 @@ export function createAgentQuestionHandlers({
     }
     const answer = text(result?.answer);
     const publicAnswer = publicKnowledgeAnswer(answer, sources);
-    return stableResult(
+    const response = stableResult(
       { certainty: 'supported', answer },
       { source: 'public_product_knowledge', sources },
       { message: publicAnswer },
     );
+    const retrieval = boundedRetrievalStatus(result?.retrieval);
+    return retrieval ? { ...response, retrieval } : response;
   }
 
   async function coach(context) {
@@ -642,7 +674,12 @@ export function createAgentQuestionHandlers({
     }
   }
 
-  const insuranceExpert = insuranceExpertTool || createInsuranceExpertTool({ execute });
+  const insuranceExpert = insuranceExpertTool || createInsuranceExpertTool({
+    execute,
+    planner: insuranceExpertPlanner,
+    timeoutMs: 90_000,
+    skillRegistry: insuranceExpertSkillRegistry,
+  });
   const salesChampion = salesChampionTool || createSalesChampionTool({ execute });
   if (typeof insuranceExpert.askInsuranceExpertTool !== 'function') {
     throw new TypeError('insuranceExpertTool.askInsuranceExpertTool is required');

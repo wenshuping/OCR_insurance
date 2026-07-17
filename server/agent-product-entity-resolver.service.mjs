@@ -1,11 +1,13 @@
 import {
   catalogProductIdentity,
   catalogProductScore,
+  searchExactProductCatalog,
   searchProductCatalog,
 } from './product-catalog-search.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const MATCH_TYPES = new Set([
+  'confirmed_candidate',
   'exact_official_name',
   'filing_name',
   'approved_alias',
@@ -20,6 +22,8 @@ const MATCH_TYPE_PRIORITY = new Map([
   ['unique_high_confidence', 4],
 ]);
 const HEURISTIC_CONFIDENCE_CEILING = 0.89;
+const DOMINANT_CONFIRMATION_MIN_CONFIDENCE = 0.7;
+const DOMINANT_CONFIRMATION_MIN_GAP = 0.25;
 const MAX_IDENTITY_TEXT_LENGTH = 200;
 const MAX_FILING_NAMES = 20;
 const SCAN_DENYLIST = new Set([
@@ -217,6 +221,17 @@ function exactFilingCandidates(products, productText, company) {
     });
   }
   return candidates;
+}
+
+function exactOfficialCandidates(products, productText, company) {
+  const target = comparable(productText);
+  const targetIdentity = catalogProductIdentity(productText);
+  return products.filter((product) => (
+    (!company || product.company === company)
+    && (comparable(product.officialName) === target
+      || (targetIdentity && catalogProductIdentity(product.officialName) === targetIdentity)
+      || approvedAliases(product).some((alias) => comparable(alias) === target))
+  )).map((product) => matchCandidate(product, productText));
 }
 
 function termOccurrences(question, term) {
@@ -518,15 +533,12 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
       if (exactFiling.length) {
         return { status: 'ambiguous', entity: null, candidates: exactFiling.slice(0, 10) };
       }
-      const recalled = searchProductCatalog({
-        db,
-        company: company || '',
-        query: productText,
-        limit: 50,
-        visibility: 'public',
-      });
+      const exactOfficial = exactOfficialCandidates(products, productText, company);
+      if (exactOfficial.length === 1 && exactOfficial[0].confidence === 1) {
+        return { status: 'resolved', entity: exactOfficial[0], candidates: [] };
+      }
       const confirmationOnlyKeys = new Set();
-      const candidates = recalled.map((row) => {
+      const candidateFromCatalog = (row) => {
         let canonicalMatch = canonicalProductForCatalogRow(row, products);
         let confirmationOnly = false;
         if (!canonicalMatch.product && !canonicalMatch.identityConflict) {
@@ -556,7 +568,38 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
           matchType: 'unique_high_confidence',
           confidence: Math.min(HEURISTIC_CONFIDENCE_CEILING, candidate.confidence),
         } : candidate;
-      }).filter(Boolean);
+      };
+      const exactCatalogCandidates = searchExactProductCatalog({
+        db,
+        company: company || '',
+        query: productText,
+        limit: 10,
+        visibility: 'public',
+      }).map(candidateFromCatalog).filter(Boolean);
+      const exactConfirmed = confirmedIdentity && exactCatalogCandidates.find((candidate) => (
+        candidate.canonicalProductId
+        && confirmationOnlyKeys.has(productIdentityKey(candidate))
+        && clean(candidate.company) === confirmedIdentity.company
+        && comparable(candidate.officialName) === comparable(confirmedIdentity.officialName)
+      ));
+      if (exactConfirmed) {
+        return {
+          status: 'resolved',
+          entity: { ...exactConfirmed, matchType: 'confirmed_candidate', confidence: 1 },
+          candidates: [],
+        };
+      }
+      if (exactCatalogCandidates.length === 1) {
+        return { status: 'ambiguous', entity: null, candidates: exactCatalogCandidates };
+      }
+      const recalled = searchProductCatalog({
+        db,
+        company: company || '',
+        query: productText,
+        limit: 50,
+        visibility: 'public',
+      });
+      const candidates = recalled.map(candidateFromCatalog).filter(Boolean);
 
       for (const product of products) {
         if (company && product.company !== company) continue;
@@ -593,11 +636,30 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
         && clean(candidate.company) === confirmedIdentity.company
         && comparable(candidate.officialName) === comparable(confirmedIdentity.officialName)
       ));
-      if (confirmed) return { status: 'resolved', entity: confirmed, candidates: [] };
+      if (confirmed) {
+        return {
+          status: 'resolved',
+          entity: { ...confirmed, matchType: 'confirmed_candidate', confidence: 1 },
+          candidates: [],
+        };
+      }
       const first = rankedCandidates[0];
       const second = rankedCandidates[1];
       if (first.confidence >= 0.9 && (!second || first.confidence - second.confidence >= 0.15)) {
         return { status: 'resolved', entity: first, candidates: [] };
+      }
+      const exactConfirmationCandidates = rankedCandidates.filter((candidate) => (
+        confirmationOnlyKeys.has(productIdentityKey(candidate))
+        && catalogProductIdentity(productText) === catalogProductIdentity(candidate.officialName)
+      ));
+      if (exactConfirmationCandidates.length === 1 && exactConfirmationCandidates[0] === first) {
+        return { status: 'ambiguous', entity: null, candidates: [first] };
+      }
+      const dominantConfirmationCandidate = confirmationOnlyKeys.has(productIdentityKey(first))
+        && first.confidence >= DOMINANT_CONFIRMATION_MIN_CONFIDENCE
+        && (!second || first.confidence - second.confidence >= DOMINANT_CONFIRMATION_MIN_GAP);
+      if (dominantConfirmationCandidate) {
+        return { status: 'ambiguous', entity: null, candidates: [first] };
       }
       return { status: 'ambiguous', entity: null, candidates: rankedCandidates };
     },

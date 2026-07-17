@@ -205,3 +205,26 @@ export function searchProductCatalog({ db, company = '', query = '', limit = 30,
     })), normalizedQuery, safeLimit);
   });
 }
+
+export function searchExactProductCatalog({ db, company = '', query = '', limit = 10, visibility = 'public' } = {}) {
+  const normalizedCompany = clean(company);
+  const normalizedQuery = clean(query);
+  if (!db || !normalizedCompany || !normalizedQuery) return [];
+  const union = catalogUnionSql(db, visibility);
+  if (!union) return [];
+  const rows = db.prepare(`
+    SELECT company, product_name, COUNT(*) AS record_count
+    FROM (${union})
+    WHERE trim(product_name) != '' AND company = ? AND product_name LIKE ?
+    GROUP BY company, product_name
+    ORDER BY product_name
+    LIMIT ?
+  `).all(normalizedCompany, `%${normalizedQuery}%`, Math.max(1, Math.min(50, Number(limit) || 10)));
+  return rankProductCatalogRows(rows.map((row) => ({
+    company: row.company,
+    productName: row.product_name,
+    recordCount: Number(row.record_count || 0),
+  })), normalizedQuery, limit).filter((row) => (
+    catalogProductIdentity(row.productName) === catalogProductIdentity(normalizedQuery)
+  ));
+}

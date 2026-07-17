@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { redactDeepSeekDirectIdentifiers } from './deepseek-privacy-gateway.mjs';
+import { normalizeAgentContextFactBlock } from './agent-context-fact-block.service.mjs';
 import {
   normalizeSemanticProposal,
   SEMANTIC_INTENTS,
@@ -122,14 +123,20 @@ function promptFor({ question, safeRecentContext }) {
       const content = boundedText(redactDeepSeekDirectIdentifiers(item?.content), 1_000);
       return role && content ? [{ role, content }] : [];
     });
+  const factBlock = safeRecentContext?.factBlock
+    ? normalizeAgentContextFactBlock(safeRecentContext.factBlock)
+    : null;
   return [
     '你是 OCR Insurance 的 Hermes 语义解析器，只做意图、原文实体提及和上下文引用解析，不回答保险事实，不调用任何工具。',
+    ...(factBlock ? [`VERIFIED_FACT_BLOCK=${JSON.stringify(factBlock)}`] : []),
     '只输出一个 JSON 对象，不要 Markdown、解释或额外字段。',
     '固定输出字段：semanticContractVersion, intent, operation, queryAspects, mentions, references, requestedSteps, confidence。',
     'semanticContractVersion 固定为 JSON 数字 1（不要输出字符串 "1"）；operation 只能是 read 或 write。',
     `intent 只能是：${SEMANTIC_INTENTS.join(', ')}。`,
     `queryAspects 只能从以下值选择：${SEMANTIC_QUERY_ASPECTS.join(', ')}。`,
     'mentions 是原文中明确出现的实体数组，每项只能含 type 和 rawText；type 只能是 insurer, product, family，rawText 必须逐字来自 USER_QUESTION。',
+    '同一保险产品内部的“计划一、计划二、计划三、方案A”等保障计划或方案编号不是独立保险产品，不得作为 product mention；只提取它们所属的产品名称。',
+    'comparison 只表示两个或以上不同保险产品之间的比较；比较同一产品内部的计划、方案或档位时，不得输出 comparison。',
     `references 每项只能含 type 和 rawText；type 只能是：${SEMANTIC_REFERENCE_TYPES.join(', ')}；rawText 必须逐字来自 USER_QUESTION。`,
     'requestedSteps 只能从 lookup, compare, generate, upload, continue 中选择。',
     'confidence 必须恰好包含 intent, mentions, references 三个 0 到 1 的数字。',

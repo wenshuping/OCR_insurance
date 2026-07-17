@@ -3,6 +3,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { assertDevSourceOwner, readDevSourceOwner } from './local-dev-source-owner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -122,6 +123,11 @@ function createProfileConfigs() {
         POLICY_ADMIN_PASSWORD: 'admin123456',
         SMS_MODE: 'mock',
         SMS_MOCK_CODE: '123456',
+        AGENT_CONVERSATION_RUNTIME: 'agent_loop',
+        HERMES_OCR_HOME: path.join(process.env.HOME || '', '.hermes/profiles/insuranceagent'),
+        HERMES_AGENT_LOOP_TIMEOUT_MS: '75000',
+        HERMES_AGENT_LOOP_STARTUP_GRACE_MS: '15000',
+        OCR_AGENT_TOOL_TIMEOUT_MS: '60000',
         ...devRuntimeEnv,
         POLICY_OCR_POSTPROCESSOR: 'none',
       },
@@ -451,6 +457,9 @@ async function startService(profile, service) {
 }
 
 async function start(profile) {
+  if (profile.name === 'dev') {
+    assertDevSourceOwner({ runtimeDir: profile.runtimeDir, projectRoot, claimIfMissing: true });
+  }
   ensureDirs(profile);
   runBuild(profile);
   for (const service of createServices(profile)) {
@@ -468,6 +477,9 @@ async function start(profile) {
 }
 
 async function stop(profile) {
+  if (profile.name === 'dev') {
+    assertDevSourceOwner({ runtimeDir: profile.runtimeDir, projectRoot });
+  }
   ensureDirs(profile);
   for (const service of [...createServices(profile)].reverse()) {
     const pid = readPid(profile, service.name);
@@ -496,6 +508,14 @@ async function stop(profile) {
 async function status(profile) {
   ensureDirs(profile);
   console.log(`[local:${profile.name}] ${profile.label}环境`);
+  if (profile.name === 'dev') {
+    const sourceOwner = readDevSourceOwner(profile.runtimeDir);
+    console.log(`源码目录: ${sourceOwner || '尚未绑定（首次启动时绑定）'}`);
+    if (sourceOwner) {
+      const currentSourceRoot = fs.realpathSync(projectRoot);
+      if (sourceOwner !== currentSourceRoot) console.log(`当前目录: ${currentSourceRoot}（非绑定目录，只读状态查询）`);
+    }
+  }
   for (const service of createServices(profile)) {
     const pid = readPid(profile, service.name);
     const running = isPidRunning(pid);

@@ -1,17 +1,17 @@
-# Hermes 语义运行配置
+# Hermes 受控 Agent Loop 运行配置
 
-钉钉主路径使用独立 `HERMES_HOME`，不能复用个人 Hermes Profile。Hermes 每轮只做一次语义解析，输出受控意图、原文实体和上下文引用；保险与销售专业任务随后由运营策略路由到保险专家或销冠，领域 Agent 的结果直接交付给客户，不再由 Hermes 重新组织。
+钉钉主路径使用独立 `HERMES_HOME`，不能复用个人 Hermes Profile。Hermes 负责理解上下文并选择 `ask_insurance_expert` 或 `ask_sales_champion`；后端负责账号与数据权限、参数校验、调用预算和证据约束。领域 Agent 的权威结果直接交付，不由 Hermes 改写。
 
 ## 独立 Profile
 
-独立目录的 `config.yaml` 只需保留实际模型提供方配置。默认语义路径以单轮、无工具模式调用 Hermes，因此个人 Profile 中的终端、文件、网页或其他 MCP 工具不会参与客户请求。
+独立目录的 `config.yaml` 只保留实际模型提供方配置，并注册名为 `ocr-insurance-domain` 的 stdio MCP，入口为当前代码版本的 `server/hermes-domain-mcp-server.mjs`。该 MCP 只暴露上述两个领域工具；终端、文件、网页和个人 MCP 不参与客户请求。
 
-启动 API 时显式传入这个目录：
+开发栈默认使用 `~/.hermes/profiles/insuranceagent`，也可以在启动时显式覆盖这个目录：
 
 ```bash
 HERMES_OCR_HOME=/absolute/path/to/dedicated-hermes-home npm run local:dev
 ```
 
-运行时先解析上下文中的产品或家庭，再由后端运营策略选择保险专家、销冠或系统处理器；领域执行仍会重新解析账号并检查资源权限。
+每次领域工具调用都会重新解析钉钉账号并检查资源权限。单次 Hermes 调用默认最长 20 秒；在尚未执行领域工具时，Provider、Session、超时或响应格式失败会用空 Session 重试一次。已经执行领域工具后不会重放请求；权威工具结果一产生就直接交付并终止本轮 CLI，不再等待第二次模型润色。
 
-旧的受控 Agent Loop 仅保留为测试或显式注入的兼容能力，不再由 `HERMES_OCR_HOME` 自动启用。如果未配置 `HERMES_OCR_HOME`，系统使用现有 Direct 安全降级路径。
+未配置 `HERMES_OCR_HOME` 时 Agent Loop 关闭并返回“语义服务暂不可用”，不会降级到 Direct 或旧分类器。仅调试旧语义协议时可显式设置 `AGENT_CONVERSATION_RUNTIME=semantic`；`direct` 也只能显式开启。

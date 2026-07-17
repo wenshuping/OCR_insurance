@@ -220,7 +220,7 @@ test('semantic product knowledge searches only the resolved product and controll
   });
 });
 
-test('product comparison requests complete evidence and uses the comparison generator', async () => {
+test('product comparison preserves the customer question and uses the comparison generator', async () => {
   const products = [
     { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },
     { canonicalProductId: 'b', company: '乙保险', officialName: '乙产品' },
@@ -244,9 +244,9 @@ test('product comparison requests complete evidence and uses the comparison gene
     queryAspects: ['comparison'],
   });
   assert.deepEqual(calls.knowledge.map((call) => call.queryAspects), [
-    ['main_responsibilities'], ['main_responsibilities'],
+    [], [],
   ]);
-  assert.ok(calls.knowledge.every((call) => /完整保险责任/u.test(call.question)));
+  assert.ok(calls.knowledge.every((call) => call.question === '甲产品和乙产品有什么区别'));
   assert.match(result.presentation.message, /^两款不是同类产品：甲侧重医疗报销，乙侧重定额给付。/u);
   assert.match(result.presentation.message, /#### 核验来源/u);
   assert.match(result.presentation.message, /https:\/\/example\.test\/a/u);

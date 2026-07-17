@@ -1,10 +1,13 @@
 import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from './agent-question-policy.service.mjs';
 import { guardAgentFinalReply } from './agent-final-response-guard.service.mjs';
+import { compileAgentContextFactBlock } from './agent-context-fact-block.service.mjs';
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const PRODUCT_COMPARISON_PATTERN = /对比|比较|区别|差异|哪款|哪个好|\bVS\.?\b/iu;
 const COMPARISON_PRONOUN_PATTERN = /^(?:他|它|这个产品|该产品|上述产品)(?=\s*(?:和|与|对比|比较|VS\.?))/iu;
 const COMPARISON_IMPERATIVE_PATTERN = /^(?:你\s*)?(?:帮我|给我)?\s*(?:对比|比较|分析|看看)(?:一下)?\s*/u;
-const PRODUCT_QUESTION_ASPECT_PATTERN = /保险责任|保障责任|保什么|保哪些|怎么赔|赔什么|优势|亮点|卖点|在售|停售|还能买|等待期|免责/u;
+const PRODUCT_QUESTION_ASPECT_PATTERN = /产品责任|保险责任|保障责任|保什么|保哪些|怎么赔|赔什么|优势|亮点|卖点|在售|停售|还能买|等待期|免责/u;
+const QUESTION_CONTENT_PATTERN = /(?:计划|方案|分别|各自|每个|是啥|是什么|有哪些|有什么|包含|包括|怎么|多少|吗|呢|\?)/u;
 
 function fallbackCandidateFromText(question) {
   const value = String(question || '').trim().slice(0, 1_000);
@@ -23,11 +26,14 @@ function productNameFromReply(value) {
 }
 
 function candidateProduct(value) {
-  const label = String(value || '').trim();
+  const stored = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const label = String(stored.label || value || '').trim();
   if (!label) return null;
-  const productName = productNameFromReply(label) || label;
-  const company = productNameFromReply(label) ? label.split('《', 1)[0].trim() : '';
-  return { label, productName, company };
+  const productName = String(stored.officialName || stored.productName || productNameFromReply(label) || label).trim();
+  const company = String(stored.company || (productNameFromReply(label) ? label.split('《', 1)[0].trim() : '')).trim();
+  const canonicalProductId = String(stored.canonicalProductId
+    || canonicalProductIdFromOfficialProduct({ company, productName })).trim();
+  return { ...stored, label, productName, company, canonicalProductId };
 }
 
 function recentFormalProductName(history) {
@@ -85,11 +91,34 @@ function authoritativeProductName(toolResults) {
   return names.length === 1 ? names[0] : '';
 }
 
-function hermesUnavailableResult() {
+function authoritativeToolInteraction(toolResults) {
+  const results = Array.isArray(toolResults) ? toolResults : [];
+  for (let index = results.length - 1; index >= 0; index -= 1) {
+    const result = results[index]?.result;
+    const interaction = result?.interaction;
+    const text = String(interaction?.text || '').trim();
+    if (!text || !['ok', 'needs_clarification', 'confirmation_required'].includes(result?.status)) continue;
+    return {
+      decision: result?.decision || (result.status === 'needs_clarification' ? 'clarify' : 'execute'),
+      interaction: { ...interaction, text },
+    };
+  }
+  return null;
+}
+
+function hermesUnavailableResult(errorCode = 'HERMES_PROVIDER_FAILED') {
+  const retryable = [
+    'HERMES_PROVIDER_FAILED', 'HERMES_TIMEOUT', 'HERMES_RESPONSE_INVALID',
+    'HERMES_SESSION_NOT_FOUND', 'HERMES_CIRCUIT_OPEN',
+  ].includes(errorCode);
   return {
     decision: 'deny',
     interaction: { type: 'denied', text: '语义服务暂不可用，请稍后重试。' },
     runtime: 'hermes',
+    recovery: {
+      status: 'failed', errorCode, retryable,
+      nextAction: retryable ? 'retry_same_request' : 'check_service_configuration',
+    },
   };
 }
 
@@ -113,9 +142,31 @@ function selectedCandidateProduct(value, products) {
 
 function candidateProducts(interaction) {
   return (Array.isArray(interaction?.candidates) ? interaction.candidates : [])
-    .map((item) => String(item?.label || '').trim())
+    .map((item) => {
+      const product = candidateProduct(item);
+      if (!product) return null;
+      return {
+        ...(String(item?.ref || '').trim() ? { ref: String(item.ref).trim() } : {}),
+        label: product.label,
+        company: product.company,
+        officialName: product.productName,
+        canonicalProductId: product.canonicalProductId,
+      };
+    })
     .filter(Boolean)
     .slice(0, 20);
+}
+
+function selectedProductQuestion(originalQuestion, selectedProduct) {
+  const original = String(originalQuestion || '').trim().slice(0, 1_000);
+  const product = String(selectedProduct?.productName || selectedProduct || '').trim();
+  if (!product) return original;
+  const aspect = original.match(PRODUCT_QUESTION_ASPECT_PATTERN)?.[0] || '';
+  if (!original || original === product || product.includes(original)) return product;
+  if (original.includes(product)) return original;
+  if (!aspect && QUESTION_CONTENT_PATTERN.test(original)) return `${product} ${original}`;
+  if (!aspect) return product;
+  return `${product}${aspect}`;
 }
 
 function pendingProductClarification(question, context, activeProductName) {
@@ -222,11 +273,15 @@ export function createAgentConversationRuntime({
       productContextTtlMinutes: settings.productContextTtlMinutes,
     });
     const history = Array.isArray(context?.history) ? context.history : [];
-    if (runtimeMode === 'hermes'
-      && typeof agentLoopClient?.runTurn !== 'function'
-      && typeof hermesClient?.runTurn !== 'function') {
+    const agentLoopMode = runtimeMode === 'agent_loop'
+      || (runtimeMode === 'hermes' && typeof agentLoopClient?.runTurn === 'function'
+        && typeof hermesClient?.runTurn !== 'function');
+    const semanticMode = runtimeMode === 'semantic'
+      || (runtimeMode === 'hermes' && !agentLoopMode);
+    if ((agentLoopMode && typeof agentLoopClient?.runTurn !== 'function')
+      || (semanticMode && typeof hermesClient?.runTurn !== 'function')) {
       reportError('HERMES_CLIENT_UNAVAILABLE');
-      return hermesUnavailableResult();
+      return hermesUnavailableResult('HERMES_CLIENT_UNAVAILABLE');
     }
     const activeProductName = (
       String(context?.product?.productName || '').trim() || recentFormalProductName(history)
@@ -244,9 +299,19 @@ export function createAgentConversationRuntime({
     async function commitAgentReply(replyText, agentLoopSessionId, toolResults = []) {
       const updatedAt = Number(now());
       const productName = authoritativeProductName(toolResults);
+      const toolInteraction = [...toolResults].reverse()
+        .find((item) => item?.tool === 'ask_insurance_expert')?.result?.interaction;
+      const products = candidateProducts(toolInteraction);
       const recoveredProduct = !context.product && activeProductName
         ? { productName: activeProductName, updatedAt }
         : null;
+      const committedProduct = productName ? { productName, updatedAt } : (context.product || recoveredProduct);
+      const owner = toolResults.some((item) => item?.tool === 'ask_insurance_expert')
+        ? 'insurance_expert'
+        : toolResults.some((item) => item?.tool === 'ask_sales_champion') ? 'sales_champion' : 'hermes';
+      const committedCandidates = products.length
+        ? { products, question, updatedAt }
+        : productName ? null : context.productCandidates;
       try {
         await conversationContext.commitContext({
           ...identity,
@@ -261,41 +326,123 @@ export function createAgentConversationRuntime({
             { role: 'user', content: question },
             ...(replyText ? [{ role: 'assistant', content: replyText }] : []),
           ].slice(-settings.fallbackHistoryMessageLimit),
-          product: productName ? { productName, updatedAt } : (context.product || recoveredProduct),
-          productCandidates: context.productCandidates,
+          product: committedProduct,
+          productCandidates: committedCandidates,
           question: context.question,
+          factBlock: compileAgentContextFactBlock({
+            previous: context.factBlock,
+            currentQuestion: question,
+            taskStatus: products.length ? 'needs_clarification' : 'completed',
+            owner,
+            product: committedProduct,
+            productSource: productName ? 'domain_agent' : 'conversation_context',
+            productCandidates: committedCandidates,
+            updatedAt,
+          }),
         });
       } catch {
         reportError('AGENT_CONVERSATION_COMMIT_FAILED');
       }
     }
-    let agentLoopFallbackReason = runtimeMode === 'hermes'
-      && typeof agentLoopClient?.runTurn !== 'function'
-      && typeof hermesClient?.runTurn !== 'function'
-      ? 'hermes_unavailable'
-      : '';
+    let agentLoopFallbackReason = '';
     let agentLoopCandidate;
     let agentLoopProposal;
     let agentLoopSessionId = String(context?.agentLoopSessionId || '');
-    if (runtimeMode === 'hermes'
-      && typeof hermesClient?.runTurn !== 'function'
-      && agentLoopClient
-      && typeof agentLoopClient.runTurn === 'function') {
+    let mustUseToolAfterContextRetry = false;
+    let retryAfterContextCollision = false;
+    const selectedProduct = selectedCandidateProduct(question, context?.productCandidates?.products);
+    const controlledCandidateSelection = Boolean((agentLoopMode || semanticMode)
+      && (selectedProduct || selectedCandidateIndex(question) >= 0));
+    if (agentLoopMode && !controlledCandidateSelection) {
       try {
-        await ensureIdentityCurrent();
-        const agentResult = await agentLoopClient.runTurn({
-          sessionId: String(context?.agentLoopSessionId || ''),
-          question,
-          capability: toolCapability,
-          gatewayUrl: toolGatewayUrl,
-          safeRecentContext: {
-            history,
-            activeEntities: activeProductName
-              ? { product: { officialName: activeProductName } }
-              : {},
-          },
-          requestId: String(channelEnvelope?.messageRef || ''),
-        });
+        let agentResult;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            await ensureIdentityCurrent();
+            const contextualFactBlock = compileAgentContextFactBlock({
+              previous: context.factBlock,
+              currentQuestion: question,
+              taskStatus: 'active',
+              owner: 'hermes',
+              product: context.product,
+              productSource: 'conversation_context',
+              productCandidates: context.productCandidates,
+              updatedAt: Number(now()),
+            });
+            const agentController = new AbortController();
+            const waitController = new AbortController();
+            const agentPromise = agentLoopClient.runTurn({
+              sessionId: attempt === 0 ? String(context?.agentLoopSessionId || '') : '',
+              question,
+              capability: toolCapability,
+              gatewayUrl: toolGatewayUrl,
+              safeRecentContext: {
+                history: retryAfterContextCollision ? [] : history,
+                activeEntities: activeProductName
+                  ? retryAfterContextCollision
+                    ? { previousProduct: { officialName: activeProductName } }
+                    : { product: { officialName: activeProductName } }
+                  : {},
+                factBlock: retryAfterContextCollision
+                  ? { ...contextualFactBlock, verifiedEntities: {} }
+                  : contextualFactBlock,
+              },
+              requestId: String(channelEnvelope?.messageRef || ''),
+              signal: agentController.signal,
+            }).then(
+              (value) => ({ kind: 'agent', value }),
+              (error) => ({ kind: 'agent_error', error }),
+            );
+            const toolPromise = toolCapability
+              && typeof toolCapabilityService?.waitForResult === 'function'
+              ? toolCapabilityService.waitForResult(toolCapability, { signal: waitController.signal }).then(
+                (claims) => ({ kind: 'tool', claims }),
+                () => new Promise(() => {}),
+              )
+              : new Promise(() => {});
+            let winner = await Promise.race([agentPromise, toolPromise]);
+            if (winner.kind === 'tool') {
+              const authoritative = authoritativeToolInteraction(winner.claims?.toolResults);
+              if (authoritative) {
+                agentController.abort();
+                waitController.abort();
+                await commitAgentReply(authoritative.interaction.text, '', winner.claims.toolResults);
+                return { ...authoritative, runtime: 'hermes' };
+              }
+              winner = await agentPromise;
+            }
+            waitController.abort();
+            if (winner.kind === 'agent_error') throw winner.error;
+            agentResult = winner.value;
+            const attemptUsage = toolCapability && typeof toolCapabilityService?.inspect === 'function'
+              ? toolCapabilityService.inspect(toolCapability)
+              : null;
+            const attemptReply = String(agentResult?.finalReply || '').trim();
+            if (attempt === 0
+              && Number(attemptUsage?.callCount || 0) === 0
+              && activeProductName
+              && attemptReply.includes(activeProductName)) {
+              mustUseToolAfterContextRetry = true;
+              retryAfterContextCollision = true;
+              reportError('HERMES_RETRY_CONTEXT_COLLISION');
+              continue;
+            }
+            break;
+          } catch (error) {
+            const usage = toolCapability && typeof toolCapabilityService?.inspect === 'function'
+              ? toolCapabilityService.inspect(toolCapability)
+              : null;
+            const authoritative = authoritativeToolInteraction(usage?.toolResults);
+            if (authoritative) {
+              await commitAgentReply(authoritative.interaction.text, agentLoopSessionId, usage?.toolResults);
+              return { ...authoritative, runtime: 'hermes' };
+            }
+            const retryable = ['HERMES_SESSION_NOT_FOUND', 'HERMES_RESPONSE_INVALID', 'HERMES_PROVIDER_FAILED', 'HERMES_TIMEOUT']
+              .includes(String(error?.code || ''));
+            if (attempt > 0 || !retryable || Number(usage?.callCount || 0) > 0) throw error;
+            reportError(`HERMES_RETRY_${String(error.code)}`);
+          }
+        }
         await ensureIdentityCurrent();
         const finalReply = String(agentResult?.finalReply || '').trim();
         if (!finalReply) throw Object.assign(new Error('HERMES_RESPONSE_INVALID'), { code: 'HERMES_RESPONSE_INVALID' });
@@ -304,41 +451,49 @@ export function createAgentConversationRuntime({
           : null;
         agentLoopSessionId = String(agentResult.sessionId || agentLoopSessionId);
         if (Number(usage?.callCount || 0) > 0) {
-          const replyText = guardAgentFinalReply({ finalReply, toolResults: usage?.toolResults }).reply;
+          const authoritative = authoritativeToolInteraction(usage?.toolResults);
+          const replyText = authoritative?.interaction?.text
+            || guardAgentFinalReply({ finalReply, toolResults: usage?.toolResults }).reply;
           await commitAgentReply(replyText, agentLoopSessionId, usage?.toolResults);
           return {
-            decision: 'execute',
-            interaction: { type: 'answer', text: replyText },
+            decision: authoritative?.decision || 'execute',
+            interaction: authoritative?.interaction || { type: 'answer', text: replyText },
             runtime: 'hermes',
           };
         }
+        if (!mustUseToolAfterContextRetry && fallbackCandidateFromText(question).intent === 'chat') {
+          await commitAgentReply(finalReply, agentLoopSessionId, []);
+          return { decision: 'execute', interaction: { type: 'answer', text: finalReply }, runtime: 'hermes' };
+        }
         reportError('HERMES_RESPONSE_INVALID');
-        return hermesUnavailableResult();
+        return hermesUnavailableResult('HERMES_RESPONSE_INVALID');
       } catch (error) {
         if (error?.code === 'AGENT_CONVERSATION_IDENTITY_CHANGED') throw error;
         reportError(String(error?.code || 'HERMES_PROVIDER_FAILED'));
-        return hermesUnavailableResult();
+        return hermesUnavailableResult(String(error?.code || 'HERMES_PROVIDER_FAILED'));
       }
     }
-    const selectedProduct = selectedCandidateProduct(question, context?.productCandidates?.products);
+    const semanticCandidateSelection = controlledCandidateSelection && !selectedProduct;
     let candidate = agentLoopCandidate;
     let proposal = agentLoopProposal;
     let semanticFallbackReason = agentLoopFallbackReason;
     let hermesSessionId = String(context?.hermesSessionId || '');
     let usedRuntime = 'direct';
-    if (selectedProduct) {
+    if (selectedProduct && !semanticCandidateSelection) {
       proposal = undefined;
       candidate = {
         intent: 'insurance_product_knowledge',
-        question: context.productCandidates.question || question,
+        question: selectedProductQuestion(context.productCandidates.question || '', selectedProduct),
         confidence: 1,
         requestedOperation: 'read',
         entities: {
           productName: selectedProduct.productName,
           ...(selectedProduct.company ? { productCompany: selectedProduct.company } : {}),
+          ...(selectedProduct.canonicalProductId ? { productCanonicalId: selectedProduct.canonicalProductId } : {}),
         },
       };
-    } else if (runtimeMode === 'hermes' && hermesClient && typeof hermesClient.runTurn === 'function') {
+    } else if (!semanticCandidateSelection
+      && semanticMode && hermesClient && typeof hermesClient.runTurn === 'function') {
       usedRuntime = 'hermes';
       try {
         let interpreted;
@@ -347,7 +502,19 @@ export function createAgentConversationRuntime({
             interpreted = await hermesClient.runTurn({
               sessionId: attempt === 0 ? hermesSessionId : '',
               question,
-              safeRecentContext: { history },
+              safeRecentContext: {
+                history,
+                factBlock: compileAgentContextFactBlock({
+                  previous: context.factBlock,
+                  currentQuestion: question,
+                  taskStatus: 'active',
+                  owner: 'hermes',
+                  product: context.product,
+                  productSource: 'conversation_context',
+                  productCandidates: context.productCandidates,
+                  updatedAt: Number(now()),
+                }),
+              },
               requestId: String(channelEnvelope?.messageRef || ''),
             });
             break;
@@ -363,10 +530,10 @@ export function createAgentConversationRuntime({
         hermesSessionId = interpreted.sessionId;
       } catch (error) {
         reportError(String(error?.code || 'HERMES_PROVIDER_FAILED'));
-        return hermesUnavailableResult();
+        return hermesUnavailableResult(String(error?.code || 'HERMES_PROVIDER_FAILED'));
       }
     }
-    if (!candidate && !proposal) {
+    if (!candidate && !proposal && !semanticCandidateSelection) {
       const direct = await directCandidate({ question, history, settings });
       if (direct?.semanticContractVersion === 1) proposal = direct;
       else candidate = direct;
@@ -383,6 +550,16 @@ export function createAgentConversationRuntime({
     let result;
     if (resolved.clarification) {
       result = resolved.clarification;
+    } else if (semanticCandidateSelection) {
+      usedRuntime = 'hermes';
+      result = await questionRouter.route({
+        internalUserId: identity.internalUserId,
+        messageRef: String(channelEnvelope?.messageRef || ''),
+        conversationHistory: history,
+        ...(channelEnvelope?.conversationId ? { conversationId: identity.channelConversationId } : {}),
+        question,
+        runtime: usedRuntime,
+      });
     } else if (proposal) {
       const bound = bindActiveProductReference(proposal, question, activeProductName);
       result = await questionRouter.route({
@@ -399,12 +576,23 @@ export function createAgentConversationRuntime({
       });
     } else {
       candidate = resolved.candidate;
+      const selectedSemanticContext = selectedProduct?.canonicalProductId && selectedProduct?.company
+        ? {
+          resolvedEntities: { product: {
+            canonicalProductId: selectedProduct.canonicalProductId,
+            company: selectedProduct.company,
+            officialName: selectedProduct.productName,
+          } },
+          queryAspects: [],
+        }
+        : undefined;
       result = await questionRouter.route({
         internalUserId: identity.internalUserId,
         messageRef: String(channelEnvelope?.messageRef || ''),
         conversationHistory: history,
         ...(channelEnvelope?.conversationId ? { conversationId: identity.channelConversationId } : {}),
         candidate,
+        ...(selectedSemanticContext ? { semanticContext: selectedSemanticContext } : {}),
       });
     }
     await ensureIdentityCurrent();
@@ -414,6 +602,12 @@ export function createAgentConversationRuntime({
     const explicitProduct = !isComparison ? String(candidate?.entities?.productName || '').trim() : '';
     const canonicalProduct = !isComparison ? (productNameFromReply(replyText) || explicitProduct) : '';
     const updatedAt = Number(now());
+    const committedProduct = canonicalProduct
+      ? { productName: canonicalProduct, updatedAt }
+      : (context.product || (activeProductName ? { productName: activeProductName, updatedAt } : null));
+    const committedCandidates = products.length
+      ? { products, question, updatedAt }
+      : (selectedProduct || clarificationCandidate) ? null : context.productCandidates;
     const nextHistory = [
       ...history,
       { role: 'user', content: question },
@@ -429,13 +623,19 @@ export function createAgentConversationRuntime({
         hermesSessionId,
         agentLoopSessionId,
         history: nextHistory,
-        product: canonicalProduct
-          ? { productName: canonicalProduct, updatedAt }
-          : (context.product || (activeProductName ? { productName: activeProductName, updatedAt } : null)),
-        productCandidates: products.length
-          ? { products, question, updatedAt }
-          : (selectedProduct || clarificationCandidate) ? null : context.productCandidates,
+        product: committedProduct,
+        productCandidates: committedCandidates,
         question: candidate?.intent && candidate.intent !== 'chat' ? { candidate, updatedAt } : context.question,
+        factBlock: compileAgentContextFactBlock({
+          previous: context.factBlock,
+          currentQuestion: question,
+          taskStatus: products.length || result?.decision === 'clarify' ? 'needs_clarification' : 'completed',
+          owner: result?.provenance?.domainAgent || 'hermes',
+          product: committedProduct,
+          productSource: result?.provenance?.domainAgent ? 'domain_agent' : 'conversation_context',
+          productCandidates: committedCandidates,
+          updatedAt,
+        }),
       });
     } catch {
       reportError('AGENT_CONVERSATION_COMMIT_FAILED');

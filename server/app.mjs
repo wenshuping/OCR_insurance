@@ -24,6 +24,7 @@ import { createAgentDomainToolGateway } from './agent-domain-tool-gateway.servic
 import { createAgentToolCapabilityService } from './agent-tool-capability.service.mjs';
 import { createDeepSeekAgentQuestionInterpreter } from './agent-question-interpreter.service.mjs';
 import { createHermesConversationClient } from './hermes-conversation-client.service.mjs';
+import { createHermesAgentLoopClient } from './hermes-agent-loop-client.service.mjs';
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
@@ -107,6 +108,8 @@ import {
 import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
 import { createProductRagService } from './product-rag.service.mjs';
 import { createAgentProductKnowledgeSearch } from './agent-product-knowledge.service.mjs';
+import { createInsuranceExpertAgentPlanner } from './insurance-expert-agent-planner.service.mjs';
+import { createInsuranceExpertSkillRegistry } from './insurance-expert-skill-registry.service.mjs';
 import {
   enrichCustomerResponsibilitySummaryWithMaterials,
   generateProductCustomerResponsibilitySummary,
@@ -2752,6 +2755,16 @@ export function createPolicyOcrApp(options = {}) {
       responsibilitySummaryQuery: (input) => customerResponsibilitySummaryQuery?.(input),
       productRagRetrieve: (input) => productRagService?.retrieve(input),
       officialDocumentFetchImpl: knowledgeFetchImpl,
+      officialReferenceLookup: ({ company, productName, question }) => crawlOpenWebProductReferenceRecords({
+        policy: { company, name: productName },
+        maxResults: 5,
+        fetchImpl: knowledgeFetchImpl,
+        officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
+        searchPlan: {
+          queries: [[productName, question].filter(Boolean).join(' ')],
+          preferredDomains: [],
+        },
+      }),
       officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       salesStatusLookup: (input) => searchOfficialProductSalesStatuses({
         ...input,
@@ -2768,12 +2781,29 @@ export function createPolicyOcrApp(options = {}) {
     ? {
       allowedOrigins: legacyAgentProductKnowledge?.allowedOrigins || [],
       async search(input) {
-        if (input?.scope !== 'public_read_only' || !input?.product) {
-          return legacyAgentProductKnowledge?.search(input);
+        const startedAt = nowMs();
+        let result;
+        try {
+          result = legacyAgentProductKnowledge
+            ? await legacyAgentProductKnowledge.search(input)
+            : await resolvedAgentProductKnowledge?.search(input);
+          return result;
+        } finally {
+          const retrieval = result?.retrieval && typeof result.retrieval === 'object'
+            ? result.retrieval
+            : {};
+          logPerformance(performanceLogger, 'agent.product_retrieval.complete', {
+            durationMs: elapsedMs(startedAt),
+            mode: String(retrieval.mode || (result?.answer ? 'verified_summary_fast_path' : 'no_verified_answer')).slice(0, 80),
+            rounds: Math.max(0, Math.min(2, Number(retrieval.rounds) || 0)),
+            queryCount: Math.max(0, Math.min(3, Number(retrieval.queryCount) || 0)),
+            completeness: String(retrieval.completeness || (result?.answer ? 'complete' : 'missing')).slice(0, 40),
+            missingEvidenceCount: Array.isArray(retrieval.missingEvidence)
+              ? Math.min(20, retrieval.missingEvidence.length)
+              : 0,
+            queryAspectCount: Array.isArray(input?.queryAspects) ? Math.min(8, input.queryAspects.length) : 0,
+          });
         }
-        const resolved = await resolvedAgentProductKnowledge?.search(input);
-        if (String(resolved?.answer || '').trim() || !legacyAgentProductKnowledge) return resolved;
-        return legacyAgentProductKnowledge.search(input);
       },
       compare(input) {
         return legacyAgentProductKnowledge?.compare?.(input) || '';
@@ -2812,6 +2842,17 @@ export function createPolicyOcrApp(options = {}) {
   const canCreateAgentConfirmation = agentStore
     && typeof agentStore.createAgentActionConfirmation === 'function'
     && typeof agentStore.transferPolicyBetweenFamilies === 'function';
+  const insuranceExpertEnv = options.env || process.env;
+  const insuranceExpertSkillRegistry = options.insuranceExpertSkillRegistry
+    || createInsuranceExpertSkillRegistry();
+  const insuranceExpertPlanner = options.insuranceExpertPlanner
+    || (insuranceExpertEnv.DEEPSEEK_API_KEY
+      ? createInsuranceExpertAgentPlanner({
+        env: insuranceExpertEnv,
+        fetchImpl: knowledgeFetchImpl,
+        skillRegistry: insuranceExpertSkillRegistry,
+      })
+      : undefined);
   const agentConfirmationService = options.agentConfirmationService || (canCreateAgentConfirmation && agentReportQueue
     ? createAgentConfirmationService({ store: agentStore, loadState: () => agentStore.load(), reportQueue: agentReportQueue })
     : null);
@@ -2822,6 +2863,8 @@ export function createPolicyOcrApp(options = {}) {
       productKnowledge: agentProductKnowledge,
       allowedKnowledgeOrigins: agentProductKnowledge?.allowedOrigins || [],
       allowedKnowledgeOriginsProvider: loadAgentKnowledgeAllowedOrigins,
+      insuranceExpertPlanner,
+      insuranceExpertSkillRegistry,
       authorizedFamilyDataLoader: async ({ familyId, internalUserId }) => {
         if (typeof agentStore.loadAuthorizedFamilyState === 'function') {
           return agentStore.loadAuthorizedFamilyState({ familyId, internalUserId });
@@ -2874,6 +2917,24 @@ export function createPolicyOcrApp(options = {}) {
   const agentLegacyQuestionRouter = options.agentLegacyQuestionRouter || (agentStore && agentHandlers
     ? createAgentQuestionRouter({ store: agentStore, handlers: agentHandlers })
     : null);
+  const agentProductResolver = options.agentProductResolver || (options.db
+    ? {
+      async resolve(input) {
+        return createAgentProductEntityResolver({
+          db: options.db,
+          tenantId: options.agentProductTenantId ?? 'default',
+          officialDomainProfiles: await loadAgentOfficialDomainProfiles(),
+        }).resolve(input);
+      },
+      async resolveAllFromText(input) {
+        return createAgentProductEntityResolver({
+          db: options.db,
+          tenantId: options.agentProductTenantId ?? 'default',
+          officialDomainProfiles: await loadAgentOfficialDomainProfiles(),
+        }).resolveAllFromText(input);
+      },
+    }
+    : null);
   let defaultAgentQuestionRouter = agentLegacyQuestionRouter;
   if (agentSemanticMode === 'enforced' && agentLegacyQuestionRouter) {
     const semanticConversationService = options.agentSemanticConversationService
@@ -2887,24 +2948,6 @@ export function createPolicyOcrApp(options = {}) {
         : null);
     let semanticResolver = options.agentSemanticResolver || null;
     if (!semanticResolver && options.db && agentStore && typeof agentStore.load === 'function') {
-      const productResolver = {
-        async resolve(input) {
-          const current = await agentStore.load();
-          return createAgentProductEntityResolver({
-            db: options.db,
-            tenantId: options.agentProductTenantId ?? 'default',
-            officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
-          }).resolve(input);
-        },
-        async resolveAllFromText(input) {
-          const current = await agentStore.load();
-          return createAgentProductEntityResolver({
-            db: options.db,
-            tenantId: options.agentProductTenantId ?? 'default',
-            officialDomainProfiles: mergeOfficialDomainProfiles(current.officialDomainProfiles || []),
-          }).resolveAllFromText(input);
-        },
-      };
       const familyResolver = createAgentFamilyEntityResolver({
         listAuthorizedFamilies: async ({ internalUserId }) => {
           const current = await agentStore.load();
@@ -2913,7 +2956,7 @@ export function createPolicyOcrApp(options = {}) {
         },
       });
       semanticResolver = createAgentSemanticResolver({
-        productResolver,
+        productResolver: agentProductResolver,
         familyResolver,
         contextTtlMs: DEFAULT_AGENT_RUNTIME_SETTINGS.productContextTtlMinutes * 60_000,
       });
@@ -2949,7 +2992,7 @@ export function createPolicyOcrApp(options = {}) {
       ? createAgentSemanticOffRouter(defaultAgentQuestionRouter)
       : defaultAgentQuestionRouter);
   const configuredConversationRuntime = String(
-    options.agentConversationRuntimeMode || process.env.AGENT_CONVERSATION_RUNTIME || 'hermes',
+    options.agentConversationRuntimeMode || process.env.AGENT_CONVERSATION_RUNTIME || 'agent_loop',
   ).trim().toLowerCase();
   const agentEnv = options.env || process.env;
   const agentToolCapabilityService = options.agentToolCapabilityService || createAgentToolCapabilityService();
@@ -2958,20 +3001,31 @@ export function createPolicyOcrApp(options = {}) {
       ? createAgentDomainToolGateway({
         questionRouter: agentQuestionRouter,
         resolveChannelIdentity: options.resolveDingTalkIdentity,
+        productResolver: agentProductResolver,
       })
       : null
   );
   const hermesAgentHome = String(agentEnv.HERMES_OCR_HOME || '').trim();
-  const hermesConversationClient = Object.prototype.hasOwnProperty.call(options, 'hermesConversationClient')
+  const hasInjectedHermesConversationClient = Object.prototype.hasOwnProperty.call(options, 'hermesConversationClient');
+  const hasInjectedHermesAgentLoopClient = Object.prototype.hasOwnProperty.call(options, 'hermesAgentLoopClient');
+  const semanticCompatibilityMode = configuredConversationRuntime === 'semantic';
+  const hermesConversationClient = hasInjectedHermesConversationClient
     ? options.hermesConversationClient
-    : (configuredConversationRuntime === 'direct'
-      ? null
-      : createHermesConversationClient({
+    : (semanticCompatibilityMode
+      ? createHermesConversationClient({
         env: hermesAgentHome ? { ...agentEnv, HERMES_HOME: hermesAgentHome } : agentEnv,
-      }));
-  const hermesAgentLoopClient = Object.prototype.hasOwnProperty.call(options, 'hermesAgentLoopClient')
+      })
+      : null);
+  const hermesAgentLoopClient = hasInjectedHermesAgentLoopClient
     ? options.hermesAgentLoopClient
-    : null;
+    : (configuredConversationRuntime === 'agent_loop' && hermesAgentHome
+      ? createHermesAgentLoopClient({
+        env: { ...agentEnv, HERMES_HOME: hermesAgentHome },
+      })
+      : null);
+  const effectiveConversationRuntime = configuredConversationRuntime === 'direct' ? 'direct'
+    : hermesAgentLoopClient ? 'agent_loop'
+      : hermesConversationClient ? 'semantic' : 'agent_loop';
   const agentToolGatewayUrl = String(options.agentToolGatewayUrl || agentEnv.OCR_AGENT_TOOL_GATEWAY_URL
     || `http://127.0.0.1:${Number(agentEnv.POLICY_OCR_APP_API_PORT || 4206)}/api/agent/hermes-tools`).trim();
   const agentConversationRuntime = options.agentConversationRuntime || (
@@ -2984,7 +3038,7 @@ export function createPolicyOcrApp(options = {}) {
         toolGatewayUrl: agentToolGatewayUrl,
         hermesClient: hermesConversationClient,
         directInterpreter: options.agentQuestionInterpreter || createDeepSeekAgentQuestionInterpreter({ env: agentEnv }),
-        runtimeMode: configuredConversationRuntime === 'direct' ? 'direct' : 'hermes',
+        runtimeMode: effectiveConversationRuntime,
         reportError: (code) => console.warn(`[agent-conversation-runtime] ${code}`),
       })
       : null

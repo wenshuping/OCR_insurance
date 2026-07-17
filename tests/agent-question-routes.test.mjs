@@ -1552,17 +1552,28 @@ test('default semantic product resolver reloads custom official company aliases'
     async recordAgentSemanticAudit(input) { return input; },
   };
   const legacyKnowledgeCalls = [];
+  let legacySourceUrl = 'https://old.insurance.example/terms';
   const app = createPolicyOcrApp({
     state, db, agentStore: store, recomputeCashflowOnStartup: false,
     agentProductKnowledge: {
       allowedOrigins: ['https://old.insurance.example'],
       async search(input) {
         legacyKnowledgeCalls.push(input);
+        const responsibilityQuestion = input.queryAspects?.includes('main_responsibilities');
+        const summaryRow = db.prepare(`SELECT summary_json, source_urls_json
+          FROM product_customer_responsibility_summaries
+          WHERE company = ? AND product_name = ? AND status = 'ready' LIMIT 1`)
+          .get(input.product?.company, input.product?.officialName);
+        const summary = summaryRow ? JSON.parse(summaryRow.summary_json) : null;
+        const summarySources = summaryRow ? JSON.parse(summaryRow.source_urls_json) : [];
         return {
-          answer: '主要优势是提供长期现金流安排，同时需要注意分红并不保证。',
+          answer: responsibilityQuestion && summary
+            ? summary.headline
+            : '主要优势是提供长期现金流安排，同时需要注意分红并不保证。',
           sources: [{
             verified: true, title: '安心产品官方资料',
-            url: 'https://old.insurance.example/terms', provenance: 'insurer_official',
+            url: responsibilityQuestion ? summarySources[0] : legacySourceUrl,
+            provenance: 'insurer_official',
           }],
         };
       },
@@ -1623,7 +1634,8 @@ test('default semantic product resolver reloads custom official company aliases'
   assert.equal(advantage.response.status, 200);
   assert.match(advantage.payload.interaction.text, /主要优势是提供长期现金流安排/u);
   assert.doesNotMatch(advantage.payload.interaction.text, /自定义责任摘要/u);
-  assert.deepEqual(legacyKnowledgeCalls[0].queryAspects, []);
+  assert.deepEqual(legacyKnowledgeCalls[0].queryAspects, ['main_responsibilities']);
+  assert.deepEqual(legacyKnowledgeCalls[1].queryAspects, []);
 
   state.officialDomainProfiles = [{
     ...state.officialDomainProfiles[0],
@@ -1638,6 +1650,11 @@ test('default semantic product resolver reloads custom official company aliases'
   db.prepare(`UPDATE product_customer_responsibility_summaries
     SET source_urls_json = ? WHERE id = 'summary-custom'`)
     .run(JSON.stringify(['https://old.insurance.example/terms']));
+  legacySourceUrl = 'https://new.insurance.example/terms';
+  const fallback = await request();
+  assert.match(fallback.payload.interaction.text, /当前没有可核验来源/u);
+
+  legacySourceUrl = 'https://old.insurance.example/terms';
   const retired = await request();
   assert.match(retired.payload.interaction.text, /当前没有可核验来源/u);
 });

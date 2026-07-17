@@ -30,7 +30,7 @@ const ENTITY_TYPES = Object.freeze(['product', 'family']);
 const ENTITY_TYPE_SET = new Set(ENTITY_TYPES);
 const ENTITY_STATUSES = new Set(['resolved', 'ambiguous', 'not_found', 'missing', 'unknown']);
 const MATCH_TYPES = new Set([
-  'exact_official_name', 'filing_name', 'approved_alias', 'company_scoped_normalized',
+  'confirmed_candidate', 'exact_official_name', 'filing_name', 'approved_alias', 'company_scoped_normalized',
   'unique_high_confidence', 'exact', 'contextual', 'ambiguous', 'not_found', 'unknown',
 ]);
 const REASONS = new Set([

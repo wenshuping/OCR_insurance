@@ -3,6 +3,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
 import { createAgentProductEntityResolver as createResolverService } from '../server/agent-product-entity-resolver.service.mjs';
+import { createAgentSemanticResolver } from '../server/agent-semantic-resolver.service.mjs';
 import { getDefaultOfficialDomainProfiles } from '../server/c-policy-analysis.service.mjs';
 import { listProductCatalogCompanies, searchProductCatalog } from '../server/product-catalog-search.mjs';
 
@@ -226,7 +227,10 @@ test('revalidates an active product against the current tenant active catalog', 
     addProduct(db, {
       canonicalProductId: 'product-current', company: '新华保险', officialName: '康健无忧两全保险',
     });
-    const resolver = createAgentProductEntityResolver({ db });
+    const resolver = createAgentProductEntityResolver({
+      db,
+      officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES,
+    });
     assert.deepEqual(resolver.resolve({
       activeProduct: {
         canonicalProductId: ' product-current ',
@@ -434,9 +438,11 @@ test('offers an official public knowledge product when the canonical catalog has
   try {
     const officialName = '新华人寿保险股份有限公司康健无忧两全保险';
     addPublicKnowledge(db, '新华保险', officialName);
+    addPublicKnowledge(db, '新华保险', '新华人寿保险股份有限公司康健无忧重大疾病保险');
+    addPublicKnowledge(db, '新华保险', '新华人寿保险股份有限公司康健长佑医疗保险');
     const resolver = createAgentProductEntityResolver({ db });
     const result = resolver.resolve({
-      mentions: [{ type: 'product', rawText: '康健无忧' }],
+      mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
     });
 
     assert.equal(result.status, 'ambiguous');
@@ -452,6 +458,90 @@ test('offers an official public knowledge product when the canonical catalog has
     });
     assert.equal(confirmed.status, 'resolved');
     assert.equal(confirmed.entity.officialName, officialName);
+    assert.equal(confirmed.entity.matchType, 'confirmed_candidate');
+    assert.equal(confirmed.entity.confidence, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('narrows a dominant shorthand public-catalog match to one explicit confirmation choice', () => {
+  const db = makeDb();
+  try {
+    const officialName = '新华人寿保险股份有限公司寰宇尊悦高端医疗保险';
+    addPublicKnowledge(db, '新华保险', officialName);
+    addPublicKnowledge(db, '农银人寿', '农银寰宇至尊高端医疗保险');
+    addPublicKnowledge(db, '民生人寿', '民生尊悦人生定期寿险');
+    addPublicKnowledge(db, '泰康人寿', '泰康尊悦人生年金保险');
+
+    const resolver = createAgentProductEntityResolver({
+      db,
+      officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES,
+    });
+    const result = resolver.resolve({
+      mentions: [{ type: 'product', rawText: '寰宇尊悦' }],
+    });
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].officialName, officialName);
+
+    const confirmed = resolver.resolve({
+      mentions: [{ type: 'product', rawText: result.candidates[0].officialName }],
+      confirmedCandidate: result.candidates[0],
+    });
+    assert.equal(confirmed.status, 'resolved');
+    assert.equal(confirmed.entity.matchType, 'confirmed_candidate');
+    assert.equal(confirmed.entity.confidence, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('a numbered shorthand confirmation crosses the semantic boundary as a resolved product', async () => {
+  const db = makeDb();
+  try {
+    const officialName = '新华人寿保险股份有限公司寰宇尊悦高端医疗保险';
+    addPublicKnowledge(db, '新华保险', officialName);
+    addPublicKnowledge(db, '农银人寿', '农银寰宇至尊高端医疗保险');
+    const productResolver = createAgentProductEntityResolver({
+      db,
+      officialDomainProfiles: OFFICIAL_DOMAIN_PROFILES,
+    });
+    const semanticResolver = createAgentSemanticResolver({
+      productResolver,
+      familyResolver: { resolve: async () => ({ status: 'not_found', entity: null, candidates: [] }) },
+      clock: () => 1_800_000_000_000,
+    });
+    const first = await semanticResolver.resolve({
+      internalUserId: 7,
+      question: '寰宇尊悦',
+      runtime: 'hermes',
+      proposal: {
+        semanticContractVersion: 1,
+        intent: 'insurance_product_knowledge',
+        operation: 'read',
+        queryAspects: ['main_responsibilities'],
+        mentions: [{ type: 'product', rawText: '寰宇尊悦' }],
+        references: [],
+        requestedSteps: ['lookup'],
+        confidence: { intent: 1, mentions: 1, references: 1 },
+      },
+    });
+    assert.equal(first.decision, 'clarify');
+    assert.equal(first.nextTaskState.candidateSets.product.length, 1);
+
+    const selected = await semanticResolver.resolve({
+      internalUserId: 7,
+      question: '1',
+      runtime: 'rule',
+      proposal: null,
+      context: { taskState: first.nextTaskState },
+    });
+    assert.equal(selected.decision, 'execute');
+    assert.equal(selected.resolvedEntities.product.officialName, officialName);
+    assert.equal(selected.resolvedEntities.product.matchType, 'confirmed_candidate');
+    assert.deepEqual(selected.proposal.queryAspects, ['main_responsibilities']);
   } finally {
     db.close();
   }

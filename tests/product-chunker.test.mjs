@@ -154,3 +154,36 @@ test('training deck chunks stay page-local and carry business topics', () => {
   assert.deepEqual(serviceTable.payload.businessTopics, ['health_services']);
   assert.doesNotMatch(serviceTable.contextualPrefix, /切片主题：适用人群/u);
 });
+
+test('every chunk inherits document annotations without mixing notes into evidence content', () => {
+  const chunks = chunkProductDocument({
+    document: {
+      id: 'doc_annotated_1',
+      fileName: '康宁保培训.txt',
+      documentType: 'training_deck',
+      sourceAuthority: 'company_material',
+      payload: {
+        title: '康宁保产品培训',
+        materialType: '产品培训课件',
+        materialUsages: ['销售建议资料', '产品责任指标补充资料'],
+        company: '测试保险公司',
+        productNames: ['康宁保'],
+        versionLabel: '2026版',
+        focusTags: ['产品优势', '流动性'],
+        specialInstructions: '重点核对流动性异议，备注不是条款证据。',
+      },
+    },
+    product: { company: '测试保险公司', productName: '康宁保', versionLabel: '2026版' },
+    pages: [{ pageNo: 1, sourceLabel: '第 1 页', headings: [], rawText: '等待期为90天。', tables: [] }],
+  });
+
+  assert.ok(chunks.length > 0);
+  assert.equal(chunks.every((chunk) => chunk.payload.documentMetadata.title === '康宁保产品培训'), true);
+  assert.deepEqual(chunks[0].payload.documentMetadata.materialUsages, ['销售建议资料', '产品责任指标补充资料']);
+  assert.deepEqual(chunks[0].payload.documentMetadata.focusTags, ['产品优势', '流动性']);
+  assert.equal(chunks[0].payload.documentMetadata.specialInstructions, '重点核对流动性异议，备注不是条款证据。');
+  assert.match(chunks[0].contextualPrefix, /资料标题：康宁保产品培训/u);
+  assert.match(chunks[0].contextualPrefix, /重点关注标签：产品优势、流动性/u);
+  assert.match(chunks[0].contextualPrefix, /资料备注（非原文证据）：重点核对流动性异议/u);
+  assert.equal(chunks.every((chunk) => !chunk.content.includes('重点核对流动性异议')), true);
+});

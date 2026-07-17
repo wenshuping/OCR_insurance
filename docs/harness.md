@@ -174,9 +174,17 @@ Professional agent output must be preserved without lossy model regeneration. Me
 
 ### Context, fallback, and product matching rules
 
+- Every Hermes Agent Loop turn must receive a bounded, server-owned fact block before recent chat history. The block may contain only the current goal, controlled verified entities, pending controlled candidates, and source-separated conflicts; it must not copy model conclusions into verified facts.
+- The fact block is persisted in the existing SQLite conversation payload. Do not create scratch-file memory, a second conversation store, or client-supplied memory. Direct identifiers must be redacted and all fields bounded before entering the model context.
+- Conflicting claims must remain as separate `source + conclusion` entries. A lower-level model or Skill must not silently merge, overwrite, or delete either claim.
+- Recent chat history remains supporting context, not the source of truth for verified entities. Place the fact block before the recent-history payload and keep the current user question at the end of the model input to reduce middle-context loss.
+- Semantic failures must expose a bounded internal recovery contract containing the error code, retryability, and next action. This metadata must not authorize Direct/keyword/domain fallback or commit guessed context.
 - With conversation context, Hermes resolves references and candidate selections first, then routes the resolved request to the responsible domain agent.
 - Without sufficient context, the system may search controlled product knowledge or the web when allowed, present relevant candidates, or ask a focused clarification. It must not guess a product.
 - User-uploaded material is retrieved and fused inside the insurance expert's product-knowledge path. Hermes only carries the user's intent and resolved references.
+- Product retrieval may use the original customer question and a server-grounded standalone question in parallel, but every rewritten query must remain bound to the already resolved canonical product, insurer, version, requested dimension, and comparison role. If that identity binding fails, discard the rewrite instead of searching a different product.
+- Keep retrieval bounded: complete current responsibility summaries use the existing zero-round fast path; other product questions may perform one initial parallel retrieval round and at most one supplemental round based on explicit missing evidence. Do not introduce HyDE, hypothetical answers, or unbounded retrieval loops without a separate reviewed design and evaluation set.
+- Completeness is evidence-oriented, not answer-length-oriented. Check the requested official fact, complete responsibility summary where applicable, approved uploaded material for advantage enrichment, and verified sources. After the supplemental round, answer only from verified evidence and expose unresolved gaps as missing evidence rather than inventing content.
 - A Hermes timeout, unavailable client, invalid session, or provider failure must not reclassify or execute the request. After the bounded Hermes retry is exhausted, return semantic service unavailable without routing to a domain agent or mutating the conversation task.
 - Product comparison requires resolved identities and evidence for every compared product. The insurance expert must produce actual comparison dimensions, differences, advantages, limitations, and applicable scenarios; listing two products separately is not a completed comparison.
 - Fixes must be general domain behavior. Do not hard-code literal product names, aliases, or one-off answers in Hermes, routing, gateway, or UI code. Any unavoidable special handling must come from controlled product metadata or contract semantics and include a regression test.
@@ -192,6 +200,90 @@ Before completing changes to Hermes, semantic routing, conversation context, ins
 5. Test the Hermes unavailable/timeout path and confirm the domain task and resolved entities are preserved.
 6. For insurance responsibilities and product comparisons, verify completeness, meaningful analysis, source citations, card shape, and long-message tail preservation.
 7. Add or update the closest focused regression tests and map new high-risk domain files in `docs/harness-test-map.json` when applicable.
+
+### DingTalk single-path end-to-end acceptance
+
+A service-level replay or a plausible final answer is not sufficient proof that a DingTalk Agent change is complete. For every change that can affect DingTalk semantics, routing, domain-agent execution, retrieval, retry behavior, or response delivery, verify one real turn through the running development stack with a single correlation `traceId`.
+
+The trace must show the complete positive path for the request:
+
+```text
+DingTalk message
+-> Hermes Agent Loop
+-> selected domain agent (`ask_insurance_expert` or `ask_sales_champion`)
+-> model-selected atomic Skill(s)
+-> required evidence retrieval and validation
+-> preserved domain-agent reply
+-> DingTalk delivery
+```
+
+For an insurance plan comparison, the expected Skill path includes `plan_comparison`, its compiled `official_terms_retrieval` dependency, and `evidence_validation`. The evidence result must be `complete` before the answer states definite product facts. A clause range, responsibility count, catalog summary, or first-page product outline is not complete plan-comparison evidence.
+
+### Domain agent Skill registry acceptance
+
+Domain agents must not expose every downloaded local Skill to the model on every turn. Skill registration is a controlled manifest plus a bounded router:
+
+- core Skills have explicit trigger examples, negative examples, required inputs, output contracts, domain ownership, layer, and official-evidence requirements;
+- downloaded local Skills are metadata-loaded but default to supporting or hidden unless a manifest entry promotes them;
+- each turn exposes only the relevant candidate Skills plus mandatory validation dependencies;
+- record-management Skills such as `insurance` must not be offered for product responsibility, plan comparison, exclusions, waiting period, deductible, reimbursement, renewal, or sales-coaching requests;
+- product-fact Skills must include `evidence_validation`, and official fact tasks must also include `official_terms_retrieval`;
+- sales-coaching Skills remain owned by `sales_champion` and must not be mixed into insurance product fact execution.
+- every `insurance_expert` Skill, including specific atomic Skills and generic QA, must receive and preserve the full semantic package: original question, resolved product identity, relevant context, official evidence, responsibility summary/cards, approved uploaded material, and validation result. Its final answer contract is always `official facts + evidence-based professional interpretation + uncertainty boundaries + citations`; it must not degrade a natural-language question into a field lookup.
+- common insurance product questions that do not match a more specific product-fact Skill must route to the insurance expert's generic `insurance_expert_qa` Skill plus evidence retrieval and validation. Examples include `这个产品适合什么人群`, `这个产品有什么亮点`, `这个产品怎么样`, `有什么注意事项`, and similar natural-language follow-ups. They must not be rewritten to `responsibility_detail`, rejected because no narrow Skill exists, or answered by Hermes from general knowledge.
+- if a turn matches no domain-agent ownership and no controlled Skill candidate, return control to Hermes for ordinary conversation. Do not force unknown non-domain requests into insurance or sales Skills.
+
+The same registry rules apply to `sales_champion`:
+
+- sales champion core Skills must have explicit sales-stage and customer-concern prerequisites, positive examples, negative examples, required inputs, output contracts, and safety boundaries;
+- downloaded generic sales, insurance, claims, coverage, analyst, automation, or recommendation Skills must stay supporting or hidden unless the sales champion manifest explicitly promotes them;
+- each sales turn exposes only the relevant sales Skills plus required fact-routing or compliance Skills; it must not receive the full local Skill library;
+- sales Skills may identify that official product facts are required, but they must not invent insurance responsibilities, exclusions, waiting periods, cash value, claims, underwriting, or product comparison facts;
+- when a sales turn needs insurance facts, the route must preserve `sales_champion` ownership for sales reasoning while using `insurance_expert` or fact-sensitive routing for official evidence;
+- explicit refusal or stop-contact signals must block promotional Skills before any sales Skill is selected.
+- sales turns that do not match a specific sales-stage atomic Skill must use the sales champion's generic clarification/consultation Skill instead of downloading arbitrary local Skills or falling back to Hermes for sales advice. If the message is not sales-domain at all, route it back to Hermes ordinary conversation.
+- every `sales_champion` Skill, including specific objection/diagnosis Skills and generic sales clarification, must receive and preserve the full customer semantic package: original question, recent conversation, grounded customer statements, sales stage, customer concerns, missing information, required official fact needs, and any insurance expert evidence. Its final answer contract is always `customer facts + sales-stage/objection interpretation + actionable communication advice/script + insurance-fact verification needs + uncertainty boundaries`; it must not degrade natural customer language into keyword scripts.
+
+Focused regression coverage must include:
+
+- `寰宇尊悦保险责任` -> `responsibility_detail`, `official_terms_retrieval`, `evidence_validation`;
+- `保障计划（计划一/二/三）分别是啥` -> `plan_comparison`, `responsibility_detail`, `official_terms_retrieval`, `evidence_validation`;
+- `帮我记录这张保单，后面提醒续期` -> local `insurance` record manager plus validation only;
+- `这个产品适合什么人群` with a resolved product -> `insurance_expert_qa`, `official_terms_retrieval`, `approved_material_retrieval`, `evidence_validation`;
+- `这个产品有什么亮点` with a resolved product -> `insurance_expert_qa`, `official_terms_retrieval`, `approved_material_retrieval`, `evidence_validation`;
+- `客户觉得收益低怎么说` -> sales champion sales-stage/concern Skills, with fact-sensitive routing when official product facts are needed;
+- a sales-domain question with no specific matching sales capability -> sales champion generic Skill (`general_sales_clarification`) rather than full local Skill exposure;
+- explicit stop-contact or refusal -> no promotional sales Skill;
+- generic downloaded claims/coverage/analyst/sales automation Skills must stay hidden unless explicitly selected by the relevant manifest/router.
+
+The same trace must also prove all forbidden paths had zero invocations:
+
+- the legacy semantic classifier;
+- Direct or keyword-based semantic fallback;
+- product fast paths that bypass the owning domain agent;
+- Hermes-generated or channel-generated insurance/sales conclusions;
+- a domain-agent call after Hermes retry exhaustion.
+
+Do not infer zero invocation merely from the final answer. Use bounded route/tool audit events or trace-scoped logs. Record, at minimum, the running source directory, process identity, `traceId`, selected domain agent, selected Skills, retrieval rounds, evidence completeness, final delivery status, and any retry reason. Before testing, verify the development processes were started from the current worktree; after a relevant server or runtime change, restart the development stack so an old process cannot satisfy the check.
+
+Run the affected conversation through this minimum scenario matrix:
+
+1. Cold start: send a context-free domain question after starting the development stack.
+2. Context follow-up: establish a verified product, then ask with an omitted subject, pronoun, short alias, or numeric candidate selection.
+3. Bounded failure: force or simulate the first Hermes attempt timing out or failing, verify only Hermes retries, and confirm no legacy or Direct fallback runs.
+4. Restart persistence: restart the development stack and repeat the contextual flow to verify controlled conversation state and current-source process ownership.
+5. Repeatability: run the target flow more than once so a nondeterministic model plan cannot hide a missing Skill dependency.
+
+For the regression case `寰宇尊悦` followed by `保障计划（计划一/二/三）分别是啥`, completion requires all of the following without product-specific routing code:
+
+- the follow-up reuses the verified product from server-owned conversation context;
+- `insurance_expert` owns interpretation and execution;
+- the Skill dependency compiler includes full official-terms retrieval and evidence validation;
+- the answer names the shared responsibilities and the concrete responsibility and deductible differences among the three plans;
+- the answer does not stop at `第2款至第10款`-style clause ranges or responsibility counts;
+- source citations identify the official material used for the stated differences.
+
+Completion evidence in the handoff must state which scenario was exercised, the observed trace path, the forbidden-path invocation counts, the focused/full test result, and whether DingTalk delivery itself was observed. If the real DingTalk turn was not executed, say so explicitly; do not describe an internal service replay as end-to-end verification.
 
 The regression set must include these conversational behaviors when the affected path is changed:
 

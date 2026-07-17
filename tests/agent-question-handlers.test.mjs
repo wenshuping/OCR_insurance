@@ -230,6 +230,82 @@ test('product knowledge requires public sources for definite facts', async () =>
   assert.doesNotMatch(JSON.stringify(uncertain), /等待测试覆盖/);
 });
 
+test('product knowledge preserves bounded evidence validation for the insurance expert loop', async () => {
+  const { handlers } = harness({}, { productKnowledge: { async search() {
+    return {
+      answer: '现有资料只列出责任编号。',
+      sources: [{
+        title: '官方条款', url: 'https://example.test/terms', provenance: 'official', verified: true,
+      }],
+      retrieval: {
+        mode: 'bounded_agentic_retrieval',
+        rounds: 1,
+        queryCount: 0,
+        completeness: 'incomplete',
+        missingEvidence: ['complete_responsibility_summary'],
+      },
+    };
+  } } });
+
+  const result = await handlers.execute('insurance_product_knowledge', {
+    question: '三个计划分别是什么', productName: '测试医疗保险', internalUserId: 9,
+  });
+
+  assert.deepEqual(result.retrieval, {
+    mode: 'bounded_agentic_retrieval',
+    rounds: 1,
+    queryCount: 0,
+    completeness: 'incomplete',
+    missingEvidence: ['complete_responsibility_summary'],
+  });
+});
+
+test('insurance expert retries the real product handler after cross-layer evidence validation fails', async () => {
+  const rounds = [];
+  const { handlers } = harness({}, {
+    insuranceExpertPlanner: { async plan() {
+      return {
+        skills: ['plan_comparison', 'official_terms_retrieval', 'evidence_validation'],
+        queryAspects: [],
+        evidenceGoals: ['取得各计划完整责任名称'],
+        maxRetrievalRounds: 1,
+      };
+    } },
+    productKnowledge: { async search(input) {
+      const round = Number(input.expertPlan?.maxRetrievalRounds || 0);
+      rounds.push(round);
+      const complete = round === 2;
+      return {
+        answer: complete ? '计划一比计划二多牙科医疗责任。' : '计划一承担第2款至第10款。',
+        sources: [{
+          title: '官方条款', url: 'https://example.test/terms', provenance: 'official', verified: true,
+        }],
+        retrieval: {
+          mode: 'bounded_agentic_retrieval',
+          rounds: round,
+          queryCount: 0,
+          completeness: complete ? 'complete' : 'incomplete',
+          missingEvidence: complete ? [] : ['complete_responsibility_summary'],
+        },
+      };
+    } },
+  });
+
+  const result = await handlers.registry.insurance_expert({
+    internalUserId: 9,
+    intent: 'insurance_product_knowledge',
+    tool: 'product_knowledge_search',
+    question: '三个计划分别是什么',
+    resolvedProduct: {
+      canonicalProductId: 'product_test', company: '新华保险', officialName: '测试医疗保险',
+    },
+  });
+
+  assert.deepEqual(rounds, [1, 2]);
+  assert.match(result.interaction.text, /牙科医疗责任/u);
+  assert.equal(result.retrieval.completeness, 'complete');
+});
+
 test('product knowledge explains what evidence is missing instead of ending with an empty refusal', async () => {
   const { handlers } = harness({}, { productKnowledge: { async search() { return {
     guidance: true,

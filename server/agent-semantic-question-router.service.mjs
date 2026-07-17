@@ -268,7 +268,11 @@ function normalizedResolution(value, {
   if (expectedProposal && !expiredSelection
     && JSON.stringify(proposal) !== JSON.stringify(expectedProposal)) return null;
   const candidate = value.decision === 'execute'
-    ? projectExecuteCandidate(value.candidate, proposal, inputQuestion)
+    ? projectExecuteCandidate(
+      value.candidate,
+      proposal,
+      pendingSelection ? proposalQuestion : inputQuestion,
+    )
     : null;
   if (value.decision === 'execute' && !candidate) return null;
   const nextTaskState = projectTaskState(value.nextTaskState);

@@ -277,9 +277,34 @@ test('explicit product mention takes priority over active context', async () => 
   assert.deepEqual(productCalls[0].mentions, [{ type: 'product', rawText: '新华康健无忧两全保险' }]);
 });
 
+test('a verified active product re-confirms its conversational alias without another clarification', async () => {
+  const { resolver, productCalls } = harness({
+    productResult: ({ confirmedCandidate }) => confirmedCandidate
+      ? { status: 'resolved', entity: PRODUCT, candidates: [] }
+      : { status: 'ambiguous', entity: null, candidates: [PRODUCT] },
+  });
+  const active = activeProduct({ aliases: ['寰宇尊悦'] });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '寰宇尊悦 它有什么优势',
+    runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['product_advantages'],
+      mentions: [{ type: 'product', rawText: '寰宇尊悦' }],
+    }),
+    context: { taskState: {
+      activeIntent: 'insurance_product_knowledge',
+      activeEntities: { product: active },
+    } },
+  });
+
+  assert.equal(result.decision, 'execute', JSON.stringify(result));
+  assert.equal(productCalls[0].confirmedCandidate.officialName, PRODUCT.officialName);
+});
+
 test('passes formal and short product mentions to the product resolver unchanged', async () => {
   for (const productName of [PRODUCT.officialName, '康健无忧两全保险']) {
-    const { resolver, productCalls } = harness({
+    const { resolver, productCalls, productScanCalls } = harness({
       productResult: canonicalProductResult, productScanResult: canonicalScanResult,
     });
     const question = `${productName}主要保什么`;
@@ -292,6 +317,94 @@ test('passes formal and short product mentions to the product resolver unchanged
     assert.equal(productCalls[0].mentions[0].rawText, productName);
     assert.equal(result.candidate.entities.productName, PRODUCT.officialName);
   }
+});
+
+test('internal plan labels remain aspects of one product instead of becoming product comparison entities', async () => {
+  const productCalls = [];
+  const { resolver, productScanCalls } = harness({
+    productScanResult: { entities: [], overflow: false },
+    productResult: (input) => {
+      productCalls.push(input);
+      if (input.confirmedCandidate) {
+        return { status: 'resolved', entity: PRODUCT, candidates: [] };
+      }
+      return { status: 'ambiguous', entity: null, candidates: [PRODUCT] };
+    },
+  });
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question: '康健无忧计划一、计划二、计划三分别是什么',
+    runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison'],
+      mentions: [
+        { type: 'product', rawText: '康健无忧' },
+        { type: 'product', rawText: '计划一' },
+        { type: 'product', rawText: '计划二' },
+        { type: 'product', rawText: '计划三' },
+      ],
+    }),
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.decisionReason, 'entity_ambiguous');
+  assert.equal(productCalls.length, 1);
+  assert.equal(productScanCalls.length, 0);
+  assert.deepEqual(productCalls[0].mentions, [{ type: 'product', rawText: '康健无忧' }]);
+  assert.equal(result.nextTaskState.candidateSets.product.length, 1);
+
+  const confirmed = await resolver.resolve({
+    internalUserId: 7,
+    question: '1',
+    runtime: 'rule',
+    fallbackReason: 'candidate_selection',
+    proposal: null,
+    context: { taskState: result.nextTaskState },
+  });
+  assert.equal(confirmed.decision, 'execute');
+  assert.equal(confirmed.candidate.question, '康健无忧计划一、计划二、计划三分别是什么');
+  assert.deepEqual(confirmed.proposal.queryAspects, ['main_responsibilities']);
+});
+
+test('internal plan follow-up reuses the active product even when Hermes labels it as comparison', async () => {
+  const currentProduct = activeProduct({
+    canonicalProductId: 'product-hyzy',
+    officialName: '新华人寿保险股份有限公司寰宇尊悦高端医疗保险',
+    aliases: ['寰宇尊悦'],
+  });
+  const { resolver, productCalls, productScanCalls } = harness({
+    productScanResult: { entities: [], overflow: false },
+    productResult: ({ activeProduct: product }) => (
+      product
+        ? { status: 'resolved', entity: currentProduct, candidates: [] }
+        : { status: 'not_found', entity: null, candidates: [] }
+    ),
+  });
+  const question = '保障计划（计划一/二/三）分别是啥';
+  const result = await resolver.resolve({
+    internalUserId: 7,
+    question,
+    runtime: 'hermes',
+    proposal: proposal({
+      queryAspects: ['comparison', 'main_responsibilities'],
+      mentions: [
+        { type: 'product', rawText: '保障计划' },
+      ],
+    }),
+    context: {
+      taskState: {
+        activeIntent: 'insurance_product_knowledge',
+        activeEntities: { product: currentProduct },
+      },
+    },
+  });
+
+  assert.equal(result.decision, 'execute', JSON.stringify(result));
+  assert.equal(result.candidate.entities.productName, currentProduct.officialName);
+  assert.deepEqual(result.proposal.queryAspects, ['main_responsibilities']);
+  assert.equal(productCalls.length, 1);
+  assert.equal(productCalls[0].activeProduct.officialName, currentProduct.officialName);
+  assert.equal(productScanCalls.length, 0);
 });
 
 test('product comparison resolves exactly two distinct canonical products', async () => {
@@ -767,7 +880,7 @@ test('catalog scan ignores ordinary single-product questions and fails closed on
     internalUserId: 7,
     question: '康健无忧产品',
     runtime: 'hermes',
-    proposal: proposal({ mentions: [{ type: 'product', rawText: '康健无忧' }] }),
+    proposal: proposal(),
   });
   assert.equal(result.decision, 'clarify');
   assert.equal(result.decisionReason, 'product_comparison_unsupported');
@@ -959,7 +1072,6 @@ test('ambiguous product selection revalidates formal identity and ignores stored
     productResult: ({ mentions, activeProduct: selectedActive, confirmedCandidate }) => {
       assert.equal(selectedActive, null);
       assert.deepEqual(mentions, [
-        { type: 'insurer', rawText: PRODUCT.company },
         { type: 'product', rawText: '第二款保险' },
       ]);
       assert.equal(confirmedCandidate.officialName, '第二款保险');
@@ -978,7 +1090,7 @@ test('ambiguous product selection revalidates formal identity and ignores stored
     context: { taskState: clarified.nextTaskState },
   });
   assert.equal(selected.decision, 'execute');
-  assert.equal(selected.candidate.question, '选择2');
+  assert.equal(selected.candidate.question, originalQuestion);
   assert.equal(selected.candidate.entities.productCanonicalId, 'catalog-canonical-id');
   assert.equal(JSON.stringify(selected).includes('attacker-controlled-id'), false);
   assert.equal(selected.nextTaskState.pendingClarification, null);
@@ -1032,7 +1144,7 @@ test('Chinese ordinal product selection is consumed only by a live pending clari
     internalUserId: 7, question: '选择第二款', runtime: 'rule', context,
   });
   assert.equal(selected.decision, 'execute');
-  assert.equal(productCalls[0].mentions[1].rawText, '第二款保险');
+  assert.equal(productCalls[0].mentions[0].rawText, '第二款保险');
 
   const unbound = await resolver.resolve({
     internalUserId: 7, question: '第二款', runtime: 'rule', context: {},

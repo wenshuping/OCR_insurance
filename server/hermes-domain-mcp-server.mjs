@@ -64,13 +64,17 @@ function gatewayConfig(env) {
 export async function executeHermesDomainTool(toolName, value, {
   env = process.env,
   fetchImpl = globalThis.fetch,
-  timeoutMs = 30_000,
+  timeoutMs,
 } = {}) {
   const input = validateHermesDomainToolInput(toolName, value);
   const { url, capability } = gatewayConfig(env);
   if (typeof fetchImpl !== 'function') throw stableError('OCR_AGENT_TOOL_GATEWAY_FAILED');
+  const configuredTimeoutMs = Math.max(
+    1_000,
+    Math.min(120_000, Number(timeoutMs ?? env?.OCR_AGENT_TOOL_TIMEOUT_MS) || 60_000),
+  );
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutId = setTimeout(() => controller.abort(), configuredTimeoutMs);
   timeoutId.unref?.();
   try {
     const response = await fetchImpl(url, {

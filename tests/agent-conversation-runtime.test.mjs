@@ -12,7 +12,7 @@ function createMemoryContext() {
     async loadContext(input) {
       return structuredClone(rows.get(key(input)) || {
         conversationId: `ref-${key(input)}`, version: 1, hermesSessionId: '', agentLoopSessionId: '', history: [],
-        product: null, productCandidates: null, question: null,
+        product: null, productCandidates: null, question: null, factBlock: null,
       });
     },
     async commitContext(input) {
@@ -25,6 +25,7 @@ function createMemoryContext() {
         product: input.product,
         productCandidates: input.productCandidates,
         question: input.question,
+        factBlock: input.factBlock,
       };
       rows.set(key(input), structuredClone(row));
       return row;
@@ -59,7 +60,15 @@ test('Hermes CLI client uses strict JSON, resumes the same session, and redacts 
   });
   const first = await client.runTurn({
     question: '他和医药安欣对比呢，手机号13800138000',
-    safeRecentContext: { history: [{ role: 'user', content: '身份证110101199001011234' }] },
+    safeRecentContext: {
+      history: [{ role: 'user', content: '身份证110101199001011234' }],
+      factBlock: {
+        goal: { question: '上一轮产品查询', status: 'completed', owner: 'insurance_expert' },
+        verifiedEntities: {
+          product: { officialName: '荣耀鑫享终身寿险', source: 'domain_agent' },
+        },
+      },
+    },
   });
   assert.equal(first.sessionId, 'hermes-session-a');
   assert.equal(first.candidate.requestedOperation, 'read');
@@ -68,6 +77,8 @@ test('Hermes CLI client uses strict JSON, resumes the same session, and redacts 
   const prompt = calls[0].args[calls[0].args.indexOf('-q') + 1];
   assert.doesNotMatch(prompt, /13800138000|110101199001011234/u);
   assert.match(prompt, /手机号已脱敏|身份证号已脱敏/u);
+  assert.match(prompt, /VERIFIED_FACT_BLOCK=.*荣耀鑫享终身寿险/u);
+  assert.ok(prompt.indexOf('VERIFIED_FACT_BLOCK=') < prompt.indexOf('SAFE_RECENT_CONTEXT='));
   assert.match(prompt, /保险专业问题.*insurance_product_knowledge.*不得归入 chat/u);
   assert.match(prompt, /销售专业问题.*sales_coaching.*不得归入 chat/u);
   assert.match(prompt, /chat 只用于不需要保险知识或销售判断/u);
@@ -360,6 +371,11 @@ test('Agent Loop receives the previous verified product as structured active con
   assert.deepEqual(agentLoopCalls[0].safeRecentContext.activeEntities, {
     product: { officialName: '新华人寿保险股份有限公司荣耀鑫享终身寿险' },
   });
+  assert.equal(agentLoopCalls[0].safeRecentContext.factBlock.goal.question, '和 荣耀鑫享赢家版对比呢');
+  assert.equal(
+    agentLoopCalls[0].safeRecentContext.factBlock.verifiedEntities.product.officialName,
+    '新华人寿保险股份有限公司荣耀鑫享终身寿险',
+  );
 });
 
 test('explicit Direct mode binds an omitted product role from verified conversation context', async () => {
@@ -453,6 +469,10 @@ test('Hermes provider failure returns unavailable without Direct fallback or rou
   assert.equal(result.decision, 'deny');
   assert.equal(result.interaction.text, '语义服务暂不可用，请稍后重试。');
   assert.equal(context.rows.has('default:dingtalk:ding-a:7:retry-conversation'), false);
+  assert.deepEqual(result.recovery, {
+    status: 'failed', errorCode: 'HERMES_PROVIDER_FAILED', retryable: true,
+    nextAction: 'retry_same_request',
+  });
 });
 
 test('invalid Hermes output returns unavailable without calling another model', async () => {
@@ -630,7 +650,7 @@ test('Agent Loop zero-tool insurance output returns unavailable without Direct f
   assert.equal(context.rows.size, 0);
 });
 
-test('Agent Loop zero-tool chat returns unavailable without Direct fallback', async () => {
+test('Agent Loop permits a zero-tool ordinary greeting without Direct fallback', async () => {
   const context = createMemoryContext();
   const routed = [];
   const runtime = createAgentConversationRuntime({
@@ -655,10 +675,116 @@ test('Agent Loop zero-tool chat returns unavailable without Direct fallback', as
     toolCapability: 'opaque-capability',
   });
 
-  assert.equal(result.interaction.text, '语义服务暂不可用，请稍后重试。');
+  assert.equal(result.interaction.text, '你好，有什么可以帮你？');
   assert.equal(result.runtime, 'hermes');
   assert.equal(routed.length, 0);
-  assert.equal(context.rows.size, 0);
+  assert.equal(context.rows.size, 1);
+});
+
+test('Agent Loop drops stale active product context when a new product clue is answered without a tool', async () => {
+  const context = createMemoryContext();
+  context.rows.set('default:dingtalk:ding-a:7:stale-product', {
+    conversationId: 'stale-product-ref', version: 1, hermesSessionId: '', agentLoopSessionId: 'old-session', history: [],
+    product: { productName: '平安福满分两全保险', updatedAt: 1_720_000_000_000 },
+    productCandidates: null, question: null,
+    factBlock: {
+      version: 1,
+      goal: { question: '上一轮查询', status: 'completed', owner: 'insurance_expert' },
+      verifiedEntities: {
+        product: { officialName: '平安福满分两全保险', source: 'domain_agent', verifiedAt: 1_720_000_000_000 },
+      },
+      conflicts: [],
+    },
+  });
+  const calls = [];
+  const authoritative = {
+    status: 'needs_clarification', decision: 'clarify',
+    interaction: {
+      type: 'clarification', text: '找到多个可能的正式产品，请选择一项。',
+      candidates: [{ ref: 'product_1', label: '中国平安《平安福满分两全保险》' }],
+    },
+  };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { async runTurn(input) {
+      calls.push(input);
+      return calls.length === 1
+        ? { sessionId: 'stale-answer-session', finalReply: '关于平安福满分两全保险，你想了解哪方面？' }
+        : { sessionId: 'fresh-answer-session', finalReply: '请选择正式产品。' };
+    } },
+    toolCapabilityService: { inspect() {
+      return calls.length > 1
+        ? { callCount: 1, toolResults: [{ tool: 'ask_insurance_expert', result: authoritative }] }
+        : { callCount: 0, toolResults: [] };
+    } },
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'stale-product', 'stale-product-1', '平安福'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].sessionId, 'old-session');
+  assert.equal(calls[0].safeRecentContext.activeEntities.product.officialName, '平安福满分两全保险');
+  assert.equal(calls[1].sessionId, '');
+  assert.deepEqual(calls[1].safeRecentContext.activeEntities, {
+    previousProduct: { officialName: '平安福满分两全保险' },
+  });
+  assert.deepEqual(calls[1].safeRecentContext.factBlock.verifiedEntities, {});
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.interaction.text, authoritative.interaction.text);
+});
+
+test('Agent Loop keeps the previous product as a comparison role when the user names a new product', async () => {
+  const context = createMemoryContext();
+  context.rows.set('default:dingtalk:ding-a:7:compare-previous-product', {
+    conversationId: 'compare-previous-product-ref', version: 1, hermesSessionId: '', agentLoopSessionId: 'old-session', history: [],
+    product: { productName: '平安福满分两全保险', updatedAt: 1_720_000_000_000 },
+    productCandidates: null, question: null,
+    factBlock: {
+      version: 1,
+      goal: { question: '上一轮查询', status: 'completed', owner: 'insurance_expert' },
+      verifiedEntities: {
+        product: { officialName: '平安福满分两全保险', source: 'domain_agent', verifiedAt: 1_720_000_000_000 },
+      },
+      conflicts: [],
+    },
+  });
+  const calls = [];
+  const authoritative = {
+    status: 'ok', decision: 'execute',
+    interaction: { type: 'answer', text: '已完成平安福与上一款产品的对比。', delivery: 'verbatim' },
+  };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { async runTurn(input) {
+      calls.push(input);
+      return calls.length === 1
+        ? { sessionId: 'stale-answer-session', finalReply: '继续介绍平安福满分两全保险。' }
+        : { sessionId: 'fresh-answer-session', finalReply: authoritative.interaction.text };
+    } },
+    toolCapabilityService: { inspect() {
+      return calls.length > 1
+        ? { callCount: 1, toolResults: [{ tool: 'ask_insurance_expert', result: authoritative }] }
+        : { callCount: 0, toolResults: [] };
+    } },
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'compare-previous-product', 'compare-previous-product-1', '平安福和以前那个产品对比'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].sessionId, '');
+  assert.deepEqual(calls[1].safeRecentContext.activeEntities, {
+    previousProduct: { officialName: '平安福满分两全保险' },
+  });
+  assert.deepEqual(calls[1].safeRecentContext.factBlock.verifiedEntities, {});
+  assert.equal(result.interaction.text, authoritative.interaction.text);
 });
 
 test('Hermes Agent Loop preserves a complete authoritative product answer instead of its lossy rewrite', async () => {
@@ -772,11 +898,11 @@ test('pasting an exact displayed candidate confirms it without a new search', as
   assert.equal(routed.length, 1);
   assert.equal(routed[0].candidate.entities.productName, product);
   assert.equal(routed[0].candidate.entities.productCompany, '新华保险');
-  assert.equal(routed[0].candidate.question, '新华的荣耀鑫享产品责任');
+  assert.equal(routed[0].candidate.question, `${product}产品责任`);
   assert.equal(context.rows.get('default:dingtalk:ding-a:7:exact-candidate').productCandidates, null);
 });
 
-test('selecting a numbered product candidate keeps its company and original question', async () => {
+test('selecting a numbered product candidate keeps its company and original question aspect', async () => {
   const context = createMemoryContext();
   const runtime = createAgentConversationRuntime({
     conversationContext: context,
@@ -794,10 +920,19 @@ test('selecting a numbered product candidate keeps its company and original ques
           ],
         } };
       }
-      assert.equal(input.candidate.question, '尊享人生保险责任');
+      assert.equal(input.candidate.question, '尊享人生年金保险（分红型）保险责任');
       assert.deepEqual(input.candidate.entities, {
         productName: '尊享人生年金保险（分红型）',
         productCompany: '新华保险',
+        productCanonicalId: 'product_dbc543be71a333f6',
+      });
+      assert.deepEqual(input.semanticContext, {
+        resolvedEntities: { product: {
+          canonicalProductId: 'product_dbc543be71a333f6',
+          company: '新华保险',
+          officialName: '尊享人生年金保险（分红型）',
+        } },
+        queryAspects: [],
       });
       return { decision: 'execute', interaction: { type: 'answer', text: '已查询新华保险正式产品。' } };
     } },
@@ -810,6 +945,162 @@ test('selecting a numbered product candidate keeps its company and original ques
   const stored = context.rows.get('default:dingtalk:ding-a:7:numbered-candidate');
   assert.equal(stored.productCandidates, null);
   assert.equal(stored.question.candidate.entities.productCompany, '新华保险');
+});
+
+test('selecting a numbered product candidate with only a product clue routes the selected exact product', async () => {
+  const context = createMemoryContext();
+  const productName = '平安福满分两全保险';
+  const routed = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    runtimeMode: 'direct',
+    directInterpreter: async ({ question }) => ({
+      intent: 'insurance_product_knowledge', question, confidence: 1, requestedOperation: 'read',
+      entities: { productName: '平安福' },
+    }),
+    questionRouter: { async route(input) {
+      routed.push(input);
+      if (routed.length === 1) {
+        return { decision: 'clarify', interaction: {
+          type: 'clarification', text: '请选择产品', candidates: [
+            { label: '中国平安《平安福惠盈年金保险》' },
+            { label: '中国平安《平安福加分两全保险》' },
+            { label: `中国平安《${productName}》` },
+          ],
+        } };
+      }
+      return { decision: 'execute', interaction: { type: 'answer', text: `中国平安《${productName}》：已查询。` } };
+    } },
+  });
+
+  await runtime.processMessage(envelope('ding-a', 'pingan-choice', 'choice-1', '平安福'));
+  const result = await runtime.processMessage(envelope('ding-a', 'pingan-choice', 'choice-2', '3'));
+
+  assert.equal(result.interaction.text, `中国平安《${productName}》：已查询。`);
+  assert.equal(routed[1].candidate.question, productName);
+  assert.equal(routed[1].candidate.entities.productName, productName);
+  assert.equal(context.rows.get('default:dingtalk:ding-a:7:pingan-choice').productCandidates, null);
+});
+
+test('Hermes candidate selection returns to the semantic router so the original query aspects survive', async () => {
+  const context = createMemoryContext();
+  const proposal = {
+    semanticContractVersion: 1,
+    intent: 'insurance_product_knowledge',
+    operation: 'read',
+    queryAspects: ['main_responsibilities'],
+    mentions: [{ type: 'product', rawText: '寰宇尊悦高端医疗保险' }],
+    references: [],
+    requestedSteps: ['lookup'],
+    confidence: { intent: 1, mentions: 1, references: 1 },
+  };
+  let hermesCalls = 0;
+  const routed = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    hermesClient: { async runTurn() {
+      hermesCalls += 1;
+      return { sessionId: 'semantic-session', proposal };
+    } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      if (input.proposal) {
+        return { decision: 'clarify', interaction: {
+          type: 'clarification', text: '请选择产品', candidates: [
+            { label: '新华保险《新华人寿保险股份有限公司寰宇尊悦高端医疗保险》' },
+          ],
+        } };
+      }
+      return { decision: 'execute', interaction: { type: 'answer', text: '已按原问题查询主要保险责任。' } };
+    } },
+  });
+
+  await runtime.processMessage(envelope('ding-a', 'semantic-selection', 'candidate-1', '寰宇尊悦高端医疗保险'));
+  const result = await runtime.processMessage(envelope('ding-a', 'semantic-selection', 'candidate-2', '1'));
+
+  assert.equal(hermesCalls, 1);
+  assert.equal(routed.length, 2);
+  assert.equal(routed[1].question, undefined);
+  assert.equal(routed[1].runtime, undefined);
+  assert.equal(routed[1].candidate.question, '新华人寿保险股份有限公司寰宇尊悦高端医疗保险');
+  assert.equal(routed[1].candidate.entities.productName, '新华人寿保险股份有限公司寰宇尊悦高端医疗保险');
+  assert.equal(routed[1].semanticContext.resolvedEntities.product.officialName, '新华人寿保险股份有限公司寰宇尊悦高端医疗保险');
+  assert.equal(routed[1].proposal, undefined);
+  assert.equal(result.interaction.text, '已按原问题查询主要保险责任。');
+});
+
+test('Agent Loop sends a numeric reply to the pending semantic clarification without another model call', async () => {
+  const context = createMemoryContext();
+  let agentCalls = 0;
+  const routed = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    runtimeMode: 'agent_loop',
+    agentLoopClient: { async runTurn() { agentCalls += 1; throw new Error('must not run'); } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '已确认产品。' } };
+    } },
+  });
+
+  const result = await runtime.processMessage(envelope('ding-a', 'pending-semantic', 'pending-1', '1'));
+
+  assert.equal(result.interaction.text, '已确认产品。');
+  assert.equal(agentCalls, 0);
+  assert.equal(routed[0].question, '1');
+  assert.equal(routed[0].runtime, 'hermes');
+});
+
+test('Agent Loop confirms its own product candidate without returning to semantic classification', async () => {
+  const context = createMemoryContext();
+  context.rows.set('default:dingtalk:ding-a:7:loop-candidate', {
+    conversationId: 'loop-candidate-ref', version: 1, hermesSessionId: '', agentLoopSessionId: '', history: [],
+    product: null,
+    productCandidates: {
+      products: ['新华保险《新华人寿保险股份有限公司寰宇尊悦高端医疗保险》'],
+      question: '保障计划（计划一/二/三）分别是啥',
+      updatedAt: 1_720_000_000_000,
+    },
+    question: null,
+  });
+  let agentCalls = 0;
+  const routed = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    runtimeMode: 'agent_loop',
+    agentLoopClient: { async runTurn() { agentCalls += 1; throw new Error('must not run'); } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '已按原问题查询三个计划。' } };
+    } },
+  });
+
+  const result = await runtime.processMessage(envelope(
+    'ding-a', 'loop-candidate', 'loop-candidate-2', '1',
+  ));
+
+  assert.equal(agentCalls, 0);
+  assert.equal(result.interaction.text, '已按原问题查询三个计划。');
+  assert.equal(routed[0].proposal, undefined);
+  assert.deepEqual(routed[0].candidate, {
+    intent: 'insurance_product_knowledge',
+    question: '新华人寿保险股份有限公司寰宇尊悦高端医疗保险 保障计划（计划一/二/三）分别是啥',
+    confidence: 1,
+    requestedOperation: 'read',
+    entities: {
+      productName: '新华人寿保险股份有限公司寰宇尊悦高端医疗保险',
+      productCompany: '新华保险',
+      productCanonicalId: 'product_dd8978c9d942398a',
+    },
+  });
+  assert.deepEqual(routed[0].semanticContext, {
+    resolvedEntities: { product: {
+      canonicalProductId: 'product_dd8978c9d942398a',
+      company: '新华保险',
+      officialName: '新华人寿保险股份有限公司寰宇尊悦高端医疗保险',
+    } },
+    queryAspects: [],
+  });
 });
 
 test('an imperative comparison does not fall back when Hermes is unavailable', async () => {
@@ -902,7 +1193,7 @@ test('Agent Loop failure after a tool call does not rerun the request through Di
   assert.equal(context.rows.size, 0);
 });
 
-test('Agent Loop final generation failure does not return a tool-result fallback', async () => {
+test('Agent Loop final generation failure returns the successful authoritative tool result', async () => {
   const context = createMemoryContext();
   const authoritative = '荣耀鑫享终身寿险包含身故或身体全残保险金。';
   let directCalls = 0;
@@ -929,10 +1220,93 @@ test('Agent Loop final generation failure does not return a tool-result fallback
     toolCapability: 'opaque-capability',
   });
 
-  assert.equal(result.decision, 'deny');
-  assert.equal(result.interaction.text, '语义服务暂不可用，请稍后重试。');
+  assert.equal(result.decision, 'execute');
+  assert.equal(result.interaction.text, authoritative);
   assert.equal(directCalls, 0);
-  assert.equal(context.rows.size, 0);
+  assert.equal(context.rows.size, 1);
+});
+
+test('Agent Loop returns an authoritative tool result without waiting for final model generation', async () => {
+  const context = createMemoryContext();
+  let aborted = false;
+  const authoritative = '请回复 1 确认正式产品。';
+  const claims = { callCount: 1, toolResults: [{
+    tool: 'ask_insurance_expert',
+    result: {
+      status: 'needs_clarification', decision: 'clarify',
+      interaction: {
+        type: 'clarification', text: authoritative,
+        candidates: [{ ref: 'product-1', label: '新华保险《寰宇尊悦高端医疗保险》' }],
+      },
+    },
+  }] };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { runTurn({ signal }) {
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+        aborted = true;
+        reject(Object.assign(new Error('aborted'), { code: 'HERMES_ABORTED' }));
+      }, { once: true }));
+    } },
+    toolCapabilityService: {
+      inspect() { return claims; },
+      async waitForResult() { return claims; },
+    },
+    toolGatewayUrl: 'http://127.0.0.1:4207/api/agent/hermes-tools',
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'agent-loop-early-tool', 'loop-early-1', '查询产品'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.equal(result.interaction.text, authoritative);
+  assert.deepEqual(result.interaction.candidates, [
+    { ref: 'product-1', label: '新华保险《寰宇尊悦高端医疗保险》' },
+  ]);
+  assert.equal(aborted, true);
+  assert.equal(context.rows.size, 1);
+  assert.deepEqual([...context.rows.values()][0].productCandidates.products, [{
+    ref: 'product-1',
+    label: '新华保险《寰宇尊悦高端医疗保险》',
+    company: '新华保险',
+    officialName: '寰宇尊悦高端医疗保险',
+    canonicalProductId: 'product_10460b52297874bb',
+  }]);
+});
+
+test('Agent Loop retries one provider failure with a fresh session and never calls Direct', async () => {
+  const context = createMemoryContext();
+  context.rows.set('default:dingtalk:ding-a:7:loop-retry', {
+    conversationId: 'loop-retry-ref', version: 1, hermesSessionId: '', agentLoopSessionId: 'stale-loop', history: [],
+    product: null, productCandidates: null, question: null,
+  });
+  const calls = [];
+  let directCalls = 0;
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    runtimeMode: 'agent_loop',
+    agentLoopClient: { async runTurn(input) {
+      calls.push(input);
+      if (calls.length === 1) throw Object.assign(new Error('offline'), { code: 'HERMES_PROVIDER_FAILED' });
+      return { sessionId: 'fresh-loop', finalReply: '你好。' };
+    } },
+    toolCapabilityService: { inspect() { return { callCount: 0, toolResults: [] }; } },
+    directInterpreter: async () => { directCalls += 1; },
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'loop-retry', 'loop-retry-1', '你好'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.equal(result.interaction.text, '你好。');
+  assert.deepEqual(calls.map((call) => call.sessionId), ['stale-loop', '']);
+  assert.equal(directCalls, 0);
+  assert.equal(context.rows.get('default:dingtalk:ding-a:7:loop-retry').agentLoopSessionId, 'fresh-loop');
 });
 
 test('Agent Loop startup failure before tool execution returns unavailable without Direct fallback', async () => {

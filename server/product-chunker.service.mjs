@@ -11,6 +11,30 @@ function stableId(...parts) {
   return `kch_${hash}`;
 }
 
+function documentMetadata(document, product) {
+  const metadata = document?.payload && typeof document.payload === 'object' ? document.payload : {};
+  const materialUsages = (Array.isArray(metadata.materialUsages) ? metadata.materialUsages : [metadata.materialUsage])
+    .map(text).filter(Boolean);
+  const productNames = (Array.isArray(metadata.productNames) ? metadata.productNames : [metadata.productName, product?.productName])
+    .map(text).filter(Boolean);
+  return {
+    title: text(metadata.title) || text(document.fileName),
+    fileName: text(document.fileName),
+    materialType: text(metadata.materialType),
+    documentType: text(document.documentType),
+    materialUsages: [...new Set(materialUsages)],
+    company: text(metadata.company) || text(product?.company),
+    productNames: [...new Set(productNames)],
+    versionLabel: text(metadata.versionLabel) || text(product?.versionLabel),
+    focusTags: [...new Set((Array.isArray(metadata.focusTags) ? metadata.focusTags : []).map(text).filter(Boolean))],
+    specialInstructions: text(metadata.specialInstructions),
+    contributorName: text(metadata.contributorName),
+    contributorRole: text(metadata.contributorRole),
+    sourceAuthority: text(document.sourceAuthority),
+    sourceUrl: text(metadata.sourceUrl),
+  };
+}
+
 export function estimateTokenCount(value) {
   const content = text(value);
   const cjkCount = (content.match(/[\u3400-\u9fff]/gu) || []).length;
@@ -19,16 +43,18 @@ export function estimateTokenCount(value) {
 }
 
 function contextPrefix({ document, product, page, headingPath, topics = [] }) {
-  const metadata = document?.payload && typeof document.payload === 'object' ? document.payload : {};
+  const metadata = documentMetadata(document, product);
   return [
     product?.company ? `保险公司：${text(product.company)}` : '',
     product?.productName ? `产品：${text(product.productName)}` : '',
     product?.versionLabel ? `产品版本：${text(product.versionLabel)}` : '',
-    metadata.contributorName ? `知识贡献者：${text(metadata.contributorRole) || '未标注角色'} · ${text(metadata.contributorName)}` : '',
-    `资料：${text(document.fileName)}`,
-    `资料类型：${text(document.documentType) || 'unknown'}`,
-    metadata.materialType ? `人工标注类型：${text(metadata.materialType)}` : '',
-    Array.isArray(metadata.materialUsages) && metadata.materialUsages.length ? `资料用途：${metadata.materialUsages.map(text).filter(Boolean).join('、')}` : metadata.materialUsage ? `资料用途：${text(metadata.materialUsage)}` : '',
+    metadata.title ? `资料标题：${metadata.title}` : '',
+    `资料文件：${metadata.fileName}`,
+    metadata.contributorName ? `知识贡献者：${metadata.contributorRole || '未标注角色'} · ${metadata.contributorName}` : '',
+    `资料类型：${metadata.materialType || metadata.documentType || 'unknown'}`,
+    metadata.materialUsages.length ? `资料用途：${metadata.materialUsages.join('、')}` : '',
+    metadata.focusTags.length ? `重点关注标签：${metadata.focusTags.join('、')}` : '',
+    metadata.specialInstructions ? `资料备注（非原文证据）：${metadata.specialInstructions}` : '',
     topics.length ? `切片主题：${topics.map((topic) => topic.label).join('、')}` : '',
     headingPath.length ? `章节：${headingPath.join(' / ')}` : '',
     `页码：${text(page.sourceLabel) || page.pageNo}`,
@@ -230,6 +256,7 @@ function chunkRecord({ id, document, product, page, pageEnd = null, headingPath,
     indexStatus: 'ready',
     payload: {
       sourceLabel: text(page.sourceLabel) || `第 ${page.pageNo} 页`,
+      documentMetadata: documentMetadata(document, product),
       businessTopics: topics.map((topic) => topic.code),
       businessTopicLabels: topics.map((topic) => topic.label),
       ...payload,

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { normalizeAgentContextFactBlock } from './agent-context-fact-block.service.mjs';
+
 const DEFAULT_TENANT_ID = 'default';
 
 function requiredText(value, name) {
@@ -57,15 +59,35 @@ export function createAgentConversationContextService({ store, clock = Date.now,
     const stored = await store.loadAgentConversationContext({ conversationId: conversation.id });
     const asOf = Number(input.asOf ?? clock());
     const ttlMs = validTtlMinutes(input.productContextTtlMinutes) * 60_000;
+    const product = isFresh(stored?.product, asOf, ttlMs) ? stored.product : null;
+    const productCandidates = isFresh(stored?.productCandidates, asOf, ttlMs) ? stored.productCandidates : null;
+    const question = isFresh(stored?.question, asOf, ttlMs) ? stored.question : null;
+    const factBlock = product || productCandidates || question
+      ? normalizeAgentContextFactBlock({
+        ...(stored?.factBlock || {}),
+        verifiedEntities: product
+          ? stored?.factBlock?.verifiedEntities || {
+            product: { officialName: product.productName, source: 'conversation_context', verifiedAt: product.updatedAt },
+          }
+          : {},
+        ...(productCandidates ? {
+          pendingClarification: stored?.factBlock?.pendingClarification || {
+            question: productCandidates.question,
+            candidates: productCandidates.products,
+          },
+        } : { pendingClarification: null }),
+      })
+      : null;
     return {
       conversationId: conversation.id,
       version: Number(stored?.version || conversation.contextVersion || 1),
       hermesSessionId: String(stored?.hermesSessionId || ''),
       agentLoopSessionId: String(stored?.agentLoopSessionId || ''),
       history: Array.isArray(stored?.history) ? stored.history : [],
-      product: isFresh(stored?.product, asOf, ttlMs) ? stored.product : null,
-      productCandidates: isFresh(stored?.productCandidates, asOf, ttlMs) ? stored.productCandidates : null,
-      question: isFresh(stored?.question, asOf, ttlMs) ? stored.question : null,
+      product,
+      productCandidates,
+      question,
+      factBlock,
     };
   }
 
@@ -89,6 +111,7 @@ export function createAgentConversationContextService({ store, clock = Date.now,
       product: input.product || null,
       productCandidates: input.productCandidates || null,
       question: input.question || null,
+      factBlock: input.factBlock ? normalizeAgentContextFactBlock(input.factBlock) : null,
       updatedAt,
       activeContextExpiresAt: new Date(updatedAt + ttlMinutes * 60_000).toISOString(),
     });

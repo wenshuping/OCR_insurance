@@ -115,7 +115,7 @@ test('chunk quality blocks later duplicate without discarding the first copy', (
   assert.equal(quality.chunks[1].indexStatus, 'blocked');
 });
 
-test('publish readiness requires every ready chunk to match exactly one bound product range', () => {
+test('publish readiness requires a bound usable chunk and isolates unbound siblings', () => {
   const base = {
     chunkType: 'child', indexStatus: 'ready', pageStart: 1, pageEnd: 1,
     canonicalProductId: 'product-1', productVersionId: '',
@@ -134,6 +134,16 @@ test('publish readiness requires every ready chunk to match exactly one bound pr
   });
   assert.equal(unbound.decision, 'blocked');
   assert.ok(unbound.blockingReasons.some((item) => item.code === 'product_binding_missing'));
+
+  const partiallyBound = assessProductPublishReadiness({
+    document: { payload: {} },
+    links: [{ canonicalProductId: 'product-1', pageStart: 1, pageEnd: 1 }],
+    chunks: [base, { ...base, pageStart: 2, pageEnd: 2, canonicalProductId: '' }],
+  });
+  assert.equal(partiallyBound.decision, 'pass');
+  assert.equal(partiallyBound.publishableChunkCount, 1);
+  assert.equal(partiallyBound.isolatedChunkCount, 1);
+  assert.ok(partiallyBound.checks.some((item) => item.code === 'chunk_product_binding_missing' && item.status === 'warning'));
 
   const ambiguous = assessProductPublishReadiness({
     document: { payload: {} },
