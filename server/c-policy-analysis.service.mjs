@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { buildKnowledgeSearchArtifacts } from './policy-knowledge.service.mjs';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash';
@@ -2441,7 +2442,7 @@ async function requestPolicyAnalysis({ config, model, messages, fetchImpl, optio
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(body)),
     });
 
     if (!response.ok) {

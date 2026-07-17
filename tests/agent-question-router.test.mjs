@@ -51,6 +51,54 @@ test('route and simulation share read and low-confidence execution decisions', a
   }
 });
 
+test('published workflow tool is forwarded as the execution action', async () => {
+  const configuredPolicy = { ...readPolicy, tool: 'coverage_report' };
+  const harness = createHarness({
+    published: { version: 52, status: 'published', policies: [configuredPolicy] },
+    families: [{ id: 11, ownerUserId: 7, familyName: '张三家庭', status: 'active' }],
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer', text: 'ok' } }) },
+  });
+
+  const result = await harness.router.route(routeInput({}));
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(harness.calls.handlers[0].input.intent, 'family_summary');
+  assert.equal(harness.calls.handlers[0].input.tool, 'coverage_report');
+  assert.equal(harness.calls.audits[0].policyVersion, 52);
+});
+
+test('open sales coaching reaches sales champion without family selection', async () => {
+  const harness = createHarness({
+    handlers: {
+      sales_champion: async () => ({ interaction: { type: 'answer', text: '先确认养老目标和流动性需求。' } }),
+    },
+  });
+
+  const result = await harness.router.route(routeInput({
+    intent: 'sales_coaching',
+    question: '现在50岁手里有100万，有什么好的产品推荐吗',
+    entities: {},
+    confidence: 0.9,
+  }, {
+    messageRef: 'msg-open-sales',
+    conversationHistory: [
+      { role: 'user', content: '50岁，有100万' },
+      { role: 'assistant', content: '请补充资金用途' },
+      { role: 'system', content: 'drop' },
+    ],
+  }));
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(result.interaction.text, '先确认养老目标和流动性需求。');
+  assert.equal(harness.calls.handlers[0].key, 'sales_champion');
+  assert.equal(Object.hasOwn(harness.calls.handlers[0].input, 'familyId'), false);
+  assert.deepEqual(harness.calls.handlers[0].input.history, [
+    { role: 'user', content: '50岁，有100万' },
+    { role: 'assistant', content: '请补充资金用途' },
+  ]);
+  assert.deepEqual(harness.calls.audits[0].authorizedResourceIds, []);
+});
+
 const readPolicy = {
   key: 'family_summary',
   intent: 'family_summary',
@@ -94,9 +142,26 @@ test('a unique authorized family executes without listing other families', async
   assert.equal(result.decision, 'execute');
   assert.equal(calls.handlers[0].input.familyId, 11);
   assert.equal(JSON.stringify(calls.handlers[0].input).includes('李四家庭'), false);
-  assert.deepEqual(Object.keys(calls.handlers[0].input).sort(), ['familyId', 'intent', 'internalUserId', 'question']);
+  assert.deepEqual(Object.keys(calls.handlers[0].input).sort(), ['familyId', 'intent', 'internalUserId', 'question', 'tool']);
+  assert.equal(calls.handlers[0].input.tool, 'family_summary');
   assert.equal(calls.audits.length, 1);
   assert.equal(calls.audits[0].policySource, 'built_in');
+});
+
+test('product knowledge passes only the controlled product entity to its handler', async () => {
+  const { router, calls } = createHarness({
+    handlers: { insurance_expert: async () => ({ interaction: { type: 'answer', text: 'ok' } }) },
+  });
+
+  const result = await router.route(routeInput({
+    intent: 'insurance_product_knowledge',
+    question: '这个产品有啥优势呀',
+    entities: { productName: '尊享人生年金保险（分红型）', arbitrary: 'drop-me' },
+  }));
+
+  assert.equal(result.decision, 'execute');
+  assert.equal(calls.handlers[0].input.productName, '尊享人生年金保险（分红型）');
+  assert.equal('arbitrary' in calls.handlers[0].input, false);
 });
 
 test('duplicate names clarify with matching candidates only', async () => {
@@ -422,7 +487,7 @@ test('transfer preview invokes its authorized preview handler while other writes
   assert.equal(calls.length, 1);
 });
 
-test('sales coaching resolves an authorized family before calling the existing sales chat flow', async () => {
+test('sales coaching distinguishes an authorized family from an open consultation', async () => {
   const families = [{ id: 11, ownerUserId: 7, familyName: '张三家庭', status: 'active' }];
   const state = { familyProfiles: families, familyMembers: [], policies: [], familyReports: [], familySalesReviews: [] };
   const calls = [];
@@ -446,11 +511,12 @@ test('sales coaching resolves an authorized family before calling the existing s
     async getPublishedAgentQuestionPolicyVersion() { return null; },
     async recordAgentRouteAudit() {},
   };
-  const missing = await createAgentQuestionRouter({ store: emptyStore, handlers }).route(
+  const open = await createAgentQuestionRouter({ store: emptyStore, handlers }).route(
     routeInput({ intent: 'sales_coaching', question: '怎么继续沟通', entities: {} }),
   );
 
   assert.equal(answered.decision, 'execute');
   assert.equal(calls[0].context.familyId, 11);
-  assert.equal(missing.decision, 'clarify');
+  assert.equal(open.decision, 'execute');
+  assert.equal(calls[1].context.consultationScope, 'open');
 });

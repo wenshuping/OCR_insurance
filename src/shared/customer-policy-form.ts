@@ -407,11 +407,12 @@ export function mergeScanToForm(scan: PolicyScanResult, current: PolicyFormData)
   const next = scanToForm(scan);
   const reuseApplicantFields = canReuseParticipantValue(next.applicant, current.applicant);
   const reuseInsuredFields = canReuseParticipantValue(next.insured, current.insured);
+  const reuseBeneficiaryFields = !next.beneficiary || canReuseParticipantValue(next.beneficiary, current.beneficiary);
   return sharePolicyPersonInfo({
     ...next,
     beneficiary: next.beneficiary || current.beneficiary,
-    beneficiaryRelation: next.beneficiaryRelation || current.beneficiaryRelation,
-    beneficiaryBirthday: next.beneficiaryBirthday || current.beneficiaryBirthday,
+    beneficiaryRelation: next.beneficiaryRelation || (reuseBeneficiaryFields ? current.beneficiaryRelation : ''),
+    beneficiaryBirthday: next.beneficiaryBirthday || (reuseBeneficiaryFields ? current.beneficiaryBirthday : ''),
     applicantBirthday: next.applicantBirthday || (reuseApplicantFields ? current.applicantBirthday : ''),
     applicantRelation: next.applicantRelation || (reuseApplicantFields ? current.applicantRelation : ''),
     insuredRelation: next.insuredRelation || (reuseInsuredFields ? current.insuredRelation : ''),
@@ -458,6 +459,12 @@ function hasConfirmedRelation(value: unknown) {
   return Boolean(relation && relation !== '待确认');
 }
 
+export function resolveBoundParticipantRelation(enteredRelation: unknown, memberRelation: unknown) {
+  const entered = String(enteredRelation || '').trim();
+  if (hasConfirmedRelation(entered)) return entered;
+  return String(memberRelation || '').trim() || '待确认';
+}
+
 export function validatePolicyEntryForm(
   data: PolicyFormData,
   options: { requireFamily?: boolean; requireParticipantRelations?: boolean } = {},
@@ -475,7 +482,9 @@ export function validatePolicyEntryForm(
   if (requireParticipantRelations && !hasConfirmedRelation(applicantRelation)) errors.push('投保人与顶梁柱的关系');
   if (!hasRequiredText(data.insured)) errors.push('被保险人姓名');
   if (requireParticipantRelations && !hasConfirmedRelation(insuredRelation)) errors.push('被保险人与顶梁柱的关系');
-  if (!hasRequiredText(data.beneficiary)) errors.push('受益人');
+  const beneficiary = normalizeBeneficiaryValue(data.beneficiary);
+  if (!hasRequiredText(beneficiary)) errors.push('受益人');
+  if (beneficiary !== '法定' && !hasConfirmedRelation(data.beneficiaryRelation)) errors.push('受益人与顶梁柱的关系');
   if (!hasRequiredText(data.date)) errors.push('投保时间');
   if (!hasRequiredText(data.paymentPeriod)) errors.push('缴费期间');
   if (!hasRequiredText(data.coveragePeriod)) errors.push('保障期间');

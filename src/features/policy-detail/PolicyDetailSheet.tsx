@@ -520,13 +520,11 @@ function PolicyEditDialog({
     const normalizedQuery = normalizeSuggestionQuery(companyQuery);
     if (!normalizedQuery) return [];
     return editCompanySuggestions
-      .filter((suggestion) => normalizeSuggestionQuery(suggestion.company) !== normalizedQuery)
-      .slice(0, 8);
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.company) !== normalizedQuery);
   }, [companyQuery, editCompanySuggestions]);
   const visibleProductSuggestions = useMemo(() => {
     if (!normalizeSuggestionQuery(companyQuery)) return [];
-    return editProductSuggestions
-      .slice(0, 8);
+    return editProductSuggestions;
   }, [companyQuery, editProductSuggestions]);
   const showCompanySuggestions = companyFocused && companyQuery && (editCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (editProductSuggestionLoading || visibleProductSuggestions.length);
@@ -542,7 +540,7 @@ function PolicyEditDialog({
     const timer = window.setTimeout(() => {
       setEditCompanySuggestions([]);
       setEditCompanySuggestionLoading(true);
-      listPolicyResponsibilityCompanySuggestions({ q, limit: 50 })
+      listPolicyResponsibilityCompanySuggestions({ q })
         .then((payload) => {
           if (!cancelled) setEditCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -552,7 +550,7 @@ function PolicyEditDialog({
         .finally(() => {
           if (!cancelled) setEditCompanySuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -571,7 +569,7 @@ function PolicyEditDialog({
     const timer = window.setTimeout(() => {
       setEditProductSuggestions([]);
       setEditProductSuggestionLoading(true);
-      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
+      listPolicyResponsibilityProductSuggestions({ company, q })
         .then((payload) => {
           if (!cancelled) setEditProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -581,7 +579,7 @@ function PolicyEditDialog({
         .finally(() => {
           if (!cancelled) setEditProductSuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -601,7 +599,7 @@ function PolicyEditDialog({
     const timer = window.setTimeout(() => {
       setEditPlanProductSuggestions([]);
       setEditPlanProductSuggestionLoading(true);
-      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
+      listPolicyResponsibilityProductSuggestions({ company, q })
         .then((payload) => {
           if (!cancelled) setEditPlanProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -611,7 +609,7 @@ function PolicyEditDialog({
         .finally(() => {
           if (!cancelled) setEditPlanProductSuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -649,7 +647,7 @@ function PolicyEditDialog({
               className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
             />
             {showCompanySuggestions ? (
-              <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="修改保险公司候选">
+              <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-72 overflow-y-auto overscroll-contain rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)] [-webkit-overflow-scrolling:touch]" role="listbox" aria-label="修改保险公司候选">
                 {editCompanySuggestionLoading ? (
                   <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -689,7 +687,7 @@ function PolicyEditDialog({
               className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
             />
             {showProductSuggestions ? (
-              <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="修改保险产品候选">
+              <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-72 overflow-y-auto overscroll-contain rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)] [-webkit-overflow-scrolling:touch]" role="listbox" aria-label="修改保险产品候选">
                 {editProductSuggestionLoading ? (
                   <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
                     <Loader2 className="h-4 w-4 animate-spin" />

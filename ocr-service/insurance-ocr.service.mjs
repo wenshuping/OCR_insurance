@@ -7,7 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { hasConfiguredOcrServiceBaseUrl, scanInsurancePolicyOverHttp } from './client.mjs';
-import { parseCashValueTable, parseCashValueText } from './cash-value-parser.mjs';
+import { parseCashValueStructuredTables, parseCashValueTable, parseCashValueText } from './cash-value-parser.mjs';
 import { getPolicyFieldAliases } from './insurance-field-schema.mjs';
 import { findBestFuzzyMatch, matchesFuzzyPhrase } from './fuzzy-matching.mjs';
 import {
@@ -22,6 +22,9 @@ import {
   OCR_PROVIDER_OLLAMA_VISION_LOCAL,
   OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE,
   OCR_PROVIDER_DEEPSEEK_OCR_VLLM,
+  OCR_PROVIDER_UNLIMITED_OCR_VLLM,
+  OCR_PROVIDER_GLM_OCR_VLLM,
+  OCR_PROVIDER_PADDLEOCR_VL16_AUTODL,
   OCR_PROVIDER_PADDLE_LOCAL,
   OCR_PROVIDER_PADDLEOCR_VL_LOCAL,
   OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL,
@@ -465,7 +468,22 @@ function birthdayFromIdNumber(value) {
   return '';
 }
 
-function extractInsuredIdentity(lines, insuredName = '') {
+function extractBirthdayBetweenLabels(lines, startPattern, endPattern) {
+  const startIndex = lines.findIndex((line) => startPattern.test(compactLine(line)));
+  if (startIndex < 0) return '';
+  const endOffset = lines
+    .slice(startIndex + 1)
+    .findIndex((line) => endPattern.test(compactLine(line)));
+  const endIndex = endOffset < 0 ? lines.length : startIndex + 1 + endOffset;
+  for (const line of lines.slice(startIndex, endIndex)) {
+    if (!/(?:出生日期|出生年月|生日)/u.test(compactLine(line))) continue;
+    const birthday = formatDateValue(line);
+    if (birthday) return birthday;
+  }
+  return '';
+}
+
+function extractInsuredIdentity(lines, insuredName = '', explicitBirthday = '') {
   const normalizedInsured = compactLine(normalizePersonNameValue(insuredName) || insuredName);
   const labelPattern = /^(?:证件号码|证件号|身份证号码|身份证号|居民身份证号码|居民身份证号)[:：]?/u;
   const candidates = [];
@@ -485,6 +503,9 @@ function extractInsuredIdentity(lines, insuredName = '') {
     else if (/投保人|设保人|要保人/u.test(previousWindow)) score -= 3;
     if (normalizedInsured && line.includes(normalizedInsured)) score += 8;
     else if (normalizedInsured && (previousWindow.includes(normalizedInsured) || nextWindow.includes(normalizedInsured))) score += 2;
+    const idBirthday = birthdayFromIdNumber(idNumber);
+    if (explicitBirthday && idBirthday === explicitBirthday) score += 20;
+    else if (explicitBirthday && idBirthday) score -= 10;
     candidates.push({ idNumber, score, index });
   }
   candidates.sort((left, right) => right.score - left.score || right.index - left.index);
@@ -1693,7 +1714,18 @@ function finalizePolicyPlans(plans = [], firstPremium = '') {
     .map((plan) => compactLine(plan?.name || ''))
     .filter(Boolean));
   const prunedPlans = (Array.isArray(plans) ? plans : [])
-    .filter((plan) => !isEmptyDuplicateRiderPlan(plan, mainNames));
+    .filter((plan) => !isEmptyDuplicateRiderPlan(plan, mainNames))
+    .filter((plan) => {
+      const name = compactLine(plan?.name || '');
+      const hasDetails = Boolean(
+        plan?.amount
+        || plan?.premium
+        || plan?.coveragePeriod
+        || plan?.paymentPeriod
+        || plan?.paymentMode,
+      );
+      return hasDetails || !/(?:交费|缴费)年限保险$/u.test(name);
+    });
   const mergedPlans = mergeDuplicatePolicyPlans(prunedPlans);
   const mainIndexes = mergedPlans
     .map((plan, index) => (plan?.role === 'main' ? index : -1))
@@ -3331,6 +3363,47 @@ async function scanPolicyWithDeepSeekOcrLayout(uploadItem) {
   };
 }
 
+async function scanPolicyWithUnlimitedOcrLayout(uploadItem) {
+  const result = await recognizeUnlimitedOcrUpload(uploadItem);
+  const best = selectBestPolicyScanCandidate([result.ocrText]);
+  const layoutResult = result.boxes?.length
+    ? parsePolicyBasicInfoFromLayoutBoxes(result.boxes)
+    : null;
+  return {
+    ...mergePolicyLayoutScanResult({ textData: best.data, layoutResult }),
+    ocrText: best.ocrText,
+    unlimitedOcr: {
+      tableCount: result.tables?.length || 0,
+      boxCount: result.boxes?.length || 0,
+    },
+  };
+}
+
+async function scanPolicyWithGlmOcrLayout(uploadItem) {
+  const result = await recognizeGlmOcrUpload(uploadItem);
+  const best = selectBestPolicyScanCandidate([result.ocrText]);
+  return {
+    ...mergePolicyLayoutScanResult({ textData: best.data, layoutResult: null }),
+    ocrText: best.ocrText,
+    glmOcr: {},
+  };
+}
+
+async function scanPolicyWithPaddleOcrVl16Layout(uploadItem) {
+  const result = await recognizePaddleOcrVl16Upload(uploadItem);
+  const best = selectBestPolicyScanCandidate([result.ocrText]);
+  const layoutResult = result.boxes?.length
+    ? parsePolicyBasicInfoFromLayoutBoxes(result.boxes)
+    : null;
+  return {
+    ...mergePolicyLayoutScanResult({ textData: best.data, layoutResult }),
+    ocrText: best.ocrText,
+    paddleOcrVl16: {
+      boxCount: result.boxes?.length || 0,
+    },
+  };
+}
+
 async function scanPolicyWithOllamaVisionPipeline(uploadItem, {
   paddleLayoutScanner = scanPolicyWithPaddleLayout,
   ollamaVisionExtractor = null,
@@ -3635,7 +3708,19 @@ export function extractPolicyFieldsFromText(rawText) {
         ...LABELS.amount,
       ])
     );
-  const insuredIdentity = isReceiptStyle ? { insuredIdNumber: '', insuredBirthday: '' } : extractInsuredIdentity(lines, insured);
+  const applicantBirthday = extractBirthdayBetweenLabels(
+    lines,
+    /(?:投保人|设保人|要保人)/u,
+    /(?:被保险[人入]|披保险人|被保人|受保人)/u,
+  );
+  const explicitInsuredBirthday = extractBirthdayBetweenLabels(
+    lines,
+    /(?:被保险[人入]|披保险人|被保人|受保人)/u,
+    /(?:生存保险金受益人|身故保险金受益人|身故受益人|受益人)/u,
+  );
+  const insuredIdentity = isReceiptStyle
+    ? { insuredIdNumber: '', insuredBirthday: '' }
+    : extractInsuredIdentity(lines, insured, explicitInsuredBirthday);
   const date = extractPreferredDate(lines) || inlineLabeledData.date;
   const mappedPaymentPeriod = combineMappedPaymentPeriod(matchedFields);
   const mainPlanPaymentPeriod = mainPlan?.paymentPeriod || '';
@@ -3712,7 +3797,8 @@ export function extractPolicyFieldsFromText(rawText) {
     || fallbackFirstPremium(lines);
   const planPremiumTotal = sumPlanPremiumsForFields(plans);
   const finalFirstPremium = fallbackFirstPremium(lines) || planPremiumTotal || firstPremium;
-  const hydratedPlans = hydratePlanFieldsFromTopLevel(plans, {
+  const finalizedPlans = finalizePolicyPlans(plans, finalFirstPremium);
+  const hydratedPlans = hydratePlanFieldsFromTopLevel(finalizedPlans, {
     amount,
     coveragePeriod,
     paymentPeriod,
@@ -3723,6 +3809,7 @@ export function extractPolicyFieldsFromText(rawText) {
     company,
     name,
     applicant,
+    applicantBirthday,
     beneficiary,
     policyNumber,
     insured,
@@ -3835,8 +3922,8 @@ async function extractTextFromPdfUpload(uploadItem) {
   return text;
 }
 
-function getConfiguredOcrProvider() {
-  return resolveEffectivePolicyOcrProvider();
+function getConfiguredOcrProvider(override = '') {
+  return String(override || '').trim().toLowerCase() || resolveEffectivePolicyOcrProvider();
 }
 
 function getConfiguredOcrPostprocessor() {
@@ -3993,6 +4080,55 @@ function getConfiguredRemoteVisionMaxTokens(env = process.env) {
 
 function getConfiguredDeepSeekOcrBaseUrl(env = process.env) {
   return String(env.POLICY_OCR_DEEPSEEK_OCR_BASE_URL || '').trim().replace(/\/+$/, '');
+}
+
+function getConfiguredUnlimitedOcrBaseUrl(env = process.env) {
+  return String(env.POLICY_OCR_UNLIMITED_OCR_BASE_URL || '').trim().replace(/\/+$/, '');
+}
+
+function getConfiguredUnlimitedOcrModel(env = process.env) {
+  return String(env.POLICY_OCR_UNLIMITED_OCR_MODEL || 'baidu/Unlimited-OCR').trim();
+}
+
+function getConfiguredUnlimitedOcrTimeoutMs(env = process.env) {
+  const value = Number(env.POLICY_OCR_UNLIMITED_OCR_TIMEOUT_MS || 1200000);
+  return Number.isFinite(value) && value > 1000 ? Math.trunc(value) : 1200000;
+}
+
+function getConfiguredUnlimitedOcrMaxTokens(env = process.env) {
+  const value = Number(env.POLICY_OCR_UNLIMITED_OCR_MAX_TOKENS || 8192);
+  return Number.isFinite(value) && value >= 1024 ? Math.trunc(value) : 8192;
+}
+
+function getConfiguredGlmOcrBaseUrl(env = process.env) {
+  return String(env.POLICY_OCR_GLM_OCR_BASE_URL || '').trim().replace(/\/+$/, '');
+}
+
+function getConfiguredGlmOcrModel(env = process.env) {
+  return String(env.POLICY_OCR_GLM_OCR_MODEL || 'glm-ocr').trim();
+}
+
+function getConfiguredGlmOcrTimeoutMs(env = process.env) {
+  const value = Number(env.POLICY_OCR_GLM_OCR_TIMEOUT_MS || 300000);
+  return Number.isFinite(value) && value > 1000 ? Math.trunc(value) : 300000;
+}
+
+function getConfiguredGlmOcrMaxTokens(env = process.env) {
+  const value = Number(env.POLICY_OCR_GLM_OCR_MAX_TOKENS || 4096);
+  return Number.isFinite(value) && value >= 1024 ? Math.trunc(value) : 4096;
+}
+
+function getConfiguredPaddleOcrVl16BaseUrl(env = process.env) {
+  return String(env.POLICY_OCR_PADDLEOCR_VL16_BASE_URL || '').trim().replace(/\/+$/, '');
+}
+
+function getConfiguredPaddleOcrVl16Model(env = process.env) {
+  return String(env.POLICY_OCR_PADDLEOCR_VL16_MODEL || 'PaddleOCR-VL-1.6').trim();
+}
+
+function getConfiguredPaddleOcrVl16TimeoutMs(env = process.env) {
+  const value = Number(env.POLICY_OCR_PADDLEOCR_VL16_TIMEOUT_MS || 300000);
+  return Number.isFinite(value) && value > 1000 ? Math.trunc(value) : 300000;
 }
 
 function buildDeepSeekOcrChatCompletionsUrl(baseUrl) {
@@ -5013,8 +5149,178 @@ export async function recognizeDeepSeekOcrUpload(uploadItem, options = {}) {
   }
 }
 
+export async function recognizeUnlimitedOcrUpload(uploadItem, options = {}) {
+  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
+  const env = options.env || process.env;
+  const fetchImpl = options.fetchImpl || fetch;
+  const baseUrl = getConfiguredUnlimitedOcrBaseUrl(env);
+  if (!baseUrl) throw new Error('POLICY_OCR_PROVIDER_NOT_CONFIGURED');
+  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), getConfiguredUnlimitedOcrTimeoutMs(env));
+  try {
+    const response = await fetchImpl(buildDeepSeekOcrChatCompletionsUrl(baseUrl), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: getConfiguredUnlimitedOcrModel(env),
+        temperature: 0,
+        max_tokens: getConfiguredUnlimitedOcrMaxTokens(env),
+        skip_special_tokens: false,
+        vllm_xargs: { ngram_size: 35, window_size: 128 },
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: '<image>document parsing.' },
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${buffer.toString('base64')}` } },
+          ],
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error('POLICY_OCR_FAILED');
+    const payload = await response.json().catch(() => null);
+    const markdown = extractRemoteVisionPayloadContent(payload);
+    const parsed = parseDeepSeekOcrMarkdown(markdown);
+    if (!parsed.ok || !parsed.ocrText) throw new Error('POLICY_OCR_EMPTY');
+    return {
+      ocrText: normalizeOcrText(parsed.ocrText),
+      markdown,
+      boxes: parsed.boxes,
+      tables: parsed.tables,
+      rawPayload: payload,
+    };
+  } catch (error) {
+    if (isAbortLikeError(error, controller.signal)) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
+    const message = String(error?.message || error || '');
+    if (message.includes('POLICY_OCR_PROVIDER_NOT_CONFIGURED') || message.includes('POLICY_OCR_EMPTY')) throw error;
+    throw new Error('POLICY_OCR_FAILED');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function recognizeGlmOcrUpload(uploadItem, options = {}) {
+  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
+  const env = options.env || process.env;
+  const fetchImpl = options.fetchImpl || fetch;
+  const baseUrl = getConfiguredGlmOcrBaseUrl(env);
+  if (!baseUrl) throw new Error('POLICY_OCR_PROVIDER_NOT_CONFIGURED');
+  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), getConfiguredGlmOcrTimeoutMs(env));
+  try {
+    const response = await fetchImpl(buildDeepSeekOcrChatCompletionsUrl(baseUrl), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: getConfiguredGlmOcrModel(env),
+        temperature: 0,
+        max_tokens: getConfiguredGlmOcrMaxTokens(env),
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${buffer.toString('base64')}` } },
+            { type: 'text', text: 'Text Recognition:' },
+          ],
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error('POLICY_OCR_FAILED');
+    const payload = await response.json().catch(() => null);
+    const markdown = extractRemoteVisionPayloadContent(payload);
+    const parsed = parseDeepSeekOcrMarkdown(markdown);
+    if (!parsed.ok || !parsed.ocrText) throw new Error('POLICY_OCR_EMPTY');
+    return { ocrText: normalizeOcrText(parsed.ocrText), markdown, rawPayload: payload };
+  } catch (error) {
+    if (isAbortLikeError(error, controller.signal)) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
+    const message = String(error?.message || error || '');
+    if (message.includes('POLICY_OCR_PROVIDER_NOT_CONFIGURED') || message.includes('POLICY_OCR_EMPTY')) throw error;
+    throw new Error('POLICY_OCR_FAILED');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function recognizePaddleOcrVl16Upload(uploadItem, options = {}) {
+  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
+  const env = options.env || process.env;
+  const fetchImpl = options.fetchImpl || fetch;
+  const baseUrl = getConfiguredPaddleOcrVl16BaseUrl(env);
+  if (!baseUrl) throw new Error('POLICY_OCR_PROVIDER_NOT_CONFIGURED');
+  const { mimeType, buffer } = parseDataUrl(uploadItem);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), getConfiguredPaddleOcrVl16TimeoutMs(env));
+  try {
+    const response = await fetchImpl(buildDeepSeekOcrChatCompletionsUrl(baseUrl), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: getConfiguredPaddleOcrVl16Model(env),
+        temperature: 0,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${buffer.toString('base64')}` } },
+            { type: 'text', text: 'OCR:' },
+          ],
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error('POLICY_OCR_FAILED');
+    const payload = await response.json().catch(() => null);
+    const markdown = extractRemoteVisionPayloadContent(payload);
+    const parsed = parseDeepSeekOcrMarkdown(markdown);
+    if (!parsed.ok || !parsed.ocrText) throw new Error('POLICY_OCR_EMPTY');
+    const boxes = Array.isArray(payload?.paddle_blocks)
+      ? payload.paddle_blocks.flatMap((block) => {
+        const text = String(block?.text || '').trim();
+        if (!text || !Array.isArray(block?.box)) return [];
+        return [{
+          text,
+          box: block.box,
+          confidence: Number(block.confidence) || 0,
+          label: String(block.label || ''),
+          order: block.order,
+        }];
+      })
+      : [];
+    return {
+      ocrText: normalizeOcrText(parsed.ocrText),
+      markdown,
+      boxes,
+      tables: parsed.tables,
+      rawPayload: payload,
+    };
+  } catch (error) {
+    if (isAbortLikeError(error, controller.signal)) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
+    const message = String(error?.message || error || '');
+    if (message.includes('POLICY_OCR_PROVIDER_NOT_CONFIGURED') || message.includes('POLICY_OCR_EMPTY')) throw error;
+    throw new Error('POLICY_OCR_FAILED');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function recognizeTextWithDeepSeekOcrVllm(uploadItem) {
   const result = await recognizeDeepSeekOcrUpload(uploadItem);
+  return result.ocrText;
+}
+
+async function recognizeTextWithUnlimitedOcrVllm(uploadItem) {
+  const result = await recognizeUnlimitedOcrUpload(uploadItem);
+  return result.ocrText;
+}
+
+async function recognizeTextWithGlmOcrVllm(uploadItem) {
+  const result = await recognizeGlmOcrUpload(uploadItem);
+  return result.ocrText;
+}
+
+async function recognizeTextWithPaddleOcrVl16(uploadItem) {
+  const result = await recognizePaddleOcrVl16Upload(uploadItem);
   return result.ocrText;
 }
 
@@ -6900,8 +7206,8 @@ async function recognizeTextWithBaiduPrivate(uploadItem) {
   return recognized;
 }
 
-async function recognizeTextFromUpload(uploadItem) {
-  const provider = getConfiguredOcrProvider();
+async function recognizeTextFromUpload(uploadItem, providerOverride = '') {
+  const provider = getConfiguredOcrProvider(providerOverride);
   if (provider === OCR_PROVIDER_BAIDU_PRIVATE) {
     return recognizeTextWithBaiduPrivate(uploadItem);
   }
@@ -6914,11 +7220,41 @@ async function recognizeTextFromUpload(uploadItem) {
   if (provider === OCR_PROVIDER_DEEPSEEK_OCR_VLLM) {
     return recognizeTextWithDeepSeekOcrVllm(uploadItem);
   }
+  if (provider === OCR_PROVIDER_UNLIMITED_OCR_VLLM) {
+    return recognizeTextWithUnlimitedOcrVllm(uploadItem);
+  }
+  if (provider === OCR_PROVIDER_GLM_OCR_VLLM) {
+    return recognizeTextWithGlmOcrVllm(uploadItem);
+  }
+  if (provider === OCR_PROVIDER_PADDLEOCR_VL16_AUTODL) {
+    return recognizeTextWithPaddleOcrVl16(uploadItem);
+  }
   if (provider === OCR_PROVIDER_HUAWEI_CLOUD_INSURANCE) {
     const scan = await scanPolicyWithHuaweiCloudInsurance(uploadItem);
     return scan.ocrText;
   }
   return recognizeTextWithVision(uploadItem);
+}
+
+export async function recognizeDocumentText(uploadItem, { provider = '' } = {}) {
+  if (!uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
+  const recognized = isPdfUpload(uploadItem)
+    ? await extractTextFromPdfUpload(uploadItem)
+    : await recognizeTextFromUpload(uploadItem, provider);
+  const ocrText = normalizeOcrText(recognized);
+  if (!ocrText) throw new Error('POLICY_OCR_EMPTY');
+  return ocrText;
+}
+
+function isTermsOnlyPolicyPage(value) {
+  const text = normalizeOcrText(value);
+  const hasTermsTitle = /(?:保险|寿险|年金|医疗|疾病|意外)[^\n]{0,24}条款/u.test(text);
+  const hasTermsChapters = /第一条[\s\S]{0,1200}第二条/u.test(text) && /责任免除/u.test(text);
+  const hasBasicPolicyFields = /(?:保险合同号码|保险单号码|保单号码|保单号)\s*[:：]/u.test(text)
+    || /(?:投保人|被保险人)\s*[:：]\s*[^\n]{1,30}/u.test(text)
+    || /首期保险费合计/u.test(text)
+    || /保险项目[^\n]{0,80}(?:保险期间|交费年限|缴费年限)/u.test(text);
+  return hasTermsTitle && hasTermsChapters && !hasBasicPolicyFields;
 }
 
 export async function scanInsurancePolicyLocal({
@@ -6927,7 +7263,9 @@ export async function scanInsurancePolicyLocal({
   ocrContext,
   paddleLayoutScanner,
   ollamaVisionExtractor,
+  provider: providerOverride = '',
 }) {
+  const provider = getConfiguredOcrProvider(providerOverride);
   let recognizedText = normalizeOcrText(ocrText);
   if (!recognizedText && !uploadItem) throw new Error('POLICY_SCAN_INPUT_REQUIRED');
   if (!recognizedText && isPdfUpload(uploadItem)) {
@@ -6944,7 +7282,6 @@ export async function scanInsurancePolicyLocal({
   if (recognizedText) {
     data = extractPolicyFieldsFromText(recognizedText);
   } else {
-    const provider = getConfiguredOcrProvider();
     if (provider === OCR_PROVIDER_OLLAMA_VISION_LOCAL) {
       const scan = await scanPolicyWithOllamaVisionPipeline(uploadItem, {
         paddleLayoutScanner,
@@ -7002,6 +7339,36 @@ export async function scanInsurancePolicyLocal({
         scanVisionDebug = merged.deepSeekOcr ? { deepSeekOcr: merged.deepSeekOcr } : null;
         bestOcrText = merged.ocrText;
         handledLayout = true;
+      } else if (provider === OCR_PROVIDER_UNLIMITED_OCR_VLLM) {
+        const merged = await scanPolicyWithUnlimitedOcrLayout(uploadItem);
+        data = merged.data;
+        scanFieldConfidence = merged.fieldConfidence || {};
+        scanFieldEvidence = merged.fieldEvidence || {};
+        scanFieldAttribution = merged.data?.fieldAttribution || {};
+        scanOcrWarnings = merged.ocrWarnings || [];
+        scanVisionDebug = merged.unlimitedOcr ? { unlimitedOcr: merged.unlimitedOcr } : null;
+        bestOcrText = merged.ocrText;
+        handledLayout = true;
+      } else if (provider === OCR_PROVIDER_GLM_OCR_VLLM) {
+        const merged = await scanPolicyWithGlmOcrLayout(uploadItem);
+        data = merged.data;
+        scanFieldConfidence = merged.fieldConfidence || {};
+        scanFieldEvidence = merged.fieldEvidence || {};
+        scanFieldAttribution = merged.data?.fieldAttribution || {};
+        scanOcrWarnings = merged.ocrWarnings || [];
+        scanVisionDebug = { glmOcr: merged.glmOcr };
+        bestOcrText = merged.ocrText;
+        handledLayout = true;
+      } else if (provider === OCR_PROVIDER_PADDLEOCR_VL16_AUTODL) {
+        const merged = await scanPolicyWithPaddleOcrVl16Layout(uploadItem);
+        data = merged.data;
+        scanFieldConfidence = merged.fieldConfidence || {};
+        scanFieldEvidence = merged.fieldEvidence || {};
+        scanFieldAttribution = merged.data?.fieldAttribution || {};
+        scanOcrWarnings = merged.ocrWarnings || [];
+        scanVisionDebug = { paddleOcrVl16: merged.paddleOcrVl16 };
+        bestOcrText = merged.ocrText;
+        handledLayout = true;
       } else if (provider === OCR_PROVIDER_PDF_EXTRACT_KIT_LOCAL) {
         const pdfExtractKitText = await recognizeTextWithPdfExtractKit(uploadItem);
         candidates.push(pdfExtractKitText);
@@ -7017,8 +7384,8 @@ export async function scanInsurancePolicyLocal({
   }
 
   if (
-    getConfiguredOcrProvider() !== OCR_PROVIDER_OLLAMA_VISION_LOCAL
-    && getConfiguredOcrProvider() !== OCR_PROVIDER_MLX_QWEN25_VL_LOCAL
+    provider !== OCR_PROVIDER_OLLAMA_VISION_LOCAL
+    && provider !== OCR_PROVIDER_MLX_QWEN25_VL_LOCAL
     && getConfiguredOcrPostprocessor() === OCR_POSTPROCESSOR_OLLAMA_QWEN
     && bestOcrText
   ) {
@@ -7043,6 +7410,11 @@ export async function scanInsurancePolicyLocal({
   data = localVisionEnhanced.data;
   bestOcrText = normalizeOcrText(localVisionEnhanced.ocrText || bestOcrText);
 
+  if (isTermsOnlyPolicyPage(bestOcrText)) {
+    const error = new Error('POLICY_OCR_TERMS_PAGE');
+    error.code = 'POLICY_OCR_TERMS_PAGE';
+    throw error;
+  }
   if (!hasPolicyDataValue(data)) throw new Error('POLICY_OCR_EMPTY');
   let fieldConfidence = Object.keys(scanFieldConfidence).length ? scanFieldConfidence : (data.fieldConfidence || {});
   let fieldEvidence = Object.keys(scanFieldEvidence).length ? scanFieldEvidence : (data.fieldEvidence || {});
@@ -7081,6 +7453,7 @@ export async function scanInsurancePolicyLocal({
 async function scanCashValueTableWithDeepSeekOcr({ uploadItem }, dependencies = {}) {
   const env = dependencies.env || process.env;
   const recognizeDeepSeek = dependencies.recognizeDeepSeekOcrUpload || recognizeDeepSeekOcrUpload;
+  const source = dependencies.source || 'deepseek_ocr';
 
   try {
     const deepSeekResult = await recognizeDeepSeek(uploadItem, {
@@ -7089,9 +7462,12 @@ async function scanCashValueTableWithDeepSeekOcr({ uploadItem }, dependencies = 
     });
 
     const attempts = [];
+    if (Array.isArray(deepSeekResult?.tables) && deepSeekResult.tables.length) {
+      attempts.push(parseCashValueStructuredTables(deepSeekResult.tables, { source }));
+    }
     if (Array.isArray(deepSeekResult?.boxes) && deepSeekResult.boxes.length) {
       const parsedBoxes = parseCashValueTable(deepSeekResult.boxes);
-      attempts.push(parsedBoxes.ok ? { ...parsedBoxes, source: 'deepseek_ocr' } : parsedBoxes);
+      attempts.push(parsedBoxes.ok ? { ...parsedBoxes, source } : parsedBoxes);
     }
 
     const textCandidates = [
@@ -7100,7 +7476,7 @@ async function scanCashValueTableWithDeepSeekOcr({ uploadItem }, dependencies = 
     ].map((item) => String(item || '').trim()).filter(Boolean);
 
     for (const textCandidate of textCandidates) {
-      const parsedText = parseCashValueText(textCandidate, { source: 'deepseek_ocr' });
+      const parsedText = parseCashValueText(textCandidate, { source });
       attempts.push(parsedText);
     }
 
@@ -7136,14 +7512,39 @@ async function scanCashValueTableWithDeepSeekOcr({ uploadItem }, dependencies = 
  * When DeepSeek-OCR is the configured OCR provider, cash value OCR uses the same
  * provider and does not fall back to PaddleOCR.
  */
-export async function scanCashValueTable({ uploadItem }, dependencies = {}) {
+export async function scanCashValueTable({ uploadItem, provider: providerOverride = '' }, dependencies = {}) {
   if (!uploadItem?.dataUrl) {
     return { ok: false, error: 'CASH_VALUE_TABLE_NOT_DETECTED', message: '缺少图片数据' };
   }
 
   const envBase = dependencies.env || process.env;
-  if (getConfiguredOcrProvider() === OCR_PROVIDER_DEEPSEEK_OCR_VLLM) {
+  const provider = getConfiguredOcrProvider(providerOverride);
+  if (provider === OCR_PROVIDER_DEEPSEEK_OCR_VLLM) {
     return scanCashValueTableWithDeepSeekOcr({ uploadItem }, { ...dependencies, env: envBase });
+  }
+  if (provider === OCR_PROVIDER_UNLIMITED_OCR_VLLM) {
+    return scanCashValueTableWithDeepSeekOcr({ uploadItem }, {
+      ...dependencies,
+      env: envBase,
+      recognizeDeepSeekOcrUpload: recognizeUnlimitedOcrUpload,
+      source: 'unlimited_ocr',
+    });
+  }
+  if (provider === OCR_PROVIDER_GLM_OCR_VLLM) {
+    return scanCashValueTableWithDeepSeekOcr({ uploadItem }, {
+      ...dependencies,
+      env: envBase,
+      recognizeDeepSeekOcrUpload: recognizeGlmOcrUpload,
+      source: 'glm_ocr',
+    });
+  }
+  if (provider === OCR_PROVIDER_PADDLEOCR_VL16_AUTODL) {
+    return scanCashValueTableWithDeepSeekOcr({ uploadItem }, {
+      ...dependencies,
+      env: envBase,
+      recognizeDeepSeekOcrUpload: recognizePaddleOcrVl16Upload,
+      source: 'paddleocr_vl16',
+    });
   }
 
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'cash-value-ocr-'));

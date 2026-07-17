@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { extractInsurancePlanMatrixEvidence } from './insurance-plan-matrix-evidence.service.mjs';
 import {
   CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
   CUSTOMER_POLICY_PHOTO_REVIEWED_EVIDENCE_LEVEL,
@@ -846,8 +848,12 @@ async function fetchMaterialPageText({ url, policy, fetchImpl, signal } = {}) {
       };
     }
     if (!/(application\/msword|officedocument)/iu.test(contentType)) {
+      const html = await response.text();
+      const matrixEvidence = extractInsurancePlanMatrixEvidence(html).text;
+      const relevantText = extractRelevantText(stripHtml(html), policy);
       return {
-        pageText: extractRelevantText(stripHtml(await response.text()), policy),
+        pageText: [matrixEvidence, relevantText].filter(Boolean).join('\n\n')
+          .slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS),
         sourceType,
         contentType,
       };
@@ -1159,7 +1165,7 @@ export async function callDeepSeekForOpenWebSearchPlan({
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
+      body: JSON.stringify(sanitizeDeepSeekRequestBody({
         model,
         temperature: 0.1,
         max_tokens: 700,
@@ -1179,7 +1185,7 @@ export async function callDeepSeekForOpenWebSearchPlan({
             content: `保险公司：${trimString(policy.company)}\n客户输入产品名：${trimString(policy.name || policy.productName)}\n请给 3-6 个中文搜索关键词和 5-10 个优先域名。`,
           },
         ],
-      }),
+      })),
     });
     if (!response.ok) return fallbackOpenWebSearchPlan(policy);
     const payload = await response.json().catch(() => ({}));
@@ -1247,6 +1253,29 @@ function parseBaiduResults(html = '', policy = {}, maxResults = 8) {
   return results;
 }
 
+function parseSoResults(html = '', policy = {}, maxResults = 8) {
+  const blocks = Array.from(String(html || '').matchAll(/<li[^>]*class=["'][^"']*res-list[^"']*["'][^>]*>[\s\S]*?<\/li>/giu))
+    .map((match) => match[0]);
+  const productName = normalizeComparableFact(policy.name || policy.productName);
+  const results = [];
+  for (const block of blocks) {
+    const linkMatch = block.match(/<h3[^>]*>[\s\S]*?<a\s+([^>]*)>([\s\S]*?)<\/a>/iu);
+    if (!linkMatch) continue;
+    const attributes = linkMatch[1];
+    const directUrl = attributes.match(/data-mdurl=["']([^"']+)["']/iu)?.[1];
+    const href = attributes.match(/href=["']([^"']+)["']/iu)?.[1];
+    const url = normalizeSearchResultUrl(directUrl || href || '');
+    const title = stripHtml(linkMatch[2]);
+    const snippetMatch = block.match(/<(?:span|p)[^>]*class=["'][^"']*(?:res-list-summary|res-desc)[^"']*["'][^>]*>([\s\S]*?)<\/(?:span|p)>/iu);
+    const snippet = stripHtml(snippetMatch?.[1] || title);
+    const relevanceText = normalizeComparableFact(`${title} ${snippet} ${url}`);
+    if (!url || !title || !/^https?:\/\//iu.test(url) || (productName && !relevanceText.includes(productName))) continue;
+    results.push({ title, url, snippet });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
 function searchQueriesFromPlan(plan = {}) {
   const queries = [];
   for (const query of plan.queries || []) {
@@ -1264,6 +1293,7 @@ async function fetchOpenWebSearchResults({ plan, policy, fetchImpl = fetch, time
   const results = [];
   const seen = new Set();
   const engines = [
+    { baseUrl: 'https://www.so.com/s', param: 'q', parse: parseSoResults },
     { baseUrl: 'https://duckduckgo.com/html/', param: 'q', parse: parseDuckDuckGoResults },
     { baseUrl: 'https://www.baidu.com/s', param: 'wd', parse: parseBaiduResults },
   ];
@@ -1301,6 +1331,179 @@ async function fetchOpenWebSearchResults({ plan, policy, fetchImpl = fetch, time
     clearTimeout(timeoutId);
   }
   return results;
+}
+
+function explicitSalesStatus(text = '', productName = '') {
+  const content = normalizeComparableFact(text);
+  const product = normalizeComparableFact(productName);
+  const index = product ? content.indexOf(product) : -1;
+  if (index < 0) return '';
+  const nearby = content.slice(Math.max(0, index - 120), index + product.length + 120);
+  if (/(?:已停售|停售|停止销售|不再销售)/u.test(nearby)) return '停售';
+  if (/(?:在售|销售中|正在销售|可投保|立即投保)/u.test(nearby)) return '在售';
+  return '';
+}
+
+async function fetchOfficialSalesStatusPage({ url, productName, fetchImpl, signal } = {}) {
+  try {
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      signal,
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html,application/xhtml+xml' },
+    });
+    const contentType = trimString(response.headers?.get?.('content-type'));
+    if (!response.ok || (contentType && !contentType.includes('text/html'))) return '';
+    return explicitSalesStatus(stripHtml(await response.text()), productName);
+  } catch {
+    return '';
+  }
+}
+
+function discoveredMedicalProductNames(value = '', profile = {}) {
+  const aliases = uniqueTrimmed([...(profile?.aliases || []), ...(profile?.companyAliases || [])], 20)
+    .filter((alias) => alias.length >= 2);
+  const compact = String(value || '').replace(/\s+/gu, '');
+  const matches = [
+    ...Array.from(compact.matchAll(
+      /[\p{Script=Han}A-Za-z0-9·—（）()-]{2,60}?(?:百万医疗险|百万医疗保险|医疗保险)(?:[（(][^）)\n]{1,24}[）)])?/gu,
+    )),
+    ...Array.from(compact.matchAll(/(?:中国人寿|国寿)惠享保(?:[（(][^）)\n]{1,24}[）)])?(?:百万医疗险)?/gu)),
+  ];
+  return uniqueTrimmed(matches.map((match) => {
+    let candidate = trimString(match[0]);
+    const brandIndexes = aliases.map((alias) => ({ alias, index: candidate.lastIndexOf(alias) }))
+      .filter((item) => item.index >= 0)
+      .sort((left, right) => right.index - left.index);
+    if (brandIndexes[0]?.index > 0) candidate = candidate.slice(brandIndexes[0].index);
+    if (/(?:中国人寿|国寿)/u.test(aliases.join(' '))) {
+      candidate = candidate.replace(/^中国人寿(?:寿险公司)?(?:推出|发布)?/u, '国寿');
+    }
+    return candidate;
+  }).filter((candidate) => (
+    candidate.length >= 6
+    && candidate.length <= 60
+    && !/(?:有哪些|价格表|靠谱吗|值得买吗|险种|产品详情|产品有哪些|推荐|保险公司提供|有百万|财险|历史上|的一款)/u.test(candidate)
+    && !/^国寿(?:百万医疗保险|百万医疗险|中端医疗保险|康悦医疗保险)$/u.test(candidate)
+    && aliases.some((alias) => candidate.includes(alias))
+  )), 12);
+}
+
+export async function searchOfficialProductSalesStatuses({
+  company = '',
+  productNames = [],
+  discoveryQuery = '',
+  officialDomainProfiles = [],
+  fetchImpl = fetch,
+  timeoutMs = 8_000,
+} = {}) {
+  const knownNames = uniqueTrimmed(productNames, 8);
+  const categoryQuery = trimString(discoveryQuery);
+  if (!trimString(company) || (!knownNames.length && !categoryQuery)) return [];
+  const profile = resolveOfficialProfile({ company }, officialDomainProfiles);
+  const domains = normalizeOfficialDomains(profile?.siteDomains?.length ? profile.siteDomains : profile?.officialDomains || []);
+  if (!domains.length) return [];
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), Math.max(3_000, timeoutMs));
+  try {
+    const discovered = [];
+    if (categoryQuery) {
+      const discoveryQueries = [
+        `${trimString(company)} ${categoryQuery} 在售 产品`,
+        `${trimString(company)} ${categoryQuery} 2025 2026`,
+        `${trimString(company)} 医疗保险 新品`,
+        `${trimString(company)} 保证续保 医疗保险 新品`,
+        ...(knownNames.some((name) => /康悦/u.test(name)) ? [`${trimString(company)} 康悦 医疗保险 2025 2026`] : []),
+      ];
+      const matches = (await Promise.all(discoveryQueries.map((query) => fetchOpenWebSearchResults({
+        plan: { queries: [query], preferredDomains: [] },
+        policy: { company },
+        fetchImpl,
+        timeoutMs,
+        maxResults: 8,
+      })))).flat();
+      for (const match of matches) {
+        const official = isOfficialUrl(match.url, { company }, officialDomainProfiles);
+        const sourceText = `${match.title} ${match.snippet}`;
+        const productNames = [
+          ...discoveredMedicalProductNames(sourceText, profile),
+          ...(/惠享保/u.test(sourceText) && /百万/u.test(sourceText)
+            ? [`国寿惠享保百万医疗险${/免健告|免健康告知/u.test(sourceText) ? '（免健告版）' : ''}`]
+            : []),
+        ].filter((productName) => (
+          !/百万医疗/u.test(categoryQuery)
+          || /百万/u.test(sourceText)
+          || (/康悦|惠享保/u.test(productName) && !/质子|海外/u.test(productName))
+        ) && !(productName.includes('超医保') && /财险/u.test(sourceText)));
+        for (const productName of productNames) {
+          discovered.push({
+            company: trimString(company),
+            productName,
+            status: '待核验',
+            checkedAt: nowIso(),
+            evidenceLevel: official ? 'insurer_official' : 'open_web_reference',
+            source: { title: trimString(match.title) || `${productName}公开网页线索`, url: match.url },
+          });
+        }
+      }
+    }
+    const names = uniqueTrimmed([...knownNames, ...discovered.map((item) => item.productName)], 12);
+    const results = await Promise.all(names.map(async (productName) => {
+      const query = `\"${productName}\" 在售 停售 (${domains.map((domain) => `site:${domain}`).join(' OR ')})`;
+      const matches = await fetchOpenWebSearchResults({
+        plan: { queries: [query], preferredDomains: [] },
+        policy: { company, name: productName },
+        fetchImpl,
+        timeoutMs,
+        maxResults: 3,
+      });
+      for (const match of matches) {
+        if (!isOfficialUrl(match.url, { company, name: productName }, officialDomainProfiles)) continue;
+        const snippetStatus = explicitSalesStatus(`${match.title} ${match.snippet}`, productName);
+        const status = snippetStatus || await fetchOfficialSalesStatusPage({
+          url: match.url,
+          productName,
+          fetchImpl,
+          signal: controller.signal,
+        });
+        if (status) {
+          return {
+            company: trimString(company),
+            productName,
+            status,
+            checkedAt: nowIso(),
+            evidenceLevel: 'insurer_official',
+            source: { title: trimString(match.title) || `${productName}官方资料`, url: match.url },
+          };
+        }
+      }
+      return null;
+    }));
+    const verifiedNames = new Set(results.filter(Boolean).map((item) => trimString(item.productName)));
+    const combined = [
+      ...results.filter(Boolean),
+      ...discovered.filter((item) => !verifiedNames.has(trimString(item.productName))),
+    ];
+    const combinedByName = new Map();
+    for (const item of combined) {
+      const key = trimString(item.productName).normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
+        .replace(/百万(?=医疗)/gu, '')
+        .replace(/医疗险(?=\(|$)/u, '医疗保险')
+        .replace(/\(([a-z])(?:款)?\)$/iu, '($1款)');
+      const current = combinedByName.get(key);
+      const score = (trimString(item.evidenceLevel) === 'insurer_official' ? 100 : 0)
+        + (/医疗保险(?:[（(]|$)/u.test(trimString(item.productName)) ? 10 : 0)
+        - (/百万医疗保险/u.test(trimString(item.productName)) ? 1 : 0);
+      const currentScore = current
+        ? (trimString(current.evidenceLevel) === 'insurer_official' ? 100 : 0)
+          + (/医疗保险(?:[（(]|$)/u.test(trimString(current.productName)) ? 10 : 0)
+          - (/百万医疗保险/u.test(trimString(current.productName)) ? 1 : 0)
+        : -1;
+      if (!current || score > currentScore) combinedByName.set(key, item);
+    }
+    return [...combinedByName.values()];
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function openWebReferenceRecordFromSearchResult(result = {}, policy = {}, officialDomainProfiles = []) {
@@ -1723,6 +1926,14 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     ownerUserId: Number(record.ownerUserId || 0) || 0,
     ownerGuestId: trimString(record.ownerGuestId),
     uploadNames: Array.isArray(record.uploadNames) ? record.uploadNames.map(trimString).filter(Boolean) : [],
+    uploadImages: Array.isArray(record.uploadImages)
+      ? record.uploadImages.map((item) => ({
+        name: trimString(item?.name),
+        type: trimString(item?.type) || 'image/jpeg',
+        size: Number(item?.size || 0) || 0,
+        dataUrl: trimString(item?.dataUrl),
+      })).filter((item) => item.dataUrl.startsWith('data:image/'))
+      : [],
     detailFields: record.detailFields && typeof record.detailFields === 'object' && !Array.isArray(record.detailFields)
       ? record.detailFields
       : undefined,

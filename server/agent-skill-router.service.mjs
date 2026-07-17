@@ -1,3 +1,5 @@
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+
 function trim(value) {
   return String(value || '').trim();
 }
@@ -74,7 +76,7 @@ const SKILL_DEFINITIONS = {
       '只吸收顾问明确选择的续聊内容，不要引入未选择的聊天内容。',
       '把已选续聊中的客户异议、表达偏好、方案排序和下一步动作融入新版报告。',
       '如果已选内容和家庭/保单资料冲突，优先提示“待核实”，不要直接覆盖事实。',
-      '新版报告仍必须保留保障缺口、财富机会、三档方案、异议处理和行动清单。',
+      '新版报告保持简短，只保留关键核实项、最多三个保障问题、最多三个销售机会、一个面谈目标和行动清单。',
     ],
   },
   followup_materials: {
@@ -229,6 +231,7 @@ export async function selectAgentSkillPromptWithDeepSeek({
   salesChatContext = null,
   fetchImpl = fetch,
   config = {},
+  privacyOptions = {},
 } = {}) {
   if (!config.apiKey) {
     return selectAgentSkillPrompt({ scene, question, salesChatContext });
@@ -249,7 +252,7 @@ export async function selectAgentSkillPromptWithDeepSeek({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(body, privacyOptions)),
     });
     if (!response.ok) {
       const bodyText = trim(await response.text());

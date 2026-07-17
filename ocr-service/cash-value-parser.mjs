@@ -277,6 +277,59 @@ export function extractCashValueRows(dataRows, columns) {
   return results;
 }
 
+function structuredTableRows(table = {}) {
+  const headers = Array.isArray(table.headers) ? table.headers : [];
+  const rows = Array.isArray(table.rows) ? table.rows : [];
+  if (!headers.length || !rows.length) return [];
+  return [headers, ...rows].map((row) => (
+    Array.isArray(row) ? row.map((value) => ({ text: String(value ?? '').trim() })) : []
+  ));
+}
+
+/**
+ * Parse cash values from OCR engine table rows before falling back to visual
+ * coordinates. This is the same row/column representation used by policy
+ * basic-information table extraction.
+ */
+export function parseCashValueStructuredTables(tables, options = {}) {
+  const attempts = [];
+  for (const table of Array.isArray(tables) ? tables : []) {
+    const rows = structuredTableRows(table);
+    if (!rows.length) continue;
+    const header = detectTableHeader(rows);
+    if (!header) continue;
+    const parsedRows = uniqueRowsByPolicyYear(extractCashValueRows(
+      rows.slice(header.headerRowIndex + 1),
+      header.columns,
+    ));
+    const flattenedCells = rows.flat();
+    const { valid, confidence } = validateAndScore(parsedRows, flattenedCells);
+    attempts.push({
+      ok: valid,
+      source: options.source || 'structured-table',
+      tableType: header.tableType,
+      rows: parsedRows,
+      rowCount: parsedRows.length,
+      confidence,
+    });
+  }
+
+  const best = attempts.sort((a, b) => (
+    Number(b.ok) - Number(a.ok)
+    || b.rows.length - a.rows.length
+    || b.confidence - a.confidence
+  ))[0];
+  if (best?.ok) return best;
+  return {
+    ok: false,
+    error: best ? 'PARSE_FAILED' : 'CASH_VALUE_TABLE_NOT_DETECTED',
+    message: best
+      ? `结构化表格解析结果不可靠：仅 ${best.rows.length} 行有效数据`
+      : '未检测到现金价值结构化表格',
+    ...(best ? { rows: best.rows, confidence: best.confidence } : {}),
+  };
+}
+
 function uniqueRowsByPolicyYear(rows) {
   const byYear = new Map();
   for (const row of rows) {

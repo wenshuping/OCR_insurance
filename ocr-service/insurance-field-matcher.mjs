@@ -154,6 +154,20 @@ function addProductNameCandidates({ candidates, lines, company }) {
     }
   }
 
+  for (let index = 0; index < lines.length; index += 1) {
+    const matched = cleanupFieldText(lines[index]).match(/投保主险[:：]?\s*(.+?[（(]\d{3,5}[）)])/u);
+    const value = normalizeProductNameText(matched?.[1] || '');
+    if (!value) continue;
+    addCandidate(candidates, createCandidate({
+      field: 'name',
+      value,
+      score: 160,
+      lineIndex: index,
+      source: 'labeled-main-plan-row',
+      reason: 'explicit 投保主险 row',
+    }));
+  }
+
   const stem = findBenefitTableProductStem(lines, company);
   if (!stem) return;
 
@@ -1471,11 +1485,66 @@ function hydrateMissingSequentialPlanDetails(plans, source) {
   return hydrated;
 }
 
+function extractPingAnInlineTablePlans(lines, company) {
+  const plans = [];
+  let insidePlanTable = false;
+  let insideOneYearSection = false;
+
+  for (const rawLine of lines) {
+    const line = cleanupFieldText(rawLine);
+    if (/保险项目.*保险期间.*交费年限.*保险费/u.test(line)) {
+      insidePlanTable = true;
+      continue;
+    }
+    if (!insidePlanTable) continue;
+    if (/附加一年期短险/u.test(line)) insideOneYearSection = true;
+    if (/首期保险费合计/u.test(line)) break;
+
+    const longTerm = line.match(/^(?:(投保主险|附加险|附加长险)[:：]?\s*)?(.+?[（(]\d{3,5}[）)])\s*(终身|\d{1,3}年)\s*(\d{1,3}年)\s*(---|[\d,]+(?:\.\d+)?元)\s*([\d,]+(?:\.\d+)?元)/u);
+    if (longTerm) {
+      const label = longTerm[1] || '';
+      plans.push({
+        company,
+        role: label === '投保主险' || plans.length === 0 ? 'main' : 'rider',
+        name: normalizeProductNameText(longTerm[2]),
+        productType: inferPlanProductType(longTerm[2]),
+        coveragePeriod: normalizeCoveragePeriodText(longTerm[3]),
+        paymentMode: '',
+        paymentPeriod: normalizePlanPaymentPeriod(normalizePaymentPeriodText(longTerm[4]), ''),
+        amount: longTerm[5] === '---' ? '' : normalizeAmountText(longTerm[5]),
+        premium: normalizeAmountText(longTerm[6]),
+        premiumText: longTerm[6],
+      });
+      continue;
+    }
+
+    if (!insideOneYearSection) continue;
+    const oneYear = line.match(/^(.+?[（(]\d{3,5}[）)])\s*([\d,]+(?:\.\d+)?元|\d+份含可选)\s*([\d,]+(?:\.\d+)?元)(?:投保人|被保险人)?$/u);
+    if (!oneYear) continue;
+    plans.push({
+      company,
+      role: 'rider',
+      name: normalizeProductNameText(oneYear[1]),
+      productType: inferPlanProductType(oneYear[1]),
+      coveragePeriod: '1年',
+      paymentMode: '',
+      paymentPeriod: '1年交',
+      amount: normalizeAmountText(oneYear[2]) || oneYear[2],
+      premium: normalizeAmountText(oneYear[3]),
+      premiumText: oneYear[3],
+    });
+  }
+
+  return plans.length >= 2 ? plans : [];
+}
+
 export function extractPolicyPlansFromLines(inputLines, options = {}) {
   const lines = (Array.isArray(inputLines) ? inputLines : [])
     .map((line) => cleanupFieldText(line))
     .filter(Boolean);
   const company = cleanupFieldText(options.company || '');
+  const pingAnPlans = extractPingAnInlineTablePlans(lines, company);
+  if (pingAnPlans.length) return pingAnPlans;
   const chinaLifePlans = extractChinaLifeDetailPlans(lines, company);
   if (chinaLifePlans.length) return chinaLifePlans;
   const receiptPlans = extractReceiptPolicyPlans(lines, company);

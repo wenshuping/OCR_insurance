@@ -1,4 +1,5 @@
 import { jsonrepair } from 'jsonrepair';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MEMORY_MODEL = 'deepseek-v4-flash';
@@ -6,6 +7,8 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_TOKENS = 1_200;
 const FAMILY_SALES_MEMORY_LIMIT = 20;
 const MEMORY_KINDS = new Set(['objection', 'preference', 'strategy', 'correction', 'todo']);
+const AUTO_CONFIRM_MEMORY_KINDS = new Set(['objection', 'preference', 'todo']);
+const CURRENT_MEMORY_STATUSES = new Set(['active', 'confirmed']);
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const CHINA_ID_NUMBER_PATTERN = /\b(?:[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3})\b/gu;
 const MOBILE_PATTERN = /\b1[3-9]\d{9}\b/gu;
@@ -58,6 +61,40 @@ function normalizeMemoryKey(kind = '', content = '') {
     .toLowerCase()}`;
 }
 
+function normalizeProvidedMemoryKey(kind = '', value = '', content = '') {
+  const normalizedKind = normalizeKind(kind);
+  const provided = trim(value)
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}:_-]+/gu, '_')
+    .replace(/^_+|_+$/gu, '')
+    .toLowerCase()
+    .slice(0, 120);
+  if (!provided) return normalizeMemoryKey(normalizedKind, content);
+  return provided.startsWith(`${normalizedKind}:`) ? provided : `${normalizedKind}:${provided}`;
+}
+
+function normalizeIso(value = '') {
+  const text = trim(value);
+  if (!text) return '';
+  const time = Date.parse(text);
+  return Number.isFinite(time) ? new Date(time).toISOString() : '';
+}
+
+function memoryStatus(memory = {}) {
+  const status = trim(memory.status).toLowerCase();
+  return status || 'active';
+}
+
+function isCurrentMemory(memory = {}, asOf = new Date().toISOString()) {
+  if (!CURRENT_MEMORY_STATUSES.has(memoryStatus(memory))) return false;
+  const point = Date.parse(asOf);
+  const validFrom = Date.parse(memory.validFrom || '');
+  const validTo = Date.parse(memory.validTo || '');
+  if (Number.isFinite(validFrom) && validFrom > point) return false;
+  if (Number.isFinite(validTo) && validTo <= point) return false;
+  return !memory.invalidatedAt;
+}
+
 function parseJsonContent(content = '') {
   const text = trim(content)
     .replace(/^```json\s*/iu, '')
@@ -80,11 +117,20 @@ export function normalizeExtractedFamilySalesMemories(value = {}) {
       const kind = normalizeKind(item?.kind);
       const content = sanitizeMemoryContent(item?.content || item?.text || item?.summary);
       const confidence = clampConfidence(item?.confidence);
-      return { kind, content, confidence };
+      const memoryKey = normalizeProvidedMemoryKey(kind, item?.memoryKey || item?.memory_key, content);
+      return {
+        kind,
+        content,
+        confidence,
+        memoryKey,
+        normalizedValue: sanitizeMemoryContent(item?.normalizedValue || item?.normalized_value || content),
+        sourceType: 'user_statement',
+        validFrom: normalizeIso(item?.validFrom || item?.valid_from),
+      };
     })
     .filter((item) => item.kind && item.content && item.confidence >= 0.7)
     .filter((item) => {
-      const key = normalizeMemoryKey(item.kind, item.content);
+      const key = `${item.memoryKey}:${normalizeMemoryKey(item.kind, item.normalizedValue)}`;
       if (!key || seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -106,14 +152,14 @@ export async function extractFamilySalesMemories({
   userMessage = null,
   assistantMessage = null,
   existingMemories = [],
+  directIdentifiers = {},
   fetchImpl = fetch,
   env = process.env,
 } = {}) {
   const config = resolveFamilySalesMemoryConfig(env);
   if (!config.apiKey) return [];
   const userContent = sanitizeMemorySourceText(userMessage?.content || '', 800);
-  const assistantContent = sanitizeMemorySourceText(assistantMessage?.content || '', 1_600);
-  if (!userContent || !assistantContent) return [];
+  if (!userContent) return [];
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -126,12 +172,14 @@ export async function extractFamilySalesMemories({
           role: 'system',
           content: [
             '你是保险销售续聊 memory 提炼器，只输出 JSON。',
-            '目标：从顾问本轮追问和助手回复中提炼可复用的家庭跟进记忆。',
-            '只保留明确、长期可复用、属于当前家庭的信息；不要保存完整原文。',
+            '目标：只从顾问本轮输入中提炼可复用的家庭跟进记忆。',
+            '助手回复不是事实来源，不得把助手提出的话术、判断或策略写成记忆。',
+            '只保留顾问明确陈述、长期可复用、属于当前家庭的信息；不要保存完整原文，也不要推测客户想法。',
             '不要保存手机号、身份证号、证件号或任何可直接识别身份的号码。',
             '不要把保单金额、责任条款、收益、分红或理赔结论当成已确认事实；这类内容只能在需要补证据时写成 todo/correction。',
             '可选 kind：objection, preference, strategy, correction, todo。',
-            'JSON 格式：{"memories":[{"kind":"objection","content":"不超过80字","confidence":0.9}]}',
+            'memoryKey 表示稳定主题槽位，相同主题更新必须使用相同 key，例如 budget_objection、plan_display_preference。',
+            'JSON 格式：{"memories":[{"kind":"objection","memoryKey":"budget_objection","content":"不超过80字","normalizedValue":"预算敏感","validFrom":"可选ISO时间","confidence":0.9}]}',
             '如果没有值得记住的内容，返回 {"memories":[]}',
           ].join('\n'),
         },
@@ -143,9 +191,6 @@ export async function extractFamilySalesMemories({
             '',
             '本轮顾问追问：',
             userContent,
-            '',
-            '本轮助手回复：',
-            assistantContent,
           ].join('\n'),
         },
       ],
@@ -163,7 +208,7 @@ export async function extractFamilySalesMemories({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(body, directIdentifiers)),
     });
     if (!response.ok) return [];
     const payload = await response.json();
@@ -213,39 +258,56 @@ export function upsertFamilySalesMemories({
   };
   const targetOwnerKey = ownerKey(normalizedOwner);
   const now = nowIso();
-  const evidenceMessageIds = mergeEvidenceMessageIds([], [userMessage?.id, assistantMessage?.id]);
+  const evidenceMessageIds = mergeEvidenceMessageIds([], [userMessage?.id]);
   const normalized = normalizeExtractedFamilySalesMemories(extractedMemories);
   if (!normalized.length) return { changed: false, memories: [] };
 
   state.familySalesMemories = Array.isArray(state.familySalesMemories) ? state.familySalesMemories : [];
   const changedMemories = [];
   for (const item of normalized) {
-    const key = normalizeMemoryKey(item.kind, item.content);
+    const key = item.memoryKey;
     const existing = state.familySalesMemories.find((memory) => (
       Number(memory?.familyId || 0) === targetFamilyId &&
-      String(memory?.status || 'active') === 'active' &&
+      isCurrentMemory(memory, now) &&
       memoryOwnerKey(memory) === targetOwnerKey &&
-      normalizeMemoryKey(memory?.kind, memory?.content) === key
+      normalizeProvidedMemoryKey(memory?.kind, memory?.memoryKey, memory?.content) === key
     ));
     if (existing) {
-      existing.confidence = Math.max(clampConfidence(existing.confidence), item.confidence);
-      existing.evidenceMessageIds = mergeEvidenceMessageIds(existing.evidenceMessageIds, evidenceMessageIds);
-      existing.sourceThreadId = Number(sourceThreadId || existing.sourceThreadId || 0);
+      const existingValue = sanitizeMemoryContent(existing.normalizedValue || existing.content);
+      if (existingValue === item.normalizedValue) {
+        existing.confidence = Math.max(clampConfidence(existing.confidence), item.confidence);
+        existing.evidenceMessageIds = mergeEvidenceMessageIds(existing.evidenceMessageIds, evidenceMessageIds);
+        existing.sourceThreadId = Number(sourceThreadId || existing.sourceThreadId || 0);
+        existing.memoryKey = key;
+        existing.recordedAt = existing.recordedAt || existing.createdAt || now;
+        existing.updatedAt = now;
+        changedMemories.push(existing);
+        continue;
+      }
+      existing.status = 'conflicted';
       existing.updatedAt = now;
       changedMemories.push(existing);
-      continue;
     }
+    const autoConfirmed = AUTO_CONFIRM_MEMORY_KINDS.has(item.kind) && item.sourceType === 'user_statement';
     const memory = {
       id: allocateId(state),
       familyId: targetFamilyId,
       ownerUserId: normalizedOwner.ownerUserId,
       ownerGuestId: normalizedOwner.ownerGuestId,
       kind: item.kind,
+      memoryKey: key,
       content: item.content,
+      normalizedValue: item.normalizedValue,
       evidenceMessageIds,
       sourceThreadId: Number(sourceThreadId || 0) || null,
-      status: 'active',
+      sourceType: item.sourceType,
+      status: existing ? 'conflicted' : (autoConfirmed ? 'confirmed' : 'candidate'),
       confidence: item.confidence,
+      validFrom: item.validFrom || now,
+      validTo: null,
+      recordedAt: now,
+      invalidatedAt: null,
+      supersedesMemoryId: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -256,7 +318,7 @@ export function upsertFamilySalesMemories({
   const active = state.familySalesMemories
     .filter((memory) => (
       Number(memory?.familyId || 0) === targetFamilyId &&
-      String(memory?.status || 'active') === 'active' &&
+      isCurrentMemory(memory, now) &&
       memoryOwnerKey(memory) === targetOwnerKey
     ))
     .sort((left, right) => (
@@ -272,9 +334,9 @@ export function upsertFamilySalesMemories({
   return { changed: true, memories: changedMemories };
 }
 
-export function buildFamilySalesMemoryContext(memories = []) {
+export function buildFamilySalesMemoryContext(memories = [], { asOf = new Date().toISOString() } = {}) {
   const active = (Array.isArray(memories) ? memories : [])
-    .filter((memory) => String(memory?.status || 'active') === 'active')
+    .filter((memory) => isCurrentMemory(memory, asOf))
     .sort((left, right) => (
       String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')) ||
       Number(right.id || 0) - Number(left.id || 0)
@@ -282,10 +344,12 @@ export function buildFamilySalesMemoryContext(memories = []) {
     .slice(0, FAMILY_SALES_MEMORY_LIMIT)
     .map((memory) => ({
       kind: normalizeKind(memory?.kind),
+      memoryKey: normalizeProvidedMemoryKey(memory?.kind, memory?.memoryKey, memory?.content),
       content: sanitizeMemoryContent(memory?.content),
       confidence: clampConfidence(memory?.confidence),
       evidenceMessageIds: mergeEvidenceMessageIds(memory?.evidenceMessageIds, []),
       sourceThreadId: Number(memory?.sourceThreadId || 0) || null,
+      validFrom: memory?.validFrom || memory?.createdAt || '',
       updatedAt: memory?.updatedAt || memory?.createdAt || '',
     }))
     .filter((memory) => memory.kind && memory.content);

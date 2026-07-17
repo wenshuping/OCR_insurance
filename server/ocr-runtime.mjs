@@ -139,6 +139,9 @@ export async function scanPolicyWithConfiguredRuntime(input, fetchImpl = fetch, 
       body: JSON.stringify({
         uploadItem: input.uploadItem || undefined,
         ocrText: trim(input.ocrText) || undefined,
+        ocrContext: input.ocrContext || undefined,
+        scenario: trim(input.scenario) || undefined,
+        provider: trim(input.provider) || undefined,
       }),
     });
   } catch (error) {
@@ -167,6 +170,47 @@ export async function scanPolicyWithConfiguredRuntime(input, fetchImpl = fetch, 
   }
   const scanPayload = payload?.scan && typeof payload.scan === 'object' ? payload.scan : payload;
   return enrichScanWithLocalHints(scanPayload, input);
+}
+
+export async function recognizeDocumentTextWithConfiguredRuntime(uploadItem, fetchImpl = fetch, env = process.env, provider = '') {
+  const baseUrl = resolveOcrServiceUrl(env);
+  if (!baseUrl) {
+    const error = new Error('本机 OCR 服务未配置，无法识别文件内容');
+    error.code = 'POLICY_OCR_SERVICE_UNAVAILABLE';
+    error.status = 503;
+    throw error;
+  }
+  const headers = { 'content-type': 'application/json', 'x-internal-service': 'policy-ocr-app' };
+  const token = trim(env.POLICY_OCR_SERVICE_TOKEN);
+  if (token) headers['x-ocr-service-token'] = token;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), resolveOcrTimeoutMs(env));
+  try {
+    const response = await fetchImpl(`${baseUrl}/internal/ocr/text/recognize`, {
+      method: 'POST',
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify({ uploadItem, scenario: 'insurance_material', provider: trim(provider) || undefined }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(payload?.message || payload?.code || 'OCR 识别失败');
+      error.code = payload?.code || 'POLICY_OCR_FAILED';
+      error.status = response.status;
+      throw error;
+    }
+    return trim(payload?.ocrText);
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error('OCR 识别超时，请压缩文件或稍后重试');
+      timeoutError.code = 'POLICY_OCR_UPSTREAM_TIMEOUT';
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function analyzePolicyLocally({ scan }) {

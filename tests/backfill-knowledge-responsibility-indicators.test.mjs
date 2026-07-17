@@ -8,7 +8,20 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   backfillKnowledgeResponsibilityIndicators,
   buildIndicatorsForProduct,
+  readArg,
 } from '../scripts/backfill-knowledge-responsibility-indicators.mjs';
+
+test('readArg accepts both equals and separated CLI values', () => {
+  const original = process.argv;
+  try {
+    process.argv = ['node', 'script', '--db-path', '/tmp/active.sqlite', '--knowledge-ids=1,2'];
+    assert.equal(readArg('db-path'), '/tmp/active.sqlite');
+    assert.equal(readArg('knowledge-ids'), '1,2');
+    assert.equal(readArg('missing', 'fallback'), 'fallback');
+  } finally {
+    process.argv = original;
+  }
+});
 
 function makeTempDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'knowledge-indicators-'));
@@ -206,6 +219,71 @@ test('buildIndicatorsForProduct handles recent official medical, travel, and div
   );
 });
 
+test('buildIndicatorsForProduct carries medical shared formulas and annual limits across sections', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '新华保险',
+    productName: '医药安欣（易核版）医疗保险',
+    productType: '医疗险',
+    salesStatus: '在售',
+    sourceRecordId: 'newchina_medical_1',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/medical-anxin.pdf',
+    sourceTitle: '医药安欣（易核版）医疗保险条款',
+    sourceText: [
+      '2.基本责任 一般医疗费用保险金包括住院医疗费用保险金、住院前后门急诊医疗费用保险金和指定门急诊医疗费用保险金三部分，年度给付限额为200万元。',
+      '重度疾病医疗费用保险金年度给付限额为400万元。外购药械医疗费用保险金年度给付限额为200万元。康护医疗费用保险金年度给付限额根据保障计划确定，计划一为10万元、计划二为5万元、计划三为2万元。',
+      '特定先进医疗费用保险金包括质子重离子医疗费用保险金、特定细胞免疫治疗医疗费用保险金和电场治疗医疗费用保险金，年度给付限额为400万元。电场治疗医疗费用保险金年度给付限额为50万元。',
+      '重度疾病异地就医费用保险金按实际发生金额给付，年度给付限额为1万元。',
+      '3.可选责任一 重度疾病特需医疗费用保险金包括重度疾病特需住院医疗费用保险金、重度疾病特需住院前后门急诊医疗费用保险金和重度疾病特需指定门急诊医疗费用保险金，年度给付限额为400万元。',
+      '4.可选责任二 小额医疗费用保险金年度给付限额根据保障计划确定，计划一为5000元、计划二为10000元、计划三为15000元。',
+      '5.医疗费用保险金计算方法 医疗费用保险金=(每次实际发生的医疗费用-其他途径已经补偿或给付的部分-年度免赔额余额)×赔付比例A×赔付比例B。',
+    ].join(' '),
+  }, '2026-07-12T00:00:00.000Z');
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(
+    byLiability.get('住院医疗费用保险金')?.formulaText,
+    '住院医疗费用保险金 = (实际发生的医疗费用 - 其他途径已补偿或给付部分 - 年度免赔额余额) × 100% × 赔付比例B',
+  );
+  assert.equal(byLiability.get('重度疾病特需医疗费用保险金')?.formulaText, '重度疾病特需医疗费用保险金 = (实际发生的医疗费用 - 其他途径已补偿或给付部分 - 年度免赔额余额) × 80% × 赔付比例B');
+  assert.equal(byLiability.get('重度疾病特需医疗费用保险金')?.responsibilityScope, 'optional');
+  assert.equal(byLiability.get('康护医疗费用保险金')?.responsibilityScope, 'basic');
+  assert.equal(byLiability.get('重度疾病异地就医费用保险金')?.formulaText, '重度疾病异地就医费用保险金 = 实际发生金额');
+  assert.equal(byLiability.get('一般医疗费用保险金年度给付限额')?.value, 2000000);
+  assert.equal(byLiability.get('外购药械医疗费用保险金年度给付限额')?.value, 2000000);
+  assert.equal(byLiability.get('康护医疗费用保险金年度给付限额')?.value, null);
+  assert.equal(byLiability.get('康护医疗费用保险金年度给付限额')?.unit, '元/计划');
+  assert.equal(byLiability.get('小额医疗费用保险金年度给付限额')?.formulaText, '小额医疗费用保险金年度给付限额 = 计划一：5000元；计划二：10000元；计划三：15000元');
+});
+
+test('buildIndicatorsForProduct handles medical formula wording without 比例A/B', () => {
+  const direct = buildIndicatorsForProduct({
+    company: '中荷人寿',
+    productName: '中荷附加住院费用E款医疗保险',
+    productType: '医疗险',
+    salesStatus: '在售',
+    sourceRecordId: 'china-life-medical-variant',
+    sourceUrl: 'https://official.example-life.test/hospital-e.pdf',
+    sourceTitle: '中荷附加住院费用E款医疗保险条款',
+    sourceText: '保险责任 住院医疗费用保险金 对合理且必要的住院医疗费用，我们按照医疗费用保险金计算方法给付。医疗费用保险金计算方法：住院医疗费用保险金=(有效医疗费用-其他途径补偿-次免赔额)×赔付比例。已获得基本医疗保险补偿的赔付比例为90%，未获得补偿的赔付比例为70%。',
+  }, '2026-07-12T00:00:00.000Z');
+  assert.equal(direct.find((item) => item.liability === '住院医疗费用保险金')?.formulaText, '住院医疗费用保险金 = (实际合理医疗费用 - 已获补偿 - 免赔额/起付金额) × 90%');
+
+  const shared = buildIndicatorsForProduct({
+    company: '渤海人寿',
+    productName: '百万无忧团体医疗保险',
+    productType: '医疗险',
+    salesStatus: '在售',
+    sourceRecordId: 'bohai-medical-variant',
+    sourceUrl: 'https://official.example-life.test/group-medical.pdf',
+    sourceTitle: '百万无忧团体医疗保险条款',
+    sourceText: '一般医疗保险金、重大疾病医疗保险金按照以下方法计算：应给付的保险金=(发生的医疗费用的有效金额-免赔额余额)×赔付比例。其他情况下赔付比例为100%。',
+  }, '2026-07-12T00:00:00.000Z');
+  const sharedFormulas = new Map(shared.map((item) => [item.liability, item.formulaText]));
+  assert.equal(sharedFormulas.get('一般医疗保险金'), '一般医疗保险金 = (发生的医疗费用的有效金额-免赔额余额)×赔付比例');
+  assert.equal(sharedFormulas.get('重大疾病医疗保险金'), '重大疾病医疗保险金 = (发生的医疗费用的有效金额-免赔额余额)×赔付比例');
+  assert.equal(shared.some((item) => /津贴|日额/u.test(item.liability)), false);
+});
+
 test('buildIndicatorsForProduct extracts hospitalization 给付金 day-count formulas', () => {
   const indicators = buildIndicatorsForProduct({
     company: '友邦人寿',
@@ -259,6 +337,42 @@ test('buildIndicatorsForProduct splits AIA compensation subheads into concrete l
     byLiability.get('手术费补偿金')?.formulaText,
     '手术费补偿金 = min(实际合理手术费 - 已获补偿, 手术费基本保险金额)',
   );
+});
+
+test('buildIndicatorsForProduct rejects formula continuation names and deduplicates filler words', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '友邦人寿',
+    productName: '友邦悦安益意外伤害保险',
+    productType: '意外险',
+    salesStatus: '在售',
+    sourceRecordId: 'aia_yueanyi_1',
+    sourceUrl: 'https://www.aia.com.cn/example/yueanyi.pdf',
+    sourceTitle: '友邦悦安益意外伤害保险条款',
+    sourceText: [
+      '保险责任 基础意外医药费用补偿金 若被保险人因意外伤害发生必需且合理的实际医药费用，本公司按合同约定给付基础意外医药费用补偿金。',
+      '必需且合理的实际医药费用按如下公式支付基础意外医药费用补偿金。',
+      '目录外药品费用补偿金 若被保险人发生目录外药品费用，本公司按合同约定给付目录外药品费用补偿金。',
+      '目录外的药品费用补偿金 若被保险人发生目录外药品费用，本公司按合同约定给付目录外的药品费用补偿金。',
+      '目录外的药品费用（释义二十四）补偿金 若被保险人发生目录外药品费用，本公司按合同约定给付目录外的药品费用补偿金。',
+    ].join('\n'),
+  }, '2026-07-10T00:00:00.000Z');
+
+  const liabilities = indicators.map((indicator) => indicator.liability);
+  assert.equal(liabilities.includes('必需且合理的实际医药费用按如下公式支付基础意外医药费用补偿金'), false);
+  assert.equal(liabilities.filter((liability) => /目录外.*药品费用补偿金/u.test(liability)).length, 1);
+});
+
+test('buildIndicatorsForProduct rejects waiver verb phrases as liability names', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '测试人寿',
+    productName: '测试豁免保险',
+    sourceRecordId: 'waiver_verb_1',
+    sourceUrl: 'https://official.example-life.test/waiver.pdf',
+    sourceTitle: '测试豁免保险条款',
+    sourceText: '保险责任 中症疾病或轻症疾病豁免保险费 被保险人确诊中症疾病或轻症疾病，本公司将豁免保险费。',
+  }, '2026-07-10T00:00:00.000Z');
+
+  assert.equal(indicators.some((indicator) => indicator.liability === '将豁免保险费'), false);
 });
 
 test('buildIndicatorsForProduct infers AIA hospitalization expense compensation liability', () => {
@@ -1743,4 +1857,28 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('buildIndicatorsForProduct parses Xinhua anniversary annuity payment wording', () => {
+  const indicators = buildIndicatorsForProduct({
+    company: '新华保险',
+    productName: '新华人寿保险股份有限公司金悦优选庆典版养老年金保险（分红型）',
+    productType: '年金险',
+    sourceRecordId: '515105',
+    sourceText: '保险责任 1.祝寿金被保险人于首次养老年金领取日生存，祝寿金=首次交纳保险费的金额×已经过完整保单年度数×1.75% 祝寿金=首次交纳保险费的金额×本合同保险费的交费年期数×1.75% 月交祝寿金=首次交纳保险费的金额×已经过完整保单年度数×12×1.75% 2.养老年金被保险人生存，每年领取金额为基本保险金额；每月领取金额为基本保险金额×月领折算系数。3.满期生存保险金被保险人生存至保险期间届满，按实际交纳的保险费给付。4.身故保险金被保险人身故，按实际交纳的保险费与基本保险金额对应的现金价值二者之较大者给付。',
+  }, new Date().toISOString());
+
+  const byLiability = new Map(indicators.map((indicator) => [indicator.liability, indicator]));
+  assert.equal(byLiability.get('祝寿金')?.value, 1.75);
+  assert.match(byLiability.get('祝寿金')?.formulaText || '', /已经过完整保单年度数/u);
+  assert.equal(byLiability.get('月交祝寿金')?.value, 1.75);
+  assert.match(byLiability.get('月交祝寿金')?.formulaText || '', /× 12 × 1.75%/u);
+  assert.equal(
+    byLiability.get('养老年金')?.formulaText,
+    '养老年金 = 按年领取：基本保险金额；按月领取：基本保险金额 × 月领折算系数',
+  );
+  assert.equal(
+    byLiability.get('身故保险金')?.formulaText,
+    '身故保险金 = max(已交保险费, 基本保险金额对应现金价值)',
+  );
 });

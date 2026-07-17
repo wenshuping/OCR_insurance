@@ -31,10 +31,13 @@ function parsePayload(value, fallback = {}) {
   }
 }
 
-function readArg(name, fallback = '') {
+export function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
   const found = process.argv.find((arg) => arg.startsWith(prefix));
-  return found ? found.slice(prefix.length) : fallback;
+  if (found) return found.slice(prefix.length);
+  const index = process.argv.indexOf(`--${name}`);
+  const value = index >= 0 ? process.argv[index + 1] : '';
+  return value && !value.startsWith('--') ? value : fallback;
 }
 
 function parseIdList(value) {
@@ -435,6 +438,7 @@ function cleanLiability(value) {
     .replace(/^第\s*[（(]?[一二三四五六七八九十\d]+[）)]?\s*项/u, '')
     .replace(/^(必选责任|基本责任|可选责任|一、|二、|三、|四、)/u, '')
     .replace(/^(?:年给付限额|年度给付限额|累计给付限额)?\d+(?:\.\d+)?\s*万?元(?=.+(?:保险金|补偿金|津贴|年金|确诊金|慰问金))/u, '')
+    .replace(/[（(]释义[一二三四五六七八九十\d]+[）)]/gu, '')
     .replace(/["“”']/gu, '')
     .replace(/\s+/gu, '')
     .replace(/^按下表所示比例给付(?=.+(?:保险金|补偿金|津贴|年金|确诊金|慰问金))/u, '')
@@ -458,8 +462,11 @@ function liabilityLooksClean(value) {
   if (genericPayoutLiability(text)) return false;
   if (!/(?:保险金|补偿金|补助金|给付金|津贴|年金|满期金|生存金|祝寿金|贺寿金|贺岁金|长寿金|关爱金|教育金|婚嫁金|立业金|创业金|深造金|确诊金|慰问金|豁免保险费)$/u.test(text)) return false;
   if (/^(保险金|基本保险金|医疗保险金|特定医疗保险金|津贴保险金)$/u.test(text)) return false;
+  if (/^\d/u.test(text)) return false;
+  if (/^(?:项|赔付|合理且必要|其每次|其他保险金统称)/u.test(text)) return false;
   if (/^(每一保险期间累计给付|已达到保险单上载明的|外伤害|年度给付限额|年给付限额|累计给付限额|累计给付|扣除|已给付|已赔付)/u.test(text)) return false;
   if (/^保险费[和及].+豁免保险费$/u.test(text)) return false;
+  if (/^(?:将|予以|可以|可)豁免保险费$/u.test(text)) return false;
   if (/^(年免赔额给付比例|保险责任给付限额|\d+(?:\.\d+)?万保险责任给付限额)/u.test(text)) return false;
   if (/每年一次|全额理赔|最高给付限制/u.test(text)) return false;
   if (/^[（(]|^(按照|按不同|约定|般|准|年领方式|月领方式|金额|比例|限额|限制|与|给付比例|赔付比例|下列|下的|中的|应给付|等同于|等值于|的|予|本附加|累计|以|相应|对应|后次|前次|本次|该项|在各项|规则|各对应|各该项|较严重项目|较严重|各项|每一项|同一项|次序|内给付|和给付次数)/u.test(text)) return false;
@@ -472,12 +479,19 @@ function liabilityLooksClean(value) {
   if (/^比例最高|对应项|项目的/u.test(text)) return false;
   if (/^(分别以|时应扣除|额累计达到|个合同生效日|上限为|日及其后|日后的)/u.test(text)) return false;
   if (/保险金[（(]若[有选][）)][和或]|保险金若您选择|该类型下|交清增额保险对应|对应的(?:身故保险金|养老年金|满期保险金|保险金)|对应身故保险金|保险单上载明的该项交通工具对应|对应日按基本保险金/u.test(text)) return false;
+  if (/(?:保险金|补偿金).*(?:和|或).*(?:保险金|补偿金)/u.test(text)) return false;
   if (/^[一二三四五六七八九十\d]+倍同等金额的保险金/u.test(text)) return false;
   if (/保险金.+保险金/u.test(text)) return false;
   if (/我们|本公司|被保险人|投保人|给付保险金|责任终止|本合同|附加险合同|约定给付/u.test(text)) return false;
+  if (/(?:按如下|按以下|按照如下|按照以下|根据如下|根据以下).{0,16}(?:公式|方式).{0,12}(?:支付|给付|赔付)/u.test(text)) return false;
   if (/申请书|条件之前|条件之日|伤残等级对应|保单周年日|周年日|金额最高|赔付金额最高|一项保险金|任意一项保险金|任何一项保险金|各对应项|各项保险金|本项责任|已符合|对应组别|本主险合同|同时给付生存保险金|赔付时需扣除|不再给付|保单账户价值及|每万元|如果未发生|给付各项|应给付|应当给付|应领取|未领取|尚未给付|扣除已领取|给付比例给付|赔付比例给付|给付比例表中|相应|相类似的残疾项目|不超过您投保|所对应的|按年领取|按月领取|约定的给付比例|费用在扣除免赔额后|天数|乘以|无单项限额|范围\)/u.test(text)) return false;
   if (/按照|给付以下保险金|给付医疗保险金|保险有限责任公司|人寿保险|准给付|年领方式|月领方式|方式下|产品说明书|条款|发〔|保险合同|本附加合同|保险金的责任/u.test(text)) return false;
   return true;
+}
+
+function comparableLiabilityKey(value) {
+  return normalizeLookupText(value)
+    .replace(/的(?=(?:药品|医药|医疗|住院|门诊|手术|护理|康复|疾病|意外|身故|伤残|全残|教育|生存|满期))/gu, '');
 }
 
 function responsibilityScopeForSection(rawLiability, sectionText) {
@@ -826,6 +840,68 @@ function dayCountAmountFormula(liability, text) {
   };
 }
 
+function explicitBirthdayBenefitFormula(liability, text) {
+  if (!/祝寿金/u.test(liability)) return null;
+  const compact = normalizeSpaces(text).replace(/\s+/gu, '');
+  const rateMatch = compact.match(/(?:月交)?祝寿金=[^。；]{0,220}?(\d+(?:\.\d+)?)\s*[％%]/u);
+  if (!rateMatch) return null;
+
+  const rate = rateMatch[1];
+  const monthly = /月交祝寿金/u.test(liability);
+  const branches = [];
+  const multiplier = monthly ? ' × 12' : '';
+  if (/已经过完整保单年度数/u.test(compact)) {
+    branches.push(`首次交纳保险费的金额 × 已经过完整保单年度数${multiplier} × ${rate}%`);
+  }
+  if (/交费年期数/u.test(compact)) {
+    branches.push(`首次交纳保险费的金额 × 本合同保险费交费年期数${multiplier} × ${rate}%`);
+  }
+  if (!branches.length) return null;
+
+  return {
+    value: Number(rate),
+    valueText: rate,
+    unit: '%',
+    basis: `首次交纳保险费的金额、已经过完整保单年度数${/交费年期数/u.test(compact) ? '、本合同保险费交费年期数' : ''}${monthly ? '、月交折算系数12' : ''}`,
+    formulaText: `${liability} = ${branches.join('；')}`,
+  };
+}
+
+function explicitAnnuityPaymentFormula(liability, text) {
+  if (!/年金/u.test(liability)) return null;
+  const compact = normalizeSpaces(text).replace(/\s+/gu, '');
+  const annual = /每年领取金额为基本保险金额/u.test(compact);
+  const monthly = /每月领取金额为基本保险金额[×xX*]月领折算系数/u.test(compact);
+  if (!annual && !monthly) return null;
+
+  const branches = [];
+  if (annual) branches.push('按年领取：基本保险金额');
+  if (monthly) branches.push('按月领取：基本保险金额 × 月领折算系数');
+  return {
+    value: null,
+    valueText: '',
+    unit: '公式',
+    basis: `基本保险金额${monthly ? '、月领折算系数' : ''}`,
+    formulaText: `${liability} = ${branches.join('；')}`,
+  };
+}
+
+function explicitPaidPremiumCashValueMaxFormula(liability, text) {
+  if (!/身故|全残/u.test(liability)) return null;
+  const compact = normalizeSpaces(text).replace(/\s+/gu, '');
+  if (!/现金价值/u.test(compact) || !/较高者|较大者|较高值|较大值/u.test(compact)) return null;
+  if (!/(?:基本|有效)保险金额对应的现金价值/u.test(compact)) return null;
+  if (!/(?:实际交纳|已交(?:纳)?|所交)(?:的)?(?:保险费|保费)[^。；]{0,80}现金价值/u.test(compact)) return null;
+  const cashBasis = /基本保险金额对应的现金价值/u.test(compact) ? '基本保险金额对应现金价值' : '现金价值';
+  return {
+    value: null,
+    valueText: '',
+    unit: '公式',
+    basis: `已交保险费、${cashBasis}`,
+    formulaText: `${liability} = max(已交保险费, ${cashBasis})`,
+  };
+}
+
 export function formulaFor(liability, sectionText) {
   const fullText = normalizeSpaces(sectionText);
   const currentLiabilityIndex = fullText.indexOf(liability);
@@ -833,6 +909,8 @@ export function formulaFor(liability, sectionText) {
   const compactPrefixHasLiability = normalizeLookupText(fullText.slice(0, 120)).includes(compactLiability);
   const conditionalFormula = conditionalEarlyLateAmountFormula(liability, fullText);
   if (conditionalFormula) return conditionalFormula;
+  const explicitMaxFormula = explicitPaidPremiumCashValueMaxFormula(liability, fullText);
+  if (explicitMaxFormula) return explicitMaxFormula;
   if (currentLiabilityIndex >= 0) {
     const leadWindow = fullText.slice(Math.max(0, currentLiabilityIndex - 260), currentLiabilityIndex + liability.length + 260);
     const compactLeadWindow = leadWindow.replace(/\s+/gu, '');
@@ -924,6 +1002,10 @@ export function formulaFor(liability, sectionText) {
   if (/(保险金给付限制|给付限制|已给付|已赔付|已领取)/u.test(scopedText.slice(0, 260)) && /降低为|降为|减少为/u.test(scopedText.slice(0, 360))) {
     return null;
   }
+  const explicitBirthdayFormula = explicitBirthdayBenefitFormula(liability, text);
+  if (explicitBirthdayFormula) return explicitBirthdayFormula;
+  const explicitAnnuityFormula = explicitAnnuityPaymentFormula(liability, text);
+  if (explicitAnnuityFormula) return explicitAnnuityFormula;
   const dayCountFormula = dayCountAmountFormula(liability, text);
   if (dayCountFormula) return dayCountFormula;
   if (/意外住院津贴保险金/u.test(liability)) {
@@ -1534,6 +1616,273 @@ export function conditionFromText(text) {
   return trim(match?.[1] || '');
 }
 
+const MEDICAL_FORMULA_LIABILITIES = Object.freeze([
+  '一般医疗费用保险金',
+  '住院医疗费用保险金',
+  '住院前后门急诊医疗费用保险金',
+  '指定门急诊医疗费用保险金',
+  '重度疾病医疗费用保险金',
+  '重度疾病住院医疗费用保险金',
+  '重度疾病住院前后门急诊医疗费用保险金',
+  '重度疾病指定门急诊医疗费用保险金',
+  '外购药械医疗费用保险金',
+  '康护医疗费用保险金',
+  '住院康复医疗费用保险金',
+  '家庭护理费用保险金',
+  '特定先进医疗费用保险金',
+  '质子重离子医疗费用保险金',
+  '特定细胞免疫治疗医疗费用保险金',
+  '电场治疗医疗费用保险金',
+  '重度疾病异地就医费用保险金',
+  '重度疾病特需医疗费用保险金',
+  '重度疾病特需住院医疗费用保险金',
+  '重度疾病特需住院前后门急诊医疗费用保险金',
+  '重度疾病特需指定门急诊医疗费用保险金',
+  '小额医疗费用保险金',
+]);
+
+const MEDICAL_LIMIT_LIABILITIES = Object.freeze([
+  '一般医疗费用保险金',
+  '重度疾病医疗费用保险金',
+  '外购药械医疗费用保险金',
+  '康护医疗费用保险金',
+  '特定先进医疗费用保险金',
+  '电场治疗医疗费用保险金',
+  '重度疾病异地就医费用保险金',
+  '重度疾病特需医疗费用保险金',
+  '小额医疗费用保险金',
+]);
+
+function medicalMoneyAmount(text) {
+  const compact = normalizeSpaces(text).replace(/\s+/gu, '');
+  const match = compact.match(/(\d+(?:\.\d+)?)(万)?元/u);
+  if (!match?.[1]) return null;
+  const amount = Number(match[1]) * (match[2] ? 10000 : 1);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function medicalPlanAmounts(text) {
+  const compact = normalizeSpaces(text).replace(/\s+/gu, '');
+  return [...compact.matchAll(/计划([一二三123])为(\d+(?:\.\d+)?)(万)?元/gu)]
+    .map((match) => {
+      const amount = Number(match[2]) * (match[3] ? 10000 : 1);
+      return {
+        plan: match[1],
+        amount,
+      };
+    })
+    .filter((item) => Number.isFinite(item.amount));
+}
+
+function medicalLiabilityOccurrence(source, liability) {
+  const positions = [];
+  const pattern = new RegExp(escapeRegExp(liability), 'gu');
+  for (const match of source.matchAll(pattern)) positions.push(match.index || 0);
+  if (!positions.length) return -1;
+  const optionalAnchor = /特需/u.test(liability)
+    ? source.indexOf('可选责任一')
+    : /小额/u.test(liability)
+      ? source.indexOf('可选责任二')
+      : -1;
+  if (optionalAnchor >= 0) {
+    const optionalPosition = positions.find((position) => position >= optionalAnchor);
+    if (optionalPosition !== undefined) return optionalPosition;
+  }
+  return positions[0];
+}
+
+function medicalResponsibilityScope(liability) {
+  return /特需|小额/u.test(liability) ? 'optional' : 'basic';
+}
+
+function medicalAnnualLimit(source, liability) {
+  const pattern = new RegExp(escapeRegExp(liability), 'gu');
+  let best = null;
+  for (const match of source.matchAll(pattern)) {
+    const position = match.index || 0;
+    const window = source.slice(position, position + 1100);
+    const limitIndex = window.search(/年度(?:累计)?给付限额/u);
+    if (limitIndex < 0) continue;
+    const limitText = window.slice(limitIndex, limitIndex + 180);
+    const limitClause = limitText.split(/[。；]/u)[0];
+    const planValues = medicalPlanAmounts(limitClause);
+    const amount = planValues.length ? null : medicalMoneyAmount(limitClause);
+    if (!planValues.length && amount === null) continue;
+    const distance = limitIndex;
+    if (!best || distance < best.distance) {
+      best = { position, limitText, planValues, amount, distance };
+    }
+  }
+  return best;
+}
+
+function medicalLiabilityLooksUsable(value) {
+  const liability = cleanLiability(value);
+  if (liability.length < 4 || liability.length > 48) return false;
+  if (!/(?:医疗|住院|门诊|药品|药械|费用|医疗器械)/u.test(liability)) return false;
+  if (/(?:津贴|日额|补贴)/u.test(liability) && !/医疗/u.test(liability)) return false;
+  if (/[，,：:]/u.test(liability)) return false;
+  if (/[\d/]/u.test(liability)) return false;
+  if (/^(?:包括|符合|合理|其每次|后|给付|赔付|比例|按照|按|对于|本合同|本附加合同|各项|下列|应当|应给付|限额|其中|若|我们|本公司|被保险人|保险人)/u.test(liability)) return false;
+  if (/(?:方法|计算|并在|但上述|给付|赔付|按照|约定|合理且必要|其每次|和|或)/u.test(liability)) return false;
+  if (/^(?:医疗费用保险金|医疗保险金|费用保险金|保险金)$/u.test(liability)) return false;
+  if (/(?:见附表|项所列|将恢复|责任终止|为限|保险责任)/u.test(liability)) return false;
+  return /(?:保险金|补偿金|补助金|津贴)$/u.test(liability);
+}
+
+function medicalSourceLiabilities(source) {
+  const sectionLiabilities = splitBenefitSections(source).map((section) => section.liability);
+  const formulaLiabilities = [...source.matchAll(/([^。；]{2,70}?(?:医疗|住院|门急诊|门诊|药品|药械|医疗器械)[^。；=＝]{0,20}(?:保险金|补偿金))\s*[=＝]/gu)]
+    .map((match) => match[1]);
+  const titleLiabilities = [...source.matchAll(/(?:^|[。；，,、\s])([\u4e00-\u9fa5A-Za-z（）()「」“”\-—]{2,24}?(?:医疗费用保险金|医疗保险金|医疗费用补偿金|住院医疗保险金|门诊医疗保险金|药品费用医疗保险金|药械医疗保险金))(?=、|和|按照|计算|给付|为|。|；|，|,|\s|$)/gu)]
+    .map((match) => match[1]);
+  return uniqueStrings([
+    ...MEDICAL_FORMULA_LIABILITIES.filter((liability) => source.includes(liability)),
+    ...sectionLiabilities,
+    ...formulaLiabilities,
+    ...titleLiabilities,
+  ]).map(cleanLiability).filter(medicalLiabilityLooksUsable);
+}
+
+function medicalDirectFormulaEntries(source, liabilities) {
+  const entries = [];
+  for (const liability of liabilities) {
+    const pattern = new RegExp(`${escapeRegExp(liability)}\\s*[=＝]\\s*([^。；]{8,320})`, 'gu');
+    for (const match of source.matchAll(pattern)) {
+      const expression = normalizeSpaces(match[1]);
+      if (!/(?:医疗|费用|赔付|给付|补偿|免赔|药品|保险金额)/u.test(expression)) continue;
+      const position = match.index || 0;
+      entries.push({
+        section: {
+          liability,
+          responsibilityScope: /可选责任|特需|小额/u.test(source.slice(Math.max(0, position - 160), position)) ? 'optional' : 'basic',
+          text: source.slice(Math.max(0, position - 100), Math.min(source.length, position + match[0].length + 140)),
+        },
+        formula: {
+          value: null,
+          valueText: '',
+          unit: '公式',
+          basis: '实际医疗费用、其他途径已获补偿、免赔额、赔付比例或给付比例',
+          formulaText: `${liability} = ${expression}`,
+        },
+      });
+    }
+  }
+  return entries;
+}
+
+function medicalSharedFormulaEntries(source, liabilities, directLiabilities) {
+  const entries = [];
+  const sharedPattern = /(?:医疗费用保险金|医疗保险金|应给付的保险金)\s*[=＝]\s*([^。；]{8,320})/gu;
+  for (const match of source.matchAll(sharedPattern)) {
+    const expression = normalizeSpaces(match[1]);
+    if (!/(?:医疗|费用|赔付|给付|补偿|免赔|药品|保险金额)/u.test(expression)) continue;
+    const position = match.index || 0;
+    const prefix = source.slice(Math.max(0, position - 220), position);
+    const nearbyLiabilities = liabilities.filter((liability) => prefix.includes(liability));
+    const targets = nearbyLiabilities.length ? nearbyLiabilities : liabilities;
+    for (const liability of targets) {
+      if (directLiabilities.has(liability)) continue;
+      entries.push({
+        fallback: 'shared',
+        section: {
+          liability,
+          responsibilityScope: /可选责任|特需|小额/u.test(prefix) ? 'optional' : 'basic',
+          text: source.slice(Math.max(0, position - 260), Math.min(source.length, position + match[0].length + 160)),
+        },
+        formula: {
+          value: null,
+          valueText: '',
+          unit: '公式',
+          basis: '实际医疗费用、免赔额、赔付比例或给付比例',
+          formulaText: `${liability} = ${expression}`,
+        },
+      });
+    }
+  }
+  return entries;
+}
+
+function medicalIndicatorEntries(product) {
+  const source = normalizeSpaces(product.sourceText);
+  const formulaPosition = source.search(/医疗费用保险金\s*[=＝][^。；]{0,260}赔付比例A[^。；]{0,40}赔付比例B/u);
+  const formulaSignal = /(?:医疗费用保险金|医疗保险金|保险金)\s*[=＝]|(?:医疗费用保险金|医疗保险金|保险金)计算(?:方法|方式)|(?:赔付比例|给付比例)/u.test(source);
+  if (formulaPosition < 0 && !formulaSignal) return [];
+
+  const formulaSource = formulaPosition >= 0
+    ? source.slice(Math.max(0, formulaPosition - 80), formulaPosition + 620)
+    : '';
+  const entries = [];
+  if (formulaPosition >= 0) for (const liability of MEDICAL_FORMULA_LIABILITIES) {
+    const position = medicalLiabilityOccurrence(source, liability);
+    if (position < 0) continue;
+    const responsibilityScope = medicalResponsibilityScope(liability);
+    const sourceExcerpt = limitText(`${source.slice(Math.max(0, position - 80), position + 520)} ${formulaSource}`, 1200);
+    if (/异地就医/u.test(liability)) {
+      entries.push({
+        section: { liability, responsibilityScope, text: sourceExcerpt },
+        formula: {
+          value: null,
+          valueText: '',
+          unit: '公式',
+          basis: '实际发生的公共交通费和住宿费、年度给付限额',
+          formulaText: `${liability} = 实际发生金额`,
+        },
+      });
+      continue;
+    }
+    const paymentRatio = /特需/u.test(liability) ? 80 : /小额/u.test(liability) ? 50 : 100;
+    entries.push({
+      section: { liability, responsibilityScope, text: sourceExcerpt },
+      formula: {
+        value: null,
+        valueText: '',
+        unit: '公式',
+        basis: '实际发生的医疗费用、其他途径已补偿或给付部分、年度免赔额余额、赔付比例A、赔付比例B',
+        formulaText: `${liability} = (实际发生的医疗费用 - 其他途径已补偿或给付部分 - 年度免赔额余额) × ${paymentRatio}% × 赔付比例B`,
+      },
+    });
+  }
+
+  if (formulaPosition < 0) {
+    const liabilities = medicalSourceLiabilities(source);
+    const directEntries = medicalDirectFormulaEntries(source, liabilities);
+    const directLiabilities = new Set(directEntries.map((entry) => entry.section.liability));
+    entries.push(...directEntries, ...medicalSharedFormulaEntries(source, liabilities, directLiabilities));
+  }
+
+  const limitLiabilities = uniqueStrings([
+    ...MEDICAL_LIMIT_LIABILITIES,
+    ...medicalSourceLiabilities(source),
+  ]);
+  for (const liability of limitLiabilities) {
+    const limit = medicalAnnualLimit(source, liability);
+    if (!limit) continue;
+    const position = limit.position;
+    const responsibilityScope = medicalResponsibilityScope(liability);
+    const indicatorLiability = `${liability}年度给付限额`;
+    const planText = limit.planValues.length
+      ? limit.planValues.map((item) => `计划${item.plan}：${item.amount}元`).join('；')
+      : `${limit.amount}元`;
+    entries.push({
+      section: {
+        liability: indicatorLiability,
+        responsibilityScope,
+        text: limitText(source.slice(Math.max(0, position - 80), position + 1100), 1200),
+      },
+      formula: {
+        value: limit.planValues.length ? null : limit.amount,
+        valueText: limit.planValues.length ? planText : String(limit.amount),
+        unit: limit.planValues.length ? '元/计划' : '元',
+        basis: '条款载明年度给付限额',
+        formulaText: `${indicatorLiability} = ${planText}`,
+        condition: '年度给付限额',
+      },
+    });
+  }
+  return entries;
+}
+
 function loadProductsWithoutIndicators(db, {
   minKnowledgeId = 0,
   companies = [],
@@ -1630,12 +1979,11 @@ function loadProductsWithoutIndicators(db, {
 export function buildIndicatorsForProduct(product, now) {
   const indicators = [];
   const seen = new Set();
-  for (const section of splitBenefitSections(product.sourceText)) {
-    const formula = formulaFor(section.liability, section.text);
-    if (!formula) continue;
-    const coverageType = coverageTypeFor(section.liability, section.text);
+  const appendIndicator = (section, formula, coverageTypeOverride = '', options = {}) => {
+    const coverageType = coverageTypeOverride || coverageTypeFor(section.liability, section.text);
+    if (options.fallback === 'shared' && indicators.some((item) => item.coverageType === coverageType && item.liability === section.liability)) return;
     const key = [coverageType, section.liability, formula.formulaText].map(normalizeLookupText).join('\u001f');
-    if (seen.has(key)) continue;
+    if (seen.has(key)) return;
     seen.add(key);
     const id = `ind_knowledge_auto_${sha1([product.company, product.productName, coverageType, section.liability, formula.formulaText].join('\u001f'))}`;
     indicators.push({
@@ -1651,7 +1999,7 @@ export function buildIndicatorsForProduct(product, now) {
       unit: formula.unit,
       basis: formula.basis,
       formulaText: formula.formulaText,
-      condition: conditionFromText(section.text),
+      condition: formula.condition || conditionFromText(section.text),
       responsibilityScope: section.responsibilityScope,
       quantificationStatus: 'quantified',
       extractionMethod: '知识库责任规则抽取',
@@ -1663,14 +2011,25 @@ export function buildIndicatorsForProduct(product, now) {
       version: VERSION,
       updatedAt: now,
     });
+  };
+  for (const section of splitBenefitSections(product.sourceText)) {
+    const formula = formulaFor(section.liability, section.text);
+    if (!formula) continue;
+    appendIndicator(section, formula);
+  }
+  for (const entry of medicalIndicatorEntries(product)) {
+    appendIndicator(entry.section, entry.formula, '医疗保障', entry);
   }
   const deduped = [];
   for (const indicator of [...indicators].sort((a, b) => b.liability.length - a.liability.length)) {
     const formulaTail = indicator.formulaText.replace(new RegExp(`^${indicator.liability.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\s*=\\s*`, 'u'), '');
+    const liabilityKey = comparableLiabilityKey(indicator.liability);
     const duplicate = deduped.some((existing) => (
       existing.coverageType === indicator.coverageType
       && existing.formulaText.replace(new RegExp(`^${existing.liability.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\s*=\\s*`, 'u'), '') === formulaTail
       && (
+        comparableLiabilityKey(existing.liability) === liabilityKey
+        ||
         existing.liability === `${indicator.liability}保险金`
         || indicator.liability === `${existing.liability}保险金`
         || (

@@ -57,6 +57,7 @@ async function main() {
   const maxWorkers = readNumberArg('max-workers', Number(process.env.ZHONGAN_MAX_WORKERS || 6));
   const knowledgeStore = await createKnowledgeStateStore();
   try {
+    const beforeUrls = new Set(knowledgeStore.knownCompanyUrls('众安保险'));
     const result = runCrawler({
       mode: 'zhongan_pages',
       company: '众安保险',
@@ -64,13 +65,14 @@ async function main() {
       productOffset,
       maxPages,
       maxWorkers,
+      skipUrls: [...beforeUrls],
     });
 
     const state = knowledgeStore.loadState();
     if (!Number(state.nextId)) state.nextId = 1;
     const before = knowledgeStore.countKnowledgeRecords();
-    const beforeUrls = new Set(knowledgeStore.allKnownUrls());
-    const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
+    const recordsToSave = (result.records || []).filter((record) => record?.url && !beforeUrls.has(String(record.url)));
+    const saved = upsertKnowledgeRecords(state, recordsToSave, { allocateId });
     knowledgeStore.saveState(state);
     const after = knowledgeStore.countKnowledgeRecords();
     const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(String(record.url)));

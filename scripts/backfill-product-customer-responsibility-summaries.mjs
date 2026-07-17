@@ -31,7 +31,7 @@ function parseLimit(value, flag = 'limit') {
 
 function resolveSummaryVersion(value) {
   const version = text(value);
-  if (!version || version === 'v24' || version === SUPPORTED_SUMMARY_VERSION) return SUPPORTED_SUMMARY_VERSION;
+  if (!version || version === 'v25' || version === SUPPORTED_SUMMARY_VERSION) return SUPPORTED_SUMMARY_VERSION;
   throw new Error(`Only ${SUPPORTED_SUMMARY_VERSION} is supported`);
 }
 

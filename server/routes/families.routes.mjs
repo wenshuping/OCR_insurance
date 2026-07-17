@@ -19,6 +19,13 @@ import {
   buildFamilyPolicyAnalysisInput,
   generateFamilyPolicyAnalysisReport,
 } from '../family-policy-analysis-report.service.mjs';
+import { sanitizeStoredPolicyAnalysis } from '../c-policy-analysis.service.mjs';
+import {
+  agentPolicyImportMatchesOwner,
+  buildAgentPolicyImportContext,
+  createAgentPolicyImportTask,
+  updateAgentPolicyImportTask,
+} from '../agent-policy-import.service.mjs';
 import { sendError } from '../http/errors.mjs';
 import {
   buildFamilySharePayload,
@@ -78,6 +85,12 @@ export function createFamilyRoutes(context) {
     recordUserReportRefresh,
     generateFamilySalesReview: generateFamilySalesReviewImpl = generateFamilySalesReview,
     generateFamilySalesChatReply: generateFamilySalesChatReplyImpl = generateFamilySalesChatReply,
+    recognizeDocumentText,
+    recognizePolicyInput,
+    scanner,
+    analyzer,
+    persistStateDocument,
+    allowDingTalkPolicyUpload = false,
     extractFamilySalesMemories: extractFamilySalesMemoriesImpl = extractFamilySalesMemories,
     generateFamilyPolicyAnalysisReport: generateFamilyPolicyAnalysisReportImpl = generateFamilyPolicyAnalysisReport,
     nowIso = () => new Date().toISOString(),
@@ -87,6 +100,7 @@ export function createFamilyRoutes(context) {
   const familyMembersContext = { listFamilyMembers };
   const familyShareContext = { attachPolicyFamilyDisplay: attachPolicyForFamilyReview, listFamilyMembers, normalizeGuestId };
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
+  state.agentPolicyImportTasks = Array.isArray(state.agentPolicyImportTasks) ? state.agentPolicyImportTasks : [];
   const saveFamilyState = async ({ includePolicies = false } = {}) => {
     if (persistFamilyState) {
       await persistFamilyState({ includePolicies });
@@ -100,6 +114,16 @@ export function createFamilyRoutes(context) {
       return;
     }
     await persist(state, familyPersistOptions);
+  };
+  const saveAgentPolicyImportTasks = async () => {
+    if (persistStateDocument) {
+      await persistStateDocument({ key: 'agentPolicyImportTasks', value: state.agentPolicyImportTasks });
+      return;
+    }
+    const error = new Error('Agent 保单任务持久化服务未配置');
+    error.code = 'AGENT_POLICY_IMPORT_STORE_NOT_READY';
+    error.status = 503;
+    throw error;
   };
 
   function hasOwn(value, key) {
@@ -498,7 +522,7 @@ export function createFamilyRoutes(context) {
     return (Array.isArray(state.familySalesMemories) ? state.familySalesMemories : [])
       .filter((memory) => (
         Number(memory?.familyId || 0) === Number(familyId || 0) &&
-        String(memory?.status || 'active') === 'active' &&
+        !['archived', 'expired', 'rejected', 'superseded'].includes(String(memory?.status || 'active')) &&
         salesMemoryMatchesOwner(memory, owner)
       ))
       .sort((left, right) => (
@@ -514,6 +538,20 @@ export function createFamilyRoutes(context) {
   function findSalesChatThread({ familyId, threadId, owner }) {
     return salesChatThreadsForFamily(familyId, owner)
       .find((thread) => Number(thread.id || 0) === Number(threadId || 0)) || null;
+  }
+
+  function findAgentPolicyImportTask({ familyId, taskId, owner }) {
+    return state.agentPolicyImportTasks.find((task) => (
+      Number(task?.id || 0) === Number(taskId || 0) &&
+      Number(task?.familyId || 0) === Number(familyId || 0) &&
+      agentPolicyImportMatchesOwner(task, owner)
+    )) || null;
+  }
+
+  function requestedAgentPolicyImportTask({ family, owner, body = {} }) {
+    const taskId = Number(body?.policyImportTaskId || 0);
+    if (!taskId) return null;
+    return findAgentPolicyImportTask({ familyId: family.id, taskId, owner });
   }
 
   function salesChatTitleFromQuestion(question = '') {
@@ -580,7 +618,7 @@ export function createFamilyRoutes(context) {
     return message;
   }
 
-  function buildSalesChatRuntimeContext({ family, owner }) {
+  function buildSalesChatRuntimeContext({ family, owner, policyImportTask = null }) {
     const members = listFamilyMembers(state, family.id);
     const policies = policiesForFamilyReport(family, owner);
     const planningProfile = family.planningProfile || null;
@@ -607,6 +645,7 @@ export function createFamilyRoutes(context) {
     });
     const salesMemoryContext = salesMemoryContextForFamily(family.id, owner);
     if (salesMemoryContext) context.salesMemoryContext = salesMemoryContext;
+    if (policyImportTask) context.policyImportContext = buildAgentPolicyImportContext(policyImportTask);
     return context;
   }
 
@@ -619,6 +658,9 @@ export function createFamilyRoutes(context) {
         userMessage,
         assistantMessage,
         existingMemories: familySalesMemoriesForFamily(family.id, owner),
+        directIdentifiers: {
+          names: listFamilyMembers(state, family.id).map((member) => member?.name).filter(Boolean),
+        },
       });
       upsertFamilySalesMemories({
         state,
@@ -636,8 +678,9 @@ export function createFamilyRoutes(context) {
     }
   }
 
-  async function generateAndAppendSalesChatReply({ thread, family, owner, question, history, userMessage }) {
-    const chatContext = buildSalesChatRuntimeContext({ family, owner });
+  async function generateAndAppendSalesChatReply({ thread, family, owner, question, history, userMessage, policyImportTask = null }) {
+    refreshFamilyCashflowsForAnalysis(family, owner);
+    const chatContext = buildSalesChatRuntimeContext({ family, owner, policyImportTask });
     const reply = await generateFamilySalesChatReplyImpl({
       context: chatContext,
       history,
@@ -1182,12 +1225,148 @@ export function createFamilyRoutes(context) {
     });
   });
 
+  router.post('/family-profiles/:id/agent-policy-imports', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    const channel = String(req.body?.channel || 'web').trim().toLowerCase();
+    if (channel === 'dingtalk' && !allowDingTalkPolicyUpload) {
+      return res.status(403).json({
+        ok: false,
+        code: 'DINGTALK_POLICY_UPLOAD_DISABLED',
+        message: '当前企业策略未启用钉钉保单原件上传，请改用网页上传',
+      });
+    }
+    const uploadItems = Array.isArray(req.body?.uploadItems)
+      ? req.body.uploadItems.filter(Boolean)
+      : req.body?.uploadItem ? [req.body.uploadItem] : [];
+    if (!uploadItems.length) return res.status(400).json({ ok: false, code: 'MISSING_UPLOAD', message: '请选择保单图片或 PDF' });
+    if (uploadItems.length > 1) return res.status(400).json({ ok: false, code: 'AGENT_POLICY_IMPORT_SINGLE_FILE_ONLY', message: '当前每次先上传一张图片或一个 PDF' });
+    try {
+      const scan = await recognizePolicyInput({
+        scanner,
+        body: { uploadItem: uploadItems[0], data: {} },
+        state,
+        applyManualData: false,
+      });
+      const now = nowIso();
+      const task = createAgentPolicyImportTask({
+        id: allocateId(state),
+        familyId: family.id,
+        owner,
+        channel,
+        targetAgent: req.body?.targetAgent,
+        scan,
+        uploadItems,
+        now,
+      });
+      state.agentPolicyImportTasks.push(task);
+      try {
+        await saveAgentPolicyImportTasks();
+      } catch (error) {
+        state.agentPolicyImportTasks = state.agentPolicyImportTasks.filter((row) => row !== task);
+        throw error;
+      }
+      return res.status(201).json({ ok: true, task: buildAgentPolicyImportContext(task) });
+    } catch (error) {
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
+  router.get('/family-profiles/:id/agent-policy-imports/:taskId', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    const task = findAgentPolicyImportTask({ familyId: family.id, taskId: req.params.taskId, owner });
+    if (!task) return res.status(404).json({ ok: false, code: 'AGENT_POLICY_IMPORT_NOT_FOUND', message: '录入任务不存在' });
+    return res.json({ ok: true, task: buildAgentPolicyImportContext(task) });
+  });
+
+  router.post('/family-profiles/:id/agent-policy-imports/:taskId/actions', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    const task = findAgentPolicyImportTask({ familyId: family.id, taskId: req.params.taskId, owner });
+    if (!task) return res.status(404).json({ ok: false, code: 'AGENT_POLICY_IMPORT_NOT_FOUND', message: '录入任务不存在' });
+    try {
+      const previousTask = structuredClone(task);
+      updateAgentPolicyImportTask(task, {
+        stateVersion: req.body?.stateVersion,
+        action: req.body?.action,
+        field: req.body?.field,
+        value: req.body?.value,
+        now: nowIso(),
+      });
+      try {
+        await saveAgentPolicyImportTasks();
+      } catch (error) {
+        Object.keys(task).forEach((key) => delete task[key]);
+        Object.assign(task, previousTask);
+        throw error;
+      }
+      return res.json({ ok: true, task: buildAgentPolicyImportContext(task) });
+    } catch (error) {
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
+  router.post('/family-profiles/:id/agent-policy-imports/:taskId/insurance-expert', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    const task = findAgentPolicyImportTask({ familyId: family.id, taskId: req.params.taskId, owner });
+    if (!task) return res.status(404).json({ ok: false, code: 'AGENT_POLICY_IMPORT_NOT_FOUND', message: '录入任务不存在' });
+    if (task.status === 'cancelled') return res.status(409).json({ ok: false, code: 'AGENT_POLICY_IMPORT_CLOSED', message: '录入任务已经取消' });
+    try {
+      const analysis = await analyzer({ scan: task.scan });
+      return res.json({
+        ok: true,
+        agent: 'insurance_expert',
+        task: buildAgentPolicyImportContext(task),
+        analysis: sanitizeStoredPolicyAnalysis(analysis),
+      });
+    } catch (error) {
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
+  router.post('/family-profiles/:id/sales-chat/attachments/recognize', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const uploadItems = Array.isArray(req.body?.uploadItems) ? req.body.uploadItems.slice(0, 5) : [];
+    if (!uploadItems.length) {
+      return res.status(400).json({ ok: false, code: 'MISSING_UPLOAD', message: '请选择聊天截图或计划书' });
+    }
+    try {
+      const documents = [];
+      for (const uploadItem of uploadItems) {
+        const ocrText = await recognizeDocumentText(uploadItem);
+        documents.push({ name: String(uploadItem?.name || '上传文件'), ocrText });
+      }
+      return res.json({ ok: true, documents });
+    } catch (error) {
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
   router.post('/family-profiles/:id/sales-chat/threads', async (req, res) => {
     const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
     if (!owner) return undefined;
     const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
     if (!family) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    }
+    const policyImportTask = requestedAgentPolicyImportTask({ family, owner, body: req.body });
+    if (req.body?.policyImportTaskId && !policyImportTask) {
+      return res.status(404).json({ ok: false, code: 'AGENT_POLICY_IMPORT_NOT_FOUND', message: '录入任务不存在' });
     }
     await repairFamilyMembersBeforeReview(family);
     const now = nowIso();
@@ -1217,6 +1396,7 @@ export function createFamilyRoutes(context) {
           question,
           history: [],
           userMessage,
+          policyImportTask,
         });
         createdMessages.push(assistantMessage);
       }
@@ -1266,6 +1446,10 @@ export function createFamilyRoutes(context) {
     if (!thread) {
       return res.status(404).json({ ok: false, code: 'FAMILY_SALES_CHAT_THREAD_NOT_FOUND', message: '续聊会话不存在' });
     }
+    const policyImportTask = requestedAgentPolicyImportTask({ family, owner, body: req.body });
+    if (req.body?.policyImportTaskId && !policyImportTask) {
+      return res.status(404).json({ ok: false, code: 'AGENT_POLICY_IMPORT_NOT_FOUND', message: '录入任务不存在' });
+    }
     const question = String(req.body?.message || req.body?.content || '').trim();
     if (!question) {
       return res.status(400).json({ ok: false, code: 'FAMILY_SALES_CHAT_EMPTY_MESSAGE', message: '请输入要追问的内容' });
@@ -1282,6 +1466,7 @@ export function createFamilyRoutes(context) {
         question,
         history: historyBeforeUserMessage,
         userMessage,
+        policyImportTask,
       });
       await saveFamilyState();
       return res.json({
@@ -1307,6 +1492,7 @@ export function createFamilyRoutes(context) {
 
     try {
       await repairFamilyMembersBeforeReview(family);
+      refreshFamilyCashflowsForAnalysis(family, owner);
       const members = listFamilyMembers(state, family.id);
       const policies = policiesForFamilyReport(family, owner);
       let reportRecord = latestFamilyReport(family.id, owner);

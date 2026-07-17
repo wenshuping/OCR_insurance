@@ -342,7 +342,7 @@ export function UploadPolicyPage(props: {
   onOpenAccount: () => void;
   onOpenFamilies: () => void;
   onScanClick: () => void;
-  onProductKnowledgeScanClick: () => void;
+  onProductKnowledgeScanClick: (target?: { company: string; name: string }) => void;
   onSelectFamily: (familyId: number | null) => void;
   onSelectFormCompany: (company: string) => void;
   onSelectFormProduct: (suggestion: PolicyProductSuggestion) => void;
@@ -427,13 +427,11 @@ export function UploadPolicyPage(props: {
     const normalizedQuery = normalizeSuggestionQuery(companyQuery);
     if (!normalizedQuery) return [];
     return (Array.isArray(formCompanySuggestions) ? formCompanySuggestions : [])
-      .filter((suggestion) => normalizeSuggestionQuery(suggestion.company) !== normalizedQuery)
-      .slice(0, 8);
+      .filter((suggestion) => normalizeSuggestionQuery(suggestion.company) !== normalizedQuery);
   }, [companyQuery, formCompanySuggestions]);
   const visibleProductSuggestions = useMemo(() => {
     if (!normalizeSuggestionQuery(companyQuery)) return [];
-    return (Array.isArray(formProductSuggestions) ? formProductSuggestions : [])
-      .slice(0, 8);
+    return Array.isArray(formProductSuggestions) ? formProductSuggestions : [];
   }, [companyQuery, formProductSuggestions]);
   const showCompanySuggestions = companyFocused && companyQuery && (formCompanySuggestionLoading || visibleCompanySuggestions.length);
   const showProductSuggestions = productFocused && companyQuery && (formProductSuggestionLoading || visibleProductSuggestions.length);
@@ -816,7 +814,7 @@ export function UploadPolicyPage(props: {
                 className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
               />
               {showCompanySuggestions ? (
-                <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="录入保险公司候选">
+                <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-72 overflow-y-auto overscroll-contain rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)] [-webkit-overflow-scrolling:touch]" role="listbox" aria-label="录入保险公司候选">
                   {formCompanySuggestionLoading ? (
                     <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -857,7 +855,7 @@ export function UploadPolicyPage(props: {
                   className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:border-blue-500 focus:ring-blue-500"
                 />
                 {showProductSuggestions ? (
-                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)]" role="listbox" aria-label="录入保险产品候选">
+                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-72 overflow-y-auto overscroll-contain rounded-2xl border border-blue-100 bg-white shadow-[0_18px_45px_-24px_rgba(15,23,42,0.45)] [-webkit-overflow-scrolling:touch]" role="listbox" aria-label="录入保险产品候选">
                     {formProductSuggestionLoading ? (
                       <div className="flex items-center gap-2 px-3 py-3 text-xs font-black text-blue-600">
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -895,7 +893,7 @@ export function UploadPolicyPage(props: {
                 showSupplement={showProductKnowledgeSupplement}
                 supplementUploading={productKnowledgeUploading}
                 supplementCount={productKnowledgeUploadCount}
-                onSupplementClick={onProductKnowledgeScanClick}
+                onSupplementClick={() => onProductKnowledgeScanClick()}
                 onSelect={onSelectProductMatch}
               />
             </div>
@@ -927,13 +925,16 @@ export function UploadPolicyPage(props: {
                 required
               />
             )}
-            <SelectField
-              label="与顶梁柱的关系"
-              value={formData.beneficiaryRelation || ''}
-              onChange={(value) => onUpdateForm('beneficiaryRelation', value)}
-              options={familyRelationOptions(formData.beneficiaryRelation || '')}
-              placeholder="请选择关系"
-            />
+            {formData.beneficiary !== '法定' ? (
+              <SelectField
+                label="与顶梁柱的关系"
+                value={formData.beneficiaryRelation || ''}
+                onChange={(value) => onUpdateForm('beneficiaryRelation', value)}
+                options={familyRelationOptions(formData.beneficiaryRelation || '')}
+                placeholder="请选择关系"
+                required
+              />
+            ) : null}
             <TextField
               label="受益人生日"
               value={formData.beneficiaryBirthday || ''}
@@ -983,6 +984,12 @@ export function UploadPolicyPage(props: {
             onUpdate={onUpdatePlan}
             onUpdateProductQuery={onUpdatePlanProductQuery}
             onUpdateOptionalResponsibility={onUpdateOptionalResponsibility}
+            onSupplementClick={(plan) => onProductKnowledgeScanClick({
+              company: String(plan.company || formData.company || ''),
+              name: String(plan.name || ''),
+            })}
+            supplementUploading={productKnowledgeUploading}
+            supplementCount={productKnowledgeUploadCount}
           />
 
           <button

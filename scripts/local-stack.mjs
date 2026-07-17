@@ -3,9 +3,11 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { assertDevSourceOwner, readDevSourceOwner } from './local-dev-source-owner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
+const projectEnvPath = path.join(projectRoot, '.env.local');
 const cloudflaredConfig = path.join(process.env.HOME || '', '.cloudflared/config.yml');
 const cloudflaredWatchdogPidPath = path.join(process.env.HOME || '', 'Library/Application Support/OCRInsurance/cloudflared.pid');
 const command = process.argv[2] || 'start';
@@ -38,6 +40,17 @@ const runtimeEnvKeys = new Set([
   'POLICY_OCR_DEEPSEEK_OCR_FIELD_EXTRACTION',
   'POLICY_OCR_DEEPSEEK_OCR_FIELD_MAX_TOKENS',
   'POLICY_OCR_DEEPSEEK_OCR_PROMPT',
+  'POLICY_OCR_UNLIMITED_OCR_BASE_URL',
+  'POLICY_OCR_UNLIMITED_OCR_MODEL',
+  'POLICY_OCR_UNLIMITED_OCR_TIMEOUT_MS',
+  'POLICY_OCR_UNLIMITED_OCR_MAX_TOKENS',
+  'POLICY_OCR_GLM_OCR_BASE_URL',
+  'POLICY_OCR_GLM_OCR_MODEL',
+  'POLICY_OCR_GLM_OCR_TIMEOUT_MS',
+  'POLICY_OCR_GLM_OCR_MAX_TOKENS',
+  'POLICY_OCR_PADDLEOCR_VL16_BASE_URL',
+  'POLICY_OCR_PADDLEOCR_VL16_MODEL',
+  'POLICY_OCR_PADDLEOCR_VL16_TIMEOUT_MS',
   'POLICY_OCR_HUAWEI_PROJECT_ID',
   'POLICY_OCR_HUAWEI_X_AUTH_TOKEN',
   'POLICY_OCR_HUAWEI_AUTH_TOKEN',
@@ -53,6 +66,12 @@ const runtimeEnvKeys = new Set([
   'POLICY_OCR_PADDLE_PYTHON',
 ]);
 const profileConfigs = createProfileConfigs();
+const dingtalkGatewayEnvKeys = [
+  'DINGTALK_APP_KEY',
+  'DINGTALK_APP_SECRET',
+  'DINGTALK_CORP_ID',
+  'AGENT_GATEWAY_HMAC_SECRET',
+];
 
 function parseCommand(rawCommand) {
   const raw = String(rawCommand || 'start').trim();
@@ -104,6 +123,11 @@ function createProfileConfigs() {
         POLICY_ADMIN_PASSWORD: 'admin123456',
         SMS_MODE: 'mock',
         SMS_MOCK_CODE: '123456',
+        AGENT_CONVERSATION_RUNTIME: 'agent_loop',
+        HERMES_OCR_HOME: path.join(process.env.HOME || '', '.hermes/profiles/insuranceagent'),
+        HERMES_AGENT_LOOP_TIMEOUT_MS: '75000',
+        HERMES_AGENT_LOOP_STARTUP_GRACE_MS: '15000',
+        OCR_AGENT_TOOL_TIMEOUT_MS: '60000',
         ...devRuntimeEnv,
         POLICY_OCR_POSTPROCESSOR: 'none',
       },
@@ -210,6 +234,18 @@ function createServices(profile) {
       healthUrl: `http://127.0.0.1:${profile.apiPort}/api/health`,
     },
     {
+      name: 'dingtalk',
+      label: '钉钉机器人',
+      command: process.execPath,
+      args: ['--env-file=.env.local', 'server/dingtalk-agent-gateway.mjs'],
+      optional: true,
+      shutdownGraceMs: 20_000,
+      skip: profile.name !== 'dev' || !hasDingtalkGatewayConfig(),
+      env: {
+        DINGTALK_CHANNEL_API_BASE_URL: `http://127.0.0.1:${profile.apiPort}`,
+      },
+    },
+    {
       name: 'web',
       label: '前端页面',
       command: process.execPath,
@@ -238,6 +274,20 @@ function createServices(profile) {
       externalCommandPattern: `cloudflared tunnel --config ${cloudflaredConfig} run`,
     },
   ];
+}
+
+function hasDingtalkGatewayConfig(env = process.env) {
+  let projectEnv = '';
+  try {
+    projectEnv = fs.readFileSync(projectEnvPath, 'utf8');
+  } catch {
+    // Environment variables alone are also supported.
+  }
+  return dingtalkGatewayEnvKeys.every((key) => {
+    if (String(env[key] || '').trim()) return true;
+    const match = projectEnv.match(new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*$`, 'mu'));
+    return Boolean(match && String(match[1] || '').trim().replace(/^(['"])(.*)\1$/u, '$2'));
+  });
 }
 
 function findCloudflared() {
@@ -407,6 +457,9 @@ async function startService(profile, service) {
 }
 
 async function start(profile) {
+  if (profile.name === 'dev') {
+    assertDevSourceOwner({ runtimeDir: profile.runtimeDir, projectRoot, claimIfMissing: true });
+  }
   ensureDirs(profile);
   runBuild(profile);
   for (const service of createServices(profile)) {
@@ -424,6 +477,9 @@ async function start(profile) {
 }
 
 async function stop(profile) {
+  if (profile.name === 'dev') {
+    assertDevSourceOwner({ runtimeDir: profile.runtimeDir, projectRoot });
+  }
   ensureDirs(profile);
   for (const service of [...createServices(profile)].reverse()) {
     const pid = readPid(profile, service.name);
@@ -437,7 +493,10 @@ async function stop(profile) {
       continue;
     }
     process.kill(pid, 'SIGTERM');
-    await wait(1000);
+    const shutdownDeadline = Date.now() + Math.max(1_000, Number(service.shutdownGraceMs) || 1_000);
+    while (isPidRunning(pid) && Date.now() < shutdownDeadline) {
+      await wait(Math.min(100, shutdownDeadline - Date.now()));
+    }
     if (isPidRunning(pid)) {
       process.kill(pid, 'SIGKILL');
     }
@@ -449,6 +508,14 @@ async function stop(profile) {
 async function status(profile) {
   ensureDirs(profile);
   console.log(`[local:${profile.name}] ${profile.label}环境`);
+  if (profile.name === 'dev') {
+    const sourceOwner = readDevSourceOwner(profile.runtimeDir);
+    console.log(`源码目录: ${sourceOwner || '尚未绑定（首次启动时绑定）'}`);
+    if (sourceOwner) {
+      const currentSourceRoot = fs.realpathSync(projectRoot);
+      if (sourceOwner !== currentSourceRoot) console.log(`当前目录: ${currentSourceRoot}（非绑定目录，只读状态查询）`);
+    }
+  }
   for (const service of createServices(profile)) {
     const pid = readPid(profile, service.name);
     const running = isPidRunning(pid);

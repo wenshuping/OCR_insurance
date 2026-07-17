@@ -1,4 +1,6 @@
 import {
+  enforceVerifiedCashflowAmounts,
+  familySalesReviewDirectIdentifiers,
   privacySafeFamilySalesReviewInputJson,
   restoreFamilySalesReviewDisplayText,
 } from './family-sales-review.service.mjs';
@@ -6,6 +8,10 @@ import {
   selectAgentSkillPrompt,
   selectAgentSkillPromptWithDeepSeek,
 } from './agent-skill-router.service.mjs';
+import {
+  redactDeepSeekDirectIdentifiers,
+  sanitizeDeepSeekRequestBody,
+} from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-pro';
@@ -49,6 +55,13 @@ function sanitizeFamilySalesChatPublicIdentity(content = '') {
     .replace(/\bdeep\s*seek(?:[-_\s]*[a-z0-9]+)*/giu, FAMILY_SALES_CHAT_PUBLIC_IDENTITY)
     .replace(/深度求索/gu, FAMILY_SALES_CHAT_PUBLIC_IDENTITY)
     .replace(/保险营销专家\s*(?:大模型|模型|AI|人工智能|agent|Agent)/gu, FAMILY_SALES_CHAT_PUBLIC_IDENTITY);
+}
+
+function sanitizeFamilySalesChatInternalFields(content = '') {
+  return trim(content).replace(
+    /`?(?:familyInput|consultationScope|sourceUpdated|latestSalesReview|latestFamilyReport|salesMemoryContext|policyImportContext)`?/gu,
+    '现有资料',
+  );
 }
 
 function resolveFamilySalesChatConfig(env = process.env) {
@@ -171,14 +184,19 @@ export function buildFamilySalesChatMessages({
   const contextJson = privacySafeChatContextJson(context || {});
   const normalizedHistory = normalizeHistory(history);
   const resolvedSkillPrompt = skillPrompt || selectAgentSkillPrompt({ scene: 'family_sales_chat', question });
+  const openConsultation = context?.consultationScope === 'open';
   return [
     {
       role: 'system',
       content: [
-        '你是一名保险营销专家，面向保险顾问提供家庭销售建议续聊支持。',
+        openConsultation
+          ? '你是一名保险营销专家，面向保险顾问提供开放式客户需求分析、产品方向建议和销售辅导。'
+          : '你是一名保险营销专家，面向保险顾问提供家庭销售建议续聊支持。',
         resolvedSkillPrompt.promptHint,
         `本轮启用 skills：${resolvedSkillPrompt.skills.map((skill) => skill.label).join('、') || '通用保险续聊'}`,
-        '你要基于当前家庭、保单、家庭保障报告、最近销售建议、官网责任证据和本轮对话继续回答顾问追问。',
+        openConsultation
+          ? '当前没有绑定家庭档案。你要基于本轮客户描述进行专业分析；信息不足时自然追问，不能假定存在未提供的家庭、保单或产品资料。'
+          : '你要基于当前家庭、保单、家庭保障报告、最近销售建议、官网责任证据和本轮对话继续回答顾问追问。',
         '必须遵守：',
         '1. 只使用输入上下文和对话历史中的事实；收入、负债、预算、责任条款、现金价值、分红、领取利益缺少证据时写“待核实”。',
         '2. 不承诺收益、分红、利率、理赔、核保、法律或税务结果。',
@@ -189,6 +207,9 @@ export function buildFamilySalesChatMessages({
         '7. 客户话术要温和、专业、可复制，避免恐吓式销售。',
         `8. 对身份、模型、厂商、API、底层大模型等问题，只能回答“${FAMILY_SALES_CHAT_IDENTITY_REPLY}”，不得自称任何底层模型或模型品牌。`,
         '9. 如果上下文包含 salesMemoryContext，只能把它当作当前家庭的跟进记忆，用于沟通风格、已确认异议、策略偏好和待办；保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准。',
+        '10. 如果上下文包含 policyImportContext，它是 OCR Insurance 输出的脱敏保单草稿；只能引用其中已提供字段，并明确提示 missingFields。不得推测被掩码身份、保单号、证件号或原始图片内容。',
+        '11. 开放式产品推荐不得从历史对话中擅自绑定某一款产品；缺少已核验候选产品及客户目标时，先给产品方向和需要确认的问题，再由受控产品知识流程核验具体产品。',
+        '12. 不得向用户展示上下文 JSON 的字段名、内部变量名、数据结构或系统实现；只能用自然语言说明“现有资料”“已提供信息”或“待补充信息”。',
         '',
         '本轮 skill 规则：',
         ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),
@@ -237,9 +258,10 @@ export async function generateFamilySalesChatReply({
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
+    const directIdentifiers = familySalesReviewDirectIdentifiers(context?.familyInput || {});
     const skillPrompt = await selectAgentSkillPromptWithDeepSeek({
       scene: 'family_sales_chat',
-      question: userQuestion,
+      question: redactDeepSeekDirectIdentifiers(userQuestion, directIdentifiers),
       fetchImpl,
       config: {
         apiKey: config.apiKey,
@@ -247,6 +269,7 @@ export async function generateFamilySalesChatReply({
         model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
         timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
       },
+      privacyOptions: directIdentifiers,
     });
     const body = {
       model: config.model,
@@ -267,7 +290,10 @@ export async function generateFamilySalesChatReply({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeDeepSeekRequestBody(
+        body,
+        directIdentifiers,
+      )),
     });
     if (!response.ok) {
       const bodyText = trim(await response.text());
@@ -283,8 +309,13 @@ export async function generateFamilySalesChatReply({
       throw withCode(new Error('FAMILY_SALES_CHAT_EMPTY_RESPONSE'), 'FAMILY_SALES_CHAT_EMPTY_RESPONSE', 502);
     }
     return {
-      content: sanitizeFamilySalesChatPublicIdentity(
-        restoreFamilySalesReviewDisplayText(upstreamContent, context?.familyInput || {}),
+      content: sanitizeFamilySalesChatInternalFields(
+        sanitizeFamilySalesChatPublicIdentity(
+          restoreFamilySalesReviewDisplayText(
+            enforceVerifiedCashflowAmounts(upstreamContent, context?.familyInput || {}),
+            context?.familyInput || {},
+          ),
+        ),
       ),
       model: trim(payload?.model || config.model) || config.model,
       generatedAt: new Date().toISOString(),

@@ -8,6 +8,7 @@ import {
   AdminOfficialDomainProfile,
   AdminMembershipConfig,
   AdminOverview,
+  AdminOcrScenarioRouting,
   AdminReportCorrection,
   AdminReportIssue,
   AdminReportIssueSummary,
@@ -29,6 +30,7 @@ import {
   getAdminKnowledgeRecords,
   getAdminMembershipConfig,
   getAdminOverview,
+  getAdminOcrScenarioRouting,
   getAdminFamilySalesReview,
   getAdminFamilySalesChatThreads,
   getAdminFamilyReport,
@@ -44,6 +46,7 @@ import {
   reviewAdminKnowledgeRecord,
   updateAdminMembershipConfig,
   updateAdminOfficialDomainProfile,
+  updateAdminOcrScenarioRouting,
   updateAdminResponsibilityGenerationConfig,
 } from '../../api';
 import { maskMobile } from '../../shared/formatters';
@@ -62,9 +65,12 @@ import { isPolicyReportGenerating } from '../../shared/policy-report-ui';
 import { AdminShell } from './AdminShell';
 import type { AdminPageKey } from './adminPages';
 import { AdminKnowledgePage } from './pages/AdminKnowledgePage';
-import { AdminAgentPoliciesPage } from './pages/AdminAgentPoliciesPage';
+import { AdminCustomerKnowledgeReviewPage } from './pages/AdminCustomerKnowledgeReviewPage';
 import { AdminFamilyReportPage } from './pages/AdminFamilyReportPage';
 import { AdminMembershipPage } from './pages/AdminMembershipPage';
+import { AdminOcrRoutingPage } from './pages/AdminOcrRoutingPage';
+import { AdminAgentPoliciesPage } from './pages/AdminAgentPoliciesPage';
+import { AdminKnowledgeUploadPage } from './pages/AdminKnowledgeUploadPage';
 import { AdminOfficialDomainsPage } from './pages/AdminOfficialDomainsPage';
 import { AdminOptionalResponsibilitiesPage } from './pages/AdminOptionalResponsibilitiesPage';
 import { AdminOverviewPage } from './pages/AdminOverviewPage';
@@ -130,6 +136,8 @@ export function AdminApp() {
   const [familyReportDailyRefreshLimitInput, setFamilyReportDailyRefreshLimitInput] = useState('3');
   const [familySalesReviewDailyRefreshLimitInput, setFamilySalesReviewDailyRefreshLimitInput] = useState('3');
   const [membershipSaving, setMembershipSaving] = useState(false);
+  const [ocrRouting, setOcrRouting] = useState<AdminOcrScenarioRouting | null>(null);
+  const [ocrRoutingSaving, setOcrRoutingSaving] = useState(false);
   const [responsibilityGenerationConfig, setResponsibilityGenerationConfig] = useState<AdminResponsibilityGenerationConfig | null>(null);
   const [responsibilityRulesText, setResponsibilityRulesText] = useState('');
   const [responsibilityBlockedTitlesText, setResponsibilityBlockedTitlesText] = useState('');
@@ -155,6 +163,7 @@ export function AdminApp() {
     setAdminToken('');
     setOverview(null);
     setMembershipConfig(null);
+    setOcrRouting(null);
     setMembershipQuotaInput('3');
     setFamilyReportDailyRefreshLimitInput('3');
     setFamilySalesReviewDailyRefreshLimitInput('3');
@@ -219,6 +228,17 @@ export function AdminApp() {
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '会员设置读取失败');
+    }
+  }
+
+  async function loadOcrRouting(token = adminToken) {
+    if (!token) return;
+    try {
+      const payload = await getAdminOcrScenarioRouting(token);
+      setOcrRouting(payload);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : 'OCR 模型路由读取失败');
     }
   }
 
@@ -390,6 +410,7 @@ export function AdminApp() {
   useEffect(() => {
     if (!adminToken) return;
     void loadMembershipConfig(adminToken);
+    void loadOcrRouting(adminToken);
     void loadResponsibilityGenerationConfig(adminToken);
     void loadOfficialDomainProfiles(adminToken);
     void loadReportIssues(adminToken);
@@ -465,6 +486,22 @@ export function AdminApp() {
       setMessage(error instanceof Error ? error.message : '会员设置保存失败');
     } finally {
       setMembershipSaving(false);
+    }
+  }
+
+  async function handleSaveOcrRouting() {
+    if (!adminToken || !ocrRouting || ocrRoutingSaving) return;
+    setOcrRoutingSaving(true);
+    setMessage('正在保存 OCR 模型路由');
+    try {
+      const payload = await updateAdminOcrScenarioRouting(adminToken, ocrRouting.config.routes);
+      setOcrRouting(payload);
+      setMessage('OCR 模型路由已保存，新上传请求立即生效');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
+      setMessage(error instanceof Error ? error.message : 'OCR 模型路由保存失败');
+    } finally {
+      setOcrRoutingSaving(false);
     }
   }
 
@@ -705,7 +742,7 @@ export function AdminApp() {
     if (activePage === 'agentPolicies' && page !== 'agentPolicies' && agentPoliciesDirty && !window.confirm('存在未保存的 Agent 策略草稿，确认离开并丢弃修改吗？')) return;
     if (page !== 'agentPolicies') setAgentPoliciesDirty(false);
     setActivePage(page);
-    if (page === 'knowledge' && !knowledgeRecords.length) void loadKnowledgeRecords();
+    if ((page === 'knowledge' || page === 'customerKnowledgeReviews') && !knowledgeRecords.length) void loadKnowledgeRecords();
     if (page === 'responsibilityGeneration' && !responsibilityGenerationConfig) void loadResponsibilityGenerationConfig();
     if (page === 'reportIssues' && !reportIssueReports.length) void loadReportIssues();
     if (page === 'optionalResponsibilities') {
@@ -716,6 +753,7 @@ export function AdminApp() {
     }
     if (page === 'officialDomains' && !officialDomainProfiles.length) void loadOfficialDomainProfiles();
     if (page === 'membership' && !membershipConfig) void loadMembershipConfig();
+    if (page === 'ocrRouting' && !ocrRouting) void loadOcrRouting();
   }
 
   function openAdminFamilyPolicies(familyId: number) {
@@ -755,14 +793,18 @@ export function AdminApp() {
       void loadAdminFamilyReport(selectedAdminFamilyId);
     } else if (activePage === 'reportIssues') {
       void loadReportIssues();
-    } else if (activePage === 'knowledge') {
+    } else if (activePage === 'knowledge' || activePage === 'customerKnowledgeReviews') {
       void loadKnowledgeRecords();
+    } else if (activePage === 'expertKnowledge' || activePage === 'companyMaterials') {
+      setMessage('资料页面已刷新');
     } else if (activePage === 'responsibilityGeneration') {
       void loadResponsibilityGenerationConfig();
     } else if (activePage === 'officialDomains') {
       void loadOfficialDomainProfiles();
     } else if (activePage === 'membership') {
       void loadMembershipConfig();
+    } else if (activePage === 'ocrRouting') {
+      void loadOcrRouting();
     } else if (activePage === 'salesReview' && selectedAdminFamilyId) {
       void loadAdminFamilySalesReview(selectedAdminFamilyId);
     }
@@ -842,6 +884,19 @@ export function AdminApp() {
             onReview={(record, action) => void reviewKnowledgeRecord(record, action)}
           />
         );
+      case 'customerKnowledgeReviews':
+        return (
+          <AdminCustomerKnowledgeReviewPage
+            records={knowledgeRecords}
+            loading={loading || knowledgeLoading}
+            onRefresh={() => void loadKnowledgeRecords()}
+            onReview={(record, action) => void reviewKnowledgeRecord(record, action)}
+          />
+        );
+      case 'expertKnowledge':
+        return <AdminKnowledgeUploadPage mode="expert" token={adminToken} onMessage={setMessage} />;
+      case 'companyMaterials':
+        return <AdminKnowledgeUploadPage mode="company_product" token={adminToken} onMessage={setMessage} />;
       case 'responsibilityGeneration':
         return (
           <AdminResponsibilityGenerationPage
@@ -887,6 +942,18 @@ export function AdminApp() {
             onFamilyReportDailyRefreshLimitInputChange={setFamilyReportDailyRefreshLimitInput}
             onFamilySalesReviewDailyRefreshLimitInputChange={setFamilySalesReviewDailyRefreshLimitInput}
             onSave={() => void handleSaveMembershipConfig()}
+          />
+        );
+      case 'ocrRouting':
+        return (
+          <AdminOcrRoutingPage
+            routing={ocrRouting}
+            saving={ocrRoutingSaving}
+            onChange={(scenario, provider) => setOcrRouting((current) => current ? {
+              ...current,
+              config: { ...current.config, routes: { ...current.config.routes, [scenario]: provider } },
+            } : current)}
+            onSave={() => void handleSaveOcrRouting()}
           />
         );
       case 'agentPolicies':
@@ -939,7 +1006,7 @@ export function AdminApp() {
       activePage={activePage}
       query={query}
       message={message}
-      loading={loading || reportIssuesLoading || userFamiliesLoading || familyReportLoading || familyReportGenerating || salesReviewLoading || optionalResponsibilityGapsLoading || responsibilityGenerationSaving}
+      loading={loading || reportIssuesLoading || userFamiliesLoading || familyReportLoading || familyReportGenerating || salesReviewLoading || optionalResponsibilityGapsLoading || responsibilityGenerationSaving || ocrRoutingSaving}
       badgeCounts={{
         reportIssues: reportIssueReports.length,
         optionalResponsibilities: overview?.summary.optionalResponsibilityGapCount ?? optionalResponsibilityGaps.length,

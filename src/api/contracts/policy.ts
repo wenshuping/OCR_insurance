@@ -129,6 +129,19 @@ export type KnowledgeRecord = PolicySource & {
   ownerUserId?: number;
   ownerGuestId?: string;
   uploadNames?: string[];
+  uploadImages?: UploadItem[];
+  reviewIndicators?: Array<{
+    id?: number | string;
+    coverageType?: string;
+    liability?: string;
+    scenario?: string;
+    payout?: string;
+    calculation?: unknown;
+    sourceExcerpt?: string;
+  }>;
+  reviewProductName?: string;
+  productNameNeedsReview?: boolean;
+  productNameSource?: 'policy_terms_title' | 'uploaded_product' | 'related_policy' | 'unresolved' | string;
   discoveredAt?: string;
   lastFetchedAt?: string;
   lastUsedAt?: string;

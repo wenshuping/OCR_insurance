@@ -1,4 +1,5 @@
 import { jsonrepair } from 'jsonrepair';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const PLANNER_MODE_SET = new Set(['auto', 'all', 'off']);
 const COMPLEX_CATEGORIES = new Set([
@@ -181,6 +182,7 @@ export function buildResponsibilityPlannerPrompt({
     'Planner 不能覆盖官方资料；官方证据没有出现的产品功能必须写入 missingOrUnclear，不要放入 functionFocus。',
     '不要编造未支持的产品功能，不要写营销文案。',
     '请输出字段：plannerVersion, productCategory, categoryLabel, confidence, recommendedTemplate, positioningFocus, productPurposeFocus, responsibilityFocus, functionFocus, attentionFocus, evidenceNeeds, missingOrUnclear, notesForFinalPrompt。',
+    'productCategory 只能是 incremental_whole_life, ordinary_whole_life, term_life, annuity, endowment, critical_illness, medical, accident, long_term_care, universal_life, investment_linked, participating_life, other 之一。',
     'confidence 只能是 high, medium, low。',
     'positioningFocus 用于复合定位；如果本地分类是两全保险且证据出现交通/航空/驾乘/电梯/自然灾害等特定意外高倍给付，必须同时包含“两全保险”和“交通/特定意外高倍保障”。',
     '对于责任很多的交通/特定意外产品，notesForFinalPrompt 必须提醒最终模型先归纳保障结构，再按场景分组列责任，不要把10条以上责任机械塞进一个展示块。',
@@ -267,7 +269,7 @@ export async function callDeepSeekForResponsibilityPlanner({
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({
+    body: JSON.stringify(sanitizeDeepSeekRequestBody({
       model,
       messages: [
         { role: 'system', content: '你只返回可解析 JSON。' },
@@ -275,7 +277,7 @@ export async function callDeepSeekForResponsibilityPlanner({
       ],
       temperature: 0.1,
       response_format: { type: 'json_object' },
-    }),
+    })),
   });
 
   const payload = await response.json().catch(() => null);

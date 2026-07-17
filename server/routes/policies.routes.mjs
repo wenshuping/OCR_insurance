@@ -450,6 +450,7 @@ export function createPolicyRoutes(context) {
             uploadItem,
             uploadItems: undefined,
             ocrText: '',
+            ocrScenario: 'insurance_material',
             manualData,
           },
           state,

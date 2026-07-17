@@ -36,7 +36,7 @@ test('customer policy photo knowledge sanitizer removes private fields and selec
   assert.doesNotMatch(safeText, /已选择可选责任一/u);
 });
 
-test('customer policy terms photos become trusted customer policy terms evidence', () => {
+test('customer policy terms photos stay pending until operations review', () => {
   const record = buildCustomerPolicyPhotoKnowledgeRecord({
     company: '新华保险',
     productName: '测试重疾保险',
@@ -45,20 +45,34 @@ test('customer policy terms photos become trusted customer policy terms evidence
     uploadItems: [{ name: 'photo.jpg' }],
   });
 
-  assert.equal(record.sourceKind, 'customer_policy_terms');
-  assert.equal(record.official, true);
-  assert.equal(record.reviewStatus, 'approved');
-  assert.equal(record.globalSearchable, true);
-  assert.equal(record.responsibilityDeferred, false);
-  assert.equal(record.evidenceLevel, 'customer_policy_terms');
-  assert.equal(record.verificationStatus, 'verified');
-  assert.equal(record.referenceOnly, false);
+  assert.equal(record.sourceKind, 'customer_policy_photo');
+  assert.equal(record.official, false);
+  assert.equal(record.reviewStatus, 'pending');
+  assert.equal(record.globalSearchable, false);
+  assert.equal(record.responsibilityDeferred, true);
+  assert.equal(record.evidenceLevel, 'customer_policy_photo_pending');
+  assert.equal(record.verificationStatus, 'pending_review');
+  assert.equal(record.referenceOnly, true);
   assert.equal(record.ownerUserId, 9);
+  assert.equal(record.uploadImages.length, 0);
 
   const approved = approveCustomerPolicyPhotoKnowledgeRecord(record, { approved: true, reviewedAt: '2026-07-03T00:00:00.000Z' });
   assert.equal(approved.reviewStatus, 'approved');
   assert.equal(approved.globalSearchable, true);
   assert.equal(approved.evidenceLevel, 'customer_policy_terms');
+});
+
+test('customer policy review record preserves uploaded images for operations only', () => {
+  const record = buildCustomerPolicyPhotoKnowledgeRecord({
+    company: '新华保险',
+    productName: '测试附加险',
+    pageText: '产品名称:测试附加险\n保险责任:住院医疗保险金。',
+    uploadItems: [{ name: 'rider.jpg', type: 'image/jpeg', size: 123, dataUrl: 'data:image/jpeg;base64,AAAA' }],
+  });
+
+  assert.deepEqual(record.uploadImages, [{ name: 'rider.jpg', type: 'image/jpeg', size: 123, dataUrl: 'data:image/jpeg;base64,AAAA' }]);
+  assert.equal(record.reviewStatus, 'pending');
+  assert.equal(record.globalSearchable, false);
 });
 
 test('customer policy non-terms photos stay pending until review', () => {

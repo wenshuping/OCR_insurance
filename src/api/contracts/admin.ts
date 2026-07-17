@@ -2,7 +2,7 @@ import type { User } from '../client';
 import type { FamilyMember, FamilyProfile, FamilyReportRecord, FamilySalesChatThread, FamilySalesReview } from './family';
 import type { KnowledgeRecord, Policy, SourceRecord } from './policy';
 import type { OptionalResponsibility, QuantificationStatus } from './responsibility';
-import { request } from '../client';
+import { ApiError, request } from '../client';
 
 export type AdminUserSummary = User & {
   familyCount: number;
@@ -101,6 +101,211 @@ export type AdminKnowledgeRecordsResponse = {
   };
 };
 
+export type AdminKnowledgeDocument = {
+  id: string;
+  fileName: string;
+  mediaType: string;
+  extension: string;
+  byteSize: number;
+  documentType: string;
+  sourceAuthority: 'company_material' | 'expert_training' | string;
+  parseStatus: string;
+  reviewStatus: string;
+  createdAt: string;
+  updatedAt: string;
+  payload: {
+    libraryType?: 'expert' | 'company_product' | string;
+    contributorName?: string;
+    contributorRole?: string;
+    title?: string;
+    materialType?: string;
+    materialUsage?: string;
+    materialUsages?: string[];
+    company?: string;
+    productName?: string;
+    productNames?: string[];
+    versionLabel?: string;
+    focusTags?: string[];
+    specialInstructions?: string;
+    sourceUrl?: string;
+    [key: string]: unknown;
+  };
+  job?: {
+    status: string;
+    currentStep: string;
+    errorCode?: string;
+    errorMessage?: string;
+  } | null;
+  reviewChunks?: AdminKnowledgeChunk[];
+  indexReview?: {
+    activeIndexVersion?: string;
+    candidateIndexVersion?: string;
+    previousActiveIndexVersion?: string;
+    diff?: { added: number; removed: number; unchanged: number };
+  } | null;
+  publishReadiness?: {
+    decision: 'pass' | 'blocked';
+    checks: Array<{ code?: string; status?: string; message?: string; affectedCount?: number }>;
+    blockingReasons: Array<{ code?: string; status?: string; message?: string; affectedCount?: number }>;
+  } | null;
+  bindingProducts?: Array<{
+    canonicalProductId: string;
+    productVersionId?: string;
+    company: string;
+    officialName: string;
+  }>;
+};
+
+export type AdminKnowledgeChunk = {
+  id: string;
+  canonicalProductId?: string;
+  productVersionId?: string;
+  chunkType: string;
+  headingPath: string[];
+  pageStart: number;
+  pageEnd: number;
+  content: string;
+  contextualPrefix?: string;
+  reviewStatus?: string;
+  indexStatus: string;
+  payload?: {
+    documentMetadata?: {
+      title?: string;
+      fileName?: string;
+      materialType?: string;
+      documentType?: string;
+      materialUsages?: string[];
+      company?: string;
+      productNames?: string[];
+      versionLabel?: string;
+      focusTags?: string[];
+      specialInstructions?: string;
+      contributorName?: string;
+      contributorRole?: string;
+      sourceAuthority?: string;
+      sourceUrl?: string;
+    };
+    quality?: {
+      decision?: string;
+      checks?: Array<{ code?: string; status?: string; message?: string }>;
+      qualityRuleVersion?: string;
+    };
+    [key: string]: unknown;
+  };
+};
+
+export type AdminKnowledgeDocumentDetail = {
+  ok: true;
+  document: AdminKnowledgeDocument;
+  chunks: AdminKnowledgeChunk[];
+  summary: {
+    pageCount: number;
+    chunkCount: number;
+    readyChunkCount: number;
+    blockedChunkCount: number;
+  };
+};
+
+export type AdminKnowledgeSourceRegion = {
+  pageNo: number;
+  bbox?: [number, number, number, number] | number[];
+  elementIds: string[];
+};
+
+export type AdminKnowledgeSourceElement = {
+  id: string;
+  kind: 'text' | 'table' | 'business_image' | 'decoration' | 'header_footer' | 'qr_contact' | string;
+  bbox?: [number, number, number, number] | number[];
+  text?: string;
+  caption?: string;
+  assetRef?: string;
+  ocrConfidence?: number | null;
+};
+
+export type AdminKnowledgeReviewPage = {
+  id: string;
+  pageNo: number;
+  rawText: string;
+  ocrConfidence?: number | null;
+  imageUrl?: string;
+  previewUrl?: string;
+  layout?: {
+    elements?: AdminKnowledgeSourceElement[];
+    [key: string]: unknown;
+  };
+};
+
+export type AdminKnowledgeCorrectionOperation = {
+  type: string;
+  targetChunkId?: string;
+  targetChunkIds?: string[];
+  elementIds?: string[];
+  content?: string;
+  splitAtText?: string;
+  relationType?: string;
+  relatedChunkId?: string;
+  [key: string]: unknown;
+};
+
+export type AdminKnowledgeReviewIssue = {
+  id: string;
+  runId?: string;
+  type: string;
+  severity: 'high' | 'medium' | 'low' | string;
+  confidence?: number | null;
+  reason: string;
+  status: string;
+  pageNos: number[];
+  sourceRegions: AdminKnowledgeSourceRegion[];
+  affectedChunkIds: string[];
+  proposedOperations: AdminKnowledgeCorrectionOperation[];
+  payload?: Record<string, unknown>;
+};
+
+export type AdminKnowledgeReviewRun = {
+  id: string;
+  indexVersion?: string;
+  reviewType: string;
+  model?: string;
+  status: string;
+  errorCode?: string;
+  errorMessage?: string;
+  startedAt?: string;
+  completedAt?: string;
+  summary?: Record<string, unknown>;
+};
+
+export type AdminKnowledgeCorrectionPlan = {
+  id?: string;
+  sourceIssueId?: string;
+  reasonCode: string;
+  note: string;
+  scope: string;
+  operations: AdminKnowledgeCorrectionOperation[];
+  status?: string;
+  requiresConfirmation?: boolean;
+};
+
+export type AdminKnowledgePageReview = {
+  pageNo: number;
+  indexVersion: string;
+  status: 'passed' | 'needs_correction';
+  note?: string;
+  reviewer?: string;
+  reviewedAt: string;
+};
+
+export type AdminKnowledgeReviewWorkspaceResponse = {
+  ok: true;
+  document: AdminKnowledgeDocument;
+  pages: AdminKnowledgeReviewPage[];
+  reviewRuns: AdminKnowledgeReviewRun[];
+  issues: AdminKnowledgeReviewIssue[];
+  corrections: AdminKnowledgeCorrectionPlan[];
+  pageReviews: AdminKnowledgePageReview[];
+  indexReview?: AdminKnowledgeDocument['indexReview'];
+};
+
 export type AdminMembershipConfig = {
   enabled: boolean;
   annualPriceCents: 30000;
@@ -127,12 +332,18 @@ export type AdminResponsibilityGenerationConfig = {
   updatedAt: string;
 };
 
+export type AdminOcrScenarioRouting = {
+  config: { routes: Record<string, string>; updatedAt: string };
+  scenarios: Array<{ key: string; label: string }>;
+  models: Array<{ value: string; label: string }>;
+};
+
 export type AdminAgentPolicyDecision = 'execute' | 'propose' | 'reject';
 export type AdminAgentPolicyHandler = 'system' | 'insurance_expert' | 'sales_champion';
 export type AdminAgentPolicyOperation = 'read' | 'write';
 export type AdminAgentPolicyConfirmation = 'not_required' | 'required';
 export type AdminAgentPolicyOutputMode = 'direct' | 'structured' | 'preview';
-export type AdminAgentPolicyTool = 'family_summary' | 'coverage_report' | 'sales_report' | 'product_knowledge_search' | 'create_upload_link' | 'propose_memory' | 'preview_transfer';
+export type AdminAgentPolicyTool = 'list_families' | 'family_summary' | 'coverage_report' | 'sales_report' | 'product_knowledge_search' | 'create_upload_link' | 'propose_memory' | 'preview_transfer';
 
 export type AdminAgentQuestionPolicy = {
   key: string;
@@ -147,11 +358,17 @@ export type AdminAgentQuestionPolicy = {
   confidenceThreshold?: number;
 };
 
+export type AdminAgentRuntimeSettings = {
+  fallbackHistoryMessageLimit: number;
+  productContextTtlMinutes: number;
+};
+
 export type AdminAgentQuestionPolicyVersion = {
   id: number;
   version: number;
   status: 'draft' | 'published' | 'archived';
   policies: AdminAgentQuestionPolicy[];
+  runtimeSettings: AdminAgentRuntimeSettings;
   actor: string;
   createdAt: string;
   publishedAt: string;
@@ -164,6 +381,7 @@ export type AdminAgentQuestionPoliciesResponse = {
   drafts: AdminAgentQuestionPolicyVersion[];
   history: AdminAgentQuestionPolicyVersion[];
   templates: AdminAgentQuestionPolicy[];
+  defaultRuntimeSettings: AdminAgentRuntimeSettings;
 };
 
 export type AdminAgentPolicySimulationCandidate = {
@@ -381,6 +599,196 @@ export function reviewAdminKnowledgeRecord(token: string, input: { id: number; a
   });
 }
 
+export function getAdminKnowledgeDocuments(token: string, options: { includeReviewChunks?: boolean } = {}) {
+  const query = options.includeReviewChunks ? '?includeChunks=review' : '';
+  return request<{ ok: true; documents: AdminKnowledgeDocument[]; summary: { count: number } }>(`/api/admin/product-knowledge/documents${query}`, { token });
+}
+
+export function getAdminProductCatalogCompanies(token: string) {
+  void token;
+  return request<{ ok: true; suggestions: Array<{ company: string; recordCount: number; matchType: string }> }>('/api/policy-responsibilities/company-suggestions')
+    .then((payload) => ({ ok: true as const, companies: payload.suggestions.map((item) => item.company), summary: { count: payload.suggestions.length } }));
+}
+
+export function searchAdminProductCatalog(token: string, input: { company?: string; query?: string; limit?: number }) {
+  void token;
+  const params = new URLSearchParams();
+  if (input.company) params.set('company', input.company);
+  if (input.query) params.set('q', input.query);
+  if (input.limit) params.set('limit', String(input.limit));
+  return request<{ ok: true; suggestions: Array<{ company: string; productName: string; recordCount: number; matchType: string }> }>(`/api/policy-responsibilities/product-suggestions?${params.toString()}`)
+    .then((payload) => ({
+      ok: true as const,
+      products: payload.suggestions.map((item) => ({ ...item, score: 0 })),
+      summary: { count: payload.suggestions.length, query: input.query || '', company: input.company || '' },
+    }));
+}
+
+export function getAdminKnowledgeDocument(token: string, documentId: string) {
+  return request<AdminKnowledgeDocumentDetail>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}`, { token });
+}
+
+export function uploadAdminKnowledgeDocument(token: string, input: {
+  libraryType: 'expert' | 'company_product';
+  fileName: string;
+  mediaType: string;
+  dataBase64: string;
+  contributorName?: string;
+  contributorRole?: string;
+  title?: string;
+  materialType?: string;
+  materialUsage?: string;
+  materialUsages?: string[];
+  company?: string;
+  productName?: string;
+  productNames?: string[];
+  versionLabel?: string;
+  focusTags?: string[];
+  specialInstructions?: string;
+}) {
+  return request<{ ok: true; deduplicated: boolean; document: AdminKnowledgeDocument }>('/api/admin/product-knowledge/documents', {
+    token,
+    body: input,
+  });
+}
+
+export function uploadAdminKnowledgeDocumentFromUrl(token: string, input: {
+  libraryType: 'expert' | 'company_product';
+  sourceUrl: string;
+  contributorName?: string;
+  contributorRole?: string;
+  title?: string;
+  materialType?: string;
+  materialUsage?: string;
+  materialUsages?: string[];
+  company?: string;
+  productName?: string;
+  productNames?: string[];
+  versionLabel?: string;
+  focusTags?: string[];
+  specialInstructions?: string;
+}) {
+  return request<{ ok: true; deduplicated: boolean; document: AdminKnowledgeDocument }>('/api/admin/product-knowledge/documents/from-url', {
+    token,
+    body: input,
+  });
+}
+
+export function processAdminKnowledgeDocument(token: string, documentId: string) {
+  return request<{ ok: true; document: AdminKnowledgeDocument }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/process`, {
+    token,
+    body: {},
+  });
+}
+
+export function reviewAdminKnowledgeDocument(token: string, documentId: string, action: 'publish' | 'reject' | 'rollback' | 'unpublish') {
+  return request<{ ok: true; document: AdminKnowledgeDocument; registeredKnowledgeRecord?: KnowledgeRecord | null; registeredKnowledgeRecords?: KnowledgeRecord[] }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/review`, {
+    token,
+    body: { action },
+  });
+}
+
+export function updateAdminKnowledgeChunkBinding(token: string, documentId: string, chunkId: string, input: {
+  action: 'bind' | 'exclude';
+  canonicalProductId?: string;
+}) {
+  return request<{
+    ok: true;
+    chunk: AdminKnowledgeChunk;
+    publishReadiness: NonNullable<AdminKnowledgeDocument['publishReadiness']>;
+  }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/chunks/${encodeURIComponent(chunkId)}/binding`, {
+    token,
+    method: 'PATCH',
+    body: input,
+  });
+}
+
+export function getAdminKnowledgeReviewWorkspace(token: string, documentId: string) {
+  return request<AdminKnowledgeReviewWorkspaceResponse>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/review-workspace`, { token });
+}
+
+export async function getAdminKnowledgeDocumentSource(token: string, documentId: string) {
+  const response = await fetch(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/source`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { code?: string; message?: string } | null;
+    throw new ApiError(response.status, payload?.code || 'PRODUCT_DOCUMENT_SOURCE_FAILED', payload?.message || '原始资料读取失败');
+  }
+  return response.blob();
+}
+
+export async function getAdminKnowledgePagePreview(token: string, documentId: string, pageNo: number) {
+  const response = await fetch(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/pages/${pageNo}/preview`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { code?: string; message?: string } | null;
+    throw new ApiError(response.status, payload?.code || 'PRODUCT_DOCUMENT_PREVIEW_FAILED', payload?.message || '原页图片预览暂不可用');
+  }
+  return response.blob();
+}
+
+export function startAdminKnowledgePreReview(token: string, documentId: string) {
+  return request<{
+    ok: true;
+    review: {
+      decision: string;
+      model?: string;
+      summary?: Record<string, unknown>;
+      issues: AdminKnowledgeReviewIssue[];
+    };
+    run: AdminKnowledgeReviewRun;
+    issues: AdminKnowledgeReviewIssue[];
+  }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/pre-review`, {
+    token,
+    body: {},
+  });
+}
+
+export function reviewAdminKnowledgePage(token: string, documentId: string, pageNo: number, input: {
+  status: 'passed' | 'needs_correction';
+  note?: string;
+  indexVersion?: string;
+}) {
+  return request<{ ok: true; review: AdminKnowledgePageReview }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/pages/${pageNo}/review`, {
+    token,
+    body: input,
+  });
+}
+
+export function planAdminKnowledgeCorrections(token: string, documentId: string, input: {
+  sourceIssueId?: string;
+  reasonCode: string;
+  note: string;
+  scope?: 'current_chunk' | 'document_repeated_regions' | 'product_page_range' | string;
+  targetChunkIds?: string[];
+  sourceElementIds?: string[];
+  operations?: AdminKnowledgeCorrectionOperation[];
+}) {
+  return request<{ ok: true; plan: AdminKnowledgeCorrectionPlan }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/corrections/plan`, {
+    token,
+    body: input,
+  });
+}
+
+export function confirmAdminKnowledgeCorrections(token: string, documentId: string, input: {
+  plan: AdminKnowledgeCorrectionPlan;
+  sourceIssueId?: string;
+  indexVersion?: string;
+}) {
+  return request<{
+    ok: true;
+    correction: AdminKnowledgeCorrectionPlan;
+    reprocessed?: { document?: AdminKnowledgeDocument; candidateIndexVersion?: string; [key: string]: unknown };
+  }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/corrections/confirm`, {
+    token,
+    body: input,
+  });
+}
+
 export function getAdminMembershipConfig(token: string) {
   return request<{ ok: true; config: AdminMembershipConfig }>('/api/admin/membership-config', { token });
 }
@@ -410,24 +818,42 @@ export function updateAdminResponsibilityGenerationConfig(token: string, input: 
   });
 }
 
+export function getAdminOcrScenarioRouting(token: string) {
+  return request<{ ok: true } & AdminOcrScenarioRouting>('/api/admin/ocr-scenario-routing', { token });
+}
+
+export function updateAdminOcrScenarioRouting(token: string, routes: Record<string, string>) {
+  return request<{ ok: true } & AdminOcrScenarioRouting>('/api/admin/ocr-scenario-routing', {
+    token,
+    method: 'PATCH',
+    body: { routes },
+  });
+}
+
 export function getAdminAgentQuestionPolicies(token: string) {
   return request<AdminAgentQuestionPoliciesResponse>('/api/admin/agent-question-policies', { token });
 }
-export function createAdminAgentQuestionPolicyDraft(token: string, policies: AdminAgentQuestionPolicy[]) {
-  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>('/api/admin/agent-question-policies/drafts', { token, body: { policies } });
+
+export function createAdminAgentQuestionPolicyDraft(token: string, policies: AdminAgentQuestionPolicy[], runtimeSettings: AdminAgentRuntimeSettings) {
+  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>('/api/admin/agent-question-policies/drafts', { token, body: { policies, runtimeSettings } });
 }
-export function updateAdminAgentQuestionPolicyDraft(token: string, draftId: number, policies: AdminAgentQuestionPolicy[]) {
-  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/drafts/${draftId}`, { token, method: 'PATCH', body: { policies } });
+
+export function updateAdminAgentQuestionPolicyDraft(token: string, draftId: number, policies: AdminAgentQuestionPolicy[], runtimeSettings: AdminAgentRuntimeSettings) {
+  return request<{ ok: true; draft: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/drafts/${draftId}`, { token, method: 'PATCH', body: { policies, runtimeSettings } });
 }
+
 export function publishAdminAgentQuestionPolicyDraft(token: string, draftId: number) {
   return request<{ ok: true; published: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/drafts/${draftId}/publish`, { token, body: {} });
 }
+
 export function rollbackAdminAgentQuestionPolicyVersion(token: string, versionId: number) {
   return request<{ ok: true; sourceVersionId: number; published: AdminAgentQuestionPolicyVersion }>(`/api/admin/agent-question-policies/versions/${versionId}/rollback`, { token, body: {} });
 }
+
 export function simulateAdminAgentQuestionPolicy(token: string, input: { draftId?: number; candidate: AdminAgentPolicySimulationCandidate }) {
   return request<AdminAgentPolicySimulationResponse>('/api/admin/agent-question-policies/simulate', { token, body: input });
 }
+
 export function getAdminAgentUnknownQuestions(token: string, input: { limit?: number; offset?: number } = {}) {
   const params = new URLSearchParams({ limit: String(input.limit || 20), offset: String(input.offset || 0) });
   return request<{ ok: true; items: AdminAgentUnknownQuestion[]; total: number; limit: number; offset: number }>(`/api/admin/agent-unknown-questions?${params}`, { token });

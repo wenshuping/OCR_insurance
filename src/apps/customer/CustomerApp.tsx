@@ -12,13 +12,16 @@ import {
   CircleUserRound,
   Copy,
   Download,
+  FileText,
   MessageSquareText,
+  Paperclip,
   SendHorizontal,
   Shield,
   ShieldCheck,
   Sparkles,
   Target,
   TrendingUp,
+  X,
 } from 'lucide-react';
 import {
   ApiError,
@@ -59,6 +62,7 @@ import {
   getFamilyReportRecord,
   getFamilySalesReview,
   listFamilySalesChatThreads,
+  recognizeFamilySalesChatAttachments,
   getHealthStatus,
   getLocalPolicyAnalysisDraft,
   getPolicy,
@@ -169,6 +173,7 @@ import {
   normalizePolicyPlanListWithIndex,
   policyToForm,
   productLookupKey,
+  resolveBoundParticipantRelation,
   sanitizeAmount,
   scanToForm,
   setMainPolicyPlanProduct,
@@ -189,6 +194,7 @@ import {
 const GUEST_ID_KEY = 'policy-ocr-app.guestId';
 const TOKEN_KEY = 'policy-ocr-app.token';
 const USER_MOBILE_KEY = 'policy-ocr-app.mobile';
+const SELECTED_FAMILY_ID_KEY = 'policy-ocr-app.selectedFamilyId';
 const FAMILY_SALES_REVIEW_RESTORE_KEY = 'policy-ocr-app.familySalesReviewFamilyId';
 const CLIENT_BOOTED_AT = new Date().toISOString();
 const CURRENT_CLIENT_ASSET_PATH = currentClientAssetPath();
@@ -620,6 +626,7 @@ export function CustomerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const productKnowledgeFileInputRef = useRef<HTMLInputElement | null>(null);
   const productKnowledgeReplaceIndexRef = useRef<number | null>(null);
+  const productKnowledgeTargetRef = useRef<{ company: string; name: string } | null>(null);
   const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
   const membershipStatusRequestRef = useRef(0);
@@ -639,7 +646,10 @@ export function CustomerApp() {
   const [familyCreateDialogOpen, setFamilyCreateDialogOpen] = useState(false);
   const [familyCreateLoading, setFamilyCreateLoading] = useState(false);
   const [familyCreateMessage, setFamilyCreateMessage] = useState('');
-  const [selectedFamilyId, setSelectedFamilyId] = useState<number | null>(null);
+  const [selectedFamilyId, setSelectedFamilyId] = useState<number | null>(() => {
+    const storedFamilyId = Number(sessionStorage.getItem(SELECTED_FAMILY_ID_KEY) || 0);
+    return storedFamilyId > 0 ? storedFamilyId : null;
+  });
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [activeTab, setActiveTab] = useState<CustomerTab>('entry');
   const [message, setMessage] = useState('可以直接录入保单');
@@ -712,6 +722,8 @@ export function CustomerApp() {
   const [familySalesChatLoading, setFamilySalesChatLoading] = useState(false);
   const [familySalesChatMessage, setFamilySalesChatMessage] = useState('');
   const [familySalesChatReviewMessageIds, setFamilySalesChatReviewMessageIds] = useState<number[]>([]);
+  const [familySalesChatAttachments, setFamilySalesChatAttachments] = useState<UploadItem[]>([]);
+  const [familySalesChatAttachmentLoading, setFamilySalesChatAttachmentLoading] = useState(false);
   const [familyPlanningProfile, setFamilyPlanningProfile] = useState<FamilyPlanningProfile>(readFamilyPlanningProfile);
 
   // Cash value upload dialog state
@@ -930,6 +942,8 @@ export function CustomerApp() {
       const nextId = current && families.some((family) => Number(family.id) === Number(current))
         ? current
         : families[0]?.id ?? null;
+      if (nextId) sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(nextId));
+      else sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
       setFormData((currentForm) => ({ ...currentForm, familyId: nextId }));
       return nextId;
     });
@@ -1010,6 +1024,7 @@ export function CustomerApp() {
   function clearCustomerSession(nextMessage = '已退出登录，当前为游客模式') {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_MOBILE_KEY);
+    sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
     sessionStorage.removeItem(FAMILY_SALES_REVIEW_RESTORE_KEY);
     setToken('');
     setMobile('');
@@ -1146,7 +1161,7 @@ export function CustomerApp() {
     const timer = window.setTimeout(() => {
       setAssistantCompanySuggestions([]);
       setAssistantCompanySuggestionLoading(true);
-      listPolicyResponsibilityCompanySuggestions({ q, limit: 50 })
+      listPolicyResponsibilityCompanySuggestions({ q })
         .then((payload) => {
           if (!cancelled) setAssistantCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -1156,7 +1171,7 @@ export function CustomerApp() {
         .finally(() => {
           if (!cancelled) setAssistantCompanySuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -1175,7 +1190,7 @@ export function CustomerApp() {
     const timer = window.setTimeout(() => {
       setAssistantProductSuggestions([]);
       setAssistantProductSuggestionLoading(true);
-      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
+      listPolicyResponsibilityProductSuggestions({ company, q })
         .then((payload) => {
           if (!cancelled) setAssistantProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -1185,7 +1200,7 @@ export function CustomerApp() {
         .finally(() => {
           if (!cancelled) setAssistantProductSuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -1203,7 +1218,7 @@ export function CustomerApp() {
     const timer = window.setTimeout(() => {
       setFormCompanySuggestions([]);
       setFormCompanySuggestionLoading(true);
-      listPolicyResponsibilityCompanySuggestions({ q, limit: 50 })
+      listPolicyResponsibilityCompanySuggestions({ q })
         .then((payload) => {
           if (!cancelled) setFormCompanySuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -1213,7 +1228,7 @@ export function CustomerApp() {
         .finally(() => {
           if (!cancelled) setFormCompanySuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -1232,7 +1247,7 @@ export function CustomerApp() {
     const timer = window.setTimeout(() => {
       setFormProductSuggestions([]);
       setFormProductSuggestionLoading(true);
-      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
+      listPolicyResponsibilityProductSuggestions({ company, q })
         .then((payload) => {
           if (!cancelled) setFormProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -1242,7 +1257,7 @@ export function CustomerApp() {
         .finally(() => {
           if (!cancelled) setFormProductSuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -1262,7 +1277,7 @@ export function CustomerApp() {
     const timer = window.setTimeout(() => {
       setFormPlanProductSuggestions([]);
       setFormPlanProductSuggestionLoading(true);
-      listPolicyResponsibilityProductSuggestions({ company, q, limit: 50 })
+      listPolicyResponsibilityProductSuggestions({ company, q })
         .then((payload) => {
           if (!cancelled) setFormPlanProductSuggestions(Array.isArray(payload.suggestions) ? payload.suggestions : []);
         })
@@ -1272,7 +1287,7 @@ export function CustomerApp() {
         .finally(() => {
           if (!cancelled) setFormPlanProductSuggestionLoading(false);
         });
-    }, 220);
+    }, 80);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -1308,7 +1323,7 @@ export function CustomerApp() {
             .map((suggestion, index) => productSuggestionToKnowledgeMatch(suggestion, name, index));
         }
         setFormProductMatches(matches);
-        setFormProductMatchStatus(matchStatus);
+        setFormProductMatchStatus(matches.length ? matchStatus : 'not_found');
         setFormProductMatchMessage(matches.length ? '' : '本地暂无匹配候选，生成时将继续查找官方资料');
       } catch (error) {
         if (cancelled) return;
@@ -1387,6 +1402,9 @@ export function CustomerApp() {
         const next = { ...current, [key]: value };
         if (['applicant', 'insured', 'beneficiary', 'applicantBirthday', 'insuredBirthday', 'beneficiaryBirthday', 'insuredIdNumber'].includes(key)) {
           return autoBindEntryMembersByName(next);
+        }
+        if (['applicantRelation', 'applicantRelationLabel', 'insuredRelation', 'insuredRelationLabel'].includes(key)) {
+          return sharePolicyPersonInfo(next);
         }
         return next;
       }
@@ -1640,6 +1658,8 @@ export function CustomerApp() {
   }
 
   function handleSelectFamily(familyId: number | null) {
+    if (familyId) sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(familyId));
+    else sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
     setSelectedFamilyId(familyId);
     setSavedFamilyReportRecord(null);
     setFamilyPolicyAnalysisReport(null);
@@ -1952,6 +1972,33 @@ export function CustomerApp() {
     }
   }
 
+  async function handleFamilySalesChatAttachments(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files || []).slice(0, 5);
+    event.target.value = '';
+    if (!files.length || !familySalesReviewFamilyId || familySalesChatAttachmentLoading) return;
+    setFamilySalesChatAttachmentLoading(true);
+    setFamilySalesChatMessage(`正在识别 ${files.length} 个文件`);
+    try {
+      const uploadItems = await Promise.all(files.map((file) => fileToUploadItem(file)));
+      setFamilySalesChatAttachments(uploadItems);
+      const payload = await recognizeFamilySalesChatAttachments({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: familySalesReviewFamilyId,
+        uploadItems,
+      });
+      const recognizedContext = payload.documents
+        .map((document) => `【${document.name} OCR 识别内容】\n${document.ocrText}`)
+        .join('\n\n');
+      setFamilySalesChatInput((current) => [recognizedContext, current.trim()].filter(Boolean).join('\n\n'));
+      setFamilySalesChatMessage(`已识别 ${payload.documents.length} 个文件，请确认文字后发送`);
+    } catch (error) {
+      setFamilySalesChatMessage(error instanceof Error ? error.message : '文件识别失败');
+    } finally {
+      setFamilySalesChatAttachmentLoading(false);
+    }
+  }
+
   async function copyFamilySalesChatMessage(content: string) {
     try {
       await navigator.clipboard.writeText(content);
@@ -2085,22 +2132,30 @@ export function CustomerApp() {
     const sharedMember = sameParticipant ? applicantMember || insuredMember : null;
     const finalApplicantMember = sharedMember || applicantMember;
     const finalInsuredMember = sharedMember || insuredMember;
-    return {
+    const applicantRelation = resolveBoundParticipantRelation(
+      syncedData.applicantRelationLabel || syncedData.applicantRelation,
+      finalApplicantMember ? relationLabelForEntryMember(finalApplicantMember) : '',
+    );
+    const insuredRelation = resolveBoundParticipantRelation(
+      syncedData.insuredRelationLabel || syncedData.insuredRelation,
+      finalInsuredMember ? relationLabelForEntryMember(finalInsuredMember) : '',
+    );
+    return sharePolicyPersonInfo({
       ...syncedData,
       familyId,
       ...(finalApplicantMember ? {
         applicantMemberId: finalApplicantMember.id,
-        applicantRelation: relationLabelForEntryMember(finalApplicantMember),
-        applicantRelationLabel: relationLabelForEntryMember(finalApplicantMember),
+        applicantRelation,
+        applicantRelationLabel: applicantRelation,
         applicantBirthday: syncedData.applicantBirthday || finalApplicantMember.birthday || '',
       } : {}),
       ...(finalInsuredMember ? {
         insuredMemberId: finalInsuredMember.id,
-        insuredRelation: relationLabelForEntryMember(finalInsuredMember),
-        insuredRelationLabel: relationLabelForEntryMember(finalInsuredMember),
+        insuredRelation,
+        insuredRelationLabel: insuredRelation,
         insuredBirthday: syncedData.insuredBirthday || finalInsuredMember.birthday || '',
       } : {}),
-    };
+    });
   }
 
   async function ensureFamilyBeforeSave() {
@@ -2132,6 +2187,7 @@ export function CustomerApp() {
   function replaceFamilyProfile(family: FamilyProfile, members: FamilyMember[]) {
     const nextFamily = { ...family, members };
     setFamilyProfiles((current) => [nextFamily, ...current.filter((item) => Number(item.id) !== Number(nextFamily.id))]);
+    sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(nextFamily.id));
     setSelectedFamilyId(nextFamily.id);
     setFormData((current) => ({ ...current, familyId: nextFamily.id }));
     return nextFamily;
@@ -2293,6 +2349,7 @@ export function CustomerApp() {
     setPolicies((current) => current.map((policy) => clearFamilyPolicyBinding(policy, family.id)));
     setSelectedPolicy((current) => (current ? clearFamilyPolicyBinding(current, family.id) : current));
     if (Number(selectedFamilyId || 0) === Number(family.id)) {
+      sessionStorage.removeItem(SELECTED_FAMILY_ID_KEY);
       setSelectedFamilyId(null);
       setShowFamilyReport(false);
       setShowFamilyPolicies(false);
@@ -2355,6 +2412,7 @@ export function CustomerApp() {
     setFormProductMatchStatus('');
     setProductKnowledgeUploadItems([]);
     setProductKnowledgeUploadCount(0);
+    productKnowledgeTargetRef.current = null;
     setBaseScanResult(null);
     setBaseAnalysisDraft(null);
     setMessage('正在上传并 OCR 识别保单信息');
@@ -2408,12 +2466,13 @@ export function CustomerApp() {
     fileInputRef.current?.click();
   }
 
-  function handleProductKnowledgeScanClick() {
+  function handleProductKnowledgeScanClick(target?: { company: string; name: string }) {
     if (blockPolicyEntryIfUnauthenticated('上传补充产品页前需要先验证手机号')) return;
     if (!uploadItem || !baseScanResult) {
       setMessage('请先上传保单基本信息页照片');
       return;
     }
+    productKnowledgeTargetRef.current = target || { company: formData.company, name: formData.name };
     productKnowledgeReplaceIndexRef.current = null;
     productKnowledgeFileInputRef.current?.click();
   }
@@ -2439,6 +2498,7 @@ export function CustomerApp() {
     if (!items.length) {
       setProductKnowledgeUploadItems([]);
       setProductKnowledgeUploadCount(0);
+      productKnowledgeTargetRef.current = null;
       setScanResult(baseScanResult);
       setOcrText(baseScanResult.ocrText || '');
       setAnalysisDraft(baseAnalysisDraft);
@@ -2451,12 +2511,13 @@ export function CustomerApp() {
     }
     setProductKnowledgeUploading(true);
     try {
+      const knowledgeTarget = productKnowledgeTargetRef.current || { company: formData.company, name: formData.name };
       const payload = await scanPolicyProductKnowledge({
         token,
         guestId,
-        company: formData.company,
-        name: formData.name,
-        manualData: formData,
+        company: knowledgeTarget.company,
+        name: knowledgeTarget.name,
+        manualData: { ...formData, company: knowledgeTarget.company, name: knowledgeTarget.name },
         scan: baseScanResult,
         uploadItems: items,
       });
@@ -2528,6 +2589,7 @@ export function CustomerApp() {
     setAnalysisDraft(null);
     setProductKnowledgeUploadItems([]);
     setProductKnowledgeUploadCount(0);
+    productKnowledgeTargetRef.current = null;
     clearOptionalResponsibilitySelections();
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey('');
@@ -3066,10 +3128,9 @@ export function CustomerApp() {
     const submitBaseData = autoBindEntryMembersByName(familyAlignedData);
     if (submitBaseData !== formData) setFormData(submitBaseData);
     const mustSelectExistingFamily = familyProfiles.some((family) => String(family.status || 'active') === 'active');
-    const familyHasCoreMember = Boolean(entrySelectedFamily?.coreMemberId);
     const validationErrors = validatePolicyEntryForm(submitBaseData, {
       requireFamily: mustSelectExistingFamily,
-      requireParticipantRelations: familyHasCoreMember,
+      requireParticipantRelations: true,
     });
     if (validationErrors.length) {
       const message = `以下必录项未填写：\n${validationErrors.map((item) => `- ${item}`).join('\n')}`;
@@ -3227,6 +3288,7 @@ export function CustomerApp() {
         outputOcrChars: String(payload.policy?.ocrText || '').length,
         responsibilityCount: payload.policy?.responsibilities?.length || 0,
       });
+      sessionStorage.setItem(SELECTED_FAMILY_ID_KEY, String(submitFamily.id));
       setSelectedFamilyId(submitFamily.id);
       setFormData({
         ...emptyForm,
@@ -3240,6 +3302,7 @@ export function CustomerApp() {
       setAnalysisDraft(null);
       setProductKnowledgeUploadItems([]);
       setProductKnowledgeUploadCount(0);
+      productKnowledgeTargetRef.current = null;
       clearOptionalResponsibilitySelections();
       setShowAnalysisReport(false);
       setConfirmedProductMatchKey('');
@@ -3609,6 +3672,7 @@ export function CustomerApp() {
     setAnalysisDraft(null);
     setProductKnowledgeUploadItems([]);
     setProductKnowledgeUploadCount(0);
+    productKnowledgeTargetRef.current = null;
     clearOptionalResponsibilitySelections();
     setShowAnalysisReport(false);
     setConfirmedProductMatchKey('');
@@ -3967,16 +4031,46 @@ export function CustomerApp() {
                   void submitFamilySalesChat();
                 }}
               >
-                <textarea
-                  value={familySalesChatInput}
-                  onChange={(event) => setFamilySalesChatInput(event.target.value)}
-                  placeholder="继续追问，例如：帮我把这段建议改成更温和的微信话术"
-                  rows={2}
-                  className="min-h-[52px] flex-1 resize-none rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold leading-5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                />
+                <div className="flex-1 rounded-2xl border border-slate-200 bg-white transition focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-100">
+                  {familySalesChatAttachments.length ? (
+                    <div className="flex flex-wrap gap-2 px-3 pt-3">
+                      {familySalesChatAttachments.map((item, index) => (
+                        <span key={`${item.name}-${index}`} className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">
+                          <FileText size={13} className="shrink-0" />
+                          <span className="truncate">{item.name}</span>
+                          <button type="button" aria-label={`移除 ${item.name}`} onClick={() => setFamilySalesChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}>
+                            <X size={13} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <textarea
+                    value={familySalesChatInput}
+                    onChange={(event) => setFamilySalesChatInput(event.target.value)}
+                    placeholder="继续追问，或上传客户聊天截图、计划书"
+                    rows={2}
+                    className="min-h-[52px] w-full resize-none rounded-2xl bg-transparent px-3 py-3 text-sm font-semibold leading-5 text-slate-900 outline-none"
+                  />
+                  <div className="flex items-center justify-between px-3 pb-2">
+                    <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-black ring-1 transition ${familySalesChatAttachmentLoading ? 'cursor-wait bg-slate-100 text-slate-400 ring-slate-200' : 'bg-blue-50 text-blue-700 ring-blue-100 hover:bg-blue-100'}`}>
+                      <Paperclip size={14} />
+                      <span>{familySalesChatAttachmentLoading ? 'OCR 识别中' : '上传图片/计划书'}</span>
+                      <input
+                        type="file"
+                        accept="image/*,.pdf,application/pdf"
+                        multiple
+                        disabled={familySalesChatAttachmentLoading || familySalesChatLoading}
+                        className="sr-only"
+                        onChange={(event) => void handleFamilySalesChatAttachments(event)}
+                      />
+                    </label>
+                    <span className="text-[11px] font-bold text-slate-400">最多 5 个文件</span>
+                  </div>
+                </div>
                 <button
                   type="submit"
-                  disabled={!familySalesChatInput.trim() || familySalesChatLoading}
+                  disabled={!familySalesChatInput.trim() || familySalesChatLoading || familySalesChatAttachmentLoading}
                   className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 text-sm font-black text-white shadow-sm shadow-blue-900/15 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-55 sm:h-auto"
                 >
                   <SendHorizontal size={17} />

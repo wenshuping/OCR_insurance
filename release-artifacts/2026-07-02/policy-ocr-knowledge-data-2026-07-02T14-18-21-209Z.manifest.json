@@ -1,0 +1,97 @@
+{
+  "format": "policy-ocr-production-sqlite-bundle-v1",
+  "mode": "knowledge",
+  "createdAt": "2026-07-02T14:22:37.462Z",
+  "bundleFile": "policy-ocr-knowledge-data-2026-07-02T14-18-21-209Z.sqlite.gz",
+  "sqliteBytes": 983941120,
+  "bundleBytes": 85468294,
+  "sqliteSha256": "3ca2473ee4ce3669d031a5b1ae833f9577511497d97fff3bb5c2075010e7ea56",
+  "bundleSha256": "90382d564075056cd7fedd4dfd83bff04435965a0d72a5c16991341a6c88f8b6",
+  "tables": [
+    {
+      "table": "knowledge_records",
+      "copied": 42777,
+      "skipped": false
+    },
+    {
+      "table": "insurance_indicator_records",
+      "copied": 104883,
+      "skipped": false
+    },
+    {
+      "table": "optional_responsibility_records",
+      "copied": 1054,
+      "skipped": false
+    },
+    {
+      "table": "product_responsibility_cards",
+      "copied": 71074,
+      "skipped": false
+    },
+    {
+      "table": "official_domain_profiles",
+      "copied": 0,
+      "skipped": false
+    },
+    {
+      "table": "indicator_definitions",
+      "copied": 46,
+      "skipped": false
+    },
+    {
+      "table": "state_documents",
+      "copied": 1,
+      "skipped": false
+    }
+  ],
+  "source": {
+    "exists": true,
+    "bytes": 1033568256,
+    "integrity": "ok",
+    "knowledgeCounts": {
+      "knowledge_records": 42777,
+      "insurance_indicator_records": 104883,
+      "optional_responsibility_records": 1054,
+      "product_responsibility_cards": 71074,
+      "official_domain_profiles": 0,
+      "indicator_definitions": 46,
+      "state_documents": 2
+    }
+  },
+  "snapshot": {
+    "exists": true,
+    "bytes": 983941120,
+    "integrity": "ok",
+    "counts": {
+      "knowledge_records": 42777,
+      "insurance_indicator_records": 104883,
+      "optional_responsibility_records": 1054,
+      "product_responsibility_cards": 71074,
+      "official_domain_profiles": 0,
+      "indicator_definitions": 46,
+      "state_documents": 1
+    },
+    "coreCounts": {
+      "users": 0,
+      "policies": 0,
+      "family_profiles": 0,
+      "family_members": 0,
+      "family_reports": 0,
+      "family_report_issues": 0,
+      "family_report_corrections": 0,
+      "family_report_shares": 0,
+      "family_sales_reviews": 0,
+      "knowledge_records": 42777,
+      "insurance_indicator_records": 104883,
+      "optional_responsibility_records": 1054,
+      "product_responsibility_cards": 71074,
+      "official_domain_profiles": 0,
+      "source_records": 0,
+      "policy_cashflows": 0,
+      "policy_cash_values": 0,
+      "indicator_definitions": 46,
+      "pending_scans": 0,
+      "state_documents": 1
+    }
+  }
+}

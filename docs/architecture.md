@@ -44,6 +44,8 @@ Codex work should default to development and should not touch local production w
 - `server/services/` contains workflow services.
 - Domain modules handle cashflow, policy OCR mapping, responsibility queries, family profiles, SMS, WeChat, Feishu knowledge, and SQLite persistence.
 
+Agent semantic routing defaults to `enforced`. The explicit `agentSemanticMode` app option overrides `POLICY_AGENT_SEMANTIC_MODE`; both accept only `enforced` or `off`. In `off` mode the app skips semantic conversation, audit, entity resolver, semantic resolver, and semantic router composition, while the legacy candidate router remains available behind a fixed safe clarification for semantic requests.
+
 `ocr-service/` contains OCR-specific service code:
 
 - `ocr-service/index.mjs` starts the OCR service.

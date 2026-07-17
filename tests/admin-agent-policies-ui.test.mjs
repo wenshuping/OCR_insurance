@@ -19,9 +19,9 @@ const pagesSource = read('../src/apps/admin/adminPages.ts');
 const appSource = read('../src/apps/admin/AdminApp.tsx');
 const pageSource = read('../src/apps/admin/pages/AdminAgentPoliciesPage.tsx');
 
-test('admin navigation exposes Agent strategy management while page state stays outside AdminApp', () => {
+test('admin navigation exposes Chinese agent strategy management while page state stays outside AdminApp', () => {
   assert.match(pagesSource, /key: 'agentPolicies'/u);
-  assert.match(pagesSource, /label: 'Agent 策略管理'/u);
+  assert.match(pagesSource, /label: '智能体策略管理'/u);
   assert.match(appSource, /<AdminAgentPoliciesPage adminToken=\{adminToken\}/u);
   assert.doesNotMatch(appSource, /agentPolicyDraft/u);
 });
@@ -51,10 +51,34 @@ test('agent strategy page provides constrained editing and explicit guarded life
   assert.match(pageSource, /回滚/u);
   assert.match(pageSource, /window\.confirm/u);
   assert.match(pageSource, /confidenceThreshold/u);
+  assert.match(pageSource, /降级历史消息上限/u);
+  assert.match(pageSource, /产品指代有效期/u);
+  assert.match(pageSource, /Hermes 会话历史由 Hermes 自动维护/u);
   assert.match(pageSource, /confirmation/u);
   assert.match(pageSource, /outputMode/u);
   assert.match(pageSource, /ALLOWED_TOOLS/u);
+  assert.match(pageSource, /list_families/u);
+  assert.match(apiSource, /AdminAgentPolicyTool = 'list_families'/u);
   assert.doesNotMatch(pageSource, /system prompt|系统提示词|Prompt 编辑/iu);
+});
+
+test('agent strategy display uses Chinese labels while preserving backend enum values', () => {
+  assert.match(pageSource, />智能体策略管理</u);
+  assert.match(pageSource, /family_list: '家庭列表'/u);
+  assert.match(pageSource, /insurance_expert: '保险专家'/u);
+  assert.match(pageSource, /not_required: '无需确认'/u);
+  assert.match(pageSource, /product_knowledge_search: '搜索产品知识'/u);
+  assert.match(pageSource, /value=\{value\}>\{localizedLabel\(HANDLER_LABELS, value\)\}/u);
+  assert.match(pageSource, />置信度阈值</u);
+  assert.match(pageSource, /实际意图/u);
+  assert.match(pageSource, /策略来源/u);
+});
+
+test('family list template passes the same frontend tool validation as the backend', () => {
+  const fallbackRead = { key: 'unknown_read', intent: 'unknown_read', enabled: true, decision: 'execute', handler: 'system', operation: 'read', confirmation: 'not_required', outputMode: 'direct', tool: null, confidenceThreshold: 0 };
+  const fallbackWrite = { ...fallbackRead, key: 'unknown_write', intent: 'unknown_write', decision: 'reject', operation: 'write', confirmation: 'required' };
+  const familyList = { ...fallbackRead, key: 'family_list', intent: 'family_list', outputMode: 'structured', tool: 'list_families' };
+  assert.deepEqual(validatePolicyDraft([familyList, fallbackRead, fallbackWrite]), []);
 });
 
 test('simulation and unknown-question views show safe operational detail and pagination', () => {

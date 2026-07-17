@@ -19,6 +19,7 @@ import {
   crawlOpenWebProductReferenceRecords,
   findKnowledgeProductCandidates,
   legacyExternalProductReferenceRecords,
+  searchOfficialProductSalesStatuses,
   withPolicyProductMatchStatus,
 } from '../server/policy-knowledge.service.mjs';
 
@@ -822,6 +823,85 @@ test('DeepSeek open web search plan can produce dynamic external reference recor
   assert.equal(gated.status, 'candidates');
   assert.equal(gated.matches[0].needsConfirmation, true);
   assert.ok(requests.some((request) => request.url.includes('/chat/completions')));
+});
+
+test('official sales-status lookup accepts only explicit status on an insurer domain', async () => {
+  const searchHtml = `
+    <html><body>
+      <div class="result">
+        <a class="result__a" href="https://official.test/products/current-a">国寿百万医疗保险（A款）</a>
+        <a class="result__snippet">中国人寿官方产品页</a>
+      </div>
+    </body></html>
+  `;
+  const fetchImpl = async (url) => {
+    if (String(url) === 'https://official.test/products/current-a') {
+      return new Response('<html><body>产品名称：国寿百万医疗保险（A款） 销售状态：在售</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    }
+    return new Response(searchHtml, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+
+  const result = await searchOfficialProductSalesStatuses({
+    company: '中国人寿',
+    productNames: ['国寿百万医疗保险（A款）'],
+    officialDomainProfiles: [{
+      company: '中国人寿',
+      aliases: ['中国人寿', '国寿'],
+      siteDomains: ['official.test'],
+      officialDomains: ['official.test'],
+    }],
+    fetchImpl,
+  });
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].status, '在售');
+  assert.equal(result[0].productName, '国寿百万医疗保险（A款）');
+  assert.equal(result[0].source.url, 'https://official.test/products/current-a');
+});
+
+test('official sales-status lookup discovers unknown medical products before exact verification', async () => {
+  const broadSearchHtml = `
+    <html><body><li class="res-list"><h3 class="res-title">
+      <a href="https://www.so.com/link?m=test" data-mdurl="https://media.test/china-life-new">中国人寿推出健康保险新品</a>
+    </h3><span class="res-list-summary">“康悦”系列再添新翼——国寿康悦臻享医疗保险（费率可调）成功上市</span></li></body></html>
+  `;
+  const exactSearchHtml = `
+    <html><body><div class="result">
+      <a class="result__a" href="https://official.test/products/kangyue">国寿康悦臻享医疗保险（费率可调）</a>
+      <a class="result__snippet">中国人寿官方产品页</a>
+    </div></body></html>
+  `;
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    if (value === 'https://official.test/products/kangyue') {
+      return new Response('<html><body>国寿康悦臻享医疗保险（费率可调） 当前销售状态：在售</body></html>', {
+        status: 200, headers: { 'content-type': 'text/html' },
+      });
+    }
+    const query = new URL(value).searchParams.get('q') || new URL(value).searchParams.get('wd') || '';
+    return new Response(query.includes('康悦臻享') ? exactSearchHtml : broadSearchHtml, {
+      status: 200, headers: { 'content-type': 'text/html' },
+    });
+  };
+
+  const result = await searchOfficialProductSalesStatuses({
+    company: '中国人寿',
+    productNames: ['国寿如E康悦百万医疗保险（A款）'],
+    discoveryQuery: '百万医疗',
+    officialDomainProfiles: [{
+      company: '中国人寿', aliases: ['中国人寿', '国寿'],
+      siteDomains: ['official.test'], officialDomains: ['official.test'],
+    }],
+    fetchImpl,
+  });
+
+  const discovered = result.find((item) => item.productName === '国寿康悦臻享医疗保险（费率可调）');
+  assert.equal(discovered.status, '在售');
+  assert.equal(discovered.evidenceLevel, 'insurer_official');
+  assert.equal(discovered.source.url, 'https://official.test/products/kangyue');
 });
 
 test('knowledge search keeps exact product version before similar New China variants', () => {

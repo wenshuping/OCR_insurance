@@ -1,31 +1,16 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { allocateId, createInitialState } from '../server/policy-ocr.domain.mjs';
+import { allocateId } from '../server/policy-ocr.domain.mjs';
 import { upsertKnowledgeRecords } from '../server/policy-knowledge.service.mjs';
+import { createKnowledgeStateStore } from './runtime-knowledge-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const runtimeDir = path.join(projectRoot, '.runtime');
-const statePath = path.resolve(process.env.POLICY_OCR_APP_STATE_PATH || path.join(runtimeDir, 'state.json'));
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
 const scraplingCwd = process.env.SCRAPLING_PROJECT_DIR || '/Users/wenshuping/Documents/Scrapling';
 const outputMarker = '__POLICY_KNOWLEDGE_JSON__';
-
-function readJson(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
-}
 
 function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -60,27 +45,32 @@ function runCrawler(payload) {
   return JSON.parse(line.slice(line.indexOf(outputMarker) + outputMarker.length));
 }
 
-function main() {
+async function main() {
   const saleStatus = readArg('sale-status', process.env.SUNSHINE_LIFE_SALE_STATUS || 'all');
   const maxProducts = readNumberArg('max-products', Number(process.env.SUNSHINE_LIFE_MAX_PRODUCTS || 0));
   const maxWorkers = readNumberArg('max-workers', Number(process.env.SUNSHINE_LIFE_MAX_WORKERS || 6));
   const pageSize = readNumberArg('page-size', Number(process.env.SUNSHINE_LIFE_PAGE_SIZE || 100));
 
-  const result = runCrawler({
-    mode: 'sunshine_life_browser_pages',
-    company: '阳光人寿',
-    saleStatus,
-    maxProducts,
-    maxWorkers,
-    pageSize,
-  });
-
-  const state = readJson(statePath, createInitialState());
-  if (!Number(state.nextId)) state.nextId = 1;
-  const before = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
-  const after = Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords.length : 0;
-  writeJson(statePath, state);
+  const knowledgeStore = await createKnowledgeStateStore();
+  try {
+    const skipUrls = knowledgeStore.knownCompanyUrls('阳光人寿');
+    const result = runCrawler({
+      mode: 'sunshine_life_browser_pages', company: '阳光人寿', saleStatus,
+      maxProducts, maxWorkers, pageSize, skipUrls,
+    });
+    if (result.ok === false) {
+      console.log(JSON.stringify(result, null, 2));
+      process.exitCode = 2;
+      return;
+    }
+    const state = knowledgeStore.loadState();
+    const before = knowledgeStore.countKnowledgeRecords();
+    const beforeUrls = new Set(knowledgeStore.allKnownUrls());
+    const saved = upsertKnowledgeRecords(state, result.records || [], { allocateId });
+    knowledgeStore.saveState(state);
+    const after = knowledgeStore.countKnowledgeRecords();
+    const newSaved = saved.filter((record) => record?.url && !beforeUrls.has(String(record.url)));
+    const newSavedIds = newSaved.map((record) => Number(record.id)).filter(Number.isFinite).sort((a, b) => a - b);
 
   console.log(
     JSON.stringify(
@@ -97,16 +87,26 @@ function main() {
         pages: result.pages || [],
         productCount: (result.products || []).length,
         materialTaskCount: result.materialTaskCount || 0,
+        skippedExistingUrlCount: skipUrls.length,
         crawledRecordCount: (result.records || []).length,
         savedRecordCount: saved.length,
+        newSavedRecordCount: newSaved.length,
+        newSavedMinId: newSavedIds[0] || null,
+        newSavedMaxId: newSavedIds.at(-1) || null,
         localKnowledgeBefore: before,
         localKnowledgeAfter: after,
-        statePath,
+        dbPath: knowledgeStore.dbPath,
       },
       null,
       2,
     ),
-  );
+    );
+  } finally {
+    knowledgeStore.close();
+  }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
